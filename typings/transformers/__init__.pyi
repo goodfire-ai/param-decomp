@@ -18,6 +18,13 @@ class PreTrainedTokenizer:
     eos_token: str
 
     def encode(self, text: str, /, *args: Any, **kwargs: Any) -> NDArray[np.signedinteger[Any]]: ...
+    def __len__(self) -> int: ...
+
+class LlamaConfig:
+    @classmethod
+    def from_pretrained(
+        cls, pretrained_model_name_or_path: str | Path, /, *args: Any, **kwargs: Any
+    ) -> Self: ...
 
 class AutoTokenizer:
     # Actually differs from the original implementation which doesn't have a return type hint

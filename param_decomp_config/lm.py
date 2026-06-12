@@ -46,8 +46,23 @@ class HFWeightsInVendored(BaseConfig):
     model_name: str  # HF hub id
 
 
+class RandomWeightsInVendored(BaseConfig):
+    """Random-init a vendored architecture at the shapes of an HF model's config, via
+    `<class>.from_hf_config_random(<hub_id>)`. Reads only the tiny cached config json —
+    no weight files touch the filesystem.
+
+    Benchmarking scaffolding: FLOP- and shape-identical to the pretrained target, so
+    throughput/memory probes run without the N-rank snapshot load (the host-OOM /
+    NFS-stall class). Never use for runs whose losses are meant to mean anything.
+    """
+
+    kind: Literal["random_weights_in_vendored"] = "random_weights_in_vendored"
+    model_class: str  # must expose `from_hf_config_random`
+    model_name: str  # HF hub id (config shapes only)
+
+
 LMTargetSpec = Annotated[
-    HFTarget | PretrainedTarget | HFWeightsInVendored,
+    HFTarget | PretrainedTarget | HFWeightsInVendored | RandomWeightsInVendored,
     Discriminator("kind"),
 ]
 
@@ -98,6 +113,14 @@ class LMDataConfig(BaseConfig):
     is_tokenized: bool = Field(default=False)
     streaming: bool = Field(default=False)
     buffer_size: PositiveInt = Field(default=1000)
+    synthetic_tokens: bool = Field(
+        default=False,
+        description=(
+            "Benchmarking scaffolding: yield seeded uniform-random token ids instead of "
+            "reading the dataset — FLOP-identical batches with zero filesystem traffic. "
+            "Requires is_tokenized=True; dataset/streaming fields are ignored."
+        ),
+    )
     shuffle_each_epoch: bool = Field(default=True)
 
 

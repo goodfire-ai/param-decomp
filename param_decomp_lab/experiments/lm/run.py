@@ -48,6 +48,7 @@ from param_decomp_config.lm import (
     LMExperimentConfig,
     LMTargetConfig,
     PretrainedTarget,
+    RandomWeightsInVendored,
 )
 from param_decomp_config.pd import PDConfig
 from param_decomp_lab.batch_and_loss_fns import make_run_batch as _make_run_batch
@@ -108,6 +109,12 @@ def build_target(target_cfg: LMTargetConfig) -> nn.Module:
                 "`from_hf_pretrained` classmethod"
             )
             target_model = ensure_cached_and_call(cls.from_hf_pretrained, spec.model_name)
+        case RandomWeightsInVendored():
+            assert hasattr(cls, "from_hf_config_random"), (
+                f"RandomWeightsInVendored target requires {spec.model_class!r} to expose a "
+                "`from_hf_config_random` classmethod"
+            )
+            target_model = cls.from_hf_config_random(spec.model_name)
     if target_cfg.activation_checkpointing:
         assert hasattr(target_model, "enable_activation_checkpointing"), (
             f"activation_checkpointing=True but {type(target_model).__name__} has no "
