@@ -179,6 +179,14 @@ class ChunkwiseSubsetReconLoss(Metric[ChunkwiseSubsetReconLossConfig]):
     log_namespace = "loss"
     short_name = "ChunkSubsetRecon"
 
+    @property
+    @override
+    def requires_clean_logits(self) -> bool:
+        """Fused recon runs every forward under the LM-head bypass, so it tolerates the
+        trainer's ambient bypass; unfused recon needs its own clean forward to produce
+        logits, which the ambient bypass would silently turn into hidden states."""
+        return not self.cfg.use_fused_kl
+
     @override
     def bind(self, *, model: ComponentModelProtocol, device: str) -> None:
         super().bind(model=model, device=device)
@@ -211,10 +219,14 @@ class ChunkwiseSubsetReconLoss(Metric[ChunkwiseSubsetReconLossConfig]):
 
         # Clean target under the SAME strategy context as the recon forwards: with
         # fused-KL this is the pre-LM-head hidden state (bypass), matching what
-        # `recon_one_forward`'s masked forward returns. `ctx.target_out` is full logits
-        # (the unbypassed metric-context forward), so it can't serve as the fused target.
-        with self._strategy.context(), torch.no_grad():
-            target_local = self._lm(ctx.batch).detach()
+        # `recon_one_forward`'s masked forward returns. When the trainer already ran the
+        # clean forward under the bypass (`target_out_kind == "hidden"`), `ctx.target_out`
+        # IS that target — reuse it instead of paying another clean suffix forward.
+        if self.cfg.use_fused_kl and ctx.target_out_kind == "hidden":
+            target_local = ctx.target_out.detach()
+        else:
+            with self._strategy.context(), torch.no_grad():
+                target_local = self._lm(ctx.batch).detach()
 
         loss, _ = chunkwise_subset_recon(
             lm=self._lm,

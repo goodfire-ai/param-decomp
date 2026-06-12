@@ -612,7 +612,11 @@ def _submit_slurm(
         comment=run_id,
         requeue=True,
     )
-    script = generate_script(slurm_config, launch.command, env={**launch.env, **FSDP_SLURM_ENV})
+    script = generate_script(
+        slurm_config,
+        launch.command,
+        env={**launch.env, **FSDP_SLURM_ENV, **profiling_env_passthrough()},
+    )
     result = submit_slurm_job(script, "lm")
 
     wandb_url = _wandb_url_for_config(config_path, run_id) if config_path is not None else None
