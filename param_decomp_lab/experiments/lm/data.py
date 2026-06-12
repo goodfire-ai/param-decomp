@@ -155,6 +155,25 @@ def _prepare_lm_dataset(
     )
 
 
+class _RandomTokens(torch.utils.data.IterableDataset[dict[str, Tensor]]):
+    """Infinite stream of uniform-random token rows — zero-I/O loader for throughput tests."""
+
+    def __init__(self, vocab_size: int, seq_len: int, seed: int, column_name: str) -> None:
+        self.vocab_size = vocab_size
+        self.seq_len = seq_len
+        self.seed = seed
+        self.column_name = column_name
+
+    def __iter__(self):
+        g = torch.Generator().manual_seed(self.seed)
+        while True:
+            yield {
+                self.column_name: torch.randint(
+                    0, self.vocab_size, (self.seq_len,), generator=g
+                )
+            }
+
+
 def create_lm_data_loader(
     cfg: LMDataConfig,
     *,
@@ -166,6 +185,16 @@ def create_lm_data_loader(
 ) -> tuple[DataLoader[Any], PreTrainedTokenizer]:
     """Create an LM token dataloader from a HuggingFace dataset split."""
     configure_hf_http_retries()
+    if cfg.dataset_name == "random":
+        tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer_name)
+        rank = dist_state.rank if dist_state is not None else 0
+        random_ds = _RandomTokens(
+            tokenizer.vocab_size, cfg.max_seq_len, seed + 1000 * rank, cfg.column_name
+        )
+        loader = DataLoader[dict[str, Tensor]](
+            random_ds, batch_size=batch_size, drop_last=True, collate_fn=collate_fn
+        )
+        return loader, tokenizer
     dataset = load_dataset(
         cfg.dataset_name,
         data_files=cfg.data_files,
