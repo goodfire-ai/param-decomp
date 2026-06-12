@@ -1,0 +1,27 @@
+harvest:
+  config:
+    method_config:
+      type: ParamDecompHarvestConfig
+      wandb_path: goodfire/param-decomp-llama/runs/p-ec62b8cb
+      # Smoke: harvest one matrix at a time. The accumulator allocates dense
+      # [C,C] and [C,vocab] GPU buffers; all 3 matrices (C=73,728) × vocab 128,256
+      # exceed an 180GB B200. One matrix (C=24,576) fits with headroom.
+      target_module_paths:
+        - model.layers.18.mlp.down_proj
+    n_batches: 2500
+    batch_size: 16
+  n_gpus: 8
+  time: "12:00:00"
+autointerp:
+  config:
+    llm:
+      type: openrouter
+      model: google/gemini-3.1-pro-preview
+      reasoning_effort: medium
+    template_strategy:
+      type: canon
+    limit: 500            # smoke pass; re-run unbounded once labels look good
+  evals: null             # labels only — no detection/fuzzing
+intruder: null
+attributions: null
+graph_interp: null
