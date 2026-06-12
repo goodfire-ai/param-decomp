@@ -114,22 +114,28 @@ def init_sources_sharded(
     site_names: tuple[str, ...],
     site_component_counts: tuple[int, ...],
     seq_len: int,
+    batch_dim: int,
+    batch_sharded: bool,
     key: PRNGKeyArray,
     mesh: Mesh,
 ) -> dict[str, Array]:
-    """Seeded PGD-source init `{site: (1, T, C+1)}` -> REPLICATED over `dp` (jit +
+    """Seeded PPGD-source init `{site: (batch_dim, T, C+1)}` with `dp` placement (jit +
     `out_shardings`; same no-host-tree rationale as `init_decomp_vu_sharded`).
 
-    The source is a single adversarial source shared across the whole global batch
-    (leading batch axis = 1, broadcast); it combines elementwise with the batch-sharded
-    CI (`mask = ci + (1-ci)*source[..., :-1]`) and its grad is AVG-reduced across shards
-    (torch `reduce_source_grads`). Replication is the semantically correct placement and
-    the torch analog. Sharding the trailing C+1 axis is invalid anyway: with the
-    weight-delta channel C+1 is odd (8193) and not divisible by the mesh size, and would
-    also fight the batch-sharded elementwise combine."""
-    repl = NamedSharding(mesh, P())
-    init = partial(init_persistent_sources, site_names, site_component_counts, seq_len)
-    return jax.jit(init, out_shardings=repl)(key)
+    `sc` scope (`batch_dim=1`, `batch_sharded=False`): one source shared across the whole
+    global batch (leading axis 1, broadcast), REPLICATED over `dp`; it combines
+    elementwise with the batch-sharded CI (`mask = ci + (1-ci)*source[..., :-1]`) and its
+    grad is AVG-reduced across shards (torch `reduce_source_grads`).
+
+    `bsc` scope (`batch_dim=global_batch`, `batch_sharded=True`): an independent source
+    per batch element, BATCH-SHARDED over `dp` so each replica owns its sub-batch's
+    sources and no cross-shard source-grad sync is needed (SPEC S16).
+
+    Sharding the trailing C+1 axis is invalid either way: C+1 is odd, not divisible by the
+    mesh size, and would fight the batch-sharded elementwise combine."""
+    out = NamedSharding(mesh, P("dp", None, None)) if batch_sharded else NamedSharding(mesh, P())
+    init = partial(init_persistent_sources, site_names, site_component_counts, seq_len, batch_dim)
+    return jax.jit(init, out_shardings=out)(key)
 
 
 def shard_batch(resid_global: jax.Array, mesh: Mesh) -> jax.Array:

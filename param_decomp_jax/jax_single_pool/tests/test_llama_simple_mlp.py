@@ -37,6 +37,7 @@ from jax_single_pool.recon import build_recon_terms
 from jax_single_pool.train import TrainState, make_faith_warmup_step, make_train_step
 from param_decomp_config.losses import (
     AdamPGDConfig,
+    BSCScope,
     ChunkwiseSubsetReconLossConfig,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
@@ -305,7 +306,7 @@ def test_step_trains_and_has_vpd_signature():
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
 
     src = init_persistent_sources(
-        lm.site_names, tuple(s.C for s in lm.sites), seq, jax.random.PRNGKey(3)
+        lm.site_names, tuple(s.C for s in lm.sites), seq, 1, jax.random.PRNGKey(3)
     )
     state = TrainState(
         components=vu, ci_fn=ci_fn,
@@ -376,6 +377,75 @@ def test_step_trains_and_has_vpd_signature():
     for V, U in state.components.vu.values():
         assert V.dtype == jnp.float32 and U.dtype == jnp.float32
     assert state.ci_fn.in_proj_w.dtype == jnp.float32
+
+
+def test_step_trains_bsc_scope():
+    """PPGD `bsc` scope: per-batch-element persistent sources `(B, T, C+1)`, updated
+    independently per element (SPEC §6 SCOPE, S16)."""
+    cfg = _tiny_cfg()
+    site_cs = _MIXED_SITE_CS
+    first = first_decomposed_layer(tuple(s.name for s in site_cs))
+    target, _ = _tiny_target_and_prefix(cfg, first, jax.random.PRNGKey(0))
+    seq, batch, n_warmup = 16, 2, 2
+    sites = site_specs(cfg, site_cs)
+    lm = llama_simple_mlp_decomposed_lm(cfg, sites)
+    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    ci_fn = init_ci_fn(CIArch(d_model=16, n_blocks=2, n_heads=2, mlp_hidden=32),
+                       lm.sites, jax.random.PRNGKey(2))  # fmt: skip
+    opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
+    opt_ci = optax.adamw(1e-3, weight_decay=0.0)
+
+    src = init_persistent_sources(
+        lm.site_names, tuple(s.C for s in lm.sites), seq, batch, jax.random.PRNGKey(3)
+    )
+    for site, c in zip(lm.site_names, (s.C for s in lm.sites), strict=True):
+        assert src[site].shape == (batch, seq, c + 1)
+    state = TrainState(
+        components=vu, ci_fn=ci_fn,
+        components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
+        ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+        sources={"PersistentPGDReconLoss": src},
+        sources_opt_state={"PersistentPGDReconLoss": init_sources_adam_state(src)},
+        step=jnp.zeros((), jnp.int32),
+    )  # fmt: skip
+    loss_spec = build_recon_terms(
+        (
+            FaithfulnessLossConfig(coeff=1e5),
+            ImportanceMinimalityLossConfig(
+                coeff=5e-6, pnorm=2.0, beta=0.2,
+                p_anneal_start_frac=0.0, p_anneal_final_p=0.4, p_anneal_end_frac=1.0,
+            ),
+            PersistentPGDReconLossConfig(
+                coeff=0.5,
+                scope=BSCScope(),
+                optimizer=AdamPGDConfig(
+                    beta1=0.5, beta2=0.99,
+                    lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
+                ),
+                n_warmup_steps=n_warmup,
+            ),
+        ),
+        lm.site_names, n_mask_samples=1, sampling="continuous",
+    )  # fmt: skip
+    step = make_train_step(
+        lm=lm, loss_spec=loss_spec, components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
+        total_steps=100, remat_recon_forwards=True, mesh=None,
+    )  # fmt: skip
+
+    resid = jax.random.normal(jax.random.PRNGKey(4), (batch, seq, cfg.n_embd)) * 0.5
+    losses = []
+    for i in range(4):
+        state, m = step(state, target, resid, jax.random.PRNGKey(100 + i))
+        losses.append({k: float(v) for k, v in m.items()})
+
+    assert all(jnp.isfinite(jnp.array(list(m.values()))).all() for m in losses)
+    final_src = state.sources["PersistentPGDReconLoss"]
+    for site, c in zip(lm.site_names, (s.C for s in lm.sites), strict=True):
+        v = final_src[site]
+        assert v.shape == (batch, seq, c + 1)  # batch axis preserved (not collapsed to 1)
+        assert float(v.min()) >= 0.0 and float(v.max()) <= 1.0  # SPEC S15 projection
+    # bsc independence: the two batch elements ascend on different data → differ.
+    assert any(not jnp.allclose(final_src[s][0], final_src[s][1]) for s in lm.site_names)
 
 
 def test_faith_warmup_decreases_faith():

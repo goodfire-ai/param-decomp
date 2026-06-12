@@ -32,6 +32,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
+from param_decomp_lab.three_pool.checkpoint import is_trainable_component_key
 from safetensors.torch import load_file
 from torch import nn
 
@@ -51,7 +52,6 @@ from param_decomp_lab.experiments.lm.vendored.llama_3_1.config import (
     VendoredLlamaConfig,
 )
 from param_decomp_lab.experiments.lm.vendored.llama_3_1.model import VendoredLlama
-from param_decomp_lab.three_pool.checkpoint import is_trainable_component_key
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "export_fixtures"
 CASES = ("l18", "l20_21", "l18_attn")
