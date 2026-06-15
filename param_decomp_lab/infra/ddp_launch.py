@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 
 from param_decomp_lab.infra.slurm import (
+    RESET_CPU_AFFINITY,
     SINGLETON_JOB_ID_BASH,
     generate_git_snapshot_setup,
 )
@@ -23,6 +24,9 @@ DDP_ENV = {
     "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
     "HF_HUB_ETAG_TIMEOUT": "30",
     "HF_HUB_DOWNLOAD_TIMEOUT": "30",
+    # The HF Xet CDN (us.aws.cdn.hf.co/xet-bridge-us) was returning non-retryable 408s
+    # on fresh jobs (2026-06-15); fall back to the classic LFS download path.
+    "HF_HUB_DISABLE_XET": "1",
 }
 
 
@@ -93,8 +97,10 @@ def build_ddp_launch(
     )
     srun_prefix = (
         f"srun --nodes={n_nodes} --ntasks={n_nodes} --ntasks-per-node=1 --kill-on-bad-exit=1"
+        " --cpu-bind=none"
     )
-    command = f"{srun_prefix} bash -c {shlex.quote(f'{setup}\n{torchrun_cmd}')}"
+    inner = f"{RESET_CPU_AFFINITY}\n{setup}\n{torchrun_cmd}"
+    command = f"{srun_prefix} bash -c {shlex.quote(inner)}"
     return DDPLaunch(command=command, n_nodes=n_nodes, gpus_per_node=GPUS_PER_NODE, env=DDP_ENV)
 
 
