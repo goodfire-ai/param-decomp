@@ -26,6 +26,7 @@ dependencies = [
     "kaleido==0.2.1",
     "numba>=0.64.0",
     "requests",
+    "umap-learn>=0.5.12",
 ]
 
 [project.scripts]
