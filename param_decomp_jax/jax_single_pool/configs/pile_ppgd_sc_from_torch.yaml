@@ -1,0 +1,8 @@
+# JAX leg of the torch<->JAX comparison on the p-20f9fc15 recipe (PPGD scope sc) —
+# torch counterpart launched from pile_llama_simple_mlp-4L_ppgd_sc.yaml at dp 16.
+# See the referenced yaml's header for the documented edits. Small target (4L d768):
+# no remat needed. Launch: pd-jax-lm, 1 node.
+torch_config: torch/pile_llama_simple_mlp_4l_ppgd_sc.yaml
+run_name: ai-jax-pile4l-ppgd-sc
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/runs
+remat_recon_forwards: false
