@@ -1,0 +1,8 @@
+# Fresh-PGD step-size-0.1 pile run — JAX leg of the torch<->JAX comparison vs
+# param_decomp_lab/experiments/lm/pile_llama_simple_mlp-4L_pgd1_ss0.1.yaml. See the
+# referenced yaml's header for the documented edits. Small target: no remat needed.
+# Launch: pd-jax-lm, 1 node.
+torch_config: torch/pile_llama_simple_mlp_4l_pgd1_ss0p1.yaml
+run_name: ai-jax-pile4l-pgd1-ss0p1
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/runs
+remat_recon_forwards: false
