@@ -1,0 +1,157 @@
+"""Regression tests for the 3-pool checkpoint-save NCCL-watchdog-timeout fix.
+
+Three failure surfaces are covered:
+
+  * ``_resolve_pg_timeout`` reads the ``PD_3POOL_PG_TIMEOUT_S`` override (the
+    knob the watchdog-safe-at-low-timeout test uses to force a tight bound) and
+    otherwise returns the default.
+
+  * ``build_world`` threads its ``pg_timeout`` into *every* ``dist.new_group``
+    call. This is the actual production fix: ``new_group`` does NOT inherit the
+    timeout passed to ``init_process_group`` — with ``timeout=None`` it falls
+    back to the 10-min NCCL default. The 3-pool runs all real collectives on
+    these subgroups, so a slow collective trips that watchdog unless the timeout
+    is set explicitly here.
+
+  * The async-consolidation invariant: the union of every rank's
+    self-contained partial must exactly cover the full model's V/U + CI-fn
+    state-dict keys, so ``assemble_model_state_dict_from_partials`` can rebuild
+    the checkpoint off the train loop with no live ranks.
+
+The default PG timeout came down from 30 min to 10 min once consolidation moved
+off the train loop: the longest on-loop collective gap is now the fast-eval
+pass + a partial-write barrier (minutes), not the old ~10-min rank-0 read of
+~100 GB of partials.
+"""
+
+import datetime
+
+import pytest
+import torch.distributed as dist
+
+from param_decomp_lab.three_pool.checkpoint import (
+    ci_fn_state_keys,
+    owned_model_state_keys,
+)
+from param_decomp_lab.three_pool.layout import Chunk, build_world
+from param_decomp_lab.three_pool.optimize import (
+    _DEFAULT_PG_TIMEOUT,
+    _rank_invariant_fingerprint_core,
+    _resolve_pg_timeout,
+)
+
+
+def test_resolve_pg_timeout_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PD_3POOL_PG_TIMEOUT_S", raising=False)
+    assert _resolve_pg_timeout() == _DEFAULT_PG_TIMEOUT
+    assert datetime.timedelta(minutes=10) == _DEFAULT_PG_TIMEOUT
+
+
+def test_resolve_pg_timeout_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PD_3POOL_PG_TIMEOUT_S", "30")
+    assert _resolve_pg_timeout() == datetime.timedelta(seconds=30)
+
+
+def test_build_world_threads_timeout_into_every_new_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every subgroup created by build_world must carry the passed timeout —
+    not new_group's 10-min NCCL default. Monkeypatches the world's collective
+    primitives so this runs without a real process group or any GPU."""
+    captured_timeouts: list[datetime.timedelta | None] = []
+
+    def fake_new_group(ranks: list[int], timeout: datetime.timedelta | None = None) -> object:
+        del ranks
+        captured_timeouts.append(timeout)
+        return object()
+
+    monkeypatch.setattr(dist, "new_group", fake_new_group)
+    monkeypatch.setattr(dist, "get_world_size", lambda: 4)
+    monkeypatch.setattr(dist, "get_rank", lambda: 0)
+
+    pg_timeout = datetime.timedelta(minutes=30)
+    build_world(
+        ci_ranks=[2],
+        chunks=[
+            Chunk(ranks=(0,), sites=("h.0.attn.q_proj",)),
+            Chunk(ranks=(1,), sites=("h.1.attn.q_proj",)),
+        ],
+        ppgd_ranks=[3],
+        batch_global=4,
+        pg_timeout=pg_timeout,
+        device=None,
+    )
+
+    assert captured_timeouts, "build_world created no process groups"
+    assert all(t == pg_timeout for t in captured_timeouts), (
+        f"every new_group must get pg_timeout={pg_timeout}; got {captured_timeouts}"
+    )
+
+
+def test_fingerprint_core_is_rank_invariant() -> None:
+    """The resume topology check reduces a fingerprint to its rank-invariant core:
+    world_size / ci_ranks / ppgd_ranks / n_chunks. The full per-chunk ranks→sites
+    mapping is re-derived from the topology, so the core ignores it."""
+    fp = {
+        "world_size": 144,
+        "ci_ranks": list(range(96, 120)),
+        "ppgd_ranks": list(range(120, 144)),
+        "chunks": [
+            {"ranks": list(range(24)), "sites": ["h.0.attn.q_proj"]},
+            {"ranks": list(range(24, 48)), "sites": ["h.12.attn.q_proj"]},
+            {"ranks": list(range(48, 72)), "sites": ["h.24.attn.q_proj"]},
+            {"ranks": list(range(72, 96)), "sites": ["h.36.attn.q_proj"]},
+        ],
+    }
+    core = _rank_invariant_fingerprint_core(fp)
+    assert core == {
+        "world_size": 144,
+        "ci_ranks": list(range(96, 120)),
+        "ppgd_ranks": list(range(120, 144)),
+        "n_chunks": 4,
+    }
+
+
+def test_fingerprint_core_catches_topology_mismatch() -> None:
+    base = {
+        "world_size": 8,
+        "ci_ranks": [6],
+        "ppgd_ranks": [7],
+        "chunks": [{"ranks": [0, 1], "sites": ["h.0.attn.q_proj"]}],
+    }
+    changed_ppgd = {**base, "ppgd_ranks": [5]}
+    assert _rank_invariant_fingerprint_core(base) != _rank_invariant_fingerprint_core(changed_ppgd)
+
+
+def test_leader_partials_exactly_cover_model_state() -> None:
+    """The per-leader partial slices (chunk-site V/U + CI fn) must partition
+    the full model's fillable keys with no gaps or overlaps — the invariant the
+    async consolidation asserts before assembling the checkpoint."""
+    sites = ("h.0.attn.q_proj", "h.1.attn.q_proj", "h.2.mlp.c_fc")
+    model_keys = {
+        "model.h.0.attn.q_proj.components.V",
+        "model.h.0.attn.q_proj.components.U",
+        "model.h.1.attn.q_proj.components.V",
+        "model.h.1.attn.q_proj.components.U",
+        "model.h.2.mlp.c_fc.components.V",
+        "model.h.2.mlp.c_fc.components.U",
+        "ci_fn._global_ci_fn.embed.weight",
+        "ci_fn._global_ci_fn.proj.weight",
+        # frozen target keys (not owned by any leader; come from the fresh buffer):
+        # the in-tree target_weight buffer at a decomposed site + a non-decomposed weight.
+        "model.h.0.attn.q_proj.target_weight",
+        "model.wte.weight",
+    }
+    target_keys = {k for k in model_keys if ".components." not in k and not k.startswith("ci_fn.")}
+    fillable = model_keys - target_keys
+
+    # Two chunks: chunk 0 owns sites 0+1, chunk 1 owns site 2. CI leader owns ci_fn.
+    chunk0 = owned_model_state_keys(model_keys, sites=(sites[0], sites[1]))
+    chunk1 = owned_model_state_keys(model_keys, sites=(sites[2],))
+    ci = ci_fn_state_keys(model_keys)
+
+    assert chunk0.isdisjoint(chunk1)
+    assert chunk0.isdisjoint(ci)
+    assert chunk1.isdisjoint(ci)
+    assert chunk0 | chunk1 | ci == fillable
+    assert target_keys.isdisjoint(chunk0 | chunk1 | ci)

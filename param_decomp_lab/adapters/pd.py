@@ -9,21 +9,24 @@ from param_decomp_lab.adapters.base import DecompositionAdapter
 from param_decomp_lab.autointerp.schemas import ModelMetadata
 from param_decomp_lab.component_model_io import HarvestableComponentModel
 from param_decomp_lab.experiments.lm.run import SavedLMRun, build_lm_loader
+from param_decomp_lab.experiments.lm.three_pool_run import SavedThreePoolLMRun
 from param_decomp_lab.experiments.utils import EXPERIMENT_CONFIG_FILENAME
 from param_decomp_lab.infra.run_files import resolve_config_path
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
 from param_decomp_lab.topology import TransformerTopology
 
 
-def load_saved_lm_run(path: str) -> SavedLMRun:
-    """Reload a single-pool LM run. Multi-pool configs carry `runtime.topology` —
-    those runs reload on the n-pool branch, not here."""
+def load_saved_lm_run(path: str) -> SavedLMRun | SavedThreePoolLMRun:
+    """Reload a single-pool or 3-pool LM run, dispatching on the saved config shape.
+
+    3-pool configs carry `runtime.topology`; single-pool `RuntimeConfig` has no such field.
+    Both saved-run types expose the same inference surface (`cfg.pd` / `cfg.target` /
+    `cfg.data` / `load_model`), so callers consume the union uniformly.
+    """
     config_path = resolve_config_path(path, config_filename=EXPERIMENT_CONFIG_FILENAME)
     raw = yaml.safe_load(config_path.read_text())
-    assert "topology" not in raw["runtime"], (
-        f"{path}: multi-pool run (runtime.topology) — needs the n-pool subsystems"
-    )
-    return SavedLMRun.from_path(path)
+    is_three_pool = "topology" in raw["runtime"]
+    return SavedThreePoolLMRun.from_path(path) if is_three_pool else SavedLMRun.from_path(path)
 
 
 class PDAdapter(DecompositionAdapter):
@@ -32,7 +35,7 @@ class PDAdapter(DecompositionAdapter):
         _, _, self._run_id = parse_wandb_run_path(wandb_path)
 
     @cached_property
-    def pd_run(self) -> SavedLMRun:
+    def pd_run(self) -> SavedLMRun | SavedThreePoolLMRun:
         return load_saved_lm_run(self._wandb_path)
 
     @cached_property

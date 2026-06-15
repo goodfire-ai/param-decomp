@@ -21,10 +21,40 @@ experiments/
 ├── resid_mlp/run.py
 └── lm/
     ├── run.py               # single-pool LM (pd-lm)
+    ├── three_pool_run.py    # 3-pool LM (pd-lm-3pool): ThreePoolLMExperimentConfig
+    │                        # (ThreePoolConstrainedPDConfig lives in three_pool/pd_config.py)
     ├── layerwise.py         # split LM YAML into per-matrix configs + SLURM-array submit
     ├── data.py
     └── pretrain/            # see lm/pretrain/CLAUDE.md
 ```
+
+## 3-pool config fork (`pd-lm-3pool`)
+
+The 3-pool training path is a standalone sibling of `pd-lm`, not a flag on it. Dispatch
+is by entry point (the repo idiom — no discriminator). `ThreePoolLMExperimentConfig`
+(in `lm/three_pool_run.py`) is a standalone `BaseConfig` with `pd:
+ThreePoolConstrainedPDConfig`, `runtime: ThreePoolRuntimeConfig` (core `RuntimeConfig`
+scalars + `topology: ThreePoolTopology`), and the usual `cadence`/`target`/`data`/`eval`/
+`wandb`. `LMExperimentConfig` is purely single-pool (no `three_pool` field).
+
+`ThreePoolConstrainedPDConfig` (in `param_decomp_lab/three_pool/pd_config.py` — it lives
+with the 3-pool subsystem it configures, so the subsystem has no dependency back into
+`experiments/lm/`) subclasses core `PDConfig` and
+bakes the 3-pool's invariants into the types — `sampling`/`n_mask_samples`/
+`use_delta_component`/`identity_decomposition_targets` are frozen `Literal` defaults, and
+the generic `loss_metrics` list is replaced by a typed `ThreePoolLosses(faith, imp,
+stoch, ppgd)` struct (it derives the inherited `loss_metrics` list from the struct via a
+before-validator and excludes it from serialization). `ThreePoolTrainer` reads
+`pd.losses.faith` / `.imp` / `.stoch` / `.ppgd` directly — no `by_type` dict, no
+`isinstance` asserts. The cross-field check coupling `pd` to `runtime.topology` (each
+per-rank batch divides `pd.batch_size`) runs as a `@model_validator` on
+`ThreePoolLMExperimentConfig`, so 3-pool misconfigs fail at YAML parse, not minutes into
+a multi-node launch. The rank-0 convention is no longer a check — the canonical resolver
+makes rank 0 the chunk-0 leader by construction. (Site coverage — every resolved chunk
+site ∈ decomposition_targets after pattern expansion — stays in
+`ThreePoolTrainer._build_runtime` since it needs the loaded model.)
+
+Reload: `SavedThreePoolLMRun` (in `three_pool_run.py`) mirrors `SavedLMRun`.
 
 ## YAML schema
 
@@ -79,7 +109,8 @@ the prediction tensor out of the model's forward output. (Vendored targets retur
 so `output_extract: 0`.)
 
 `hf_weights_in_vendored` requires `model_class` to expose a `from_hf_pretrained(model_name)`
-classmethod that loads real HF weights into a checkpointable, componentizable vendored arch. The vendored models live in `experiments/lm/vendored/`:
+classmethod that loads real HF weights into a checkpointable, componentizable vendored arch. The
+3-pool path uses this. The vendored models live in `experiments/lm/vendored/`:
 `gpt2.py` (GPT-2) and the **`llama_3_1/`** package (Llama-3.1 — `config` / `model` /
 `components`). **Do not confuse the vendored `llama_3_1` with `pretrain/models/llama_simple.py`**:
 the latter is a separate, small pretrain-only architecture (different MLP, ties embeddings, no

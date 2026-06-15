@@ -131,6 +131,7 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
 | `param_decomp_lab/investigate/` | `param_decomp_lab/investigate/CLAUDE.md` | Agent investigation of a research question |
 | `param_decomp_lab/app/` | `param_decomp_lab/app/CLAUDE.md` | Web visualization (FastAPI + Svelte) |
 | `param_decomp_lab/experiments/lm/pretrain/` | `param_decomp_lab/experiments/lm/pretrain/CLAUDE.md` | LM target-model pretraining |
+| `param_decomp_lab/three_pool/` | `param_decomp_lab/three_pool/CLAUDE.md` | 3-pool training (CI / chunkwise / PPGD pools); checkpoint-save barrier + PG-timeout invariants |
 
 ## Saved-run layout
 
@@ -183,6 +184,7 @@ All declared in `param_decomp_lab/pyproject.toml`.
 | `pd-resid-mlp` | `experiments/resid_mlp/run.py` | Run ResidMLP from a YAML |
 | `pd-lm` | `experiments/lm/run.py` | Run single-pool LM from a YAML |
 | `pd-jax-lm` | `experiments/lm/jax_launch.py` | Submit a JAX `jsp-train` run: snapshot ref + shared-FS workspace + sbatch |
+| `pd-lm-3pool` | `experiments/lm/three_pool_run.py` | Run 3-pool LM from a `ThreePoolLMExperimentConfig` YAML |
 | `pd-lm-layerwise` | `experiments/lm/layerwise.py` | Split an LM YAML into per-matrix configs, submit as a SLURM array |
 | `pd-pretrain` | `experiments/lm/pretrain/cli.py` | Pretrain target models |
 | `pd-harvest` | `harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |

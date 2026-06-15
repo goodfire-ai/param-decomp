@@ -409,7 +409,7 @@ class _EvalLoopInputs(Protocol):
     """The slice of an experiment config `_build_eval_loop` reads.
 
     Lets the single-pool `LMExperimentConfig` and the 3-pool
-    sibling experiment configs share one eval-loop builder without a common base.
+    `ThreePoolLMExperimentConfig` share one eval-loop builder without a common base.
     """
 
     @property

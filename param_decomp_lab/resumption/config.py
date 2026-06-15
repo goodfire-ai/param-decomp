@@ -12,7 +12,7 @@ from typing import Literal
 
 import torch
 
-from param_decomp.training_state import TrainingState
+from param_decomp.training_state import ThreePoolTrainingState, TrainingState
 from param_decomp_config.base import BaseConfig
 
 
@@ -67,11 +67,11 @@ def resolve_step(run_dir: Path, step: int | Literal["latest"]) -> int:
     return step
 
 
-def read_training_snapshot(run_dir: Path, step: int) -> TrainingState:
+def read_training_snapshot(run_dir: Path, step: int) -> TrainingState | ThreePoolTrainingState:
     """Read `<run_dir>/training_<step>.pth` into its training-state dataclass.
 
     Single-pool runs persist a `TrainingState`; 3-pool runs persist a
-    the n-pool shapes on their branch. The caller narrows to the type its resume path
+    `ThreePoolTrainingState`. The caller narrows to the type its resume path
     expects. `weights_only=False` because the payload contains arbitrary cfg
     dicts (model_dump output) alongside tensors.
     """
@@ -82,7 +82,7 @@ def read_training_snapshot(run_dir: Path, step: int) -> TrainingState:
     # it every rank eager-loads the full consolidated checkpoint (which includes the ~8B
     # frozen target) → a multi-TB shared-FS read storm that stalls resume at scale.
     snapshot = torch.load(path, map_location="cpu", weights_only=False, mmap=True)
-    assert isinstance(snapshot, TrainingState), (
-        f"expected TrainingState in {path}, got {type(snapshot).__name__}"
+    assert isinstance(snapshot, TrainingState | ThreePoolTrainingState), (
+        f"expected TrainingState or ThreePoolTrainingState in {path}, got {type(snapshot).__name__}"
     )
     return snapshot

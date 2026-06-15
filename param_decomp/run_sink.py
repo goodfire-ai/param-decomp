@@ -1,10 +1,14 @@
-"""The `OnePoolRunSink` Protocol — the trainer's side-effect boundary.
+"""Per-pool `RunSink` Protocols.
 
-The concrete implementation lives in `param_decomp_lab.run_sink`
-(`OnePoolSink`): local-files / wandb / console plumbing plus a typed
-`checkpoint` that delegates to `_persist`. (The pool-suffixed names leave
-room for the n-pool subsystems' sibling sinks, which live on their own
-branch.)
+Each pool's trainer accepts a typed sink: 1-pool's `Trainer` takes
+`OnePoolRunSink`, 3-pool's `ThreePoolTrainer` takes `ThreePoolRunSink`. The
+only difference between the two protocols is the `checkpoint` parameter's
+state type. `log`, `console`, and `finish` are identical.
+
+Concrete implementations live in `param_decomp_lab.run_sink` (`OnePoolSink`,
+`ThreePoolSink`) — they share a private base for the local-files / wandb /
+console plumbing, then add typed `checkpoint` methods that delegate to a
+shared `_persist`.
 
 Timing — when the trainer emits — lives separately: `param_decomp_config.pd.Cadence`
 owns train-log + checkpoint periods, and `param_decomp.optimize.EvalLoop` owns
@@ -44,4 +48,23 @@ class OnePoolRunSink(Protocol):
         ...
 
 
-RunSink = OnePoolRunSink
+@runtime_checkable
+class ThreePoolRunSink(Protocol):
+    """Side-effect sink for a 3-pool training run.
+
+    Unlike `OnePoolRunSink`, the 3-pool sink does NOT persist a training state
+    from the train loop. The trainer writes self-contained per-rank partials to
+    a shared-FS scratch dir (cheap, no rank-0 read), then calls
+    `checkpoint_written` so the sink can fire the async consolidation+eval job
+    that reads those partials, assembles ``model_<step>.pth`` +
+    ``training_<step>.pth`` off the critical path, and runs the slow eval.
+    """
+
+    def log(self, metrics: dict[str, Any], step: int) -> None: ...
+    def console(self, *lines: str) -> None: ...
+    def checkpoint_written(self, step: int, *, final: bool) -> None: ...
+    def finish(self) -> None: ...
+
+
+# Convenience alias for the few call sites that don't care which pool the sink serves.
+RunSink = OnePoolRunSink | ThreePoolRunSink

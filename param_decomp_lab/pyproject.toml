@@ -34,6 +34,9 @@ pd-tms = "param_decomp_lab.experiments.tms.run:cli"
 pd-resid-mlp = "param_decomp_lab.experiments.resid_mlp.run:cli"
 pd-lm = "param_decomp_lab.experiments.lm.run:cli"
 pd-jax-lm = "param_decomp_lab.experiments.lm.jax_launch:cli"
+pd-lm-3pool = "param_decomp_lab.experiments.lm.three_pool_run:cli"
+pd-lm-2pool = "param_decomp_lab.experiments.lm.two_pool_run:cli"
+pd-lm-fsdp = "param_decomp_lab.experiments.lm.fsdp_run:cli"
 pd-lm-layerwise = "param_decomp_lab.experiments.lm.layerwise:cli"
 pd-offline-eval = "param_decomp_lab.experiments.lm.offline_eval:cli"
 pd-pretrain = "param_decomp_lab.experiments.lm.pretrain.cli:cli"
@@ -90,6 +93,7 @@ packages = [
     "param_decomp_lab.investigate.scripts",
     "param_decomp_lab.postprocess",
     "param_decomp_lab.scripts",
+    "param_decomp_lab.three_pool",
     "param_decomp_lab.topology",
     "param_decomp_lab.toy_models",
 ]

@@ -16,7 +16,7 @@ from param_decomp_config.pd import Cadence
 from param_decomp_lab.infra.run_files import generate_run_id
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.infra.wandb import try_wandb
-from param_decomp_lab.run_sink import OnePoolSink
+from param_decomp_lab.run_sink import OnePoolSink, ThreePoolSink
 
 EXPERIMENT_CONFIG_FILENAME = "experiment_config.yaml"
 
@@ -25,7 +25,7 @@ class _PdRunInputs(Protocol):
     """The slice of an experiment config `init_pd_run` reads.
 
     Lets the single-pool `ExperimentConfig` and the standalone 3-pool
-    future experiment-config shapes share one sink builder without a common base — it
+    `ThreePoolLMExperimentConfig` share one sink builder without a common base — it
     only touches `cadence`, `wandb`, and `to_file`, never `pd` / `runtime`.
     """
 
@@ -36,7 +36,7 @@ class _PdRunInputs(Protocol):
     def to_file(self, path: Path | str) -> None: ...
 
 
-def init_pd_run[S: OnePoolSink](
+def init_pd_run[S: OnePoolSink | ThreePoolSink](
     cfg: _PdRunInputs,
     *,
     sink_class: type[S],
@@ -49,7 +49,7 @@ def init_pd_run[S: OnePoolSink](
     """Allocate `run_id` + `out_dir`, write `experiment_config.yaml`, return a sink.
 
     `sink_class` picks the pool-specific sink (`OnePoolSink` for 1-pool runs,
-    or an n-pool sibling on its branch). The choice is the caller's; this helper just
+    `ThreePoolSink` for 3-pool). The choice is the caller's; this helper just
     forwards through to the class's `local` / `with_wandb` / `silent` constructors.
 
     Local-only when `cfg.wandb is None`, else wandb-backed. Non-main DDP ranks get a

@@ -1,9 +1,9 @@
 """Concrete `RunSink` classes used by the in-repo experiments and lab tooling.
 
-The lab sink (`OnePoolSink`) builds on a private base
+Two pool-specific sinks (`OnePoolSink`, `ThreePoolSink`) share a private base
 (`_LabSinkBase`) for the local-files / wandb / console / log plumbing. They
 differ in how a checkpoint is persisted: `OnePoolSink.checkpoint` writes the
-`TrainingState` synchronously via `_persist`
+`TrainingState` synchronously via `_persist`; `ThreePoolSink.checkpoint_written`
 persists nothing (the trainer already wrote per-rank partials) and only fires
 the async consolidation+eval job via the `on_save` hook.
 
@@ -13,7 +13,7 @@ Three constructors on each:
     sink = OnePoolSink.with_wandb(out_dir, project=..., run_id=..., ...)
     sink = OnePoolSink.silent()                                # tests / quick checks
 
-Non-main ranks transparently get a no-op
+(same shape for `ThreePoolSink`). Non-main ranks transparently get a no-op
 sink regardless of which constructor is called.
 """
 
@@ -70,7 +70,7 @@ def _local_log(data: dict[str, Any], step: int, out_dir: Path) -> None:
 
 @dataclass(frozen=True)
 class _LabSinkBase:
-    """Shared local-files + wandb plumbing for `OnePoolSink`.
+    """Shared local-files + wandb plumbing for `OnePoolSink` / `ThreePoolSink`.
 
     Pool-specific subclasses inherit constructors and the log / console /
     finish / `_persist` helpers, and add typed `checkpoint` methods.
@@ -211,6 +211,24 @@ class OnePoolSink(_LabSinkBase):
 
     def checkpoint(self, snapshot: TrainingState, *, final: bool) -> None:
         self._persist(snapshot, final=final)
+
+
+@dataclass(frozen=True)
+class ThreePoolSink(_LabSinkBase):
+    """Lab sink for 3-pool runs (satisfies `ThreePoolRunSink`).
+
+    Persists nothing itself: the trainer has already written self-contained
+    per-rank partials to the scratch dir. This only fires the rank-0 `on_save`
+    hook, which submits the async job that consolidates those partials into
+    ``model_<step>.pth`` + ``training_<step>.pth`` and runs the slow eval.
+    """
+
+    def checkpoint_written(self, step: int, *, final: bool) -> None:
+        del final  # the async consolidation path is identical for the final save
+        if self.out_dir is None:
+            return
+        if self.on_save is not None:
+            self.on_save(step)
 
 
 def _wandb_value(v: Any) -> Any:
