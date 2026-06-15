@@ -158,7 +158,7 @@ def test_train_trajectory_matches():
     for leaf_idx, leaf in enumerate(jax.tree.leaves(eqx.filter(ci_fn, eqx.is_array))):
         np.testing.assert_array_equal(np.asarray(leaf), f[f"ci_leaf::{leaf_idx}"])
     sources = init_persistent_sources(
-        lm.site_names, tuple(s.C for s in lm.sites), T, random.PRNGKey(3)
+        lm.site_names, tuple(s.C for s in lm.sites), T, 1, random.PRNGKey(3)
     )
     for name, source in sources.items():
         np.testing.assert_array_equal(np.asarray(source), f[f"src::{name}"])

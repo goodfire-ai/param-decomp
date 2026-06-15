@@ -436,6 +436,13 @@ def torchrun_command(
         f"--master_port={master_port} "
         f"-m {python_module} {script_args}"
     )
-    srun_flags = f"--nodes={n_nodes} --ntasks={n_nodes} --ntasks-per-node=1 --kill-on-bad-exit=1"
+    # --cpu-bind=none: srun otherwise applies any SLURM_CPU_BIND it inherits from the
+    # submitting shell. Launching from inside a narrow interactive/dev allocation (e.g. an
+    # 8-CPU `pod`) propagates that mask onto all ranks, starving eager-mode torch of
+    # kernel-launch CPU. This makes the launch independent of the submitting context.
+    srun_flags = (
+        f"--nodes={n_nodes} --ntasks={n_nodes} --ntasks-per-node=1 --kill-on-bad-exit=1"
+        " --cpu-bind=none"
+    )
     inner = f"{setup}\n{torchrun_cmd}"
     return f"srun {srun_flags} bash -c {shlex.quote(inner)}"

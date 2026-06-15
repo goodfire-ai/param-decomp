@@ -77,7 +77,7 @@ def main() -> None:
     vu = init_decomp_vu_sharded(lm.sites, random.PRNGKey(1), mesh)
     ci_fn = init_ci_fn_sharded(CIArch(4096, 4, 64, 16384), lm.sites, random.PRNGKey(2), mesh)
     src = init_sources_sharded(
-        lm.site_names, tuple(s.C for s in lm.sites), seq, random.PRNGKey(3), mesh
+        lm.site_names, tuple(s.C for s in lm.sites), seq, 1, False, random.PRNGKey(3), mesh
     )
     opt_vu = optax.chain(
         optax.clip_by_global_norm(0.01),
