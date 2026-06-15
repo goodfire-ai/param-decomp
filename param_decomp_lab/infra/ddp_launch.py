@@ -91,8 +91,13 @@ def build_ddp_launch(
             base_command,
         ]
     )
+    # --cpu-bind=none: srun otherwise applies any SLURM_CPU_BIND it inherits from the
+    # submitting shell. Launching from inside a narrow interactive/dev allocation (e.g. an
+    # 8-CPU `pod`) propagates that mask onto all ranks, starving eager-mode torch of
+    # kernel-launch CPU. This makes the launch independent of the submitting context.
     srun_prefix = (
         f"srun --nodes={n_nodes} --ntasks={n_nodes} --ntasks-per-node=1 --kill-on-bad-exit=1"
+        " --cpu-bind=none"
     )
     command = f"{srun_prefix} bash -c {shlex.quote(f'{setup}\n{torchrun_cmd}')}"
     return DDPLaunch(command=command, n_nodes=n_nodes, gpus_per_node=GPUS_PER_NODE, env=DDP_ENV)
