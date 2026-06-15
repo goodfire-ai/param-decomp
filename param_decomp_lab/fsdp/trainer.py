@@ -97,6 +97,7 @@ from param_decomp_lab.experiments.lm.vendored.llama_3_1.components import (
     ComponentLinear,
     ComponentLlama,
 )
+from param_decomp_lab.experiments.lm.vendored.llama_simple_mlp import ComponentLlamaSimpleMLP
 from param_decomp_lab.fsdp.checkpoint import load_dcp, save_dcp
 from param_decomp_lab.fsdp.component_adapter import FsdpComponentAdapter
 from param_decomp_lab.fsdp.config import FsdpRuntimeConfig
@@ -144,7 +145,7 @@ def _target_transformer_blocks(model: ComponentTarget) -> list[nn.Module]:
     ComponentGPT2 keeps them in ``_h``; ComponentLlama in ``_layers`` (each is the
     plain Python list backing the ``nn.ModuleList``)."""
     match model:
-        case ComponentGPT2():
+        case ComponentGPT2() | ComponentLlamaSimpleMLP():
             return list(model._h)
         case ComponentLlama():
             return list(model._layers)
