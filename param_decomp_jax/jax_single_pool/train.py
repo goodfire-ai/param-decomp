@@ -68,7 +68,8 @@ class TrainState:
     components_opt_state: optax.OptState
     ci_fn_opt_state: optax.OptState
     sources: dict[str, dict[str, Array]]
-    """Persistent adversarial sources, `state_key -> site -> (1, T, C+1)` in [0,1].
+    """Persistent adversarial sources, `state_key -> site -> source` in [0,1]; per-site
+    shape spells the scope (`sc` -> `(1, T, C+1)`, `bsc` -> `(B, T, C+1)` batch-sharded).
     One state_key per persistent loss term (SPEC S23); empty when no persistent term."""
     sources_opt_state: dict[str, SourcesAdamState]
     step: Array
