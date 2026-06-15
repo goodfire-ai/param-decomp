@@ -38,6 +38,17 @@ GPUS_PER_NODE: int = 8
 SINGLETON_JOB_ID_BASH = "$SLURM_JOB_ID"
 ARRAY_JOB_ID_BASH = "${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
 
+# Since the 2026-06-11 20:33 UTC Slurm redeploy, every step task launches with slurmd's
+# own 4-core CPU affinity instead of the job allocation's (cluster ticket open; the step
+# cgroup cpuset is still correct). sched_setaffinity clamps to the cgroup cpuset, so
+# resetting to the full CPU range restores exactly the allocated CPUs. Belongs in every
+# sbatch prologue AND in every srun-launched task (each step launch re-applies the bad
+# mask — pair with `srun --cpu-bind=none`). Drop once the cluster-side fix lands.
+RESET_CPU_AFFINITY = (
+    "taskset -pc 0-$(($(getconf _NPROCESSORS_CONF) - 1)) $$ > /dev/null"
+    "  # work around broken step CPU affinity (2026-06-11 slurm redeploy)"
+)
+
 
 @dataclass
 class SlurmConfig:
@@ -111,6 +122,7 @@ def generate_script(
 
 set -euo pipefail
 umask 002  # Ensure files are group-writable
+{RESET_CPU_AFFINITY}
 {env_exports}
 {setup}
 
@@ -173,6 +185,7 @@ esac
 
 set -euo pipefail
 umask 002  # Ensure files are group-writable
+{RESET_CPU_AFFINITY}
 {env_exports}
 {comment_section}
 {setup}
@@ -436,6 +449,9 @@ def torchrun_command(
         f"--master_port={master_port} "
         f"-m {python_module} {script_args}"
     )
-    srun_flags = f"--nodes={n_nodes} --ntasks={n_nodes} --ntasks-per-node=1 --kill-on-bad-exit=1"
-    inner = f"{setup}\n{torchrun_cmd}"
+    srun_flags = (
+        f"--nodes={n_nodes} --ntasks={n_nodes} --ntasks-per-node=1 --kill-on-bad-exit=1"
+        " --cpu-bind=none"
+    )
+    inner = f"{RESET_CPU_AFFINITY}\n{setup}\n{torchrun_cmd}"
     return f"srun {srun_flags} bash -c {shlex.quote(inner)}"
