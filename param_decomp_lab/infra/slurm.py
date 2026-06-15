@@ -9,6 +9,7 @@ It handles:
 - Job submission with script renaming and log file creation
 """
 
+import os
 import shlex
 import subprocess
 import tempfile
@@ -267,6 +268,9 @@ def _common_sbatch_lines(config: SlurmConfig, log_pattern: str) -> list[str]:
         lines.append("#SBATCH --requeue")
     if config.comment:
         lines.append(f'#SBATCH --comment="{config.comment}"')
+    exclude = os.environ.get("PD_SBATCH_EXCLUDE")
+    if exclude:
+        lines.append(f"#SBATCH --exclude={exclude}")
     return lines
 
 
