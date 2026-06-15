@@ -70,6 +70,9 @@ def main() -> None:
     ap.add_argument("--n_regions", type=int, default=20)
     ap.add_argument("--patch", type=int, default=40)
     ap.add_argument("--run_id", default="bneck-1e-2")
+    ap.add_argument("--umap", action="store_true", help="add a 3D UMAP basis of the code vectors")
+    ap.add_argument("--umap_neighbors", type=int, default=30)
+    ap.add_argument("--umap_min_dist", type=float, default=0.1)
     args = ap.parse_args()
 
     meta = json.loads((args.codes / "meta.json").read_text())
@@ -105,12 +108,27 @@ def main() -> None:
     thumbs = token_thumbnails(tokens.tolist(), tokenizer, args.patch)
     code_l0 = (codes != 0).float().sum(dim=1).numpy()
 
+    extra_bases: dict[str, np.ndarray] | None = None
+    if args.umap:
+        import umap
+
+        print(f"UMAP over {codes.shape[0]} code vectors...")
+        xyz = umap.UMAP(
+            n_components=3,
+            n_neighbors=args.umap_neighbors,
+            min_dist=args.umap_min_dist,
+            metric="cosine",
+            random_state=0,
+        ).fit_transform(codes.numpy())
+        extra_bases = {"umap3d": np.asarray(xyz, dtype=np.float32)}
+
     data = build_latent_viewer_data(
         points=codes.numpy(),
         thumbnails=thumbs,
         labels=labels.astype(int),
         groups=groups,
         patch_size=args.patch,
+        extra_bases=extra_bases,
         point_scalar=code_l0,
         point_label="token-position",
     )
