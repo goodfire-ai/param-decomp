@@ -100,6 +100,8 @@ def harvest_codes(
     stats = CodeStats(dim=dim, device=device)
     code_buf: list[Float[Tensor, "n D"]] = []
     tok_buf: list[Int[Tensor, " n"]] = []
+    seq_buf: list[Int[Tensor, "b s"]] = []
+    seq_len = -1
     buffered = 0
     chunk_idx = 0
 
@@ -122,12 +124,14 @@ def harvest_codes(
             )
         codes = ci.bottleneck_codes
         assert codes is not None
+        seq_len = batch.shape[1]
         flat_codes: Float[Tensor, "n D"] = codes.reshape(-1, dim).float()
         flat_toks: Int[Tensor, " n"] = batch.reshape(-1)
 
         stats.update(flat_codes)
         code_buf.append(flat_codes.half().cpu())
         tok_buf.append(flat_toks.to(torch.int32).cpu())
+        seq_buf.append(batch.to(torch.int32).cpu())
         buffered += flat_codes.shape[0]
         if buffered >= positions_per_chunk:
             flush()
@@ -136,12 +140,16 @@ def harvest_codes(
 
     flush()
     torch.save(stats.to_dict(), out_dir / "stats.pt")
+    # Token sequences in flat-code order: global position i -> sequences[i // seq_len, i % seq_len].
+    # Used to recover context windows for activating examples.
+    torch.save(torch.cat(seq_buf, dim=0), out_dir / "sequences.pt")
     meta = {
         "run_path": run_path,
         "dim": dim,
         "n_positions": stats.n_positions,
         "n_batches": n_batches,
         "batch_size": batch_size,
+        "seq_len": seq_len,
         "tokenizer_name": pd_run.cfg.data.tokenizer_name,
         "n_chunks": chunk_idx,
     }
