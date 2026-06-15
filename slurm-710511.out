@@ -1,0 +1,3 @@
+task affinity: 0022
+Cpus_allowed_list:	44-47,108-111
+step cpuset.cpus.effective: 0-127

@@ -22,6 +22,17 @@ from param_decomp_lab.infra.settings import REPO_ROOT, SBATCH_SCRIPTS_DIR, SLURM
 SINGLETON_JOB_ID_BASH = "$SLURM_JOB_ID"
 ARRAY_JOB_ID_BASH = "${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
 
+# Since the 2026-06-11 20:33 UTC Slurm redeploy, every step task launches with slurmd's
+# own 4-core CPU affinity instead of the job allocation's (cluster ticket open; the step
+# cgroup cpuset is still correct). sched_setaffinity clamps to the cgroup cpuset, so
+# resetting to the full CPU range restores exactly the allocated CPUs. Belongs in every
+# sbatch prologue AND in every srun-launched task (each step launch re-applies the bad
+# mask — pair with `srun --cpu-bind=none`). Drop once the cluster-side fix lands.
+RESET_CPU_AFFINITY = (
+    "taskset -pc 0-$(($(getconf _NPROCESSORS_CONF) - 1)) $$ > /dev/null"
+    "  # work around broken step CPU affinity (2026-06-11 slurm redeploy)"
+)
+
 
 @dataclass
 class SlurmConfig:
@@ -75,6 +86,7 @@ def generate_script(config: SlurmConfig, command: str, env: dict[str, str] | Non
 
 set -euo pipefail
 umask 002  # Ensure files are group-writable
+{RESET_CPU_AFFINITY}
 {env_exports}
 {setup}
 
@@ -137,6 +149,7 @@ esac
 
 set -euo pipefail
 umask 002  # Ensure files are group-writable
+{RESET_CPU_AFFINITY}
 {env_exports}
 {comment_section}
 {setup}

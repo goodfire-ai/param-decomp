@@ -1,0 +1,77 @@
+[project]
+name = "param-decomp-jax"
+version = "0.0.1"
+description = "The JAX single-pool VPD trainer distribution"
+requires-python = ">=3.10"
+dependencies = [
+    "jax==0.10.1",
+    "equinox==0.13.8",
+    "optax==0.2.8",
+    "jaxtyping==0.3.10",
+    "einops==0.8.2",
+    "numpy==2.4.6",
+    "safetensors==0.7.0",
+    "pyarrow==19.0.1",
+    "pyyaml==6.0.2",
+    "orbax-checkpoint==0.12.0",
+    "wandb==0.21.0",
+    # satisfied by the sibling in-tree package: install both editably in one command,
+    # `uv pip install -e ./param_decomp_config -e './param_decomp_jax[cuda]'`
+    "param-decomp-config==0.0.1",
+]
+
+[project.optional-dependencies]
+cuda = ["jax[cuda12]==0.10.1"]
+dev = ["pytest", "basedpyright"]
+
+[project.scripts]
+jsp-train = "jax_single_pool.run:main"
+jsp-export = "jax_single_pool.export:main"
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["jax_single_pool", "jax_single_pool.*", "vendored_jax", "vendored_jax.*"]
+
+# Ruff / type config inherited from the param-decomp root pyproject.toml.
+
+[tool.pyright]
+# Same selective-strictness profile as the param-decomp root pyproject, scoped to this
+# distribution (standard mode + the load-bearing strict flags).
+# vendored_jax is a verbatim numeric mirror of the torch vendored Llama — kept
+# out of strict typing (its correctness contract is the parity tests, not types).
+include = ["jax_single_pool"]
+exclude = [
+    "**/__pycache__",
+    "jax_single_pool/tests/equivalence/torch_reference.py",  # torch-env script
+    "jax_single_pool/tools/verify_export_torch.py",  # torch-env script
+    "jax_single_pool/tools/convert_llama_simple_mlp_checkpoint.py",  # torch-env script
+    "jax_single_pool/tests/simple_mlp_equivalence/gen_torch_fixtures.py",  # torch-env script
+    "jax_single_pool/tests/stacked_parity/gen_stacked_fixtures.py",  # base-branch-only script (pre-restructure API)
+]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.13"
+# param-decomp-config is installed editable from the sibling in-tree package; resolve
+# its source directly (editable finder hooks are invisible to pyright).
+extraPaths = [".."]
+typeCheckingMode = "standard"
+
+strictListInference = true
+strictDictionaryInference = true
+strictSetInference = true
+reportFunctionMemberAccess = true
+reportUnknownParameterType = true
+reportIncompatibleMethodOverride = true
+reportIncompatibleVariableOverride = true
+reportOverlappingOverload = true
+reportConstantRedefinition = true
+reportPropertyTypeMismatch = true
+reportMissingTypeArgument = true
+reportUnnecessaryCast = true
+reportUnnecessaryComparison = true
+reportUnnecessaryContains = true
+reportUnusedExpression = true

@@ -1,0 +1,7 @@
+# Fresh-PGD pile run — JAX counterpart of Dan's torch p-af354eb1 (pgd1step-ss1.0)
+# via the shared-config route. See the referenced yaml's header for the documented
+# edits. Small target (4L d768): no remat needed. Launch: pd-jax-lm, 1 node.
+torch_config: torch/pile_llama_simple_mlp_4l_pgd1.yaml
+run_name: jax-pile4l-pgd1-ss1
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/runs
+remat_recon_forwards: false
