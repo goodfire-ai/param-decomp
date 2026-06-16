@@ -37,6 +37,7 @@ DATASET_DESCRIPTIONS: dict[str, str] = {
     ),
     "danbraunai/pile-uncopyrighted-tok-shuffled": _PILE,
     "danbraunai/pile-uncopyrighted-tok": _PILE,
+    "pile_neox_tok_512": _PILE,
     "apollo-research/Skylion007-openwebtext-tokenizer-gpt2": (
         "OpenWebText: web pages linked from Reddit (GPT-2's pretraining distribution)."
     ),

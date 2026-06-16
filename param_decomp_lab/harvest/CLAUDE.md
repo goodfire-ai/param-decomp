@@ -18,7 +18,13 @@ no torch component model, no `jsp-export` safetensors bridge. The run is opened 
 pattern — see below); its frozen forward-only pass (lower-leaky CI + ‖U‖·(x@V) component
 acts + clean-logit softmax) is converted into the SAME `HarvestBatch` the torch
 `ParamDecompHarvestFn` produces, fed to the SAME `Harvester`, and written via the SAME
-`HarvestRepo.save_results`. Autointerp / clustering / app read the output unchanged.
+`HarvestRepo.save_results`. The harvest *output* (DB + `token_stats.pt`) is byte-identical
+to the torch contract, so consumers read it unchanged. Run *metadata* (tokenizer, layer
+descriptions) is the one place that differs: a JAX run has no torch `.pth`, so
+`adapter_from_id` routes it (via `adapters.jax_pd.is_jax_run` — detects the `pd-jax-lm`
+wrapper's `torch_config:` key) to `JaxPDAdapter`, which reads metadata from the pinned
+config and builds only the target *architecture* (no orbax restore). The torch `PDAdapter`
+stays the torch-run path.
 
 ```bash
 python -m param_decomp_lab.harvest.scripts.run_worker_jax \

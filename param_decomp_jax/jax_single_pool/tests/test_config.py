@@ -11,6 +11,7 @@ import yaml
 from jax_single_pool.config import (
     WRAPPER_KEYS,
     WRAPPER_OPTIONAL_KEYS,
+    assert_supported_weights_dtype,
     build_experiment_config,
     load_run_dir_config,
     load_wrapper,
@@ -316,9 +317,10 @@ def test_c49k_yaml_converts(tmp_path: Path):
 
 
 def test_fp32_frozen_target_is_refused(tmp_path: Path):
-    """A config requesting an fp32 frozen target must crash at convert time — the
-    bf16-only targets have no fp32 capability, and there is no silent downgrade
-    (issue #727)."""
+    """A config requesting an fp32 frozen target must crash at the train/submit
+    boundary — the bf16-only targets have no fp32 capability, and there is no silent
+    downgrade (issue #727). Consumption paths (`load_run_dir_config`) ignore the field,
+    so the guard lives in the wrapper route, not the shared builder."""
     wrapper = _stamped_wrapper(tmp_path, CONFIGS / "llama8b_l18_C49k_200k_from_torch.yaml")
     schema_yaml_path = (
         wrapper.parent / yaml.safe_load(wrapper.read_text())["torch_config"]
@@ -328,9 +330,7 @@ def test_fp32_frozen_target_is_refused(tmp_path: Path):
         update={"target": cfg.target.model_copy(update={"weights_dtype": "float32"})}
     )
     with pytest.raises(AssertionError, match="weights_dtype"):
-        build_experiment_config(
-            cfg, run_name="r", run_id=RUN_ID, out_dir=tmp_path, remat_recon_forwards=False
-        )
+        assert_supported_weights_dtype(cfg)
 
 
 def test_load_run_dir_config_rebuilds_wrapper_runs(tmp_path: Path):

@@ -21,6 +21,11 @@ def adapter_from_config(method_config: DecompositionMethodHarvestConfig) -> Deco
 
     match method_config:
         case ParamDecompHarvestConfig():
+            from param_decomp_lab.adapters.jax_pd import JaxPDAdapter, is_jax_run
+
+            if is_jax_run(method_config.wandb_path):
+                return JaxPDAdapter(method_config.wandb_path)
+
             from param_decomp_lab.adapters.pd import PDAdapter
 
             return PDAdapter(method_config.wandb_path)

@@ -350,6 +350,21 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
     )
 
 
+def assert_supported_weights_dtype(cfg: LMExperimentConfig) -> None:
+    """Refuse a frozen-target weights_dtype the loader can't honour (issue #727: no
+    silent downgrade). Enforced at the train/submit boundary only — the bf16-only
+    loaders ignore `weights_dtype` when *consuming* a finished run, so opening an
+    already-trained bf16 run whose stored config predates the explicit-bf16
+    convention must not be blocked here."""
+    target = _resolve_target(cfg)
+    assert cfg.target.weights_dtype in target.supported_weights_dtypes, (
+        f"target {type(target).__name__} supports frozen-target weights_dtype "
+        f"{sorted(target.supported_weights_dtypes)}, config asks for "
+        f"{cfg.target.weights_dtype!r}. No silent downgrade (issue #727): declare a "
+        f"supported dtype in the yaml."
+    )
+
+
 def build_experiment_config(
     cfg: LMExperimentConfig,
     run_name: str,
@@ -365,13 +380,6 @@ def build_experiment_config(
     assert cfg.pd.use_delta_component and cfg.pd.tied_weights is None
     assert cfg.runtime.autocast_bf16, "JAX trainer computes in bf16 (autocast analog)"
     assert cfg.pd.faithfulness_warmup_weight_decay == 0.0
-
-    assert cfg.target.weights_dtype in target.supported_weights_dtypes, (
-        f"target {type(target).__name__} supports frozen-target weights_dtype "
-        f"{sorted(target.supported_weights_dtypes)}, config asks for "
-        f"{cfg.target.weights_dtype!r}. No silent downgrade (issue #727): declare a "
-        f"supported dtype in the yaml."
-    )
 
     vu_opt = cfg.pd.components_optimizer
     ci_opt = cfg.pd.ci_fn_optimizer
@@ -460,6 +468,7 @@ def load_wrapper(wrapper_path: Path) -> tuple[ExperimentConfig, Path, dict[str, 
     assert schema_yaml_path.exists(), f"config not found: {schema_yaml_path}"
     schema_raw = yaml.safe_load(schema_yaml_path.read_text())
     cfg = LMExperimentConfig(**schema_raw)
+    assert_supported_weights_dtype(cfg)
     wandb_group, wandb_tags = _wandb_group_tags(raw)
     experiment_config = build_experiment_config(
         cfg,
