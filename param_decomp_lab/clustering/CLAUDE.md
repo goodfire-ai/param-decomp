@@ -23,6 +23,29 @@ pd-cluster-merge /path/to/ch-<id>/ merge_alpha_10.json
 - `HarvestConfig` (`harvest_config.py`): model_path, n_tokens, activation_threshold, batch_size, etc.
 - `MergeConfig` (`merge_config.py`): alpha, iters, merge_pair_sampling_method, etc.
 
+### JAX runs (`scripts/run_worker_jax.py`)
+
+A JAX single-pool run (`param_decomp_jax`, orbax checkpoint) is harvested into a
+membership snapshot **natively** — no torch component model, no `jsp-export` safetensors
+bridge. The run is opened with `jax_single_pool.load_run.open_jax_run` (the reusable
+"open a JAX run for consumption" pattern, shared with `harvest`); the lower-leaky CI from
+its frozen forward is sampled per token position and streamed — as the SAME torch-tensor
+dict `collect_memberships` builds — into the SAME `MembershipBuilder`, producing the SAME
+`ProcessedMemberships` snapshot. `pd-cluster-merge` then reads it unchanged.
+
+```bash
+python -m param_decomp_lab.clustering.scripts.run_worker_jax \
+    --run_dir runs/p-761bc061 --n_tokens 50000 --batch_size 16 --n_tokens_per_seq 16
+# → PARAM_DECOMP_OUT_DIR/clustering/harvests/ch-<id>/  (same layout as pd-cluster-harvest)
+```
+
+The forward runs in jax (CPU or one GPU); the `MembershipBuilder` accumulator stays torch
+— this worker is the one place both stacks meet (the pure JAX package never imports
+torch). Pre-tokenized parquet is served by the trainer's own `ShardServer` (never
+streamed from HF). Only the model/forward bit is JAX-ified: position sampling
+(`flatten_lm_activations`), filtering, snapshotting, and merge are framework-agnostic and
+shared with the torch path.
+
 ### Ensemble pipeline (for stability analysis)
 
 **`pd-clustering` / `run_pipeline.py`**: Runs multiple clustering runs (ensemble) with different seeds, then runs `calc_distances` to compute pairwise distances between results. Use this for ensemble experiments.

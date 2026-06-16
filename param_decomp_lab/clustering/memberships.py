@@ -365,7 +365,7 @@ def _lm_sample_positions(
     return torch.arange(batch_size).unsqueeze(1).expand_as(positions), positions
 
 
-def _flatten_lm_activations(
+def flatten_lm_activations(
     act: Float[Tensor, "batch n_ctx C"],
     *,
     batch_size: int,
@@ -423,7 +423,7 @@ def collect_memberships(
         n_remaining = config.n_tokens - n_collected
         batch_take = min(batch_size * tokens_per_seq, n_remaining)
         sampled: dict[str, Float[Tensor, "samples C"]] = {
-            key: _flatten_lm_activations(
+            key: flatten_lm_activations(
                 act,
                 batch_size=batch_size,
                 n_ctx=n_ctx,
