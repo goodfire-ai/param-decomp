@@ -330,7 +330,7 @@ class TestImportanceMinimalityLossUpdate:
         live = m.update(ctx)
         evaluated = m.compute()
         assert isinstance(evaluated, dict)
-        assert torch.allclose(live, evaluated["ImportanceMinimalityLoss"])
+        assert torch.allclose(live, evaluated["imp_min/ImportanceMinimalityLoss"])
 
     def test_update_returns_grad_tracking_scalar(self: object) -> None:
         """The live scalar must keep autograd connected to its CI inputs."""
@@ -350,8 +350,9 @@ class TestImportanceMinimalityLossUpdate:
         assert torch.allclose(ci.grad, expected_grad)
 
     def test_compute_logs_beta_and_no_beta(self: object) -> None:
-        """`compute()` emits both the headline (beta-weighted) loss and a `no_beta` term
-        that is the pure L_p value — a sparsity proxy independent of the tuned `beta`."""
+        """`compute()` emits the headline (beta-weighted) loss and the pure L_p value — a
+        beta-independent sparsity proxy — both under fully-qualified `imp_min/` keys, so the
+        pair groups together off the loss panel and the proxy doesn't read as a loss term."""
         cfg = ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=1.0, eps=0.0)
         metric = ImportanceMinimalityLoss(cfg)
         # Bypass `bind` (no ComponentModel needed) — set the accumulator state directly.
@@ -361,13 +362,21 @@ class TestImportanceMinimalityLossUpdate:
 
         out = metric.compute()
         assert isinstance(out, dict)
-        assert set(out) == {"ImportanceMinimalityLoss", "ImportanceMinimalityLoss_no_beta"}
+        assert set(out) == {
+            "imp_min/ImportanceMinimalityLoss",
+            "imp_min/ImportanceMinimalityLoss_no_beta",
+        }
 
         # per_component_mean = [2, 3]; no_beta = sum = 5; beta=1 adds log2 term => larger.
         expected_no_beta = 5.0
         expected_with_beta = 2.0 * (1 + math.log2(5)) + 3.0 * (1 + math.log2(7))
         assert torch.allclose(
-            out["ImportanceMinimalityLoss_no_beta"], torch.tensor(expected_no_beta)
+            out["imp_min/ImportanceMinimalityLoss_no_beta"], torch.tensor(expected_no_beta)
         )
-        assert torch.allclose(out["ImportanceMinimalityLoss"], torch.tensor(expected_with_beta))
-        assert out["ImportanceMinimalityLoss"] > out["ImportanceMinimalityLoss_no_beta"]
+        assert torch.allclose(
+            out["imp_min/ImportanceMinimalityLoss"], torch.tensor(expected_with_beta)
+        )
+        assert (
+            out["imp_min/ImportanceMinimalityLoss"]
+            > out["imp_min/ImportanceMinimalityLoss_no_beta"]
+        )
