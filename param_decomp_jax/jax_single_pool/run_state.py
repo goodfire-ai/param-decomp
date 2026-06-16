@@ -55,6 +55,8 @@ def init_train_state(
             lm.site_names,
             tuple(s.C for s in lm.sites),
             cfg.data.seq_len,
+            loss_spec.persistent[state_key].scope,
+            cfg.data.global_batch,
             random.fold_in(src_key, term_idx),
             mesh,
         )

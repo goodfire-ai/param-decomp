@@ -59,6 +59,7 @@ def test_jitted_sharded_inits_match_eager_values():
     )
     from jax_single_pool.lm import SiteC, SiteSpec
     from jax_single_pool.tests.test_llama8b import _tiny_cfg
+    from param_decomp_config.losses import BSCScope, SCScope
 
     mesh = dp_mesh()
     n = mesh.devices.size
@@ -100,10 +101,23 @@ def test_jitted_sharded_inits_match_eager_values():
 
     site_names = tuple(s.name for s in sites)
     site_Cs = tuple(s.C for s in sites)
-    src_sharded = init_sources_sharded(site_names, site_Cs, 16, jax.random.PRNGKey(3), mesh)
-    src_eager = init_persistent_sources(site_names, site_Cs, 16, jax.random.PRNGKey(3))
+    src_sharded = init_sources_sharded(
+        site_names, site_Cs, 16, SCScope(), 1, jax.random.PRNGKey(3), mesh
+    )
+    src_eager = init_persistent_sources(site_names, site_Cs, 16, 1, jax.random.PRNGKey(3))
     for name in site_names:
         src_sharding = src_sharded[name].sharding
         assert isinstance(src_sharding, NamedSharding)
         assert src_sharding.spec == P()
         assert jnp.allclose(jnp.asarray(src_sharded[name]), src_eager[name], rtol=1e-6, atol=0)
+
+    # bsc: one source per batch element, batch-sharded over dp (axis 0), no cross-rank sync.
+    bsc_global_batch = 4 * n
+    src_bsc = init_sources_sharded(
+        site_names, site_Cs, 16, BSCScope(), bsc_global_batch, jax.random.PRNGKey(3), mesh
+    )
+    for name, C in zip(site_names, site_Cs, strict=True):
+        assert src_bsc[name].shape == (bsc_global_batch, 16, C + 1), name
+        bsc_sharding = src_bsc[name].sharding
+        assert isinstance(bsc_sharding, NamedSharding)
+        assert bsc_sharding.spec == P("dp", None, None), name

@@ -36,13 +36,20 @@ def importance_minimality_terms(
     `ImportanceMinimalityLoss_no_beta` metric.
 
     Under GSPMD the `(b, t)` axes are the global batch, so `jnp.sum` IS the exact
-    global per-component sum — XLA reduces across shards inside the graph."""
+    global per-component sum — XLA reduces across shards inside the graph.
+
+    DECISIVE PRECISION TEST (diagnostic, revert after): compute the Lp penalty in bf16 to
+    match torch-`main`, which never casts `ci_upper_leaky` to fp32 under autocast. The
+    fp32 path (`ci.astype(float32)` + the `(ci+eps)**p` power in fp32) is the suspected
+    cause of the low-p CI-fn gradient runaway after ~77.5% of training; torch's bf16
+    `(ci+eps)**p` is the (accidentally stabilising) baseline behaviour."""
     lp = jnp.zeros((), jnp.float32)
     entropy = jnp.zeros((), jnp.float32)
+    pnorm_bf16 = pnorm.astype(jnp.bfloat16)
     for ci in ci_upper.values():
-        ci = ci.astype(jnp.float32)  # (B, T, C)
+        ci = ci.astype(jnp.bfloat16)  # (B, T, C) — match torch bf16 Lp (was float32)
         n_positions = ci.shape[0] * ci.shape[1]
-        per_component_sums = jnp.sum((ci + eps) ** pnorm, axis=(0, 1))  # (C,)
+        per_component_sums = jnp.sum((ci + eps) ** pnorm_bf16, axis=(0, 1))  # (C,) bf16
         per_component_means = per_component_sums / n_positions
         lp = lp + jnp.sum(per_component_means)
         entropy = entropy + jnp.sum(per_component_means * jnp.log2(1.0 + per_component_sums))
