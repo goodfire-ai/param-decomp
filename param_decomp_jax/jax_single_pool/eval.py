@@ -11,6 +11,35 @@ variant is a masked forward with ALL sites live and no routing; only `stoch_mask
 carries a weight-delta mask (torch `make_mask_infos` without weight deltas drops the
 delta term — delta mask 0 here). CE is next-token cross-entropy with the first label
 ignored; KL is per-position vs the clean (frozen) logits.
+
+Cross-batch aggregation (the multi-`n_steps` eval pass in `run.py`): every key this
+function returns is a per-BATCH scalar that the caller averages uniformly over the
+eval batches. This is mean-safe against the torch reference — i.e. it matches torch's
+accumulate-then-`compute()` to within float reassociation — only because every emitted
+key is itself a per-batch reduction that torch *also* averages across batches, and the
+eval batches are uniform `(B, T)`. The S8/D2 Jensen trap (a nonlinearity applied AFTER
+the cross-batch reduction, so mean-of-batch-results ≠ result-of-global-batch) does NOT
+arise here, because no emitted key wraps the cross-batch axis in a nonlinearity:
+
+- `ce_kl/kl_<variant>`: torch `CEandKLLosses` accumulates `kl * n_positions` and divides
+  by total positions (token-weighted mean of a per-batch mean). Uniform `(B, T)` makes
+  token-weighting equal to the uniform `1/n_steps` average here.
+- `ce_kl/ce_difference_<variant>` = `ce_v - ce_target`: torch averages this per-batch
+  DIFFERENCE (computed inside `_calc_ce_and_kl_losses`), not a difference of grand means.
+  Linear, so uniform-average parity holds.
+- `ce_kl/ce_unrecovered_<variant>` = `(ce_v - ce_target) / (ce_zero - ce_target)`: the
+  potential Jensen term. But torch forms this RATIO per-batch too, then averages the
+  per-batch ratios — it never divides grand-mean numerator by grand-mean denominator. So
+  averaging JAX's per-batch ratios matches torch exactly; no global-sum-before-divide is
+  needed.
+- `l0/<threshold>_<site|group>`: torch `CI_L0` collects per-batch L0 and averages them
+  uniformly (`sum / count`); group L0 is a per-batch sum of member L0s. Linear.
+- `loss/PGDReconLoss`: torch `PGDReconLoss` accumulates `kl * n` over batches and divides
+  by total `n` (example-weighted mean of a per-batch mean KL); equals the uniform average
+  under uniform `(B, T)`.
+
+Both production yamls run `eval.n_steps: 1`, so today the cross-batch average is a no-op;
+the parity argument above is what keeps it correct if `n_steps` is raised.
 """
 
 from fnmatch import fnmatch

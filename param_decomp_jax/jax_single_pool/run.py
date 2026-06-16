@@ -320,6 +320,10 @@ def train(
         if cfg.eval is not None and now_step % cfg.eval.every == 0:
             assert eval_step_fn is not None and eval_server is not None
             eval_pass_index = now_step // cfg.eval.every
+            # uniform-average of per-batch scalars; mean-safe vs torch's accumulate-then-
+            # compute() ONLY because every emitted key is a per-batch reduction that torch
+            # also averages across batches AND eval batches are uniform (B, T). See
+            # eval.py's module docstring for the per-key parity argument (cites SPEC S8/D2).
             metric_sums: dict[str, jax.Array] = {}
             for j in range(cfg.eval.n_steps):
                 eval_tokens = _global_token_batch(
