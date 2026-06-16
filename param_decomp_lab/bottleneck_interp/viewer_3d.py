@@ -660,6 +660,11 @@ instGeom.setAttribute('iUVb',     new THREE.InstancedBufferAttribute(uvB, 2));
 instGeom.setAttribute('iAlpha',   new THREE.InstancedBufferAttribute(alphas, 1));
 instGeom.setAttribute('iTint',    new THREE.InstancedBufferAttribute(tints, 3));
 instGeom.setAttribute('iVisible', new THREE.InstancedBufferAttribute(iVisible, 1));
+// Per-instance hover flag: the point under the cursor gets a forced white rim so you can
+// see which thumbnail a click will select (the nearest-in-screen-space pick can sit behind
+// the one you meant). Independent of the rim-overlay tint and the border-thickness slider.
+const iHover = new Float32Array(TOTAL);
+instGeom.setAttribute('iHover',   new THREE.InstancedBufferAttribute(iHover, 1));
 
 const material = new THREE.ShaderMaterial({
     uniforms: {
@@ -675,16 +680,19 @@ const material = new THREE.ShaderMaterial({
         attribute float iAlpha;
         attribute vec3 iTint;
         attribute float iVisible;
+        attribute float iHover;
         varying vec2 vCellUV;
         varying vec2 vUVa;
         varying vec2 vUVb;
         varying float vAlpha;
         varying vec3 vTint;
         varying float vVisible;
+        varying float vHover;
         uniform float uThumb;
         void main() {
             vVisible = iVisible;
             vTint = iTint;
+            vHover = iHover;
             vCellUV = uv;
             vUVa = iUVa;
             vUVb = iUVb;
@@ -704,6 +712,7 @@ const material = new THREE.ShaderMaterial({
         varying float vAlpha;
         varying vec3 vTint;
         varying float vVisible;
+        varying float vHover;
 
         vec3 sampleBlended(vec2 cellUV) {
             vec3 a = texture2D(uAtlas, vUVa + cellUV * uCell).rgb;
@@ -714,17 +723,22 @@ const material = new THREE.ShaderMaterial({
 
         void main() {
             if (vVisible < 0.5) discard;
-            if (uBorder <= 0.0) {
+            // The hovered thumbnail always gets a white rim, even when the border slider is
+            // at zero, so the click target is unambiguous.
+            float border = uBorder;
+            vec3 tint = vTint;
+            if (vHover > 0.5) { border = max(uBorder, 0.12); tint = vec3(1.0); }
+            if (border <= 0.0) {
                 gl_FragColor = vec4(sampleBlended(vCellUV), 1.0);
                 return;
             }
             float d = min(min(vCellUV.x, 1.0 - vCellUV.x),
                           min(vCellUV.y, 1.0 - vCellUV.y));
-            if (d < uBorder) {
-                gl_FragColor = vec4(vTint, 1.0);
+            if (d < border) {
+                gl_FragColor = vec4(tint, 1.0);
             } else {
-                float t = 1.0 / (1.0 - 2.0 * uBorder);
-                vec2 inner = (vCellUV - uBorder) * t;
+                float t = 1.0 / (1.0 - 2.0 * border);
+                vec2 inner = (vCellUV - border) * t;
                 gl_FragColor = vec4(sampleBlended(inner), 1.0);
             }
         }
@@ -1874,8 +1888,18 @@ function pickNearest() {
     }
     return (best >= 0 && bestD < 0.005) ? best : -1;
 }
+let hoveredPoint = -1;
+function setHovered(idx) {
+    if (idx === hoveredPoint) return;
+    if (hoveredPoint >= 0) iHover[hoveredPoint] = 0;
+    hoveredPoint = idx;
+    if (hoveredPoint >= 0) iHover[hoveredPoint] = 1;
+    instGeom.attributes.iHover.needsUpdate = true;
+    renderer.domElement.style.cursor = hoveredPoint >= 0 ? 'pointer' : 'default';
+}
 function updateHover() {
     const best = pickNearest();
+    setHovered(best);
     if (best >= 0) {
         const c = DATA.labels[best];
         const cm = DATA.clusters.find(x => x.id === c);
