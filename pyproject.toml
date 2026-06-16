@@ -10,7 +10,7 @@ dependencies = [
     "torch>=2.6",
     "pydantic<2.12", # https://github.com/goodfire-ai/param-decomp/pull/232 , https://github.com/goodfire-ai/param-decomp/issues/221
     "tqdm",
-    "transformers",
+    "transformers>=5,<6", # v5 loads HF checkpoints in their native dtype by default (was upcast to fp32)
     "jaxtyping",
     "einops",
     "matplotlib",

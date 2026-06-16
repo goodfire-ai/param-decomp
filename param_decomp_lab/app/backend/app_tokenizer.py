@@ -62,8 +62,15 @@ class AppTokenizer:
     def encode(self, text: str) -> list[int]:
         return self._tok.encode(text, add_special_tokens=False)
 
+    def _decode(self, token_ids: list[int]) -> str:
+        # transformers>=5 types decode as `str | list[str]`; a flat list of ids always
+        # decodes to a single str.
+        text = self._tok.decode(token_ids, skip_special_tokens=False)
+        assert isinstance(text, str)
+        return text
+
     def decode(self, token_ids: list[int]) -> str:
-        return self._tok.decode(token_ids, skip_special_tokens=False)
+        return self._decode(token_ids)
 
     def get_spans(self, token_ids: list[int]) -> list[str]:
         """Decode token_ids into per-token display strings that concatenate to the full text.
@@ -77,7 +84,7 @@ class AppTokenizer:
         if not self._is_fast:
             return self._fallback_spans(token_ids)
 
-        text = self._tok.decode(token_ids, skip_special_tokens=False)
+        text = self._decode(token_ids)
         re_encoded = self._tok(text, return_offsets_mapping=True, add_special_tokens=False)
 
         if re_encoded.input_ids != token_ids:
@@ -113,7 +120,7 @@ class AppTokenizer:
         if not self._is_fast:
             return self._fallback_raw_spans(token_ids)
 
-        text = self._tok.decode(token_ids, skip_special_tokens=False)
+        text = self._decode(token_ids)
         re_encoded = self._tok(text, return_offsets_mapping=True, add_special_tokens=False)
 
         if re_encoded.input_ids != token_ids:
@@ -136,7 +143,7 @@ class AppTokenizer:
 
     def get_tok_display(self, token_id: int) -> str:
         """Single token -> display string for vocab browsers and hover labels."""
-        return escape_for_display(self._tok.decode([token_id], skip_special_tokens=False))
+        return escape_for_display(self._decode([token_id]))
 
     def _fallback_spans(self, token_ids: list[int]) -> list[str]:
         """Incremental decode: each span = decode(:i+1) - decode(:i).
@@ -146,7 +153,7 @@ class AppTokenizer:
         spans: list[str] = []
         prev = ""
         for i in range(len(token_ids)):
-            current = self._tok.decode(token_ids[: i + 1], skip_special_tokens=False)
+            current = self._decode(token_ids[: i + 1])
             spans.append(escape_for_display(current[len(prev) :]))
             prev = current
         return spans
@@ -155,7 +162,7 @@ class AppTokenizer:
         spans: list[str] = []
         prev = ""
         for i in range(len(token_ids)):
-            current = self._tok.decode(token_ids[: i + 1], skip_special_tokens=False)
+            current = self._decode(token_ids[: i + 1])
             spans.append(current[len(prev) :])
             prev = current
         return spans
