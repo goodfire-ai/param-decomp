@@ -1,0 +1,7 @@
+# JAX leg of the torch-vs-JAX runtime comparison, driven by the stock-HF torch config
+# (the converter maps raw-HF Llama to the same JAX model as the vendored spec). Shares
+# every hyperparameter with the torch leg via the referenced torch LMExperimentConfig.
+torch_config: torch/llama8b_l18_b128_cmp32_hf.yaml
+run_name: jax-l18-b128-cmp32-hf
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/jax_runs
+remat_recon_forwards: true

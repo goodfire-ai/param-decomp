@@ -179,7 +179,10 @@ class ImportanceMinimalityLoss(Metric[ImportanceMinimalityLossConfig]):
         n_examples = int(all_reduce(self.n_examples, op=ReduceOp.SUM))
         lp, entropy = lp_and_entropy_terms(reduced_sums, n_examples)
         name = self.instance_key
+        # Both go under `imp_min/` (fully-qualified keys, so they skip the `loss/`
+        # namespace): the proxy isn't a loss term, and grouping the two there keeps the
+        # headline beside its beta-independent `lp` proxy instead of in the loss panel.
         return {
-            name: lp + self.cfg.beta * entropy,
-            f"{name}_no_beta": lp,
+            f"imp_min/{name}": lp + self.cfg.beta * entropy,
+            f"imp_min/{name}_no_beta": lp,
         }
