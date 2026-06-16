@@ -1,0 +1,7 @@
+# Stochastic-recon-only pile run — JAX leg of the torch<->JAX comparison via the
+# shared-config route. Same recipe as pile_ppgd_bsc_from_torch.yaml but with the PGD/PPGD
+# adversary removed entirely (stochastic recon only). Small target (4L): no remat needed.
+# Launch: pd-jax-lm, 1 node (8 GPUs, dp=8). out_dir minted at submit.
+torch_config: torch/pile_llama_simple_mlp_4l_stoch_only.yaml
+run_name: ai-jax-pile4l-stoch-only
+remat_recon_forwards: false
