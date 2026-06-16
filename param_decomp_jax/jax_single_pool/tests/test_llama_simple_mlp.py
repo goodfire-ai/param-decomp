@@ -427,13 +427,12 @@ _PRODUCTION_PATTERN_CS = {
 
 
 @pytest.mark.skipif(not _REAL_CACHE_DIR.exists(), reason="t-9d2b8f02 pretrain cache not mounted")
-def test_torch_config_pretrained_target_converts_with_wildcards():
+def test_pretrained_target_converts_with_wildcards():
     """`kind: pretrained` LlamaSimpleMLP target specs convert, expanding `h.*`
     wildcard decomposition patterns over the checkpoint's n_layer (4)."""
     import yaml
 
-    from jax_single_pool.config import LlamaSimpleMLPTargetConfig
-    from jax_single_pool.torch_config import convert_torch_lm_config
+    from jax_single_pool.config import LlamaSimpleMLPTargetConfig, build_experiment_config
     from param_decomp_config.lm import LMExperimentConfig
 
     reference_yaml = (
@@ -452,7 +451,7 @@ def test_torch_config_pretrained_target_converts_with_wildcards():
     ]
     raw["data"]["max_seq_len"] = 512  # the model's n_ctx
 
-    cfg = convert_torch_lm_config(
+    cfg = build_experiment_config(
         LMExperimentConfig(**raw),
         run_name="t",
         run_id="p-00000000",

@@ -39,6 +39,7 @@ from jax_single_pool.config import (
     ExperimentConfig,
     LlamaSimpleMLPTargetConfig,
     TargetConfig,
+    load_wrapper,
 )
 from jax_single_pool.data import BatchSchedule, ShardServer, scan_shards
 from jax_single_pool.eval import make_eval_step
@@ -59,7 +60,6 @@ from jax_single_pool.lm import DecomposedLM
 from jax_single_pool.recon import build_recon_terms
 from jax_single_pool.run_state import build_optimizers, init_train_state
 from jax_single_pool.sharding import dp_mesh, init_distributed
-from jax_single_pool.torch_config import load_torch_wrapper
 from jax_single_pool.train import TrainState, make_faith_warmup_step, make_train_step
 from param_decomp_config.wandb_config import flatten_typed_lists
 
@@ -441,15 +441,15 @@ def main() -> None:
     configure_hf_http_retries()
     mesh = dp_mesh()
 
-    cfg, torch_yaml_path, raw_cfg = load_torch_wrapper(args.config)
+    cfg, schema_yaml_path, raw_cfg = load_wrapper(args.config)
 
     is_main = jax.process_index() == 0
     if is_main:
         cfg.run_dir.mkdir(parents=True, exist_ok=True)
         _pin_config_copy(cfg.run_dir, "config.yaml", args.config)
-        # the torch yaml under the torch SavedLMRun contract name, making the run
+        # the schema yaml under the torch SavedLMRun contract name, making the run
         # dir consumable by harvest/app/postprocess (runs/<p-id>/ convention)
-        _pin_config_copy(cfg.run_dir, "experiment_config.yaml", torch_yaml_path)
+        _pin_config_copy(cfg.run_dir, "experiment_config.yaml", schema_yaml_path)
         site_summary = " ".join(f"{s.name}:C{s.C}" for s in cfg.target.sites)
         print(
             f"run {cfg.run_name} | {mesh.devices.size} GPU / {jax.process_count()} proc | "

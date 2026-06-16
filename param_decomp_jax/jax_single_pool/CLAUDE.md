@@ -34,9 +34,10 @@ recon semantics: masks thread through the suffix forward, loss is KL on final lo
 `llama_simple_mlp.py` is the second target (the pile-pretrained `LlamaSimpleMLP`,
 t-9d2b8f02; sites `h.{i}.attn.{q,k,v,o}_proj` / `h.{i}.mlp.{c_fc,down_proj}`) —
 config dispatch is `TargetConfig` (llama8b) vs `LlamaSimpleMLPTargetConfig` in
-`config.py`, torch-route `kind: pretrained` specs + `h.*` wildcards in
-`torch_config.py`, target build in `run.py::main`. Export/offline-eval stay
-llama8b-only (guarded).
+`config.py` (which also reads the canonical `param_decomp_config` schema DIRECTLY —
+`build_experiment_config`/`load_wrapper` — routing `kind: pretrained` specs + `h.*`
+wildcards), target build in `run.py::main`. Export/offline-eval stay llama8b-only
+(guarded).
 
 ## Invariants with sharp teeth (the ones that have actually bitten)
 

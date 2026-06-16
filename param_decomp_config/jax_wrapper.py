@@ -1,10 +1,10 @@
 """Canonical key set for the `pd-jax-lm` wrapper yaml — the single source of truth
 shared by the lab-side launcher (`jax_launch._validate_wrapper`, torch venv) and the
-runtime loader (`jax_single_pool.torch_config.load_torch_wrapper`, jax venv).
+runtime loader (`jax_single_pool.config.load_wrapper`, jax venv).
 
 Lives here, in the torch-free config package, because it's the only distribution both
 venvs install; neither side can import the other's package. See the wrapper schema in
-`jax_single_pool.torch_config`'s module docstring.
+`jax_single_pool.config`'s module docstring.
 
 `run_id`, `wandb_group`, and `wandb_tags` are minted from the launch (`pd-jax-lm`
 mints the id; `--group`/`--tags` supply the rest) and appended to the workspace copy

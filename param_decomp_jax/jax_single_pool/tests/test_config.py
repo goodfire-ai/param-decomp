@@ -8,16 +8,16 @@ from pathlib import Path
 import pytest
 import yaml
 
+from jax_single_pool.config import (
+    WRAPPER_KEYS,
+    WRAPPER_OPTIONAL_KEYS,
+    build_experiment_config,
+    load_run_dir_config,
+    load_wrapper,
+)
 from jax_single_pool.llama8b import mlp_family_site_cs
 from jax_single_pool.lm import SiteC
 from jax_single_pool.recon import build_recon_terms
-from jax_single_pool.torch_config import (
-    WRAPPER_KEYS,
-    WRAPPER_OPTIONAL_KEYS,
-    convert_torch_lm_config,
-    load_run_dir_config,
-    load_torch_wrapper,
-)
 from param_decomp_config.jax_wrapper import (
     RUN_ID_KEY,
     SUBMIT_MINTED_KEYS,
@@ -42,7 +42,7 @@ def _stamped_wrapper(tmp_path: Path, wrapper: Path) -> Path:
 
 
 def test_b128_wrapper_converts(tmp_path: Path):
-    converted, torch_yaml_path, torch_raw = load_torch_wrapper(
+    converted, torch_yaml_path, torch_raw = load_wrapper(
         _stamped_wrapper(tmp_path, CONFIGS / "llama8b_l18_b128_cmp32_from_torch.yaml")
     )
     assert torch_yaml_path == (CONFIGS / "torch" / "llama8b_l18_b128_cmp32_1pool.yaml").resolve()
@@ -94,7 +94,7 @@ def test_eval_block_maps_and_defers_offline_metrics(capsys: pytest.CaptureFixtur
         ],
     }
     torch_cfg = type(torch_cfg)(**raw)
-    cfg = convert_torch_lm_config(
+    cfg = build_experiment_config(
         torch_cfg, run_name="t", run_id=RUN_ID, out_dir=Path("/tmp"), remat_recon_forwards=True
     )
     assert cfg.eval is not None
@@ -116,7 +116,7 @@ def test_unsupported_settings_refuse():
         ),
     )
     with pytest.raises(AssertionError, match="unsupported training loss"):
-        convert_torch_lm_config(
+        build_experiment_config(
             type(torch_cfg)(**hidden_acts_training_loss), run_name="t", run_id=RUN_ID,
             out_dir=Path("/tmp"), remat_recon_forwards=True,
         )  # fmt: skip
@@ -134,7 +134,7 @@ def test_unsupported_settings_refuse():
         ),
     )
     with pytest.raises(AssertionError):
-        convert_torch_lm_config(
+        build_experiment_config(
             type(torch_cfg)(**sigmoid_ppgd), run_name="t", run_id=RUN_ID, out_dir=Path("/tmp"),
             remat_recon_forwards=True,
         )  # fmt: skip
@@ -147,7 +147,7 @@ def test_unsupported_settings_refuse():
         ),
     )
     with pytest.raises(AssertionError, match="unsupported decomposition target"):
-        convert_torch_lm_config(
+        build_experiment_config(
             type(torch_cfg)(**non_site_target), run_name="t", run_id=RUN_ID, out_dir=Path("/tmp"),
             remat_recon_forwards=True,
         )  # fmt: skip
@@ -160,7 +160,7 @@ def test_unsupported_settings_refuse():
         ),
     )
     with pytest.raises(AssertionError, match="unsupported decomposition target"):
-        convert_torch_lm_config(
+        build_experiment_config(
             type(torch_cfg)(**embedding_target), run_name="t", run_id=RUN_ID, out_dir=Path("/tmp"),
             remat_recon_forwards=True,
         )  # fmt: skip
@@ -178,7 +178,7 @@ def test_unsupported_model_family_refuses_and_supported_families_dispatch():
     torch_cfg, raw = _reference_torch_cfg()
 
     def _converted_target(spec: dict):
-        cfg = convert_torch_lm_config(
+        cfg = build_experiment_config(
             type(torch_cfg)(**dict(raw, target=dict(raw["target"], spec=spec))),
             run_name="t", run_id=RUN_ID, out_dir=Path("/tmp"), remat_recon_forwards=True,
         )  # fmt: skip
@@ -268,7 +268,7 @@ def test_decaying_persistent_source_schedule_refuses():
         ),
     )
     with pytest.raises(AssertionError):
-        convert_torch_lm_config(
+        build_experiment_config(
             type(torch_cfg)(**decaying_source), run_name="t", run_id=RUN_ID,
             out_dir=Path("/tmp"), remat_recon_forwards=True,
         )  # fmt: skip
@@ -289,7 +289,7 @@ def test_arbitrary_sites_with_per_site_c_convert():
             ],
         ),
     )
-    cfg = convert_torch_lm_config(
+    cfg = build_experiment_config(
         type(torch_cfg)(**general), run_name="t", run_id=RUN_ID, out_dir=Path("/tmp"),
         remat_recon_forwards=True,
     )  # fmt: skip
@@ -305,7 +305,7 @@ def test_c49k_yaml_converts_with_documented_divergences(
 ):
     """The C49k/200k yaml (raw-HF target spec, fp32 weights_dtype, `model.`-prefixed
     site patterns) must convert, printing the fp32-frozen divergence note."""
-    converted, _torch_path, _raw = load_torch_wrapper(
+    converted, _torch_path, _raw = load_wrapper(
         _stamped_wrapper(tmp_path, CONFIGS / "llama8b_l18_C49k_200k_from_torch.yaml")
     )
     printed = capsys.readouterr().out
@@ -323,7 +323,7 @@ def test_load_run_dir_config_rebuilds_wrapper_runs(tmp_path: Path):
     config.yaml + the torch yaml as experiment_config.yaml (run.py's
     `_pin_config_copy`), and the rebuilt config must equal the launch-time conversion."""
     wrapper = _stamped_wrapper(tmp_path, CONFIGS / "llama8b_l18_C49k_200k_from_torch.yaml")
-    expected, torch_yaml_path, _ = load_torch_wrapper(wrapper)
+    expected, torch_yaml_path, _ = load_wrapper(wrapper)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "config.yaml").write_text(wrapper.read_text())
@@ -347,18 +347,18 @@ def test_wrapper_run_id_required_and_drives_identity(tmp_path: Path):
     """The run dir and wandb id are the p-id (torch runs/<id>/ convention); the human
     name stays the wandb display name. Missing or malformed run_id refuses."""
     wrapper = _stamped_wrapper(tmp_path, CONFIGS / "llama8b_l18_C49k_200k_from_torch.yaml")
-    cfg, _, _ = load_torch_wrapper(wrapper)
+    cfg, _, _ = load_wrapper(wrapper)
     assert cfg.run_id == RUN_ID
     assert cfg.run_dir.name == RUN_ID
     assert cfg.run_name == "jax-l18-C49k-200k"
 
     with pytest.raises(AssertionError, match="keys must be"):
-        load_torch_wrapper(CONFIGS / "llama8b_l18_C49k_200k_from_torch.yaml")  # no run_id
+        load_wrapper(CONFIGS / "llama8b_l18_C49k_200k_from_torch.yaml")  # no run_id
 
     bad_id = tmp_path / "bad_id.yaml"
     bad_id.write_text(wrapper.read_text().replace(RUN_ID, "run42"))
     with pytest.raises(AssertionError, match="run_id must be"):
-        load_torch_wrapper(bad_id)
+        load_wrapper(bad_id)
 
 
 def test_loader_uses_shared_wrapper_key_set():
@@ -376,4 +376,4 @@ def test_loader_rejects_unexpected_key(tmp_path: Path):
     raw["bogus_key"] = "x"
     wrapper.write_text(yaml.safe_dump(raw))
     with pytest.raises(AssertionError, match="keys must be"):
-        load_torch_wrapper(wrapper)
+        load_wrapper(wrapper)

@@ -23,7 +23,6 @@ replaces the hand-written-NCCL multi-pool design with zero manual collectives.
 | `ci_fn.py` | shared-transformer CI fn over ordered site specs; the two leaky-hard squashings (SPEC §4.6, S5/S6) |
 | `checkpoint.py` | orbax sharded save/resume of `TrainState` (adversary sources + moments included, no full-gather on the loop, SPEC S22) |
 | `eval.py` | in-loop eval pass: the six CE/KL masking variants + per-site CI-L0 in one jitted step, logged under the torch `EvalLoop` keys (`eval/ce_kl/*`, `eval/l0/*`) — enabled by the optional `eval:` config block |
-| `torch_config.py` | the shared-config route: a wrapper yaml (`torch_config:` + run identity + the remat knob) routes through `param-decomp-config`'s `LMExperimentConfig` and converts the supported subspace onto `ExperimentConfig` — asserts loudly on anything this trainer doesn't implement |
 | `run_state.py` | optimizer + initial-`TrainState` construction from an `ExperimentConfig` — shared by `run.py` and the exporter (orbax restores onto this reference) |
 | `export.py` | `jsp-export <run_dir> [--step N]` — orbax checkpoint → `<run_dir>/export/model_<step>.safetensors` with the torch `LMComponentModel`'s exact state-dict keys (V/U destacked per site, CI fn in-proj/out-head permuted to torch's sorted site order, frozen target included), so the torch eval/harvest/postprocess stack runs on JAX runs |
 | `tools/` | export round-trip verification: `gen_export_fixture.py` (JAX venv) + `verify_export_torch.py` (torch venv, rebuilds the real torch modules from the safetensors and matches forwards at fp32 tolerance) |
@@ -33,7 +32,7 @@ replaces the hand-written-NCCL multi-pool design with zero manual collectives.
 | `run.py` | the training entrypoint (`jsp-train <config.yaml>`): data, faith warmup, loop, metrics jsonl/wandb, orbax checkpoints, SIGTERM-save + requeue-resume |
 | `data.py` | deterministic batch schedule over the pre-tokenized fineweb parquet shards; O(1) resume addressing, per-process slices |
 | `hf_http.py` | `configure_hf_http_retries` — idempotent retrying-adapter install on huggingface_hub (cold-cache 8N-rank startup burst); no-op without huggingface_hub; JAX-side analog of `param_decomp_lab/infra/hf_http.py` |
-| `config.py` | the trainer's internal `ExperimentConfig` (built only by `torch_config.py`): shared pydantic loss/adversary configs passed through + jax-runtime knob structs |
+| `config.py` | the shared-config route + the trainer's internal `ExperimentConfig`: a wrapper yaml (`torch_config:` + run identity + the remat knob) routes through `param-decomp-config`'s `LMExperimentConfig`, and `build_experiment_config`/`load_wrapper` read that schema DIRECTLY onto `ExperimentConfig` (shared pydantic loss/adversary configs passed through + jax-runtime knob structs) — asserts loudly on anything this trainer doesn't implement |
 | `configs/` | wrapper yamls (`*_from_torch.yaml`) + the torch `LMExperimentConfig` yamls they reference under `torch/` |
 | `slurm/` | push-triggered offline-eval sbatch scripts (training launches go through `pd-jax-lm`, which generates the job script) |
 | `llama8b_sharding.py` | the 8B placement plan (frozen replicated; per-site V/U + CI + Adam C-sharded; source replicated; batch sharded) |
