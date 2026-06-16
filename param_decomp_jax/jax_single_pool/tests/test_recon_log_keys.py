@@ -108,3 +108,14 @@ def test_fixed_scalar_loss_keys_use_torch_class_names():
     faith, imp = _non_recon_configs()
     assert _METRIC_KEYS["faith"] == f"train/loss/{faith.type}"
     assert _METRIC_KEYS["imp"] == f"train/loss/{imp.type}"
+
+
+def test_no_train_loss_no_beta_key():
+    """Torch's `ImportanceMinimalityLoss_no_beta` diagnostic is emitted only by
+    `Metric.compute` (the eval path), never from the train step. The JAX trainer must
+    not emit a `train/loss/*_no_beta` key — doing so was a logged-key divergence from
+    torch (#647)."""
+    from jax_single_pool.run import _METRIC_KEYS  # pyright: ignore[reportPrivateUsage]
+
+    assert not any(k.endswith("_no_beta") for k in _METRIC_KEYS), _METRIC_KEYS
+    assert not any(v.endswith("_no_beta") for v in _METRIC_KEYS.values()), _METRIC_KEYS

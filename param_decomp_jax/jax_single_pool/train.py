@@ -392,7 +392,7 @@ def make_train_step(
         # gets too (sources are leaves). ──
         def loss_fn(
             trainable: tuple[Any, CIFn, dict[str, dict[str, Array]]],
-        ) -> tuple[Array, tuple[Array, Array, Array, tuple[Array, ...]]]:
+        ) -> tuple[Array, tuple[Array, Array, tuple[Array, ...]]]:
             components, ci_fn, persistent_sources = trainable
             components_bf16 = cast_floating(components, COMPUTE_DT)
             ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
@@ -459,13 +459,11 @@ def make_train_step(
             total_loss = faith_coeff * faith_loss + imp_coeff * imp_loss
             for term, term_loss in zip(recon_terms, term_losses, strict=True):
                 total_loss = total_loss + term.coeff * term_loss
-            return total_loss, (faith_loss, imp_loss, imp_lp, tuple(term_losses))
+            return total_loss, (faith_loss, imp_loss, tuple(term_losses))
 
-        (total_loss, (faith_loss, imp_loss, imp_lp, term_losses)), grads = (
-            eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-                (state.components, state.ci_fn, warmed_sources)
-            )
-        )
+        (total_loss, (faith_loss, imp_loss, term_losses)), grads = eqx.filter_value_and_grad(
+            loss_fn, has_aux=True
+        )((state.components, state.ci_fn, warmed_sources))
         components_grad, ci_fn_grad, persistent_grads_scaled = grads
         grad_norm_metrics = _grad_norm_metrics(components_grad, ci_fn_grad)
 
@@ -519,7 +517,6 @@ def make_train_step(
             "total": total_loss,
             "faith": faith_loss,
             "imp": imp_loss,
-            "imp_no_beta": imp_lp,
             "p_imp": pnorm,
             **{f"loss/{t.name}": v for t, v in zip(recon_terms, term_losses, strict=True)},
             **grad_norm_metrics,

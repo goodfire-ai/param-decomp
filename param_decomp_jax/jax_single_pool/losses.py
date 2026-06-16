@@ -33,8 +33,9 @@ def importance_minimality_terms(
     ci_upper: dict[str, Array], pnorm: Array, eps: float
 ) -> tuple[Array, Array]:
     """`(lp, entropy)` with per-site grouping and the global-batch sum inside the log2
-    (SPEC S7/S8); the loss is `lp + beta * entropy` and `lp` alone is the torch
-    `ImportanceMinimalityLoss_no_beta` metric.
+    (SPEC S7/S8); the loss is `lp + beta * entropy`. Torch's `_no_beta` diagnostic (`lp`
+    alone) is emitted only on the eval path (`Metric.compute`), never from the train
+    step, so this trainer does not log a `train/loss/*_no_beta` key.
 
     Under GSPMD the `(b, t)` axes are the global batch, so `jnp.sum` IS the exact
     global per-component sum — XLA reduces across shards inside the graph."""
