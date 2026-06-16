@@ -1,6 +1,6 @@
 # Loss parity: every torch loss Metric in the JAX trainer — design
 
-Status: IMPLEMENTED (stages 1-3; 2026-06-11) — `recon.py` holds the strategies/terms/`build_recon_terms`, `train.py` the multi-term step, SPEC amended (S10′/S12′/S13′/S14′, S23/S24). Deferred per §6 stage 4: `nsc` scope, sigmoid parameterization, `start_frac>0`, the hidden-acts seam. Scope: the 15 `LOSS_METRIC_CLASSES` entries +
+Status: IMPLEMENTED (stages 1-3; 2026-06-11. `start_frac>0` source-LR-warmup gating: stage 4, 2026-06-16, SPEC S25) — `recon.py` holds the strategies/terms/`build_recon_terms`, `train.py` the multi-term step, SPEC amended (S10′/S12′/S13′/S14′, S23/S24/S25). Deferred per §6 stage 4: `nsc` scope, sigmoid parameterization, the hidden-acts seam. Scope: the 15 `LOSS_METRIC_CLASSES` entries +
 `ChunkwiseSubsetReconLoss` (lab) as the torch surface; `recon.py` / `adversary.py` /
 `train.py` / `SPEC.md` as the JAX surface. Every torch `update()` /
 `before_backward` / `after_backward` path was read, not just class names.
@@ -342,9 +342,11 @@ divisibility for `nsc`) becomes a converter assert.
   the analog is `coeff_t = where(step ≥ start_frac·total, coeff, 0)` plus gating
   source/moment updates with `where` — semantics match (sources init at step 0 but
   untouched until active; distributionally identical since init is RNG-pure), cost
-  is paying the adversary forward before activation. Either accept that cost or
-  keep refusing `start_frac > 0` (current assert). Propose: keep refusing until a
-  config actually needs it.
+  is paying the adversary forward before activation. IMPLEMENTED 2026-06-16 (SPEC
+  S25): `term_active = step_f32 >= start_frac·total` gates the warmup `(sources, opt)`
+  carry, the term-loss contribution, and the final-ascent `(sources, opt)` — all via
+  `_select_pytree` `where`. `start_frac == 0.0` skips the gating entirely (byte-exact
+  unchanged path).
 - **Q4 — `nsc` tiling.** Torch tiles `n_sources` over the **per-rank** batch slice
   (synced replicas ⇒ each source covers `B/n` global elements, rank-interleaved);
   JAX would tile over the global batch (contiguous). Same multiset of assignments,
@@ -374,7 +376,7 @@ divisibility for `nsc`) becomes a converter assert.
 | PPGD scopes `c`/`nsc`/`bsc` | **composition-only** | source-shape variants of `init_persistent_sources` + Q4 note; `bsc` needs no replica sync (S16 already covers) |
 | PPGD `sign` SRC_STEP, sigmoid parameterization, `n_samples>1` | **composition-only** | SPEC §6 already names them as variation points |
 | multiple simultaneous loss/adversary terms | **composition-only** | §2.2 TrainState dicts + per-term S14 |
-| PPGD `start_frac > 0` | **composition-only (deferred)** | Q3 — keep the refusing assert until needed |
+| PPGD `start_frac > 0` | **implemented (2026-06-16)** | Q3 — `term_active` `where`-gating, SPEC S25 |
 | `StochasticHiddenActsReconLoss` | **needs-new-seam → recommend-keep-on-bridge** | `masked_site_outputs` fn per target; conflicts with the one-recon-semantics rule; already offline (§4c) |
 | attn-pattern eval losses | **keep-on-bridge** | eval-only in torch too (§4d) |
 

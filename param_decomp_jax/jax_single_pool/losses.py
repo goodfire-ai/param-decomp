@@ -61,5 +61,13 @@ def annealed_pnorm(step_f32: Array, total_steps: int, cfg: ImportanceMinimalityL
 def warmup_then_constant_lr(
     step_f32: Array, total_steps: int, lr: float, warmup_frac: float
 ) -> Array:
-    warmup_steps = jnp.maximum(jnp.floor(total_steps * warmup_frac), 1.0)
+    """Linear ramp `0 → lr` over `int(total_steps * warmup_frac)` steps, then constant.
+
+    `warmup_frac == 0` short-circuits to full `lr` at every step (torch
+    `get_scheduled_value`: `warmup_steps = int(total_steps * 0) = 0`, so the
+    `step < warmup_steps` warmup branch never fires). `warmup_frac` is a static
+    config float, so this is a trace-time branch."""
+    warmup_steps = int(total_steps * warmup_frac)
+    if warmup_steps == 0:
+        return jnp.asarray(lr, jnp.float32)
     return jnp.where(step_f32 < warmup_steps, lr * step_f32 / warmup_steps, lr)

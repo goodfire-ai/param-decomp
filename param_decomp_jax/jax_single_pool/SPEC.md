@@ -240,6 +240,7 @@ init: biases zero; weights fan-in scaled (torch init_param_)
 | S22 | Checkpoints round-trip ALL trajectory state of §3 — including every persistent term's sources + SRC_STEP moments + step/schedule counters — such that a resumed run continues the same trajectory (modulo RNG streams and kernel nondeterminism, cf. D4). |
 | S23 | A persistent source bundle feeds exactly ONE loss term. (The fused-backward S14′ unscaling divides that term's coeff out of the source gradient; a bundle shared across terms would make the division wrong.) |
 | S24 | A persistent term's WARMUP ascents forward all sites, routed everywhere — regardless of the term's loss plan (torch parity: `persistent_pgd_state.warmup` hardcodes route-all). A fresh-PGD entry draws its routing ONCE per step, shared by all its ascents and its main loss forward (torch parity: `pgd_masked_recon_loss_update`). |
+| S25 | A persistent term with `start_frac > 0` contributes nothing — no loss, no source/optimizer update — until `step/total_steps >= start_frac` (torch parity: `update()` returns `None` before `start_frac`, the term absent and its state frozen at init). Sources are RNG-initialized at step 0 but untouched while inactive, so activation is distributionally identical to lazy construction. `start_frac == 0.0` is the always-active common case and keeps the unguarded, byte-exact path. The source-LR schedule (S13) is a pure function of `step`, so the LR used at the activation step already reflects whatever warmup/decay that step's schedule prescribes. |
 
 ## 6. Variation points
 

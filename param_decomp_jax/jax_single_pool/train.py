@@ -60,6 +60,15 @@ def cast_floating(tree: Any, dtype: Any) -> Any:
     return jax.tree.map(lambda a: a.astype(dtype) if eqx.is_inexact_array(a) else a, tree)
 
 
+def _select_pytree(active: Array, when_active: Any, when_inactive: Any) -> Any:
+    """Element-wise `where(active, when_active, when_inactive)` over matching pytrees.
+
+    Gates a persistent term's source/optimizer updates on `start_frac` (SPEC S25):
+    when inactive the leaf is left untouched, matching torch's `update()`-returns-None
+    (the term is absent, its state frozen at init until `step/total >= start_frac`)."""
+    return jax.tree.map(lambda a, b: jnp.where(active, a, b), when_active, when_inactive)
+
+
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class TrainState:
@@ -260,8 +269,16 @@ def make_train_step(
         source_lrs: dict[str, Array] = {}
         warmed_sources: dict[str, dict[str, Array]] = {}
         warmup_opt_states: dict[str, SourcesAdamState] = {}
+        # `start_frac` gating (SPEC S25): a term contributes nothing — no loss, no
+        # source/optimizer update — until `step/total_steps >= start_frac`. `start_frac`
+        # is a static config float, so the no-gating common case (`== 0.0`) keeps the
+        # zero-overhead path; a positive `start_frac` pays the adversary forward before
+        # activation and `where`-gates every state update (LOSS_PARITY_DESIGN Q3).
+        term_active: dict[str, Array] = {}
         for state_key, ppgd_cfg in loss_spec.persistent.items():
             adam = persistent_adams[state_key]
+            if ppgd_cfg.start_frac > 0.0:
+                term_active[state_key] = step_f32 >= ppgd_cfg.start_frac * total_steps
             source_lr = warmup_then_constant_lr(
                 step_f32,
                 total_steps,
@@ -291,12 +308,18 @@ def make_train_step(
                 )
                 return (sources, adam_state), None
 
+            base_sources = state.sources[state_key]
+            base_opt = state.sources_opt_state[state_key]
             (warmed, warmed_opt), _ = jax.lax.scan(
                 warmup_body,
-                (state.sources[state_key], state.sources_opt_state[state_key]),
+                (base_sources, base_opt),
                 None,
                 length=ppgd_cfg.n_warmup_steps,
             )
+            if ppgd_cfg.start_frac > 0.0:
+                warmed, warmed_opt = _select_pytree(
+                    term_active[state_key], (warmed, warmed_opt), (base_sources, base_opt)
+                )
             warmed_sources[state_key] = jax.lax.stop_gradient(warmed)
             warmup_opt_states[state_key] = warmed_opt
 
@@ -415,7 +438,14 @@ def make_train_step(
                         total = total + kl_per_position(masked, clean_logits)
                         n_forwards += 1
                 assert n_forwards > 0, f"term {term.name!r} produced no forwards"
-                term_losses.append(total / n_forwards)
+                term_loss = total / n_forwards
+                first_sources = term.plan[0].sources
+                if (
+                    isinstance(first_sources, PersistentSources)
+                    and loss_spec.persistent[first_sources.state_key].start_frac > 0.0
+                ):
+                    term_loss = term_active[first_sources.state_key] * term_loss
+                term_losses.append(term_loss)
 
             total_loss = faith_coeff * faith_loss + imp_coeff * imp_loss
             for term, term_loss in zip(recon_terms, term_losses, strict=True):
@@ -447,6 +477,12 @@ def make_train_step(
                 source_lrs[state_key],
                 persistent_adams[state_key],
             )
+            if loss_spec.persistent[state_key].start_frac > 0.0:
+                ascended, ascended_opt = _select_pytree(
+                    term_active[state_key],
+                    (ascended, ascended_opt),
+                    (warmed_sources[state_key], warmup_opt_states[state_key]),
+                )
             new_sources[state_key] = ascended
             new_sources_opt_state[state_key] = ascended_opt
 
