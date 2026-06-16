@@ -20,8 +20,10 @@ def _clean_metric_output(
     """Normalize one `compute()` return.
 
     Accepts a scalar tensor (emitted as `{log_namespace}/{metric_name}`) or a dict
-    (keys prefixed by `log_namespace`). Non-tensor dict values pass through to the
-    concrete sink so core stays logging-backend agnostic.
+    (keys prefixed by `log_namespace`, unless a key already carries its own namespace
+    — i.e. contains a `/`, in which case it passes through verbatim, letting one metric
+    emit secondary keys outside its headline namespace). Non-tensor dict values pass
+    through to the concrete sink so core stays logging-backend agnostic.
     """
     computed: MetricOutType = {}
     match computed_raw:
@@ -36,7 +38,7 @@ def _clean_metric_output(
                 if isinstance(v, Tensor):
                     assert v.numel() == 1, f"Only scalar tensors supported, got shape {v.shape}"
                     v = v.item()
-                computed[f"{log_namespace}/{k}"] = v
+                computed[k if "/" in k else f"{log_namespace}/{k}"] = v
         case _:
             raise ValueError(f"Unsupported type: {type(computed_raw)}")
     return computed

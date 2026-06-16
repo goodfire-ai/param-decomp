@@ -7,7 +7,14 @@ subset recon). Each carries a unique `type: Literal["<ClassName>"]` discriminato
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BeforeValidator, Field, NonNegativeFloat, NonNegativeInt, PositiveInt
+from pydantic import (
+    BeforeValidator,
+    Field,
+    NonNegativeFloat,
+    NonNegativeInt,
+    PositiveFloat,
+    PositiveInt,
+)
 
 from param_decomp_config.base import BaseConfig, Probability
 from param_decomp_config.routing import SubsetRoutingType, UniformKSubsetRoutingConfig
@@ -50,6 +57,26 @@ class ImportanceMinimalityLossConfig(LossMetricConfig):
     p_anneal_final_p: NonNegativeFloat | None = None
     p_anneal_end_frac: Probability = 1.0
     eps: NonNegativeFloat = 1e-12
+
+
+class SmoothL0ImportanceMinimalityLossConfig(LossMetricConfig):
+    """Config for the bounded smooth-L0 (Geman–McClure) importance-minimality penalty.
+
+    Penalty per CI value is `φ(c) = c² / (c² + γ²)`: flat at 0 (`φ'(0)=0`), saturating to
+    1 (so the per-component sum counts ≈ active positions), with a bounded gradient
+    (`~0.65/γ` near the threshold `c≈γ`). This avoids the `L_p` penalty's gradient cliff
+    as `p→0`. `beta` weights the same entropy-like `mean * log2(1 + sum)` term used by the
+    `L_p` variant, now over `φ`. `gamma` is the initial threshold, linearly annealed
+    toward `gamma_final` between `gamma_anneal_start_frac` and `gamma_anneal_end_frac` of
+    training (no-op when `gamma_final is None` or `gamma_anneal_start_frac == 1.0`).
+    """
+
+    type: Literal["SmoothL0ImportanceMinimalityLoss"] = "SmoothL0ImportanceMinimalityLoss"
+    gamma: PositiveFloat
+    beta: NonNegativeFloat
+    gamma_anneal_start_frac: Probability = 1.0
+    gamma_final: PositiveFloat | None = None
+    gamma_anneal_end_frac: Probability = 1.0
 
 
 class CIMaskedReconLossConfig(LossMetricConfig):
