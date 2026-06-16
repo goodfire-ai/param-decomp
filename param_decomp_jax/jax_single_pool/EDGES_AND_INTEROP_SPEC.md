@@ -212,12 +212,13 @@ real torch `LMComponentModel.build`.
 | I11 | **Layout vs the wired loader.** The export emits the VENDORED `LMComponentModel` layout, but the loader `SavedLMRun.load_model` invokes on this branch is `load_component_model` (the CORE `ComponentModel`, keys `target_model.*` + `_components.<dashed-path>.{V,U}`). The vendored-layout loader exists but is unreachable from the wired path. The canonical export target for `feature/jax` must be decided: emit the core layout (preferred — it's what the branch builds, and `build_target` already supplies the frozen target, so inlining the 8B target is redundant), or wire `SavedLMRun` to dispatch to the vendored loader. | CONFIRMED (gap) | `export.py:5-31`; `component_model.py:164-171`; `component_model_io.py:117-127` |
 | I12 | **The parity verifier is rotted.** `tools/verify_export_torch.py` imports `param_decomp_lab.three_pool.checkpoint.is_trainable_component_key` (no such module/symbol on this branch) and asserts the vendored layout — it cannot run, and the interop contract has NO working end-to-end parity test in CI. The empirical check reproduced its assertions inline; the contract must be re-pinned by a runnable verifier against whichever layout I11 settles on. | CONFIRMED (gap) | `verify_export_torch.py:35`; verify `notes` |
 
-**CI-fn numeric divergences (documented tolerance, not mapping errors).** JAX CIFn uses
-tanh-approx GELU (torch: exact erf, ≈4.7e-4 max gap) and weightless-RMS eps `1e-5`
-(torch: dtype-finfo ≈1.19e-7 fp32). These shift CI logits near the leaky-hard clamp
-boundary, changing the alive set the app/harvest report. CLAUDE.md states they "unify
-with torch at a run boundary" — UNRESOLVED; pin the chosen value(s) before any
-bit-level torch CI-fn transfer. (`ci_fn.py:58-59`, `93`; SPEC `S6`.)
+**CI-fn numerics: UNIFIED with torch (#624/#625/#730 resolved "match torch").** JAX CIFn
+uses exact-erf GELU (`jax.nn.gelu(..., approximate=False)`, matching torch `nn.GELU()`)
+and weightless-RMS eps `finfo(fp32).eps` ≈1.19e-7 (`CI_FN_RMS_EPS`, matching torch
+`F.rms_norm`'s default; RMS upcasts to fp32 so fp32 finfo governs). The former CI-logit
+divergence near the leaky-hard clamp boundary is resolved — these ops are now bit-faithful
+torch→JAX, so the only remaining CI-fn-transfer blocker is the site-order permutation (I7).
+(`ci_fn.py` GELU line + `CI_FN_RMS_EPS`; torch `ci_nn_blocks.py:167,174`; SPEC `S4`/`S6`.)
 
 ---
 

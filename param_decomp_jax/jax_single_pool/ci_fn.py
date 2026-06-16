@@ -21,6 +21,10 @@ from vendored_jax.llama import apply_rope, attn_implementation, rms_norm, rope_c
 
 from jax_single_pool.lm import SiteSpec
 
+CI_FN_RMS_EPS = float(jnp.finfo(jnp.float32).eps)
+"""Matches torch's `F.rms_norm` default eps (`finfo(fp32).eps` ~1.19e-7); RMS upcasts to
+fp32 internally, so this is the dtype that governs (SPEC S4)."""
+
 
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
@@ -90,7 +94,7 @@ class CIBlock(eqx.Module):
         y = y.reshape(b, t, d)
         x = x + y @ self.wo.T
         h = _weightless_rms_norm(x, self.eps)
-        return x + (jax.nn.gelu(h @ self.w1 + self.b1) @ self.w2 + self.b2)
+        return x + (jax.nn.gelu(h @ self.w1 + self.b1, approximate=False) @ self.w2 + self.b2)
 
 
 class CIFn(eqx.Module):
@@ -168,7 +172,7 @@ def init_ci_fn(arch: CIArch, sites: tuple[SiteSpec, ...], key: PRNGKeyArray) -> 
             b2=jnp.zeros((arch.d_model,)),
             n_head=arch.n_heads,
             head_dim=hd,
-            eps=1e-5,
+            eps=CI_FN_RMS_EPS,
         )
 
     inv_freq = 1.0 / (10000.0 ** (jnp.arange(0, hd, 2, dtype=jnp.float32) / hd))
@@ -183,5 +187,5 @@ def init_ci_fn(arch: CIArch, sites: tuple[SiteSpec, ...], key: PRNGKeyArray) -> 
         inv_freq=inv_freq,
         site_names=tuple(s.name for s in sites),
         split_sizes=tuple(s.C for s in sites),
-        eps=1e-5,
+        eps=CI_FN_RMS_EPS,
     )

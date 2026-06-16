@@ -8,8 +8,9 @@ Open items: persistent-source scopes beyond `sc`, sigmoid parameterization, and 
 hidden-acts seam are deliberately refused (SPEC S31, LOSS_PARITY_DESIGN §6 stage 4 —
 hidden-acts is keep-on-bridge); persistent `start_frac>0` is now implemented (SPEC S32,
 `term_active` `where`-gating); SPEC S24's two torch-parity quirks (PPGD warmup
-route-all, fresh-PGD single routing draw) are pinned pending a team decision; CI-fn
-numerics (gelu erf, rms eps) unify with torch at a run boundary.
+route-all, fresh-PGD single routing draw) are pinned pending a team decision. CI-fn
+numerics are unified with the torch oracle (#624/#625/#730 resolved): GELU is exact-erf
+(`approximate=False`) and RMSNorm eps is `finfo(fp32).eps` (`CI_FN_RMS_EPS`).
 
 ## The one rule
 

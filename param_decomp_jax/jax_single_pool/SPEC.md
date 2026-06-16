@@ -203,16 +203,24 @@ before the loop:                                                                
 
 ```
 in:   {site: x_s [B,T,d_in_s]}  (clean site inputs, fixed site order)
-1.    h_s = rms_norm(x_s)                      # weightless (no learnable scale)
+1.    h_s = rms_norm(x_s)                      # weightless; eps = finfo(fp32).eps ~1.19e-7 (S4)
 2.    h   = concat_s(h_s) @ W_in + b_in        # → [B,T,d_model]; NO nonlinearity here
 3.    × n_blocks (pre-norm):
         h += attn(rms_norm_weightless(h))      # bidirectional MHA, rotate-half RoPE
                                                # base 10000; q/k/v/out bias-FREE
                                                # RoPE inv_freq is a stop-gradient buffer (S27)
-        h += mlp(rms_norm_weightless(h))       # Linear(d→16384)+b → GELU → Linear(→d)+b
+        h += mlp(rms_norm_weightless(h))       # Linear(d→16384)+b → GELU(erf, NOT tanh) → Linear(→d)+b (S6)
 4.    logits = h @ W_out + b_out               # → [B,T, Σ_s C_s], split per site in order
 init: biases zero; weights fan-in scaled (torch init_param_)
 ```
+
+CI-fn numerics unify with the torch oracle (#624/#625/#730, resolved "unify — match
+torch"): GELU is exact-erf (`jax.nn.gelu(..., approximate=False)`, matching torch
+`nn.GELU()`), and the weightless RMSNorm uses `eps = finfo(fp32).eps` (`CI_FN_RMS_EPS`,
+matching torch `F.rms_norm`'s default `eps=None → finfo(x.dtype).eps`; RMS upcasts to
+fp32, so fp32 finfo governs). This makes torch→JAX CI-fn weight transfer bit-faithful
+on the clean path. Refs: `ci_fn.py` GELU line + `CI_FN_RMS_EPS`; torch
+`ci_nn_blocks.py:167,174`.
 
 ---
 
