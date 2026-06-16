@@ -1,0 +1,7 @@
+# 8-GPU step-speed benchmark, batch_size=16 variant (per-device 2 at 8-way DP) for
+# comparison on smaller-GPU-memory clusters. Identical to
+# llama8b_l18_stepbench_from_torch.yaml except batch_size 64 -> 16.
+torch_config: torch/llama8b_l18_stepbench_bs16_1pool.yaml
+run_name: ai-jax-l18-stepbench-bs16-8gpu
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/jax_runs
+remat_recon_forwards: true
