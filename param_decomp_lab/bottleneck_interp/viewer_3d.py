@@ -470,6 +470,12 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
   </div>
   <div class="muted" id="tourHint">Deterministic rolling-window walk through PCs in variance-descending order. K_tour is the smallest top-K whose cumulative variance explained ≥ 95% of the current basis. Scrub the progress slider to seek anywhere without changing play/pause state. Reset returns to the start and pauses.</div>
 
+  <section id="rimSection" style="display:none;">
+    <h2>Rim source</h2>
+    <select id="rimSource"></select>
+    <div id="overlayItems" style="margin-top:6px; max-height:200px; overflow:auto;"></div>
+  </section>
+
   <h2 id="clusterHeader">Clusters <button id="allOn">all</button> <button id="allOff">none</button></h2>
   <div id="clusterList"></div>
 
@@ -707,6 +713,81 @@ const material = new THREE.ShaderMaterial({
 const mesh = new THREE.Mesh(instGeom, material);
 mesh.frustumCulled = false;
 scene.add(mesh);
+
+// --- Rim overlays: the iTint rim channel is fed by a selectable source. 'cluster' uses
+// the per-point cluster colour (origTint); any DATA.overlays entry (e.g. module/component
+// CI-activity) rims points by which of its selected items are active there. ---
+const OVERLAYS = DATA.overlays || {};
+const overlaySelected = {};
+for (const k of Object.keys(OVERLAYS)) {
+    const ov = OVERLAYS[k];
+    ov.colourById = new Map();
+    for (const it of ov.items) ov.colourById.set(it.id, it.colour);
+    overlaySelected[k] = new Set(ov.items.map(it => it.id));
+}
+let rimMode = 'cluster';
+const DIM_TINT = [0.16, 0.16, 0.18];
+
+function applyTint() {
+    if (rimMode === 'cluster' || !OVERLAYS[rimMode]) {
+        for (let i = 0; i < N; i++) {
+            tints[i*3] = origTint[i*3];
+            tints[i*3+1] = origTint[i*3+1];
+            tints[i*3+2] = origTint[i*3+2];
+        }
+    } else {
+        const ov = OVERLAYS[rimMode];
+        const sel = overlaySelected[rimMode];
+        for (let i = 0; i < N; i++) {
+            let col = DIM_TINT;
+            const items = ov.point_items[i];
+            for (let j = 0; j < items.length; j++) {
+                if (sel.has(items[j])) { col = ov.colourById.get(items[j]); break; }
+            }
+            tints[i*3] = col[0]; tints[i*3+1] = col[1]; tints[i*3+2] = col[2];
+        }
+    }
+    instGeom.attributes.iTint.needsUpdate = true;
+}
+
+function renderOverlayItems() {
+    const box = document.getElementById('overlayItems');
+    box.innerHTML = '';
+    if (rimMode === 'cluster' || !OVERLAYS[rimMode]) return;
+    const ov = OVERLAYS[rimMode];
+    const sel = overlaySelected[rimMode];
+    for (const it of ov.items) {
+        const row = document.createElement('label');
+        row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = sel.has(it.id);
+        cb.addEventListener('change', () => {
+            if (cb.checked) sel.add(it.id); else sel.delete(it.id);
+            applyTint();
+        });
+        const c = it.colour;
+        const sw = document.createElement('span');
+        sw.style.cssText = `display:inline-block;width:10px;height:10px;border-radius:2px;`
+            + `background:rgb(${c[0]*255|0},${c[1]*255|0},${c[2]*255|0})`;
+        const txt = document.createElement('span');
+        txt.textContent = it.name;
+        row.append(cb, sw, txt);
+        box.appendChild(row);
+    }
+}
+
+if (Object.keys(OVERLAYS).length > 0) {
+    document.getElementById('rimSection').style.display = 'block';
+    const rimSourceEl = document.getElementById('rimSource');
+    rimSourceEl.innerHTML = '<option value="cluster">cluster</option>'
+        + Object.keys(OVERLAYS).map(k => `<option value="${k}">${k}</option>`).join('');
+    rimSourceEl.addEventListener('change', (e) => {
+        rimMode = e.target.value;
+        renderOverlayItems();
+        applyTint();
+    });
+}
 
 // --- k-NN edge mesh (only meaningful when DATA.knn.k > 0) ---
 const MAX_EDGES = Math.max(1, N * KNN_K);
