@@ -145,6 +145,65 @@ def test_eval_step_fresh_pgd_probe():
     assert jnp.array_equal(out["loss/PGDReconLoss"], out_same["loss/PGDReconLoss"])
 
 
+def test_eval_step_fresh_pgd_probe_device_count_invariant():
+    """R-7 (eval facet): the fresh c-scope PGD probe's KL must be invariant to device
+    count up to float reassociation.
+
+    The probe ascends `source += step * sign(dKL/dsource)` on a `(1,1,C+1)` source
+    REPLICATED across the dp mesh. Each ascent's sign is taken AFTER the cotangent
+    folds into the replicated leaf, so the gradient must be the GLOBAL-batch mean grad
+    (torch all-reduce-AVG parity, S15/E19) — NOT a per-shard partial. A per-shard
+    partial would flip signs on some shards, send the ascent down a different
+    trajectory, and yield a different final KL. Comparing the single-layout run
+    (mesh=None, whole batch on one device) against the GSPMD batch-sharded run pins
+    that the JAX cotangent into the replicated source is the global mean. At 1 device
+    the two paths are identical; the test bites under
+    `XLA_FLAGS=--xla_force_host_platform_device_count=4`.
+    """
+    from jax_single_pool.ci_fn import CIArch, init_ci_fn
+    from jax_single_pool.llama8b import init_decomp_vu
+    from jax_single_pool.sharding import dp_mesh, shard_batch
+
+    mesh = dp_mesh()
+    n_dev = mesh.devices.size
+
+    cfg = _tiny_cfg()
+    tgt = _tiny_target(cfg, 4, jax.random.PRNGKey(0))
+    sites = llama_site_specs(cfg, mlp_family_site_cs(4, 4, 8))
+    lm = llama_decomposed_lm(cfg, sites)
+    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    ci_fn = init_ci_fn(CIArch(16, 1, 2, 32), lm.sites, jax.random.PRNGKey(2))
+
+    b, t = 4 * n_dev, 16
+    token_ids = jax.random.randint(jax.random.PRNGKey(3), (b, t), 0, cfg.vocab_size)
+    residual = jax.random.normal(jax.random.PRNGKey(4), (b, t, cfg.n_embd)) * 0.5
+
+    single_step = make_eval_step(
+        lm, rounding_threshold=0.0, ci_alive_threshold=0.0,
+        l0_group_patterns=None, pgd=(8, 0.1), mesh=None,
+    )  # fmt: skip
+    sharded_step = make_eval_step(
+        lm, rounding_threshold=0.0, ci_alive_threshold=0.0,
+        l0_group_patterns=None, pgd=(8, 0.1), mesh=mesh,
+    )  # fmt: skip
+
+    out_single = single_step(vu, ci_fn, tgt, token_ids, residual, jax.random.PRNGKey(5))
+    out_sharded = sharded_step(
+        vu, ci_fn, tgt, token_ids, shard_batch(residual, mesh, batch_axis=0), jax.random.PRNGKey(5)
+    )
+
+    single_kl = float(out_single["loss/PGDReconLoss"])
+    sharded_kl = float(out_sharded["loss/PGDReconLoss"])
+    assert jnp.isfinite(single_kl) and jnp.isfinite(sharded_kl)
+    # reassociation-only tolerance: cross-shard reduction order differs, so bit-exactness
+    # is not achievable, but a per-shard-partial grad (the R-7 bug) would change the
+    # ascent sign on some shards and blow this far past tolerance.
+    assert abs(single_kl - sharded_kl) <= 1e-4 * abs(single_kl) + 1e-6, (
+        f"fresh-PGD eval probe KL diverged across shardings: single {single_kl!r} vs "
+        f"sharded({n_dev}) {sharded_kl!r} — c-scope source grad is not the global mean (R-7)"
+    )
+
+
 def test_eval_step_l0_groups_sum_member_sites():
     """torch CI_L0 `groups` parity: a group's L0 is the SUM of its fnmatch-member
     sites' L0s; an unmatched pattern refuses at build time."""

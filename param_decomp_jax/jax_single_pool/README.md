@@ -32,6 +32,7 @@ replaces the hand-written-NCCL multi-pool design with zero manual collectives.
 | `llama_simple_mlp.py` | `LlamaSimpleMLP` pile-pretrained target (`goodfire/spd/runs/t-9d2b8f02`: 4L, d768, GELU MLP, plain rotate-half RoPE, tied head): sites `h.{i}.attn.{q,k,v,o}_proj` / `h.{i}.mlp.{c_fc,down_proj}` with `h.*` wildcard expansion, pretrain-cache safetensors loader (one-off `.pt` conversion: `tools/convert_llama_simple_mlp_checkpoint.py`), `llama_simple_mlp_decomposed_lm(cfg, sites)`; frozen weights small enough to replicate (`replicate_frozen`), V/U/CI/source placement reuses the generic per-site plan |
 | `run.py` | the training entrypoint (`jsp-train <config.yaml>`): data, faith warmup, loop, metrics jsonl/wandb, orbax checkpoints, SIGTERM-save + requeue-resume |
 | `data.py` | deterministic batch schedule over the pre-tokenized fineweb parquet shards; O(1) resume addressing, per-process slices |
+| `hf_http.py` | `configure_hf_http_retries` — idempotent retrying-adapter install on huggingface_hub (cold-cache 8N-rank startup burst); no-op without huggingface_hub; JAX-side analog of `param_decomp_lab/infra/hf_http.py` |
 | `config.py` | the trainer's internal `ExperimentConfig` (built only by `torch_config.py`): shared pydantic loss/adversary configs passed through + jax-runtime knob structs |
 | `configs/` | wrapper yamls (`*_from_torch.yaml`) + the torch `LMExperimentConfig` yamls they reference under `torch/` |
 | `slurm/` | push-triggered offline-eval sbatch scripts (training launches go through `pd-jax-lm`, which generates the job script) |

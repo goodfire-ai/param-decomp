@@ -130,6 +130,11 @@ class ExperimentConfig:
     cadence: CadenceConfig
     eval: EvalConfig | None
     wandb: WandbConfig | None
+    wandb_group: str | None
+    """wandb UI group (`pd-jax-lm --group`); None = ungrouped. torch threads the
+    same CLI flag to `wandb.init(group=...)`."""
+    wandb_tags: tuple[str, ...]
+    """wandb tags (`pd-jax-lm --tags a,b,c`, comma-split); empty = untagged."""
 
     @property
     def run_dir(self) -> Path:

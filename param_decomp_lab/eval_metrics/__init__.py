@@ -13,6 +13,7 @@ from param_decomp.metrics.dispatch import LOSS_METRIC_CLASSES
 from param_decomp.metrics.pgd_masked_recon import PGDReconLoss
 from param_decomp.metrics.stochastic_hidden_acts_recon import StochasticHiddenActsReconLoss
 from param_decomp_config.base import BaseConfig
+from param_decomp_config.wandb_config import flatten_typed_lists
 from param_decomp_lab.eval_metrics.attn_patterns_recon_loss import (
     CIMaskedAttnPatternsReconLoss,
     StochasticAttnPatternsReconLoss,
@@ -49,10 +50,11 @@ EVAL_METRIC_CLASSES: dict[str, type[Metric[Any]]] = {
 }
 
 
-def _metric_short_names() -> dict[str, str]:
-    """Map metric class name (== config `type`) to `short_name`, for wandb key prettifying.
-
-    Covers both loss and eval metrics.
+def metric_short_names() -> dict[str, str]:
+    """Map metric class name (== config `type`) to `short_name`, derived from the loss +
+    eval metric registries. The canonical wandb-facing copy is the torch-free
+    `param_decomp_config.wandb_config.METRIC_SHORT_NAMES`; a test guards the two against
+    drift.
     """
     return {
         cls.__name__: cls.short_name
@@ -66,39 +68,9 @@ def wandb_config_dict(config: BaseConfig) -> dict[str, Any]:
 
     Nested lists-of-typed-dicts (loss/eval metric lists) are flattened into queryable
     flat keys addressed by metric `short_name`, and the raw lists dropped so wandb
-    doesn't also log them as opaque JSON blobs. Lives here (not in `infra/wandb`) so the
-    infra layer doesn't depend upward on the metric registries.
+    doesn't also log them as opaque JSON blobs. The flattening (and the `short_name`
+    table) live in `param_decomp_config.wandb_config` so the JAX trainer can produce the
+    identical key layout without reaching into the torch metric registry; the table there
+    is guarded against this registry-derived one by a test.
     """
-    short_names = _metric_short_names()
-    config_dict = config.model_dump(mode="json")
-    flattened: dict[str, Any] = {}
-
-    def is_typed_list(obj: Any) -> bool:
-        return (
-            isinstance(obj, list)
-            and len(obj) > 0
-            and all(isinstance(x, dict) and "type" in x for x in obj)
-        )
-
-    def walk(obj: Any, path: str) -> None:
-        if isinstance(obj, dict):
-            for key in list(obj.keys()):
-                child = obj[key]
-                child_path = f"{path}.{key}" if path else key
-                if is_typed_list(child):
-                    for entry in child:
-                        short = short_names.get(entry["type"], entry["type"])
-                        for k, v in entry.items():
-                            if k == "type":
-                                continue
-                            flattened[f"{child_path}.{short}.{k}"] = v
-                    del obj[key]
-                else:
-                    walk(child, child_path)
-        elif isinstance(obj, list):
-            for i, item in enumerate(obj):
-                walk(item, f"{path}.{i}")
-
-    walk(config_dict, "")
-    config_dict.update(flattened)
-    return config_dict
+    return flatten_typed_lists(config.model_dump(mode="json"))

@@ -13,6 +13,8 @@ Entry: a small wrapper YAML carrying what the torch schema cannot express —
     run_name: my-run          # human-readable wandb display name
     out_dir: /mnt/data/.../param-decomp/runs
     remat_recon_forwards: false                     # jax-runtime memory/compute trade
+    wandb_group: my-sweep     # optional; wandb UI group (pd-jax-lm --group)
+    wandb_tags: [a, b]        # optional; wandb tags (pd-jax-lm --tags a,b)
 
 `jsp-train` detects the `torch_config` key and routes here (`load_torch_wrapper`).
 
@@ -50,6 +52,7 @@ from jax_single_pool.llama8b import SITE_NAME_PATTERN, canonical_site_cs
 from jax_single_pool.lm import SiteC
 from jax_single_pool.recon import build_recon_terms
 from param_decomp_config.eval_metrics import CEandKLLossesConfig, CI_L0Config
+from param_decomp_config.jax_wrapper import WRAPPER_KEYS, WRAPPER_OPTIONAL_KEYS
 from param_decomp_config.lm import (
     HFTarget,
     HFWeightsInVendored,
@@ -226,6 +229,8 @@ def convert_torch_lm_config(
     run_id: str,
     out_dir: Path,
     remat_recon_forwards: bool,
+    wandb_group: str | None = None,
+    wandb_tags: tuple[str, ...] = (),
 ) -> ExperimentConfig:
     target = _resolve_target(torch_cfg)
 
@@ -294,11 +299,22 @@ def convert_torch_lm_config(
         ),
         eval=_eval(torch_cfg),
         wandb=torch_cfg.wandb,
+        wandb_group=wandb_group,
+        wandb_tags=wandb_tags,
     )
 
 
-WRAPPER_KEYS = {"torch_config", "run_id", "run_name", "out_dir", "remat_recon_forwards"}
 _RUN_ID_PATTERN = re.compile(r"^p-[0-9a-f]{8}$")
+
+
+def _wandb_group_tags(raw: dict[str, Any]) -> tuple[str | None, tuple[str, ...]]:
+    """The wandb UI knobs (`pd-jax-lm --group`/`--tags`) are stamped into the wrapper
+    at submit time, like `run_id`; both default to absent for hand-written wrappers."""
+    group = raw.get("wandb_group")
+    assert group is None or isinstance(group, str), group
+    tags = raw.get("wandb_tags", [])
+    assert isinstance(tags, list) and all(isinstance(t, str) for t in tags), tags
+    return group, tuple(tags)
 
 
 def load_torch_wrapper(wrapper_path: Path) -> tuple[ExperimentConfig, Path, dict[str, Any]]:
@@ -310,19 +326,25 @@ def load_torch_wrapper(wrapper_path: Path) -> tuple[ExperimentConfig, Path, dict
     `pd-jax-lm` at submit time, so resumes derive the same identity and the
     byte-compare pins it."""
     raw = yaml.safe_load(wrapper_path.read_text())
-    assert set(raw) == WRAPPER_KEYS, f"{wrapper_path}: keys must be {sorted(WRAPPER_KEYS)}"
+    assert WRAPPER_KEYS <= set(raw) <= WRAPPER_KEYS | WRAPPER_OPTIONAL_KEYS, (
+        f"{wrapper_path}: keys must be {sorted(WRAPPER_KEYS)} "
+        f"(optional: {sorted(WRAPPER_OPTIONAL_KEYS)}), got {sorted(raw)}"
+    )
     run_id = raw["run_id"]
     assert _RUN_ID_PATTERN.match(run_id), f"run_id must be p-<8hex>, got {run_id!r}"
     torch_yaml_path = (wrapper_path.parent / raw["torch_config"]).resolve()
     assert torch_yaml_path.exists(), f"torch config not found: {torch_yaml_path}"
     torch_raw = yaml.safe_load(torch_yaml_path.read_text())
     torch_cfg = LMExperimentConfig(**torch_raw)
+    wandb_group, wandb_tags = _wandb_group_tags(raw)
     cfg = convert_torch_lm_config(
         torch_cfg,
         run_name=raw["run_name"],
         run_id=run_id,
         out_dir=Path(raw["out_dir"]),
         remat_recon_forwards=raw["remat_recon_forwards"],
+        wandb_group=wandb_group,
+        wandb_tags=wandb_tags,
     )
     return cfg, torch_yaml_path, torch_raw
 
@@ -336,12 +358,18 @@ def load_run_dir_config(run_dir: Path) -> ExperimentConfig:
     wrapper's own (launch-relative) path field is ignored — the pinned copy is the
     source of truth."""
     raw = yaml.safe_load((run_dir / "config.yaml").read_text())
-    assert set(raw) == WRAPPER_KEYS, f"{run_dir}/config.yaml: keys must be {sorted(WRAPPER_KEYS)}"
+    assert WRAPPER_KEYS <= set(raw) <= WRAPPER_KEYS | WRAPPER_OPTIONAL_KEYS, (
+        f"{run_dir}/config.yaml: keys must be {sorted(WRAPPER_KEYS)} "
+        f"(optional: {sorted(WRAPPER_OPTIONAL_KEYS)}), got {sorted(raw)}"
+    )
     torch_raw = yaml.safe_load((run_dir / "experiment_config.yaml").read_text())
+    wandb_group, wandb_tags = _wandb_group_tags(raw)
     return convert_torch_lm_config(
         LMExperimentConfig(**torch_raw),
         run_name=raw["run_name"],
         run_id=raw["run_id"],
         out_dir=Path(raw["out_dir"]),
         remat_recon_forwards=raw["remat_recon_forwards"],
+        wandb_group=wandb_group,
+        wandb_tags=wandb_tags,
     )

@@ -156,7 +156,10 @@ No central registry to update — post-processing callers `import` the new
 - If `cfg.wandb is None` → `RunSink.local(out_dir)`.
 - Otherwise → `RunSink.with_wandb(...)` with the full `ExperimentConfig` dumped into
   `wandb.config`. Nested lists of typed configs (loss / eval metrics) are flattened
-  into queryable flat keys via `flatten_typed_lists` in `infra/wandb.py`.
+  into queryable flat keys via `flatten_typed_lists` in
+  `param_decomp_config/wandb_config.py` (torch-free, so the JAX trainer logs the same
+  key layout; the `short_name` table there is drift-guarded against the torch metric
+  registry).
 
 Non-main DDP ranks get `RunSink.silent()`.
 
