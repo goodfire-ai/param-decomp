@@ -18,6 +18,11 @@ import fire
 import yaml
 
 from param_decomp.log import logger
+from param_decomp_config.jax_wrapper import (
+    RUN_ID_KEY,
+    SUBMIT_MINTED_KEYS,
+    WRAPPER_KEYS_BEFORE_SUBMIT,
+)
 from param_decomp_config.lm import LMExperimentConfig
 from param_decomp_lab.infra.git import create_git_snapshot
 from param_decomp_lab.infra.run_files import generate_run_id
@@ -132,13 +137,16 @@ def _wrapper_path_relative_to_repo(config_path: str) -> Path:
 
 
 def _validate_wrapper(wrapper_path: Path) -> tuple[LMExperimentConfig, str]:
-    """Lab-side mirror of `jax_single_pool.torch_config.load_torch_wrapper`'s checks
-    (which can't be imported here — that module pulls jax)."""
+    """Validate a not-yet-stamped wrapper against the same key set the runtime loader
+    (`jax_single_pool.torch_config.load_torch_wrapper`) enforces. The loader's module
+    pulls jax and can't be imported in this venv, but both sides read the shared
+    `param_decomp_config.jax_wrapper` constants — `run_id`/`wandb_group`/`wandb_tags`
+    are minted and appended at submit, so a hand-authored wrapper carries exactly
+    `WRAPPER_KEYS_BEFORE_SUBMIT`."""
     raw = yaml.safe_load(wrapper_path.read_text())
-    expected = {"torch_config", "run_name", "out_dir", "remat_recon_forwards"}
-    assert set(raw) == expected, (
-        f"{wrapper_path}: keys must be {sorted(expected)} "
-        f"(run_id/wandb_group/wandb_tags are stamped at submit), got {sorted(raw)}"
+    assert set(raw) == WRAPPER_KEYS_BEFORE_SUBMIT, (
+        f"{wrapper_path}: keys must be {sorted(WRAPPER_KEYS_BEFORE_SUBMIT)} "
+        f"({sorted(SUBMIT_MINTED_KEYS)} are stamped at submit), got {sorted(raw)}"
     )
     torch_yaml_path = (wrapper_path.parent / raw["torch_config"]).resolve()
     assert torch_yaml_path.exists(), f"torch config not found: {torch_yaml_path}"
@@ -180,11 +188,12 @@ def _build_workspace(
     run(["make", "install-jax-cuda"], cwd=workspace)
 
     wrapper = workspace / wrapper_rel
-    stamped: dict[str, str | list[str]] = {"run_id": run_id}
+    stamped: dict[str, str | list[str]] = {RUN_ID_KEY: run_id}
     if group is not None:
         stamped["wandb_group"] = group
     if tags:
         stamped["wandb_tags"] = tags
+    assert set(stamped) <= SUBMIT_MINTED_KEYS
     assert not (set(stamped) & set(yaml.safe_load(wrapper.read_text())))
     with wrapper.open("a") as f:
         f.write("\n" + yaml.safe_dump(stamped, sort_keys=False))

@@ -12,10 +12,18 @@ from jax_single_pool.llama8b import mlp_family_site_cs
 from jax_single_pool.lm import SiteC
 from jax_single_pool.recon import build_recon_terms
 from jax_single_pool.torch_config import (
+    WRAPPER_KEYS,
+    WRAPPER_OPTIONAL_KEYS,
     convert_torch_lm_config,
     load_run_dir_config,
     load_torch_wrapper,
 )
+from param_decomp_config.jax_wrapper import (
+    RUN_ID_KEY,
+    SUBMIT_MINTED_KEYS,
+    WRAPPER_KEYS_BEFORE_SUBMIT,
+)
+from param_decomp_config.jax_wrapper import WRAPPER_KEYS as SHARED_WRAPPER_KEYS
 from param_decomp_config.losses import PersistentPGDReconLossConfig
 
 CONFIGS = Path(__file__).parent.parent / "configs"
@@ -243,3 +251,21 @@ def test_wrapper_run_id_required_and_drives_identity(tmp_path: Path):
     bad_id.write_text(wrapper.read_text().replace(RUN_ID, "run42"))
     with pytest.raises(AssertionError, match="run_id must be"):
         load_torch_wrapper(bad_id)
+
+
+def test_loader_uses_shared_wrapper_key_set():
+    """The runtime loader's key sets are the shared constants (no hand-copied
+    literals); a hand-authored wrapper carries the required keys minus run_id, and
+    the submit-minted keys are exactly run_id + the optional wandb knobs."""
+    assert WRAPPER_KEYS is SHARED_WRAPPER_KEYS
+    assert WRAPPER_KEYS_BEFORE_SUBMIT | {RUN_ID_KEY} == WRAPPER_KEYS
+    assert {RUN_ID_KEY} | WRAPPER_OPTIONAL_KEYS == SUBMIT_MINTED_KEYS
+
+
+def test_loader_rejects_unexpected_key(tmp_path: Path):
+    wrapper = _stamped_wrapper(tmp_path, CONFIGS / "llama8b_l18_C49k_200k_from_torch.yaml")
+    raw = yaml.safe_load(wrapper.read_text())
+    raw["bogus_key"] = "x"
+    wrapper.write_text(yaml.safe_dump(raw))
+    with pytest.raises(AssertionError, match="keys must be"):
+        load_torch_wrapper(wrapper)

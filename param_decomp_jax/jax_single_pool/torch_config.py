@@ -52,6 +52,7 @@ from jax_single_pool.llama8b import SITE_NAME_PATTERN, canonical_site_cs
 from jax_single_pool.lm import SiteC
 from jax_single_pool.recon import build_recon_terms
 from param_decomp_config.eval_metrics import CEandKLLossesConfig, CI_L0Config
+from param_decomp_config.jax_wrapper import WRAPPER_KEYS, WRAPPER_OPTIONAL_KEYS
 from param_decomp_config.lm import (
     HFTarget,
     HFWeightsInVendored,
@@ -303,8 +304,6 @@ def convert_torch_lm_config(
     )
 
 
-WRAPPER_KEYS = {"torch_config", "run_id", "run_name", "out_dir", "remat_recon_forwards"}
-WRAPPER_OPTIONAL_KEYS = {"wandb_group", "wandb_tags"}
 _RUN_ID_PATTERN = re.compile(r"^p-[0-9a-f]{8}$")
 
 
