@@ -28,6 +28,24 @@ from param_decomp_lab.bottleneck_interp.viewer_3d import (
     write_viewer_html,
 )
 
+# One colour per module *type*; the layer is disambiguated by the item name.
+_MODULE_TYPE_COLOUR = {
+    "mlp.c_fc": [0.12, 0.47, 0.71],
+    "mlp.down_proj": [0.09, 0.75, 0.81],
+    "attn.q_proj": [0.84, 0.15, 0.16],
+    "attn.k_proj": [1.00, 0.50, 0.05],
+    "attn.v_proj": [0.58, 0.40, 0.74],
+    "attn.o_proj": [0.17, 0.63, 0.17],
+}
+
+
+def _module_colour(module_name: str) -> list[float]:
+    """RGB for a module path like 'h.0.mlp.c_fc', keyed on the type suffix."""
+    for suffix, colour in _MODULE_TYPE_COLOUR.items():
+        if module_name.endswith(suffix):
+            return colour
+    return [0.5, 0.5, 0.5]
+
 
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -107,6 +125,17 @@ def main() -> None:
         "point_pos": point_pos.tolist(),
         "tokens": seq_tokens,
     }
+
+    # Module rim overlay (B4): per point, which decomposition-target modules are CI-active.
+    if h.module_activity is not None and h.module_names is not None:
+        act = h.module_activity[flat_idx]  # [n_points, M] uint8
+        items = [
+            {"id": j, "name": name, "colour": _module_colour(name)}
+            for j, name in enumerate(h.module_names)
+        ]
+        point_items = [act[i].nonzero().flatten().tolist() for i in range(act.shape[0])]
+        data.setdefault("overlays", {})["module"] = {"items": items, "point_items": point_items}
+
     args.out.parent.mkdir(parents=True, exist_ok=True)
     write_viewer_html(data, args.out, run_id=args.run_id, subtitle="bottleneck code manifold")
     print(f"wrote {args.out}")
