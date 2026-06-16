@@ -201,7 +201,7 @@ class ActivationExamplesReservoir:
             firings = self.firings[component, j]
             acts = {act_type: self.acts[act_type][component, j] for act_type in self.acts}
 
-            mask = toks != WINDOW_PAD_SENTINEL  # TODO(oli) not sure this is actually needed
+            mask = toks != WINDOW_PAD_SENTINEL
 
             toks = toks[mask].tolist()
             firings = firings[mask].tolist()

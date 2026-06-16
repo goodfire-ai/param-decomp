@@ -14,9 +14,9 @@ def next_token_probs(jax_run: LoadedJaxRun, token_ids: list[int]) -> list[float 
     if len(token_ids) == 0:
         return []
 
-    output_probs = np.asarray(jax_run.forward(jnp.asarray([token_ids])).output_probs[0])
-    result: list[float | None] = [
-        float(output_probs[i, token_ids[i + 1]]) for i in range(len(token_ids) - 1)
-    ]
+    output_probs = jax_run.forward(jnp.asarray([token_ids])).output_probs[0]
+    next_tokens = jnp.asarray(token_ids[1:])
+    next_probs = np.asarray(output_probs[jnp.arange(len(token_ids) - 1), next_tokens])
+    result: list[float | None] = [float(p) for p in next_probs]
     result.append(None)
     return result

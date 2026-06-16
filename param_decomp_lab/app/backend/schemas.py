@@ -27,6 +27,24 @@ class OutputProbability(BaseModel):
 # =============================================================================
 
 
+class DatasetSearchResult(BaseModel):
+    """A single search result from the dataset."""
+
+    text: str
+    occurrence_count: int
+    metadata: dict[str, str]
+
+
+class DatasetSearchMetadata(BaseModel):
+    """Metadata about a completed dataset search."""
+
+    query: str
+    split: str
+    dataset_name: str
+    total_results: int
+    search_time_seconds: float
+
+
 class SubcomponentMetadata(BaseModel):
     """Lightweight metadata for a subcomponent (without examples/token_prs)"""
 

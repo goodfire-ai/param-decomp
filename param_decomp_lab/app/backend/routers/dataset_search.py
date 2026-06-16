@@ -18,20 +18,13 @@ from pydantic import BaseModel
 from param_decomp.log import logger
 from param_decomp_lab.app.backend.dependencies import DepLoadedRun, DepStateManager
 from param_decomp_lab.app.backend.inference import next_token_probs
+from param_decomp_lab.app.backend.schemas import DatasetSearchMetadata, DatasetSearchResult
 from param_decomp_lab.app.backend.state import DatasetSearchState
 from param_decomp_lab.app.backend.utils import log_errors
 
 # =============================================================================
 # Schemas
 # =============================================================================
-
-
-class DatasetSearchResult(BaseModel):
-    """A single search result from the dataset."""
-
-    text: str
-    occurrence_count: int
-    metadata: dict[str, str]
 
 
 class TokenizedSearchResult(BaseModel):
@@ -41,16 +34,6 @@ class TokenizedSearchResult(BaseModel):
     next_token_probs: list[float | None]
     occurrence_count: int
     metadata: dict[str, str]
-
-
-class DatasetSearchMetadata(BaseModel):
-    """Metadata about a completed dataset search."""
-
-    query: str
-    split: str
-    dataset_name: str
-    total_results: int
-    search_time_seconds: float
 
 
 class DatasetSearchPage(BaseModel):
@@ -127,7 +110,7 @@ def search_dataset(
     column_names = dataset.column_names
     metadata_columns = [c for c in column_names if c != text_column]
 
-    results: list[dict[str, Any]] = []
+    results: list[DatasetSearchResult] = []
     for item in filtered:
         item_dict: dict[str, Any] = dict(item)
         text: str = item_dict[text_column]
@@ -135,11 +118,11 @@ def search_dataset(
             col: str(item_dict[col]) for col in metadata_columns if item_dict.get(col) is not None
         }
         results.append(
-            {
-                "text": text,
-                "occurrence_count": text.lower().count(search_query),
-                "metadata": row_metadata,
-            }
+            DatasetSearchResult(
+                text=text,
+                occurrence_count=text.lower().count(search_query),
+                metadata=row_metadata,
+            )
         )
 
     search_time = time.time() - start_time
@@ -153,7 +136,7 @@ def search_dataset(
     )
     manager.state.dataset_search_state = DatasetSearchState(
         results=results,
-        metadata=search_metadata.model_dump(),
+        metadata=search_metadata,
     )
 
     logger.info(f"Found {len(results)} results in {search_time:.2f}s (searched {total_rows} rows)")
@@ -190,7 +173,7 @@ def get_dataset_results(
     page_results = search_state.results[start_idx:end_idx]
 
     return DatasetSearchPage(
-        results=[DatasetSearchResult(**r) for r in page_results],
+        results=page_results,
         page=page,
         page_size=page_size,
         total_results=total_results,
@@ -237,9 +220,7 @@ def get_tokenized_results(
     tokenized_results: list[TokenizedSearchResult] = []
 
     for result in page_results:
-        text: str = result["text"]
-
-        token_ids = tokenizer.encode(text)
+        token_ids = tokenizer.encode(result.text)
         if len(token_ids) > max_tokens:
             token_ids = token_ids[:max_tokens]
 
@@ -252,12 +233,12 @@ def get_tokenized_results(
             TokenizedSearchResult(
                 tokens=token_strings,
                 next_token_probs=next_token_probs(loaded.jax_run, token_ids),
-                occurrence_count=result["occurrence_count"],
-                metadata=result["metadata"],
+                occurrence_count=result.occurrence_count,
+                metadata=result.metadata,
             )
         )
 
-    query = search_state.metadata.get("query", "")
+    query = search_state.metadata.query
 
     return TokenizedSearchPage(
         results=tokenized_results,

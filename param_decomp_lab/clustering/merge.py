@@ -1,7 +1,6 @@
 """Merge iteration with optional logging callback."""
 
 import time
-import warnings
 from typing import Protocol
 
 import numpy as np
@@ -163,10 +162,7 @@ def merge_iteration_memberships(
         )
 
         if k_groups <= 3:
-            warnings.warn(
-                f"Stopping early at iteration {iter_idx} as only {k_groups} groups left",
-                stacklevel=2,
-            )
+            logger.info(f"Stopping early at iteration {iter_idx} as only {k_groups} groups left")
             break
 
     return merge_history

@@ -15,18 +15,13 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException
 
-from param_decomp.log import logger
 from param_decomp_lab.app.backend.database import PromptAttrDB
 from param_decomp_lab.app.backend.state import RunState, StateManager
 
 
 def get_state_manager() -> StateManager:
     """Get the StateManager singleton."""
-    try:
-        return StateManager.get()
-    except Exception as e:
-        logger.error(f"[DEPENDENCY] Failed to get StateManager: {e}")
-        raise
+    return StateManager.get()
 
 
 def get_db() -> PromptAttrDB:

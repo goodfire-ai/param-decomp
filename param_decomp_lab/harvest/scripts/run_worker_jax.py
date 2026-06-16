@@ -33,9 +33,9 @@ from param_decomp_lab.harvest.schemas import HarvestBatch, get_harvest_subrun_di
 
 
 def _to_torch(array: object) -> torch.Tensor:
-    """Host a JAX/numpy array as a CPU torch tensor (copy: the accumulator's reservoir
-    writes into the token windows in place)."""
-    return torch.from_numpy(np.array(np.asarray(array)))
+    """Host a JAX/numpy array as a CPU torch tensor (one writable copy: the accumulator's
+    reservoir writes into the token windows in place)."""
+    return torch.from_numpy(np.array(array))
 
 
 def harvest_batch_from_forward(
@@ -56,9 +56,12 @@ def harvest_batch_from_forward(
     )
 
 
-def harvest_jax_run(
-    run: LoadedJaxRun, config: HarvestConfig, activation_threshold: float, output_dir: Path
-) -> None:
+def harvest_jax_run(run: LoadedJaxRun, config: HarvestConfig, output_dir: Path) -> None:
+    method_config = config.method_config
+    assert isinstance(method_config, ParamDecompHarvestConfig), (
+        "JAX harvest path requires a ParamDecompHarvestConfig"
+    )
+    activation_threshold = method_config.activation_threshold
     data, seed = run.config.data, run.config.seed
     schedule = BatchSchedule(scan_shards(data.dir), config.batch_size, seed)
     server = ShardServer(schedule, data.seq_len, process_index=0, process_count=1)
@@ -93,8 +96,14 @@ def main() -> None:
     ap.add_argument("--run_dir", type=Path, required=True)
     ap.add_argument("--step", type=int, default=None, help="checkpoint step (default: latest)")
     ap.add_argument("--n_batches", type=int, required=True)
-    ap.add_argument("--batch_size", type=int, default=16)
-    ap.add_argument("--activation_threshold", type=float, default=0.0)
+    ap.add_argument(
+        "--batch_size", type=int, default=HarvestConfig.model_fields["batch_size"].default
+    )
+    ap.add_argument(
+        "--activation_threshold",
+        type=float,
+        default=ParamDecompHarvestConfig.model_fields["activation_threshold"].default,
+    )
     ap.add_argument("--subrun_id", type=str, default=None)
     ap.add_argument(
         "--no_cooccurrence",
@@ -115,7 +124,7 @@ def main() -> None:
     )
     output_dir = get_harvest_subrun_dir(run.run_id, subrun_id)
     logger.info(f"JAX harvest: run {run.run_id} step {run.step}, subrun {subrun_id}")
-    harvest_jax_run(run, config, args.activation_threshold, output_dir)
+    harvest_jax_run(run, config, output_dir)
 
 
 if __name__ == "__main__":

@@ -30,6 +30,13 @@ class IterationInfo:
     merges: GroupMerge
 
 
+@dataclass(frozen=True)
+class MergeHistoryMeta:
+    """Provenance of a `MergeHistory` loaded from disk (everything else is a typed field)."""
+
+    origin_path: Path
+
+
 def _zip_save_arr(zf: zipfile.ZipFile, name: str, arr: np.ndarray) -> None:
     """Save a numpy array to a zip file."""
     buf: io.BytesIO = io.BytesIO()
@@ -55,7 +62,7 @@ class MergeHistory(SaveableObject):
     merge_config: MergeConfig
     n_iters_current: int
 
-    meta: dict[str, Any] | None = None
+    meta: MergeHistoryMeta | None = None
 
     @property
     def c_components(self) -> int:
@@ -85,7 +92,6 @@ class MergeHistory(SaveableObject):
             n_iters_current=self.n_iters_current,
             total_iters=len(self.merges.k_groups),
             len_labels=len(self.labels),
-            # wandb_url=self.wandb_url,
             merge_config=self.merge_config.model_dump(mode="json"),
             merges_summary=self.merges.summary(),
         )
@@ -256,15 +262,13 @@ class MergeHistory(SaveableObject):
             metadata: dict[str, Any] = json.loads(zf.read("metadata.json").decode("utf-8"))
             merge_config: MergeConfig = MergeConfig.model_validate(metadata["merge_config"])
 
-        metadata["origin_path"] = path
-
         return cls(
             merges=merges,
             selected_pairs=selected_pairs,
             labels=labels,
             merge_config=merge_config,
             n_iters_current=metadata["n_iters_current"],
-            meta=metadata,
+            meta=MergeHistoryMeta(origin_path=path),
         )
 
 
@@ -399,11 +403,6 @@ class MergeHistoryEnsemble:
                     : self.n_iters_min, i_comp_old
                 ]
 
-            # assert np.max(merges_array[i_ens]) == hist_n_components - 1, (
-            #     f"Max component index in history {i_ens} should be {hist_n_components - 1}, "
-            #     f"but got {np.max(merges_array[i_ens])}"
-            # )
-
             # put each missing label into its own group
             hist_missing_labels: set[str] = unique_labels_set - set(hist_c_labels)
             assert len(hist_missing_labels) == c_components - hist_n_components
@@ -417,22 +416,12 @@ class MergeHistoryEnsemble:
                     dtype=np.int32,
                 )
 
-        # TODO: double check this
-        # Convert any Path objects to strings for JSON serialization
-        history_metadatas: list[dict[str, Any] | None] = []
-        for history in self.data:
-            if history.meta is not None:
-                meta_copy = history.meta.copy()
-                # Convert Path objects to strings
-                for key, value in meta_copy.items():
-                    if isinstance(value, Path):
-                        meta_copy[key] = str(value)
-                history_metadatas.append(meta_copy)
-            else:
-                history_metadatas.append(None)
+        origin_paths: list[str | None] = [
+            str(history.meta.origin_path) if history.meta is not None else None
+            for history in self.data
+        ]
 
         return (
-            # TODO: dataclass this
             merges_array,
             dict(
                 component_labels=unique_labels,
@@ -442,7 +431,7 @@ class MergeHistoryEnsemble:
                 n_iters_range=self.n_iters_range,
                 c_components=c_components,
                 config=self.config.model_dump(mode="json"),
-                history_metadatas=history_metadatas,
+                origin_paths=origin_paths,
             ),
         )
 

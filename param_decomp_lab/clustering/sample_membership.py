@@ -339,7 +339,7 @@ def compute_coactivation_matrix_from_csr(
     component_activity_csr: sparse.csr_matrix,
 ) -> ClusterCoactivationShaped:
     """Compute the full coactivation matrix from a sample-by-component CSR matrix."""
-    activation_matrix = component_activity_csr.astype(np.int32, copy=False)
+    activation_matrix = component_activity_csr.astype(np.int64, copy=False)
     coact = (activation_matrix.T @ activation_matrix).toarray()
     return coact.astype(np.float32, copy=False)
 

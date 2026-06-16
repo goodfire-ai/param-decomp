@@ -7,7 +7,6 @@ harvest/autointerp/cluster repos. No torch.
 """
 
 from dataclasses import dataclass, field
-from typing import Any
 
 from jax_single_pool.load_run import LoadedJaxRun
 
@@ -15,6 +14,7 @@ from param_decomp_config.lm import LMDataConfig, LMTargetConfig
 from param_decomp_config.pd import PDConfig
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.app.backend.database import PromptAttrDB, Run
+from param_decomp_lab.app.backend.schemas import DatasetSearchMetadata, DatasetSearchResult
 from param_decomp_lab.app.backend.topology import AppTopology
 from param_decomp_lab.autointerp.repo import InterpRepo
 from param_decomp_lab.harvest.repo import HarvestRepo
@@ -41,8 +41,8 @@ class RunState:
 class DatasetSearchState:
     """State for dataset search results (memory-only, no persistence)."""
 
-    results: list[dict[str, Any]]
-    metadata: dict[str, Any]
+    results: list[DatasetSearchResult]
+    metadata: DatasetSearchMetadata
 
 
 @dataclass
