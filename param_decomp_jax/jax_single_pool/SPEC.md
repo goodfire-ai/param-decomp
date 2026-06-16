@@ -298,7 +298,7 @@ refer to the `feature/fsdp-lm-trainer` lineage — those trees are not on this b
 
 The JAX implementation (`jax_single_pool/train.py`) uses these pseudocode names
 verbatim: `clean_logits`, `site_inputs`, `source_masks`, `stochastic_recon_loss`,
-`adversarial_recon_loss`, `sources_adam_ascend_project`, `ReconPlan`/`ReconForward`,
+`adversarial_recon_loss`, `sources_ascend_project`, `ReconPlan`/`ReconForward`,
 `uniform_k_routing`, `subset_chunk_plan`, `per_site_plan`.
 
 Rationale worth keeping: the two squashings give each consumer gradient only in its

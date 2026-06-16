@@ -4,9 +4,10 @@ Two semantically distinct adversaries share the source/mask machinery but nothin
 else (SPEC §3):
 
 - **Persistent PGD (PPGD)** — `PersistentPGDReconLossConfig`. Per-site `(1, T, C+1)`
-  sources + their Adam moments live in `TrainState` across steps; each step runs
-  `n_warmup_steps` supplemental Adam ascents plus one final ascent from the main
-  backward (SPEC S13/S14), projecting to [0,1] after every update (S15).
+  sources + their SRC_STEP optimizer state live in `TrainState` across steps; each step
+  runs `n_warmup_steps` supplemental ascents plus one final ascent from the main backward
+  (SPEC S13/S14), projecting to [0,1] after every update (S15). The SRC_STEP variation
+  point (SPEC §6) is `adam` (carries bias-corrected moments) or `sign` (stateless).
 - **Fresh PGD** — `PGDReconLossConfig` (torch `PGDReconLoss` as a TRAINING loss).
   Sources are re-initialized every step, ascended `n_steps` times by
   `step_size * sign(grad)` with clamp to [0,1], and carry NO state across steps —
@@ -22,7 +23,7 @@ from jax import random
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from jax_single_pool.lm import SiteSpec
-from param_decomp_config.losses import AdamPGDConfig
+from param_decomp_config.losses import AdamPGDConfig, PGDOptimizerConfig, SignPGDConfig
 
 
 @jax.tree_util.register_dataclass
@@ -31,6 +32,16 @@ class SourcesAdamState:
     m: dict[str, Array]
     v: dict[str, Array]
     step_count: Float[Array, ""]
+
+
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class SourcesSignState:
+    """SRC_STEP `sign` variant carries no moments (SPEC §6); an empty pytree keeps the
+    `TrainState.sources_opt_state` slot uniform across optimizer choices."""
+
+
+SourcesOptState = SourcesAdamState | SourcesSignState
 
 
 def init_persistent_sources(
@@ -89,17 +100,23 @@ def init_sources_adam_state(sources: dict[str, Array]) -> SourcesAdamState:
     )
 
 
-def sources_adam_ascend_project(
+def init_sources_opt_state(
+    sources: dict[str, Array], optimizer: PGDOptimizerConfig
+) -> SourcesOptState:
+    match optimizer:
+        case AdamPGDConfig():
+            return init_sources_adam_state(sources)
+        case SignPGDConfig():
+            return SourcesSignState()
+
+
+def _sources_adam_ascend(
     sources: dict[str, Array],
     sources_grad: dict[str, Array],
     adam_state: SourcesAdamState,
     lr: Array,
     adam: AdamPGDConfig,
 ) -> tuple[dict[str, Array], SourcesAdamState]:
-    """One Adam ASCENT on the persistent sources, then project to [0,1] (SPEC S13/S15).
-
-    The variation point `SRC_STEP` (SPEC §6): a `sign` variant would replace the Adam
-    update with `lr * sign(grad)` (stateless) — same projection contract."""
     step_count = adam_state.step_count + 1.0
     m = {s: adam.beta1 * adam_state.m[s] + (1 - adam.beta1) * sources_grad[s] for s in sources}
     v = {
@@ -109,15 +126,34 @@ def sources_adam_ascend_project(
     bias_correction1 = 1 - adam.beta1**step_count
     bias_correction2 = 1 - adam.beta2**step_count
     new_sources = {
-        s: jnp.clip(
-            sources[s]
-            + lr * (m[s] / bias_correction1) / (jnp.sqrt(v[s] / bias_correction2) + adam.eps),
-            0.0,
-            1.0,
-        )
+        s: sources[s]
+        + lr * (m[s] / bias_correction1) / (jnp.sqrt(v[s] / bias_correction2) + adam.eps)
         for s in sources
     }
     return new_sources, SourcesAdamState(m=m, v=v, step_count=step_count)
+
+
+def sources_ascend_project(
+    sources: dict[str, Array],
+    sources_grad: dict[str, Array],
+    opt_state: SourcesOptState,
+    lr: Array,
+    optimizer: PGDOptimizerConfig,
+) -> tuple[dict[str, Array], SourcesOptState]:
+    """One ASCENT on the persistent sources via the SRC_STEP variation point (SPEC §6),
+    then project to [0,1] (SPEC S13/S15). `adam` carries bias-corrected moments across
+    steps; `sign` is stateless (`sources += lr * sign(grad)`)."""
+    match optimizer:
+        case AdamPGDConfig():
+            assert isinstance(opt_state, SourcesAdamState)
+            new_sources, new_opt_state = _sources_adam_ascend(
+                sources, sources_grad, opt_state, lr, optimizer
+            )
+        case SignPGDConfig():
+            assert isinstance(opt_state, SourcesSignState)
+            new_sources = {s: sources[s] + lr * jnp.sign(sources_grad[s]) for s in sources}
+            new_opt_state = opt_state
+    return {s: jnp.clip(v, 0.0, 1.0) for s, v in new_sources.items()}, new_opt_state
 
 
 def source_masks(

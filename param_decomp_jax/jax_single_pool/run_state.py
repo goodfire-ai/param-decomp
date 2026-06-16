@@ -13,7 +13,7 @@ from jax import random
 from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray
 
-from jax_single_pool.adversary import init_sources_adam_state
+from jax_single_pool.adversary import init_sources_opt_state
 from jax_single_pool.config import ExperimentConfig
 from jax_single_pool.llama8b_sharding import (
     init_ci_fn_sharded,
@@ -66,6 +66,9 @@ def init_train_state(
         components_opt_state=opt_vu.init(eqx.filter(components, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
         sources=sources,
-        sources_opt_state={k: init_sources_adam_state(v) for k, v in sources.items()},
+        sources_opt_state={
+            k: init_sources_opt_state(v, loss_spec.persistent[k].optimizer)
+            for k, v in sources.items()
+        },
         step=jnp.zeros((), jnp.int32),
     )

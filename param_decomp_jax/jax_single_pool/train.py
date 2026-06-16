@@ -28,10 +28,10 @@ from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from jax_single_pool.adversary import (
-    SourcesAdamState,
+    SourcesOptState,
     init_fresh_pgd_sources,
     source_masks,
-    sources_adam_ascend_project,
+    sources_ascend_project,
 )
 from jax_single_pool.ci_fn import CIFn, CIValues
 from jax_single_pool.lm import DecomposedLM
@@ -51,7 +51,7 @@ from jax_single_pool.recon import (
     Routes,
     StochasticSources,
 )
-from param_decomp_config.losses import AdamPGDConfig
+from param_decomp_config.losses import PGDOptimizerConfig
 
 COMPUTE_DT = jnp.bfloat16
 
@@ -70,7 +70,7 @@ class TrainState:
     sources: dict[str, dict[str, Array]]
     """Persistent adversarial sources, `state_key -> site -> (1, T, C+1)` in [0,1].
     One state_key per persistent loss term (SPEC S23); empty when no persistent term."""
-    sources_opt_state: dict[str, SourcesAdamState]
+    sources_opt_state: dict[str, SourcesOptState]
     step: Array
 
 
@@ -128,11 +128,9 @@ def make_train_step(
         if isinstance(entry.sources, PersistentSources)
     }
     assert set(term_coeff_by_state_key) == set(loss_spec.persistent)
-    persistent_adams: dict[str, AdamPGDConfig] = {}
-    for state_key, ppgd_cfg in loss_spec.persistent.items():
-        optimizer = ppgd_cfg.optimizer
-        assert isinstance(optimizer, AdamPGDConfig)
-        persistent_adams[state_key] = optimizer
+    persistent_optimizers: dict[str, PGDOptimizerConfig] = {
+        state_key: ppgd_cfg.optimizer for state_key, ppgd_cfg in loss_spec.persistent.items()
+    }
 
     def batch_sharded(x: Array) -> Array:
         if mesh is None:
@@ -259,14 +257,14 @@ def make_train_step(
         # loss plan), sequential per term as in torch.
         source_lrs: dict[str, Array] = {}
         warmed_sources: dict[str, dict[str, Array]] = {}
-        warmup_opt_states: dict[str, SourcesAdamState] = {}
+        warmup_opt_states: dict[str, SourcesOptState] = {}
         for state_key, ppgd_cfg in loss_spec.persistent.items():
-            adam = persistent_adams[state_key]
+            optimizer = persistent_optimizers[state_key]
             source_lr = warmup_then_constant_lr(
                 step_f32,
                 total_steps,
-                adam.lr_schedule.start_val,
-                adam.lr_schedule.warmup_pct,
+                optimizer.lr_schedule.start_val,
+                optimizer.lr_schedule.warmup_pct,
             )
             source_lrs[state_key] = source_lr
 
@@ -278,18 +276,18 @@ def make_train_step(
                 return kl_per_position(masked, clean_logits)
 
             def warmup_body(
-                carry: tuple[dict[str, Array], SourcesAdamState],
+                carry: tuple[dict[str, Array], SourcesOptState],
                 _: None,
                 source_lr: Array = source_lr,
-                adam: AdamPGDConfig = adam,
+                optimizer: PGDOptimizerConfig = optimizer,
                 warmup_loss: Callable[[dict[str, Array]], Array] = warmup_loss,
-            ) -> tuple[tuple[dict[str, Array], SourcesAdamState], None]:
-                sources, adam_state = carry
+            ) -> tuple[tuple[dict[str, Array], SourcesOptState], None]:
+                sources, opt_state = carry
                 sources_grad = jax.grad(warmup_loss)(sources)
-                sources, adam_state = sources_adam_ascend_project(
-                    sources, sources_grad, adam_state, source_lr, adam
+                sources, opt_state = sources_ascend_project(
+                    sources, sources_grad, opt_state, source_lr, optimizer
                 )
-                return (sources, adam_state), None
+                return (sources, opt_state), None
 
             (warmed, warmed_opt), _ = jax.lax.scan(
                 warmup_body,
@@ -434,18 +432,18 @@ def make_train_step(
         # the backward saw coeff·L_term, the adversary ascends on L_term itself, and the
         # division is exact because each source bundle feeds exactly one term (S23). ──
         new_sources: dict[str, dict[str, Array]] = {}
-        new_sources_opt_state: dict[str, SourcesAdamState] = {}
+        new_sources_opt_state: dict[str, SourcesOptState] = {}
         for state_key in loss_spec.persistent:
             coeff = term_coeff_by_state_key[state_key]
             sources_grad = {
                 site: g / coeff for site, g in persistent_grads_scaled[state_key].items()
             }
-            ascended, ascended_opt = sources_adam_ascend_project(
+            ascended, ascended_opt = sources_ascend_project(
                 warmed_sources[state_key],
                 sources_grad,
                 warmup_opt_states[state_key],
                 source_lrs[state_key],
-                persistent_adams[state_key],
+                persistent_optimizers[state_key],
             )
             new_sources[state_key] = ascended
             new_sources_opt_state[state_key] = ascended_opt

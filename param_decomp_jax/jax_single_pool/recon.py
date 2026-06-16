@@ -31,6 +31,7 @@ from param_decomp_config.losses import (
     PGDReconLossConfig,
     PGDReconSubsetLossConfig,
     SCScope,
+    SignPGDConfig,
     StochasticReconLayerwiseLossConfig,
     StochasticReconLossConfig,
     StochasticReconSubsetLossConfig,
@@ -258,7 +259,7 @@ def _assert_supported_persistent(
     assert isinstance(cfg.scope, SCScope), f"persistent scope {cfg.scope} unsupported (sc only)"
     assert not cfg.use_sigmoid_parameterization and cfg.start_frac == 0.0, cfg
     optimizer = cfg.optimizer
-    assert isinstance(optimizer, AdamPGDConfig), optimizer
+    assert isinstance(optimizer, AdamPGDConfig | SignPGDConfig), optimizer
     schedule = optimizer.lr_schedule
     assert schedule.fn_type == "constant" and schedule.final_val_frac == 1.0, schedule
 
