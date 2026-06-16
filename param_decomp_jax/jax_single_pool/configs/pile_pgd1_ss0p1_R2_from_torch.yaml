@@ -1,0 +1,4 @@
+torch_config: torch/pile_llama_simple_mlp_4l_pgd1_ss0p1_R2.yaml
+run_name: ai-jax-pile4l-R2
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/runs
+remat_recon_forwards: false

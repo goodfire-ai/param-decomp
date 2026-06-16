@@ -18,7 +18,7 @@ from param_decomp.log import logger
 _configured = False
 
 
-def configure_hf_http_retries(*, total_retries: int = 5, backoff_factor: float = 1.5) -> None:
+def configure_hf_http_retries(*, total_retries: int = 8, backoff_factor: float = 1.5) -> None:
     """Install a retrying HTTP backend on huggingface_hub (idempotent, process-global).
 
     `backoff_factor` with full jitter spaces retries at roughly 0, 1.5, 3, 6, 12s; the
@@ -36,7 +36,7 @@ def configure_hf_http_retries(*, total_retries: int = 5, backoff_factor: float =
         status=total_retries,
         backoff_factor=backoff_factor,
         backoff_jitter=1.0,
-        status_forcelist=(429, 500, 502, 503, 504),
+        status_forcelist=(408, 429, 500, 502, 503, 504),
         allowed_methods=frozenset({"GET", "HEAD", "OPTIONS"}),
         respect_retry_after_header=True,
         raise_on_status=False,

@@ -1,0 +1,5 @@
+# LOCAL (uncommitted) 8-GPU step-speed benchmark for THIS cluster (synthetic data).
+torch_config: torch/llama8b_l18_stepbench_synth_1pool.yaml
+run_name: ai-jax-l18-stepbench-8gpu
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/jax_runs
+remat_recon_forwards: true
