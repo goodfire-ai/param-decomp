@@ -49,6 +49,8 @@ def main(
     time: str = "72:00:00",
     qos: str | None = None,
     run_id: str | None = None,
+    group: str | None = None,
+    tags: str | None = None,
 ) -> None:
     """Submit a jsp-train run.
 
@@ -60,17 +62,21 @@ def main(
         time: SLURM time limit.
         qos: SLURM QoS (e.g. `opportunistic`); None is the normal QoS.
         run_id: Resubmit an existing launch — reuses its workspace (and identity)
-            instead of building a new one.
+            instead of building a new one. `group`/`tags` are ignored on resubmit
+            (the original workspace wrapper already carries them).
+        group: wandb UI group (no-op when the torch config omits `wandb:`).
+        tags: Comma-separated wandb tags (no-op when `wandb:` is omitted).
     """
     wrapper_rel = _wrapper_path_relative_to_repo(config_path)
     torch_cfg, run_name = _validate_wrapper(REPO_ROOT / wrapper_rel)
+    tag_list = [s.strip() for s in tags.split(",")] if tags is not None else []
 
     if run_id is None:
         run_id = generate_run_id("param_decomp")
         snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=run_id)
         logger.info(f"Created git snapshot: {snapshot_ref} ({commit_hash[:8]})")
         workspace = WORKSPACES_DIR / run_id
-        _build_workspace(workspace, snapshot_ref, run_id, wrapper_rel)
+        _build_workspace(workspace, snapshot_ref, run_id, wrapper_rel, group, tag_list)
     else:
         snapshot_ref = f"refs/runs/snapshot/{run_id}"
         workspace = WORKSPACES_DIR / run_id
@@ -131,8 +137,8 @@ def _validate_wrapper(wrapper_path: Path) -> tuple[LMExperimentConfig, str]:
     raw = yaml.safe_load(wrapper_path.read_text())
     expected = {"torch_config", "run_name", "out_dir", "remat_recon_forwards"}
     assert set(raw) == expected, (
-        f"{wrapper_path}: keys must be {sorted(expected)} (run_id is minted at submit), "
-        f"got {sorted(raw)}"
+        f"{wrapper_path}: keys must be {sorted(expected)} "
+        f"(run_id/wandb_group/wandb_tags are stamped at submit), got {sorted(raw)}"
     )
     torch_yaml_path = (wrapper_path.parent / raw["torch_config"]).resolve()
     assert torch_yaml_path.exists(), f"torch config not found: {torch_yaml_path}"
@@ -143,7 +149,14 @@ def _validate_wrapper(wrapper_path: Path) -> tuple[LMExperimentConfig, str]:
     return torch_cfg, raw["run_name"]
 
 
-def _build_workspace(workspace: Path, snapshot_ref: str, run_id: str, wrapper_rel: Path) -> None:
+def _build_workspace(
+    workspace: Path,
+    snapshot_ref: str,
+    run_id: str,
+    wrapper_rel: Path,
+    group: str | None,
+    tags: list[str],
+) -> None:
     """Materialize the snapshot as an immutable shared-FS checkout with both venvs."""
     assert not workspace.exists(), f"workspace already exists: {workspace}"
     workspace.parent.mkdir(parents=True, exist_ok=True)
@@ -167,9 +180,14 @@ def _build_workspace(workspace: Path, snapshot_ref: str, run_id: str, wrapper_re
     run(["make", "install-jax-cuda"], cwd=workspace)
 
     wrapper = workspace / wrapper_rel
-    assert "run_id" not in yaml.safe_load(wrapper.read_text())
+    stamped: dict[str, str | list[str]] = {"run_id": run_id}
+    if group is not None:
+        stamped["wandb_group"] = group
+    if tags:
+        stamped["wandb_tags"] = tags
+    assert not (set(stamped) & set(yaml.safe_load(wrapper.read_text())))
     with wrapper.open("a") as f:
-        f.write(f"\nrun_id: {run_id}\n")
+        f.write("\n" + yaml.safe_dump(stamped, sort_keys=False))
 
 
 def _wandb_url(torch_cfg: LMExperimentConfig, run_id: str) -> str | None:

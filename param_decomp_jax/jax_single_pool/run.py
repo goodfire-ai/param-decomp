@@ -133,6 +133,8 @@ class MetricsSink:
                 entity=cfg.wandb.entity,
                 name=cfg.run_name,
                 id=cfg.run_id,
+                group=cfg.wandb_group,
+                tags=list(cfg.wandb_tags),
                 resume="allow",
                 config=raw_cfg,
             )
