@@ -15,6 +15,7 @@ process computes the same global schedule and contributes its local batch slice.
 import argparse
 import dataclasses
 import json
+import math
 import signal
 import subprocess
 import time
@@ -306,6 +307,10 @@ def train(
             per_step = dt / max(now_step - last_logged, 1)
             last_logged = now_step
             record = {k: float(v) for k, v in metrics.items()}
+            for loss_name in ("total", *(k for k in record if k.startswith("loss/"))):
+                assert math.isfinite(record[loss_name]), (
+                    f"non-finite loss {loss_name!r} at step {now_step}: {record[loss_name]}"
+                )
             record["step_time_s"] = per_step
             record["tok_per_s"] = tokens_per_step / per_step
             record["tok_per_s_per_gpu"] = tokens_per_step / per_step / ndev
