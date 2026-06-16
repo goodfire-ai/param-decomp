@@ -230,7 +230,7 @@ def _site_cs(cfg: LMExperimentConfig) -> tuple[SiteC, ...]:
     return canonical_site_cs(tuple(site_cs))
 
 
-def _resolve_target(cfg: LMExperimentConfig) -> "TargetConfig | LlamaSimpleMLPTargetConfig":
+def _resolve_target(cfg: LMExperimentConfig) -> AnyTargetConfig:
     """Target spec + decomposition patterns -> the JAX target config.
 
     Vendored and raw-HF Llama specs load the SAME meta-llama weights (the export

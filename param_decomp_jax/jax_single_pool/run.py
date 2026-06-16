@@ -45,8 +45,6 @@ from jax_single_pool.data import BatchSchedule, ShardServer, scan_shards
 from jax_single_pool.eval import make_eval_step
 from jax_single_pool.hf_http import configure_hf_http_retries
 from jax_single_pool.llama8b import (
-    Prefix,
-    Target,
     first_decomposed_layer,
     llama31_8b_config,
     llama_decomposed_lm,
@@ -60,7 +58,8 @@ from jax_single_pool.lm import DecomposedModel
 from jax_single_pool.recon import build_recon_terms
 from jax_single_pool.run_state import build_optimizers, init_train_state
 from jax_single_pool.sharding import dp_mesh, init_distributed
-from jax_single_pool.train import TrainState, make_faith_warmup_step, make_train_step
+from jax_single_pool.target_aliases import AnyFrozenTarget, AnyPrefix
+from jax_single_pool.train import make_faith_warmup_step, make_train_step
 from param_decomp_config.wandb_config import flatten_typed_lists
 
 _sigterm_received = False
@@ -74,7 +73,7 @@ def _install_sigterm_flag() -> None:
     signal.signal(signal.SIGTERM, handler)
 
 
-def _ensure_global(tree: object, mesh: Mesh) -> object:
+def _ensure_global[T](tree: T, mesh: Mesh) -> T:
     """Re-materialize the NON-mesh array leaves (eagerly created scalars: step
     counters, Adam counts) as well-formed GLOBAL replicated arrays via an identity
     jit. Multi-controller orbax can only save global arrays — and an eager
@@ -178,8 +177,8 @@ def train(
     cfg: ExperimentConfig,
     raw_cfg: dict[str, object],
     lm: DecomposedModel,
-    frozen: Target | llama_simple_mlp.SimpleMLPTarget,
-    prefix: Prefix | llama_simple_mlp.SimpleMLPPrefix,
+    frozen: AnyFrozenTarget,
+    prefix: AnyPrefix,
     prefix_residual_fn: Callable[[Any, Any], jax.Array],
     mesh: Mesh,
 ) -> None:
@@ -194,12 +193,12 @@ def train(
     key = random.PRNGKey(cfg.seed)
     init_key, src_key, run_key = random.split(key, 3)
     state = _ensure_global(init_train_state(cfg, lm, opt_vu, opt_ci, init_key, src_key, mesh), mesh)
-    assert isinstance(state, TrainState)
 
     checkpoint_manager = make_checkpoint_manager(cfg.run_dir / "ckpts", cfg.cadence.keep_last)
     restored = restore_latest(checkpoint_manager, state)
     if restored is not None:
         state, ckpt_step = restored
+        assert int(state.step) == ckpt_step, (int(state.step), ckpt_step)
         start_step = ckpt_step
         if is_main:
             print(f"resumed from checkpoint step {ckpt_step}", flush=True)
@@ -475,8 +474,8 @@ def main() -> None:
             flush=True,
         )
 
-    frozen: Target | llama_simple_mlp.SimpleMLPTarget
-    prefix: Prefix | llama_simple_mlp.SimpleMLPPrefix
+    frozen: AnyFrozenTarget
+    prefix: AnyPrefix
     prefix_residual_fn: Callable[[Any, Any], jax.Array]
     match cfg.target:
         case TargetConfig():

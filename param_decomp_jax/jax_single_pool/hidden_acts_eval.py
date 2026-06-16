@@ -34,6 +34,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from jax_single_pool.lm import DecomposedModel
 from jax_single_pool.train import COMPUTE_DT, cast_floating
+from param_decomp_config.routing import SamplingType
 
 
 @dataclass(frozen=True)
@@ -105,12 +106,11 @@ def make_ci_hidden_acts_step(lm: DecomposedModel) -> HiddenActsStep:
 
 
 def make_stochastic_hidden_acts_step(
-    lm: DecomposedModel, n_mask_samples: int, sampling: str
+    lm: DecomposedModel, n_mask_samples: int, sampling: SamplingType
 ) -> HiddenActsStep:
     """Stochastic-mask hidden-acts step: `n_mask_samples` draws of `mask = ci + (1−ci)·s`
     (with weight deltas), per-draw per-site MSE summed. RNG via per-draw / per-site
     `fold_in` (the eval-step discipline, mirrors `train.stochastic_entry_masks`)."""
-    assert sampling in ("continuous", "binomial"), sampling
     assert n_mask_samples >= 1, n_mask_samples
     site_names = lm.site_names
 

@@ -42,6 +42,7 @@ from param_decomp_config.losses import (
 from param_decomp_config.pd import AnyLossMetricConfig
 from param_decomp_config.routing import (
     AllRoutingConfig,
+    SamplingType,
     StaticProbabilityRoutingConfig,
     SubsetRoutingType,
     UniformKSubsetRoutingConfig,
@@ -66,7 +67,7 @@ sampler identities, family sizes — is static; only the key varies per step."""
 class StochasticSources:
     """Fresh per-draw sources: components `U[0,1]` (or Bernoulli), delta `U[0,1]`."""
 
-    sampling: Literal["continuous", "binomial"]
+    sampling: SamplingType
 
 
 @dataclass(frozen=True)
@@ -297,10 +298,10 @@ def _assert_supported_persistent(cfg: PersistentPGDReconLossConfig) -> None:
 
 
 def build_recon_terms(
-    loss_metrics: tuple[AnyLossMetricConfig, ...] | list[AnyLossMetricConfig],
+    loss_metrics: tuple[AnyLossMetricConfig, ...],
     site_names: tuple[str, ...],
     n_mask_samples: int,
-    sampling: Literal["continuous", "binomial"],
+    sampling: SamplingType,
 ) -> LossSpec:
     """Map the shared torch loss configs onto recon terms (LOSS_PARITY_DESIGN §3).
 
@@ -312,7 +313,7 @@ def build_recon_terms(
     terms: list[ReconLossTerm] = []
     persistent: dict[str, PersistentPGDReconLossConfig] = {}
 
-    def instance_key(cfg: AnyLossMetricConfig) -> str:
+    def assert_unique_instance_key(cfg: AnyLossMetricConfig) -> str:
         name = cfg.name if cfg.name is not None else cfg.type
         assert all(t.name != name for t in terms), f"duplicate loss instance_key {name!r}"
         return name
@@ -332,17 +333,17 @@ def build_recon_terms(
                 plan = make_plan(
                     one_chunk(site_names), AllRoutingConfig(), ConstantSources(value), n_samples=1
                 )
-                terms.append(ReconLossTerm(instance_key(cfg), cfg.coeff, plan))
+                terms.append(ReconLossTerm(assert_unique_instance_key(cfg), cfg.coeff, plan))
             case CIMaskedReconSubsetLossConfig():
                 plan = make_plan(
                     one_chunk(site_names), cfg.routing, ConstantSources(0.0), n_samples=1
                 )
-                terms.append(ReconLossTerm(instance_key(cfg), cfg.coeff, plan))
+                terms.append(ReconLossTerm(assert_unique_instance_key(cfg), cfg.coeff, plan))
             case CIMaskedReconLayerwiseLossConfig():
                 plan = make_plan(
                     per_site(site_names), AllRoutingConfig(), ConstantSources(0.0), n_samples=1
                 )
-                terms.append(ReconLossTerm(instance_key(cfg), cfg.coeff, plan))
+                terms.append(ReconLossTerm(assert_unique_instance_key(cfg), cfg.coeff, plan))
             case StochasticReconLossConfig():
                 plan = make_plan(
                     one_chunk(site_names),
@@ -350,12 +351,12 @@ def build_recon_terms(
                     StochasticSources(sampling),
                     n_mask_samples,
                 )
-                terms.append(ReconLossTerm(instance_key(cfg), cfg.coeff, plan))
+                terms.append(ReconLossTerm(assert_unique_instance_key(cfg), cfg.coeff, plan))
             case StochasticReconSubsetLossConfig():
                 plan = make_plan(
                     one_chunk(site_names), cfg.routing, StochasticSources(sampling), n_mask_samples
                 )
-                terms.append(ReconLossTerm(instance_key(cfg), cfg.coeff, plan))
+                terms.append(ReconLossTerm(assert_unique_instance_key(cfg), cfg.coeff, plan))
             case StochasticReconLayerwiseLossConfig():
                 plan = make_plan(
                     per_site(site_names),
@@ -363,7 +364,7 @@ def build_recon_terms(
                     StochasticSources(sampling),
                     n_mask_samples,
                 )
-                terms.append(ReconLossTerm(instance_key(cfg), cfg.coeff, plan))
+                terms.append(ReconLossTerm(assert_unique_instance_key(cfg), cfg.coeff, plan))
             case ChunkwiseSubsetReconLossConfig():
                 assert isinstance(cfg.routing, UniformKSubsetRoutingConfig), cfg.routing
                 plan = make_plan(
@@ -372,21 +373,21 @@ def build_recon_terms(
                     StochasticSources(sampling),
                     cfg.n_samples,
                 )
-                terms.append(ReconLossTerm(instance_key(cfg), cfg.coeff, plan))
+                terms.append(ReconLossTerm(assert_unique_instance_key(cfg), cfg.coeff, plan))
             case PGDReconLossConfig() | PGDReconSubsetLossConfig():
                 fresh = FreshPGDSources(cfg.init, cfg.n_steps, cfg.step_size, cfg.mask_scope)
                 routing = (
                     cfg.routing if isinstance(cfg, PGDReconSubsetLossConfig) else AllRoutingConfig()
                 )
                 plan = make_plan(one_chunk(site_names), routing, fresh, n_samples=1)
-                terms.append(ReconLossTerm(instance_key(cfg), cfg.coeff, plan))
+                terms.append(ReconLossTerm(assert_unique_instance_key(cfg), cfg.coeff, plan))
             case PGDReconLayerwiseLossConfig():
                 fresh = FreshPGDSources(cfg.init, cfg.n_steps, cfg.step_size, cfg.mask_scope)
                 plan = make_plan(per_site(site_names), AllRoutingConfig(), fresh, n_samples=1)
-                terms.append(ReconLossTerm(instance_key(cfg), cfg.coeff, plan))
+                terms.append(ReconLossTerm(assert_unique_instance_key(cfg), cfg.coeff, plan))
             case PersistentPGDReconLossConfig():
                 _assert_supported_persistent(cfg)
-                key = instance_key(cfg)
+                key = assert_unique_instance_key(cfg)
                 assert key not in persistent
                 persistent[key] = cfg
                 plan = make_plan(

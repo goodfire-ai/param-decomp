@@ -62,6 +62,7 @@ from jax_single_pool.lm import DecomposedModel
 from jax_single_pool.load_run import build_target
 from jax_single_pool.run_state import build_optimizers, init_train_state
 from jax_single_pool.sharding import dp_mesh
+from param_decomp_config.routing import SamplingType
 
 
 @dataclass(frozen=True)
@@ -246,8 +247,9 @@ def render_slow_eval_figures(
     logs them under `slow_eval/` (`figures/<key>` from each metric's `compute()`)."""
     lower_hist = plot_ci_value_histograms({s: r.lower_sample for s, r in reductions.items()})
     logits_hist = plot_ci_value_histograms({s: r.logits_sample for s, r in reductions.items()})
-    densities = {s: r.density_counts / max(r.n_positions, 1) for s, r in reductions.items()}
-    mean_cis = {s: r.ci_sums / max(r.n_positions, 1) for s, r in reductions.items()}
+    assert all(r.n_positions > 0 for r in reductions.values())
+    densities = {s: r.density_counts / r.n_positions for s, r in reductions.items()}
+    mean_cis = {s: r.ci_sums / r.n_positions for s, r in reductions.items()}
     density_fig = plot_component_activation_density(densities)
     mean_linear, mean_log = plot_mean_component_cis_both_scales(mean_cis)
     return {
@@ -279,7 +281,7 @@ def compute_hidden_acts_metrics(
     frozen: Any,
     residual_batches: list[Float[Array, "B T d"]],
     n_mask_samples: int,
-    sampling: str,
+    sampling: SamplingType,
     base_key: Array,
 ) -> dict[str, float]:
     """Both hidden-acts recon eval metrics over the eval batches, keyed by the torch

@@ -35,6 +35,7 @@ from jaxtyping import Array, Float, Int
 
 from jax_single_pool import llama_simple_mlp
 from jax_single_pool.checkpoint import make_checkpoint_manager, restore_latest, restore_step
+from jax_single_pool.ci_fn import CIFn
 from jax_single_pool.config import (
     ExperimentConfig,
     LlamaSimpleMLPTargetConfig,
@@ -55,6 +56,7 @@ from jax_single_pool.llama8b_sharding import replicate_target
 from jax_single_pool.lm import DecomposedModel
 from jax_single_pool.run_state import build_optimizers, init_train_state
 from jax_single_pool.sharding import dp_mesh
+from jax_single_pool.target_aliases import AnyFrozenTarget, AnyPrefix
 from jax_single_pool.train import COMPUTE_DT, TrainState, cast_floating
 
 
@@ -70,7 +72,7 @@ class HarvestForward:
 
 def build_target(
     cfg: ExperimentConfig, mesh: jax.sharding.Mesh
-) -> tuple[DecomposedModel, Any, Any, Callable[[Any, Any], jax.Array], int]:
+) -> tuple[DecomposedModel, AnyFrozenTarget, AnyPrefix, Callable[[Any, Any], jax.Array], int]:
     """`(lm, frozen target, prefix, prefix_residual_fn, vocab_size)` for the run's target
     config. SimpleMLP reads its local pretrain cache (no network); llama8b reads the HF
     snapshot (frozen bf16 target + fp32-compute, matching `run.py::main`)."""
@@ -130,7 +132,10 @@ class LoadedJaxRun:
     config: ExperimentConfig
     vocab_size: int
     _state: TrainState
-    _forward: Any
+    _forward: Callable[
+        [DecompVU, CIFn, Int[Array, "B T"]],
+        tuple[dict[str, Array], dict[str, Array], Array],
+    ]
 
     @property
     def site_names(self) -> tuple[str, ...]:
@@ -177,7 +182,7 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
 
     @jax.jit
     def forward(
-        components: DecompVU, ci_fn: Any, token_ids: Int[Array, "B T"]
+        components: DecompVU, ci_fn: CIFn, token_ids: Int[Array, "B T"]
     ) -> tuple[dict[str, Array], dict[str, Array], Array]:
         residual = prefix_residual_fn(prefix, token_ids)
         clean_output = lm.clean_output(target, residual)
