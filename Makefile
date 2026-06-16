@@ -13,15 +13,19 @@ install-dev: bridge-jax-into-main-venv
 
 # `uv sync --all-packages` manages the main venv exclusively and strips anything not in
 # the workspace lock — including jax, which `param_decomp_jax` is NOT a member of. But the
-# JAX-run bridge workers (e.g. harvest's run_worker_jax.py) live in the lab venv and
-# `import jax` + `from jax_single_pool ...`, and `make type` over them needs both stacks
-# resolvable. So re-add them right after the sync: jax/jaxlib CPU (4 small wheels, no
-# downgrades to wandb/numpy/pyarrow) + the editable `param_decomp_jax` source `--no-deps`
-# (gives `jax_single_pool` / `vendored_jax` without dragging in its pinned wandb/numpy).
+# JAX-run consumers in the lab venv (harvest's run_worker_jax.py, the app backend) `import
+# jax` + `from jax_single_pool ...` and call `open_jax_run` (restores an orbax checkpoint,
+# builds a `DecomposedLM`), and `make type` over them needs both stacks resolvable. So
+# re-add the JAX runtime right after the sync: jax/jaxlib CPU + the JAX trainer's own
+# runtime deps (equinox/optax/jaxtyping/orbax — orbax pulls pure-python absl/etils/
+# tensorstore/...), all jax-pinned so nothing bumps jax; then the editable
+# `param_decomp_jax` source `--no-deps` (gives `jax_single_pool` / `vendored_jax` without
+# dragging in its pinned wandb/numpy/pyarrow that would downgrade the torch stack).
 .PHONY: bridge-jax-into-main-venv
 bridge-jax-into-main-venv:
 	uv sync --all-packages
-	uv pip install "jax==0.10.1" "jaxlib==0.10.1"
+	uv pip install --no-deps "equinox==0.13.8" "optax==0.2.8" "jaxtyping==0.3.10"
+	uv pip install "jax==0.10.1" "jaxlib==0.10.1" "orbax-checkpoint==0.12.0"
 	uv pip install --no-deps -e ./param_decomp_jax
 
 .PHONY: install-all

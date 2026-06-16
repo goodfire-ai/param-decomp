@@ -1,10 +1,10 @@
 """Prompt listing endpoints."""
 
-import torch
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 from param_decomp_lab.app.backend.dependencies import DepLoadedRun, DepStateManager
+from param_decomp_lab.app.backend.inference import next_token_probs
 from param_decomp_lab.app.backend.utils import log_errors
 
 # =============================================================================
@@ -35,27 +35,6 @@ def _make_preview(spans: list[str]) -> str:
 router = APIRouter(prefix="/api/prompts", tags=["prompts"])
 
 
-def compute_next_token_probs(token_ids: list[int], loaded: DepLoadedRun) -> list[float | None]:
-    """Compute P(next_token | prefix) for each position."""
-    if len(token_ids) == 0:
-        return []
-
-    device = next(loaded.model.parameters()).device
-    tokens_tensor = torch.tensor([token_ids], device=device)
-
-    with torch.no_grad():
-        logits = loaded.model(tokens_tensor)
-        probs = torch.softmax(logits, dim=-1)
-
-    result: list[float | None] = []
-    for i in range(len(token_ids) - 1):
-        next_token_id = token_ids[i + 1]
-        prob = probs[0, i, next_token_id].item()
-        result.append(prob)
-    result.append(None)  # No next token for last position
-    return result
-
-
 @router.get("")
 @log_errors
 def list_prompts(manager: DepStateManager, loaded: DepLoadedRun) -> list[PromptPreview]:
@@ -68,14 +47,13 @@ def list_prompts(manager: DepStateManager, loaded: DepLoadedRun) -> list[PromptP
         prompt = db.get_prompt(pid)
         assert prompt is not None, f"Prompt {pid} in index but not in DB"
         spans = loaded.tokenizer.get_spans(prompt.token_ids)
-        next_token_probs = compute_next_token_probs(prompt.token_ids, loaded)
         results.append(
             PromptPreview(
                 id=prompt.id,
                 token_ids=prompt.token_ids,
                 tokens=spans,
                 preview=_make_preview(spans),
-                next_token_probs=next_token_probs,
+                next_token_probs=next_token_probs(loaded.jax_run, prompt.token_ids),
             )
         )
     return results
@@ -101,12 +79,11 @@ def add_custom_prompt(text: str, manager: DepStateManager, loaded: DepLoadedRun)
     db = manager.db
     prompt_id = db.add_custom_prompt(loaded.run.id, token_ids, loaded.context_length)
     spans = loaded.tokenizer.get_spans(token_ids)
-    next_token_probs = compute_next_token_probs(token_ids, loaded)
 
     return PromptPreview(
         id=prompt_id,
         token_ids=token_ids,
         tokens=spans,
         preview=_make_preview(spans),
-        next_token_probs=next_token_probs,
+        next_token_probs=next_token_probs(loaded.jax_run, token_ids),
     )

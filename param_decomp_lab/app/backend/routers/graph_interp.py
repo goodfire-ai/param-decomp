@@ -8,9 +8,9 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from param_decomp_lab.app.backend.dependencies import DepLoadedRun
+from param_decomp_lab.app.backend.topology import AppTopology
 from param_decomp_lab.app.backend.utils import log_errors
 from param_decomp_lab.graph_interp.schemas import LabelResult
-from param_decomp_lab.topology import TransformerTopology
 
 MAX_GRAPH_NODES = 500
 
@@ -18,7 +18,7 @@ MAX_GRAPH_NODES = 500
 _ALREADY_CANONICAL = {"embed", "output"}
 
 
-def _concrete_to_canonical_key(concrete_key: str, topology: TransformerTopology) -> str:
+def _concrete_to_canonical_key(concrete_key: str, topology: AppTopology) -> str:
     layer, idx = concrete_key.rsplit(":", 1)
     if layer in _ALREADY_CANONICAL:
         return concrete_key
@@ -27,7 +27,7 @@ def _concrete_to_canonical_key(concrete_key: str, topology: TransformerTopology)
 
 
 def _canonical_to_concrete_key(
-    canonical_layer: str, component_idx: int, topology: TransformerTopology
+    canonical_layer: str, component_idx: int, topology: AppTopology
 ) -> str:
     concrete = topology.canon_to_target(canonical_layer)
     return f"{concrete}:{component_idx}"

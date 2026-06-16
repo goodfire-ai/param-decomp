@@ -16,7 +16,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import fire
-import torch
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -30,7 +29,6 @@ from param_decomp_lab.app.backend.database import PromptAttrDB
 from param_decomp_lab.app.backend.routers.activation_contexts import (
     router as activation_contexts_router,
 )
-from param_decomp_lab.app.backend.routers.agents import router as agents_router
 from param_decomp_lab.app.backend.routers.autointerp_compare import (
     router as autointerp_compare_router,
 )
@@ -42,8 +40,6 @@ from param_decomp_lab.app.backend.routers.dataset_attributions import (
 )
 from param_decomp_lab.app.backend.routers.dataset_search import router as dataset_search_router
 from param_decomp_lab.app.backend.routers.graph_interp import router as graph_interp_router
-from param_decomp_lab.app.backend.routers.graphs import router as graphs_router
-from param_decomp_lab.app.backend.routers.intervention import router as intervention_router
 from param_decomp_lab.app.backend.routers.investigations import router as investigations_router
 from param_decomp_lab.app.backend.routers.mcp import router as mcp_router
 from param_decomp_lab.app.backend.routers.pretrain_info import router as pretrain_info_router
@@ -51,10 +47,7 @@ from param_decomp_lab.app.backend.routers.prompts import router as prompts_route
 from param_decomp_lab.app.backend.routers.run_registry import router as run_registry_router
 from param_decomp_lab.app.backend.routers.runs import router as runs_router
 from param_decomp_lab.app.backend.state import StateManager
-from param_decomp_lab.distributed import get_device
 from param_decomp_lab.infra.settings import PARAM_DECOMP_APP_DEFAULT_RUN
-
-DEVICE = get_device()
 
 
 @asynccontextmanager
@@ -72,8 +65,6 @@ async def lifespan(app: FastAPI):  # pyright: ignore[reportUnusedParameter]
     manager.initialize(db)
 
     logger.info(f"[STARTUP] DB initialized: {db.db_path}")
-    logger.info(f"[STARTUP] Device: {DEVICE}")
-    logger.info(f"[STARTUP] CUDA available: {torch.cuda.is_available()}")
 
     # Configure MCP for investigation mode (derives paths from investigation dir)
     investigation_dir = os.environ.get("PARAM_DECOMP_INVESTIGATION_DIR")
@@ -185,14 +176,11 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 app.include_router(runs_router)
 app.include_router(autointerp_compare_router)
 app.include_router(prompts_router)
-app.include_router(graphs_router)
 app.include_router(activation_contexts_router)
 app.include_router(correlations_router)
 app.include_router(clusters_router)
-app.include_router(intervention_router)
 app.include_router(dataset_search_router)
 app.include_router(dataset_attributions_router)
-app.include_router(agents_router)
 app.include_router(investigations_router)
 app.include_router(mcp_router)
 app.include_router(data_sources_router)

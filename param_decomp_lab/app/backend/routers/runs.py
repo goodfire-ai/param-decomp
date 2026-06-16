@@ -1,29 +1,28 @@
 """Run management endpoints."""
 
 import getpass
-from typing import cast
+from pathlib import Path
 from urllib.parse import unquote
 
-import torch
 import yaml
 from fastapi import APIRouter, HTTPException
+from jax_single_pool.load_run import open_jax_run
 from pydantic import BaseModel, ValidationError
 
-from param_decomp.component_model import ComponentModel
 from param_decomp.log import logger
-from param_decomp_lab.adapters.pd import load_saved_lm_run
+from param_decomp_config.lm import LMExperimentConfig
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.app.backend.dependencies import DepStateManager
 from param_decomp_lab.app.backend.state import RunState
+from param_decomp_lab.app.backend.topology import AppTopology
 from param_decomp_lab.app.backend.utils import log_errors
 from param_decomp_lab.autointerp.repo import InterpRepo
-from param_decomp_lab.component_model_io import VendoredHarvestModel
 from param_decomp_lab.dataset_attributions.repo import AttributionRepo
-from param_decomp_lab.distributed import get_device
+from param_decomp_lab.experiments.utils import EXPERIMENT_CONFIG_FILENAME
 from param_decomp_lab.graph_interp.repo import GraphInterpRepo
 from param_decomp_lab.harvest.repo import HarvestRepo
+from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
-from param_decomp_lab.topology import TransformerTopology, get_sources_by_target
 
 # Datasets small enough to load into memory for search
 _SEARCHABLE_DATASETS = {"SimpleStories/SimpleStories"}
@@ -51,20 +50,25 @@ class LoadedRun(BaseModel):
 
 router = APIRouter(prefix="/api", tags=["runs"])
 
-DEVICE = get_device()
+
+def _model_type(cfg: LMExperimentConfig) -> str:
+    """Target-model class name (last segment of the dotted `model_class` path)."""
+    return cfg.target.spec.model_class.rsplit(".", 1)[-1]
 
 
 @router.post("/runs/load")
 @log_errors
 def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
-    """Load a run by its wandb path. Creates the run in DB if not found.
+    """Load a JAX run by its wandb path / run id. Creates the run in DB if not found.
 
     Accepts various W&B run reference formats:
     - "entity/project/runId" (compact form)
     - "entity/project/runs/runId" (with /runs/)
     - "https://wandb.ai/entity/project/runs/runId..." (URL)
 
-    This loads the model onto GPU and makes it available for attribution computation.
+    Opens the run's orbax checkpoint via `open_jax_run` (the model forward) and reads its
+    pinned `LMExperimentConfig` for target/data/algorithm metadata. Read-only: no GPU
+    training, no torch.
     """
     db = manager.db
 
@@ -72,8 +76,12 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
     clean_wandb_path = f"{entity}/{project}/{run_id}"
 
     logger.info(f"[API] Loading {clean_wandb_path}")
+    run_dir = PARAM_DECOMP_OUT_DIR / "runs" / run_id
+    assert run_dir.is_dir(), f"run dir not found: {run_dir}"
+
+    config_path = run_dir / EXPERIMENT_CONFIG_FILENAME
     try:
-        pd_run = load_saved_lm_run(clean_wandb_path)
+        cfg = LMExperimentConfig.from_file(config_path)
     except ValidationError as e:
         raise HTTPException(
             status_code=400,
@@ -82,8 +90,6 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
                 f"token-based app. Use an LM run.\n\n{e}"
             ),
         ) from e
-    lm_target = pd_run.cfg.target
-    lm_data = pd_run.cfg.data
 
     run = db.get_run_by_wandb_path(clean_wandb_path)
     if run is None:
@@ -105,53 +111,24 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
         )
         return {"status": "already_loaded", "run_id": run.id, "wandb_path": run.wandb_path}
 
-    # Unload previous run if any
-    if manager.run_state is not None:
-        logger.info(f"[API] Unloading previous run {manager.run_state.run.id}")
-        del manager.run_state.model
-        torch.cuda.empty_cache()
-        manager.run_state = None
+    manager.run_state = None
 
-    # Load the target + ComponentModel
-    logger.info(f"[API] Loading model for run {run.id}: {run.wandb_path}")
-    model = pd_run.load_model().to(DEVICE)
-    model.eval()
+    logger.info(f"[API] Opening JAX run {run.id}: {run_dir}")
+    jax_run = open_jax_run(Path(run_dir))
 
-    pd_config = pd_run.cfg.pd
-    logger.info(f"[API] Loading tokenizer for run {run.id}: {lm_data.tokenizer_name}")
-    app_tokenizer = AppTokenizer.from_pretrained(lm_data.tokenizer_name)
+    logger.info(f"[API] Loading tokenizer for run {run.id}: {cfg.data.tokenizer_name}")
+    app_tokenizer = AppTokenizer.from_pretrained(cfg.data.tokenizer_name)
 
-    # Build topology and sources_by_target mapping
-    logger.info(f"[API] Building topology for run {run.id}")
-    topology = TransformerTopology(model.target_model)
-
-    # Vendored 3-pool models (VendoredHarvestModel) only support the harvest-style forward,
-    # not the cache_type="component_acts"/mask_infos forward that gradient connectivity needs.
-    # Skip it: attribution graphs are disabled for these runs; the component + autointerp
-    # viewers (which read harvest/interp data, not the model) still work.
-    if isinstance(model, VendoredHarvestModel):
-        logger.warning(
-            f"[API] Run {run.id} is a vendored 3-pool run: skipping sources_by_target. "
-            "Attribution graphs are disabled; component + autointerp viewers work."
-        )
-        sources_by_target: dict[str, list[str]] = {}
-    else:
-        logger.info(f"[API] Building sources_by_target mapping for run {run.id}")
-        sources_by_target = get_sources_by_target(model, topology, DEVICE, pd_config.sampling)
+    topology = AppTopology.from_model_type(_model_type(cfg), jax_run.site_names)
 
     manager.run_state = RunState(
         run=run,
-        # Vendored 3-pool runs load as VendoredHarvestModel, which presents only the
-        # harvest-style forward. We store it as a ComponentModel for the component +
-        # autointerp viewers (DB-backed, no model forward); graph/intervention compute
-        # raises NotImplementedError at runtime for these runs.
-        model=cast(ComponentModel, model),
+        jax_run=jax_run,
         topology=topology,
         tokenizer=app_tokenizer,
-        sources_by_target=sources_by_target,
-        config=pd_config,
-        lm_target=lm_target,
-        lm_data=lm_data,
+        config=cfg.pd,
+        lm_target=cfg.target,
+        lm_data=cfg.data,
         context_length=context_length,
         harvest=HarvestRepo.open_most_recent(run_id),
         interp=InterpRepo.open(run_id),
@@ -159,7 +136,7 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
         graph_interp=GraphInterpRepo.open(run_id),
     )
 
-    logger.info(f"[API] Run {run.id} loaded on {DEVICE}")
+    logger.info(f"[API] Run {run.id} loaded (step {jax_run.step})")
     return {"status": "loaded", "run_id": run.id, "wandb_path": run.wandb_path}
 
 

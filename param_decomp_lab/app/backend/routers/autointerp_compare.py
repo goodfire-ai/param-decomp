@@ -13,10 +13,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from param_decomp_lab.app.backend.dependencies import DepLoadedRun
+from param_decomp_lab.app.backend.topology import AppTopology
 from param_decomp_lab.app.backend.utils import log_errors
 from param_decomp_lab.autointerp.db import InterpDB
 from param_decomp_lab.autointerp.schemas import get_autointerp_dir
-from param_decomp_lab.topology import TransformerTopology
 
 router = APIRouter(prefix="/api/autointerp_compare", tags=["autointerp_compare"])
 
@@ -45,14 +45,14 @@ class InterpretationDetail(BaseModel):
     prompt: str
 
 
-def _concrete_to_canonical_key(concrete_key: str, topology: TransformerTopology) -> str:
+def _concrete_to_canonical_key(concrete_key: str, topology: AppTopology) -> str:
     layer, idx = concrete_key.rsplit(":", 1)
     canonical = topology.target_to_canon(layer)
     return f"{canonical}:{idx}"
 
 
 def _canonical_to_concrete_key(
-    canonical_layer: str, component_idx: int, topology: TransformerTopology
+    canonical_layer: str, component_idx: int, topology: AppTopology
 ) -> str:
     concrete = topology.canon_to_target(canonical_layer)
     return f"{concrete}:{component_idx}"

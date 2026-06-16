@@ -7,9 +7,10 @@ These are private implementation details — only TransformerTopology is public.
 import re
 from abc import ABC
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from torch import nn
+if TYPE_CHECKING:
+    from torch import nn
 
 from param_decomp_lab.topology.canonical import (
     CanonicalWeight,
@@ -214,7 +215,27 @@ class _HFGpt2PathSchema(_PathSchema):
     unembed_path = "lm_head"
 
 
-def get_path_schema(model: nn.Module) -> _PathSchema:
+_MODEL_TYPE_PATH_SCHEMAS: dict[str, type[_PathSchema]] = {
+    "LlamaSimple": _LlamaSimplePathSchema,
+    "LlamaSimpleMLP": _LlamaSimpleMLPPathSchema,
+    "GPT2Simple": _GPT2SimplePathSchema,
+    "GPT2": _GPT2PathSchema,
+}
+
+
+def path_schema_for_model_type(model_type: str) -> _PathSchema:
+    """Select a path schema by target-model class name — torch-free (no live model).
+
+    The torch-free consumers (the app reading a JAX run) only know the model type from
+    config, never a live `nn.Module`."""
+    schema_cls = _MODEL_TYPE_PATH_SCHEMAS.get(model_type)
+    assert schema_cls is not None, (
+        f"No path schema for model type {model_type!r}. Add one in path_schemas.py."
+    )
+    return schema_cls()
+
+
+def get_path_schema(model: "nn.Module") -> _PathSchema:
     from transformers.models.gpt2 import GPT2LMHeadModel
 
     from param_decomp_lab.experiments.lm.pretrain.models.gpt2 import GPT2

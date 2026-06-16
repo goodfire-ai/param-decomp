@@ -8,8 +8,6 @@ MCP Spec: https://modelcontextprotocol.io/specification/2025-06-18/basic/transpo
 
 import inspect
 import json
-import queue
-import threading
 import traceback
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
@@ -17,29 +15,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-import torch
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from param_decomp.log import logger
-from param_decomp_config.losses import ImportanceMinimalityLossConfig
-from param_decomp_lab.app.backend.compute import (
-    compute_ci_only,
-    compute_prompt_attributions_optimized,
-    parse_node_key,
-)
-from param_decomp_lab.app.backend.database import StoredGraph
-from param_decomp_lab.app.backend.optim_cis import CELossConfig, OptimCIConfig
-from param_decomp_lab.app.backend.routers.graphs import _build_out_probs
+from param_decomp_lab.app.backend.inference import next_token_probs
 from param_decomp_lab.app.backend.routers.pretrain_info import _get_pretrain_info
 from param_decomp_lab.app.backend.state import StateManager
-from param_decomp_lab.distributed import get_device
 from param_decomp_lab.harvest import analysis
 
 router = APIRouter(tags=["mcp"])
-
-DEVICE = get_device()
 
 # MCP protocol version
 MCP_PROTOCOL_VERSION = "2024-11-05"
@@ -117,43 +103,6 @@ class ToolDefinition(BaseModel):
 
 TOOLS: list[ToolDefinition] = [
     ToolDefinition(
-        name="optimize_graph",
-        description="""Optimize a sparse circuit for a specific behavior.
-
-Given a prompt and target token, finds the minimal set of components that produce the target prediction.
-Returns the optimized graph with component CI values and edges showing information flow.
-
-This is the primary tool for understanding how the model produces a specific output.""",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "prompt_text": {
-                    "type": "string",
-                    "description": "The input text to analyze (e.g., 'The boy said that')",
-                },
-                "target_token": {
-                    "type": "string",
-                    "description": "The token to predict (e.g., ' he'). Include leading space if needed.",
-                },
-                "loss_position": {
-                    "type": "integer",
-                    "description": "Position to optimize prediction at (0-indexed, usually last position). If not specified, uses the last position.",
-                },
-                "steps": {
-                    "type": "integer",
-                    "description": "Optimization steps (default: 100, more = sparser but slower)",
-                    "default": 100,
-                },
-                "ci_threshold": {
-                    "type": "number",
-                    "description": "CI threshold for including components (default: 0.5, lower = more components)",
-                    "default": 0.5,
-                },
-            },
-            "required": ["prompt_text", "target_token"],
-        },
-    ),
-    ToolDefinition(
         name="get_component_info",
         description="""Get detailed information about a component.
 
@@ -179,35 +128,6 @@ Use this to understand what role a component plays in a circuit.""",
                 },
             },
             "required": ["layer", "component_idx"],
-        },
-    ),
-    ToolDefinition(
-        name="run_ablation",
-        description="""Run an ablation experiment with only selected components active.
-
-Tests a hypothesis by running the model with a sparse set of components.
-Returns predictions showing what the circuit produces vs the full model.
-
-Use this to verify that identified components are necessary and sufficient.""",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "text": {
-                    "type": "string",
-                    "description": "Input text for the ablation",
-                },
-                "selected_nodes": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Node keys to keep active (format: 'layer:seq_pos:component_idx')",
-                },
-                "top_k": {
-                    "type": "integer",
-                    "description": "Number of top predictions to return per position (default: 10)",
-                    "default": 10,
-                },
-            },
-            "required": ["text", "selected_nodes"],
         },
     ),
     ToolDefinition(
@@ -392,61 +312,6 @@ explaining what you investigated and what you found.""",
         },
     ),
     ToolDefinition(
-        name="save_graph_artifact",
-        description="""Save a graph as an artifact for inclusion in your research report.
-
-After calling optimize_graph and getting a graph_id, call this to save the graph
-as an artifact. Then reference it in your research log using the param_decomp:graph syntax:
-
-```param_decomp:graph
-artifact: graph_001
-```
-
-This allows humans reviewing your investigation to see interactive circuit visualizations
-inline with your research notes.""",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "graph_id": {
-                    "type": "integer",
-                    "description": "The graph ID returned by optimize_graph",
-                },
-                "caption": {
-                    "type": "string",
-                    "description": "Optional caption describing what this graph shows",
-                },
-            },
-            "required": ["graph_id"],
-        },
-    ),
-    ToolDefinition(
-        name="probe_component",
-        description="""Fast CI probing on custom text.
-
-Computes causal importance values and subcomponent activations for a specific component
-across all positions in the input text. Also returns next-token probabilities.
-
-Use this for quick, targeted analysis of how a component responds to specific inputs.""",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "text": {
-                    "type": "string",
-                    "description": "The input text to probe",
-                },
-                "layer": {
-                    "type": "string",
-                    "description": "Canonical layer name (e.g., '0.mlp.up')",
-                },
-                "component_idx": {
-                    "type": "integer",
-                    "description": "Component index within the layer",
-                },
-            },
-            "required": ["text", "layer", "component_idx"],
-        },
-    ),
-    ToolDefinition(
         name="get_component_activation_examples",
         description="""Get activation examples from harvest data for a component.
 
@@ -542,205 +407,6 @@ def _canonicalize_key(concrete_key: str, loaded: Any) -> str:
     return f"{_canonicalize_layer(layer, loaded)}:{idx}"
 
 
-def _tool_optimize_graph(params: dict[str, Any]) -> Generator[dict[str, Any]]:
-    """Optimize a sparse circuit for a behavior. Yields progress events."""
-    manager, loaded = _get_state()
-
-    prompt_text = params["prompt_text"]
-    target_token = params["target_token"]
-    steps = params.get("steps", 100)
-    ci_threshold = params.get("ci_threshold", 0.5)
-
-    # Tokenize prompt
-    token_ids = loaded.tokenizer.encode(prompt_text)
-    if not token_ids:
-        raise ValueError("Prompt text produced no tokens")
-
-    # Find target token ID
-    target_token_ids = loaded.tokenizer.encode(target_token)
-    if len(target_token_ids) != 1:
-        raise ValueError(
-            f"Target token '{target_token}' tokenizes to {len(target_token_ids)} tokens, expected 1. "
-            f"Token IDs: {target_token_ids}"
-        )
-    label_token = target_token_ids[0]
-
-    # Determine loss position
-    loss_position = params.get("loss_position")
-    if loss_position is None:
-        loss_position = len(token_ids) - 1
-
-    if loss_position >= len(token_ids):
-        raise ValueError(
-            f"loss_position {loss_position} out of bounds for prompt with {len(token_ids)} tokens"
-        )
-
-    _log_event(
-        "tool_start",
-        f"optimize_graph: '{prompt_text}' → '{target_token}'",
-        {"steps": steps, "loss_position": loss_position},
-    )
-
-    yield {"type": "progress", "current": 0, "total": steps, "stage": "starting optimization"}
-
-    # Create prompt in DB
-    prompt_id = manager.db.add_custom_prompt(
-        run_id=loaded.run.id,
-        token_ids=token_ids,
-        context_length=loaded.context_length,
-    )
-
-    # Build optimization config
-    loss_config = CELossConfig(coeff=1.0, position=loss_position, label_token=label_token)
-
-    optim_config = OptimCIConfig(
-        adv_pgd=None,  # AdvPGDConfig(n_steps=10, step_size=0.01, init="random"),
-        seed=0,
-        lr=1e-2,
-        steps=steps,
-        weight_decay=0.0,
-        lr_schedule="cosine",
-        lr_exponential_halflife=None,
-        lr_warmup_pct=0.01,
-        log_freq=max(1, steps // 10),
-        imp_min_config=ImportanceMinimalityLossConfig(coeff=0.1, pnorm=0.5, beta=0.0),
-        loss_config=loss_config,
-        sampling=loaded.config.sampling,
-        ce_kl_rounding_threshold=0.5,
-        mask_type="ci",
-    )
-
-    tokens_tensor = torch.tensor([token_ids], device=DEVICE)
-    progress_queue: queue.Queue[dict[str, Any]] = queue.Queue()
-
-    def on_progress(current: int, total: int, stage: str) -> None:
-        progress_queue.put({"current": current, "total": total, "stage": stage})
-
-    # Run optimization in thread
-    result_holder: list[Any] = []
-    error_holder: list[Exception] = []
-
-    def compute():
-        try:
-            with manager.gpu_lock():
-                result = compute_prompt_attributions_optimized(
-                    model=loaded.model,
-                    topology=loaded.topology,
-                    tokens=tokens_tensor,
-                    sources_by_target=loaded.sources_by_target,
-                    optim_config=optim_config,
-                    output_prob_threshold=0.01,
-                    device=DEVICE,
-                    on_progress=on_progress,
-                )
-                result_holder.append(result)
-        except Exception as e:
-            error_holder.append(e)
-
-    thread = threading.Thread(target=compute)
-    thread.start()
-
-    # Yield progress events (throttle logging to every 10% or 10 steps)
-    last_logged_step = -1
-    log_interval = max(1, steps // 10)
-
-    while thread.is_alive() or not progress_queue.empty():
-        try:
-            progress = progress_queue.get(timeout=0.1)
-            current = progress["current"]
-            # Log to events.jsonl at intervals (for human monitoring)
-            if current - last_logged_step >= log_interval or current == progress["total"]:
-                _log_event(
-                    "optimization_progress",
-                    f"optimize_graph: step {current}/{progress['total']} ({progress['stage']})",
-                    {"prompt": prompt_text, "target": target_token, **progress},
-                )
-                last_logged_step = current
-            # Always yield to SSE stream (for Claude)
-            yield {"type": "progress", **progress}
-        except queue.Empty:
-            continue
-
-    thread.join()
-
-    if error_holder:
-        raise error_holder[0]
-
-    if not result_holder:
-        raise RuntimeError("Optimization completed but no result was produced")
-
-    result = result_holder[0]
-
-    ci_masked_out_logits = result.ci_masked_out_logits.cpu()
-    target_out_logits = result.target_out_logits.cpu()
-
-    # Build output probs for response
-    out_probs = _build_out_probs(
-        ci_masked_out_logits,
-        target_out_logits,
-        loaded.tokenizer.get_tok_display,
-    )
-
-    # Save graph to DB
-    from param_decomp_lab.app.backend.database import OptimizationParams
-
-    opt_params = OptimizationParams(
-        imp_min_coeff=0.1,
-        steps=steps,
-        pnorm=0.5,
-        beta=0.0,
-        mask_type="ci",
-        loss=loss_config,
-        ci_masked_label_prob=result.metrics.ci_masked_label_prob,
-        stoch_masked_label_prob=result.metrics.stoch_masked_label_prob,
-        adv_pgd_label_prob=result.metrics.adv_pgd_label_prob,
-    )
-    graph_id = manager.db.save_graph(
-        prompt_id=prompt_id,
-        graph=StoredGraph(
-            graph_type="optimized",
-            edges=result.edges,
-            edges_abs=result.edges_abs,
-            ci_masked_out_logits=ci_masked_out_logits,
-            target_out_logits=target_out_logits,
-            node_ci_vals=result.node_ci_vals,
-            node_subcomp_acts=result.node_subcomp_acts,
-            optimization_params=opt_params,
-        ),
-    )
-
-    # Filter nodes by CI threshold
-    active_components = {k: v for k, v in result.node_ci_vals.items() if v >= ci_threshold}
-
-    # Get target token probability
-    target_key = f"{loss_position}:{label_token}"
-    target_prob = out_probs.get(target_key)
-
-    token_strings = [loaded.tokenizer.get_tok_display(t) for t in token_ids]
-
-    final_result = {
-        "graph_id": graph_id,
-        "prompt_id": prompt_id,
-        "tokens": token_strings,
-        "target_token": target_token,
-        "target_token_id": label_token,
-        "target_position": loss_position,
-        "target_probability": target_prob.prob if target_prob else None,
-        "target_probability_baseline": target_prob.target_prob if target_prob else None,
-        "active_components": active_components,
-        "total_active": len(active_components),
-        "output_probs": {k: {"prob": v.prob, "token": v.token} for k, v in out_probs.items()},
-    }
-
-    _log_event(
-        "tool_complete",
-        f"optimize_graph complete: {len(active_components)} active components",
-        {"graph_id": graph_id, "target_prob": target_prob.prob if target_prob else None},
-    )
-
-    yield {"type": "result", "data": final_result}
-
-
 def _tool_get_component_info(params: dict[str, Any]) -> dict[str, Any]:
     """Get detailed information about a component."""
     _, loaded = _get_state()
@@ -827,65 +493,6 @@ def _tool_get_component_info(params: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _tool_run_ablation(params: dict[str, Any]) -> dict[str, Any]:
-    """Run ablation with selected components."""
-    from param_decomp_lab.app.backend.compute import (
-        DEFAULT_EVAL_PGD_CONFIG,
-        compute_intervention,
-    )
-    from param_decomp_lab.app.backend.optim_cis import MeanKLLossConfig
-
-    manager, loaded = _get_state()
-
-    text = params["text"]
-    selected_nodes = params["selected_nodes"]
-    top_k = params.get("top_k", 10)
-
-    _log_event(
-        "tool_call",
-        f"run_ablation: '{text[:50]}...' with {len(selected_nodes)} nodes",
-        {"text": text, "n_nodes": len(selected_nodes)},
-    )
-
-    token_ids = loaded.tokenizer.encode(text)
-    tokens = torch.tensor([token_ids], dtype=torch.long, device=DEVICE)
-
-    active_nodes = [parse_node_key(key, loaded.topology) for key in selected_nodes]
-
-    with manager.gpu_lock():
-        result = compute_intervention(
-            model=loaded.model,
-            tokens=tokens,
-            active_nodes=active_nodes,
-            nodes_to_ablate=None,
-            tokenizer=loaded.tokenizer,
-            adv_pgd_config=DEFAULT_EVAL_PGD_CONFIG,
-            loss_config=MeanKLLossConfig(),
-            sampling=loaded.config.sampling,
-            top_k=top_k,
-        )
-
-    predictions = []
-    for pos_predictions in result.ci:
-        pos_result = []
-        for pred in pos_predictions:
-            pos_result.append(
-                {
-                    "token": pred.token,
-                    "token_id": pred.token_id,
-                    "circuit_prob": round(pred.prob, 6),
-                    "full_model_prob": round(pred.target_prob, 6),
-                }
-            )
-        predictions.append(pos_result)
-
-    return {
-        "input_tokens": result.input_tokens,
-        "predictions_per_position": predictions,
-        "selected_nodes": selected_nodes,
-    }
-
-
 def _tool_search_dataset(params: dict[str, Any]) -> dict[str, Any]:
     """Search the loaded run's training dataset for rows containing a query string."""
     import time
@@ -959,18 +566,8 @@ def _tool_create_prompt(params: dict[str, Any]) -> dict[str, Any]:
         context_length=loaded.context_length,
     )
 
-    # Compute next token probs
-    tokens_tensor = torch.tensor([token_ids], device=DEVICE)
-    with torch.no_grad():
-        logits = loaded.model(tokens_tensor)
-        probs = torch.softmax(logits, dim=-1)
-
-    next_token_probs = []
-    for i in range(len(token_ids) - 1):
-        next_token_id = token_ids[i + 1]
-        prob = probs[0, i, next_token_id].item()
-        next_token_probs.append(round(prob, 6))
-    next_token_probs.append(None)
+    probs = next_token_probs(loaded.jax_run, token_ids)
+    rounded_probs = [round(p, 6) if p is not None else None for p in probs]
 
     token_strings = [loaded.tokenizer.get_tok_display(t) for t in token_ids]
 
@@ -979,7 +576,7 @@ def _tool_create_prompt(params: dict[str, Any]) -> dict[str, Any]:
         "text": text,
         "tokens": token_strings,
         "token_ids": token_ids,
-        "next_token_probs": next_token_probs,
+        "next_token_probs": rounded_probs,
     }
 
 
@@ -1088,193 +685,6 @@ def _tool_set_investigation_summary(params: dict[str, Any]) -> dict[str, Any]:
     return {"status": "ok", "path": str(summary_path)}
 
 
-def _tool_save_graph_artifact(params: dict[str, Any]) -> dict[str, Any]:
-    """Save a graph as an artifact for the research report.
-
-    Uses the same filtering logic as the main graph API:
-    1. Filter nodes by CI threshold
-    2. Add pseudo nodes (wte, output)
-    3. Filter edges to only active nodes
-    4. Apply edge limit
-    """
-    config = _require_investigation_config()
-    manager, loaded = _get_state()
-
-    graph_id = params["graph_id"]
-    caption = params.get("caption")
-    ci_threshold = params.get("ci_threshold", 0.5)
-    edge_limit = params.get("edge_limit", 5000)
-
-    _log_event(
-        "tool_call",
-        f"save_graph_artifact: graph_id={graph_id}",
-        {"graph_id": graph_id, "caption": caption},
-    )
-
-    # Fetch graph from DB
-    result = manager.db.get_graph(graph_id)
-    if result is None:
-        raise ValueError(f"Graph with id={graph_id} not found")
-
-    graph, prompt_id = result
-
-    # Get tokens from prompt
-    prompt_record = manager.db.get_prompt(prompt_id)
-    if prompt_record is None:
-        raise ValueError(f"Prompt with id={prompt_id} not found")
-
-    tokens = [loaded.tokenizer.get_tok_display(tid) for tid in prompt_record.token_ids]
-    num_tokens = len(tokens)
-
-    # Create artifacts directory
-    artifacts_dir = config.investigation_dir / "artifacts"
-    artifacts_dir.mkdir(exist_ok=True)
-
-    # Generate artifact ID (find max existing number to avoid collisions)
-    existing_nums = []
-    for f in artifacts_dir.glob("graph_*.json"):
-        try:
-            num = int(f.stem.split("_")[1])
-            existing_nums.append(num)
-        except (IndexError, ValueError):
-            continue
-    artifact_num = max(existing_nums, default=0) + 1
-    artifact_id = f"graph_{artifact_num:03d}"
-
-    # Compute out_probs from stored logits
-    out_probs = _build_out_probs(
-        graph.ci_masked_out_logits,
-        graph.target_out_logits,
-        loaded.tokenizer.get_tok_display,
-    )
-
-    # Step 1: Filter nodes by CI threshold (same as main graph API)
-    filtered_ci_vals = {k: v for k, v in graph.node_ci_vals.items() if v > ci_threshold}
-    l0_total = len(filtered_ci_vals)
-
-    # Step 2: Add pseudo nodes (embed and output) - same as _add_pseudo_layer_nodes
-    node_ci_vals_with_pseudo = dict(filtered_ci_vals)
-    for seq_pos in range(num_tokens):
-        node_ci_vals_with_pseudo[f"embed:{seq_pos}:0"] = 1.0
-    for key, out_prob in out_probs.items():
-        seq_pos, token_id = key.split(":")
-        node_ci_vals_with_pseudo[f"output:{seq_pos}:{token_id}"] = out_prob.prob
-
-    # Step 3: Filter edges to only active nodes
-    active_node_keys = set(node_ci_vals_with_pseudo.keys())
-    filtered_edges = [
-        e
-        for e in graph.edges
-        if str(e.source) in active_node_keys and str(e.target) in active_node_keys
-    ]
-
-    # Step 4: Sort by strength and apply edge limit
-    filtered_edges.sort(key=lambda e: abs(e.strength), reverse=True)
-    filtered_edges = filtered_edges[:edge_limit]
-
-    # Build edges data
-    edges_data = [
-        {
-            "src": str(e.source),
-            "tgt": str(e.target),
-            "val": e.strength,
-        }
-        for e in filtered_edges
-    ]
-
-    # Compute max abs attr from filtered edges
-    max_abs_attr = max((abs(e.strength) for e in filtered_edges), default=0.0)
-
-    # Filter nodeSubcompActs to match nodeCiVals
-    filtered_subcomp_acts = {
-        k: v for k, v in graph.node_subcomp_acts.items() if k in node_ci_vals_with_pseudo
-    }
-
-    # Build artifact data (self-contained GraphData, same structure as API response)
-    artifact = {
-        "type": "graph",
-        "id": artifact_id,
-        "caption": caption,
-        "graph_id": graph_id,
-        "data": {
-            "tokens": tokens,
-            "edges": edges_data,
-            "outputProbs": {
-                k: {
-                    "prob": v.prob,
-                    "logit": v.logit,
-                    "target_prob": v.target_prob,
-                    "target_logit": v.target_logit,
-                    "token": v.token,
-                }
-                for k, v in out_probs.items()
-            },
-            "nodeCiVals": node_ci_vals_with_pseudo,
-            "nodeSubcompActs": filtered_subcomp_acts,
-            "maxAbsAttr": max_abs_attr,
-            "l0_total": l0_total,
-        },
-    }
-
-    # Save artifact
-    artifact_path = artifacts_dir / f"{artifact_id}.json"
-    artifact_path.write_text(json.dumps(artifact, indent=2))
-
-    _log_event(
-        "artifact_saved",
-        f"Saved graph artifact: {artifact_id}",
-        {"artifact_id": artifact_id, "graph_id": graph_id, "path": str(artifact_path)},
-    )
-
-    return {"artifact_id": artifact_id, "path": str(artifact_path)}
-
-
-def _tool_probe_component(params: dict[str, Any]) -> dict[str, Any]:
-    """Fast CI probing on custom text for a specific component."""
-    manager, loaded = _get_state()
-
-    text = params["text"]
-    layer = params["layer"]
-    component_idx = params["component_idx"]
-
-    _log_event(
-        "tool_call",
-        f"probe_component: '{text[:50]}...' layer={layer} idx={component_idx}",
-        {"text": text, "layer": layer, "component_idx": component_idx},
-    )
-
-    token_ids = loaded.tokenizer.encode(text)
-    assert token_ids, "Text produced no tokens"
-    tokens_tensor = torch.tensor([token_ids], device=DEVICE)
-
-    concrete_layer = loaded.topology.canon_to_target(layer)
-
-    with manager.gpu_lock():
-        result = compute_ci_only(
-            model=loaded.model, tokens=tokens_tensor, sampling=loaded.config.sampling
-        )
-
-    ci_values = result.ci_lower_leaky[concrete_layer][0, :, component_idx].tolist()
-    subcomp_acts = result.component_acts[concrete_layer][0, :, component_idx].tolist()
-
-    # Get next token probs from target model output
-    next_token_probs = []
-    for i in range(len(token_ids) - 1):
-        next_token_id = token_ids[i + 1]
-        prob = result.target_out_probs[0, i, next_token_id].item()
-        next_token_probs.append(round(prob, 6))
-    next_token_probs.append(None)
-
-    token_strings = [loaded.tokenizer.get_tok_display(t) for t in token_ids]
-
-    return {
-        "tokens": token_strings,
-        "ci_values": ci_values,
-        "subcomp_acts": subcomp_acts,
-        "next_token_probs": next_token_probs,
-    }
-
-
 def _tool_get_component_activation_examples(params: dict[str, Any]) -> dict[str, Any]:
     """Get activation examples from harvest data."""
     _, loaded = _get_state()
@@ -1332,22 +742,16 @@ def _tool_get_model_info(_params: dict[str, Any]) -> dict[str, Any]:
 # =============================================================================
 
 
-_STREAMING_TOOLS: dict[str, Callable[..., Generator[dict[str, Any]]]] = {
-    "optimize_graph": _tool_optimize_graph,
-}
+_STREAMING_TOOLS: dict[str, Callable[..., Generator[dict[str, Any]]]] = {}
 
 _SIMPLE_TOOLS: dict[str, Callable[..., dict[str, Any]]] = {
     "get_component_info": _tool_get_component_info,
-    "run_ablation": _tool_run_ablation,
     "search_dataset": _tool_search_dataset,
     "create_prompt": _tool_create_prompt,
     "update_research_log": _tool_update_research_log,
     "save_explanation": _tool_save_explanation,
     "set_investigation_summary": _tool_set_investigation_summary,
-    "save_graph_artifact": _tool_save_graph_artifact,
-    "probe_component": _tool_probe_component,
     "get_component_activation_examples": _tool_get_component_activation_examples,
-    # "get_component_attributions": _tool_get_component_attributions,
     "get_model_info": _tool_get_model_info,
 }
 

@@ -1,39 +1,35 @@
 """Application state management for the PD backend.
 
-Contains:
-- RunState: Runtime state for a loaded run (model, tokenizer, repos)
-- StateManager: Singleton managing app-wide state with proper lifecycle
+The app is a read-only viewer over a saved JAX run: it opens the orbax checkpoint via
+`open_jax_run` (the model forward, torch-free) and reads the run's pinned torch-free
+`LMExperimentConfig` for target/data/algorithm metadata, plus the pre-computed
+harvest/autointerp/attribution/cluster repos. No torch.
 """
 
-import threading
-from collections.abc import Generator
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
-from fastapi import HTTPException
+from jax_single_pool.load_run import LoadedJaxRun
 
-from param_decomp.component_model import ComponentModel
 from param_decomp_config.lm import LMDataConfig, LMTargetConfig
 from param_decomp_config.pd import PDConfig
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.app.backend.database import PromptAttrDB, Run
+from param_decomp_lab.app.backend.topology import AppTopology
 from param_decomp_lab.autointerp.repo import InterpRepo
 from param_decomp_lab.dataset_attributions.repo import AttributionRepo
 from param_decomp_lab.graph_interp.repo import GraphInterpRepo
 from param_decomp_lab.harvest.repo import HarvestRepo
-from param_decomp_lab.topology import TransformerTopology
 
 
 @dataclass
 class RunState:
-    """Runtime state for a loaded run (model, tokenizer, etc.)"""
+    """Runtime state for a loaded JAX run (model forward + tokenizer + repos)."""
 
     run: Run
-    model: ComponentModel
-    topology: TransformerTopology
+    jax_run: LoadedJaxRun
+    topology: AppTopology
     tokenizer: AppTokenizer
-    sources_by_target: dict[str, list[str]]
     config: PDConfig
     # The token-based app only loads LM runs.
     lm_target: LMTargetConfig
@@ -73,7 +69,6 @@ class StateManager:
 
     def __init__(self) -> None:
         self._state: AppState | None = None
-        self._gpu_lock = threading.Lock()
 
     @classmethod
     def get(cls) -> "StateManager":
@@ -116,21 +111,3 @@ class StateManager:
         """Clean up resources."""
         if self._state is not None:
             self._state.db.close()
-
-    @contextmanager
-    def gpu_lock(self) -> Generator[None]:
-        """Acquire GPU lock or fail with 503 if another GPU operation is in progress.
-
-        Use this for GPU-intensive endpoints to prevent concurrent operations
-        that would cause the server to hang.
-        """
-        acquired = self._gpu_lock.acquire(blocking=False)
-        if not acquired:
-            raise HTTPException(
-                status_code=503,
-                detail="GPU operation already in progress. Please wait and retry.",
-            )
-        try:
-            yield
-        finally:
-            self._gpu_lock.release()

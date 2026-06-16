@@ -8,9 +8,9 @@ from pydantic import ValidationError
 
 from param_decomp_config.base import BaseConfig
 from param_decomp_lab.app.backend.state import StateManager
+from param_decomp_lab.app.backend.topology import AppTopology
 from param_decomp_lab.app.backend.utils import log_errors
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
-from param_decomp_lab.topology import TransformerTopology
 
 router = APIRouter(prefix="/api/clusters", tags=["clusters"])
 
@@ -92,7 +92,7 @@ def load_cluster_mapping(file_path: str) -> ClusterMapping:
 
 
 def _to_canonical_keys(
-    clusters: dict[str, int | None], topology: TransformerTopology
+    clusters: dict[str, int | None], topology: AppTopology
 ) -> dict[str, int | None]:
     """Convert concrete component keys (e.g. `h.3.mlp.down_proj:5`) to canonical keys.
 

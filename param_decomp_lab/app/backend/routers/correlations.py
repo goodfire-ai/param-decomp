@@ -11,21 +11,21 @@ from pydantic import BaseModel
 
 from param_decomp.log import logger
 from param_decomp_lab.app.backend.dependencies import DepLoadedRun
+from param_decomp_lab.app.backend.topology import AppTopology
 from param_decomp_lab.app.backend.utils import log_errors
 from param_decomp_lab.autointerp.schemas import ModelMetadata
 from param_decomp_lab.harvest import analysis
-from param_decomp_lab.topology import TransformerTopology
 
 
 def _canonical_to_concrete_key(
-    canonical_layer: str, component_idx: int, topology: TransformerTopology
+    canonical_layer: str, component_idx: int, topology: AppTopology
 ) -> str:
     """Translate canonical layer + component idx to a concrete component key for harvest data."""
     concrete = topology.canon_to_target(canonical_layer)
     return f"{concrete}:{component_idx}"
 
 
-def _concrete_to_canonical_key(concrete_key: str, topology: TransformerTopology) -> str:
+def _concrete_to_canonical_key(concrete_key: str, topology: AppTopology) -> str:
     """Translate concrete component key to canonical component key."""
     layer, idx = concrete_key.rsplit(":", 1)
     canonical = topology.target_to_canon(layer)
@@ -204,7 +204,7 @@ async def request_component_interpretation(
         n_blocks=loaded.topology.n_blocks,
         dataset_name=loaded.lm_data.dataset_name,
         layer_descriptions={
-            path: loaded.topology.target_to_canon(path) for path in loaded.model.target_module_paths
+            path: loaded.topology.target_to_canon(path) for path in loaded.jax_run.site_names
         },
         seq_len=loaded.lm_data.max_seq_len,
         decomposition_method="pd",

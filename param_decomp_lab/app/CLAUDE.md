@@ -1,11 +1,37 @@
 # PD App
 
-Web-based visualization and analysis tool for exploring neural network component decompositions.
+Web-based **read-only viewer** for exploring saved decompositions.
 
-- **Backend**: Python FastAPI (`backend/`)
+- **Backend**: Python FastAPI (`backend/`) — **reads JAX runs natively, imports zero
+  torch** (#841). It opens the run's orbax checkpoint via
+  `jax_single_pool.load_run.open_jax_run` (the model forward) and reads the run's
+  torch-free `param_decomp_config.lm.LMExperimentConfig` for target/data/algorithm
+  metadata, plus the pre-computed harvest / autointerp / attribution / cluster repos.
 - **Frontend**: Svelte 5 + TypeScript (`frontend/`)
-- **Database**: SQLite at `PARAM_DECOMP_OUT_DIR/app/prompt_attr.db` (shared across team via NFS)
+- **Database**: SQLite at `PARAM_DECOMP_OUT_DIR/app/prompt_attr.db` (shared across team via
+  NFS) — only `runs` + `prompts` now (attribution graphs / interventions are gone).
 - **TODOs**: See `TODO.md` for open work items
+
+## What the backend does NOT do (CUT in #841)
+
+On-the-fly **attribution graphs, interventions, and circuit optimization** were removed
+when the app became a read-only JAX viewer — they were the only torch-requiring code.
+Deleted: `backend/compute.py`, `backend/optim_cis.py`, `backend/routers/{graphs,
+intervention,agents}.py`, the `/probe` endpoint, and the MCP tools that ran them
+(`optimize_graph`, `run_ablation`, `probe_component`, `save_graph_artifact`). The
+torch oracle for that compute lives at git tag `torch-oracle`; re-homing it onto a JAX
+path is a follow-up. `param_decomp_lab/editing/` was a downstream consumer of that
+compute and is now unbuildable (excluded from `[tool.pyright]` until re-homed).
+
+Live LM next-token probabilities (prompt previews, dataset-search rows, MCP
+`create_prompt`) come from `backend/inference.py::next_token_probs`, which reads
+`open_jax_run(...).forward(...).output_probs` (softmax of the clean frozen-target
+logits) — the same quantity the old torch path computed.
+
+`open_jax_run` is SimpleMLP-only today; loading a llama8b run raises (phase-4 follow-up).
+Pre-#727 runs that declare `weights_dtype: float32` are refused by
+`build_experiment_config`'s dtype assert — re-stamp the run's `experiment_config.yaml`
+with a supported dtype to load it.
 
 ## Project Context
 
@@ -34,24 +60,21 @@ This launches both backend (FastAPI/uvicorn) and frontend (Vite) dev servers.
 
 ```
 backend/
-├── server.py              # FastAPI app, CORS, routers
-├── state.py               # Singleton StateManager + HarvestRepo (lazy-loaded harvest data)
-├── compute.py             # Core attribution computation + intervention evaluation
+├── server.py              # FastAPI app, CORS, routers (no torch, no CUDA check)
+├── state.py               # Singleton StateManager + RunState (LoadedJaxRun + repos)
+├── topology.py            # AppTopology: torch-free canonical ↔ concrete path mapping
+├── inference.py           # next_token_probs from open_jax_run(...).forward().output_probs
 ├── app_tokenizer.py       # AppTokenizer: wraps HF tokenizers for display/encoding
-├── (topology lives at param_decomp/topology/ — TransformerTopology)
 ├── schemas.py             # Pydantic API models
 ├── dependencies.py        # FastAPI dependency injection
 ├── utils.py               # Logging/timing utilities
-├── database.py            # SQLite interface
-├── optim_cis.py           # Sparse CI optimization, loss configs, PGD
+├── database.py            # SQLite interface (runs + prompts only)
 └── routers/
-    ├── runs.py            # Load W&B runs + GET /api/model_info
+    ├── runs.py            # Load a JAX run (open_jax_run + LMExperimentConfig) + GET /api/status
     ├── run_registry.py    # Architecture + data-availability lookups for the frontend run list
-    ├── graphs.py          # Compute attribution graphs
     ├── graph_interp.py    # Context-aware labels + prompt-edge graph from graph_interp pipeline
-    ├── prompts.py         # Prompt management
+    ├── prompts.py         # Prompt management (next-token probs via JAX forward)
     ├── activation_contexts.py  # Serves pre-harvested activation contexts
-    ├── intervention.py    # Selective component activation
     ├── correlations.py    # Component correlations + token stats + interpretations
     ├── autointerp_compare.py   # List autointerp subruns + serve interpretations from each
     ├── dataset_attributions.py # Precomputed dataset-aggregated component attributions
@@ -60,11 +83,17 @@ backend/
     ├── investigations.py  # List and serve investigation outputs
     ├── clusters.py        # Component clustering
     ├── dataset_search.py  # Dataset search (reads dataset from run config)
-    ├── agents.py          # Various useful endpoints that AI agents should look at when helping
-    └── mcp.py             # MCP (Model Context Protocol) endpoint for Claude Code
+    └── mcp.py             # MCP endpoint for Claude Code (read-only tools only)
 ```
 
-Note: Activation contexts, correlations, and token stats are now loaded from pre-harvested data (see `param_decomp_lab/harvest/`). The app no longer computes these on-the-fly.
+Note: Activation contexts, correlations, and token stats are loaded from pre-harvested
+data (see `param_decomp_lab/harvest/`). The backend never runs the decomposition forward
+except to read clean-logit next-token probabilities (`inference.py`).
+
+`AppTopology` (canonical ↔ concrete, e.g. `0.mlp.up` ↔ `h.0.mlp.c_fc`) is built from the
+JAX target's model-type name + decomposed site names via the shared `_PathSchema`
+definitions in `param_decomp_lab/topology/path_schemas.py` (torch-free). The torch-coupled
+`TransformerTopology` (built from an `nn.Module`) is NOT used by the app.
 
 ### Frontend Structure
 
@@ -157,107 +186,8 @@ Node keys follow the format `"layer:seq:cIdx"` where:
 - `wte` (word token embedding): Input embeddings, single pseudo-component (idx 0)
 - `output`: Output logits, component_idx = token_id
 
-These appear in attribution graphs but **cannot be intervened on**.
-Only internal layers (attn/mlp projections) support selective activation.
-
-Helper: `isInterventableNode()` in `promptAttributionsTypes.ts`
-
-### Backend Types (`compute.py`)
-
-```python
-Node(layer: str, seq_pos: int, component_idx: int)
-
-Edge(source: Node, target: Node, strength: float, is_cross_seq: bool)
-# strength = gradient * activation
-# is_cross_seq = True for k/v → o_proj (attention pattern)
-
-PromptAttributionResult(edges, ci_masked_out_logits, target_out_logits, node_ci_vals, node_subcomp_acts)
-
-TokenPrediction(token, token_id, prob, logit, target_prob, target_logit)
-
-InterventionResult(input_tokens, ci, stochastic, adversarial, ci_loss, stochastic_loss, adversarial_loss)
-# ci/stochastic/adversarial are list[list[TokenPrediction]] (per-position top-k)
-# losses are evaluated using the graph's implied loss context
-```
-
-### Frontend Types (`promptAttributionsTypes.ts`)
-
-```typescript
-GraphData = {
-  id: number,
-  tokens: string[],
-  edges: Edge[],                              // {src, tgt, val}
-  outputProbs: Record<string, OutputProbEntry>, // "seq:cIdx" → {prob, token}
-  nodeCiVals: Record<string, number>,         // node_key → CI value
-  maxAbsAttr: number,
-  l0_total: number,                           // total active components
-  optimization?: OptimizationResult
-}
-```
-
----
-
-## Core Computations
-
-### Attribution Graph (`compute.py`)
-
-**Entry points**:
-
-- `compute_prompt_attributions()` - Uses model's natural CI values
-- `compute_prompt_attributions_optimized()` - Sparse CI optimization
-
-**Algorithm** (`compute_edges_from_ci`):
-
-1. Forward pass with CI masks → component activations cached
-2. For each target layer, for each alive (seq_pos, component):
-   - Compute gradient of target w.r.t. all source layers
-   - `strength = grad * source_activation`
-   - Create Edge for each alive source component
-
-**Cross-sequence edges**: `topology.is_cross_seq_pair()` detects k/v → o_proj in same attention block.
-These have gradients across sequence positions (causal attention pattern).
-
-### Causal Importance (CI)
-
-CI determines which components are "alive":
-
-- Computed via `model.calc_causal_importances()`
-- Thresholded: `ci >= ci_threshold` → active
-- For output layer: `prob >= output_prob_threshold`
-
-### CI Optimization (`optim_cis.py`)
-
-Finds sparse CI mask that:
-
-- Preserves prediction of target `label_token`
-- Minimizes L0 (active component count)
-- Uses importance minimality + CE loss (or KL loss)
-
-### Interventions (`compute.py → compute_intervention`)
-
-A single unified function evaluates a node selection under three masking regimes:
-
-- **CI**: mask = selection (binary on/off)
-- **Stochastic**: mask = selection + (1-selection) × Uniform(0,1)
-- **Adversarial**: PGD optimizes alive-but-unselected components to maximize loss; non-alive get Uniform(0,1)
-
-Returns `InterventionResult` with top-k `TokenPrediction`s per position for each regime, plus per-regime loss values.
-
-**Loss context**: Every graph has an implied loss that interventions evaluate against:
-
-- **Standard/manual graphs** → `MeanKLLossConfig` (mean KL divergence from target across all positions)
-- **Optimized graphs** → the graph's optimization loss (CE for a specific token at a position, or KL at a position)
-
-This loss is used for two things: (1) what PGD maximizes during adversarial evaluation, and (2) the `ci_loss`/`stochastic_loss`/`adversarial_loss` metrics reported in `InterventionResult`.
-
-**Alive masks**: `compute_intervention` recomputes the model's natural CI (one forward pass + `calc_causal_importances`) and binarizes at 0 to get alive masks. This ensures the alive set is always the full model's CI — not the graph's potentially sparse optimized CI. PGD can only manipulate alive-but-unselected components.
-
-**Training PGD vs Eval PGD**: The PGD settings in the graph optimization config (`adv_pgd_n_steps`,
-`adv_pgd_step_size`) are a _training_ regularizer — they make CI optimization robust. The PGD in
-`compute_intervention` is an _eval_ metric — it measures worst-case performance for a given node
-selection. Eval PGD defaults are in `compute.py` (`DEFAULT_EVAL_PGD_CONFIG`).
-
-**Base intervention run**: Created automatically during graph computation. Uses all interventable nodes with CI > 0. Persisted as an `intervention_run` so predictions are available synchronously.
+These pseudo-layers appear in the pre-computed `graph_interp` data the app reads. The
+backend no longer computes attribution graphs or interventions (CUT — see top of file).
 
 ---
 
@@ -266,33 +196,15 @@ selection. Eval PGD defaults are in `compute.py` (`DEFAULT_EVAL_PGD_CONFIG`).
 ### Run Loading
 
 ```
-POST /api/runs/load(wandb_path)
-  → Load ComponentModel + tokenizer from W&B
-  → Build sources_by_target (valid gradient paths)
-  → Store in StateManager singleton
-  ← LoadedRun
-```
-
-### Graph Computation (SSE streaming)
-
-```
-POST /api/graphs
-  → compute_prompt_attributions()
-  → Stream progress: {type: "progress", current, total, stage}
-  ← {type: "complete", data: GraphData}
-```
-
-### Intervention
-
-```
-POST /api/intervention/run {graph_id, selected_nodes, top_k, adv_pgd}
-  → compute_intervention(active_nodes, graph_alive_masks, loss_config)
-  ← InterventionRunSummary {id, selected_nodes, result: InterventionResult}
-
-InterventionResult = {
-  input_tokens, ci, stochastic, adversarial,  // TokenPrediction[][] per regime
-  ci_loss, stochastic_loss, adversarial_loss   // loss under each regime
-}
+POST /api/runs/load(wandb_path, context_length)
+  → run_dir = PARAM_DECOMP_OUT_DIR/runs/<run_id>
+  → open_jax_run(run_dir)                       # orbax checkpoint → forward()
+  → LMExperimentConfig.from_file(experiment_config.yaml)   # torch-free target/data/pd
+  → AppTopology.from_model_type(...)            # canonical path mapping
+  → AppTokenizer.from_pretrained(data.tokenizer_name)
+  → open harvest/interp/attributions/graph_interp repos
+  → store in StateManager singleton
+  ← {status, run_id, wandb_path}
 ```
 
 ### Component Correlations & Interpretations
@@ -328,12 +240,13 @@ GET /api/dataset/results?page=1&page_size=20
 
 Located at `PARAM_DECOMP_OUT_DIR/app/prompt_attr.db` (shared via NFS). Uses DELETE journal mode with `fcntl.flock` write locking for safe concurrent access from multiple backends.
 
-| Table               | Key                                | Purpose                                                  |
-| ------------------- | ---------------------------------- | -------------------------------------------------------- |
-| `runs`              | `wandb_path`                       | W&B run references                                       |
-| `prompts`           | `(run_id, context_length)`         | Token sequences                                          |
-| `graphs`            | `(prompt_id, optimization_params)` | Attribution edges + CI/target logits + node CI values    |
-| `intervention_runs` | `graph_id`                         | Saved `InterventionResult` JSON (single `result` column) |
+| Table     | Key                        | Purpose             |
+| --------- | -------------------------- | ------------------- |
+| `runs`    | `wandb_path`               | W&B run references  |
+| `prompts` | `(run_id, context_length)` | Token sequences     |
+
+The `graphs` / `intervention_runs` tables are gone (attribution + intervention CUT). The
+real shared DB may still carry those tables — they're just unused.
 
 Note: Activation contexts, correlations, token stats, and interpretations are loaded from pre-harvested data at `PARAM_DECOMP_OUT_DIR/{harvest,autointerp}/` (see `param_decomp_lab/harvest/` and `param_decomp_lab/autointerp/`).
 
@@ -347,12 +260,13 @@ Note: Activation contexts, correlations, token stats, and interpretations are lo
 StateManager.get() → AppState:
   - db: PromptAttrDB (always available)
   - run_state: RunState | None
-      - model: ComponentModel
-      - topology: TransformerTopology  # Model topology (embedding, unembed, cross-seq roles)
+      - jax_run: LoadedJaxRun       # open_jax_run output: forward() + site_names + vocab
+      - topology: AppTopology       # torch-free canonical ↔ concrete path mapping
       - tokenizer: AppTokenizer     # Token display, encoding, span construction
-      - sources_by_target: dict[target_layer → source_layers]
-      - config, context_length
-      - harvest: HarvestRepo       # Lazy-loaded pre-harvested data
+      - config: PDConfig            # the run's algorithm config (for /status config_yaml)
+      - lm_target, lm_data          # torch-free LMExperimentConfig sub-configs
+      - context_length
+      - harvest / interp / attributions / graph_interp repos  # pre-computed data
   - dataset_search_state: DatasetSearchState | None  # Cached search results
 
 HarvestRepo:  # Lazy-loads from PARAM_DECOMP_OUT_DIR/runs/<run_id>/harvest/

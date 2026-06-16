@@ -11,16 +11,15 @@ import random
 import time
 from typing import Annotated, Any
 
-import torch
 from datasets import Dataset, load_dataset
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from param_decomp.log import logger
 from param_decomp_lab.app.backend.dependencies import DepLoadedRun, DepStateManager
+from param_decomp_lab.app.backend.inference import next_token_probs
 from param_decomp_lab.app.backend.state import DatasetSearchState
 from param_decomp_lab.app.backend.utils import log_errors
-from param_decomp_lab.distributed import get_device
 
 # =============================================================================
 # Schemas
@@ -220,8 +219,6 @@ def get_tokenized_results(
             detail="No search results available. Perform a search first.",
         )
 
-    device = get_device()
-    model = loaded.model
     tokenizer = loaded.tokenizer
 
     total_results = len(search_state.results)
@@ -249,25 +246,12 @@ def get_tokenized_results(
         if len(token_ids) == 0:
             continue
 
-        tokens_tensor = torch.tensor([token_ids], device=device)
-
-        with torch.no_grad():
-            logits = model(tokens_tensor)
-            probs = torch.softmax(logits, dim=-1)
-
-        next_token_probs: list[float | None] = []
-        for i in range(len(token_ids) - 1):
-            next_token_id = token_ids[i + 1]
-            prob = probs[0, i, next_token_id].item()
-            next_token_probs.append(prob)
-        next_token_probs.append(None)
-
         token_strings = loaded.tokenizer.get_spans(token_ids)
 
         tokenized_results.append(
             TokenizedSearchResult(
                 tokens=token_strings,
-                next_token_probs=next_token_probs,
+                next_token_probs=next_token_probs(loaded.jax_run, token_ids),
                 occurrence_count=result["occurrence_count"],
                 metadata=result["metadata"],
             )
@@ -381,8 +365,6 @@ def get_random_samples_with_loss(
     text_column = loaded.lm_data.column_name
     _assert_simplestories(dataset_name)
 
-    device = get_device()
-    model = loaded.model
     tokenizer = loaded.tokenizer
 
     logger.info(f"Loading dataset {dataset_name} (split={split}) for random sampling with loss...")
@@ -411,19 +393,6 @@ def get_random_samples_with_loss(
         if len(token_ids) == 0:
             continue
 
-        tokens_tensor = torch.tensor([token_ids], device=device)
-
-        with torch.no_grad():
-            logits = model(tokens_tensor)
-            probs = torch.softmax(logits, dim=-1)
-
-        next_token_probs: list[float | None] = []
-        for i in range(len(token_ids) - 1):
-            next_token_id = token_ids[i + 1]
-            prob = probs[0, i, next_token_id].item()
-            next_token_probs.append(prob)
-        next_token_probs.append(None)  # No next token for last position
-
         token_strings = loaded.tokenizer.get_spans(token_ids)
 
         row_metadata = {
@@ -433,7 +402,7 @@ def get_random_samples_with_loss(
         results.append(
             TokenizedSample(
                 tokens=token_strings,
-                next_token_probs=next_token_probs,
+                next_token_probs=next_token_probs(loaded.jax_run, token_ids),
                 metadata=row_metadata,
             )
         )
