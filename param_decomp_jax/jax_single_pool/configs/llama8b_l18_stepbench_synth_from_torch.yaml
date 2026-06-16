@@ -1,0 +1,6 @@
+# LOCAL (uncommitted) and-gmi (H200) 8-GPU step-speed benchmark (synthetic data).
+# out_dir omitted on purpose: pd-jax-lm defaults it to PARAM_DECOMP_OUT_DIR/runs
+# for the current cluster (and-gmi artifacts mount).
+torch_config: torch/llama8b_l18_stepbench_synth_1pool.yaml
+run_name: ai-jax-l18-stepbench-8gpu
+remat_recon_forwards: true
