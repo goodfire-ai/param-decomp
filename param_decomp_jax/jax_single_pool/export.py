@@ -9,7 +9,8 @@ stack loads a JAX run like any 2/3-pool checkpoint. CPU-only; fp32 masters expor
 fp32 (the frozen bf16 target upcasts exactly, matching torch's fp32 HF load).
 Adversary sources and optimizer state are training-only and not exported.
 
-Key mapping (verified against the real torch modules — see `tools/verify_export_torch.py`):
+Key mapping (was verified against the real torch modules by the now-deleted
+`tools/verify_export_torch.py`; `tools/export_fixtures/*` are the frozen goldens):
 
   * V/U — read per site from `DecompVU.vu` to `model.<site>.components.{V,U}`
     (MLP and attention sites alike — torch componentizes any per-layer matrix).

@@ -57,9 +57,15 @@ llama8b-only (guarded).
 
 1. `pytest jax_single_pool/tests/` — at the default device count AND
    `XLA_FLAGS="--xla_force_host_platform_device_count=4"`.
-2. `tests/equivalence/` — fixture-driven torch↔JAX per-term numeric equivalence
-   (fp32, no RNG, zeroed attn). Regenerate goldens only when the MATH changes:
-   `gen_fixtures.py` (JAX env) then `torch_reference.py` (torch env).
+2. `tests/equivalence/` — fixture-driven JAX-vs-frozen-golden per-term numeric
+   equivalence (fp32, no RNG, zeroed attn). The torch references are FROZEN committed
+   goldens (`torch_reference.json`, `simple_mlp_equivalence/*.npz`,
+   `tools/export_fixtures/*`); the torch generators/verifier that produced them are
+   deleted so `param_decomp_jax` imports no torch (push-1). Regenerate goldens only when
+   the MATH changes: redraw fixtures JAX-side with `gen_fixtures.py`, then check out the
+   `torch-oracle` git tag in a torch-venv worktree and run that revision's
+   `torch_reference.py` / `gen_torch_fixtures.py` / `gen_export_fixture.py`, copying the
+   emitted goldens back here.
 3. `experiments/invariance_check.py` at 4 sim devices — trajectory invariant to
    device count up to float reassociation (SPEC D4).
 

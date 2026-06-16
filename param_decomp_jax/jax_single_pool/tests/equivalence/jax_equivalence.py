@@ -1,6 +1,6 @@
 """JAX equivalence check: the JAX single-pool PD loss terms vs the torch reference.
 
-Run in the JAX env AFTER `torch_reference.py`. Loads the SAME fixtures, builds the
+Loads the SAME fixtures behind the frozen `torch_reference.json` golden, builds the
 Llama `DecomposedLM` with the identical (zeroed-attn) suffix weights, and computes each
 loss term through the generic trainer's OWN helpers (`train.py`), feeding the FIXED
 masks / sources / routing from the fixtures (no RNG). Compares to

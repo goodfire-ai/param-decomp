@@ -2,9 +2,10 @@
 
 These pin the pure mapping (key names, per-site V/U reads, the site-order permutation,
 frozen-key rename) — including attention (q/k/v/o) sites with heterogeneous C. The
-cross-framework numeric proof is the tools pair (`tools/gen_export_fixture.py` +
-`tools/verify_export_torch.py`, the latter run in the torch venv against the real
-`LMComponentModel` / `GlobalSharedTransformerCiFn`).
+cross-framework numeric proof lived in the torch tools pair (`gen_export_fixture.py` +
+`verify_export_torch.py`), now deleted so `param_decomp_jax` imports no torch; the
+committed `tools/export_fixtures/*` are the frozen goldens (resurrect the torch
+verifier from the `torch-oracle` git tag if the mapping changes).
 """
 
 import numpy as np

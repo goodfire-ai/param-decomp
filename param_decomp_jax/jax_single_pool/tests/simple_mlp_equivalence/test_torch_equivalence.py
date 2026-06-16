@@ -1,7 +1,10 @@
 """Torch-reference equivalence for the LlamaSimpleMLP target.
 
-Fixtures from `gen_torch_fixtures.py` (torch venv). Both sides fp32; this is the test
-that catches RoPE / GELU-flavor / GQA / norm-eps mismatches:
+Fixtures are FROZEN committed goldens (`*_fixture.npz`); the torch generator that drew
+them (`gen_torch_fixtures.py`) is deleted — `param_decomp_jax` imports no torch. To
+regen, check out the `torch-oracle` git tag and run that revision's
+`gen_torch_fixtures.py` in the torch venv. Both sides fp32; this is the test that
+catches RoPE / GELU-flavor / GQA / norm-eps mismatches:
 
   * tiny (hermetic): the JAX target is rebuilt from the fixture's state dict; the
     fixture's GQA repeat=2 exercises the kv-head repeat path.

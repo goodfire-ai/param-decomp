@@ -1,9 +1,9 @@
 """Generate the FIXED, framework-agnostic fixtures for the cross-framework PD
-equivalence harness (`torch_reference.py` + `jax_equivalence.py`).
+equivalence harness (`jax_equivalence.py`).
 
 Everything is drawn ONCE here with numpy and serialized to `fixtures.npz`, so both
-the torch reference and the JAX impl consume byte-identical inputs and draw NO RNG of
-their own. That makes each loss term a deterministic function of the fixtures — the only
+the (now-frozen) torch reference and the JAX impl consume byte-identical inputs and
+draw NO RNG of their own. That makes each loss term a deterministic function of the fixtures — the only
 way two frameworks can disagree is a genuine math difference, which is exactly what we
 want the harness to surface.
 

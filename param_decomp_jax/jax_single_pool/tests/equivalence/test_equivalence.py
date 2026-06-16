@@ -24,12 +24,12 @@ Two kinds of check:
     (all sites live) never exercise — and asserts it equals an explicit reference that
     hard-codes the frozen site to `x @ W`.
 
-Regenerate the cross-framework golden (only needed if the math or fixtures change):
-
-    # JAX env:
-    python jax_single_pool/tests/equivalence/gen_fixtures.py
-    # torch (param-decomp) env:
-    python jax_single_pool/tests/equivalence/torch_reference.py
+`torch_reference.json` is a FROZEN committed golden. The torch generator that produced
+it (`torch_reference.py`) is deleted — `param_decomp_jax` imports no torch. To regen
+(only if the math or fixtures change): check out the `torch-oracle` git tag in a
+separate worktree, run that revision's `torch_reference.py` in the torch
+(`param-decomp`) venv, and copy the resulting `torch_reference.json` back here. The
+fixtures themselves (`fixtures.npz`) are still drawn JAX-side by `gen_fixtures.py`.
 """
 
 import inspect
