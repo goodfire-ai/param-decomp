@@ -179,7 +179,9 @@ class ImportanceMinimalityLoss(Metric[ImportanceMinimalityLossConfig]):
         n_examples = int(all_reduce(self.n_examples, op=ReduceOp.SUM))
         lp, entropy = lp_and_entropy_terms(reduced_sums, n_examples)
         name = self.instance_key
+        # `lp` is the beta-independent sparsity proxy, not a loss term — emit it under
+        # the `sparsity/` namespace (fully-qualified key) so it doesn't read as a loss.
         return {
             name: lp + self.cfg.beta * entropy,
-            f"{name}_no_beta": lp,
+            f"sparsity/{name}_no_beta": lp,
         }
