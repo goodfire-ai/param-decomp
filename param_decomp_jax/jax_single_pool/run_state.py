@@ -7,11 +7,12 @@ optimizer-state structure.
 """
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import optax
 from jax import random
 from jax.sharding import Mesh
-from jaxtyping import PRNGKeyArray
+from jaxtyping import Array, PRNGKeyArray
 
 from jax_single_pool.adversary import init_sources_adam_state
 from jax_single_pool.config import ExperimentConfig
@@ -25,13 +26,49 @@ from jax_single_pool.recon import build_recon_terms
 from jax_single_pool.train import TrainState
 
 
+def torch_cosine_schedule(peak_lr: float, total_steps: int, alpha: float) -> optax.Schedule:
+    """Cosine decay matching torch's `get_scheduled_value` denominator: `progress =
+    step / (total_steps - 1)` (no warmup), so `0.1×` is reached at `step = total_steps - 1`.
+    optax's `cosine_decay_schedule` divides by `total_steps`, reaching it one step later
+    (SPEC S20). `total_steps == 1` collapses to a constant `peak_lr`."""
+    denom = max(total_steps - 1, 1)
+
+    def schedule(count: Array) -> Array:
+        progress = jnp.asarray(count, jnp.float32) / denom
+        return peak_lr * (alpha + (1 - alpha) * 0.5 * (1 + jnp.cos(jnp.pi * progress)))
+
+    return schedule
+
+
+def clip_by_global_norm_with_eps(max_norm: float, eps: float) -> optax.GradientTransformation:
+    """Global-norm clip matching torch's `clip_grad_norm_`: scale by
+    `clip(max_norm / (global_norm + eps), max=1)`. optax's `clip_by_global_norm` omits
+    `eps`; at small `max_norm` (0.01) the clip fires almost every step so this ~1e-4
+    relative offset is per-step (SPEC S19)."""
+
+    def init(params: optax.Params) -> optax.EmptyState:
+        del params
+        return optax.EmptyState()
+
+    def update(
+        updates: optax.Updates, state: optax.EmptyState, params: optax.Params | None = None
+    ) -> tuple[optax.Updates, optax.EmptyState]:
+        del params
+        global_norm = optax.global_norm(updates)
+        scale = jnp.minimum(max_norm / (global_norm + eps), 1.0)
+        updates = jax.tree.map(lambda g: g * scale, updates)
+        return updates, state
+
+    return optax.GradientTransformation(init, update)
+
+
 def build_optimizers(cfg: ExperimentConfig):
     """Returns (opt_vu, opt_ci, schedules): the schedule fns are returned too so the
     log path reports the exact LR the optimizer applies (single source of truth)."""
-    sched_vu = optax.cosine_decay_schedule(cfg.vu_optimizer.lr, cfg.steps, alpha=0.1)
-    sched_ci = optax.cosine_decay_schedule(cfg.ci_optimizer.lr, cfg.steps, alpha=0.1)
+    sched_vu = torch_cosine_schedule(cfg.vu_optimizer.lr, cfg.steps, alpha=0.1)
+    sched_ci = torch_cosine_schedule(cfg.ci_optimizer.lr, cfg.steps, alpha=0.1)
     opt_vu = optax.chain(
-        optax.clip_by_global_norm(cfg.vu_optimizer.grad_clip_norm),
+        clip_by_global_norm_with_eps(cfg.vu_optimizer.grad_clip_norm, eps=1e-6),
         optax.adamw(sched_vu, b1=0.9, b2=0.999, eps=1e-8, weight_decay=0.0),
     )
     opt_ci = optax.adamw(sched_ci, b1=0.9, b2=0.999, eps=1e-8, weight_decay=0.0)
