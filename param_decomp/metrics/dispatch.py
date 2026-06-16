@@ -20,6 +20,7 @@ from param_decomp.metrics.persistent_pgd_recon import (
 from param_decomp.metrics.pgd_masked_recon import PGDReconLoss
 from param_decomp.metrics.pgd_masked_recon_layerwise import PGDReconLayerwiseLoss
 from param_decomp.metrics.pgd_masked_recon_subset import PGDReconSubsetLoss
+from param_decomp.metrics.smooth_l0_importance_minimality import SmoothL0ImportanceMinimalityLoss
 from param_decomp.metrics.stochastic_hidden_acts_recon import StochasticHiddenActsReconLoss
 from param_decomp.metrics.stochastic_recon import StochasticReconLoss
 from param_decomp.metrics.stochastic_recon_layerwise import StochasticReconLayerwiseLoss
@@ -39,6 +40,7 @@ LOSS_METRIC_CLASSES: dict[str, type[Metric[Any]]] = {
         PGDReconLayerwiseLoss,
         PGDReconLoss,
         PGDReconSubsetLoss,
+        SmoothL0ImportanceMinimalityLoss,
         StochasticHiddenActsReconLoss,
         StochasticReconLayerwiseLoss,
         StochasticReconLoss,

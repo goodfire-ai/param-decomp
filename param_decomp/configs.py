@@ -33,6 +33,9 @@ from param_decomp.metrics.persistent_pgd_recon import (
 from param_decomp.metrics.pgd_masked_recon import PGDReconLossConfig
 from param_decomp.metrics.pgd_masked_recon_layerwise import PGDReconLayerwiseLossConfig
 from param_decomp.metrics.pgd_masked_recon_subset import PGDReconSubsetLossConfig
+from param_decomp.metrics.smooth_l0_importance_minimality import (
+    SmoothL0ImportanceMinimalityLossConfig,
+)
 from param_decomp.metrics.stochastic_hidden_acts_recon import StochasticHiddenActsReconLossConfig
 from param_decomp.metrics.stochastic_recon import StochasticReconLossConfig
 from param_decomp.metrics.stochastic_recon_layerwise import StochasticReconLayerwiseLossConfig
@@ -64,6 +67,7 @@ AnyLossMetricConfig = Annotated[
     | PGDReconLayerwiseLossConfig
     | PGDReconLossConfig
     | PGDReconSubsetLossConfig
+    | SmoothL0ImportanceMinimalityLossConfig
     | StochasticHiddenActsReconLossConfig
     | StochasticReconLayerwiseLossConfig
     | StochasticReconLossConfig

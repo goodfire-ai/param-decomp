@@ -33,6 +33,20 @@ entry. Duplicate `type` literals in a single config are rejected.
 A metric that wants to manipulate state coupled to backward overrides `before_backward`
 and/or `after_backward` (see PPGD for the canonical example).
 
+## Importance-minimality variants
+
+Two interchangeable CI-sparsity penalties, same `sum + beta·entropy` shape:
+
+- `ImportanceMinimalityLoss` (`importance_minimality.py`) — `L_p`: `(c + eps)^p`, `p`
+  annealed toward 0. Gradient `p·c^(p-1)` blows up as `c→0` for `p<1`.
+- `SmoothL0ImportanceMinimalityLoss` (`smooth_l0_importance_minimality.py`) — bounded
+  Geman–McClure `c²/(c²+γ²)`: flat at 0, saturating to 1, bounded gradient `~0.65/γ` near
+  `c≈γ`. Drop-in alternative avoiding the `L_p` cliff; `γ` anneals like `p`. Self-contained.
+
+Both are registered eval-side (`EVAL_METRIC_CLASSES` + `AnyEvalMetricConfig`), so a run driven
+by one can log the other as an eval-only sparsity proxy. The directly comparable cross-run
+sparsity number is `CI_L0`; each penalty's own `_no_beta` proxy is on its own scale.
+
 ## Metric identity (`instance_key`) and same-class loss + eval
 
 Metric instances are keyed everywhere — instance dicts, state-dict, and log-key
