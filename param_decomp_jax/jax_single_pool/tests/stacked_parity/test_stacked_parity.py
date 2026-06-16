@@ -36,7 +36,7 @@ from jax_single_pool.llama8b import (
     mlp_family_site_cs,
 )
 from jax_single_pool.lm import DecomposedLM
-from jax_single_pool.recon import build_recon_terms
+from jax_single_pool.recon import StochasticSources, build_recon_terms, subset_chunk_plan
 from jax_single_pool.tests.test_llama8b import _tiny_cfg
 from jax_single_pool.train import TrainState, make_train_step
 from param_decomp_config.losses import (
@@ -144,6 +144,32 @@ def test_masked_logits_match():
         {s: masks[s] for s in chunk0}, {s: delta_masks[s] for s in chunk0}, routes0, chunk0, True,
     )  # fmt: skip
     _assert_close(masked_subset, f["out::masked_subset"], "masked_logits (subset live)")
+
+
+def test_chunk_plan_static_live_set_matches():
+    """The production `subset_chunk_plan` (`ChunkwiseSubsetReconLoss`) is what reaches the
+    static live-set realization of SPEC S2: each plan entry holds a STATIC `live_sites`
+    tuple, and `masked_logits` runs every absent site on the frozen `x @ W` path (no
+    `(B,T,C)` acts) — distinct from the per-position routing fallback. This drives that
+    plan directly and asserts its first chunk's frozen-site forward matches the torch
+    golden (`out::masked_subset`), so the chunk-plan path is verified against the oracle.
+    """
+    f, lm, tgt, vu, resid = _load()
+
+    plan = subset_chunk_plan(
+        lm.site_names, sites_per_chunk=3, n_samples=1, sources=StochasticSources("continuous")
+    )
+    chunk0 = lm.site_names[:3]
+    assert plan[0].live_sites == chunk0, (plan[0].live_sites, chunk0)
+    assert all(len(entry.live_sites) == 3 for entry in plan), [e.live_sites for e in plan]
+
+    masks = {s: jnp.asarray(f[f"mask::{s}"]) for s in chunk0}
+    delta_masks = {s: jnp.asarray(f[f"delta_mask::{s}"]) for s in chunk0}
+    routes = {s: jnp.asarray(f[f"route0::{s}"]) for s in chunk0}
+    masked = lm.masked_logits(
+        tgt, vu, resid, masks, delta_masks, routes, plan[0].live_sites, plan[0].has_delta
+    )
+    _assert_close(masked, f["out::masked_subset"], "chunk-plan static-live-set forward")
 
 
 def test_train_trajectory_matches():
