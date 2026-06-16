@@ -12,6 +12,7 @@ import optax
 from jax_single_pool.adversary import (
     init_persistent_sources,
     init_sources_adam_state,
+    sources_adam_ascend_project,
 )
 from jax_single_pool.checkpoint import (
     make_checkpoint_manager,
@@ -125,6 +126,63 @@ def test_roundtrip_and_exact_resume(tmp_path: Path):
         assert float(m_cont[k]) == float(m_load[k]), k
     for a, b in zip(jax.tree.leaves(state_cont), jax.tree.leaves(loaded_cont), strict=True):
         assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
+
+
+def test_persistent_adam_step_count_roundtrip_and_post_resume_bias_correction(tmp_path: Path):
+    """Issue #678 (matrix §8 + S22/S13/S23): after N persistent ascents, the orbax
+    checkpoint must carry the adversary's `step_count` leaf (present, fp32, == N) and
+    bit-equal Adam moments; the FIRST post-resume ascent must apply bias-correction for
+    count N+1 (not N, not 1)."""
+    state_key = "PersistentPGDReconLoss"
+    beta1, beta2 = 0.5, 0.99
+
+    tgt, state, step, resid = _build(seed=1)
+    for i in range(3):
+        state, _ = step(state, tgt, resid, jax.random.PRNGKey(i))
+
+    pre_save = state.sources_opt_state[state_key]
+    n_ascents = int(pre_save.step_count)
+    # Each train step runs n_warmup_steps (1) supplemental ascents + 1 final ascent.
+    assert n_ascents == 3 * (1 + 1)
+
+    mgr = make_checkpoint_manager(tmp_path / "ckpts", keep_last=2)
+    save_state(mgr, 3, state)
+
+    _, fresh, _, _ = _build(seed=7)
+    restored = restore_latest(mgr, fresh)
+    assert restored is not None
+    loaded, _ = restored
+    loaded_adam = loaded.sources_opt_state[state_key]
+
+    # (a) the step_count leaf survived the round-trip: present, fp32 scalar, value N.
+    assert state_key in loaded.sources_opt_state
+    assert loaded_adam.step_count.dtype == jnp.float32
+    assert loaded_adam.step_count.shape == ()
+    assert float(loaded_adam.step_count) == float(n_ascents)
+
+    # (c) the restored Adam moments are bit-equal to pre-save (per site, m and v).
+    for site in pre_save.m:
+        assert jnp.array_equal(loaded_adam.m[site], pre_save.m[site])
+        assert jnp.array_equal(loaded_adam.v[site], pre_save.v[site])
+
+    # (b) the first post-resume ascent applies bias-correction for count N+1.
+    adam_cfg = AdamPGDConfig(
+        beta1=beta1, beta2=beta2, lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025)
+    )
+    grads = {site: jnp.ones_like(v) for site, v in loaded.sources[state_key].items()}
+    _, post_resume = sources_adam_ascend_project(
+        loaded.sources[state_key], grads, loaded_adam, jnp.asarray(0.01), adam_cfg
+    )
+    assert float(post_resume.step_count) == float(n_ascents + 1)
+    expected_bc1 = 1.0 - beta1 ** (n_ascents + 1)
+    expected_bc2 = 1.0 - beta2 ** (n_ascents + 1)
+    actual_bc1 = 1.0 - beta1 ** float(post_resume.step_count)
+    actual_bc2 = 1.0 - beta2 ** float(post_resume.step_count)
+    assert abs(actual_bc1 - expected_bc1) < 1e-12
+    assert abs(actual_bc2 - expected_bc2) < 1e-12
+    # The N+1 denominator must differ from both the N and the count-1 alternatives.
+    assert abs(expected_bc1 - (1.0 - beta1**n_ascents)) > 1e-9
+    assert abs(expected_bc1 - (1.0 - beta1**1)) > 1e-9
 
 
 def test_no_checkpoint_returns_none(tmp_path: Path):
