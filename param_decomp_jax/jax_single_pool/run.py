@@ -217,6 +217,14 @@ def train(
                 warmed_components, faith_warmup_opt_state, faith_warmup_loss = faith_warmup_step(
                     warmed_components, faith_warmup_opt_state, frozen
                 )
+                if _sigterm_received:
+                    # No valid checkpoint exists yet (the step-0 save happens only after
+                    # warmup completes, and resume skips warmup whenever a checkpoint is
+                    # present — a partially-warmed step-0 save would resume as if fully
+                    # warmed). Exit cleanly; the SLURM requeue redoes warmup from scratch.
+                    if is_main:
+                        print("SIGTERM during faith warmup: exiting for requeue", flush=True)
+                    return
             assert faith_warmup_loss is not None
             jax.block_until_ready(faith_warmup_loss)
             new_opt_vu = _ensure_global(
@@ -335,7 +343,7 @@ def train(
             sink.log(now_step, record)
             window_t0 = time.time()
 
-        if cfg.eval is not None and now_step % cfg.eval.every == 0:
+        if cfg.eval is not None and now_step % cfg.eval.every == 0 and not _sigterm_received:
             assert eval_step_fn is not None and eval_server is not None
             eval_pass_index = now_step // cfg.eval.every
             # uniform-average of per-batch scalars; mean-safe vs torch's accumulate-then-
@@ -344,6 +352,8 @@ def train(
             # eval.py's module docstring for the per-key parity argument (cites SPEC S8/D2).
             metric_sums: dict[str, jax.Array] = {}
             for j in range(cfg.eval.n_steps):
+                if _sigterm_received:
+                    break
                 eval_tokens = _global_token_batch(
                     eval_server.local_batch(eval_pass_index * cfg.eval.n_steps + j),
                     mesh,
@@ -359,15 +369,21 @@ def train(
                 )
                 for k, v in eval_metrics.items():
                     metric_sums[k] = metric_sums.get(k, jnp.zeros(())) + v
-            eval_record = {f"eval/{k}": float(v) / cfg.eval.n_steps for k, v in metric_sums.items()}
-            sink.log(now_step, eval_record)
-            if is_main:
-                headline = {
-                    k: eval_record[f"eval/{k}"]
-                    for k in ("ce_kl/kl_ci_masked", "ce_kl/ce_unrecovered_ci_masked")
+            # A SIGTERM mid-pass abandons the partial averages unlogged and falls through
+            # to the save block, which services the flag with a synchronous save of the
+            # already-completed `now_step` before the train loop breaks for requeue.
+            if not _sigterm_received:
+                eval_record = {
+                    f"eval/{k}": float(v) / cfg.eval.n_steps for k, v in metric_sums.items()
                 }
-                print(f"[eval @ {now_step}] {headline}", flush=True)
-            window_t0 = time.time()
+                sink.log(now_step, eval_record)
+                if is_main:
+                    headline = {
+                        k: eval_record[f"eval/{k}"]
+                        for k in ("ce_kl/kl_ci_masked", "ce_kl/ce_unrecovered_ci_masked")
+                    }
+                    print(f"[eval @ {now_step}] {headline}", flush=True)
+                window_t0 = time.time()
 
         if now_step % cfg.cadence.save_every == 0 or now_step == cfg.steps or _sigterm_received:
             save_state(checkpoint_manager, now_step, state)
