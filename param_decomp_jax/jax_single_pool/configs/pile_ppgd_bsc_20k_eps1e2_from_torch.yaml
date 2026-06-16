@@ -1,0 +1,6 @@
+# ROBUST FIX test (eps=1e-2): stronger reconditioning of the importance-min gradient
+# (eps 1e-12 -> 1e-2), capping near-zero gradient to ~6. A/B vs baseline p-d64ef990.
+torch_config: torch/pile_llama_simple_mlp_4l_ppgd_bsc_20k_eps1e2.yaml
+run_name: ai-jax-pile4l-ppgd-bsc-20k-eps1e2
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/runs
+remat_recon_forwards: false

@@ -1,0 +1,7 @@
+# 20k EXPERIMENT arm: CI-fn gradient clipping (global-norm 1.0) — neither JAX nor torch
+# clips the CI-fn today. Tests whether containing the CI-fn grad stops the low-p runaway.
+# Identical to pile_ppgd_bsc_20k_from_torch.yaml except ci_fn_optimizer.grad_clip_norm=1.0.
+torch_config: torch/pile_llama_simple_mlp_4l_ppgd_bsc_20k_ciclip.yaml
+run_name: ai-jax-pile4l-ppgd-bsc-20k-ciclip
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/runs
+remat_recon_forwards: false
