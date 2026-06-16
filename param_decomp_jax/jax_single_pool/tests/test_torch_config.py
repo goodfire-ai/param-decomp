@@ -158,6 +158,80 @@ def test_unsupported_settings_refuse():
         )  # fmt: skip
 
 
+def test_unsupported_model_family_refuses_and_supported_families_dispatch():
+    """E23 (PARITY_MATRIX §11 row 2): only Llama-3.1-8B (`hf`/`hf_weights_in_vendored`
+    → `TargetConfig`) and `LlamaSimpleMLP` (`pretrained` →
+    `LlamaSimpleMLPTargetConfig`) convert; every other family is refused at convert
+    time. The torch schema's `LMTargetSpec` discriminated union still validates a
+    GPT-2 spec (it's a well-formed `kind`), so the refusal must come from
+    `_resolve_target`'s per-family asserts, not pydantic."""
+    from jax_single_pool.config import LlamaSimpleMLPTargetConfig, TargetConfig
+
+    torch_cfg, raw = _reference_torch_cfg()
+
+    def _converted_target(spec: dict):
+        cfg = convert_torch_lm_config(
+            type(torch_cfg)(**dict(raw, target=dict(raw["target"], spec=spec))),
+            run_name="t", run_id=RUN_ID, out_dir=Path("/tmp"), remat_recon_forwards=True,
+        )  # fmt: skip
+        return cfg.target
+
+    vendored_llama = _converted_target(
+        {
+            "kind": "hf_weights_in_vendored",
+            "model_class": "param_decomp_lab.experiments.lm.vendored.llama_3_1.model.VendoredLlama",
+            "model_name": "meta-llama/Llama-3.1-8B",
+        }
+    )
+    assert isinstance(vendored_llama, TargetConfig)
+
+    raw_hf_llama = _converted_target(
+        {
+            "kind": "hf",
+            "model_class": "transformers.LlamaForCausalLM",
+            "model_name": "meta-llama/Llama-3.1-8B",
+        }
+    )
+    assert isinstance(raw_hf_llama, TargetConfig)
+
+    gpt2_hf = {
+        "kind": "hf",
+        "model_class": "transformers.GPT2LMHeadModel",
+        "model_name": "gpt2",
+    }
+    with pytest.raises(AssertionError, match="transformers.GPT2LMHeadModel"):
+        _converted_target(gpt2_hf)
+
+    gpt2_vendored = {
+        "kind": "hf_weights_in_vendored",
+        "model_class": "param_decomp_lab.experiments.lm.pretrain.models.gpt2.GPT2Simple",
+        "model_name": "gpt2",
+    }
+    with pytest.raises(AssertionError, match="GPT2Simple"):
+        _converted_target(gpt2_vendored)
+
+    other_hf_llama = {
+        "kind": "hf",
+        "model_class": "transformers.LlamaForCausalLM",
+        "model_name": "meta-llama/Llama-3.2-1B",
+    }
+    with pytest.raises(AssertionError, match="Llama-3.2-1B"):
+        _converted_target(other_hf_llama)
+
+    # `pretrained` dispatches into the LlamaSimpleMLP branch (proven by the
+    # model-class assert firing there); a non-LlamaSimpleMLP pretrained spec refuses
+    # before any disk access.
+    non_simple_mlp_pretrained = {
+        "kind": "pretrained",
+        "model_class": "param_decomp_lab.experiments.lm.pretrain.models.gpt2.GPT2Simple",
+        "run_path": "goodfire/spd/runs/t-deadbeef",
+    }
+    with pytest.raises(AssertionError, match="GPT2Simple"):
+        _converted_target(non_simple_mlp_pretrained)
+
+    assert LlamaSimpleMLPTargetConfig is not None  # the `pretrained` happy-path type
+
+
 def test_arbitrary_sites_with_per_site_c_convert():
     """Attention + MLP sites across non-contiguous layers with heterogeneous C —
     the general site space this trainer now implements."""
