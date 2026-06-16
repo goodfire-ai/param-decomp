@@ -395,6 +395,12 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
   <div class="muted">__SUBTITLE__</div>
   <div class="muted" id="visibleCount" style="margin-top:6px;"></div>
 
+  <section id="seqSection" style="display:none;">
+    <h2>Sequence</h2>
+    <div class="muted" id="seqHint">click a point to show its sequence</div>
+    <div id="seqPanel" style="max-height:240px; overflow:auto; line-height:1.7; font-size:12px;"></div>
+  </section>
+
   <section id="atlasSection">
     <h2>Thumbnail type</h2>
     <select id="atlasSelect"></select>
@@ -1485,9 +1491,27 @@ const pivotMarker = new THREE.Mesh(
 pivotMarker.visible = false;
 scene.add(pivotMarker);
 
+const SEQ = DATA.seq || null;
+const seqSectionEl = document.getElementById('seqSection');
+const seqPanelEl = document.getElementById('seqPanel');
+const seqHintEl = document.getElementById('seqHint');
+if (SEQ) seqSectionEl.style.display = 'block';
+
+function renderSequence(idx) {
+    if (!SEQ) return;
+    const s = SEQ.point_seq[idx], p = SEQ.point_pos[idx];
+    const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/\\n/g, '\\\\n');
+    seqPanelEl.innerHTML = SEQ.tokens[s].map((t, i) => i === p
+        ? `<span style="background:#fde047;color:#000;border-radius:2px;">${esc(t)}</span>`
+        : esc(t)).join('');
+    seqHintEl.textContent = `sequence ${s}, position ${p}`;
+}
+
 function selectPoint(idx) {
     pivotLock = idx;
     updateOrbitTarget();
+    renderSequence(idx);
 }
 function clearPivot() {
     pivotLock = -1;

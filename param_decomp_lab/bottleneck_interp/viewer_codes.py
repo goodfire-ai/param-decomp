@@ -1,14 +1,16 @@
 """Build the 3D grand-tour viewer over bottleneck code vectors.
 
 Each point is one token-position's code `z`; PCA'd to 3D this is the code manifold.
-Points are coloured by k-means region and each carries a thumbnail rendering its focus
-token, so hovering/zooming shows what token sits where on the manifold.
+Points are sampled as whole sequences (so a sequence's positions stay together for the
+flow lines and the click-to-show-sequence sidebar), coloured by k-means region, and each
+carries a thumbnail rendering its focus token.
 
 Reads a context-preserving harvest (codes + sequences.pt) and writes a self-contained
 HTML viewer.
 """
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
@@ -31,7 +33,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--codes", required=True, type=Path, help="context-preserving harvest dir")
     ap.add_argument("--out", required=True, type=Path, help="output .html path")
-    ap.add_argument("--n_points", type=int, default=8000)
+    ap.add_argument("--n_sequences", type=int, default=60, help="whole sequences to sample")
     ap.add_argument("--n_regions", type=int, default=20)
     ap.add_argument("--patch", type=int, default=40)
     ap.add_argument("--run_id", default="bneck-1e-2")
@@ -40,11 +42,20 @@ def main() -> None:
     ap.add_argument("--umap_min_dist", type=float, default=0.1)
     args = ap.parse_args()
 
-    h = load_harvest(args.codes, args.n_points * 4)
-    sel = torch.randperm(h.codes.shape[0])[: args.n_points]
-    codes = h.codes[sel]
-    tokens = h.flat_tokens[sel]
-    print(f"points {tuple(codes.shape)}")
+    seq_len = json.loads((args.codes / "meta.json").read_text())["seq_len"]
+    pool = args.n_sequences * seq_len * 4
+    h = load_harvest(args.codes, pool)
+    n_seq_avail = h.codes.shape[0] // seq_len
+    chosen = torch.randperm(n_seq_avail)[: args.n_sequences]
+    # gather every position of each chosen sequence, in order, so points stay contiguous
+    flat_idx = (chosen[:, None] * seq_len + torch.arange(seq_len)).reshape(-1)
+    codes = h.codes[flat_idx]
+    tokens = h.flat_tokens[flat_idx]
+    n_chosen = len(chosen)
+    point_seq = torch.arange(n_chosen).repeat_interleave(seq_len)
+    point_pos = torch.arange(seq_len).repeat(n_chosen)
+    seq_tokens = [[h.tokenizer.decode([int(t)]) for t in h.sequences[int(c)]] for c in chosen]
+    print(f"points {tuple(codes.shape)} from {n_chosen} sequences of length {seq_len}")
 
     labels = kmeans_regions(codes, args.n_regions)
 
@@ -89,6 +100,13 @@ def main() -> None:
         point_scalar=code_l0,
         point_label="token-position",
     )
+    # Sequence panel: per-point (sequence, position) + each sequence's decoded tokens, so
+    # the viewer can show a clicked point's whole sequence and draw per-sequence flow lines.
+    data["seq"] = {
+        "point_seq": point_seq.tolist(),
+        "point_pos": point_pos.tolist(),
+        "tokens": seq_tokens,
+    }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     write_viewer_html(data, args.out, run_id=args.run_id, subtitle="bottleneck code manifold")
     print(f"wrote {args.out}")
