@@ -34,7 +34,12 @@ def build_optimizers(cfg: ExperimentConfig):
         optax.clip_by_global_norm(cfg.vu_optimizer.grad_clip_norm),
         optax.adamw(sched_vu, b1=0.9, b2=0.999, eps=1e-8, weight_decay=0.0),
     )
-    opt_ci = optax.adamw(sched_ci, b1=0.9, b2=0.999, eps=1e-8, weight_decay=0.0)
+    ci_clip = (
+        []
+        if cfg.ci_optimizer.grad_clip_norm is None
+        else [optax.clip_by_global_norm(cfg.ci_optimizer.grad_clip_norm)]
+    )
+    opt_ci = optax.chain(*ci_clip, optax.adamw(sched_ci, b1=0.9, b2=0.999, eps=1e-8, weight_decay=0.0))
     return opt_vu, opt_ci, (sched_vu, sched_ci)
 
 
@@ -55,6 +60,8 @@ def init_train_state(
             lm.site_names,
             tuple(s.C for s in lm.sites),
             cfg.data.seq_len,
+            loss_spec.persistent[state_key].scope,
+            cfg.data.global_batch,
             random.fold_in(src_key, term_idx),
             mesh,
         )

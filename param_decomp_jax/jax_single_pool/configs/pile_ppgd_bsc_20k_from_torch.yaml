@@ -1,0 +1,6 @@
+# 20k baseline repro of the spike (faster than 40k: p<1 ~step 12.5k, blowup ~17.5-20k).
+# Current JAX code (no CI-fn clip). A/B control for the grad-clip arm. Normal QoS.
+torch_config: torch/pile_llama_simple_mlp_4l_ppgd_bsc_20k.yaml
+run_name: ai-jax-pile4l-ppgd-bsc-20k
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/runs
+remat_recon_forwards: false

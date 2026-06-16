@@ -1,0 +1,7 @@
+# ROBUST FIX test (eps=1e-3): recondition the importance-min gradient by flooring the
+# (ci+eps)^(p-1) term (eps 1e-12 -> 1e-3), capping the ~6e6 near-zero gradient to ~25.
+# Identical to pile_ppgd_bsc_20k_from_torch.yaml otherwise. A/B vs baseline p-d64ef990.
+torch_config: torch/pile_llama_simple_mlp_4l_ppgd_bsc_20k_eps1e3.yaml
+run_name: ai-jax-pile4l-ppgd-bsc-20k-eps1e3
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/runs
+remat_recon_forwards: false

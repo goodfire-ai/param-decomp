@@ -251,7 +251,6 @@ def convert_torch_lm_config(
     _assert_plain_adamw(vu_opt, "components_optimizer")
     _assert_plain_adamw(ci_opt, "ci_fn_optimizer")
     assert vu_opt.grad_clip_norm is not None, "components grad clip is part of the method"
-    assert ci_opt.grad_clip_norm is None, "CI-fn grad clip unsupported"
 
     loss_metrics = _losses(torch_cfg, tuple(sc.name for sc in target.sites))
     data = _data(torch_cfg)
@@ -274,7 +273,9 @@ def convert_torch_lm_config(
         vu_optimizer=VUOptimizerConfig(
             lr=vu_opt.lr_schedule.start_val, grad_clip_norm=vu_opt.grad_clip_norm
         ),
-        ci_optimizer=CIOptimizerConfig(lr=ci_opt.lr_schedule.start_val),
+        ci_optimizer=CIOptimizerConfig(
+            lr=ci_opt.lr_schedule.start_val, grad_clip_norm=ci_opt.grad_clip_norm
+        ),
         ci_fn=_ci_arch(torch_cfg, data.seq_len),
         faith_warmup=FaithWarmupConfig(
             steps=torch_cfg.pd.faithfulness_warmup_steps, lr=torch_cfg.pd.faithfulness_warmup_lr
