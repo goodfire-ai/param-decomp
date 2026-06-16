@@ -98,6 +98,10 @@ known-third-party = ["wandb"]
 [tool.pyright]
 include = ["param_decomp", "param_decomp_config", "param_decomp_lab", "nano_param_decomp"]
 exclude = ["**/wandb/**", "**/_scratch/**", "param_decomp_lab/_linear_sum_assignment.py", "param_decomp_lab/app/frontend"]
+# Resolve (don't type-check) the JAX distribution: lab consumes it through the
+# editable-install import hook pyright can't follow. The package stays out of `include`
+# (it is type-checked in its own torch-free pass; see param_decomp_jax CLAUDE.md).
+extraPaths = ["param_decomp_jax"]
 stubPath = "typings" # Having type stubs for transformers shaves 10 seconds off basedpyright calls
 
 strictListInference = true

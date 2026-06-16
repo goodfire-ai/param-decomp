@@ -10,6 +10,37 @@ core `ComponentModel` (single-pool, and pre-`e8ff5a64` 3-pool) and the vendored
 satisfy the `HarvestableComponentModel` protocol; `SavedThreePoolLMRun.load_model`
 sniffs the state-dict key prefixes (`detect_checkpoint_format`) and dispatches.
 
+## JAX runs (`scripts/run_worker_jax.py`)
+
+A JAX single-pool run (`param_decomp_jax`, orbax checkpoint) is harvested **natively** —
+no torch component model, no `jsp-export` safetensors bridge. The run is opened with
+`jax_single_pool.load_run.open_jax_run` (the reusable "open a JAX run for consumption"
+pattern — see below); its frozen forward-only pass (lower-leaky CI + ‖U‖·(x@V) component
+acts + clean-logit softmax) is converted into the SAME `HarvestBatch` the torch
+`ParamDecompHarvestFn` produces, fed to the SAME `Harvester`, and written via the SAME
+`HarvestRepo.save_results`. Autointerp / clustering / app read the output unchanged.
+
+```bash
+python -m param_decomp_lab.harvest.scripts.run_worker_jax \
+    --run_dir runs/p-761bc061 --n_batches 50 --batch_size 16
+```
+
+The forward runs in jax (CPU or one GPU); the accumulator stays torch — this worker is
+the one place both stacks meet (the pure JAX package never imports torch). Pre-tokenized
+parquet is served by the trainer's own `ShardServer` (never streamed from HF). On CPU the
+dense component co-occurrence (`O(C²)` + `O(C·vocab)` per batch) dominates; pass
+`--no_cooccurrence` for a quick spot-check (drops only `component_correlations.pt`).
+
+### The reusable run-loading pattern (for clustering / autointerp / slow-eval / app)
+
+`jax_single_pool.load_run.open_jax_run(run_dir, step=None) -> LoadedJaxRun` is the single
+entry point any consumer of a JAX run should use. It rebuilds the frozen target +
+`DecomposedLM` from the run's pinned config (`load_run_dir_config`), restores the orbax
+checkpoint onto a reference `TrainState`, and exposes `run.forward(token_ids) ->
+HarvestForward` plus the metadata torch consumers key on (`layer_activation_sizes`,
+`vocab_size`, `site_names`). Pure JAX, torch-free, single-device-friendly. Add the
+forward outputs a new consumer needs there; don't re-open checkpoints ad hoc.
+
 ## Usage (SLURM)
 
 ```bash
