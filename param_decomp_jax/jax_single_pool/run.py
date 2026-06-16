@@ -59,6 +59,7 @@ from jax_single_pool.run_state import build_optimizers, init_train_state
 from jax_single_pool.sharding import dp_mesh, init_distributed
 from jax_single_pool.torch_config import load_torch_wrapper
 from jax_single_pool.train import TrainState, make_faith_warmup_step, make_train_step
+from param_decomp_config.wandb_config import flatten_typed_lists
 
 _sigterm_received = False
 
@@ -119,7 +120,7 @@ _METRIC_KEYS = {
 class MetricsSink:
     """Process-0 metrics fan-out: jsonl always, wandb when configured."""
 
-    def __init__(self, cfg: ExperimentConfig, raw_cfg: dict[str, object], is_main: bool):
+    def __init__(self, cfg: ExperimentConfig, wandb_config: dict[str, object], is_main: bool):
         self._jsonl = None
         self._wandb = None
         if not is_main:
@@ -134,7 +135,7 @@ class MetricsSink:
                 name=cfg.run_name,
                 id=cfg.run_id,
                 resume="allow",
-                config=raw_cfg,
+                config=wandb_config,
             )
             # slow_eval/* rides a dedicated step axis (torch convention,
             # infra/wandb.py): pd-offline-eval logs those keys retroactively into
@@ -272,18 +273,22 @@ def train(
         )
 
     # the raw torch yaml's runtime block describes the UPSTREAM run (e.g. dp: 32);
-    # record what this run actually executes on so wandb never lies about topology
-    raw_cfg = dict(
-        raw_cfg,
-        jax_runtime={
-            "n_devices": ndev,
-            "n_processes": n_proc,
-            "remat_recon_forwards": cfg.remat_recon_forwards,
-            "run_id": cfg.run_id,
-            "run_dir": str(cfg.run_dir),
-        },
+    # record what this run actually executes on so wandb never lies about topology.
+    # flatten the metric lists into the same flat keys torch logs (E14) so cross-impl
+    # wandb config queries line up.
+    wandb_config = flatten_typed_lists(
+        dict(
+            raw_cfg,
+            jax_runtime={
+                "n_devices": ndev,
+                "n_processes": n_proc,
+                "remat_recon_forwards": cfg.remat_recon_forwards,
+                "run_id": cfg.run_id,
+                "run_dir": str(cfg.run_dir),
+            },
+        )
     )
-    sink = MetricsSink(cfg, raw_cfg, is_main)
+    sink = MetricsSink(cfg, wandb_config, is_main)
     tokens_per_step = cfg.data.global_batch * cfg.data.seq_len
     window_t0 = time.time()
     last_logged = start_step
