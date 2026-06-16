@@ -45,14 +45,21 @@ contiguous, and emits these beyond the base point cloud:
 - **flow lines** — checkbox draws a polyline through the selected sequence's positions.
 - **rim overlays** — the thumbnail rim is fed by a selectable source (`data["overlays"]`):
   - `cluster` (default) — per-point k-means region colour.
-  - `module` — *scored* overlay: per-point per-module CI-active fraction + a threshold
-    slider (plain on/off saturates, so threshold the degree of engagement; ~0.01 works).
+  - `module` — *scored* overlay coloured by each point's **dominant** selected module
+    (argmax). The score is engagement *relative to that module's own mean* (frac /
+    mean_frac, capped at `score_max`=8×); the slider is a floor in those ×-mean units
+    (default 1.0). Raw fractions are tiny and uneven across module types, so a
+    plain-fraction threshold saturated on one colour / went all-grey — relative engagement
+    spreads the map and reveals position-specific specialisation.
   - `component` — *picker* overlay (only with a `--components` harvest): search a component
     by name, rim the points where it is causally important. Inverted index is built at
-    build time onto the sampled points.
+    build time onto the sampled points. With `--component_labels <json>` (a
+    `{component_name: label}` map, e.g. from autointerp) the picker shows the label
+    primarily and the component id as secondary muted text.
 
 Overlay kinds in the payload: `items`+`point_items` (set membership), `items`+`point_scores`
-+`default_threshold` (scored, slider), or `kind:"picker"`+`index`+`names` (search-select).
++`score_max`+`default_threshold` (scored → dominant-by-argmax, slider is a floor), or
+`kind:"picker"`+`index`+`names` (+optional `labels`) (search-select).
 
 ## Shared helpers — `harvest_io.py`
 
