@@ -1,0 +1,5 @@
+# Robust-fix eps sweep (1.0e-04): impmin gradient floor. A/B vs baseline p-d64ef990 (1e-12, collapsed).
+torch_config: torch/pile_llama_simple_mlp_4l_ppgd_bsc_20k_eps1e4.yaml
+run_name: ai-jax-pile4l-ppgd-bsc-20k-eps1e4
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/runs
+remat_recon_forwards: false

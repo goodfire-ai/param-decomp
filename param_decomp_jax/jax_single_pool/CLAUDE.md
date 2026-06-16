@@ -4,9 +4,10 @@ Single-pool VPD trainer in JAX, **generic over vendored LM targets**. The semant
 source of truth is `SPEC.md` (normative pseudocode + numbered invariants, grounded in
 the stable torch `param_decomp` impl). See `README.md` for the file map.
 
-Open items: persistent-source scopes beyond `sc`, sigmoid parameterization,
+Open items: persistent-source scopes `c`/`nsc`, sigmoid parameterization,
 `start_frac>0`, and the hidden-acts seam are deliberately refused (LOSS_PARITY_DESIGN
-§6 stage 4); SPEC S24's two torch-parity quirks (PPGD warmup route-all, fresh-PGD
+§6 stage 4). `sc` and `bsc` are supported (`bsc` is batch-sharded, no replica sync).
+SPEC S24's two torch-parity quirks (PPGD warmup route-all, fresh-PGD
 single routing draw) are pinned pending a team decision; CI-fn numerics (gelu erf,
 rms eps) unify with torch at a run boundary.
 
