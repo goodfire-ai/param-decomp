@@ -113,24 +113,6 @@ def test_unsupported_settings_refuse():
             out_dir=Path("/tmp"), remat_recon_forwards=True,
         )  # fmt: skip
 
-    sigmoid_ppgd = dict(
-        raw,
-        pd=dict(
-            raw["pd"],
-            loss_metrics=[
-                dict(m, use_sigmoid_parameterization=True)
-                if m["type"] == "PersistentPGDReconLoss"
-                else m
-                for m in raw["pd"]["loss_metrics"]
-            ],
-        ),
-    )
-    with pytest.raises(AssertionError):
-        convert_torch_lm_config(
-            type(torch_cfg)(**sigmoid_ppgd), run_name="t", run_id=RUN_ID, out_dir=Path("/tmp"),
-            remat_recon_forwards=True,
-        )  # fmt: skip
-
     non_site_target = dict(
         raw,
         pd=dict(

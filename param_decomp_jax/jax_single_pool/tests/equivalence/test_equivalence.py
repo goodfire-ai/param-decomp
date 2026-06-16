@@ -76,3 +76,61 @@ def test_structure_ppgd_has_delta_channel() -> None:
     assert "ci_lower[site] + (1.0 - ci_lower[site]) * source[..., :-1]" in src, (
         "ppgd must interpolate mask=ci+(1-ci)*source"
     )
+
+
+def test_sigmoid_parameterization_matches_torch_effective_sources() -> None:
+    """SPEC S15/S16, §6 `PROJ`/`EFFECTIVE` (sigmoid variant). Torch's
+    `get_effective_sources` applies `sigmoid` to the WHOLE latent (incl. the trailing
+    delta channel) before `get_ppgd_mask_infos` interpolates
+    `mask = ci + (1-ci)*EFFECTIVE(src)[..., :C]` / `delta = EFFECTIVE(src)[..., -1]`.
+    `source_masks(..., "sigmoid")` must reproduce that math from the SAME unbounded
+    latent (the leaf the ascent updates without projection)."""
+    import jax
+    import jax.numpy as jnp
+
+    key = jax.random.PRNGKey(0)
+    ci_key, src_key = jax.random.split(key)
+    sites = ("a", "b")
+    B, T, C = 2, 3, 4
+    ci_lower = {
+        s: jax.random.uniform(jax.random.fold_in(ci_key, i), (B, T, C)) for i, s in enumerate(sites)
+    }
+    latent = {
+        s: jax.random.normal(jax.random.fold_in(src_key, i), (1, T, C + 1)) * 3.0
+        for i, s in enumerate(sites)
+    }
+
+    masks, delta_masks = adversary_mod.source_masks(ci_lower, latent, sites, "sigmoid")
+    for s in sites:
+        effective = jax.nn.sigmoid(latent[s])
+        expected_mask = ci_lower[s] + (1.0 - ci_lower[s]) * effective[..., :-1]
+        np.testing.assert_allclose(
+            np.asarray(masks[s]), np.asarray(expected_mask), rtol=1e-6, atol=1e-6
+        )
+        np.testing.assert_allclose(
+            np.asarray(delta_masks[s]), np.asarray(effective[..., -1]), rtol=1e-6, atol=1e-6
+        )
+        assert jnp.all((masks[s] >= 0.0) & (masks[s] <= 1.0)), "sigmoid masks must stay in [0,1]"
+
+
+def test_sigmoid_parameterization_init_is_normal_and_proj_is_identity() -> None:
+    """SPEC §6: sigmoid init is N(0,1) (unbounded latent, range exceeds [0,1]); `PROJ`
+    is identity so an ascent that drives a source past 1 is NOT clamped back."""
+    import jax
+    import jax.numpy as jnp
+
+    sites = ("a",)
+    src = adversary_mod.init_persistent_sources(sites, (8,), 16, "sigmoid", jax.random.PRNGKey(1))
+    assert jnp.max(src["a"]) > 1.0 and jnp.min(src["a"]) < 0.0, "N(0,1) init must escape [0,1]"
+
+    from param_decomp_config.schedule import ScheduleConfig
+
+    adam = adversary_mod.AdamPGDConfig(
+        lr_schedule=ScheduleConfig(fn_type="constant", start_val=1.0)
+    )
+    state = adversary_mod.init_sources_adam_state(src)
+    grad = {"a": jnp.ones_like(src["a"])}
+    ascended, _ = adversary_mod.sources_adam_ascend_project(
+        src, grad, state, jnp.asarray(50.0), adam, "sigmoid"
+    )
+    assert jnp.max(ascended["a"]) > 1.0, "sigmoid PROJ must be identity (no clamp to [0,1])"

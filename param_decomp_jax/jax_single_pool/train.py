@@ -28,9 +28,11 @@ from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from jax_single_pool.adversary import (
+    SourceParameterization,
     SourcesAdamState,
     init_fresh_pgd_sources,
     source_masks,
+    source_parameterization,
     sources_adam_ascend_project,
 )
 from jax_single_pool.ci_fn import CIFn, CIValues
@@ -129,10 +131,12 @@ def make_train_step(
     }
     assert set(term_coeff_by_state_key) == set(loss_spec.persistent)
     persistent_adams: dict[str, AdamPGDConfig] = {}
+    persistent_parameterizations: dict[str, SourceParameterization] = {}
     for state_key, ppgd_cfg in loss_spec.persistent.items():
         optimizer = ppgd_cfg.optimizer
         assert isinstance(optimizer, AdamPGDConfig)
         persistent_adams[state_key] = optimizer
+        persistent_parameterizations[state_key] = source_parameterization(ppgd_cfg)
 
     def batch_sharded(x: Array) -> Array:
         if mesh is None:
@@ -226,9 +230,11 @@ def make_train_step(
         clean_logits: Array,
         forward_fn: Any,
     ) -> Array:
-        """Mean KL over the entry's draws with FIXED source values — the adversarial
-        ascent objective (shared by fresh and persistent ascents, SPEC S12')."""
-        masks, delta_masks = source_masks(ci_lower, sources, entry.live_sites)
+        """Mean KL over the entry's draws with FIXED source values — the fresh-PGD
+        adversarial ascent objective (SPEC S12'). Fresh PGD is always clamp-parameterized
+        (its sources are projected to [0,1] each ascent); persistent ascents read sources
+        through `source_masks` directly with their own parameterization."""
+        masks, delta_masks = source_masks(ci_lower, sources, entry.live_sites, "clamp")
         total = jnp.zeros((), jnp.float32)
         for routes in routes_per_draw:
             masked = forward_fn(
@@ -262,6 +268,7 @@ def make_train_step(
         warmup_opt_states: dict[str, SourcesAdamState] = {}
         for state_key, ppgd_cfg in loss_spec.persistent.items():
             adam = persistent_adams[state_key]
+            parameterization = persistent_parameterizations[state_key]
             source_lr = warmup_then_constant_lr(
                 step_f32,
                 total_steps,
@@ -270,8 +277,13 @@ def make_train_step(
             )
             source_lrs[state_key] = source_lr
 
-            def warmup_loss(sources: dict[str, Array]) -> Array:
-                masks, delta_masks = source_masks(ci_lower_detached, sources, site_names)
+            def warmup_loss(
+                sources: dict[str, Array],
+                parameterization: SourceParameterization = parameterization,
+            ) -> Array:
+                masks, delta_masks = source_masks(
+                    ci_lower_detached, sources, site_names, parameterization
+                )
                 masked = masked_forward(
                     frozen, components_detached, residual, masks, delta_masks, None, site_names
                 )
@@ -282,12 +294,13 @@ def make_train_step(
                 _: None,
                 source_lr: Array = source_lr,
                 adam: AdamPGDConfig = adam,
+                parameterization: SourceParameterization = parameterization,
                 warmup_loss: Callable[[dict[str, Array]], Array] = warmup_loss,
             ) -> tuple[tuple[dict[str, Array], SourcesAdamState], None]:
                 sources, adam_state = carry
                 sources_grad = jax.grad(warmup_loss)(sources)
                 sources, adam_state = sources_adam_ascend_project(
-                    sources, sources_grad, adam_state, source_lr, adam
+                    sources, sources_grad, adam_state, source_lr, adam, parameterization
                 )
                 return (sources, adam_state), None
 
@@ -398,10 +411,14 @@ def make_train_step(
                                     ci.lower,
                                     fresh_sources[(term_idx, entry_idx)],
                                     entry.live_sites,
+                                    "clamp",
                                 )
                             case PersistentSources(state_key=state_key):
                                 masks, delta_masks = source_masks(
-                                    ci.lower, persistent_sources[state_key], entry.live_sites
+                                    ci.lower,
+                                    persistent_sources[state_key],
+                                    entry.live_sites,
+                                    persistent_parameterizations[state_key],
                                 )
                         masked = checkpointed_masked_forward(
                             frozen,
@@ -446,6 +463,7 @@ def make_train_step(
                 warmup_opt_states[state_key],
                 source_lrs[state_key],
                 persistent_adams[state_key],
+                persistent_parameterizations[state_key],
             )
             new_sources[state_key] = ascended
             new_sources_opt_state[state_key] = ascended_opt

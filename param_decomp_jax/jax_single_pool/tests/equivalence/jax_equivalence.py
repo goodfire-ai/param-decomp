@@ -174,7 +174,7 @@ def compute_jax_terms(f: dict[str, np.ndarray]) -> dict[str, float]:
 
     # ---- ppgd (FIXED sources) ----
     source = per_site("ppgd_source")  # {site: (1, T, C+1)}
-    masks, delta_masks = source_masks(ci_lower, source, lm.site_names)
+    masks, delta_masks = source_masks(ci_lower, source, lm.site_names, "clamp")
     pred = lm.masked_logits(tgt, vu, resid, masks, delta_masks, None, lm.site_names)
     ppgd = float(kl_per_position(pred, clean))
 

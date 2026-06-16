@@ -22,7 +22,23 @@ from jax import random
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from jax_single_pool.lm import SiteSpec
-from param_decomp_config.losses import AdamPGDConfig
+from param_decomp_config.losses import (
+    AdamPGDConfig,
+    PersistentPGDReconLossConfig,
+    PersistentPGDReconSubsetLossConfig,
+)
+
+SourceParameterization = Literal["clamp", "sigmoid"]
+"""The `PROJ`/`EFFECTIVE` variation point (SPEC §6, line `PROJ`/`EFFECTIVE`). `clamp`:
+sources live in `[0,1]`, projected by clamp after each ascent, read as-is, init U[0,1].
+`sigmoid`: latent sources are unbounded (no projection), read through a sigmoid, init
+N(0,1). Torch counterpart: `use_sigmoid_parameterization` in `persistent_pgd_state.py`."""
+
+
+def source_parameterization(
+    cfg: PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig,
+) -> SourceParameterization:
+    return "sigmoid" if cfg.use_sigmoid_parameterization else "clamp"
 
 
 @jax.tree_util.register_dataclass
@@ -37,14 +53,17 @@ def init_persistent_sources(
     site_names: tuple[str, ...],
     site_component_counts: tuple[int, ...],
     seq_len: int,
+    parameterization: SourceParameterization,
     key: PRNGKeyArray,
 ) -> dict[str, Array]:
     """PPGD `sc` scope (SPEC §1.6): `(1, T, C+1)` per site — shared across batch
-    elements, free per position — init U[0,1] (SPEC S15; clamp parameterization).
-    Trailing channel = the weight-delta source."""
+    elements, free per position. Init is U[0,1] under `clamp`, N(0,1) (unbounded
+    latent) under `sigmoid` (SPEC S15 / §6 `PROJ`/`EFFECTIVE`). Trailing channel =
+    the weight-delta source."""
     keys = random.split(key, len(site_names))
+    init_fn = random.normal if parameterization == "sigmoid" else random.uniform
     return {
-        name: random.uniform(k, (1, seq_len, c + 1), jnp.float32)
+        name: init_fn(k, (1, seq_len, c + 1), jnp.float32)
         for name, c, k in zip(site_names, site_component_counts, keys, strict=True)
     }
 
@@ -95,8 +114,11 @@ def sources_adam_ascend_project(
     adam_state: SourcesAdamState,
     lr: Array,
     adam: AdamPGDConfig,
+    parameterization: SourceParameterization,
 ) -> tuple[dict[str, Array], SourcesAdamState]:
-    """One Adam ASCENT on the persistent sources, then project to [0,1] (SPEC S13/S15).
+    """One Adam ASCENT on the persistent sources, then `PROJ` (SPEC S13/S15). `PROJ` is
+    clamp to [0,1] under `clamp`, identity under `sigmoid` (the latent stays unbounded
+    and is squashed at read time by `source_masks`; SPEC §6 `PROJ`/`EFFECTIVE`).
 
     The variation point `SRC_STEP` (SPEC §6): a `sign` variant would replace the Adam
     update with `lr * sign(grad)` (stateless) — same projection contract."""
@@ -108,29 +130,37 @@ def sources_adam_ascend_project(
     }
     bias_correction1 = 1 - adam.beta1**step_count
     bias_correction2 = 1 - adam.beta2**step_count
-    new_sources = {
-        s: jnp.clip(
-            sources[s]
-            + lr * (m[s] / bias_correction1) / (jnp.sqrt(v[s] / bias_correction2) + adam.eps),
-            0.0,
-            1.0,
-        )
+    ascended = {
+        s: sources[s]
+        + lr * (m[s] / bias_correction1) / (jnp.sqrt(v[s] / bias_correction2) + adam.eps)
         for s in sources
     }
+    new_sources = (
+        ascended
+        if parameterization == "sigmoid"
+        else {s: jnp.clip(a, 0.0, 1.0) for s, a in ascended.items()}
+    )
     return new_sources, SourcesAdamState(m=m, v=v, step_count=step_count)
 
 
 def source_masks(
-    ci_lower: dict[str, Array], sources: dict[str, Array], site_names: tuple[str, ...]
+    ci_lower: dict[str, Array],
+    sources: dict[str, Array],
+    site_names: tuple[str, ...],
+    parameterization: SourceParameterization,
 ) -> tuple[dict[str, Array], dict[str, Array]]:
-    """`mask = ci + (1−ci)·source[:, :C]`; delta mask = raw trailing channel (SPEC S1).
-    Shared by both adversaries; sources broadcast over whatever leading dims their
-    scope left singleton. The fp32 source state is cast to the CI dtype here
-    (torch-under-autocast behavior); the source gradient flows back through the cast."""
+    """`mask = ci + (1−ci)·EFFECTIVE(source)[:, :C]`; delta mask = `EFFECTIVE(source)`
+    trailing channel (SPEC S1). `EFFECTIVE` is identity under `clamp`, sigmoid under
+    `sigmoid` (SPEC §6 `PROJ`/`EFFECTIVE`). Shared by both adversaries; sources
+    broadcast over whatever leading dims their scope left singleton. The fp32 source
+    state is cast to the CI dtype here (torch-under-autocast behavior); the source
+    gradient flows back through the cast (and through the sigmoid)."""
     masks = {}
     delta_masks = {}
     for site in site_names:
         source = sources[site].astype(ci_lower[site].dtype)
+        if parameterization == "sigmoid":
+            source = jax.nn.sigmoid(source)
         masks[site] = ci_lower[site] + (1.0 - ci_lower[site]) * source[..., :-1]
         delta_masks[site] = source[..., -1]
     return masks, delta_masks

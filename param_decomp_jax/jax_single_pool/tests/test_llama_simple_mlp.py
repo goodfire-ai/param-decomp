@@ -305,7 +305,7 @@ def test_step_trains_and_has_vpd_signature():
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
 
     src = init_persistent_sources(
-        lm.site_names, tuple(s.C for s in lm.sites), seq, jax.random.PRNGKey(3)
+        lm.site_names, tuple(s.C for s in lm.sites), seq, "clamp", jax.random.PRNGKey(3)
     )
     state = TrainState(
         components=vu, ci_fn=ci_fn,

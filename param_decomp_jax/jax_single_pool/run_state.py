@@ -13,7 +13,7 @@ from jax import random
 from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray
 
-from jax_single_pool.adversary import init_sources_adam_state
+from jax_single_pool.adversary import init_sources_adam_state, source_parameterization
 from jax_single_pool.config import ExperimentConfig
 from jax_single_pool.llama8b_sharding import (
     init_ci_fn_sharded,
@@ -55,6 +55,7 @@ def init_train_state(
             lm.site_names,
             tuple(s.C for s in lm.sites),
             cfg.data.seq_len,
+            source_parameterization(loss_spec.persistent[state_key]),
             random.fold_in(src_key, term_idx),
             mesh,
         )

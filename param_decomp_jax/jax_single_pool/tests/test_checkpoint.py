@@ -58,7 +58,7 @@ def _build(seed: int):
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
     src = init_persistent_sources(
-        lm.site_names, tuple(s.C for s in lm.sites), seq, jax.random.PRNGKey(seed + 2)
+        lm.site_names, tuple(s.C for s in lm.sites), seq, "clamp", jax.random.PRNGKey(seed + 2)
     )
     state = TrainState(
         components=vu, ci_fn=ci_fn,
@@ -148,7 +148,12 @@ def _build_sharded(seed: int, mesh):
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
     src = init_sources_sharded(
-        lm.site_names, tuple(s.C for s in lm.sites), seq, jax.random.PRNGKey(seed + 2), mesh
+        lm.site_names,
+        tuple(s.C for s in lm.sites),
+        seq,
+        "clamp",
+        jax.random.PRNGKey(seed + 2),
+        mesh,
     )
     state = TrainState(
         components=vu, ci_fn=ci_fn,

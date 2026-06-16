@@ -100,8 +100,10 @@ def test_jitted_sharded_inits_match_eager_values():
 
     site_names = tuple(s.name for s in sites)
     site_Cs = tuple(s.C for s in sites)
-    src_sharded = init_sources_sharded(site_names, site_Cs, 16, jax.random.PRNGKey(3), mesh)
-    src_eager = init_persistent_sources(site_names, site_Cs, 16, jax.random.PRNGKey(3))
+    src_sharded = init_sources_sharded(
+        site_names, site_Cs, 16, "clamp", jax.random.PRNGKey(3), mesh
+    )
+    src_eager = init_persistent_sources(site_names, site_Cs, 16, "clamp", jax.random.PRNGKey(3))
     for name in site_names:
         src_sharding = src_sharded[name].sharding
         assert isinstance(src_sharding, NamedSharding)
