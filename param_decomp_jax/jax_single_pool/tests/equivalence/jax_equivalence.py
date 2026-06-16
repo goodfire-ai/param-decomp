@@ -36,9 +36,12 @@ from jax_single_pool.llama8b import (  # noqa: E402
     FrozenAttn,
     SuffixLayer,
     Target,
+    _clean_mlp_out,  # noqa: E402  (reference suffix forward in the chunk-plan gate check)
+    _site_out,  # noqa: E402
     llama_decomposed_lm,
     llama_site_specs,
     mlp_family_site_cs,
+    rms_norm,
     site_name,
 )
 from jax_single_pool.losses import (  # noqa: E402
@@ -179,6 +182,78 @@ def compute_jax_terms(f: dict[str, np.ndarray]) -> dict[str, float]:
     ppgd = float(kl_per_position(pred, clean))
 
     return {"faith": faith, "imp": imp, "stoch": stoch, "ppgd": ppgd}
+
+
+def _suffix_with_split_mlp(
+    tgt: Target,
+    vu: DecompVU,
+    resid: jnp.ndarray,
+    live_layer: int,
+    live_kinds: tuple[str, ...],
+    masks: dict[str, jnp.ndarray],
+    delta_masks: dict[str, jnp.ndarray],
+    n_decomp_layers: int,
+) -> jnp.ndarray:
+    """Hand-rolled fp32 suffix forward where `live_layer`'s MLP runs `live_kinds`
+    through the decomposed `_site_out` path and EVERY other MLP site (including this
+    layer's NON-live sibling sites) through the frozen `x @ W` path. This is the
+    explicit S2 realization the production `subset_chunk_plan` relies on when a chunk
+    boundary splits a layer's MLP — a reference for `masked_logits(..., live=...)`."""
+    x = resid
+    for layer_offset, suffix_layer in enumerate(tgt.layers):
+        layer = layer_offset  # first decomposed layer is 0 in this harness
+        post_attn = x  # attn is zeroed -> contributes 0 (SPEC harness invariant)
+        mlp_in = rms_norm(post_attn, suffix_layer.ln2, tgt.eps)
+        if layer != live_layer or layer >= n_decomp_layers:
+            mlp_out = _clean_mlp_out(suffix_layer, mlp_in)
+        else:
+
+            def frozen_or_live(kind: str, W: jnp.ndarray, x_in: jnp.ndarray) -> jnp.ndarray:
+                site = site_name(live_layer, kind)
+                if kind not in live_kinds:
+                    return x_in @ W.T
+                V, U = vu.site(site)
+                return _site_out(x_in, V, U, W, masks[site], delta_masks[site], None)
+
+            gate = frozen_or_live("gate", suffix_layer.Wg, mlp_in)
+            up = frozen_or_live("up", suffix_layer.Wu, mlp_in)
+            down_in = jax.nn.silu(gate) * up
+            mlp_out = frozen_or_live("down", suffix_layer.Wd, down_in)
+        x = post_attn + mlp_out
+    x = rms_norm(x, tgt.norm, tgt.eps)
+    return x @ tgt.lm_head.T
+
+
+def chunk_plan_static_gate_kl(f: dict[str, np.ndarray]) -> tuple[float, float]:
+    """SPEC S2 under a layer-SPLITTING chunk plan (issue #640): drive `lm.masked_logits`
+    with `live = (l_i.gate, l_i.up)` so `l_i.down` is a fully-frozen site WITHIN an
+    otherwise-decomposed layer's MLP — the static-live-gate path the production
+    `subset_chunk_plan` exercises but the per-chunk `stoch` term (whole live chunks) and
+    the all-sites `ppgd` term never do. Returns (gate-path KL, explicit-frozen-reference
+    KL); the test asserts they agree to fp32 tolerance."""
+    lm, tgt, vu, n_layers = _build(f)
+    resid = jnp.asarray(f["resid"], dtype=FP)
+    clean = jax.lax.stop_gradient(lm.clean_logits(tgt, resid))
+
+    def per_site(prefix: str) -> dict[str, jnp.ndarray]:
+        by_kind = {k: jnp.asarray(f[f"{prefix}_{k}"], dtype=FP) for k in MLP_KINDS}
+        return {site_name(i, k): by_kind[k][:, :, i] for i in range(n_layers) for k in MLP_KINDS}
+
+    ci_lower = per_site("ci_lower")
+    stoch_u = per_site("stoch_u")
+    stoch_delta = per_site("stoch_delta")
+
+    live_layer = 0
+    live_kinds = ("gate", "up")  # `down` left non-live -> frozen `x @ W` inside the MLP
+    live = tuple(site_name(live_layer, k) for k in live_kinds)
+    masks = {s: ci_lower[s] + (1.0 - ci_lower[s]) * stoch_u[s] for s in live}
+    delta_masks = {s: stoch_delta[s] for s in live}
+
+    gate_pred = lm.masked_logits(tgt, vu, resid, masks, delta_masks, None, live)
+    ref_pred = _suffix_with_split_mlp(
+        tgt, vu, resid, live_layer, live_kinds, masks, delta_masks, n_layers
+    )
+    return float(kl_per_position(gate_pred, clean)), float(kl_per_position(ref_pred, clean))
 
 
 def main() -> None:

@@ -14,6 +14,13 @@ Two kinds of check:
     the stochastic recon runs ONE forward PER CHUNK (S10), recon is KL not MSE (§2.3),
     and the PPGD source carries the trailing raw weight-delta channel (S1).
 
+  * **Chunk-plan static-live gate (S2).** `test_chunk_plan_static_live_gate` drives
+    `masked_logits` with a live set that splits a layer's MLP (`live = (l0.gate, l0.up)`,
+    `l0.down` frozen) — the realization the production `subset_chunk_plan` hits when a
+    chunk boundary cuts across a layer, which `stoch` (whole-layer chunks) and `ppgd`
+    (all sites live) never exercise — and asserts it equals an explicit reference that
+    hard-codes the frozen site to `x @ W`.
+
 Regenerate the cross-framework golden (only needed if the math or fixtures change):
 
     # JAX env:
@@ -32,7 +39,10 @@ import pytest
 import jax_single_pool.adversary as adversary_mod
 import jax_single_pool.losses as losses_mod
 import jax_single_pool.train as train_mod
-from jax_single_pool.tests.equivalence.jax_equivalence import compute_jax_terms
+from jax_single_pool.tests.equivalence.jax_equivalence import (
+    chunk_plan_static_gate_kl,
+    compute_jax_terms,
+)
 
 HERE = Path(__file__).resolve().parent
 RTOL = 2e-4
@@ -48,6 +58,22 @@ def test_jax_matches_torch_reference(term: str) -> None:
     jv, tv = jaxv[term], ref[term]
     assert abs(jv - tv) <= ATOL + RTOL * abs(tv), (
         f"{term}: jax {jv:.8e} vs torch {tv:.8e} (rel {abs(jv - tv) / (abs(tv) + 1e-30):.2e})"
+    )
+
+
+def test_chunk_plan_static_live_gate() -> None:
+    """SPEC S2 under a layer-SPLITTING chunk plan (issue #640). The production
+    `subset_chunk_plan` partitions sites into sequential groups that can cut across a
+    layer's MLP, leaving whole sites frozen (`x @ W`) inside an otherwise-decomposed
+    layer. The `stoch` term here uses whole-layer live chunks and `ppgd` decomposes
+    every site, so neither pins this static-live gate. Drive `masked_logits` with
+    `live = (l0.gate, l0.up)` (so `l0.down` is the frozen sibling) and assert it equals
+    an explicit reference forward that hard-codes `l0.down` to `x @ W`."""
+    f = dict(np.load(HERE / "fixtures.npz"))
+    gate_kl, ref_kl = chunk_plan_static_gate_kl(f)
+    assert abs(gate_kl - ref_kl) <= ATOL + RTOL * abs(ref_kl), (
+        f"static-live gate {gate_kl:.8e} vs explicit-frozen reference {ref_kl:.8e} "
+        f"(rel {abs(gate_kl - ref_kl) / (abs(ref_kl) + 1e-30):.2e})"
     )
 
 
