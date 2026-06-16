@@ -22,15 +22,15 @@ never silently diverge. Cite IDs (`S14`, `N1`, …) in commit messages and revie
 
 ## Architecture in one breath
 
-`lm.py` defines `DecomposedLM` — ordered `sites` + four pure fns (`clean_logits`,
-`site_inputs`, `masked_logits`, `weight_deltas`) plus a pluggable `recon_loss_fn`
+`lm.py` defines `DecomposedModel` — ordered `sites` + four pure fns (`clean_output`,
+`site_inputs`, `masked_output`, `weight_deltas`) plus a pluggable `recon_loss_fn`
 (default `kl_per_position`), flat site-name-keyed dicts at the boundary, frozen pytree
 always a runtime arg (never a jit closure constant — an 8B target becomes a multi-GB
 HLO constant). The `[B,T,d]` residual is the FIXED WAIST: masking / routing / sources /
 imp-min / the CI fn all stay `(B,T)`-shaped. Only three EDGES are generic so non-LM
 (bio-style) targets fit (#828): the model INPUT (`prefix_residual_fn(prefix, inputs)`
 in `run.py` takes `Any` — tokens for an LM, a dict for bio), the model OUTPUT
-(`clean_logits`/`masked_logits` return `Any` — logits, a tuple of heads, coords; field
+(`clean_output`/`masked_output` return `Any` — logits, a tuple of heads, coords; field
 NAMES stay `*_logits` pending a deferred rename), and the recon comparison
 (`recon_loss_fn(clean_output, masked_output) -> scalar`, default
 `kl_per_position` so the LM path is byte-identical). `train.py` is the generic step factory
@@ -55,7 +55,7 @@ SimpleMLP target via `jsp-slow-eval` (`slow_eval.py`) — no torch export round-
 
 ## Invariants with sharp teeth (the ones that have actually bitten)
 
-- **S3**: the recon target is the FROZEN-path forward (`clean_logits`), never the
+- **S3**: the recon target is the FROZEN-path forward (`clean_output`), never the
   `mask=1` decomposed identity (bf16 rounding + V/U in the stopped graph).
 - **S13/S15**: source updates go through the persistent Adam AND project to [0,1]
   after EVERY ascent — an unprojected drift past 1 has zero `clip` gradient and the

@@ -41,7 +41,7 @@ dense component co-occurrence (`O(C²)` + `O(C·vocab)` per batch) dominates; pa
 
 `jax_single_pool.load_run.open_jax_run(run_dir, step=None) -> LoadedJaxRun` is the single
 entry point any consumer of a JAX run should use. It rebuilds the frozen target +
-`DecomposedLM` from the run's pinned config (`load_run_dir_config`), restores the orbax
+`DecomposedModel` from the run's pinned config (`load_run_dir_config`), restores the orbax
 checkpoint onto a reference `TrainState`, and exposes `run.forward(token_ids) ->
 HarvestForward` plus the metadata torch consumers key on (`layer_activation_sizes`,
 `vocab_size`, `site_names`). Pure JAX, torch-free, single-device-friendly. Add the

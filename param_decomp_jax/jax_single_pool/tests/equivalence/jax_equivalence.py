@@ -1,18 +1,18 @@
 """JAX equivalence check: the JAX single-pool PD loss terms vs the torch reference.
 
 Loads the SAME fixtures behind the frozen `torch_reference.json` golden, builds the
-Llama `DecomposedLM` with the identical (zeroed-attn) suffix weights, and computes each
+Llama `DecomposedModel` with the identical (zeroed-attn) suffix weights, and computes each
 loss term through the generic trainer's OWN helpers (`train.py`), feeding the FIXED
 masks / sources / routing from the fixtures (no RNG). Compares to
 `torch_reference.json` at fp32 tolerance.
 
-Term wiring (all `jax_single_pool.train` + the `DecomposedLM` boundary):
+Term wiring (all `jax_single_pool.train` + the `DecomposedModel` boundary):
   * faith — `faithfulness_loss(lm.weight_deltas(frozen, vu))`
   * imp   — `importance_minimality_terms(ci_upper, p, beta, eps)` (per-site dicts)
   * stoch — per chunk: `mask = ci+(1-ci)*u`, fixed delta mask, fixed route over the
-            chunk's 3 sites; `lm.masked_logits(..., live=chunk)`; `kl_per_position`
-            vs `lm.clean_logits` (the frozen path, SPEC S3). Mean over chunks.
-  * ppgd  — `source_masks` + `lm.masked_logits(..., live=all)`.
+            chunk's 3 sites; `lm.masked_output(..., live=chunk)`; `kl_per_position`
+            vs `lm.clean_output` (the frozen path, SPEC S3). Mean over chunks.
+  * ppgd  — `source_masks` + `lm.masked_output(..., live=all)`.
 
 Bit-identical is impossible across RNG/FP backends; we assert each term within
 `RTOL`/`ATOL` of the torch value.
@@ -143,7 +143,7 @@ def compute_jax_terms(f: dict[str, np.ndarray]) -> dict[str, float]:
     lm, tgt, vu, n_layers = _build(f)
     resid = jnp.asarray(f["resid"], dtype=FP)
 
-    clean = jax.lax.stop_gradient(lm.clean_logits(tgt, resid))
+    clean = jax.lax.stop_gradient(lm.clean_output(tgt, resid))
 
     # fixtures key CI per kind as (B, T, L, C); the trainer keys per site.
     def per_site(prefix: str) -> dict[str, jnp.ndarray]:
@@ -171,14 +171,14 @@ def compute_jax_terms(f: dict[str, np.ndarray]) -> dict[str, float]:
         masks = {s: ci_lower[s] + (1.0 - ci_lower[s]) * stoch_u[s] for s in chunk}
         delta_masks = {s: stoch_delta[s] for s in chunk}
         routes = {site_name(i, k): jnp.asarray(f[f"route_chunk{i}_{k}"]) for k in MLP_KINDS}
-        pred = lm.masked_logits(tgt, vu, resid, masks, delta_masks, routes, chunk, True)
+        pred = lm.masked_output(tgt, vu, resid, masks, delta_masks, routes, chunk, True)
         stoch_total += float(kl_per_position(pred, clean))
     stoch = stoch_total / n_layers
 
     # ---- ppgd (FIXED sources) ----
     source = per_site("ppgd_source")  # {site: (1, T, C+1)}
     masks, delta_masks = source_masks(ci_lower, source, lm.site_names)
-    pred = lm.masked_logits(tgt, vu, resid, masks, delta_masks, None, lm.site_names, True)
+    pred = lm.masked_output(tgt, vu, resid, masks, delta_masks, None, lm.site_names, True)
     ppgd = float(kl_per_position(pred, clean))
 
     return {"faith": faith, "imp": imp, "stoch": stoch, "ppgd": ppgd}
@@ -198,7 +198,7 @@ def _suffix_with_split_mlp(
     through the decomposed `_site_out` path and EVERY other MLP site (including this
     layer's NON-live sibling sites) through the frozen `x @ W` path. This is the
     explicit S2 realization the production `subset_chunk_plan` relies on when a chunk
-    boundary splits a layer's MLP — a reference for `masked_logits(..., live=...)`."""
+    boundary splits a layer's MLP — a reference for `masked_output(..., live=...)`."""
     x = resid
     for layer_offset, suffix_layer in enumerate(tgt.layers):
         layer = layer_offset  # first decomposed layer is 0 in this harness
@@ -225,7 +225,7 @@ def _suffix_with_split_mlp(
 
 
 def chunk_plan_static_gate_kl(f: dict[str, np.ndarray]) -> tuple[float, float]:
-    """SPEC S2 under a layer-SPLITTING chunk plan (issue #640): drive `lm.masked_logits`
+    """SPEC S2 under a layer-SPLITTING chunk plan (issue #640): drive `lm.masked_output`
     with `live = (l_i.gate, l_i.up)` so `l_i.down` is a fully-frozen site WITHIN an
     otherwise-decomposed layer's MLP — the static-live-gate path the production
     `subset_chunk_plan` exercises but the per-chunk `stoch` term (whole live chunks) and
@@ -233,7 +233,7 @@ def chunk_plan_static_gate_kl(f: dict[str, np.ndarray]) -> tuple[float, float]:
     KL); the test asserts they agree to fp32 tolerance."""
     lm, tgt, vu, n_layers = _build(f)
     resid = jnp.asarray(f["resid"], dtype=FP)
-    clean = jax.lax.stop_gradient(lm.clean_logits(tgt, resid))
+    clean = jax.lax.stop_gradient(lm.clean_output(tgt, resid))
 
     def per_site(prefix: str) -> dict[str, jnp.ndarray]:
         by_kind = {k: jnp.asarray(f[f"{prefix}_{k}"], dtype=FP) for k in MLP_KINDS}
@@ -249,7 +249,7 @@ def chunk_plan_static_gate_kl(f: dict[str, np.ndarray]) -> tuple[float, float]:
     masks = {s: ci_lower[s] + (1.0 - ci_lower[s]) * stoch_u[s] for s in live}
     delta_masks = {s: stoch_delta[s] for s in live}
 
-    gate_pred = lm.masked_logits(tgt, vu, resid, masks, delta_masks, None, live, True)
+    gate_pred = lm.masked_output(tgt, vu, resid, masks, delta_masks, None, live, True)
     ref_pred = _suffix_with_split_mlp(
         tgt, vu, resid, live_layer, live_kinds, masks, delta_masks, n_layers
     )

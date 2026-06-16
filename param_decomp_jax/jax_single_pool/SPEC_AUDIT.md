@@ -113,7 +113,7 @@ These are real, load-bearing on-branch torch behaviors with no current invariant
 
 **P4 — record the warmup_pct==0 source-LR edge** (S13). torch short-circuits to full LR at step 0 (`warmup_steps=0`); JAX `max(floor(...),1)` yields LR=0 at step 0. Diverges for exactly one step only when `warmup_pct==0`; production uses 2.5%. One-line note or a JAX fix to match torch's short-circuit.
 
-**P5 — add a one-line S3 note** that `clean_logits` = suffix-only clean forward when residual-start is active (the on-branch torch single-pool reference is NOT residual-start; equivalent under sg/frozen prefix). Tightens the contract wording.
+**P5 — add a one-line S3 note** that `clean_output` = suffix-only clean forward when residual-start is active (the on-branch torch single-pool reference is NOT residual-start; equivalent under sg/frozen prefix). Tightens the contract wording.
 
 ## 2. (c) Genuine jax-vs-torch correctness risks surfaced
 

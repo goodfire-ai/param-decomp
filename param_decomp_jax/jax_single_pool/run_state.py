@@ -21,7 +21,7 @@ from jax_single_pool.llama8b_sharding import (
     init_decomp_vu_sharded,
     init_sources_sharded,
 )
-from jax_single_pool.lm import DecomposedLM
+from jax_single_pool.lm import DecomposedModel
 from jax_single_pool.recon import build_recon_terms
 from jax_single_pool.train import TrainState
 
@@ -77,7 +77,7 @@ def build_optimizers(cfg: ExperimentConfig):
 
 def init_train_state(
     cfg: ExperimentConfig,
-    lm: DecomposedLM,
+    lm: DecomposedModel,
     opt_vu: optax.GradientTransformation,
     opt_ci: optax.GradientTransformation,
     init_key: PRNGKeyArray,

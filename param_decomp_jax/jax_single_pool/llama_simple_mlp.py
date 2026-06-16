@@ -1,4 +1,4 @@
-"""`LlamaSimpleMLP` pile-pretrained target — the second `DecomposedLM` implementation.
+"""`LlamaSimpleMLP` pile-pretrained target — the second `DecomposedModel` implementation.
 
 Torch reference (read-only, ground truth):
 `param_decomp_lab/experiments/lm/pretrain/models/llama_simple_mlp.py`, weights from
@@ -43,7 +43,7 @@ from safetensors import safe_open
 from vendored_jax.llama import rms_norm
 
 from jax_single_pool.llama8b import DecompVU, FrozenAttn
-from jax_single_pool.lm import DecomposedLM, SiteC, SiteSpec
+from jax_single_pool.lm import DecomposedModel, SiteC, SiteSpec
 
 KIND_ORDER = ("q_proj", "k_proj", "v_proj", "o_proj", "c_fc", "down_proj")
 """Within-layer canonical site order = computation order. The canonical site order
@@ -444,8 +444,8 @@ def weight_deltas_fp32(
 
 def llama_simple_mlp_decomposed_lm(
     cfg: LlamaSimpleMLPConfig, sites: tuple[SiteSpec, ...]
-) -> DecomposedLM:
-    """The `DecomposedLM` boundary for this target (`lm.py` contract). `sites` must be
+) -> DecomposedModel:
+    """The `DecomposedModel` boundary for this target (`lm.py` contract). `sites` must be
     canonical-ordered with dims matching `cfg` (`site_specs`)."""
     site_cs = tuple(SiteC(s.name, s.C) for s in sites)
     assert sites == site_specs(cfg, canonical_site_cs(site_cs)), (
@@ -453,11 +453,11 @@ def llama_simple_mlp_decomposed_lm(
     )
     site_names = tuple(s.name for s in sites)
     first_layer = first_decomposed_layer(site_names)
-    return DecomposedLM(
+    return DecomposedModel(
         sites=sites,
-        clean_logits=lambda frozen, resid: clean_suffix_logits(frozen, resid),
+        clean_output=lambda frozen, resid: clean_suffix_logits(frozen, resid),
         site_inputs=lambda frozen, resid: clean_site_inputs(frozen, first_layer, site_names, resid),
-        masked_logits=lambda frozen,
+        masked_output=lambda frozen,
         components,
         resid,
         masks,

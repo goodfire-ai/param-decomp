@@ -46,7 +46,7 @@ from jax_single_pool.config import (
     load_run_dir_config,
 )
 from jax_single_pool.data import BatchSchedule, ShardServer, scan_shards
-from jax_single_pool.lm import DecomposedLM
+from jax_single_pool.lm import DecomposedModel
 from jax_single_pool.run_state import build_optimizers, init_train_state
 from jax_single_pool.sharding import dp_mesh
 
@@ -76,7 +76,7 @@ flat_logits)` — the per-batch reduction, pre-reduced over positions. The slow 
 metrics read only the CI arrays, so V/U (`components`) is not an input."""
 
 
-def make_slow_eval_step(lm: DecomposedLM, ci_alive_threshold: float) -> SlowEvalStep:
+def make_slow_eval_step(lm: DecomposedModel, ci_alive_threshold: float) -> SlowEvalStep:
     """Build the jit'd per-batch reduction `slow_eval_step(ci_fn, frozen, residual) ->
     ({site: density_counts}, {site: ci_sums}, n_positions, {site: flat lower},
     {site: flat logits})`. `lower`/`logits` are returned whole (the host caps the

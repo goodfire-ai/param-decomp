@@ -3,7 +3,7 @@ consumers that follow it: clustering, autointerp, slow-eval, app).
 
 This is the reusable "load a JAX run" pattern. It reads a run dir
 (`runs/<p-id>/{config.yaml, experiment_config.yaml, ckpts/}`), rebuilds the frozen
-target + `DecomposedLM` from the pinned config, restores the orbax checkpoint onto a
+target + `DecomposedModel` from the pinned config, restores the orbax checkpoint onto a
 reference `TrainState`, and exposes the pure forward a consumer needs:
 
     run = open_jax_run(run_dir)                 # latest checkpoint
@@ -39,7 +39,7 @@ from jax_single_pool.config import (
     load_run_dir_config,
 )
 from jax_single_pool.llama8b import DecompVU
-from jax_single_pool.lm import DecomposedLM
+from jax_single_pool.lm import DecomposedModel
 from jax_single_pool.run_state import build_optimizers, init_train_state
 from jax_single_pool.sharding import dp_mesh
 from jax_single_pool.train import COMPUTE_DT, TrainState, cast_floating
@@ -103,7 +103,7 @@ class LoadedJaxRun:
 
     run_id: str
     step: int
-    lm: DecomposedLM
+    lm: DecomposedModel
     config: ExperimentConfig
     vocab_size: int
     _state: TrainState
@@ -157,7 +157,7 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
         components: DecompVU, ci_fn: Any, token_ids: Int[Array, "B T"]
     ) -> tuple[dict[str, Array], dict[str, Array], Array]:
         residual = prefix_residual_fn(prefix, token_ids)
-        clean_logits = lm.clean_logits(target, residual)
+        clean_output = lm.clean_output(target, residual)
         site_inputs = lm.site_inputs(target, residual)
 
         components_bf16 = cast_floating(components, COMPUTE_DT)
@@ -173,7 +173,7 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
         return (
             {site: lower_ci[site].astype(jnp.float32) for site in site_names},
             component_acts,
-            jax.nn.softmax(clean_logits.astype(jnp.float32), axis=-1),
+            jax.nn.softmax(clean_output.astype(jnp.float32), axis=-1),
         )
 
     return LoadedJaxRun(

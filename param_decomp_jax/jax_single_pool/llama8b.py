@@ -1,4 +1,4 @@
-"""Llama-3.1-8B vendored target — the first `DecomposedLM` implementation.
+"""Llama-3.1-8B vendored target — the first `DecomposedModel` implementation.
 
 The decomposed sites are any per-layer weight matrices (SPEC §1/§3) named torch-style:
 `layers.{i}.self_attn.{q,k,v,o}_proj` and `layers.{i}.mlp.{gate,up,down}_proj`, each
@@ -34,7 +34,7 @@ from vendored_jax.llama import (
     rope_cos_sin,
 )
 
-from jax_single_pool.lm import DecomposedLM, SiteC, SiteSpec
+from jax_single_pool.lm import DecomposedModel, SiteC, SiteSpec
 
 DT = jnp.bfloat16
 
@@ -450,8 +450,8 @@ def weight_deltas_fp32(
     return out
 
 
-def llama_decomposed_lm(cfg: LlamaConfig, sites: tuple[SiteSpec, ...]) -> DecomposedLM:
-    """The `DecomposedLM` boundary for this target (SPEC §1; `lm.py` contract).
+def llama_decomposed_lm(cfg: LlamaConfig, sites: tuple[SiteSpec, ...]) -> DecomposedModel:
+    """The `DecomposedModel` boundary for this target (SPEC §1; `lm.py` contract).
     `sites` must be canonical-ordered with dims matching `cfg` (`llama_site_specs`)."""
     site_cs = tuple(SiteC(s.name, s.C) for s in sites)
     assert sites == llama_site_specs(cfg, canonical_site_cs(site_cs)), (
@@ -459,11 +459,11 @@ def llama_decomposed_lm(cfg: LlamaConfig, sites: tuple[SiteSpec, ...]) -> Decomp
     )
     site_names = tuple(s.name for s in sites)
     first_layer = first_decomposed_layer(site_names)
-    return DecomposedLM(
+    return DecomposedModel(
         sites=sites,
-        clean_logits=lambda frozen, resid: clean_suffix_logits(frozen, resid),
+        clean_output=lambda frozen, resid: clean_suffix_logits(frozen, resid),
         site_inputs=lambda frozen, resid: clean_site_inputs(frozen, first_layer, site_names, resid),
-        masked_logits=lambda frozen,
+        masked_output=lambda frozen,
         components,
         resid,
         masks,

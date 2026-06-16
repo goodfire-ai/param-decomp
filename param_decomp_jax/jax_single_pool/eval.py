@@ -52,7 +52,7 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
-from jax_single_pool.lm import DecomposedLM
+from jax_single_pool.lm import DecomposedModel
 from jax_single_pool.losses import kl_per_position
 from jax_single_pool.train import COMPUTE_DT, cast_floating
 
@@ -70,7 +70,7 @@ def next_token_cross_entropy(
 
 
 def make_eval_step(
-    lm: DecomposedLM,
+    lm: DecomposedModel,
     rounding_threshold: float,
     ci_alive_threshold: float,
     l0_group_patterns: dict[str, tuple[str, ...]] | None,
@@ -109,7 +109,7 @@ def make_eval_step(
         delta_masks: dict[str, Array],
     ) -> Array:  # fmt: skip
         return batch_sharded(
-            lm.masked_logits(
+            lm.masked_output(
                 frozen, components_bf16, residual, masks, delta_masks, None, site_names, True
             )
         )
@@ -124,7 +124,7 @@ def make_eval_step(
         key: PRNGKeyArray,
     ) -> dict[str, Array]:
         residual = batch_sharded(residual)
-        clean_logits = batch_sharded(lm.clean_logits(frozen, residual))
+        clean_output = batch_sharded(lm.clean_output(frozen, residual))
         site_inputs = lm.site_inputs(frozen, residual)
 
         components_bf16 = cast_floating(components, COMPUTE_DT)
@@ -176,9 +176,9 @@ def make_eval_step(
         ce: dict[str, Array] = {}
         for variant, (masks, delta_masks) in variant_masks.items():
             variant_logits = masked_forward(frozen, components_bf16, residual, masks, delta_masks)
-            kl[variant] = kl_per_position(variant_logits, clean_logits)
+            kl[variant] = kl_per_position(variant_logits, clean_output)
             ce[variant] = next_token_cross_entropy(variant_logits, token_ids)
-        target_ce = next_token_cross_entropy(clean_logits, token_ids)
+        target_ce = next_token_cross_entropy(clean_output, token_ids)
 
         out: dict[str, Array] = {}
         for variant in variant_masks:
@@ -217,7 +217,7 @@ def make_eval_step(
                     masks[site] = ci_site + (1.0 - ci_site) * source[..., :-1]
                     delta_masks[site] = source[..., -1]
                 masked = masked_forward(frozen, components_bf16, residual, masks, delta_masks)
-                return kl_per_position(masked, clean_logits)
+                return kl_per_position(masked, clean_output)
 
             def ascend(
                 adversarial_sources: dict[str, Array], _: None

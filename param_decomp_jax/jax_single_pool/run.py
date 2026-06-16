@@ -56,7 +56,7 @@ from jax_single_pool.llama8b import (
     prefix_residual,
 )
 from jax_single_pool.llama8b_sharding import replicate_target
-from jax_single_pool.lm import DecomposedLM
+from jax_single_pool.lm import DecomposedModel
 from jax_single_pool.recon import build_recon_terms
 from jax_single_pool.run_state import build_optimizers, init_train_state
 from jax_single_pool.sharding import dp_mesh, init_distributed
@@ -175,7 +175,7 @@ class MetricsSink:
 def train(
     cfg: ExperimentConfig,
     raw_cfg: dict[str, object],
-    lm: DecomposedLM,
+    lm: DecomposedModel,
     frozen: Target | llama_simple_mlp.SimpleMLPTarget,
     prefix: Prefix | llama_simple_mlp.SimpleMLPPrefix,
     prefix_residual_fn: Callable[[Any, Any], jax.Array],

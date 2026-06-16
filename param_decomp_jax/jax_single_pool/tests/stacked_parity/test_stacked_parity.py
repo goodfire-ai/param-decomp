@@ -5,8 +5,8 @@ against the pre-restructure `feature/jax-single-pool-pd` code (stacked `DecompVU
 contiguous-MLP-only `llama_decomposed_lm`). This test rebuilds the identical model in
 the per-site representation and checks, for the same MLP-family site set:
 
-  * `clean_logits` — BIT-identical (same op sequence on the frozen path).
-  * `site_inputs` / `weight_deltas` / `masked_logits` — to fp32 reassociation
+  * `clean_output` — BIT-identical (same op sequence on the frozen path).
+  * `site_inputs` / `weight_deltas` / `masked_output` — to fp32 reassociation
     tolerance (SPEC D4: rel ~1e-5; observed essentially exact).
   * a 2-step training trajectory (metrics + final V/U + final adversary sources) —
     rel ~1e-5. The sources / train-step code is unchanged, so their RNG streams
@@ -42,7 +42,7 @@ from jax_single_pool.llama8b import (
     llama_site_specs,
     mlp_family_site_cs,
 )
-from jax_single_pool.lm import DecomposedLM
+from jax_single_pool.lm import DecomposedModel
 from jax_single_pool.recon import StochasticSources, build_recon_terms, subset_chunk_plan
 from jax_single_pool.tests.test_llama8b import _tiny_cfg
 from jax_single_pool.train import TrainState, make_train_step
@@ -74,7 +74,7 @@ old fixed names. The stored arrays themselves are untouched — only the lookup 
 the live metrics dict is remapped."""
 
 
-def _load() -> tuple[dict[str, np.ndarray], DecomposedLM, Target, DecompVU, jnp.ndarray]:
+def _load() -> tuple[dict[str, np.ndarray], DecomposedModel, Target, DecompVU, jnp.ndarray]:
     assert FIXTURES.exists(), "regenerate via gen_stacked_fixtures.py on the base branch"
     f = dict(np.load(FIXTURES))
     cfg = _tiny_cfg()
@@ -119,9 +119,9 @@ def _assert_close(got: jnp.ndarray, want: np.ndarray, what: str) -> None:
     np.testing.assert_allclose(np.asarray(got), want, rtol=RTOL, atol=ATOL, err_msg=what)
 
 
-def test_clean_logits_bit_identical():
+def test_clean_output_bit_identical():
     f, lm, tgt, _vu, resid = _load()
-    clean = lm.clean_logits(tgt, resid)
+    clean = lm.clean_output(tgt, resid)
     assert jnp.array_equal(clean, jnp.asarray(f["out::clean"])), (
         "clean logits diverged from the stacked implementation (must be bit-identical)"
     )
@@ -137,26 +137,26 @@ def test_site_inputs_and_weight_deltas_match():
         _assert_close(deltas[name], f[f"out::wd::{name}"], f"weight_delta {name}")
 
 
-def test_masked_logits_match():
+def test_masked_output_match():
     f, lm, tgt, vu, resid = _load()
     masks = {s: jnp.asarray(f[f"mask::{s}"]) for s in lm.site_names}
     delta_masks = {s: jnp.asarray(f[f"delta_mask::{s}"]) for s in lm.site_names}
-    masked_all = lm.masked_logits(tgt, vu, resid, masks, delta_masks, None, lm.site_names, True)
-    _assert_close(masked_all, f["out::masked_all"], "masked_logits (all live)")
+    masked_all = lm.masked_output(tgt, vu, resid, masks, delta_masks, None, lm.site_names, True)
+    _assert_close(masked_all, f["out::masked_all"], "masked_output (all live)")
 
     chunk0 = lm.site_names[:3]
     routes0 = {s: jnp.asarray(f[f"route0::{s}"]) for s in chunk0}
-    masked_subset = lm.masked_logits(
+    masked_subset = lm.masked_output(
         tgt, vu, resid,
         {s: masks[s] for s in chunk0}, {s: delta_masks[s] for s in chunk0}, routes0, chunk0, True,
     )  # fmt: skip
-    _assert_close(masked_subset, f["out::masked_subset"], "masked_logits (subset live)")
+    _assert_close(masked_subset, f["out::masked_subset"], "masked_output (subset live)")
 
 
 def test_chunk_plan_static_live_set_matches():
     """The production `subset_chunk_plan` (`ChunkwiseSubsetReconLoss`) is what reaches the
     static live-set realization of SPEC S2: each plan entry holds a STATIC `live_sites`
-    tuple, and `masked_logits` runs every absent site on the frozen `x @ W` path (no
+    tuple, and `masked_output` runs every absent site on the frozen `x @ W` path (no
     `(B,T,C)` acts) — distinct from the per-position routing fallback. This drives that
     plan directly and asserts its first chunk's frozen-site forward matches the torch
     golden (`out::masked_subset`), so the chunk-plan path is verified against the oracle.
@@ -173,7 +173,7 @@ def test_chunk_plan_static_live_set_matches():
     masks = {s: jnp.asarray(f[f"mask::{s}"]) for s in chunk0}
     delta_masks = {s: jnp.asarray(f[f"delta_mask::{s}"]) for s in chunk0}
     routes = {s: jnp.asarray(f[f"route0::{s}"]) for s in chunk0}
-    masked = lm.masked_logits(
+    masked = lm.masked_output(
         tgt, vu, resid, masks, delta_masks, routes, plan[0].live_sites, plan[0].has_delta
     )
     _assert_close(masked, f["out::masked_subset"], "chunk-plan static-live-set forward")

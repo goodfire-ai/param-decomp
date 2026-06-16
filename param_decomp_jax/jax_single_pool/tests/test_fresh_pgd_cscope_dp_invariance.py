@@ -64,7 +64,7 @@ def _ascend_cscope_source(
     if mesh is not None:
         residual = shard_batch(residual, mesh, batch_axis=0)
 
-    clean_logits = jax.lax.stop_gradient(lm.clean_logits(frozen, residual))
+    clean_output = jax.lax.stop_gradient(lm.clean_output(frozen, residual))
     # ci_lower = 0 so the mask is just the c-scope source — the cleanest probe of the
     # sign-ascent. Shapes match the masked forward's per-site (B, T, C) expectation.
     ci_lower = {s.name: jnp.zeros((gbatch, seq, s.C), jnp.float32) for s in sites}
@@ -73,10 +73,10 @@ def _ascend_cscope_source(
 
     def ascent_loss(sources: dict[str, jax.Array]) -> jax.Array:
         masks, delta_masks = source_masks(ci_lower, sources, lm.site_names)
-        masked = lm.masked_logits(
+        masked = lm.masked_output(
             frozen, components, residual, masks, delta_masks, None, lm.site_names, True
         )
-        return kl_per_position(masked, clean_logits)
+        return kl_per_position(masked, clean_output)
 
     def sign_ascend_body(
         sources: dict[str, jax.Array], _: None

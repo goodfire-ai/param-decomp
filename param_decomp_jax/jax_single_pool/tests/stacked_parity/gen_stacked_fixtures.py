@@ -120,7 +120,7 @@ def main() -> None:
     arrays["resid"] = np.asarray(resid)
 
     # ── direct forward pins (fp32, eager) ──
-    arrays["out::clean"] = np.asarray(lm.clean_logits(tgt, resid))
+    arrays["out::clean"] = np.asarray(lm.clean_output(tgt, resid))
     for name, site_input in lm.site_inputs(tgt, resid).items():
         arrays[f"out::site_input::{name}"] = np.asarray(site_input)
     for name, delta in lm.weight_deltas(tgt, vu).items():
@@ -144,10 +144,10 @@ def main() -> None:
     jm = {k: jax.numpy.asarray(v) for k, v in masks.items()}
     jdm = {k: jax.numpy.asarray(v) for k, v in delta_masks.items()}
     arrays["out::masked_all"] = np.asarray(
-        lm.masked_logits(tgt, vu, resid, jm, jdm, None, lm.site_names, True)
+        lm.masked_output(tgt, vu, resid, jm, jdm, None, lm.site_names, True)
     )
     arrays["out::masked_subset"] = np.asarray(
-        lm.masked_logits(
+        lm.masked_output(
             tgt,
             vu,
             resid,

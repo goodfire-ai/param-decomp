@@ -1,4 +1,4 @@
-"""The generic single-pool VPD training step over a `DecomposedLM` (SPEC §4).
+"""The generic single-pool VPD training step over a `DecomposedModel` (SPEC §4).
 
 One `jax.jit` step: clean target → CI envelope → per-persistent-term supplemental
 ascents + per-fresh-entry sign-PGD ascents (`adversary.py`) → faith + imp-min +
@@ -34,7 +34,7 @@ from jax_single_pool.adversary import (
     sources_adam_ascend_project,
 )
 from jax_single_pool.ci_fn import CIFn, CIValues
-from jax_single_pool.lm import DecomposedLM
+from jax_single_pool.lm import DecomposedModel
 from jax_single_pool.losses import (
     annealed_pnorm,
     faithfulness_loss,
@@ -109,7 +109,7 @@ def _grad_norm_metrics(components_grad: Any, ci_fn_grad: Any) -> dict[str, Array
 
 
 def make_train_step(
-    lm: DecomposedLM,
+    lm: DecomposedModel,
     *,
     loss_spec: LossSpec,
     components_optimizer: optax.GradientTransformation,
@@ -172,7 +172,7 @@ def make_train_step(
         has_delta: bool,
     ) -> Array:
         return batch_sharded(
-            lm.masked_logits(
+            lm.masked_output(
                 frozen, components_bf16, residual, masks, delta_masks, routes, live_sites, has_delta
             )
         )
@@ -232,7 +232,7 @@ def make_train_step(
         components_bf16: Any,
         ci_lower: dict[str, Array],
         residual: Array,
-        clean_logits: Array,
+        clean_output: Array,
         forward_fn: Any,
     ) -> Array:
         """Mean KL over the entry's draws with FIXED source values — the adversarial
@@ -250,7 +250,7 @@ def make_train_step(
                 entry.live_sites,
                 entry.has_delta,
             )
-            total = total + recon_loss_fn(masked, clean_logits)
+            total = total + recon_loss_fn(masked, clean_output)
         return total / len(routes_per_draw)
 
     @jax.jit
@@ -262,7 +262,7 @@ def make_train_step(
         batch, seq = residual.shape[0], residual.shape[1]
 
         residual = batch_sharded(residual)
-        clean_logits = jax.lax.stop_gradient(batch_sharded(lm.clean_logits(frozen, residual)))
+        clean_output = jax.lax.stop_gradient(batch_sharded(lm.clean_output(frozen, residual)))
         site_inputs = lm.site_inputs(frozen, residual)
 
         # ── adversary ascents: params + CI detached (SPEC §4.5) ──
@@ -306,7 +306,7 @@ def make_train_step(
                     site_names,
                     True,
                 )
-                return recon_loss_fn(masked, clean_logits)
+                return recon_loss_fn(masked, clean_output)
 
             def warmup_body(
                 carry: tuple[dict[str, Array], SourcesAdamState],
@@ -369,7 +369,7 @@ def make_train_step(
                         components_detached,
                         ci_lower_detached,
                         residual,
-                        clean_logits,
+                        clean_output,
                         masked_forward,
                     )
 
@@ -450,7 +450,7 @@ def make_train_step(
                             entry.live_sites,
                             entry.has_delta,
                         )
-                        total = total + recon_loss_fn(masked, clean_logits)
+                        total = total + recon_loss_fn(masked, clean_output)
                         n_forwards += 1
                 assert n_forwards > 0, f"term {term.name!r} produced no forwards"
                 term_loss = total / n_forwards
@@ -540,7 +540,7 @@ def make_train_step(
 
 
 def make_faith_warmup_step(
-    lm: DecomposedLM, opt: optax.GradientTransformation
+    lm: DecomposedModel, opt: optax.GradientTransformation
 ) -> Callable[[Any, optax.OptState, Any], tuple[Any, optax.OptState, Array]]:
     @jax.jit
     def warmup_step(

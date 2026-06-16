@@ -15,7 +15,7 @@ replaces the hand-written-NCCL multi-pool design with zero manual collectives.
 
 | file | what |
 |---|---|
-| `lm.py` | `DecomposedLM` — the interface a vendored LM target implements (ordered sites, flat site-keyed dicts, frozen pytree as runtime arg) + generic chunking |
+| `lm.py` | `DecomposedModel` — the interface a vendored LM target implements (ordered sites, flat site-keyed dicts, frozen pytree as runtime arg) + generic chunking |
 | `train.py` | the step factory: one fused jit step over faith + imp-min + the recon loss TERMS, per-persistent-term fused final ascents, fp32 masters + bf16 compute |
 | `losses.py` | the pure loss terms (KL/(B·T), faithfulness, imp-min lp+entropy split) + schedules (p-anneal, source-LR warmup) |
 | `adversary.py` | adversarial source machinery: persistent state + Adam ascents, fresh sign-PGD init, `source_masks` |
@@ -65,8 +65,8 @@ python -m jax_single_pool.experiments.llama8b_real --real_weights --first_layer 
 
 ## Design
 
-- **Generic over vendored LMs.** The trainer sees only the `DecomposedLM` fn-table
-  (`lm.py`): ordered `sites`, `clean_logits`, `site_inputs`, `masked_logits`,
+- **Generic over vendored LMs.** The trainer sees only the `DecomposedModel` fn-table
+  (`lm.py`): ordered `sites`, `clean_output`, `site_inputs`, `masked_output`,
   `weight_deltas` — all pure, all taking the frozen pytree as a *runtime arg* (a frozen
   8B target closed over as a jit constant bakes multi-GB weights into the HLO). Adding
   a target (e.g. GPT-2) = implementing that table; no TMS/ResidMLP-style generality.

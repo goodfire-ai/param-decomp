@@ -7,14 +7,14 @@ from jaxtyping import Array
 from param_decomp_config.losses import ImportanceMinimalityLossConfig
 
 
-def kl_per_position(masked_logits: Array, clean_logits: Array) -> Array:
+def kl_per_position(masked_output: Array, clean_output: Array) -> Array:
     """`Σ_{b,t} KL(softmax(clean) ‖ softmax(masked)) / (B·T)` in fp32 (SPEC §2.3, N3)."""
-    masked_logits = masked_logits.astype(jnp.float32)
-    clean_logits = clean_logits.astype(jnp.float32)
-    log_q = jax.nn.log_softmax(masked_logits, axis=-1)
-    log_p = jax.nn.log_softmax(clean_logits, axis=-1)
+    masked_output = masked_output.astype(jnp.float32)
+    clean_output = clean_output.astype(jnp.float32)
+    log_q = jax.nn.log_softmax(masked_output, axis=-1)
+    log_p = jax.nn.log_softmax(clean_output, axis=-1)
     p = jnp.exp(log_p)
-    n_positions = masked_logits.shape[0] * masked_logits.shape[1]
+    n_positions = masked_output.shape[0] * masked_output.shape[1]
     return jnp.sum(p * (log_p - log_q)) / n_positions
 
 

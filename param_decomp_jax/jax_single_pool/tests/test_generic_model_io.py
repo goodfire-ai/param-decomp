@@ -1,8 +1,8 @@
 """Forcing function for the generic model-I/O seam (issue #828).
 
 The trainer's `[B,T,d]` residual is the fixed waist; only three EDGES are generic — the
-model INPUT (`prefix_residual_fn` reads it), the model OUTPUT (`clean_logits` /
-`masked_logits` return `Any`), and the recon comparison (`DecomposedLM.recon_loss_fn`).
+model INPUT (`prefix_residual_fn` reads it), the model OUTPUT (`clean_output` /
+`masked_output` return `Any`), and the recon comparison (`DecomposedModel.recon_loss_fn`).
 This builds a tiny non-LM target that bends ALL THREE at once:
 
   * INPUT  — a dict `{"feat": [B,T,d], "gain": [B,T]}` rather than token ids.
@@ -27,7 +27,7 @@ from jax import random
 from jaxtyping import Array, Float
 
 from jax_single_pool.ci_fn import CIArch, init_ci_fn
-from jax_single_pool.lm import DecomposedLM, SiteSpec
+from jax_single_pool.lm import DecomposedModel, SiteSpec
 from jax_single_pool.recon import build_recon_terms
 from jax_single_pool.train import TrainState, make_train_step
 from param_decomp_config.losses import (
@@ -68,7 +68,7 @@ def _heads(frozen: SyntheticFrozen, hidden: Array) -> tuple[Array, Array]:
     return hidden @ frozen.read_coords.T, hidden @ frozen.read_aux.T
 
 
-def _synthetic_lm() -> DecomposedLM:
+def _synthetic_lm() -> DecomposedModel:
     site = SiteSpec(name=SITE, d_in=D, d_out=D, C=C)
 
     def clean_output(frozen: SyntheticFrozen, resid: Array) -> tuple[Array, Array]:
@@ -107,11 +107,11 @@ def _synthetic_lm() -> DecomposedLM:
         aux_err = (masked[1].astype(jnp.float32) - clean[1].astype(jnp.float32)) ** 2
         return (jnp.sum(coords_err) + jnp.sum(aux_err)) / (B * T)
 
-    return DecomposedLM(
+    return DecomposedModel(
         sites=(site,),
-        clean_logits=clean_output,
+        clean_output=clean_output,
         site_inputs=site_inputs,
-        masked_logits=masked_output,
+        masked_output=masked_output,
         weight_deltas=weight_deltas,
         recon_loss_fn=geometric_mse,
     )
@@ -127,11 +127,11 @@ def test_default_recon_loss_fn_is_kl_per_position():
     byte-for-byte the pre-seam behavior (proved at scale by the stacked-parity golden)."""
     from jax_single_pool.losses import kl_per_position
 
-    lm = DecomposedLM(
+    lm = DecomposedModel(
         sites=(SiteSpec(SITE, D, D, C),),
-        clean_logits=lambda f, r: r,
+        clean_output=lambda f, r: r,
         site_inputs=lambda f, r: {SITE: r},
-        masked_logits=lambda *a: a[2],
+        masked_output=lambda *a: a[2],
         weight_deltas=lambda f, c: {},
     )
     assert lm.recon_loss_fn is kl_per_position
@@ -150,7 +150,7 @@ def test_prefix_residual_consumes_dict_input():
 
 
 def test_tuple_output_and_geometric_loss_flow():
-    """`clean_logits`/`masked_logits` emit a tuple; `recon_loss_fn` (MSE) contracts it."""
+    """`clean_output`/`masked_output` emit a tuple; `recon_loss_fn` (MSE) contracts it."""
     lm = _synthetic_lm()
     key = random.PRNGKey(1)
     frozen = SyntheticFrozen(
@@ -164,20 +164,20 @@ def test_tuple_output_and_geometric_loss_flow():
     )
     resid = random.normal(random.fold_in(key, 5), (B, T, D))
 
-    clean = lm.clean_logits(frozen, resid)
+    clean = lm.clean_output(frozen, resid)
     assert isinstance(clean, tuple) and len(clean) == 2
     assert clean[0].shape == (B, T, K_COORDS) and clean[1].shape == (B, T, M_AUX)
 
     masks = {SITE: jnp.ones((B, T, C))}
     delta_masks = {SITE: jnp.zeros((B, T))}
-    masked = lm.masked_logits(frozen, components, resid, masks, delta_masks, None, (SITE,), False)
+    masked = lm.masked_output(frozen, components, resid, masks, delta_masks, None, (SITE,), False)
     assert isinstance(masked, tuple) and len(masked) == 2
 
     loss = lm.recon_loss_fn(masked, clean)
     assert loss.shape == () and jnp.isfinite(loss)
 
 
-def _initial_state(lm: DecomposedLM, components: SyntheticComponents, ci_arch: CIArch):
+def _initial_state(lm: DecomposedModel, components: SyntheticComponents, ci_arch: CIArch):
     opt_vu = optax.adamw(1e-2, weight_decay=0.0)
     opt_ci = optax.adamw(1e-2, weight_decay=0.0)
     ci_fn = init_ci_fn(ci_arch, lm.sites, random.PRNGKey(11))

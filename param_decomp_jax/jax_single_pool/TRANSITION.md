@@ -10,7 +10,7 @@ dead.
 ## 1. The decision
 
 - **One framework: JAX.** Both training and analysis run in JAX. There is no permanent
-  torch consumption layer, no dual-backend seam, no `Arr`-generic protocol. `DecomposedLM`
+  torch consumption layer, no dual-backend seam, no `Arr`-generic protocol. `DecomposedModel`
   is simply THE model interface (no `Arr` TypeVar).
 - **Built on `feature/jax`, not `main`.** All work lands on `feature/jax`; the branch is
   squash-merged to `main` **once, at the very end** (phase 4). The cutover is
@@ -29,7 +29,7 @@ dead.
   torch code in HEAD.
 - **The JAX→torch export bridge is DEAD.** We do **not** make torch load JAX runs.
   `jsp-export`'s torch-`ComponentModel` shape goes away; JAX consumers read the **orbax
-  checkpoint + `DecomposedLM`** directly. The whole `#746`–`#752` export-bridge cluster is
+  checkpoint + `DecomposedModel`** directly. The whole `#746`–`#752` export-bridge cluster is
   closed as moot.
 - **Dropped features stay dropped for now** (revisit in JAX later, as backlog — not part
   of the numbered roadmap):
@@ -47,8 +47,8 @@ dead.
 Promote what already exists — pure-functional, state-injected. There is no torch
 counterpart to keep in sync.
 
-- **`DecomposedLM`** (`lm.py`): ordered `sites` + `clean_logits` / `site_inputs` /
-  `masked_logits` / `weight_deltas` over `(frozen, vu)` pytrees.
+- **`DecomposedModel`** (`lm.py`): ordered `sites` + `clean_output` / `site_inputs` /
+  `masked_output` / `weight_deltas` over `(frozen, vu)` pytrees.
 - **`CIFn`** (`ci_fn.py`): `site_inputs -> (ci_lower, ci_upper)`. (SRP: model and CI are
   separate concerns; a run is the pair + frozen target.)
 - **Dispatch lives only at the edges:** one `load(run) -> Decomposition` and one
@@ -84,7 +84,7 @@ A standalone, torch-free training runtime.
 
 ### Phase 2 — Analyze in JAX (*in progress*)
 
-Port the consumers to read JAX runs **natively** (orbax + `DecomposedLM`), in dependency
+Port the consumers to read JAX runs **natively** (orbax + `DecomposedModel`), in dependency
 order:
 
 1. **Harvest** — the keystone; component-statistics collection everything else reads.

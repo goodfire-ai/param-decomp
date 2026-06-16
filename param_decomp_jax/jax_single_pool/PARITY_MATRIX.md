@@ -104,7 +104,7 @@ All recon KL terms share one normalization: `Σ sum_kl / Σ n_positions` (torch)
 | `mask = ci + (1-ci)*source` | `masks.py:165-175,222-228` | `adversary.py:134`; `train.py:198,214` | done | S1/S5 | Identical across all 3 JAX source paths + torch. |
 | Non-live site frozen `x@W` — two realizations (S2) | `component_model.py:369-377,304-308`; `ci_masked_recon_subset.py:26` | `llama8b.py:363-431`; `recon.py:207-237` | done | S2 | (a) static `live`-set gate (chunk plan); (b) per-position route fallback. torch single-pool subset uses only (b); JAX (a) only via `subset_chunk_plan`. **Verify the equivalence harness exercises a chunk plan.** |
 | Per-position routing fallback `where(route, y_dec, x@W)` | `component_model.py:369-373`; `masks.py:127-152` | `llama8b.py:306-307`; `recon.py:135-145` | done | S2/S11 | uniform-k draw distribution matches (S11). |
-| `clean_logits` = frozen-path forward, not mask=1 identity | `train_step.py:141,150`; `component_model.py:298,379` | `llama8b.py:319-326`; `llama_simple_mlp.py:303`; `train.py:249` | done | S3 | **Structural diff**: torch single-pool reference here is WHOLE-frozen-forward, NOT residual-start; JAX uses suffix-only over harvested residual. Equivalent under stop-grad, but SPEC S3/S18 describe residual-start as contract — tighten wording. |
+| `clean_output` = frozen-path forward, not mask=1 identity | `train_step.py:141,150`; `component_model.py:298,379` | `llama8b.py:319-326`; `llama_simple_mlp.py:303`; `train.py:249` | done | S3 | **Structural diff**: torch single-pool reference here is WHOLE-frozen-forward, NOT residual-start; JAX uses suffix-only over harvested residual. Equivalent under stop-grad, but SPEC S3/S18 describe residual-start as contract — tighten wording. |
 | CI inputs = clean frozen-path site inputs (S4) | `train_step.py:141-146`; `component_model.py:350` | `llama8b.py:329-360`; `llama_simple_mlp.py:313-346` | done | S4 | SimpleMLP uses gelu(tanh) for down_in vs Llama silu — target-specific, correct. |
 | Delta component C+1 channel sizing | `masks.py:230-238`; `components.py:71-74` | `adversary.py:47,73`; `train.py:199-201` | done | S1 | Stochastic delta is a separate `[B,T]` draw (not a C+1 channel). Constant path zeros delta vs torch skips it — identical value, compute diff. |
 | Per-site C (heterogeneous) | `decomposition_targets.py:21`; `component_model.py:165`; `components.py:255` | `lm.py:36-42`; `llama8b.py:258-278`; `ci_fn.py:185` | done | S5 | Production uses one C; machinery per-site both sides. |
@@ -323,8 +323,8 @@ L 1000–3000, XL > 3000).
 
 ### JAX package core
 
-**PR-8 — JAX `DecomposedLM` + CI transformer + sigmoids**
-- **Scope**: `lm.py` (`DecomposedLM` protocol, four pure fns, flat site-name dicts), `ci_fn.py` (shared transformer, lower/upper leaky-hard custom VJP), `llama8b.py` site machinery + clean_site_inputs + masked_forward.
+**PR-8 — JAX `DecomposedModel` + CI transformer + sigmoids**
+- **Scope**: `lm.py` (`DecomposedModel` protocol, four pure fns, flat site-name dicts), `ci_fn.py` (shared transformer, lower/upper leaky-hard custom VJP), `llama8b.py` site machinery + clean_site_inputs + masked_forward.
 - **Depends on**: PR-6, PR-2.
 - **Rationale**: The pure forward/CI surface, no optimization yet. **Ships with two acknowledged numeric deviations** (GELU tanh vs erf, rms eps 1e-5 vs finfo) and the site-order convention (KIND_ORDER) — document all three in the PR and SPEC. **Must add the missing `lower_leaky_hard` grad-check unit test here** (the single most subtle numeric, currently untested).
 - **Size**: L.
@@ -397,7 +397,7 @@ flowchart LR
     PR5["PR-5 · dead-code drop"]
     PR6["PR-6 · vendored Llama-8B"]
     PR7["PR-7 · SimpleMLP (jax)"]
-    PR8["PR-8 · DecomposedLM + CI"]
+    PR8["PR-8 · DecomposedModel + CI"]
     PR9["PR-9 · loss terms"]
     PR10["PR-10 · adversary + recon"]
     PR11["PR-11 · train step + sharding"]

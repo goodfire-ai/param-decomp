@@ -104,7 +104,7 @@ def masked_forward(residual[B,T,d], live_sites, masks, delta_masks, routes) -> l
     each site s ∈ live_sites computes site_out(x, s, masks[s], delta_masks[s], routes[s]);
     each site s ∉ live_sites computes x @ W_s            # frozen path, NOT y_dec(mask=1)   (S2)
 
-def clean_logits(residual)   = masked_forward(residual, live_sites=∅)                       (S3)
+def clean_output(residual)   = masked_forward(residual, live_sites=∅)                       (S3)
 def site_inputs(residual)    = the activation entering each site's weight on the clean path
     # MLP sites: gate_in = up_in = post-ln2 residual; down_in = silu(gate)·up               (S4)
     # attn sites: q_in = k_in = v_in = post-ln1 residual; o_in = pre-o_proj attn output
@@ -130,8 +130,8 @@ def make_masks(ci_lower_s[B,T,C], source_s[B,T,C+1]) -> (mask, delta_mask):
     mask       = ci_lower_s + (1 − ci_lower_s) * source_s[..., :C]
     delta_mask = source_s[..., C]              # delta channel raw: NO ci interpolation     (S1)
 
-def kl_per_position(masked_logits, clean_logits) =
-    Σ_{b,t} KL(softmax(clean_logits[b,t]) ‖ softmax(masked_logits[b,t])) / (B·T)    # fp32 (N3)
+def kl_per_position(masked_output, clean_output) =
+    Σ_{b,t} KL(softmax(clean_output[b,t]) ‖ softmax(masked_output[b,t])) / (B·T)    # fp32 (N3)
 
 def faithfulness_loss(components) = ( Σ_s ‖W_s − V_s@U_s‖_F² ) / ( Σ_s numel(W_s) )        (S17)
 
@@ -141,20 +141,20 @@ def importance_minimality_loss(ci_upper, pnorm):         # per-site grouping    
 
 # RECON_PLAN: a static list of entries (live_sites, SAMPLE_ROUTING); each entry's sampler
 # returns a statically-sized FAMILY of routing draws, each draw = one forward (§6).
-def stochastic_recon_loss(components, ci_lower, residual, clean_logits):
+def stochastic_recon_loss(components, ci_lower, residual, clean_output):
     total, n_forwards = 0, 0
     for (live_sites, SAMPLE_ROUTING) in RECON_PLAN:
         for routes in SAMPLE_ROUTING(key, [B,T]):        # fresh per step                 (R1,S11)
             masks, delta_masks = make_masks(ci_lower_s, source_s ~ U[0,1]^[B,T,C+1])  ∀ s ∈ live_sites
             total += kl_per_position(masked_forward(residual, live_sites, masks, delta_masks, routes),
-                                     clean_logits)
+                                     clean_output)
             n_forwards += 1
     return total / n_forwards                                                               (S10)
 
-def adversarial_recon_loss(components, ci_lower, sources, residual, clean_logits):     # all sites (S12)
+def adversarial_recon_loss(components, ci_lower, sources, residual, clean_output):     # all sites (S12)
     masks, delta_masks = make_masks(ci_lower_s, expand(SCOPE, sources[s]))    ∀ s ∈ sites
     return kl_per_position(masked_forward(residual, ALL_SITES, masks, delta_masks, ALL),
-                           clean_logits)
+                           clean_output)
 ```
 
 ### 4.4 The adversary
@@ -170,7 +170,7 @@ def sources_update(sources, sources_grad, opt_state):
 ```
 def train_step(state, batch, step):
     residual = sg[ prefix_forward(batch) ]           # per fresh batch                      (S18)
-    cln      = sg[ clean_logits(residual) ]                                                  (S3)
+    cln      = sg[ clean_output(residual) ]                                                  (S3)
     ci_lower, ci_upper = ci(ci_fn, site_inputs(residual))   # ONE conceptual CI eval/step;
                                                             # recompute allowed (deterministic)
     # -- supplemental adversary ascents (components & CI detached) --
@@ -231,7 +231,7 @@ on the clean path. Refs: `ci_fn.py` GELU line + `CI_FN_RMS_EPS`; torch
 |---|---|
 | S1 | `mask = ci + (1−ci)·source` per component channel; the delta channel is the raw source value, never ci-interpolated; CI has no delta output. |
 | S2 | A site not live in a forward runs the frozen `x @ W_s` path — zero V/U gradient, zero decomposition rounding, and none of the live path's ~9× compute or `(B,T,C)` activations. |
-| S3 | The recon target `clean_logits` is the frozen-path forward, stop-gradient. Never the `mask=1, delta=1` decomposed identity (differs in bf16 and pollutes the graph). Under residual-start (S18), `clean_logits` is the SUFFIX-only clean forward over the harvested residual (`clean_suffix_logits`); this equals the whole-model frozen forward because the frozen prefix is stop-gradient'd and runs once outside the graph — the two forms are identical under sg of the frozen prefix. The on-branch torch single-pool reference computes the whole-model frozen forward; JAX computes the suffix-only form; they agree by this equivalence. |
+| S3 | The recon target `clean_output` is the frozen-path forward, stop-gradient. Never the `mask=1, delta=1` decomposed identity (differs in bf16 and pollutes the graph). Under residual-start (S18), `clean_output` is the SUFFIX-only clean forward over the harvested residual (`clean_suffix_logits`); this equals the whole-model frozen forward because the frozen prefix is stop-gradient'd and runs once outside the graph — the two forms are identical under sg of the frozen prefix. The on-branch torch single-pool reference computes the whole-model frozen forward; JAX computes the suffix-only form; they agree by this equivalence. |
 | S4 | CI inputs are the clean site inputs from the frozen path of the same batch. |
 | S5 | `ci_lower` and `ci_upper` are two squashings of the SAME logits. `ci_lower` feeds every mask; `ci_upper` feeds imp-min only; no other crossing. |
 | S6 | The squashings' forward/backward are exactly §4.2 — including `lower_leaky_hard`'s grad-sign-gated lower leak (a custom VJP, not autodiff of the forward). The backward is a nested `where` with `<=` boundaries: on `0 < x <= 1` pass `g`; at `x <= 0` pass `α·g` ONLY where `g < 0`, else `0`; at `x > 1` pass `0`; `α=0.01`. The boundary tie at `x=0` resolves to the LOWER (`x <= 0`) branch — this `<=` placement is exactly what makes torch (`ci_sigmoids.py`) and JAX (`ci_fn.py`, `_lhs_b`) bit-identical and is load-bearing, not incidental. Grad-checked by `tests/test_lower_leaky_hard_grad.py` (`g<0` vs `g>0` at `x<0`, `x∈(0,1]`, `x>1`; #789). |
@@ -253,13 +253,13 @@ on the clean path. Refs: `ci_fn.py` GELU line + `CI_FN_RMS_EPS`; torch
 | S22 | Checkpoints round-trip ALL trajectory state of §3 — including every persistent term's sources + SRC_STEP moments + step/schedule counters — such that a resumed run continues the same trajectory (modulo RNG streams and kernel nondeterminism, cf. D4). **SIGTERM lifecycle (decision):** a SLURM-delivered SIGTERM sets a flag that is serviced at the main train-step boundary (synchronous save of the completed step, then exit for requeue), inside the faith-warmup loop (clean exit WITHOUT a save — no valid checkpoint exists pre-step-0, and resume skips warmup whenever any checkpoint is present, so a partial step-0 save would resume as if fully warmed; the requeue redoes warmup), and inside the in-loop eval pass (abandon the partial pass unlogged, fall through to the step-boundary save). The **first-jit-compile window remains unserviced** — a SIGTERM there is honored only once compilation finishes and control reaches the next servicing point. Periodic `save_every` is the BACKSTOP guarantee for every window; the SIGTERM→save path is the low-latency fast path, not the sole guarantee (lore `jsp_sigterm_save_never_fired`: 6/6 historical preemptions fell back to periodic ckpts; warmup/eval servicing closes the two largest unserviced windows). |
 | S23 | A persistent source bundle feeds exactly ONE loss term. (The fused-backward S14′ unscaling divides that term's coeff out of the source gradient; a bundle shared across terms would make the division wrong.) |
 | S24 | A persistent term's WARMUP ascents forward all sites, routed everywhere — regardless of the term's loss plan (torch parity: `persistent_pgd_state.warmup` hardcodes route-all). A fresh-PGD entry draws its routing ONCE per step, shared by all its ascents and its main loss forward (torch parity: `pgd_masked_recon_loss_update`). |
-| S25 | Recon KL direction is `KL(softmax(clean_logits) ‖ softmax(masked_logits))` — `P = clean`, `Q = masked`. Equivalently `Σ p_clean · (log p_clean − log p_masked)`. Torch `recon_loss_kl` realizes this as `F.kl_div(log_softmax(pred=masked), softmax(target=clean), reduction='sum')` (`batch_and_loss_fns.py::recon_loss_kl`); reversing the arguments is a silent, plausible bug, so the direction is semantic, not incidental. |
+| S25 | Recon KL direction is `KL(softmax(clean_output) ‖ softmax(masked_output))` — `P = clean`, `Q = masked`. Equivalently `Σ p_clean · (log p_clean − log p_masked)`. Torch `recon_loss_kl` realizes this as `F.kl_div(log_softmax(pred=masked), softmax(target=clean), reduction='sum')` (`batch_and_loss_fns.py::recon_loss_kl`); reversing the arguments is a silent, plausible bug, so the direction is semantic, not incidental. |
 | S26 | Normalization identity: `(Σ_forwards sum_kl) / (Σ_forwards n_positions) == mean_forwards(sum_kl / n_positions)`, valid **iff** every forward shares the same `(B,T)` (so `n_positions` is constant across forwards). This precondition is what makes JAX's mean-over-forwards (S10′) equal torch's `(Σ sum_kl)/(Σ n_positions)` accumulator; uniform `(B,T)` across all forwards in a term is therefore required. (Stated in LOSS_PARITY_DESIGN §4e; cross-ref S10′.) |
 | S27 | The CI transformer's RoPE `inv_freq` (§4.6) is a non-trained buffer and MUST be stop-gradient'd in the CI fn. In JAX it is a pytree leaf and would otherwise be optax-updated, silently drifting the rotary frequencies; torch carries it as a registered buffer (no grad). Ref `ci_fn.py:115`. |
 | S28 | Eval splits across two processes (§10): a FAST scalar tier run in-loop on cadence `eval.every`, and a SLOW/plot tier delegated entirely to `pd-offline-eval` on exported checkpoints. The torch `slow_every` / `slow_on_first_step` cadence (`optimize.py`'s `EvalLoop`) has NO JAX in-loop analog — the slow tier is offline, keyed off the checkpoint-save cadence, by design. |
 | S29 | JAX `EvalConfig` carries `batch_size`, `every`, `n_steps` (+ `rounding_threshold`, `ci_alive_threshold`) and DELIBERATELY omits `slow_every` / `slow_on_first_step` (those have no in-loop tier — S28). `eval` is atomic-optional (`EvalConfig | None`): `None` disables in-loop eval. |
 | S30 | `cfg.cadence.log_every` divides `cfg.eval.every` (`eval.every % log_every == 0`, asserted at `run.py:255`) so every eval step is also a train-log step. |
-| S31 | `StochasticHiddenActsReconLoss` is NOT a JAX training loss — `build_recon_terms` refuses it (`recon.py` final `case _`: `raise AssertionError(f"unsupported training loss {cfg.type!r}")`). Its objective is per-element MSE on each target module's OUTPUT activations, which `DecomposedLM`'s four-fn table deliberately does not expose (the table returns final logits only); porting it would need a fifth per-target seam `masked_site_outputs(...) -> dict[site, (B,T,d_out)]` plus a per-element (not per-position) normalization, and as a training loss it is exactly the site-local recon the trainer treats as a conceptual no-no (LOSS_PARITY_DESIGN §4c). It rides the OFFLINE BRIDGE instead: it lives only in `torch_config.OFFLINE_EVAL_METRIC_TYPES`, and `pd-offline-eval` computes it bit-faithfully on exported checkpoints (S28's slow tier). Keep-on-bridge is the decision; the seam is built ONLY if a training-loss use case appears, and then as an explicit amendment to this invariant (LOSS_PARITY_DESIGN §6 stage 4). |
+| S31 | `StochasticHiddenActsReconLoss` is NOT a JAX training loss — `build_recon_terms` refuses it (`recon.py` final `case _`: `raise AssertionError(f"unsupported training loss {cfg.type!r}")`). Its objective is per-element MSE on each target module's OUTPUT activations, which `DecomposedModel`'s four-fn table deliberately does not expose (the table returns final logits only); porting it would need a fifth per-target seam `masked_site_outputs(...) -> dict[site, (B,T,d_out)]` plus a per-element (not per-position) normalization, and as a training loss it is exactly the site-local recon the trainer treats as a conceptual no-no (LOSS_PARITY_DESIGN §4c). It rides the OFFLINE BRIDGE instead: it lives only in `torch_config.OFFLINE_EVAL_METRIC_TYPES`, and `pd-offline-eval` computes it bit-faithfully on exported checkpoints (S28's slow tier). Keep-on-bridge is the decision; the seam is built ONLY if a training-loss use case appears, and then as an explicit amendment to this invariant (LOSS_PARITY_DESIGN §6 stage 4). |
 | S32 | A persistent term with `start_frac > 0` contributes nothing — no loss, no source/optimizer update — until `step/total_steps >= start_frac` (torch parity: `persistent_pgd_recon.update()` returns `None` before `start_frac`, the term absent and its state frozen at init). Sources are RNG-initialized at step 0 but untouched while inactive, so activation is distributionally identical to torch's lazy state construction (the init draw is RNG-pure). `start_frac == 0.0` is the always-active common case and keeps the unguarded, byte-exact path (`train.py` only inserts the `term_active` `where`-gating when `start_frac > 0`). The source-LR schedule (S13′) is a pure function of `step`, so the LR at the activation step already reflects whatever warmup/decay that step prescribes. |
 
 ## 6. Variation points
@@ -324,7 +324,7 @@ ancestry are on-branch (rows below).
 | §4.6 CI arch | `param_decomp/ci_fns.py::GlobalSharedTransformerCiFn` (`:156`), `param_decomp/ci_nn_blocks.py` |
 
 The JAX implementation (`jax_single_pool/train.py`) uses these pseudocode names
-verbatim: `clean_logits`, `site_inputs`, `source_masks`, `stochastic_recon_loss`,
+verbatim: `clean_output`, `site_inputs`, `source_masks`, `stochastic_recon_loss`,
 `adversarial_recon_loss`, `sources_adam_ascend_project`, `ReconPlan`/`ReconForward`,
 `uniform_k_routing`, `subset_chunk_plan`, `per_site_plan`.
 

@@ -18,7 +18,7 @@ Two kinds of check:
     forward, and a B/T-transposed source must break it (the fixtures keep `B != T`).
 
   * **Chunk-plan static-live gate (S2).** `test_chunk_plan_static_live_gate` drives
-    `masked_logits` with a live set that splits a layer's MLP (`live = (l0.gate, l0.up)`,
+    `masked_output` with a live set that splits a layer's MLP (`live = (l0.gate, l0.up)`,
     `l0.down` frozen) — the realization the production `subset_chunk_plan` hits when a
     chunk boundary cuts across a layer, which `stoch` (whole-layer chunks) and `ppgd`
     (all sites live) never exercise — and asserts it equals an explicit reference that
@@ -75,7 +75,7 @@ def test_chunk_plan_static_live_gate() -> None:
     `subset_chunk_plan` partitions sites into sequential groups that can cut across a
     layer's MLP, leaving whole sites frozen (`x @ W`) inside an otherwise-decomposed
     layer. The `stoch` term here uses whole-layer live chunks and `ppgd` decomposes
-    every site, so neither pins this static-live gate. Drive `masked_logits` with
+    every site, so neither pins this static-live gate. Drive `masked_output` with
     `live = (l0.gate, l0.up)` (so `l0.down` is the frozen sibling) and assert it equals
     an explicit reference forward that hard-codes `l0.down` to `x @ W`."""
     f = dict(np.load(HERE / "fixtures.npz"))
@@ -198,7 +198,7 @@ def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
         assert masks[s].shape[0] == B and masks[s].shape[1] == T, masks[s].shape
         assert delta_masks[s].shape == (1, T), delta_masks[s].shape
 
-    pred = lm.masked_logits(tgt, vu, resid, masks, delta_masks, None, lm.site_names, True)
+    pred = lm.masked_output(tgt, vu, resid, masks, delta_masks, None, lm.site_names, True)
     assert pred.shape == (B, T, vocab), pred.shape
 
     # A source whose free axis is sized B (not T) — i.e. the B/T axes transposed — must NOT
@@ -208,4 +208,4 @@ def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
         assert bt_transposed[s].shape == (1, B, source[s].shape[-1]), bt_transposed[s].shape
     with pytest.raises(Exception):  # noqa: B017 — broadcast error, framework-specific type
         bad_masks, bad_delta = source_masks(ci_lower, bt_transposed, lm.site_names)
-        lm.masked_logits(tgt, vu, resid, bad_masks, bad_delta, None, lm.site_names, True)
+        lm.masked_output(tgt, vu, resid, bad_masks, bad_delta, None, lm.site_names, True)

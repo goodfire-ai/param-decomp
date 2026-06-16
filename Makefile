@@ -15,7 +15,7 @@ install-dev: bridge-jax-into-main-venv
 # the workspace lock — including jax, which `param_decomp_jax` is NOT a member of. But the
 # JAX-run consumers in the lab venv (harvest's run_worker_jax.py, the app backend) `import
 # jax` + `from jax_single_pool ...` and call `open_jax_run` (restores an orbax checkpoint,
-# builds a `DecomposedLM`), and `make type` over them needs both stacks resolvable. So
+# builds a `DecomposedModel`), and `make type` over them needs both stacks resolvable. So
 # re-add the JAX runtime right after the sync: jax/jaxlib CPU + the JAX trainer's own
 # runtime deps (equinox/optax/jaxtyping/orbax — orbax pulls pure-python absl/etils/
 # tensorstore/...), all jax-pinned so nothing bumps jax; then the editable

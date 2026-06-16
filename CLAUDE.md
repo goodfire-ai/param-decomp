@@ -82,8 +82,8 @@ venv). The semantics source of truth is its `SPEC.md` (normative pseudocode + nu
 invariants, grounded in the torch oracle — JAX **conforms** to it). For the real entry
 points, read `param_decomp_jax/jax_single_pool/CLAUDE.md` and `SPEC.md`. In one breath:
 
-- **`DecomposedLM`** (`jax_single_pool/lm.py`) — THE model interface: ordered `sites` +
-  pure fns (`clean_logits` / `site_inputs` / `masked_logits` / `weight_deltas`) over
+- **`DecomposedModel`** (`jax_single_pool/lm.py`) — THE model interface: ordered `sites` +
+  pure fns (`clean_output` / `site_inputs` / `masked_output` / `weight_deltas`) over
   `(frozen, vu)` pytrees. Generic over vendored LM targets. There is one recon
   semantics: chunkwise masking through the suffix forward, KL on final logits.
 - **`jsp-train <config.yaml>`** (`jax_single_pool/run.py`) — the composition root and the

@@ -25,7 +25,7 @@ The exceptions:
 - `FaithfulnessLoss`, `ImportanceMinimalityLoss` — not recons (weight-space /
   CI-space objectives). Already implemented; nothing to do.
 - `StochasticHiddenActsReconLoss` — a recon in spirit but its objective is MSE on
-  *internal* activations, which the `DecomposedLM` fn-table deliberately does not
+  *internal* activations, which the `DecomposedModel` fn-table deliberately does not
   expose. The one genuine seam-breaker. Recommendation: keep on the offline bridge
   (it is already in `torch_config.OFFLINE_EVAL_METRIC_TYPES`), per Oli's stance
   that hidden-acts is an eval metric; see §4c.
@@ -143,12 +143,12 @@ generalization lands between runs).
 
 ```python
 def recon_term_loss(term, frozen, components_bf16, ci_lower, persistent_sources_for_term,
-                    residual, clean_logits, key) -> Array:
+                    residual, clean_output, key) -> Array:
     total, n = 0, 0
     for entry in term.plan:
         for routes in entry.sample_routing(entry_key, (B, T)):
             masks, delta_masks = materialize(entry.sources, ci_lower, entry.live_sites, draw_key)
-            total += kl_per_position(masked_forward(..., routes, entry.live_sites), clean_logits)
+            total += kl_per_position(masked_forward(..., routes, entry.live_sites), clean_output)
             n += 1
     return total / n
 ```
@@ -275,7 +275,7 @@ always full `(B,T)` fresh draws regardless of anything — consistent with torch
 **(c) Hidden-acts losses.** `StochasticHiddenActsReconLoss.update` calls
 `model.forward_with_output_acts(batch)` twice (target acts, then masked acts) and
 MSEs per module — it needs every target module's *output activation*, which
-`DecomposedLM` deliberately does not expose (the fn-table returns final logits
+`DecomposedModel` deliberately does not expose (the fn-table returns final logits
 only). The seam would be a fifth fn,
 `masked_site_outputs(frozen, vu, residual, masks, delta_masks, routes, live) ->
 dict[site, (B,T,d_out)]`, implemented per target. That is mechanical but it (i)

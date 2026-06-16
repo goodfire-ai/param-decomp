@@ -1,4 +1,4 @@
-"""`DecomposedLM` — the interface a vendored target implements for the generic trainer.
+"""`DecomposedModel` — the interface a vendored target implements for the generic trainer.
 
 The trainer (`train.py`) is abstract over the target model: it sees an ordered set of
 decomposed **sites** (SPEC §1.2) and a handful of pure functions over `(frozen, vu)`
@@ -8,9 +8,9 @@ layer axis) is its own business.
 
 The `[B,T,d]` residual is the FIXED WAIST: masking, routing, source scopes, imp-min, the
 CI fn, and normalization all operate on `(B,T)` and stay LM-shaped. Only the three EDGES
-are generic — the model's INPUT (whatever `site_inputs`/`clean_logits`/`masked_logits`
+are generic — the model's INPUT (whatever `site_inputs`/`clean_output`/`masked_output`
 read upstream of the residual; tokens for an LM, a dict for a bio target), the model's
-OUTPUT (`clean_logits`/`masked_logits` return `Any` — logits, a tuple of heads, coords),
+OUTPUT (`clean_output`/`masked_output` return `Any` — logits, a tuple of heads, coords),
 and the recon comparison (`recon_loss_fn`, default `kl_per_position`).
 
 Every function takes the frozen-target pytree as a RUNTIME argument. Never close over
@@ -51,21 +51,21 @@ class SiteSpec:
 
 
 @dataclass(frozen=True)
-class DecomposedLM:
+class DecomposedModel:
     """Pure-function table over `(frozen, vu)` pytrees (see module docstring).
 
     `sites` fixes the canonical site order — chunking (SPEC S10) and the CI fn's
     input/output concatenation both follow it.
 
-    `masked_logits(frozen, vu, resid, masks, delta_masks, routes, live, has_delta)`:
+    `masked_output(frozen, vu, resid, masks, delta_masks, routes, live, has_delta)`:
     `live` (a tuple of site names, static under jit) lists the sites running their
     decomposed forward; all other sites MUST run the frozen `x @ W` path (SPEC S2).
     `masks`/`delta_masks` may broadcast over the batch dim (the PPGD source case).
     `has_delta` (static) False skips the `x @ Δ` matmul for constant-source entries
     whose delta mask is a constant 0 (LOSS_PARITY_DESIGN §4b).
 
-    `clean_logits` is the all-frozen forward — the recon target (SPEC S3); never the
-    `mask=1` decomposed identity. Its output (and `masked_logits`') is `Any`: an LM
+    `clean_output` is the all-frozen forward — the recon target (SPEC S3); never the
+    `mask=1` decomposed identity. Its output (and `masked_output`') is `Any`: an LM
     emits `[B,T,vocab]` logits, a bio target a tuple of heads or coordinates.
 
     `weight_deltas` returns fp32 `W − V@U` per site from fp32 master `vu` (SPEC N2).
@@ -77,9 +77,9 @@ class DecomposedLM:
     """
 
     sites: tuple[SiteSpec, ...]
-    clean_logits: Callable[[Any, Float[Array, "B T d"]], Any]
+    clean_output: Callable[[Any, Float[Array, "B T d"]], Any]
     site_inputs: Callable[[Any, Float[Array, "B T d"]], dict[str, Float[Array, "B T d_in"]]]
-    masked_logits: Callable[
+    masked_output: Callable[
         [
             Any,
             Any,

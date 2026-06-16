@@ -11,7 +11,7 @@ The contract this guards: the per-device gradient flowing into the replicated `s
 source is the GLOBAL mean. If GSPMD instead emitted a bare all-reduce(SUM) on the
 source cotangent (the bug), the N-device source grad would be N× the single-device grad.
 We compute the source-leaf grad of the adversarial ascent objective
-(`kl_per_position(masked_logits(...), clean_logits)`, the same loss the persistent
+(`kl_per_position(masked_output(...), clean_output)`, the same loss the persistent
 ascent backprops, SPEC S12'/S14') on the SAME fixed global batch + seed at 1 layout
 (`mesh=None`) and at N≥2 simulated devices, and assert they match to rel ≤ 1e-4.
 
@@ -78,14 +78,14 @@ def _source_grad(sharded: bool) -> dict[str, jax.Array]:
     ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
     site_inputs = lm.site_inputs(tgt, resid)
     ci_lower = ci_fn_bf16(site_inputs).lower
-    clean_logits = jax.lax.stop_gradient(lm.clean_logits(tgt, resid))
+    clean_output = jax.lax.stop_gradient(lm.clean_output(tgt, resid))
 
     def source_loss(sources: dict[str, jax.Array]) -> jax.Array:
         masks, delta_masks = source_masks(ci_lower, sources, lm.site_names)
-        masked = lm.masked_logits(
+        masked = lm.masked_output(
             tgt, components_bf16, resid, masks, delta_masks, None, lm.site_names, True
         )
-        return kl_per_position(masked, clean_logits)
+        return kl_per_position(masked, clean_output)
 
     grad_fn = jax.jit(jax.grad(source_loss))
     if mesh is not None:
