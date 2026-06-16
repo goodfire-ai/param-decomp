@@ -160,7 +160,12 @@ class MetricsSink:
             flush=True,
         )
         if self._wandb is not None:
-            self._wandb.log(record, step=step)
+            # CommError catches wandb-server hiccups (a transient outage must not kill a
+            # multi-day run) while letting genuine misuse (e.g. a non-dict record) raise.
+            try:
+                self._wandb.log(record, step=step)
+            except self._wandb.errors.CommError as e:
+                print(f"wandb communication error, skipping log: {e}", flush=True)
 
 
 def train(
