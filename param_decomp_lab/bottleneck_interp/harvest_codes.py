@@ -7,7 +7,7 @@ Saves, under `<out_dir>/`:
   - `theta.pt`           : fp32 [D] learned per-dim gate thresholds
   - `stats.pt`           : per-dim running statistics (firing/sign counts, sums)
   - `sequences.pt`       : int32 [n_seq, seq_len] token ids (context windows)
-  - `module_activity.pt` : uint8 [n_positions, M] per-module CI-active flags
+  - `module_frac.pt`     : uint8 [n_positions, M] per-module fraction-CI-active (x255)
   - `meta.json`          : run id, D, n_positions, seq_len, module_names, tokenizer, etc.
 
 The raw codes feed manifold analysis and autointerp example tables; the running stats
@@ -107,7 +107,7 @@ def harvest_codes(
     # Per-position module activity: for each decomposition-target module, whether any of
     # its components is causally important (lower-leaky CI > threshold) at that position.
     module_names: list[str] = []
-    module_act_buf: list[Int[Tensor, "n M"]] = []
+    module_frac_buf: list[Int[Tensor, "n M"]] = []
     seq_len = -1
     buffered = 0
     chunk_idx = 0
@@ -137,21 +137,26 @@ def harvest_codes(
 
         if not module_names:
             module_names = sorted(ci.lower_leaky.keys())
-        module_active = torch.stack(
+        # Per module, the fraction of its components that are strongly causally important
+        # (lower-leaky CI > threshold) at this position, as uint8 (frac * 255). "Any
+        # active" saturates (~every module active everywhere), so store the degree of
+        # engagement and let the viewer threshold it.
+        module_frac = torch.stack(
             [
-                (
-                    ci.lower_leaky[m].reshape(-1, ci.lower_leaky[m].shape[-1]) > module_ci_threshold
-                ).any(dim=-1)
+                (ci.lower_leaky[m].reshape(-1, ci.lower_leaky[m].shape[-1]) > module_ci_threshold)
+                .float()
+                .mean(dim=-1)
                 for m in module_names
             ],
             dim=-1,
-        )  # [n, M] bool
+        )  # [n, M] in [0, 1]
+        module_frac_u8 = (module_frac * 255).round().clamp(0, 255).to(torch.uint8)
 
         stats.update(flat_codes)
         code_buf.append(flat_codes.half().cpu())
         tok_buf.append(flat_toks.to(torch.int32).cpu())
         seq_buf.append(batch.to(torch.int32).cpu())
-        module_act_buf.append(module_active.to(torch.uint8).cpu())
+        module_frac_buf.append(module_frac_u8.cpu())
         buffered += flat_codes.shape[0]
         if buffered >= positions_per_chunk:
             flush()
@@ -163,7 +168,7 @@ def harvest_codes(
     # Token sequences in flat-code order: global position i -> sequences[i // seq_len, i % seq_len].
     # Used to recover context windows for activating examples.
     torch.save(torch.cat(seq_buf, dim=0), out_dir / "sequences.pt")
-    torch.save(torch.cat(module_act_buf, dim=0), out_dir / "module_activity.pt")
+    torch.save(torch.cat(module_frac_buf, dim=0), out_dir / "module_frac.pt")
     meta = {
         "run_path": run_path,
         "dim": dim,

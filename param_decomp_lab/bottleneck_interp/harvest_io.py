@@ -50,8 +50,8 @@ REGION_PALETTE: list[list[float]] = [
 class Harvest:
     """A loaded context-preserving harvest, with `flat_tokens` aligned to `codes`.
 
-    `module_activity` is `[n, M]` uint8 (per position, whether each module in
-    `module_names` is CI-active), present only if the harvest stored it.
+    `module_frac` is `[n, M]` float in [0, 1] (per position, the fraction of each module's
+    components that are CI-active), present only if the harvest stored it.
     """
 
     meta: dict[str, Any]
@@ -61,7 +61,7 @@ class Harvest:
     codes: Float[Tensor, "n D"]
     flat_tokens: Int[Tensor, " n"]
     module_names: list[str] | None
-    module_activity: Int[Tensor, "n M"] | None
+    module_frac: Float[Tensor, "n M"] | None
 
 
 def load_harvest(code_dir: Path, max_positions: int) -> Harvest:
@@ -71,8 +71,10 @@ def load_harvest(code_dir: Path, max_positions: int) -> Harvest:
     codes = load_codes(code_dir, max_positions)[:max_positions].float()
     flat_tokens = sequences.reshape(-1)[: codes.shape[0]]
 
-    module_path = code_dir / "module_activity.pt"
-    module_activity = torch.load(module_path)[: codes.shape[0]] if module_path.exists() else None
+    frac_path = code_dir / "module_frac.pt"
+    module_frac = (
+        torch.load(frac_path)[: codes.shape[0]].float() / 255.0 if frac_path.exists() else None
+    )
     return Harvest(
         meta=meta,
         seq_len=meta["seq_len"],
@@ -81,7 +83,7 @@ def load_harvest(code_dir: Path, max_positions: int) -> Harvest:
         codes=codes,
         flat_tokens=flat_tokens,
         module_names=meta.get("module_names"),
-        module_activity=module_activity,
+        module_frac=module_frac,
     )
 
 

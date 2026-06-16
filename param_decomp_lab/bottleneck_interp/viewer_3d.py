@@ -719,14 +719,31 @@ scene.add(mesh);
 // CI-activity) rims points by which of its selected items are active there. ---
 const OVERLAYS = DATA.overlays || {};
 const overlaySelected = {};
+const overlayThreshold = {};
 for (const k of Object.keys(OVERLAYS)) {
     const ov = OVERLAYS[k];
     ov.colourById = new Map();
     for (const it of ov.items) ov.colourById.set(it.id, it.colour);
     overlaySelected[k] = new Set(ov.items.map(it => it.id));
+    overlayThreshold[k] = (ov.default_threshold ?? 0.05);  // scored overlays only
 }
 let rimMode = 'cluster';
 const DIM_TINT = [0.16, 0.16, 0.18];
+
+// A point's rim under an overlay is the colour of the first SELECTED item active there.
+// 'set' overlays use point_items (membership); 'scored' overlays use point_scores (uint8)
+// thresholded by overlayThreshold (a slider).
+function overlayItemForPoint(ov, sel, i) {
+    if (ov.point_scores) {
+        const thr = overlayThreshold[rimMode] * 255;
+        const sc = ov.point_scores[i];
+        for (const it of ov.items) if (sel.has(it.id) && sc[it.id] >= thr) return it.id;
+    } else {
+        const items = ov.point_items[i];
+        for (let j = 0; j < items.length; j++) if (sel.has(items[j])) return items[j];
+    }
+    return -1;
+}
 
 function applyTint() {
     if (rimMode === 'cluster' || !OVERLAYS[rimMode]) {
@@ -739,11 +756,8 @@ function applyTint() {
         const ov = OVERLAYS[rimMode];
         const sel = overlaySelected[rimMode];
         for (let i = 0; i < N; i++) {
-            let col = DIM_TINT;
-            const items = ov.point_items[i];
-            for (let j = 0; j < items.length; j++) {
-                if (sel.has(items[j])) { col = ov.colourById.get(items[j]); break; }
-            }
+            const id = overlayItemForPoint(ov, sel, i);
+            const col = id >= 0 ? ov.colourById.get(id) : DIM_TINT;
             tints[i*3] = col[0]; tints[i*3+1] = col[1]; tints[i*3+2] = col[2];
         }
     }
@@ -756,6 +770,24 @@ function renderOverlayItems() {
     if (rimMode === 'cluster' || !OVERLAYS[rimMode]) return;
     const ov = OVERLAYS[rimMode];
     const sel = overlaySelected[rimMode];
+    if (ov.point_scores) {
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'margin-bottom:6px;';
+        const lab = document.createElement('div');
+        lab.className = 'muted';
+        const slider = document.createElement('input');
+        slider.type = 'range'; slider.min = '0'; slider.max = '0.15'; slider.step = '0.002';
+        slider.value = String(overlayThreshold[rimMode]);
+        slider.style.width = '100%';
+        const setLab = () => { lab.textContent = `CI-fraction threshold ${(+slider.value).toFixed(3)}`; };
+        setLab();
+        slider.addEventListener('input', () => {
+            overlayThreshold[rimMode] = parseFloat(slider.value);
+            setLab(); applyTint();
+        });
+        wrap.append(slider, lab);
+        box.appendChild(wrap);
+    }
     for (const it of ov.items) {
         const row = document.createElement('label');
         row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;';

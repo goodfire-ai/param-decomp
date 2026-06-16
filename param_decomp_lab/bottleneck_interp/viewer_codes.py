@@ -58,6 +58,12 @@ def main() -> None:
     ap.add_argument("--umap", action="store_true", help="add a 3D UMAP basis of the code vectors")
     ap.add_argument("--umap_neighbors", type=int, default=30)
     ap.add_argument("--umap_min_dist", type=float, default=0.1)
+    ap.add_argument(
+        "--module_threshold",
+        type=float,
+        default=0.01,
+        help="default fraction-CI threshold for the module rim overlay",
+    )
     args = ap.parse_args()
 
     seq_len = json.loads((args.codes / "meta.json").read_text())["seq_len"]
@@ -126,15 +132,21 @@ def main() -> None:
         "tokens": seq_tokens,
     }
 
-    # Module rim overlay (B4): per point, which decomposition-target modules are CI-active.
-    if h.module_activity is not None and h.module_names is not None:
-        act = h.module_activity[flat_idx]  # [n_points, M] uint8
+    # Module rim overlay (B4): per point, each module's fraction of CI-active components
+    # (a "scored" overlay the viewer thresholds with a slider, since plain on/off
+    # saturates — almost every module has some active component everywhere).
+    if h.module_frac is not None and h.module_names is not None:
+        frac = h.module_frac[flat_idx]  # [n_points, M] in [0, 1]
         items = [
             {"id": j, "name": name, "colour": _module_colour(name)}
             for j, name in enumerate(h.module_names)
         ]
-        point_items = [act[i].nonzero().flatten().tolist() for i in range(act.shape[0])]
-        data.setdefault("overlays", {})["module"] = {"items": items, "point_items": point_items}
+        point_scores = (frac * 255).round().clamp(0, 255).to(torch.uint8).tolist()
+        data.setdefault("overlays", {})["module"] = {
+            "items": items,
+            "point_scores": point_scores,
+            "default_threshold": args.module_threshold,
+        }
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     write_viewer_html(data, args.out, run_id=args.run_id, subtitle="bottleneck code manifold")
