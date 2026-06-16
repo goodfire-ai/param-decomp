@@ -30,15 +30,24 @@ from param_decomp_config.lm import LMExperimentConfig
 from param_decomp_lab.infra.git import create_git_snapshot
 from param_decomp_lab.infra.run_files import generate_run_id
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR, REPO_ROOT
-from param_decomp_lab.infra.slurm import SlurmConfig, generate_script, submit_slurm_job
+from param_decomp_lab.infra.slurm import (
+    RESET_CPU_AFFINITY,
+    SlurmConfig,
+    generate_script,
+    submit_slurm_job,
+)
 from param_decomp_lab.infra.wandb import get_wandb_entity
 
 GPUS_PER_NODE = 8
 WORKSPACES_DIR = PARAM_DECOMP_OUT_DIR / "workspaces"
 
 # Mirrors the validated llama8b.sbatch srun line: one task per GPU, block placement.
+# --cpu-bind=none + the in-task RESET_CPU_AFFINITY work around the 2026-06-11 slurm
+# redeploy's broken step affinity (ranks float over the job cpuset instead of per-rank
+# 8-CPU blocks until the cluster-side fix lands).
 _SRUN_FLAGS = (
     "--kill-on-bad-exit=1 --ntasks-per-node=8 --cpus-per-task=8 --distribution=block:block"
+    " --cpu-bind=none"
 )
 
 # Default 0.75 caps the XLA pool too low for production steps (OOM, job 50644);
@@ -109,7 +118,7 @@ def main(
         comment=comment if comment is not None else (wandb_url or run_id),
     )
     jax_dir = workspace / "param_decomp_jax"
-    rank_command = f"source .venv-cuda/bin/activate\n{_RANK_ENV}\nexec jsp-train {wrapper_rel.relative_to('param_decomp_jax')}"
+    rank_command = f"{RESET_CPU_AFFINITY}\nsource .venv-cuda/bin/activate\n{_RANK_ENV}\nexec jsp-train {wrapper_rel.relative_to('param_decomp_jax')}"
     command = f"srun {_SRUN_FLAGS} bash -c {shlex.quote(rank_command)}"
     script = generate_script(slurm_config, command, setup=f'cd "{jax_dir}"')
     result = submit_slurm_job(script, "jax-lm")

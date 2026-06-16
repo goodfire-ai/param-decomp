@@ -1,0 +1,121 @@
+# LOCAL (uncommitted) cluster-run variant of llama8b_l18_stepbench_1pool.yaml.
+# Identical compute/topology; only data.data_files points at a synthetic
+# random-token shard (step TIME is independent of token content), because this
+# cluster has no staged fineweb_llama_tok_2048. Use for throughput measurement only.
+pd:
+  seed: 0
+  n_mask_samples: 1
+  ci_config:
+    mode: global
+    fn_type: global_shared_transformer
+    hidden_dims: null
+    simple_transformer_ci_cfg:
+      d_model: 4096
+      n_blocks: 4
+      mlp_hidden_dim:
+      - 16384
+      attn_config:
+        n_heads: 64
+        max_len: 2048
+        rope_base: 10000.0
+  sampling: continuous
+  sigmoid_type: leaky_hard
+  decomposition_targets:
+  - module_pattern: layers.18.mlp.gate_proj
+    C: 24576
+  - module_pattern: layers.18.mlp.up_proj
+    C: 24576
+  - module_pattern: layers.18.mlp.down_proj
+    C: 24576
+  identity_decomposition_targets: null
+  use_delta_component: true
+  tied_weights: null
+  components_optimizer:
+    lr_schedule:
+      start_val: 1.5e-04
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+    grad_clip_norm: 0.01
+    betas:
+    - 0.9
+    - 0.999
+    weight_decay: 0.0
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+    grad_clip_norm: null
+    betas:
+    - 0.9
+    - 0.999
+    weight_decay: 0.0
+  steps: 150
+  batch_size: 16
+  faithfulness_warmup_steps: 0
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - type: FaithfulnessLoss
+    coeff: 100000.0
+  - type: ImportanceMinimalityLoss
+    coeff: 5.0e-06
+    pnorm: 2.0
+    beta: 0.2
+    p_anneal_start_frac: 0.0
+    p_anneal_final_p: 0.4
+    p_anneal_end_frac: 1.0
+    eps: 1.0e-12
+  - type: StochasticReconSubsetLoss
+    coeff: 0.5
+    routing:
+      type: uniform_k_subset
+  - type: PersistentPGDReconLoss
+    coeff: 0.5
+    n_samples: 1
+    n_warmup_steps: 2
+    optimizer:
+      type: adam
+      beta1: 0.5
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        start_val: 0.01
+        warmup_pct: 0.025
+        final_val_frac: 1.0
+        fn_type: constant
+    scope:
+      type: broadcast_across_batch
+    use_sigmoid_parameterization: false
+    start_frac: 0.0
+cadence:
+  train_log_every: 10
+  save_every: 100000
+  keep_last_n_checkpoints: 1
+target:
+  spec:
+    kind: hf_weights_in_vendored
+    model_class: param_decomp_lab.experiments.lm.vendored.llama_3_1.model.VendoredLlama
+    model_name: meta-llama/Llama-3.1-8B
+  output_extract: 0
+  activation_checkpointing: true
+  weights_dtype: bfloat16
+data:
+  tokenizer_name: meta-llama/Llama-3.1-8B
+  max_seq_len: 2048
+  buffer_size: 1000
+  dataset_name: parquet
+  data_files: /mnt/data/artifacts/mechanisms/param-decomp/datasets/synth_llama_tok_2048/*.parquet
+  revision: null
+  column_name: input_ids
+  train_split: train
+  eval_split: train
+  shuffle_each_epoch: true
+  is_tokenized: true
+  streaming: false
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null
