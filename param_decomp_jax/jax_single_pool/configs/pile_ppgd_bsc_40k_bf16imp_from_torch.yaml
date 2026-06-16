@@ -1,0 +1,10 @@
+# DECISIVE PRECISION TEST arm. Identical to pile_ppgd_bsc_40k_from_torch.yaml; the only
+# difference is a code change (losses.py importance_minimality_terms computes the Lp
+# penalty in bf16 to match torch-main, instead of fp32), captured in this run's snapshot.
+# A/B partner: p-4e59a901 (same config, fp32 importance-min = current/main JAX behaviour).
+# If this run stays stable past step ~31k where p-4e59a901 diverges, the fp32 importance-min
+# is confirmed as the root cause. Launch: pd-jax-lm, 2 nodes (16 GPUs), opportunistic.
+torch_config: torch/pile_llama_simple_mlp_4l_ppgd_bsc_40k.yaml
+run_name: ai-jax-pile4l-ppgd-bsc-40k-bf16imp
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/runs
+remat_recon_forwards: false

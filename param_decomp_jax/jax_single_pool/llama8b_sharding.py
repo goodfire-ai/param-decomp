@@ -38,6 +38,7 @@ from jax_single_pool.llama8b import DecompVU, Target, init_decomp_vu
 from jax_single_pool.lm import SiteSpec
 from jax_single_pool.sharding import dp_mesh
 from jax_single_pool.sharding import shard_batch as _generic_shard_batch
+from param_decomp_config.losses import BSCScope, PersistentPGDSourceScope, SCScope
 
 __all__ = [
     "dp_mesh",
@@ -114,22 +115,39 @@ def init_sources_sharded(
     site_names: tuple[str, ...],
     site_component_counts: tuple[int, ...],
     seq_len: int,
+    scope: PersistentPGDSourceScope,
+    global_batch: int,
     key: PRNGKeyArray,
     mesh: Mesh,
 ) -> dict[str, Array]:
-    """Seeded PGD-source init `{site: (1, T, C+1)}` -> REPLICATED over `dp` (jit +
-    `out_shardings`; same no-host-tree rationale as `init_decomp_vu_sharded`).
+    """Seeded PPGD-source init -> placed per scope (jit + `out_shardings`; same
+    no-host-tree rationale as `init_decomp_vu_sharded`).
 
-    The source is a single adversarial source shared across the whole global batch
-    (leading batch axis = 1, broadcast); it combines elementwise with the batch-sharded
-    CI (`mask = ci + (1-ci)*source[..., :-1]`) and its grad is AVG-reduced across shards
-    (torch `reduce_source_grads`). Replication is the semantically correct placement and
-    the torch analog. Sharding the trailing C+1 axis is invalid anyway: with the
-    weight-delta channel C+1 is odd (8193) and not divisible by the mesh size, and would
-    also fight the batch-sharded elementwise combine."""
-    repl = NamedSharding(mesh, P())
-    init = partial(init_persistent_sources, site_names, site_component_counts, seq_len)
-    return jax.jit(init, out_shardings=repl)(key)
+    `sc`: `{site: (1, T, C+1)}` REPLICATED over `dp`. One adversarial source shared
+    across the whole global batch (leading batch axis = 1, broadcast); it combines
+    elementwise with the batch-sharded CI (`mask = ci + (1-ci)*source[..., :-1]`) and its
+    grad is AVG-reduced across shards (torch `reduce_source_grads`).
+
+    `bsc`: `{site: (B, T, C+1)}` BATCH-SHARDED over `dp` (axis 0), aligning each batch
+    element's source with that element's `shard_batch`-placed residual/CI. The source is
+    independent per element, so the per-element grad is already shard-local — NO
+    cross-rank reduction, matching torch's `_skip_all_reduce`. (Requires
+    `global_batch % n_dev == 0`, the same divisibility `shard_batch` needs.)
+
+    Sharding the trailing C+1 axis is invalid for either scope: with the weight-delta
+    channel C+1 is odd and not divisible by the mesh size, and would also fight the
+    batch-sharded elementwise combine."""
+    match scope:
+        case SCScope():
+            batch_dim, placement = 1, NamedSharding(mesh, P())
+        case BSCScope():
+            batch_dim, placement = global_batch, NamedSharding(mesh, P("dp", None, None))
+        case _:
+            raise AssertionError(f"unsupported persistent scope {scope}")
+    init = partial(
+        init_persistent_sources, site_names, site_component_counts, seq_len, batch_dim
+    )
+    return jax.jit(init, out_shardings=placement)(key)
 
 
 def shard_batch(resid_global: jax.Array, mesh: Mesh) -> jax.Array:
