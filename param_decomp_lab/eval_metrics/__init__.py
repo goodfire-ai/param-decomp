@@ -10,7 +10,9 @@ from typing import Any
 
 from param_decomp.metrics.base import Metric
 from param_decomp.metrics.dispatch import LOSS_METRIC_CLASSES
+from param_decomp.metrics.importance_minimality import ImportanceMinimalityLoss
 from param_decomp.metrics.pgd_masked_recon import PGDReconLoss
+from param_decomp.metrics.smooth_l0_importance_minimality import SmoothL0ImportanceMinimalityLoss
 from param_decomp.metrics.stochastic_hidden_acts_recon import StochasticHiddenActsReconLoss
 from param_decomp_config.base import BaseConfig
 from param_decomp_lab.eval_metrics.attn_patterns_recon_loss import (
@@ -40,8 +42,10 @@ EVAL_METRIC_CLASSES: dict[str, type[Metric[Any]]] = {
         CIMeanPerComponent,
         ComponentActivationDensity,
         IdentityCIError,
+        ImportanceMinimalityLoss,
         PermutedCIPlots,
         PGDReconLoss,
+        SmoothL0ImportanceMinimalityLoss,
         StochasticAttnPatternsReconLoss,
         StochasticHiddenActsReconLoss,
         UVPlots,
