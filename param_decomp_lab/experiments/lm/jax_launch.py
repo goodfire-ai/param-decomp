@@ -30,7 +30,8 @@ WORKSPACES_DIR = PARAM_DECOMP_OUT_DIR / "workspaces"
 
 # Mirrors the validated llama8b.sbatch srun line: one task per GPU, block placement.
 _SRUN_FLAGS = (
-    "--kill-on-bad-exit=1 --ntasks-per-node=8 --cpus-per-task=8 --distribution=block:block"
+    "--kill-on-bad-exit=1 --ntasks-per-node=8 --cpus-per-task=8 "
+    "--distribution=block:block --cpu-bind=none"
 )
 
 # Default 0.75 caps the XLA pool too low for production steps (OOM, job 50644);
