@@ -26,12 +26,14 @@ import inspect
 import json
 from pathlib import Path
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
 import jax_single_pool.adversary as adversary_mod
 import jax_single_pool.losses as losses_mod
 import jax_single_pool.train as train_mod
+from jax_single_pool.adversary import source_masks
 from jax_single_pool.tests.equivalence.jax_equivalence import compute_jax_terms
 
 HERE = Path(__file__).resolve().parent
@@ -75,4 +77,45 @@ def test_structure_ppgd_has_delta_channel() -> None:
     assert "[..., :-1]" in src and "[..., -1]" in src, "ppgd source needs the delta channel"
     assert "ci_lower[site] + (1.0 - ci_lower[site]) * source[..., :-1]" in src, (
         "ppgd must interpolate mask=ci+(1-ci)*source"
+    )
+
+
+def test_sc_scope_broadcast_axis_matches_torch() -> None:
+    """SPEC S1/S16: the `sc`-scope PPGD source `(1, T, C+1)` broadcasts over the batch
+    axis and varies per position. This pins the batch broadcast axis: a silent transpose
+    (`(1, T, ...)` read as `(T, 1, ...)`) would broadcast over position and vary per
+    batch element instead — uncaught by the scalar-KL `ppgd` term, which sums over `B·T`.
+
+    Reference is torch's `mask = ci + (1 - ci) * source` (`interpolate_component_mask`):
+    numpy broadcasting is identical to torch's, so this is exact (not approximate) and
+    runs in the JAX env alone. B != T so a transposed axis is shape-detectable too."""
+    B, T, C = 3, 5, 4
+    site = "h.0.mlp.c_fc"
+    rng = np.random.default_rng(0)
+    ci_lower_np = rng.uniform(0.0, 1.0, (B, T, C)).astype(np.float32)
+    source_np = rng.uniform(0.0, 1.0, (1, T, C + 1)).astype(np.float32)
+
+    masks, delta_masks = source_masks(
+        {site: jnp.asarray(ci_lower_np)}, {site: jnp.asarray(source_np)}, (site,)
+    )
+    mask = np.asarray(masks[site])
+    delta_mask = np.asarray(delta_masks[site])
+
+    # The component mask gains the batch axis via `(1 - ci)` broadcasting; the raw delta
+    # channel stays at the source's `(1, T)` (it is batch-broadcast later, in the forward).
+    assert mask.shape == (B, T, C)
+    assert delta_mask.shape == (1, T)
+
+    # torch reference: `ci + (1 - ci) * source[..., :C]`, framework-agnostic broadcast.
+    ref_mask = ci_lower_np + (1.0 - ci_lower_np) * source_np[..., :C]
+    np.testing.assert_allclose(mask, ref_mask, rtol=RTOL, atol=ATOL)
+    np.testing.assert_allclose(delta_mask, source_np[..., C], rtol=RTOL, atol=ATOL)
+
+    # Axis assertion on the raw delta channel (the source value with no ci entanglement):
+    # its leading-1 makes it batch-invariant, and (B != T) it varies per position. A
+    # silent transpose `(1, T, ...)` read as `(T, 1, ...)` would flip both — varying per
+    # batch, constant per position. The scalar-KL `ppgd` term sums over B·T and cannot
+    # see this; the materialized mask can.
+    assert not np.allclose(delta_mask[0, 0], delta_mask[0, 1]), (
+        "sc source must vary per position (a transposed broadcast axis would not)"
     )
