@@ -107,3 +107,48 @@ def test_jitted_sharded_inits_match_eager_values():
         assert isinstance(src_sharding, NamedSharding)
         assert src_sharding.spec == P()
         assert jnp.allclose(jnp.asarray(src_sharded[name]), src_eager[name], rtol=1e-6, atol=0)
+
+
+def test_fresh_pgd_c_bc_sources_are_replica_identical():
+    """Fresh-PGD `c`/`bc` sources must be REPLICA-IDENTICAL across every shard (issue
+    #660; SPEC S16, D4): the `c` -> `(1,1,C+1)` / `bc` -> `(B,1,C+1)` leaf carries no
+    sharded leading axis, so the adversarial source the masks see must hold the same
+    values on every device. Replica-identity follows from the init key being replicated
+    (the trainer derives it from `fold_in(run_key, step)`, identical on all processes).
+
+    Asserts: (a) the per-shard buffers of the replicated init all equal the eager
+    single-device init, and (b) the placement is fully replicated (`P()`), at the
+    test's device count (run at 1 AND `--xla_force_host_platform_device_count=4`).
+    """
+    from functools import partial
+
+    from jax.sharding import NamedSharding
+    from jax.sharding import PartitionSpec as P
+
+    from jax_single_pool.adversary import init_fresh_pgd_sources
+    from jax_single_pool.lm import SiteSpec
+
+    mesh = dp_mesh()
+    n = mesh.devices.size
+    batch = 4 * n
+    seq = 7
+    sites = (
+        SiteSpec("layers.2.self_attn.q_proj", 16, 16, 8),
+        SiteSpec("layers.3.mlp.down_proj", 8, 16, 13),
+    )
+
+    for scope in ("c", "bc"):
+        key = jax.random.PRNGKey(660)
+        eager = init_fresh_pgd_sources(sites, "random", scope, batch, seq, key)
+        init = partial(init_fresh_pgd_sources, sites, "random", scope, batch, seq)
+        repl = NamedSharding(mesh, P())
+        sharded = jax.jit(init, out_shardings=repl)(key)
+        for site in sites:
+            leaf = sharded[site.name]
+            assert isinstance(leaf.sharding, NamedSharding)
+            assert leaf.sharding.spec == P(), (scope, site.name)
+            for shard in leaf.addressable_shards:
+                assert jnp.array_equal(jnp.asarray(shard.data), eager[site.name]), (
+                    scope,
+                    site.name,
+                )
