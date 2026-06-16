@@ -78,12 +78,14 @@ class LMDataConfig(BaseConfig):
     """LM experiment dataset / dataloader settings."""
 
     dataset_name: str = Field(..., description="HuggingFace dataset id")
-    data_files: str | None = Field(
+    data_files: str | dict[str, str] | None = Field(
         default=None,
         description=(
-            "Explicit file glob passed to load_dataset (e.g. 'sample/350BT/*.parquet'). "
+            "Explicit file glob(s) passed to load_dataset (e.g. 'sample/350BT/*.parquet'). "
             "Resolves directly against that path instead of enumerating the whole repo "
-            "tree, which slashes Hub API calls vs. selecting a config by name."
+            "tree, which slashes Hub API calls vs. selecting a config by name. A dict maps "
+            "split name -> glob (e.g. {'train': '.../train-*.parquet', 'val': "
+            "'.../val-*.parquet'}), used with dataset_name='parquet' to read local shards."
         ),
     )
     revision: str | None = Field(
