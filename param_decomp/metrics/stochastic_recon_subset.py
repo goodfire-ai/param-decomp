@@ -27,7 +27,6 @@ def _stochastic_recon_subset_loss_update(
     router: Router,
     reconstruction_loss: ReconstructionLoss,
 ) -> tuple[Float[Tensor, ""], int]:
-    assert ci, "Empty ci"
     sum_loss = torch.zeros((), device=get_obj_device(ci))
     n_examples = 0
     stoch_mask_infos_list = [

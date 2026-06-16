@@ -29,12 +29,20 @@ class LowerLeakyHardSigmoidFunction(Function):
     active region without inflating gradients in the wrong direction.
     """
 
+    # functorch-compatible (setup_context style) so torch.func.grad/vmap can traverse it —
+    # behaviourally identical to the old ctx-in-forward version.
+    generate_vmap_rule = True
+
     @override
     @staticmethod
-    def forward(ctx: Any, x: Tensor, alpha: float = 0.01) -> Tensor:
+    def forward(x: Tensor, alpha: float = 0.01) -> Tensor:  # pyright: ignore[reportIncompatibleMethodOverride]
+        return torch.clamp(x, min=0, max=1)
+
+    @staticmethod
+    def setup_context(ctx: Any, inputs: tuple[Tensor, float], output: Tensor) -> None:
+        x, alpha = inputs
         ctx.save_for_backward(x)
         ctx.alpha = alpha
-        return torch.clamp(x, min=0, max=1)
 
     @override
     @staticmethod

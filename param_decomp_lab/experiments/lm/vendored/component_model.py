@@ -28,6 +28,7 @@ from param_decomp.decomposition_targets import DecompositionTarget
 from param_decomp_config.ci_fn import CiConfig
 from param_decomp_config.routing import SamplingType
 from param_decomp_lab.experiments.lm.pretrain.models.gpt2_simple import GPT2Simple
+from param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp import LlamaSimpleMLP
 from param_decomp_lab.experiments.lm.vendored.gpt2 import (
     ComponentGPT2,
     MaskInfos,
@@ -39,8 +40,12 @@ from param_decomp_lab.experiments.lm.vendored.llama_3_1.components import (
     componentize_llama,
 )
 from param_decomp_lab.experiments.lm.vendored.llama_3_1.model import VendoredLlama
+from param_decomp_lab.experiments.lm.vendored.llama_simple_mlp import (
+    ComponentLlamaSimpleMLP,
+    componentize_llama_simple_mlp,
+)
 
-ComponentTarget = ComponentGPT2 | ComponentLlama
+ComponentTarget = ComponentGPT2 | ComponentLlama | ComponentLlamaSimpleMLP
 
 
 def _componentize(target_model: nn.Module, components: dict[str, Components]) -> ComponentTarget:
@@ -51,10 +56,12 @@ def _componentize(target_model: nn.Module, components: dict[str, Components]) ->
             return componentize_gpt2(target_model, components)
         case VendoredLlama():
             return componentize_llama(target_model, components)
+        case LlamaSimpleMLP():
+            return componentize_llama_simple_mlp(target_model, components)
         case _:
             raise TypeError(
                 f"unsupported 3-pool target {type(target_model).__name__}; "
-                "expected GPT2Simple or VendoredLlama"
+                "expected GPT2Simple, VendoredLlama, or LlamaSimpleMLP"
             )
 
 

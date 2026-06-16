@@ -93,18 +93,25 @@ class ComponentLinear(nn.Module):
             weight_delta_and_mask=mask_info.weight_delta_and_mask,
             component_acts_cache=component_acts_cache,
         )
-        if mask_info.routing_mask == "all":
+        if isinstance(mask_info.routing_mask, str):  # "all" sentinel; isinstance is compile-safe
             return components_out
         return torch.where(
             mask_info.routing_mask[..., None], components_out, self.target_forward(x)
         )
 
 
-def _proj(module: nn.Module, x: Tensor, mask_infos: MaskInfos | None) -> Tensor:
-    """Apply a (possibly component-decomposed) leaf, routing its mask in by path. Component
-    leaves stash their pre/post-weight acts on themselves when capture is active (see
-    `ComponentLinear` / `capture_acts`); plain leaves are applied unchanged."""
+def _proj(
+    module: nn.Module,
+    x: Tensor,
+    mask_infos: MaskInfos | None,
+    acts_out: dict[str, Tensor] | None = None,
+) -> Tensor:
+    """Apply a (possibly component-decomposed) leaf, routing its mask in by path. With `acts_out`
+    set, a component leaf's input act is recorded there (compile-traceable pre-weight-acts return,
+    no module stash). Plain leaves are applied unchanged."""
     if isinstance(module, ComponentLinear):
+        if acts_out is not None:
+            acts_out[module.path] = x
         mask_info = None if mask_infos is None else mask_infos.get(module.path)
         return module(x, mask_info)
     return module(x)
@@ -116,10 +123,11 @@ class ComponentLlamaMLP(LlamaMLP):
         self,
         x: Float[Tensor, "... dim"],
         mask_infos: MaskInfos | None = None,
+        acts_out: dict[str, Tensor] | None = None,
     ) -> Float[Tensor, "... dim"]:
-        gate = _proj(self.gate_proj, x, mask_infos)
-        up = _proj(self.up_proj, x, mask_infos)
-        return _proj(self.down_proj, F.silu(gate) * up, mask_infos)
+        gate = _proj(self.gate_proj, x, mask_infos, acts_out)
+        up = _proj(self.up_proj, x, mask_infos, acts_out)
+        return _proj(self.down_proj, F.silu(gate) * up, mask_infos, acts_out)
 
 
 class ComponentLlamaAttention(LlamaAttention):
@@ -128,11 +136,12 @@ class ComponentLlamaAttention(LlamaAttention):
         self,
         x: Float[Tensor, "b t d"],
         mask_infos: MaskInfos | None = None,
+        acts_out: dict[str, Tensor] | None = None,
     ) -> Float[Tensor, "b t d"]:
-        q = _proj(self.q_proj, x, mask_infos)
-        k = _proj(self.k_proj, x, mask_infos)
-        v = _proj(self.v_proj, x, mask_infos)
-        return _proj(self.o_proj, self._attend(q, k, v), mask_infos)
+        q = _proj(self.q_proj, x, mask_infos, acts_out)
+        k = _proj(self.k_proj, x, mask_infos, acts_out)
+        v = _proj(self.v_proj, x, mask_infos, acts_out)
+        return _proj(self.o_proj, self._attend(q, k, v), mask_infos, acts_out)
 
 
 class ComponentLlamaBlock(LlamaBlock):
@@ -141,11 +150,12 @@ class ComponentLlamaBlock(LlamaBlock):
         self,
         x: Float[Tensor, "b t d"],
         mask_infos: MaskInfos | None = None,
+        acts_out: dict[str, Tensor] | None = None,
     ) -> Float[Tensor, "b t d"]:
         attn: ComponentLlamaAttention = self.self_attn  # pyright: ignore[reportAssignmentType]
         mlp: ComponentLlamaMLP = self.mlp  # pyright: ignore[reportAssignmentType]
-        x = x + attn(self.input_layernorm(x), mask_infos)
-        x = x + mlp(self.post_attention_layernorm(x), mask_infos)
+        x = x + attn(self.input_layernorm(x), mask_infos, acts_out)
+        x = x + mlp(self.post_attention_layernorm(x), mask_infos, acts_out)
         return x
 
 
@@ -232,6 +242,23 @@ class ComponentLlama(VendoredLlama):
                 x = block(x, mask_infos)
         x = self.norm(x)
         return x if self._bypass_lm_head else self.lm_head(x)
+
+    def forward_acts(
+        self,
+        idx: Int[Tensor, "b t"],
+        mask_infos: MaskInfos | None = None,
+    ) -> tuple[Tensor, dict[str, Tensor]]:
+        """Traceable forward returning `(output, pre_weight_acts)` — each decomposed site's input
+        act in a returned dict (no capture_acts stash/hooks). For torch.compile(fullgraph) loss.
+        Runs un-checkpointed and ignores residual-start (compiler CSEs the shared prefix)."""
+        acts_out: dict[str, Tensor] = {}
+        x = _proj(self.embed_tokens, idx, mask_infos, acts_out)
+        blocks: list[ComponentLlamaBlock] = self._layers  # pyright: ignore[reportAssignmentType]
+        for block in blocks:
+            x = block(x, mask_infos, acts_out)
+        x = self.norm(x)
+        out = x if self._bypass_lm_head else self.lm_head(x)
+        return out, acts_out
 
     @property
     def _capturing(self) -> bool:

@@ -123,7 +123,9 @@ class _ComponentModule(ABC, nn.Module):
             weight_delta_and_mask=mask_info.weight_delta_and_mask,
             component_acts_cache=component_acts_cache,
         )
-        if mask_info.routing_mask == "all":
+        # `isinstance(..., str)` (static, dynamo-specializable) rather than `== "all"`, which
+        # on a tensor routing_mask is a non-Tensor torch op that breaks torch.compile.
+        if isinstance(mask_info.routing_mask, str):
             return components_out
         return torch.where(
             mask_info.routing_mask[..., None], components_out, self.target_forward(x)
