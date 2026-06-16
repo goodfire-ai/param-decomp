@@ -259,8 +259,6 @@ def _assert_supported_persistent(
     assert not cfg.use_sigmoid_parameterization and cfg.start_frac == 0.0, cfg
     optimizer = cfg.optimizer
     assert isinstance(optimizer, AdamPGDConfig), optimizer
-    schedule = optimizer.lr_schedule
-    assert schedule.fn_type == "constant" and schedule.final_val_frac == 1.0, schedule
 
 
 def build_recon_terms(

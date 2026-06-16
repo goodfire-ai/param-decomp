@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from jaxtyping import Array
 
 from param_decomp_config.losses import ImportanceMinimalityLossConfig
+from param_decomp_config.schedule import ScheduleConfig
 
 
 def kl_per_position(masked_logits: Array, clean_logits: Array) -> Array:
@@ -58,8 +59,31 @@ def annealed_pnorm(step_f32: Array, total_steps: int, cfg: ImportanceMinimalityL
     return jnp.asarray(cfg.pnorm + (cfg.p_anneal_final_p - cfg.pnorm) * progress)
 
 
-def warmup_then_constant_lr(
-    step_f32: Array, total_steps: int, lr: float, warmup_frac: float
-) -> Array:
-    warmup_steps = jnp.maximum(jnp.floor(total_steps * warmup_frac), 1.0)
-    return jnp.where(step_f32 < warmup_steps, lr * step_f32 / warmup_steps, lr)
+def scheduled_lr(step_f32: Array, total_steps: int, schedule: ScheduleConfig) -> Array:
+    """Linear warmup to `start_val`, then constant / linear / cosine decay to
+    `final_val_frac * start_val` — the traced mirror of torch's
+    `get_scheduled_value` (SPEC S13′). Decay spans `[warmup_steps, total_steps - 1]`."""
+    warmup_steps = int(total_steps * schedule.warmup_pct)
+    decay_steps = total_steps - warmup_steps
+    start_val = schedule.start_val
+    final_val_frac = schedule.final_val_frac
+
+    warmup_value = start_val * step_f32 / max(warmup_steps, 1)
+
+    if decay_steps <= 1:
+        decay_value = jnp.asarray(start_val)
+    else:
+        progress = (step_f32 - warmup_steps) / (decay_steps - 1)
+        match schedule.fn_type:
+            case "constant":
+                decay_value = jnp.asarray(start_val)
+            case "linear":
+                multiplier = final_val_frac + (1 - final_val_frac) * (1 - progress)
+                decay_value = start_val * multiplier
+            case "cosine":
+                multiplier = final_val_frac + (1 - final_val_frac) * 0.5 * (
+                    1 + jnp.cos(jnp.pi * progress)
+                )
+                decay_value = start_val * multiplier
+
+    return jnp.where(step_f32 < warmup_steps, warmup_value, decay_value)
