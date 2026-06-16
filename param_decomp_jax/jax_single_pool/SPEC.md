@@ -117,8 +117,9 @@ def ci(ci_fn, site_inputs) -> (ci_lower, ci_upper):      # each {site: [B,T,C]}
     logits = CI_TRANSFORMER(ci_fn, site_inputs)          # architecture pinned in §4.6
     return lower_leaky_hard(logits), upper_leaky_hard(logits)                               (S5)
 
-lower_leaky_hard: fwd clamp(x,0,1); CUSTOM bwd: pass g on 0<x≤1;
-                  at x≤0 pass α·g ONLY where g<0, else 0; at x>1 zero.  α=0.01              (S6)
+lower_leaky_hard: fwd clamp(x,0,1); CUSTOM bwd (nested where, boundaries are <=):
+                  pass g on 0<x≤1; at x≤0 pass α·g ONLY where g<0, else 0; at x>1 zero.
+                  Tie-break: x=0 resolves to the LOWER (x≤0) branch.  α=0.01               (S6)
 upper_leaky_hard: fwd x>1 ? 1+α(x−1) : clamp(x,0,1); ordinary autodiff of that expr.       (S6)
 ```
 
@@ -225,7 +226,7 @@ init: biases zero; weights fan-in scaled (torch init_param_)
 | S3 | The recon target `clean_logits` is the frozen-path forward, stop-gradient. Never the `mask=1, delta=1` decomposed identity (differs in bf16 and pollutes the graph). Under residual-start (S18), `clean_logits` is the SUFFIX-only clean forward over the harvested residual (`clean_suffix_logits`); this equals the whole-model frozen forward because the frozen prefix is stop-gradient'd and runs once outside the graph — the two forms are identical under sg of the frozen prefix. The on-branch torch single-pool reference computes the whole-model frozen forward; JAX computes the suffix-only form; they agree by this equivalence. |
 | S4 | CI inputs are the clean site inputs from the frozen path of the same batch. |
 | S5 | `ci_lower` and `ci_upper` are two squashings of the SAME logits. `ci_lower` feeds every mask; `ci_upper` feeds imp-min only; no other crossing. |
-| S6 | The squashings' forward/backward are exactly §4.2 — including `lower_leaky_hard`'s grad-sign-gated lower leak (a custom VJP, not autodiff of the forward). |
+| S6 | The squashings' forward/backward are exactly §4.2 — including `lower_leaky_hard`'s grad-sign-gated lower leak (a custom VJP, not autodiff of the forward). The backward is a nested `where` with `<=` boundaries: on `0 < x <= 1` pass `g`; at `x <= 0` pass `α·g` ONLY where `g < 0`, else `0`; at `x > 1` pass `0`; `α=0.01`. The boundary tie at `x=0` resolves to the LOWER (`x <= 0`) branch — this `<=` placement is exactly what makes torch (`ci_sigmoids.py`) and JAX (`ci_fn.py`, `_lhs_b`) bit-identical and is load-bearing, not incidental. Grad-checked by `tests/test_lower_leaky_hard_grad.py` (`g<0` vs `g>0` at `x<0`, `x∈(0,1]`, `x>1`; #789). |
 | S7 | Imp-min groups per site: the `log2(1+sum)` consumes one site's per-component sum. Merging sites/layers into one group is incorrect (convexity). |
 | S8 | The per-component sums are over the **global batch**, accumulated before the `log2`. (Per-shard results combined after the log are incorrect — Jensen; see D2.) |
 | S9 | `pnorm(step)` anneals linearly `2.0 → 0.4` over the configured frac window; `eps` sits inside the power. **JAX narrowing:** annealing is REQUIRED — `annealed_pnorm` asserts `cfg.p_anneal_final_p is not None` (`losses.py:53`) and `train.py:122` asserts it too. Torch supports a constant-p config (`importance_minimality.py:16-37` returns `initial_p` when no annealing window). Constant-p in JAX is expressed by setting `p_anneal_final_p == pnorm` (a flat schedule); any other torch constant-p config is REFUSED (fail-fast assert), never silently approximated. |
@@ -238,8 +239,8 @@ init: biases zero; weights fan-in scaled (torch init_param_)
 | S16 | Shared-scope sources are identical on every data-parallel replica at every step (identical init, identical updates from the global-batch gradient). `per_batch_per_position` sources shard with the batch instead. (Implementation mapping in §8/§9.) |
 | S17 | `faithfulness_loss` is the global mean of squared delta entries over all sites' parameters (Σ‖Δ‖² / Σ numel), recomputed from live V/U each step. |
 | S18 | Each training step consumes a fresh data batch; the prefix harvest runs per batch, outside every gradient graph. |
-| S19 | Components gradients are global-norm-clipped at `0.01`, before the optimizer step. CI fn is unclipped (production). |
-| S20 | Both main optimizers are AdamW, `wd=0`, betas `(0.9, 0.999)`, eps `1e-8`; LR cosine to `0.1×` start, no warmup, stepped per training step. |
+| S19 | Components gradients are global-norm-clipped at `0.01`, before the optimizer step. CI fn is unclipped (production). The clip coefficient uses torch's eps convention: `clip_coef = min(1, max_norm / (total_norm + 1e-6))` (`torch.nn.utils.clip_grad_norm_`). This `+1e-6` is canonical and matched JAX-side (#643); plain `optax.clip_by_global_norm` divides by `max(total_norm, max_norm)` with NO eps, which at `clip=0.01` (clip fires almost every step) gives a ~1e-4 relative component-grad difference each step — a real per-step deviation the JAX clip must avoid by reproducing the `+1e-6`. |
+| S20 | Both main optimizers are AdamW, `wd=0`, betas `(0.9, 0.999)`, eps `1e-8`; LR cosine to `0.1×` start, no warmup, stepped per training step. Cosine convention is canonical-torch: `progress = (step − warmup) / (decay_steps − 1)`, so LR reaches `0.1×` at `step = steps − 1` (`schedule.py`). This is matched JAX-side (#642); plain `optax.cosine_decay_schedule(lr, steps, alpha=0.1)` divides by `steps` and reaches `0.1×` one update LATER (at `count = steps`), a genuine formula divergence of ~O(1/steps) ≈ 2.5e-6/step at 400k that the JAX schedule must avoid by using the `decay_steps − 1` denominator. |
 | S21 | Faithfulness warmup (400 × AdamW lr `1e-3` on `faithfulness_loss` alone) precedes step 0; its optimizer is discarded. |
 | S22 | Checkpoints round-trip ALL trajectory state of §3 — including every persistent term's sources + SRC_STEP moments + step/schedule counters — such that a resumed run continues the same trajectory (modulo RNG streams and kernel nondeterminism, cf. D4). |
 | S23 | A persistent source bundle feeds exactly ONE loss term. (The fused-backward S14′ unscaling divides that term's coeff out of the source gradient; a bundle shared across terms would make the division wrong.) |
