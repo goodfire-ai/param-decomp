@@ -1,0 +1,8 @@
+# Diagnostic 40k accelerated-anneal repro of p-7847c8aa's post-300k divergence. Same
+# config as pile_ppgd_bsc_from_torch.yaml but steps=40000, so the pnorm anneal reaches
+# p<1 near step ~31k (the same 77.5% fraction where the full run broke). dp=16 kept for
+# numerical fidelity. Launch: pd-jax-lm, 2 nodes (16 GPUs).
+torch_config: torch/pile_llama_simple_mlp_4l_ppgd_bsc_40k.yaml
+run_name: ai-jax-pile4l-ppgd-bsc-40k
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/runs
+remat_recon_forwards: false
