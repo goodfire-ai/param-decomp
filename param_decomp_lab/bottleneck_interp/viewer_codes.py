@@ -12,6 +12,7 @@ HTML viewer.
 import argparse
 import json
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import torch
@@ -83,8 +84,15 @@ def main() -> None:
     ap.add_argument(
         "--module_threshold",
         type=float,
-        default=0.01,
-        help="default fraction-CI threshold for the module rim overlay",
+        default=1.0,
+        help="module rim floor: min engagement (× the module's own mean) to colour a point",
+    )
+    ap.add_argument(
+        "--component_labels",
+        type=Path,
+        default=None,
+        help="optional JSON {component_name: autointerp label} shown primarily in the "
+        "component picker (id kept as secondary text)",
     )
     args = ap.parse_args()
 
@@ -152,31 +160,44 @@ def main() -> None:
         "point_seq": point_seq.tolist(),
         "point_pos": point_pos.tolist(),
         "tokens": seq_tokens,
+        "seq_len": int(seq_len),
     }
 
-    # Module rim overlay (B4): per point, each module's fraction of CI-active components
-    # (a "scored" overlay the viewer thresholds with a slider, since plain on/off
-    # saturates — almost every module has some active component everywhere).
+    # Module rim overlay (B4): per point, each module's engagement *relative to its own
+    # mean* over the sample (frac / mean_frac). The viewer rims each point by its dominant
+    # selected module (argmax) with the slider as a floor. Raw fractions are tiny and very
+    # uneven across module types, so a plain-fraction threshold saturated on one colour or
+    # went all-grey; relative engagement spreads the map across modules and reveals
+    # position-specific specialisation.
     if h.module_frac is not None and h.module_names is not None:
-        frac = h.module_frac[flat_idx]  # [n_points, M] in [0, 1]
+        frac = h.module_frac[flat_idx].float()  # [n_points, M] in [0, 1]
+        rel = frac / (frac.mean(dim=0, keepdim=True) + 1e-8)  # ×-its-own-mean engagement
+        score_max = 8.0  # cap; ≥8× the module's mean all map to full intensity
         items = [
             {"id": j, "name": name, "colour": _module_colour(name)}
             for j, name in enumerate(h.module_names)
         ]
-        point_scores = (frac * 255).round().clamp(0, 255).to(torch.uint8).tolist()
+        point_scores = (rel.clamp(0, score_max) / score_max * 255).round().to(torch.uint8).tolist()
         data.setdefault("overlays", {})["module"] = {
             "items": items,
             "point_scores": point_scores,
+            "score_max": score_max,
             "default_threshold": args.module_threshold,
         }
 
     # Component rim overlay (B3): for each global component active somewhere in the sample,
     # the list of sampled points where it is CI-active. The viewer's picker selects one
-    # component by name and rims those points.
+    # component by name and rims those points. With --component_labels, the picker shows the
+    # autointerp label primarily and the raw component id secondarily.
     if h.active_components is not None and h.component_names is not None:
-        data.setdefault("overlays", {})["component"] = _component_overlay(
-            h.active_components, h.component_names, flat_idx
-        )
+        overlay = _component_overlay(h.active_components, h.component_names, flat_idx)
+        if args.component_labels is not None:
+            name_to_label: dict[str, str] = json.loads(args.component_labels.read_text())
+            names = cast(dict[str, str], overlay["names"])
+            overlay["labels"] = {
+                cid: name_to_label[name] for cid, name in names.items() if name in name_to_label
+            }
+        data.setdefault("overlays", {})["component"] = overlay
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     write_viewer_html(data, args.out, run_id=args.run_id, subtitle="bottleneck code manifold")

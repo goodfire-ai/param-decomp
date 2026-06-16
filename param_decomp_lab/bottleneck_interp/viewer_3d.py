@@ -349,7 +349,7 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
   html, body { margin: 0; height: 100%; background: #0a0a0a; color: #e4e4e7;
                font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
   #scene { position: fixed; inset: 0; }
-  #sidebar { position: fixed; top: 0; right: 0; height: 100%; width: 440px;
+  #sidebar { position: fixed; top: 0; right: 0; height: 100%; width: 580px;
              background: rgba(15, 15, 20, 0.92); border-left: 1px solid #27272a;
              overflow-y: auto; padding: 18px 16px; box-sizing: border-box;
              font-size: 13px; line-height: 1.45; }
@@ -373,6 +373,10 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
   .swatch { width: 12px; height: 12px; border-radius: 2px; flex: 0 0 12px;
             border: 1px solid #3f3f46; }
   .muted { color: #71717a; font-size: 11px; }
+  /* The sequence panel renders the model's actual prompt tokens; set it in a monospace
+     face so it reads as text-being-modelled, distinct from the sans-serif UI chrome. */
+  #seqPanel { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .comp-id { color: #71717a; font-size: 10px; margin-left: 4px; }
   #hover { position: fixed; left: 12px; bottom: 12px; padding: 8px 10px;
            background: rgba(15,15,20,0.92); border: 1px solid #27272a;
            border-radius: 4px; font-size: 12px; pointer-events: none;
@@ -397,8 +401,12 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
 
   <section id="seqSection" style="display:none;">
     <h2>Sequence</h2>
+    <div class="row" style="align-items:center;">
+      <button id="seqPrev" disabled>&#9664; prev token</button>
+      <button id="seqNext" disabled>next token &#9654;</button>
+    </div>
     <div class="muted" id="seqHint">click a point to show its sequence</div>
-    <label><input type="checkbox" id="flowLines"> flow line for this sequence</label>
+    <label><input type="checkbox" id="flowLines"> flow line for this sequence (rainbow by position)</label>
     <div id="seqPanel" style="max-height:240px; overflow:auto; line-height:1.7; font-size:12px;"></div>
   </section>
 
@@ -470,12 +478,6 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
   </div>
   <div class="muted" id="tourHint">Deterministic rolling-window walk through PCs in variance-descending order. K_tour is the smallest top-K whose cumulative variance explained ≥ 95% of the current basis. Scrub the progress slider to seek anywhere without changing play/pause state. Reset returns to the start and pauses.</div>
 
-  <section id="rimSection" style="display:none;">
-    <h2>Rim source</h2>
-    <select id="rimSource"></select>
-    <div id="overlayItems" style="margin-top:6px; max-height:320px; overflow:auto;"></div>
-  </section>
-
   <h2 id="clusterHeader">Clusters <button id="allOn">all</button> <button id="allOff">none</button></h2>
   <div id="clusterList"></div>
 
@@ -490,6 +492,12 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
     </div>
     <div id="manifoldGrid"></div>
     <div class="muted" id="mfHint" style="margin-top:6px"></div>
+  </section>
+
+  <section id="rimSection" style="display:none;">
+    <h2>Rim source</h2>
+    <select id="rimSource"></select>
+    <div id="overlayItems" style="margin-top:6px; max-height:320px; overflow:auto;"></div>
   </section>
 
   <h2>Border thickness</h2>
@@ -727,24 +735,31 @@ for (const k of Object.keys(OVERLAYS)) {
     for (const it of ov.items) ov.colourById.set(it.id, it.colour);
     overlaySelected[k] = new Set(ov.items.map(it => it.id));
     overlayThreshold[k] = (ov.default_threshold ?? 0.05);  // scored overlays only
+    ov.score_max = ov.score_max ?? 1;  // slider/threshold scale for scored overlays
 }
 let rimMode = 'cluster';
 let selectedPickerId = null;  // for 'picker' overlays (component)
 const DIM_TINT = [0.16, 0.16, 0.18];
 const PICKER_HILITE = [1.0, 0.85, 0.2];
 
-// A point's rim under an overlay is the colour of the first SELECTED item active there.
-// 'set' overlays use point_items (membership); 'scored' overlays use point_scores (uint8)
-// thresholded by overlayThreshold (a slider).
+// A point's rim under an overlay names one item active there.
+// 'set' overlays use point_items (membership) -> first selected member.
+// 'scored' overlays use point_scores (uint8, scaled so slider units = ov.score_max) ->
+// the DOMINANT selected item (argmax score), provided it clears the threshold floor. This
+// makes the module overlay a "which module is most engaged here" map rather than a
+// first-match that saturates on one colour.
 function overlayItemForPoint(ov, sel, i) {
     if (ov.point_scores) {
-        const thr = overlayThreshold[rimMode] * 255;
+        const thr = overlayThreshold[rimMode] / ov.score_max * 255;
         const sc = ov.point_scores[i];
-        for (const it of ov.items) if (sel.has(it.id) && sc[it.id] >= thr) return it.id;
-    } else {
-        const items = ov.point_items[i];
-        for (let j = 0; j < items.length; j++) if (sel.has(items[j])) return items[j];
+        let bestId = -1, bestSc = thr;
+        for (const it of ov.items) {
+            if (sel.has(it.id) && sc[it.id] >= bestSc) { bestSc = sc[it.id]; bestId = it.id; }
+        }
+        return bestId;
     }
+    const items = ov.point_items[i];
+    for (let j = 0; j < items.length; j++) if (sel.has(items[j])) return items[j];
     return -1;
 }
 
@@ -810,21 +825,32 @@ function renderOverlayItems() {
         const refresh = () => {
             const q = search.value.toLowerCase();
             listEl.innerHTML = '';
+            // Match on the human label (autointerp) when present, else the component id.
+            const labelOf = (id) => (ov.labels && ov.labels[id]) || ov.names[id];
             const ids = Object.keys(ov.names)
-                .filter(id => ov.names[id].toLowerCase().includes(q))
+                .filter(id => labelOf(id).toLowerCase().includes(q) || ov.names[id].toLowerCase().includes(q))
                 .sort((a, b) => ov.index[b].length - ov.index[a].length)
-                .slice(0, 200);
+                .slice(0, 1000);
             for (const id of ids) {
-                listEl.appendChild(overlayRow(
+                const row = overlayRow(
                     PICKER_HILITE,
-                    `${ov.names[id]} (${ov.index[id].length})`,
+                    `${labelOf(id)} (${ov.index[id].length})`,
                     id === selectedPickerId,
                     () => {
                         selectedPickerId = (selectedPickerId === id) ? null : id;
                         applyTint();
                         refresh();
                     },
-                ));
+                );
+                // When an autointerp label is shown primarily, keep the raw component id as
+                // secondary muted text so it stays identifiable.
+                if (ov.labels && ov.labels[id]) {
+                    const cid = document.createElement('span');
+                    cid.className = 'comp-id';
+                    cid.textContent = ov.names[id];
+                    row.appendChild(cid);
+                }
+                listEl.appendChild(row);
             }
         };
         search.addEventListener('input', refresh);
@@ -834,15 +860,20 @@ function renderOverlayItems() {
     }
 
     const sel = overlaySelected[rimMode];
-    // 'scored' overlays (module): a threshold slider above the checkbox list.
+    // 'scored' overlays (module): each point is rimmed by its dominant selected module; the
+    // slider is a floor on relative engagement (× the module's own mean) below which a point
+    // is left grey.
     if (ov.point_scores) {
         const lab = document.createElement('div');
         lab.className = 'muted';
         const slider = document.createElement('input');
-        slider.type = 'range'; slider.min = '0'; slider.max = '0.15'; slider.step = '0.002';
+        slider.type = 'range'; slider.min = '0'; slider.max = String(ov.score_max);
+        slider.step = String(ov.score_max / 100);
         slider.value = String(overlayThreshold[rimMode]);
         slider.style.width = '100%';
-        const setLab = () => { lab.textContent = `CI-fraction threshold ${(+slider.value).toFixed(3)}`; };
+        const setLab = () => {
+            lab.textContent = `dominant module; min engagement ${(+slider.value).toFixed(2)}× its mean`;
+        };
         setLab();
         slider.addEventListener('input', () => {
             overlayThreshold[rimMode] = parseFloat(slider.value);
@@ -907,12 +938,21 @@ scene.add(lineMesh);
 
 let edgeK = Math.min(5, KNN_K);
 
-// --- Per-sequence flow lines (B1): connect consecutive positions of the selected sequence ---
+// --- Per-sequence flow lines (B1): connect consecutive positions of the selected sequence,
+// coloured as a rainbow gradient that sweeps with token position along the sequence. ---
+function hueToRgb(h) {  // h in [0,1] -> RGB on the saturated rainbow (HSV s=v=1)
+    const r = Math.abs(h * 6 - 3) - 1;
+    const g = 2 - Math.abs(h * 6 - 2);
+    const b = 2 - Math.abs(h * 6 - 4);
+    return [Math.min(1, Math.max(0, r)), Math.min(1, Math.max(0, g)), Math.min(1, Math.max(0, b))];
+}
 const flowFlat = new Float32Array(Math.max(1, N) * 6);
+const flowColFlat = new Float32Array(Math.max(1, N) * 6);
 const flowGeom = new LineSegmentsGeometry();
 flowGeom.setPositions(flowFlat);
+flowGeom.setColors(flowColFlat);
 const flowMat = new LineMaterial({
-    color: 0xffcc33, linewidth: 2.5, transparent: true, opacity: 0.9,
+    vertexColors: true, linewidth: 2.5, transparent: true, opacity: 0.95,
     depthWrite: false, worldUnits: false,
 });
 flowMat.resolution.set(window.innerWidth, window.innerHeight);
@@ -926,14 +966,22 @@ let flowEnabled = false;
 function updateFlowLines() {
     if (!SEQ || !flowEnabled || pivotLock < 0) { flowMesh.visible = false; return; }
     const targetSeq = SEQ.point_seq[pivotLock];
-    let outIdx = 0, edgeCount = 0;
+    const seqLen = SEQ.seq_len;
+    let outIdx = 0, colIdx = 0, edgeCount = 0;
     for (let i = 0; i + 1 < N; i++) {
         if (SEQ.point_seq[i] !== targetSeq || SEQ.point_seq[i + 1] !== targetSeq) continue;
         flowFlat[outIdx++] = positions[i * 3]; flowFlat[outIdx++] = positions[i * 3 + 1]; flowFlat[outIdx++] = positions[i * 3 + 2];
         flowFlat[outIdx++] = positions[(i + 1) * 3]; flowFlat[outIdx++] = positions[(i + 1) * 3 + 1]; flowFlat[outIdx++] = positions[(i + 1) * 3 + 2];
+        // Each endpoint takes the hue of its own token position; vertex-colour interpolation
+        // then sweeps the rainbow smoothly along the line as the sequence index advances.
+        const ca = hueToRgb(SEQ.point_pos[i] / Math.max(1, seqLen - 1));
+        const cb = hueToRgb(SEQ.point_pos[i + 1] / Math.max(1, seqLen - 1));
+        flowColFlat[colIdx++] = ca[0]; flowColFlat[colIdx++] = ca[1]; flowColFlat[colIdx++] = ca[2];
+        flowColFlat[colIdx++] = cb[0]; flowColFlat[colIdx++] = cb[1]; flowColFlat[colIdx++] = cb[2];
         edgeCount++;
     }
-    flowGeom.attributes.instanceStart.data.needsUpdate = true;
+    flowGeom.setPositions(flowFlat.subarray(0, edgeCount * 6));
+    flowGeom.setColors(flowColFlat.subarray(0, edgeCount * 6));
     flowGeom.instanceCount = edgeCount;
     flowMesh.visible = edgeCount > 0;
 }
@@ -1706,12 +1754,27 @@ const SEQ = DATA.seq || null;
 const seqSectionEl = document.getElementById('seqSection');
 const seqPanelEl = document.getElementById('seqPanel');
 const seqHintEl = document.getElementById('seqHint');
+const seqPrevEl = document.getElementById('seqPrev');
+const seqNextEl = document.getElementById('seqNext');
+// (sequence, position) -> point index, so the prev/next arrows can walk the centred token
+// along its sequence one token at a time.
+const seqPosToPoint = new Map();
 if (SEQ) {
     seqSectionEl.style.display = 'block';
+    for (let i = 0; i < N; i++) seqPosToPoint.set(SEQ.point_seq[i] * 100000 + SEQ.point_pos[i], i);
     document.getElementById('flowLines').addEventListener('change', (e) => {
         flowEnabled = e.target.checked;
         updateFlowLines();
     });
+    seqPrevEl.addEventListener('click', () => stepSequence(-1));
+    seqNextEl.addEventListener('click', () => stepSequence(1));
+}
+
+function stepSequence(delta) {
+    if (!SEQ || pivotLock < 0) return;
+    const s = SEQ.point_seq[pivotLock], p = SEQ.point_pos[pivotLock];
+    const next = seqPosToPoint.get(s * 100000 + (p + delta));
+    if (next !== undefined) selectPoint(next);
 }
 
 function renderSequence(idx) {
@@ -1723,6 +1786,8 @@ function renderSequence(idx) {
         ? `<span style="background:#fde047;color:#000;border-radius:2px;">${esc(t)}</span>`
         : esc(t)).join('');
     seqHintEl.textContent = `sequence ${s}, position ${p}`;
+    seqPrevEl.disabled = !seqPosToPoint.has(s * 100000 + (p - 1));
+    seqNextEl.disabled = !seqPosToPoint.has(s * 100000 + (p + 1));
 }
 
 function selectPoint(idx) {
@@ -1734,6 +1799,7 @@ function selectPoint(idx) {
 function clearPivot() {
     pivotLock = -1;
     updateOrbitTarget();
+    if (SEQ) { seqPrevEl.disabled = true; seqNextEl.disabled = true; }
 }
 
 let downX = 0, downY = 0, downT = 0;
