@@ -4,7 +4,7 @@ Implements the scalar core of the torch reference `eval:` block — `CEandKLLoss
 (six masking variants) and `CI_L0` — inside one jitted function, logged under the
 exact torch wandb keys (`eval/ce_kl/<variant>`, `eval/l0/<threshold>_<site>`).
 Plot-type metrics (CI histograms, activation density, per-component means) ride the
-offline path instead: `jsp-export` → torch `pd-offline-eval`.
+offline path instead — natively in JAX via `jsp-slow-eval` (`slow_eval.py`).
 
 Variant semantics mirror `param_decomp_lab/eval_metrics/ce_and_kl_losses.py`: each
 variant is a masked forward with ALL sites live and no routing; only `stoch_masked`

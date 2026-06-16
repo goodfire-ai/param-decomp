@@ -15,6 +15,8 @@ dependencies = [
     "pyyaml==6.0.2",
     "orbax-checkpoint==0.12.0",
     "wandb==0.21.0",
+    "matplotlib==3.10.8",
+    "pillow==12.0.0",
     # satisfied by the sibling in-tree package: install both editably in one command,
     # `uv pip install -e ./param_decomp_config -e './param_decomp_jax[cuda]'`
     "param-decomp-config==0.0.1",
@@ -27,6 +29,7 @@ dev = ["pytest", "basedpyright"]
 [project.scripts]
 jsp-train = "jax_single_pool.run:main"
 jsp-export = "jax_single_pool.export:main"
+jsp-slow-eval = "jax_single_pool.slow_eval:main"
 
 [build-system]
 requires = ["setuptools", "wheel"]

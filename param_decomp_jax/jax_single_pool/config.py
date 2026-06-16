@@ -194,6 +194,9 @@ class ExperimentConfig:
         return self.out_dir / self.run_id
 
 
+# Slow/plot eval metrics the in-loop scalar pass (`eval.py`) does NOT compute. The first
+# three are rendered natively by `jsp-slow-eval` (`slow_eval.py`) over a checkpoint; the
+# rest still ride the torch `jsp-export` -> `pd-offline-eval` bridge.
 OFFLINE_EVAL_METRIC_TYPES = frozenset(
     {
         "CIHistograms",

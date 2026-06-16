@@ -108,9 +108,15 @@ class CIFn(eqx.Module):
     split_sizes: tuple[int, ...] = eqx.field(static=True)
     eps: float = eqx.field(static=True)
 
-    def __call__(self, site_inputs: dict[str, Array]) -> CIValues:
-        """`site_inputs`: clean per-site inputs, keyed by site name (canonical order is
-        `self.site_names`). Returns the two squashings of the same logits, per site."""
+    def _site_slices(self) -> dict[str, slice]:
+        offsets = [0]
+        for c in self.split_sizes:
+            offsets.append(offsets[-1] + c)
+        return {name: slice(offsets[i], offsets[i + 1]) for i, name in enumerate(self.site_names)}
+
+    def site_logits(self, site_inputs: dict[str, Array]) -> dict[str, Array]:
+        """Pre-squash CI-fn logits, per site (`{site: (B, T, C)}`). This is torch's
+        `pre_sigmoid` view (`CIHistograms` plots it alongside `lower_leaky`)."""
         assert set(site_inputs) == set(self.site_names), (
             f"site_inputs keys {sorted(site_inputs)} != CI fn sites {sorted(self.site_names)}"
         )
@@ -120,18 +126,16 @@ class CIFn(eqx.Module):
         for block in self.blocks:
             x = block(x, inv_freq)
         logits = x @ self.out_w + self.out_b  # (b, t, Σ_s C_s)
-        lower = lower_leaky_hard_sigmoid(logits)
-        upper = upper_leaky_hard_sigmoid(logits)
+        site_slices = self._site_slices()
+        return {name: logits[..., site_slices[name]] for name in self.site_names}
 
-        offsets = [0]
-        for c in self.split_sizes:
-            offsets.append(offsets[-1] + c)
-        site_slices = {
-            name: slice(offsets[i], offsets[i + 1]) for i, name in enumerate(self.site_names)
-        }
+    def __call__(self, site_inputs: dict[str, Array]) -> CIValues:
+        """`site_inputs`: clean per-site inputs, keyed by site name (canonical order is
+        `self.site_names`). Returns the two squashings of the same logits, per site."""
+        site_logits = self.site_logits(site_inputs)
         return CIValues(
-            lower={name: lower[..., site_slices[name]] for name in self.site_names},
-            upper={name: upper[..., site_slices[name]] for name in self.site_names},
+            lower={name: lower_leaky_hard_sigmoid(site_logits[name]) for name in self.site_names},
+            upper={name: upper_leaky_hard_sigmoid(site_logits[name]) for name in self.site_names},
         )
 
 

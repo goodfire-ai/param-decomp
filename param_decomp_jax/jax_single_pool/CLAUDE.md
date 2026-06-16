@@ -39,8 +39,9 @@ t-9d2b8f02; sites `h.{i}.attn.{q,k,v,o}_proj` / `h.{i}.mlp.{c_fc,down_proj}`) �
 config dispatch is `TargetConfig` (llama8b) vs `LlamaSimpleMLPTargetConfig` in
 `config.py` (which also reads the canonical `param_decomp_config` schema DIRECTLY —
 `build_experiment_config`/`load_wrapper` — routing `kind: pretrained` specs + `h.*`
-wildcards), target build in `run.py::main`. Export/offline-eval stay llama8b-only
-(guarded).
+wildcards), target build in `run.py::main`. `jsp-export` (torch-format export) stays
+llama8b-only (guarded); the slow plot metrics are computed NATIVELY in JAX for the
+SimpleMLP target via `jsp-slow-eval` (`slow_eval.py`) — no torch export round-trip.
 
 ## Invariants with sharp teeth (the ones that have actually bitten)
 
