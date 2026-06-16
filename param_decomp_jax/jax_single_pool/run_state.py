@@ -6,12 +6,15 @@ rebuild the state exactly as the run did — same init fns, same key derivation,
 optimizer-state structure.
 """
 
+from collections.abc import Callable
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
 from jax import random
 from jax.sharding import Mesh
+from jax.typing import ArrayLike
 from jaxtyping import Array, PRNGKeyArray
 
 from jax_single_pool.adversary import init_sources_adam_state
@@ -26,14 +29,16 @@ from jax_single_pool.recon import build_recon_terms
 from jax_single_pool.train import TrainState
 
 
-def torch_cosine_schedule(peak_lr: float, total_steps: int, alpha: float) -> optax.Schedule:
+def torch_cosine_schedule(
+    peak_lr: float, total_steps: int, alpha: float
+) -> Callable[[ArrayLike], Array]:
     """Cosine decay matching torch's `get_scheduled_value` denominator: `progress =
     step / (total_steps - 1)` (no warmup), so `0.1×` is reached at `step = total_steps - 1`.
     optax's `cosine_decay_schedule` divides by `total_steps`, reaching it one step later
     (SPEC S20). `total_steps == 1` collapses to a constant `peak_lr`."""
     denom = max(total_steps - 1, 1)
 
-    def schedule(count: Array) -> Array:
+    def schedule(count: ArrayLike) -> Array:
         progress = jnp.asarray(count, jnp.float32) / denom
         return peak_lr * (alpha + (1 - alpha) * 0.5 * (1 + jnp.cos(jnp.pi * progress)))
 
@@ -51,8 +56,8 @@ def clip_by_global_norm_with_eps(max_norm: float, eps: float) -> optax.GradientT
         return optax.EmptyState()
 
     def update(
-        updates: optax.Updates, state: optax.EmptyState, params: optax.Params | None = None
-    ) -> tuple[optax.Updates, optax.EmptyState]:
+        updates: optax.Updates, state: optax.OptState, params: optax.Params | None = None
+    ) -> tuple[optax.Updates, optax.OptState]:
         del params
         global_norm = optax.global_norm(updates)
         scale = jnp.minimum(max_norm / (global_norm + eps), 1.0)

@@ -24,7 +24,11 @@ dependencies = [
 
 [project.optional-dependencies]
 cuda = ["jax[cuda12]==0.10.1"]
-dev = ["pytest", "basedpyright"]
+# huggingface-hub is a typecheck-/dev-time dep only: `hf_http.configure_hf_http_retries`
+# imports it behind a runtime `find_spec` guard (no-op when absent), so it is never a
+# runtime dependency — but the type-checker needs its (`py.typed`) stubs to resolve those
+# guarded imports. Pinned to the torch side's version.
+dev = ["pytest", "basedpyright", "huggingface-hub==0.36.0"]
 
 [project.scripts]
 jsp-train = "jax_single_pool.run:main"

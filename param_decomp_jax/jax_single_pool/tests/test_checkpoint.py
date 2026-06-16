@@ -8,6 +8,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
+from jax.sharding import Mesh
 
 from jax_single_pool.adversary import (
     init_persistent_sources,
@@ -191,7 +192,7 @@ def test_no_checkpoint_returns_none(tmp_path: Path):
     assert restore_latest(mgr, fresh) is None
 
 
-def _build_sharded(seed: int, mesh):
+def _build_sharded(seed: int, mesh: Mesh):
     """A `TrainState` placed exactly as the production trainer places it
     (`run_state.init_train_state`): C-sharded V/U + ci_fn, replicated sources, over the
     `dp` mesh. Built directly from the `*_sharded` init fns so the saved/restored

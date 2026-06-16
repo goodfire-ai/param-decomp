@@ -62,9 +62,9 @@ class CIMaskedReconLayerwiseLossConfig(LossMetricConfig):
 
 class CIMaskedReconSubsetLossConfig(LossMetricConfig):
     type: Literal["CIMaskedReconSubsetLoss"] = "CIMaskedReconSubsetLoss"
-    routing: Annotated[
-        SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
-    ]
+    routing: Annotated[SubsetRoutingType, Field(discriminator="type")] = (
+        UniformKSubsetRoutingConfig()
+    )
 
 
 class StochasticReconLossConfig(LossMetricConfig):
@@ -77,9 +77,9 @@ class StochasticReconLayerwiseLossConfig(LossMetricConfig):
 
 class StochasticReconSubsetLossConfig(LossMetricConfig):
     type: Literal["StochasticReconSubsetLoss"] = "StochasticReconSubsetLoss"
-    routing: Annotated[
-        SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
-    ]
+    routing: Annotated[SubsetRoutingType, Field(discriminator="type")] = (
+        UniformKSubsetRoutingConfig()
+    )
 
 
 class StochasticHiddenActsReconLossConfig(LossMetricConfig):
@@ -108,9 +108,9 @@ class ChunkwiseSubsetReconLossConfig(LossMetricConfig):
 
     type: Literal["ChunkwiseSubsetReconLoss"] = "ChunkwiseSubsetReconLoss"
     sites_per_chunk: PositiveInt
-    routing: Annotated[
-        SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
-    ]
+    routing: Annotated[SubsetRoutingType, Field(discriminator="type")] = (
+        UniformKSubsetRoutingConfig()
+    )
     n_samples: PositiveInt = 1
     use_fused_kl: bool = True
 
@@ -156,9 +156,9 @@ class PGDReconLayerwiseLossConfig(PGDConfig):
 
 class PGDReconSubsetLossConfig(PGDConfig):
     type: Literal["PGDReconSubsetLoss"] = "PGDReconSubsetLoss"
-    routing: Annotated[
-        SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
-    ]
+    routing: Annotated[SubsetRoutingType, Field(discriminator="type")] = (
+        UniformKSubsetRoutingConfig()
+    )
 
 
 class SignPGDConfig(BaseConfig):

@@ -24,3 +24,15 @@ repos:
         types: [python]
         stages:
           - pre-commit
+
+      # The `type` hook above runs the torch venv's basedpyright, which excludes the JAX
+      # distribution. This runs the JAX venv's basedpyright over `jax_single_pool/` so the
+      # JAX side can't regress (`make check-jax`).
+      - id: type-jax
+        name: "Type check JAX with BasedPyright"
+        entry: make check-jax
+        language: system
+        files: ^param_decomp_jax/
+        pass_filenames: false
+        stages:
+          - pre-commit

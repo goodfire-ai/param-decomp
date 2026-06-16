@@ -179,7 +179,7 @@ def test_unsupported_model_family_refuses_and_supported_families_dispatch():
 
     torch_cfg, raw = _reference_torch_cfg()
 
-    def _converted_target(spec: dict):
+    def _converted_target(spec: dict[str, str]):
         cfg = build_experiment_config(
             type(torch_cfg)(**dict(raw, target=dict(raw["target"], spec=spec))),
             run_name="t", run_id=RUN_ID, out_dir=Path("/tmp"), remat_recon_forwards=True,
