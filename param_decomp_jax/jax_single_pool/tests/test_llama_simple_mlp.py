@@ -218,7 +218,7 @@ def test_clean_path_and_masked_identity():
     assert clean.shape == (b, t, cfg.vocab_size)
 
     # SPEC S2: a masked forward with NO live sites is the frozen path — bit-identical.
-    none_masked = lm.masked_logits(target, vu, resid, {}, {}, None, ())
+    none_masked = lm.masked_logits(target, vu, resid, {}, {}, None, (), True)
     assert jnp.array_equal(clean, none_masked), "live=() must be the exact frozen path"
 
     # All-live, masks=1, delta=1, route-everywhere reconstructs the frozen path up to
@@ -226,7 +226,7 @@ def test_clean_path_and_masked_identity():
     names = lm.site_names
     ones_masks = {s.name: jnp.ones((b, t, s.C)) for s in lm.sites}
     ones_delta = {s: jnp.ones((b, t)) for s in names}
-    full = lm.masked_logits(target, vu, resid, ones_masks, ones_delta, None, names)
+    full = lm.masked_logits(target, vu, resid, ones_masks, ones_delta, None, names, True)
     assert jnp.allclose(clean, full, atol=1e-4), "mask=1 identity drifted"
 
     site_in = lm.site_inputs(target, resid)
@@ -263,7 +263,7 @@ def test_zero_masking_one_site_changes_logits(ablated_site: str):
     ablated = lm.masked_logits(
         target, vu, resid,
         {ablated_site: jnp.zeros((b, t, C))}, {ablated_site: jnp.zeros((b, t))},
-        None, (ablated_site,),
+        None, (ablated_site,), True,
     )  # fmt: skip
     assert not jnp.allclose(clean, ablated, atol=1e-4), f"ablating {ablated_site} did nothing"
 
@@ -281,7 +281,7 @@ def test_o_site_masks_attention_output():
     clean = lm.clean_logits(target, resid)
     ones = lm.masked_logits(
         target, vu, resid, {o_site: jnp.ones((b, t, 8))}, {o_site: jnp.ones((b, t))}, None,
-        (o_site,),
+        (o_site,), True,
     )  # fmt: skip
     assert jnp.allclose(clean, ones, atol=1e-4)
     # o's clean site input is the pre-o_proj attention output, shape (b, t, qd)

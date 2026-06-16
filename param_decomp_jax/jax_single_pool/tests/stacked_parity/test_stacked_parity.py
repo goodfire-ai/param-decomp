@@ -134,14 +134,14 @@ def test_masked_logits_match():
     f, lm, tgt, vu, resid = _load()
     masks = {s: jnp.asarray(f[f"mask::{s}"]) for s in lm.site_names}
     delta_masks = {s: jnp.asarray(f[f"delta_mask::{s}"]) for s in lm.site_names}
-    masked_all = lm.masked_logits(tgt, vu, resid, masks, delta_masks, None, lm.site_names)
+    masked_all = lm.masked_logits(tgt, vu, resid, masks, delta_masks, None, lm.site_names, True)
     _assert_close(masked_all, f["out::masked_all"], "masked_logits (all live)")
 
     chunk0 = lm.site_names[:3]
     routes0 = {s: jnp.asarray(f[f"route0::{s}"]) for s in chunk0}
     masked_subset = lm.masked_logits(
         tgt, vu, resid,
-        {s: masks[s] for s in chunk0}, {s: delta_masks[s] for s in chunk0}, routes0, chunk0,
+        {s: masks[s] for s in chunk0}, {s: delta_masks[s] for s in chunk0}, routes0, chunk0, True,
     )  # fmt: skip
     _assert_close(masked_subset, f["out::masked_subset"], "masked_logits (subset live)")
 

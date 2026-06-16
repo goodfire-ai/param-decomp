@@ -270,20 +270,22 @@ def _site_out(
     U: Array,
     W: Array,
     mask: Array | None,
-    delta_mask: Array,
+    delta_mask: Array | None,
     route: Array | None,
 ) -> Array:
     """One decomposed linear (SPEC §4.1), same as `llama8b._site_out`: `((x@V)*m)@U +
     (x@Δ)*d`, routed per position against the frozen `x @ W.T`. `mask` may be None
-    (fully on); `route` None routes everywhere. The delta on this PATH is bf16-computed
-    from the cast components (documented divergence; the faithfulness loss uses the
-    fp32 `weight_deltas`, SPEC N2)."""
+    (fully on); `route` None routes everywhere. `delta_mask` None drops the delta path
+    entirely (constant-source entries carry no delta, LOSS_PARITY_DESIGN §4b). The delta
+    on this PATH is bf16-computed from the cast components (documented divergence; the
+    faithfulness loss uses the fp32 `weight_deltas`, SPEC N2)."""
     acts = x @ V
     if mask is not None:
         acts = acts * mask
     out = acts @ U
-    delta = W - (V @ U).T  # (d_out, d_in)
-    out = out + delta_mask[..., None] * (x @ delta.T)
+    if delta_mask is not None:
+        delta = W - (V @ U).T  # (d_out, d_in)
+        out = out + delta_mask[..., None] * (x @ delta.T)
     if route is not None:
         out = jnp.where(route[..., None], out, x @ W.T)
     return out
@@ -355,12 +357,13 @@ def _masked_site_out(
     delta_masks: dict[str, Array],
     routes: dict[str, Array] | None,
     live_set: frozenset[str],
+    has_delta: bool,
 ) -> Array:
     if site not in live_set:
         return x_in @ W.T
     V, U = components.site(site)
     return _site_out(
-        x_in, V, U, W, masks[site], delta_masks[site],
+        x_in, V, U, W, masks[site], delta_masks[site] if has_delta else None,
         None if routes is None else routes[site],
     )  # fmt: skip
 
@@ -374,11 +377,13 @@ def masked_suffix_logits(
     delta_masks: dict[str, Array],
     routes: dict[str, Array] | None,
     live: tuple[str, ...],
+    has_delta: bool,
 ) -> Array:
     """Masked decomposed suffix forward (SPEC §4.1, S2): sites in `live` run their
     decomposed forward with `masks[s]` / `delta_masks[s]` / `routes[s]`; every other
     site — and every site absent from the decomposition entirely — runs the frozen
-    `x @ W` path. `live` is static under jit."""
+    `x @ W` path. `live` and `has_delta` are static under jit; `has_delta` False skips
+    the `x @ Δ` matmul (LOSS_PARITY_DESIGN §4b)."""
     assert resid.shape[1] <= target.n_ctx, (resid.shape, target.n_ctx)
     live_set = frozenset(live)
     x = resid
@@ -386,7 +391,7 @@ def masked_suffix_logits(
         layer_idx = first_layer + layer_offset
         live_kinds = {kind for kind in KIND_ORDER if site_name(layer_idx, kind) in live_set}
         attn = layer.attn
-        site_args = (masks, delta_masks, routes, live_set)
+        site_args = (masks, delta_masks, routes, live_set, has_delta)
         h1 = rms_norm(x, layer.ln1, target.eps)
         if not live_kinds & set(ATTN_KINDS):
             attn_out = attn(h1, target.inv_freq)
@@ -452,9 +457,16 @@ def llama_simple_mlp_decomposed_lm(
         sites=sites,
         clean_logits=lambda frozen, resid: clean_suffix_logits(frozen, resid),
         site_inputs=lambda frozen, resid: clean_site_inputs(frozen, first_layer, site_names, resid),
-        masked_logits=lambda frozen, components, resid, masks, delta_masks, routes, live: (
+        masked_logits=lambda frozen,
+        components,
+        resid,
+        masks,
+        delta_masks,
+        routes,
+        live,
+        has_delta: (
             masked_suffix_logits(
-                frozen, components, first_layer, resid, masks, delta_masks, routes, live
+                frozen, components, first_layer, resid, masks, delta_masks, routes, live, has_delta
             )
         ),
         weight_deltas=lambda frozen, components: weight_deltas_fp32(

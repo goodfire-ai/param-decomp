@@ -48,10 +48,12 @@ class DecomposedLM:
     `sites` fixes the canonical site order — chunking (SPEC S10) and the CI fn's
     input/output concatenation both follow it.
 
-    `masked_logits(frozen, vu, resid, masks, delta_masks, routes, live)`:
+    `masked_logits(frozen, vu, resid, masks, delta_masks, routes, live, has_delta)`:
     `live` (a tuple of site names, static under jit) lists the sites running their
     decomposed forward; all other sites MUST run the frozen `x @ W` path (SPEC S2).
     `masks`/`delta_masks` may broadcast over the batch dim (the PPGD source case).
+    `has_delta` (static) False skips the `x @ Δ` matmul for constant-source entries
+    whose delta mask is a constant 0 (LOSS_PARITY_DESIGN §4b).
 
     `clean_logits` is the all-frozen forward — the recon target (SPEC S3); never the
     `mask=1` decomposed identity.
@@ -63,7 +65,16 @@ class DecomposedLM:
     clean_logits: Callable[[Any, Float[Array, "B T d"]], Float[Array, "B T vocab"]]
     site_inputs: Callable[[Any, Float[Array, "B T d"]], dict[str, Float[Array, "B T d_in"]]]
     masked_logits: Callable[
-        [Any, Any, Float[Array, "B T d"], SiteMasks, SiteDeltaMasks, SiteRoutes, tuple[str, ...]],
+        [
+            Any,
+            Any,
+            Float[Array, "B T d"],
+            SiteMasks,
+            SiteDeltaMasks,
+            SiteRoutes,
+            tuple[str, ...],
+            bool,
+        ],
         Float[Array, "B T vocab"],
     ]
     weight_deltas: Callable[[Any, Any], dict[str, Float[Array, "d_out d_in"]]]

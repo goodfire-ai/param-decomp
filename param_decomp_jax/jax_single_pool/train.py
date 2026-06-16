@@ -159,10 +159,11 @@ def make_train_step(
         delta_masks: dict[str, Array],
         routes: dict[str, Array] | None,
         live_sites: tuple[str, ...],
+        has_delta: bool,
     ) -> Array:
         return batch_sharded(
             lm.masked_logits(
-                frozen, components_bf16, residual, masks, delta_masks, routes, live_sites
+                frozen, components_bf16, residual, masks, delta_masks, routes, live_sites, has_delta
             )
         )
 
@@ -170,7 +171,7 @@ def make_train_step(
     # forward at a time (the torch 2-pool streaming profile) at the cost of the
     # recompute; with few recon forwards and memory headroom, remat off is faster.
     checkpointed_masked_forward = (
-        jax.checkpoint(masked_forward, static_argnums=(6,))
+        jax.checkpoint(masked_forward, static_argnums=(6, 7))
         if remat_recon_forwards
         else masked_forward
     )
@@ -205,15 +206,13 @@ def make_train_step(
         strategy: ConstantSources,
         ci_lower: dict[str, Array],
         live_sites: tuple[str, ...],
-        batch_seq: tuple[int, int],
     ) -> tuple[dict[str, Array], dict[str, Array]]:
-        masks = {}
-        delta_masks = {}
-        for site in live_sites:
-            ci_site = ci_lower[site]
-            masks[site] = ci_site + (1.0 - ci_site) * strategy.value
-            delta_masks[site] = jnp.zeros(batch_seq, ci_site.dtype)
-        return masks, delta_masks
+        """No delta masks: `has_delta` is False for constant sources, so the forward
+        skips the `x @ Δ` matmul and never indexes the (empty) delta dict (§4b)."""
+        masks = {
+            site: ci_lower[site] + (1.0 - ci_lower[site]) * strategy.value for site in live_sites
+        }
+        return masks, {}
 
     def entry_loss_for_sources(
         entry: ReconForward,
@@ -232,7 +231,14 @@ def make_train_step(
         total = jnp.zeros((), jnp.float32)
         for routes in routes_per_draw:
             masked = forward_fn(
-                frozen, components_bf16, residual, masks, delta_masks, routes, entry.live_sites
+                frozen,
+                components_bf16,
+                residual,
+                masks,
+                delta_masks,
+                routes,
+                entry.live_sites,
+                entry.has_delta,
             )
             total = total + kl_per_position(masked, clean_logits)
         return total / len(routes_per_draw)
@@ -273,7 +279,14 @@ def make_train_step(
             def warmup_loss(sources: dict[str, Array]) -> Array:
                 masks, delta_masks = source_masks(ci_lower_detached, sources, site_names)
                 masked = masked_forward(
-                    frozen, components_detached, residual, masks, delta_masks, None, site_names
+                    frozen,
+                    components_detached,
+                    residual,
+                    masks,
+                    delta_masks,
+                    None,
+                    site_names,
+                    True,
                 )
                 return kl_per_position(masked, clean_logits)
 
@@ -391,7 +404,7 @@ def make_train_step(
                                 )
                             case ConstantSources() as strategy:
                                 masks, delta_masks = constant_entry_masks(
-                                    strategy, ci.lower, entry.live_sites, (batch, seq)
+                                    strategy, ci.lower, entry.live_sites
                                 )
                             case FreshPGDSources():
                                 masks, delta_masks = source_masks(
@@ -411,6 +424,7 @@ def make_train_step(
                             delta_masks,
                             routes,
                             entry.live_sites,
+                            entry.has_delta,
                         )
                         total = total + kl_per_position(masked, clean_logits)
                         n_forwards += 1

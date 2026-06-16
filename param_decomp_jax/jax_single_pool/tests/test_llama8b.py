@@ -167,7 +167,7 @@ def test_clean_path_and_masked_identity(first: int, last: int):
 
     # SPEC S2: a masked forward with NO live sites is the frozen path — bit-identical
     # to the clean target.
-    none_masked = lm.masked_logits(tgt, vu, resid, {}, {}, None, ())
+    none_masked = lm.masked_logits(tgt, vu, resid, {}, {}, None, (), True)
     assert jnp.array_equal(clean, none_masked), "live=() must be the exact frozen path"
 
     # All-live, masks=1, delta=1, route-everywhere reconstructs the frozen path up to
@@ -175,7 +175,7 @@ def test_clean_path_and_masked_identity(first: int, last: int):
     names = lm.site_names
     ones_masks = {s: jnp.ones((b, t, C)) for s in names}
     ones_delta = {s: jnp.ones((b, t)) for s in names}
-    full = lm.masked_logits(tgt, vu, resid, ones_masks, ones_delta, None, names)
+    full = lm.masked_logits(tgt, vu, resid, ones_masks, ones_delta, None, names, True)
     assert jnp.allclose(clean, full, atol=1e-4), "mask=1 identity drifted"
 
     site_in = lm.site_inputs(tgt, resid)
@@ -204,13 +204,13 @@ def test_attention_sites_clean_and_masked_identity():
         assert V.shape == (spec.d_in, spec.C) and U.shape == (spec.C, spec.d_out)
 
     clean = lm.clean_logits(tgt, resid)
-    none_masked = lm.masked_logits(tgt, vu, resid, {}, {}, None, ())
+    none_masked = lm.masked_logits(tgt, vu, resid, {}, {}, None, (), True)
     assert jnp.array_equal(clean, none_masked), "live=() must be the exact frozen path"
 
     names = lm.site_names
     ones_masks = {s.name: jnp.ones((b, t, s.C)) for s in lm.sites}
     ones_delta = {s: jnp.ones((b, t)) for s in names}
-    full = lm.masked_logits(tgt, vu, resid, ones_masks, ones_delta, None, names)
+    full = lm.masked_logits(tgt, vu, resid, ones_masks, ones_delta, None, names, True)
     assert jnp.allclose(clean, full, atol=1e-4), "mask=1 identity drifted (attention sites)"
 
     # zero-mask + zero-delta on q alone must CHANGE the logits (the site is live on
@@ -218,7 +218,7 @@ def test_attention_sites_clean_and_masked_identity():
     q_site = "layers.4.self_attn.q_proj"
     zero_mask = {q_site: jnp.zeros((b, t, 8))}
     zero_delta = {q_site: jnp.zeros((b, t))}
-    ablated = lm.masked_logits(tgt, vu, resid, zero_mask, zero_delta, None, (q_site,))
+    ablated = lm.masked_logits(tgt, vu, resid, zero_mask, zero_delta, None, (q_site,), True)
     assert not jnp.allclose(clean, ablated, atol=1e-4), "ablating q did nothing"
 
     site_in = lm.site_inputs(tgt, resid)
@@ -246,7 +246,14 @@ def test_o_site_masks_attention_output():
 
     clean = lm.clean_logits(tgt, resid)
     ones = lm.masked_logits(
-        tgt, vu, resid, {o_site: jnp.ones((b, t, 8))}, {o_site: jnp.ones((b, t))}, None, (o_site,)
+        tgt,
+        vu,
+        resid,
+        {o_site: jnp.ones((b, t, 8))},
+        {o_site: jnp.ones((b, t))},
+        None,
+        (o_site,),
+        True,
     )
     assert jnp.allclose(clean, ones, atol=1e-4)
     # o's clean site input is the pre-o_proj attention output, shape (b, t, qd)

@@ -100,16 +100,29 @@ class PersistentSources:
 MaskSourceStrategy = StochasticSources | ConstantSources | FreshPGDSources | PersistentSources
 
 
+def strategy_has_delta(sources: MaskSourceStrategy) -> bool:
+    """`ConstantSources` carries no delta path (torch passes no `weight_deltas` for the
+    Unmasked/CIMasked losses); its `delta_mask` would be a constant 0, so the `x @ Δ`
+    matmul is skipped entirely (static, retrace-safe — LOSS_PARITY_DESIGN §4b). Every
+    other strategy drives a live delta mask."""
+    return not isinstance(sources, ConstantSources)
+
+
 @dataclass(frozen=True)
 class ReconForward:
     """One plan entry: which sites run their decomposed path (`live_sites` — everything
     else takes the frozen `x @ W` path, the ~9x-cheaper non-decomposed matmul), a
     sampler producing this entry's family of routing draws, and the strategy that
-    generates each draw's mask/delta sources."""
+    generates each draw's mask/delta sources. `has_delta` (static, derived from the
+    strategy) skips the `x @ Δ` matmul for constant-source entries."""
 
     live_sites: tuple[str, ...]
     sample_routing: RoutingSampler
     sources: MaskSourceStrategy
+
+    @property
+    def has_delta(self) -> bool:
+        return strategy_has_delta(self.sources)
 
 
 ReconPlan = tuple[ReconForward, ...]

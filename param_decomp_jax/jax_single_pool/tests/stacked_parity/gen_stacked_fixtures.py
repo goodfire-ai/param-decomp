@@ -144,7 +144,7 @@ def main() -> None:
     jm = {k: jax.numpy.asarray(v) for k, v in masks.items()}
     jdm = {k: jax.numpy.asarray(v) for k, v in delta_masks.items()}
     arrays["out::masked_all"] = np.asarray(
-        lm.masked_logits(tgt, vu, resid, jm, jdm, None, lm.site_names)
+        lm.masked_logits(tgt, vu, resid, jm, jdm, None, lm.site_names, True)
     )
     arrays["out::masked_subset"] = np.asarray(
         lm.masked_logits(
@@ -155,6 +155,7 @@ def main() -> None:
             {s: jdm[s] for s in chunk0},
             {s: jax.numpy.asarray(routes0[s]) for s in chunk0},
             chunk0,
+            True,
         )  # fmt: skip
     )
 

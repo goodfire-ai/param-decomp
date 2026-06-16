@@ -81,7 +81,7 @@ def make_eval_step(
     ) -> Array:  # fmt: skip
         return batch_sharded(
             lm.masked_logits(
-                frozen, components_bf16, residual, masks, delta_masks, None, site_names
+                frozen, components_bf16, residual, masks, delta_masks, None, site_names, True
             )
         )
 
