@@ -1,0 +1,9 @@
+# push-1 save+resume acceptance smoke (#810). Production per-rank shape of the
+# fresh-PGD pile run (pile_pgd1_from_torch.yaml): LlamaSimpleMLP 4L, all h.* sites,
+# per-site C, seq 512, global batch 64 over 16 GPUs (2 nodes) => 4/rank. Steps and
+# save_every reduced so it checkpoints multiple times in a few minutes, exercising
+# real orbax sharded save + requeue-resume. Launch: pd-jax-lm ... --nodes 2.
+torch_config: torch/pile_llama_simple_mlp_4l_pgd1_SMOKE.yaml
+run_name: jax-pile4l-pgd1-push1-smoke
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/runs
+remat_recon_forwards: false
