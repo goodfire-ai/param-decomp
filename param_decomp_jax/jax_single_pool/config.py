@@ -56,6 +56,7 @@ class VUOptimizerConfig:
 @dataclass(frozen=True)
 class CIOptimizerConfig:
     lr: float
+    grad_clip_norm: float | None
 
 
 @dataclass(frozen=True)
