@@ -198,7 +198,7 @@ def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
         assert masks[s].shape[0] == B and masks[s].shape[1] == T, masks[s].shape
         assert delta_masks[s].shape == (1, T), delta_masks[s].shape
 
-    pred = lm.masked_logits(tgt, vu, resid, masks, delta_masks, None, lm.site_names)
+    pred = lm.masked_logits(tgt, vu, resid, masks, delta_masks, None, lm.site_names, True)
     assert pred.shape == (B, T, vocab), pred.shape
 
     # A source whose free axis is sized B (not T) — i.e. the B/T axes transposed — must NOT
@@ -208,4 +208,4 @@ def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
         assert bt_transposed[s].shape == (1, B, source[s].shape[-1]), bt_transposed[s].shape
     with pytest.raises(Exception):  # noqa: B017 — broadcast error, framework-specific type
         bad_masks, bad_delta = source_masks(ci_lower, bt_transposed, lm.site_names)
-        lm.masked_logits(tgt, vu, resid, bad_masks, bad_delta, None, lm.site_names)
+        lm.masked_logits(tgt, vu, resid, bad_masks, bad_delta, None, lm.site_names, True)

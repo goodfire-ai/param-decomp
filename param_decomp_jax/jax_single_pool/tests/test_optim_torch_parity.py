@@ -33,13 +33,18 @@ def test_cosine_schedule_matches_torch_denominator():
 
 
 def test_cosine_schedule_differs_from_optax():
+    """Torch's `step / (total_steps - 1)` denominator reaches `alpha·peak` one step
+    earlier than optax's `count / total_steps`: at `total_steps - 1` ours is already at
+    the floor while optax still has a full step of decay left. The gap is largest with
+    few steps (with 400k it flattens into fp noise at the endpoints — SPEC S19)."""
     peak_lr = 1.5e-4
-    total_steps = 400_000
+    total_steps = 10
     optax_sched = optax.cosine_decay_schedule(peak_lr, total_steps, alpha=0.1)
     ours = torch_cosine_schedule(peak_lr, total_steps, alpha=0.1)
     endpoint = total_steps - 1
     assert float(ours(jnp.int32(endpoint))) == pytest.approx(0.1 * peak_lr, rel=1e-6)
     assert float(optax_sched(jnp.int32(endpoint))) != pytest.approx(0.1 * peak_lr, rel=1e-6)
+    assert float(optax_sched(jnp.int32(total_steps))) == pytest.approx(0.1 * peak_lr, rel=1e-6)
 
 
 def test_grad_clip_matches_torch_eps():

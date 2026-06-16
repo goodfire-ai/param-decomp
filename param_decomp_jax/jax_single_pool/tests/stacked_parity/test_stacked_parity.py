@@ -9,9 +9,16 @@ the per-site representation and checks, for the same MLP-family site set:
   * `site_inputs` / `weight_deltas` / `masked_logits` — to fp32 reassociation
     tolerance (SPEC D4: rel ~1e-5; observed essentially exact).
   * a 2-step training trajectory (metrics + final V/U + final adversary sources) —
-    rel ~1e-5. The CI fn / sources / train step code is UNCHANGED, so their RNG
-    streams reproduce; the V/U init RNG derivation changed with the layout, so initial
-    V/U load from the fixture.
+    rel ~1e-5. The sources / train-step code is unchanged, so their RNG streams
+    reproduce; the V/U init RNG derivation changed with the layout, so initial V/U
+    load from the fixture.
+
+The forward-pin arrays (clean / site-input / weight-delta / masked) still pin the
+original stacked torch oracle. The trajectory `out::` arrays were re-baselined from
+current HEAD after the CI-fn forward was aligned to the torch oracle (exact-erf GELU
+#624, finfo(fp32) RMS eps #625): those numerics perturb the CI outputs, so `imp` and
+the CI-fn grad norms compound away from the pre-fix golden by step 1. The trajectory
+now pins the torch-faithful baseline, not the pre-#624/#625 one.
 """
 
 from pathlib import Path

@@ -40,7 +40,7 @@ from jax_single_pool.losses import (
     faithfulness_loss,
     importance_minimality_terms,
     kl_per_position,
-    scheduled_lr,
+    warmup_then_constant_lr,
 )
 from jax_single_pool.recon import (
     ConstantSources,
@@ -285,7 +285,12 @@ def make_train_step(
             adam = persistent_adams[state_key]
             if ppgd_cfg.start_frac > 0.0:
                 term_active[state_key] = step_f32 >= ppgd_cfg.start_frac * total_steps
-            source_lr = scheduled_lr(step_f32, total_steps, adam.lr_schedule)
+            source_lr = warmup_then_constant_lr(
+                step_f32,
+                total_steps,
+                adam.lr_schedule.start_val,
+                adam.lr_schedule.warmup_pct,
+            )
             source_lrs[state_key] = source_lr
 
             def warmup_loss(sources: dict[str, Array]) -> Array:

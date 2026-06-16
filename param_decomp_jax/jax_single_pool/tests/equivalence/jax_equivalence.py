@@ -249,7 +249,7 @@ def chunk_plan_static_gate_kl(f: dict[str, np.ndarray]) -> tuple[float, float]:
     masks = {s: ci_lower[s] + (1.0 - ci_lower[s]) * stoch_u[s] for s in live}
     delta_masks = {s: stoch_delta[s] for s in live}
 
-    gate_pred = lm.masked_logits(tgt, vu, resid, masks, delta_masks, None, live)
+    gate_pred = lm.masked_logits(tgt, vu, resid, masks, delta_masks, None, live, True)
     ref_pred = _suffix_with_split_mlp(
         tgt, vu, resid, live_layer, live_kinds, masks, delta_masks, n_layers
     )
