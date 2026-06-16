@@ -18,7 +18,6 @@ METRIC_SHORT_NAMES: dict[str, str] = {
     "FaithfulnessLoss": "Faith",
     "ImportanceMinimalityLoss": "ImpMin",
     "PersistentPGDReconLoss": "PersistPGDRecon",
-    "PersistentPGDReconSubsetLoss": "PersistPGDReconSub",
     "PGDReconLayerwiseLoss": "PGDReconLayer",
     "PGDReconLoss": "PGDRecon",
     "PGDReconSubsetLoss": "PGDReconSub",

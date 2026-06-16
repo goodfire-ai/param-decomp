@@ -27,5 +27,5 @@ def test_validate_wrapper_rejects_unexpected_key(tmp_path: Path):
     wrapper = tmp_path / "wrapper.yaml"
     raw = {key: "x" for key in WRAPPER_KEYS_BEFORE_SUBMIT} | {"bogus_key": "x"}
     wrapper.write_text(yaml.safe_dump(raw))
-    with pytest.raises(AssertionError, match="keys must be"):
+    with pytest.raises(AssertionError, match="keys must include"):
         _validate_wrapper(wrapper)
