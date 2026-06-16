@@ -17,7 +17,10 @@ convention (caller-specified `--out`).
    post-gate codes `z` (fp16, chunked `codes_*.pt`), the token `sequences.pt` (for
    context windows), per-dim running `stats.pt`, learned `theta.pt`, and `meta.json`.
    `sequences.pt` makes the harvest *context-preserving*: global flat position `i` maps to
-   `sequences[i // seq_len, i % seq_len]`.
+   `sequences[i // seq_len, i % seq_len]`. Also stores `module_frac.pt` (per-position
+   per-module fraction of CI-active components) for the module overlay; with `--components`
+   it additionally stores `active_components.pt` (COO of position/global-component-id) +
+   `component_names.json` for the component overlay.
 2. **`geometry`** — support structure, intrinsic dimension (TwoNN + Levina–Bickel MLE),
    PCA variance curve. Owns `load_codes` (the chunk loader the rest import). Headline
    metric: intrinsic dim vs active-L0 vs linear-PCA dim (curvature signature).
@@ -30,6 +33,26 @@ convention (caller-specified `--out`).
 6. **`viewer_codes` / `viewer_dims`** — 3D PCA + grand-tour viewers (HTML) over code
    vectors (positions) / code dims respectively; `viewer_3d` is the ported sp-viz
    renderer + template. `--umap` adds a 3D UMAP basis flippable against PCA in the UI.
+
+## Viewer interactions (`viewer_codes` → `viewer_3d`)
+
+`viewer_codes` samples whole sequences (`--n_sequences`) so a sequence's positions stay
+contiguous, and emits these beyond the base point cloud:
+
+- **click-to-pivot** — click a point to lock the orbit pivot on it (click empty to clear).
+- **sequence sidebar** — clicking a point shows its whole sequence's tokens (clicked
+  position highlighted), from `data["seq"]` (per-point `seq_id`/`pos` + decoded tokens).
+- **flow lines** — checkbox draws a polyline through the selected sequence's positions.
+- **rim overlays** — the thumbnail rim is fed by a selectable source (`data["overlays"]`):
+  - `cluster` (default) — per-point k-means region colour.
+  - `module` — *scored* overlay: per-point per-module CI-active fraction + a threshold
+    slider (plain on/off saturates, so threshold the degree of engagement; ~0.01 works).
+  - `component` — *picker* overlay (only with a `--components` harvest): search a component
+    by name, rim the points where it is causally important. Inverted index is built at
+    build time onto the sampled points.
+
+Overlay kinds in the payload: `items`+`point_items` (set membership), `items`+`point_scores`
++`default_threshold` (scored, slider), or `kind:"picker"`+`index`+`names` (search-select).
 
 ## Shared helpers — `harvest_io.py`
 
