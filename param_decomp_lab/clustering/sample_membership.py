@@ -2,7 +2,6 @@ from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
-import torch
 from numba import njit
 from scipy import sparse
 
@@ -342,7 +341,7 @@ def compute_coactivation_matrix_from_csr(
     """Compute the full coactivation matrix from a sample-by-component CSR matrix."""
     activation_matrix = component_activity_csr.astype(np.int32, copy=False)
     coact = (activation_matrix.T @ activation_matrix).toarray()
-    return torch.from_numpy(coact.astype(np.float32, copy=False))
+    return coact.astype(np.float32, copy=False)
 
 
 def compute_coactivation_matrix(
@@ -356,7 +355,7 @@ def compute_coactivation_matrix(
     """
     n_groups = len(memberships)
     if n_groups == 0:
-        return torch.empty((0, 0), dtype=torch.float32)
+        return np.empty((0, 0), dtype=np.float32)
 
     n_samples = memberships[0].n_samples
     assert all(membership.n_samples == n_samples for membership in memberships), (

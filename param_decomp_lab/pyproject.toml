@@ -36,8 +36,6 @@ pd-jax-lm = "param_decomp_lab.experiments.lm.jax_launch:cli"
 pd-offline-eval = "param_decomp_lab.experiments.lm.offline_eval:cli"
 pd-pretrain = "param_decomp_lab.experiments.lm.pretrain.cli:cli"
 # Post-processing pipeline CLIs (SLURM-driven; lab subtrees).
-pd-clustering = "param_decomp_lab.clustering.scripts.run_pipeline:cli"
-pd-cluster-harvest = "param_decomp_lab.clustering.scripts.run_harvest:cli"
 pd-cluster-merge = "param_decomp_lab.clustering.scripts.run_merge:cli"
 pd-harvest = "param_decomp_lab.harvest.scripts.run_slurm_cli:cli"
 pd-intruder = "param_decomp_lab.harvest.scripts.run_intruder_slurm_cli:cli"
@@ -64,7 +62,6 @@ packages = [
     "param_decomp_lab.autointerp.strategies",
     "param_decomp_lab.clustering",
     "param_decomp_lab.clustering.math",
-    "param_decomp_lab.clustering.plotting",
     "param_decomp_lab.clustering.scripts",
     "param_decomp_lab.eval_metrics",
     "param_decomp_lab.experiments",
@@ -91,8 +88,6 @@ param_decomp_lab = "."
 [tool.setuptools.package-data]
 param_decomp_lab = [
     "app/frontend/**/*",
-    "clustering/configs/**/*.json",
-    "clustering/configs/**/*.yaml",
     "experiments/**/*.yaml",
     "postprocess/*.yaml",
     "experiments/lm/pretrain/configs/*.yaml",

@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any, override
 
 import numpy as np
-import torch
 from jaxtyping import Float, Int
 
 from param_decomp_lab.clustering.math.merge_distances import compute_distances
@@ -73,7 +72,7 @@ class MergeHistory(SaveableObject):
         return MergeHistory(
             labels=labels,
             n_iters_current=0,
-            selected_pairs=np.full((n_iters_target, 2), -1, dtype=np.int16),
+            selected_pairs=np.full((n_iters_target, 2), -1, dtype=np.int32),
             merges=BatchedGroupMerge.init_empty(
                 batch_size=n_iters_target, n_components=n_components
             ),
@@ -107,7 +106,7 @@ class MergeHistory(SaveableObject):
         current_merge: GroupMerge,
     ) -> None:
         """Add data for one iteration."""
-        self.selected_pairs[idx] = np.array(selected_pair, dtype=np.int16)
+        self.selected_pairs[idx] = np.array(selected_pair, dtype=np.int32)
         self.merges[idx] = current_merge
 
         assert self.n_iters_current == idx
@@ -152,7 +151,7 @@ class MergeHistory(SaveableObject):
             f"Invalid iteration: {iteration = }, {self.n_iters_current = }"
         )
         merge: GroupMerge = self.merges[iteration]
-        return torch.unique(merge.group_idxs).tolist()
+        return np.unique(merge.group_idxs).tolist()
 
     def get_cluster_component_labels(self, iteration: int, cluster_id: int) -> ComponentLabels:
         """Get component labels for a specific cluster at a given iteration.
@@ -203,14 +202,14 @@ class MergeHistory(SaveableObject):
         """Final number of groups after merging."""
         if self.n_iters_current == 0:
             return self.c_components
-        return int(self.merges.k_groups[self.n_iters_current - 1].item())
+        return int(self.merges.k_groups[self.n_iters_current - 1])
 
     @property
     def initial_k_groups(self) -> int:
         """Initial number of groups before merging."""
         if self.n_iters_current == 0:
             return self.c_components
-        return int(self.merges.k_groups[0].item())
+        return int(self.merges.k_groups[0])
 
     @override
     def save(self, path: Path) -> None:
@@ -220,8 +219,8 @@ class MergeHistory(SaveableObject):
             _zip_save_arr_dict(
                 zf=zf,
                 data={
-                    "merge.group_idxs": self.merges.group_idxs.cpu().numpy(),
-                    "merge.k_groups": self.merges.k_groups.cpu().numpy(),
+                    "merge.group_idxs": self.merges.group_idxs,
+                    "merge.k_groups": self.merges.k_groups,
                     "selected_pairs": self.selected_pairs,
                 },
             )
@@ -249,8 +248,8 @@ class MergeHistory(SaveableObject):
             k_groups: np.ndarray = np.load(io.BytesIO(zf.read("merge.k_groups.npy")))
             selected_pairs: np.ndarray = np.load(io.BytesIO(zf.read("selected_pairs.npy")))
             merges: BatchedGroupMerge = BatchedGroupMerge(
-                group_idxs=torch.from_numpy(group_idxs),
-                k_groups=torch.from_numpy(k_groups),
+                group_idxs=group_idxs,
+                k_groups=k_groups,
             )
             labels_raw: list[str] = zf.read("labels.txt").decode("utf-8").splitlines()
             labels: ComponentLabels = ComponentLabels(labels_raw)
@@ -338,9 +337,7 @@ class MergeHistoryEnsemble:
         output: MergesArray = np.full(
             (n_ens, n_iters, c_components),
             fill_value=-1,
-            dtype=np.int16,
-            # if you have more than 32k components, change this to np.int32
-            # if you have more than 2.1b components, rethink your life choices
+            dtype=np.int32,
         )
         for i_ens, history in enumerate(self.data):
             for i_iter, merge in enumerate(history.merges):
@@ -372,7 +369,7 @@ class MergeHistoryEnsemble:
             merges_array: MergesArray = np.full(
                 (self.n_ensemble, self.n_iters_min, c_components),
                 fill_value=-1,
-                dtype=np.int16,
+                dtype=np.int32,
             )
         except Exception as e:
             err_msg = (
@@ -417,7 +414,7 @@ class MergeHistoryEnsemble:
                 merges_array[i_ens, :, i_comp_new_relabel] = np.full(
                     self.n_iters_min,
                     fill_value=idx_missing + hist_n_components,
-                    dtype=np.int16,
+                    dtype=np.int32,
                 )
 
         # TODO: double check this

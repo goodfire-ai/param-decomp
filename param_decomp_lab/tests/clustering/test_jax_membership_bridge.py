@@ -1,10 +1,9 @@
 """The JAX clustering bridge turns per-site lower-leaky CI `(B, T, C)` into the
-`(samples, C)` torch dict `MembershipBuilder` consumes, sampling token positions the
-same way the torch `collect_memberships` path does (`flatten_lm_activations`)."""
+`(samples, C)` numpy dict `MembershipBuilder` consumes, sampling token positions
+via `flatten_lm_activations`."""
 
 import jax.numpy as jnp
 import numpy as np
-import torch
 
 from param_decomp_lab.clustering.memberships import flatten_lm_activations
 from param_decomp_lab.clustering.scripts.run_worker_jax import sampled_ci_from_forward
@@ -19,14 +18,14 @@ def test_sampled_ci_all_positions_matches_flatten() -> None:
         {site: jnp.asarray(ci)},
         n_tokens_per_seq=None,
         use_all_tokens_per_seq=True,
-        rng=torch.Generator().manual_seed(0),
+        rng=np.random.default_rng(0),
     )
 
     assert sampled[site].shape == (2 * 5, 3)
-    assert torch.allclose(sampled[site], torch.from_numpy(ci).reshape(2 * 5, 3))
+    np.testing.assert_allclose(sampled[site], ci.reshape(2 * 5, 3))
 
 
-def test_sampled_ci_random_positions_matches_torch_path_under_same_rng() -> None:
+def test_sampled_ci_random_positions_matches_flatten_under_same_rng() -> None:
     rng = np.random.default_rng(1)
     ci = rng.uniform(0.0, 1.0, size=(4, 7, 6)).astype(np.float32)
     site = "h.0.mlp.c_fc"
@@ -35,17 +34,17 @@ def test_sampled_ci_random_positions_matches_torch_path_under_same_rng() -> None
         {site: jnp.asarray(ci)},
         n_tokens_per_seq=3,
         use_all_tokens_per_seq=False,
-        rng=torch.Generator().manual_seed(123),
+        rng=np.random.default_rng(123),
     )
 
     expected = flatten_lm_activations(
-        torch.from_numpy(ci),
+        ci,
         batch_size=4,
         n_ctx=7,
         n_tokens_per_seq=3,
         use_all_tokens_per_seq=False,
-        rng=torch.Generator().manual_seed(123),
+        rng=np.random.default_rng(123),
     )
 
     assert sampled[site].shape == (4 * 3, 6)
-    assert torch.allclose(sampled[site], expected)
+    np.testing.assert_allclose(sampled[site], expected)

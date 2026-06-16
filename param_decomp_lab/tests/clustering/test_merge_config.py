@@ -1,9 +1,16 @@
 """Tests for MergeConfig with new sampling system."""
 
+import numpy as np
 import pytest
-import torch
 
 from param_decomp_lab.clustering.merge_config import MergeConfig
+
+
+def _symmetric_costs(k: int) -> np.ndarray:
+    costs = np.random.randn(k, k).astype(np.float32)
+    costs = (costs + costs.T) / 2
+    np.fill_diagonal(costs, np.inf)
+    return costs
 
 
 class TestMergeConfigSampling:
@@ -27,10 +34,7 @@ class TestMergeConfigSampling:
         assert config.merge_pair_sampling_kwargs == {"threshold": 0.1}
 
         # Test that sampler works
-        k = 4
-        costs = torch.randn(k, k)
-        costs = (costs + costs.T) / 2
-        costs.fill_diagonal_(float("inf"))
+        costs = _symmetric_costs(4)
 
         pair = config.merge_pair_sample(costs)
 
@@ -48,10 +52,7 @@ class TestMergeConfigSampling:
         assert config.merge_pair_sampling_kwargs == {"temperature": 2.0}
 
         # Test that sampler works
-        k = 4
-        costs = torch.randn(k, k)
-        costs = (costs + costs.T) / 2
-        costs.fill_diagonal_(float("inf"))
+        costs = _symmetric_costs(4)
 
         pair = config.merge_pair_sample(costs)
 
@@ -145,10 +146,7 @@ class TestMergeConfigSampling:
         config = MergeConfig(merge_pair_sampling_method="range", merge_pair_sampling_kwargs={})
 
         # Should work with default parameters of the sampler
-        k = 3
-        costs = torch.randn(k, k)
-        costs = (costs + costs.T) / 2
-        costs.fill_diagonal_(float("inf"))
+        costs = _symmetric_costs(3)
 
         # Range sampler has default threshold=0.05
         pair = config.merge_pair_sample(costs)
@@ -162,10 +160,7 @@ class TestMergeConfigSampling:
             merge_pair_sampling_method="range", merge_pair_sampling_kwargs={"threshold": 0.3}
         )
 
-        k = 3
-        costs = torch.randn(k, k)
-        costs = (costs + costs.T) / 2
-        costs.fill_diagonal_(float("inf"))
+        costs = _symmetric_costs(3)
 
         # Should work with config's method
         pair = config.merge_pair_sample(costs)

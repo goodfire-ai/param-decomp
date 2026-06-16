@@ -219,9 +219,7 @@ Training is now `jsp-train` (JAX), submitted via `pd-jax-lm`.
 | `pd-harvest` | `harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
 | `pd-autointerp` | `autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
 | `pd-postprocess` | `postprocess/cli.py` | Unified postprocessing pipeline |
-| `pd-clustering` | `clustering/scripts/run_pipeline.py` | Clustering ensemble pipeline |
-| `pd-cluster-harvest` | `clustering/scripts/run_harvest.py` | Harvest activations → membership snapshot |
-| `pd-cluster-merge` | `clustering/scripts/run_merge.py` | Merge from snapshot (CPU only) |
+| `pd-cluster-merge` | `clustering/scripts/run_merge.py` | Merge from a membership snapshot (CPU only) |
 | `pd-intruder` | `harvest/scripts/run_intruder_slurm_cli.py` | Submit intruder eval job |
 | `pd-investigate` | `investigate/scripts/run_slurm_cli.py` | Submit agent-investigation job |
 

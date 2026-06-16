@@ -6,13 +6,13 @@ component model, no `jsp-export` safetensors bridge.
 
 The run is opened with `jax_single_pool.load_run.open_jax_run` (the reusable JAX
 "open a run for consumption" pattern); the lower-leaky CI from its frozen forward is
-sampled per token position and streamed — as the SAME torch-tensor dict the torch
-`collect_memberships` builds — into the SAME `MembershipBuilder`, producing the SAME
-`ProcessedMemberships` snapshot `pd-cluster-merge` consumes unchanged.
+sampled per token position and streamed — as a numpy-array dict — into the
+`MembershipBuilder`, producing the `ProcessedMemberships` snapshot `pd-cluster-merge`
+consumes unchanged.
 
-The JAX forward runs in jax (CPU or one GPU); the `MembershipBuilder` accumulator stays
-torch. This worker imports both — the only place the two stacks meet. Pre-tokenized
-parquet is read with the trainer's own `ShardServer` (never streamed from HF).
+The JAX forward runs in jax (CPU or one GPU); the `MembershipBuilder` accumulator is
+numpy. Pre-tokenized parquet is read with the trainer's own `ShardServer` (never streamed
+from HF).
 """
 
 import argparse
@@ -20,7 +20,6 @@ from pathlib import Path
 
 import jax.numpy as jnp
 import numpy as np
-import torch
 from jax_single_pool.data import BatchSchedule, ShardServer, scan_shards
 from jax_single_pool.load_run import LoadedJaxRun, open_jax_run
 
@@ -30,21 +29,16 @@ from param_decomp_lab.clustering.memberships import MembershipBuilder, flatten_l
 from param_decomp_lab.clustering.paths import clustering_harvest_dir, new_harvest_id
 
 
-def _to_torch(array: object) -> torch.Tensor:
-    """Host a JAX/numpy array as a CPU torch tensor."""
-    return torch.from_numpy(np.array(np.asarray(array)))
-
-
 def sampled_ci_from_forward(
     lower_leaky_ci: dict[str, jnp.ndarray],
     *,
     n_tokens_per_seq: int | None,
     use_all_tokens_per_seq: bool,
-    rng: torch.Generator,
-) -> dict[str, torch.Tensor]:
+    rng: np.random.Generator,
+) -> dict[str, np.ndarray]:
     """Per-site lower-leaky CI `(B, T, C)` -> `(samples, C)`, sampling token positions
-    the same way the torch `collect_memberships` path does (`flatten_lm_activations`)."""
-    site_ci = {site: _to_torch(ci) for site, ci in lower_leaky_ci.items()}
+    via `flatten_lm_activations`."""
+    site_ci = {site: np.asarray(ci) for site, ci in lower_leaky_ci.items()}
     batch_size, n_ctx, _ = next(iter(site_ci.values())).shape
     return {
         site: flatten_lm_activations(
@@ -68,7 +62,7 @@ def harvest_jax_run(run: LoadedJaxRun, config: HarvestConfig, output_dir: Path) 
     schedule = BatchSchedule(scan_shards(data.dir), config.batch_size, config.dataset_seed)
     server = ShardServer(schedule, data.seq_len, process_index=0, process_count=1)
 
-    rng = torch.Generator().manual_seed(config.dataset_seed)
+    rng = np.random.default_rng(config.dataset_seed)
     builder = MembershipBuilder(
         activation_threshold=config.activation_threshold,
         filter_dead_threshold=config.filter_dead_threshold,

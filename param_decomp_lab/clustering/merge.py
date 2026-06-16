@@ -1,16 +1,11 @@
-"""
-Merge iteration with logging support.
-
-This wraps the pure merge_iteration_pure() function and adds WandB/plotting callbacks.
-"""
+"""Merge iteration with optional logging callback."""
 
 import time
 import warnings
 from typing import Protocol
 
-import torch
+import numpy as np
 from jaxtyping import Float
-from torch import Tensor
 from tqdm import tqdm
 
 from param_decomp.log import logger
@@ -34,24 +29,6 @@ from param_decomp_lab.clustering.types import (
 )
 
 
-def _choose_coact_device(coact: ClusterCoactivationShaped) -> torch.device:
-    """Prefer GPU for dense cost-matrix math when enough memory is available."""
-    if not torch.cuda.is_available():
-        return coact.device
-
-    if coact.device.type == "cuda":
-        return coact.device
-
-    free_bytes, _ = torch.cuda.mem_get_info()
-    coact_bytes = coact.numel() * coact.element_size()
-    # Current coact, a temporary clone during recompute, and the costs tensor dominate.
-    required_bytes = coact_bytes * 3 + 512 * 1024**2
-    if free_bytes >= required_bytes:
-        return torch.device("cuda")
-
-    return coact.device
-
-
 class LogCallback(Protocol):
     def __call__(
         self,
@@ -65,7 +42,7 @@ class LogCallback(Protocol):
         merge_pair_cost: float,
         mdl_loss: float,
         mdl_loss_norm: float,
-        diag_acts: Float[Tensor, " k_groups"],
+        diag_acts: Float[np.ndarray, " k_groups"],
     ) -> None: ...
 
 
@@ -98,16 +75,6 @@ def merge_iteration_memberships(
         f"{time.perf_counter() - coact_start:.2f}s "
         f"(shape={tuple(current_coact.shape)})"
     )
-    coact_device = _choose_coact_device(current_coact)
-    if coact_device != current_coact.device:
-        transfer_start = time.perf_counter()
-        current_coact = current_coact.to(device=coact_device)
-        logger.info(
-            "Moved compressed coactivation matrix to "
-            f"{coact_device} in {time.perf_counter() - transfer_start:.2f}s"
-        )
-    else:
-        logger.info(f"Keeping compressed coactivation matrix on {current_coact.device}")
 
     c_components: int = current_coact.shape[0]
     assert current_coact.shape[1] == c_components, "Coactivation matrix must be square"
@@ -122,11 +89,7 @@ def merge_iteration_memberships(
         labels=component_labels,
     )
 
-    pbar: tqdm[int] = tqdm(
-        range(num_iters),
-        unit="iter",
-        total=num_iters,
-    )
+    pbar: tqdm[int] = tqdm(range(num_iters), unit="iter", total=num_iters)
     merge_start = time.perf_counter()
     log_every = min(10, num_iters)
     for iter_idx in pbar:
@@ -152,14 +115,14 @@ def merge_iteration_memberships(
             current_merge=current_merge,
         )
 
-        diag_acts: Float[Tensor, " k_groups"] = torch.diag(current_coact)
+        diag_acts: Float[np.ndarray, " k_groups"] = np.diag(current_coact)
         mdl_loss: float = compute_mdl_cost(
             acts=diag_acts,
             merges=current_merge,
             alpha=merge_config.alpha,
         )
         mdl_loss_norm: float = mdl_loss / n_samples
-        merge_pair_cost: float = float(costs[merge_pair].item())
+        merge_pair_cost: float = float(costs[merge_pair])
 
         pbar.set_description(f"k={k_groups}, mdl={mdl_loss_norm:.4f}, pair={merge_pair_cost:.4f}")
 
