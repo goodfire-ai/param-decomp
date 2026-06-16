@@ -253,7 +253,7 @@ init: biases zero; weights fan-in scaled (torch init_param_)
 | `SCOPE` | persistent: `c (1,1)` · `sc (1,T)` · `nsc (n,T), n|B` · `bsc (B,T)` (jax: `sc` only today) — fresh-PGD: `c` · `bc` · `bsc` | ★ sc |
 | stoch sampling | `continuous U[0,1]` · `binomial {0,1}` | ★ continuous |
 | delta component | on (`C+1` channels) · off (no delta path, no delta mask) | ★ on |
-| CI squashing | `leaky_hard` pair (§4.2); other registry sigmoids exist in torch but are out of spec scope | ★ leaky_hard |
+| CI squashing | `leaky_hard` asymmetric pair (§4.2) · `normal` · `hard` · `upper_leaky_hard` · `swish_hard` (each uses one fn for both lower/upper views, matching torch `ComponentModel`); selected by `pd.sigmoid_type` | ★ leaky_hard |
 
 A variant choice must hold every invariant not explicitly parameterized by it.
 

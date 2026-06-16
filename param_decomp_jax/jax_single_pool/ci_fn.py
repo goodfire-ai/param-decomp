@@ -11,7 +11,9 @@ The SAME logits are squashed two ways (SPEC S5/S6): `lower_leaky_hard` feeds the
 (SPEC N1); the trainer casts for bf16 compute.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 import equinox as eqx
 import jax
@@ -53,6 +55,69 @@ def upper_leaky_hard_sigmoid(x: Float[Array, "..."]) -> Float[Array, "..."]:
     (torch builds its backward the same way; only the lower squashing is a custom VJP)."""
     alpha = 0.01
     return jnp.where(x > 1, 1 + alpha * (x - 1), jnp.clip(x, 0.0, 1.0))
+
+
+def normal_sigmoid(x: Array) -> Array:
+    return jax.nn.sigmoid(x)
+
+
+def hard_sigmoid(x: Array) -> Array:
+    """`clamp(x, 0, 1)` — zero gradient outside `[0, 1]` (autodiff of the clip)."""
+    return jnp.clip(x, 0.0, 1.0)
+
+
+def leaky_hard_sigmoid(x: Array) -> Array:
+    """`alpha*x` for `x<=0`, `clamp(x, max=1)` otherwise — leaks on the lower side only
+    (mirrors torch `leaky_hard_sigmoid`; ordinary autodiff matches torch's backward)."""
+    alpha = 0.01
+    return jnp.where(x > 0, jnp.minimum(x, 1.0), alpha * x)
+
+
+def _swish(x: Array, beta: float) -> Array:
+    return x * jax.nn.sigmoid(beta * x)
+
+
+def _upside_down_swish(x: Array, beta: float) -> Array:
+    return x * jax.nn.sigmoid(-beta * x)
+
+
+def swish_hard_sigmoid(x: Array) -> Array:
+    """Smooth sigmoid built from Swish bumps at each boundary (mirrors torch
+    `swish_hard_sigmoid` defaults: beta=10, scale=0.5, xshift=0.5, yshift=0.5)."""
+    beta, scale, xshift, yshift = 10.0, 0.5, 0.5, 0.5
+    x = x - xshift
+    return (
+        yshift
+        + (_upside_down_swish(x - scale, beta) - _swish(x, beta))
+        + (_swish(x + scale, beta) - _upside_down_swish(x, beta))
+    )
+
+
+SigmoidType = Literal["normal", "hard", "leaky_hard", "upper_leaky_hard", "swish_hard"]
+"""The torch `pd.sigmoid_type` literals."""
+
+_SIGMOID_FNS: dict[str, Callable[[Array], Array]] = {
+    "normal": normal_sigmoid,
+    "hard": hard_sigmoid,
+    "leaky_hard": leaky_hard_sigmoid,
+    "upper_leaky_hard": upper_leaky_hard_sigmoid,
+    "lower_leaky_hard": lower_leaky_hard_sigmoid,
+    "swish_hard": swish_hard_sigmoid,
+}
+
+
+def squashing_fns(
+    sigmoid_type: SigmoidType,
+) -> tuple[Callable[[Array], Array], Callable[[Array], Array]]:
+    """The (lower, upper) squashings the CI fn applies to its raw logits, selected by
+    `sigmoid_type` exactly as torch `ComponentModel` does: `leaky_hard` is the asymmetric
+    production pair (custom-VJP lower-leak feeds recon/PPGD masks, upper-leak feeds
+    importance-minimality); every other type uses ONE function for both views (SPEC S5/S6;
+    torch component_model.py:180-186)."""
+    if sigmoid_type == "leaky_hard":
+        return _SIGMOID_FNS["lower_leaky_hard"], _SIGMOID_FNS["upper_leaky_hard"]
+    fn = _SIGMOID_FNS[sigmoid_type]
+    return fn, fn
 
 
 def _weightless_rms_norm(x: Array, eps: float) -> Array:
@@ -103,6 +168,7 @@ class CIFn(eqx.Module):
     site_names: tuple[str, ...] = eqx.field(static=True)
     split_sizes: tuple[int, ...] = eqx.field(static=True)
     eps: float = eqx.field(static=True)
+    sigmoid_type: SigmoidType = eqx.field(static=True)
 
     def __call__(self, site_inputs: dict[str, Array]) -> CIValues:
         """`site_inputs`: clean per-site inputs, keyed by site name (canonical order is
@@ -116,8 +182,9 @@ class CIFn(eqx.Module):
         for block in self.blocks:
             x = block(x, inv_freq)
         logits = x @ self.out_w + self.out_b  # (b, t, Σ_s C_s)
-        lower = lower_leaky_hard_sigmoid(logits)
-        upper = upper_leaky_hard_sigmoid(logits)
+        lower_fn, upper_fn = squashing_fns(self.sigmoid_type)
+        lower = lower_fn(logits)
+        upper = upper_fn(logits)
 
         offsets = [0]
         for c in self.split_sizes:
@@ -137,6 +204,7 @@ class CIArch:
     n_blocks: int
     n_heads: int
     mlp_hidden: int
+    sigmoid_type: SigmoidType = "leaky_hard"
 
 
 def init_ci_fn(arch: CIArch, sites: tuple[SiteSpec, ...], key: PRNGKeyArray) -> CIFn:
@@ -184,4 +252,5 @@ def init_ci_fn(arch: CIArch, sites: tuple[SiteSpec, ...], key: PRNGKeyArray) -> 
         site_names=tuple(s.name for s in sites),
         split_sizes=tuple(s.C for s in sites),
         eps=1e-5,
+        sigmoid_type=arch.sigmoid_type,
     )

@@ -142,6 +142,7 @@ def _ci_arch(cfg: LMExperimentConfig, seq_len: int) -> CIArch:
         n_blocks=transformer.n_blocks,
         n_heads=transformer.attn_config.n_heads,
         mlp_hidden=transformer.mlp_hidden_dim[0],
+        sigmoid_type=cfg.pd.sigmoid_type,
     )
 
 
@@ -229,7 +230,6 @@ def convert_torch_lm_config(
 ) -> ExperimentConfig:
     target = _resolve_target(torch_cfg)
 
-    assert torch_cfg.pd.sigmoid_type == "leaky_hard", torch_cfg.pd.sigmoid_type
     assert torch_cfg.pd.use_delta_component and torch_cfg.pd.tied_weights is None
     assert torch_cfg.runtime.autocast_bf16, "JAX trainer computes in bf16 (autocast analog)"
     assert torch_cfg.pd.faithfulness_warmup_weight_decay == 0.0

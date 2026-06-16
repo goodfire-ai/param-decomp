@@ -184,6 +184,23 @@ def test_arbitrary_sites_with_per_site_c_convert():
     )
 
 
+def test_sigmoid_type_threads_into_ci_arch():
+    """A non-production `sigmoid_type` now converts (no longer refused) and flows to the
+    JAX CI fn arch verbatim."""
+    torch_cfg, raw = _reference_torch_cfg()
+    swish = dict(raw, pd=dict(raw["pd"], sigmoid_type="swish_hard"))
+    cfg = convert_torch_lm_config(
+        type(torch_cfg)(**swish), run_name="t", run_id=RUN_ID, out_dir=Path("/tmp"),
+        remat_recon_forwards=True,
+    )  # fmt: skip
+    assert cfg.ci_fn.sigmoid_type == "swish_hard"
+
+    default = convert_torch_lm_config(
+        torch_cfg, run_name="t", run_id=RUN_ID, out_dir=Path("/tmp"), remat_recon_forwards=True
+    )
+    assert default.ci_fn.sigmoid_type == "leaky_hard"
+
+
 def test_c49k_yaml_converts_with_documented_divergences(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
