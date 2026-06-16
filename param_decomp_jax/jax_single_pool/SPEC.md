@@ -1,10 +1,13 @@
 # Single-pool VPD — semantics spec
 
 Pins the **meaning** of the single-pool VPD training step. An implementation (torch,
-JAX, anything) is correct iff it satisfies this document. Ground truth: the stable
-torch impl in `goodfire-ai/param-decomp` @ `feature/fsdp-lm-trainer`; production
-constants from the production 2-pool yaml (`llama8b_l18_b512_2pool_lr_mid.yaml`, n-pool lineage)
-(extended 1 → N decomposed layers). Torch file pointers live in §9 (non-normative).
+JAX, anything) is correct iff it satisfies this document. Ground truth: the on-branch
+single-pool torch core in `goodfire-ai/param-decomp` @ `feature/jax` (`param_decomp/`),
+file pointers in §9 (non-normative). The runnable torch Metric for the production
+*stochastic* recon term (`ChunkwiseSubsetReconLoss`) lives off-branch on the
+`feature/fsdp-lm-trainer` n-pool lineage — the parity fixtures pin it; there is no
+on-branch Metric counterpart (see §9). Production constants are from the production yaml
+(`llama8b_l18_b512_2pool_lr_mid.yaml`, n-pool lineage), extended 1 → N decomposed layers.
 
 **How to read.** Normative content is: the pseudocode (§4), the invariants (§5–§8),
 and the tables (§2, §3, §6). Prose between them is orientation only. Notation:
@@ -205,6 +208,7 @@ in:   {site: x_s [B,T,d_in_s]}  (clean site inputs, fixed site order)
 3.    × n_blocks (pre-norm):
         h += attn(rms_norm_weightless(h))      # bidirectional MHA, rotate-half RoPE
                                                # base 10000; q/k/v/out bias-FREE
+                                               # RoPE inv_freq is a stop-gradient buffer (S27)
         h += mlp(rms_norm_weightless(h))       # Linear(d→16384)+b → GELU → Linear(→d)+b
 4.    logits = h @ W_out + b_out               # → [B,T, Σ_s C_s], split per site in order
 init: biases zero; weights fan-in scaled (torch init_param_)
@@ -218,17 +222,17 @@ init: biases zero; weights fan-in scaled (torch init_param_)
 |---|---|
 | S1 | `mask = ci + (1−ci)·source` per component channel; the delta channel is the raw source value, never ci-interpolated; CI has no delta output. |
 | S2 | A site not live in a forward runs the frozen `x @ W_s` path — zero V/U gradient, zero decomposition rounding, and none of the live path's ~9× compute or `(B,T,C)` activations. |
-| S3 | The recon target `clean_logits` is the frozen-path forward, stop-gradient. Never the `mask=1, delta=1` decomposed identity (differs in bf16 and pollutes the graph). |
+| S3 | The recon target `clean_logits` is the frozen-path forward, stop-gradient. Never the `mask=1, delta=1` decomposed identity (differs in bf16 and pollutes the graph). Under residual-start (S18), `clean_logits` is the SUFFIX-only clean forward over the harvested residual (`clean_suffix_logits`); this equals the whole-model frozen forward because the frozen prefix is stop-gradient'd and runs once outside the graph — the two forms are identical under sg of the frozen prefix. The on-branch torch single-pool reference computes the whole-model frozen forward; JAX computes the suffix-only form; they agree by this equivalence. |
 | S4 | CI inputs are the clean site inputs from the frozen path of the same batch. |
 | S5 | `ci_lower` and `ci_upper` are two squashings of the SAME logits. `ci_lower` feeds every mask; `ci_upper` feeds imp-min only; no other crossing. |
 | S6 | The squashings' forward/backward are exactly §4.2 — including `lower_leaky_hard`'s grad-sign-gated lower leak (a custom VJP, not autodiff of the forward). |
 | S7 | Imp-min groups per site: the `log2(1+sum)` consumes one site's per-component sum. Merging sites/layers into one group is incorrect (convexity). |
 | S8 | The per-component sums are over the **global batch**, accumulated before the `log2`. (Per-shard results combined after the log are incorrect — Jensen; see D2.) |
-| S9 | `pnorm(step)` anneals linearly `2.0 → 0.4` over the configured frac window; `eps` sits inside the power. |
-| S10′ | The recon objective is a static tuple of coefficiented loss TERMS (one per configured recon loss metric, in config order). Each term is a static plan of `(live_sites, SAMPLE_ROUTING, MASK_SOURCE)` entries; the term's loss = mean over ALL its forwards (every draw of every entry) of `kl_per_position`; the total adds `coeff · term` per term. Plan structures (live-sets, sampler identities, family sizes, strategy kinds) are fixed across steps. The §4 pseudocode shows the production two-term instantiation (`stochastic_recon_loss` + `adversarial_recon_loss`). |
+| S9 | `pnorm(step)` anneals linearly `2.0 → 0.4` over the configured frac window; `eps` sits inside the power. **JAX narrowing:** annealing is REQUIRED — `annealed_pnorm` asserts `cfg.p_anneal_final_p is not None` (`losses.py:53`) and `train.py:122` asserts it too. Torch supports a constant-p config (`importance_minimality.py:16-37` returns `initial_p` when no annealing window). Constant-p in JAX is expressed by setting `p_anneal_final_p == pnorm` (a flat schedule); any other torch constant-p config is REFUSED (fail-fast assert), never silently approximated. |
+| S10′ | The recon objective is a static tuple of coefficiented loss TERMS (one per configured recon loss metric, in config order). Each term is a static plan of `(live_sites, SAMPLE_ROUTING, MASK_SOURCE)` entries; the term's loss = mean over ALL its forwards (every draw of every entry) of `kl_per_position`; the total adds `coeff · term` per term. Plan structures (live-sets, sampler identities, family sizes, strategy kinds) are fixed across steps. The §4 pseudocode shows the production two-term instantiation (`stochastic_recon_loss` + `adversarial_recon_loss`). Recon KL direction is pinned by S25; the mean-over-forwards ≡ accumulator identity by S26. |
 | S11 | `uniform_k_routing`, per position: `k ~ U{1..|live_sites|}` then a uniform `k`-subset of the live sites routes True; non-live sites are not live at all. Routing draws are fresh per step, sampled inside the step. |
 | S12′ | An adversarial term's loss forward consumes its sources as LEAVES (no ascent-graph history); gradient flows to components and (through `ci_lower`) to the CI fn — and, for persistent sources, to the leaves themselves (S14′). The PRODUCTION adversarial term masks ALL sites and routes everywhere; subset-routed adversarial terms route per their plan. |
-| S13′ | Per persistent term: source updates per training step = `n_warmup + 1`, all through THAT term's persistent SRC_STEP optimizer state; its source LR schedule advances once per training step. |
+| S13′ | Per persistent term: source updates per training step = `n_warmup + 1`, all through THAT term's persistent SRC_STEP optimizer state; its source LR schedule advances once per training step. **`warmup_pct==0` edge (accepted seam):** at `warmup_pct==0` torch short-circuits to full LR at step 0 (`warmup_steps=0`), while JAX clamps `warmup_steps = max(floor(...), 1)` → source LR `=0` at step 0 (`losses.py:61`, `train.py:265`). A one-step divergence, only when `warmup_pct==0`; production uses 2.5% warmup and is unaffected. Accepted, not matched. |
 | S14′ | Each persistent term's final ascent gradient comes from the SAME graph as the main backward (pre-update components, live `ci_lower`), unscaled by THAT term's coeff. It is applied after backward; it must not use post-update params. |
 | S15 | Every source update ends with `PROJ` (★ clamp to `[0,1]`). Init: ★ `sources ~ U[0,1]` i.i.d. |
 | S16 | Shared-scope sources are identical on every data-parallel replica at every step (identical init, identical updates from the global-batch gradient). `per_batch_per_position` sources shard with the batch instead. (Implementation mapping in §8/§9.) |
@@ -240,6 +244,12 @@ init: biases zero; weights fan-in scaled (torch init_param_)
 | S22 | Checkpoints round-trip ALL trajectory state of §3 — including every persistent term's sources + SRC_STEP moments + step/schedule counters — such that a resumed run continues the same trajectory (modulo RNG streams and kernel nondeterminism, cf. D4). |
 | S23 | A persistent source bundle feeds exactly ONE loss term. (The fused-backward S14′ unscaling divides that term's coeff out of the source gradient; a bundle shared across terms would make the division wrong.) |
 | S24 | A persistent term's WARMUP ascents forward all sites, routed everywhere — regardless of the term's loss plan (torch parity: `persistent_pgd_state.warmup` hardcodes route-all). A fresh-PGD entry draws its routing ONCE per step, shared by all its ascents and its main loss forward (torch parity: `pgd_masked_recon_loss_update`). |
+| S25 | Recon KL direction is `KL(softmax(clean_logits) ‖ softmax(masked_logits))` — `P = clean`, `Q = masked`. Equivalently `Σ p_clean · (log p_clean − log p_masked)`. Torch `recon_loss_kl` realizes this as `F.kl_div(log_softmax(pred=masked), softmax(target=clean), reduction='sum')` (`batch_and_loss_fns.py::recon_loss_kl`); reversing the arguments is a silent, plausible bug, so the direction is semantic, not incidental. |
+| S26 | Normalization identity: `(Σ_forwards sum_kl) / (Σ_forwards n_positions) == mean_forwards(sum_kl / n_positions)`, valid **iff** every forward shares the same `(B,T)` (so `n_positions` is constant across forwards). This precondition is what makes JAX's mean-over-forwards (S10′) equal torch's `(Σ sum_kl)/(Σ n_positions)` accumulator; uniform `(B,T)` across all forwards in a term is therefore required. (Stated in LOSS_PARITY_DESIGN §4e; cross-ref S10′.) |
+| S27 | The CI transformer's RoPE `inv_freq` (§4.6) is a non-trained buffer and MUST be stop-gradient'd in the CI fn. In JAX it is a pytree leaf and would otherwise be optax-updated, silently drifting the rotary frequencies; torch carries it as a registered buffer (no grad). Ref `ci_fn.py:115`. |
+| S28 | Eval splits across two processes (§10): a FAST scalar tier run in-loop on cadence `eval.every`, and a SLOW/plot tier delegated entirely to `pd-offline-eval` on exported checkpoints. The torch `slow_every` / `slow_on_first_step` cadence (`optimize.py`'s `EvalLoop`) has NO JAX in-loop analog — the slow tier is offline, keyed off the checkpoint-save cadence, by design. |
+| S29 | JAX `EvalConfig` carries `batch_size`, `every`, `n_steps` (+ `rounding_threshold`, `ci_alive_threshold`) and DELIBERATELY omits `slow_every` / `slow_on_first_step` (those have no in-loop tier — S28). `eval` is atomic-optional (`EvalConfig | None`): `None` disables in-loop eval. |
+| S30 | `cfg.cadence.log_every` divides `cfg.eval.every` (`eval.every % log_every == 0`, asserted at `run.py:255`) so every eval step is also a train-log step. |
 
 ## 6. Variation points
 
@@ -261,9 +271,9 @@ A variant choice must hold every invariant not explicitly parameterized by it.
 
 | id | rule |
 |---|---|
-| N1 | Components and CI-fn master params fp32; both AdamW moment sets fp32; SRC_STEP moments fp32. Forward compute may be bf16; the frozen target may be stored bf16. |
+| N1 | Components and CI-fn master params fp32; both AdamW moment sets fp32; SRC_STEP moments fp32. Forward compute may be bf16; the frozen target may be stored bf16. The persistent-source Adam (`SRC_STEP = adam`) places eps AFTER the sqrt, inside the denom: `denom = sqrt(v_hat) + eps` (not `sqrt(v_hat + eps)`) — a classic eps-before-vs-after-sqrt parity trap. Refs: torch `persistent_pgd_state.py:125` (`v_hat.sqrt().add_(eps)`), jax `adversary.py:113`. |
 | N2 | Faithfulness deltas `W − V@U` are computed in fp32 outside any autocast; the sum-of-squares is fp32. (The delta on the masked-forward PATH may be bf16-computed — a documented bf16-rounding divergence from torch, which forms it in fp32 and casts at use.) |
-| N3 | `kl_per_position` (softmaxes + KL sum) and the imp-min reduction are fp32. Loss scalars and gradient accumulation fp32. |
+| N3 | `kl_per_position` (softmaxes + KL sum) and the imp-min reduction are fp32. Loss scalars and gradient accumulation fp32. **imp-min cast point (accepted seam):** the *reduction* is fp32 on both sides, but the elementwise `(ci + eps)**p` intermediate differs — torch forms it as a bf16 intermediate (autocast leaves the pow in the input dtype) then sums in fp32 (`importance_minimality.py:49,146`; `train_step.py:142,225`), while JAX casts `ci → fp32` BEFORE the power (`losses.py:43,45`). This is a small per-component-sum rounding asymmetry on the imp-min input that the fp32-only equivalence fixture does not exercise; accepted as a seam because the fp32 masters dominate the trajectory. **eval cast point (accepted seam):** `CEandKLLosses` carries the SAME bf16-input asymmetry — torch computes the eval softmax under bf16 autocast (`param_decomp_lab/eval_metrics/ce_and_kl_losses.py:91-176`), JAX casts to fp32 before `log_softmax` (`eval.py:31-40,110-166`). Both seams are bf16-vs-fp32 input cast-point divergences, not direction/reduction divergences; the expected `kl_<v>` delta on a fixed batch is the bf16-rounding floor (rel ≪ 1e-2), accepted rather than bounded by a fixture (cf. E17). |
 | R1 | Every stochastic draw (mask sources, routing, source init) is independent across sites, positions, forwards, steps — distributions as stated. |
 | R2 | RNG stream order/bits need not match torch. |
 | R3 | Draws over a sharded batch are independent across ranks (distinct streams). |
@@ -284,17 +294,23 @@ is global-batch math. This section is the whole answer to "now shard it":
 
 ## 9. Non-normative: torch ground-truth pointers & rationale
 
-Pointers into the n-pool subsystems (`three_pool/`, `param_decomp_lab/metrics/`)
-refer to the `feature/fsdp-lm-trainer` lineage — those trees are not on this branch.
+All pointers below resolve to the on-branch single-pool torch core (`param_decomp/`) at
+`feature/jax`. The one exception is the production *stochastic* recon term: its runnable
+torch Metric `ChunkwiseSubsetReconLoss` lives off-branch on the `feature/fsdp-lm-trainer`
+n-pool lineage (`param_decomp_lab/metrics/chunkwise_subset_recon.py`) — there is no
+on-branch Metric counterpart, but the torch↔JAX parity fixtures (`tests/equivalence/`)
+pin its math (R-1). The KL primitive it composes (`recon_loss_kl`) and the recon-plan
+ancestry are on-branch (rows below).
 
 | spec | torch source |
 |---|---|
 | §4.1 site/forward, routing | `param_decomp/components.py` (`LinearComponents.forward`), `param_decomp/masks.py` |
 | §4.2 squashings | `param_decomp/ci_sigmoids.py` (`LowerLeakyHardSigmoidFunction`, `upper_leaky_hard_sigmoid`) |
-| §4.3 faith / imp / recon-plan / KL | `metrics/faithfulness.py:17` · `metrics/importance_minimality.py` · `param_decomp_lab/metrics/chunkwise_subset_recon.py:73` + `three_pool/step_chunkwise.py::recon_masked_forward` + `three_pool/recon_plan.py` (`PerSitePlan`/`SubsetReconPlan` = the RECON_PLAN ancestors) · `param_decomp_lab/batch_and_loss_fns.py::recon_loss_kl` |
-| §4.4–4.5 adversary, ordering | `metrics/persistent_pgd_state.py` (init/warmup/step/scopes/`reduce_source_grads`), `metrics/persistent_pgd_recon.py` (`before_backward`/`after_backward`), `param_decomp/train_step.py::run_loss_step` (hook order), `param_decomp/optimize.py:490` (clip → step) |
-| §4.5 warmup, schedules | `param_decomp/faithfulness_warmup.py`, `param_decomp/schedule.py::get_scheduled_value` |
-| §4.6 CI arch | `param_decomp/ci_fns.py::GlobalSharedTransformerCiFn` (`:289`), `param_decomp/ci_nn_blocks.py` |
+| §4.3 faith / imp / KL | `param_decomp/metrics/faithfulness.py` (`faithfulness_loss`) · `param_decomp/metrics/importance_minimality.py` · `param_decomp_lab/batch_and_loss_fns.py::recon_loss_kl` |
+| §4.3 recon term (stochastic) | OFF-BRANCH: `param_decomp_lab/metrics/chunkwise_subset_recon.py` (`ChunkwiseSubsetReconLoss`) on `feature/fsdp-lm-trainer`; pinned by `tests/equivalence/` fixtures, no on-branch Metric |
+| §4.4–4.5 adversary, ordering | `param_decomp/metrics/persistent_pgd_state.py` (init/warmup/step/scopes; source Adam denom `v_hat.sqrt().add_(eps)` @ `:125` — N1), `param_decomp/metrics/persistent_pgd_recon.py` (`before_backward`/`after_backward`), `param_decomp/metrics/pgd_utils.py`, `param_decomp/train_step.py::run_loss_step` (hook order), `param_decomp/optimize.py` (clip → step) |
+| §4.5 warmup, schedules | `param_decomp/faithfulness_warmup.py`, `param_decomp_config/schedule.py::get_scheduled_value` |
+| §4.6 CI arch | `param_decomp/ci_fns.py::GlobalSharedTransformerCiFn` (`:156`), `param_decomp/ci_nn_blocks.py` |
 
 The JAX implementation (`jax_single_pool/train.py`) uses these pseudocode names
 verbatim: `clean_logits`, `site_inputs`, `source_masks`, `stochastic_recon_loss`,
@@ -309,3 +325,26 @@ count. The `log2` term approximates a description-length / frequency penalty (`L
 in the VPD paper) — its convexity is why S8 demands the true global sum. Fused-linear-KL
 and LM-head-bypass are memory/throughput optimizations and must be semantically
 invisible (cf. `recon_loss_kl` equivalence).
+
+---
+
+## 10. Eval (two-process split)
+
+Eval is normative only at the boundary; the metric *values* it reports are not part of
+the training-step semantics. The split (S28–S30):
+
+- **FAST tier — in-loop.** Scalar eval metrics run inside the training process on
+  cadence `eval.every` (JAX `run.py:320-348`). This is the torch `EvalLoop` analog
+  restricted to scalars. `EvalConfig` (`config.py:90-104`) carries
+  `batch_size`/`every`/`n_steps` and omits `slow_every`/`slow_on_first_step` — there is
+  no in-loop slow tier.
+- **SLOW / plot tier — offline.** All plot/heavy metrics are delegated to
+  `pd-offline-eval`, run on exported checkpoints and keyed off the checkpoint-save
+  cadence — a separate process, not the training loop. The torch
+  `slow_every`/`slow_on_first_step` cadence (`optimize.py`'s `EvalLoop`) has no JAX
+  in-loop analog by design.
+- **Cadence coupling.** `log_every` divides `eval.every` (asserted `run.py:255`), so
+  every eval step is also a train-log step.
+- **Cast-point seam.** The offline `CEandKLLosses` carries the bf16-input cast-point
+  asymmetry recorded in N3 (torch softmax under bf16 autocast; JAX fp32 before
+  `log_softmax`), an accepted seam.
