@@ -398,6 +398,7 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
   <section id="seqSection" style="display:none;">
     <h2>Sequence</h2>
     <div class="muted" id="seqHint">click a point to show its sequence</div>
+    <label><input type="checkbox" id="flowLines"> flow line for this sequence</label>
     <div id="seqPanel" style="max-height:240px; overflow:auto; line-height:1.7; font-size:12px;"></div>
   </section>
 
@@ -729,6 +730,37 @@ scene.add(lineMesh);
 
 let edgeK = Math.min(5, KNN_K);
 
+// --- Per-sequence flow lines (B1): connect consecutive positions of the selected sequence ---
+const flowFlat = new Float32Array(Math.max(1, N) * 6);
+const flowGeom = new LineSegmentsGeometry();
+flowGeom.setPositions(flowFlat);
+const flowMat = new LineMaterial({
+    color: 0xffcc33, linewidth: 2.5, transparent: true, opacity: 0.9,
+    depthWrite: false, worldUnits: false,
+});
+flowMat.resolution.set(window.innerWidth, window.innerHeight);
+const flowMesh = new LineSegments2(flowGeom, flowMat);
+flowMesh.computeLineDistances = () => flowMesh;
+flowMesh.frustumCulled = false;
+flowMesh.visible = false;
+scene.add(flowMesh);
+let flowEnabled = false;
+
+function updateFlowLines() {
+    if (!SEQ || !flowEnabled || pivotLock < 0) { flowMesh.visible = false; return; }
+    const targetSeq = SEQ.point_seq[pivotLock];
+    let outIdx = 0, edgeCount = 0;
+    for (let i = 0; i + 1 < N; i++) {
+        if (SEQ.point_seq[i] !== targetSeq || SEQ.point_seq[i + 1] !== targetSeq) continue;
+        flowFlat[outIdx++] = positions[i * 3]; flowFlat[outIdx++] = positions[i * 3 + 1]; flowFlat[outIdx++] = positions[i * 3 + 2];
+        flowFlat[outIdx++] = positions[(i + 1) * 3]; flowFlat[outIdx++] = positions[(i + 1) * 3 + 1]; flowFlat[outIdx++] = positions[(i + 1) * 3 + 2];
+        edgeCount++;
+    }
+    flowGeom.attributes.instanceStart.data.needsUpdate = true;
+    flowGeom.instanceCount = edgeCount;
+    flowMesh.visible = edgeCount > 0;
+}
+
 function updateLines() {
     if (!HAS_KNN_UI || !lineMesh.visible) return;
     const k = Math.min(edgeK, KNN_K);
@@ -810,6 +842,7 @@ function applyVisibility() {
     }
     instGeom.attributes.iVisible.needsUpdate = true;
     updateLines();
+    updateFlowLines();
     updateOrbitTarget();
     updateVisibleCount();
 }
@@ -950,6 +983,7 @@ function applyProjection() {
     instGeom.attributes.iOffset.needsUpdate = true;
     updateVarExSummary();
     updateLines();
+    updateFlowLines();
     updateOrbitTarget();
 }
 
@@ -1495,7 +1529,13 @@ const SEQ = DATA.seq || null;
 const seqSectionEl = document.getElementById('seqSection');
 const seqPanelEl = document.getElementById('seqPanel');
 const seqHintEl = document.getElementById('seqHint');
-if (SEQ) seqSectionEl.style.display = 'block';
+if (SEQ) {
+    seqSectionEl.style.display = 'block';
+    document.getElementById('flowLines').addEventListener('change', (e) => {
+        flowEnabled = e.target.checked;
+        updateFlowLines();
+    });
+}
 
 function renderSequence(idx) {
     if (!SEQ) return;
@@ -1512,6 +1552,7 @@ function selectPoint(idx) {
     pivotLock = idx;
     updateOrbitTarget();
     renderSequence(idx);
+    updateFlowLines();
 }
 function clearPivot() {
     pivotLock = -1;
@@ -1577,6 +1618,7 @@ window.addEventListener('resize', () => {
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
     lineMat.resolution.set(window.innerWidth, window.innerHeight);
+    flowMat.resolution.set(window.innerWidth, window.innerHeight);
 });
 
 function animate() {
