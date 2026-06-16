@@ -821,6 +821,19 @@ function updateVisibleCount() {
 // position is kept (no jump); only the look-at point shifts. Falls back to
 // the previous target if everything is hidden.
 function updateOrbitTarget() {
+    // Locked pivot: orbit around a chosen point (set by clicking it) so local
+    // structure can be inspected. Clearing the lock (click empty space) restores
+    // the auto-centroid behaviour below.
+    if (pivotLock >= 0) {
+        controls.target.set(
+            positions[pivotLock * 3], positions[pivotLock * 3 + 1], positions[pivotLock * 3 + 2]
+        );
+        pivotMarker.position.copy(controls.target);
+        pivotMarker.visible = true;
+        controls.update();
+        return;
+    }
+    pivotMarker.visible = false;
     let cx = 0, cy = 0, cz = 0, count = 0;
     for (let i = 0; i < TOTAL; i++) {
         if (iVisible[i] < 0.5) continue;
@@ -1462,8 +1475,40 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
     pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
 });
-function updateHover() {
-    raycaster.setFromCamera(pointer, camera);
+
+// --- Click-to-pivot: orbit around a clicked point (click empty space to clear) ---
+let pivotLock = -1;
+const pivotMarker = new THREE.Mesh(
+    new THREE.SphereGeometry(0.15, 16, 12),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.6 })
+);
+pivotMarker.visible = false;
+scene.add(pivotMarker);
+
+function selectPoint(idx) {
+    pivotLock = idx;
+    updateOrbitTarget();
+}
+function clearPivot() {
+    pivotLock = -1;
+    updateOrbitTarget();
+}
+
+let downX = 0, downY = 0, downT = 0;
+renderer.domElement.addEventListener('pointerdown', (e) => {
+    downX = e.clientX; downY = e.clientY; downT = performance.now();
+});
+renderer.domElement.addEventListener('pointerup', (e) => {
+    const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
+    if (moved > 5 || performance.now() - downT > 400) return;  // a drag/rotate, not a click
+    const rect = renderer.domElement.getBoundingClientRect();
+    pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    const idx = pickNearest();
+    if (idx >= 0) selectPoint(idx); else clearPivot();
+});
+
+function pickNearest() {
     const v = new THREE.Vector3();
     let best = -1, bestD = Infinity;
     for (let i = 0; i < N; i++) {
@@ -1474,7 +1519,11 @@ function updateHover() {
         const d = dx*dx + dy*dy;
         if (d < bestD) { bestD = d; best = i; }
     }
-    if (best >= 0 && bestD < 0.005) {
+    return (best >= 0 && bestD < 0.005) ? best : -1;
+}
+function updateHover() {
+    const best = pickNearest();
+    if (best >= 0) {
         const c = DATA.labels[best];
         const cm = DATA.clusters.find(x => x.id === c);
         const rate = DATA.firing_rate[best];
