@@ -76,7 +76,6 @@ frontend/src/
 │   │   ├── index.ts              # Re-exports all API modules
 │   │   ├── runs.ts               # Run loading
 │   │   ├── runRegistry.ts        # Run-list metadata + data availability
-│   │   ├── graphs.ts             # Attribution graph computation
 │   │   ├── graphInterp.ts        # Context-aware graph_interp labels
 │   │   ├── prompts.ts            # Prompt management
 │   │   ├── activationContexts.ts # Activation contexts
@@ -86,13 +85,11 @@ frontend/src/
 │   │   ├── dataSources.ts        # Data provenance
 │   │   ├── pretrainInfo.ts       # Target-model architecture
 │   │   ├── investigations.ts     # Investigation outputs
-│   │   ├── intervention.ts       # Selective activation
 │   │   ├── dataset.ts            # Dataset search
 │   │   └── clusters.ts           # Component clustering
 │   ├── index.ts                  # Shared utilities (Loadable<T> pattern)
 │   ├── graphLayout.ts               # Shared graph layout (parseLayer, row sorting)
 │   ├── promptAttributionsTypes.ts # TypeScript types
-│   ├── interventionTypes.ts
 │   ├── colors.ts                 # Color utilities
 │   ├── registry.ts               # Component registry
 │   ├── runState.svelte.ts        # Global run-scoped state (Svelte 5 runes)
@@ -100,31 +97,20 @@ frontend/src/
 │   └── clusterMapping.svelte.ts  # Cluster mapping state
 └── components/
     ├── RunSelector.svelte            # Run selection screen
-    ├── PromptAttributionsTab.svelte   # Main analysis container
-    ├── PromptAttributionsGraph.svelte # SVG graph visualization
-    ├── ActivationContextsTab.svelte  # Component firing patterns tab
+    ├── RunView.svelte                # Tab shell (read-only viewer)
+    ├── ActivationContextsTab.svelte  # Component firing patterns tab (default tab)
     ├── ActivationContextsViewer.svelte
     ├── ActivationContextsPagedTable.svelte
     ├── DatasetSearchTab.svelte       # Dataset search UI
     ├── DatasetSearchResults.svelte
     ├── ClusterPathInput.svelte       # Cluster path selector (dropdown populated from registry.ts)
-    ├── ComponentProbeInput.svelte    # Component probe UI
     ├── TokenHighlights.svelte        # Token highlighting
-    ├── prompt-attr/
-    │   ├── InterventionsView.svelte      # Selective activation UI
-    │   ├── StagedNodesPanel.svelte       # Pinned nodes list
+    ├── prompt-attr/                  # Attribution-graph layout helpers reused by the investigations ArtifactGraph
     │   ├── NodeTooltip.svelte            # Hover card
     │   ├── ComponentNodeCard.svelte      # Component details
     │   ├── ComponentCorrelationPills.svelte
     │   ├── OutputNodeCard.svelte         # Output node details
-    │   ├── PromptPicker.svelte
-    │   ├── PromptCardHeader.svelte
-    │   ├── PromptCardTabs.svelte
-    │   ├── ViewControls.svelte
-    │   ├── ComputeProgressOverlay.svelte # Progress during computation
-    │   ├── TokenDropdown.svelte
-    │   ├── graphUtils.ts                 # Layout helpers
-    │   └── types.ts                      # UI state types
+    │   └── graphUtils.ts                 # Layout helpers
     └── ui/                               # Reusable UI components
         ├── ComponentCorrelationMetrics.svelte
         ├── ComponentPillList.svelte

@@ -6,7 +6,6 @@
     import { useComponentDataExpectCached } from "../lib/useComponentDataExpectCached.svelte";
     import { RUN_KEY, type RunContext } from "../lib/useRun.svelte";
     import ActivationContextsPagedTable, { type ActivationExamplesData } from "./ActivationContextsPagedTable.svelte";
-    import ComponentProbeInput from "./ComponentProbeInput.svelte";
     import ComponentCorrelationMetrics from "./ui/ComponentCorrelationMetrics.svelte";
     import DatasetAttributionsSection from "./ui/DatasetAttributionsSection.svelte";
     import InterpretationBadge from "./ui/InterpretationBadge.svelte";
@@ -124,8 +123,6 @@
             <ActivationContextsPagedTable data={activationExamples} />
         {/if}
     </div>
-
-    <ComponentProbeInput {layer} componentIdx={cIdx} {maxAbsComponentAct} />
 
     {#if componentData.datasetAttributions.status === "uninitialized"}
         <StatusText>uninitialized</StatusText>

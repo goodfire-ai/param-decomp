@@ -8,7 +8,6 @@
     import { useComponentData } from "../lib/useComponentData.svelte";
     import { RUN_KEY, type RunContext } from "../lib/useRun.svelte";
     import ActivationContextsPagedTable, { type ActivationExamplesData } from "./ActivationContextsPagedTable.svelte";
-    import ComponentProbeInput from "./ComponentProbeInput.svelte";
     import ComponentCorrelationMetrics from "./ui/ComponentCorrelationMetrics.svelte";
     import ComponentFrequencyCurve from "./ui/ComponentFrequencyCurve.svelte";
     import GraphInterpBadge from "./ui/GraphInterpBadge.svelte";
@@ -298,12 +297,6 @@
         {:else}
             <ActivationContextsPagedTable data={activationExamples} />
         {/if}
-
-        <ComponentProbeInput
-            layer={selectedLayer}
-            componentIdx={currentMetadata.subcomponent_idx}
-            {maxAbsComponentAct}
-        />
 
         <!-- Dataset attributions -->
         {#if componentData.datasetAttributions?.status === "loaded" && componentData.datasetAttributions.data}

@@ -278,14 +278,6 @@ export type LayoutResult = {
     height: number;
 };
 
-// Component probe result
-export type SubcomponentProbeResult = {
-    tokens: string[];
-    ci_values: number[];
-    subcomp_acts: number[];
-    next_token_probs: (number | null)[]; // Probability of next token (last is null)
-};
-
 /** Get display name for a layer (e.g., "lm_head" -> "W_U") using model-provided names */
 export function getLayerDisplayName(layer: string, displayNames: Record<string, string>): string {
     return displayNames[layer] ?? layer;

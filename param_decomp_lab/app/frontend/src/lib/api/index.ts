@@ -44,12 +44,10 @@ export async function fetchJson<T>(url: string, options?: RequestInit): Promise<
 // Re-export all API modules
 export * from "./autointerpCompare";
 export * from "./runs";
-export * from "./graphs";
 export * from "./prompts";
 export * from "./activationContexts";
 export * from "./correlations";
 export * from "./datasetAttributions";
-export * from "./intervention";
 export * from "./dataset";
 export * from "./clusters";
 export * from "./investigations";

@@ -1,5 +1,5 @@
 /**
- * Utility functions for the PromptAttributionsGraph component.
+ * Utility functions for attribution-graph layout.
  */
 
 /** Linear interpolation between min and max. */

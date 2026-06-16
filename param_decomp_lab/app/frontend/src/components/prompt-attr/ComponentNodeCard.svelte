@@ -9,7 +9,6 @@
     import { useComponentDataExpectCached } from "../../lib/useComponentDataExpectCached.svelte";
     import { RUN_KEY, type RunContext } from "../../lib/useRun.svelte";
     import ActivationContextsPagedTable from "../ActivationContextsPagedTable.svelte";
-    import ComponentProbeInput from "../ComponentProbeInput.svelte";
     import ComponentCorrelationMetrics from "../ui/ComponentCorrelationMetrics.svelte";
     import DatasetAttributionsSection from "../ui/DatasetAttributionsSection.svelte";
     import EdgeAttributionGrid from "../ui/EdgeAttributionGrid.svelte";
@@ -162,12 +161,6 @@
         onPinComponent(clickedLayer, parseInt(clickedCIdx), parseInt(clickedSeqIdx));
     }
 
-    // Compute global max absolute component act for normalization (used by both activating examples and probe)
-    const maxAbsComponentAct = $derived.by(() => {
-        if (componentData.componentDetail.status !== "loaded") return 1;
-        return computeMaxAbsComponentAct(componentData.componentDetail.data.example_component_acts);
-    });
-
     const activationExamples = $derived(
         mapLoadable(
             componentData.componentDetail,
@@ -226,8 +219,6 @@
             <ActivationContextsPagedTable data={activationExamples} />
         {/if}
     </div>
-
-    <ComponentProbeInput {layer} componentIdx={cIdx} {maxAbsComponentAct} />
 
     <!-- Prompt attributions -->
     {#if displaySettings.showEdgeAttributions && hasAnyEdges}

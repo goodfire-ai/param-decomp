@@ -15,7 +15,6 @@
         type SubrunSummary,
     } from "../lib/api";
     import ActivationContextsPagedTable, { type ActivationExamplesData } from "./ActivationContextsPagedTable.svelte";
-    import ComponentProbeInput from "./ComponentProbeInput.svelte";
     import ComponentCorrelationMetrics from "./ui/ComponentCorrelationMetrics.svelte";
     import ComponentFrequencyCurve from "./ui/ComponentFrequencyCurve.svelte";
     import SectionHeader from "./ui/SectionHeader.svelte";
@@ -331,12 +330,6 @@
                 {:else}
                     <ActivationContextsPagedTable data={activationExamples} />
                 {/if}
-
-                <ComponentProbeInput
-                    layer={selectedLayer}
-                    componentIdx={currentMetadata.subcomponent_idx}
-                    {maxAbsComponentAct}
-                />
 
                 {#if componentData.datasetAttributions?.status === "loaded" && componentData.datasetAttributions.data}
                     <DatasetAttributionsSection attributions={componentData.datasetAttributions.data} />

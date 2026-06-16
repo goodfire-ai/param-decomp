@@ -4,7 +4,6 @@
 
 import type {
     ActivationContextsSummary,
-    SubcomponentProbeResult,
     SubcomponentActivationContexts,
 } from "../promptAttributionsTypes";
 import { ApiError, fetchJson } from "./index";
@@ -29,16 +28,4 @@ export async function getActivationContextDetail(
     return fetchJson<SubcomponentActivationContexts>(
         `/api/activation_contexts/${encodeURIComponent(layer)}/${componentIdx}?limit=${limit}`,
     );
-}
-
-export async function probeComponent(
-    text: string,
-    layer: string,
-    componentIdx: number,
-): Promise<SubcomponentProbeResult> {
-    return fetchJson<SubcomponentProbeResult>("/api/activation_contexts/probe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, layer, component_idx: componentIdx }),
-    });
 }

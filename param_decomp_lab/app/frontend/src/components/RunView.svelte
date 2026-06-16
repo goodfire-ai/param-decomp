@@ -8,7 +8,6 @@
     import DatasetExplorerTab from "./DatasetExplorerTab.svelte";
     import InvestigationsTab from "./InvestigationsTab.svelte";
     import DataSourcesTab from "./DataSourcesTab.svelte";
-    import PromptAttributionsTab from "./PromptAttributionsTab.svelte";
     import DisplaySettingsDropdown from "./ui/DisplaySettingsDropdown.svelte";
 
     const runState = getContext<RunContext>(RUN_KEY);
@@ -18,7 +17,6 @@
     );
 
     let activeTab = $state<
-        | "prompts"
         | "components"
         | "autointerp-compare"
         | "dataset-search"
@@ -31,13 +29,13 @@
 
     $effect(() => {
         if (runState.prompts.status === "loaded" && activeTab === null) {
-            activeTab = "prompts";
+            activeTab = "components";
         }
     });
 
     $effect(() => {
         if (activeTab === "clusters" && !runState.clusterMapping) {
-            activeTab = "prompts";
+            activeTab = "components";
         }
     });
 </script>
@@ -68,14 +66,6 @@
                 Investigations
             </button>
             {#if runState.run.status === "loaded" && runState.run.data}
-                <button
-                    type="button"
-                    class="tab-button"
-                    class:active={activeTab === "prompts"}
-                    onclick={() => (activeTab = "prompts")}
-                >
-                    Prompts
-                </button>
                 <button
                     type="button"
                     class="tab-button"
@@ -146,9 +136,6 @@
         </div>
         {#if runState.prompts.status === "loaded"}
             <!-- Use hidden class instead of conditional rendering to preserve state -->
-            <div class="tab-content" class:hidden={activeTab !== "prompts"}>
-                <PromptAttributionsTab prompts={runState.prompts.data} />
-            </div>
             <div class="tab-content" class:hidden={activeTab !== "components"}>
                 <ActivationContextsTab />
             </div>
