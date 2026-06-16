@@ -32,6 +32,7 @@ from param_decomp_config.losses import (
     PGDReconLayerwiseLossConfig,
     PGDReconLossConfig,
     PGDReconSubsetLossConfig,
+    SmoothL0ImportanceMinimalityLossConfig,
     StochasticHiddenActsReconLossConfig,
     StochasticReconLayerwiseLossConfig,
     StochasticReconLossConfig,
@@ -66,6 +67,7 @@ AnyLossMetricConfig = Annotated[
     | PGDReconLayerwiseLossConfig
     | PGDReconLossConfig
     | PGDReconSubsetLossConfig
+    | SmoothL0ImportanceMinimalityLossConfig
     | StochasticHiddenActsReconLossConfig
     | StochasticReconLayerwiseLossConfig
     | StochasticReconLossConfig
