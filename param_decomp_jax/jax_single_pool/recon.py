@@ -356,6 +356,8 @@ def build_recon_terms(
                 plan = all_sites_plan(site_names, sampler, PersistentSources(state_key=key))
                 terms.append(ReconLossTerm(key, cfg.coeff, plan))
             case _:
+                # StochasticHiddenActsReconLoss lands here by design: it is keep-on-bridge
+                # (offline-eval only), not a JAX training loss (SPEC S31, LOSS_PARITY_DESIGN §4c).
                 raise AssertionError(f"unsupported training loss {cfg.type!r}")
 
     assert faith_coeff is not None and imp_min is not None, (

@@ -284,9 +284,9 @@ adds a per-target implementation burden ×2 targets, (ii) normalizes per-element
 *training* loss it is exactly the "site-local recon" this trainer's CLAUDE.md
 calls a conceptual no-no. Oli's stance (hidden-acts ≈ eval metric) matches the
 plumbing reality: it is already in `OFFLINE_EVAL_METRIC_TYPES` and `pd-offline-eval`
-computes it bit-faithfully on exported checkpoints. **Recommendation:
+computes it bit-faithfully on exported checkpoints. **Decided (SPEC S31):
 keep-on-bridge; do not build the seam unless a training-loss use case appears, and
-then as an explicit spec amendment.** (Note: PPGD's eval-time hidden-acts extras
+then as an explicit amendment to S31.** (Note: PPGD's eval-time hidden-acts extras
 in `_accum_hidden_acts` are eval-only decoration on the metric, not part of the
 training loss — they ride the same bridge.)
 
@@ -375,7 +375,7 @@ divisibility for `nsc`) becomes a converter assert.
 | PPGD `sign` SRC_STEP, sigmoid parameterization, `n_samples>1` | **composition-only** | SPEC §6 already names them as variation points |
 | multiple simultaneous loss/adversary terms | **composition-only** | §2.2 TrainState dicts + per-term S14 |
 | PPGD `start_frac > 0` | **composition-only (deferred)** | Q3 — keep the refusing assert until needed |
-| `StochasticHiddenActsReconLoss` | **needs-new-seam → recommend-keep-on-bridge** | `masked_site_outputs` fn per target; conflicts with the one-recon-semantics rule; already offline (§4c) |
+| `StochasticHiddenActsReconLoss` | **needs-new-seam → keep-on-bridge (decided, SPEC S31)** | `masked_site_outputs` fn per target; conflicts with the one-recon-semantics rule; already offline (§4c) |
 | attn-pattern eval losses | **keep-on-bridge** | eval-only in torch too (§4d) |
 
 **`torch_config.py` converter changes:** `_losses` stops slotting into

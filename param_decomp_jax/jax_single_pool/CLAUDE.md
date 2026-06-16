@@ -5,8 +5,8 @@ source of truth is `SPEC.md` (normative pseudocode + numbered invariants, ground
 the stable torch `param_decomp` impl). See `README.md` for the file map.
 
 Open items: persistent-source scopes beyond `sc`, sigmoid parameterization,
-`start_frac>0`, and the hidden-acts seam are deliberately refused (LOSS_PARITY_DESIGN
-§6 stage 4); SPEC S24's two torch-parity quirks (PPGD warmup route-all, fresh-PGD
+`start_frac>0`, and the hidden-acts seam are deliberately refused (SPEC S31,
+LOSS_PARITY_DESIGN §6 stage 4 — hidden-acts is keep-on-bridge); SPEC S24's two torch-parity quirks (PPGD warmup route-all, fresh-PGD
 single routing draw) are pinned pending a team decision; CI-fn numerics (gelu erf,
 rms eps) unify with torch at a run boundary.
 
