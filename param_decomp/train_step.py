@@ -1,15 +1,13 @@
-"""Model-agnostic pieces of the PD training step, shared across trainers.
+"""Model-agnostic pieces of the PD step: metric context, loss step, and the eval pass.
 
-These are the parts of the optimization step that do not depend on how the model is
-wrapped (DDP vs FSDP) or how checkpoints are written: building the per-batch
-:class:`MetricContext`, accumulating the weighted loss and running backward (plus the
-metrics' ``before_backward`` / ``after_backward`` hooks), the eval pass, and LR
-scheduling. :class:`~param_decomp.optimize.Trainer` and the lab-side FSDP LM trainer both
-compose these so the loop body has a single source of truth.
+These are the parts of the step that do not depend on how the model is wrapped (DDP vs
+FSDP) or how checkpoints are written: building the per-batch `MetricContext`,
+accumulating the weighted loss and running backward (plus the metrics'
+`before_backward` / `after_backward` hooks), the eval pass, and LR scheduling.
 
-``EvalLoop`` and the SIGTERM flag live here too (they're loop scaffolding, not
-trainer-specific) and are re-exported from :mod:`param_decomp.optimize` for backwards
-compatibility.
+With the torch trainer retired (oracle at git tag `torch-oracle`), the live consumer is
+`experiments.lm.offline_eval`, which runs `run_eval_pass` over an `EvalLoop` to score a
+JAX-exported checkpoint with the reference yaml's eval metrics.
 """
 
 import gc

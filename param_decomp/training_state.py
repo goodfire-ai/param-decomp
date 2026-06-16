@@ -1,8 +1,9 @@
-"""Canonical training-state dataclasses persisted to `training_<step>.pth`.
+"""Canonical training-state dataclass persisted to `training_<step>.pth`.
 
-Lives in its own module so `param_decomp.optimize` (where the trainer produces
-it) and `param_decomp.run_sink` (where the sink protocol consumes it) can import
-without a cycle.
+Lives in its own module so `param_decomp.run_sink` (where the sink protocol
+references it) can import it without pulling in the rest of the train-loop. The
+torch trainer that produced it has been retired (oracle at git tag `torch-oracle`);
+this dataclass remains as the on-disk schema the sink protocol is typed against.
 """
 
 from dataclasses import dataclass

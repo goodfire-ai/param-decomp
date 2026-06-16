@@ -1,34 +1,30 @@
-"""TMS PD experiment: YAML -> `Trainer` glue, plus the `SavedTMSRun` reload class.
+"""TMS PD experiment: builders + the `SavedTMSRun` reload class.
 
-Run via `pd-tms path/to/config.yaml`.
+The torch training driver has been retired (the JAX single-pool trainer is
+production; the torch oracle lives at git tag `torch-oracle`). What remains is the
+consumer bridge: the pure builders (`build_target`, `build_tms_loader`,
+`make_run_batch`) and `SavedTMSRun`, which load a saved TMS decomposition off disk.
 """
 
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-import fire
 from pydantic import Field
 from torch.utils.data import DataLoader
 
 from param_decomp.batch_and_loss_fns import RunBatch
 from param_decomp.component_model import ComponentModel
 from param_decomp.distributed import DistributedState
-from param_decomp.log import logger
-from param_decomp.optimize import EvalLoop, Trainer
 from param_decomp_config.base import BaseConfig, Probability
 from param_decomp_config.experiment import ExperimentConfig
-from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
+from param_decomp_lab.batch_and_loss_fns import run_batch_first_element
 from param_decomp_lab.component_model_io import load_component_model
-from param_decomp_lab.distributed import get_device
-from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES
 from param_decomp_lab.experiments.tms.data import SparseFeatureDataset
 from param_decomp_lab.experiments.tms.models import TMSModel, TMSTargetRunInfo
-from param_decomp_lab.experiments.utils import EXPERIMENT_CONFIG_FILENAME, init_pd_run
+from param_decomp_lab.experiments.utils import EXPERIMENT_CONFIG_FILENAME
 from param_decomp_lab.infra.paths import ModelPath
 from param_decomp_lab.infra.run_files import resolve_run_files
-from param_decomp_lab.run_sink import OnePoolSink
-from param_decomp_lab.seed import set_seed
 
 
 class TMSTargetConfig(BaseConfig):
@@ -91,10 +87,6 @@ def make_run_batch(target_cfg: TMSTargetConfig) -> RunBatch:
     return run_batch_first_element
 
 
-def _tied_weights_for(target_model: TMSModel) -> list[tuple[str, str]] | None:
-    return [("linear1", "linear2")] if target_model.config.tied_weights else None
-
-
 @dataclass(frozen=True)
 class SavedTMSRun:
     """Handle to a completed TMS PD run on disk or in W&B."""
@@ -120,68 +112,3 @@ class SavedTMSRun:
             target_model=build_target(self.cfg.target),
             run_batch=make_run_batch(self.cfg.target),
         )
-
-
-def main(
-    config_path: str | Path,
-    *,
-    group: str | None = None,
-    tags: str | None = None,
-) -> None:
-    """Run a TMS PD experiment end-to-end from a YAML config. `group` / `tags` are wandb-only."""
-    cfg = TMSExperimentConfig.from_file(config_path)
-
-    set_seed(cfg.pd.seed)
-    device = get_device()
-    logger.info(f"Using device: {device}")
-
-    target_model = build_target(cfg.target).to(device)
-    cfg = cfg.model_copy(
-        update={
-            "pd": cfg.pd.model_copy(update={"tied_weights": _tied_weights_for(target_model)}),
-            "runtime": cfg.runtime.model_copy(update={"device": device}),
-        }
-    )
-
-    train_loader = build_tms_loader(
-        cfg.target, cfg.data, split="train", device=device, batch_size=cfg.pd.batch_size
-    )
-    eval_loop = _build_eval_loop(cfg, device)
-
-    sink = init_pd_run(cfg, sink_class=OnePoolSink, group=group, tags=tags, resume_wandb=False)
-
-    try:
-        trainer = Trainer(
-            target_model=target_model,
-            run_batch=make_run_batch(cfg.target),
-            reconstruction_loss=recon_loss_mse,
-            pd_config=cfg.pd,
-            runtime_config=cfg.runtime,
-        )
-        trainer.run(train_loader, sink, cfg.cadence, eval_loop)
-    finally:
-        sink.finish()
-
-
-def _build_eval_loop(cfg: TMSExperimentConfig, device: str) -> EvalLoop | None:
-    """Build the `EvalLoop` from `cfg.eval`, or `None` when eval is disabled."""
-    if cfg.eval is None:
-        return None
-    return EvalLoop(
-        loader=build_tms_loader(
-            cfg.target, cfg.data, split="eval", device=device, batch_size=cfg.eval.batch_size
-        ),
-        metrics=[EVAL_METRIC_CLASSES[m.type](m) for m in cfg.eval.metrics],
-        n_steps=cfg.eval.n_steps,
-        every=cfg.eval.every,
-        slow_every=cfg.eval.slow_every,
-        slow_on_first_step=cfg.eval.slow_on_first_step,
-    )
-
-
-def cli() -> None:
-    fire.Fire(main)
-
-
-if __name__ == "__main__":
-    cli()

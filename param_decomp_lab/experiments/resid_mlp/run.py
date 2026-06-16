@@ -1,34 +1,31 @@
-"""ResidMLP PD experiment: YAML -> `Trainer` glue, plus the `SavedResidMLPRun` reload class.
+"""ResidMLP PD experiment: builders + the `SavedResidMLPRun` reload class.
 
-Run via `pd-resid-mlp path/to/config.yaml`.
+The torch training driver has been retired (the JAX single-pool trainer is
+production; the torch oracle lives at git tag `torch-oracle`). What remains is the
+consumer bridge: the pure builders (`build_target`, `build_resid_mlp_loader`,
+`make_run_batch`) and `SavedResidMLPRun`, which load a saved ResidMLP decomposition
+off disk.
 """
 
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-import fire
 from pydantic import Field
 from torch.utils.data import DataLoader
 
 from param_decomp.batch_and_loss_fns import RunBatch
 from param_decomp.component_model import ComponentModel
 from param_decomp.distributed import DistributedState
-from param_decomp.log import logger
-from param_decomp.optimize import EvalLoop, Trainer
 from param_decomp_config.base import BaseConfig, Probability
 from param_decomp_config.experiment import ExperimentConfig
-from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
+from param_decomp_lab.batch_and_loss_fns import run_batch_first_element
 from param_decomp_lab.component_model_io import load_component_model
-from param_decomp_lab.distributed import get_device
-from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES
 from param_decomp_lab.experiments.resid_mlp.data import ResidMLPDataset
 from param_decomp_lab.experiments.resid_mlp.models import ResidMLP, ResidMLPTargetRunInfo
-from param_decomp_lab.experiments.utils import EXPERIMENT_CONFIG_FILENAME, init_pd_run
+from param_decomp_lab.experiments.utils import EXPERIMENT_CONFIG_FILENAME
 from param_decomp_lab.infra.paths import ModelPath
 from param_decomp_lab.infra.run_files import resolve_run_files
-from param_decomp_lab.run_sink import OnePoolSink
-from param_decomp_lab.seed import set_seed
 
 
 class ResidMLPTargetConfig(BaseConfig):
@@ -120,66 +117,3 @@ class SavedResidMLPRun:
             target_model=build_target(self.cfg.target),
             run_batch=make_run_batch(self.cfg.target),
         )
-
-
-def main(
-    config_path: str | Path,
-    *,
-    group: str | None = None,
-    tags: str | None = None,
-) -> None:
-    """Run a ResidMLP PD experiment end-to-end from a YAML config.
-
-    `group` / `tags` are wandb-only.
-    """
-    cfg = ResidMLPExperimentConfig.from_file(config_path)
-
-    set_seed(cfg.pd.seed)
-    device = get_device()
-    logger.info(f"Using device: {device}")
-    cfg = cfg.model_copy(update={"runtime": cfg.runtime.model_copy(update={"device": device})})
-
-    target_model = build_target(cfg.target).to(device)
-
-    train_loader = build_resid_mlp_loader(
-        cfg.target, cfg.data, split="train", device=device, batch_size=cfg.pd.batch_size
-    )
-    eval_loop = _build_eval_loop(cfg, device)
-
-    sink = init_pd_run(cfg, sink_class=OnePoolSink, group=group, tags=tags, resume_wandb=False)
-
-    try:
-        trainer = Trainer(
-            target_model=target_model,
-            run_batch=make_run_batch(cfg.target),
-            reconstruction_loss=recon_loss_mse,
-            pd_config=cfg.pd,
-            runtime_config=cfg.runtime,
-        )
-        trainer.run(train_loader, sink, cfg.cadence, eval_loop)
-    finally:
-        sink.finish()
-
-
-def _build_eval_loop(cfg: ResidMLPExperimentConfig, device: str) -> EvalLoop | None:
-    """Build the `EvalLoop` from `cfg.eval`, or `None` when eval is disabled."""
-    if cfg.eval is None:
-        return None
-    return EvalLoop(
-        loader=build_resid_mlp_loader(
-            cfg.target, cfg.data, split="eval", device=device, batch_size=cfg.eval.batch_size
-        ),
-        metrics=[EVAL_METRIC_CLASSES[m.type](m) for m in cfg.eval.metrics],
-        n_steps=cfg.eval.n_steps,
-        every=cfg.eval.every,
-        slow_every=cfg.eval.slow_every,
-        slow_on_first_step=cfg.eval.slow_on_first_step,
-    )
-
-
-def cli() -> None:
-    fire.Fire(main)
-
-
-if __name__ == "__main__":
-    cli()

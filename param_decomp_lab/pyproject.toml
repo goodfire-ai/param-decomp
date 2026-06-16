@@ -29,12 +29,10 @@ dependencies = [
 ]
 
 [project.scripts]
-# Per-experiment runners — directly invoke the experiment's `main`.
-pd-tms = "param_decomp_lab.experiments.tms.run:cli"
-pd-resid-mlp = "param_decomp_lab.experiments.resid_mlp.run:cli"
-pd-lm = "param_decomp_lab.experiments.lm.run:cli"
+# LM run submission (JAX single-pool trainer) + offline torch eval of its exports.
+# The torch training drivers (pd-tms / pd-resid-mlp / pd-lm / pd-lm-layerwise) were
+# retired with the torch trainer; the oracle lives at git tag `torch-oracle`.
 pd-jax-lm = "param_decomp_lab.experiments.lm.jax_launch:cli"
-pd-lm-layerwise = "param_decomp_lab.experiments.lm.layerwise:cli"
 pd-offline-eval = "param_decomp_lab.experiments.lm.offline_eval:cli"
 pd-pretrain = "param_decomp_lab.experiments.lm.pretrain.cli:cli"
 # Post-processing pipeline CLIs (SLURM-driven; lab subtrees).
