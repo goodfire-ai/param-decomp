@@ -36,17 +36,16 @@ from jaxtyping import Array, Float
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 
-from jax_single_pool import llama_simple_mlp
 from jax_single_pool.checkpoint import make_checkpoint_manager, restore_step
 from jax_single_pool.ci_fn import lower_leaky_hard_sigmoid
 from jax_single_pool.config import (
     EvalConfig,
     ExperimentConfig,
-    LlamaSimpleMLPTargetConfig,
     load_run_dir_config,
 )
 from jax_single_pool.data import BatchSchedule, ShardServer, scan_shards
 from jax_single_pool.lm import DecomposedModel
+from jax_single_pool.load_run import build_target
 from jax_single_pool.run_state import build_optimizers, init_train_state
 from jax_single_pool.sharding import dp_mesh
 
@@ -251,38 +250,13 @@ def _eval_config(cfg: ExperimentConfig) -> EvalConfig:
     return cfg.eval
 
 
-def _build_simple_mlp(cfg: ExperimentConfig, mesh: Any):
-    assert isinstance(cfg.target, LlamaSimpleMLPTargetConfig), (
-        f"JAX slow-eval implements the SimpleMLP target; got {type(cfg.target).__name__}"
-    )
-    cache_dir = llama_simple_mlp.pretrain_cache_dir(cfg.target.pretrain_run_path)
-    simple_cfg = llama_simple_mlp.load_model_config(cache_dir)
-    lm = llama_simple_mlp.llama_simple_mlp_decomposed_lm(
-        simple_cfg, llama_simple_mlp.site_specs(simple_cfg, cfg.target.sites)
-    )
-    first_layer = llama_simple_mlp.first_decomposed_layer(lm.site_names)
-    frozen = llama_simple_mlp.replicate_frozen(
-        llama_simple_mlp.load_target_from_pretrain_cache(
-            cache_dir, simple_cfg, first_layer, jnp.bfloat16
-        ),
-        mesh,
-    )
-    prefix = llama_simple_mlp.replicate_frozen(
-        llama_simple_mlp.load_prefix_from_pretrain_cache(
-            cache_dir, simple_cfg, first_layer, jnp.bfloat16
-        ),
-        mesh,
-    )
-    return lm, frozen, prefix
-
-
 def run_offline_slow_eval(run_dir: Path, cfg: ExperimentConfig, step: int) -> dict[str, bytes]:
     """Restore checkpoint `step` from `run_dir`'s ckpts and render the slow figures.
     `run_dir` is the on-disk dir (the exporter takes it the same way); `cfg.run_dir`
     can differ when a run dir is read from a relocated copy. CPU-OK."""
     eval_cfg = _eval_config(cfg)
     mesh = dp_mesh()
-    lm, frozen, prefix = _build_simple_mlp(cfg, mesh)
+    lm, frozen, prefix, prefix_residual_fn, _vocab_size = build_target(cfg, mesh)
 
     opt_vu, opt_ci, _schedules = build_optimizers(cfg)
     init_key, src_key, _run_key = random.split(random.PRNGKey(cfg.seed), 3)
@@ -292,9 +266,9 @@ def run_offline_slow_eval(run_dir: Path, cfg: ExperimentConfig, step: int) -> di
 
     schedule = BatchSchedule(scan_shards(cfg.data.dir), eval_cfg.batch_size, cfg.seed + 1)
     server = ShardServer(schedule, cfg.data.seq_len, jax.process_index(), jax.process_count())
-    harvest = jax.jit(llama_simple_mlp.prefix_residual)
+    to_residual = jax.jit(prefix_residual_fn)
     residual_batches = [
-        harvest(prefix, jnp.asarray(server.local_batch(j))) for j in range(eval_cfg.n_steps)
+        to_residual(prefix, jnp.asarray(server.local_batch(j))) for j in range(eval_cfg.n_steps)
     ]
 
     slow_eval_step = make_slow_eval_step(lm, eval_cfg.ci_alive_threshold)

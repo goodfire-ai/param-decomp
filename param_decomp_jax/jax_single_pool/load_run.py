@@ -22,12 +22,15 @@ compute on the components / CI fn (training's `COMPUTE_DT`) so consumed CI match
 trained model's; output probs are fp32 from the fp32-upcast frozen forward.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import jax
 import jax.numpy as jnp
+from jax.sharding import NamedSharding
+from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, Int
 
 from jax_single_pool import llama_simple_mlp
@@ -38,7 +41,17 @@ from jax_single_pool.config import (
     TargetConfig,
     load_run_dir_config,
 )
-from jax_single_pool.llama8b import DecompVU
+from jax_single_pool.llama8b import (
+    DecompVU,
+    first_decomposed_layer,
+    llama31_8b_config,
+    llama_decomposed_lm,
+    llama_site_specs,
+    load_prefix_from_hf,
+    load_target_from_hf,
+    prefix_residual,
+)
+from jax_single_pool.llama8b_sharding import replicate_target
 from jax_single_pool.lm import DecomposedModel
 from jax_single_pool.run_state import build_optimizers, init_train_state
 from jax_single_pool.sharding import dp_mesh
@@ -55,9 +68,12 @@ class HarvestForward:
     output_probs: Float[Array, "B T vocab"]
 
 
-def _build_target(cfg: ExperimentConfig, mesh: jax.sharding.Mesh):
-    """Frozen target + prefix-residual fn for the run's target config. SimpleMLP reads
-    its local pretrain cache (no network); llama8b reads the HF snapshot."""
+def build_target(
+    cfg: ExperimentConfig, mesh: jax.sharding.Mesh
+) -> tuple[DecomposedModel, Any, Any, Callable[[Any, Any], jax.Array], int]:
+    """`(lm, frozen target, prefix, prefix_residual_fn, vocab_size)` for the run's target
+    config. SimpleMLP reads its local pretrain cache (no network); llama8b reads the HF
+    snapshot (frozen bf16 target + fp32-compute, matching `run.py::main`)."""
     match cfg.target:
         case LlamaSimpleMLPTargetConfig():
             cache_dir = llama_simple_mlp.pretrain_cache_dir(cfg.target.pretrain_run_path)
@@ -80,10 +96,17 @@ def _build_target(cfg: ExperimentConfig, mesh: jax.sharding.Mesh):
             )
             return lm, target, prefix, llama_simple_mlp.prefix_residual, simple_cfg.vocab_size
         case TargetConfig():
-            raise NotImplementedError(
-                "open_jax_run currently builds the LlamaSimpleMLP target only; the "
-                "llama8b target needs HF weight loading + sharding (see run.py main)."
+            llama_cfg = llama31_8b_config()
+            lm = llama_decomposed_lm(llama_cfg, llama_site_specs(llama_cfg, cfg.target.sites))
+            first_layer = first_decomposed_layer(lm.site_names)
+            target = replicate_target(
+                load_target_from_hf(cfg.target.model_name, llama_cfg, first_layer), mesh
             )
+            prefix = jax.device_put(
+                load_prefix_from_hf(cfg.target.model_name, llama_cfg, first_layer),
+                NamedSharding(mesh, P()),
+            )
+            return lm, target, prefix, prefix_residual, llama_cfg.vocab_size
 
 
 def _u_norms(components: DecompVU, site_names: tuple[str, ...]) -> dict[str, Float[Array, " C"]]:
@@ -134,7 +157,7 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
     """Open the run at `run_dir`; restore checkpoint `step` (latest if None)."""
     cfg = load_run_dir_config(run_dir)
     mesh = dp_mesh()
-    lm, target, prefix, prefix_residual_fn, vocab_size = _build_target(cfg, mesh)
+    lm, target, prefix, prefix_residual_fn, vocab_size = build_target(cfg, mesh)
 
     opt_vu, opt_ci, _ = build_optimizers(cfg)
     init_key, src_key = jax.random.split(jax.random.PRNGKey(cfg.seed))
