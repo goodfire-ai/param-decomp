@@ -41,6 +41,7 @@ from jax_single_pool.config import (
 )
 from jax_single_pool.data import BatchSchedule, ShardServer, scan_shards
 from jax_single_pool.eval import make_eval_step
+from jax_single_pool.hf_http import configure_hf_http_retries
 from jax_single_pool.llama8b import (
     Prefix,
     Target,
@@ -414,6 +415,9 @@ def main() -> None:
 
     _install_sigterm_flag()
     init_distributed()
+    # Harden the cold-cache HF weight load against the 8N-rank startup burst before any
+    # per-rank Hub call (no-op when huggingface_hub is absent / cache is pre-warmed).
+    configure_hf_http_retries()
     mesh = dp_mesh()
 
     cfg, torch_yaml_path, raw_cfg = load_torch_wrapper(args.config)
