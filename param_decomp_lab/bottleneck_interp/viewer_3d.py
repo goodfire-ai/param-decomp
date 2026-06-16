@@ -349,7 +349,7 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
   html, body { margin: 0; height: 100%; background: #0a0a0a; color: #e4e4e7;
                font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
   #scene { position: fixed; inset: 0; }
-  #sidebar { position: fixed; top: 0; right: 0; height: 100%; width: 320px;
+  #sidebar { position: fixed; top: 0; right: 0; height: 100%; width: 440px;
              background: rgba(15, 15, 20, 0.92); border-left: 1px solid #27272a;
              overflow-y: auto; padding: 18px 16px; box-sizing: border-box;
              font-size: 13px; line-height: 1.45; }
@@ -473,7 +473,7 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
   <section id="rimSection" style="display:none;">
     <h2>Rim source</h2>
     <select id="rimSource"></select>
-    <div id="overlayItems" style="margin-top:6px; max-height:200px; overflow:auto;"></div>
+    <div id="overlayItems" style="margin-top:6px; max-height:320px; overflow:auto;"></div>
   </section>
 
   <h2 id="clusterHeader">Clusters <button id="allOn">all</button> <button id="allOff">none</button></h2>
@@ -775,47 +775,67 @@ function applyTint() {
     instGeom.attributes.iTint.needsUpdate = true;
 }
 
+// A cluster-list-style row: checkbox + colour swatch + label, matching the Clusters UI.
+function overlayRow(colour, label, checked, onToggle) {
+    const row = document.createElement('label');
+    row.className = 'cluster-row';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = checked;
+    cb.addEventListener('change', () => onToggle(cb.checked));
+    const sw = document.createElement('span');
+    sw.className = 'swatch';
+    sw.style.background = `rgb(${Math.round(255*colour[0])},${Math.round(255*colour[1])},${Math.round(255*colour[2])})`;
+    const txt = document.createElement('span');
+    txt.textContent = label;
+    row.append(cb, sw, txt);
+    return row;
+}
+
 function renderOverlayItems() {
     const box = document.getElementById('overlayItems');
     box.innerHTML = '';
     if (rimMode === 'cluster' || !OVERLAYS[rimMode]) return;
     const ov = OVERLAYS[rimMode];
+
+    // 'picker' overlays (component): a search box filters the same cluster-row format,
+    // each row a single-select toggle.
     if (ov.kind === 'picker') {
         const search = document.createElement('input');
         search.type = 'text';
         search.placeholder = 'search component (e.g. h.2.attn.q_proj#15)';
         search.style.width = '100%';
-        const results = document.createElement('div');
-        results.style.cssText = 'max-height:200px; overflow:auto; margin-top:4px;';
+        const listEl = document.createElement('div');
+        listEl.style.cssText = 'margin-top:4px;';
         const refresh = () => {
             const q = search.value.toLowerCase();
-            results.innerHTML = '';
+            listEl.innerHTML = '';
             const ids = Object.keys(ov.names)
                 .filter(id => ov.names[id].toLowerCase().includes(q))
                 .sort((a, b) => ov.index[b].length - ov.index[a].length)
-                .slice(0, 100);
+                .slice(0, 200);
             for (const id of ids) {
-                const row = document.createElement('div');
-                row.textContent = `${ov.names[id]} (${ov.index[id].length})`;
-                row.style.cssText = 'cursor:pointer; font-size:11px; padding:2px 4px;'
-                    + (id === selectedPickerId ? 'background:#3b3b46;' : '');
-                row.addEventListener('click', () => {
-                    selectedPickerId = (selectedPickerId === id) ? null : id;
-                    applyTint();
-                    refresh();
-                });
-                results.appendChild(row);
+                listEl.appendChild(overlayRow(
+                    PICKER_HILITE,
+                    `${ov.names[id]} (${ov.index[id].length})`,
+                    id === selectedPickerId,
+                    () => {
+                        selectedPickerId = (selectedPickerId === id) ? null : id;
+                        applyTint();
+                        refresh();
+                    },
+                ));
             }
         };
         search.addEventListener('input', refresh);
-        box.append(search, results);
+        box.append(search, listEl);
         refresh();
         return;
     }
+
     const sel = overlaySelected[rimMode];
+    // 'scored' overlays (module): a threshold slider above the checkbox list.
     if (ov.point_scores) {
-        const wrap = document.createElement('div');
-        wrap.style.cssText = 'margin-bottom:6px;';
         const lab = document.createElement('div');
         lab.className = 'muted';
         const slider = document.createElement('input');
@@ -828,27 +848,28 @@ function renderOverlayItems() {
             overlayThreshold[rimMode] = parseFloat(slider.value);
             setLab(); applyTint();
         });
-        wrap.append(slider, lab);
-        box.appendChild(wrap);
+        box.append(slider, lab);
     }
+
+    const controls = document.createElement('div');
+    const allBtn = document.createElement('button');
+    allBtn.textContent = 'all';
+    const noneBtn = document.createElement('button');
+    noneBtn.textContent = 'none';
+    const setAll = (on) => {
+        if (on) for (const it of ov.items) sel.add(it.id); else sel.clear();
+        renderOverlayItems(); applyTint();
+    };
+    allBtn.addEventListener('click', () => setAll(true));
+    noneBtn.addEventListener('click', () => setAll(false));
+    controls.append(allBtn, noneBtn);
+    box.appendChild(controls);
+
     for (const it of ov.items) {
-        const row = document.createElement('label');
-        row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;';
-        const cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.checked = sel.has(it.id);
-        cb.addEventListener('change', () => {
-            if (cb.checked) sel.add(it.id); else sel.delete(it.id);
+        box.appendChild(overlayRow(it.colour, it.name, sel.has(it.id), (on) => {
+            if (on) sel.add(it.id); else sel.delete(it.id);
             applyTint();
-        });
-        const c = it.colour;
-        const sw = document.createElement('span');
-        sw.style.cssText = `display:inline-block;width:10px;height:10px;border-radius:2px;`
-            + `background:rgb(${c[0]*255|0},${c[1]*255|0},${c[2]*255|0})`;
-        const txt = document.createElement('span');
-        txt.textContent = it.name;
-        row.append(cb, sw, txt);
-        box.appendChild(row);
+        }));
     }
 }
 
