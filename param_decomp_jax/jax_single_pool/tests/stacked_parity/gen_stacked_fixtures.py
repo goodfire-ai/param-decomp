@@ -103,7 +103,7 @@ def main() -> None:
     vu = init_decomp_vu(cfg, C, layer_range.n_layers, random.PRNGKey(1))
     ci_fn = init_ci_fn(CI_ARCH, lm.sites, random.PRNGKey(2))
     sources = init_persistent_sources(
-        lm.site_names, tuple(s.C for s in lm.sites), T, random.PRNGKey(3)
+        lm.site_names, tuple(s.C for s in lm.sites), T, 1, random.PRNGKey(3)
     )
     resid = random.normal(random.PRNGKey(4), (B, T, cfg.n_embd)) * 0.5
 

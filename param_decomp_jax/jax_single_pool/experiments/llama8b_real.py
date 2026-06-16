@@ -176,7 +176,9 @@ def main():
     if args.shard:
         vu = init_decomp_vu_sharded(lm.sites, random.PRNGKey(1), mesh)
         ci_fn = init_ci_fn_sharded(arch, lm.sites, random.PRNGKey(2), mesh)
-        src = init_sources_sharded(lm.site_names, site_Cs, args.seq, random.PRNGKey(3), mesh)
+        src = init_sources_sharded(
+            lm.site_names, site_Cs, args.seq, SCScope(), 1, random.PRNGKey(3), mesh
+        )
     else:
         repl = NamedSharding(mesh, P())
         put = lambda a: jax.device_put(a, repl) if eqx.is_array(a) else a  # noqa: E731
@@ -185,7 +187,7 @@ def main():
         src = {
             k: jax.device_put(v, repl)
             for k, v in init_persistent_sources(
-                lm.site_names, site_Cs, args.seq, random.PRNGKey(3)
+                lm.site_names, site_Cs, args.seq, 1, random.PRNGKey(3)
             ).items()
         }
     resid = shard_batch(resid_global, mesh)
