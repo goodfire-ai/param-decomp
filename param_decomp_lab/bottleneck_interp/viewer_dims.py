@@ -11,18 +11,14 @@ position-manifold view in `viewer_codes.py`.
 """
 
 import argparse
-import json
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import torch
 import umap
-from transformers import AutoTokenizer
 
-from param_decomp_lab.bottleneck_interp.geometry import load_codes
+from param_decomp_lab.bottleneck_interp.harvest_io import load_harvest, token_thumbnails
 from param_decomp_lab.bottleneck_interp.viewer_3d import build_latent_viewer_data, write_viewer_html
-from param_decomp_lab.bottleneck_interp.viewer_codes import token_thumbnails
 
 _BANDS = [(0.0, 0.05, "rare <5%"), (0.05, 0.25, "low"), (0.25, 0.5, "mid"), (0.5, 1.01, "high")]
 _BAND_COLOUR = [[0.84, 0.15, 0.16], [1.0, 0.6, 0.2], [0.17, 0.63, 0.17], [0.12, 0.47, 0.71]]
@@ -46,12 +42,8 @@ def main() -> None:
     ap.add_argument("--run_id", default="bneck-1e-2-dims")
     args = ap.parse_args()
 
-    meta = json.loads((args.codes / "meta.json").read_text())
-    tokenizer: Any = AutoTokenizer.from_pretrained(meta["tokenizer_name"])
-    sequences = torch.load(args.codes / "sequences.pt")
-    flat_tokens = sequences.reshape(-1)
-
-    codes = load_codes(args.codes, args.n_profile)[: args.n_profile].float()  # (P, D)
+    h = load_harvest(args.codes, args.n_profile)
+    codes = h.codes  # (P, D)
     n_pos, dim = codes.shape
     profiles = codes.T.contiguous().numpy()  # (D, P): each dim's activation profile
     print(f"dims {dim}, profile length {n_pos}")
@@ -73,7 +65,7 @@ def main() -> None:
     firing_rate = (codes != 0).float().mean(dim=0).numpy()  # (D,)
     # each dim's top-activating token (within the sampled positions)
     top_pos = codes.abs().argmax(dim=0).numpy()  # (D,) position index per dim
-    top_token_ids = flat_tokens[torch.from_numpy(top_pos.astype(np.int64))].tolist()
+    top_token_ids = h.flat_tokens[torch.from_numpy(top_pos.astype(np.int64))].tolist()
 
     labels = np.array([firing_band(float(r)) for r in firing_rate], dtype=int)
     groups: list[dict[str, object]] = []
@@ -88,7 +80,7 @@ def main() -> None:
             }
         )
 
-    thumbs = token_thumbnails(top_token_ids, tokenizer, args.patch)
+    thumbs = token_thumbnails(top_token_ids, h.tokenizer, args.patch)
 
     data = build_latent_viewer_data(
         points=points,

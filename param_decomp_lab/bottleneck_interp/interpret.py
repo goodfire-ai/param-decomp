@@ -11,7 +11,6 @@ Context window for global position i is sequences[i // seq_len, (i-w) : (i+w+1)]
 
 import argparse
 import json
-from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -19,10 +18,12 @@ from typing import Any
 import numpy as np
 import torch
 from jaxtyping import Float
-from sklearn.cluster import MiniBatchKMeans
-from transformers import AutoTokenizer
 
-from param_decomp_lab.bottleneck_interp.geometry import load_codes
+from param_decomp_lab.bottleneck_interp.harvest_io import (
+    kmeans_regions,
+    load_harvest,
+    top_tokens,
+)
 
 
 @dataclass
@@ -54,11 +55,6 @@ def context_window(
     return f"{before}[[{focus}]]{after}".replace("\n", "\\n")
 
 
-def top_tokens(tokens: torch.Tensor, tokenizer: Any, k: int) -> list[tuple[str, int]]:
-    counts = Counter(tokens.tolist())
-    return [(repr(tokenizer.decode([t])), n) for t, n in counts.most_common(k)]
-
-
 def cluster_regions(
     codes: Float[torch.Tensor, "n D"],
     sequences: torch.Tensor,
@@ -68,9 +64,7 @@ def cluster_regions(
     n_examples: int,
     half: int,
 ) -> list[Region]:
-    x = codes.numpy()
-    km = MiniBatchKMeans(n_clusters=n_regions, random_state=0, n_init="auto", batch_size=4096)
-    labels = km.fit_predict(x)
+    labels = kmeans_regions(codes, n_regions)
     flat_tokens = sequences.reshape(-1)
     out: list[Region] = []
     for r in range(n_regions):
@@ -127,20 +121,18 @@ def main() -> None:
     ap.add_argument("--half", type=int, default=8)
     args = ap.parse_args()
 
-    meta = json.loads((args.codes / "meta.json").read_text())
-    seq_len = meta["seq_len"]
-    tokenizer = AutoTokenizer.from_pretrained(meta["tokenizer_name"])
-    sequences = torch.load(args.codes / "sequences.pt")
-    codes = load_codes(args.codes, args.n_samples)[: args.n_samples]
-    # codes are in flat sequence-major order; align sequences to the same positions
-    n_seq = args.n_samples // seq_len
-    sequences = sequences[:n_seq]
-    codes = codes[: n_seq * seq_len]
-    print(f"codes {tuple(codes.shape)}  sequences {tuple(sequences.shape)}")
+    h = load_harvest(args.codes, args.n_samples)
+    print(f"codes {tuple(h.codes.shape)}  sequences {tuple(h.sequences.shape)}")
 
     args.out.mkdir(parents=True, exist_ok=True)
     regions = cluster_regions(
-        codes, sequences, seq_len, tokenizer, args.n_regions, args.region_examples, args.half
+        h.codes,
+        h.sequences,
+        h.seq_len,
+        h.tokenizer,
+        args.n_regions,
+        args.region_examples,
+        args.half,
     )
     (args.out / "regions.json").write_text(json.dumps([asdict(r) for r in regions], indent=2))
     print(f"wrote {args.n_regions} regions -> {args.out / 'regions.json'}")
@@ -150,7 +142,7 @@ def main() -> None:
 
     if args.dims:
         dims = dim_examples(
-            codes, sequences, seq_len, tokenizer, args.dims, args.dim_examples, args.half
+            h.codes, h.sequences, h.seq_len, h.tokenizer, args.dims, args.dim_examples, args.half
         )
         (args.out / "dim_examples.json").write_text(json.dumps([asdict(d) for d in dims], indent=2))
         print(f"wrote {len(args.dims)} dim example sets -> {args.out / 'dim_examples.json'}")
