@@ -1,6 +1,9 @@
 # JAX leg of the persistent-PGD pile experiment — byte-derived from the stored config of
 # torch run p-20f9fc15 (the pile_llama_simple_mlp-4L baseline; snapshot
-# runs/p-20f9fc15/experiment_config.yaml). Target: LlamaSimpleMLP 4L pile model
+# runs/p-20f9fc15/experiment_config.yaml). This is the same config José used for the
+# paper's parameter decomposition (the "Interpreting Language Model Parameters" 4L Pile
+# run): param_decomp_lab/experiments/lm/pile_llama_simple_mlp-4L.yaml, run as p-20f9fc15.
+# Target: LlamaSimpleMLP 4L pile model
 # (t-9d2b8f02), all h.* sites, per-site C. Adversary: PersistentPGDReconLoss, scope
 # per_batch_per_position (-> bsc), n_warmup_steps=2, Adam(0.5,0.99) lr const 0.01 w/
 # 2.5% warmup, clamp parameterization. Identical to pile_llama_simple_mlp_4l_pgd1.yaml

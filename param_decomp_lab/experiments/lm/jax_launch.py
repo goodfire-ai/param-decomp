@@ -53,9 +53,10 @@ def main(
     """Submit a jsp-train run.
 
     Args:
-        config_path: Wrapper yaml (`{torch_config, run_name, out_dir,
-            remat_recon_forwards}`), inside the repo. `run_id` must be absent —
-            this launcher mints it.
+        config_path: Wrapper yaml (`{torch_config, run_name, remat_recon_forwards}`,
+            with an optional `out_dir` override), inside the repo. `run_id` and
+            `out_dir` are minted here and stamped into the workspace copy; `out_dir`
+            defaults to `PARAM_DECOMP_OUT_DIR/runs` (the current cluster) when absent.
         nodes: Node count (8 GPUs each).
         time: SLURM time limit.
         qos: SLURM QoS (e.g. `opportunistic`); None is the normal QoS.
@@ -129,10 +130,11 @@ def _validate_wrapper(wrapper_path: Path) -> tuple[LMExperimentConfig, str]:
     """Lab-side mirror of `jax_single_pool.torch_config.load_torch_wrapper`'s checks
     (which can't be imported here — that module pulls jax)."""
     raw = yaml.safe_load(wrapper_path.read_text())
-    expected = {"torch_config", "run_name", "out_dir", "remat_recon_forwards"}
-    assert set(raw) == expected, (
-        f"{wrapper_path}: keys must be {sorted(expected)} (run_id is minted at submit), "
-        f"got {sorted(raw)}"
+    required = {"torch_config", "run_name", "remat_recon_forwards"}
+    allowed = required | {"out_dir"}
+    assert required <= set(raw) <= allowed, (
+        f"{wrapper_path}: keys must include {sorted(required)} and may add an out_dir "
+        f"override (run_id and out_dir are minted at submit), got {sorted(raw)}"
     )
     torch_yaml_path = (wrapper_path.parent / raw["torch_config"]).resolve()
     assert torch_yaml_path.exists(), f"torch config not found: {torch_yaml_path}"
@@ -167,9 +169,12 @@ def _build_workspace(workspace: Path, snapshot_ref: str, run_id: str, wrapper_re
     run(["make", "install-jax-cuda"], cwd=workspace)
 
     wrapper = workspace / wrapper_rel
-    assert "run_id" not in yaml.safe_load(wrapper.read_text())
+    stamped = yaml.safe_load(wrapper.read_text())
+    assert "run_id" not in stamped
     with wrapper.open("a") as f:
         f.write(f"\nrun_id: {run_id}\n")
+        if "out_dir" not in stamped:
+            f.write(f"out_dir: {PARAM_DECOMP_OUT_DIR / 'runs'}\n")
 
 
 def _wandb_url(torch_cfg: LMExperimentConfig, run_id: str) -> str | None:
