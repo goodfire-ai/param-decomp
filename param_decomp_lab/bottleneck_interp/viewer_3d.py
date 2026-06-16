@@ -373,14 +373,25 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
   .swatch { width: 12px; height: 12px; border-radius: 2px; flex: 0 0 12px;
             border: 1px solid #3f3f46; }
   .muted { color: #71717a; font-size: 11px; }
-  /* The sequence panel renders the model's actual prompt tokens; set it in a monospace
-     face so it reads as text-being-modelled, distinct from the sans-serif UI chrome. */
-  #seqPanel { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   .comp-id { color: #71717a; font-size: 10px; margin-left: 4px; }
   #hover { position: fixed; left: 12px; bottom: 12px; padding: 8px 10px;
            background: rgba(15,15,20,0.92); border: 1px solid #27272a;
            border-radius: 4px; font-size: 12px; pointer-events: none;
            display: none; }
+  /* Bottom bar: the focused token's sequence on one line, centred on that token,
+     flanked by the step arrows; a back button restores the previous focus. */
+  #seqBar { position: fixed; left: 12px; right: 600px; bottom: 12px; display: none;
+            align-items: center; gap: 6px; padding: 6px 8px;
+            background: rgba(15,15,20,0.94); border: 1px solid #27272a;
+            border-radius: 6px; }
+  #seqLine { flex: 1; overflow: hidden; white-space: nowrap; min-width: 0;
+             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+             font-size: 12px; line-height: 1.6; scroll-behavior: smooth; }
+  #seqLine .focus-tok { background: #fde047; color: #000; border-radius: 2px; }
+  #seqBar button { flex: 0 0 auto; }
+  #seqBar .seq-meta { flex: 0 0 auto; font-size: 11px; color: #71717a;
+                      max-width: 180px; overflow: hidden; text-overflow: ellipsis;
+                      white-space: nowrap; }
   button { background: #3f3f46; color: #e4e4e7; border: none; padding: 4px 8px;
            border-radius: 3px; cursor: pointer; font-size: 12px; }
   button:hover { background: #52525b; }
@@ -401,13 +412,8 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
 
   <section id="seqSection" style="display:none;">
     <h2>Sequence</h2>
-    <div class="row" style="align-items:center;">
-      <button id="seqPrev" disabled>&#9664; prev token</button>
-      <button id="seqNext" disabled>next token &#9654;</button>
-    </div>
-    <div class="muted" id="seqHint">click a point to show its sequence</div>
+    <div class="muted" id="seqHint">click a point — its sequence shows along the bottom</div>
     <label><input type="checkbox" id="flowLines"> flow line for this sequence (rainbow by position)</label>
-    <div id="seqPanel" style="max-height:240px; overflow:auto; line-height:1.7; font-size:12px;"></div>
   </section>
 
   <section id="atlasSection">
@@ -416,7 +422,7 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
   </section>
 
   <h2>Thumbnail size</h2>
-  <input type="range" id="thumbSize" min="1" max="50" value="14" step="1" style="width:100%">
+  <input type="range" id="thumbSize" min="0.2" max="50" value="14" step="0.2" style="width:100%">
 
   <section id="synthSection">
     <h2>Synthetic atoms</h2>
@@ -505,6 +511,13 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
   <div class="muted" id="borderLabel">no border</div>
 </div>
 <div id="hover"></div>
+<div id="seqBar">
+  <button id="seqBack" title="back to previous focus (history)" disabled>&#8617; back</button>
+  <button id="seqPrev" title="previous token (&larr;)" disabled>&#9664;</button>
+  <div id="seqLine"></div>
+  <button id="seqNext" title="next token (&rarr;)" disabled>&#9654;</button>
+  <span class="seq-meta" id="seqMeta"></span>
+</div>
 
 <script type="importmap">
 {
@@ -1745,20 +1758,26 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
 let pivotLock = -1;
 const pivotMarker = new THREE.Mesh(
     new THREE.SphereGeometry(0.15, 16, 12),
-    new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.6 })
+    new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.2 })
 );
 pivotMarker.visible = false;
 scene.add(pivotMarker);
 
 const SEQ = DATA.seq || null;
 const seqSectionEl = document.getElementById('seqSection');
-const seqPanelEl = document.getElementById('seqPanel');
 const seqHintEl = document.getElementById('seqHint');
+const seqBarEl = document.getElementById('seqBar');
+const seqLineEl = document.getElementById('seqLine');
+const seqMetaEl = document.getElementById('seqMeta');
 const seqPrevEl = document.getElementById('seqPrev');
 const seqNextEl = document.getElementById('seqNext');
+const seqBackEl = document.getElementById('seqBack');
 // (sequence, position) -> point index, so the prev/next arrows can walk the centred token
 // along its sequence one token at a time.
 const seqPosToPoint = new Map();
+// Focus history: each selectPoint pushes the previous focus so 'back' can undo a misclick
+// (clicking a thumbnail behind the intended one) or retrace a step-through.
+const focusHistory = [];
 if (SEQ) {
     seqSectionEl.style.display = 'block';
     for (let i = 0; i < N; i++) seqPosToPoint.set(SEQ.point_seq[i] * 100000 + SEQ.point_pos[i], i);
@@ -1768,6 +1787,7 @@ if (SEQ) {
     });
     seqPrevEl.addEventListener('click', () => stepSequence(-1));
     seqNextEl.addEventListener('click', () => stepSequence(1));
+    seqBackEl.addEventListener('click', goBack);
 }
 
 function stepSequence(delta) {
@@ -1777,29 +1797,44 @@ function stepSequence(delta) {
     if (next !== undefined) selectPoint(next);
 }
 
+function goBack() {
+    if (focusHistory.length === 0) return;
+    const prev = focusHistory.pop();
+    selectPoint(prev, true);  // don't re-push: this IS the undo
+}
+
 function renderSequence(idx) {
     if (!SEQ) return;
     const s = SEQ.point_seq[idx], p = SEQ.point_pos[idx];
     const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;').replace(/\\n/g, '\\\\n');
-    seqPanelEl.innerHTML = SEQ.tokens[s].map((t, i) => i === p
-        ? `<span style="background:#fde047;color:#000;border-radius:2px;">${esc(t)}</span>`
-        : esc(t)).join('');
-    seqHintEl.textContent = `sequence ${s}, position ${p}`;
+        .replace(/>/g, '&gt;').replace(/\\n/g, '\\u23ce');  // show newlines as a glyph on one line
+    seqLineEl.innerHTML = SEQ.tokens[s].map((t, i) => i === p
+        ? `<span class="focus-tok" id="seqFocusTok">${esc(t)}</span>`
+        : `<span>${esc(t)}</span>`).join('');
+    seqMetaEl.textContent = `seq ${s} · pos ${p}`;
+    seqHintEl.textContent = `showing sequence ${s}, position ${p} (bottom bar)`;
     seqPrevEl.disabled = !seqPosToPoint.has(s * 100000 + (p - 1));
     seqNextEl.disabled = !seqPosToPoint.has(s * 100000 + (p + 1));
+    seqBackEl.disabled = focusHistory.length === 0;
+    // Scroll the single line so the focused token sits in the centre of the bar.
+    const tok = document.getElementById('seqFocusTok');
+    if (tok) seqLineEl.scrollLeft = tok.offsetLeft - seqLineEl.clientWidth / 2 + tok.offsetWidth / 2;
 }
 
-function selectPoint(idx) {
+function selectPoint(idx, fromBack = false) {
+    if (!fromBack && pivotLock >= 0 && pivotLock !== idx) focusHistory.push(pivotLock);
     pivotLock = idx;
     updateOrbitTarget();
-    renderSequence(idx);
+    if (SEQ) { seqBarEl.style.display = 'flex'; renderSequence(idx); }
     updateFlowLines();
 }
 function clearPivot() {
     pivotLock = -1;
     updateOrbitTarget();
-    if (SEQ) { seqPrevEl.disabled = true; seqNextEl.disabled = true; }
+    if (SEQ) {
+        seqBarEl.style.display = 'none';
+        seqPrevEl.disabled = true; seqNextEl.disabled = true;
+    }
 }
 
 let downX = 0, downY = 0, downT = 0;
@@ -1814,6 +1849,16 @@ renderer.domElement.addEventListener('pointerup', (e) => {
     pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     const idx = pickNearest();
     if (idx >= 0) selectPoint(idx); else clearPivot();
+});
+
+// Left/Right arrow keys step the focused token along its sequence (mirrors the bottom-bar
+// arrows). Ignored while typing in a field so the component search box still works.
+window.addEventListener('keydown', (e) => {
+    if (!SEQ || pivotLock < 0) return;
+    const t = document.activeElement;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
+    if (e.key === 'ArrowLeft') { stepSequence(-1); e.preventDefault(); }
+    else if (e.key === 'ArrowRight') { stepSequence(1); e.preventDefault(); }
 });
 
 function pickNearest() {

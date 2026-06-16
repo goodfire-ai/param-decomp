@@ -74,7 +74,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--codes", required=True, type=Path, help="context-preserving harvest dir")
     ap.add_argument("--out", required=True, type=Path, help="output .html path")
-    ap.add_argument("--n_sequences", type=int, default=60, help="whole sequences to sample")
+    ap.add_argument("--n_sequences", type=int, default=120, help="whole sequences to sample")
     ap.add_argument("--n_regions", type=int, default=20)
     ap.add_argument("--patch", type=int, default=40)
     ap.add_argument("--run_id", default="bneck-1e-2")
