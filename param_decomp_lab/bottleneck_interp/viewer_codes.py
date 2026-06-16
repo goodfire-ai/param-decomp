@@ -47,6 +47,28 @@ def _module_colour(module_name: str) -> list[float]:
     return [0.5, 0.5, 0.5]
 
 
+def _component_overlay(
+    coo: dict[str, torch.Tensor], component_names: list[str], flat_idx: torch.Tensor
+) -> dict[str, object]:
+    """Invert the active-component COO onto the sampled points: {component id -> sampled
+    point ids where active} + names, for the viewer's component picker."""
+    remap = torch.full((int(flat_idx.max()) + 1,), -1, dtype=torch.long)
+    remap[flat_idx] = torch.arange(len(flat_idx))
+    pt, cp = coo["point"].long(), coo["comp"].long()
+    in_range = pt < remap.shape[0]
+    pt, cp = pt[in_range], cp[in_range]
+    keep = remap[pt] >= 0
+    sampled_pt = remap[pt[keep]].numpy()
+    comp = cp[keep].numpy()
+    order = comp.argsort(kind="stable")
+    comp_s, pt_s = comp[order], sampled_pt[order]
+    uniq, starts = np.unique(comp_s, return_index=True)
+    bounds = list(starts) + [len(comp_s)]
+    index = {str(int(c)): pt_s[bounds[k] : bounds[k + 1]].tolist() for k, c in enumerate(uniq)}
+    names = {str(int(c)): component_names[int(c)] for c in uniq}
+    return {"kind": "picker", "index": index, "names": names}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--codes", required=True, type=Path, help="context-preserving harvest dir")
@@ -147,6 +169,14 @@ def main() -> None:
             "point_scores": point_scores,
             "default_threshold": args.module_threshold,
         }
+
+    # Component rim overlay (B3): for each global component active somewhere in the sample,
+    # the list of sampled points where it is CI-active. The viewer's picker selects one
+    # component by name and rims those points.
+    if h.active_components is not None and h.component_names is not None:
+        data.setdefault("overlays", {})["component"] = _component_overlay(
+            h.active_components, h.component_names, flat_idx
+        )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     write_viewer_html(data, args.out, run_id=args.run_id, subtitle="bottleneck code manifold")

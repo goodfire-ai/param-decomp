@@ -79,6 +79,7 @@ def harvest_codes(
     positions_per_chunk: int,
     device: str,
     module_ci_threshold: float,
+    store_components: bool,
 ) -> None:
     pd_run = SavedLMRun.from_path(run_path)
     model = pd_run.load_model().to(device).eval()
@@ -108,6 +109,14 @@ def harvest_codes(
     # its components is causally important (lower-leaky CI > threshold) at that position.
     module_names: list[str] = []
     module_frac_buf: list[Int[Tensor, "n M"]] = []
+    # Optional per-position active-component COO (for the component rim overlay): flat
+    # (position, global_component_id) pairs where lower-leaky CI > threshold. Global ids
+    # number components across modules in sorted-module order; component_names maps them.
+    comp_offsets: dict[str, int] = {}
+    component_names: list[str] = []
+    coo_point_buf: list[Int[Tensor, " nnz"]] = []
+    coo_comp_buf: list[Int[Tensor, " nnz"]] = []
+    pos_offset = 0
     seq_len = -1
     buffered = 0
     chunk_idx = 0
@@ -152,6 +161,22 @@ def harvest_codes(
         )  # [n, M] in [0, 1]
         module_frac_u8 = (module_frac * 255).round().clamp(0, 255).to(torch.uint8)
 
+        if store_components:
+            if not comp_offsets:
+                off = 0
+                for m in module_names:
+                    comp_offsets[m] = off
+                    c = ci.lower_leaky[m].shape[-1]
+                    component_names.extend(f"{m}#{j}" for j in range(c))
+                    off += c
+            n_this = flat_codes.shape[0]
+            for m in module_names:
+                ll = ci.lower_leaky[m].reshape(n_this, -1)
+                rows, locals_ = (ll > module_ci_threshold).nonzero(as_tuple=True)
+                coo_point_buf.append((rows + pos_offset).to(torch.int32).cpu())
+                coo_comp_buf.append((locals_ + comp_offsets[m]).to(torch.int32).cpu())
+            pos_offset += n_this
+
         stats.update(flat_codes)
         code_buf.append(flat_codes.half().cpu())
         tok_buf.append(flat_toks.to(torch.int32).cpu())
@@ -169,6 +194,12 @@ def harvest_codes(
     # Used to recover context windows for activating examples.
     torch.save(torch.cat(seq_buf, dim=0), out_dir / "sequences.pt")
     torch.save(torch.cat(module_frac_buf, dim=0), out_dir / "module_frac.pt")
+    if store_components:
+        torch.save(
+            {"point": torch.cat(coo_point_buf), "comp": torch.cat(coo_comp_buf)},
+            out_dir / "active_components.pt",
+        )
+        (out_dir / "component_names.json").write_text(json.dumps(component_names))
     meta = {
         "run_path": run_path,
         "dim": dim,
@@ -194,6 +225,11 @@ def main() -> None:
     ap.add_argument("--positions_per_chunk", type=int, default=500_000)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--module_ci_threshold", type=float, default=0.1)
+    ap.add_argument(
+        "--components",
+        action="store_true",
+        help="also store per-position active-component COO (for the component overlay)",
+    )
     args = ap.parse_args()
     harvest_codes(
         run_path=args.run,
@@ -203,6 +239,7 @@ def main() -> None:
         positions_per_chunk=args.positions_per_chunk,
         device=args.device,
         module_ci_threshold=args.module_ci_threshold,
+        store_components=args.components,
     )
 
 

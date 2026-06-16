@@ -722,13 +722,16 @@ const overlaySelected = {};
 const overlayThreshold = {};
 for (const k of Object.keys(OVERLAYS)) {
     const ov = OVERLAYS[k];
+    if (!ov.items) continue;  // 'picker' overlays (component) have no item list
     ov.colourById = new Map();
     for (const it of ov.items) ov.colourById.set(it.id, it.colour);
     overlaySelected[k] = new Set(ov.items.map(it => it.id));
     overlayThreshold[k] = (ov.default_threshold ?? 0.05);  // scored overlays only
 }
 let rimMode = 'cluster';
+let selectedPickerId = null;  // for 'picker' overlays (component)
 const DIM_TINT = [0.16, 0.16, 0.18];
+const PICKER_HILITE = [1.0, 0.85, 0.2];
 
 // A point's rim under an overlay is the colour of the first SELECTED item active there.
 // 'set' overlays use point_items (membership); 'scored' overlays use point_scores (uint8)
@@ -752,6 +755,14 @@ function applyTint() {
             tints[i*3+1] = origTint[i*3+1];
             tints[i*3+2] = origTint[i*3+2];
         }
+    } else if (OVERLAYS[rimMode].kind === 'picker') {
+        for (let i = 0; i < N; i++) {
+            tints[i*3] = DIM_TINT[0]; tints[i*3+1] = DIM_TINT[1]; tints[i*3+2] = DIM_TINT[2];
+        }
+        const pts = (selectedPickerId != null) ? OVERLAYS[rimMode].index[selectedPickerId] : null;
+        if (pts) for (const p of pts) {
+            tints[p*3] = PICKER_HILITE[0]; tints[p*3+1] = PICKER_HILITE[1]; tints[p*3+2] = PICKER_HILITE[2];
+        }
     } else {
         const ov = OVERLAYS[rimMode];
         const sel = overlaySelected[rimMode];
@@ -769,6 +780,38 @@ function renderOverlayItems() {
     box.innerHTML = '';
     if (rimMode === 'cluster' || !OVERLAYS[rimMode]) return;
     const ov = OVERLAYS[rimMode];
+    if (ov.kind === 'picker') {
+        const search = document.createElement('input');
+        search.type = 'text';
+        search.placeholder = 'search component (e.g. h.2.attn.q_proj#15)';
+        search.style.width = '100%';
+        const results = document.createElement('div');
+        results.style.cssText = 'max-height:200px; overflow:auto; margin-top:4px;';
+        const refresh = () => {
+            const q = search.value.toLowerCase();
+            results.innerHTML = '';
+            const ids = Object.keys(ov.names)
+                .filter(id => ov.names[id].toLowerCase().includes(q))
+                .sort((a, b) => ov.index[b].length - ov.index[a].length)
+                .slice(0, 100);
+            for (const id of ids) {
+                const row = document.createElement('div');
+                row.textContent = `${ov.names[id]} (${ov.index[id].length})`;
+                row.style.cssText = 'cursor:pointer; font-size:11px; padding:2px 4px;'
+                    + (id === selectedPickerId ? 'background:#3b3b46;' : '');
+                row.addEventListener('click', () => {
+                    selectedPickerId = (selectedPickerId === id) ? null : id;
+                    applyTint();
+                    refresh();
+                });
+                results.appendChild(row);
+            }
+        };
+        search.addEventListener('input', refresh);
+        box.append(search, results);
+        refresh();
+        return;
+    }
     const sel = overlaySelected[rimMode];
     if (ov.point_scores) {
         const wrap = document.createElement('div');

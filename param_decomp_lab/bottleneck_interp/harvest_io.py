@@ -62,6 +62,11 @@ class Harvest:
     flat_tokens: Int[Tensor, " n"]
     module_names: list[str] | None
     module_frac: Float[Tensor, "n M"] | None
+    # Active-component COO (present only with a --components harvest): `active_components`
+    # is {"point": [nnz], "comp": [nnz]} flat indices into positions / global component
+    # ids; `component_names` maps a global component id to "module#local".
+    component_names: list[str] | None
+    active_components: dict[str, Tensor] | None
 
 
 def load_harvest(code_dir: Path, max_positions: int) -> Harvest:
@@ -75,6 +80,11 @@ def load_harvest(code_dir: Path, max_positions: int) -> Harvest:
     module_frac = (
         torch.load(frac_path)[: codes.shape[0]].float() / 255.0 if frac_path.exists() else None
     )
+
+    comp_path = code_dir / "active_components.pt"
+    names_path = code_dir / "component_names.json"
+    active_components = torch.load(comp_path) if comp_path.exists() else None
+    component_names = json.loads(names_path.read_text()) if names_path.exists() else None
     return Harvest(
         meta=meta,
         seq_len=meta["seq_len"],
@@ -84,6 +94,8 @@ def load_harvest(code_dir: Path, max_positions: int) -> Harvest:
         flat_tokens=flat_tokens,
         module_names=meta.get("module_names"),
         module_frac=module_frac,
+        component_names=component_names,
+        active_components=active_components,
     )
 
 
