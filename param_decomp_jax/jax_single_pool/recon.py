@@ -19,6 +19,7 @@ from jaxtyping import Array, PRNGKeyArray
 from jax_single_pool.lm import chunk_sites
 from param_decomp_config.losses import (
     AdamPGDConfig,
+    BSCScope,
     ChunkwiseSubsetReconLossConfig,
     CIMaskedReconLayerwiseLossConfig,
     CIMaskedReconLossConfig,
@@ -283,7 +284,9 @@ class LossSpec:
 
 
 def _assert_supported_persistent(cfg: PersistentPGDReconLossConfig) -> None:
-    assert isinstance(cfg.scope, SCScope), f"persistent scope {cfg.scope} unsupported (sc only)"
+    assert isinstance(cfg.scope, SCScope | BSCScope), (
+        f"persistent scope {cfg.scope} unsupported (sc/bsc only)"
+    )
     assert not cfg.use_sigmoid_parameterization, cfg
     optimizer = cfg.optimizer
     assert isinstance(optimizer, AdamPGDConfig), optimizer

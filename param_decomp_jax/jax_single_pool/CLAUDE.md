@@ -4,12 +4,14 @@ Single-pool VPD trainer in JAX, **generic over vendored LM targets**. The semant
 source of truth is `SPEC.md` (normative pseudocode + numbered invariants, grounded in
 the stable torch `param_decomp` impl). See `README.md` for the file map.
 
-Open items: persistent-source scopes beyond `sc`, sigmoid parameterization, and the
+Open items: persistent-source scopes `c`/`nsc`, sigmoid parameterization, and the
 hidden-acts seam are deliberately refused (SPEC S31, LOSS_PARITY_DESIGN §6 stage 4 —
-hidden-acts is keep-on-bridge); persistent `start_frac>0` is now implemented (SPEC S32,
-`term_active` `where`-gating); SPEC S24's two torch-parity quirks (PPGD warmup
-route-all, fresh-PGD single routing draw) are pinned pending a team decision. CI-fn
-numerics are unified with the torch oracle (#624/#625/#730 resolved): GELU is exact-erf
+hidden-acts is keep-on-bridge). `sc` and `bsc` are supported (`bsc` is batch-sharded:
+an independent source per batch element and position, no cross-replica sync — SPEC
+S16/D1). Persistent `start_frac>0` is now implemented (SPEC S32, `term_active`
+`where`-gating); SPEC S24's two torch-parity quirks (PPGD warmup route-all, fresh-PGD
+single routing draw) are pinned pending a team decision. CI-fn numerics are unified
+with the torch oracle (#624/#625/#730 resolved): GELU is exact-erf
 (`approximate=False`) and RMSNorm eps is `finfo(fp32).eps` (`CI_FN_RMS_EPS`).
 
 ## The one rule

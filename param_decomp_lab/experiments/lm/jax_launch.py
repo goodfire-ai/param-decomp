@@ -19,9 +19,12 @@ import yaml
 
 from param_decomp.log import logger
 from param_decomp_config.jax_wrapper import (
+    AUTHOR_OVERRIDABLE_KEYS,
+    OUT_DIR_KEY,
     RUN_ID_KEY,
     SUBMIT_MINTED_KEYS,
     WRAPPER_KEYS_BEFORE_SUBMIT,
+    WRAPPER_REQUIRED_BEFORE_SUBMIT,
 )
 from param_decomp_config.lm import LMExperimentConfig
 from param_decomp_lab.infra.git import create_git_snapshot
@@ -61,9 +64,10 @@ def main(
     """Submit a jsp-train run.
 
     Args:
-        config_path: Wrapper yaml (`{torch_config, run_name, out_dir,
-            remat_recon_forwards}`), inside the repo. `run_id` must be absent —
-            this launcher mints it.
+        config_path: Wrapper yaml (`{torch_config, run_name, remat_recon_forwards}`,
+            with an optional `out_dir` override), inside the repo. `run_id` and
+            `out_dir` are minted here and stamped into the workspace copy; `out_dir`
+            defaults to `PARAM_DECOMP_OUT_DIR/runs` (the current cluster) when absent.
         nodes: Node count (8 GPUs each).
         time: SLURM time limit.
         qos: SLURM QoS (e.g. `opportunistic`); None is the normal QoS.
@@ -146,9 +150,11 @@ def _validate_wrapper(wrapper_path: Path) -> tuple[LMExperimentConfig, str]:
     are minted and appended at submit, so a hand-authored wrapper carries exactly
     `WRAPPER_KEYS_BEFORE_SUBMIT`."""
     raw = yaml.safe_load(wrapper_path.read_text())
-    assert set(raw) == WRAPPER_KEYS_BEFORE_SUBMIT, (
-        f"{wrapper_path}: keys must be {sorted(WRAPPER_KEYS_BEFORE_SUBMIT)} "
-        f"({sorted(SUBMIT_MINTED_KEYS)} are stamped at submit), got {sorted(raw)}"
+    assert WRAPPER_REQUIRED_BEFORE_SUBMIT <= set(raw) <= WRAPPER_KEYS_BEFORE_SUBMIT, (
+        f"{wrapper_path}: keys must include {sorted(WRAPPER_REQUIRED_BEFORE_SUBMIT)} "
+        f"and may add {sorted(AUTHOR_OVERRIDABLE_KEYS)} "
+        f"({sorted(SUBMIT_MINTED_KEYS)} are stamped at submit, {sorted(AUTHOR_OVERRIDABLE_KEYS)} "
+        f"minted if absent), got {sorted(raw)}"
     )
     torch_yaml_path = (wrapper_path.parent / raw["torch_config"]).resolve()
     assert torch_yaml_path.exists(), f"torch config not found: {torch_yaml_path}"
@@ -190,13 +196,16 @@ def _build_workspace(
     run(["make", "install-jax-cuda"], cwd=workspace)
 
     wrapper = workspace / wrapper_rel
+    authored = yaml.safe_load(wrapper.read_text())
     stamped: dict[str, str | list[str]] = {RUN_ID_KEY: run_id}
     if group is not None:
         stamped["wandb_group"] = group
     if tags:
         stamped["wandb_tags"] = tags
-    assert set(stamped) <= SUBMIT_MINTED_KEYS
-    assert not (set(stamped) & set(yaml.safe_load(wrapper.read_text())))
+    if OUT_DIR_KEY not in authored:
+        stamped[OUT_DIR_KEY] = str(PARAM_DECOMP_OUT_DIR / "runs")
+    assert set(stamped) <= SUBMIT_MINTED_KEYS | AUTHOR_OVERRIDABLE_KEYS
+    assert not (set(stamped) & set(authored))
     with wrapper.open("a") as f:
         f.write("\n" + yaml.safe_dump(stamped, sort_keys=False))
 

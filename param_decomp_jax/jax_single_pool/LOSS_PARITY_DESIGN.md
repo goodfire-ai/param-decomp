@@ -366,14 +366,14 @@ divisibility for `nsc`) becomes a converter assert.
 | `ImportanceMinimalityLoss` | **already-runnable** | S7–S9, D2; `p_anneal_final_p=None` (constant p) is a trivial assert-relax |
 | `ChunkwiseSubsetReconLoss` | **already-runnable** | the production stochastic term |
 | `StochasticReconSubsetLoss` (uniform_k) | **already-runnable** | converted today as 1-chunk plan |
-| `PersistentPGDReconLoss` (sc, Adam, clamp) | **already-runnable** | the production adversary |
+| `PersistentPGDReconLoss` (sc/bsc, Adam, clamp) | **already-runnable** | the production adversary; `bsc` is batch-sharded (`P("dp", None, None)`), no replica sync |
 | `PGDReconLoss` (as the single adversary; as eval probe) | **already-runnable** | both paths exist |
 | `UnmaskedReconLoss` | **composition-only** | `ConstantSources(1.0)`; optional `has_delta` static flag |
 | `CIMaskedReconLoss` / `Subset` / `Layerwise` | **composition-only** | `ConstantSources(0.0)` × plan shape; `static_probability` routing sampler is ~5 lines |
 | `StochasticReconLoss` / `Layerwise` | **composition-only** | plan shapes; `binomial` sampling = one `random.bernoulli` branch |
 | `PGDReconSubsetLoss` / `Layerwise` | **composition-only** | `FreshPGDSources` per entry + Q2 routing-draw sharing; `bc` scope shape exists in `init_fresh_pgd_sources` already |
 | `PersistentPGDReconSubsetLoss` | **composition-only** | needs warmup-plan/loss-plan split (Q1) + routed loss fwds |
-| PPGD scopes `c`/`nsc`/`bsc` | **composition-only** | source-shape variants of `init_persistent_sources` + Q4 note; `bsc` needs no replica sync (S16 already covers) |
+| PPGD scopes `c`/`nsc` | **composition-only** | source-shape variants of `init_persistent_sources` + Q4 note (`bsc` now implemented: batch-sharded, no replica sync per S16) |
 | PPGD `sign` SRC_STEP, sigmoid parameterization, `n_samples>1` | **composition-only** | SPEC §6 already names them as variation points |
 | multiple simultaneous loss/adversary terms | **composition-only** | §2.2 TrainState dicts + per-term S14 |
 | PPGD `start_frac > 0` | **implemented (2026-06-16)** | Q3 — `term_active` `where`-gating, SPEC S32 |

@@ -89,7 +89,13 @@ def _build_sharded(seed: int):
     site_cs = tuple(s.C for s in lm.sites)
     sources = {
         name: init_sources_sharded(
-            lm.site_names, site_cs, seq, jax.random.fold_in(jax.random.PRNGKey(seed + 2), i), mesh
+            lm.site_names,
+            site_cs,
+            seq,
+            SCScope(),
+            mesh.devices.size,
+            jax.random.fold_in(jax.random.PRNGKey(seed + 2), i),
+            mesh,
         )
         for i, name in enumerate(PERSISTENT_TERMS)
     }
