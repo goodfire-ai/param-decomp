@@ -1,0 +1,10 @@
+# 8-GPU step-speed benchmark wrapper. Run directly on an 8-GPU box:
+#   cd param_decomp_jax && jsp-train jax_single_pool/configs/llama8b_l18_stepbench_from_torch.yaml
+# (single process sees all 8 local GPUs -> 8-way dp mesh; no SLURM/torchrun needed).
+# Watch stdout for `train/perf/step_time_s`, `tok_per_s`, `tok_per_s_per_gpu`,
+# `train/mem/peak_gb_per_rank` — ignore the first window (XLA compile), read the
+# steady-state ones. Set out_dir for your machine.
+torch_config: torch/llama8b_l18_stepbench_1pool.yaml
+run_name: ai-jax-l18-stepbench-8gpu
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/jax_runs
+remat_recon_forwards: true
