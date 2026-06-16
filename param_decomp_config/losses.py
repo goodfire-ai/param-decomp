@@ -100,9 +100,10 @@ class ChunkwiseSubsetReconLossConfig(LossMetricConfig):
     clean logits (when `use_fused_kl`). The total is the mean over all chunk forwards of
     `recon_loss / n_positions`, matching the 2-pool's per-step recon.
 
-    The impl (`param_decomp_lab.metrics.chunkwise_subset_recon`) lives lab-side: it
-    needs the vendored `LMComponentModel` (fused-KL LM-head bypass) and the lab
-    recon-plan machinery. The lab FSDP trainer dispatches this `type` to the lab class.
+    The JAX single-pool trainer implements this natively: `recon.build_recon_terms`
+    maps this `type` onto `recon.subset_chunk_plan` (a parameterization of the one
+    `chunkwise_plan` builder), and the jitted step runs the chunk forwards directly —
+    no vendored `LMComponentModel` or lab recon-plan machinery is involved.
     """
 
     type: Literal["ChunkwiseSubsetReconLoss"] = "ChunkwiseSubsetReconLoss"
@@ -236,14 +237,16 @@ PersistentPGDSourceScope = Annotated[
 ]
 
 
-class _PersistentPGDBaseConfig(LossMetricConfig):
-    """Shared fields for persistent PGD configs.
+class PersistentPGDReconLossConfig(LossMetricConfig):
+    """Persistent-PGD recon loss: adversarial mask sources persist across train steps,
+    routed to all layers every forward.
 
     `update()` returns `None` before `start_frac` of training. Under
     `use_sigmoid_parameterization=True` sources are unconstrained and read via sigmoid;
     otherwise sources are clamped to `[0, 1]` after each step.
     """
 
+    type: Literal["PersistentPGDReconLoss"] = "PersistentPGDReconLoss"
     optimizer: Annotated[PGDOptimizerConfig, Field(discriminator="type")]
     scope: PersistentPGDSourceScope
     use_sigmoid_parameterization: bool = False
@@ -256,14 +259,3 @@ class _PersistentPGDBaseConfig(LossMetricConfig):
     )
     start_frac: Probability = 0.0
     n_samples: PositiveInt = 1
-
-
-class PersistentPGDReconLossConfig(_PersistentPGDBaseConfig):
-    type: Literal["PersistentPGDReconLoss"] = "PersistentPGDReconLoss"
-
-
-class PersistentPGDReconSubsetLossConfig(_PersistentPGDBaseConfig):
-    type: Literal["PersistentPGDReconSubsetLoss"] = "PersistentPGDReconSubsetLoss"
-    routing: Annotated[
-        SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
-    ]

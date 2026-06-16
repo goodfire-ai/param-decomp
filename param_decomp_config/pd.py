@@ -28,7 +28,6 @@ from param_decomp_config.losses import (
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
-    PersistentPGDReconSubsetLossConfig,
     PGDReconLayerwiseLossConfig,
     PGDReconLossConfig,
     PGDReconSubsetLossConfig,
@@ -62,7 +61,6 @@ AnyLossMetricConfig = Annotated[
     | FaithfulnessLossConfig
     | ImportanceMinimalityLossConfig
     | PersistentPGDReconLossConfig
-    | PersistentPGDReconSubsetLossConfig
     | PGDReconLayerwiseLossConfig
     | PGDReconLossConfig
     | PGDReconSubsetLossConfig

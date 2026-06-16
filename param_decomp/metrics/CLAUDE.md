@@ -86,6 +86,7 @@ These two concepts both show up in the PGD metrics and are easy to confuse:
 
 ## PPGD note
 
-PPGD's state machine lives in `persistent_pgd_state.py` (shared); its `Metric`
-classes + configs live in `persistent_pgd_recon.py`. The split is so the subset
-variant (`PersistentPGDReconSubsetLoss`) can reuse the same state machine.
+PPGD's state machine lives in `persistent_pgd_state.py`; its `Metric` class
+(`PersistentPGDReconLoss`, route-all only) lives in `persistent_pgd_recon.py`. There is
+no subset variant — PPGD+subset is structurally banned (#584): persistent adversarial
+sources only ever route to all layers.

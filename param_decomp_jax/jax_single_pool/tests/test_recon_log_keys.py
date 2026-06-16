@@ -25,7 +25,6 @@ from param_decomp_config.losses import (
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
-    PersistentPGDReconSubsetLossConfig,
     PGDReconLayerwiseLossConfig,
     PGDReconLossConfig,
     PGDReconSubsetLossConfig,
@@ -61,9 +60,6 @@ RECON_CONFIGS = (
     ),
     PGDReconSubsetLossConfig(coeff=1.0, init="random", step_size=0.1, n_steps=1, mask_scope="bsc"),
     PersistentPGDReconLossConfig(coeff=1.0, optimizer=_persistent_optimizer(), scope=SCScope()),
-    PersistentPGDReconSubsetLossConfig(
-        coeff=1.0, optimizer=_persistent_optimizer(), scope=SCScope()
-    ),
 )
 
 

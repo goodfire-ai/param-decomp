@@ -15,7 +15,7 @@ from jaxtyping import Float
 from torch import Tensor
 
 from param_decomp.distributed import active_reduction_group, all_reduce, is_distributed
-from param_decomp.masks import AllLayersRouter, Router, get_subset_router
+from param_decomp.masks import AllLayersRouter
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.persistent_pgd_state import (
@@ -28,23 +28,7 @@ from param_decomp.metrics.stochastic_hidden_acts_recon import (
     calc_hidden_acts_mse,
     compute_per_module_metrics,
 )
-from param_decomp_config.losses import (
-    LossMetricConfig,
-    NSCScope,
-    PersistentPGDReconLossConfig,
-    PersistentPGDReconSubsetLossConfig,
-)
-
-
-def _router_for_cfg(
-    cfg: PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig,
-    device: torch.device | str,
-) -> Router:
-    match cfg:
-        case PersistentPGDReconLossConfig():
-            return AllLayersRouter()
-        case PersistentPGDReconSubsetLossConfig(routing=routing):
-            return get_subset_router(routing, device)
+from param_decomp_config.losses import LossMetricConfig, NSCScope, PersistentPGDReconLossConfig
 
 
 def validate_pgd_scope(
@@ -63,9 +47,7 @@ def validate_pgd_scope(
     )
     per_rank = batch_size // world_size
     for cfg in loss_metrics:
-        if isinstance(
-            cfg, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig
-        ) and isinstance(cfg.scope, NSCScope):
+        if isinstance(cfg, PersistentPGDReconLossConfig) and isinstance(cfg.scope, NSCScope):
             n = cfg.scope.n_sources
             assert per_rank % n == 0, (
                 f"{cfg.type}: repeat_across_batch n_sources={n} must divide "
@@ -73,10 +55,11 @@ def validate_pgd_scope(
             )
 
 
-class _PersistentPGDReconBase[
-    TConfig: PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig
-](Metric[TConfig]):
-    """Shared logic between all-layers and subset PPGD recon metrics.
+class PersistentPGDReconLoss(Metric[PersistentPGDReconLossConfig]):
+    """PPGD adversarial-mask recon loss (routes to all layers).
+
+    Drives components to reconstruct the target output under adversarially-optimised
+    masks whose source tensors persist across training steps.
 
     Lazily constructs the `PersistentPGDState` on the first `update` so it can snapshot
     the live batch shape. Returns the live recon loss on training steps and, on eval
@@ -85,10 +68,11 @@ class _PersistentPGDReconBase[
     and `after_backward`.
     """
 
+    short_name = "PersistPGDRecon"
     log_namespace: ClassVar[str] = "loss"
     slow: ClassVar[bool] = True
 
-    def __init__(self, cfg: TConfig) -> None:
+    def __init__(self, cfg: PersistentPGDReconLossConfig) -> None:
         super().__init__(cfg)
         self.state: PersistentPGDState | None = None
         self._pending_source_grads: PPGDSources | None = None
@@ -116,7 +100,7 @@ class _PersistentPGDReconBase[
             use_sigmoid_parameterization=self.cfg.use_sigmoid_parameterization,
             n_warmup_steps=self.cfg.n_warmup_steps,
             n_samples=self.cfg.n_samples,
-            router=_router_for_cfg(self.cfg, self.device),
+            router=AllLayersRouter(),
             reconstruction_loss=ctx.reconstruction_loss,
             replica_sync_group=replica_sync_group,
         )
@@ -242,19 +226,3 @@ class _PersistentPGDReconBase[
             self._pending_resume_state = state
         else:
             self.state.load_state_dict(state)
-
-
-class PersistentPGDReconLoss(_PersistentPGDReconBase[PersistentPGDReconLossConfig]):
-    """PPGD adversarial-mask recon loss (routes to all layers).
-
-    Drives components to reconstruct the target output under adversarially-optimised
-    masks whose source tensors persist across training steps.
-    """
-
-    short_name = "PersistPGDRecon"
-
-
-class PersistentPGDReconSubsetLoss(_PersistentPGDReconBase[PersistentPGDReconSubsetLossConfig]):
-    """`PersistentPGDReconLoss` variant that masks only a routed subset of layers per forward."""
-
-    short_name = "PersistPGDReconSub"

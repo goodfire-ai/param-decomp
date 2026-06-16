@@ -26,7 +26,6 @@ from param_decomp_config.losses import (
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
-    PersistentPGDReconSubsetLossConfig,
     PGDReconLayerwiseLossConfig,
     PGDReconLossConfig,
     PGDReconSubsetLossConfig,
@@ -214,7 +213,31 @@ def routing_sampler_from_config(
             return route_all_n(n_draws)
 
 
-# ───────────────────────────── plan builders ─────────────────────────────
+# ───────────────────────────── the chunkwise plan ─────────────────────────────
+
+
+def chunkwise_plan(
+    site_names: tuple[str, ...],
+    sites_per_chunk: int,
+    sampler_for_chunk: Callable[[tuple[str, ...]], RoutingSampler],
+    sources: MaskSourceStrategy,
+) -> ReconPlan:
+    """The ONE recon-plan builder. Partition the sites into sequential
+    `sites_per_chunk`-groups in canonical order (SPEC S10), one `ReconForward` per chunk
+    with that chunk live and the rest frozen `x@W` (SPEC S2). `sampler_for_chunk` turns
+    each chunk into its routing draws; `sources` is shared by every entry.
+
+    The torch loss-class plan shapes are this builder's endpoints:
+      * `sites_per_chunk = len(site_names)` → one chunk = every site (the `all_sites`
+        shape: a single entry with everything live).
+      * `sites_per_chunk = 1` → `len(site_names)` one-site chunks (the `*Layerwise`
+        shape).
+      * `1 < sites_per_chunk < N` with `uniform_k_routing` → the production
+        `ChunkwiseSubsetReconLoss` (torch `SubsetReconPlan` over the chunk topology)."""
+    return tuple(
+        ReconForward(live_sites=chunk, sample_routing=sampler_for_chunk(chunk), sources=sources)
+        for chunk in chunk_sites(site_names, sites_per_chunk)
+    )
 
 
 def subset_chunk_plan(
@@ -223,31 +246,25 @@ def subset_chunk_plan(
     n_samples: int,
     sources: MaskSourceStrategy,
 ) -> ReconPlan:
-    """The production plan: partition into sequential chunks, `n_samples` uniform-k
-    forwards per chunk (torch `SubsetReconPlan` over `ThreePoolTopology` chunks)."""
-    return tuple(
-        ReconForward(
-            live_sites=chunk,
-            sample_routing=uniform_k_routing(chunk, n_samples),
-            sources=sources,
-        )
-        for chunk in chunk_sites(site_names, sites_per_chunk)
+    """The production plan: `n_samples` uniform-k forwards per chunk (torch
+    `SubsetReconPlan` over `ThreePoolTopology` chunks)."""
+    return chunkwise_plan(
+        site_names, sites_per_chunk, lambda chunk: uniform_k_routing(chunk, n_samples), sources
     )
 
 
 def per_site_plan(site_names: tuple[str, ...], sources: MaskSourceStrategy) -> ReconPlan:
-    """One forward per site, routed everywhere — the torch `*Layerwise` plan shape."""
-    return tuple(
-        ReconForward(live_sites=(site,), sample_routing=route_all, sources=sources)
-        for site in site_names
-    )
+    """One forward per site, routed everywhere — the torch `*Layerwise` plan shape
+    (`chunkwise_plan` with `sites_per_chunk = 1`)."""
+    return chunkwise_plan(site_names, 1, lambda _chunk: route_all, sources)
 
 
 def all_sites_plan(
     site_names: tuple[str, ...], sample_routing: RoutingSampler, sources: MaskSourceStrategy
 ) -> ReconPlan:
-    """One entry with every site live."""
-    return (ReconForward(live_sites=site_names, sample_routing=sample_routing, sources=sources),)
+    """One entry with every site live — `chunkwise_plan` with the whole site list as a
+    single chunk."""
+    return chunkwise_plan(site_names, len(site_names), lambda _chunk: sample_routing, sources)
 
 
 # ───────────────────────────── shared-config -> terms ─────────────────────────────
@@ -262,12 +279,10 @@ class LossSpec:
     faith_coeff: float
     imp_min: ImportanceMinimalityLossConfig
     recon_terms: ReconLossTerms
-    persistent: dict[str, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig]
+    persistent: dict[str, PersistentPGDReconLossConfig]
 
 
-def _assert_supported_persistent(
-    cfg: PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig,
-) -> None:
+def _assert_supported_persistent(cfg: PersistentPGDReconLossConfig) -> None:
     assert isinstance(cfg.scope, SCScope), f"persistent scope {cfg.scope} unsupported (sc only)"
     assert not cfg.use_sigmoid_parameterization, cfg
     optimizer = cfg.optimizer
@@ -290,7 +305,7 @@ def build_recon_terms(
     faith_coeff: float | None = None
     imp_min: ImportanceMinimalityLossConfig | None = None
     terms: list[ReconLossTerm] = []
-    persistent: dict[str, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig] = {}
+    persistent: dict[str, PersistentPGDReconLossConfig] = {}
 
     def instance_key(cfg: AnyLossMetricConfig) -> str:
         name = cfg.name if cfg.name is not None else cfg.type
@@ -328,13 +343,11 @@ def build_recon_terms(
                 plan = all_sites_plan(site_names, sampler, StochasticSources(sampling))
                 terms.append(ReconLossTerm(instance_key(cfg), cfg.coeff, plan))
             case StochasticReconLayerwiseLossConfig():
-                plan = tuple(
-                    ReconForward(
-                        live_sites=(site,),
-                        sample_routing=route_all_n(n_mask_samples),
-                        sources=StochasticSources(sampling),
-                    )
-                    for site in site_names
+                plan = chunkwise_plan(
+                    site_names,
+                    sites_per_chunk=1,
+                    sampler_for_chunk=lambda _chunk: route_all_n(n_mask_samples),
+                    sources=StochasticSources(sampling),
                 )
                 terms.append(ReconLossTerm(instance_key(cfg), cfg.coeff, plan))
             case ChunkwiseSubsetReconLossConfig():
@@ -356,17 +369,14 @@ def build_recon_terms(
                 fresh = FreshPGDSources(cfg.init, cfg.n_steps, cfg.step_size, cfg.mask_scope)
                 plan = per_site_plan(site_names, fresh)
                 terms.append(ReconLossTerm(instance_key(cfg), cfg.coeff, plan))
-            case PersistentPGDReconLossConfig() | PersistentPGDReconSubsetLossConfig():
+            case PersistentPGDReconLossConfig():
                 _assert_supported_persistent(cfg)
                 key = instance_key(cfg)
                 assert key not in persistent
                 persistent[key] = cfg
-                sampler = (
-                    routing_sampler_from_config(cfg.routing, site_names, cfg.n_samples)
-                    if isinstance(cfg, PersistentPGDReconSubsetLossConfig)
-                    else route_all_n(cfg.n_samples)
+                plan = all_sites_plan(
+                    site_names, route_all_n(cfg.n_samples), PersistentSources(state_key=key)
                 )
-                plan = all_sites_plan(site_names, sampler, PersistentSources(state_key=key))
                 terms.append(ReconLossTerm(key, cfg.coeff, plan))
             case _:
                 # StochasticHiddenActsReconLoss lands here by design: it is keep-on-bridge
