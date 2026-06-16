@@ -14,6 +14,10 @@ functions (the load-bearing math), on the byte-identical fixtures, and writes
     from the fixtures, run the masked suffix forward (real `LinearComponents.forward` for
     the chunk's sites; frozen `F.linear` for every other layer + the tail), and
     `recon_loss_kl(pred, clean)/n_positions`. Mean over the chunks.
+  * **stoch_route_all** — the same per-chunk subset recon as `stoch`, but every chunk
+    `ComponentsMaskInfo` carries `routing_mask="all"` so the live sites have no
+    per-position `torch.where` fallback. Isolates the static live-set frozen-site path
+    (every non-chunk layer runs the frozen MLP) from per-position routing (parity R-2).
   * **ppgd** — `get_ppgd_mask_infos` (real) builds the component masks (`ci+(1-ci)*src`)
     + the weight-delta channel from the fixed sources; masked suffix forward over ALL
     sites; `recon_loss_kl/n_positions`.
@@ -207,6 +211,27 @@ def main() -> None:
         stoch_sum += (kl_sum / n).item()
     stoch = stoch_sum / s.n_layers
 
+    # ---- stoch_route_all (per-chunk subset recon, routing=all → static live-set only) ----
+    stoch_route_all_sum = 0.0
+    for i in range(s.n_layers):
+        mask_infos = {}
+        for k in KINDS:
+            ci_s = ci_lower_layer[k][:, :, i, :]  # (B,T,C)
+            u = torch.tensor(f[f"stoch_u_{k}"][:, :, i, :], dtype=torch.float32)
+            comp_mask = ci_s + (1 - ci_s) * u
+            delta = s.comp[i][k].target_weight - s.comp[i][k].weight
+            delta_mask = torch.tensor(f[f"stoch_delta_{k}"][:, :, i], dtype=torch.float32)
+            mask_infos[f"l{i}.{k}"] = ComponentsMaskInfo(
+                component_mask=comp_mask,
+                routing_mask="all",
+                weight_delta_and_mask=(delta, delta_mask),
+            )
+        pred = s.forward(mask_infos=mask_infos, decompose_layers={i})
+        kl_sum, n = recon_loss_kl(pred=pred, target=clean)
+        assert n == n_positions
+        stoch_route_all_sum += (kl_sum / n).item()
+    stoch_route_all = stoch_route_all_sum / s.n_layers
+
     # ---- ppgd (all sites, persistent sources via get_ppgd_mask_infos) ----
     # Build per-site ci + weight_deltas + sources keyed by site, then the real mask infos.
     ci_site = {f"l{i}.{k}": ci_lower_layer[k][:, :, i, :] for i in range(s.n_layers) for k in KINDS}
@@ -228,7 +253,14 @@ def main() -> None:
     kl_sum, n = recon_loss_kl(pred=pred, target=clean)
     ppgd = (kl_sum / n).item()
 
-    out = {"faith": faith, "imp": imp, "stoch": stoch, "ppgd": ppgd, "n_chunks": s.n_layers}
+    out = {
+        "faith": faith,
+        "imp": imp,
+        "stoch": stoch,
+        "stoch_route_all": stoch_route_all,
+        "ppgd": ppgd,
+        "n_chunks": s.n_layers,
+    }
     (HERE / "torch_reference.json").write_text(json.dumps(out, indent=2))
     print(json.dumps(out, indent=2))
 

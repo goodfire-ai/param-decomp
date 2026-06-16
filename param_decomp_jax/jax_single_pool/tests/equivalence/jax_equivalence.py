@@ -12,6 +12,11 @@ Term wiring (all `jax_single_pool.train` + the `DecomposedLM` boundary):
   * stoch — per chunk: `mask = ci+(1-ci)*u`, fixed delta mask, fixed route over the
             chunk's 3 sites; `lm.masked_logits(..., live=chunk)`; `kl_per_position`
             vs `lm.clean_logits` (the frozen path, SPEC S3). Mean over chunks.
+  * stoch_route_all — identical chunk plan as `stoch` but routing is `all` (`routes=None`)
+            so the LIVE chunk's sites have NO per-position fallback. This isolates the
+            STATIC live-set frozen-site path (SPEC S2: every non-chunk site runs frozen
+            `x@W`, no `(B,T,C)` acts) from the per-position routing fallback they share in
+            `stoch` — the R-2 concern in the parity matrix.
   * ppgd  — `source_masks` + `lm.masked_logits(..., live=all)`.
 
 Bit-identical is impossible across RNG/FP backends; we assert each term within
@@ -172,13 +177,29 @@ def compute_jax_terms(f: dict[str, np.ndarray]) -> dict[str, float]:
         stoch_total += float(kl_per_position(pred, clean))
     stoch = stoch_total / n_layers
 
+    # ---- stoch_route_all (per-chunk, FIXED masks, routing=all → static live-set only) ----
+    stoch_route_all_total = 0.0
+    for i in range(n_layers):
+        chunk = tuple(site_name(i, k) for k in MLP_KINDS)
+        masks = {s: ci_lower[s] + (1.0 - ci_lower[s]) * stoch_u[s] for s in chunk}
+        delta_masks = {s: stoch_delta[s] for s in chunk}
+        pred = lm.masked_logits(tgt, vu, resid, masks, delta_masks, None, chunk)
+        stoch_route_all_total += float(kl_per_position(pred, clean))
+    stoch_route_all = stoch_route_all_total / n_layers
+
     # ---- ppgd (FIXED sources) ----
     source = per_site("ppgd_source")  # {site: (1, T, C+1)}
     masks, delta_masks = source_masks(ci_lower, source, lm.site_names)
     pred = lm.masked_logits(tgt, vu, resid, masks, delta_masks, None, lm.site_names)
     ppgd = float(kl_per_position(pred, clean))
 
-    return {"faith": faith, "imp": imp, "stoch": stoch, "ppgd": ppgd}
+    return {
+        "faith": faith,
+        "imp": imp,
+        "stoch": stoch,
+        "stoch_route_all": stoch_route_all,
+        "ppgd": ppgd,
+    }
 
 
 def main() -> None:
@@ -187,7 +208,7 @@ def main() -> None:
     jaxv = compute_jax_terms(f)
     print(f"{'term':6} {'jax':>16} {'torch':>16} {'rel_err':>12}  ok")
     all_ok = True
-    for term in ("faith", "imp", "stoch", "ppgd"):
+    for term in ("faith", "imp", "stoch", "stoch_route_all", "ppgd"):
         jv, tv = jaxv[term], ref[term]
         rel = abs(jv - tv) / (abs(tv) + 1e-30)
         ok = abs(jv - tv) <= ATOL + RTOL * abs(tv)

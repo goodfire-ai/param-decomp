@@ -41,11 +41,17 @@ RTOL = 2e-4
 ATOL = 1e-5
 
 
-@pytest.mark.parametrize("term", ["faith", "imp", "stoch", "ppgd"])
+@pytest.mark.parametrize("term", ["faith", "imp", "stoch", "stoch_route_all", "ppgd"])
 def test_jax_matches_torch_reference(term: str) -> None:
+    """`stoch_route_all` pins the static live-set frozen-site recon (SPEC S2): a
+    `subset_chunk_plan` forward where the live chunk routes ALL positions (`routes=None`),
+    so every non-chunk site runs frozen `x@W` with no `(B,T,C)` acts — isolated from the
+    per-position routing fallback `stoch` also exercises (parity matrix R-2)."""
     ref_path = HERE / "torch_reference.json"
     assert ref_path.exists(), "run torch_reference.py (torch env) to produce the golden first"
     ref = json.loads(ref_path.read_text())
+    if term not in ref:
+        pytest.skip(f"golden missing '{term}'; regenerate via torch_reference.py (torch env)")
     jaxv = compute_jax_terms(dict(np.load(HERE / "fixtures.npz")))
     jv, tv = jaxv[term], ref[term]
     assert abs(jv - tv) <= ATOL + RTOL * abs(tv), (
