@@ -56,6 +56,7 @@ def main(
     run_id: str | None = None,
     group: str | None = None,
     tags: str | None = None,
+    comment: str | None = None,
 ) -> None:
     """Submit a jsp-train run.
 
@@ -71,6 +72,7 @@ def main(
             (the original workspace wrapper already carries them).
         group: wandb UI group (no-op when the torch config omits `wandb:`).
         tags: Comma-separated wandb tags (no-op when `wandb:` is omitted).
+        comment: SLURM `--comment`; defaults to the wandb run URL (or run id).
     """
     wrapper_rel = _wrapper_path_relative_to_repo(config_path)
     torch_cfg, run_name = _validate_wrapper(REPO_ROOT / wrapper_rel)
@@ -100,7 +102,7 @@ def main(
         time=time,
         signal="TERM@300",
         requeue=True,
-        comment=wandb_url or run_id,
+        comment=comment if comment is not None else (wandb_url or run_id),
     )
     jax_dir = workspace / "param_decomp_jax"
     rank_command = f"source .venv-cuda/bin/activate\n{_RANK_ENV}\nexec jsp-train {wrapper_rel.relative_to('param_decomp_jax')}"
