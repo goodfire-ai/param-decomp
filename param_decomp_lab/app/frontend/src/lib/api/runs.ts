@@ -12,9 +12,7 @@ export type LoadedRun = {
     prompt_count: number;
     context_length: number;
     backend_user: string;
-    dataset_attributions_available: boolean;
     dataset_search_enabled: boolean;
-    graph_interp_available: boolean;
     autointerp_available: boolean;
 };
 

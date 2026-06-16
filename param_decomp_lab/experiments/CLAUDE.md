@@ -183,9 +183,8 @@ PARAM_DECOMP_OUT_DIR/runs/<run_id>/
   metrics.jsonl              # local logs (RunSink.log)
 ```
 
-Post-decomposition pipelines (harvest, autointerp, attributions, graph_interp) nest
-their own sub-directories under this same `runs/<run_id>/` dir — see each module's
-CLAUDE.md.
+Post-decomposition pipelines (harvest, autointerp) nest their own sub-directories under
+this same `runs/<run_id>/` dir — see each module's CLAUDE.md.
 
 ## Canonical references
 

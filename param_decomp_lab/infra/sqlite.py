@@ -2,7 +2,7 @@
 
 Two environments exist in this codebase:
 
-1. **NFS databases** (harvest, autointerp, graph_interp, dataset_attributions):
+1. **NFS databases** (harvest, autointerp):
    - Live at PARAM_DECOMP_OUT_DIR on shared NFS mount
    - WAL mode MUST NOT be used — it requires POSIX advisory locking which
      NFS doesn't support reliably, causing "database is locked" errors

@@ -7,7 +7,7 @@
 
 import type { Loadable } from ".";
 import * as api from "./api";
-import type { LoadedRun as RunData, InterpretationHeadline, GraphInterpHeadline } from "./api";
+import type { LoadedRun as RunData, InterpretationHeadline } from "./api";
 import type { PromptPreview, SubcomponentActivationContexts, SubcomponentMetadata } from "./promptAttributionsTypes";
 
 /** Maps component keys to cluster IDs. Singletons (unclustered components) have null values. */
@@ -41,9 +41,6 @@ export function useRun() {
     /** Intruder eval scores keyed by component key */
     let intruderScores = $state<Loadable<Record<string, number>>>({ status: "uninitialized" });
 
-    /** Graph interp labels keyed by component key (layer:cIdx) */
-    let graphInterpLabels = $state<Loadable<Record<string, GraphInterpHeadline>>>({ status: "uninitialized" });
-
     /** Cluster mapping for the current run */
     let clusterMapping = $state<ClusterMapping | null>(null);
 
@@ -63,7 +60,6 @@ export function useRun() {
         prompts = { status: "uninitialized" };
         interpretations = { status: "uninitialized" };
         intruderScores = { status: "uninitialized" };
-        graphInterpLabels = { status: "uninitialized" };
         activationContextsSummary = { status: "uninitialized" };
         _componentDetailsCache = {};
         clusterMapping = null;
@@ -81,9 +77,6 @@ export function useRun() {
         api.getIntruderScores()
             .then((data) => (intruderScores = { status: "loaded", data }))
             .catch((error) => (intruderScores = { status: "error", error }));
-        api.getAllGraphInterpLabels()
-            .then((data) => (graphInterpLabels = { status: "loaded", data }))
-            .catch((error) => (graphInterpLabels = { status: "error", error }));
         api.getAllInterpretations()
             .then((i) => {
                 interpretations = {
@@ -212,20 +205,12 @@ export function useRun() {
         return clusterMapping?.data[key] ?? null;
     }
 
-    function getGraphInterpLabel(componentKey: string): GraphInterpHeadline | null {
-        if (graphInterpLabels.status !== "loaded") return null;
-        return graphInterpLabels.data[componentKey] ?? null;
-    }
-
     return {
         get run() {
             return run;
         },
         get interpretations() {
             return interpretations;
-        },
-        get graphInterpLabels() {
-            return graphInterpLabels;
         },
         get clusterMapping() {
             return clusterMapping;
@@ -235,12 +220,6 @@ export function useRun() {
         },
         get activationContextsSummary() {
             return activationContextsSummary;
-        },
-        get datasetAttributionsAvailable() {
-            return run.status === "loaded" && run.data.dataset_attributions_available;
-        },
-        get graphInterpAvailable() {
-            return run.status === "loaded" && run.data.graph_interp_available;
         },
         get autoInterpAvailable() {
             return run.status === "loaded" && run.data.autointerp_available;
@@ -252,7 +231,6 @@ export function useRun() {
         getInterpretation,
         setInterpretation,
         getIntruderScore,
-        getGraphInterpLabel,
         getActivationContextDetail,
         loadActivationContextsSummary,
         setClusterMapping,

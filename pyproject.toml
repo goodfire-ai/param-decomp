@@ -102,11 +102,6 @@ exclude = [
     "**/_scratch/**",
     "param_decomp_lab/_linear_sum_assignment.py",
     "param_decomp_lab/app/frontend",
-    # `editing/` is torch attribution + intervention + circuit-opt that reached into the
-    # app's `backend.compute` / `backend.optim_cis`. Those were CUT when the app became a
-    # read-only JAX viewer (#841); editing must be re-homed onto a JAX path before it can
-    # be type-checked again.
-    "param_decomp_lab/editing",
 ]
 # Resolve (don't type-check) the JAX distribution: lab consumes it through the
 # editable-install import hook pyright can't follow. The package stays out of `include`

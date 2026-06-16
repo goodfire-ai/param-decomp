@@ -82,7 +82,6 @@ export type GraphData = {
     maxAbsAttrAbs: number | null; // max absolute edge value for abs-target variant
     maxAbsSubcompAct: number; // max absolute subcomponent activation for normalization
     l0_total: number; // total active components at current CI threshold
-    optimization?: OptimizationResult;
 };
 
 /** Build edge indexes from flat edge array (single pass) */
@@ -111,55 +110,6 @@ export function buildEdgeIndexes(edges: EdgeData[]): {
 
     return { edgesBySource, edgesByTarget };
 }
-
-export type MaskType = "stochastic" | "ci";
-
-export type CELossResult = {
-    type: "ce";
-    coeff: number;
-    position: number;
-    label_token: number;
-    label_str: string;
-};
-
-export type KLLossResult = {
-    type: "kl";
-    coeff: number;
-    position: number;
-};
-
-export type LogitLossResult = {
-    type: "logit";
-    coeff: number;
-    position: number;
-    label_token: number;
-    label_str: string;
-};
-
-export type LossResult = CELossResult | KLLossResult | LogitLossResult;
-
-export type OptimizationMetrics = {
-    ci_masked_label_prob: number | null; // Probability of label under CI mask (CE loss only)
-    stoch_masked_label_prob: number | null; // Probability of label under stochastic mask (CE loss only)
-    adv_pgd_label_prob: number | null; // Probability of label under adversarial mask (CE loss only)
-    l0_total: number; // Total L0 (active components)
-};
-
-export type PgdConfig = {
-    n_steps: number;
-    step_size: number;
-};
-
-export type OptimizationResult = {
-    imp_min_coeff: number;
-    steps: number;
-    pnorm: number;
-    beta: number;
-    mask_type: MaskType;
-    loss: LossResult;
-    metrics: OptimizationMetrics;
-    pgd: PgdConfig | null;
-};
 
 export type SubcomponentMetadata = {
     subcomponent_idx: number;

@@ -42,10 +42,8 @@ pd-cluster-merge = "param_decomp_lab.clustering.scripts.run_merge:cli"
 pd-harvest = "param_decomp_lab.harvest.scripts.run_slurm_cli:cli"
 pd-intruder = "param_decomp_lab.harvest.scripts.run_intruder_slurm_cli:cli"
 pd-autointerp = "param_decomp_lab.autointerp.scripts.run_slurm_cli:cli"
-pd-attributions = "param_decomp_lab.dataset_attributions.scripts.run_slurm_cli:cli"
 pd-investigate = "param_decomp_lab.investigate.scripts.run_slurm_cli:cli"
 pd-postprocess = "param_decomp_lab.postprocess.cli:cli"
-pd-graph-interp = "param_decomp_lab.graph_interp.scripts.run_slurm_cli:cli"
 
 [build-system]
 requires = ["setuptools", "wheel"]
@@ -68,9 +66,6 @@ packages = [
     "param_decomp_lab.clustering.math",
     "param_decomp_lab.clustering.plotting",
     "param_decomp_lab.clustering.scripts",
-    "param_decomp_lab.dataset_attributions",
-    "param_decomp_lab.dataset_attributions.scripts",
-    "param_decomp_lab.editing",
     "param_decomp_lab.eval_metrics",
     "param_decomp_lab.experiments",
     "param_decomp_lab.experiments.lm",
@@ -78,8 +73,6 @@ packages = [
     "param_decomp_lab.experiments.lm.pretrain.models",
     "param_decomp_lab.experiments.resid_mlp",
     "param_decomp_lab.experiments.tms",
-    "param_decomp_lab.graph_interp",
-    "param_decomp_lab.graph_interp.scripts",
     "param_decomp_lab.harvest",
     "param_decomp_lab.harvest.harvest_fn",
     "param_decomp_lab.harvest.scripts",

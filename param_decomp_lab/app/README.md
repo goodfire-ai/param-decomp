@@ -1,8 +1,8 @@
 # PD Visualization App
 
-A web app for exploring PD decompositions: attribution graphs, component activations,
-correlations, dataset search, autointerp labels, interventions, and clustering. Built
-with Svelte 5 (frontend) and FastAPI (backend).
+A read-only web app for exploring PD decompositions: component activations,
+correlations, dataset search, autointerp labels, and clustering. Built with Svelte 5
+(frontend) and FastAPI (backend).
 
 ## Quick Start
 
@@ -30,8 +30,6 @@ param_decomp_lab/app/
 ├── backend/
 │   ├── server.py             # FastAPI app, CORS, exception handlers, router registration
 │   ├── state.py              # StateManager singleton + HarvestRepo (lazy-loaded)
-│   ├── compute.py            # Attribution + intervention computation
-│   ├── optim_cis.py          # Sparse-CI optimisation, PGD
 │   ├── app_tokenizer.py      # AppTokenizer wrapper for HF tokenizers
 │   ├── database.py           # SQLite schema + access (NFS-safe)
 │   ├── schemas.py            # Pydantic API models

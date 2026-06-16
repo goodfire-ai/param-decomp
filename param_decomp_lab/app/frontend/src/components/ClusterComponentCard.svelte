@@ -7,7 +7,6 @@
     import { RUN_KEY, type RunContext } from "../lib/useRun.svelte";
     import ActivationContextsPagedTable, { type ActivationExamplesData } from "./ActivationContextsPagedTable.svelte";
     import ComponentCorrelationMetrics from "./ui/ComponentCorrelationMetrics.svelte";
-    import DatasetAttributionsSection from "./ui/DatasetAttributionsSection.svelte";
     import InterpretationBadge from "./ui/InterpretationBadge.svelte";
     import SectionHeader from "./ui/SectionHeader.svelte";
     import StatusText from "./ui/StatusText.svelte";
@@ -124,26 +123,6 @@
         {/if}
     </div>
 
-    {#if componentData.datasetAttributions.status === "uninitialized"}
-        <StatusText>uninitialized</StatusText>
-    {:else if componentData.datasetAttributions.status === "loaded"}
-        {#if componentData.datasetAttributions.data !== null}
-            <DatasetAttributionsSection attributions={componentData.datasetAttributions.data} />
-        {:else}
-            <StatusText>No dataset attributions available.</StatusText>
-        {/if}
-    {:else if componentData.datasetAttributions.status === "loading"}
-        <div class="dataset-attributions-loading">
-            <SectionHeader title="Dataset Attributions" />
-            <StatusText>Loading...</StatusText>
-        </div>
-    {:else if componentData.datasetAttributions.status === "error"}
-        <div class="dataset-attributions-loading">
-            <SectionHeader title="Dataset Attributions" />
-            <StatusText>Error: {String(componentData.datasetAttributions.error)}</StatusText>
-        </div>
-    {/if}
-
     <div class="token-stats-section">
         <SectionHeader title="Token Statistics" />
         <div class="token-stats-row">
@@ -238,12 +217,6 @@
     }
 
     .correlations-section {
-        display: flex;
-        flex-direction: column;
-        gap: var(--space-2);
-    }
-
-    .dataset-attributions-loading {
         display: flex;
         flex-direction: column;
         gap: var(--space-2);

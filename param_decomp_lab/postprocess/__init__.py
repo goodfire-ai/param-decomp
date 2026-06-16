@@ -6,7 +6,6 @@ All steps always run — data accumulates (harvest upserts, autointerp resumes).
 Dependency graph:
     harvest             (GPU array -> merge, GPU, PD-only)
     ├── intruder eval   (CPU, depends on harvest merge, label-free)
-    ├── attributions    (GPU array -> merge, depends on harvest merge, PD-only)
     └── autointerp      (CPU, LLM calls, resumes via completed keys)
         ├── detection   (CPU, label-dependent)
         └── fuzzing     (CPU, label-dependent)
@@ -20,12 +19,6 @@ import yaml
 
 from param_decomp.log import logger
 from param_decomp_lab.autointerp.scripts.run_slurm import AutointerpSubmitResult, submit_autointerp
-from param_decomp_lab.dataset_attributions.scripts.run_slurm import submit_attributions
-from param_decomp_lab.graph_interp.scripts.run_slurm import (
-    GraphInterpSubmitResult,
-    submit_graph_interp,
-)
-from param_decomp_lab.harvest.config import ParamDecompHarvestConfig
 from param_decomp_lab.harvest.scripts import run_intruder
 from param_decomp_lab.harvest.scripts.run_slurm import submit_harvest
 from param_decomp_lab.infra.git import create_git_snapshot
@@ -103,33 +96,6 @@ def postprocess(config: PostprocessConfig, dependency_job_id: str | None = None)
             }
         )
 
-    # === 4. Attributions (depends on harvest merge, PD-only) ===
-    attr_result = None
-    if config.attributions is not None:
-        assert isinstance(decomp_cfg, ParamDecompHarvestConfig)
-        attr_result = submit_attributions(
-            wandb_path=decomp_cfg.wandb_path,
-            config=config.attributions,
-            harvest_subrun_id=harvest_result.subrun_id,
-            snapshot_ref=snapshot_ref,
-            dependency_job_id=harvest_result.merge_result.job_id,
-        )
-
-    # === 5. Graph interp (depends on harvest merge + attribution merge) ===
-    graph_interp_result: GraphInterpSubmitResult | None = None
-    if config.graph_interp is not None:
-        assert attr_result is not None
-        graph_interp_result = submit_graph_interp(
-            decomposition_id=decomp_cfg.id,
-            config=config.graph_interp,
-            dependency_job_ids=[
-                harvest_result.merge_result.job_id,
-                attr_result.merge_result.job_id,
-            ],
-            snapshot_ref=snapshot_ref,
-            harvest_subrun_id=harvest_result.subrun_id,
-        )
-
     # === Write metadata ===
     metadata_id = "pp-" + datetime.now().strftime("%Y%m%d_%H%M%S")
     metadata_dir = PARAM_DECOMP_OUT_DIR / "postprocess" / metadata_id
@@ -143,18 +109,12 @@ def postprocess(config: PostprocessConfig, dependency_job_id: str | None = None)
     }
     if intruder_result is not None:
         jobs["intruder_eval"] = intruder_result.job_id
-    if attr_result is not None:
-        jobs["attr_array"] = attr_result.array_result.job_id
-        jobs["attr_merge"] = attr_result.merge_result.job_id
-        jobs["attr_subrun"] = attr_result.subrun_id
     if autointerp_result is not None:
         jobs["interpret"] = autointerp_result.interpret_result.job_id
         if autointerp_result.detection_result is not None:
             jobs["detection"] = autointerp_result.detection_result.job_id
         if autointerp_result.fuzzing_result is not None:
             jobs["fuzzing"] = autointerp_result.fuzzing_result.job_id
-    if graph_interp_result is not None:
-        jobs["graph_interp"] = graph_interp_result.result.job_id
 
     metadata = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),

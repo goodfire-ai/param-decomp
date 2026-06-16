@@ -10,12 +10,10 @@
     import ActivationContextsPagedTable, { type ActivationExamplesData } from "./ActivationContextsPagedTable.svelte";
     import ComponentCorrelationMetrics from "./ui/ComponentCorrelationMetrics.svelte";
     import ComponentFrequencyCurve from "./ui/ComponentFrequencyCurve.svelte";
-    import GraphInterpBadge from "./ui/GraphInterpBadge.svelte";
     import InterpretationBadge from "./ui/InterpretationBadge.svelte";
     import SectionHeader from "./ui/SectionHeader.svelte";
     import StatusText from "./ui/StatusText.svelte";
     import TokenStatsSection from "./ui/TokenStatsSection.svelte";
-    import DatasetAttributionsSection from "./ui/DatasetAttributionsSection.svelte";
 
     type Props = {
         activationContextsSummary: ActivationContextsSummary;
@@ -38,9 +36,6 @@
     let currentMetadata = $derived<SubcomponentMetadata>(currentLayerMetadata[currentPage]);
     let currentIntruderScore = $derived(
         currentMetadata ? runState.getIntruderScore(`${selectedLayer}:${currentMetadata.subcomponent_idx}`) : null,
-    );
-    let currentGraphInterpLabel = $derived(
-        currentMetadata ? runState.getGraphInterpLabel(`${selectedLayer}:${currentMetadata.subcomponent_idx}`) : null,
     );
 
     // Component data hook - call load() explicitly when component changes
@@ -286,9 +281,6 @@
                 interpretationDetail={componentData.interpretationDetail}
                 onGenerate={componentData.generateInterpretation}
             />
-            {#if currentGraphInterpLabel && componentData.graphInterpDetail.status === "loaded" && componentData.graphInterpDetail.data}
-                <GraphInterpBadge headline={currentGraphInterpLabel} detail={componentData.graphInterpDetail.data} />
-            {/if}
         </div>
 
         <!-- Activation examples -->
@@ -296,21 +288,6 @@
             <StatusText>Error loading component data: {String(activationExamples.error)}</StatusText>
         {:else}
             <ActivationContextsPagedTable data={activationExamples} />
-        {/if}
-
-        <!-- Dataset attributions -->
-        {#if componentData.datasetAttributions?.status === "loaded" && componentData.datasetAttributions.data}
-            <DatasetAttributionsSection attributions={componentData.datasetAttributions.data} />
-        {:else if componentData.datasetAttributions?.status === "loading"}
-            <div class="dataset-attributions-loading">
-                <SectionHeader title="Dataset Attributions" />
-                <StatusText>Loading...</StatusText>
-            </div>
-        {:else if componentData.datasetAttributions?.status === "error"}
-            <div class="dataset-attributions-loading">
-                <SectionHeader title="Dataset Attributions" />
-                <StatusText>Error: {String(componentData.datasetAttributions.error)}</StatusText>
-            </div>
         {/if}
 
         <div class="token-stats-row">
@@ -521,12 +498,6 @@
     }
 
     .interpretation-badges {
-        display: flex;
-        flex-direction: column;
-        gap: var(--space-2);
-    }
-
-    .dataset-attributions-loading {
         display: flex;
         flex-direction: column;
         gap: var(--space-2);

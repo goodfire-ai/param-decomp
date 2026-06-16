@@ -10,9 +10,7 @@
     import { RUN_KEY, type RunContext } from "../../lib/useRun.svelte";
     import ActivationContextsPagedTable from "../ActivationContextsPagedTable.svelte";
     import ComponentCorrelationMetrics from "../ui/ComponentCorrelationMetrics.svelte";
-    import DatasetAttributionsSection from "../ui/DatasetAttributionsSection.svelte";
     import EdgeAttributionGrid from "../ui/EdgeAttributionGrid.svelte";
-    import GraphInterpBadge from "../ui/GraphInterpBadge.svelte";
     import InterpretationBadge from "../ui/InterpretationBadge.svelte";
     import SectionHeader from "../ui/SectionHeader.svelte";
     import StatusText from "../ui/StatusText.svelte";
@@ -50,7 +48,6 @@
 
     const clusterId = $derived(runState.clusterMapping?.data[`${layer}:${cIdx}`]);
     const intruderScore = $derived(runState.getIntruderScore(`${layer}:${cIdx}`));
-    const graphInterpLabel = $derived(runState.getGraphInterpLabel(`${layer}:${cIdx}`));
 
     // Handle clicking a correlated component - parse key and pin it at same seqIdx
     function handleCorrelationClick(componentKey: string) {
@@ -203,9 +200,6 @@
             interpretationDetail={componentData.interpretationDetail}
             onGenerate={componentData.generateInterpretation}
         />
-        {#if graphInterpLabel && componentData.graphInterpDetail.status === "loaded" && componentData.graphInterpDetail.data}
-            <GraphInterpBadge headline={graphInterpLabel} detail={componentData.graphInterpDetail.data} />
-        {/if}
     </div>
 
     <!-- Activating examples (from harvest data) -->
@@ -231,29 +225,6 @@
             pageSize={COMPONENT_CARD_CONSTANTS.PROMPT_ATTRIBUTIONS_PAGE_SIZE}
             onClick={handleEdgeNodeClick}
         />
-    {/if}
-
-    <!-- Dataset attributions  -->
-    {#if componentData.datasetAttributions.status === "loading" || componentData.datasetAttributions.status === "uninitialized"}
-        <div class="dataset-attributions-loading">
-            <SectionHeader title="Dataset Attributions" />
-            <div class="skeleton-group">
-                <div class="skeleton skeleton-line wide"></div>
-                <div class="skeleton skeleton-line medium"></div>
-            </div>
-        </div>
-    {:else if componentData.datasetAttributions.status === "loaded"}
-        {#if componentData.datasetAttributions.data !== null}
-            <DatasetAttributionsSection
-                attributions={componentData.datasetAttributions.data}
-                onComponentClick={handleCorrelationClick}
-            />
-        {/if}
-    {:else if componentData.datasetAttributions.status === "error"}
-        <div class="dataset-attributions-loading">
-            <SectionHeader title="Dataset Attributions" />
-            <StatusText>Error: {String(componentData.datasetAttributions.error)}</StatusText>
-        </div>
     {/if}
 
     <div class="token-stats-section">
@@ -375,12 +346,6 @@
     }
 
     .correlations-section {
-        display: flex;
-        flex-direction: column;
-        gap: var(--space-2);
-    }
-
-    .dataset-attributions-loading {
         display: flex;
         flex-direction: column;
         gap: var(--space-2);

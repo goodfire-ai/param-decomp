@@ -17,9 +17,7 @@ from param_decomp_lab.app.backend.state import RunState
 from param_decomp_lab.app.backend.topology import AppTopology
 from param_decomp_lab.app.backend.utils import log_errors
 from param_decomp_lab.autointerp.repo import InterpRepo
-from param_decomp_lab.dataset_attributions.repo import AttributionRepo
 from param_decomp_lab.experiments.utils import EXPERIMENT_CONFIG_FILENAME
-from param_decomp_lab.graph_interp.repo import GraphInterpRepo
 from param_decomp_lab.harvest.repo import HarvestRepo
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
@@ -42,9 +40,7 @@ class LoadedRun(BaseModel):
     prompt_count: int
     context_length: int
     backend_user: str
-    dataset_attributions_available: bool
     dataset_search_enabled: bool
-    graph_interp_available: bool
     autointerp_available: bool
 
 
@@ -132,8 +128,6 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
         context_length=context_length,
         harvest=HarvestRepo.open_most_recent(run_id),
         interp=InterpRepo.open(run_id),
-        attributions=AttributionRepo.open(run_id),
-        graph_interp=GraphInterpRepo.open(run_id),
     )
 
     logger.info(f"[API] Run {run.id} loaded (step {jax_run.step})")
@@ -166,9 +160,7 @@ def get_status(manager: DepStateManager) -> LoadedRun | None:
         prompt_count=prompt_count,
         context_length=context_length,
         backend_user=getpass.getuser(),
-        dataset_attributions_available=manager.run_state.attributions is not None,
         dataset_search_enabled=dataset_search_enabled,
-        graph_interp_available=manager.run_state.graph_interp is not None,
         autointerp_available=manager.run_state.interp is not None,
     )
 

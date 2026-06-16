@@ -21,7 +21,6 @@
     import StatusText from "./ui/StatusText.svelte";
     import SubrunInterpCard from "./ui/SubrunInterpCard.svelte";
     import TokenStatsSection from "./ui/TokenStatsSection.svelte";
-    import DatasetAttributionsSection from "./ui/DatasetAttributionsSection.svelte";
 
     interface Props {
         activationContextsSummary: ActivationContextsSummary;
@@ -331,15 +330,6 @@
                     <ActivationContextsPagedTable data={activationExamples} />
                 {/if}
 
-                {#if componentData.datasetAttributions?.status === "loaded" && componentData.datasetAttributions.data}
-                    <DatasetAttributionsSection attributions={componentData.datasetAttributions.data} />
-                {:else if componentData.datasetAttributions?.status === "loading"}
-                    <div class="section-loading">
-                        <SectionHeader title="Dataset Attributions" />
-                        <StatusText>Loading...</StatusText>
-                    </div>
-                {/if}
-
                 <div class="token-stats-row">
                     {#if componentData.tokenStats.status === "uninitialized" || componentData.tokenStats.status === "loading"}
                         <StatusText>Loading token stats...</StatusText>
@@ -561,12 +551,6 @@
     }
 
     .correlations-section {
-        display: flex;
-        flex-direction: column;
-        gap: var(--space-2);
-    }
-
-    .section-loading {
         display: flex;
         flex-direction: column;
         gap: var(--space-2);

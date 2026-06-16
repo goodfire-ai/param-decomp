@@ -6,16 +6,6 @@
     const AVAILABILITY_COLUMNS: { key: keyof DataAvailability; abbrev: string; tooltip: string }[] = [
         { key: "harvest", abbrev: "H", tooltip: "Harvest: activation stats, correlations, token associations" },
         { key: "autointerp", abbrev: "AI", tooltip: "Autointerp: LLM-generated component labels" },
-        {
-            key: "attributions",
-            abbrev: "DA",
-            tooltip: "Dataset Attributions: component-to-component attribution strengths",
-        },
-        {
-            key: "graph_interp",
-            abbrev: "GI",
-            tooltip: "Graph Interp: context-aware labels using attribution graph structure",
-        },
     ];
 
     type Props = {

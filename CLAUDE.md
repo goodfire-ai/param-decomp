@@ -138,7 +138,7 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
   builders (`build_target` / loader / `make_run_batch`) + the `Saved<Name>Run` reload
   classes that load a saved decomposition off disk. The torch training drivers were
   retired with the torch trainer; training is `jsp-train` (JAX) launched via `pd-jax-lm`.
-- `param_decomp_lab/{harvest,autointerp,clustering,dataset_attributions,graph_interp,investigate,app}/`
+- `param_decomp_lab/{harvest,autointerp,clustering,investigate,app}/`
   — post-pipeline + app, each with its own CLAUDE.md.
 - `param_decomp_lab/postprocess/` — orchestrates the post-pipeline stages.
 - `param_decomp_lab/eval_metrics/` — batteries-included eval-metric set.
@@ -154,12 +154,10 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
 | `param_decomp/metrics/` | `param_decomp/metrics/CLAUDE.md` | Loss-metric dispatch, config placement rule, sources vs masks, PPGD |
 | `param_decomp_lab/experiments/` | `param_decomp_lab/experiments/CLAUDE.md` | Adding an experiment, YAML schema, LM `target.spec`, `Saved<Name>Run` |
 | `param_decomp_lab/eval_metrics/` | `param_decomp_lab/eval_metrics/CLAUDE.md` | Eval-metric dispatch — user-extensible (vs canonical loss metrics) |
-| `param_decomp_lab/postprocess/` | `param_decomp_lab/postprocess/CLAUDE.md` | Pipeline orchestration: harvest → autointerp / attributions / intruder → graph_interp |
+| `param_decomp_lab/postprocess/` | `param_decomp_lab/postprocess/CLAUDE.md` | Pipeline orchestration: harvest → autointerp / intruder |
 | `param_decomp_lab/harvest/` | `param_decomp_lab/harvest/CLAUDE.md` | Component-statistics collection pipeline |
 | `param_decomp_lab/autointerp/` | `param_decomp_lab/autointerp/CLAUDE.md` | LLM-based component interpretation |
 | `param_decomp_lab/clustering/` | `param_decomp_lab/clustering/CLAUDE.md` | Hierarchical clustering of components |
-| `param_decomp_lab/dataset_attributions/` | `param_decomp_lab/dataset_attributions/CLAUDE.md` | Aggregated component-to-component attributions |
-| `param_decomp_lab/graph_interp/` | `param_decomp_lab/graph_interp/CLAUDE.md` | Context-aware labelling using the attribution graph |
 | `param_decomp_lab/investigate/` | `param_decomp_lab/investigate/CLAUDE.md` | Agent investigation of a research question |
 | `param_decomp_lab/app/` | `param_decomp_lab/app/CLAUDE.md` | Web visualization (FastAPI + Svelte) |
 | `param_decomp_lab/experiments/lm/pretrain/` | `param_decomp_lab/experiments/lm/pretrain/CLAUDE.md` | LM target-model pretraining |
@@ -175,8 +173,6 @@ PARAM_DECOMP_OUT_DIR/runs/<run_id>/
   metrics.jsonl              # local logs
   harvest/h-*/...            # pd-harvest output
   autointerp/a-*/...         # pd-autointerp output
-  dataset_attributions/da-*/...  # pd-attributions output
-  graph_interp/*/...         # pd-graph-interp output
 ```
 
 Both training output and the W&B download cache write here. Per-stage subdirs are
@@ -222,8 +218,6 @@ Training is now `jsp-train` (JAX), submitted via `pd-jax-lm`.
 | `pd-pretrain` | `experiments/lm/pretrain/cli.py` | Pretrain target models |
 | `pd-harvest` | `harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
 | `pd-autointerp` | `autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
-| `pd-attributions` | `dataset_attributions/scripts/run_slurm_cli.py` | Submit dataset-attribution SLURM job |
-| `pd-graph-interp` | `graph_interp/scripts/run_slurm_cli.py` | Submit graph-interp SLURM job |
 | `pd-postprocess` | `postprocess/cli.py` | Unified postprocessing pipeline |
 | `pd-clustering` | `clustering/scripts/run_pipeline.py` | Clustering ensemble pipeline |
 | `pd-cluster-harvest` | `clustering/scripts/run_harvest.py` | Harvest activations → membership snapshot |

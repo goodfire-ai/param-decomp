@@ -169,7 +169,7 @@ python -m param_decomp_lab.clustering.scripts.get_cluster_mapping /path/to/clust
 
 Top-level run types use `RUN_TYPE_ABBREVIATIONS` in `param_decomp_lab/infra/run_files.py`: `p` (param_decomp), `t` (train), `c` (clustering/runs), `e` (clustering/ensembles), `ch` (clustering/harvests).
 
-Subrun prefixes are **not** centralized yet — each module hardcodes its own in its `repo.py`: `h-` (harvest), `a-` (autointerp), `da-` (dataset_attributions), `ti-` (graph_interp). These should eventually be unified into `RUN_TYPE_ABBREVIATIONS`.
+Subrun prefixes are **not** centralized yet — each module hardcodes its own in its `repo.py`: `h-` (harvest), `a-` (autointerp). These should eventually be unified into `RUN_TYPE_ABBREVIATIONS`.
 
 ## App Integration
 

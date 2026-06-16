@@ -20,7 +20,6 @@
         | "components"
         | "autointerp-compare"
         | "dataset-search"
-        | "model-graph"
         | "data-sources"
         | "investigations"
         | "clusters"

@@ -15,9 +15,7 @@ from param_decomp_config.lm import LMExperimentConfig
 from param_decomp_lab.app.backend.routers.pretrain_info import _get_pretrain_info
 from param_decomp_lab.app.backend.utils import log_errors
 from param_decomp_lab.autointerp.schemas import get_autointerp_dir
-from param_decomp_lab.dataset_attributions.repo import get_attributions_dir
 from param_decomp_lab.experiments.utils import EXPERIMENT_CONFIG_FILENAME
-from param_decomp_lab.graph_interp.schemas import get_graph_interp_dir
 from param_decomp_lab.harvest.schemas import get_harvest_dir
 from param_decomp_lab.infra.run_files import resolve_config_path
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
@@ -28,8 +26,6 @@ router = APIRouter(prefix="/api/run_registry", tags=["run_registry"])
 class DataAvailability(BaseModel):
     harvest: bool
     autointerp: bool
-    attributions: bool
-    graph_interp: bool
 
 
 class RunInfoResponse(BaseModel):
@@ -50,8 +46,6 @@ def _check_availability(run_id: str) -> DataAvailability:
     return DataAvailability(
         harvest=_has_glob_match(get_harvest_dir(run_id), "h-*/harvest.db"),
         autointerp=_has_glob_match(get_autointerp_dir(run_id), "a-*/.done"),
-        attributions=_has_glob_match(get_attributions_dir(run_id), "da-*/dataset_attributions.pt"),
-        graph_interp=_has_glob_match(get_graph_interp_dir(run_id), "*/interp.db"),
     )
 
 

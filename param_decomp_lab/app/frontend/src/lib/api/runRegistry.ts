@@ -7,8 +7,6 @@ import { fetchJson } from "./index";
 export type DataAvailability = {
     harvest: boolean;
     autointerp: boolean;
-    attributions: boolean;
-    graph_interp: boolean;
 };
 
 export type RunInfoResponse = {

@@ -153,57 +153,6 @@
             {/if}
         </section>
 
-        <!-- Dataset Attributions -->
-        <section class="card pipeline-card" class:unavailable={data.status === "loaded" && !data.data.attributions}>
-            <div class="card-header">
-                <span class="status-dot" class:active={data.status === "loaded" && !!data.data.attributions}></span>
-                <h3 class="card-title">Dataset Attributions</h3>
-            </div>
-            {#if data.status === "loading"}
-                <p class="status-text">Loading...</p>
-            {:else if data.status === "loaded" && data.data.attributions}
-                {@const attributions = data.data.attributions}
-                <div class="info-grid">
-                    <span class="label">Subrun</span>
-                    <span class="value mono">{attributions.subrun_id}</span>
-                    <span class="label">Tokens</span>
-                    <span class="value">{attributions.n_tokens_processed.toLocaleString()}</span>
-                    <span class="label">CI threshold</span>
-                    <span class="value mono">{attributions.ci_threshold}</span>
-                </div>
-            {:else if data.status === "loaded"}
-                <p class="status-text">Not available</p>
-            {/if}
-        </section>
-
-        <!-- Graph Interp -->
-        <section class="card pipeline-card" class:unavailable={data.status === "loaded" && !data.data.graph_interp}>
-            <div class="card-header">
-                <span class="status-dot" class:active={data.status === "loaded" && !!data.data.graph_interp}></span>
-                <h3 class="card-title">Graph Interp</h3>
-            </div>
-            {#if data.status === "loading"}
-                <p class="status-text">Loading...</p>
-            {:else if data.status === "loaded" && data.data.graph_interp}
-                {@const graph_interp = data.data.graph_interp}
-                <div class="info-grid">
-                    <span class="label">Subrun</span>
-                    <span class="value mono">{graph_interp.subrun_id}</span>
-                    {#each Object.entries(graph_interp.label_counts) as [key, value] (key)}
-                        <span class="label">{key} labels</span>
-                        <span class="value">{value.toLocaleString()}</span>
-                    {/each}
-                    {#if graph_interp.config}
-                        {#each Object.entries(graph_interp.config) as [key, value] (key)}
-                            <span class="label">{key}</span>
-                            <span class="value mono">{formatConfigValue(value)}</span>
-                        {/each}
-                    {/if}
-                </div>
-            {:else if data.status === "loaded"}
-                <p class="status-text">Not available</p>
-            {/if}
-        </section>
     </div>
 </div>
 

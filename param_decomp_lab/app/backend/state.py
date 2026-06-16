@@ -3,7 +3,7 @@
 The app is a read-only viewer over a saved JAX run: it opens the orbax checkpoint via
 `open_jax_run` (the model forward, torch-free) and reads the run's pinned torch-free
 `LMExperimentConfig` for target/data/algorithm metadata, plus the pre-computed
-harvest/autointerp/attribution/cluster repos. No torch.
+harvest/autointerp/cluster repos. No torch.
 """
 
 from dataclasses import dataclass, field
@@ -17,8 +17,6 @@ from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.app.backend.database import PromptAttrDB, Run
 from param_decomp_lab.app.backend.topology import AppTopology
 from param_decomp_lab.autointerp.repo import InterpRepo
-from param_decomp_lab.dataset_attributions.repo import AttributionRepo
-from param_decomp_lab.graph_interp.repo import GraphInterpRepo
 from param_decomp_lab.harvest.repo import HarvestRepo
 
 
@@ -37,8 +35,6 @@ class RunState:
     context_length: int
     harvest: HarvestRepo | None
     interp: InterpRepo | None
-    attributions: AttributionRepo | None
-    graph_interp: GraphInterpRepo | None
 
 
 @dataclass

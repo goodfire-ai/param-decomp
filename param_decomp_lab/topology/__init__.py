@@ -18,7 +18,4 @@ Node key format:
     "{layer_address}:{seq_pos}:{component_idx}"
 """
 
-from param_decomp_lab.topology.gradient_connectivity import (
-    get_sources_by_target as get_sources_by_target,
-)
 from param_decomp_lab.topology.topology import TransformerTopology as TransformerTopology

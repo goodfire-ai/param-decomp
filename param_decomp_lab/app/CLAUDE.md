@@ -6,22 +6,29 @@ Web-based **read-only viewer** for exploring saved decompositions.
   torch** (#841). It opens the run's orbax checkpoint via
   `jax_single_pool.load_run.open_jax_run` (the model forward) and reads the run's
   torch-free `param_decomp_config.lm.LMExperimentConfig` for target/data/algorithm
-  metadata, plus the pre-computed harvest / autointerp / attribution / cluster repos.
+  metadata, plus the pre-computed harvest / autointerp / cluster repos.
 - **Frontend**: Svelte 5 + TypeScript (`frontend/`)
 - **Database**: SQLite at `PARAM_DECOMP_OUT_DIR/app/prompt_attr.db` (shared across team via
   NFS) — only `runs` + `prompts` now (attribution graphs / interventions are gone).
 - **TODOs**: See `TODO.md` for open work items
 
-## What the backend does NOT do (CUT in #841)
+## What the backend does NOT do (CUT in #841, dropped-feature sweep per TRANSITION §1)
 
 On-the-fly **attribution graphs, interventions, and circuit optimization** were removed
-when the app became a read-only JAX viewer — they were the only torch-requiring code.
-Deleted: `backend/compute.py`, `backend/optim_cis.py`, `backend/routers/{graphs,
-intervention,agents}.py`, the `/probe` endpoint, and the MCP tools that ran them
-(`optimize_graph`, `run_ablation`, `probe_component`, `save_graph_artifact`). The
-torch oracle for that compute lives at git tag `torch-oracle`; re-homing it onto a JAX
-path is a follow-up. `param_decomp_lab/editing/` was a downstream consumer of that
-compute and is now unbuildable (excluded from `[tool.pyright]` until re-homed).
+when the app became a read-only JAX viewer (#841) — they were the only torch-requiring
+code. Deleted there: `backend/compute.py`, `backend/optim_cis.py`,
+`backend/routers/{graphs,intervention,agents}.py`, the `/probe` endpoint, and the MCP
+tools that ran them (`optimize_graph`, `run_ablation`, `probe_component`,
+`save_graph_artifact`).
+
+The **dataset-attribution and graph-interp surface** then went too, per TRANSITION §1:
+`backend/routers/{dataset_attributions,graph_interp}.py`, the frontend
+`api/{datasetAttributions,graphInterp}.ts` clients, `ModelGraph.svelte`,
+`DatasetAttributionsSection.svelte`, `GraphInterpBadge.svelte`, and the backend
+`dataset_attributions/` + `graph_interp/` modules. `param_decomp_lab/editing/` (a
+downstream consumer of the dropped torch compute) was deleted with them. The torch
+oracle for that compute lives at git tag `torch-oracle`; these are backlog items to
+re-home onto a JAX path.
 
 Live LM next-token probabilities (prompt previews, dataset-search rows, MCP
 `create_prompt`) come from `backend/inference.py::next_token_probs`, which reads
@@ -72,13 +79,11 @@ backend/
 └── routers/
     ├── runs.py            # Load a JAX run (open_jax_run + LMExperimentConfig) + GET /api/status
     ├── run_registry.py    # Architecture + data-availability lookups for the frontend run list
-    ├── graph_interp.py    # Context-aware labels + prompt-edge graph from graph_interp pipeline
     ├── prompts.py         # Prompt management (next-token probs via JAX forward)
     ├── activation_contexts.py  # Serves pre-harvested activation contexts
     ├── correlations.py    # Component correlations + token stats + interpretations
     ├── autointerp_compare.py   # List autointerp subruns + serve interpretations from each
-    ├── dataset_attributions.py # Precomputed dataset-aggregated component attributions
-    ├── data_sources.py    # Provenance: subrun IDs, configs, counts (harvest/autointerp/attributions)
+    ├── data_sources.py    # Provenance: subrun IDs, configs, counts (harvest/autointerp)
     ├── pretrain_info.py   # Target-model architecture lookups without loading checkpoints
     ├── investigations.py  # List and serve investigation outputs
     ├── clusters.py        # Component clustering
@@ -105,12 +110,10 @@ frontend/src/
 │   │   ├── index.ts              # Re-exports all API modules
 │   │   ├── runs.ts               # Run loading
 │   │   ├── runRegistry.ts        # Run-list metadata + data availability
-│   │   ├── graphInterp.ts        # Context-aware graph_interp labels
 │   │   ├── prompts.ts            # Prompt management
 │   │   ├── activationContexts.ts # Activation contexts
 │   │   ├── correlations.ts       # Correlations + interpretations
 │   │   ├── autointerpCompare.ts  # Autointerp subrun comparison
-│   │   ├── datasetAttributions.ts # Dataset-aggregated attributions
 │   │   ├── dataSources.ts        # Data provenance
 │   │   ├── pretrainInfo.ts       # Target-model architecture
 │   │   ├── investigations.ts     # Investigation outputs
@@ -165,15 +168,15 @@ Node keys follow the format `"layer:seq:cIdx"` where:
 - `seq`: Sequence position (0-indexed)
 - `cIdx`: Component index within the layer
 
-### Non-Interventable Nodes
+### Pseudo-layers
 
-`wte` and `output` are **pseudo-layers** for visualization only:
+`wte` and `output` are **pseudo-layers** for display only:
 
 - `wte` (word token embedding): Input embeddings, single pseudo-component (idx 0)
 - `output`: Output logits, component_idx = token_id
 
-These pseudo-layers appear in the pre-computed `graph_interp` data the app reads. The
-backend no longer computes attribution graphs or interventions (CUT — see top of file).
+The backend no longer computes attribution graphs or interventions (CUT — see top of
+file).
 
 ---
 
@@ -188,7 +191,7 @@ POST /api/runs/load(wandb_path, context_length)
   → LMExperimentConfig.from_file(experiment_config.yaml)   # torch-free target/data/pd
   → AppTopology.from_model_type(...)            # canonical path mapping
   → AppTokenizer.from_pretrained(data.tokenizer_name)
-  → open harvest/interp/attributions/graph_interp repos
+  → open harvest/interp repos
   → store in StateManager singleton
   ← {status, run_id, wandb_path}
 ```
@@ -252,7 +255,7 @@ StateManager.get() → AppState:
       - config: PDConfig            # the run's algorithm config (for /status config_yaml)
       - lm_target, lm_data          # torch-free LMExperimentConfig sub-configs
       - context_length
-      - harvest / interp / attributions / graph_interp repos  # pre-computed data
+      - harvest / interp repos  # pre-computed data
   - dataset_search_state: DatasetSearchState | None  # Cached search results
 
 HarvestRepo:  # Lazy-loads from PARAM_DECOMP_OUT_DIR/runs/<run_id>/harvest/

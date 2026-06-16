@@ -35,11 +35,7 @@ from param_decomp_lab.app.backend.routers.autointerp_compare import (
 from param_decomp_lab.app.backend.routers.clusters import router as clusters_router
 from param_decomp_lab.app.backend.routers.correlations import router as correlations_router
 from param_decomp_lab.app.backend.routers.data_sources import router as data_sources_router
-from param_decomp_lab.app.backend.routers.dataset_attributions import (
-    router as dataset_attributions_router,
-)
 from param_decomp_lab.app.backend.routers.dataset_search import router as dataset_search_router
-from param_decomp_lab.app.backend.routers.graph_interp import router as graph_interp_router
 from param_decomp_lab.app.backend.routers.investigations import router as investigations_router
 from param_decomp_lab.app.backend.routers.mcp import router as mcp_router
 from param_decomp_lab.app.backend.routers.pretrain_info import router as pretrain_info_router
@@ -180,11 +176,9 @@ app.include_router(activation_contexts_router)
 app.include_router(correlations_router)
 app.include_router(clusters_router)
 app.include_router(dataset_search_router)
-app.include_router(dataset_attributions_router)
 app.include_router(investigations_router)
 app.include_router(mcp_router)
 app.include_router(data_sources_router)
-app.include_router(graph_interp_router)
 app.include_router(pretrain_info_router)
 app.include_router(run_registry_router)
 
