@@ -61,6 +61,27 @@ eval:
 A dict-returning metric flattens under its own internal keys, so two dict-returning
 instances of one class would still collide — namespace their keys if you need that.
 
+A `compute()` dict key that already contains a `/` keeps its own namespace (skips the
+`log_namespace` prefix), letting a metric emit a secondary key elsewhere — e.g.
+`ImportanceMinimalityLoss` logs its `no_beta` proxy under `sparsity/` instead of `loss/`.
+
+## Importance-minimality variants
+
+Two interchangeable CI-sparsity penalties, same `(sum + beta·entropy)` shape and the
+same exact-DDP reduction (the additive split `lp_and_entropy_terms` / `finalize_imp_min`
+is penalty-agnostic and shared):
+
+- `ImportanceMinimalityLoss` (`importance_minimality.py`) — `L_p`: `(c + eps)^p` with `p`
+  annealed toward 0. Gradient `p·c^(p-1)` blows up as `c→0` for `p<1`.
+- `SmoothL0ImportanceMinimalityLoss` (`smooth_l0_importance_minimality.py`) — bounded
+  Geman–McClure `c²/(c²+γ²)`: flat at 0, saturating to 1, bounded gradient `~0.65/γ` near
+  `c≈γ`. Drop-in replacement avoiding the `L_p` cliff; `γ` anneals like `p`.
+
+Both are registered eval-side too (`EVAL_METRIC_CLASSES` + `AnyEvalMetricConfig`), so a run
+driven by one can log the other as an eval-only sparsity proxy. The directly comparable
+cross-run sparsity number is `CI_L0` (a hard count); each penalty's own `_no_beta` proxy is
+on its own scale.
+
 ## Config placement rule
 
 Every config class lives in the torch-free `param_decomp_config` package — loss-metric

@@ -23,6 +23,10 @@ DDP_ENV = {
     "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
     "HF_HUB_ETAG_TIMEOUT": "30",
     "HF_HUB_DOWNLOAD_TIMEOUT": "30",
+    # Per-user datasets cache: the shared HF_DATASETS_CACHE holds a parquet builder lock
+    # owned by another user (EACCES on acquire). Streaming needs only its own writable
+    # cache dir; no arrow conversion happens. Hub cache (model weights) stays shared.
+    "HF_DATASETS_CACHE": "/mnt/home/dan.braun/.cache/hf_datasets_rt",
 }
 
 
@@ -92,7 +96,8 @@ def build_ddp_launch(
         ]
     )
     srun_prefix = (
-        f"srun --nodes={n_nodes} --ntasks={n_nodes} --ntasks-per-node=1 --kill-on-bad-exit=1"
+        f"srun --nodes={n_nodes} --ntasks={n_nodes} --ntasks-per-node=1 "
+        "--kill-on-bad-exit=1 --cpu-bind=none"
     )
     command = f"{srun_prefix} bash -c {shlex.quote(f'{setup}\n{torchrun_cmd}')}"
     return DDPLaunch(command=command, n_nodes=n_nodes, gpus_per_node=GPUS_PER_NODE, env=DDP_ENV)

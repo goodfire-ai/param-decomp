@@ -12,7 +12,9 @@ from pydantic import Discriminator, Field, model_validator
 from param_decomp_config.autointerp import LLMConfig, StrategyConfig
 from param_decomp_config.base import BaseConfig
 from param_decomp_config.losses import (
+    ImportanceMinimalityLossConfig,
     PGDReconLossConfig,
+    SmoothL0ImportanceMinimalityLossConfig,
     StochasticHiddenActsReconLossConfig,
 )
 
@@ -148,8 +150,10 @@ AnyEvalMetricConfig = Annotated[
     | CIMeanPerComponentConfig
     | ComponentActivationDensityConfig
     | IdentityCIErrorConfig
+    | ImportanceMinimalityLossConfig
     | PermutedCIPlotsConfig
     | PGDReconLossConfig
+    | SmoothL0ImportanceMinimalityLossConfig
     | StochasticAttnPatternsReconLossConfig
     | StochasticHiddenActsReconLossConfig
     | UVPlotsConfig,

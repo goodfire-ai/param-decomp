@@ -1,0 +1,22 @@
+harvest:
+  config:
+    method_config:
+      type: ParamDecompHarvestConfig
+      wandb_path: goodfire/param-decomp/runs/p-73cf27e4
+    n_batches: 2500
+    batch_size: 256
+  n_gpus: 64
+  time: "12:00:00"
+autointerp:
+  config:
+    llm:
+      type: openrouter
+      model: google/gemini-3.1-pro-preview
+      reasoning_effort: medium
+    template_strategy:
+      type: canon
+    limit: 10000
+  evals: null
+intruder: null
+attributions: null
+graph_interp: null
