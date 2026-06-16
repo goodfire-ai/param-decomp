@@ -58,6 +58,8 @@ from param_decomp_config.losses import PGDReconLossConfig
 from param_decomp_config.pd import AnyLossMetricConfig, OptimizerConfig
 from param_decomp_config.schedule import ScheduleConfig
 
+WeightsDtype = Literal["float32", "bfloat16"]
+
 
 @dataclass(frozen=True)
 class TargetConfig:
@@ -66,6 +68,11 @@ class TargetConfig:
     model_name: str
     sites: tuple[SiteC, ...]
     """Decomposed sites with per-site C, in canonical order (`canonical_site_cs`)."""
+
+    supported_weights_dtypes: frozenset[WeightsDtype] = frozenset({"bfloat16"})
+    """Frozen-target weight dtypes the loader supports (`llama8b.py` is bf16-only:
+    `DT = jnp.bfloat16`). A config requesting a dtype outside this set is refused at
+    convert time — no silent downgrade (issue #727)."""
 
 
 @dataclass(frozen=True)
@@ -77,6 +84,10 @@ class LlamaSimpleMLPTargetConfig:
     sites: tuple[SiteC, ...]
     """Decomposed sites with per-site C, in canonical order
     (`llama_simple_mlp.canonical_site_cs`)."""
+
+    supported_weights_dtypes: frozenset[WeightsDtype] = frozenset({"bfloat16"})
+    """Frozen-target weight dtypes the loader supports (`llama_simple_mlp.py` loads bf16:
+    `jnp.bfloat16` hardcoded at the call site). See `TargetConfig.supported_weights_dtypes`."""
 
 
 AnyTargetConfig = TargetConfig | LlamaSimpleMLPTargetConfig
@@ -355,15 +366,12 @@ def build_experiment_config(
     assert cfg.runtime.autocast_bf16, "JAX trainer computes in bf16 (autocast analog)"
     assert cfg.pd.faithfulness_warmup_weight_decay == 0.0
 
-    if cfg.target.weights_dtype == "float32":
-        print(
-            "DIVERGENCE: config asks for an fp32 frozen target; the JAX trainer keeps "
-            "the frozen target in bf16 (measured ~5e-4 nats KL on clean logits — negligible "
-            "vs recon KLs, but not bit-parity).",
-            flush=True,
-        )
-    else:
-        assert cfg.target.weights_dtype == "bfloat16", cfg.target.weights_dtype
+    assert cfg.target.weights_dtype in target.supported_weights_dtypes, (
+        f"target {type(target).__name__} supports frozen-target weights_dtype "
+        f"{sorted(target.supported_weights_dtypes)}, config asks for "
+        f"{cfg.target.weights_dtype!r}. No silent downgrade (issue #727): declare a "
+        f"supported dtype in the yaml."
+    )
 
     vu_opt = cfg.pd.components_optimizer
     ci_opt = cfg.pd.ci_fn_optimizer

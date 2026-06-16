@@ -24,6 +24,7 @@ from param_decomp_config.jax_wrapper import (
     WRAPPER_KEYS_BEFORE_SUBMIT,
 )
 from param_decomp_config.jax_wrapper import WRAPPER_KEYS as SHARED_WRAPPER_KEYS
+from param_decomp_config.lm import LMExperimentConfig
 from param_decomp_config.losses import PersistentPGDReconLossConfig
 
 CONFIGS = Path(__file__).parent.parent / "configs"
@@ -300,22 +301,36 @@ def test_arbitrary_sites_with_per_site_c_convert():
     )
 
 
-def test_c49k_yaml_converts_with_documented_divergences(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-):
-    """The C49k/200k yaml (raw-HF target spec, fp32 weights_dtype, `model.`-prefixed
-    site patterns) must convert, printing the fp32-frozen divergence note."""
+def test_c49k_yaml_converts(tmp_path: Path):
+    """The C49k/200k yaml (raw-HF target spec, bf16 weights_dtype, `model.`-prefixed
+    site patterns) must convert cleanly."""
     converted, _torch_path, _raw = load_wrapper(
         _stamped_wrapper(tmp_path, CONFIGS / "llama8b_l18_C49k_200k_from_torch.yaml")
     )
-    printed = capsys.readouterr().out
-    assert "fp32 frozen target" in printed
     assert converted.target.sites == mlp_family_site_cs(18, 18, 49152)
     assert converted.steps == 200000
     assert converted.data.global_batch == 512 and converted.data.seq_len == 2048
     assert converted.vu_optimizer.lr == 7e-05 and converted.ci_optimizer.lr == 7e-05
     assert converted.eval is not None and converted.eval.pgd is not None
     assert converted.wandb is not None and converted.wandb.entity is None
+
+
+def test_fp32_frozen_target_is_refused(tmp_path: Path):
+    """A config requesting an fp32 frozen target must crash at convert time — the
+    bf16-only targets have no fp32 capability, and there is no silent downgrade
+    (issue #727)."""
+    wrapper = _stamped_wrapper(tmp_path, CONFIGS / "llama8b_l18_C49k_200k_from_torch.yaml")
+    schema_yaml_path = (
+        wrapper.parent / yaml.safe_load(wrapper.read_text())["torch_config"]
+    ).resolve()
+    cfg = LMExperimentConfig(**yaml.safe_load(schema_yaml_path.read_text()))
+    cfg = cfg.model_copy(
+        update={"target": cfg.target.model_copy(update={"weights_dtype": "float32"})}
+    )
+    with pytest.raises(AssertionError, match="weights_dtype"):
+        build_experiment_config(
+            cfg, run_name="r", run_id=RUN_ID, out_dir=tmp_path, remat_recon_forwards=False
+        )
 
 
 def test_load_run_dir_config_rebuilds_wrapper_runs(tmp_path: Path):

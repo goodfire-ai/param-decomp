@@ -155,6 +155,7 @@ runtime:
   dp: 16
 target:
   output_extract: 0
+  weights_dtype: bfloat16
   spec:
     kind: pretrained
     model_class: param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp.LlamaSimpleMLP

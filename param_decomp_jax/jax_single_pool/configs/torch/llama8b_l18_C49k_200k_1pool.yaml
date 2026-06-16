@@ -15,8 +15,10 @@
 #   7. lrs (components + ci_fn): 5e-5 -> 7e-5 per Oli — a deliberate 1.4x partial
 #      bump for the 4x batch (full sqrt scaling would be 2x; chosen NOT to).
 # Everything else in pd: (C=30000, lrs 5e-5/5e-5, 200k steps, batch 128, eval set)
-# is upstream-identical. weights_dtype is upstream's default fp32; the JAX frozen
-# target runs bf16 (converter prints the documented divergence).
+# is upstream-identical.
+#   8. target.weights_dtype: upstream's default fp32 -> bfloat16. The JAX targets are
+#      bf16-only and now REFUSE an fp32 frozen-target request (issue #727), so the
+#      declared dtype must match the target's capability.
 cadence:
   keep_last_n_checkpoints: 2
   save_every: 5000
@@ -154,6 +156,7 @@ runtime:
   dp: 32
 target:
   output_extract: logits
+  weights_dtype: bfloat16
   spec:
     kind: hf
     model_class: transformers.LlamaForCausalLM
