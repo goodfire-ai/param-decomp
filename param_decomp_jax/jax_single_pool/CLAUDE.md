@@ -27,8 +27,10 @@ never silently diverge. Cite IDs (`S14`, `N1`, …) in commit messages and revie
 boundary, frozen pytree always a runtime arg (never a jit closure constant — an 8B
 target becomes a multi-GB HLO constant). `train.py` is the generic step factory
 (fp32 masters / bf16 compute) over a static tuple of recon loss TERMS (S10′ — the
-torch loss-class cartesian product factored as plan × mask-source strategy, built
-from the shared configs by `recon.build_recon_terms`; see LOSS_PARITY_DESIGN.md),
+torch loss-class cartesian product factored as chunking × routing × mask-source
+strategy: a chunking helper (`one_chunk`/`per_site`/`into_groups`) feeds the single
+`make_plan` constructor, built from the shared configs by `recon.build_recon_terms`;
+see LOSS_PARITY_DESIGN.md),
 consuming `losses.py` (pure loss terms + schedules) and `adversary.py` (persistent
 vs fresh source machinery — semantically distinct adversaries sharing only
 `source_masks`); `ci_fn.py` the shared CI transformer; `llama8b.py` + `llama8b_sharding.py` the first target. There is ONE

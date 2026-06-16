@@ -2,11 +2,14 @@
 route), mask-SOURCE strategies (where the [0,1] source values come from), and the
 mapping from the shared torch loss configs onto them (`build_recon_terms`).
 
+A plan is built from two orthogonal choices: how the sites are CHUNKED (a chunking
+helper `tuple[str, ...] -> list[Chunk]`) and how each chunk is turned into routed
+forwards (`make_plan`, sharing one routing config + source strategy across chunks).
 The torch loss-class cartesian product (`CIMasked`/`Stochastic`/`Unmasked`/`PGD`/
-`PersistentPGD` x `_`/`Subset`/`Layerwise`) factors exactly as plan shape x source
-strategy — see LOSS_PARITY_DESIGN.md. Everything here is static structure closed
-over by the jit'd step; only keys (and, for persistent terms, `TrainState` entries)
-vary per step.
+`PersistentPGD` x `_`/`Subset`/`Layerwise`) factors exactly as chunking x routing x
+source strategy — see LOSS_PARITY_DESIGN.md. Everything here is static structure
+closed over by the jit'd step; only keys (and, for persistent terms, `TrainState`
+entries) vary per step.
 """
 
 from collections.abc import Callable
@@ -189,17 +192,12 @@ def static_probability_routing(
 
 
 def route_all_n(n_draws: int) -> RoutingSampler:
-    """`n_draws` forwards, each routing every position to every live site."""
+    """`n_draws` forwards, each routing every position to every live site (`AllRoutingConfig`)."""
 
     def sample(_key: PRNGKeyArray, _batch_seq_shape: tuple[int, int]) -> tuple[Routes, ...]:
         return (None,) * n_draws
 
     return sample
-
-
-def route_all(_key: PRNGKeyArray, _batch_seq_shape: tuple[int, int]) -> tuple[Routes, ...]:
-    """One draw routing every position to every live site."""
-    return (None,)
 
 
 def routing_sampler_from_config(
@@ -214,30 +212,48 @@ def routing_sampler_from_config(
             return route_all_n(n_draws)
 
 
-# ───────────────────────────── the chunkwise plan ─────────────────────────────
+# ───────────────────────────── chunking helpers ─────────────────────────────
+
+Chunk = tuple[str, ...]
+"""A live-set: the sites that run their decomposed path in one forward, everything else
+on the frozen `x@W` path (SPEC S2)."""
 
 
-def chunkwise_plan(
-    site_names: tuple[str, ...],
-    sites_per_chunk: int,
-    sampler_for_chunk: Callable[[tuple[str, ...]], RoutingSampler],
+def one_chunk(sites: tuple[str, ...]) -> list[Chunk]:
+    """The whole model as a single chunk (torch `all_sites`: every site live)."""
+    return [tuple(sites)]
+
+
+def per_site(sites: tuple[str, ...]) -> list[Chunk]:
+    """One single-site chunk per site (torch `*Layerwise`)."""
+    return [(s,) for s in sites]
+
+
+def into_groups(sites: tuple[str, ...], k: int) -> list[Chunk]:
+    """Sequential size-`k` groups in canonical site order (torch chunkwise; SPEC S10)."""
+    return list(chunk_sites(sites, k))
+
+
+# ───────────────────────────── the plan constructor ─────────────────────────────
+
+
+def make_plan(
+    chunks: list[Chunk],
+    routing: SubsetRoutingType,
     sources: MaskSourceStrategy,
+    n_samples: int,
 ) -> ReconPlan:
-    """The ONE recon-plan builder. Partition the sites into sequential
-    `sites_per_chunk`-groups in canonical order (SPEC S10), one `ReconForward` per chunk
-    with that chunk live and the rest frozen `x@W` (SPEC S2). `sampler_for_chunk` turns
-    each chunk into its routing draws; `sources` is shared by every entry.
-
-    The torch loss-class plan shapes are this builder's endpoints:
-      * `sites_per_chunk = len(site_names)` → one chunk = every site (the `all_sites`
-        shape: a single entry with everything live).
-      * `sites_per_chunk = 1` → `len(site_names)` one-site chunks (the `*Layerwise`
-        shape).
-      * `1 < sites_per_chunk < N` with `uniform_k_routing` → the production
-        `ChunkwiseSubsetReconLoss` (torch `SubsetReconPlan` over the chunk topology)."""
+    """One `ReconForward` per chunk: that chunk live, the rest frozen `x@W` (SPEC S2),
+    with `n_samples` routing draws from `routing` over the chunk's own sites (SPEC S11)
+    and the shared `sources`. The chunking (`one_chunk`/`per_site`/`into_groups`) and the
+    routing/source choices are orthogonal — see LOSS_PARITY_DESIGN.md."""
     return tuple(
-        ReconForward(live_sites=chunk, sample_routing=sampler_for_chunk(chunk), sources=sources)
-        for chunk in chunk_sites(site_names, sites_per_chunk)
+        ReconForward(
+            live_sites=chunk,
+            sample_routing=routing_sampler_from_config(routing, chunk, n_samples),
+            sources=sources,
+        )
+        for chunk in chunks
     )
 
 
@@ -249,23 +265,9 @@ def subset_chunk_plan(
 ) -> ReconPlan:
     """The production plan: `n_samples` uniform-k forwards per chunk (torch
     `SubsetReconPlan` over `ThreePoolTopology` chunks)."""
-    return chunkwise_plan(
-        site_names, sites_per_chunk, lambda chunk: uniform_k_routing(chunk, n_samples), sources
+    return make_plan(
+        into_groups(site_names, sites_per_chunk), UniformKSubsetRoutingConfig(), sources, n_samples
     )
-
-
-def per_site_plan(site_names: tuple[str, ...], sources: MaskSourceStrategy) -> ReconPlan:
-    """One forward per site, routed everywhere — the torch `*Layerwise` plan shape
-    (`chunkwise_plan` with `sites_per_chunk = 1`)."""
-    return chunkwise_plan(site_names, 1, lambda _chunk: route_all, sources)
-
-
-def all_sites_plan(
-    site_names: tuple[str, ...], sample_routing: RoutingSampler, sources: MaskSourceStrategy
-) -> ReconPlan:
-    """One entry with every site live — `chunkwise_plan` with the whole site list as a
-    single chunk."""
-    return chunkwise_plan(site_names, len(site_names), lambda _chunk: sample_routing, sources)
 
 
 # ───────────────────────────── shared-config -> terms ─────────────────────────────
@@ -327,58 +329,71 @@ def build_recon_terms(
                 imp_min = cfg
             case UnmaskedReconLossConfig() | CIMaskedReconLossConfig():
                 value = 1.0 if isinstance(cfg, UnmaskedReconLossConfig) else 0.0
-                plan = all_sites_plan(site_names, route_all, ConstantSources(value))
+                plan = make_plan(
+                    one_chunk(site_names), AllRoutingConfig(), ConstantSources(value), n_samples=1
+                )
                 terms.append(ReconLossTerm(instance_key(cfg), cfg.coeff, plan))
             case CIMaskedReconSubsetLossConfig():
-                sampler = routing_sampler_from_config(cfg.routing, site_names, n_draws=1)
-                plan = all_sites_plan(site_names, sampler, ConstantSources(0.0))
+                plan = make_plan(
+                    one_chunk(site_names), cfg.routing, ConstantSources(0.0), n_samples=1
+                )
                 terms.append(ReconLossTerm(instance_key(cfg), cfg.coeff, plan))
             case CIMaskedReconLayerwiseLossConfig():
-                plan = per_site_plan(site_names, ConstantSources(0.0))
+                plan = make_plan(
+                    per_site(site_names), AllRoutingConfig(), ConstantSources(0.0), n_samples=1
+                )
                 terms.append(ReconLossTerm(instance_key(cfg), cfg.coeff, plan))
             case StochasticReconLossConfig():
-                plan = all_sites_plan(
-                    site_names, route_all_n(n_mask_samples), StochasticSources(sampling)
+                plan = make_plan(
+                    one_chunk(site_names),
+                    AllRoutingConfig(),
+                    StochasticSources(sampling),
+                    n_mask_samples,
                 )
                 terms.append(ReconLossTerm(instance_key(cfg), cfg.coeff, plan))
             case StochasticReconSubsetLossConfig():
-                sampler = routing_sampler_from_config(cfg.routing, site_names, n_mask_samples)
-                plan = all_sites_plan(site_names, sampler, StochasticSources(sampling))
+                plan = make_plan(
+                    one_chunk(site_names), cfg.routing, StochasticSources(sampling), n_mask_samples
+                )
                 terms.append(ReconLossTerm(instance_key(cfg), cfg.coeff, plan))
             case StochasticReconLayerwiseLossConfig():
-                plan = chunkwise_plan(
-                    site_names,
-                    sites_per_chunk=1,
-                    sampler_for_chunk=lambda _chunk: route_all_n(n_mask_samples),
-                    sources=StochasticSources(sampling),
+                plan = make_plan(
+                    per_site(site_names),
+                    AllRoutingConfig(),
+                    StochasticSources(sampling),
+                    n_mask_samples,
                 )
                 terms.append(ReconLossTerm(instance_key(cfg), cfg.coeff, plan))
             case ChunkwiseSubsetReconLossConfig():
                 assert isinstance(cfg.routing, UniformKSubsetRoutingConfig), cfg.routing
-                plan = subset_chunk_plan(
-                    site_names, cfg.sites_per_chunk, cfg.n_samples, StochasticSources(sampling)
+                plan = make_plan(
+                    into_groups(site_names, cfg.sites_per_chunk),
+                    cfg.routing,
+                    StochasticSources(sampling),
+                    cfg.n_samples,
                 )
                 terms.append(ReconLossTerm(instance_key(cfg), cfg.coeff, plan))
             case PGDReconLossConfig() | PGDReconSubsetLossConfig():
                 fresh = FreshPGDSources(cfg.init, cfg.n_steps, cfg.step_size, cfg.mask_scope)
-                sampler = (
-                    routing_sampler_from_config(cfg.routing, site_names, n_draws=1)
-                    if isinstance(cfg, PGDReconSubsetLossConfig)
-                    else route_all
+                routing = (
+                    cfg.routing if isinstance(cfg, PGDReconSubsetLossConfig) else AllRoutingConfig()
                 )
-                plan = all_sites_plan(site_names, sampler, fresh)
+                plan = make_plan(one_chunk(site_names), routing, fresh, n_samples=1)
                 terms.append(ReconLossTerm(instance_key(cfg), cfg.coeff, plan))
             case PGDReconLayerwiseLossConfig():
                 fresh = FreshPGDSources(cfg.init, cfg.n_steps, cfg.step_size, cfg.mask_scope)
-                plan = per_site_plan(site_names, fresh)
+                plan = make_plan(per_site(site_names), AllRoutingConfig(), fresh, n_samples=1)
                 terms.append(ReconLossTerm(instance_key(cfg), cfg.coeff, plan))
             case PersistentPGDReconLossConfig():
                 _assert_supported_persistent(cfg)
                 key = instance_key(cfg)
                 assert key not in persistent
                 persistent[key] = cfg
-                plan = all_sites_plan(
-                    site_names, route_all_n(cfg.n_samples), PersistentSources(state_key=key)
+                plan = make_plan(
+                    one_chunk(site_names),
+                    AllRoutingConfig(),
+                    PersistentSources(state_key=key),
+                    cfg.n_samples,
                 )
                 terms.append(ReconLossTerm(key, cfg.coeff, plan))
             case _:
