@@ -13,6 +13,9 @@ Two kinds of check:
   * **Structural.** `test_structure_*` pin SPEC invariants that aren't a single number:
     the stochastic recon runs ONE forward PER CHUNK (S10), recon is KL not MSE (§2.3),
     and the PPGD source carries the trailing raw weight-delta channel (S1).
+    `test_sc_source_broadcasts_over_batch_in_masked_forward` pins the sc-scope
+    broadcast (S1/S16): an `(1, T, C+1)` source broadcasts over `[B, T]` in the masked
+    forward, and a B/T-transposed source must break it (the fixtures keep `B != T`).
 
 Regenerate the cross-framework golden (only needed if the math or fixtures change):
 
@@ -41,12 +44,16 @@ RTOL = 2e-4
 ATOL = 1e-5
 
 
+def _load_fixtures() -> dict[str, np.ndarray]:
+    return dict(np.load(HERE / "fixtures.npz"))
+
+
 @pytest.mark.parametrize("term", ["faith", "imp", "stoch", "ppgd"])
 def test_jax_matches_torch_reference(term: str) -> None:
     ref_path = HERE / "torch_reference.json"
     assert ref_path.exists(), "run torch_reference.py (torch env) to produce the golden first"
     ref = json.loads(ref_path.read_text())
-    jaxv = compute_jax_terms(dict(np.load(HERE / "fixtures.npz")))
+    jaxv = compute_jax_terms(_load_fixtures())
     jv, tv = jaxv[term], ref[term]
     assert abs(jv - tv) <= ATOL + RTOL * abs(tv), (
         f"{term}: jax {jv:.8e} vs torch {tv:.8e} (rel {abs(jv - tv) / (abs(tv) + 1e-30):.2e})"
@@ -119,3 +126,60 @@ def test_sc_scope_broadcast_axis_matches_torch() -> None:
     assert not np.allclose(delta_mask[0, 0], delta_mask[0, 1]), (
         "sc source must vary per position (a transposed broadcast axis would not)"
     )
+
+
+def test_fixtures_are_batch_asymmetric_so_a_bt_transpose_is_observable() -> None:
+    """The sc-broadcast guard below (and the `ppgd` numeric term) can only catch a B/T
+    axis transpose when `B != T`; a square fixture would let a transpose pass silently."""
+    f = _load_fixtures()
+    B, T = int(f["_scalar_B"]), int(f["_scalar_T"])
+    assert B != T, f"fixtures must keep B != T to expose a B/T transpose, got B={B} T={T}"
+    for k in ("gate", "up", "down"):
+        sc = f[f"ppgd_source_{k}"]  # (1, T, L, C+1)
+        assert sc.shape[0] == 1 and sc.shape[1] == T, (
+            f"ppgd source must be sc-scope (1, T, L, C+1), got {sc.shape}"
+        )
+
+
+def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
+    """SPEC S1/S16: an sc-scope source `(1, T, C+1)` broadcasts over `[B, T]` in the
+    masked forward — shared across batch elements, free per position. This exercises the
+    `delta_mask[..., None]` / mask broadcast (llama8b `_site_out`) the way the PPGD path
+    does, and pins the broadcast AXIS: transposing the source to `(1, B, C+1)` (B != T)
+    must break the forward rather than silently re-interpret the time axis as batch."""
+    from jax_single_pool.llama8b import MLP_KINDS, site_name
+    from jax_single_pool.tests.equivalence.jax_equivalence import FP, _build
+
+    f = _load_fixtures()
+    lm, tgt, vu, n_layers = _build(f)
+    resid = jnp.asarray(f["resid"], dtype=FP)
+    B, T = int(f["_scalar_B"]), int(f["_scalar_T"])
+    vocab = int(f["_scalar_VOCAB"])
+    assert B != T
+
+    def per_site_sc(prefix: str) -> dict[str, "jnp.ndarray"]:
+        by_kind = {k: jnp.asarray(f[f"{prefix}_{k}"], dtype=FP) for k in ("gate", "up", "down")}
+        return {site_name(i, k): by_kind[k][:, :, i] for i in range(n_layers) for k in MLP_KINDS}
+
+    ci_lower = per_site_sc("ci_lower")  # (B, T, C)
+    source = per_site_sc("ppgd_source")  # (1, T, C+1) per site
+    for s in lm.site_names:
+        assert source[s].shape == (1, T, source[s].shape[-1]), source[s].shape
+
+    masks, delta_masks = source_masks(ci_lower, source, lm.site_names)
+    # `ci + (1-ci)*src` lifts the sc mask to the CI's batch dim; delta stays sc.
+    for s in lm.site_names:
+        assert masks[s].shape[0] == B and masks[s].shape[1] == T, masks[s].shape
+        assert delta_masks[s].shape == (1, T), delta_masks[s].shape
+
+    pred = lm.masked_logits(tgt, vu, resid, masks, delta_masks, None, lm.site_names)
+    assert pred.shape == (B, T, vocab), pred.shape
+
+    # A source whose free axis is sized B (not T) — i.e. the B/T axes transposed — must NOT
+    # broadcast against the `(B, T, C)` ci. The time axis is load-bearing, not interchangeable.
+    bt_transposed = {s: source[s][:, :B, :] for s in lm.site_names}
+    for s in lm.site_names:
+        assert bt_transposed[s].shape == (1, B, source[s].shape[-1]), bt_transposed[s].shape
+    with pytest.raises(Exception):  # noqa: B017 — broadcast error, framework-specific type
+        bad_masks, bad_delta = source_masks(ci_lower, bt_transposed, lm.site_names)
+        lm.masked_logits(tgt, vu, resid, bad_masks, bad_delta, None, lm.site_names)
