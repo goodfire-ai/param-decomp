@@ -240,6 +240,40 @@ def test_unsupported_model_family_refuses_and_supported_families_dispatch():
     assert LlamaSimpleMLPTargetConfig is not None  # the `pretrained` happy-path type
 
 
+def test_decaying_persistent_source_schedule_refuses():
+    """The JAX source schedule is `warmup_then_constant_lr` (no post-warmup decay);
+    a torch PPGD source `lr_schedule` that decays would silently flatten, so the
+    conversion gate must refuse it (issue #646; matrix S13/S20)."""
+    torch_cfg, raw = _reference_torch_cfg()
+    decaying_source = dict(
+        raw,
+        pd=dict(
+            raw["pd"],
+            loss_metrics=[
+                dict(
+                    m,
+                    optimizer=dict(
+                        m["optimizer"],
+                        lr_schedule=dict(
+                            m["optimizer"]["lr_schedule"],
+                            fn_type="cosine",
+                            final_val_frac=0.1,
+                        ),
+                    ),
+                )
+                if m["type"] == "PersistentPGDReconLoss"
+                else m
+                for m in raw["pd"]["loss_metrics"]
+            ],
+        ),
+    )
+    with pytest.raises(AssertionError):
+        convert_torch_lm_config(
+            type(torch_cfg)(**decaying_source), run_name="t", run_id=RUN_ID,
+            out_dir=Path("/tmp"), remat_recon_forwards=True,
+        )  # fmt: skip
+
+
 def test_arbitrary_sites_with_per_site_c_convert():
     """Attention + MLP sites across non-contiguous layers with heterogeneous C —
     the general site space this trainer now implements."""
