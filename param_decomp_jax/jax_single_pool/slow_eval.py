@@ -19,10 +19,18 @@ Cross-batch reductions are exact under micro-batching: density/mean accumulate
 SUM-over-positions + a position count, divided once at the end (token-weighted mean,
 uniform `(B, T)` makes it the plain mean). `CIHistograms` caps its raw-value sample at
 `n_batches_accum` batches, matching the torch metric's `n_batches_accum` early-stop.
+
+It also computes the two SCALAR hidden-acts recon eval metrics (`CIHiddenActsReconLoss`,
+`StochasticHiddenActsReconLoss`) natively — per decomposed site, the summed MSE between
+the masked-model and target-model site OUTPUT activations, divided once by the element
+count (`hidden_acts_eval.py`). Those ride the `masked_site_outputs` model seam (SPEC S31,
+amended 2026-06-16 from keep-on-bridge) and are emitted as scalars under the torch log
+keys (`<ClassName>/<site>` + a combined `<ClassName>`).
 """
 
 import argparse
 import io
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +52,12 @@ from jax_single_pool.config import (
     load_run_dir_config,
 )
 from jax_single_pool.data import BatchSchedule, ShardServer, scan_shards
+from jax_single_pool.hidden_acts_eval import (
+    accumulate_hidden_acts,
+    hidden_acts_log_entries,
+    make_ci_hidden_acts_step,
+    make_stochastic_hidden_acts_step,
+)
 from jax_single_pool.lm import DecomposedModel
 from jax_single_pool.load_run import build_target
 from jax_single_pool.run_state import build_optimizers, init_train_state
@@ -245,15 +259,52 @@ def render_slow_eval_figures(
     }
 
 
+@dataclass(frozen=True)
+class SlowEvalOutput:
+    """The offline slow-eval payload: plot `figures` ({log_key: png}) and scalar
+    `hidden_acts` metrics ({torch_log_key: mse})."""
+
+    figures: dict[str, bytes]
+    hidden_acts: dict[str, float]
+
+
 def _eval_config(cfg: ExperimentConfig) -> EvalConfig:
     assert cfg.eval is not None, f"{cfg.run_id}: no eval block — nothing to slow-eval"
     return cfg.eval
 
 
-def run_offline_slow_eval(run_dir: Path, cfg: ExperimentConfig, step: int) -> dict[str, bytes]:
-    """Restore checkpoint `step` from `run_dir`'s ckpts and render the slow figures.
-    `run_dir` is the on-disk dir (the exporter takes it the same way); `cfg.run_dir`
-    can differ when a run dir is read from a relocated copy. CPU-OK."""
+def compute_hidden_acts_metrics(
+    lm: DecomposedModel,
+    state: Any,
+    frozen: Any,
+    residual_batches: list[Float[Array, "B T d"]],
+    n_mask_samples: int,
+    sampling: str,
+    base_key: Array,
+) -> dict[str, float]:
+    """Both hidden-acts recon eval metrics over the eval batches, keyed by the torch
+    `<ClassName>[/<site>]` log keys. `state.components`/`state.ci_fn` are the restored
+    trajectory; `base_key` seeds the stochastic variant's per-batch draws."""
+    ci_key, stoch_key = random.split(base_key)
+    ci_step = make_ci_hidden_acts_step(lm)
+    ci_reductions = accumulate_hidden_acts(
+        ci_step, state.components, state.ci_fn, frozen, residual_batches, ci_key
+    )
+    stoch_step = make_stochastic_hidden_acts_step(lm, n_mask_samples, sampling)
+    stoch_reductions = accumulate_hidden_acts(
+        stoch_step, state.components, state.ci_fn, frozen, residual_batches, stoch_key
+    )
+    return {
+        **hidden_acts_log_entries("CIHiddenActsReconLoss", ci_reductions),
+        **hidden_acts_log_entries("StochasticHiddenActsReconLoss", stoch_reductions),
+    }
+
+
+def run_offline_slow_eval(run_dir: Path, cfg: ExperimentConfig, step: int) -> SlowEvalOutput:
+    """Restore checkpoint `step` from `run_dir`'s ckpts, render the slow figures, and
+    compute the scalar hidden-acts recon metrics. `run_dir` is the on-disk dir (the
+    exporter takes it the same way); `cfg.run_dir` can differ when a run dir is read from
+    a relocated copy. CPU-OK."""
     eval_cfg = _eval_config(cfg)
     mesh = dp_mesh()
     lm, frozen, prefix, prefix_residual_fn, _vocab_size = build_target(cfg, mesh)
@@ -275,7 +326,11 @@ def run_offline_slow_eval(run_dir: Path, cfg: ExperimentConfig, step: int) -> di
     reductions = accumulate_site_reductions(
         slow_eval_step, state.ci_fn, frozen, residual_batches, _n_batches_accum(run_dir)
     )
-    return render_slow_eval_figures(reductions)
+    hidden_acts = compute_hidden_acts_metrics(
+        lm, state, frozen, residual_batches, cfg.n_mask_samples, cfg.sampling,
+        random.fold_in(random.PRNGKey(cfg.seed), step),
+    )  # fmt: skip
+    return SlowEvalOutput(figures=render_slow_eval_figures(reductions), hidden_acts=hidden_acts)
 
 
 def _n_batches_accum(run_dir: Path) -> int | None:
@@ -290,15 +345,20 @@ def _n_batches_accum(run_dir: Path) -> int | None:
     return None
 
 
-def _write_figures(figures: dict[str, bytes], out_dir: Path, step: int) -> None:
+def _write_output(output: SlowEvalOutput, out_dir: Path, step: int) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    for key, png in figures.items():
+    for key, png in output.figures.items():
         path = out_dir / f"{key.replace('/', '__')}_step{step}.png"
         path.write_bytes(png)
         print(f"wrote {path}", flush=True)
+    scalars_path = out_dir / f"hidden_acts_recon_step{step}.json"
+    scalars_path.write_text(json.dumps(output.hidden_acts, indent=2, sort_keys=True))
+    print(f"wrote {scalars_path}", flush=True)
+    for key in ("CIHiddenActsReconLoss", "StochasticHiddenActsReconLoss"):
+        print(f"  {key} = {output.hidden_acts[key]:.6g}", flush=True)
 
 
-def _log_to_wandb(cfg: ExperimentConfig, figures: dict[str, bytes], step: int) -> None:
+def _log_to_wandb(cfg: ExperimentConfig, output: SlowEvalOutput, step: int) -> None:
     import wandb
     from PIL import Image
 
@@ -312,8 +372,9 @@ def _log_to_wandb(cfg: ExperimentConfig, figures: dict[str, bytes], step: int) -
     wandb.define_metric("slow_eval/step")
     wandb.define_metric("slow_eval/*", step_metric="slow_eval/step")
     payload: dict[str, Any] = {
-        f"slow_eval/{k}": wandb.Image(Image.open(io.BytesIO(v))) for k, v in figures.items()
+        f"slow_eval/{k}": wandb.Image(Image.open(io.BytesIO(v))) for k, v in output.figures.items()
     }
+    payload.update({f"slow_eval/loss/{k}": v for k, v in output.hidden_acts.items()})
     payload["slow_eval/step"] = step
     wandb.log(payload)
     wandb.finish()
@@ -332,10 +393,10 @@ def main() -> None:
     step = args.step if args.step is not None else manager.latest_step()
     assert step is not None, f"no checkpoints under {args.run_dir / 'ckpts'}"
 
-    figures = run_offline_slow_eval(args.run_dir, cfg, step)
-    _write_figures(figures, args.run_dir / "slow_eval", step)
+    output = run_offline_slow_eval(args.run_dir, cfg, step)
+    _write_output(output, args.run_dir / "slow_eval", step)
     if not args.no_wandb:
-        _log_to_wandb(cfg, figures, step)
+        _log_to_wandb(cfg, output, step)
 
 
 if __name__ == "__main__":

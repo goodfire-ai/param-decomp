@@ -67,7 +67,8 @@ python -m jax_single_pool.experiments.llama8b_real --real_weights --first_layer 
 
 - **Generic over vendored LMs.** The trainer sees only the `DecomposedModel` fn-table
   (`lm.py`): ordered `sites`, `clean_output`, `site_inputs`, `masked_output`,
-  `weight_deltas` — all pure, all taking the frozen pytree as a *runtime arg* (a frozen
+  `masked_site_outputs` (the hidden-acts eval seam, SPEC S31), `weight_deltas` — all
+  pure, all taking the frozen pytree as a *runtime arg* (a frozen
   8B target closed over as a jit constant bakes multi-GB weights into the HLO). Adding
   a target (e.g. GPT-2) = implementing that table; no TMS/ResidMLP-style generality.
 - **One jit'd step, functional minimax.** The persistent adversary (per-site sources +

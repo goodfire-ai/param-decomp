@@ -70,6 +70,13 @@ class DecomposedModel:
 
     `weight_deltas` returns fp32 `W − V@U` per site from fp32 master `vu` (SPEC N2).
 
+    `masked_site_outputs` shares `masked_output`'s masking machinery but returns the
+    per-`live`-site decomposed LINEAR OUTPUT (`((x@V)*m)@U + (x@Δ)*d`, the intermediate
+    `masked_output` threads onward) instead of final logits, keyed by site (SPEC S31).
+    It exists ONLY for the offline hidden-acts recon eval metrics — never the recon grid,
+    which stays KL-on-final-logits (SPEC §2.3). The clean (target) per-site output is the
+    frozen `x @ W` of `site_inputs`, derivable without this fn.
+
     `recon_loss_fn(clean_output, masked_output) -> scalar` is the recon comparison the
     step minimizes (SPEC §2.3). It defaults to `kl_per_position` (the LM cross-entropy
     surrogate); a non-LM target supplies its own (e.g. an MSE/geometric loss). It must
@@ -91,6 +98,19 @@ class DecomposedModel:
             bool,
         ],
         Any,
+    ]
+    masked_site_outputs: Callable[
+        [
+            Any,
+            Any,
+            Float[Array, "B T d"],
+            SiteMasks,
+            SiteDeltaMasks,
+            SiteRoutes,
+            tuple[str, ...],
+            bool,
+        ],
+        dict[str, Float[Array, "B T d_out"]],
     ]
     weight_deltas: Callable[[Any, Any], dict[str, Float[Array, "d_out d_in"]]]
     recon_loss_fn: Callable[[Any, Any], Float[Array, ""]] = field(default=kl_per_position)

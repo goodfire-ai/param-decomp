@@ -4,9 +4,12 @@ Single-pool VPD trainer in JAX, **generic over vendored LM targets**. The semant
 source of truth is `SPEC.md` (normative pseudocode + numbered invariants, grounded in
 the stable torch `param_decomp` impl). See `README.md` for the file map.
 
-Open items: persistent-source scopes `c`/`nsc`, sigmoid parameterization, and the
-hidden-acts seam are deliberately refused (SPEC S31, LOSS_PARITY_DESIGN §6 stage 4 —
-hidden-acts is keep-on-bridge). `sc` and `bsc` are supported (`bsc` is batch-sharded:
+Open items: persistent-source scopes `c`/`nsc` and sigmoid parameterization are
+deliberately refused. The hidden-acts seam is now BUILT (SPEC S31 amended 2026-06-16):
+`CIHiddenActsReconLoss` / `StochasticHiddenActsReconLoss` are standalone offline eval
+metrics (`hidden_acts_eval.py`, via `jsp-slow-eval`) over a fifth model fn
+`masked_site_outputs` — NOT recon-grid training terms (the recon loss stays
+KL-on-final-logits). `sc` and `bsc` are supported (`bsc` is batch-sharded:
 an independent source per batch element and position, no cross-replica sync — SPEC
 S16/D1). Persistent `start_frac>0` is now implemented (SPEC S32, `term_active`
 `where`-gating); SPEC S24's two torch-parity quirks (PPGD warmup route-all, fresh-PGD
@@ -22,7 +25,7 @@ never silently diverge. Cite IDs (`S14`, `N1`, …) in commit messages and revie
 
 ## Architecture in one breath
 
-`lm.py` defines `DecomposedModel` — ordered `sites` + four pure fns (`clean_output`,
+`lm.py` defines `DecomposedModel` — ordered `sites` + five pure fns (`clean_output`,
 `site_inputs`, `masked_output`, `weight_deltas`) plus a pluggable `recon_loss_fn`
 (default `kl_per_position`), flat site-name-keyed dicts at the boundary, frozen pytree
 always a runtime arg (never a jit closure constant — an 8B target becomes a multi-GB

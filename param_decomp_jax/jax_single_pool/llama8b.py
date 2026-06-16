@@ -373,17 +373,24 @@ def _masked_site_out(
     routes: dict[str, Array] | None,
     live_set: frozenset[str],
     has_delta: bool,
+    collect: dict[str, Array] | None,
 ) -> Array:
+    """One site's output in the masked forward; if `collect` is given, the per-`live`-site
+    decomposed output is recorded there (the hidden-acts recon material, SPEC S31).
+    Non-live sites take the frozen `x @ W` path and are NOT collected."""
     if site not in live_set:
         return x_in @ W.T
     V, U = components.site(site)
-    return _site_out(
+    out = _site_out(
         x_in, V, U, W, masks[site], delta_masks[site] if has_delta else None,
         None if routes is None else routes[site],
     )  # fmt: skip
+    if collect is not None:
+        collect[site] = out
+    return out
 
 
-def masked_suffix_logits(
+def _run_masked_suffix(
     target: Target,
     components: DecompVU,
     first_layer: int,
@@ -393,19 +400,21 @@ def masked_suffix_logits(
     routes: dict[str, Array] | None,
     live: tuple[str, ...],
     has_delta: bool,
+    collect: dict[str, Array] | None,
 ) -> Array:
-    """Masked decomposed suffix forward (SPEC §1.3, S2): sites in `live` run their
-    decomposed forward with `masks[s]` / `delta_masks[s]` / `routes[s]`; every other
-    site — and every site absent from the decomposition entirely — runs the frozen
-    `x @ W` path. `live` and `has_delta` are static under jit; `has_delta` False skips
-    the `x @ Δ` matmul (LOSS_PARITY_DESIGN §4b)."""
+    """The masked decomposed suffix forward shared by `masked_suffix_logits` and
+    `masked_suffix_site_outputs` (SPEC §1.3, S2): sites in `live` run their decomposed
+    forward with `masks[s]` / `delta_masks[s]` / `routes[s]`; every other site — and every
+    site absent from the decomposition entirely — runs the frozen `x @ W` path. `live` and
+    `has_delta` are static under jit; `has_delta` False skips the `x @ Δ` matmul
+    (LOSS_PARITY_DESIGN §4b). A non-None `collect` gathers per-site decomposed outputs."""
     live_set = frozenset(live)
     x = resid
     for layer_offset, suffix_layer in enumerate(target.layers):
         layer = first_layer + layer_offset
         live_kinds = {kind for kind in KIND_ORDER if site_name(layer, kind) in live_set}
         attn = suffix_layer.attn
-        site_args = (masks, delta_masks, routes, live_set, has_delta)
+        site_args = (masks, delta_masks, routes, live_set, has_delta, collect)
         h1 = rms_norm(x, suffix_layer.ln1, target.eps)
         if not live_kinds & set(ATTN_KINDS):
             attn_out = attn(h1, target.inv_freq)
@@ -435,6 +444,43 @@ def masked_suffix_logits(
         x = post_attn + mlp_out
     x = rms_norm(x, target.norm, target.eps)
     return x @ target.lm_head.T
+
+
+def masked_suffix_logits(
+    target: Target,
+    components: DecompVU,
+    first_layer: int,
+    resid: Float[Array, "b t d"],
+    masks: dict[str, Array],
+    delta_masks: dict[str, Array],
+    routes: dict[str, Array] | None,
+    live: tuple[str, ...],
+    has_delta: bool,
+) -> Array:
+    return _run_masked_suffix(
+        target, components, first_layer, resid, masks, delta_masks, routes, live, has_delta, None
+    )
+
+
+def masked_suffix_site_outputs(
+    target: Target,
+    components: DecompVU,
+    first_layer: int,
+    resid: Float[Array, "b t d"],
+    masks: dict[str, Array],
+    delta_masks: dict[str, Array],
+    routes: dict[str, Array] | None,
+    live: tuple[str, ...],
+    has_delta: bool,
+) -> dict[str, Array]:
+    """Per-`live`-site decomposed output of the masked forward (SPEC S31). Runs the exact
+    `masked_suffix_logits` forward, discards the logits, returns the collected outputs."""
+    collect: dict[str, Array] = {}
+    _run_masked_suffix(
+        target, components, first_layer, resid, masks, delta_masks, routes, live, has_delta, collect
+    )
+    assert set(collect) == set(live), (sorted(collect), sorted(live))
+    return collect
 
 
 def weight_deltas_fp32(
@@ -472,6 +518,18 @@ def llama_decomposed_lm(cfg: LlamaConfig, sites: tuple[SiteSpec, ...]) -> Decomp
         live,
         has_delta: (
             masked_suffix_logits(
+                frozen, components, first_layer, resid, masks, delta_masks, routes, live, has_delta
+            )
+        ),
+        masked_site_outputs=lambda frozen,
+        components,
+        resid,
+        masks,
+        delta_masks,
+        routes,
+        live,
+        has_delta: (
+            masked_suffix_site_outputs(
                 frozen, components, first_layer, resid, masks, delta_masks, routes, live, has_delta
             )
         ),

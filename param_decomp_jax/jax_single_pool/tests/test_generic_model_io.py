@@ -95,6 +95,24 @@ def _synthetic_lm() -> DecomposedModel:
             hidden = hidden + delta_masks[SITE][..., None] * (resid @ delta.T)
         return _heads(frozen, hidden)
 
+    def masked_site_outputs(
+        frozen: SyntheticFrozen,
+        components: SyntheticComponents,
+        resid: Array,
+        masks: dict[str, Array],
+        delta_masks: dict[str, Array],
+        routes: dict[str, Array] | None,
+        live: tuple[str, ...],
+        has_delta: bool,
+    ) -> dict[str, Array]:
+        assert live == (SITE,) and routes is None, (live, routes)
+        V, U, W = components.V, components.U, frozen.W
+        hidden = (resid @ V) * masks[SITE] @ U
+        if has_delta:
+            delta = W - (V @ U).T
+            hidden = hidden + delta_masks[SITE][..., None] * (resid @ delta.T)
+        return {SITE: hidden}
+
     def weight_deltas(frozen: SyntheticFrozen, components: SyntheticComponents) -> dict[str, Array]:
         return {
             SITE: frozen.W.astype(jnp.float32)
@@ -112,6 +130,7 @@ def _synthetic_lm() -> DecomposedModel:
         clean_output=clean_output,
         site_inputs=site_inputs,
         masked_output=masked_output,
+        masked_site_outputs=masked_site_outputs,
         weight_deltas=weight_deltas,
         recon_loss_fn=geometric_mse,
     )
@@ -132,6 +151,7 @@ def test_default_recon_loss_fn_is_kl_per_position():
         clean_output=lambda f, r: r,
         site_inputs=lambda f, r: {SITE: r},
         masked_output=lambda *a: a[2],
+        masked_site_outputs=lambda *a: {SITE: a[2]},
         weight_deltas=lambda f, c: {},
     )
     assert lm.recon_loss_fn is kl_per_position

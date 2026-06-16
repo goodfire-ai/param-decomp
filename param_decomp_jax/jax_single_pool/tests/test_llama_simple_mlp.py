@@ -268,6 +268,77 @@ def test_zero_masking_one_site_changes_logits(ablated_site: str):
     assert not jnp.allclose(clean, ablated, atol=1e-4), f"ablating {ablated_site} did nothing"
 
 
+def test_masked_site_outputs_frozen_when_routed_false_or_unmasked():
+    """Clean per-site output: routing FALSE everywhere falls onto `_site_out`'s frozen
+    `x @ W` branch — exactly the target site output. With a single-site decomposition the
+    frozen W per site is `site_input @ W.T`, recovered from `weight_deltas` + `V@U`."""
+    cfg = _tiny_cfg()
+    sites_cs = (SiteC("h.2.attn.q_proj", 8), SiteC("h.2.mlp.c_fc", 12))
+    first = first_decomposed_layer(tuple(s.name for s in sites_cs))
+    target, _ = _tiny_target_and_prefix(cfg, first, jax.random.PRNGKey(0))
+    sites = site_specs(cfg, sites_cs)
+    lm = llama_simple_mlp_decomposed_lm(cfg, sites)
+    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    names = lm.site_names
+    b, t = 2, 16
+    resid = jax.random.normal(jax.random.PRNGKey(2), (b, t, cfg.n_embd)) * 0.5
+
+    site_in = lm.site_inputs(target, resid)
+    ones_masks = {s.name: jnp.ones((b, t, s.C)) for s in lm.sites}
+    zeros_delta = {s: jnp.zeros((b, t)) for s in names}
+    false_routes = {s: jnp.zeros((b, t), bool) for s in names}
+
+    clean_outs = lm.masked_site_outputs(
+        target, vu, resid, ones_masks, zeros_delta, false_routes, names, False
+    )
+    assert set(clean_outs) == set(names)
+    # frozen `x @ W` per site, reconstructed independently from weight_deltas + V@U.
+    deltas = lm.weight_deltas(target, vu)
+    for s in names:
+        V, U = vu.site(s)
+        W = (V.astype(jnp.float32) @ U.astype(jnp.float32)).T + deltas[s]  # (d_out, d_in)
+        expected = site_in[s].astype(jnp.float32) @ W.T
+        assert jnp.allclose(clean_outs[s].astype(jnp.float32), expected, atol=1e-3), s
+
+
+@pytest.mark.parametrize("site_name_str", ["h.2.attn.q_proj", "h.2.mlp.c_fc"])
+def test_masked_site_outputs_match_hand_computed_masked_linear(site_name_str: str):
+    """Masked per-site output equals the hand-computed `((x@V)*m)@U` (+ delta path). One
+    site at a time so the masked site input equals the clean `site_inputs` (no upstream
+    masked site contaminating the threaded forward)."""
+    cfg = _tiny_cfg()
+    sites_cs = (SiteC(site_name_str, 8),)
+    first = first_decomposed_layer((site_name_str,))
+    target, _ = _tiny_target_and_prefix(cfg, first, jax.random.PRNGKey(0))
+    sites = site_specs(cfg, sites_cs)
+    lm = llama_simple_mlp_decomposed_lm(cfg, sites)
+    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    names = lm.site_names
+    s = site_name_str
+    b, t = 2, 16
+    resid = jax.random.normal(jax.random.PRNGKey(2), (b, t, cfg.n_embd)) * 0.5
+
+    x_in = lm.site_inputs(target, resid)[s]
+    V, U = vu.site(s)
+    mask = jax.random.uniform(jax.random.PRNGKey(7), (b, t, sites_cs[0].C))
+
+    no_delta = lm.masked_site_outputs(
+        target, vu, resid, {s: mask}, {s: jnp.zeros((b, t))}, None, names, False
+    )
+    hand = ((x_in @ V) * mask) @ U
+    assert jnp.allclose(no_delta[s], hand, atol=1e-4), s
+
+    # delta path: + delta_mask · (x @ Δ), Δ = W − V@U == lm.weight_deltas (fp32 oracle)
+    delta_in = lm.weight_deltas(target, vu)[s]
+    delta_mask = jax.random.uniform(jax.random.PRNGKey(9), (b, t))
+    with_delta = lm.masked_site_outputs(
+        target, vu, resid, {s: mask}, {s: delta_mask}, None, names, True
+    )
+    hand_delta = delta_mask[..., None] * (x_in.astype(jnp.float32) @ delta_in.T)
+    expected = hand.astype(jnp.float32) + hand_delta
+    assert jnp.allclose(with_delta[s].astype(jnp.float32), expected, atol=1e-3), s
+
+
 def test_o_site_masks_attention_output():
     cfg = _tiny_cfg()
     o_site = "h.2.attn.o_proj"
