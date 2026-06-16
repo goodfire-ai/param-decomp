@@ -1,13 +1,12 @@
 """Causal-importance function configs."""
 
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
-from pydantic import Field, PositiveInt, model_validator
+from pydantic import BeforeValidator, Field, PositiveInt, model_validator
 
 from param_decomp_config.base import BaseConfig
 
 LayerwiseCiFnType = Literal["mlp", "vector_mlp", "shared_mlp"]
-GlobalCiFnType = Literal["global_shared_mlp", "global_shared_transformer"]
 
 
 class LayerwiseCiConfig(BaseConfig):
@@ -76,36 +75,53 @@ class GlobalSharedTransformerCiConfig(BaseConfig):
         return self
 
 
-class GlobalCiConfig(BaseConfig):
-    """A single global CI fn that maps all layers jointly."""
+class GlobalSharedMlpCiConfig(BaseConfig):
+    """A single global MLP CI fn that maps all layers jointly."""
 
     mode: Literal["global"] = "global"
-    fn_type: GlobalCiFnType = Field(
-        ...,
-        description="Type of global CI function: global_shared_mlp or global_shared_transformer",
+    fn_type: Literal["global_shared_mlp"] = "global_shared_mlp"
+    hidden_dims: list[PositiveInt] = Field(
+        ..., description="Hidden dimensions for the global_shared_mlp CI function."
     )
-    hidden_dims: list[PositiveInt] | None = Field(
-        default=None,
-        description="Hidden dimensions for global_shared_mlp CI function.",
-    )
-    simple_transformer_ci_cfg: GlobalSharedTransformerCiConfig | None = None
-
-    @model_validator(mode="after")
-    def validate_ci_config(self) -> Self:
-        if self.fn_type == "global_shared_mlp":
-            assert self.hidden_dims is not None, (
-                "hidden_dims must be specified when fn_type='global_shared_mlp'"
-            )
-        elif self.fn_type == "global_shared_transformer":
-            assert self.simple_transformer_ci_cfg is not None, (
-                "simple_transformer_ci_cfg must be specified when fn_type='global_shared_transformer'"
-            )
-            assert self.hidden_dims is None, (
-                "hidden_dims is only used for fn_type='global_shared_mlp'"
-            )
-        return self
 
 
-# Discriminated union (by `mode`) of every CI-fn config the trainer accepts. Pydantic
-# picks the right branch from the YAML `pd.ci_config.mode` literal.
-CiConfig = LayerwiseCiConfig | GlobalCiConfig
+class GlobalSharedTransformerCiFnConfig(BaseConfig):
+    """A single global transformer CI fn that maps all layers jointly."""
+
+    mode: Literal["global"] = "global"
+    fn_type: Literal["global_shared_transformer"] = "global_shared_transformer"
+    simple_transformer_ci_cfg: GlobalSharedTransformerCiConfig
+
+
+# Stored global CI configs predate the split into per-fn_type classes: they wrote a
+# single class with both `hidden_dims` and `simple_transformer_ci_cfg`, the inactive one
+# left as `None`. Drop the inactive null so the now-`extra=forbid` per-fn_type classes
+# accept old files. Delete once stored runs are migrated.
+_NULLABLE_LEGACY_GLOBAL_CI_KEYS = frozenset({"hidden_dims", "simple_transformer_ci_cfg"})
+
+
+def _drop_null_inactive_global_ci_field(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            k: v
+            for k, v in value.items()
+            if not (k in _NULLABLE_LEGACY_GLOBAL_CI_KEYS and v is None)
+        }
+    return value
+
+
+# Discriminated (by `fn_type`) union of the global CI-fn configs. Both share
+# `mode="global"`; the `fn_type` literal selects MLP vs transformer.
+GlobalCiConfig = Annotated[
+    GlobalSharedMlpCiConfig | GlobalSharedTransformerCiFnConfig,
+    Field(discriminator="fn_type"),
+    BeforeValidator(_drop_null_inactive_global_ci_field),
+]
+
+
+# Nested discriminated union: the outer `mode` literal picks layerwise vs global, and
+# the global branch's inner `fn_type` literal selects MLP vs transformer.
+CiConfig = Annotated[
+    LayerwiseCiConfig | GlobalCiConfig,
+    Field(discriminator="mode"),
+]

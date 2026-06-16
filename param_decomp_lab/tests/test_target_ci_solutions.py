@@ -1,11 +1,32 @@
 import torch
 
+from param_decomp_config.eval_metrics import DenseCITargetSpec, IdentityCITargetSpec
 from param_decomp_lab.toy_models.target_ci import (
     DenseCIPattern,
     IdentityCIPattern,
     TargetCISolution,
     compute_target_metrics,
+    make_target_ci_solution,
 )
+
+
+class TestMakeTargetCISolution:
+    def test_none_when_both_empty(self):
+        assert make_target_ci_solution(identity_ci=None, dense_ci=None) is None
+        assert make_target_ci_solution(identity_ci=[], dense_ci=[]) is None
+
+    def test_builds_from_typed_specs(self):
+        solution = make_target_ci_solution(
+            identity_ci=[IdentityCITargetSpec(layer_pattern="layers.*.mlp_in", n_features=100)],
+            dense_ci=[DenseCITargetSpec(layer_pattern="layers.*.mlp_out", k=3)],
+        )
+        assert solution is not None
+        identity = solution.module_targets["layers.*.mlp_in"]
+        dense = solution.module_targets["layers.*.mlp_out"]
+        assert isinstance(identity, IdentityCIPattern)
+        assert identity.n_features == 100
+        assert isinstance(dense, DenseCIPattern)
+        assert dense.k == 3
 
 
 class TestIdentityCIPattern:

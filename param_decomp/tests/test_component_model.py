@@ -32,7 +32,7 @@ from param_decomp.decomposition_targets import (
     resolve_decomposition_targets,
 )
 from param_decomp.masks import ComponentsMaskInfo, make_mask_infos
-from param_decomp_config.ci_fn import GlobalCiConfig, LayerwiseCiConfig
+from param_decomp_config.ci_fn import GlobalSharedMlpCiConfig, LayerwiseCiConfig
 from param_decomp_config.decomposition_target import DecompositionTargetConfig
 from param_decomp_config.losses import ImportanceMinimalityLossConfig
 from param_decomp_config.pd import OptimizerConfig, PDConfig
@@ -531,7 +531,7 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
                 DecompositionTargetConfig(module_pattern="linear1", C=4),
                 DecompositionTargetConfig(module_pattern="linear2", C=4),
             ],
-            ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[4]),
+            ci_config=GlobalSharedMlpCiConfig(hidden_dims=[4]),
             batch_size=1,
             steps=1,
             components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
@@ -636,7 +636,7 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
                 DecompositionTargetConfig(module_pattern="linear1", C=4),
                 DecompositionTargetConfig(module_pattern="linear2", C=4),
             ],
-            ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[4]),
+            ci_config=GlobalSharedMlpCiConfig(hidden_dims=[4]),
             batch_size=1,
             steps=1,
             components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
@@ -874,7 +874,7 @@ def test_component_model_with_global_ci():
         decomposition_targets=[
             DecompositionTarget(module_path=p, C=C) for p in target_module_paths
         ],
-        ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
+        ci_config=GlobalSharedMlpCiConfig(hidden_dims=[16]),
         sigmoid_type="leaky_hard",
     )
 
@@ -901,7 +901,7 @@ def test_component_model_global_ci_calc_causal_importances():
         decomposition_targets=[
             DecompositionTarget(module_path=p, C=C) for p in target_module_paths
         ],
-        ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
+        ci_config=GlobalSharedMlpCiConfig(hidden_dims=[16]),
         sigmoid_type="leaky_hard",
     )
 
@@ -947,7 +947,7 @@ def test_component_model_global_ci_different_inputs_different_ci():
         decomposition_targets=[
             DecompositionTarget(module_path=p, C=C) for p in target_module_paths
         ],
-        ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
+        ci_config=GlobalSharedMlpCiConfig(hidden_dims=[16]),
         sigmoid_type="leaky_hard",
     )
 
@@ -980,7 +980,7 @@ def test_component_model_global_ci_binomial_sampling():
         decomposition_targets=[
             DecompositionTarget(module_path=p, C=C) for p in target_module_paths
         ],
-        ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
+        ci_config=GlobalSharedMlpCiConfig(hidden_dims=[16]),
         sigmoid_type="leaky_hard",
     )
 
@@ -1007,7 +1007,7 @@ def test_component_model_global_ci_with_embeddings():
         decomposition_targets=[
             DecompositionTarget(module_path=p, C=C) for p in target_module_paths
         ],
-        ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
+        ci_config=GlobalSharedMlpCiConfig(hidden_dims=[16]),
         sigmoid_type="leaky_hard",
     )
 
@@ -1049,7 +1049,7 @@ def test_component_model_global_ci_gradient_flow():
         decomposition_targets=[
             DecompositionTarget(module_path=p, C=C) for p in target_module_paths
         ],
-        ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
+        ci_config=GlobalSharedMlpCiConfig(hidden_dims=[16]),
         sigmoid_type="leaky_hard",
     )
 
@@ -1088,7 +1088,7 @@ def test_component_model_global_ci_detach_inputs_blocks_gradients():
         decomposition_targets=[
             DecompositionTarget(module_path=p, C=C) for p in target_module_paths
         ],
-        ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
+        ci_config=GlobalSharedMlpCiConfig(hidden_dims=[16]),
         sigmoid_type="leaky_hard",
     )
 
@@ -1127,7 +1127,7 @@ def test_component_model_global_ci_masking_zeros():
         decomposition_targets=[
             DecompositionTarget(module_path=p, C=C) for p in target_module_paths
         ],
-        ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
+        ci_config=GlobalSharedMlpCiConfig(hidden_dims=[16]),
         sigmoid_type="leaky_hard",
     )
 
@@ -1175,7 +1175,7 @@ def test_component_model_global_ci_partial_masking():
         decomposition_targets=[
             DecompositionTarget(module_path=p, C=C) for p in target_module_paths
         ],
-        ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
+        ci_config=GlobalSharedMlpCiConfig(hidden_dims=[16]),
         sigmoid_type="leaky_hard",
     )
 
@@ -1209,7 +1209,7 @@ def test_component_model_global_ci_weight_deltas_all_ones_matches_target():
         decomposition_targets=[
             DecompositionTarget(module_path=p, C=C) for p in target_module_paths
         ],
-        ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
+        ci_config=GlobalSharedMlpCiConfig(hidden_dims=[16]),
         sigmoid_type="leaky_hard",
     )
 
@@ -1249,7 +1249,7 @@ def test_global_ci_save_and_load():
                 DecompositionTargetConfig(module_pattern="linear1", C=4),
                 DecompositionTargetConfig(module_pattern="linear2", C=4),
             ],
-            ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[8]),
+            ci_config=GlobalSharedMlpCiConfig(hidden_dims=[8]),
             batch_size=1,
             steps=1,
             components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),

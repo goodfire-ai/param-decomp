@@ -15,6 +15,8 @@ from param_decomp.components import Components, EmbeddingComponents, get_module_
 from param_decomp_config.ci_fn import (
     CiConfig,
     GlobalCiConfig,
+    GlobalSharedMlpCiConfig,
+    GlobalSharedTransformerCiFnConfig,
     LayerwiseCiConfig,
     LayerwiseCiFnType,
 )
@@ -415,9 +417,6 @@ def _make_global_ci_fn(
     components: dict[str, Components],
     ci_config: GlobalCiConfig,
 ) -> GlobalSharedMLPCiFn | GlobalSharedTransformerCiFn:
-    ci_fn_type = ci_config.fn_type
-    ci_fn_hidden_dims = ci_config.hidden_dims
-
     layer_configs: dict[str, tuple[int, int]] = {}
     for path, module_c in module_to_c.items():
         target_module = target_model.get_submodule(path)
@@ -429,13 +428,13 @@ def _make_global_ci_fn(
             input_dim = get_module_input_dim(target_module)
         layer_configs[path] = (input_dim, module_c)
 
-    match ci_fn_type:
-        case "global_shared_mlp":
-            assert ci_fn_hidden_dims is not None
-            return GlobalSharedMLPCiFn(layer_configs=layer_configs, hidden_dims=ci_fn_hidden_dims)
-        case "global_shared_transformer":
+    match ci_config:
+        case GlobalSharedMlpCiConfig():
+            return GlobalSharedMLPCiFn(
+                layer_configs=layer_configs, hidden_dims=ci_config.hidden_dims
+            )
+        case GlobalSharedTransformerCiFnConfig():
             transformer_cfg = ci_config.simple_transformer_ci_cfg
-            assert transformer_cfg is not None
             return GlobalSharedTransformerCiFn(
                 target_model_layer_configs={
                     path: TargetLayerConfig(input_dim=input_dim, C=C)
@@ -486,7 +485,7 @@ def make_ci_fn_wrapper(
                 components=components,
                 ci_fn_type=ci_config.fn_type,
             )
-        case GlobalCiConfig():
+        case GlobalSharedMlpCiConfig() | GlobalSharedTransformerCiFnConfig():
             raw_global = _make_global_ci_fn(
                 target_model=target_model,
                 module_to_c=module_to_c,

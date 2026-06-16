@@ -7,7 +7,7 @@ Provider runtime classes (HTTP clients, dispatch) live in
 
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, PositiveInt
 
 from param_decomp_config.base import BaseConfig
 
@@ -128,9 +128,9 @@ class CompactSkepticalConfig(BaseConfig):
     """Current default strategy: compact prompt, skeptical tone, structured JSON output."""
 
     type: Literal["compact_skeptical"] = "compact_skeptical"
-    max_examples: int = 30
+    max_examples: PositiveInt = 30
     include_pmi: bool = True
-    label_max_words: int = 8
+    label_max_words: PositiveInt = 8
     forbidden_words: list[str] | None = None
     example_rendering: ExampleRenderingConfig = Field(default_factory=default_example_rendering)
 
@@ -145,9 +145,9 @@ class DualViewConfig(BaseConfig):
     """
 
     type: Literal["dual_view"] = "dual_view"
-    max_examples: int = 30
+    max_examples: PositiveInt = 30
     include_pmi: bool = True
-    label_max_words: int = 8
+    label_max_words: PositiveInt = 8
     forbidden_words: list[str] | None = None
     example_rendering: ExampleRenderingConfig = Field(default_factory=default_example_rendering)
 
@@ -160,8 +160,8 @@ class RichExamplesConfig(BaseConfig):
     """
 
     type: Literal["rich_examples"] = "rich_examples"
-    max_examples: int = 30
-    label_max_words: int = 8
+    max_examples: PositiveInt = 30
+    label_max_words: PositiveInt = 8
     output_pmi_min_count: float = 2.0
     example_rendering: RichExampleRenderingConfig = Field(
         default_factory=default_rich_example_rendering
@@ -176,8 +176,8 @@ class CanonConfig(BaseConfig):
     """
 
     type: Literal["canon"] = "canon"
-    max_examples: int = 30
-    label_max_words: int = 8
+    max_examples: PositiveInt = 30
+    label_max_words: PositiveInt = 8
 
 
 StrategyConfig = CompactSkepticalConfig | DualViewConfig | RichExamplesConfig | CanonConfig

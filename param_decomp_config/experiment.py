@@ -5,8 +5,9 @@ types.
 """
 
 from pathlib import Path
+from typing import Self
 
-from pydantic import Field, PositiveInt
+from pydantic import Field, PositiveInt, model_validator
 
 from param_decomp_config.base import BaseConfig
 from param_decomp_config.eval_metrics import AnyEvalMetricConfig
@@ -30,6 +31,13 @@ class EvalConfig(BaseConfig):
     slow_on_first_step: bool = True
     metrics: list[AnyEvalMetricConfig] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def validate_slow_every_multiple_of_every(self) -> Self:
+        assert self.slow_every % self.every == 0, (
+            f"slow_every ({self.slow_every}) must be a multiple of every ({self.every})"
+        )
+        return self
+
 
 class ResumeProvenance(BaseConfig):
     """Records where a resumed run came from. Lives on `ExperimentConfig`.
@@ -46,8 +54,8 @@ class ResumeProvenance(BaseConfig):
     """Path to the parent run's directory."""
 
     parent_step: int
-    """The step at which we resumed (i.e. the step number in the parent's
-    `training_<step>.pth` snapshot we loaded from)."""
+    """The step at which we resumed (i.e. the step number of the parent's orbax
+    `ckpts/<step>/` checkpoint we loaded from)."""
 
 
 class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):

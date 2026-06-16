@@ -17,6 +17,7 @@ import torch
 from jaxtyping import Float, Int
 from torch import Tensor
 
+from param_decomp_config.eval_metrics import DenseCITargetSpec, IdentityCITargetSpec
 from param_decomp_lab.toy_models._linear_sum_assignment import linear_sum_assignment
 
 
@@ -265,27 +266,21 @@ def compute_target_metrics(
 
 
 def make_target_ci_solution(
-    identity_ci: list[dict[str, str | int]] | None = None,
-    dense_ci: list[dict[str, str | int]] | None = None,
+    identity_ci: list[IdentityCITargetSpec] | None,
+    dense_ci: list[DenseCITargetSpec] | None,
 ) -> TargetCISolution | None:
-    """Build a `TargetCISolution` from config-style specs.
-
-    Each `identity_ci` entry needs `{layer_pattern, n_features}`; each `dense_ci` entry
-    needs `{layer_pattern, k}`. Returns `None` when both lists are empty.
-    """
+    """Build a `TargetCISolution` from config specs. Returns `None` when both are empty."""
     if not identity_ci and not dense_ci:
         return None
 
-    module_targets = {}
+    module_targets: dict[str, TargetCIPattern] = {}
 
     if identity_ci:
         for spec in identity_ci:
-            module_targets[spec["layer_pattern"]] = IdentityCIPattern(
-                n_features=int(spec["n_features"])
-            )
+            module_targets[spec.layer_pattern] = IdentityCIPattern(n_features=spec.n_features)
 
     if dense_ci:
         for spec in dense_ci:
-            module_targets[spec["layer_pattern"]] = DenseCIPattern(k=int(spec["k"]))
+            module_targets[spec.layer_pattern] = DenseCIPattern(k=spec.k)
 
     return TargetCISolution(module_targets)

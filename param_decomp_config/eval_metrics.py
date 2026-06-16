@@ -7,7 +7,7 @@ subclass via `EVAL_METRIC_CLASSES` (lab-side).
 
 from typing import Annotated, Literal, Self
 
-from pydantic import Discriminator, Field, model_validator
+from pydantic import Discriminator, Field, PositiveInt, model_validator
 
 from param_decomp_config.autointerp import LLMConfig, StrategyConfig
 from param_decomp_config.base import BaseConfig
@@ -19,13 +19,13 @@ from param_decomp_config.losses import (
 
 class AutointerpLabelsConfig(BaseConfig):
     type: Literal["AutointerpLabels"] = "AutointerpLabels"
-    k: int
+    k: PositiveInt
     """Number of components to sample uniformly over the concatenated component space."""
     seed: int
     activation_threshold: float
-    max_examples: int
+    max_examples: PositiveInt
     """Reservoir capacity (activation examples kept per sampled component)."""
-    context_tokens_per_side: int
+    context_tokens_per_side: PositiveInt
     llm: LLMConfig
     template_strategy: Annotated[StrategyConfig, Field(discriminator="type")]
     # Run/data facts the prompt needs that a bare ComponentModel doesn't carry. They
@@ -33,7 +33,7 @@ class AutointerpLabelsConfig(BaseConfig):
     # is self-contained (plain config dispatch). `n_blocks` / `layer_descriptions` are
     # derived from the model at `bind`.
     dataset_name: str
-    seq_len: int
+    seq_len: PositiveInt
     tokenizer_name: str
 
 
@@ -52,7 +52,7 @@ class CIHistogramsConfig(BaseConfig):
     """`n_batches_accum=None` accumulates every batch in the eval pass."""
 
     type: Literal["CIHistograms"] = "CIHistograms"
-    n_batches_accum: int | None
+    n_batches_accum: PositiveInt | None
 
 
 class CI_L0Config(BaseConfig):
@@ -76,7 +76,7 @@ class _AttnPatternsBaseConfig(BaseConfig):
     output split as `[Q | K | V]` along the last dim) — not both, not neither.
     """
 
-    n_heads: int
+    n_heads: PositiveInt
     q_proj_path: str | None = None
     k_proj_path: str | None = None
     c_attn_path: str | None = None
@@ -108,34 +108,44 @@ class ComponentActivationDensityConfig(BaseConfig):
     ci_alive_threshold: float = 0.0
 
 
+class IdentityCITargetSpec(BaseConfig):
+    """A layer expected to produce an Identity CI pattern over `n_features` features."""
+
+    layer_pattern: str
+    n_features: PositiveInt
+
+
+class DenseCITargetSpec(BaseConfig):
+    """A layer expected to produce a Dense CI pattern with `k` active components."""
+
+    layer_pattern: str
+    k: PositiveInt
+
+
 class IdentityCIErrorConfig(BaseConfig):
     """`identity_ci` / `dense_ci` list layers expected to produce Identity / Dense patterns."""
 
     type: Literal["IdentityCIError"] = "IdentityCIError"
-    identity_ci: list[dict[str, str | int]] | None
-    dense_ci: list[dict[str, str | int]] | None
+    identity_ci: list[IdentityCITargetSpec] | None
+    dense_ci: list[DenseCITargetSpec] | None
 
 
-class PermutedCIPlotsConfig(BaseConfig):
+class _PermutationPlotsBaseConfig(BaseConfig):
     """fnmatch patterns for layers permuted to align with the corresponding target solution.
 
     `identity_patterns` and `dense_patterns` are matched separately against the model.
     """
 
+    identity_patterns: list[str] | None
+    dense_patterns: list[str] | None
+
+
+class PermutedCIPlotsConfig(_PermutationPlotsBaseConfig):
     type: Literal["PermutedCIPlots"] = "PermutedCIPlots"
-    identity_patterns: list[str] | None
-    dense_patterns: list[str] | None
 
 
-class UVPlotsConfig(BaseConfig):
-    """fnmatch patterns for layers permuted to align with the corresponding target solution.
-
-    `identity_patterns` and `dense_patterns` are matched separately against the model.
-    """
-
+class UVPlotsConfig(_PermutationPlotsBaseConfig):
     type: Literal["UVPlots"] = "UVPlots"
-    identity_patterns: list[str] | None
-    dense_patterns: list[str] | None
 
 
 AnyEvalMetricConfig = Annotated[

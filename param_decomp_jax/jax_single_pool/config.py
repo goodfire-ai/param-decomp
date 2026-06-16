@@ -45,6 +45,7 @@ from jax_single_pool.ci_fn import CIArch
 from jax_single_pool.llama8b import SITE_NAME_PATTERN, canonical_site_cs
 from jax_single_pool.lm import SiteC
 from jax_single_pool.recon import build_recon_terms
+from param_decomp_config.ci_fn import GlobalSharedTransformerCiFnConfig
 from param_decomp_config.eval_metrics import CEandKLLossesConfig, CI_L0Config
 from param_decomp_config.experiment import WandbConfig
 from param_decomp_config.jax_wrapper import WRAPPER_KEYS, WRAPPER_OPTIONAL_KEYS
@@ -262,9 +263,8 @@ def _resolve_target(cfg: LMExperimentConfig) -> "TargetConfig | LlamaSimpleMLPTa
 
 def _ci_arch(cfg: LMExperimentConfig, seq_len: int) -> CIArch:
     ci = cfg.pd.ci_config
-    assert ci.mode == "global" and ci.fn_type == "global_shared_transformer", ci
+    assert isinstance(ci, GlobalSharedTransformerCiFnConfig), ci
     transformer = ci.simple_transformer_ci_cfg
-    assert transformer is not None
     assert transformer.mlp_hidden_dim is not None and len(transformer.mlp_hidden_dim) == 1, (
         f"CI MLP must be single-hidden-layer, got {transformer.mlp_hidden_dim}"
     )

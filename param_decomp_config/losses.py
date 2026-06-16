@@ -7,7 +7,14 @@ subset recon). Each carries a unique `type: Literal["<ClassName>"]` discriminato
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BeforeValidator, Field, NonNegativeFloat, NonNegativeInt, PositiveInt
+from pydantic import (
+    BeforeValidator,
+    Field,
+    NonNegativeFloat,
+    NonNegativeInt,
+    PositiveFloat,
+    PositiveInt,
+)
 
 from param_decomp_config.base import BaseConfig, Probability
 from param_decomp_config.routing import SubsetRoutingType, UniformKSubsetRoutingConfig
@@ -134,6 +141,12 @@ def _alias_legacy_mask_scope(value: Any) -> Any:
 # Scope literals spell the adversarial-source shape in tensor order (batch, seq, C).
 # `c` is one shared vector, rank-polymorphic and DP-synced; `bc` (no seq axis) and
 # `bsc` (LM) are independent per batch element, and must match the batch rank.
+#
+# Deliberately NOT unified with `PersistentPGDSourceScope` below: per-step PGD encodes
+# its scope as a bare YAML string (this `Literal`), while persistent PGD encodes it as a
+# nested config object (the `CScope | ... | BSCScope` discriminated union). The value
+# spaces also differ — `bc` is per-step-only; `sc`/`nsc` are persistent-only. Converging
+# them would change the stored YAML shape of one side and break old-run parsing.
 MaskScope = Annotated[Literal["c", "bc", "bsc"], BeforeValidator(_alias_legacy_mask_scope)]
 
 
@@ -141,8 +154,8 @@ class PGDConfig(LossMetricConfig):
     """Shared base for per-step PGD loss configs."""
 
     init: PGDInitStrategy
-    step_size: float
-    n_steps: int
+    step_size: PositiveFloat
+    n_steps: NonNegativeInt
     mask_scope: MaskScope
 
 

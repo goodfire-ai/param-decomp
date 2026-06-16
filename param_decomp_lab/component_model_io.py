@@ -21,7 +21,12 @@ from param_decomp.decomposition_targets import (
     insert_identity_operations_,
     resolve_decomposition_targets,
 )
-from param_decomp_config.ci_fn import CiConfig, GlobalCiConfig, LayerwiseCiConfig
+from param_decomp_config.ci_fn import (
+    CiConfig,
+    GlobalSharedMlpCiConfig,
+    GlobalSharedTransformerCiFnConfig,
+    LayerwiseCiConfig,
+)
 from param_decomp_config.decomposition_target import DecompositionTargetConfig
 from param_decomp_config.pd import PDConfig
 from param_decomp_config.routing import SamplingType
@@ -79,7 +84,7 @@ def _validate_checkpoint_ci_config_compatibility(
                 f"Config specifies layerwise CI but checkpoint has no ci_fn._ci_fns keys "
                 f"(has ci_fn._global_ci_fn: {has_global_ci_fn})"
             )
-        case GlobalCiConfig():
+        case GlobalSharedMlpCiConfig() | GlobalSharedTransformerCiFnConfig():
             assert has_global_ci_fn, (
                 f"Config specifies global CI but checkpoint has no ci_fn._global_ci_fn keys "
                 f"(has ci_fn._ci_fns: {has_layerwise_ci_fns})"
