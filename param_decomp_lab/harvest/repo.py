@@ -9,6 +9,8 @@ Layout: runs/<decomposition_id>/harvest/h-YYYYMMDD_HHMMSS/{harvest.db, *.pt}
 
 from pathlib import Path
 
+import numpy as np
+
 from param_decomp.log import logger
 from param_decomp_lab.harvest.accumulator import Harvester
 from param_decomp_lab.harvest.config import HarvestConfig
@@ -85,23 +87,23 @@ class HarvestRepo:
         if harvester.cooccurrence_counts is not None:
             correlations = CorrelationStorage(
                 component_keys=component_keys,
-                count_i=harvester.firing_counts.long().cpu(),
-                count_ij=harvester.cooccurrence_counts.long().cpu(),
+                count_i=harvester.firing_counts,
+                count_ij=harvester.cooccurrence_counts,
                 count_total=harvester.total_tokens_processed,
             )
-            correlations.save(output_dir / "component_correlations.pt")
+            correlations.save(output_dir / "component_correlations.npz")
 
         token_stats = TokenStatsStorage(
             component_keys=component_keys,
             vocab_size=harvester.vocab_size,
             n_tokens=harvester.total_tokens_processed,
-            input_counts=harvester.input_cooccurrence.cpu(),
-            input_totals=harvester.input_marginals.float().cpu(),
-            output_counts=harvester.output_cooccurrence.cpu(),
-            output_totals=harvester.output_marginals.cpu(),
-            firing_counts=harvester.firing_counts.cpu(),
+            input_counts=harvester.input_cooccurrence,
+            input_totals=harvester.input_marginals.astype(np.float64),
+            output_counts=harvester.output_cooccurrence,
+            output_totals=harvester.output_marginals,
+            firing_counts=harvester.firing_counts,
         )
-        token_stats.save(output_dir / "token_stats.pt")
+        token_stats.save(output_dir / "token_stats.npz")
 
     # -- Provenance ------------------------------------------------------------
 
@@ -134,13 +136,13 @@ class HarvestRepo:
     # -- Correlations & token stats (tensor data) ------------------------------
 
     def get_correlations(self) -> CorrelationStorage | None:
-        path = self._dir / "component_correlations.pt"
+        path = self._dir / "component_correlations.npz"
         if not path.exists():
             return None
         return CorrelationStorage.load(path)
 
     def get_token_stats(self) -> TokenStatsStorage | None:
-        path = self._dir / "token_stats.pt"
+        path = self._dir / "token_stats.npz"
         if not path.exists():
             return None
         return TokenStatsStorage.load(path)

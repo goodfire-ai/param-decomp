@@ -7,34 +7,13 @@ subclass via `EVAL_METRIC_CLASSES` (lab-side).
 
 from typing import Annotated, Literal, Self
 
-from pydantic import Discriminator, Field, PositiveInt, model_validator
+from pydantic import Discriminator, PositiveInt, model_validator
 
-from param_decomp_config.autointerp import LLMConfig, StrategyConfig
 from param_decomp_config.base import BaseConfig
 from param_decomp_config.losses import (
     PGDReconLossConfig,
     StochasticHiddenActsReconLossConfig,
 )
-
-
-class AutointerpLabelsConfig(BaseConfig):
-    type: Literal["AutointerpLabels"] = "AutointerpLabels"
-    k: PositiveInt
-    """Number of components to sample uniformly over the concatenated component space."""
-    seed: int
-    activation_threshold: float
-    max_examples: PositiveInt
-    """Reservoir capacity (activation examples kept per sampled component)."""
-    context_tokens_per_side: PositiveInt
-    llm: LLMConfig
-    template_strategy: Annotated[StrategyConfig, Field(discriminator="type")]
-    # Run/data facts the prompt needs that a bare ComponentModel doesn't carry. They
-    # mirror `data.*` / are the eval data the metric renders — kept here so the metric
-    # is self-contained (plain config dispatch). `n_blocks` / `layer_descriptions` are
-    # derived from the model at `bind`.
-    dataset_name: str
-    seq_len: PositiveInt
-    tokenizer_name: str
 
 
 class CEandKLLossesConfig(BaseConfig):
@@ -149,8 +128,7 @@ class UVPlotsConfig(_PermutationPlotsBaseConfig):
 
 
 AnyEvalMetricConfig = Annotated[
-    AutointerpLabelsConfig
-    | CEandKLLossesConfig
+    CEandKLLossesConfig
     | CIHiddenActsReconLossConfig
     | CIHistogramsConfig
     | CI_L0Config

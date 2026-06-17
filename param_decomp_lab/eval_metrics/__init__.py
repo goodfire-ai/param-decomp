@@ -18,7 +18,6 @@ from param_decomp_lab.eval_metrics.attn_patterns_recon_loss import (
     CIMaskedAttnPatternsReconLoss,
     StochasticAttnPatternsReconLoss,
 )
-from param_decomp_lab.eval_metrics.autointerp_labels import AutointerpLabels
 from param_decomp_lab.eval_metrics.ce_and_kl_losses import CEandKLLosses
 from param_decomp_lab.eval_metrics.ci_hidden_acts_recon_loss import CIHiddenActsReconLoss
 from param_decomp_lab.eval_metrics.ci_histograms import CIHistograms
@@ -32,7 +31,6 @@ from param_decomp_lab.eval_metrics.uv_plots import UVPlots
 EVAL_METRIC_CLASSES: dict[str, type[Metric[Any]]] = {
     cls.__name__: cls
     for cls in (
-        AutointerpLabels,
         CEandKLLosses,
         CIHiddenActsReconLoss,
         CIHistograms,

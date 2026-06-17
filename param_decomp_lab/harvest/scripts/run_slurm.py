@@ -14,8 +14,9 @@ from datetime import datetime
 
 from param_decomp.log import logger
 from param_decomp_lab.harvest.config import HarvestSlurmConfig
+from param_decomp_lab.harvest.schemas import get_harvest_dir
 from param_decomp_lab.harvest.scripts import run_merge as harvest_merge
-from param_decomp_lab.harvest.scripts import run_worker as harvest_worker
+from param_decomp_lab.harvest.scripts import run_worker_jax as harvest_worker
 from param_decomp_lab.infra.git import create_git_snapshot
 from param_decomp_lab.infra.slurm import (
     SlurmArrayConfig,
@@ -61,10 +62,13 @@ def submit_harvest(
     suffix = f"-{job_suffix}" if job_suffix else ""
     array_job_name = f"pd-harvest{suffix}"
 
+    run_dir = get_harvest_dir(config.config.method_config.id).parent
+
     worker_commands = []
     for rank in range(n_gpus):
         cmd = harvest_worker.get_command(
             config.config,
+            run_dir=run_dir,
             rank=rank,
             world_size=n_gpus,
             subrun_id=subrun_id,
