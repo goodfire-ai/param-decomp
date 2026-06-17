@@ -1,16 +1,14 @@
 from functools import cached_property
 from pathlib import Path
-from typing import Any, override
+from typing import override
 
-from torch.utils.data import DataLoader
+from jax_single_pool.load_run import RunMetadata, run_metadata
 
-from param_decomp.decomposition_targets import resolve_decomposition_targets
 from param_decomp_config.lm import LMExperimentConfig
 from param_decomp_lab.adapters.base import DecompositionAdapter
 from param_decomp_lab.autointerp.schemas import ModelMetadata
-from param_decomp_lab.experiments.lm.run import build_target
 from param_decomp_lab.harvest.schemas import get_harvest_dir
-from param_decomp_lab.topology import TransformerTopology
+from param_decomp_lab.topology.path_schemas import path_schema_for_model_type
 
 JAX_RUN_CONFIG_FILENAME = "config.yaml"
 
@@ -24,23 +22,28 @@ def is_jax_run(decomposition_id: str) -> bool:
 
 
 class JaxPDAdapter(DecompositionAdapter):
-    """Autointerp/clustering adapter for a JAX single-pool run, read from its pinned
-    config. Autointerp consumes harvest output plus run metadata only — no trained
-    components — so this builds the target *architecture* from config (no orbax restore,
-    no PD checkpoint) purely to derive `n_blocks` and canonical layer descriptions."""
+    """Autointerp/clustering adapter for a JAX single-pool run, read torch-free from its
+    pinned config. Autointerp consumes harvest output plus run metadata only — no trained
+    components — so the target topology (`n_blocks`, vocab, per-site `(name, C)`) comes
+    from `jax_single_pool.load_run.run_metadata` (config + pretrain-cache `model_config`,
+    no orbax restore); canonical layer descriptions render via the torch-free path schema."""
 
     def __init__(self, decomposition_id: str):
         self._run_id = decomposition_id
 
     @cached_property
+    def _run_dir(self) -> Path:
+        return get_harvest_dir(self._run_id).parent
+
+    @cached_property
     def cfg(self) -> LMExperimentConfig:
-        config_path = get_harvest_dir(self._run_id).parent / JAX_RUN_CONFIG_FILENAME
+        config_path = self._run_dir / JAX_RUN_CONFIG_FILENAME
         assert config_path.exists(), f"config not found: {config_path}"
         return LMExperimentConfig.from_file(config_path)
 
     @cached_property
-    def _topology(self) -> TransformerTopology:
-        return TransformerTopology(build_target(self.cfg.target))
+    def _metadata(self) -> RunMetadata:
+        return run_metadata(self._run_dir)
 
     @property
     @override
@@ -50,22 +53,12 @@ class JaxPDAdapter(DecompositionAdapter):
     @property
     @override
     def vocab_size(self) -> int:
-        return self._topology.embedding_module.num_embeddings
+        return self._metadata.vocab_size
 
     @property
     @override
     def layer_activation_sizes(self) -> list[tuple[str, int]]:
-        targets = resolve_decomposition_targets(
-            self._topology.target_model, self.cfg.pd.decomposition_targets
-        )
-        return [(t.module_path, t.C) for t in targets]
-
-    @override
-    def dataloader(self, batch_size: int) -> DataLoader[Any]:
-        raise NotImplementedError(
-            "JaxPDAdapter does not build a torch dataloader; the JAX harvest worker reads "
-            "pre-tokenized parquet via the trainer's ShardServer."
-        )
+        return self._metadata.layer_activation_sizes
 
     @property
     @override
@@ -75,15 +68,15 @@ class JaxPDAdapter(DecompositionAdapter):
     @property
     @override
     def model_metadata(self) -> ModelMetadata:
-        cfg = self.cfg
+        schema = path_schema_for_model_type(self._metadata.model_type)
         return ModelMetadata(
-            n_blocks=self._topology.n_blocks,
+            n_blocks=self._metadata.n_blocks,
             dataset_name=self._semantic_dataset_name(),
             layer_descriptions={
-                path: self._topology.target_to_canon(path)
-                for path, _ in self.layer_activation_sizes
+                path: schema.parse_target_path(path).canonical_str()
+                for path, _ in self._metadata.layer_activation_sizes
             },
-            seq_len=cfg.data.max_seq_len,
+            seq_len=self.cfg.data.max_seq_len,
             decomposition_method="pd",
         )
 

@@ -300,8 +300,8 @@ def _site_out(
         acts = acts * mask
     out = acts @ U
     if delta_mask is not None:
-        # DIVERGENCE from torch-under-autocast (documented, accepted): this delta is
-        # computed in bf16 from the cast components; torch computes W − V@U in fp32 then
+        # DIVERGENCE vs the autocast oracle (documented, accepted): this delta is
+        # computed in bf16 from the cast components; the oracle computes W − V@U in fp32 then
         # casts at the einsum. bf16-rounding-level difference on the delta PATH only —
         # the faithfulness loss uses the fp32 `weight_deltas` (SPEC N2), not this.
         delta = W - (V @ U).T  # (d_out, d_in)

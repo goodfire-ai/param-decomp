@@ -1,8 +1,8 @@
 # Parameter Decomposition Lab
 
 Lab package for the `param-decomp` repository. This distribution contains the in-repo
-experiments, visualization app, pretraining scripts, postprocessing pipelines, and SLURM
-tooling. It imports as `param_decomp_lab` and depends on the core `param-decomp` package.
+experiment glue, postprocessing pipelines, and SLURM tooling. It imports as
+`param_decomp_lab` and depends on the core `param-decomp` package.
 
 ## Local Development
 
@@ -25,7 +25,6 @@ The lab package owns the `pd-*` commands:
 
 ```bash
 pd-jax-lm     param_decomp_lab/experiments/lm/<wrapper>.yaml --nodes N
-pd-pretrain   --config_path param_decomp_lab/experiments/lm/pretrain/configs/pile_llama_simple_mlp-4L-768.yaml
 pd-harvest    path/to/harvest_slurm_config.yaml
 pd-autointerp <decomposition_id> --config path/to/autointerp_slurm_config.yaml --harvest_subrun_id h-YYYYMMDD_HHMMSS
 ```

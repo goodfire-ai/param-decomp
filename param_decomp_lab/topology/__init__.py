@@ -2,9 +2,8 @@
 
 Two layers:
 - canonical.py: Pure data types for model-agnostic layer addressing.
-  No torch dependency. Used by serialization, database, frontend layout.
-- topology.py: Bidirectional mapping between canonical and concrete module paths.
-  Depends on torch.nn and specific model classes.
+- path_schemas.py: Bidirectional mapping between canonical and concrete module paths,
+  selected by model-type name (`path_schema_for_model_type`) — torch-free, no live model.
 
 Canonical layer address format:
     "embed"                   — embedding
@@ -18,4 +17,6 @@ Node key format:
     "{layer_address}:{seq_pos}:{component_idx}"
 """
 
-from param_decomp_lab.topology.topology import TransformerTopology as TransformerTopology
+from param_decomp_lab.topology.path_schemas import (
+    path_schema_for_model_type as path_schema_for_model_type,
+)

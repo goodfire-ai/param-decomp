@@ -16,14 +16,19 @@ the main repo — all commands (including git) run in the worktree.
 
 `.env` file with WandB credentials required (see `.env.example`).
 
-**Two-stack gotcha (torch + JAX in the main venv).** The JAX trainer distribution
-(`param_decomp_jax/`) keeps its own venvs (`make install-jax` / `install-jax-cuda`) —
-its CUDA wheels conflict with torch's. But `param_decomp_jax` is NOT a uv-workspace
-member, so a bare `uv sync --all-packages` strips jax from the main `.venv`. The
-JAX-run bridge workers (e.g. `param_decomp_lab/harvest/scripts/run_worker_jax.py`)
-live in the lab venv and `import jax` + `from jax_single_pool ...`, and `make type`
-over them needs both stacks resolvable. `make install-dev` handles this: it re-adds
-jax/jaxlib (CPU) + the editable `param_decomp_jax` source (`--no-deps`) into the main
+**The repo is torch-free.** All torch was deleted (trainer is JAX; torch consumers were
+de-torched; the torch oracle lives at git tag `torch-oracle`). The one torch island left
+is `nano_param_decomp/` — a standalone single-file VPD reference impl for paper readers,
+excluded from `make type` and not imported by any package.
+
+**Bridge jax into the main venv.** The JAX trainer distribution (`param_decomp_jax/`)
+keeps its own venvs (`make install-jax` / `install-jax-cuda`; CUDA wheels the CPU main
+venv doesn't carry). But `param_decomp_jax` is NOT a uv-workspace member, so a bare
+`uv sync --all-packages` strips jax from the main `.venv`. The lab JAX-run consumers
+(`harvest`/`clustering` `run_worker_jax.py`, the `JaxPDAdapter`) `import jax` +
+`from jax_single_pool ...` and call `open_jax_run` / `run_metadata`, and `make type`
+over them needs jax resolvable. `make install-dev` handles this: it re-adds jax/jaxlib
+(CPU) + beartype + the editable `param_decomp_jax` source (`--no-deps`) into the main
 venv right after the sync. Use `make install-dev`, never a bare `uv sync`.
 
 ## Project overview
@@ -54,16 +59,12 @@ Three flat-layout distributions, deliberately split:
   loss/eval-metric configs, experiment YAML schemas). Depends only on pydantic, numpy,
   pyyaml, annotated-types — so non-torch consumers (e.g. the JAX repo) can validate the
   same YAML run configs without pulling torch/transformers/wandb. Keep it that way.
-- **`param-decomp`** (`param_decomp/`) — core torch library. Since the torch trainer was
-  retired (see [Training](#training-jax)), and torch-run loading was dropped too (the
-  torch `ComponentModel` / CI fns / sigmoids / masks / loss metrics / `RunSink` /
-  `RunBatch` protocols / `component_model_io` are gone from HEAD — preserved at git tag
-  `torch-oracle`; a JAX-native run loader returns as the #10 torch->jax adapter). What
-  survives here is the small torch-free (or torch-but-config-only) substrate the torch
-  **consumers** still need: `param_decomp.log` (logger), `param_decomp.distributed`
-  (the read-only dist state + collectives), and `param_decomp.decomposition_targets`
-  (`resolve_decomposition_targets`, used by `JaxPDAdapter` to derive layer topology).
-  Depends on config.
+- **`param-decomp`** (`param_decomp/`) — what's left of the core after the torch trainer
+  retirement AND the full de-torch: just `param_decomp.log` (the logger every consumer
+  uses) + a bare `__init__.py`. The torch `ComponentModel` / CI fns / sigmoids / masks /
+  loss metrics / `RunSink` / `RunBatch` protocols / `component_model_io` / `distributed` /
+  `decomposition_targets` are all gone from HEAD (preserved at git tag `torch-oracle`); a
+  JAX-native run loader returns as the #10 torch->jax adapter. Depends on config.
 - **`param-decomp-lab`** (`param_decomp_lab/`) — team tooling. Experiment scripts, the
   post-processing pipelines, infra, lab-side helpers. Churns freely; depends on core +
   config.
@@ -108,8 +109,7 @@ package-level re-exports, `__init__.py` files are bare:
 from param_decomp_config.pd import Cadence, PDConfig, RuntimeConfig
 from param_decomp_config.losses import LossMetricConfig
 from param_decomp.log import logger
-from param_decomp.distributed import DistributedState, all_reduce, is_main_process
-from param_decomp.decomposition_targets import resolve_decomposition_targets
+from jax_single_pool.load_run import open_jax_run, run_metadata
 ```
 
 - `PDConfig` — algorithm config: seed, CI fn, loss metrics, optimizers, decomposition
@@ -118,11 +118,12 @@ from param_decomp.decomposition_targets import resolve_decomposition_targets
   `param_decomp_config`; only their torch `Metric` *impls* were dropped.)
 - `RuntimeConfig` — compute substrate: `autocast_bf16`, `device`, `dp`. Perturbs numerics
   without changing the algorithm.
-- `param_decomp.log` / `param_decomp.distributed` — the logger and the read-only
-  distributed state + collectives every consumer uses.
-- `resolve_decomposition_targets` — maps a target `nn.Module` + decomposition-target
-  config to the concrete decomposition sites; `JaxPDAdapter` uses it to report layer
-  sizes.
+- `param_decomp.log` — the logger every consumer uses (the only thing left in
+  `param_decomp/`).
+- `jax_single_pool.load_run.{open_jax_run, run_metadata}` — the JAX consumer entry: a run
+  opened for a forward pass (`open_jax_run`, restores orbax) or just its torch-free target
+  topology (`run_metadata`: `n_blocks`/`vocab`/per-site `(name, C)` from config + cache, no
+  restore). `JaxPDAdapter` keys autointerp/clustering metadata off `run_metadata`.
 
 The torch run-loading surface (`ComponentModel`, the loss `Metric` impls, `RunSink`,
 `RunBatch` / `ReconstructionLoss`, `component_model_io`, the vendored archs) was dropped
@@ -134,35 +135,34 @@ and returns JAX-native as the #10 torch->jax adapter.
   (`BaseConfig`, `Probability`, `runtime_cast`), `schedule`, `routing`, `ci_fn`,
   `decomposition_target`, `losses`, `pd`, `experiment`, `lm`, `eval_metrics`,
   `autointerp`.
-- `param_decomp/` — consumer substrate only (see [Public API](#public-api)):
-  `log.py`, `distributed.py`, `decomposition_targets.py`. The torch core (component
-  model, CI fns, sigmoids, masks, loss metrics, run-sink, run-batch protocols) was
-  dropped; it lives at git tag `torch-oracle`.
-- `param_decomp_lab/experiments/lm/run.py` — the `build_target` consumer bridge:
-  builds the LM target *architecture* from config (for `JaxPDAdapter` topology). The
-  `SavedLMRun` reload + `build_lm_loader` + `make_run_batch` were dropped with
-  torch-run loading. Training is `jsp-train` (JAX) launched via `pd-jax-lm`. The torch
-  TMS and ResidualMLP experiment dirs were deleted — those domains now live only as JAX
-  targets (`param_decomp_jax/jax_single_pool/tms.py`, `resid_mlp.py`).
+- `param_decomp/` — `log.py` only (see [Public API](#public-api)). The torch core
+  (component model, CI fns, sigmoids, masks, loss metrics, run-sink, run-batch protocols,
+  `distributed`, `decomposition_targets`) was dropped; it lives at git tag `torch-oracle`.
+- `param_decomp_lab/adapters/` — `JaxPDAdapter`: torch-free autointerp/clustering metadata
+  for a JAX run, keyed off `jax_single_pool.load_run.run_metadata` (config + cache, no
+  orbax restore). The torch `build_target` bridge was deleted with the rest of torch.
+- `param_decomp_lab/experiments/lm/` — `data.py` (the offline tokenize helper for
+  `prestage_tokenized.py`), `prestage_tokenized.py` (HF text → int32 parquet shards for
+  the JAX trainer), `jax_launch.py` (`pd-jax-lm`). The torch `run.py::build_target` +
+  pretrain dir were deleted. The torch TMS and ResidualMLP experiment dirs were deleted —
+  those domains now live only as JAX targets (`param_decomp_jax/jax_single_pool/tms.py`,
+  `resid_mlp.py`).
 - `param_decomp_lab/{harvest,autointerp,clustering,investigate}/`
   — post-pipeline stages, each with its own CLAUDE.md.
 - `param_decomp_lab/postprocess/` — orchestrates the post-pipeline stages.
-- `param_decomp_lab/infra/` — settings, paths, slurm, ddp_launch (single-/multi-node
-  torchrun wrapper), wandb, sqlite, git, run_files, markdown, pydantic helpers.
-- `param_decomp_lab/{seed.py, distributed.py}` — lab-side helpers that aren't big
-  enough to warrant their own subdir.
+- `param_decomp_lab/infra/` — settings, paths, slurm, wandb, sqlite, git, run_files,
+  markdown, pydantic helpers.
 
 ## Module pointers
 
 | Module | CLAUDE.md | What it covers |
 |---|---|---|
-| `param_decomp_lab/experiments/` | `param_decomp_lab/experiments/CLAUDE.md` | Adding an experiment, YAML schema, LM `target.spec`, `build_target` |
+| `param_decomp_lab/experiments/` | `param_decomp_lab/experiments/CLAUDE.md` | LM `target.spec` schema, the offline prestage tool, JAX launch |
 | `param_decomp_lab/postprocess/` | `param_decomp_lab/postprocess/CLAUDE.md` | Pipeline orchestration: harvest → autointerp / intruder |
 | `param_decomp_lab/harvest/` | `param_decomp_lab/harvest/CLAUDE.md` | Component-statistics collection pipeline |
 | `param_decomp_lab/autointerp/` | `param_decomp_lab/autointerp/CLAUDE.md` | LLM-based component interpretation |
 | `param_decomp_lab/clustering/` | `param_decomp_lab/clustering/CLAUDE.md` | Hierarchical clustering of components |
 | `param_decomp_lab/investigate/` | `param_decomp_lab/investigate/CLAUDE.md` | Agent investigation of a research question |
-| `param_decomp_lab/experiments/lm/pretrain/` | `param_decomp_lab/experiments/lm/pretrain/CLAUDE.md` | LM target-model pretraining |
 
 > **The torch web-app (`param_decomp_lab/app/`) was temporarily removed during the JAX
 > migration** to shed torch surface for the JAX-primary merge. It is slated for re-add,
@@ -221,7 +221,6 @@ Training is now `jsp-train` (JAX), submitted via `pd-jax-lm`.
 | Command | Entry point | Purpose |
 |---|---|---|
 | `pd-jax-lm` | `experiments/lm/jax_launch.py` | Submit a JAX `jsp-train` run: snapshot ref + shared-FS workspace + sbatch |
-| `pd-pretrain` | `experiments/lm/pretrain/cli.py` | Pretrain target models |
 | `pd-harvest` | `harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
 | `pd-autointerp` | `autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
 | `pd-postprocess` | `postprocess/cli.py` | Unified postprocessing pipeline |

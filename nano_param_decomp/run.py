@@ -1,20 +1,11 @@
 """Minimal single-file Parameter Decomposition implementation.
 
-The method itself has zero dependencies on the `param_decomp` package.
-Sibling entry points wire it up to specific target models:
-
-  - `pile_4L.py`         — VPD paper's 4-layer LlamaSimpleMLP on the Pile
-  - `simplestories_4L.py` — 2-layer LlamaSimpleMLP on SimpleStories
-
-Launch via `torchrun -m` (the entry points use relative imports, so they
-must be run as modules from the repo root, not as scripts):
-
-    # 8-GPU single-node
-    torchrun --standalone --nproc_per_node=8 -m nano_param_decomp.pile_4L
-    torchrun --standalone --nproc_per_node=8 -m nano_param_decomp.simplestories_4L
-
-    # Single-GPU smoke test
-    python -m nano_param_decomp.pile_4L
+The reference torch implementation for VPD paper readers — the one torch file left
+in the repo (the rest of the repo is torch-free; training is the JAX trainer in
+`param_decomp_jax/`). The method itself has zero dependencies on the `param_decomp`
+package. The model-wiring entry points (`pile_4L.py` / `simplestories_2L.py`) were
+deleted with the torch `pretrain/` archs they imported; to run this, supply a target
+`nn.Module` + token loader and call `decompose(...)` directly.
 
 The file is structured for paper readers — everything the method needs is here:
 

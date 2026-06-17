@@ -397,7 +397,7 @@ def torchrun_command(
         snapshot_ref: Fully-qualified git ref to checkout
             (e.g. ``refs/runs/snapshot/<id>``).
         python_module: Module to launch (e.g.
-            ``param_decomp_lab.experiments.lm.run``).
+            ``param_decomp_lab.harvest.scripts.run_worker_jax``).
         script_args: Positional args passed to the module. **Pass paths to
             in-repo files as paths RELATIVE to REPO_ROOT** — the snapshot
             setup ``cd``'s into the per-node snapshot checkout, so relative

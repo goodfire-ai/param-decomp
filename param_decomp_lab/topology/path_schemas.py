@@ -1,16 +1,14 @@
 """Path schemas: bidirectional mapping between concrete module paths and canonical weights.
 
-Each model family gets a PathSchema subclass that declares its concrete naming conventions.
-These are private implementation details — only TransformerTopology is public.
+Each model family gets a PathSchema subclass that declares its concrete naming conventions,
+selected by model-type name. The schemas are private; `path_schema_for_model_type` is the
+public entry (torch-free — no live model, just the config's model-type string).
 """
 
 import re
 from abc import ABC
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
-
-if TYPE_CHECKING:
-    from torch import nn
+from typing import Literal
 
 from param_decomp_lab.topology.canonical import (
     CanonicalWeight,
@@ -207,14 +205,6 @@ class _GPT2PathSchema(_PathSchema):
     unembed_path = "lm_head"
 
 
-class _HFGpt2PathSchema(_PathSchema):
-    embedding_path = "transformer.wte"
-    blocks = "transformer.h"
-    attn = _FusedAttnPathSchema(base="attn", qkv="c_attn", o="c_proj")
-    mlp = _FFNPathSchema(base="mlp", up="c_fc", down="c_proj")
-    unembed_path = "lm_head"
-
-
 _MODEL_TYPE_PATH_SCHEMAS: dict[str, type[_PathSchema]] = {
     "LlamaSimple": _LlamaSimplePathSchema,
     "LlamaSimpleMLP": _LlamaSimpleMLPPathSchema,
@@ -226,35 +216,9 @@ _MODEL_TYPE_PATH_SCHEMAS: dict[str, type[_PathSchema]] = {
 def path_schema_for_model_type(model_type: str) -> _PathSchema:
     """Select a path schema by target-model class name — torch-free (no live model).
 
-    The torch-free consumers (the app reading a JAX run) only know the model type from
-    config, never a live `nn.Module`."""
+    Consumers reading a JAX run know the model type from config, never a live model."""
     schema_cls = _MODEL_TYPE_PATH_SCHEMAS.get(model_type)
     assert schema_cls is not None, (
         f"No path schema for model type {model_type!r}. Add one in path_schemas.py."
     )
     return schema_cls()
-
-
-def get_path_schema(model: "nn.Module") -> _PathSchema:
-    from transformers.models.gpt2 import GPT2LMHeadModel
-
-    from param_decomp_lab.experiments.lm.pretrain.models.gpt2 import GPT2
-    from param_decomp_lab.experiments.lm.pretrain.models.gpt2_simple import GPT2Simple
-    from param_decomp_lab.experiments.lm.pretrain.models.llama_simple import LlamaSimple
-    from param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp import LlamaSimpleMLP
-
-    match model:
-        case LlamaSimple():
-            return _LlamaSimplePathSchema()
-        case LlamaSimpleMLP():
-            return _LlamaSimpleMLPPathSchema()
-        case GPT2Simple():
-            return _GPT2SimplePathSchema()
-        case GPT2():
-            return _GPT2PathSchema()
-        case GPT2LMHeadModel():
-            return _HFGpt2PathSchema()
-        case _:
-            raise ValueError(
-                f"Unsupported model class {type(model).__name__}. Add a _PathSchema in path_schemas.py."
-            )

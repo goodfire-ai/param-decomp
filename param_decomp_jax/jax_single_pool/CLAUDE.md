@@ -150,8 +150,9 @@ recovery in `tests/test_resid_mlp.py`).
 3. `experiments/invariance_check.py` at 4 sim devices — trajectory invariant to
    device count up to float reassociation (SPEC D4).
 
-`basedpyright jax_single_pool/` must be clean; the package stays out of the repo
-`[tool.pyright]` include (torch venv type-checks the torch side).
+`basedpyright jax_single_pool/` must be clean (run via `make check-jax` in the JAX
+distribution's own venv); the package stays out of the main repo `[tool.pyright]` include
+and is resolved there only via `extraPaths` for the lab consumers that import it.
 
 ## The training pipeline (`run.py`)
 

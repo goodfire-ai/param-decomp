@@ -27,7 +27,7 @@ from huggingface_hub import HfApi, hf_hub_download
 from transformers import AutoTokenizer
 
 from param_decomp.log import logger
-from param_decomp_lab.experiments.lm.data import _tokenize_and_concatenate
+from param_decomp_lab.experiments.lm.data import tokenize_and_concatenate
 
 
 def _shard_token_count(path: Path, seq_len: int) -> int:
@@ -89,7 +89,7 @@ def prestage(
         )
         raw = load_dataset("parquet", data_files=str(local), split="train")
         assert isinstance(raw, Dataset)
-        tokenized = _tokenize_and_concatenate(
+        tokenized = tokenize_and_concatenate(
             raw, tokenizer, column_name=column_name, max_length=seq_len, num_proc=num_proc
         )
         assert isinstance(tokenized, Dataset)

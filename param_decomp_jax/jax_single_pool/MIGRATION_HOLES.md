@@ -37,16 +37,18 @@ still name them — they just no-op until reimplemented.
 - **App** (`param_decomp_lab/app/`) — temporarily removed (#868); slated for a JAX-native
   re-add. `pd-investigate` subprocess-launches it, so it's broken until the app returns.
 
-## `pretrain/` is a TRANSITIONAL torch island (endpoint: fully torch-free)
+## `pretrain/` is DELETED — reimplement in JAX when next needed
 
-After the residual-layer de-torch, `param_decomp_lab/experiments/lm/pretrain/` is the ONLY
-torch left (the in-house target model defs + training loop). It is **not a permanent
-island** — the intent (Oli, 2026-06-17) is: when we next need to pretrain a target, we
-write that in JAX from scratch, and then **delete `pretrain/` entirely → the repo is 100%
-torch-free**. So isolate it minimally (its own torch venv, #5/#9); don't over-invest in
-tooling around code slated for deletion. The base models we currently decompose
-(Llama-3.1-8B, the pile `LlamaSimpleMLP` `t-9d2b8f02`) are already pretrained on disk, so
-`pretrain/` is rarely run in the meantime.
+`param_decomp_lab/experiments/lm/pretrain/` (the in-house target model defs + training
+loop + `pd-pretrain` CLI) was **deleted** with the rest of torch — the repo is now
+torch-free (zero `import torch`). When we next need to pretrain a target, write it in JAX
+from scratch. This costs nothing in the meantime: the base models we currently decompose
+(Llama-3.1-8B, the pile `LlamaSimpleMLP` `t-9d2b8f02`) are already pretrained on disk, and
+the trainer loads them through its OWN torch-free loaders
+(`llama_simple_mlp.load_target_from_pretrain_cache` / `load_prefix_from_pretrain_cache`)
+reading the on-disk weight cache — never through `pretrain/` code. The one-off torch
+checkpoint→safetensors converter (`tools/convert_llama_simple_mlp_checkpoint.py`) was
+deleted too; the existing caches already hold their converted safetensors.
 
 ## Imp-min token-count reparameterization (deferred, Oli)
 

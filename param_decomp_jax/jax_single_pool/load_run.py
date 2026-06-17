@@ -221,3 +221,44 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
         _state=state,
         _forward=forward,
     )
+
+
+@dataclass(frozen=True)
+class RunMetadata:
+    """A JAX run's target topology, read from config + cache WITHOUT restoring a
+    checkpoint — the metadata the autointerp/clustering consumers need (`n_blocks`,
+    `vocab_size`, per-site `(name, C)`). `model_type` selects the canonical-path schema
+    consumers use to render human-readable layer descriptions."""
+
+    model_type: str
+    n_blocks: int
+    vocab_size: int
+    layer_activation_sizes: list[tuple[str, int]]
+
+
+def run_metadata(run_dir: Path) -> RunMetadata:
+    """Target topology for `run_dir`, derived from the pinned config (+ the SimpleMLP
+    pretrain cache's `model_config.yaml` for `n_layer`/`vocab_size`). No orbax restore."""
+    cfg = load_run_dir_config(run_dir)
+    match cfg.target:
+        case LlamaSimpleMLPTargetConfig():
+            cache_dir = llama_simple_mlp.pretrain_cache_dir(cfg.target.pretrain_run_path)
+            simple_cfg = llama_simple_mlp.load_model_config(cache_dir)
+            return RunMetadata(
+                model_type="LlamaSimpleMLP",
+                n_blocks=simple_cfg.n_layer,
+                vocab_size=simple_cfg.vocab_size,
+                layer_activation_sizes=[(s.name, s.C) for s in cfg.target.sites],
+            )
+        case TargetConfig():
+            llama_cfg = llama31_8b_config()
+            return RunMetadata(
+                model_type="Llama",
+                n_blocks=llama_cfg.n_layer,
+                vocab_size=llama_cfg.vocab_size,
+                layer_activation_sizes=[(s.name, s.C) for s in cfg.target.sites],
+            )
+        case TMSTargetConfig() | ResidMLPTargetConfig():
+            raise AssertionError(
+                "run_metadata is the LM-consumer path only (TMS/ResidMLP are not harvested)"
+            )

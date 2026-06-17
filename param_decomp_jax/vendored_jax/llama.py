@@ -227,7 +227,7 @@ class ComponentLlama(eqx.Module):
         return x @ self.lm_head.T
 
 
-# ----------------------------- build from torch state dict -----------------------------
+# ----------------------------- build from HF state dict -----------------------------
 
 # decomposition-target leaves (per block) and their HF-stripped key suffixes
 _ATTN = ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj"]

@@ -8,7 +8,6 @@ license = { text = "MIT" }
 readme = "README.md"
 dependencies = [
     "param-decomp-config==0.0.1",
-    "torch>=2.11,<2.12",
     "pydantic<2.12", # https://github.com/goodfire-ai/param-decomp/pull/232 , https://github.com/goodfire-ai/param-decomp/issues/221
     "tqdm",
     "transformers",
@@ -52,15 +51,9 @@ namespaces = false
 [tool.uv.workspace]
 members = ["param_decomp_config", "param_decomp_lab"]
 
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
-
 [tool.uv.sources]
 param-decomp = { workspace = true }
 param-decomp-config = { workspace = true }
-torch = { index = "pytorch-cu128" }
 
 [tool.ruff]
 line-length = 100
@@ -96,11 +89,14 @@ docstring-code-format = true
 known-third-party = ["wandb"]
 
 [tool.pyright]
-include = ["param_decomp", "param_decomp_config", "param_decomp_lab", "nano_param_decomp"]
+# nano_param_decomp/ is the standalone torch single-file VPD reference impl for paper
+# readers (see README); it is the one torch island left in the repo and is type-checked
+# in a torch env, not this JAX-only one.
+include = ["param_decomp", "param_decomp_config", "param_decomp_lab"]
 exclude = [
     "**/wandb/**",
     "**/_scratch/**",
-    "param_decomp_lab/_linear_sum_assignment.py",
+    "nano_param_decomp",
 ]
 # Resolve (don't type-check) the JAX distribution: lab consumes it through the
 # editable-install import hook pyright can't follow. The package stays out of `include`

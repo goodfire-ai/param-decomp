@@ -13,22 +13,23 @@ install-dev: bridge-jax-into-main-venv
 
 # `uv sync --all-packages` manages the main venv exclusively and strips anything not in
 # the workspace lock — including jax, which `param_decomp_jax` is NOT a member of. But the
-# JAX-run consumers in the lab venv (harvest's run_worker_jax.py) `import
-# jax` + `from jax_single_pool ...` and call `open_jax_run` (restores an orbax checkpoint,
-# builds a `DecomposedModel`), and `make type` over them needs both stacks resolvable. So
-# re-add the JAX runtime right after the sync: jax/jaxlib CPU + the JAX trainer's own
-# runtime deps (equinox/optax/jaxtyping/orbax — orbax pulls pure-python absl/etils/
-# tensorstore/...), all jax-pinned so nothing bumps jax; then the editable
-# `param_decomp_jax` source `--no-deps` (gives `jax_single_pool` / `vendored_jax` without
-# dragging in its pinned wandb/numpy/pyarrow that would downgrade the torch stack).
+# lab JAX-run consumers (harvest/clustering `run_worker_jax.py`, the `JaxPDAdapter`) `import
+# jax` + `from jax_single_pool ...` and call `open_jax_run` / `run_metadata`, and `make
+# type` over them needs jax resolvable. So re-add the JAX runtime right after the sync:
+# jax/jaxlib CPU + the JAX trainer's own runtime deps (equinox/optax/jaxtyping/orbax —
+# orbax pulls pure-python absl/etils/tensorstore/...), all jax-pinned so nothing bumps jax;
+# then the editable `param_decomp_jax` source `--no-deps` (gives `jax_single_pool` /
+# `vendored_jax` without dragging in its pinned wandb/numpy/pyarrow that would downgrade
+# the main stack). The repo is torch-free; the production CUDA jax lives in the JAX
+# distribution's own venv (`make install-jax-cuda`).
 .PHONY: bridge-jax-into-main-venv
 bridge-jax-into-main-venv:
 	uv sync --all-packages
-	uv pip install --no-deps "equinox==0.13.8" "optax==0.2.8" "jaxtyping==0.3.10"
+	uv pip install --no-deps "equinox==0.13.8" "optax==0.2.8" "jaxtyping==0.3.10" "beartype==0.22.2"
 	uv pip install "jax==0.10.1" "jaxlib==0.10.1" "orbax-checkpoint==0.12.0"
 	uv pip install --no-deps -e ./param_decomp_jax
 
-# The JAX distribution keeps its own venvs (its CUDA wheels conflict with torch's).
+# The JAX distribution keeps its own venvs (CUDA wheels the CPU main venv doesn't carry).
 # Create-if-missing rather than --clear: on NFS a venv with files held open (e.g. by
 # an IDE's language server) cannot be deleted in place; `rm -rf` it manually if you
 # really want a from-scratch env.
@@ -60,8 +61,6 @@ check-jax:
 # 2. install with `uv sync` but with some special options:
 #  > `--frozen` to enforce using the lock file for consistent dependency versions
 #  > `--link-mode copy` because symlinks/hardlinks dont work half the time anyway
-#  > `--extra-index-url` to get cpu-only pytorch wheels. installing with just `uv sync` will download a bunch of cuda stuff we cannot use anyway, since there are no GPUs anyways. takes up a lot of space and makes the install take 5x as long
-#  > `--index-strategy unsafe-best-match` because pytorch index won't have every version of each package we need. markupsafe is a particular pain point
 # Note: explored the `--compile-bytecode` option for test speedups, nothing came of it. see https://github.com/goodfire-ai/param-decomp/pull/187/commits/740f6a28f4d3378078c917125356b6466f155e71
 .PHONY: install-ci
 install-ci:
@@ -69,9 +68,7 @@ install-ci:
 	uv sync \
 		--frozen \
 		--all-packages \
-		--link-mode copy \
-		--extra-index-url https://download.pytorch.org/whl/cpu \
-		--index-strategy unsafe-best-match
+		--link-mode copy
 
 # checks
 .PHONY: type

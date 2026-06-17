@@ -35,58 +35,18 @@ pd-jax-lm    param_decomp_lab/experiments/lm/<wrapper>.yaml --nodes N
 TMS and ResidualMLP now live only as JAX targets in `param_decomp_jax/jax_single_pool/`
 (`tms.py`, `resid_mlp.py`); the torch experiment dirs were deleted.
 
-For a brand-new experiment, write your own `run.py` that builds the target model, the
-train/eval dataloaders, the eval `Metric` list, the `PDConfig` and `RuntimeConfig`, a
-`Cadence` (when to emit), and a `RunSink` (where output goes), then calls `optimize(...)`:
-
-```python
-from param_decomp.configs import Cadence, PDConfig, RuntimeConfig
-from param_decomp.optimize import EvalLoop, optimize
-from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
-from param_decomp_lab.run_sink import RunSink
-
-optimize(
-    target_model=my_target_module,
-    train_loader=train_loader,
-    run_batch=run_batch_first_element,
-    reconstruction_loss=recon_loss_mse,
-    pd_config=PDConfig(...),
-    runtime_config=RuntimeConfig(device=device),
-    cadence=Cadence(
-        train_log_every=100,
-        save_every=5000,
-    ),
-    sink=RunSink.local(out_dir),
-    eval_loop=EvalLoop(
-        loader=eval_loader,
-        metrics=[...],  # list of pre-instantiated Metric objects
-        n_steps=10,
-        every=1000,
-        slow_every=5000,
-    ),
-)
-```
-
-The LM `run.py` ([lm](param_decomp_lab/experiments/lm/run.py)) is the reference example.
+Training is the JAX single-pool trainer (`param_decomp_jax/jax_single_pool/`, entry point
+`jsp-train`), launched from the lab side via `pd-jax-lm`. A run is one self-contained YAML
+(the `param_decomp_config` experiment schema). The torch trainer (`optimize()`, the torch
+`Metric` impls, `RunSink`) was retired and is preserved at git tag `torch-oracle`. See
+`param_decomp_jax/jax_single_pool/CLAUDE.md` and `SPEC.md` for the trainer.
 
 ## Metrics
 
-Configure training losses in `pd.loss_metrics` as a list of `{type: "<ClassName>", ...}`
-entries. The `type` literal dispatches to a `Metric` subclass via
-`param_decomp.metrics.dispatch.LOSS_METRIC_CLASSES`. Loss metrics must set `coeff`; they
-are evaluated automatically alongside dedicated eval metrics. New loss metrics are added
-by defining the class in `param_decomp/metrics/`, appending the config to
-`AnyLossMetricConfig` in `configs.py`, and appending the class to `LOSS_METRIC_CLASSES`.
-
-Eval metrics are caller-supplied: instantiate `Metric` objects in your `run.py` and pass
-them via `EvalLoop(metrics=...)`. The in-repo experiments validate the YAML
-`eval.metrics` list via the `AnyEvalMetricConfig` discriminated union on `EvalConfig`,
-then dispatch each entry through `EVAL_METRIC_CLASSES` (both in
-`param_decomp_lab.eval_metrics`):
-
-```python
-eval_metrics = [EVAL_METRIC_CLASSES[m.type](m) for m in cfg.eval.metrics]
-```
+Training losses are configured in `pd.loss_metrics` as a list of `{type: "<ClassName>",
+...}` entries; eval metrics in `eval.metrics`. Both are validated by the torch-free
+`param_decomp_config` schema and computed by the JAX trainer
+(`param_decomp_jax/jax_single_pool/losses.py`, `slow_eval.py`).
 
 ## Packaging
 
