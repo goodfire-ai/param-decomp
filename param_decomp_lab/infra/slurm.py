@@ -14,7 +14,12 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from param_decomp_lab.infra.settings import REPO_ROOT, SBATCH_SCRIPTS_DIR, SLURM_LOGS_DIR
+from param_decomp_lab.infra.settings import (
+    PARAM_DECOMP_OUT_DIR,
+    REPO_ROOT,
+    SBATCH_SCRIPTS_DIR,
+    SLURM_LOGS_DIR,
+)
 
 # Bash expressions that uniquely identify a job invocation, used to name per-job /tmp
 # workspaces. Exposed so other modules building SLURM commands (e.g. multi-node DDP
@@ -259,7 +264,8 @@ git checkout "{snapshot_ref}"
 deactivate 2>/dev/null || true
 unset VIRTUAL_ENV
 uv sync --all-packages --no-dev --link-mode copy -q
-source .venv/bin/activate"""
+source .venv/bin/activate
+export PARAM_DECOMP_OUT_DIR="{PARAM_DECOMP_OUT_DIR.resolve()}\""""
 
 
 def _workspace_setup(config: SlurmConfig, workspace_suffix: str) -> str:
@@ -271,7 +277,8 @@ def _workspace_setup(config: SlurmConfig, workspace_suffix: str) -> str:
     else:
         return f"""\
 cd "{REPO_ROOT}"
-source .venv/bin/activate"""
+source .venv/bin/activate
+export PARAM_DECOMP_OUT_DIR="{PARAM_DECOMP_OUT_DIR.resolve()}\""""
 
 
 def _setup_section_singleton(config: SlurmConfig) -> str:
