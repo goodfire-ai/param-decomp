@@ -23,6 +23,9 @@ DDP_ENV = {
     "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
     "HF_HUB_ETAG_TIMEOUT": "30",
     "HF_HUB_DOWNLOAD_TIMEOUT": "30",
+    # The HF Xet CDN (us.aws.cdn.hf.co/xet-bridge-us) returns non-retryable 408s
+    # mid-stream (killed run p-0599c2eb at step 60k); fall back to the classic LFS path.
+    "HF_HUB_DISABLE_XET": "1",
 }
 
 
