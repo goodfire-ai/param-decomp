@@ -46,7 +46,12 @@ from jax_single_pool.llama8b import SITE_NAME_PATTERN, canonical_site_cs
 from jax_single_pool.lm import SiteC
 from jax_single_pool.recon import build_recon_terms
 from param_decomp_config.ci_fn import GlobalSharedTransformerCiFnConfig
-from param_decomp_config.eval_metrics import CEandKLLossesConfig, CI_L0Config
+from param_decomp_config.eval_metrics import (
+    CEandKLLossesConfig,
+    CI_L0Config,
+    CIMaskedAttnPatternsReconLossConfig,
+    StochasticAttnPatternsReconLossConfig,
+)
 from param_decomp_config.experiment import WandbConfig
 from param_decomp_config.jax_wrapper import WRAPPER_KEYS, WRAPPER_OPTIONAL_KEYS
 from param_decomp_config.lm import (
@@ -142,6 +147,17 @@ class EvalPGDConfig:
 
 
 @dataclass(frozen=True)
+class AttnPatternsEvalConfig:
+    """In-loop attention-pattern recon metrics (torch `CIMaskedAttnPatternsReconLoss` /
+    `StochasticAttnPatternsReconLoss`). Q/K are read from the decomposed `*q_proj`/`*k_proj`
+    sites; the attention recipe (RoPE/GQA/head-dim) is read from the target — so no
+    config-side n_heads/paths are threaded here. The flags select which variants run."""
+
+    ci_masked: bool
+    stochastic: bool
+
+
+@dataclass(frozen=True)
 class EvalConfig:
     """In-loop eval pass (torch `EvalLoop` analog, scalar metrics only — plots ride the
     offline export path). `rounding_threshold` binarises CI for the CE/KL
@@ -156,6 +172,7 @@ class EvalConfig:
     """torch CI_L0 `groups`: fnmatch site patterns whose member L0s sum into a
     group-named key. None = per-site keys only."""
     pgd: EvalPGDConfig | None
+    attn_patterns: AttnPatternsEvalConfig | None
 
 
 @dataclass(frozen=True)
@@ -208,8 +225,6 @@ OFFLINE_EVAL_METRIC_TYPES = frozenset(
         "UVPlots",
         "PermutedCIPlots",
         "IdentityCIError",
-        "CIMaskedAttnPatternsReconLoss",
-        "StochasticAttnPatternsReconLoss",
         "AutointerpLabels",
     }
 )
@@ -315,10 +330,23 @@ def _data(cfg: LMExperimentConfig) -> DataConfig:
     )
 
 
+def _assert_separate_qk_attn_paths(
+    metric: CIMaskedAttnPatternsReconLossConfig | StochasticAttnPatternsReconLossConfig,
+) -> None:
+    """The JAX targets decompose attention as separate `*q_proj`/`*k_proj` sites; no JAX
+    target produces a combined-QKV (`c_attn`) site to split. Refuse the combined config
+    loudly (the attn-patterns step reads Q/K from the q/k_proj sites by name)."""
+    assert metric.c_attn_path is None, (
+        f"{metric.type}: combined c_attn is unsupported (no JAX target produces a merged-QKV "
+        f"site); decompose separate q_proj/k_proj sites instead"
+    )
+
+
 def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
     if cfg.eval is None:
         return None
     ce_kl = ci_l0 = pgd = None
+    attn_ci = attn_stoch = False
     skipped_offline: list[str] = []
     for metric in cfg.eval.metrics:
         match metric:
@@ -329,6 +357,12 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
             case PGDReconLossConfig():
                 assert metric.init == "random" and metric.mask_scope == "c", metric
                 pgd = EvalPGDConfig(n_steps=metric.n_steps, step_size=metric.step_size)
+            case CIMaskedAttnPatternsReconLossConfig():
+                _assert_separate_qk_attn_paths(metric)
+                attn_ci = True
+            case StochasticAttnPatternsReconLossConfig():
+                _assert_separate_qk_attn_paths(metric)
+                attn_stoch = True
             case _ if metric.type in OFFLINE_EVAL_METRIC_TYPES:
                 skipped_offline.append(metric.type)
             case _:
@@ -350,6 +384,11 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
             else None
         ),
         pgd=pgd,
+        attn_patterns=(
+            AttnPatternsEvalConfig(ci_masked=attn_ci, stochastic=attn_stoch)
+            if attn_ci or attn_stoch
+            else None
+        ),
     )
 
 

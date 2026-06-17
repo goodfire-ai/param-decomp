@@ -34,6 +34,13 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 
 from jax_single_pool import llama_simple_mlp
+from jax_single_pool.attn_patterns_eval import (
+    accumulate_attn_patterns,
+    attn_pattern_for,
+    attn_patterns_log_entries,
+    make_ci_attn_patterns_step,
+    make_stochastic_attn_patterns_step,
+)
 from jax_single_pool.checkpoint import make_checkpoint_manager, restore_latest, save_state
 from jax_single_pool.config import (
     ExperimentConfig,
@@ -269,6 +276,7 @@ def train(
     # the SAME corpus (own seed), advanced one block of `n_steps` batches per eval pass.
     eval_step_fn = None
     eval_server = None
+    attn_steps: dict[str, Any] = {}
     if cfg.eval is not None:
         assert cfg.eval.every % cfg.cadence.log_every == 0, (
             "eval must land on a train-log step: the tok/s window resets after eval, so a "
@@ -288,6 +296,16 @@ def train(
             eval_pgd,
             mesh,
         )
+        if cfg.eval.attn_patterns is not None:
+            pattern_fn = attn_pattern_for(frozen)
+            if cfg.eval.attn_patterns.ci_masked:
+                attn_steps["CIMaskedAttnPatternsReconLoss"] = make_ci_attn_patterns_step(
+                    lm, pattern_fn
+                )
+            if cfg.eval.attn_patterns.stochastic:
+                attn_steps["StochasticAttnPatternsReconLoss"] = make_stochastic_attn_patterns_step(
+                    lm, pattern_fn, cfg.n_mask_samples, cfg.sampling
+                )
 
     # the raw torch yaml's runtime block describes the UPSTREAM run (e.g. dp: 32);
     # record what this run actually executes on so wandb never lies about topology.
@@ -351,6 +369,7 @@ def train(
             # also averages across batches AND eval batches are uniform (B, T). See
             # eval.py's module docstring for the per-key parity argument (cites SPEC S8/D2).
             metric_sums: dict[str, jax.Array] = {}
+            eval_residuals: list[jax.Array] = []
             for j in range(cfg.eval.n_steps):
                 if _sigterm_received:
                     break
@@ -360,6 +379,7 @@ def train(
                     cfg.eval.batch_size,
                 )
                 eval_residual = harvest(prefix, eval_tokens)
+                eval_residuals.append(eval_residual)
                 # fold values >= cfg.steps never collide with the train step keys
                 eval_key = random.fold_in(
                     run_key, cfg.steps + eval_pass_index * cfg.eval.n_steps + j
@@ -376,6 +396,17 @@ def train(
                 eval_record = {
                     f"eval/{k}": float(v) / cfg.eval.n_steps for k, v in metric_sums.items()
                 }
+                for class_name, attn_step in attn_steps.items():
+                    # token-weighted (Σ sum_kl / Σ n), NOT the uniform per-batch average
+                    # above — KL is summed over distributions, divided by their count.
+                    attn_key = random.fold_in(run_key, 2 * cfg.steps + eval_pass_index)
+                    reductions = accumulate_attn_patterns(
+                        attn_step, state.components, state.ci_fn, frozen, eval_residuals, attn_key
+                    )
+                    eval_record |= {
+                        f"eval/loss/{k}": v
+                        for k, v in attn_patterns_log_entries(class_name, reductions).items()
+                    }
                 sink.log(now_step, eval_record)
                 if is_main:
                     headline = {
