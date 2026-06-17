@@ -398,6 +398,9 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
              font-size: 12px; line-height: 1.6; scroll-behavior: smooth; }
   #seqLine .focus-tok { background: #fde047; color: #000; border-radius: 2px; }
   #seqBar button { flex: 0 0 auto; }
+  #seqBar .seq-prompt { flex: 0 0 auto; font-weight: 600; font-size: 12px;
+                        color: #fde047; padding: 2px 6px; border: 1px solid #3f3f46;
+                        border-radius: 3px; white-space: nowrap; }
   #seqBar .seq-meta { flex: 0 0 auto; font-size: 11px; color: #71717a;
                       max-width: 180px; overflow: hidden; text-overflow: ellipsis;
                       white-space: nowrap; }
@@ -425,6 +428,10 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
       <div class="muted" id="seqHint">click a point — its sequence shows along the bottom</div>
       <label><input type="checkbox" id="flowLines"> flow line for this sequence (rainbow by position)</label>
       <label><input type="checkbox" id="showPivot"> marker sphere on selected point</label>
+      <div style="margin-top:8px">
+        <input type="range" id="camGlide" min="0" max="1" value="0.12" step="0.02" style="width:100%">
+        <div class="muted" id="camGlideLabel">camera glide 0.12 (0 instant → 1 slow)</div>
+      </div>
       <div style="margin-top:8px">
         <input type="range" id="flowOpacity" min="0.05" max="1" value="0.95" step="0.05" style="width:100%">
         <div class="muted" id="flowOpacityLabel">flow line opacity 0.95</div>
@@ -559,7 +566,9 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
 </div>
 <div id="hover"></div>
 <div id="seqBar">
-  <button id="seqBack" title="back to previous focus (history)" disabled>&#8617; back</button>
+  <span class="seq-prompt" id="seqPrompt"></span>
+  <button id="seqBack" title="back (history)" disabled>&#8617;</button>
+  <button id="seqFwd" title="forward (history)" disabled>&#8618;</button>
   <button id="seqPrev" title="previous token (&larr;)" disabled>&#9664;</button>
   <div id="seqLine"></div>
   <button id="seqNext" title="next token (&rarr;)" disabled>&#9654;</button>
@@ -1085,9 +1094,9 @@ let flowLocalitySigma = Infinity;  // gaussian width (in tokens) around the focu
                                    // Infinity = no locality fade (whole sequence equally lit)
 
 function updateFlowLines() {
-    if (!SEQ || !flowEnabled || pivotLock < 0) { flowMesh.visible = false; return; }
-    const targetSeq = SEQ.point_seq[pivotLock];
-    const focusPos = SEQ.point_pos[pivotLock];
+    if (!SEQ || !flowEnabled || focusPoint < 0) { flowMesh.visible = false; return; }
+    const targetSeq = SEQ.point_seq[focusPoint];
+    const focusPos = SEQ.point_pos[focusPoint];
     const seqLen = SEQ.seq_len;
     const twoSigSq = 2 * flowLocalitySigma * flowLocalitySigma;
     // Locality fade: scale each endpoint's colour toward black (the dark background) by a
@@ -1212,31 +1221,30 @@ function updateVisibleCount() {
 // clusters re-centres the orbit on whatever the user is looking at. Camera
 // position is kept (no jump); only the look-at point shifts. Falls back to
 // the previous target if everything is hidden.
-function updateOrbitTarget() {
-    // Locked pivot: orbit around a chosen point (set by clicking it) so local
-    // structure can be inspected. Clearing the lock (click empty space) restores
-    // the auto-centroid behaviour below.
-    if (pivotLock >= 0) {
-        controls.target.set(
-            positions[pivotLock * 3], positions[pivotLock * 3 + 1], positions[pivotLock * 3 + 2]
+// Recompute the orbit goal (the chosen orbitPoint, else the visible-points centroid) and
+// either snap to it (instant) or let the per-frame glide ease toward it. The marker sits at
+// the goal so it flags the chosen point immediately, even mid-glide.
+function updateOrbitTarget(instant = true) {
+    if (orbitPoint >= 0) {
+        glideGoal.set(
+            positions[orbitPoint * 3], positions[orbitPoint * 3 + 1], positions[orbitPoint * 3 + 2]
         );
-        pivotMarker.position.copy(controls.target);
+        pivotMarker.position.copy(glideGoal);
         pivotMarker.visible = showPivotMarker;
-        controls.update();
-        return;
+    } else {
+        pivotMarker.visible = false;
+        let cx = 0, cy = 0, cz = 0, count = 0;
+        for (let i = 0; i < TOTAL; i++) {
+            if (iVisible[i] < 0.5) continue;
+            cx += positions[i * 3 + 0];
+            cy += positions[i * 3 + 1];
+            cz += positions[i * 3 + 2];
+            count++;
+        }
+        if (count === 0) return;
+        glideGoal.set(cx / count, cy / count, cz / count);
     }
-    pivotMarker.visible = false;
-    let cx = 0, cy = 0, cz = 0, count = 0;
-    for (let i = 0; i < TOTAL; i++) {
-        if (iVisible[i] < 0.5) continue;
-        cx += positions[i * 3 + 0];
-        cy += positions[i * 3 + 1];
-        cz += positions[i * 3 + 2];
-        count++;
-    }
-    if (count === 0) return;
-    controls.target.set(cx / count, cy / count, cz / count);
-    controls.update();
+    if (instant) { controls.target.copy(glideGoal); controls.update(); }
 }
 
 // --- Axis pick + basis switch ---
@@ -1869,9 +1877,18 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
     pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
 });
 
-// --- Click-to-pivot: orbit around a clicked point (click empty space to clear) ---
-let pivotLock = -1;
+// --- Focus / orbit model ---
+// Two separate notions: orbitPoint is the camera's rotation centre (set by a single click);
+// focusPoint is the token whose sequence the bottom bar + flow lines track (set by a double
+// click or the step/back/forward nav). -1 means "none" (orbit falls back to the centroid).
+let orbitPoint = -1;
+let focusPoint = -1;
 let showPivotMarker = false;  // marker sphere off by default (toggled in the Sequence panel)
+// The orbit target eases toward glideGoal each frame; cameraGlide maps 0->instant, 1->slow.
+const glideGoal = new THREE.Vector3();
+let cameraGlide = 0.12;
+const glideRateFor = (s) => Math.max(0.012, Math.pow(1 - s, 3));
+let glideRate = glideRateFor(cameraGlide);
 const pivotMarker = new THREE.Mesh(
     new THREE.SphereGeometry(0.15, 16, 12),
     new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.2 })
@@ -1888,11 +1905,13 @@ const seqMetaEl = document.getElementById('seqMeta');
 const seqPrevEl = document.getElementById('seqPrev');
 const seqNextEl = document.getElementById('seqNext');
 const seqBackEl = document.getElementById('seqBack');
+const seqFwdEl = document.getElementById('seqFwd');
+const seqPromptEl = document.getElementById('seqPrompt');
 // (sequence, position) -> point index, so the prev/next arrows can walk the centred token
 // along its sequence one token at a time.
 const seqPosToPoint = new Map();
-// Focus history: each selectPoint pushes the previous focus so 'back' can undo a misclick
-// (clicking a thumbnail behind the intended one) or retrace a step-through.
+// Focus history (back stack): each new focus pushes the previous one so back/forward can
+// retrace a step-through or undo a misclick.
 const focusHistory = [];
 if (SEQ) {
     seqSectionEl.style.display = 'block';
@@ -1922,25 +1941,62 @@ if (SEQ) {
         showPivotMarker = e.target.checked;
         updateOrbitTarget();
     });
+    document.getElementById('camGlide').addEventListener('input', (e) => {
+        cameraGlide = parseFloat(e.target.value);
+        glideRate = glideRateFor(cameraGlide);
+        document.getElementById('camGlideLabel').textContent =
+            `camera glide ${cameraGlide.toFixed(2)} (0 instant → 1 slow)`;
+    });
     seqPrevEl.addEventListener('click', () => stepSequence(-1));
     seqNextEl.addEventListener('click', () => stepSequence(1));
     seqBackEl.addEventListener('click', goBack);
+    seqFwdEl.addEventListener('click', goForward);
 }
+
+// Forward history for the redo direction (cleared whenever a fresh focus is chosen).
+const forwardStack = [];
 
 function stepSequence(delta) {
-    if (!SEQ || pivotLock < 0) return;
-    const s = SEQ.point_seq[pivotLock], p = SEQ.point_pos[pivotLock];
+    if (!SEQ || focusPoint < 0) return;
+    const s = SEQ.point_seq[focusPoint], p = SEQ.point_pos[focusPoint];
     const next = seqPosToPoint.get(s * 100000 + (p + delta));
-    if (next !== undefined) selectPoint(next);
+    if (next !== undefined) focusOn(next);
 }
 
+// Move the focused token. Same sequence -> glide the camera + smooth-scroll the strip;
+// different sequence (prompt change) -> jump instantly in both. History-managed.
+function applyFocus(idx) {
+    const promptChanged = focusPoint < 0 || SEQ.point_seq[idx] !== SEQ.point_seq[focusPoint];
+    focusPoint = idx;
+    orbitPoint = idx;
+    updateOrbitTarget(promptChanged);
+    seqBarEl.style.display = 'flex';
+    renderSequence(idx, promptChanged);
+    updateFlowLines();
+}
+function focusOn(idx) {
+    if (focusPoint >= 0 && focusPoint !== idx) focusHistory.push(focusPoint);
+    forwardStack.length = 0;
+    applyFocus(idx);
+}
 function goBack() {
     if (focusHistory.length === 0) return;
-    const prev = focusHistory.pop();
-    selectPoint(prev, true);  // don't re-push: this IS the undo
+    if (focusPoint >= 0) forwardStack.push(focusPoint);
+    applyFocus(focusHistory.pop());
+}
+function goForward() {
+    if (forwardStack.length === 0) return;
+    if (focusPoint >= 0) focusHistory.push(focusPoint);
+    applyFocus(forwardStack.pop());
+}
+function clearFocus() {
+    focusPoint = -1; orbitPoint = -1;
+    updateOrbitTarget(false);
+    if (SEQ) seqBarEl.style.display = 'none';
+    updateFlowLines();
 }
 
-function renderSequence(idx) {
+function renderSequence(idx, promptChanged) {
     if (!SEQ) return;
     const s = SEQ.point_seq[idx], p = SEQ.point_pos[idx];
     const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -1948,33 +2004,22 @@ function renderSequence(idx) {
     seqLineEl.innerHTML = SEQ.tokens[s].map((t, i) => i === p
         ? `<span class="focus-tok" id="seqFocusTok">${esc(t)}</span>`
         : `<span>${esc(t)}</span>`).join('');
-    seqMetaEl.textContent = `seq ${s} · pos ${p}`;
-    seqHintEl.textContent = `showing sequence ${s}, position ${p} (bottom bar)`;
+    seqPromptEl.textContent = `prompt ${s}`;
+    seqMetaEl.textContent = `pos ${p}`;
+    seqHintEl.textContent = `showing prompt ${s}, position ${p} (bottom bar)`;
     seqPrevEl.disabled = !seqPosToPoint.has(s * 100000 + (p - 1));
     seqNextEl.disabled = !seqPosToPoint.has(s * 100000 + (p + 1));
     seqBackEl.disabled = focusHistory.length === 0;
-    // Scroll the single line so the focused token sits in the centre of the bar.
+    seqFwdEl.disabled = forwardStack.length === 0;
+    // Centre the focused token: instant when the prompt changed, smooth when stepping within it.
     const tok = document.getElementById('seqFocusTok');
-    if (tok) seqLineEl.scrollLeft = tok.offsetLeft - seqLineEl.clientWidth / 2 + tok.offsetWidth / 2;
+    if (tok) seqLineEl.scrollTo({
+        left: tok.offsetLeft - seqLineEl.clientWidth / 2 + tok.offsetWidth / 2,
+        behavior: promptChanged ? 'auto' : 'smooth',
+    });
 }
 
-function selectPoint(idx, fromBack = false) {
-    if (!fromBack && pivotLock >= 0 && pivotLock !== idx) focusHistory.push(pivotLock);
-    pivotLock = idx;
-    updateOrbitTarget();
-    if (SEQ) { seqBarEl.style.display = 'flex'; renderSequence(idx); }
-    updateFlowLines();
-}
-function clearPivot() {
-    pivotLock = -1;
-    updateOrbitTarget();
-    if (SEQ) {
-        seqBarEl.style.display = 'none';
-        seqPrevEl.disabled = true; seqNextEl.disabled = true;
-    }
-}
-
-let downX = 0, downY = 0, downT = 0;
+let downX = 0, downY = 0, downT = 0, clickTimer = null;
 renderer.domElement.addEventListener('pointerdown', (e) => {
     downX = e.clientX; downY = e.clientY; downT = performance.now();
 });
@@ -1985,13 +2030,24 @@ renderer.domElement.addEventListener('pointerup', (e) => {
     pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     const idx = pickNearest();
-    if (idx >= 0) selectPoint(idx); else clearPivot();
+    // Single click moves only the rotation centre (glide); double click changes the focused
+    // sequence. Discriminate with a short timer.
+    if (clickTimer !== null) {
+        clearTimeout(clickTimer); clickTimer = null;
+        if (idx >= 0) focusOn(idx); else clearFocus();
+    } else {
+        clickTimer = setTimeout(() => {
+            clickTimer = null;
+            if (idx >= 0) { orbitPoint = idx; updateOrbitTarget(false); }
+            else { orbitPoint = -1; updateOrbitTarget(false); }
+        }, 260);
+    }
 });
 
 // Left/Right arrow keys step the focused token along its sequence (mirrors the bottom-bar
 // arrows). Ignored while typing in a field so the component search box still works.
 window.addEventListener('keydown', (e) => {
-    if (!SEQ || pivotLock < 0) return;
+    if (!SEQ || focusPoint < 0) return;
     const t = document.activeElement;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
     if (e.key === 'ArrowLeft') { stepSequence(-1); e.preventDefault(); }
@@ -2059,6 +2115,11 @@ window.addEventListener('resize', () => {
 function animate() {
     requestAnimationFrame(animate);
     if (tourState === 'playing') tourStep();
+    // Ease the orbit target toward its goal (single/double-click and step nav set the goal;
+    // glideRate maps the camera-glide slider, where 0 snaps and 1 crawls).
+    if (controls.target.distanceToSquared(glideGoal) > 1e-7) {
+        controls.target.lerp(glideGoal, glideRate);
+    }
     controls.update();
     updateHover();
     renderer.render(scene, camera);
