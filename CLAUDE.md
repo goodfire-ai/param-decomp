@@ -55,15 +55,18 @@ Three flat-layout distributions, deliberately split:
   pyyaml, annotated-types — so non-torch consumers (e.g. the JAX repo) can validate the
   same YAML run configs without pulling torch/transformers/wandb. Keep it that way.
 - **`param-decomp`** (`param_decomp/`) — core torch library. Since the torch trainer was
-  retired (see [Training](#training-jax)), what survives here is **bridge substrate**:
-  `ComponentModel`, the CI fns / sigmoids / masks / decomposition targets, the `RunSink`
-  protocol, and the `RunBatch` / `ReconstructionLoss` protocols — the surface the torch
-  consumers (harvest / eval) reach through `component_model_io.py` to load JAX
-  exports. Depends on config. The live torch optimization loop and loss metrics are gone
-  from HEAD (preserved at git tag `torch-oracle`).
+  retired (see [Training](#training-jax)), and torch-run loading was dropped too (the
+  torch `ComponentModel` / CI fns / sigmoids / masks / loss metrics / `RunSink` /
+  `RunBatch` protocols / `component_model_io` are gone from HEAD — preserved at git tag
+  `torch-oracle`; a JAX-native run loader returns as the #10 torch->jax adapter). What
+  survives here is the small torch-free (or torch-but-config-only) substrate the torch
+  **consumers** still need: `param_decomp.log` (logger), `param_decomp.distributed`
+  (the read-only dist state + collectives), and `param_decomp.decomposition_targets`
+  (`resolve_decomposition_targets`, used by `JaxPDAdapter` to derive layer topology).
+  Depends on config.
 - **`param-decomp-lab`** (`param_decomp_lab/`) — team tooling. Experiment scripts, the
-  post-processing pipelines, infra, eval metrics, lab-side helpers. Churns
-  freely; depends on core + config.
+  post-processing pipelines, infra, lab-side helpers. Churns freely; depends on core +
+  config.
 
 `make install-dev` syncs all three editably via the uv workspace in the root
 `pyproject.toml`. The `pd-*` console scripts all live in
@@ -94,36 +97,36 @@ points, read `param_decomp_jax/jax_single_pool/CLAUDE.md` and `SPEC.md`. In one 
   shared-FS workspace, sbatches). `lab → param_decomp_jax` is a fine dependency; only
   `param_decomp_jax → lab` is forbidden.
 
-## Public API (bridge substrate)
+## Public API (consumer substrate)
 
-What remains of the torch core after the trainer's retirement is the surface the torch
-**consumers** (harvest / eval / autointerp / clustering) use to load and read a
-saved JAX decomposition. Import names from where they're defined — no package-level
-re-exports, `__init__.py` files are bare:
+After the trainer's retirement AND the torch-run-loading drop, what `param_decomp/`
+still exposes is a thin substrate the torch **consumers** (harvest / autointerp /
+clustering / intruder) lean on. Import names from where they're defined — no
+package-level re-exports, `__init__.py` files are bare:
 
 ```python
 from param_decomp_config.pd import Cadence, PDConfig, RuntimeConfig
-from param_decomp.run_sink import RunSink
-from param_decomp.metrics.base import Metric
 from param_decomp_config.losses import LossMetricConfig
-from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
+from param_decomp.log import logger
+from param_decomp.distributed import DistributedState, all_reduce, is_main_process
+from param_decomp.decomposition_targets import resolve_decomposition_targets
 ```
 
 - `PDConfig` — algorithm config: seed, CI fn, loss metrics, optimizers, decomposition
   targets, tied weights. The torch-free schema in `param_decomp_config`; the JAX trainer
-  reads it directly.
+  reads it directly. (The eval-metric *config* classes likewise stay in
+  `param_decomp_config`; only their torch `Metric` *impls* were dropped.)
 - `RuntimeConfig` — compute substrate: `autocast_bf16`, `device`, `dp`. Perturbs numerics
   without changing the algorithm.
-- `RunBatch` / `ReconstructionLoss` — protocols in `param_decomp/batch_and_loss_fns.py`,
-  consumed by the torch consumer bridge (`SavedLMRun` reload path).
-- `RunSink` — Protocol with three methods (`log`, `console`, `checkpoint`). Concrete
-  impl in `param_decomp_lab.run_sink.RunSink` (local files + wandb + rank-aware no-op),
-  built via `.local(...)`, `.with_wandb(...)`, or `.silent()`.
-- `Metric` — base class with `__init__(cfg)` + `bind(model, device)`. Each config carries
-  a `type: Literal["<ClassName>"]` discriminator. See `param_decomp/metrics/CLAUDE.md`
-  for the loss-metric wiring (canonical, curated) and
-  `param_decomp_lab/eval_metrics/CLAUDE.md` for the eval-metric wiring
-  (user-extensible).
+- `param_decomp.log` / `param_decomp.distributed` — the logger and the read-only
+  distributed state + collectives every consumer uses.
+- `resolve_decomposition_targets` — maps a target `nn.Module` + decomposition-target
+  config to the concrete decomposition sites; `JaxPDAdapter` uses it to report layer
+  sizes.
+
+The torch run-loading surface (`ComponentModel`, the loss `Metric` impls, `RunSink`,
+`RunBatch` / `ReconstructionLoss`, `component_model_io`, the vendored archs) was dropped
+and returns JAX-native as the #10 torch->jax adapter.
 
 ## Where things live
 
@@ -131,31 +134,29 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
   (`BaseConfig`, `Probability`, `runtime_cast`), `schedule`, `routing`, `ci_fn`,
   `decomposition_target`, `losses`, `pd`, `experiment`, `lm`, `eval_metrics`,
   `autointerp`.
-- `param_decomp/` — core library (see [Public API](#public-api)). Module docstrings
-  describe each file.
-- `param_decomp/metrics/` — loss `Metric` classes and dispatch.
-- `param_decomp_lab/experiments/lm/run.py` — LM consumer bridge: pure builders
-  (`build_target` / loader / `make_run_batch`) + the `SavedLMRun` reload class that loads
-  a saved decomposition off disk. The torch training drivers were retired with the torch
-  trainer; training is `jsp-train` (JAX) launched via `pd-jax-lm`. The torch TMS and
-  ResidualMLP experiment dirs were deleted — those domains now live only as JAX targets
-  (`param_decomp_jax/jax_single_pool/tms.py`, `resid_mlp.py`).
+- `param_decomp/` — consumer substrate only (see [Public API](#public-api)):
+  `log.py`, `distributed.py`, `decomposition_targets.py`. The torch core (component
+  model, CI fns, sigmoids, masks, loss metrics, run-sink, run-batch protocols) was
+  dropped; it lives at git tag `torch-oracle`.
+- `param_decomp_lab/experiments/lm/run.py` — the `build_target` consumer bridge:
+  builds the LM target *architecture* from config (for `JaxPDAdapter` topology). The
+  `SavedLMRun` reload + `build_lm_loader` + `make_run_batch` were dropped with
+  torch-run loading. Training is `jsp-train` (JAX) launched via `pd-jax-lm`. The torch
+  TMS and ResidualMLP experiment dirs were deleted — those domains now live only as JAX
+  targets (`param_decomp_jax/jax_single_pool/tms.py`, `resid_mlp.py`).
 - `param_decomp_lab/{harvest,autointerp,clustering,investigate}/`
   — post-pipeline stages, each with its own CLAUDE.md.
 - `param_decomp_lab/postprocess/` — orchestrates the post-pipeline stages.
-- `param_decomp_lab/eval_metrics/` — batteries-included eval-metric set.
 - `param_decomp_lab/infra/` — settings, paths, slurm, ddp_launch (single-/multi-node
   torchrun wrapper), wandb, sqlite, git, run_files, markdown, pydantic helpers.
-- `param_decomp_lab/{seed.py, distributed.py, batch_and_loss_fns.py, component_model_io.py, run_sink.py}`
-  — lab-side helpers that aren't big enough to warrant their own subdir.
+- `param_decomp_lab/{seed.py, distributed.py}` — lab-side helpers that aren't big
+  enough to warrant their own subdir.
 
 ## Module pointers
 
 | Module | CLAUDE.md | What it covers |
 |---|---|---|
-| `param_decomp/metrics/` | `param_decomp/metrics/CLAUDE.md` | Loss-metric dispatch, config placement rule, sources vs masks, PPGD |
-| `param_decomp_lab/experiments/` | `param_decomp_lab/experiments/CLAUDE.md` | Adding an experiment, YAML schema, LM `target.spec`, `Saved<Name>Run` |
-| `param_decomp_lab/eval_metrics/` | `param_decomp_lab/eval_metrics/CLAUDE.md` | Eval-metric dispatch — user-extensible (vs canonical loss metrics) |
+| `param_decomp_lab/experiments/` | `param_decomp_lab/experiments/CLAUDE.md` | Adding an experiment, YAML schema, LM `target.spec`, `build_target` |
 | `param_decomp_lab/postprocess/` | `param_decomp_lab/postprocess/CLAUDE.md` | Pipeline orchestration: harvest → autointerp / intruder |
 | `param_decomp_lab/harvest/` | `param_decomp_lab/harvest/CLAUDE.md` | Component-statistics collection pipeline |
 | `param_decomp_lab/autointerp/` | `param_decomp_lab/autointerp/CLAUDE.md` | LLM-based component interpretation |

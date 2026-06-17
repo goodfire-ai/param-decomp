@@ -56,7 +56,6 @@ packages = [
     "param_decomp_lab.clustering",
     "param_decomp_lab.clustering.math",
     "param_decomp_lab.clustering.scripts",
-    "param_decomp_lab.eval_metrics",
     "param_decomp_lab.experiments",
     "param_decomp_lab.experiments.lm",
     "param_decomp_lab.experiments.lm.pretrain",

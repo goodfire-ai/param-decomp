@@ -1,8 +1,9 @@
-"""PD run-loading adapters: recover model metadata + a dataloader from a saved run.
+"""PD run-loading adapters: recover model metadata from a saved JAX single-pool run.
 
-A PD adapter knows how to load the target model, report its layer structure and vocab
-size, and build a streaming dataloader. Torch runs route to `PDAdapter`, JAX single-pool
-runs to `JaxPDAdapter`.
+An adapter loads the target model and reports its layer structure and vocab size.
+Training is JAX now, so the only adapter is `JaxPDAdapter`; the torch-run loader was
+dropped with the torch-trainer shed and is slated to return JAX-native (the #10
+torch->jax adapter).
 
 Construct via adapter_from_config(method_config).
 """
@@ -14,12 +15,11 @@ from param_decomp_lab.harvest.config import ParamDecompHarvestConfig
 def adapter_from_config(method_config: ParamDecompHarvestConfig) -> DecompositionAdapter:
     from param_decomp_lab.adapters.jax_pd import JaxPDAdapter, is_jax_run
 
-    if is_jax_run(method_config.wandb_path):
-        return JaxPDAdapter(method_config.wandb_path)
-
-    from param_decomp_lab.adapters.pd import PDAdapter
-
-    return PDAdapter(method_config.wandb_path)
+    assert is_jax_run(method_config.wandb_path), (
+        f"{method_config.wandb_path}: only JAX single-pool runs are loadable; "
+        "torch-run loading was dropped (re-add tracked as the #10 torch->jax adapter)."
+    )
+    return JaxPDAdapter(method_config.wandb_path)
 
 
 def adapter_from_id(decomposition_id: str) -> DecompositionAdapter:
