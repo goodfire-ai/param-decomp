@@ -3,6 +3,8 @@
 
 from jax_single_pool.llama8b import Prefix, Target
 from jax_single_pool.llama_simple_mlp import SimpleMLPPrefix, SimpleMLPTarget
+from jax_single_pool.tms import TMSTarget
 
-AnyFrozenTarget = Target | SimpleMLPTarget
-AnyPrefix = Prefix | SimpleMLPPrefix
+AnyFrozenTarget = Target | SimpleMLPTarget | TMSTarget
+AnyPrefix = Prefix | SimpleMLPPrefix | None
+"""TMS has no prefix (the whole model is decomposed); its `prefix` slot is `None`."""

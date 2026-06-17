@@ -1,0 +1,4 @@
+# TMS 5->5 SMOKE wrapper — jsp-train full-loop validation (pretrain + decompose + ckpt).
+torch_config: torch/tms_5-5_SMOKE.yaml
+run_name: jax-tms-5-5-smoke
+remat_recon_forwards: false

@@ -173,6 +173,7 @@ def main() -> None:
     assert step is not None, f"no checkpoints under {args.run_dir / 'ckpts'}"
     state = restore_step(manager, reference, step)
     assert isinstance(state.components, DecompVU)
+    assert isinstance(state.ci_fn, CIFn), "export is the transformer-CI-fn (LM) path only"
 
     tensors = components_state(state.components, lm.sites)
     tensors |= ci_fn_state(state.ci_fn, lm.sites)

@@ -26,7 +26,6 @@ METRIC_SHORT_NAMES: dict[str, str] = {
     "StochasticReconLoss": "StochRecon",
     "StochasticReconSubsetLoss": "StochReconSub",
     "UnmaskedReconLoss": "UnmaskedRecon",
-    "AutointerpLabels": "Autointerp",
     "CEandKLLosses": "CEandKL",
     "CIHiddenActsReconLoss": "CIHiddenActRecon",
     "CIHistograms": "CIHist",

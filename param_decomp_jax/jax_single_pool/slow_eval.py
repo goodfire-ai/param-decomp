@@ -48,6 +48,7 @@ from matplotlib.figure import Figure
 from jax_single_pool.checkpoint import make_checkpoint_manager, restore_step
 from jax_single_pool.ci_fn import lower_leaky_hard_sigmoid
 from jax_single_pool.config import (
+    DataConfig,
     EvalConfig,
     ExperimentConfig,
     load_run_dir_config,
@@ -318,8 +319,10 @@ def run_offline_slow_eval(run_dir: Path, cfg: ExperimentConfig, step: int) -> Sl
     manager = make_checkpoint_manager(run_dir / "ckpts", cfg.cadence.keep_last)
     state = restore_step(manager, reference, step)
 
-    schedule = BatchSchedule(scan_shards(cfg.data.dir), eval_cfg.batch_size, cfg.seed + 1)
-    server = ShardServer(schedule, cfg.data.seq_len, jax.process_index(), jax.process_count())
+    data_cfg = cfg.data
+    assert isinstance(data_cfg, DataConfig), "slow eval reads the LM parquet data path"
+    schedule = BatchSchedule(scan_shards(data_cfg.dir), eval_cfg.batch_size, cfg.seed + 1)
+    server = ShardServer(schedule, data_cfg.seq_len, jax.process_index(), jax.process_count())
     to_residual = jax.jit(prefix_residual_fn)
     residual_batches = [
         to_residual(prefix, jnp.asarray(server.local_batch(j))) for j in range(eval_cfg.n_steps)

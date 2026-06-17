@@ -18,10 +18,14 @@ from jax.typing import ArrayLike
 from jaxtyping import Array, PRNGKeyArray
 
 from jax_single_pool.adversary import init_sources_adam_state
-from jax_single_pool.config import ExperimentConfig
+from jax_single_pool.ci_fn import CIArch
+from jax_single_pool.ci_fn_mlp import MLPCIArch
+from jax_single_pool.config import DataConfig, ExperimentConfig
 from jax_single_pool.llama8b_sharding import (
     init_ci_fn_sharded,
+    init_decomp_vu_replicated,
     init_decomp_vu_sharded,
+    init_layerwise_mlp_ci_fn_replicated,
     init_sources_sharded,
 )
 from jax_single_pool.lm import DecomposedModel
@@ -89,24 +93,37 @@ def init_train_state(
     src_key: PRNGKeyArray,
     mesh: Mesh,
 ) -> TrainState:
-    components = init_decomp_vu_sharded(lm.sites, init_key, mesh)
-    ci_fn = init_ci_fn_sharded(cfg.ci_fn, lm.sites, random.fold_in(init_key, 1), mesh)
+    ci_key = random.fold_in(init_key, 1)
+    match cfg.ci_fn:
+        case MLPCIArch():
+            components = init_decomp_vu_replicated(lm.sites, init_key, mesh)
+            ci_fn = init_layerwise_mlp_ci_fn_replicated(cfg.ci_fn, lm.sites, ci_key, mesh)
+        case CIArch():
+            components = init_decomp_vu_sharded(lm.sites, init_key, mesh)
+            ci_fn = init_ci_fn_sharded(cfg.ci_fn, lm.sites, ci_key, mesh)
     assert ci_fn.expects_axes == lm.leading_axes, (
         f"CI fn expects leading axes {ci_fn.expects_axes} but model has {lm.leading_axes}"
     )
     loss_spec = build_recon_terms(cfg.loss_metrics, lm.site_names, cfg.n_mask_samples, cfg.sampling)
-    sources = {
-        state_key: init_sources_sharded(
-            lm.site_names,
-            tuple(s.C for s in lm.sites),
-            cfg.data.seq_len,
-            loss_spec.persistent[state_key].scope,
-            cfg.data.global_batch,
-            random.fold_in(src_key, term_idx),
-            mesh,
+    sources: dict[str, dict[str, Array]] = {}
+    if loss_spec.persistent:
+        # Persistent sources live on a position axis; TMS (no position axis) carries none.
+        data = cfg.data
+        assert isinstance(data, DataConfig), (
+            "persistent PGD sources need a sequence axis; TMS (leading_axes=()) has none"
         )
-        for term_idx, state_key in enumerate(loss_spec.persistent)
-    }
+        sources = {
+            state_key: init_sources_sharded(
+                lm.site_names,
+                tuple(s.C for s in lm.sites),
+                data.seq_len,
+                loss_spec.persistent[state_key].scope,
+                data.global_batch,
+                random.fold_in(src_key, term_idx),
+                mesh,
+            )
+            for term_idx, state_key in enumerate(loss_spec.persistent)
+        }
     return TrainState(
         components=components,
         ci_fn=ci_fn,

@@ -35,7 +35,7 @@ from param_decomp_lab.experiments.lm.vendored.component_model import LMComponent
 
 @runtime_checkable
 class HarvestableComponentModel(Protocol):
-    """The surface the harvest path (`harvest_fn/param_decomp.py` + `PDAdapter`) needs.
+    """The surface the torch adapter path (`PDAdapter`) needs.
 
     Satisfied by both the core `ComponentModel` and `VendoredHarvestModel`. `target_model`
     is the bare transformer (for `TransformerTopology`); `components`/`module_to_c`/

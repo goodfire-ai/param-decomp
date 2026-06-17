@@ -20,7 +20,7 @@ Keys go under `slow_eval/<log_namespace>/<key>`, matching the in-train torch key
 byte-for-byte, logged retroactively onto the dedicated `slow_eval/step` axis (via
 `wandb.define_metric`): the JAX run is live and its default `_step` axis has advanced
 past the export step, so an explicit `wandb.log(step=<export step>)` would be
-silently dropped (same reasoning as `experiments.lm.async_eval`).
+silently dropped.
 
 Usage:
     pd-offline-eval <run>/export/model_<step>.safetensors path/to/reference.yaml \\
