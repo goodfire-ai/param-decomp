@@ -182,3 +182,20 @@ def test_simple_mlp_step_runs_end_to_end():
     assert set(sum_kl) == {"h.0.attn.q_proj"}
     assert int(n_dist["h.0.attn.q_proj"]) == b * cfg.n_head * t
     assert np.isfinite(float(sum_kl["h.0.attn.q_proj"]))
+
+
+def test_attn_patterns_steps_reject_positionless_target():
+    """Attention patterns are causal maps over a sequence axis; both step constructors
+    must fail loud against a positionless (`leading_axes=()`) target. The leading-axes
+    guard fires before site/pattern inspection, so a dummy pattern fn is fine."""
+    from jax_single_pool.tms import TMSConfig, site_specs, tms_decomposed_model
+
+    cfg = TMSConfig(n_features=5, n_hidden=2)
+    sites = site_specs(cfg, (SiteC("linear1", 8), SiteC("linear2", 6)))
+    lm = tms_decomposed_model(cfg, sites)
+    assert lm.leading_axes == ()
+    dummy_pattern_fn = lambda q, k: q  # noqa: E731 — never reached; assert fires first
+    with pytest.raises(AssertionError, match="LM-only"):
+        make_ci_attn_patterns_step(lm, dummy_pattern_fn)
+    with pytest.raises(AssertionError, match="LM-only"):
+        make_stochastic_attn_patterns_step(lm, dummy_pattern_fn, 1, "continuous")

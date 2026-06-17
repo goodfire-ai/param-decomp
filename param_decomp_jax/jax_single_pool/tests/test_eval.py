@@ -236,3 +236,20 @@ def test_eval_step_l0_groups_sum_member_sites():
             lm, rounding_threshold=0.0, ci_alive_threshold=0.0,
             l0_group_patterns={"ghost": ("layers.99.*",)}, pgd=None, mesh=None,
         )  # fmt: skip
+
+
+def test_make_eval_step_rejects_positionless_target():
+    """CEandKLLosses/CI_L0 is LM-only (tokens + vocab logits over a sequence axis);
+    constructing it against a positionless (`leading_axes=()`) target must fail loud."""
+    from jax_single_pool.lm import SiteC
+    from jax_single_pool.tms import TMSConfig, site_specs, tms_decomposed_model
+
+    cfg = TMSConfig(n_features=5, n_hidden=2)
+    sites = site_specs(cfg, (SiteC("linear1", 8), SiteC("linear2", 6)))
+    lm = tms_decomposed_model(cfg, sites)
+    assert lm.leading_axes == ()
+    with pytest.raises(AssertionError, match="LM-only"):
+        make_eval_step(
+            lm, rounding_threshold=0.0, ci_alive_threshold=0.0,
+            l0_group_patterns=None, pgd=None, mesh=None,
+        )  # fmt: skip

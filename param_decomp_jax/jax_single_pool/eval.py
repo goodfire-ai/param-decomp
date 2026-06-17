@@ -86,7 +86,16 @@ def make_eval_step(
     `(1, 1, C+1)` source shared across batch AND positions, `n_steps` ascents of
     `source += step_size * sign(∂KL/∂source)` clamped to `[0, 1]`, KL evaluated at the
     final source. The global-mean KL makes the source gradient the global-batch
-    gradient under GSPMD (torch all-reduce-AVG parity)."""
+    gradient under GSPMD (torch all-reduce-AVG parity).
+
+    CEandKLLosses / CI_L0 read tokens + vocab logits (next-token CE, KL over the vocab
+    axis) and the fresh-PGD source is `(1, 1, C+1)` over a `(batch, sequence)` waist, so
+    this metric is LM-only — asserted on `leading_axes` at construction (localize-and-
+    assert: fail loudly, never silently mis-shape a positionless target)."""
+    assert lm.leading_axes == ("sequence",), (
+        f"CEandKLLosses/CI_L0 eval is LM-only (tokens + vocab logits over a sequence "
+        f"axis); model has leading_axes={lm.leading_axes}"
+    )
     site_names = lm.site_names
     site_component_counts = {s.name: s.C for s in lm.sites}
     l0_groups: dict[str, tuple[str, ...]] = {}

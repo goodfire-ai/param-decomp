@@ -181,9 +181,20 @@ def _masked_patterns_kl(
     }
 
 
+def _assert_attention_sequence_axes(lm: DecomposedModel) -> None:
+    """Attention patterns are `(B, H, T_query, T_key)` causal maps over a sequence axis;
+    the metric only applies to a sequence-axis LM target (complements the per-target
+    `attn_pattern_for` dispatch, which rejects non-attention targets)."""
+    assert lm.leading_axes == ("sequence",), (
+        f"attn-patterns eval is LM-only (causal attention over a sequence axis); model "
+        f"has leading_axes={lm.leading_axes}"
+    )
+
+
 def make_ci_attn_patterns_step(lm: DecomposedModel, pattern_fn: AttnPatternFn) -> AttnPatternsStep:
     """Deterministic CI-mask attn-patterns step: `lower_leaky` CI, no delta, one masked
     forward + one clean (all-false) forward."""
+    _assert_attention_sequence_axes(lm)
     site_names = lm.site_names
     layer_pairs = _attn_layer_sites(site_names)
 
@@ -221,6 +232,7 @@ def make_stochastic_attn_patterns_step(
     """Stochastic-mask attn-patterns step: `n_mask_samples` draws of `mask = ci + (1−ci)·s`
     (with weight deltas), per-draw per-layer pattern KL summed. RNG via per-draw / per-site
     `fold_in` (the eval-step discipline, mirrors `hidden_acts_eval`)."""
+    _assert_attention_sequence_axes(lm)
     assert n_mask_samples >= 1, n_mask_samples
     site_names = lm.site_names
     layer_pairs = _attn_layer_sites(site_names)
