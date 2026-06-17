@@ -1,0 +1,6 @@
+# Hacky Llama-8B L18 smoke wrapper — produces a loadable checkpoint for the
+# JAX-vs-torch slow-eval parity check. Points at the shrunk torch config.
+torch_config: torch/llama8b_l18_SMOKE_slow_eval_parity.yaml
+run_name: jax-l18-smoke-slow-eval-parity
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/jax_runs
+remat_recon_forwards: true
