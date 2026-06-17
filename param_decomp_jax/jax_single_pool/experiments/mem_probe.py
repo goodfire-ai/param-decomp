@@ -132,6 +132,7 @@ def main() -> None:
     ap.add_argument("--C", type=int, default=24576)
     ap.add_argument("--sites_per_chunk", type=int, default=3)
     ap.add_argument("--recon_coeff", type=float, default=0.5)
+    ap.add_argument("--seq", type=int, default=2048)
     args = ap.parse_args()
     init_distributed()
     mesh = dp_mesh()
@@ -140,7 +141,7 @@ def main() -> None:
 
     cfg = llama31_8b_config()
     sites = llama_site_specs(cfg, mlp_family_site_cs(args.first_layer, args.last_layer, args.C))
-    seq = 2048
+    seq = args.seq
     gbatch = args.per_gpu_batch * ndev
     lm = llama_decomposed_lm(cfg, sites)
 
