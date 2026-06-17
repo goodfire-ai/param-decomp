@@ -16,10 +16,23 @@ import time
 from typing import override
 
 import httpx
-from huggingface_hub.utils import set_client_factory
-from huggingface_hub.utils._http import hf_request_event_hook
 
 from param_decomp.log import logger
+
+# Try to import the new huggingface_hub v1+ API
+try:
+    from huggingface_hub.utils import set_client_factory
+    from huggingface_hub.utils._http import hf_request_event_hook
+    _HAS_NEW_API = True
+except ImportError:
+    # Fallback for older huggingface_hub versions
+    logger.warning(
+        "huggingface_hub retry setup failed - missing v1+ API. "
+        "Using default client (no retry enhancement)"
+    )
+    _HAS_NEW_API = False
+    set_client_factory = None
+    hf_request_event_hook = None
 
 _configured = False
 
@@ -59,7 +72,8 @@ class _RetryTransport(httpx.HTTPTransport):
     def _sleep(self, attempt: int, *, reason: str) -> None:
         # Full-jitter exponential backoff (~0, 1.5, 3, 6, 12s at backoff_factor=1.5); the
         # jitter de-synchronizes the simultaneous retries of many DDP ranks.
-        delay = self._backoff_factor * (2**attempt) * random.random()
+        delay = self._backoff_factor * (2**attempt)
+        delay = random.uniform(0, delay)
         logger.warning("HF Hub request failed (%s); retrying in %.1fs", reason, delay)
         time.sleep(delay)
 
@@ -70,8 +84,16 @@ def configure_hf_http_retries(*, total_retries: int = 5, backoff_factor: float =
     if _configured:
         return
 
+    if not _HAS_NEW_API:
+        # Skip configuration if the new API isn't available
+        _configured = True
+        return
+
     def client_factory() -> httpx.Client:
-        # Match huggingface_hub's `default_client_factory` apart from the retrying transport.
+        """Create an httpx client with retry transport.
+        
+        Mirrors huggingface_hub's default_client_factory apart from the retrying transport.
+        """
         return httpx.Client(
             transport=_RetryTransport(total_retries=total_retries, backoff_factor=backoff_factor),
             event_hooks={"request": [hf_request_event_hook]},

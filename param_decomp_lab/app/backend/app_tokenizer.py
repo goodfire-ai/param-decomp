@@ -66,7 +66,17 @@ class AppTokenizer:
         # transformers>=5 types decode as `str | list[str]`; a flat list of ids always
         # decodes to a single str.
         text = self._tok.decode(token_ids, skip_special_tokens=False)
-        assert isinstance(text, str)
+        if not isinstance(text, str):
+            # Log actual type for debugging if assertion fails
+            from param_decomp.log import logger
+            logger.error(
+                "Unexpected decode return type: %s (expected str). "
+                "Input: %s tokens starting with %s", 
+                type(text).__name__, 
+                len(token_ids), 
+                token_ids[:5] if token_ids else "[]"
+            )
+        assert isinstance(text, str), f"Expected str, got {type(text).__name__}"
         return text
 
     def decode(self, token_ids: list[int]) -> str:
