@@ -349,13 +349,22 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
   html, body { margin: 0; height: 100%; background: #0a0a0a; color: #e4e4e7;
                font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
   #scene { position: fixed; inset: 0; }
-  #sidebar { position: fixed; top: 0; right: 0; height: 100%; width: 580px;
-             background: rgba(15, 15, 20, 0.92); border-left: 1px solid #27272a;
+  #sidebar { position: fixed; top: 0; left: 0; height: 100%; width: 580px;
+             background: rgba(15, 15, 20, 0.92); border-right: 1px solid #27272a;
              overflow-y: auto; padding: 18px 16px; box-sizing: border-box;
              font-size: 13px; line-height: 1.45; }
   #sidebar h1 { font-size: 14px; margin: 0 0 4px 0; }
   #sidebar h2 { font-size: 12px; margin: 16px 0 6px; text-transform: uppercase;
                 letter-spacing: 0.05em; color: #a1a1aa; }
+  /* Collapsible panels: a clickable header with a disclosure arrow toggles its body. */
+  .panel { border-top: 1px solid #1f1f23; }
+  .panel > .ph { cursor: pointer; user-select: none; display: flex; align-items: center;
+                 gap: 6px; margin: 0; padding: 12px 0 8px; }
+  .panel > .ph::before { content: '\\25be'; font-size: 10px; color: #71717a;
+                         transition: transform 0.12s; flex: 0 0 auto; }
+  .panel.collapsed > .ph::before { transform: rotate(-90deg); }
+  .panel.collapsed > .pb { display: none; }
+  .pb { padding-bottom: 6px; }
   #sidebar label { display: block; margin: 4px 0; }
   #sidebar select, #sidebar input[type="text"] { width: 100%; padding: 4px 6px;
        background: #18181b; color: #e4e4e7; border: 1px solid #3f3f46;
@@ -374,13 +383,13 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
             border: 1px solid #3f3f46; }
   .muted { color: #71717a; font-size: 11px; }
   .comp-id { color: #71717a; font-size: 10px; margin-left: 4px; }
-  #hover { position: fixed; left: 12px; bottom: 12px; padding: 8px 10px;
+  #hover { position: fixed; left: 596px; top: 12px; padding: 8px 10px;
            background: rgba(15,15,20,0.92); border: 1px solid #27272a;
            border-radius: 4px; font-size: 12px; pointer-events: none;
            display: none; }
   /* Bottom bar: the focused token's sequence on one line, centred on that token,
      flanked by the step arrows; a back button restores the previous focus. */
-  #seqBar { position: fixed; left: 12px; right: 600px; bottom: 12px; display: none;
+  #seqBar { position: fixed; left: 600px; right: 12px; bottom: 12px; display: none;
             align-items: center; gap: 6px; padding: 6px 8px;
             background: rgba(15,15,20,0.94); border: 1px solid #27272a;
             border-radius: 6px; }
@@ -406,109 +415,147 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
 <body>
 <div id="scene"></div>
 <div id="sidebar">
-  <h1>3D PCA viewer</h1>
+  <h1>3D viewer</h1>
   <div class="muted">__SUBTITLE__</div>
   <div class="muted" id="visibleCount" style="margin-top:6px;"></div>
 
-  <section id="seqSection" style="display:none;">
-    <h2>Sequence</h2>
-    <div class="muted" id="seqHint">click a point — its sequence shows along the bottom</div>
-    <label><input type="checkbox" id="flowLines"> flow line for this sequence (rainbow by position)</label>
-  </section>
-
-  <section id="atlasSection">
-    <h2>Thumbnail type</h2>
-    <select id="atlasSelect"></select>
-  </section>
-
-  <h2>Thumbnail size</h2>
-  <input type="range" id="thumbSize" min="0.2" max="50" value="14" step="0.2" style="width:100%">
-
-  <section id="synthSection">
-    <h2>Synthetic atoms</h2>
-    <label><input type="checkbox" id="showSynth"> Show interpolated atoms</label>
-    <div class="muted" id="synthHint"></div>
-  </section>
-
-  <section id="knnSection">
-    <h2>Neighbour graph</h2>
-    <label><input type="checkbox" id="showLines"> Show k-NN edges</label>
-    <div style="margin-top:8px">
-      <input type="range" id="edgeK" min="1" max="20" value="5" step="1" style="width:100%">
-      <div class="muted" id="edgeKLabel">k = 5 neighbours per atom</div>
+  <section class="panel" id="seqSection" style="display:none;">
+    <h2 class="ph">Sequence</h2>
+    <div class="pb">
+      <div class="muted" id="seqHint">click a point — its sequence shows along the bottom</div>
+      <label><input type="checkbox" id="flowLines"> flow line for this sequence (rainbow by position)</label>
+      <label><input type="checkbox" id="showPivot"> marker sphere on selected point</label>
+      <div style="margin-top:8px">
+        <input type="range" id="flowOpacity" min="0.05" max="1" value="0.95" step="0.05" style="width:100%">
+        <div class="muted" id="flowOpacityLabel">flow line opacity 0.95</div>
+      </div>
+      <div style="margin-top:8px">
+        <input type="range" id="flowLocality" min="2" max="512" value="512" step="2" style="width:100%">
+        <div class="muted" id="flowLocalityLabel">locality focus: off (whole sequence)</div>
+      </div>
     </div>
-    <div style="margin-top:8px">
-      <input type="range" id="edgeWidth" min="0.5" max="6" value="2" step="0.1" style="width:100%">
-      <div class="muted" id="edgeWidthLabel">line thickness 2.0 px</div>
+  </section>
+
+  <section class="panel" id="atlasSection">
+    <h2 class="ph">Thumbnail type</h2>
+    <div class="pb"><select id="atlasSelect"></select></div>
+  </section>
+
+  <section class="panel">
+    <h2 class="ph">Thumbnail size</h2>
+    <div class="pb">
+      <input type="range" id="thumbSize" min="0.2" max="50" value="14" step="0.2" style="width:100%">
     </div>
-    <div class="muted" id="linesHint"></div>
   </section>
 
-  <section id="basisSection">
-    <h2>PCA basis</h2>
-    <div id="basisRadios"></div>
-  </section>
-
-  <h2>Axes</h2>
-  <div class="axis-row" data-axis="0">
-    <span class="axis-name">X</span>
-    <input type="range" class="axis-slider" min="1" step="any" data-wheel-step="1">
-    <span class="axis-label muted"></span>
-  </div>
-  <div class="axis-row" data-axis="1">
-    <span class="axis-name">Y</span>
-    <input type="range" class="axis-slider" min="1" step="any" data-wheel-step="1">
-    <span class="axis-label muted"></span>
-  </div>
-  <div class="axis-row" data-axis="2">
-    <span class="axis-name">Z</span>
-    <input type="range" class="axis-slider" min="1" step="any" data-wheel-step="1">
-    <span class="axis-label muted"></span>
-  </div>
-  <div class="muted" id="varex"></div>
-
-  <h2>Grand tour</h2>
-  <button id="tourBtn">Start grand tour</button>
-  <button id="resetBtn" disabled>Reset</button>
-  <div style="margin-top:8px">
-    <input type="range" id="tourLegSec" min="1" max="400" value="120" step="1" style="width:100%">
-    <div class="muted" id="tourLegLabel">120 sec per leg</div>
-  </div>
-  <div style="margin-top:8px">
-    <input type="range" id="tourRotSpeed" min="0" max="10" value="0" step="0.1" style="width:100%">
-    <div class="muted" id="tourRotSpeedLabel">camera rotation off (drag up to spin)</div>
-  </div>
-  <div style="margin-top:8px">
-    <input type="range" id="tourProgress" min="0" max="1" value="0" step="any" data-wheel-step="0.01" style="width:100%">
-    <div class="muted" id="tourProgressLabel">Tour position — start to drag</div>
-  </div>
-  <div class="muted" id="tourHint">Deterministic rolling-window walk through PCs in variance-descending order. K_tour is the smallest top-K whose cumulative variance explained ≥ 95% of the current basis. Scrub the progress slider to seek anywhere without changing play/pause state. Reset returns to the start and pauses.</div>
-
-  <h2 id="clusterHeader">Clusters <button id="allOn">all</button> <button id="allOff">none</button></h2>
-  <div id="clusterList"></div>
-
-  <section id="manifoldFilterSection">
-    <h2>Manifold filter
-      <button id="mfAll">all</button>
-      <button id="mfNone">none</button>
-    </h2>
-    <div class="muted" id="mfMode" style="margin-bottom:6px">
-      <label><input type="radio" name="mfmode" value="any" checked> any active</label>
-      <label><input type="radio" name="mfmode" value="all"> all active</label>
+  <section class="panel" id="synthSection">
+    <h2 class="ph">Synthetic atoms</h2>
+    <div class="pb">
+      <label><input type="checkbox" id="showSynth"> Show interpolated atoms</label>
+      <div class="muted" id="synthHint"></div>
     </div>
-    <div id="manifoldGrid"></div>
-    <div class="muted" id="mfHint" style="margin-top:6px"></div>
   </section>
 
-  <section id="rimSection" style="display:none;">
-    <h2>Rim source</h2>
-    <select id="rimSource"></select>
-    <div id="overlayItems" style="margin-top:6px; max-height:320px; overflow:auto;"></div>
+  <section class="panel" id="knnSection">
+    <h2 class="ph">Neighbour graph</h2>
+    <div class="pb">
+      <label><input type="checkbox" id="showLines"> Show k-NN edges</label>
+      <div style="margin-top:8px">
+        <input type="range" id="edgeK" min="1" max="20" value="5" step="1" style="width:100%">
+        <div class="muted" id="edgeKLabel">k = 5 neighbours per atom</div>
+      </div>
+      <div style="margin-top:8px">
+        <input type="range" id="edgeWidth" min="0.5" max="6" value="2" step="0.1" style="width:100%">
+        <div class="muted" id="edgeWidthLabel">line thickness 2.0 px</div>
+      </div>
+      <div class="muted" id="linesHint"></div>
+    </div>
   </section>
 
-  <h2>Border thickness</h2>
-  <input type="range" id="borderSize" min="0" max="10" value="0" step="1" style="width:100%">
-  <div class="muted" id="borderLabel">no border</div>
+  <section class="panel" id="basisSection">
+    <h2 class="ph">Projection basis</h2>
+    <div class="pb"><div id="basisRadios"></div></div>
+  </section>
+
+  <section class="panel">
+    <h2 class="ph">Axes</h2>
+    <div class="pb">
+      <div class="axis-row" data-axis="0">
+        <span class="axis-name">X</span>
+        <input type="range" class="axis-slider" min="1" step="any" data-wheel-step="1">
+        <span class="axis-label muted"></span>
+      </div>
+      <div class="axis-row" data-axis="1">
+        <span class="axis-name">Y</span>
+        <input type="range" class="axis-slider" min="1" step="any" data-wheel-step="1">
+        <span class="axis-label muted"></span>
+      </div>
+      <div class="axis-row" data-axis="2">
+        <span class="axis-name">Z</span>
+        <input type="range" class="axis-slider" min="1" step="any" data-wheel-step="1">
+        <span class="axis-label muted"></span>
+      </div>
+      <div class="muted" id="varex"></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2 class="ph">Clusters</h2>
+    <div class="pb">
+      <div class="row"><button id="allOn">all</button><button id="allOff">none</button></div>
+      <div id="clusterList"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="manifoldFilterSection">
+    <h2 class="ph">Manifold filter</h2>
+    <div class="pb">
+      <div class="row"><button id="mfAll">all</button><button id="mfNone">none</button></div>
+      <div class="muted" id="mfMode" style="margin-bottom:6px">
+        <label><input type="radio" name="mfmode" value="any" checked> any active</label>
+        <label><input type="radio" name="mfmode" value="all"> all active</label>
+      </div>
+      <div id="manifoldGrid"></div>
+      <div class="muted" id="mfHint" style="margin-top:6px"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="rimSection" style="display:none;">
+    <h2 class="ph">Rim source</h2>
+    <div class="pb">
+      <select id="rimSource"></select>
+      <div id="overlayItems" style="margin-top:6px; max-height:320px; overflow:auto;"></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2 class="ph">Border thickness</h2>
+    <div class="pb">
+      <input type="range" id="borderSize" min="0" max="10" value="0" step="1" style="width:100%">
+      <div class="muted" id="borderLabel">no border</div>
+    </div>
+  </section>
+
+  <section class="panel collapsed">
+    <h2 class="ph">Grand tour</h2>
+    <div class="pb">
+      <button id="tourBtn">Start grand tour</button>
+      <button id="resetBtn" disabled>Reset</button>
+      <div style="margin-top:8px">
+        <input type="range" id="tourLegSec" min="1" max="400" value="120" step="1" style="width:100%">
+        <div class="muted" id="tourLegLabel">120 sec per leg</div>
+      </div>
+      <div style="margin-top:8px">
+        <input type="range" id="tourRotSpeed" min="0" max="10" value="0" step="0.1" style="width:100%">
+        <div class="muted" id="tourRotSpeedLabel">camera rotation off (drag up to spin)</div>
+      </div>
+      <div style="margin-top:8px">
+        <input type="range" id="tourProgress" min="0" max="1" value="0" step="any" data-wheel-step="0.01" style="width:100%">
+        <div class="muted" id="tourProgressLabel">Tour position — start to drag</div>
+      </div>
+      <div class="muted" id="tourHint">Deterministic rolling-window walk through projection axes in variance-descending order. K_tour is the smallest top-K whose cumulative variance explained ≥ 95% of the current basis. Scrub the progress slider to seek anywhere without changing play/pause state. Reset returns to the start and pauses.</div>
+    </div>
+  </section>
 </div>
 <div id="hover"></div>
 <div id="seqBar">
@@ -886,30 +933,69 @@ function renderOverlayItems() {
         return;
     }
 
+    // 'scored' overlays (module): a single module is rimmed at a time. A scrubber (◀/▶ +
+    // slider) selects which one; the engagement-floor slider sets how strongly it must be
+    // engaged (× its own mean) for a point to be coloured. One-at-a-time reads far better
+    // than the old multi-checkbox list.
     const sel = overlaySelected[rimMode];
-    // 'scored' overlays (module): each point is rimmed by its dominant selected module; the
-    // slider is a floor on relative engagement (× the module's own mean) below which a point
-    // is left grey.
     if (ov.point_scores) {
-        const lab = document.createElement('div');
-        lab.className = 'muted';
-        const slider = document.createElement('input');
-        slider.type = 'range'; slider.min = '0'; slider.max = String(ov.score_max);
-        slider.step = String(ov.score_max / 100);
-        slider.value = String(overlayThreshold[rimMode]);
-        slider.style.width = '100%';
-        const setLab = () => {
-            lab.textContent = `dominant module; min engagement ${(+slider.value).toFixed(2)}× its mean`;
+        // The selection is exactly one module; derive the scrub index from it.
+        if (sel.size !== 1) { sel.clear(); sel.add(ov.items[0].id); }
+        let idx = ov.items.findIndex(it => sel.has(it.id));
+        if (idx < 0) idx = 0;
+
+        const floorLab = document.createElement('div');
+        floorLab.className = 'muted';
+        const floor = document.createElement('input');
+        floor.type = 'range'; floor.min = '0'; floor.max = String(ov.score_max);
+        floor.step = String(ov.score_max / 100);
+        floor.value = String(overlayThreshold[rimMode]);
+        floor.style.width = '100%';
+        const setFloorLab = () => {
+            floorLab.textContent = `min engagement ${(+floor.value).toFixed(2)}× its mean`;
         };
-        setLab();
-        slider.addEventListener('input', () => {
-            overlayThreshold[rimMode] = parseFloat(slider.value);
-            setLab(); applyTint();
+        setFloorLab();
+        floor.addEventListener('input', () => {
+            overlayThreshold[rimMode] = parseFloat(floor.value);
+            setFloorLab(); applyTint();
         });
-        box.append(slider, lab);
+
+        const pickRow = document.createElement('div');
+        pickRow.className = 'row';
+        pickRow.style.alignItems = 'center';
+        const prev = document.createElement('button'); prev.textContent = '\\u25c0'; prev.style.flex = '0 0 auto';
+        const next = document.createElement('button'); next.textContent = '\\u25b6'; next.style.flex = '0 0 auto';
+        const scrub = document.createElement('input');
+        scrub.type = 'range'; scrub.min = '0'; scrub.max = String(ov.items.length - 1);
+        scrub.step = '1'; scrub.value = String(idx); scrub.style.flex = '1';
+        const nameRow = document.createElement('div');
+        nameRow.className = 'cluster-row';
+        const setItem = (i) => {
+            idx = Math.max(0, Math.min(ov.items.length - 1, i));
+            const it = ov.items[idx];
+            sel.clear(); sel.add(it.id);
+            scrub.value = String(idx);
+            nameRow.innerHTML = '';
+            const sw = document.createElement('span');
+            sw.className = 'swatch';
+            sw.style.background = `rgb(${Math.round(255*it.colour[0])},${Math.round(255*it.colour[1])},${Math.round(255*it.colour[2])})`;
+            const txt = document.createElement('span');
+            txt.textContent = `${it.name}  (${idx + 1}/${ov.items.length})`;
+            nameRow.append(sw, txt);
+            applyTint();
+        };
+        prev.addEventListener('click', () => setItem(idx - 1));
+        next.addEventListener('click', () => setItem(idx + 1));
+        scrub.addEventListener('input', () => setItem(parseInt(scrub.value, 10)));
+        pickRow.append(prev, scrub, next);
+        box.append(floor, floorLab, pickRow, nameRow);
+        setItem(idx);
+        return;
     }
 
+    // 'set' overlays (membership): the multi-checkbox list with all/none.
     const controls = document.createElement('div');
+    controls.className = 'row';
     const allBtn = document.createElement('button');
     allBtn.textContent = 'all';
     const noneBtn = document.createElement('button');
@@ -941,6 +1027,11 @@ if (Object.keys(OVERLAYS).length > 0) {
         renderOverlayItems();
         applyTint();
     });
+}
+
+// Collapsible sidebar panels: clicking a panel header toggles its body.
+for (const head of document.querySelectorAll('.panel > .ph')) {
+    head.addEventListener('click', () => head.parentElement.classList.toggle('collapsed'));
 }
 
 // --- k-NN edge mesh (only meaningful when DATA.knn.k > 0) ---
@@ -989,27 +1080,37 @@ flowMesh.frustumCulled = false;
 flowMesh.visible = false;
 scene.add(flowMesh);
 let flowEnabled = false;
+let flowOpacity = 0.95;       // overall flow-line transparency (material opacity)
+let flowLocalitySigma = Infinity;  // gaussian width (in tokens) around the focused position;
+                                   // Infinity = no locality fade (whole sequence equally lit)
 
 function updateFlowLines() {
     if (!SEQ || !flowEnabled || pivotLock < 0) { flowMesh.visible = false; return; }
     const targetSeq = SEQ.point_seq[pivotLock];
+    const focusPos = SEQ.point_pos[pivotLock];
     const seqLen = SEQ.seq_len;
+    const twoSigSq = 2 * flowLocalitySigma * flowLocalitySigma;
+    // Locality fade: scale each endpoint's colour toward black (the dark background) by a
+    // gaussian in distance-from-focus, so far-away parts of the sequence soft-hide.
+    const wt = (pos) => (twoSigSq === Infinity ? 1 : Math.exp(-((pos - focusPos) ** 2) / twoSigSq));
     let outIdx = 0, colIdx = 0, edgeCount = 0;
     for (let i = 0; i + 1 < N; i++) {
         if (SEQ.point_seq[i] !== targetSeq || SEQ.point_seq[i + 1] !== targetSeq) continue;
         flowFlat[outIdx++] = positions[i * 3]; flowFlat[outIdx++] = positions[i * 3 + 1]; flowFlat[outIdx++] = positions[i * 3 + 2];
         flowFlat[outIdx++] = positions[(i + 1) * 3]; flowFlat[outIdx++] = positions[(i + 1) * 3 + 1]; flowFlat[outIdx++] = positions[(i + 1) * 3 + 2];
-        // Each endpoint takes the hue of its own token position; vertex-colour interpolation
-        // then sweeps the rainbow smoothly along the line as the sequence index advances.
+        // Each endpoint takes the hue of its own token position (vertex-colour interpolation
+        // sweeps the rainbow along the line), dimmed by the locality gaussian.
+        const wa = wt(SEQ.point_pos[i]), wb = wt(SEQ.point_pos[i + 1]);
         const ca = hueToRgb(SEQ.point_pos[i] / Math.max(1, seqLen - 1));
         const cb = hueToRgb(SEQ.point_pos[i + 1] / Math.max(1, seqLen - 1));
-        flowColFlat[colIdx++] = ca[0]; flowColFlat[colIdx++] = ca[1]; flowColFlat[colIdx++] = ca[2];
-        flowColFlat[colIdx++] = cb[0]; flowColFlat[colIdx++] = cb[1]; flowColFlat[colIdx++] = cb[2];
+        flowColFlat[colIdx++] = ca[0]*wa; flowColFlat[colIdx++] = ca[1]*wa; flowColFlat[colIdx++] = ca[2]*wa;
+        flowColFlat[colIdx++] = cb[0]*wb; flowColFlat[colIdx++] = cb[1]*wb; flowColFlat[colIdx++] = cb[2]*wb;
         edgeCount++;
     }
     flowGeom.setPositions(flowFlat.subarray(0, edgeCount * 6));
     flowGeom.setColors(flowColFlat.subarray(0, edgeCount * 6));
     flowGeom.instanceCount = edgeCount;
+    flowMat.opacity = flowOpacity;
     flowMesh.visible = edgeCount > 0;
 }
 
@@ -1120,7 +1221,7 @@ function updateOrbitTarget() {
             positions[pivotLock * 3], positions[pivotLock * 3 + 1], positions[pivotLock * 3 + 2]
         );
         pivotMarker.position.copy(controls.target);
-        pivotMarker.visible = true;
+        pivotMarker.visible = showPivotMarker;
         controls.update();
         return;
     }
@@ -1770,6 +1871,7 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
 
 // --- Click-to-pivot: orbit around a clicked point (click empty space to clear) ---
 let pivotLock = -1;
+let showPivotMarker = false;  // marker sphere off by default (toggled in the Sequence panel)
 const pivotMarker = new THREE.Mesh(
     new THREE.SphereGeometry(0.15, 16, 12),
     new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.2 })
@@ -1798,6 +1900,27 @@ if (SEQ) {
     document.getElementById('flowLines').addEventListener('change', (e) => {
         flowEnabled = e.target.checked;
         updateFlowLines();
+    });
+    document.getElementById('flowOpacity').addEventListener('input', (e) => {
+        flowOpacity = parseFloat(e.target.value);
+        document.getElementById('flowOpacityLabel').textContent = `flow line opacity ${flowOpacity.toFixed(2)}`;
+        updateFlowLines();
+    });
+    document.getElementById('flowLocality').addEventListener('input', (e) => {
+        const v = parseFloat(e.target.value);
+        const lab = document.getElementById('flowLocalityLabel');
+        if (v >= parseFloat(e.target.max)) {
+            flowLocalitySigma = Infinity;
+            lab.textContent = 'locality focus: off (whole sequence)';
+        } else {
+            flowLocalitySigma = v;
+            lab.textContent = `locality focus: σ ≈ ${v} tokens around centre`;
+        }
+        updateFlowLines();
+    });
+    document.getElementById('showPivot').addEventListener('change', (e) => {
+        showPivotMarker = e.target.checked;
+        updateOrbitTarget();
     });
     seqPrevEl.addEventListener('click', () => stepSequence(-1));
     seqNextEl.addEventListener('click', () => stepSequence(1));
