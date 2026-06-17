@@ -50,6 +50,45 @@ reading the on-disk weight cache — never through `pretrain/` code. The one-off
 checkpoint→safetensors converter (`tools/convert_llama_simple_mlp_checkpoint.py`) was
 deleted too; the existing caches already hold their converted safetensors.
 
+## Review blind spots — dropped/changed with no prior tracking note
+
+Surfaced by the `main`-vs-`feature/jax` recursive taxonomy (`MIGRATION_TAXONOMY.md`,
+repo root). All are deliberate consequences of the torch shed; listed here so they're
+tracked rather than silently absent. None block the squash.
+
+Intentional drops (confirm scope, no re-add planned this push):
+
+- **Component types: `EmbeddingComponents`, Radford-`Conv1D`, `Identity`** — the JAX stack
+  decomposes `nn.Linear`-equivalents only (Llama MLP). The factory's conv1d/identity/
+  embedding dispatch has no JAX path; folds into the deferred eqx-auto-decompose (#11).
+- **`identity_insertion` / `identity_decomposition_targets`** — refused via assert; config
+  field retained but inert.
+- **LM-path component weight tying (`tie_component_weights`)** — refused via
+  `assert tied_weights is None` on the LM path (TMS/ResidMLP keep embedding ties).
+- **`ci_sigmoids` registry** — only `leaky_hard` (split lower/upper) survives; `normal` /
+  `hard` / standalone `leaky_hard` / `swish_hard` are unreachable schema literals.
+- **`mlp_scalar` CI-fn arch** — torch's scalar `get_component_acts(x)=x@V` couples CI-fn
+  input to trained components; doesn't fit the generic `ci_fn(site_inputs)` waist. Replaced
+  by the vector-input `LayerwiseMLPCIFn`. (Rationale in `CLAUDE.md`.)
+- **`PersistentPGDReconSubsetLoss`** — dropped from the config union; a future composition
+  per `LOSS_PARITY_DESIGN.md`.
+- **CLT/transcoder adapters + `_vendor` models (#863)** — comparison-method tooling; can't
+  harvest CLT/transcoder runs until re-added.
+- **`editing/` + `generate_token_divergence.py`** — model-editing + token-divergence viz
+  (also noted in `TRANSITION.md §1/§6`).
+- **toy-models target-CI pattern framework** — `DenseCIPattern` / `TargetCISolution` /
+  fnmatch expansion / greedy permutation gone; only per-target `identity_ci_error` survives.
+
+Benign mechanism changes (no behavior risk):
+
+- **`component_acts` cache-mode coupling removed** — autointerp/harvest recompute `x@V`
+  inline; no per-component pre/post-detach cache.
+- **`wandb.finish()` never called** — relies on process exit.
+- **torch DDP `with_distributed_cleanup` / `ensure_cached_and_call`** — os._exit SIGABRT
+  guard + download-once-per-node helper have no JAX analog.
+- **imp-min `world_size` scaling** — explicit `log2(1+sum·world_size)` replaced by GSPMD's
+  in-graph global sum (see `imp_min_world_size_noop` memory).
+
 ## Imp-min token-count reparameterization (deferred, Oli)
 
 The imp-min entropy term carries a `log2(batch·seq)` coupling — a per-token-batch
