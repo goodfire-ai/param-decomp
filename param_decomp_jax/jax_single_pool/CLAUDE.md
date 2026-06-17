@@ -179,6 +179,19 @@ into the workspace's single config yaml, and sbatches. Requeues re-enter the wor
 never the live checkout. `--run_id` resubmits an existing workspace. Don't hand-write
 sbatch files.
 
+`main` enables JAX's persistent compilation cache
+(`_enable_persistent_compilation_cache`) at `$PARAM_DECOMP_OUT_DIR/xla_compilation_cache`
+— a SIBLING of `runs/` (derived from `out_dir.parent`), shared across all runs and all
+8N ranks, NOT per-run. The ~24-min chunkwise-step compile is keyed by HLO + backend +
+topology + jax/xla version, so a requeue/resume or a fresh run at the same config+topology
+loads the executable from disk in seconds. Set after `init_distributed` (the write gate
+reads the distributed state) and before the first compile; threshold 60s
+(`jax_persistent_cache_min_compile_time_secs`) so only the big compiles cache. Multi-host
+safe on jax 0.10.1: jax gates the cache WRITE on `process_id == 0` (`compiler.py` — "Only
+write cache entries from the first process … contention for writes on some filesystems"),
+so all ranks read but only rank 0 writes — no shared-FS race. Requires the cache dir on a
+shared FS, which `$PARAM_DECOMP_OUT_DIR` already is.
+
 ## Gotchas
 
 - **`shard_batch` topology** (`sharding.py`): uses `make_array_from_process_local_data`

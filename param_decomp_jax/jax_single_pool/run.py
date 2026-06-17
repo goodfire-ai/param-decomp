@@ -84,6 +84,24 @@ def _install_sigterm_flag() -> None:
     signal.signal(signal.SIGTERM, handler)
 
 
+def _enable_persistent_compilation_cache(out_dir: Path) -> Path:
+    """Cache compiled XLA executables to a shared-FS dir reused across runs/requeues.
+
+    The ~24-min compile of the chunkwise step is keyed by HLO + backend + topology +
+    jax/xla version, so a matching re-compile (requeue, or a fresh run at the same
+    config+topology) loads from disk in seconds. The dir is a SIBLING of `runs/` (not
+    per-run, not inside the immutable per-run workspace) so every run shares it; all 8N
+    ranks point at the same shared-FS path. Only process 0 writes (jax gates the write on
+    `process_id == 0` to avoid shared-FS write contention); every rank reads. Must run
+    after `init_distributed` (the rank gate reads the distributed state) and before the
+    first compile."""
+    cache_dir = out_dir.parent / "xla_compilation_cache"
+    jax.config.update("jax_compilation_cache_dir", str(cache_dir))
+    jax.config.update("jax_persistent_cache_min_compile_time_secs", 60.0)
+    jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
+    return cache_dir
+
+
 def _ensure_global[T](tree: T, mesh: Mesh) -> T:
     """Re-materialize the NON-mesh array leaves (eagerly created scalars: step
     counters, Adam counts) as well-formed GLOBAL replicated arrays via an identity
@@ -686,10 +704,14 @@ def main() -> None:
 
     cfg, raw_cfg = load_config(args.config)
 
+    cache_dir = _enable_persistent_compilation_cache(cfg.out_dir)
+
     is_main = jax.process_index() == 0
     if is_main:
+        cache_dir.mkdir(parents=True, exist_ok=True)
         cfg.run_dir.mkdir(parents=True, exist_ok=True)
         _pin_config_copy(cfg.run_dir, "config.yaml", args.config)
+        print(f"persistent XLA compilation cache: {cache_dir}", flush=True)
         site_summary = " ".join(f"{s.name}:C{s.C}" for s in cfg.target.sites)
         shape_summary = (
             f"n_features={cfg.data.n_features}"
