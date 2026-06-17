@@ -5,7 +5,7 @@ within a single shared masked forward pass — so the replacements are trained j
 block's compressed MLP seeing inputs produced by the (compressed) earlier blocks. CI masks for
 all blocks are reused from the teacher pass. Loss: KL(teacher || student) on output logits.
 
-Run: python scratch/mlp0_compress/run_all.py --n_compressed N [--steps N] ...
+Run: python scratch/mlp_compress/run_all.py --n_compressed N [--steps N] ...
 """
 
 import json

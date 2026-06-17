@@ -11,7 +11,7 @@ still reported as eval metrics.
 All decomposition components, the CI function, and the CI masks stay frozen; only the small
 attention (fewer heads) and MLP (n_compressed bottleneck) transformations train.
 
-Run: python scratch/mlp0_compress/run_mse.py --n_heads H --n_compressed N [--steps ...] ...
+Run: python scratch/mlp_compress/run_mse.py --n_heads H --n_compressed N [--steps ...] ...
 """
 
 import json

@@ -28,7 +28,7 @@ two masking regimes:
 
 With `adversarial_coeff == 0` (default) only the stochastic term runs. No sparsity penalty.
 
-Run: python scratch/mlp0_compress/run_component.py --d_expand D [--steps N] ...
+Run: python scratch/mlp_compress/run_component.py --d_expand D [--steps N] ...
 """
 
 import json

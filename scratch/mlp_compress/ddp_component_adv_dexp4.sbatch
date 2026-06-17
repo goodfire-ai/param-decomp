@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:8
 #SBATCH --time=24:00:00
 #SBATCH --comment="Disentangled component MLP, d_expand=4, multi-node DDP (nodes*8 GPUs). 2-term loss 0.5*relmse(stochastic) + 0.5*relmse(persistent adversarial, per_batch_per_position PPGD). s-55ea3f9b; oli/opus"
-#SBATCH --output=/mnt/polished-lake/home/oli/opus-param-decomp/wt-mlp0-compress/scratch/mlp0_compress/ddp_component_adv_dexp4_%j.log
+#SBATCH --output=/mnt/polished-lake/home/oli/opus-param-decomp/wt-mlp0-compress/scratch/mlp_compress/ddp_component_adv_dexp4_%j.log
 
 # Tuning config for the adversarial ComponentMLP run. Edit the values below and resubmit
 # with `sbatch ddp_component_adv_dexp4.sbatch`. Every argument is a `main()` parameter in
@@ -62,7 +62,7 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 srun --ntasks-per-node=1 --kill-on-bad-exit=1 bash -c '
   cd /mnt/polished-lake/home/oli/opus-param-decomp/wt-mlp0-compress
   source .venv/bin/activate
-  cd scratch/mlp0_compress
+  cd scratch/mlp_compress
   torchrun \
     --nnodes=$SLURM_NNODES --node_rank=$SLURM_PROCID --nproc_per_node=8 \
     --master_addr=$MASTER_ADDR --master_port=$MASTER_PORT \

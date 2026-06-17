@@ -11,7 +11,7 @@ from `run.py`. Everything is trained jointly against KL(teacher ‖ student) on 
 CI masks for all components are reused from the teacher pass; all decomposition components
 stay frozen.
 
-Run: python scratch/mlp0_compress/run_attn.py --n_heads H --head_dim D [--n_compressed 16] [--steps N] ...
+Run: python scratch/mlp_compress/run_attn.py --n_heads H --head_dim D [--n_compressed 16] [--steps N] ...
 """
 
 import json

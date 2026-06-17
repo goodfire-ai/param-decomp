@@ -8,7 +8,7 @@ except block-0's MLP output is recomputed through a compressed bottleneck — fr
 masks are reused from the teacher pass (the CI fn reads 3072-dim `down_proj` pre-acts,
 which don't exist in the compressed pass). Loss: KL(teacher || student) on output logits.
 
-Run: python scratch/mlp0_compress/run.py [--steps N] [--batch_size B] ...
+Run: python scratch/mlp_compress/run.py [--steps N] [--batch_size B] ...
 """
 
 import json
