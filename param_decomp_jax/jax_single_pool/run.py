@@ -40,7 +40,12 @@ from jax_single_pool.attn_patterns_eval import (
     make_ci_attn_patterns_step,
     make_stochastic_attn_patterns_step,
 )
-from jax_single_pool.checkpoint import make_checkpoint_manager, restore_latest, save_state
+from jax_single_pool.checkpoint import (
+    init_from_parent,
+    make_checkpoint_manager,
+    restore_latest,
+    save_state,
+)
 from jax_single_pool.config import (
     DataConfig,
     ExperimentConfig,
@@ -51,6 +56,7 @@ from jax_single_pool.config import (
     TMSDataConfig,
     TMSTargetConfig,
     load_config,
+    load_run_dir_config,
 )
 from jax_single_pool.data import BatchSchedule, ShardServer, scan_shards
 from jax_single_pool.eval import make_eval_step
@@ -71,6 +77,7 @@ from jax_single_pool.run_state import build_optimizers, init_train_state
 from jax_single_pool.sharding import dp_mesh, init_distributed
 from jax_single_pool.target_aliases import AnyFrozenTarget, AnyPrefix
 from jax_single_pool.train import make_faith_warmup_step, make_train_step
+from param_decomp_config.experiment import ResumeProvenance
 from param_decomp_config.wandb_config import flatten_typed_lists
 
 _sigterm_received = False
@@ -184,6 +191,24 @@ class MetricsSink:
                 print(f"wandb communication error, skipping log: {e}", flush=True)
 
 
+def assert_finetune_structural_compat(cfg: ExperimentConfig, prov: ResumeProvenance) -> None:
+    """Fine-tune requires the parent's decomposition STRUCTURE to match the new config's:
+    same sites (names + C) and same ci-fn arch. A changed C / layers / target / ci-fn is a
+    different-shaped decomposition and is NOT a fine-tune (the parent's V/U + ci_fn would
+    not load onto the new reference). Only LR / coeffs / eps / seq / batch / steps may
+    change. Read from the parent's pinned `config.yaml` so the failure is a readable config
+    diff, not an opaque orbax tree mismatch."""
+    parent_cfg = load_run_dir_config(prov.parent_run_dir)
+    parent_sites = tuple((s.name, s.C) for s in parent_cfg.target.sites)
+    new_sites = tuple((s.name, s.C) for s in cfg.target.sites)
+    assert parent_sites == new_sites, (
+        f"fine-tune sites mismatch: parent {parent_sites} != new {new_sites}"
+    )
+    assert parent_cfg.ci_fn == cfg.ci_fn, (
+        f"fine-tune ci-fn arch mismatch: parent {parent_cfg.ci_fn} != new {cfg.ci_fn}"
+    )
+
+
 def train(
     cfg: ExperimentConfig,
     raw_cfg: dict[str, object],
@@ -214,6 +239,21 @@ def train(
         start_step = ckpt_step
         if is_main:
             print(f"resumed from checkpoint step {ckpt_step}", flush=True)
+    elif cfg.resume_provenance is not None:
+        # Fine-tune init (SPEC S33): own ckpts/ is empty, so this is the FIRST entry, not a
+        # requeue — load the parent's trained V/U + ci_fn onto the fresh reference, start a
+        # clean schedule from step 0 (fresh optimizer / sources, no faith warmup).
+        start_step = 0
+        prov = cfg.resume_provenance
+        assert_finetune_structural_compat(cfg, prov)
+        state = init_from_parent(prov.parent_run_dir / "ckpts", prov.parent_step, state)
+        save_state(checkpoint_manager, 0, state)
+        if is_main:
+            print(
+                f"fine-tune: initialized V/U + ci_fn from {prov.parent_run_dir} "
+                f"step {prov.parent_step}; training fresh from step 0",
+                flush=True,
+            )
     else:
         start_step = 0
         if cfg.faith_warmup.steps > 0:
@@ -702,6 +742,9 @@ def main() -> None:
             f"sites=[{site_summary}] steps={cfg.steps}",
             flush=True,
         )
+
+    if isinstance(cfg.target, (TMSTargetConfig, ResidMLPTargetConfig)):
+        assert cfg.resume_provenance is None, "fine-tune (resume_provenance) is LM-only"
 
     if isinstance(cfg.target, TMSTargetConfig):
         tms_cfg = tms.TMSConfig(n_features=cfg.target.n_features, n_hidden=cfg.target.n_hidden)

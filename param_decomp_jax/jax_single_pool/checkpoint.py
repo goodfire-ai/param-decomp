@@ -9,12 +9,19 @@ loads only the trajectory.
 
 Synchronous saves (no async): a SIGTERM-triggered save must be on disk before the
 process exits for SLURM requeue-resume.
+
+`init_from_parent` is the fine-tune entry (SPEC S33): a fresh run loads a PARENT
+checkpoint's V/U + ci_fn (the trained decomposition) but starts a clean schedule —
+fresh optimizer / sources, `step=0` — under a NEW config (changed LR / coeffs / steps,
+same component & ci-fn structure).
 """
 
+import dataclasses
 from pathlib import Path
 from typing import cast
 
 import jax
+import jax.numpy as jnp
 import orbax.checkpoint as ocp
 from orbax.checkpoint.type_handlers import ArrayHandler, register_type_handler
 
@@ -58,3 +65,27 @@ def restore_latest(
     if step is None:
         return None
     return restore_step(mgr, reference, step), step
+
+
+def init_from_parent(parent_ckpt_dir: Path, parent_step: int, reference: TrainState) -> TrainState:
+    """Fine-tune init (SPEC S33): load the parent checkpoint's trained V/U + ci_fn ONTO
+    `reference` (a fresh-from-init `TrainState` built from the NEW config), and keep the
+    fresh reference's optimizer states, persistent sources, and `step=0`.
+
+    Only the components and ci_fn carry over — the new schedule wants a clean Adam (no
+    stale momentum scale) and a fresh adversary; the schedule recomputes from step 0 over
+    the new `cfg.steps`. The full parent state is restored onto `reference`, which orbax
+    requires to be shape/dtype/sharding-identical to the parent's saved state: a mismatch
+    in component/ci_fn structure (different sites / C / ci-fn arch) fails the restore. The
+    config-level structural guard in `run.py` is the readable pre-check before this point."""
+    parent_mgr = make_checkpoint_manager(parent_ckpt_dir, keep_last=1)
+    assert parent_step in parent_mgr.all_steps(), (
+        f"parent step {parent_step} not in {parent_ckpt_dir} (have {sorted(parent_mgr.all_steps())})"
+    )
+    parent = restore_step(parent_mgr, reference, parent_step)
+    return dataclasses.replace(
+        reference,
+        components=parent.components,
+        ci_fn=parent.ci_fn,
+        step=jnp.zeros((), jnp.int32),
+    )

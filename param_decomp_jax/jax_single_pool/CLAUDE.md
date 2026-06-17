@@ -171,6 +171,28 @@ the schema now also carries — top-level `run_name`/`run_id`/`out_dir`, the
 `runtime.remat_recon_forwards` memory/compute knob, and `wandb.group`/`wandb.tags`.
 `run_id`/`out_dir` are absent in a hand-authored config; `pd-jax-lm` mints + stamps them.
 
+**Fine-tune from a parent checkpoint** (`resume_provenance`, SPEC S33, LM-only). A fresh
+run can initialize its trained decomposition (V/U + ci_fn) from a PARENT run's checkpoint
+and continue under a DIFFERENT config (changed LR / coeffs / eps / seq / batch / steps —
+NOT changed C / sites / ci-fn arch). Add to the config:
+
+```yaml
+resume_provenance:
+  # ABSOLUTE path — jsp-train runs with cwd = <workspace>/param_decomp_jax, so a
+  # relative path would resolve under the workspace, not the output runs dir.
+  parent_run_dir: /mnt/data/artifacts/mechanisms/param-decomp/runs/p-bd3cd4d4
+  parent_step: 175000
+```
+
+On the FIRST entry (own `ckpts/` empty) the trainer loads `parent_run_dir/ckpts/175000`
+onto the fresh reference and keeps ONLY the components + ci_fn; the optimizer states,
+persistent sources, and `step` are FRESH (`step = 0`, no faith warmup) so the new LR /
+p-anneal schedule recomputes over the new `cfg.steps` from 0. A subsequent SLURM requeue
+(own `ckpts/` now non-empty) resumes from the run's own dir and ignores provenance.
+`run.py::assert_finetune_structural_compat` reads the parent's pinned `config.yaml` and
+asserts matching sites (names + C) + ci-fn arch before the restore. Provenance flows into
+`config.yaml` + `wandb.config`. Launch as usual via `pd-jax-lm <config.yaml> --nodes N`.
+
 **Launch via `pd-jax-lm <config.yaml> --nodes N`** (lab-side, torch venv): mints the
 `p-` run id, snapshots the tree to `refs/runs/snapshot/<id>`, materializes an
 immutable shared-FS workspace (clone + both venvs) at

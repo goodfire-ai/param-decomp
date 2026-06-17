@@ -44,22 +44,25 @@ class EvalConfig(BaseConfig):
 
 
 class ResumeProvenance(BaseConfig):
-    """Records where a resumed run came from. Lives on `ExperimentConfig`.
+    """Fine-tune lineage: a fresh run initialized from a PARENT decomposition. Lives on
+    `ExperimentConfig`.
 
-    Resumed runs get their own `run_id` and own `experiment_config.yaml`. Provenance is
-    what makes them traceable back to the parent: the resume composition root sets
-    `ExperimentConfig.resume_provenance` on the effective config it hands to
-    `init_pd_run`, so the lineage is dumped into `experiment_config.yaml` and surfaced
-    in `wandb.config` (and thus the wandb UI). A run with `resume_provenance is None`
-    is a fresh run.
+    A fine-tune run gets its own `run_id` / `config.yaml` / `ckpts/`; this records the
+    parent it forked from. The JAX trainer (`run.py::train`, SPEC S33) loads the parent
+    checkpoint's V/U + ci_fn onto a fresh reference state and trains a clean schedule from
+    step 0 (fresh optimizer / sources) under the new config — only when the run's own
+    `ckpts/` is empty (a subsequent SLURM requeue resumes from the run's own dir, ignoring
+    provenance). The structure (sites / C / ci-fn arch) must match the parent; only
+    LR / coeffs / eps / seq / batch / steps may change. Provenance flows into
+    `config.yaml` and `wandb.config` so the lineage is visible in the wandb UI. A run with
+    `resume_provenance is None` is a fresh-from-init run.
     """
 
     parent_run_dir: Path
-    """Path to the parent run's directory."""
+    """Path to the parent run's directory (the dir that contains `ckpts/<parent_step>/`)."""
 
     parent_step: int
-    """The step at which we resumed (i.e. the step number of the parent's orbax
-    `ckpts/<step>/` checkpoint we loaded from)."""
+    """The parent's orbax `ckpts/<step>/` checkpoint step to initialize V/U + ci_fn from."""
 
 
 class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):

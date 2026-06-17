@@ -48,7 +48,7 @@ from param_decomp_config.eval_metrics import (
     CIMaskedAttnPatternsReconLossConfig,
     StochasticAttnPatternsReconLossConfig,
 )
-from param_decomp_config.experiment import WandbConfig
+from param_decomp_config.experiment import ResumeProvenance, WandbConfig
 from param_decomp_config.lm import (
     HFTarget,
     HFWeightsInVendored,
@@ -273,6 +273,9 @@ class ExperimentConfig:
     cadence: CadenceConfig
     eval: EvalConfig | None
     wandb: WandbConfig | None
+    resume_provenance: ResumeProvenance | None
+    """Set on a fine-tune run: the parent run dir + step to initialize V/U + ci_fn from
+    (SPEC S33). `None` for a fresh-from-init run. Records lineage in wandb.config."""
 
     @property
     def run_dir(self) -> Path:
@@ -577,6 +580,7 @@ def build_experiment_config(cfg: LMExperimentConfig) -> ExperimentConfig:
         cadence=shared.cadence,
         eval=_eval(cfg),
         wandb=cfg.wandb,
+        resume_provenance=cfg.resume_provenance,
     )
 
 
@@ -636,6 +640,7 @@ def build_tms_experiment_config(cfg: TMSExperimentConfig) -> ExperimentConfig:
         cadence=shared.cadence,
         eval=None,
         wandb=cfg.wandb,
+        resume_provenance=cfg.resume_provenance,
     )
 
 
@@ -700,6 +705,7 @@ def build_resid_mlp_experiment_config(cfg: ResidMLPExperimentConfig) -> Experime
         cadence=shared.cadence,
         eval=None,
         wandb=cfg.wandb,
+        resume_provenance=cfg.resume_provenance,
     )
 
 
