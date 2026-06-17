@@ -23,6 +23,9 @@ DDP_ENV = {
     "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
     "HF_HUB_ETAG_TIMEOUT": "30",
     "HF_HUB_DOWNLOAD_TIMEOUT": "30",
+    # Avoid the flaky Xet CDN (see hf_http.py); not sufficient alone — the plain-GET
+    # fallback can still 408, so this leans on that 408 retry rather than replacing it.
+    "HF_HUB_DISABLE_XET": "1",
 }
 
 
