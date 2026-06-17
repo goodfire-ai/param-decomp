@@ -71,16 +71,18 @@ def _top_k_per_row(arr: np.ndarray, k: int) -> list[list[list[float]]]:
 
 
 def _pack_coords(coords: np.ndarray) -> dict[str, Any]:
-    """Float32 coords as base64, per-axis pre-normalised to unit std so JS
-    doesn't redo the work on every slider tweak."""
+    """Coords as base64, per-axis pre-normalised to unit std so JS doesn't redo the work on
+    every slider tweak. Stored as float16 (half the bytes, visually identical for projection
+    — these are only display positions) with a dtype marker the JS decoder reads."""
     arr = np.ascontiguousarray(coords, dtype=np.float32)
     mu = arr.mean(axis=0, keepdims=True)
     sd = arr.std(axis=0, keepdims=True)
     sd = np.where(sd < 1e-9, 1.0, sd)
-    normed = ((arr - mu) / sd).astype(np.float32)
+    normed = ((arr - mu) / sd).astype(np.float16)
     return {
         "buffer_b64": base64.b64encode(normed.tobytes()).decode("ascii"),
         "n_components": int(normed.shape[1]),
+        "dtype": "f16",
     }
 
 
@@ -655,9 +657,24 @@ function _decodeB64(b64, TypedArray) {
     for (let i = 0; i < len; i++) buf[i] = bin.charCodeAt(i);
     return new TypedArray(buf.buffer);
 }
+// IEEE half-float (uint16) -> float32. Coord buffers are stored as f16 to halve download
+// size; downstream projection code keeps using a plain Float32Array.
+function _f16ToF32(u16) {
+    const out = new Float32Array(u16.length);
+    for (let i = 0; i < u16.length; i++) {
+        const h = u16[i];
+        const s = (h & 0x8000) >> 15, e = (h & 0x7c00) >> 10, f = h & 0x03ff;
+        if (e === 0) out[i] = (s ? -1 : 1) * Math.pow(2, -14) * (f / 1024);
+        else if (e === 0x1f) out[i] = f ? NaN : (s ? -Infinity : Infinity);
+        else out[i] = (s ? -1 : 1) * Math.pow(2, e - 15) * (1 + f / 1024);
+    }
+    return out;
+}
 for (const key of Object.keys(DATA.bases)) {
     const b = DATA.bases[key];
-    b.coords_flat = _decodeB64(b.buffer_b64, Float32Array);
+    b.coords_flat = b.dtype === 'f16'
+        ? _f16ToF32(_decodeB64(b.buffer_b64, Uint16Array))
+        : _decodeB64(b.buffer_b64, Float32Array);
     b.stride = b.n_components;
     delete b.buffer_b64;
 }

@@ -154,10 +154,9 @@ def main() -> None:
         point_scalar=code_l0,
         point_label="token-position",
         point_top_k=10,
-        # Keep the HTML small: the raw-dims basis is a redundant full-width coord buffer,
-        # and the PCA tail is near-zero variance. Both dominate file size / download time.
-        emit_raw_basis=False,
-        max_pca_components=96,
+        # Keep both full bases (PCA + raw bottleneck dims — the raw axes are used to project
+        # onto specific code dimensions). float16 coord packing keeps the file in check.
+        emit_raw_basis=True,
     )
     # Sequence panel: per-point (sequence, position) + each sequence's decoded tokens, so
     # the viewer can show a clicked point's whole sequence and draw per-sequence flow lines.
