@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import cast
 
 import jax
-import jax.numpy as jnp
 import orbax.checkpoint as ocp
 from orbax.checkpoint.type_handlers import ArrayHandler, register_type_handler
 
@@ -83,9 +82,12 @@ def init_from_parent(parent_ckpt_dir: Path, parent_step: int, reference: TrainSt
         f"parent step {parent_step} not in {parent_ckpt_dir} (have {sorted(parent_mgr.all_steps())})"
     )
     parent = restore_step(parent_mgr, reference, parent_step)
+    # Keep reference.step (already a GLOBAL replicated zero: init_train_state builds step=0,
+    # _ensure_global re-materializes it as a well-formed global array). Re-creating it as
+    # jnp.zeros((), jnp.int32) yields a HOST-LOCAL SingleDeviceSharding array that orbax
+    # refuses to serialize in a multi-host save.
     return dataclasses.replace(
         reference,
         components=parent.components,
         ci_fn=parent.ci_fn,
-        step=jnp.zeros((), jnp.int32),
     )
