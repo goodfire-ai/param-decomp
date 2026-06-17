@@ -31,40 +31,66 @@ With `adversarial_coeff == 0` (default) only the stochastic term runs. No sparsi
 Run: python scratch/mlp_compress/run_component.py --d_expand D [--steps N] ...
 """
 
+import glob
 import json
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
-from pathlib import Path
-from typing import Iterator, Literal
+from typing import Literal
 
 import einops
 import fire
 import torch
 import wandb
 from dotenv import load_dotenv
+from run import RUN_DIR
+from run_attn import mlp_module_names
+from run_mse import capture_residuals, relative_mse, resid_point_names
 from torch import Tensor, nn
 
 from param_decomp.component_model import ComponentModel
 from param_decomp.components import LinearComponents, init_param_
-from param_decomp.masks import AllLayersRouter, calc_stochastic_component_mask_info, make_mask_infos
-from param_decomp.metrics.persistent_pgd_state import AdamPGDConfig, make_ppgd_optimizer
-from param_decomp.metrics.pgd_utils import get_pgd_init_tensor
-from param_decomp.schedule import ScheduleConfig
 from param_decomp.distributed import (
     all_reduce,
     avg_metrics_across_ranks,
     is_main_process,
     seed_per_rank,
 )
-from param_decomp_lab.distributed import cleanup_distributed, get_device, init_distributed
+from param_decomp.masks import AllLayersRouter, calc_stochastic_component_mask_info, make_mask_infos
+from param_decomp.metrics.persistent_pgd_state import AdamPGDConfig, make_ppgd_optimizer
+from param_decomp.metrics.pgd_utils import get_pgd_init_tensor
+from param_decomp.schedule import ScheduleConfig
 from param_decomp_lab.batch_and_loss_fns import calc_kl_divergence_lm
+from param_decomp_lab.distributed import cleanup_distributed, get_device, init_distributed
+from param_decomp_lab.experiments.lm.data import LMDataConfig
 from param_decomp_lab.experiments.lm.run import SavedLMRun, build_lm_loader
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR, REPO_ROOT
-from run import RUN_DIR
-from run_attn import mlp_module_names
-from run_mse import capture_residuals, relative_mse, resid_point_names
 
 OUT_BASE = PARAM_DECOMP_OUT_DIR / "runs/s-55ea3f9b/component_mlp"
+
+
+def read_dataset_from_local_cache(data_cfg: LMDataConfig) -> LMDataConfig:
+    """Rewrite a streaming HF-hub data config to stream the same shards from the local cache.
+
+    This cluster's egress to the HF Xet CDN flakily 408s mid-stream, which kills long runs.
+    The full dataset is already in the shared HF cache, so we read the cached parquet shards
+    directly via the `parquet` builder (no hub access). `data_files` is a per-split dict keyed
+    by `train_split`/`eval_split` to match the split `build_lm_loader` requests.
+    """
+    from huggingface_hub.constants import HF_HUB_CACHE
+
+    repo_cache = f"{HF_HUB_CACHE}/datasets--{data_cfg.dataset_name.replace('/', '--')}"
+    data_dirs = sorted(glob.glob(f"{repo_cache}/snapshots/*/data"))
+    assert data_dirs, f"dataset not in local HF cache: {data_cfg.dataset_name}"
+    data_dir = data_dirs[-1]
+    files = {
+        split: sorted(glob.glob(f"{data_dir}/{split}-*.parquet"))
+        for split in (data_cfg.train_split, data_cfg.eval_split)
+    }
+    assert all(files.values()), f"missing cached shards under {data_dir}: {files}"
+    return data_cfg.model_copy(
+        update={"dataset_name": "parquet", "data_files": files, "revision": None}
+    )
 
 
 class ComponentMLP(nn.Module):
@@ -110,9 +136,7 @@ class ComponentMLP(nn.Module):
         a_in = einops.einsum(x, self.V_cfc, "... d, d C -> ... C") * m_cfc
         bypass = einops.einsum(a_in, self.W_bypass, "... Ci, Ci Co -> ... Co")
         hidden = self.activation(einops.einsum(a_in, self.W_in, "... Ci, Ci N -> ... N"))
-        hidden = einops.rearrange(
-            hidden, "... (C d) -> ... C d", C=self.C_out, d=self.d_expand
-        )
+        hidden = einops.rearrange(hidden, "... (C d) -> ... C d", C=self.C_out, d=self.d_expand)
         neuron_out = einops.einsum(hidden, self.w_neuron, "... C d, C d -> ... C")
         a_out = (bypass + neuron_out) * m_down
         return einops.einsum(a_out, self.U_down, "... C, C d -> ... d")
@@ -268,9 +292,7 @@ def masked_student_kl_to_target(
     student_logits = student_forward(
         comp_model, batch, make_mask_infos(component_masks), mlp_modules, component_mlps
     )
-    return calc_kl_divergence_lm(
-        pred=student_logits.float(), target=target_logits.float()
-    ).item()
+    return calc_kl_divergence_lm(pred=student_logits.float(), target=target_logits.float()).item()
 
 
 def adversarial_student_kl_to_target(
@@ -294,8 +316,9 @@ def adversarial_student_kl_to_target(
     """
     batch_dims = next(iter(ci.values())).shape[:-1]
     sources = {
-        name: get_pgd_init_tensor(init, (*[1 for _ in batch_dims], c.shape[-1]), c.device)
-        .requires_grad_(True)
+        name: get_pgd_init_tensor(
+            init, (*[1 for _ in batch_dims], c.shape[-1]), c.device
+        ).requires_grad_(True)
         for name, c in ci.items()
     }
 
@@ -437,13 +460,22 @@ def main(
         )
         print(f"wandb: {wb.url}")
 
+    data_cfg = read_dataset_from_local_cache(pd_run.cfg.data)
     train_loader = build_lm_loader(
-        pd_run.cfg.target, pd_run.cfg.data, split="train", device=device,
-        batch_size=batch_size, seed=seed + rank,
+        pd_run.cfg.target,
+        data_cfg,
+        split="train",
+        device=device,
+        batch_size=batch_size,
+        seed=seed + rank,
     )
     eval_loader = build_lm_loader(
-        pd_run.cfg.target, pd_run.cfg.data, split="eval", device=device,
-        batch_size=batch_size, seed=seed,
+        pd_run.cfg.target,
+        data_cfg,
+        split="eval",
+        device=device,
+        batch_size=batch_size,
+        seed=seed,
     )
     eval_iter = iter(eval_loader)
     eval_batches = [next(eval_iter).to(device) for _ in range(n_eval_batches)]
@@ -518,8 +550,15 @@ def main(
                     comp_model, b, rounded, target_logits, mlp_modules, component_mlps
                 )
                 kl_adversarial += adversarial_student_kl_to_target(
-                    comp_model, b, ci, target_logits, mlp_modules, component_mlps,
-                    init=pgd_init, step_size=pgd_step_size, n_steps=pgd_n_steps,
+                    comp_model,
+                    b,
+                    ci,
+                    target_logits,
+                    mlp_modules,
+                    component_mlps,
+                    init=pgd_init,
+                    step_size=pgd_step_size,
+                    n_steps=pgd_n_steps,
                 )
         n = len(eval_ctx)
         return {
@@ -565,8 +604,13 @@ def main(
                 with autocast():
                     warm_loss = adversarial_coeff * sum(
                         masked_resid_relmse_terms(
-                            comp_model, batch, make_mask_infos(adversarial.masks(ci)),
-                            mlp_modules, component_mlps, n_blocks, point_names,
+                            comp_model,
+                            batch,
+                            make_mask_infos(adversarial.masks(ci)),
+                            mlp_modules,
+                            component_mlps,
+                            n_blocks,
+                            point_names,
                         ).values()
                     )
                 warm_grads = torch.autograd.grad(warm_loss, list(adversarial.sources.values()))
@@ -574,8 +618,13 @@ def main(
             with autocast():
                 relmse_adv = sum(
                     masked_resid_relmse_terms(
-                        comp_model, batch, make_mask_infos(adversarial.masks(ci)),
-                        mlp_modules, component_mlps, n_blocks, point_names,
+                        comp_model,
+                        batch,
+                        make_mask_infos(adversarial.masks(ci)),
+                        mlp_modules,
+                        component_mlps,
+                        n_blocks,
+                        point_names,
                     ).values()
                 )
             loss = loss + adversarial_coeff * relmse_adv
