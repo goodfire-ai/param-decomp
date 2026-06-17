@@ -60,7 +60,7 @@ recon semantics: masks thread through the suffix forward, loss is KL on final lo
 t-9d2b8f02; sites `h.{i}.attn.{q,k,v,o}_proj` / `h.{i}.mlp.{c_fc,down_proj}`) —
 config dispatch is `TargetConfig` (llama8b) vs `LlamaSimpleMLPTargetConfig` in
 `config.py` (which also reads the canonical `param_decomp_config` schema DIRECTLY —
-`build_experiment_config`/`load_wrapper` — routing `kind: pretrained` specs + `h.*`
+`build_experiment_config`/`load_config` — routing `kind: pretrained` specs + `h.*`
 wildcards), target build in `run.py::main`. The slow plot metrics are computed
 NATIVELY in JAX via `jsp-slow-eval` (`slow_eval.py`) — no torch export round-trip
 (the torch offline-eval bridge `jsp-export` / `pd-offline-eval` was retired).
@@ -165,12 +165,19 @@ saves (no on-loop full-gather); SIGTERM → save → SLURM requeue → resume fr
 Resume with a changed config is refused (byte-compare). Smokes before a long run
 MUST exercise save AND resume at the production per-rank shape.
 
-**Launch via `pd-jax-lm <wrapper.yaml> --nodes N`** (lab-side, torch venv): mints the
+A run config is ONE self-contained yaml: the `param_decomp_config` experiment schema
+(`pd`/`data`/`eval`/`cadence`/`runtime`/`target`/`wandb`) plus the run-instance fields
+the schema now also carries — top-level `run_name`/`run_id`/`out_dir`, the
+`runtime.remat_recon_forwards` memory/compute knob, and `wandb.group`/`wandb.tags`.
+`run_id`/`out_dir` are absent in a hand-authored config; `pd-jax-lm` mints + stamps them.
+
+**Launch via `pd-jax-lm <config.yaml> --nodes N`** (lab-side, torch venv): mints the
 `p-` run id, snapshots the tree to `refs/runs/snapshot/<id>`, materializes an
 immutable shared-FS workspace (clone + both venvs) at
-`$PARAM_DECOMP_OUT_DIR/workspaces/<id>`, stamps the id into the workspace's wrapper
-yaml, and sbatches. Requeues re-enter the workspace, never the live checkout.
-`--run_id` resubmits an existing workspace. Don't hand-write sbatch files.
+`$PARAM_DECOMP_OUT_DIR/workspaces/<id>`, stamps the id (+ out_dir / wandb group / tags)
+into the workspace's single config yaml, and sbatches. Requeues re-enter the workspace,
+never the live checkout. `--run_id` resubmits an existing workspace. Don't hand-write
+sbatch files.
 
 ## Gotchas
 

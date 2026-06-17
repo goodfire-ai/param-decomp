@@ -1,7 +1,0 @@
-# TMS 5->2 PD decomposition (superposition toy). Small target, no remat. Launch:
-# pd-jax-lm, 1 node. Validates via the in-loop ground-truth target-CI metric
-# (eval/identity_ci_error/<site>) logged each train-log step — no separate eval pass.
-torch_config: torch/tms_5-2.yaml
-run_name: jax-tms-5-2
-out_dir: /mnt/data/artifacts/mechanisms/param-decomp/jax_runs
-remat_recon_forwards: false

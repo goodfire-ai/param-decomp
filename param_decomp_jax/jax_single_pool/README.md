@@ -32,8 +32,8 @@ replaces the hand-written-NCCL multi-pool design with zero manual collectives.
 | `run.py` | the training entrypoint (`jsp-train <config.yaml>`): data, faith warmup, loop, metrics jsonl/wandb, orbax checkpoints, SIGTERM-save + requeue-resume |
 | `data.py` | deterministic batch schedule over the pre-tokenized fineweb parquet shards; O(1) resume addressing, per-process slices |
 | `hf_http.py` | `configure_hf_http_retries` — idempotent retrying-adapter install on huggingface_hub (cold-cache 8N-rank startup burst); no-op without huggingface_hub; JAX-side analog of `param_decomp_lab/infra/hf_http.py` |
-| `config.py` | the shared-config route + the trainer's internal `ExperimentConfig`: a wrapper yaml (`torch_config:` + run identity + the remat knob) routes through `param-decomp-config`'s `LMExperimentConfig`, and `build_experiment_config`/`load_wrapper` read that schema DIRECTLY onto `ExperimentConfig` (shared pydantic loss/adversary configs passed through + jax-runtime knob structs) — asserts loudly on anything this trainer doesn't implement |
-| `configs/` | wrapper yamls (`*_from_torch.yaml`) + the torch `LMExperimentConfig` yamls they reference under `torch/` |
+| `config.py` | the single-file config route + the trainer's internal `ExperimentConfig`: one self-contained yaml (the `param-decomp-config` `LMExperimentConfig`/TMS/ResidMLP schema + top-level `run_name`/`run_id`/`out_dir`, `runtime.remat_recon_forwards`, `wandb.group`/`tags`), and `build_experiment_config`/`load_config` read that schema DIRECTLY onto `ExperimentConfig` (shared pydantic loss/adversary configs passed through + jax-runtime knob structs) — asserts loudly on anything this trainer doesn't implement |
+| `configs/` | the single self-contained run yamls (one file per run; no wrapper/schema split) |
 | `llama8b_sharding.py` | the 8B placement plan (frozen replicated; per-site V/U + CI + Adam C-sharded; source replicated; batch sharded) |
 | `experiments/llama8b_real.py` | the runnable 8B step + tok/s/GPU bench |
 | `experiments/invariance_check.py` | device-count invariance harness (SPEC D4) |

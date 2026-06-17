@@ -1,10 +1,10 @@
-# TMS 5->2 PD decomposition — the canonical superposition toy (5 features in 2 hidden
-# dims). The JAX counterpart of the torch `tms_5-2_config.yaml`, adapted to the JAX
-# trainer's schema: the target is pretrained from scratch in-process (no wandb run_path),
-# and FaithfulnessLoss is in the loss list (the JAX recon-term builder requires it; the
-# torch TMS configs relied on faith warmup alone). The decomposition is UNTIED
-# (linear1/linear2 are two sites with independent V/U; tied_weights: null), the target is
-# tied. CI fn: layerwise per-site MLP (fn_type=mlp, hidden_dims=[16]). Runs on 1 GPU.
+# ResidualMLP 1-layer wrapper — JAX counterpart of torch resid_mlp1_config.yaml.
+run_name: jax-resid-mlp-1l
+# ResidualMLP 1-layer PD decomposition — the JAX counterpart of the torch
+# resid_mlp1_config.yaml (n_features=100, d_embed=1000, d_mlp=50, fixed random embedding).
+# The torch target read from a wandb pretrain run; here the target is pretrained from
+# scratch in-process (the read-off `act_fn(x) + x` objective), so the run is reproducible
+# from this config alone.
 pd:
   seed: 0
   n_mask_samples: 1
@@ -18,36 +18,36 @@ pd:
   use_delta_component: true
   tied_weights: null
   decomposition_targets:
-  - module_pattern: linear1
-    C: 20
-  - module_pattern: linear2
-    C: 20
+  - module_pattern: layers.0.mlp_in
+    C: 100
+  - module_pattern: layers.0.mlp_out
+    C: 100
   loss_metrics:
   - type: ImportanceMinimalityLoss
-    coeff: 3e-3
-    pnorm: 1.0
+    coeff: 1e-5
+    pnorm: 2.0
     beta: 0.0
     p_anneal_start_frac: 0.0
-    p_anneal_final_p: 1.0
+    p_anneal_final_p: 2.0
     p_anneal_end_frac: 1.0
-  - type: StochasticReconLoss
-    coeff: 1.0
   - type: StochasticReconLayerwiseLoss
+    coeff: 1.0
+  - type: StochasticReconLoss
     coeff: 1.0
   - type: FaithfulnessLoss
     coeff: 1.0
-  batch_size: 4096
-  steps: 10000
+  batch_size: 2048
+  steps: 20000
   components_optimizer:
     grad_clip_norm: 0.01
     lr_schedule:
-      start_val: 1e-3
+      start_val: 2e-3
       fn_type: cosine
       warmup_pct: 0.0
       final_val_frac: 0.1
   ci_fn_optimizer:
     lr_schedule:
-      start_val: 1e-3
+      start_val: 2e-3
       fn_type: cosine
       warmup_pct: 0.0
       final_val_frac: 0.1
@@ -55,22 +55,27 @@ pd:
   faithfulness_warmup_lr: 0.01
   faithfulness_warmup_weight_decay: 0.0
 runtime:
+  remat_recon_forwards: false
   autocast_bf16: true
   device: cuda
   dp: null
 cadence:
-  train_log_every: 200
+  train_log_every: 100
   save_every: 5000
   keep_last_n_checkpoints: 2
 target:
-  n_features: 5
-  n_hidden: 2
-  n_hidden_layers: 0
+  n_features: 100
+  d_embed: 1000
+  d_mlp: 50
+  n_layers: 1
+  act_fn_name: relu
+  in_bias: false
+  out_bias: false
   pretrain:
-    steps: 5000
+    steps: 2000
     batch_size: 2048
-    lr: 1e-2
+    lr: 3e-3
     seed: 0
 data:
-  feature_probability: 0.05
+  feature_probability: 0.01
   data_generation_type: at_least_zero_active

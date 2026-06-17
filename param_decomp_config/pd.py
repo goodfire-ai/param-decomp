@@ -96,6 +96,14 @@ class RuntimeConfig(BaseConfig):
             "data-parallel across them. None means a single device."
         ),
     )
+    remat_recon_forwards: bool = Field(
+        default=False,
+        description=(
+            "JAX trainer memory/compute trade: rematerialize the recon-loss masked "
+            "forwards under the suffix model (deep targets need it to fit). Compute "
+            "substrate knob, no algorithm effect."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_device_dp(self) -> Self:

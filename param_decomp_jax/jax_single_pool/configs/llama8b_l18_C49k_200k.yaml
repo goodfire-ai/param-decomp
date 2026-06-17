@@ -1,3 +1,8 @@
+# Overnight C49k/200k run (2026-06-10) — JAX counterpart of torch p-19645bf7 via the
+# shared-config route. See the referenced yaml's header for the documented edits.
+# remat off: AOT-probed to fit at the launch topology (64 GPU, per-rank batch 8).
+run_name: jax-l18-C49k-200k
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/jax_runs
 # JAX leg of the C30k/200k run — derived from torch run p-19645bf7
 # (wandb goodfire/param-decomp-llama/p-19645bf7, "p-19645bf7_C30k_200ksteps";
 # snapshot runs/p-19645bf7/experiment_config.yaml). DOCUMENTED EDITS vs upstream:
@@ -151,6 +156,7 @@ pd:
   tied_weights: null
   use_delta_component: true
 runtime:
+  remat_recon_forwards: false
   autocast_bf16: true
   device: cuda:0
   dp: 32

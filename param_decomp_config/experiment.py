@@ -19,6 +19,10 @@ class WandbConfig(BaseConfig):
 
     project: str
     entity: str | None = None
+    group: str | None = None
+    """Wandb UI group (`pd-jax-lm --group`); None = ungrouped."""
+    tags: list[str] = Field(default_factory=list)
+    """Wandb tags (`pd-jax-lm --tags a,b,c`, comma-split); empty = untagged."""
 
 
 class EvalConfig(BaseConfig):
@@ -67,8 +71,21 @@ class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):
             pass
 
     Omit the `eval:` block to skip eval entirely; omit `wandb:` to skip wandb (the run
-    still writes `experiment_config.yaml` + checkpoints locally).
+    still writes `config.yaml` + checkpoints locally).
+
+    `run_id` / `out_dir` are minted by `pd-jax-lm` at submit time (both `None` in a
+    hand-authored config); the stamped workspace copy carries them, and `jsp-train`
+    resumes by byte-comparing that pinned copy.
     """
+
+    run_name: str
+    """Human-readable display name (the wandb run NAME)."""
+    run_id: str | None = None
+    """Canonical `p-<8hex>` id (wandb run ID + run-dir name). `None` in a hand-authored
+    config; minted + stamped by `pd-jax-lm` at submit time."""
+    out_dir: Path | None = None
+    """Run-output root (the run dir is `out_dir / run_id`). `None` lets `pd-jax-lm` mint
+    `PARAM_DECOMP_OUT_DIR/runs`; set it to override (the llama8b configs use `jax_runs`)."""
 
     pd: PDConfig
     runtime: RuntimeConfig

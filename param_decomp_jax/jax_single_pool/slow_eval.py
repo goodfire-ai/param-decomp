@@ -344,7 +344,7 @@ def _n_batches_accum(run_dir: Path) -> int | None:
     `EvalConfig`, which keeps only scalar-tier fields). None caps nothing."""
     import yaml
 
-    raw = yaml.safe_load((run_dir / "experiment_config.yaml").read_text())
+    raw = yaml.safe_load((run_dir / "config.yaml").read_text())
     for metric in raw["eval"]["metrics"]:
         if metric.get("type") == "CIHistograms":
             return metric.get("n_batches_accum")

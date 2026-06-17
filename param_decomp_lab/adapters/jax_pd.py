@@ -2,7 +2,6 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any, override
 
-import yaml
 from torch.utils.data import DataLoader
 
 from param_decomp.decomposition_targets import resolve_decomposition_targets
@@ -10,20 +9,18 @@ from param_decomp_config.lm import LMExperimentConfig
 from param_decomp_lab.adapters.base import DecompositionAdapter
 from param_decomp_lab.autointerp.schemas import ModelMetadata
 from param_decomp_lab.experiments.lm.run import build_target
-from param_decomp_lab.experiments.utils import EXPERIMENT_CONFIG_FILENAME
 from param_decomp_lab.harvest.schemas import get_harvest_dir
 from param_decomp_lab.topology import TransformerTopology
 
+JAX_RUN_CONFIG_FILENAME = "config.yaml"
+
 
 def is_jax_run(decomposition_id: str) -> bool:
-    """A JAX single-pool run dir pins the `pd-jax-lm` wrapper as `config.yaml` (it carries
-    a `torch_config:` key) and checkpoints with orbax under `ckpts/`; a torch run instead
-    has `model_*.pth`. The wrapper key is the explicit marker."""
-    wrapper = get_harvest_dir(decomposition_id).parent / "config.yaml"
-    if not wrapper.exists():
-        return False
-    raw = yaml.safe_load(wrapper.read_text())
-    return isinstance(raw, dict) and "torch_config" in raw
+    """A JAX single-pool run dir pins its single self-contained run config as
+    `config.yaml` and checkpoints with orbax under `ckpts/`; a torch run instead has
+    `model_*.pth` and no orbax `ckpts/`. The orbax `ckpts/` dir is the explicit marker."""
+    run_dir = get_harvest_dir(decomposition_id).parent
+    return (run_dir / JAX_RUN_CONFIG_FILENAME).exists() and (run_dir / "ckpts").is_dir()
 
 
 class JaxPDAdapter(DecompositionAdapter):
@@ -37,7 +34,7 @@ class JaxPDAdapter(DecompositionAdapter):
 
     @cached_property
     def cfg(self) -> LMExperimentConfig:
-        config_path = get_harvest_dir(self._run_id).parent / EXPERIMENT_CONFIG_FILENAME
+        config_path = get_harvest_dir(self._run_id).parent / JAX_RUN_CONFIG_FILENAME
         assert config_path.exists(), f"config not found: {config_path}"
         return LMExperimentConfig.from_file(config_path)
 

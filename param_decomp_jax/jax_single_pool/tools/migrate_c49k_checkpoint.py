@@ -52,7 +52,7 @@ from jax.sharding import SingleDeviceSharding
 from jaxtyping import Array
 
 from jax_single_pool.checkpoint import make_checkpoint_manager, restore_latest, save_state
-from jax_single_pool.config import _build_from_schema
+from jax_single_pool.config import build_from_schema
 from jax_single_pool.llama8b import llama31_8b_config, llama_decomposed_lm, llama_site_specs
 from jax_single_pool.run_state import build_optimizers, init_train_state
 from jax_single_pool.sharding import dp_mesh
@@ -171,15 +171,11 @@ def _build_reference(
     coexists with the 47 GB restored tree under the session's ~78 GB cgroup cap."""
     schema_raw = yaml.safe_load((run_dir / "experiment_config.yaml").read_text())
     schema_raw["target"]["weights_dtype"] = "bfloat16"
-    cfg = _build_from_schema(
-        schema_raw,
-        run_name=run_dir.name,
-        run_id=run_id,
-        out_dir=out_dir,
-        remat_recon_forwards=False,
-        wandb_group=None,
-        wandb_tags=(),
-    )
+    schema_raw["run_name"] = run_dir.name
+    schema_raw["run_id"] = run_id
+    schema_raw["out_dir"] = str(out_dir)
+    schema_raw.setdefault("runtime", {})["remat_recon_forwards"] = False
+    cfg = build_from_schema(schema_raw)
     llama_cfg = llama31_8b_config()
     lm = llama_decomposed_lm(llama_cfg, llama_site_specs(llama_cfg, cfg.target.sites))
     opt_vu, opt_ci, _ = build_optimizers(cfg)
@@ -190,17 +186,16 @@ def _build_reference(
 
 
 def _write_dst_config(src_run_dir: Path, dst_run_dir: Path, run_id: str) -> None:
-    """Stamp the destination run dir's config copies: a wrapper `config.yaml` carrying
-    the minted `run_id` + the destination `out_dir`, and the schema `experiment_config.yaml`
-    with `weights_dtype: bfloat16` so the current trainer's loader assertions pass."""
-    wrapper = yaml.safe_load((src_run_dir / "config.yaml").read_text())
-    wrapper["run_id"] = run_id
-    wrapper["out_dir"] = str(dst_run_dir.parent)
-    (dst_run_dir / "config.yaml").write_text(yaml.safe_dump(wrapper, sort_keys=False))
-
+    """Write the destination run dir's single self-contained `config.yaml`: the source
+    run's old schema yaml (`experiment_config.yaml`) with `weights_dtype: bfloat16` and
+    the run-instance fields (run_name, minted run_id, destination out_dir) stamped in, so
+    the current trainer's single-file loader assertions pass."""
     schema = yaml.safe_load((src_run_dir / "experiment_config.yaml").read_text())
     schema["target"]["weights_dtype"] = "bfloat16"
-    (dst_run_dir / "experiment_config.yaml").write_text(yaml.safe_dump(schema, sort_keys=False))
+    schema["run_name"] = src_run_dir.name
+    schema["run_id"] = run_id
+    schema["out_dir"] = str(dst_run_dir.parent)
+    (dst_run_dir / "config.yaml").write_text(yaml.safe_dump(schema, sort_keys=False))
 
 
 def _verify(dst_run_dir: Path, reference: TrainState, lm: Any, cfg: Any) -> None:

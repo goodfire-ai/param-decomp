@@ -2,7 +2,7 @@
 consumers that follow it: clustering, autointerp, slow-eval, app).
 
 This is the reusable "load a JAX run" pattern. It reads a run dir
-(`runs/<p-id>/{config.yaml, experiment_config.yaml, ckpts/}`), rebuilds the frozen
+(`runs/<p-id>/{config.yaml, ckpts/}`), rebuilds the frozen
 target + `DecomposedModel` from the pinned config, restores the orbax checkpoint onto a
 reference `TrainState`, and exposes the pure forward a consumer needs:
 

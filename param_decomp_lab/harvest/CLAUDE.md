@@ -15,8 +15,9 @@ for consumption" pattern — see below); its frozen forward-only pass (lower-lea
 `HarvestBatch` of NumPy arrays, fed to the `Harvester`, and written via
 `HarvestRepo.save_results`. Run *metadata* (tokenizer, layer descriptions) comes through
 `adapter_from_id`, which routes a JAX run (via `adapters.jax_pd.is_jax_run` — detects the
-`pd-jax-lm` wrapper's `torch_config:` key) to `JaxPDAdapter`, reading metadata from the
-pinned config and building only the target *architecture* (no orbax restore).
+orbax `ckpts/` dir beside the run's single `config.yaml`) to `JaxPDAdapter`, reading
+metadata from the pinned config and building only the target *architecture* (no orbax
+restore).
 
 ```bash
 # single process

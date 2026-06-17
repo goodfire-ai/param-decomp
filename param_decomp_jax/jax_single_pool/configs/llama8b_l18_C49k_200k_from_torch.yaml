@@ -1,7 +1,0 @@
-# Overnight C49k/200k run (2026-06-10) — JAX counterpart of torch p-19645bf7 via the
-# shared-config route. See the referenced yaml's header for the documented edits.
-# remat off: AOT-probed to fit at the launch topology (64 GPU, per-rank batch 8).
-torch_config: torch/llama8b_l18_C49k_200k_1pool.yaml
-run_name: jax-l18-C49k-200k
-out_dir: /mnt/data/artifacts/mechanisms/param-decomp/jax_runs
-remat_recon_forwards: false

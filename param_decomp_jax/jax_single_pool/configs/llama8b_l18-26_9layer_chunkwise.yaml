@@ -1,3 +1,15 @@
+# From-scratch 9-layer R&D decomposition of Llama-3.1-8B MLP layers 18-26 (27 targets,
+# C=49152, seq 512, B=128, 40k steps, chunkwise recon 3 chunks of 9 sites). See the
+# referenced schema yaml's header for the documented edits vs the C49k single-layer base.
+# remat ON: 9 layers' chunkwise recon forwards need rematerialization.
+# AOT memory probe (jax_single_pool/experiments/mem_probe.py, 64 B200, remat on,
+# sites_per_chunk 9, no buffer donation) per-device peak HBM = temp + args + out, seq 512:
+#   B=64  : 144.8 GiB   B=128 : 147.7 GiB   B=256 : 150.3 GiB   (all fit the 180 GiB cap)
+# (seq 2048 was 179 GiB at B=64 — over the cliff; seq 512 is what makes 27 sites fit.)
+# B=128 chosen: ~32 GiB headroom, lands on the B=128 LR precedent exactly. Probed live at
+# MEM_FRACTION 0.92.
+run_name: jax-l18-26-9L-seq512-b128-40k
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/jax_runs
 # From-scratch 9-layer R&D decomposition of Llama-3.1-8B MLP layers 18-26 inclusive
 # (9 layers x 3 matrices = 27 decomposition_targets). Derived from the single-layer-18
 # C49k run (torch/llama8b_l18_C49k_200k_1pool.yaml). DELIBERATE EDITS vs that base:
@@ -24,7 +36,7 @@
 #      over 40k).
 # Everything else (PersistentPGDReconLoss one-chunk coeff 0.5 broadcast_across_batch,
 # FaithfulnessLoss 1e5, faith warmup, eval metric set, target.weights_dtype bfloat16) is
-# identical to the C49k base. remat is on in the wrapper (remat_recon_forwards: true).
+# identical to the C49k base. remat is on (runtime.remat_recon_forwards: true).
 cadence:
   keep_last_n_checkpoints: 2
   save_every: 5000
@@ -207,6 +219,7 @@ pd:
   tied_weights: null
   use_delta_component: true
 runtime:
+  remat_recon_forwards: true
   autocast_bf16: true
   device: cuda:0
   dp: 64

@@ -1,13 +1,12 @@
-# JAX leg of the persistent-PGD pile experiment — byte-derived from the stored config of
-# torch run p-20f9fc15 (the pile_llama_simple_mlp-4L baseline; snapshot
-# runs/p-20f9fc15/experiment_config.yaml). This is the same config José used for the
-# paper's parameter decomposition (the "Interpreting Language Model Parameters" 4L Pile
-# run): param_decomp_lab/experiments/lm/pile_llama_simple_mlp-4L.yaml, run as p-20f9fc15.
-# Target: LlamaSimpleMLP 4L pile model
-# (t-9d2b8f02), all h.* sites, per-site C. Adversary: PersistentPGDReconLoss, scope
-# per_batch_per_position (-> bsc), n_warmup_steps=2, Adam(0.5,0.99) lr const 0.01 w/
-# 2.5% warmup, clamp parameterization. Identical to pile_llama_simple_mlp_4l_pgd1.yaml
-# (p-af354eb1, fresh PGD) except this one recon term. DOCUMENTED EDITS vs upstream:
+# Fresh-PGD pile run — JAX counterpart of Dan's torch p-af354eb1 (pgd1step-ss1.0)
+# via the shared-config route. See the referenced yaml's header for the documented
+# edits. Small target (4L d768): no remat needed. Launch: pd-jax-lm, 1 node.
+run_name: jax-pile4l-pgd1-ss1
+# JAX leg of Dan's fresh-PGD pile experiment — byte-derived from the stored config of
+# torch run p-af354eb1 ("pgd1step-ss1.0", the relaunch of p-a005ed60; snapshot
+# runs/p-af354eb1/experiment_config.yaml). Target: LlamaSimpleMLP 4L pile model
+# (t-9d2b8f02), all h.* sites, per-site C, PGDRecon n_steps=1 step_size=1
+# unique_per_datapoint (-> bsc). DOCUMENTED EDITS vs upstream:
 #   1. data: streaming HF danbraunai/pile-uncopyrighted-tok-shuffled -> the staged
 #      parquet artifact (datasets/pile_neox_tok_512; same dataset, same seq 512 —
 #      the JAX trainer reads pre-tokenized parquet shards only).
@@ -140,23 +139,11 @@ pd:
       type: uniform_k_subset
     type: StochasticReconSubsetLoss
   - coeff: 0.5
-    n_samples: 1
-    n_warmup_steps: 2
-    optimizer:
-      beta1: 0.5
-      beta2: 0.99
-      eps: 1.0e-08
-      lr_schedule:
-        final_val_frac: 1.0
-        fn_type: constant
-        start_val: 0.01
-        warmup_pct: 0.025
-      type: adam
-    scope:
-      type: per_batch_per_position
-    start_frac: 0.0
-    type: PersistentPGDReconLoss
-    use_sigmoid_parameterization: false
+    init: random
+    mask_scope: unique_per_datapoint
+    n_steps: 1
+    step_size: 1.0
+    type: PGDReconLoss
   - coeff: 10000000.0
     type: FaithfulnessLoss
   n_mask_samples: 1
@@ -167,11 +154,13 @@ pd:
   tied_weights: null
   use_delta_component: true
 runtime:
+  remat_recon_forwards: false
   autocast_bf16: true
   device: cuda:0
   dp: 16
 target:
   output_extract: 0
+  weights_dtype: bfloat16
   spec:
     kind: pretrained
     model_class: param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp.LlamaSimpleMLP

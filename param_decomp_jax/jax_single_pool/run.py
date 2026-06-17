@@ -50,7 +50,7 @@ from jax_single_pool.config import (
     TargetConfig,
     TMSDataConfig,
     TMSTargetConfig,
-    load_wrapper,
+    load_config,
 )
 from jax_single_pool.data import BatchSchedule, ShardServer, scan_shards
 from jax_single_pool.eval import make_eval_step
@@ -145,8 +145,8 @@ class MetricsSink:
                 entity=cfg.wandb.entity,
                 name=cfg.run_name,
                 id=cfg.run_id,
-                group=cfg.wandb_group,
-                tags=list(cfg.wandb_tags),
+                group=cfg.wandb.group,
+                tags=list(cfg.wandb.tags),
                 resume="allow",
                 config=wandb_config,
             )
@@ -684,15 +684,12 @@ def main() -> None:
     configure_hf_http_retries()
     mesh = dp_mesh()
 
-    cfg, schema_yaml_path, raw_cfg = load_wrapper(args.config)
+    cfg, raw_cfg = load_config(args.config)
 
     is_main = jax.process_index() == 0
     if is_main:
         cfg.run_dir.mkdir(parents=True, exist_ok=True)
         _pin_config_copy(cfg.run_dir, "config.yaml", args.config)
-        # the schema yaml under the torch SavedLMRun contract name, making the run
-        # dir consumable by harvest/app/postprocess (runs/<p-id>/ convention)
-        _pin_config_copy(cfg.run_dir, "experiment_config.yaml", schema_yaml_path)
         site_summary = " ".join(f"{s.name}:C{s.C}" for s in cfg.target.sites)
         shape_summary = (
             f"n_features={cfg.data.n_features}"

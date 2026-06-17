@@ -1,8 +1,0 @@
-# Persistent-PGD (bsc) pile run — JAX replication of torch p-20f9fc15 via the
-# shared-config route. Identical to pile_pgd1_from_torch.yaml except the adversary is
-# PersistentPGDReconLoss (scope per_batch_per_position -> bsc). Small target (4L d768):
-# no remat needed. Launch: pd-jax-lm, 2 nodes (16 GPUs, dp=16). out_dir is minted at
-# submit (PARAM_DECOMP_OUT_DIR/runs, current cluster); add an out_dir key only to override.
-torch_config: torch/pile_llama_simple_mlp_4l_ppgd_bsc.yaml
-run_name: ai-jax-pile4l-ppgd-bsc
-remat_recon_forwards: false

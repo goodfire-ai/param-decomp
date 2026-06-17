@@ -176,7 +176,7 @@ Every artifact for a decomposition lives under one dir per run:
 
 ```
 PARAM_DECOMP_OUT_DIR/runs/<run_id>/
-  <wrapper>.yaml             # the stamped run config (jsp-train reads it; resume byte-compares)
+  config.yaml                # the single self-contained run config (jsp-train reads it; resume byte-compares)
   ckpts/<step>/...           # orbax sharded checkpoints (JAX trainer)
   metrics.jsonl              # local logs
   harvest/h-*/...            # pd-harvest output

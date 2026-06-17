@@ -1,7 +1,8 @@
-"""The shared-config (wrapper) route — the trainer's only config surface.
+"""The single-file run-config route — the trainer's only config surface.
 
-Committed wrapper yamls deliberately carry NO `run_id` (`pd-jax-lm` mints one and
-stamps the workspace copy at submit time), so tests inject one the same way."""
+Committed configs deliberately carry NO `run_id` (`pd-jax-lm` mints one and stamps the
+workspace copy at submit time) and some leave `out_dir` absent (minted at submit), so
+tests inject both the same way `pd-jax-lm` does."""
 
 from pathlib import Path
 
@@ -9,23 +10,15 @@ import pytest
 import yaml
 
 from jax_single_pool.config import (
-    WRAPPER_KEYS,
-    WRAPPER_OPTIONAL_KEYS,
     DataConfig,
     assert_supported_weights_dtype,
     build_experiment_config,
+    load_config,
     load_run_dir_config,
-    load_wrapper,
 )
 from jax_single_pool.llama8b import mlp_family_site_cs
 from jax_single_pool.lm import SiteC
 from jax_single_pool.recon import build_recon_terms
-from param_decomp_config.jax_wrapper import (
-    RUN_ID_KEY,
-    SUBMIT_MINTED_KEYS,
-    WRAPPER_KEYS_BEFORE_SUBMIT,
-)
-from param_decomp_config.jax_wrapper import WRAPPER_KEYS as SHARED_WRAPPER_KEYS
 from param_decomp_config.lm import LMExperimentConfig
 from param_decomp_config.losses import PersistentPGDReconLossConfig
 
@@ -33,23 +26,27 @@ CONFIGS = Path(__file__).parent.parent / "configs"
 RUN_ID = "p-0123abcd"
 
 
-def _stamped_wrapper(tmp_path: Path, wrapper: Path) -> Path:
-    """A tmp copy of `wrapper` with `run_id` stamped and the torch path absolutized —
-    what the pd-jax-lm workspace copy looks like."""
-    raw = yaml.safe_load(wrapper.read_text())
-    raw["torch_config"] = str((wrapper.parent / raw["torch_config"]).resolve())
+def _stamped_config(tmp_path: Path, config: Path) -> Path:
+    """A tmp copy of `config` with `run_id` + (if absent) `out_dir` stamped — what the
+    pd-jax-lm workspace copy looks like at submit time."""
+    raw = yaml.safe_load(config.read_text())
     raw["run_id"] = RUN_ID
-    stamped = tmp_path / wrapper.name
+    if raw.get("out_dir") is None:
+        raw["out_dir"] = "/tmp/out"
+    stamped = tmp_path / config.name
     stamped.write_text(yaml.safe_dump(raw))
     return stamped
 
 
-def test_b128_wrapper_converts(tmp_path: Path):
-    converted, torch_yaml_path, torch_raw = load_wrapper(
-        _stamped_wrapper(tmp_path, CONFIGS / "llama8b_l18_b128_cmp32_from_torch.yaml")
-    )
-    assert torch_yaml_path == (CONFIGS / "torch" / "llama8b_l18_b128_cmp32_1pool.yaml").resolve()
-    assert torch_raw["pd"]["batch_size"] == 128
+def _reference_lm_raw():
+    raw = yaml.safe_load((CONFIGS / "llama8b_l18_b128_cmp32.yaml").read_text())
+    raw["run_id"] = RUN_ID
+    return raw
+
+
+def test_b128_config_converts(tmp_path: Path):
+    converted, raw = load_config(_stamped_config(tmp_path, CONFIGS / "llama8b_l18_b128_cmp32.yaml"))
+    assert raw["pd"]["batch_size"] == 128
     assert converted.run_name == "jax-l18-b128-cmp32-from-torch"
     assert converted.data.global_batch == 128
     assert converted.target.sites == mlp_family_site_cs(18, 18, 24576)
@@ -67,15 +64,8 @@ def test_b128_wrapper_converts(tmp_path: Path):
     ]
 
 
-def _reference_torch_cfg():
-    from param_decomp_config.lm import LMExperimentConfig
-
-    raw = yaml.safe_load((CONFIGS / "torch" / "llama8b_l18_b128_cmp32_1pool.yaml").read_text())
-    return LMExperimentConfig(**raw), raw
-
-
 def test_eval_block_maps_and_defers_offline_metrics(capsys: pytest.CaptureFixture[str]):
-    torch_cfg, raw = _reference_torch_cfg()
+    raw = _reference_lm_raw()
     raw["eval"] = {
         "batch_size": 128,
         "every": 1000,
@@ -96,10 +86,7 @@ def test_eval_block_maps_and_defers_offline_metrics(capsys: pytest.CaptureFixtur
             {"type": "ComponentActivationDensity", "ci_alive_threshold": 0.0},
         ],
     }
-    torch_cfg = type(torch_cfg)(**raw)
-    cfg = build_experiment_config(
-        torch_cfg, run_name="t", run_id=RUN_ID, out_dir=Path("/tmp"), remat_recon_forwards=True
-    )
+    cfg = build_experiment_config(LMExperimentConfig(**raw))
     assert cfg.eval is not None
     assert (cfg.eval.batch_size, cfg.eval.every, cfg.eval.n_steps) == (128, 1000, 1)
     assert cfg.eval.rounding_threshold == 0.0 and cfg.eval.ci_alive_threshold == 0.0
@@ -108,7 +95,7 @@ def test_eval_block_maps_and_defers_offline_metrics(capsys: pytest.CaptureFixtur
 
 
 def test_unsupported_settings_refuse():
-    torch_cfg, raw = _reference_torch_cfg()
+    raw = _reference_lm_raw()
 
     hidden_acts_training_loss = dict(
         raw,
@@ -119,10 +106,7 @@ def test_unsupported_settings_refuse():
         ),
     )
     with pytest.raises(AssertionError, match="unsupported training loss"):
-        build_experiment_config(
-            type(torch_cfg)(**hidden_acts_training_loss), run_name="t", run_id=RUN_ID,
-            out_dir=Path("/tmp"), remat_recon_forwards=True,
-        )  # fmt: skip
+        build_experiment_config(LMExperimentConfig(**hidden_acts_training_loss))
 
     sigmoid_ppgd = dict(
         raw,
@@ -137,10 +121,7 @@ def test_unsupported_settings_refuse():
         ),
     )
     with pytest.raises(AssertionError):
-        build_experiment_config(
-            type(torch_cfg)(**sigmoid_ppgd), run_name="t", run_id=RUN_ID, out_dir=Path("/tmp"),
-            remat_recon_forwards=True,
-        )  # fmt: skip
+        build_experiment_config(LMExperimentConfig(**sigmoid_ppgd))
 
     non_site_target = dict(
         raw,
@@ -150,10 +131,7 @@ def test_unsupported_settings_refuse():
         ),
     )
     with pytest.raises(AssertionError, match="unsupported decomposition target"):
-        build_experiment_config(
-            type(torch_cfg)(**non_site_target), run_name="t", run_id=RUN_ID, out_dir=Path("/tmp"),
-            remat_recon_forwards=True,
-        )  # fmt: skip
+        build_experiment_config(LMExperimentConfig(**non_site_target))
 
     embedding_target = dict(
         raw,
@@ -163,28 +141,24 @@ def test_unsupported_settings_refuse():
         ),
     )
     with pytest.raises(AssertionError, match="unsupported decomposition target"):
-        build_experiment_config(
-            type(torch_cfg)(**embedding_target), run_name="t", run_id=RUN_ID, out_dir=Path("/tmp"),
-            remat_recon_forwards=True,
-        )  # fmt: skip
+        build_experiment_config(LMExperimentConfig(**embedding_target))
 
 
 def test_unsupported_model_family_refuses_and_supported_families_dispatch():
     """E23 (PARITY_MATRIX §11 row 2): only Llama-3.1-8B (`hf`/`hf_weights_in_vendored`
     → `TargetConfig`) and `LlamaSimpleMLP` (`pretrained` →
     `LlamaSimpleMLPTargetConfig`) convert; every other family is refused at convert
-    time. The torch schema's `LMTargetSpec` discriminated union still validates a
-    GPT-2 spec (it's a well-formed `kind`), so the refusal must come from
-    `_resolve_target`'s per-family asserts, not pydantic."""
+    time. The schema's `LMTargetSpec` discriminated union still validates a GPT-2 spec
+    (it's a well-formed `kind`), so the refusal must come from `_resolve_target`'s
+    per-family asserts, not pydantic."""
     from jax_single_pool.config import LlamaSimpleMLPTargetConfig, TargetConfig
 
-    torch_cfg, raw = _reference_torch_cfg()
+    raw = _reference_lm_raw()
 
     def _converted_target(spec: dict[str, str]):
         cfg = build_experiment_config(
-            type(torch_cfg)(**dict(raw, target=dict(raw["target"], spec=spec))),
-            run_name="t", run_id=RUN_ID, out_dir=Path("/tmp"), remat_recon_forwards=True,
-        )  # fmt: skip
+            LMExperimentConfig(**dict(raw, target=dict(raw["target"], spec=spec)))
+        )
         return cfg.target
 
     vendored_llama = _converted_target(
@@ -245,9 +219,9 @@ def test_unsupported_model_family_refuses_and_supported_families_dispatch():
 
 def test_decaying_persistent_source_schedule_refuses():
     """The JAX source schedule is `warmup_then_constant_lr` (no post-warmup decay);
-    a torch PPGD source `lr_schedule` that decays would silently flatten, so the
-    conversion gate must refuse it (issue #646; matrix S13/S20)."""
-    torch_cfg, raw = _reference_torch_cfg()
+    a source `lr_schedule` that decays would silently flatten, so the conversion gate
+    must refuse it (issue #646; matrix S13/S20)."""
+    raw = _reference_lm_raw()
     decaying_source = dict(
         raw,
         pd=dict(
@@ -271,16 +245,13 @@ def test_decaying_persistent_source_schedule_refuses():
         ),
     )
     with pytest.raises(AssertionError):
-        build_experiment_config(
-            type(torch_cfg)(**decaying_source), run_name="t", run_id=RUN_ID,
-            out_dir=Path("/tmp"), remat_recon_forwards=True,
-        )  # fmt: skip
+        build_experiment_config(LMExperimentConfig(**decaying_source))
 
 
 def test_arbitrary_sites_with_per_site_c_convert():
     """Attention + MLP sites across non-contiguous layers with heterogeneous C —
     the general site space this trainer now implements."""
-    torch_cfg, raw = _reference_torch_cfg()
+    raw = _reference_lm_raw()
     general = dict(
         raw,
         pd=dict(
@@ -292,10 +263,7 @@ def test_arbitrary_sites_with_per_site_c_convert():
             ],
         ),
     )
-    cfg = build_experiment_config(
-        type(torch_cfg)(**general), run_name="t", run_id=RUN_ID, out_dir=Path("/tmp"),
-        remat_recon_forwards=True,
-    )  # fmt: skip
+    cfg = build_experiment_config(LMExperimentConfig(**general))
     assert cfg.target.sites == (
         SiteC("layers.18.self_attn.q_proj", 128),
         SiteC("layers.18.self_attn.v_proj", 32),
@@ -303,12 +271,10 @@ def test_arbitrary_sites_with_per_site_c_convert():
     )
 
 
-def test_c49k_yaml_converts(tmp_path: Path):
-    """The C49k/200k yaml (raw-HF target spec, bf16 weights_dtype, `model.`-prefixed
+def test_c49k_config_converts(tmp_path: Path):
+    """The C49k/200k config (raw-HF target spec, bf16 weights_dtype, `model.`-prefixed
     site patterns) must convert cleanly."""
-    converted, _torch_path, _raw = load_wrapper(
-        _stamped_wrapper(tmp_path, CONFIGS / "llama8b_l18_C49k_200k_from_torch.yaml")
-    )
+    converted, _raw = load_config(_stamped_config(tmp_path, CONFIGS / "llama8b_l18_C49k_200k.yaml"))
     assert converted.target.sites == mlp_family_site_cs(18, 18, 49152)
     assert converted.steps == 200000
     assert isinstance(converted.data, DataConfig)
@@ -318,16 +284,31 @@ def test_c49k_yaml_converts(tmp_path: Path):
     assert converted.wandb is not None and converted.wandb.entity is None
 
 
-def test_tms_wrapper_converts(tmp_path: Path):
-    """The TMS wrapper dispatches to the TMS schema (structural `n_features` marker),
+def test_nine_layer_config_converts(tmp_path: Path):
+    """The launch-critical 9-layer chunkwise config: 27 MLP sites (layers 18-26), seq
+    512, B=128, 40k steps, eps 1e-6, comp 1.5e-4 / ci_fn 5e-5, remat on."""
+    converted, _raw = load_config(
+        _stamped_config(tmp_path, CONFIGS / "llama8b_l18-26_9layer_chunkwise.yaml")
+    )
+    assert converted.run_name == "jax-l18-26-9L-seq512-b128-40k"
+    assert len(converted.target.sites) == 27
+    assert isinstance(converted.data, DataConfig)
+    assert converted.data.seq_len == 512 and converted.data.global_batch == 128
+    assert converted.steps == 40000
+    assert converted.vu_optimizer.lr == 1.5e-4 and converted.ci_optimizer.lr == 5e-5
+    assert converted.remat_recon_forwards is True
+    imp = next(m for m in converted.loss_metrics if m.type == "ImportanceMinimalityLoss")
+    assert imp.eps == 1e-6 and imp.coeff == 5e-6
+
+
+def test_tms_config_converts(tmp_path: Path):
+    """The TMS config dispatches to the TMS schema (structural `n_hidden` marker),
     builds the vendored TMS target (untied linear1/linear2 sites), the layerwise-MLP CI
     arch, and the positionless synthetic data config."""
     from jax_single_pool.ci_fn_mlp import MLPCIArch
     from jax_single_pool.config import TMSDataConfig, TMSTargetConfig
 
-    converted, _torch_path, _raw = load_wrapper(
-        _stamped_wrapper(tmp_path, CONFIGS / "tms_5-2_from_torch.yaml")
-    )
+    converted, _raw = load_config(_stamped_config(tmp_path, CONFIGS / "tms_5-2.yaml"))
     assert isinstance(converted.target, TMSTargetConfig)
     assert converted.target.n_features == 5 and converted.target.n_hidden == 2
     assert converted.target.sites == (SiteC("linear1", 20), SiteC("linear2", 20))
@@ -350,12 +331,10 @@ def test_fp32_frozen_target_is_refused(tmp_path: Path):
     """A config requesting an fp32 frozen target must crash at the train/submit
     boundary — the bf16-only targets have no fp32 capability, and there is no silent
     downgrade (issue #727). Consumption paths (`load_run_dir_config`) ignore the field,
-    so the guard lives in the wrapper route, not the shared builder."""
-    wrapper = _stamped_wrapper(tmp_path, CONFIGS / "llama8b_l18_C49k_200k_from_torch.yaml")
-    schema_yaml_path = (
-        wrapper.parent / yaml.safe_load(wrapper.read_text())["torch_config"]
-    ).resolve()
-    cfg = LMExperimentConfig(**yaml.safe_load(schema_yaml_path.read_text()))
+    so the guard lives in the build route, not a reload path."""
+    raw = yaml.safe_load((CONFIGS / "llama8b_l18_C49k_200k.yaml").read_text())
+    raw["run_id"] = RUN_ID
+    cfg = LMExperimentConfig(**raw)
     cfg = cfg.model_copy(
         update={"target": cfg.target.model_copy(update={"weights_dtype": "float32"})}
     )
@@ -363,50 +342,31 @@ def test_fp32_frozen_target_is_refused(tmp_path: Path):
         assert_supported_weights_dtype(cfg)
 
 
-def test_load_run_dir_config_rebuilds_wrapper_runs(tmp_path: Path):
-    """The exporter reads run dirs via `load_run_dir_config`; runs pin the wrapper as
-    config.yaml + the torch yaml as experiment_config.yaml (run.py's
-    `_pin_config_copy`), and the rebuilt config must equal the launch-time conversion."""
-    wrapper = _stamped_wrapper(tmp_path, CONFIGS / "llama8b_l18_C49k_200k_from_torch.yaml")
-    expected, torch_yaml_path, _ = load_wrapper(wrapper)
+def test_load_run_dir_config_rebuilds_runs(tmp_path: Path):
+    """Tools read run dirs via `load_run_dir_config`; runs pin the single self-contained
+    config as `config.yaml` (run.py's `_pin_config_copy`), and the rebuilt config must
+    equal the launch-time conversion."""
+    stamped = _stamped_config(tmp_path, CONFIGS / "llama8b_l18_C49k_200k.yaml")
+    expected, _ = load_config(stamped)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    (run_dir / "config.yaml").write_text(wrapper.read_text())
-    (run_dir / "experiment_config.yaml").write_text(torch_yaml_path.read_text())
+    (run_dir / "config.yaml").write_text(stamped.read_text())
     assert load_run_dir_config(run_dir) == expected
 
 
-def test_wrapper_run_id_required_and_drives_identity(tmp_path: Path):
-    """The run dir and wandb id are the p-id (torch runs/<id>/ convention); the human
-    name stays the wandb display name. Missing or malformed run_id refuses."""
-    wrapper = _stamped_wrapper(tmp_path, CONFIGS / "llama8b_l18_C49k_200k_from_torch.yaml")
-    cfg, _, _ = load_wrapper(wrapper)
+def test_run_id_required_and_drives_identity(tmp_path: Path):
+    """The run dir and wandb id are the p-id (runs/<id>/ convention); the human name
+    stays the wandb display name. Missing or malformed run_id refuses at build time."""
+    cfg, _ = load_config(_stamped_config(tmp_path, CONFIGS / "llama8b_l18_C49k_200k.yaml"))
     assert cfg.run_id == RUN_ID
     assert cfg.run_dir.name == RUN_ID
     assert cfg.run_name == "jax-l18-C49k-200k"
 
-    with pytest.raises(AssertionError, match="keys must be"):
-        load_wrapper(CONFIGS / "llama8b_l18_C49k_200k_from_torch.yaml")  # no run_id
-
-    bad_id = tmp_path / "bad_id.yaml"
-    bad_id.write_text(wrapper.read_text().replace(RUN_ID, "run42"))
+    # the committed config carries no run_id (minted at submit) → build refuses
     with pytest.raises(AssertionError, match="run_id must be"):
-        load_wrapper(bad_id)
+        load_config(CONFIGS / "llama8b_l18_C49k_200k.yaml")
 
-
-def test_loader_uses_shared_wrapper_key_set():
-    """The runtime loader's key sets are the shared constants (no hand-copied
-    literals); a hand-authored wrapper carries the required keys minus run_id, and
-    the submit-minted keys are exactly run_id + the optional wandb knobs."""
-    assert WRAPPER_KEYS is SHARED_WRAPPER_KEYS
-    assert WRAPPER_KEYS_BEFORE_SUBMIT | {RUN_ID_KEY} == WRAPPER_KEYS
-    assert {RUN_ID_KEY} | WRAPPER_OPTIONAL_KEYS == SUBMIT_MINTED_KEYS
-
-
-def test_loader_rejects_unexpected_key(tmp_path: Path):
-    wrapper = _stamped_wrapper(tmp_path, CONFIGS / "llama8b_l18_C49k_200k_from_torch.yaml")
-    raw = yaml.safe_load(wrapper.read_text())
-    raw["bogus_key"] = "x"
-    wrapper.write_text(yaml.safe_dump(raw))
-    with pytest.raises(AssertionError, match="keys must be"):
-        load_wrapper(wrapper)
+    bad_id = _stamped_config(tmp_path, CONFIGS / "llama8b_l18_C49k_200k.yaml")
+    bad_id.write_text(bad_id.read_text().replace(RUN_ID, "run42"))
+    with pytest.raises(AssertionError, match="run_id must be"):
+        load_config(bad_id)

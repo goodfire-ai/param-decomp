@@ -1,5 +1,82 @@
 # ResidualMLP 1-layer SMOKE wrapper — jsp-train full-loop validation (pretrain + decompose
 # + ckpt + in-loop target-CI metric).
-torch_config: torch/resid_mlp_1l_SMOKE.yaml
 run_name: jax-resid-mlp-1l-smoke
-remat_recon_forwards: false
+# ResidualMLP 1-layer SMOKE PD decomposition — the clean recovers-identity regime
+# (d_mlp == n_features == d_embed, no superposition), tiny step count for a jsp-train
+# smoke (full-loop composition-root validation: pretrain -> faith warmup -> step loop ->
+# checkpoint -> in-loop target-CI metric). 1 GPU / CPU.
+pd:
+  seed: 0
+  n_mask_samples: 1
+  sampling: continuous
+  ci_config:
+    mode: layerwise
+    fn_type: mlp
+    hidden_dims:
+    - 16
+  sigmoid_type: leaky_hard
+  use_delta_component: true
+  tied_weights: null
+  decomposition_targets:
+  - module_pattern: layers.0.mlp_in
+    C: 5
+  - module_pattern: layers.0.mlp_out
+    C: 5
+  loss_metrics:
+  - type: ImportanceMinimalityLoss
+    coeff: 3e-3
+    pnorm: 1.0
+    beta: 0.0
+    p_anneal_start_frac: 0.0
+    p_anneal_final_p: 1.0
+    p_anneal_end_frac: 1.0
+  - type: StochasticReconLoss
+    coeff: 1.0
+  - type: StochasticReconLayerwiseLoss
+    coeff: 1.0
+  - type: FaithfulnessLoss
+    coeff: 1.0
+  batch_size: 256
+  steps: 20
+  components_optimizer:
+    grad_clip_norm: 0.01
+    lr_schedule:
+      start_val: 1e-3
+      fn_type: cosine
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 1e-3
+      fn_type: cosine
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+  faithfulness_warmup_steps: 50
+  faithfulness_warmup_lr: 0.01
+  faithfulness_warmup_weight_decay: 0.0
+runtime:
+  remat_recon_forwards: false
+  autocast_bf16: true
+  device: cuda
+  dp: null
+cadence:
+  train_log_every: 5
+  save_every: 10
+  keep_last_n_checkpoints: 2
+target:
+  n_features: 5
+  d_embed: 5
+  d_mlp: 5
+  n_layers: 1
+  act_fn_name: relu
+  in_bias: false
+  out_bias: false
+  fixed_identity_embedding: true
+  pretrain:
+    steps: 500
+    batch_size: 256
+    lr: 1e-2
+    seed: 0
+data:
+  feature_probability: 0.05
+  data_generation_type: at_least_zero_active

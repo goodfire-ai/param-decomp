@@ -1,32 +1,25 @@
 """The trainer's internal experiment config, built DIRECTLY from the canonical
 `param_decomp_config` schema.
 
-The yaml surface is the shared torch-free schema (`LMExperimentConfig`, reached via a
-small wrapper yaml carrying the run identity + jax-runtime knobs the schema cannot
-express); this module reads that schema directly and maps the subspace this trainer
-implements onto the dataclasses below, ASSERTING loudly on anything else — a config
-either converts exactly or refuses to run, never silently approximates. The loss list
-is the SHARED pydantic configs passed through verbatim (`build_recon_terms` maps them
-onto recon terms); the dataclasses here carry only the jax-runtime knobs that have
-no canonical-schema home (remat, checkpoint cadence, the CI-fn architecture extraction).
+The yaml surface is the shared torch-free schema (`LMExperimentConfig` and its TMS /
+ResidMLP siblings) — ONE self-contained file per run carrying the algorithm schema
+(`pd`/`data`/`eval`/`cadence`/`runtime`/`target`/`wandb`) PLUS the run-instance fields
+the schema now also holds: top-level `run_name` / `run_id` / `out_dir`, the
+`runtime.remat_recon_forwards` memory/compute knob, and `wandb.group` / `wandb.tags`.
+This module reads that schema directly and maps the subspace this trainer implements
+onto the dataclasses below, ASSERTING loudly on anything else — a config either converts
+exactly or refuses to run, never silently approximates. The loss list is the SHARED
+pydantic configs passed through verbatim (`build_recon_terms` maps them onto recon
+terms); the dataclasses here carry only the jax-runtime knobs the canonical schema can't
+express (checkpoint cadence, the CI-fn architecture extraction).
 
-Wrapper entry (see `load_wrapper`): a small yaml carrying what the canonical schema
-cannot express —
-
-    torch_config: <path, relative to the wrapper>   # the LMExperimentConfig yaml
-    run_id: p-1a2b3c4d        # canonical id (generate: secrets.token_hex(4)); run dir
-                              # name + wandb id — the runs/<id>/ convention
-    run_name: my-run          # human-readable wandb display name
-    out_dir: /mnt/data/.../param-decomp/runs
-    remat_recon_forwards: false                     # jax-runtime memory/compute trade
-    wandb_group: my-sweep     # optional; wandb UI group (pd-jax-lm --group)
-    wandb_tags: [a, b]        # optional; wandb tags (pd-jax-lm --tags a,b)
-
-`jsp-train` detects the `torch_config` key and routes here (`load_wrapper`).
+`run_id` / `out_dir` are `None` in a hand-authored config; `pd-jax-lm` mints them at
+submit time and stamps the workspace copy, which `jsp-train` then resumes by
+byte-comparing the pinned `config.yaml`.
 
 Knowingly ignored canonical-schema fields (runtime details with no JAX analog, or
 JAX-side equivalents derived elsewhere): `runtime.device/dp` (GSPMD owns placement),
-`target.activation_checkpointing` (the wrapper's `remat_recon_forwards` is the explicit
+`target.activation_checkpointing` (`runtime.remat_recon_forwards` is the explicit
 analog), `target.output_extract`, `data.buffer_size/shuffle_each_epoch/train_split/
 eval_split` (the JAX data schedule is deterministic by construction), `eval.slow_every/
 slow_on_first_step` (no slow in-loop metrics; plot/slow metrics run offline via
@@ -56,7 +49,6 @@ from param_decomp_config.eval_metrics import (
     StochasticAttnPatternsReconLossConfig,
 )
 from param_decomp_config.experiment import WandbConfig
-from param_decomp_config.jax_wrapper import WRAPPER_KEYS, WRAPPER_OPTIONAL_KEYS
 from param_decomp_config.lm import (
     HFTarget,
     HFWeightsInVendored,
@@ -281,11 +273,6 @@ class ExperimentConfig:
     cadence: CadenceConfig
     eval: EvalConfig | None
     wandb: WandbConfig | None
-    wandb_group: str | None
-    """wandb UI group (`pd-jax-lm --group`); None = ungrouped. torch threads the
-    same CLI flag to `wandb.init(group=...)`."""
-    wandb_tags: tuple[str, ...]
-    """wandb tags (`pd-jax-lm --tags a,b,c`, comma-split); empty = untagged."""
 
     @property
     def run_dir(self) -> Path:
@@ -552,19 +539,24 @@ def _convert_shared(
     )
 
 
-def build_experiment_config(
-    cfg: LMExperimentConfig,
-    run_name: str,
-    run_id: str,
-    out_dir: Path,
-    remat_recon_forwards: bool,
-    wandb_group: str | None = None,
-    wandb_tags: tuple[str, ...] = (),
-) -> ExperimentConfig:
+def _run_instance(
+    cfg: "LMExperimentConfig | TMSExperimentConfig | ResidMLPExperimentConfig",
+) -> tuple[str, str, Path]:
+    """The resolved run identity (`run_name`, `run_id`, `out_dir`). `run_id` / `out_dir`
+    are minted + stamped by `pd-jax-lm`; a config reaching the trainer must carry both."""
+    assert cfg.run_id is not None and _RUN_ID_PATTERN.match(cfg.run_id), (
+        f"run_id must be p-<8hex>, got {cfg.run_id!r} (pd-jax-lm stamps it at submit)"
+    )
+    assert cfg.out_dir is not None, "out_dir unset (pd-jax-lm mints it at submit)"
+    return cfg.run_name, cfg.run_id, cfg.out_dir
+
+
+def build_experiment_config(cfg: LMExperimentConfig) -> ExperimentConfig:
     target = _resolve_target(cfg)
     shared = _convert_shared(cfg)
     loss_metrics = _losses(cfg, tuple(sc.name for sc in target.sites))
     data = _data(cfg)
+    run_name, run_id, out_dir = _run_instance(cfg)
 
     return ExperimentConfig(
         run_name=run_name,
@@ -577,7 +569,7 @@ def build_experiment_config(
         loss_metrics=loss_metrics,
         n_mask_samples=cfg.pd.n_mask_samples,
         sampling=cfg.pd.sampling,
-        remat_recon_forwards=remat_recon_forwards,
+        remat_recon_forwards=cfg.runtime.remat_recon_forwards,
         vu_optimizer=shared.vu_optimizer,
         ci_optimizer=shared.ci_optimizer,
         ci_fn=_ci_arch(cfg, data.seq_len),
@@ -585,8 +577,6 @@ def build_experiment_config(
         cadence=shared.cadence,
         eval=_eval(cfg),
         wandb=cfg.wandb,
-        wandb_group=wandb_group,
-        wandb_tags=wandb_tags,
     )
 
 
@@ -609,15 +599,7 @@ def _tms_target(cfg: TMSExperimentConfig) -> TMSTargetConfig:
     )
 
 
-def build_tms_experiment_config(
-    cfg: TMSExperimentConfig,
-    run_name: str,
-    run_id: str,
-    out_dir: Path,
-    remat_recon_forwards: bool,
-    wandb_group: str | None = None,
-    wandb_tags: tuple[str, ...] = (),
-) -> ExperimentConfig:
+def build_tms_experiment_config(cfg: TMSExperimentConfig) -> ExperimentConfig:
     target = _tms_target(cfg)
     shared = _convert_shared(cfg)
     loss_metrics = tuple(cfg.pd.loss_metrics)
@@ -634,6 +616,7 @@ def build_tms_experiment_config(
         feature_probability=cfg.data.feature_probability,
         data_generation_type=cfg.data.data_generation_type,
     )
+    run_name, run_id, out_dir = _run_instance(cfg)
     return ExperimentConfig(
         run_name=run_name,
         run_id=run_id,
@@ -645,7 +628,7 @@ def build_tms_experiment_config(
         loss_metrics=loss_metrics,
         n_mask_samples=cfg.pd.n_mask_samples,
         sampling=cfg.pd.sampling,
-        remat_recon_forwards=remat_recon_forwards,
+        remat_recon_forwards=cfg.runtime.remat_recon_forwards,
         vu_optimizer=shared.vu_optimizer,
         ci_optimizer=shared.ci_optimizer,
         ci_fn=_layerwise_mlp_ci_arch(cfg),
@@ -653,8 +636,6 @@ def build_tms_experiment_config(
         cadence=shared.cadence,
         eval=None,
         wandb=cfg.wandb,
-        wandb_group=wandb_group,
-        wandb_tags=wandb_tags,
     )
 
 
@@ -682,15 +663,7 @@ def _resid_mlp_target(cfg: ResidMLPExperimentConfig) -> ResidMLPTargetConfig:
     )
 
 
-def build_resid_mlp_experiment_config(
-    cfg: ResidMLPExperimentConfig,
-    run_name: str,
-    run_id: str,
-    out_dir: Path,
-    remat_recon_forwards: bool,
-    wandb_group: str | None = None,
-    wandb_tags: tuple[str, ...] = (),
-) -> ExperimentConfig:
+def build_resid_mlp_experiment_config(cfg: ResidMLPExperimentConfig) -> ExperimentConfig:
     target = _resid_mlp_target(cfg)
     shared = _convert_shared(cfg)
     loss_metrics = tuple(cfg.pd.loss_metrics)
@@ -707,6 +680,7 @@ def build_resid_mlp_experiment_config(
         feature_probability=cfg.data.feature_probability,
         data_generation_type=cfg.data.data_generation_type,
     )
+    run_name, run_id, out_dir = _run_instance(cfg)
     return ExperimentConfig(
         run_name=run_name,
         run_id=run_id,
@@ -718,7 +692,7 @@ def build_resid_mlp_experiment_config(
         loss_metrics=loss_metrics,
         n_mask_samples=cfg.pd.n_mask_samples,
         sampling=cfg.pd.sampling,
-        remat_recon_forwards=remat_recon_forwards,
+        remat_recon_forwards=cfg.runtime.remat_recon_forwards,
         vu_optimizer=shared.vu_optimizer,
         ci_optimizer=shared.ci_optimizer,
         ci_fn=_layerwise_mlp_ci_arch(cfg),
@@ -726,8 +700,6 @@ def build_resid_mlp_experiment_config(
         cadence=shared.cadence,
         eval=None,
         wandb=cfg.wandb,
-        wandb_group=wandb_group,
-        wandb_tags=wandb_tags,
     )
 
 
@@ -751,110 +723,33 @@ def _is_resid_mlp_schema(schema_raw: dict[str, Any]) -> bool:
     return isinstance(target, dict) and "d_embed" in target
 
 
-def _build_from_schema(
-    schema_raw: dict[str, Any],
-    run_name: str,
-    run_id: str,
-    out_dir: Path,
-    remat_recon_forwards: bool,
-    wandb_group: str | None,
-    wandb_tags: tuple[str, ...],
-) -> ExperimentConfig:
+def build_from_schema(schema_raw: dict[str, Any]) -> ExperimentConfig:
+    """Validate a single self-contained run config (the canonical schema + run-instance
+    fields) and convert it to the trainer's `ExperimentConfig`. Dispatches on the
+    structural target marker (`_is_tms_schema` / `_is_resid_mlp_schema`)."""
     if _is_tms_schema(schema_raw):
-        return build_tms_experiment_config(
-            TMSExperimentConfig(**schema_raw),
-            run_name=run_name,
-            run_id=run_id,
-            out_dir=out_dir,
-            remat_recon_forwards=remat_recon_forwards,
-            wandb_group=wandb_group,
-            wandb_tags=wandb_tags,
-        )
+        return build_tms_experiment_config(TMSExperimentConfig(**schema_raw))
     if _is_resid_mlp_schema(schema_raw):
-        return build_resid_mlp_experiment_config(
-            ResidMLPExperimentConfig(**schema_raw),
-            run_name=run_name,
-            run_id=run_id,
-            out_dir=out_dir,
-            remat_recon_forwards=remat_recon_forwards,
-            wandb_group=wandb_group,
-            wandb_tags=wandb_tags,
-        )
+        return build_resid_mlp_experiment_config(ResidMLPExperimentConfig(**schema_raw))
     cfg = LMExperimentConfig(**schema_raw)
     assert_supported_weights_dtype(cfg)
-    return build_experiment_config(
-        cfg,
-        run_name=run_name,
-        run_id=run_id,
-        out_dir=out_dir,
-        remat_recon_forwards=remat_recon_forwards,
-        wandb_group=wandb_group,
-        wandb_tags=wandb_tags,
-    )
+    return build_experiment_config(cfg)
 
 
-def _wandb_group_tags(raw: dict[str, Any]) -> tuple[str | None, tuple[str, ...]]:
-    """The wandb UI knobs (`pd-jax-lm --group`/`--tags`) are stamped into the wrapper
-    at submit time, like `run_id`; both default to absent for hand-written wrappers."""
-    group = raw.get("wandb_group")
-    assert group is None or isinstance(group, str), group
-    tags = raw.get("wandb_tags", [])
-    assert isinstance(tags, list) and all(isinstance(t, str) for t in tags), tags
-    return group, tuple(tags)
+def load_config(config_path: Path) -> tuple[ExperimentConfig, dict[str, Any]]:
+    """Parse a single self-contained run YAML (the canonical schema + top-level
+    `run_name`/`run_id`/`out_dir`, `runtime.remat_recon_forwards`, `wandb.group`/`tags`)
+    -> (trainer config, raw dict for wandb logging).
 
-
-def load_wrapper(wrapper_path: Path) -> tuple[ExperimentConfig, Path, dict[str, Any]]:
-    """Parse a wrapper YAML (see module docstring) -> (config, schema yaml path, raw
-    schema dict for wandb). The schema path is resolved relative to the wrapper file.
-
-    `run_id` is the canonical `p-<8hex>` identity (torch `generate_run_id` format):
-    run dir name + wandb run id, stamped into the workspace's wrapper copy by
-    `pd-jax-lm` at submit time, so resumes derive the same identity and the
-    byte-compare pins it."""
-    raw = yaml.safe_load(wrapper_path.read_text())
-    assert WRAPPER_KEYS <= set(raw) <= WRAPPER_KEYS | WRAPPER_OPTIONAL_KEYS, (
-        f"{wrapper_path}: keys must be {sorted(WRAPPER_KEYS)} "
-        f"(optional: {sorted(WRAPPER_OPTIONAL_KEYS)}), got {sorted(raw)}"
-    )
-    run_id = raw["run_id"]
-    assert _RUN_ID_PATTERN.match(run_id), f"run_id must be p-<8hex>, got {run_id!r}"
-    schema_yaml_path = (wrapper_path.parent / raw["torch_config"]).resolve()
-    assert schema_yaml_path.exists(), f"config not found: {schema_yaml_path}"
-    schema_raw = yaml.safe_load(schema_yaml_path.read_text())
-    wandb_group, wandb_tags = _wandb_group_tags(raw)
-    experiment_config = _build_from_schema(
-        schema_raw,
-        run_name=raw["run_name"],
-        run_id=run_id,
-        out_dir=Path(raw["out_dir"]),
-        remat_recon_forwards=raw["remat_recon_forwards"],
-        wandb_group=wandb_group,
-        wandb_tags=wandb_tags,
-    )
-    return experiment_config, schema_yaml_path, schema_raw
+    `run_id` is the canonical `p-<8hex>` identity (run dir name + wandb run id) — minted
+    and stamped into the workspace copy by `pd-jax-lm` at submit time, so resumes derive
+    the same identity and the byte-compare pins it."""
+    schema_raw = yaml.safe_load(config_path.read_text())
+    return build_from_schema(schema_raw), schema_raw
 
 
 def load_run_dir_config(run_dir: Path) -> ExperimentConfig:
-    """Rebuild a run's `ExperimentConfig` from its pinned config copies (for tools
-    that read finished/live run dirs, e.g. the exporter).
-
-    A run dir pins the wrapper as `config.yaml` and the referenced schema yaml beside
-    it as `experiment_config.yaml` (the torch `SavedLMRun` contract name); the
-    wrapper's own (launch-relative) path field is ignored — the pinned copy is the
-    source of truth."""
-    raw = yaml.safe_load((run_dir / "config.yaml").read_text())
-    assert WRAPPER_KEYS <= set(raw) <= WRAPPER_KEYS | WRAPPER_OPTIONAL_KEYS, (
-        f"{run_dir}/config.yaml: keys must be {sorted(WRAPPER_KEYS)} "
-        f"(optional: {sorted(WRAPPER_OPTIONAL_KEYS)}), got {sorted(raw)}"
-    )
-    schema_raw = yaml.safe_load((run_dir / "experiment_config.yaml").read_text())
-    wandb_group, wandb_tags = _wandb_group_tags(raw)
-    return _build_from_schema(
-        schema_raw,
-        run_name=raw["run_name"],
-        run_id=raw["run_id"],
-        out_dir=Path(raw["out_dir"]),
-        remat_recon_forwards=raw["remat_recon_forwards"],
-        wandb_group=wandb_group,
-        wandb_tags=wandb_tags,
-    )
+    """Rebuild a run's `ExperimentConfig` from its single pinned `config.yaml` (for tools
+    that read finished/live run dirs, e.g. harvest / slow-eval)."""
+    schema_raw = yaml.safe_load((run_dir / "config.yaml").read_text())
+    return build_from_schema(schema_raw)

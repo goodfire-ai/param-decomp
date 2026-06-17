@@ -511,10 +511,9 @@ def test_pretrained_target_converts_with_wildcards():
     )
     from param_decomp_config.lm import LMExperimentConfig
 
-    reference_yaml = (
-        Path(__file__).parent.parent / "configs" / "torch" / "llama8b_l18_b128_cmp32_1pool.yaml"
-    )
+    reference_yaml = Path(__file__).parent.parent / "configs" / "llama8b_l18_b128_cmp32.yaml"
     raw = yaml.safe_load(reference_yaml.read_text())
+    raw["run_id"] = "p-00000000"
     raw["target"]["spec"] = {
         "kind": "pretrained",
         "model_class": (
@@ -527,13 +526,7 @@ def test_pretrained_target_converts_with_wildcards():
     ]
     raw["data"]["max_seq_len"] = 512  # the model's n_ctx
 
-    cfg = build_experiment_config(
-        LMExperimentConfig(**raw),
-        run_name="t",
-        run_id="p-00000000",
-        out_dir=Path("/tmp"),
-        remat_recon_forwards=False,
-    )
+    cfg = build_experiment_config(LMExperimentConfig(**raw))
     target = cfg.target
     assert isinstance(target, LlamaSimpleMLPTargetConfig)
     assert target.pretrain_run_path == "goodfire/spd/runs/t-9d2b8f02"
