@@ -74,8 +74,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--codes", required=True, type=Path, help="context-preserving harvest dir")
     ap.add_argument("--out", required=True, type=Path, help="output .html path")
-    ap.add_argument("--n_sequences", type=int, default=120, help="whole sequences to sample")
-    ap.add_argument("--n_regions", type=int, default=20)
+    ap.add_argument("--n_sequences", type=int, default=250, help="whole sequences to sample")
+    ap.add_argument("--n_regions", type=int, default=40)
     ap.add_argument("--patch", type=int, default=40)
     ap.add_argument("--run_id", default="bneck-1e-2")
     ap.add_argument("--umap", action="store_true", help="add a 3D UMAP basis of the code vectors")
@@ -153,6 +153,7 @@ def main() -> None:
         extra_bases=extra_bases,
         point_scalar=code_l0,
         point_label="token-position",
+        point_top_k=10,
     )
     # Sequence panel: per-point (sequence, position) + each sequence's decoded tokens, so
     # the viewer can show a clicked point's whole sequence and draw per-sequence flow lines.

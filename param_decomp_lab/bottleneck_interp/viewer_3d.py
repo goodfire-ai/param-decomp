@@ -59,6 +59,17 @@ def _pca_rows(X: np.ndarray) -> dict[str, Any]:
     return {"coords": coords, "var_explained": var_explained}
 
 
+def _top_k_per_row(arr: np.ndarray, k: int) -> list[list[list[float]]]:
+    """Per row, the top-k entries by |value| as [[col_index, value], ...], strongest first."""
+    k = min(k, arr.shape[1])
+    part = np.argpartition(-np.abs(arr), k - 1, axis=1)[:, :k]
+    out: list[list[list[float]]] = []
+    for r in range(arr.shape[0]):
+        cols = part[r][np.argsort(-np.abs(arr[r, part[r]]))]
+        out.append([[int(j), round(float(arr[r, j]), 4)] for j in cols])
+    return out
+
+
 def _pack_coords(coords: np.ndarray) -> dict[str, Any]:
     """Float32 coords as base64, per-axis pre-normalised to unit std so JS
     doesn't redo the work on every slider tweak."""
@@ -197,6 +208,7 @@ def build_latent_viewer_data(
     primary_basis: Literal["pca", "raw"] = "pca",
     point_active_mask: np.ndarray | None = None,
     manifold_filter_meta: dict[str, Any] | None = None,
+    point_top_k: int | None = None,
 ) -> dict[str, Any]:
     """Build viewer JSON for an arbitrary (points, thumbnails) cloud.
 
@@ -332,6 +344,15 @@ def build_latent_viewer_data(
         payload["point_active_mask_b64"] = base64.b64encode(mask_u8.tobytes()).decode("ascii")
         payload["point_active_mask_n_inst"] = int(point_active_mask.shape[1])
         payload["manifold_filter_meta"] = manifold_filter_meta or {}
+
+    # Per-point top-k strongest coordinates (by |value|), for the selected-point info panel:
+    # `point_top_dims` over the raw input dims (e.g. bottleneck code), `point_top_pcs` over
+    # the PCA projection. Computed from the un-normalised arrays so "strongest" is honest.
+    if point_top_k is not None:
+        payload["point_top_dims"] = _top_k_per_row(points, point_top_k)
+        payload["point_top_pcs"] = _top_k_per_row(
+            np.asarray(pca_res["coords"], np.float32), point_top_k
+        )
     return payload
 
 
@@ -389,7 +410,18 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
            display: none; }
   /* Bottom bar: the focused token's sequence on one line, centred on that token,
      flanked by the step arrows; a back button restores the previous focus. */
-  #seqBar { position: fixed; left: 600px; right: 12px; bottom: 12px; display: none;
+  /* Right info panel: details about the focused point. */
+  #infoPanel { position: fixed; top: 0; right: 0; height: 100%; width: 340px;
+               background: rgba(15,15,20,0.92); border-left: 1px solid #27272a;
+               overflow-y: auto; padding: 18px 16px; box-sizing: border-box;
+               font-size: 13px; line-height: 1.45; display: none; }
+  #infoPanel h2 { font-size: 12px; margin: 14px 0 4px; text-transform: uppercase;
+                  letter-spacing: 0.05em; color: #a1a1aa; }
+  #infoPanel .kv { display: flex; justify-content: space-between; gap: 8px;
+                   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                   font-size: 11px; padding: 1px 0; }
+  #infoPanel .kv .v { color: #a1a1aa; font-variant-numeric: tabular-nums; }
+  #seqBar { position: fixed; left: 600px; right: 360px; bottom: 12px; display: none;
             align-items: center; gap: 6px; padding: 6px 8px;
             background: rgba(15,15,20,0.94); border: 1px solid #27272a;
             border-radius: 6px; }
@@ -531,7 +563,7 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
     <h2 class="ph">Rim source</h2>
     <div class="pb">
       <select id="rimSource"></select>
-      <div id="overlayItems" style="margin-top:6px; max-height:320px; overflow:auto;"></div>
+      <div id="overlayItems" style="margin-top:6px; max-height:320px; overflow-y:auto; overflow-x:hidden;"></div>
     </div>
   </section>
 
@@ -565,6 +597,11 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
   </section>
 </div>
 <div id="hover"></div>
+<div id="infoPanel">
+  <h1 style="font-size:14px;margin:0 0 4px;">Selected point</h1>
+  <div class="muted" id="infoHead">double-click a point to inspect it</div>
+  <div id="infoBody"></div>
+</div>
 <div id="seqBar">
   <span class="seq-prompt" id="seqPrompt"></span>
   <button id="seqBack" title="back (history)" disabled>&#8617;</button>
@@ -896,49 +933,72 @@ function renderOverlayItems() {
     if (rimMode === 'cluster' || !OVERLAYS[rimMode]) return;
     const ov = OVERLAYS[rimMode];
 
-    // 'picker' overlays (component): a search box filters the same cluster-row format,
-    // each row a single-select toggle.
+    // 'picker' overlays (component): a visible, searchable list, but selection is driven by
+    // a slider + ◀/▶ that scrubs through the list (the same control style as the module
+    // overlay). Clicking a row also selects it. The selected component rims its points.
     if (ov.kind === 'picker') {
+        const labelOf = (id) => (ov.labels && ov.labels[id]) || ov.names[id];
         const search = document.createElement('input');
         search.type = 'text';
-        search.placeholder = 'search component (e.g. h.2.attn.q_proj#15)';
+        search.placeholder = 'filter components (e.g. q_proj or an interpretation)';
         search.style.width = '100%';
+        const navRow = document.createElement('div');
+        navRow.className = 'row'; navRow.style.alignItems = 'center';
+        const prev = document.createElement('button'); prev.textContent = '\\u25c0'; prev.style.flex = '0 0 auto';
+        const next = document.createElement('button'); next.textContent = '\\u25b6'; next.style.flex = '0 0 auto';
+        const scrub = document.createElement('input');
+        scrub.type = 'range'; scrub.min = '0'; scrub.step = '1'; scrub.style.flex = '1';
+        navRow.append(prev, scrub, next);
         const listEl = document.createElement('div');
-        listEl.style.cssText = 'margin-top:4px;';
-        const refresh = () => {
+        listEl.style.cssText = 'margin-top:4px; max-height:240px; overflow-y:auto; overflow-x:hidden;';
+        let ids = [], rows = [], cur = 0;
+        const highlight = () => rows.forEach((r, i) => {
+            r.style.background = ids[i] === selectedPickerId ? '#3b3b46' : '';
+            if (ids[i] === selectedPickerId) r.scrollIntoView({ block: 'nearest' });
+        });
+        const select = (i) => {
+            if (!ids.length) return;
+            cur = Math.max(0, Math.min(ids.length - 1, i));
+            selectedPickerId = ids[cur];
+            scrub.value = String(cur);
+            highlight(); applyTint();
+        };
+        const rebuild = () => {
             const q = search.value.toLowerCase();
-            listEl.innerHTML = '';
-            // Match on the human label (autointerp) when present, else the component id.
-            const labelOf = (id) => (ov.labels && ov.labels[id]) || ov.names[id];
-            const ids = Object.keys(ov.names)
+            ids = Object.keys(ov.names)
                 .filter(id => labelOf(id).toLowerCase().includes(q) || ov.names[id].toLowerCase().includes(q))
                 .sort((a, b) => ov.index[b].length - ov.index[a].length)
                 .slice(0, 1000);
-            for (const id of ids) {
-                const row = overlayRow(
-                    PICKER_HILITE,
-                    `${labelOf(id)} (${ov.index[id].length})`,
-                    id === selectedPickerId,
-                    () => {
-                        selectedPickerId = (selectedPickerId === id) ? null : id;
-                        applyTint();
-                        refresh();
-                    },
-                );
-                // When an autointerp label is shown primarily, keep the raw component id as
-                // secondary muted text so it stays identifiable.
+            listEl.innerHTML = ''; rows = [];
+            ids.forEach((id, i) => {
+                const row = document.createElement('div');
+                row.className = 'cluster-row';
+                const sw = document.createElement('span');
+                sw.className = 'swatch';
+                sw.style.background = `rgb(${(PICKER_HILITE[0]*255)|0},${(PICKER_HILITE[1]*255)|0},${(PICKER_HILITE[2]*255)|0})`;
+                const txt = document.createElement('span');
+                txt.textContent = `${labelOf(id)} (${ov.index[id].length})`;
+                row.append(sw, txt);
                 if (ov.labels && ov.labels[id]) {
                     const cid = document.createElement('span');
-                    cid.className = 'comp-id';
-                    cid.textContent = ov.names[id];
+                    cid.className = 'comp-id'; cid.textContent = ov.names[id];
                     row.appendChild(cid);
                 }
-                listEl.appendChild(row);
-            }
+                row.addEventListener('click', () => select(i));
+                listEl.appendChild(row); rows.push(row);
+            });
+            scrub.max = String(Math.max(0, ids.length - 1));
+            const keep = ids.indexOf(selectedPickerId);
+            cur = keep >= 0 ? keep : 0;
+            scrub.value = String(cur);
+            highlight();
         };
-        search.addEventListener('input', refresh);
-        box.append(search, listEl);
-        refresh();
+        prev.addEventListener('click', () => select(cur - 1));
+        next.addEventListener('click', () => select(cur + 1));
+        scrub.addEventListener('input', () => select(parseInt(scrub.value, 10)));
+        search.addEventListener('input', rebuild);
+        box.append(search, navRow, listEl);
+        rebuild();
         return;
     }
 
@@ -1079,13 +1139,18 @@ const flowGeom = new LineSegmentsGeometry();
 flowGeom.setPositions(flowFlat);
 flowGeom.setColors(flowColFlat);
 const flowMat = new LineMaterial({
+    // depthTest off + high renderOrder so the flow line draws on top of the opaque
+    // thumbnails — otherwise thumbnails occlude segments at some camera angles, which
+    // reads as the line getting thinner/patchy. worldUnits:false keeps the width a
+    // constant pixel size regardless of distance or angle.
     vertexColors: true, linewidth: 2.5, transparent: true, opacity: 0.95,
-    depthWrite: false, worldUnits: false,
+    depthWrite: false, depthTest: false, worldUnits: false,
 });
 flowMat.resolution.set(window.innerWidth, window.innerHeight);
 const flowMesh = new LineSegments2(flowGeom, flowMat);
 flowMesh.computeLineDistances = () => flowMesh;
 flowMesh.frustumCulled = false;
+flowMesh.renderOrder = 10;
 flowMesh.visible = false;
 scene.add(flowMesh);
 let flowEnabled = false;
@@ -1224,7 +1289,8 @@ function updateVisibleCount() {
 // Recompute the orbit goal (the chosen orbitPoint, else the visible-points centroid) and
 // either snap to it (instant) or let the per-frame glide ease toward it. The marker sits at
 // the goal so it flags the chosen point immediately, even mid-glide.
-function updateOrbitTarget(instant = true) {
+function updateOrbitTarget(instant = true, pan = false) {
+    glidePan = pan;
     if (orbitPoint >= 0) {
         glideGoal.set(
             positions[orbitPoint * 3], positions[orbitPoint * 3 + 1], positions[orbitPoint * 3 + 2]
@@ -1244,7 +1310,11 @@ function updateOrbitTarget(instant = true) {
         if (count === 0) return;
         glideGoal.set(cx / count, cy / count, cz / count);
     }
-    if (instant) { controls.target.copy(glideGoal); controls.update(); }
+    if (instant) {
+        if (pan) { _glideDelta.subVectors(glideGoal, controls.target); camera.position.add(_glideDelta); }
+        controls.target.copy(glideGoal);
+        controls.update();
+    }
 }
 
 // --- Axis pick + basis switch ---
@@ -1889,6 +1959,13 @@ const glideGoal = new THREE.Vector3();
 let cameraGlide = 0.12;
 const glideRateFor = (s) => Math.max(0.012, Math.pow(1 - s, 3));
 let glideRate = glideRateFor(cameraGlide);
+// When true, the glide moves the camera POSITION with the target (a pan: fixed viewing
+// angle, the focused point slides to screen centre). When false it moves only the target
+// (a re-aim: the view rotates to the new rotation centre). Stepping a sequence pans;
+// single-click re-aims.
+let glidePan = false;
+const _glideBefore = new THREE.Vector3();
+const _glideDelta = new THREE.Vector3();
 const pivotMarker = new THREE.Mesh(
     new THREE.SphereGeometry(0.15, 16, 12),
     new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.2 })
@@ -1907,6 +1984,21 @@ const seqNextEl = document.getElementById('seqNext');
 const seqBackEl = document.getElementById('seqBack');
 const seqFwdEl = document.getElementById('seqFwd');
 const seqPromptEl = document.getElementById('seqPrompt');
+const infoPanelEl = document.getElementById('infoPanel');
+const infoHeadEl = document.getElementById('infoHead');
+const infoBodyEl = document.getElementById('infoBody');
+// Lazily-built inverse of the component overlay's {component -> points} index, so the info
+// panel can list the components active at a given point. Built once on first use.
+let pointToComps = null;
+function ensurePointToComps() {
+    if (pointToComps !== null) return;
+    pointToComps = Array.from({length: N}, () => []);
+    const ov = OVERLAYS.component;
+    if (!ov || !ov.index) return;
+    for (const cid of Object.keys(ov.index)) {
+        for (const p of ov.index[cid]) if (p < N) pointToComps[p].push(cid);
+    }
+}
 // (sequence, position) -> point index, so the prev/next arrows can walk the centred token
 // along its sequence one token at a time.
 const seqPosToPoint = new Map();
@@ -1969,10 +2061,11 @@ function applyFocus(idx) {
     const promptChanged = focusPoint < 0 || SEQ.point_seq[idx] !== SEQ.point_seq[focusPoint];
     focusPoint = idx;
     orbitPoint = idx;
-    updateOrbitTarget(promptChanged);
+    updateOrbitTarget(promptChanged, true);  // pan: keep the viewing angle, slide to the token
     seqBarEl.style.display = 'flex';
     renderSequence(idx, promptChanged);
     updateFlowLines();
+    updateInfoPanel(idx);
 }
 function focusOn(idx) {
     if (focusPoint >= 0 && focusPoint !== idx) focusHistory.push(focusPoint);
@@ -1994,6 +2087,67 @@ function clearFocus() {
     updateOrbitTarget(false);
     if (SEQ) seqBarEl.style.display = 'none';
     updateFlowLines();
+    updateInfoPanel(-1);
+}
+
+// Right-hand panel: everything we know about the focused point. Cluster + top dims/PCs come
+// straight from the payload; modules and components reuse the rim-overlay data (module =
+// per-module engagement relative to its own mean; component = active where lower-leaky CI
+// exceeds the harvest threshold).
+function infoRows(pairs, fmt) {
+    return pairs.map(([k, v]) =>
+        `<div class="kv"><span>${k}</span><span class="v">${fmt(v)}</span></div>`).join('');
+}
+function updateInfoPanel(idx) {
+    if (idx < 0) { infoPanelEl.style.display = 'none'; return; }
+    infoPanelEl.style.display = 'block';
+    const parts = [];
+    if (SEQ) {
+        const s = SEQ.point_seq[idx], p = SEQ.point_pos[idx];
+        const tok = SEQ.tokens[s][p];
+        infoHeadEl.textContent = `prompt ${s}, position ${p}`;
+        parts.push(`<h2>Token</h2><div class="kv"><span>"${tok.replace(/</g,'&lt;').replace(/\\n/g,'\\u23ce')}"</span><span class="v">#${idx}</span></div>`);
+    } else {
+        infoHeadEl.textContent = `point #${idx}`;
+    }
+    // Cluster
+    const cl = DATA.clusters.find(x => x.id === DATA.labels[idx]);
+    if (cl) {
+        const c = cl.colour;
+        const sw = `display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;background:rgb(${(c[0]*255)|0},${(c[1]*255)|0},${(c[2]*255)|0})`;
+        parts.push(`<h2>Cluster</h2><div><span style="${sw}"></span>${cl.label || ('#'+cl.id)}</div>`);
+    }
+    // Top bottleneck dims / PCA dims
+    if (DATA.point_top_dims) {
+        parts.push(`<h2>Top bottleneck dims</h2>` + infoRows(DATA.point_top_dims[idx].map(([d,v]) => [`dim ${d}`, v]), v => v.toFixed(3)));
+    }
+    if (DATA.point_top_pcs) {
+        parts.push(`<h2>Top PCA dims</h2>` + infoRows(DATA.point_top_pcs[idx].map(([d,v]) => [`PC ${d}`, v]), v => v.toFixed(3)));
+    }
+    // Most-engaged modules (relative-to-mean engagement, as in the module rim overlay)
+    const mov = OVERLAYS.module;
+    if (mov && mov.point_scores) {
+        const sc = mov.point_scores[idx];
+        const ranked = mov.items.map(it => [it, sc[it.id]]).filter(([, s]) => s > 0)
+            .sort((a, b) => b[1] - a[1]).slice(0, 8);
+        parts.push(`<h2>Top modules (× mean)</h2>` + ranked.map(([it, s]) => {
+            const c = it.colour;
+            const sw = `display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;background:rgb(${(c[0]*255)|0},${(c[1]*255)|0},${(c[2]*255)|0})`;
+            return `<div class="kv"><span><span style="${sw}"></span>${it.name}</span><span class="v">${(s / 255 * mov.score_max).toFixed(2)}×</span></div>`;
+        }).join(''));
+    }
+    // Most-involved components (active = lower-leaky CI over threshold), rarest-first so the
+    // most point-specific ones lead.
+    const cov = OVERLAYS.component;
+    if (cov && cov.index) {
+        ensurePointToComps();
+        const labelOf = (cid) => (cov.labels && cov.labels[cid]) || cov.names[cid];
+        const comps = pointToComps[idx].slice()
+            .sort((a, b) => cov.index[a].length - cov.index[b].length).slice(0, 12);
+        parts.push(`<h2>Components active here (${pointToComps[idx].length})</h2>`
+            + comps.map(cid => `<div class="kv"><span>${labelOf(cid)}</span><span class="v">n=${cov.index[cid].length}</span></div>`).join(''));
+    }
+    infoBodyEl.innerHTML = parts.join('');
 }
 
 function renderSequence(idx, promptChanged) {
@@ -2116,9 +2270,15 @@ function animate() {
     requestAnimationFrame(animate);
     if (tourState === 'playing') tourStep();
     // Ease the orbit target toward its goal (single/double-click and step nav set the goal;
-    // glideRate maps the camera-glide slider, where 0 snaps and 1 crawls).
+    // glideRate maps the camera-glide slider, where 0 snaps and 1 crawls). In pan mode the
+    // camera position rides along by the same delta, keeping the viewing angle fixed.
     if (controls.target.distanceToSquared(glideGoal) > 1e-7) {
+        _glideBefore.copy(controls.target);
         controls.target.lerp(glideGoal, glideRate);
+        if (glidePan) {
+            _glideDelta.subVectors(controls.target, _glideBefore);
+            camera.position.add(_glideDelta);
+        }
     }
     controls.update();
     updateHover();
