@@ -91,6 +91,9 @@ def init_train_state(
 ) -> TrainState:
     components = init_decomp_vu_sharded(lm.sites, init_key, mesh)
     ci_fn = init_ci_fn_sharded(cfg.ci_fn, lm.sites, random.fold_in(init_key, 1), mesh)
+    assert ci_fn.expects_axes == lm.leading_axes, (
+        f"CI fn expects leading axes {ci_fn.expects_axes} but model has {lm.leading_axes}"
+    )
     loss_spec = build_recon_terms(cfg.loss_metrics, lm.site_names, cfg.n_mask_samples, cfg.sampling)
     sources = {
         state_key: init_sources_sharded(

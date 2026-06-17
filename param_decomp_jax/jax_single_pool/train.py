@@ -22,10 +22,11 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
+from beartype import beartype
 from jax import random
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Bool, Float, PRNGKeyArray, jaxtyped
 
 from jax_single_pool.adversary import (
     SourcesAdamState,
@@ -161,16 +162,17 @@ def make_train_step(
             upper={site: batch_sharded(v) for site, v in ci_values.upper.items()},
         )
 
+    @jaxtyped(typechecker=beartype)
     def masked_forward(
         frozen: Any,
         components_bf16: Any,
-        residual: Array,
-        masks: dict[str, Array],
-        delta_masks: dict[str, Array],
-        routes: dict[str, Array] | None,
+        residual: Float[Array, "*leading d"],
+        masks: dict[str, Float[Array, "*leading _"]],
+        delta_masks: dict[str, Float[Array, "..."]],
+        routes: dict[str, Bool[Array, "*leading"]] | None,
         live_sites: tuple[str, ...],
         has_delta: bool,
-    ) -> Array:
+    ) -> Any:
         return batch_sharded(
             lm.masked_output(
                 frozen, components_bf16, residual, masks, delta_masks, routes, live_sites, has_delta
@@ -190,7 +192,7 @@ def make_train_step(
         strategy: StochasticSources,
         ci_lower: dict[str, Array],
         live_sites: tuple[str, ...],
-        batch_seq: tuple[int, int],
+        leading_shape: tuple[int, ...],
         draw_key: PRNGKeyArray,
     ) -> tuple[dict[str, Array], dict[str, Array]]:
         mask_source_key, delta_mask_key = random.split(draw_key)
@@ -208,7 +210,7 @@ def make_train_step(
                     )
             masks[site] = ci_site + (1.0 - ci_site) * stochastic_source
             delta_masks[site] = random.uniform(
-                random.fold_in(delta_mask_key, site_idx), batch_seq, COMPUTE_DT
+                random.fold_in(delta_mask_key, site_idx), leading_shape, COMPUTE_DT
             )
         return masks, delta_masks
 
@@ -254,12 +256,13 @@ def make_train_step(
         return total / len(routes_per_draw)
 
     @jax.jit
+    @jaxtyped(typechecker=beartype)
     def step(
-        state: TrainState, frozen: Any, residual: Float[Array, "b t d"], key: PRNGKeyArray
+        state: TrainState, frozen: Any, residual: Float[Array, "*leading d"], key: PRNGKeyArray
     ) -> tuple[TrainState, dict[str, Array]]:
         step_f32 = state.step.astype(jnp.float32)
         pnorm = annealed_pnorm(step_f32, total_steps, imp_min)
-        batch, seq = residual.shape[0], residual.shape[1]
+        leading = residual.shape[:-1]
 
         residual = batch_sharded(residual)
         clean_output = jax.lax.stop_gradient(batch_sharded(lm.clean_output(frozen, residual)))
@@ -349,11 +352,11 @@ def make_train_step(
                     continue
                 fresh_cfg = entry.sources
                 routing_key, init_key = random.split(random.fold_in(term_key, entry_idx))
-                routes_per_draw = entry.sample_routing(routing_key, (batch, seq))
+                routes_per_draw = entry.sample_routing(routing_key, leading)
                 fixed_routes[(term_idx, entry_idx)] = routes_per_draw
                 live_specs = tuple(s for s in lm.sites if s.name in entry.live_sites)
                 init = init_fresh_pgd_sources(
-                    live_specs, fresh_cfg.init, fresh_cfg.scope, batch, seq, init_key
+                    live_specs, fresh_cfg.init, fresh_cfg.scope, leading, init_key
                 )
 
                 def ascent_loss(
@@ -418,13 +421,13 @@ def make_train_step(
                         case FreshPGDSources():
                             routes_per_draw = fixed_routes[(term_idx, entry_idx)]
                         case _:
-                            routes_per_draw = entry.sample_routing(routing_key, (batch, seq))
+                            routes_per_draw = entry.sample_routing(routing_key, leading)
                     for draw_idx, routes in enumerate(routes_per_draw):
                         draw_key = random.fold_in(entry_key, draw_idx)
                         match entry.sources:
                             case StochasticSources() as strategy:
                                 masks, delta_masks = stochastic_entry_masks(
-                                    strategy, ci.lower, entry.live_sites, (batch, seq), draw_key
+                                    strategy, ci.lower, entry.live_sites, leading, draw_key
                                 )
                             case ConstantSources() as strategy:
                                 masks, delta_masks = constant_entry_masks(

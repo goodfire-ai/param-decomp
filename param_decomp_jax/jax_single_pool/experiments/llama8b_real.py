@@ -187,7 +187,7 @@ def main():
         src = {
             k: jax.device_put(v, repl)
             for k, v in init_persistent_sources(
-                lm.site_names, site_Cs, args.seq, 1, random.PRNGKey(3)
+                lm.site_names, site_Cs, (1, args.seq), random.PRNGKey(3)
             ).items()
         }
     resid = shard_batch(resid_global, mesh)

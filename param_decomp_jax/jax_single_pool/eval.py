@@ -120,7 +120,7 @@ def make_eval_step(
         ci_fn: Any,
         frozen: Any,
         token_ids: Int[Array, "B T"],
-        residual: Float[Array, "B T d"],
+        residual: Float[Array, "*leading d"],
         key: PRNGKeyArray,
     ) -> dict[str, Array]:
         residual = batch_sharded(residual)
@@ -132,8 +132,8 @@ def make_eval_step(
         # one explicit C-shard -> batch-shard reshard; see train.py batch_sharded_ci
         ci_lower = {site: batch_sharded(v) for site, v in ci_fn_bf16(site_inputs).lower.items()}
 
-        batch, seq = token_ids.shape
-        zeros_delta = {site: jnp.zeros((batch, seq), COMPUTE_DT) for site in site_names}
+        leading = token_ids.shape
+        zeros_delta = {site: jnp.zeros(leading, COMPUTE_DT) for site in site_names}
 
         stoch_key, random_key, pgd_key = random.split(key, 3)
         variant_masks: dict[str, tuple[dict[str, Array], dict[str, Array]]] = {}
@@ -151,7 +151,7 @@ def make_eval_step(
             )
             stoch_masks[site] = ci_site + (1.0 - ci_site) * stochastic_source
             stoch_deltas[site] = random.uniform(
-                random.fold_in(stoch_key, len(site_names) + site_idx), (batch, seq), COMPUTE_DT
+                random.fold_in(stoch_key, len(site_names) + site_idx), leading, COMPUTE_DT
             )
         variant_masks["stoch_masked"] = (stoch_masks, stoch_deltas)
         variant_masks["random_masked"] = (

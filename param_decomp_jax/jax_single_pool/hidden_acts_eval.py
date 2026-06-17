@@ -46,10 +46,10 @@ class SiteMSEReduction:
     n_elements: int
 
 
-def _all_false_routes(site_names: tuple[str, ...], batch: int, seq: int) -> dict[str, Array]:
+def _all_false_routes(site_names: tuple[str, ...], leading: tuple[int, ...]) -> dict[str, Array]:
     """Route every position to the frozen path so `masked_site_outputs` returns the
     target `x @ W` per site (the clean recon target)."""
-    return {s: jnp.zeros((batch, seq), bool) for s in site_names}
+    return {s: jnp.zeros(leading, bool) for s in site_names}
 
 
 def _per_site_sum_mse(
@@ -63,7 +63,7 @@ def _per_site_sum_mse(
 
 
 HiddenActsStep = Callable[
-    [Any, Any, Any, Float[Array, "B T d"], PRNGKeyArray],
+    [Any, Any, Any, Float[Array, "*leading d"], PRNGKeyArray],
     tuple[dict[str, Array], dict[str, int]],
 ]
 """`(components, ci_fn, frozen, residual, key) -> ({site: sum_mse}, {site: n_elements})`
@@ -80,7 +80,7 @@ def make_ci_hidden_acts_step(lm: DecomposedModel) -> HiddenActsStep:
         components: Any,
         ci_fn: Any,
         frozen: Any,
-        residual: Float[Array, "B T d"],
+        residual: Float[Array, "*leading d"],
         _key: PRNGKeyArray,
     ) -> tuple[dict[str, Array], dict[str, int]]:
         site_inputs = lm.site_inputs(frozen, residual)
@@ -88,12 +88,12 @@ def make_ci_hidden_acts_step(lm: DecomposedModel) -> HiddenActsStep:
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
         ci_lower = ci_fn_bf16(site_inputs).lower
 
-        batch, seq = residual.shape[0], residual.shape[1]
-        zeros_delta = {s: jnp.zeros((batch, seq), COMPUTE_DT) for s in site_names}
+        leading = residual.shape[:-1]
+        zeros_delta = {s: jnp.zeros(leading, COMPUTE_DT) for s in site_names}
         clean = lm.masked_site_outputs(
             frozen, components_bf16, residual,
             {s: jnp.ones_like(ci_lower[s]) for s in site_names}, zeros_delta,
-            _all_false_routes(site_names, batch, seq), site_names, False,
+            _all_false_routes(site_names, leading), site_names, False,
         )  # fmt: skip
         masked = lm.masked_site_outputs(
             frozen, components_bf16, residual, ci_lower, zeros_delta, None, site_names, False
@@ -116,19 +116,23 @@ def make_stochastic_hidden_acts_step(
 
     @jax.jit
     def step(
-        components: Any, ci_fn: Any, frozen: Any, residual: Float[Array, "B T d"], key: PRNGKeyArray
+        components: Any,
+        ci_fn: Any,
+        frozen: Any,
+        residual: Float[Array, "*leading d"],
+        key: PRNGKeyArray,
     ) -> tuple[dict[str, Array], dict[str, int]]:
         site_inputs = lm.site_inputs(frozen, residual)
         components_bf16 = cast_floating(components, COMPUTE_DT)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
         ci_lower = ci_fn_bf16(site_inputs).lower
 
-        batch, seq = residual.shape[0], residual.shape[1]
+        leading = residual.shape[:-1]
         clean = lm.masked_site_outputs(
             frozen, components_bf16, residual,
             {s: jnp.ones_like(ci_lower[s]) for s in site_names},
-            {s: jnp.zeros((batch, seq), COMPUTE_DT) for s in site_names},
-            _all_false_routes(site_names, batch, seq), site_names, False,
+            {s: jnp.zeros(leading, COMPUTE_DT) for s in site_names},
+            _all_false_routes(site_names, leading), site_names, False,
         )  # fmt: skip
 
         sum_mse = {s: jnp.zeros((), jnp.float32) for s in site_names}
@@ -146,7 +150,7 @@ def make_stochastic_hidden_acts_step(
                         source = random.bernoulli(source_key, 0.5, ci_site.shape).astype(COMPUTE_DT)
                 masks[site] = ci_site + (1.0 - ci_site) * source
                 delta_masks[site] = random.uniform(
-                    random.fold_in(delta_key, site_idx), (batch, seq), COMPUTE_DT
+                    random.fold_in(delta_key, site_idx), leading, COMPUTE_DT
                 )
             masked = lm.masked_site_outputs(
                 frozen, components_bf16, residual, masks, delta_masks, None, site_names, True
@@ -165,7 +169,7 @@ def accumulate_hidden_acts(
     components: Any,
     ci_fn: Any,
     frozen: Any,
-    residual_batches: list[Float[Array, "B T d"]],
+    residual_batches: list[Float[Array, "*leading d"]],
     base_key: PRNGKeyArray,
 ) -> dict[str, SiteMSEReduction]:
     """Drive `step` over the eval batches, host-accumulating `(Σ sum_mse, Σ n)` per site

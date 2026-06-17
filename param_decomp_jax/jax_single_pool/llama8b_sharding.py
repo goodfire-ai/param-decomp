@@ -139,12 +139,13 @@ def init_sources_sharded(
     batch-sharded elementwise combine."""
     match scope:
         case SCScope():
-            batch_dim, placement = 1, NamedSharding(mesh, P())
+            leading_shape, placement = (1, seq_len), NamedSharding(mesh, P())
         case BSCScope():
-            batch_dim, placement = global_batch, NamedSharding(mesh, P("dp", None, None))
+            leading_shape = (global_batch, seq_len)
+            placement = NamedSharding(mesh, P("dp", None, None))
         case _:
             raise AssertionError(f"unsupported persistent scope {scope}")
-    init = partial(init_persistent_sources, site_names, site_component_counts, seq_len, batch_dim)
+    init = partial(init_persistent_sources, site_names, site_component_counts, leading_shape)
     return jax.jit(init, out_shardings=placement)(key)
 
 

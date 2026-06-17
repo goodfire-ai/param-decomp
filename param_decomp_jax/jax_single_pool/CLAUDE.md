@@ -25,18 +25,27 @@ never silently diverge. Cite IDs (`S14`, `N1`, …) in commit messages and revie
 
 ## Architecture in one breath
 
-`lm.py` defines `DecomposedModel` — ordered `sites` + five pure fns (`clean_output`,
-`site_inputs`, `masked_output`, `weight_deltas`) plus a pluggable `recon_loss_fn`
-(default `kl_per_position`), flat site-name-keyed dicts at the boundary, frozen pytree
-always a runtime arg (never a jit closure constant — an 8B target becomes a multi-GB
-HLO constant). The `[B,T,d]` residual is the FIXED WAIST: masking / routing / sources /
-imp-min / the CI fn all stay `(B,T)`-shaped. Only three EDGES are generic so non-LM
-(bio-style) targets fit (#828): the model INPUT (`prefix_residual_fn(prefix, inputs)`
-in `run.py` takes `Any` — tokens for an LM, a dict for bio), the model OUTPUT
-(`clean_output`/`masked_output` return `Any` — logits, a tuple of heads, coords; field
-NAMES stay `*_logits` pending a deferred rename), and the recon comparison
-(`recon_loss_fn(clean_output, masked_output) -> scalar`, default
-`kl_per_position` so the LM path is byte-identical). `train.py` is the generic step factory
+`lm.py` defines `DecomposedModel` — ordered `sites` + `leading_axes` + five pure fns
+(`clean_output`, `site_inputs`, `masked_output`, `weight_deltas`) plus a pluggable
+`recon_loss_fn` (default `kl_per_position`), flat site-name-keyed dicts at the boundary,
+frozen pytree always a runtime arg (never a jit closure constant — an 8B target becomes a
+multi-GB HLO constant). The activation waist is GENERIC `[*leading, d]` (masks/CI
+`[*leading, C]`), `leading = (batch,) + named position axes`: masking / routing / sources
+/ imp-min all read an opaque `leading = residual.shape[:-1]`; reductions are
+`math.prod(shape[:-1])` / `axis=tuple(range(ndim-1))`. CI is independent over every leading
+axis (no per-axis CI semantics, only axis NAMES — see AXIS_SEMANTICS_DESIGN.md).
+`DecomposedModel.leading_axes` names the position axes (`("sequence",)` for LM, `()` for
+TMS); `CIFn.expects_axes` mirrors it, and `init_train_state` asserts they're equal (early
+fail) so the CI fn stays per-domain (RoPE over `sequence`) without the core adapting. The
+three EDGES are generic so non-LM (bio-style) targets fit (#828): the model INPUT
+(`prefix_residual_fn(prefix, inputs)` in `run.py` takes `Any` — tokens for an LM, a dict
+for bio), the model OUTPUT (`clean_output`/`masked_output` return `Any` — logits, a tuple
+of heads, coords; field NAMES stay `*_logits` pending a deferred rename), and the recon
+comparison (`recon_loss_fn(clean_output, masked_output) -> scalar`, default
+`kl_per_position` so the LM path is byte-identical). The waist shape contract (all per-site
+tensors in one forward share one `*leading` prefix) is enforced at trace time by
+`@jaxtyped(typechecker=beartype)` on the core `step`, `masked_forward`, and the loss fns.
+`train.py` is the generic step factory
 (fp32 masters / bf16 compute) over a static tuple of recon loss TERMS (S10′ — the
 torch loss-class cartesian product factored as chunking × routing × mask-source
 strategy: a chunking helper (`one_chunk`/`per_site`/`into_groups`) feeds the single
