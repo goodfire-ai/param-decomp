@@ -209,6 +209,8 @@ def build_latent_viewer_data(
     point_active_mask: np.ndarray | None = None,
     manifold_filter_meta: dict[str, Any] | None = None,
     point_top_k: int | None = None,
+    emit_raw_basis: bool = True,
+    max_pca_components: int | None = None,
 ) -> dict[str, Any]:
     """Build viewer JSON for an arbitrary (points, thumbnails) cloud.
 
@@ -256,34 +258,44 @@ def build_latent_viewer_data(
     atlas_b64 = atlases[default_atlas_name]["b64"]
     atlas_side = atlases[default_atlas_name]["side"]
 
-    # Always emit both bases so the user can flip at runtime via the radio UI
-    # — PCA aligns axes with leading variance, raw shows the underlying units.
+    # PCA basis (axes ordered by variance). Coord buffers dominate the payload, so cap the
+    # number of emitted components when asked — the tail PCs are near-zero variance and the
+    # axis sliders / grand tour rarely reach them.
     pca_res = _pca_rows(points)
+    pca_coords = np.asarray(pca_res["coords"], np.float32)
+    pca_var = pca_res["var_explained"]
+    if max_pca_components is not None:
+        pca_coords = pca_coords[:, :max_pca_components]
+        pca_var = pca_var[:max_pca_components]
     pca_basis = {
         "label": "Latent-space PCA",
-        **_pack_coords(pca_res["coords"]),
-        "var_explained": pca_res["var_explained"],
+        **_pack_coords(pca_coords),
+        "var_explained": pca_var,
         "supports_synthetics": False,
         "axis_prefix": "PC",
         "axis_noun": "PCs",
     }
-    raw_coords = np.ascontiguousarray(points, dtype=np.float32)
-    raw_per_dim_var = raw_coords.var(axis=0)
-    raw_total_var = float(raw_per_dim_var.sum())
-    raw_basis = {
-        "label": "Raw bottleneck dims",
-        **_pack_coords(raw_coords),
-        "var_explained": (raw_per_dim_var / max(raw_total_var, 1e-30)).tolist(),
-        "supports_synthetics": False,
-        "axis_prefix": "Dim",
-        "axis_noun": "dims",
-    }
-    # Default-first: dict insertion order = render order; first basis = default.
-    bases: dict[str, dict[str, Any]] = (
-        {"pca": pca_basis, "raw": raw_basis}
-        if primary_basis == "pca"
-        else {"raw": raw_basis, "pca": pca_basis}
-    )
+    bases: dict[str, dict[str, Any]] = {"pca": pca_basis}
+    # The raw-dims basis is the same vectors unrotated — a big, mostly-redundant coord
+    # buffer. Off by default for high-dim inputs; the info panel still surfaces raw dims.
+    if emit_raw_basis:
+        raw_coords = np.ascontiguousarray(points, dtype=np.float32)
+        raw_per_dim_var = raw_coords.var(axis=0)
+        raw_total_var = float(raw_per_dim_var.sum())
+        raw_basis = {
+            "label": "Raw bottleneck dims",
+            **_pack_coords(raw_coords),
+            "var_explained": (raw_per_dim_var / max(raw_total_var, 1e-30)).tolist(),
+            "supports_synthetics": False,
+            "axis_prefix": "Dim",
+            "axis_noun": "dims",
+        }
+        # Default-first: dict insertion order = render order; first basis = default.
+        bases = (
+            {"pca": pca_basis, "raw": raw_basis}
+            if primary_basis == "pca"
+            else {"raw": raw_basis, "pca": pca_basis}
+        )
     if extra_bases:
         for name, coords in extra_bases.items():
             bases[name] = {
