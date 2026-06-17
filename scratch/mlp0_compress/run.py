@@ -40,9 +40,15 @@ DOWN = "h.0.mlp.down_proj"
 class CompressedMaskedMLP(nn.Module):
     """Block-0 MLP with the neuron dimension compressed, operating in CI-mask space.
 
-    Forward: `x @ V_cfc * ci_cfc @ U_compressed -> GELU -> @ V_compressed * ci_down @ U_down`.
+    Forward: `x @ V_cfc * ci_cfc @ U_compressed -> act -> @ V_compressed -> * ci_down @ U_down`.
     `V_cfc` / `U_down` are frozen buffers copied from the decomposition; only
-    `U_compressed` / `V_compressed` train. The target MLP has no biases.
+    `U_compressed` / `V_compressed` (and the optional `bypass`) train. The target MLP has
+    no biases.
+
+    When `bypass` is set, a learned linear map sends the input subcomponent activations
+    (`comp_acts_cfc`, dim `C_cfc`) directly to the output subcomponent activations
+    (`comp_acts_down`, dim `C_down`), in parallel with the compressed nonlinear path and
+    summed before the shared `ci_down` mask. The bypass carries no sparsity penalty.
     """
 
     V_cfc: Tensor
@@ -53,18 +59,22 @@ class CompressedMaskedMLP(nn.Module):
         V_cfc: Tensor,
         U_down: Tensor,
         n_compressed: int,
-        gelu: nn.Module,
+        activation: nn.Module,
+        bypass: bool,
     ):
         super().__init__()
         self.register_buffer("V_cfc", V_cfc.clone())
         self.register_buffer("U_down", U_down.clone())
         C_cfc = V_cfc.shape[1]
         C_down = U_down.shape[0]
+        assert n_compressed > 0 or bypass, "need a compressed-neuron path, a bypass, or both"
         self.U_compressed = nn.Parameter(torch.empty(C_cfc, n_compressed))
         self.V_compressed = nn.Parameter(torch.empty(n_compressed, C_down))
-        init_param_(self.U_compressed, fan_val=C_cfc, nonlinearity="linear")
-        init_param_(self.V_compressed, fan_val=n_compressed, nonlinearity="linear")
-        self.gelu = gelu
+        if n_compressed > 0:
+            init_param_(self.U_compressed, fan_val=C_cfc, nonlinearity="linear")
+            init_param_(self.V_compressed, fan_val=n_compressed, nonlinearity="linear")
+        self.activation = activation
+        self.bypass = nn.Parameter(torch.zeros(C_cfc, C_down)) if bypass else None
 
     def forward(
         self,
@@ -73,12 +83,16 @@ class CompressedMaskedMLP(nn.Module):
         ci_down: Tensor,
     ) -> Tensor:
         comp_acts_cfc = einops.einsum(x, self.V_cfc, "... d_in, d_in C -> ... C") * ci_cfc
-        hidden = self.gelu(
+        hidden = self.activation(
             einops.einsum(comp_acts_cfc, self.U_compressed, "... C, C n -> ... n")
         )
-        comp_acts_down = (
-            einops.einsum(hidden, self.V_compressed, "... n, n C -> ... C") * ci_down
-        )
+        self.last_hidden = hidden
+        down_components = einops.einsum(hidden, self.V_compressed, "... n, n C -> ... C")
+        if self.bypass is not None:
+            down_components = down_components + einops.einsum(
+                comp_acts_cfc, self.bypass, "... C_in, C_in C_out -> ... C_out"
+            )
+        comp_acts_down = down_components * ci_down
         return einops.einsum(comp_acts_down, self.U_down, "... C, C d_out -> ... d_out")
 
 
@@ -161,7 +175,11 @@ def main(
 
     mlp0 = comp_model.target_model.get_submodule("h.0.mlp")
     compressed = CompressedMaskedMLP(
-        V_cfc=cfc.V.data, U_down=down.U.data, n_compressed=n_compressed, gelu=mlp0.gelu
+        V_cfc=cfc.V.data,
+        U_down=down.U.data,
+        n_compressed=n_compressed,
+        activation=mlp0.gelu,
+        bypass=False,
     ).to(device)
 
     n_trainable = sum(p.numel() for p in compressed.parameters() if p.requires_grad)
