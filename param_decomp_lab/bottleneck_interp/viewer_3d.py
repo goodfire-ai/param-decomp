@@ -501,14 +501,6 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
     </div>
   </section>
 
-  <section class="panel" id="synthSection">
-    <h2 class="ph">Synthetic points</h2>
-    <div class="pb">
-      <label><input type="checkbox" id="showSynth"> Show interpolated points</label>
-      <div class="muted" id="synthHint"></div>
-    </div>
-  </section>
-
   <section class="panel" id="knnSection">
     <h2 class="ph">Neighbour graph</h2>
     <div class="pb">
@@ -635,7 +627,7 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
 }
 </script>
 
-<script id="viewer-data" type="application/json">__DATA_JSON__</script>
+__DATA_BLOCKS__
 
 <script type="module">
 import * as THREE from 'three';
@@ -644,7 +636,22 @@ import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 
-const DATA = JSON.parse(document.getElementById('viewer-data').textContent);
+// The payload is split across <script> blocks (a single JSON string can't exceed ~512M
+// chars in V8). Heavy sub-values are replaced inline with {"__chunk__": id} markers; revive
+// them by parsing their own block. Each block is independently under the limit.
+function _reviveChunks(v) {
+    if (Array.isArray(v)) return v.map(_reviveChunks);
+    if (v && typeof v === 'object') {
+        if (typeof v.__chunk__ === 'string') {
+            return JSON.parse(document.getElementById(v.__chunk__).textContent);
+        }
+        const out = {};
+        for (const k in v) out[k] = _reviveChunks(v[k]);
+        return out;
+    }
+    return v;
+}
+const DATA = _reviveChunks(JSON.parse(document.getElementById('viewer-data').textContent));
 const N = DATA.n_atoms;
 const VIEWER_META = DATA.viewer_meta || {};
 const POINT_LABEL = VIEWER_META.point_label || 'atom';
@@ -690,7 +697,6 @@ const KNN_K = DATA.knn.k;
 
 const HAS_SYNTHETICS = N_SYN > 0;
 const HAS_KNN_UI = KNN_K > 0;
-if (!HAS_SYNTHETICS) document.getElementById('synthSection').classList.add('hidden');
 if (!HAS_KNN_UI) document.getElementById('knnSection').classList.add('hidden');
 if (Object.keys(DATA.bases).length <= 1) {
     document.getElementById('basisSection').classList.add('hidden');
@@ -2330,17 +2336,47 @@ def _default_subtitle(data: dict[str, Any], run_id: str) -> str:
     return " — ".join(parts)
 
 
+# A JS string can't exceed ~512M chars (V8), so the payload can't be one JSON.parse once
+# it gets large. Externalise any sub-value whose JSON exceeds this into its own <script>
+# block, replacing it inline with a {"__chunk__": id} marker the loader revives.
+_CHUNK_THRESHOLD = 25_000_000
+_STRING_HARD_LIMIT = 500_000_000
+
+
+def _split_payload(value: Any, chunks: list[tuple[str, str]]) -> Any:
+    """Recursively replace heavy sub-values with chunk markers, appending (id, json) to
+    `chunks`. A value small enough stays inline; a heavy one becomes its own chunk; one
+    that alone exceeds the string limit is recursed into (and asserts if it can't split)."""
+    js = json.dumps(value)
+    if len(js) <= _CHUNK_THRESHOLD:
+        return value
+    if len(js) < _STRING_HARD_LIMIT:
+        cid = f"vd-{len(chunks)}"
+        chunks.append((cid, js))
+        return {"__chunk__": cid}
+    assert isinstance(value, (dict, list)), (
+        f"a single {type(value).__name__} value is {len(js)} chars, over the browser string "
+        f"limit, and can't be split further — reduce the data size"
+    )
+    if isinstance(value, dict):
+        return {k: _split_payload(v, chunks) for k, v in value.items()}
+    return [_split_payload(v, chunks) for v in value]
+
+
 def write_viewer_html(
     data: dict[str, Any], out_path: Path, run_id: str, subtitle: str | None = None
 ) -> None:
     """Write a self-contained interactive viewer HTML."""
     if subtitle is None:
         subtitle = _default_subtitle(data, run_id)
-    payload = json.dumps(data)
+    chunks: list[tuple[str, str]] = []
+    main = _split_payload(data, chunks)
+    blocks = [f'<script id="viewer-data" type="application/json">{json.dumps(main)}</script>']
+    blocks += [f'<script id="{cid}" type="application/json">{js}</script>' for cid, js in chunks]
     html = (
         _VIEWER_TEMPLATE.replace("__TITLE__", run_id)
         .replace("__SUBTITLE__", subtitle)
-        .replace("__DATA_JSON__", payload)
+        .replace("__DATA_BLOCKS__", "\n".join(blocks))
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html)
