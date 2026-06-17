@@ -71,7 +71,6 @@ packages = [
     "param_decomp_lab.experiments.resid_mlp",
     "param_decomp_lab.experiments.tms",
     "param_decomp_lab.harvest",
-    "param_decomp_lab.harvest.harvest_fn",
     "param_decomp_lab.harvest.scripts",
     "param_decomp_lab.infra",
     "param_decomp_lab.investigate",
