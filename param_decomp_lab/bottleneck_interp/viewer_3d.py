@@ -344,7 +344,7 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>3D PCA viewer — __TITLE__</title>
+<title>3D viewer — __TITLE__</title>
 <style>
   html, body { margin: 0; height: 100%; background: #0a0a0a; color: #e4e4e7;
                font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
@@ -449,9 +449,9 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
   </section>
 
   <section class="panel" id="synthSection">
-    <h2 class="ph">Synthetic atoms</h2>
+    <h2 class="ph">Synthetic points</h2>
     <div class="pb">
-      <label><input type="checkbox" id="showSynth"> Show interpolated atoms</label>
+      <label><input type="checkbox" id="showSynth"> Show interpolated points</label>
       <div class="muted" id="synthHint"></div>
     </div>
   </section>
@@ -462,7 +462,7 @@ _VIEWER_TEMPLATE = """<!DOCTYPE html>
       <label><input type="checkbox" id="showLines"> Show k-NN edges</label>
       <div style="margin-top:8px">
         <input type="range" id="edgeK" min="1" max="20" value="5" step="1" style="width:100%">
-        <div class="muted" id="edgeKLabel">k = 5 neighbours per atom</div>
+        <div class="muted" id="edgeKLabel">k = 5 neighbours per point</div>
       </div>
       <div style="margin-top:8px">
         <input type="range" id="edgeWidth" min="0.5" max="6" value="2" step="0.1" style="width:100%">
