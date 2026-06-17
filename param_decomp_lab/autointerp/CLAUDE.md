@@ -75,7 +75,7 @@ Each strategy config type has a corresponding prompt implementation:
 
 ### Repository (`repo.py`)
 
-`InterpRepo` provides read/write access to autointerp data for a run. Lazily opens the SQLite database on first access. Used by the app backend.
+`InterpRepo` provides read/write access to autointerp data for a run. Lazily opens the SQLite database on first access.
 
 ### Interpret (`interpret.py`)
 

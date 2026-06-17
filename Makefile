@@ -13,7 +13,7 @@ install-dev: bridge-jax-into-main-venv
 
 # `uv sync --all-packages` manages the main venv exclusively and strips anything not in
 # the workspace lock — including jax, which `param_decomp_jax` is NOT a member of. But the
-# JAX-run consumers in the lab venv (harvest's run_worker_jax.py, the app backend) `import
+# JAX-run consumers in the lab venv (harvest's run_worker_jax.py) `import
 # jax` + `from jax_single_pool ...` and call `open_jax_run` (restores an orbax checkpoint,
 # builds a `DecomposedModel`), and `make type` over them needs both stacks resolvable. So
 # re-add the JAX runtime right after the sync: jax/jaxlib CPU + the JAX trainer's own
@@ -27,9 +27,6 @@ bridge-jax-into-main-venv:
 	uv pip install --no-deps "equinox==0.13.8" "optax==0.2.8" "jaxtyping==0.3.10"
 	uv pip install "jax==0.10.1" "jaxlib==0.10.1" "orbax-checkpoint==0.12.0"
 	uv pip install --no-deps -e ./param_decomp_jax
-
-.PHONY: install-all
-install-all: install-dev install-app
 
 # The JAX distribution keeps its own venvs (its CUDA wheels conflict with torch's).
 # Create-if-missing rather than --clear: on NFS a venv with files held open (e.g. by
@@ -57,18 +54,6 @@ test-jax:
 check-jax:
 	cd param_decomp_jax && .venv/bin/basedpyright jax_single_pool/
 
-
-.PHONY: app
-app:
-	@uv run --package param-decomp-lab python -m param_decomp_lab.app.run_app
-
-.PHONY: install-app
-install-app:
-	(cd param_decomp_lab/app/frontend && npm install)
-
-.PHONY: check-app
-check-app:
-	(cd param_decomp_lab/app/frontend && npm run format && npm run check && npm run lint)
 
 # special install for CI (GitHub Actions) that reduces disk usage and install time
 # 1. create a fresh venv with `--clear` -- this is mostly only for local testing of the CI install

@@ -1,4 +1,4 @@
-"""Tokenizer wrapper that isolates HuggingFace tokenizer quirks from the rest of the app.
+"""Tokenizer wrapper that isolates HuggingFace tokenizer quirks from display/encoding.
 
 The core problem: `"".join(tokenizer.decode([t]) for t in ids)` != `tokenizer.decode(ids)`
 because tokenizers encode word boundaries in family-specific ways (BPE's Ġ prefix,
@@ -27,6 +27,34 @@ def escape_for_display(s: str) -> str:
     for char, replacement in _CONTROL_CHAR_MAP.items():
         s = s.replace(char, replacement)
     return s
+
+
+def delimit_tokens(tokens: list[tuple[str, bool]]) -> str:
+    """Join token strings, wrapping active spans in <<delimiters>>.
+
+    Consecutive active tokens are grouped: [(" over", T), (" the", T), (" moon", T)]
+    produces " <<over the moon>>".
+    """
+    parts: list[str] = []
+    in_span = False
+    for tok, active in tokens:
+        if active and not in_span:
+            stripped = tok.lstrip()
+            parts.append(tok[: len(tok) - len(stripped)])
+            parts.append("<<")
+            parts.append(stripped)
+            in_span = True
+        elif active:
+            parts.append(tok)
+        elif in_span:
+            parts.append(">>")
+            parts.append(tok)
+            in_span = False
+        else:
+            parts.append(tok)
+    if in_span:
+        parts.append(">>")
+    return "".join(parts)
 
 
 class AppTokenizer:

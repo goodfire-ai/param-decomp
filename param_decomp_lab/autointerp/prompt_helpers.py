@@ -12,8 +12,6 @@ from param_decomp_config.autointerp import (
     SingleLineExamplesConfig,
     XmlExamplesConfig,
 )
-from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
-from param_decomp_lab.app.backend.utils import delimit_tokens
 from param_decomp_lab.autointerp.schemas import (
     DECOMPOSITION_DESCRIPTIONS,
     DecompositionMethod,
@@ -21,6 +19,7 @@ from param_decomp_lab.autointerp.schemas import (
 from param_decomp_lab.harvest.analysis import TokenPRLift
 from param_decomp_lab.harvest.schemas import ComponentData
 from param_decomp_lab.infra.markdown import Md
+from param_decomp_lab.tokenizer_display import AppTokenizer, delimit_tokens
 
 _PILE = (
     "The Pile (uncopyrighted subset): diverse text from books, academic papers, code, "

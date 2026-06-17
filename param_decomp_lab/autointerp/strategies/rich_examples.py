@@ -5,7 +5,6 @@ in the examples so the LLM can judge evidence quality directly.
 """
 
 from param_decomp_config.autointerp import RichExamplesConfig
-from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.autointerp.prompt_helpers import (
     build_annotated_examples,
     dataset_description,
@@ -16,6 +15,7 @@ from param_decomp_lab.autointerp.schemas import DecompositionMethod, ModelMetada
 from param_decomp_lab.harvest.analysis import TokenPRLift
 from param_decomp_lab.harvest.schemas import ComponentData
 from param_decomp_lab.infra.markdown import Md
+from param_decomp_lab.tokenizer_display import AppTokenizer
 
 _DECOMPOSITION_DESCRIPTIONS: dict[DecompositionMethod, str] = {
     "pd": (

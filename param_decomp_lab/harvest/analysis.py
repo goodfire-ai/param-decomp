@@ -10,8 +10,8 @@ from typing import Literal
 import numpy as np
 from jaxtyping import Float
 
-from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.harvest.storage import CorrelationStorage, TokenStatsStorage
+from param_decomp_lab.tokenizer_display import AppTokenizer
 
 Metric = Literal["precision", "recall", "jaccard", "pmi"]
 

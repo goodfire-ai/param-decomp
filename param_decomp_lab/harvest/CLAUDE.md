@@ -1,8 +1,8 @@
 # Harvest Module
 
 Offline pipeline that collects component statistics in a single pass over training data.
-Produces data consumed by the autointerp module (`param_decomp_lab/autointerp/`) and the
-app (`param_decomp_lab/app/`). The whole module is **torch-free**: the only decomposition
+Produces data consumed by the autointerp module (`param_decomp_lab/autointerp/`). The
+whole module is **torch-free**: the only decomposition
 runs it harvests are JAX single-pool runs (`run_worker_jax.py`), and the accumulator is
 NumPy.
 
@@ -165,7 +165,7 @@ Uses WAL mode for concurrent reads. Serialization via `orjson`.
 
 ### Repository (`repo.py`)
 
-`HarvestRepo` provides read-only access to all harvest data for a run. Automatically resolves the latest sub-run directory (by lexicographic sort of `h-YYYYMMDD_HHMMSS` names). Returns `None` if no sub-run exists. Used by the app backend.
+`HarvestRepo` provides read-only access to all harvest data for a run. Automatically resolves the latest sub-run directory (by lexicographic sort of `h-YYYYMMDD_HHMMSS` names). Returns `None` if no sub-run exists.
 
 ## Key Types (`schemas.py`)
 

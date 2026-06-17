@@ -58,11 +58,11 @@ Three flat-layout distributions, deliberately split:
   retired (see [Training](#training-jax)), what survives here is **bridge substrate**:
   `ComponentModel`, the CI fns / sigmoids / masks / decomposition targets, the `RunSink`
   protocol, and the `RunBatch` / `ReconstructionLoss` protocols — the surface the torch
-  consumers (harvest / app / eval) reach through `component_model_io.py` to load JAX
+  consumers (harvest / eval) reach through `component_model_io.py` to load JAX
   exports. Depends on config. The live torch optimization loop and loss metrics are gone
   from HEAD (preserved at git tag `torch-oracle`).
 - **`param-decomp-lab`** (`param_decomp_lab/`) — team tooling. Experiment scripts, the
-  post-processing pipelines, the app, infra, eval metrics, lab-side helpers. Churns
+  post-processing pipelines, infra, eval metrics, lab-side helpers. Churns
   freely; depends on core + config.
 
 `make install-dev` syncs all three editably via the uv workspace in the root
@@ -97,7 +97,7 @@ points, read `param_decomp_jax/jax_single_pool/CLAUDE.md` and `SPEC.md`. In one 
 ## Public API (bridge substrate)
 
 What remains of the torch core after the trainer's retirement is the surface the torch
-**consumers** (harvest / app / eval / autointerp / clustering) use to load and read a
+**consumers** (harvest / eval / autointerp / clustering) use to load and read a
 saved JAX decomposition. Import names from where they're defined — no package-level
 re-exports, `__init__.py` files are bare:
 
@@ -140,8 +140,8 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
   trainer; training is `jsp-train` (JAX) launched via `pd-jax-lm`. The torch TMS and
   ResidualMLP experiment dirs were deleted — those domains now live only as JAX targets
   (`param_decomp_jax/jax_single_pool/tms.py`, `resid_mlp.py`).
-- `param_decomp_lab/{harvest,autointerp,clustering,investigate,app}/`
-  — post-pipeline + app, each with its own CLAUDE.md.
+- `param_decomp_lab/{harvest,autointerp,clustering,investigate}/`
+  — post-pipeline stages, each with its own CLAUDE.md.
 - `param_decomp_lab/postprocess/` — orchestrates the post-pipeline stages.
 - `param_decomp_lab/eval_metrics/` — batteries-included eval-metric set.
 - `param_decomp_lab/infra/` — settings, paths, slurm, ddp_launch (single-/multi-node
@@ -161,8 +161,13 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
 | `param_decomp_lab/autointerp/` | `param_decomp_lab/autointerp/CLAUDE.md` | LLM-based component interpretation |
 | `param_decomp_lab/clustering/` | `param_decomp_lab/clustering/CLAUDE.md` | Hierarchical clustering of components |
 | `param_decomp_lab/investigate/` | `param_decomp_lab/investigate/CLAUDE.md` | Agent investigation of a research question |
-| `param_decomp_lab/app/` | `param_decomp_lab/app/CLAUDE.md` | Web visualization (FastAPI + Svelte) |
 | `param_decomp_lab/experiments/lm/pretrain/` | `param_decomp_lab/experiments/lm/pretrain/CLAUDE.md` | LM target-model pretraining |
+
+> **The torch web-app (`param_decomp_lab/app/`) was temporarily removed during the JAX
+> migration** to shed torch surface for the JAX-primary merge. It is slated for re-add,
+> likely as a JAX-native viewer. The reusable tokenizer-display helpers it once owned
+> (`AppTokenizer`, `escape_for_display`, `delimit_tokens`) now live in
+> `param_decomp_lab/tokenizer_display.py`. See the removal PR for the full re-add log.
 
 ## Saved-run layout
 
@@ -201,7 +206,6 @@ correct default; check `echo $PARAM_DECOMP_OUT_DIR` if outputs land somewhere un
 | `make format` | ruff lint + format |
 | `make test` | Tests excluding slow |
 | `make test-all` | All tests |
-| `make app` | Launch the PD app (backend + frontend) |
 
 Run a single test: `python -m pytest path/to/test_file.py::test_name`.
 

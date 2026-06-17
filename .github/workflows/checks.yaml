@@ -73,23 +73,3 @@ jobs:
           OMPI_ALLOW_RUN_AS_ROOT: 1
           OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
           HF_HOME: ${{ github.workspace }}/.hf-cache
-  build-frontend:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: param_decomp_lab/app/frontend
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Run svelte-check
-        run: npm run check
-
-      - name: Run linter
-        run: npm run lint
-
-      - name: Build frontend
-        run: npm run build

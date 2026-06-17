@@ -4,7 +4,7 @@ import pytest
 from transformers import AutoTokenizer
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
-from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
+from param_decomp_lab.tokenizer_display import AppTokenizer
 
 # Test strings covering various tokenization edge cases
 BASIC_STRINGS = [
@@ -43,7 +43,7 @@ class TestGetSpans:
         token_ids = gpt2_tokenizer.encode(text)
         spans = gpt2_tokenizer.get_spans(token_ids)
         assert len(spans) == len(token_ids)
-        from param_decomp_lab.app.backend.app_tokenizer import escape_for_display
+        from param_decomp_lab.tokenizer_display import escape_for_display
 
         assert "".join(spans) == escape_for_display(gpt2_tokenizer.decode(token_ids))
 
@@ -53,7 +53,7 @@ class TestGetSpans:
         spans = gpt2_tokenizer.get_spans(token_ids)
         assert len(spans) == len(token_ids)
         # For unicode, some spans may be empty (multi-byte split), but concat must match
-        from param_decomp_lab.app.backend.app_tokenizer import escape_for_display
+        from param_decomp_lab.tokenizer_display import escape_for_display
 
         assert "".join(spans) == escape_for_display(gpt2_tokenizer.decode(token_ids))
 

@@ -121,8 +121,3 @@ python -m param_decomp_lab.clustering.scripts.get_cluster_mapping /path/to/clust
 
 `RUN_TYPE_ABBREVIATIONS` in `param_decomp_lab/infra/run_files.py`: `c` (clustering/runs),
 `ch` (clustering/harvests).
-
-## App Integration
-
-To expose a cluster mapping in the app dropdown for a run, add its path to `CANONICAL_RUNS`
-in `param_decomp_lab/app/frontend/src/lib/registry.ts` under the run's `clusterMappings`.

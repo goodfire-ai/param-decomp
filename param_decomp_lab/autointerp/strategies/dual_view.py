@@ -8,7 +8,6 @@ Key differences from compact_skeptical:
 """
 
 from param_decomp_config.autointerp import DualViewConfig
-from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.autointerp.prompt_helpers import (
     build_annotated_examples,
     build_data_presentation,
@@ -24,6 +23,7 @@ from param_decomp_lab.autointerp.schemas import ModelMetadata
 from param_decomp_lab.harvest.analysis import TokenPRLift
 from param_decomp_lab.harvest.schemas import ComponentData
 from param_decomp_lab.infra.markdown import Md
+from param_decomp_lab.tokenizer_display import AppTokenizer
 
 
 def format_prompt(

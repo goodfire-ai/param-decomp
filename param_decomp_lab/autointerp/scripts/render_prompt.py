@@ -5,7 +5,6 @@ Usage:
 """
 
 from param_decomp_config.autointerp import RichExamplesConfig
-from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.autointerp.schemas import ModelMetadata
 from param_decomp_lab.autointerp.strategies.rich_examples import format_prompt
 from param_decomp_lab.harvest.analysis import TokenPRLift
@@ -14,6 +13,7 @@ from param_decomp_lab.harvest.schemas import (
     ComponentData,
     ComponentTokenPMI,
 )
+from param_decomp_lab.tokenizer_display import AppTokenizer
 
 TOKENIZER_NAME = "openai-community/gpt2"
 

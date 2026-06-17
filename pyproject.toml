@@ -65,7 +65,7 @@ torch = { index = "pytorch-cu128" }
 [tool.ruff]
 line-length = 100
 fix = true
-extend-exclude = ["param_decomp_lab/app/frontend", "**/_scratch"]
+extend-exclude = ["**/_scratch"]
 
 [tool.ruff.lint]
 ignore = [
@@ -101,7 +101,6 @@ exclude = [
     "**/wandb/**",
     "**/_scratch/**",
     "param_decomp_lab/_linear_sum_assignment.py",
-    "param_decomp_lab/app/frontend",
 ]
 # Resolve (don't type-check) the JAX distribution: lab consumes it through the
 # editable-install import hook pyright can't follow. The package stays out of `include`

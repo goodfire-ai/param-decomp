@@ -16,8 +16,6 @@ dependencies = [
     "streamlit",
     "streamlit-antd-components",
     "scipy>=1.14.1",
-    "fastapi",
-    "uvicorn",
     "orjson",
     "aiolimiter>=1.2",
     "openrouter>=0.1.1",
@@ -50,9 +48,6 @@ build-backend = "setuptools.build_meta"
 packages = [
     "param_decomp_lab",
     "param_decomp_lab.adapters",
-    "param_decomp_lab.app",
-    "param_decomp_lab.app.backend",
-    "param_decomp_lab.app.backend.routers",
     "param_decomp_lab.autointerp",
     "param_decomp_lab.autointerp.scoring",
     "param_decomp_lab.autointerp.scoring.scripts",
@@ -82,7 +77,6 @@ param_decomp_lab = "."
 
 [tool.setuptools.package-data]
 param_decomp_lab = [
-    "app/frontend/**/*",
     "experiments/**/*.yaml",
     "postprocess/*.yaml",
     "experiments/lm/pretrain/configs/*.yaml",
@@ -90,9 +84,6 @@ param_decomp_lab = [
 
 [tool.setuptools.exclude-package-data]
 param_decomp_lab = [
-    "app/frontend/**/node_modules/**",
-    "app/frontend/**/dist/**",
-    "app/logs/**",
     "**/__pycache__/**",
     "**/*.pyc",
 ]
