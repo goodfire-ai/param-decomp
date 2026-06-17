@@ -33,7 +33,7 @@ from jax import random
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from jax_single_pool import llama_simple_mlp, tms
+from jax_single_pool import llama_simple_mlp, resid_mlp, tms
 from jax_single_pool.attn_patterns_eval import (
     accumulate_attn_patterns,
     attn_pattern_for,
@@ -46,6 +46,8 @@ from jax_single_pool.config import (
     DataConfig,
     ExperimentConfig,
     LlamaSimpleMLPTargetConfig,
+    ResidMLPDataConfig,
+    ResidMLPTargetConfig,
     TargetConfig,
     TMSDataConfig,
     TMSTargetConfig,
@@ -548,6 +550,121 @@ def train_tms(
                 print(f"checkpoint saved @ step {now_step}", flush=True)
 
 
+def train_resid_mlp(
+    cfg: ExperimentConfig,
+    raw_cfg: dict[str, object],
+    lm: DecomposedModel,
+    frozen: resid_mlp.ResidMLPTarget,
+    mesh: Mesh,
+) -> None:
+    """The ResidMLP composition over the unified core: same `init_train_state` / faith
+    warmup / `make_train_step` / orbax checkpointing as the LM path, but with in-process
+    synthetic sparse-feature data, the `W_E` embedding as the residual prefix, and the
+    standalone ground-truth target-CI metric (`resid_mlp.identity_ci_error`) instead of
+    the LM CEandKLLosses eval pass.
+
+    The residual entering the decomposed model is `x @ W_E`; the step factory, recon terms
+    (MSE recon_loss_fn), losses and adversaries are all the generic core, unchanged."""
+    data_cfg = cfg.data
+    assert isinstance(data_cfg, ResidMLPDataConfig) and isinstance(cfg.target, ResidMLPTargetConfig)
+    is_main = jax.process_index() == 0
+    ndev = mesh.devices.size
+    assert data_cfg.global_batch % ndev == 0, (data_cfg.global_batch, ndev)
+
+    cfg.run_dir.mkdir(parents=True, exist_ok=True)
+    opt_vu, opt_ci, (sched_vu, sched_ci) = build_optimizers(cfg)
+
+    key = random.PRNGKey(cfg.seed)
+    init_key, src_key, run_key, data_key = random.split(key, 4)
+    state = _ensure_global(init_train_state(cfg, lm, opt_vu, opt_ci, init_key, src_key, mesh), mesh)
+
+    checkpoint_manager = make_checkpoint_manager(cfg.run_dir / "ckpts", cfg.cadence.keep_last)
+    restored = restore_latest(checkpoint_manager, state)
+    if restored is not None:
+        state, ckpt_step = restored
+        assert int(state.step) == ckpt_step, (int(state.step), ckpt_step)
+        start_step = ckpt_step
+        if is_main:
+            print(f"resumed from checkpoint step {ckpt_step}", flush=True)
+    else:
+        start_step = 0
+        if cfg.faith_warmup.steps > 0:
+            faith_warmup_optimizer = optax.adamw(cfg.faith_warmup.lr, weight_decay=0.0)
+            faith_warmup_opt_state = faith_warmup_optimizer.init(
+                eqx.filter(state.components, eqx.is_array)
+            )
+            faith_warmup_step = make_faith_warmup_step(lm, faith_warmup_optimizer)
+            warmed_components = state.components
+            faith_warmup_loss = None
+            for _ in range(cfg.faith_warmup.steps):
+                warmed_components, faith_warmup_opt_state, faith_warmup_loss = faith_warmup_step(
+                    warmed_components, faith_warmup_opt_state, frozen
+                )
+            assert faith_warmup_loss is not None
+            jax.block_until_ready(faith_warmup_loss)
+            new_opt_vu = _ensure_global(
+                opt_vu.init(eqx.filter(warmed_components, eqx.is_array)), mesh
+            )
+            state = dataclasses.replace(
+                state, components=warmed_components, components_opt_state=new_opt_vu
+            )
+            if is_main:
+                print(f"faith warmup: final faith {float(faith_warmup_loss):.3e}", flush=True)
+        save_state(checkpoint_manager, 0, state)
+
+    step_fn = make_train_step(
+        lm=lm,
+        loss_spec=build_recon_terms(
+            cfg.loss_metrics, lm.site_names, cfg.n_mask_samples, cfg.sampling
+        ),
+        components_optimizer=opt_vu,
+        ci_fn_optimizer=opt_ci,
+        total_steps=cfg.steps,
+        remat_recon_forwards=cfg.remat_recon_forwards,
+        mesh=mesh,
+    )
+
+    @jax.jit
+    def sample_residual(step_key: jax.Array) -> jax.Array:
+        x = resid_mlp.sample_sparse_features(
+            step_key,
+            data_cfg.global_batch,
+            data_cfg.n_features,
+            data_cfg.feature_probability,
+            data_cfg.data_generation_type,
+        )
+        residual = resid_mlp.resid_mlp_input_residual(frozen, x)
+        return jax.lax.with_sharding_constraint(residual, NamedSharding(mesh, P("dp")))
+
+    @jax.jit
+    def single_feature_ci(components: Any, ci_fn: Any) -> dict[str, jax.Array]:
+        resid = resid_mlp.single_feature_probe(data_cfg.n_features) @ frozen.W_E
+        return ci_fn(lm.site_inputs(frozen, resid)).lower
+
+    wandb_config = flatten_typed_lists(
+        dict(raw_cfg, jax_runtime={"n_devices": ndev, "run_id": cfg.run_id})
+    )
+    sink = MetricsSink(cfg, wandb_config, is_main)
+
+    for step in range(start_step, cfg.steps):
+        residual = sample_residual(random.fold_in(data_key, step))
+        state, metrics = step_fn(state, frozen, residual, random.fold_in(run_key, step))
+        now_step = step + 1
+        if now_step % cfg.cadence.log_every == 0 or now_step == cfg.steps:
+            jax.block_until_ready(metrics["total"])
+            record = {k: float(v) for k, v in metrics.items()}
+            ci_lower = single_feature_ci(state.components, state.ci_fn)
+            for site, ci in ci_lower.items():
+                record[f"eval/identity_ci_error/{site}"] = float(
+                    resid_mlp.identity_ci_error(ci, tolerance=0.1)
+                )
+            sink.log(now_step, record)
+        if now_step % cfg.cadence.save_every == 0 or now_step == cfg.steps:
+            save_state(checkpoint_manager, now_step, state)
+            if is_main:
+                print(f"checkpoint saved @ step {now_step}", flush=True)
+
+
 def offline_eval_submission_argv(run_dir: Path, step: int) -> list[str] | None:
     """The sbatch argv for the push-triggered offline eval of this checkpoint, or None
     for step 0 (the init checkpoint). `-J jsp-oeval-<run> --dependency=singleton`
@@ -618,7 +735,7 @@ def main() -> None:
         site_summary = " ".join(f"{s.name}:C{s.C}" for s in cfg.target.sites)
         shape_summary = (
             f"n_features={cfg.data.n_features}"
-            if isinstance(cfg.data, TMSDataConfig)
+            if isinstance(cfg.data, (TMSDataConfig, ResidMLPDataConfig))
             else f"seq={cfg.data.seq_len}"
         )
         print(
@@ -646,6 +763,42 @@ def main() -> None:
             mesh,
         )
         train_tms(cfg, raw_cfg, lm, frozen, mesh)
+        if jax.process_count() > 1:
+            import jax.experimental.multihost_utils as mhu
+
+            mhu.sync_global_devices("train_done")
+            jax.distributed.shutdown()
+        return
+
+    if isinstance(cfg.target, ResidMLPTargetConfig):
+        resid_cfg = resid_mlp.ResidMLPConfig(
+            n_features=cfg.target.n_features,
+            d_embed=cfg.target.d_embed,
+            d_mlp=cfg.target.d_mlp,
+            n_layers=cfg.target.n_layers,
+            act_fn_name=cfg.target.act_fn_name,
+            in_bias=cfg.target.in_bias,
+            out_bias=cfg.target.out_bias,
+            fixed_identity_embedding=cfg.target.fixed_identity_embedding,
+        )
+        lm = resid_mlp.resid_mlp_decomposed_model(
+            resid_cfg, resid_mlp.site_specs(resid_cfg, cfg.target.sites)
+        )
+        if is_main:
+            print(f"pretraining ResidMLP target ({cfg.target.pretrain_steps} steps)...", flush=True)
+        frozen = resid_mlp.replicate_target(
+            resid_mlp.pretrain_resid_mlp_target(
+                resid_cfg,
+                cfg.target.feature_probability,
+                cfg.target.data_generation_type,
+                cfg.target.pretrain_steps,
+                cfg.target.pretrain_batch_size,
+                cfg.target.pretrain_lr,
+                cfg.target.pretrain_seed,
+            ),
+            mesh,
+        )
+        train_resid_mlp(cfg, raw_cfg, lm, frozen, mesh)
         if jax.process_count() > 1:
             import jax.experimental.multihost_utils as mhu
 

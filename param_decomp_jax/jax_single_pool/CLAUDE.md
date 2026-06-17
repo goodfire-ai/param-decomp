@@ -77,7 +77,7 @@ one independent MLP per site mapping `site_input [B,d_in] -> [B,C]` logits throu
 same `lower/upper_leaky_hard` squashings; `run_state.init_train_state` dispatches CI-fn
 construction on `cfg.ci_fn` (`CIArch` transformer vs `MLPCIArch`) and uses replicated
 (not C-sharded) V/U + CI for the tiny TMS. Config dispatch: `config._is_tms_schema`
-(structural `target.n_features` marker) routes the canonical schema to
+(structural `target.n_hidden` marker) routes the canonical schema to
 `build_tms_experiment_config` (torch-free `param_decomp_config.tms.TMSExperimentConfig`);
 `TMSTargetConfig` / `TMSDataConfig` join the `AnyTargetConfig` / `AnyDataConfig` unions;
 `run.py::main` builds + pretrains the target and calls `train_tms` (the TMS composition
@@ -92,6 +92,32 @@ which couples the CI-fn input to the trained components and so does NOT fit the 
 `ci_fn(site_inputs)` waist; the vector-input per-site MLP (consumes the raw `site_input`)
 fits the waist with no core change and recovers a clean identity in the non-superposed
 (`n_hidden==n_features`) regime (validated end-to-end in `tests/test_tms.py`).
+`resid_mlp.py` is the fourth target and the **second non-LM one** — the SPD/APD
+residual-stream toy (`leading_axes=()`, no position axis; the waist is the residual
+stream `[B, d_embed]`). A FIXED input embedding `W_E` (`n_features→d_embed`), `n_layers`
+MLP blocks each reading/writing the `d_embed` residual stream, a FIXED unembed `W_U =
+W_Eᵀ`; the DECOMPOSITION targets the per-layer MLP matrices (sites `layers.{i}.mlp_in` /
+`layers.{i}.mlp_out`, UNTIED V/U). Unlike TMS it HAS a prefix (`W_E`, so
+`resid_mlp_input_residual(frozen, x) = x @ W_E` — the prefix `W_E` is carried inside the
+frozen target itself, no separate `prefix` slot), and unlike LM the recon comparison is
+`recon_loss_fn = resid_mlp_mse` (MSE on the model output `[B, n_features]`, NOT KL). The
+frozen target is **pretrained from scratch in-process** (`pretrain_resid_mlp_target`, the
+read-off `mean((out − (act_fn(x)+x))²)` objective with trivial unit label coeffs — no
+wandb/cache). It REUSES `LayerwiseMLPCIFn` (`fn_type=mlp`, no new CI arch) and the same
+ground-truth identity-CI metric (`resid_mlp.identity_ci_error`, the single-feature probe
+through `W_E`). Config dispatch: `config._is_resid_mlp_schema` (structural `target.d_embed`
+marker, disjoint from TMS's `n_hidden` and the LM's `spec`) routes the canonical schema to
+`build_resid_mlp_experiment_config` (torch-free
+`param_decomp_config.resid_mlp.ResidMLPExperimentConfig`); `ResidMLPTargetConfig` /
+`ResidMLPDataConfig` join the `AnyTargetConfig` / `AnyDataConfig` unions and `ResidMLPTarget`
+joins `AnyFrozenTarget`; `run.py::main` builds + pretrains the target and calls
+`train_resid_mlp` (mirroring `train_tms`). Harvest / slow-eval / export over ResidMLP are
+NOT wired (`load_run.build_target` asserts against it; `export` is llama8b-only). **Finding:**
+again ZERO core change — only ADDED a target + dispatch (the CI arch was reused). The
+identity-embedding regime sets `W_U = W_Eᵀ = I` (the salvaged design choice; torch leaves
+`W_U` at its discarded random init there since only `mlp_in` CI structure is asserted), the
+unambiguous clean per-feature ground truth (validated end-to-end pretrain→decompose→identity
+recovery in `tests/test_resid_mlp.py`).
 
 ## Invariants with sharp teeth (the ones that have actually bitten)
 

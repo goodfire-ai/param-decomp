@@ -46,6 +46,7 @@ from jax_single_pool.ci_fn_mlp import MLPCIArch
 from jax_single_pool.llama8b import SITE_NAME_PATTERN, canonical_site_cs
 from jax_single_pool.lm import SiteC
 from jax_single_pool.recon import build_recon_terms
+from jax_single_pool.resid_mlp import canonical_site_cs as resid_mlp_canonical_site_cs
 from jax_single_pool.tms import canonical_site_cs as tms_canonical_site_cs
 from param_decomp_config.ci_fn import GlobalSharedTransformerCiFnConfig, LayerwiseCiConfig
 from param_decomp_config.eval_metrics import (
@@ -64,6 +65,7 @@ from param_decomp_config.lm import (
 )
 from param_decomp_config.losses import PGDReconLossConfig
 from param_decomp_config.pd import AnyLossMetricConfig, OptimizerConfig
+from param_decomp_config.resid_mlp import ResidMLPExperimentConfig
 from param_decomp_config.schedule import ScheduleConfig
 from param_decomp_config.tms import TMSExperimentConfig
 
@@ -122,7 +124,34 @@ class TMSTargetConfig:
     so any dtype the config declares is honoured."""
 
 
-AnyTargetConfig = TargetConfig | LlamaSimpleMLPTargetConfig | TMSTargetConfig
+@dataclass(frozen=True)
+class ResidMLPTargetConfig:
+    """The vendored ResidualMLP target (`resid_mlp.py`), pretrained from scratch in-process
+    from `pretrain` (no weight artifact); a fixed embedding (`W_U = W_Eᵀ`) with trainable
+    per-layer MLP blocks."""
+
+    n_features: int
+    d_embed: int
+    d_mlp: int
+    n_layers: int
+    act_fn_name: str
+    in_bias: bool
+    out_bias: bool
+    fixed_identity_embedding: bool
+    sites: tuple[SiteC, ...]
+    pretrain_steps: int
+    pretrain_batch_size: int
+    pretrain_lr: float
+    pretrain_seed: int
+    feature_probability: float
+    data_generation_type: str
+
+    supported_weights_dtypes: frozenset[WeightsDtype] = frozenset({"float32", "bfloat16"})
+    """The from-scratch pretrain runs in fp32 and the frozen target is cast at build time,
+    so any dtype the config declares is honoured."""
+
+
+AnyTargetConfig = TargetConfig | LlamaSimpleMLPTargetConfig | TMSTargetConfig | ResidMLPTargetConfig
 
 
 @dataclass(frozen=True)
@@ -143,7 +172,18 @@ class TMSDataConfig:
     data_generation_type: str
 
 
-AnyDataConfig = DataConfig | TMSDataConfig
+@dataclass(frozen=True)
+class ResidMLPDataConfig:
+    """The ResidMLP synthetic sparse-feature data — generated fresh per step in-process
+    (`resid_mlp.sample_sparse_features`, values in [-1, 1]), no parquet/tokenizer."""
+
+    n_features: int
+    global_batch: int
+    feature_probability: float
+    data_generation_type: str
+
+
+AnyDataConfig = DataConfig | TMSDataConfig | ResidMLPDataConfig
 
 
 @dataclass(frozen=True)
@@ -333,11 +373,11 @@ def _ci_arch(cfg: LMExperimentConfig, seq_len: int) -> CIArch:
     )
 
 
-def _layerwise_mlp_ci_arch(cfg: TMSExperimentConfig) -> MLPCIArch:
+def _layerwise_mlp_ci_arch(cfg: "TMSExperimentConfig | ResidMLPExperimentConfig") -> MLPCIArch:
     ci = cfg.pd.ci_config
     assert isinstance(ci, LayerwiseCiConfig), ci
-    assert ci.fn_type == "mlp", f"TMS CI fn must be fn_type=mlp, got {ci.fn_type}"
-    assert ci.hidden_dims, "TMS MLP CI fn needs at least one hidden layer"
+    assert ci.fn_type == "mlp", f"layerwise CI fn must be fn_type=mlp, got {ci.fn_type}"
+    assert ci.hidden_dims, "layerwise MLP CI fn needs at least one hidden layer"
     return MLPCIArch(hidden_dims=tuple(ci.hidden_dims))
 
 
@@ -468,7 +508,9 @@ class _SharedConvert:
     ci_lr_for_arch: float
 
 
-def _convert_shared(cfg: "LMExperimentConfig | TMSExperimentConfig") -> _SharedConvert:
+def _convert_shared(
+    cfg: "LMExperimentConfig | TMSExperimentConfig | ResidMLPExperimentConfig",
+) -> _SharedConvert:
     assert cfg.pd.sigmoid_type == "leaky_hard", cfg.pd.sigmoid_type
     assert cfg.pd.use_delta_component and cfg.pd.tied_weights is None
     assert cfg.runtime.autocast_bf16, "JAX trainer computes in bf16 (autocast analog)"
@@ -616,15 +658,97 @@ def build_tms_experiment_config(
     )
 
 
+def _resid_mlp_target(cfg: ResidMLPExperimentConfig) -> ResidMLPTargetConfig:
+    assert cfg.pd.identity_decomposition_targets is None, "identity targets unsupported"
+    site_cs = resid_mlp_canonical_site_cs(
+        tuple(SiteC(t.module_pattern, t.C) for t in cfg.pd.decomposition_targets)
+    )
+    return ResidMLPTargetConfig(
+        n_features=cfg.target.n_features,
+        d_embed=cfg.target.d_embed,
+        d_mlp=cfg.target.d_mlp,
+        n_layers=cfg.target.n_layers,
+        act_fn_name=cfg.target.act_fn_name,
+        in_bias=cfg.target.in_bias,
+        out_bias=cfg.target.out_bias,
+        fixed_identity_embedding=cfg.target.fixed_identity_embedding,
+        sites=site_cs,
+        pretrain_steps=cfg.target.pretrain.steps,
+        pretrain_batch_size=cfg.target.pretrain.batch_size,
+        pretrain_lr=cfg.target.pretrain.lr,
+        pretrain_seed=cfg.target.pretrain.seed,
+        feature_probability=cfg.data.feature_probability,
+        data_generation_type=cfg.data.data_generation_type,
+    )
+
+
+def build_resid_mlp_experiment_config(
+    cfg: ResidMLPExperimentConfig,
+    run_name: str,
+    run_id: str,
+    out_dir: Path,
+    remat_recon_forwards: bool,
+    wandb_group: str | None = None,
+    wandb_tags: tuple[str, ...] = (),
+) -> ExperimentConfig:
+    target = _resid_mlp_target(cfg)
+    shared = _convert_shared(cfg)
+    loss_metrics = tuple(cfg.pd.loss_metrics)
+    build_recon_terms(
+        loss_metrics, tuple(sc.name for sc in target.sites), cfg.pd.n_mask_samples, cfg.pd.sampling
+    )
+    assert cfg.eval is None, (
+        "ResidMLP in-loop eval is the standalone target-CI metric (run.py::train_resid_mlp), "
+        "not the LM CEandKLLosses pass; omit the eval: block"
+    )
+    data = ResidMLPDataConfig(
+        n_features=cfg.target.n_features,
+        global_batch=cfg.pd.batch_size,
+        feature_probability=cfg.data.feature_probability,
+        data_generation_type=cfg.data.data_generation_type,
+    )
+    return ExperimentConfig(
+        run_name=run_name,
+        run_id=run_id,
+        out_dir=out_dir,
+        seed=cfg.pd.seed,
+        steps=cfg.pd.steps,
+        target=target,
+        data=data,
+        loss_metrics=loss_metrics,
+        n_mask_samples=cfg.pd.n_mask_samples,
+        sampling=cfg.pd.sampling,
+        remat_recon_forwards=remat_recon_forwards,
+        vu_optimizer=shared.vu_optimizer,
+        ci_optimizer=shared.ci_optimizer,
+        ci_fn=_layerwise_mlp_ci_arch(cfg),
+        faith_warmup=shared.faith_warmup,
+        cadence=shared.cadence,
+        eval=None,
+        wandb=cfg.wandb,
+        wandb_group=wandb_group,
+        wandb_tags=wandb_tags,
+    )
+
+
 _RUN_ID_PATTERN = re.compile(r"^p-[0-9a-f]{8}$")
 
 
 def _is_tms_schema(schema_raw: dict[str, Any]) -> bool:
-    """TMS vs LM schemas differ in their `target` block: the LM target carries a `spec`
-    discriminated union, the TMS target carries `n_features`. The schema yaml has no top-
-    level kind tag, so dispatch on this structural marker."""
+    """TMS vs LM/ResidMLP schemas differ in their `target` block: the LM target carries a
+    `spec` discriminated union, the TMS target carries `n_hidden` (ResidMLP carries
+    `d_embed`/`n_layers` instead). The schema yaml has no top-level kind tag, so dispatch
+    on this structural marker."""
     target = schema_raw.get("target", {})
-    return isinstance(target, dict) and "n_features" in target
+    return isinstance(target, dict) and "n_hidden" in target
+
+
+def _is_resid_mlp_schema(schema_raw: dict[str, Any]) -> bool:
+    """The ResidMLP target carries `d_embed` (a residual-stream width with no TMS or LM
+    analog) — the structural marker distinguishing it from TMS (`n_hidden`) and the LM
+    (`spec`)."""
+    target = schema_raw.get("target", {})
+    return isinstance(target, dict) and "d_embed" in target
 
 
 def _build_from_schema(
@@ -639,6 +763,16 @@ def _build_from_schema(
     if _is_tms_schema(schema_raw):
         return build_tms_experiment_config(
             TMSExperimentConfig(**schema_raw),
+            run_name=run_name,
+            run_id=run_id,
+            out_dir=out_dir,
+            remat_recon_forwards=remat_recon_forwards,
+            wandb_group=wandb_group,
+            wandb_tags=wandb_tags,
+        )
+    if _is_resid_mlp_schema(schema_raw):
+        return build_resid_mlp_experiment_config(
+            ResidMLPExperimentConfig(**schema_raw),
             run_name=run_name,
             run_id=run_id,
             out_dir=out_dir,

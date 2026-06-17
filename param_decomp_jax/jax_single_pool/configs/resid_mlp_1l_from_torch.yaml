@@ -1,0 +1,4 @@
+# ResidualMLP 1-layer wrapper — JAX counterpart of torch resid_mlp1_config.yaml.
+torch_config: torch/resid_mlp_1l.yaml
+run_name: jax-resid-mlp-1l
+remat_recon_forwards: false

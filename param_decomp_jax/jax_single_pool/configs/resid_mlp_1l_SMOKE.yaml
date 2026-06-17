@@ -1,0 +1,5 @@
+# ResidualMLP 1-layer SMOKE wrapper — jsp-train full-loop validation (pretrain + decompose
+# + ckpt + in-loop target-CI metric).
+torch_config: torch/resid_mlp_1l_SMOKE.yaml
+run_name: jax-resid-mlp-1l-smoke
+remat_recon_forwards: false

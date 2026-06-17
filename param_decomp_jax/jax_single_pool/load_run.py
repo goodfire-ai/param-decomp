@@ -39,6 +39,7 @@ from jax_single_pool.ci_fn import CIFn
 from jax_single_pool.config import (
     ExperimentConfig,
     LlamaSimpleMLPTargetConfig,
+    ResidMLPTargetConfig,
     TargetConfig,
     TMSTargetConfig,
     load_run_dir_config,
@@ -77,9 +78,9 @@ def build_target(
     """`(lm, frozen target, prefix, prefix_residual_fn, vocab_size)` for the run's target
     config. SimpleMLP reads its local pretrain cache (no network); llama8b reads the HF
     snapshot (frozen bf16 target + fp32-compute, matching `run.py::main`)."""
-    assert not isinstance(cfg.target, TMSTargetConfig), (
-        "harvest/slow-eval over the TMS target is not wired (TMS validates via the in-loop "
-        "target-CI metric in run.py::train_tms)"
+    assert not isinstance(cfg.target, (TMSTargetConfig, ResidMLPTargetConfig)), (
+        "harvest/slow-eval over the TMS/ResidMLP targets is not wired (they validate via "
+        "the in-loop target-CI metric in run.py::train_tms / train_resid_mlp)"
     )
     match cfg.target:
         case LlamaSimpleMLPTargetConfig():
