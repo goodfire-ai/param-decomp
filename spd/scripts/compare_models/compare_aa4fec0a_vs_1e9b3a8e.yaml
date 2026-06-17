@@ -1,0 +1,15 @@
+# Compare s-aa4fec0a vs s-1e9b3a8e
+current_model_path: "wandb:goodfire/spd/runs/s-aa4fec0a"
+reference_model_path: "wandb:goodfire/spd/runs/s-1e9b3a8e"
+
+# Analysis parameters
+density_threshold: 0.001
+n_eval_steps: 5
+
+# Data loading parameters
+eval_batch_size: 32
+shuffle_data: false
+ci_alive_threshold: 0.0
+
+# Output to a separate directory to avoid overwriting existing results
+output_dir: "spd/scripts/compare_models/out_aa4fec0a_vs_1e9b3a8e"
