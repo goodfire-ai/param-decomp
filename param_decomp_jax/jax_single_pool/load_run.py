@@ -12,7 +12,7 @@ reference `TrainState`, and exposes the pure forward a consumer needs:
     fwd.component_acts[site]                    # (B, T, C) ‖U_c‖ · (x @ V) per site
     fwd.output_probs                            # (B, T, vocab) softmax of clean logits
 
-No torch, no `jsp-export` safetensors bridge: the V/U + CI fn come straight from the
+No torch, no safetensors bridge: the V/U + CI fn come straight from the
 orbax checkpoint and the target is built from its own config. CPU-friendly (jax falls
 back to CPU); a single device is enough for a small harvest.
 

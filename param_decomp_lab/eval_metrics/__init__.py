@@ -2,8 +2,10 @@
 
 YAML `eval.metrics` entries are validated against `AnyEvalMetricConfig` (in
 `param_decomp_config.eval_metrics`) and dispatched to the matching `Metric` subclass
-via `EVAL_METRIC_CLASSES`. External users instantiate
-their own eval metrics directly and pass them in `EvalLoop(metrics=...)`.
+via `EVAL_METRIC_CLASSES`. The live in-loop eval runs in the JAX trainer;
+`wandb_config_dict` / `metric_short_names` here are the shared wandb-key plumbing the
+JAX trainer reuses, and the metric classes themselves stay the user-extensible torch
+surface.
 """
 
 from typing import Any

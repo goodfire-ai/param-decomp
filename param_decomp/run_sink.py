@@ -7,8 +7,7 @@ room for the n-pool subsystems' sibling sinks, which live on their own
 branch.)
 
 Timing — when the trainer emits — lives separately: `param_decomp_config.pd.Cadence`
-owns train-log + checkpoint periods, and `param_decomp.train_step.EvalLoop` owns
-the eval period.
+owns train-log + checkpoint periods.
 """
 
 from typing import Any, Protocol, runtime_checkable

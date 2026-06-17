@@ -33,7 +33,6 @@ dev = ["pytest", "basedpyright", "huggingface-hub==0.36.0"]
 
 [project.scripts]
 jsp-train = "jax_single_pool.run:main"
-jsp-export = "jax_single_pool.export:main"
 jsp-slow-eval = "jax_single_pool.slow_eval:main"
 
 [build-system]
@@ -55,7 +54,6 @@ include = ["jax_single_pool"]
 exclude = [
     "**/__pycache__",
     "jax_single_pool/tests/equivalence/torch_reference.py",  # torch-env script
-    "jax_single_pool/tools/verify_export_torch.py",  # torch-env script
     "jax_single_pool/tools/convert_llama_simple_mlp_checkpoint.py",  # torch-env script
     "jax_single_pool/tests/simple_mlp_equivalence/gen_torch_fixtures.py",  # torch-env script
     "jax_single_pool/tests/stacked_parity/gen_stacked_fixtures.py",  # base-branch-only script (pre-restructure API)

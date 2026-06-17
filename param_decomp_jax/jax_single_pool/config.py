@@ -30,7 +30,7 @@ JAX-side equivalents derived elsewhere): `runtime.device/dp` (GSPMD owns placeme
 analog), `target.output_extract`, `data.buffer_size/shuffle_each_epoch/train_split/
 eval_split` (the JAX data schedule is deterministic by construction), `eval.slow_every/
 slow_on_first_step` (no slow in-loop metrics; plot/slow metrics run offline via
-`jsp-export` + `pd-offline-eval`), `use_fused_kl` (a torch impl detail).
+`jsp-slow-eval`), `use_fused_kl` (a torch impl detail).
 """
 
 import re
@@ -294,7 +294,7 @@ class ExperimentConfig:
 
 # Slow/plot eval metrics the in-loop scalar pass (`eval.py`) does NOT compute. The first
 # three are rendered natively by `jsp-slow-eval` (`slow_eval.py`) over a checkpoint; the
-# rest still ride the torch `jsp-export` -> `pd-offline-eval` bridge.
+# rest are accepted as config but have no JAX offline pass yet.
 OFFLINE_EVAL_METRIC_TYPES = frozenset(
     {
         "CIHistograms",

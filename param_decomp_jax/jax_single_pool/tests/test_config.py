@@ -376,18 +376,6 @@ def test_load_run_dir_config_rebuilds_wrapper_runs(tmp_path: Path):
     assert load_run_dir_config(run_dir) == expected
 
 
-def test_offline_eval_submission_argv(tmp_path: Path):
-    from jax_single_pool.run import offline_eval_submission_argv
-
-    assert offline_eval_submission_argv(tmp_path, 0) is None  # init checkpoint
-    argv = offline_eval_submission_argv(tmp_path, 5000)
-    assert argv is not None and argv[0] == "sbatch"
-    assert f"--job-name=jsp-oeval-{tmp_path.name}" in argv
-    assert "--dependency=singleton" in argv
-    assert argv[-2:] == [str(tmp_path), "5000"]
-    assert Path(argv[-3]).name == "offline_eval_once.sbatch" and Path(argv[-3]).exists()
-
-
 def test_wrapper_run_id_required_and_drives_identity(tmp_path: Path):
     """The run dir and wandb id are the p-id (torch runs/<id>/ convention); the human
     name stays the wandb display name. Missing or malformed run_id refuses."""

@@ -214,7 +214,6 @@ Training is now `jsp-train` (JAX), submitted via `pd-jax-lm`.
 | Command | Entry point | Purpose |
 |---|---|---|
 | `pd-jax-lm` | `experiments/lm/jax_launch.py` | Submit a JAX `jsp-train` run: snapshot ref + shared-FS workspace + sbatch |
-| `pd-offline-eval` | `experiments/lm/offline_eval.py` | Torch offline eval of a JAX run's exported checkpoint |
 | `pd-pretrain` | `experiments/lm/pretrain/cli.py` | Pretrain target models |
 | `pd-harvest` | `harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
 | `pd-autointerp` | `autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |

@@ -1,5 +1,5 @@
-"""Harvest a JAX single-pool run natively — no torch component model, no `jsp-export`
-safetensors bridge.
+"""Harvest a JAX single-pool run natively — no torch component model, no safetensors
+bridge.
 
     python -m param_decomp_lab.harvest.scripts.run_worker_jax \
         --run_dir runs/p-761bc061 --n_batches 50 --batch_size 16

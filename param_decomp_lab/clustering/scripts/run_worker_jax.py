@@ -1,5 +1,5 @@
 """Harvest clustering memberships from a JAX single-pool run natively — no torch
-component model, no `jsp-export` safetensors bridge.
+component model, no safetensors bridge.
 
     python -m param_decomp_lab.clustering.scripts.run_worker_jax \
         --run_dir runs/p-761bc061 --n_tokens 50000 --batch_size 16 --n_tokens_per_seq 8

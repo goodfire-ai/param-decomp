@@ -29,11 +29,10 @@ dependencies = [
 ]
 
 [project.scripts]
-# LM run submission (JAX single-pool trainer) + offline torch eval of its exports.
+# LM run submission (JAX single-pool trainer).
 # The torch training drivers (pd-tms / pd-resid-mlp / pd-lm / pd-lm-layerwise) were
 # retired with the torch trainer; the oracle lives at git tag `torch-oracle`.
 pd-jax-lm = "param_decomp_lab.experiments.lm.jax_launch:cli"
-pd-offline-eval = "param_decomp_lab.experiments.lm.offline_eval:cli"
 pd-pretrain = "param_decomp_lab.experiments.lm.pretrain.cli:cli"
 # Post-processing pipeline CLIs (SLURM-driven; lab subtrees).
 pd-cluster-merge = "param_decomp_lab.clustering.scripts.run_merge:cli"

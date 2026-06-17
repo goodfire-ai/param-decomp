@@ -1,19 +1,19 @@
 """JAX-native slow (plot-type) eval metrics, the offline counterpart of `eval.py`.
 
 `eval.py` runs the FAST scalar tier in-loop (CE/KL, CI-L0, the fresh-PGD probe). The
-SLOW tier is the heavy plot metrics that torch ran out-of-loop via `pd-offline-eval`:
+SLOW tier is the heavy plot metrics deferred to this out-of-loop pass:
 `CIHistograms`, `ComponentActivationDensity`, `CIMeanPerComponent` (the torch eval-
 metric classes of the same names). Every one of them is a reduction over the per-site
 causal-importance arrays from a masked-free forward, then a numpy/matplotlib plot. The
 forward + reduction is JAX; the plotting is framework-agnostic (it mirrors the torch
 `param_decomp_lab/eval_metrics/plotting.py` reductions on numpy arrays, no torch).
 
-This runs as an OFFLINE pass over an on-disk checkpoint (`jsp-slow-eval <run_dir>`), the
-same shape as torch `experiments.lm.offline_eval`: rebuild the JAX target from the run's
+This runs as an OFFLINE pass over an on-disk checkpoint (`jsp-slow-eval <run_dir>`):
+rebuild the JAX target from the run's
 config, restore the `TrainState`, accumulate the reductions over `n_steps` eval batches,
 render the figures, and log them under `slow_eval/*` into the run's wandb (the dedicated
 `slow_eval/step` axis — the live run's `_step` has advanced, so an explicit `step=` write
-would be dropped; same reasoning as torch offline-eval). No torch, no export round-trip.
+would be dropped). No torch, no export round-trip.
 
 Cross-batch reductions are exact under micro-batching: density/mean accumulate
 SUM-over-positions + a position count, divided once at the end (token-weighted mean,

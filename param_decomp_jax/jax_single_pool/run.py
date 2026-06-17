@@ -17,7 +17,6 @@ import dataclasses
 import json
 import math
 import signal
-import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -426,9 +425,6 @@ def train(
             save_state(checkpoint_manager, now_step, state)
             if is_main:
                 print(f"checkpoint saved @ step {now_step}", flush=True)
-                # export/offline-eval only exists for the llama8b target so far
-                if isinstance(cfg.target, TargetConfig):
-                    _submit_offline_eval(cfg.run_dir, now_step)
             window_t0 = time.time()
         if _sigterm_received:
             if is_main:
@@ -663,41 +659,6 @@ def train_resid_mlp(
             save_state(checkpoint_manager, now_step, state)
             if is_main:
                 print(f"checkpoint saved @ step {now_step}", flush=True)
-
-
-def offline_eval_submission_argv(run_dir: Path, step: int) -> list[str] | None:
-    """The sbatch argv for the push-triggered offline eval of this checkpoint, or None
-    for step 0 (the init checkpoint). `-J jsp-oeval-<run> --dependency=singleton`
-    serializes evals per run; the once-script's marker file dedups across requeues."""
-    if step == 0:
-        return None
-    once_script = Path(__file__).parent / "slurm" / "offline_eval_once.sbatch"
-    return [
-        "sbatch",
-        f"--job-name=jsp-oeval-{run_dir.name}",
-        "--dependency=singleton",
-        f"--comment=push-triggered offline eval: {run_dir.name} step {step}",
-        str(once_script),
-        str(run_dir),
-        str(step),
-    ]
-
-
-def _submit_offline_eval(run_dir: Path, step: int) -> None:
-    """Fire-and-forget: a failed eval submission must not kill a multi-day training
-    run — the one place graceful handling beats fail-fast. Loud on any failure."""
-    argv = offline_eval_submission_argv(run_dir, step)
-    if argv is None:
-        return
-    result = subprocess.run(argv, capture_output=True, text=True)
-    if result.returncode == 0:
-        print(f"offline eval submitted for step {step}: {result.stdout.strip()}", flush=True)
-    else:
-        print(
-            f"OFFLINE EVAL SUBMISSION FAILED for step {step} (training continues): "
-            f"{result.stderr.strip()}",
-            flush=True,
-        )
 
 
 def _pin_config_copy(run_dir: Path, name: str, source: Path) -> None:

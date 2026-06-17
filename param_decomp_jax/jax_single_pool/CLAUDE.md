@@ -61,9 +61,9 @@ t-9d2b8f02; sites `h.{i}.attn.{q,k,v,o}_proj` / `h.{i}.mlp.{c_fc,down_proj}`) �
 config dispatch is `TargetConfig` (llama8b) vs `LlamaSimpleMLPTargetConfig` in
 `config.py` (which also reads the canonical `param_decomp_config` schema DIRECTLY —
 `build_experiment_config`/`load_wrapper` — routing `kind: pretrained` specs + `h.*`
-wildcards), target build in `run.py::main`. `jsp-export` (torch-format export) stays
-llama8b-only (guarded); the slow plot metrics are computed NATIVELY in JAX for the
-SimpleMLP target via `jsp-slow-eval` (`slow_eval.py`) — no torch export round-trip.
+wildcards), target build in `run.py::main`. The slow plot metrics are computed
+NATIVELY in JAX via `jsp-slow-eval` (`slow_eval.py`) — no torch export round-trip
+(the torch offline-eval bridge `jsp-export` / `pd-offline-eval` was retired).
 `tms.py` is the third target and the **first non-LM one** (`leading_axes=()`, no position
 axis; the waist is `[B, n_features]`) — the proof the generic `[*leading, d]` core fits a
 positionless target. The TMS target is the Anthropic toy (`out = relu(linear2(linear1(x)))`,
