@@ -51,7 +51,6 @@ build-backend = "setuptools.build_meta"
 packages = [
     "param_decomp_lab",
     "param_decomp_lab.adapters",
-    "param_decomp_lab.adapters._vendor",
     "param_decomp_lab.app",
     "param_decomp_lab.app.backend",
     "param_decomp_lab.app.backend.routers",

@@ -17,7 +17,7 @@ def get_autointerp_subrun_dir(decomposition_id: str, autointerp_run_id: str) -> 
     return get_autointerp_dir(decomposition_id) / autointerp_run_id
 
 
-DecompositionMethod = Literal["pd", "clt", "transcoder"]
+DecompositionMethod = Literal["pd"]
 
 DECOMPOSITION_DESCRIPTIONS: dict[DecompositionMethod, str] = {
     "pd": (
@@ -27,16 +27,6 @@ DECOMPOSITION_DESCRIPTIONS: dict[DecompositionMethod, str] = {
         "token position: CI near 1 means the component is essential at that position, CI near "
         "0 means it can be ablated without affecting output. A component 'fires' when its CI "
         "is high."
-    ),
-    "clt": (
-        "Each component is a feature from a Cross-Layer Transcoder (CLT). CLTs learn sparse, "
-        "interpretable features that map activations at one layer to contributions at another. "
-        "A component 'fires' when its activation magnitude is high."
-    ),
-    "transcoder": (
-        "Each component is a feature from a Transcoder, which learns a sparse dictionary of "
-        "linear transformations mapping MLP inputs to MLP outputs. A component 'fires' when "
-        "its encoder activation is above threshold."
     ),
 }
 

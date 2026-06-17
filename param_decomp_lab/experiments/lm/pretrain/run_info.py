@@ -91,7 +91,7 @@ def _migrate_legacy_data_config(config_dict: dict[str, Any]) -> dict[str, Any]:
     Old pretrain runs stored two split-level dataset configs (`LMDataLoaderConfig`).
     New code uses one `LMDataConfig` with `train_split`/`eval_split` and a single seed.
     This migrator runs at config-dict read time so reload paths (`PretrainRunInfo.from_path`
-    and downstream readers in `adapters/{base,clt,transcoder}.py`) see the new shape.
+    and downstream readers in `adapters/base.py`) see the new shape.
 
     Semantic drift: legacy code seeded val with the same `seed or 0` as train; new code
     derives val seed as `seed + 1`. Eval sampling order shifts on reload. Acceptable for
