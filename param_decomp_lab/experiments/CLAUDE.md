@@ -1,11 +1,18 @@
 # `param_decomp_lab/experiments/`
 
-Composition roots for the in-repo experiments. Each experiment is a plain Python script
-that parses a YAML, builds the target / loaders / metrics, and runs a `Trainer`.
+Composition roots for the in-repo experiments. Training is JAX now (`jsp-train`, launched
+via `pd-jax-lm`); what survives here on the torch side is the **LM consumer bridge** — the
+`SavedLMRun` reload class that post-processing (harvest / app / eval) imports to load a
+saved decomposition off disk.
 
-There is no central registry — each `run.py` declares its own `<Name>ExperimentConfig`
-+ build functions + `Saved<Name>Run` reload class, and post-processing callers import
-the concrete reload class directly.
+The torch TMS and ResidualMLP experiment dirs were deleted: those domains now live only as
+JAX targets (`param_decomp_jax/jax_single_pool/tms.py`, `resid_mlp.py`). Their torch-free
+config schemas (`param_decomp_config/tms.py`, `resid_mlp.py`) remain, since the JAX trainer
+reads them.
+
+There is no central registry — `lm/run.py` declares its own `LMExperimentConfig` +
+build functions + `SavedLMRun` reload class, and post-processing callers import the
+concrete reload class directly.
 
 ## Layout
 
@@ -17,33 +24,13 @@ The `ExperimentConfig[T,D]` generic + `EvalConfig` + `WandbConfig` +
 ```
 experiments/
 ├── utils.py                 # init_pd_run + EXPERIMENT_CONFIG_FILENAME
-├── tms/run.py
-├── resid_mlp/run.py
 └── lm/
-    ├── run.py               # single-pool LM (pd-lm)
+    ├── run.py               # LM consumer bridge (SavedLMRun reload)
+    ├── jax_launch.py        # pd-jax-lm: snapshot + shared-FS workspace + sbatch
     ├── layerwise.py         # split LM YAML into per-matrix configs + SLURM-array submit
     ├── data.py
     └── pretrain/            # see lm/pretrain/CLAUDE.md
 ```
-
-## YAML schema
-
-One validated pydantic tree (extra keys raise):
-
-```yaml
-pd:      { ... PDConfig ... }
-runtime: { ... RuntimeConfig ... }
-cadence: { train_log_every, save_every, dense_log_phase: { every, until_step } }  # dense_log_phase optional
-target:  { ... per-experiment target config ... }
-data:    { ... per-experiment data config ... }
-eval:    { batch_size, n_steps, every, slow_every, slow_on_first_step,
-           metrics: [ {type: "...", ...}, ... ] }   # optional: omit to skip eval
-wandb:   { project: ..., entity: ... }              # optional: omit to skip wandb
-```
-
-`eval.metrics` entries are dispatched via `EVAL_METRIC_CLASSES` (see
-[`../eval_metrics/CLAUDE.md`](../eval_metrics/CLAUDE.md)). `slow_every` must be a
-multiple of `every`.
 
 ## LM `target.spec`
 
@@ -85,17 +72,17 @@ classmethod that loads real HF weights into a checkpointable, componentizable ve
 the latter is a separate, small pretrain-only architecture (different MLP, ties embeddings, no
 llama3 RoPE scaling) and is NOT the real-Llama decomposition target — don't retrofit it.
 
-## Anatomy of `run.py`
+## Anatomy of `lm/run.py`
 
-Every experiment script exposes the same five top-level shapes:
+The LM bridge exposes the same shapes a fresh-run script and a reload path share:
 
 ```python
-class <Name>ExperimentConfig(ExperimentConfig[<Name>TargetConfig, <Name>DataConfig]):
-    pass  # LM's lives in param_decomp_config/lm.py; TMS/ResidMLP declare theirs in run.py
+class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
+    ...  # lives in param_decomp_config/lm.py
 
 def build_target(target_cfg) -> nn.Module: ...
 
-def build_<name>_loader(
+def build_lm_loader(
     target_cfg, data_cfg, *,
     split: Literal["train", "eval"], device: str, batch_size: int,
     dist_state=None, seed=None,
@@ -104,27 +91,20 @@ def build_<name>_loader(
 def make_run_batch(target_cfg) -> RunBatch: ...
 
 @dataclass(frozen=True)
-class Saved<Name>Run:
-    cfg: <Name>ExperimentConfig
+class SavedLMRun:
+    cfg: LMExperimentConfig
     checkpoint_path: Path
 
     @classmethod
-    def from_path(cls, path: ModelPath) -> "Saved<Name>Run": ...
+    def from_path(cls, path: ModelPath) -> "SavedLMRun": ...
     def load_model(self) -> ComponentModel: ...
 ```
 
-The loader is per-experiment-named (`build_lm_loader`, `build_tms_loader`,
-`build_resid_mlp_loader`) so cross-imports don't shadow each other. The reload class
-deliberately does *not* re-export the loader as a method — post-processing code calls
-the free function directly with `pd_run.cfg.target` / `pd_run.cfg.data`.
+The reload class deliberately does *not* re-export the loader as a method — post-processing
+code calls the free function directly with `pd_run.cfg.target` / `pd_run.cfg.data`.
 
-`main()` calls the module-level build functions directly; `Saved<Name>Run` delegates
-to those same functions, so there's no duplication between "fresh run from YAML" and
-"reload from disk" paths.
-
-`main()` writes the resolved `<Name>ExperimentConfig` to `out_dir / EXPERIMENT_CONFIG_FILENAME`
-via `cfg.to_file(...)`. There is no kind discriminator on disk — each post-processing
-caller imports the concrete `Saved<Name>Run` it expects:
+There is no kind discriminator on disk — each post-processing caller imports the concrete
+`SavedLMRun` it expects:
 
 ```python
 from param_decomp_lab.experiments.lm.run import SavedLMRun
@@ -135,19 +115,6 @@ pd_run = SavedLMRun.from_path("entity/project/runs/<run_id>")
 
 Pydantic validation against the wrong `ExperimentConfig` subclass fails fast at YAML
 load time.
-
-## Adding a new experiment
-
-Drop a `run.py` next to a YAML config. Implement the five shapes above. Then either:
-
-1. Invoke `python -m param_decomp_lab.experiments.<name>.run config.yaml`, or
-2. Add a console script in `param_decomp_lab/pyproject.toml`:
-   ```toml
-   pd-<name> = "param_decomp_lab.experiments.<name>.run:cli"
-   ```
-
-No central registry to update — post-processing callers `import` the new
-`Saved<Name>Run` directly from its module.
 
 ## Sink + wandb wiring
 
@@ -173,22 +140,3 @@ Every `pd-*` run command accepts `--group <id>` and `--tags a,b,c` (no-ops when
   `pd-lm-layerwise` auto-generates a `lw-...` group id and stamps every child run with
   it. Manual users can pass `--group` to mark ad-hoc multi-launches.
 - **`--tags`** adds wandb tags — orthogonal to `group`, many per run, user-defined.
-
-## Saved-run layout
-
-```
-PARAM_DECOMP_OUT_DIR/runs/<run_id>/
-  experiment_config.yaml     # the full ExperimentConfig
-  model_<step>.pth           # checkpoints (RunSink.checkpoint)
-  metrics.jsonl              # local logs (RunSink.log)
-```
-
-Post-decomposition pipelines (harvest, autointerp) nest their own sub-directories under
-this same `runs/<run_id>/` dir — see each module's CLAUDE.md.
-
-## Canonical references
-
-- `param_decomp_lab/experiments/tms/run.py` — smallest, simplest reference.
-- `param_decomp_lab/experiments/resid_mlp/run.py` — toy model with feature_importances.
-- `param_decomp_lab/experiments/lm/run.py` — discriminated `target.spec`, DDP via
-  `with_distributed_cleanup`.

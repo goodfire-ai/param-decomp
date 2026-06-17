@@ -115,7 +115,7 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
 - `RuntimeConfig` — compute substrate: `autocast_bf16`, `device`, `dp`. Perturbs numerics
   without changing the algorithm.
 - `RunBatch` / `ReconstructionLoss` — protocols in `param_decomp/batch_and_loss_fns.py`,
-  consumed by the torch consumer bridges (`SavedLMRun` / `SavedTMSRun` reload paths).
+  consumed by the torch consumer bridge (`SavedLMRun` reload path).
 - `RunSink` — Protocol with three methods (`log`, `console`, `checkpoint`). Concrete
   impl in `param_decomp_lab.run_sink.RunSink` (local files + wandb + rank-aware no-op),
   built via `.local(...)`, `.with_wandb(...)`, or `.silent()`.
@@ -134,10 +134,12 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
 - `param_decomp/` — core library (see [Public API](#public-api)). Module docstrings
   describe each file.
 - `param_decomp/metrics/` — loss `Metric` classes and dispatch.
-- `param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py` — consumer bridges: pure
-  builders (`build_target` / loader / `make_run_batch`) + the `Saved<Name>Run` reload
-  classes that load a saved decomposition off disk. The torch training drivers were
-  retired with the torch trainer; training is `jsp-train` (JAX) launched via `pd-jax-lm`.
+- `param_decomp_lab/experiments/lm/run.py` — LM consumer bridge: pure builders
+  (`build_target` / loader / `make_run_batch`) + the `SavedLMRun` reload class that loads
+  a saved decomposition off disk. The torch training drivers were retired with the torch
+  trainer; training is `jsp-train` (JAX) launched via `pd-jax-lm`. The torch TMS and
+  ResidualMLP experiment dirs were deleted — those domains now live only as JAX targets
+  (`param_decomp_jax/jax_single_pool/tms.py`, `resid_mlp.py`).
 - `param_decomp_lab/{harvest,autointerp,clustering,investigate,app}/`
   — post-pipeline + app, each with its own CLAUDE.md.
 - `param_decomp_lab/postprocess/` — orchestrates the post-pipeline stages.

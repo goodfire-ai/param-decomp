@@ -29,10 +29,11 @@ The `pd-*` commands are installed by `param-decomp-lab`. Each in-repo experiment
 self-contained script that reads a YAML and calls `optimize()`:
 
 ```bash
-pd-tms       param_decomp_lab/experiments/tms/tms_5-2_config.yaml
-pd-resid-mlp param_decomp_lab/experiments/resid_mlp/resid_mlp1_config.yaml
-pd-lm        param_decomp_lab/experiments/lm/pile_llama_simple_mlp-4L.yaml
+pd-jax-lm    param_decomp_lab/experiments/lm/<wrapper>.yaml --nodes N
 ```
+
+TMS and ResidualMLP now live only as JAX targets in `param_decomp_jax/jax_single_pool/`
+(`tms.py`, `resid_mlp.py`); the torch experiment dirs were deleted.
 
 For a brand-new experiment, write your own `run.py` that builds the target model, the
 train/eval dataloaders, the eval `Metric` list, the `PDConfig` and `RuntimeConfig`, a
@@ -66,10 +67,7 @@ optimize(
 )
 ```
 
-The three in-repo `run.py` files
-([tms](param_decomp_lab/experiments/tms/run.py),
- [resid_mlp](param_decomp_lab/experiments/resid_mlp/run.py),
- [lm](param_decomp_lab/experiments/lm/run.py)) are reference examples.
+The LM `run.py` ([lm](param_decomp_lab/experiments/lm/run.py)) is the reference example.
 
 ## Metrics
 
