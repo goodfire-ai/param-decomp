@@ -31,6 +31,7 @@ keys (`<ClassName>/<site>` + a combined `<ClassName>`).
 import argparse
 import io
 import json
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,6 +48,7 @@ from matplotlib.figure import Figure
 from jax_single_pool.checkpoint import make_checkpoint_manager, restore_step
 from jax_single_pool.ci_fn import lower_leaky_hard_sigmoid
 from jax_single_pool.config import (
+    DataConfig,
     EvalConfig,
     ExperimentConfig,
     load_run_dir_config,
@@ -82,7 +84,7 @@ class SiteReduction:
 
 
 SlowEvalStep = Callable[
-    [Any, Any, Float[Array, "B T d"]],
+    [Any, Any, Float[Array, "*leading d"]],
     tuple[dict[str, Array], dict[str, Array], Array, dict[str, Array], dict[str, Array]],
 ]
 """`(ci_fn, frozen, residual) -> (density_counts, ci_sums, n_positions, flat_lower,
@@ -99,7 +101,7 @@ def make_slow_eval_step(lm: DecomposedModel, ci_alive_threshold: float) -> SlowE
 
     @jax.jit
     def slow_eval_step(
-        ci_fn: Any, frozen: Any, residual: Float[Array, "B T d"]
+        ci_fn: Any, frozen: Any, residual: Float[Array, "*leading d"]
     ) -> tuple[dict[str, Array], dict[str, Array], Array, dict[str, Array], dict[str, Array]]:
         # CI fn stays fp32 (its master dtype): torch offline-eval keeps V/U + CI fn fp32,
         # casting only the frozen target to bf16. The slow plot metrics are a
@@ -119,7 +121,7 @@ def make_slow_eval_step(lm: DecomposedModel, ci_alive_threshold: float) -> SlowE
         }
         ci_sums = {s: lower[s].reshape(-1, lower[s].shape[-1]).sum(0) for s in site_names}
         first = lower[site_names[0]]
-        n_positions = jnp.asarray(first.shape[0] * first.shape[1], jnp.int32)
+        n_positions = jnp.asarray(math.prod(first.shape[:-1]), jnp.int32)
         flat_lower = {s: lower[s].reshape(-1) for s in site_names}
         flat_logits = {s: logits[s].reshape(-1) for s in site_names}
         return density_counts, ci_sums, n_positions, flat_lower, flat_logits
@@ -131,7 +133,7 @@ def accumulate_site_reductions(
     slow_eval_step: SlowEvalStep,
     ci_fn: Any,
     frozen: Any,
-    residual_batches: list[Float[Array, "B T d"]],
+    residual_batches: list[Float[Array, "*leading d"]],
     n_batches_accum: int | None,
 ) -> dict[str, SiteReduction]:
     """Drive `slow_eval_step` over the eval batches and fold the per-batch reductions
@@ -279,7 +281,7 @@ def compute_hidden_acts_metrics(
     lm: DecomposedModel,
     state: Any,
     frozen: Any,
-    residual_batches: list[Float[Array, "B T d"]],
+    residual_batches: list[Float[Array, "*leading d"]],
     n_mask_samples: int,
     sampling: SamplingType,
     base_key: Array,
@@ -317,8 +319,10 @@ def run_offline_slow_eval(run_dir: Path, cfg: ExperimentConfig, step: int) -> Sl
     manager = make_checkpoint_manager(run_dir / "ckpts", cfg.cadence.keep_last)
     state = restore_step(manager, reference, step)
 
-    schedule = BatchSchedule(scan_shards(cfg.data.dir), eval_cfg.batch_size, cfg.seed + 1)
-    server = ShardServer(schedule, cfg.data.seq_len, jax.process_index(), jax.process_count())
+    data_cfg = cfg.data
+    assert isinstance(data_cfg, DataConfig), "slow eval reads the LM parquet data path"
+    schedule = BatchSchedule(scan_shards(data_cfg.dir), eval_cfg.batch_size, cfg.seed + 1)
+    server = ShardServer(schedule, data_cfg.seq_len, jax.process_index(), jax.process_count())
     to_residual = jax.jit(prefix_residual_fn)
     residual_batches = [
         to_residual(prefix, jnp.asarray(server.local_batch(j))) for j in range(eval_cfg.n_steps)

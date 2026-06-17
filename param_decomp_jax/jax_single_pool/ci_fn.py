@@ -107,6 +107,10 @@ class CIFn(eqx.Module):
     site_names: tuple[str, ...] = eqx.field(static=True)
     split_sizes: tuple[int, ...] = eqx.field(static=True)
     eps: float = eqx.field(static=True)
+    expects_axes: tuple[str, ...] = eqx.field(static=True)
+    """The leading position-axis names this CI fn expects; must equal the
+    `DecomposedModel.leading_axes` it pairs with (asserted at trainer construction). This
+    LM CI fn applies RoPE over a single `sequence` axis, so it expects `("sequence",)`."""
 
     def _site_slices(self) -> dict[str, slice]:
         offsets = [0]
@@ -192,4 +196,5 @@ def init_ci_fn(arch: CIArch, sites: tuple[SiteSpec, ...], key: PRNGKeyArray) -> 
         site_names=tuple(s.name for s in sites),
         split_sizes=tuple(s.C for s in sites),
         eps=CI_FN_RMS_EPS,
+        expects_axes=("sequence",),
     )

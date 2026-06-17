@@ -37,17 +37,17 @@ class SourcesAdamState:
 def init_persistent_sources(
     site_names: tuple[str, ...],
     site_component_counts: tuple[int, ...],
-    seq_len: int,
-    batch_dim: int,
+    leading_shape: tuple[int, ...],
     key: PRNGKeyArray,
 ) -> dict[str, Array]:
-    """Per-site PPGD sources `(batch_dim, T, C+1)`, init U[0,1] (SPEC S15; clamp
-    parameterization); trailing channel = the weight-delta source. `batch_dim` spells the
-    scope's leading axis (SPEC §1.6): 1 for `sc` (shared across batch, free per position),
-    B for `bsc` (independent per batch element and position)."""
+    """Per-site PPGD sources `(*leading_shape, C+1)`, init U[0,1] (SPEC S15; clamp
+    parameterization); trailing channel = the weight-delta source. `leading_shape` spells
+    the scope over the model's leading axes (SPEC §1.6): for an LM `(1, T)` for `sc`
+    (batch axis collapsed -> shared across batch, free per position) and `(B, T)` for `bsc`
+    (independent per batch element and position)."""
     keys = random.split(key, len(site_names))
     return {
-        name: random.uniform(k, (batch_dim, seq_len, c + 1), jnp.float32)
+        name: random.uniform(k, (*leading_shape, c + 1), jnp.float32)
         for name, c, k in zip(site_names, site_component_counts, keys, strict=True)
     }
 
@@ -56,24 +56,26 @@ def init_fresh_pgd_sources(
     sites: tuple[SiteSpec, ...],
     init: Literal["random", "ones", "zeroes"],
     scope: Literal["c", "bc", "bsc"],
-    batch: int,
-    seq: int,
+    leading: tuple[int, ...],
     key: PRNGKeyArray,
 ) -> dict[str, Array]:
     """Per-site fresh adversarial sources (torch `_init_adv_sources`): trailing channel
-    is the weight-delta source; shape per `scope` (shape-spelled: `bsc` ->
-    `(B, T, C+1)`, `bc` -> `(B, 1, C+1)`, `c` -> `(1, 1, C+1)`)."""
+    is the weight-delta source; `leading = (B,) + position axes`. The source's leading
+    shape spells `scope` over those axes (LM `(B, T)`): `bsc` keeps the full leading,
+    `bc` collapses every position axis to 1 (`(B, 1)`), `c` collapses every axis to 1
+    (`(1, 1)`)."""
+    batch, *positions = leading
     match scope:
         case "bsc":
-            leading = (batch, seq)
+            source_leading = leading
         case "bc":
-            leading = (batch, 1)
+            source_leading = (batch, *(1 for _ in positions))
         case "c":
-            leading = (1, 1)
+            source_leading = tuple(1 for _ in leading)
     keys = random.split(key, len(sites))
     sources = {}
     for site, site_key in zip(sites, keys, strict=True):
-        shape = (*leading, site.C + 1)
+        shape = (*source_leading, site.C + 1)
         match init:
             case "random":
                 sources[site.name] = random.uniform(site_key, shape, jnp.float32)

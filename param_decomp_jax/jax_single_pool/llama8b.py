@@ -507,6 +507,7 @@ def llama_decomposed_lm(cfg: LlamaConfig, sites: tuple[SiteSpec, ...]) -> Decomp
     first_layer = first_decomposed_layer(site_names)
     return DecomposedModel(
         sites=sites,
+        leading_axes=("sequence",),
         clean_output=lambda frozen, resid: clean_suffix_logits(frozen, resid),
         site_inputs=lambda frozen, resid: clean_site_inputs(frozen, first_layer, site_names, resid),
         masked_output=lambda frozen,

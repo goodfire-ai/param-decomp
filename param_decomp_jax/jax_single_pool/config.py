@@ -42,10 +42,12 @@ import yaml
 
 from jax_single_pool import llama_simple_mlp
 from jax_single_pool.ci_fn import CIArch
+from jax_single_pool.ci_fn_mlp import MLPCIArch
 from jax_single_pool.llama8b import SITE_NAME_PATTERN, canonical_site_cs
 from jax_single_pool.lm import SiteC
 from jax_single_pool.recon import build_recon_terms
-from param_decomp_config.ci_fn import GlobalSharedTransformerCiFnConfig
+from jax_single_pool.tms import canonical_site_cs as tms_canonical_site_cs
+from param_decomp_config.ci_fn import GlobalSharedTransformerCiFnConfig, LayerwiseCiConfig
 from param_decomp_config.eval_metrics import CEandKLLossesConfig, CI_L0Config
 from param_decomp_config.experiment import WandbConfig
 from param_decomp_config.jax_wrapper import WRAPPER_KEYS, WRAPPER_OPTIONAL_KEYS
@@ -58,6 +60,9 @@ from param_decomp_config.lm import (
 from param_decomp_config.losses import PGDReconLossConfig
 from param_decomp_config.pd import AnyLossMetricConfig, OptimizerConfig
 from param_decomp_config.schedule import ScheduleConfig
+from param_decomp_config.tms import TMSExperimentConfig
+
+CIFnArch = CIArch | MLPCIArch
 
 WeightsDtype = Literal["float32", "bfloat16"]
 
@@ -91,7 +96,28 @@ class LlamaSimpleMLPTargetConfig:
     `jnp.bfloat16` hardcoded at the call site). See `TargetConfig.supported_weights_dtypes`."""
 
 
-AnyTargetConfig = TargetConfig | LlamaSimpleMLPTargetConfig
+@dataclass(frozen=True)
+class TMSTargetConfig:
+    """The vendored TMS target (`tms.py`), pretrained from scratch in-process from
+    `pretrain` (no weight artifact). `n_hidden_layers` is fixed 0 (the production TMS
+    configs have none); a positive value is refused at convert time."""
+
+    n_features: int
+    n_hidden: int
+    sites: tuple[SiteC, ...]
+    pretrain_steps: int
+    pretrain_batch_size: int
+    pretrain_lr: float
+    pretrain_seed: int
+    feature_probability: float
+    data_generation_type: str
+
+    supported_weights_dtypes: frozenset[WeightsDtype] = frozenset({"float32", "bfloat16"})
+    """The from-scratch pretrain runs in fp32 and the frozen target is cast at build time,
+    so any dtype the config declares is honoured."""
+
+
+AnyTargetConfig = TargetConfig | LlamaSimpleMLPTargetConfig | TMSTargetConfig
 
 
 @dataclass(frozen=True)
@@ -99,6 +125,20 @@ class DataConfig:
     dir: Path
     seq_len: int
     global_batch: int
+
+
+@dataclass(frozen=True)
+class TMSDataConfig:
+    """The TMS synthetic sparse-feature data — generated fresh per step in-process
+    (`tms.sample_sparse_features`), no parquet/tokenizer."""
+
+    n_features: int
+    global_batch: int
+    feature_probability: float
+    data_generation_type: str
+
+
+AnyDataConfig = DataConfig | TMSDataConfig
 
 
 @dataclass(frozen=True)
@@ -170,7 +210,7 @@ class ExperimentConfig:
     seed: int
     steps: int
     target: AnyTargetConfig
-    data: DataConfig
+    data: AnyDataConfig
     loss_metrics: tuple[AnyLossMetricConfig, ...]
     """The shared `pd.loss_metrics` configs, verbatim and in yaml order (order is
     RNG-load-bearing — see `build_recon_terms`)."""
@@ -179,7 +219,7 @@ class ExperimentConfig:
     remat_recon_forwards: bool
     vu_optimizer: VUOptimizerConfig
     ci_optimizer: CIOptimizerConfig
-    ci_fn: CIArch
+    ci_fn: CIFnArch
     faith_warmup: FaithWarmupConfig
     cadence: CadenceConfig
     eval: EvalConfig | None
@@ -278,6 +318,14 @@ def _ci_arch(cfg: LMExperimentConfig, seq_len: int) -> CIArch:
     )
 
 
+def _layerwise_mlp_ci_arch(cfg: TMSExperimentConfig) -> MLPCIArch:
+    ci = cfg.pd.ci_config
+    assert isinstance(ci, LayerwiseCiConfig), ci
+    assert ci.fn_type == "mlp", f"TMS CI fn must be fn_type=mlp, got {ci.fn_type}"
+    assert ci.hidden_dims, "TMS MLP CI fn needs at least one hidden layer"
+    return MLPCIArch(hidden_dims=tuple(ci.hidden_dims))
+
+
 def _assert_cosine_to_tenth(schedule: ScheduleConfig, who: str) -> None:
     """The trainer hardcodes optax cosine decay to 0.1x with no warmup (SPEC S19/S20)."""
     assert schedule.fn_type == "cosine", f"{who}: only cosine lr supported, got {schedule}"
@@ -368,17 +416,20 @@ def assert_supported_weights_dtype(cfg: LMExperimentConfig) -> None:
     )
 
 
-def build_experiment_config(
-    cfg: LMExperimentConfig,
-    run_name: str,
-    run_id: str,
-    out_dir: Path,
-    remat_recon_forwards: bool,
-    wandb_group: str | None = None,
-    wandb_tags: tuple[str, ...] = (),
-) -> ExperimentConfig:
-    target = _resolve_target(cfg)
+@dataclass(frozen=True)
+class _SharedConvert:
+    """The algorithm-config pieces shared by every target (optimizers, faith warmup,
+    cadence) — the part of `*ExperimentConfig` that does not depend on the target/data
+    domain."""
 
+    vu_optimizer: VUOptimizerConfig
+    ci_optimizer: CIOptimizerConfig
+    faith_warmup: FaithWarmupConfig
+    cadence: CadenceConfig
+    ci_lr_for_arch: float
+
+
+def _convert_shared(cfg: "LMExperimentConfig | TMSExperimentConfig") -> _SharedConvert:
     assert cfg.pd.sigmoid_type == "leaky_hard", cfg.pd.sigmoid_type
     assert cfg.pd.use_delta_component and cfg.pd.tied_weights is None
     assert cfg.runtime.autocast_bf16, "JAX trainer computes in bf16 (autocast analog)"
@@ -393,29 +444,13 @@ def build_experiment_config(
     assert vu_opt.grad_clip_norm is not None, "components grad clip is part of the method"
     assert ci_opt.grad_clip_norm is None, "CI-fn grad clip unsupported"
 
-    loss_metrics = _losses(cfg, tuple(sc.name for sc in target.sites))
-    data = _data(cfg)
-
     cadence = cfg.cadence
     assert cadence.save_every is not None and cadence.keep_last_n_checkpoints is not None, cadence
-
-    return ExperimentConfig(
-        run_name=run_name,
-        run_id=run_id,
-        out_dir=out_dir,
-        seed=cfg.pd.seed,
-        steps=cfg.pd.steps,
-        target=target,
-        data=data,
-        loss_metrics=loss_metrics,
-        n_mask_samples=cfg.pd.n_mask_samples,
-        sampling=cfg.pd.sampling,
-        remat_recon_forwards=remat_recon_forwards,
+    return _SharedConvert(
         vu_optimizer=VUOptimizerConfig(
             lr=vu_opt.lr_schedule.start_val, grad_clip_norm=vu_opt.grad_clip_norm
         ),
         ci_optimizer=CIOptimizerConfig(lr=ci_opt.lr_schedule.start_val),
-        ci_fn=_ci_arch(cfg, data.seq_len),
         faith_warmup=FaithWarmupConfig(
             steps=cfg.pd.faithfulness_warmup_steps, lr=cfg.pd.faithfulness_warmup_lr
         ),
@@ -432,6 +467,41 @@ def build_experiment_config(
                 else None
             ),
         ),
+        ci_lr_for_arch=ci_opt.lr_schedule.start_val,
+    )
+
+
+def build_experiment_config(
+    cfg: LMExperimentConfig,
+    run_name: str,
+    run_id: str,
+    out_dir: Path,
+    remat_recon_forwards: bool,
+    wandb_group: str | None = None,
+    wandb_tags: tuple[str, ...] = (),
+) -> ExperimentConfig:
+    target = _resolve_target(cfg)
+    shared = _convert_shared(cfg)
+    loss_metrics = _losses(cfg, tuple(sc.name for sc in target.sites))
+    data = _data(cfg)
+
+    return ExperimentConfig(
+        run_name=run_name,
+        run_id=run_id,
+        out_dir=out_dir,
+        seed=cfg.pd.seed,
+        steps=cfg.pd.steps,
+        target=target,
+        data=data,
+        loss_metrics=loss_metrics,
+        n_mask_samples=cfg.pd.n_mask_samples,
+        sampling=cfg.pd.sampling,
+        remat_recon_forwards=remat_recon_forwards,
+        vu_optimizer=shared.vu_optimizer,
+        ci_optimizer=shared.ci_optimizer,
+        ci_fn=_ci_arch(cfg, data.seq_len),
+        faith_warmup=shared.faith_warmup,
+        cadence=shared.cadence,
         eval=_eval(cfg),
         wandb=cfg.wandb,
         wandb_group=wandb_group,
@@ -439,7 +509,115 @@ def build_experiment_config(
     )
 
 
+def _tms_target(cfg: TMSExperimentConfig) -> TMSTargetConfig:
+    assert cfg.target.n_hidden_layers == 0, "TMS hidden layers unsupported (production has none)"
+    assert cfg.pd.identity_decomposition_targets is None, "identity targets unsupported"
+    site_cs = tms_canonical_site_cs(
+        tuple(SiteC(t.module_pattern, t.C) for t in cfg.pd.decomposition_targets)
+    )
+    return TMSTargetConfig(
+        n_features=cfg.target.n_features,
+        n_hidden=cfg.target.n_hidden,
+        sites=site_cs,
+        pretrain_steps=cfg.target.pretrain.steps,
+        pretrain_batch_size=cfg.target.pretrain.batch_size,
+        pretrain_lr=cfg.target.pretrain.lr,
+        pretrain_seed=cfg.target.pretrain.seed,
+        feature_probability=cfg.data.feature_probability,
+        data_generation_type=cfg.data.data_generation_type,
+    )
+
+
+def build_tms_experiment_config(
+    cfg: TMSExperimentConfig,
+    run_name: str,
+    run_id: str,
+    out_dir: Path,
+    remat_recon_forwards: bool,
+    wandb_group: str | None = None,
+    wandb_tags: tuple[str, ...] = (),
+) -> ExperimentConfig:
+    target = _tms_target(cfg)
+    shared = _convert_shared(cfg)
+    loss_metrics = tuple(cfg.pd.loss_metrics)
+    build_recon_terms(
+        loss_metrics, tuple(sc.name for sc in target.sites), cfg.pd.n_mask_samples, cfg.pd.sampling
+    )
+    assert cfg.eval is None, (
+        "TMS in-loop eval is the standalone target-CI metric (run.py::train_tms), not the "
+        "LM CEandKLLosses pass; omit the eval: block"
+    )
+    data = TMSDataConfig(
+        n_features=cfg.target.n_features,
+        global_batch=cfg.pd.batch_size,
+        feature_probability=cfg.data.feature_probability,
+        data_generation_type=cfg.data.data_generation_type,
+    )
+    return ExperimentConfig(
+        run_name=run_name,
+        run_id=run_id,
+        out_dir=out_dir,
+        seed=cfg.pd.seed,
+        steps=cfg.pd.steps,
+        target=target,
+        data=data,
+        loss_metrics=loss_metrics,
+        n_mask_samples=cfg.pd.n_mask_samples,
+        sampling=cfg.pd.sampling,
+        remat_recon_forwards=remat_recon_forwards,
+        vu_optimizer=shared.vu_optimizer,
+        ci_optimizer=shared.ci_optimizer,
+        ci_fn=_layerwise_mlp_ci_arch(cfg),
+        faith_warmup=shared.faith_warmup,
+        cadence=shared.cadence,
+        eval=None,
+        wandb=cfg.wandb,
+        wandb_group=wandb_group,
+        wandb_tags=wandb_tags,
+    )
+
+
 _RUN_ID_PATTERN = re.compile(r"^p-[0-9a-f]{8}$")
+
+
+def _is_tms_schema(schema_raw: dict[str, Any]) -> bool:
+    """TMS vs LM schemas differ in their `target` block: the LM target carries a `spec`
+    discriminated union, the TMS target carries `n_features`. The schema yaml has no top-
+    level kind tag, so dispatch on this structural marker."""
+    target = schema_raw.get("target", {})
+    return isinstance(target, dict) and "n_features" in target
+
+
+def _build_from_schema(
+    schema_raw: dict[str, Any],
+    run_name: str,
+    run_id: str,
+    out_dir: Path,
+    remat_recon_forwards: bool,
+    wandb_group: str | None,
+    wandb_tags: tuple[str, ...],
+) -> ExperimentConfig:
+    if _is_tms_schema(schema_raw):
+        return build_tms_experiment_config(
+            TMSExperimentConfig(**schema_raw),
+            run_name=run_name,
+            run_id=run_id,
+            out_dir=out_dir,
+            remat_recon_forwards=remat_recon_forwards,
+            wandb_group=wandb_group,
+            wandb_tags=wandb_tags,
+        )
+    cfg = LMExperimentConfig(**schema_raw)
+    assert_supported_weights_dtype(cfg)
+    return build_experiment_config(
+        cfg,
+        run_name=run_name,
+        run_id=run_id,
+        out_dir=out_dir,
+        remat_recon_forwards=remat_recon_forwards,
+        wandb_group=wandb_group,
+        wandb_tags=wandb_tags,
+    )
 
 
 def _wandb_group_tags(raw: dict[str, Any]) -> tuple[str | None, tuple[str, ...]]:
@@ -470,11 +648,9 @@ def load_wrapper(wrapper_path: Path) -> tuple[ExperimentConfig, Path, dict[str, 
     schema_yaml_path = (wrapper_path.parent / raw["torch_config"]).resolve()
     assert schema_yaml_path.exists(), f"config not found: {schema_yaml_path}"
     schema_raw = yaml.safe_load(schema_yaml_path.read_text())
-    cfg = LMExperimentConfig(**schema_raw)
-    assert_supported_weights_dtype(cfg)
     wandb_group, wandb_tags = _wandb_group_tags(raw)
-    experiment_config = build_experiment_config(
-        cfg,
+    experiment_config = _build_from_schema(
+        schema_raw,
         run_name=raw["run_name"],
         run_id=run_id,
         out_dir=Path(raw["out_dir"]),
@@ -500,8 +676,8 @@ def load_run_dir_config(run_dir: Path) -> ExperimentConfig:
     )
     schema_raw = yaml.safe_load((run_dir / "experiment_config.yaml").read_text())
     wandb_group, wandb_tags = _wandb_group_tags(raw)
-    return build_experiment_config(
-        LMExperimentConfig(**schema_raw),
+    return _build_from_schema(
+        schema_raw,
         run_name=raw["run_name"],
         run_id=raw["run_id"],
         out_dir=Path(raw["out_dir"]),

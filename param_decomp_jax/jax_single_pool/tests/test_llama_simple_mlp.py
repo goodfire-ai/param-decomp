@@ -14,7 +14,7 @@ import optax
 import pytest
 
 from jax_single_pool.adversary import init_persistent_sources, init_sources_adam_state
-from jax_single_pool.ci_fn import CIArch, init_ci_fn
+from jax_single_pool.ci_fn import CIArch, CIFn, init_ci_fn
 from jax_single_pool.llama8b import DecompVU, FrozenAttn, init_decomp_vu
 from jax_single_pool.llama_simple_mlp import (
     LlamaSimpleMLPConfig,
@@ -376,7 +376,7 @@ def test_step_trains_and_has_vpd_signature():
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
 
     src = init_persistent_sources(
-        lm.site_names, tuple(s.C for s in lm.sites), seq, 1, jax.random.PRNGKey(3)
+        lm.site_names, tuple(s.C for s in lm.sites), (1, seq), jax.random.PRNGKey(3)
     )
     state = TrainState(
         components=vu, ci_fn=ci_fn,
@@ -446,6 +446,7 @@ def test_step_trains_and_has_vpd_signature():
     assert isinstance(state.components, DecompVU)
     for V, U in state.components.vu.values():
         assert V.dtype == jnp.float32 and U.dtype == jnp.float32
+    assert isinstance(state.ci_fn, CIFn)
     assert state.ci_fn.in_proj_w.dtype == jnp.float32
 
 
@@ -503,7 +504,11 @@ def test_pretrained_target_converts_with_wildcards():
     wildcard decomposition patterns over the checkpoint's n_layer (4)."""
     import yaml
 
-    from jax_single_pool.config import LlamaSimpleMLPTargetConfig, build_experiment_config
+    from jax_single_pool.config import (
+        DataConfig,
+        LlamaSimpleMLPTargetConfig,
+        build_experiment_config,
+    )
     from param_decomp_config.lm import LMExperimentConfig
 
     reference_yaml = (
@@ -551,4 +556,5 @@ def test_pretrained_target_converts_with_wildcards():
     (stoch_term,) = [t for t in loss_spec.recon_terms if t.name == "StochasticReconSubsetLoss"]
     (stoch_entry,) = stoch_term.plan
     assert len(stoch_entry.live_sites) == 24
+    assert isinstance(cfg.data, DataConfig)
     assert cfg.data.seq_len == 512

@@ -127,6 +127,7 @@ def _synthetic_lm() -> DecomposedModel:
 
     return DecomposedModel(
         sites=(site,),
+        leading_axes=("sequence",),
         clean_output=clean_output,
         site_inputs=site_inputs,
         masked_output=masked_output,
@@ -148,6 +149,7 @@ def test_default_recon_loss_fn_is_kl_per_position():
 
     lm = DecomposedModel(
         sites=(SiteSpec(SITE, D, D, C),),
+        leading_axes=("sequence",),
         clean_output=lambda f, r: r,
         site_inputs=lambda f, r: {SITE: r},
         masked_output=lambda *a: a[2],

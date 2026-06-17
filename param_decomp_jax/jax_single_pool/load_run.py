@@ -40,6 +40,7 @@ from jax_single_pool.config import (
     ExperimentConfig,
     LlamaSimpleMLPTargetConfig,
     TargetConfig,
+    TMSTargetConfig,
     load_run_dir_config,
 )
 from jax_single_pool.llama8b import (
@@ -76,6 +77,10 @@ def build_target(
     """`(lm, frozen target, prefix, prefix_residual_fn, vocab_size)` for the run's target
     config. SimpleMLP reads its local pretrain cache (no network); llama8b reads the HF
     snapshot (frozen bf16 target + fp32-compute, matching `run.py::main`)."""
+    assert not isinstance(cfg.target, TMSTargetConfig), (
+        "harvest/slow-eval over the TMS target is not wired (TMS validates via the in-loop "
+        "target-CI metric in run.py::train_tms)"
+    )
     match cfg.target:
         case LlamaSimpleMLPTargetConfig():
             cache_dir = llama_simple_mlp.pretrain_cache_dir(cfg.target.pretrain_run_path)
@@ -148,8 +153,10 @@ class LoadedJaxRun:
         return [(s.name, s.C) for s in self.lm.sites]
 
     def forward(self, token_ids: Int[Array, "B T"]) -> HarvestForward:
+        ci_fn = self._state.ci_fn
+        assert isinstance(ci_fn, CIFn), "harvest is the transformer-CI-fn (LM) path only"
         lower_leaky_ci, component_acts, output_probs = self._forward(
-            self._state.components, self._state.ci_fn, token_ids
+            self._state.components, ci_fn, token_ids
         )
         return HarvestForward(
             lower_leaky_ci=lower_leaky_ci,

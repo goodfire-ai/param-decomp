@@ -34,6 +34,7 @@ from jaxtyping import Array, PRNGKeyArray
 
 from jax_single_pool.adversary import init_persistent_sources
 from jax_single_pool.ci_fn import CIArch, CIFn, init_ci_fn
+from jax_single_pool.ci_fn_mlp import LayerwiseMLPCIFn, MLPCIArch, init_layerwise_mlp_ci_fn
 from jax_single_pool.llama8b import DecompVU, Target, init_decomp_vu
 from jax_single_pool.lm import SiteSpec
 from jax_single_pool.sharding import dp_mesh
@@ -44,7 +45,9 @@ __all__ = [
     "dp_mesh",
     "replicate_target",
     "init_decomp_vu_sharded",
+    "init_decomp_vu_replicated",
     "init_ci_fn_sharded",
+    "init_layerwise_mlp_ci_fn_replicated",
     "init_sources_sharded",
     "shard_batch",
 ]
@@ -88,6 +91,27 @@ def init_decomp_vu_sharded(sites: tuple[SiteSpec, ...], key: PRNGKeyArray, mesh:
 
     out_shardings = jax.tree_util.tree_map_with_path(place, jax.eval_shape(init, key))
     return jax.jit(init, out_shardings=out_shardings)(key)
+
+
+def init_decomp_vu_replicated(
+    sites: tuple[SiteSpec, ...], key: PRNGKeyArray, mesh: Mesh
+) -> DecompVU:
+    """REPLICATED per-site V/U init — the TMS path (tiny model, runs on one device; the
+    per-site C need not divide the mesh size). The activation waist still batch-shards;
+    only these masters replicate."""
+    repl = NamedSharding(mesh, P())
+    init = partial(init_decomp_vu, sites)
+    return jax.jit(init, out_shardings=repl)(key)
+
+
+def init_layerwise_mlp_ci_fn_replicated(
+    arch: MLPCIArch, sites: tuple[SiteSpec, ...], key: PRNGKeyArray, mesh: Mesh
+) -> LayerwiseMLPCIFn:
+    """REPLICATED per-site MLP CI fn init — the TMS path; the per-site MLPs are tiny so
+    replicating costs nothing (same rationale as `init_decomp_vu_replicated`)."""
+    repl = NamedSharding(mesh, P())
+    init = partial(init_layerwise_mlp_ci_fn, arch, sites)
+    return jax.jit(init, out_shardings=repl)(key)
 
 
 def init_ci_fn_sharded(
@@ -139,12 +163,13 @@ def init_sources_sharded(
     batch-sharded elementwise combine."""
     match scope:
         case SCScope():
-            batch_dim, placement = 1, NamedSharding(mesh, P())
+            leading_shape, placement = (1, seq_len), NamedSharding(mesh, P())
         case BSCScope():
-            batch_dim, placement = global_batch, NamedSharding(mesh, P("dp", None, None))
+            leading_shape = (global_batch, seq_len)
+            placement = NamedSharding(mesh, P("dp", None, None))
         case _:
             raise AssertionError(f"unsupported persistent scope {scope}")
-    init = partial(init_persistent_sources, site_names, site_component_counts, seq_len, batch_dim)
+    init = partial(init_persistent_sources, site_names, site_component_counts, leading_shape)
     return jax.jit(init, out_shardings=placement)(key)
 
 

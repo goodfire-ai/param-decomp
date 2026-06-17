@@ -25,18 +25,27 @@ never silently diverge. Cite IDs (`S14`, `N1`, …) in commit messages and revie
 
 ## Architecture in one breath
 
-`lm.py` defines `DecomposedModel` — ordered `sites` + five pure fns (`clean_output`,
-`site_inputs`, `masked_output`, `weight_deltas`) plus a pluggable `recon_loss_fn`
-(default `kl_per_position`), flat site-name-keyed dicts at the boundary, frozen pytree
-always a runtime arg (never a jit closure constant — an 8B target becomes a multi-GB
-HLO constant). The `[B,T,d]` residual is the FIXED WAIST: masking / routing / sources /
-imp-min / the CI fn all stay `(B,T)`-shaped. Only three EDGES are generic so non-LM
-(bio-style) targets fit (#828): the model INPUT (`prefix_residual_fn(prefix, inputs)`
-in `run.py` takes `Any` — tokens for an LM, a dict for bio), the model OUTPUT
-(`clean_output`/`masked_output` return `Any` — logits, a tuple of heads, coords; field
-NAMES stay `*_logits` pending a deferred rename), and the recon comparison
-(`recon_loss_fn(clean_output, masked_output) -> scalar`, default
-`kl_per_position` so the LM path is byte-identical). `train.py` is the generic step factory
+`lm.py` defines `DecomposedModel` — ordered `sites` + `leading_axes` + five pure fns
+(`clean_output`, `site_inputs`, `masked_output`, `weight_deltas`) plus a pluggable
+`recon_loss_fn` (default `kl_per_position`), flat site-name-keyed dicts at the boundary,
+frozen pytree always a runtime arg (never a jit closure constant — an 8B target becomes a
+multi-GB HLO constant). The activation waist is GENERIC `[*leading, d]` (masks/CI
+`[*leading, C]`), `leading = (batch,) + named position axes`: masking / routing / sources
+/ imp-min all read an opaque `leading = residual.shape[:-1]`; reductions are
+`math.prod(shape[:-1])` / `axis=tuple(range(ndim-1))`. CI is independent over every leading
+axis (no per-axis CI semantics, only axis NAMES — see AXIS_SEMANTICS_DESIGN.md).
+`DecomposedModel.leading_axes` names the position axes (`("sequence",)` for LM, `()` for
+TMS); `CIFn.expects_axes` mirrors it, and `init_train_state` asserts they're equal (early
+fail) so the CI fn stays per-domain (RoPE over `sequence`) without the core adapting. The
+three EDGES are generic so non-LM (bio-style) targets fit (#828): the model INPUT
+(`prefix_residual_fn(prefix, inputs)` in `run.py` takes `Any` — tokens for an LM, a dict
+for bio), the model OUTPUT (`clean_output`/`masked_output` return `Any` — logits, a tuple
+of heads, coords; field NAMES stay `*_logits` pending a deferred rename), and the recon
+comparison (`recon_loss_fn(clean_output, masked_output) -> scalar`, default
+`kl_per_position` so the LM path is byte-identical). The waist shape contract (all per-site
+tensors in one forward share one `*leading` prefix) is enforced at trace time by
+`@jaxtyped(typechecker=beartype)` on the core `step`, `masked_forward`, and the loss fns.
+`train.py` is the generic step factory
 (fp32 masters / bf16 compute) over a static tuple of recon loss TERMS (S10′ — the
 torch loss-class cartesian product factored as chunking × routing × mask-source
 strategy: a chunking helper (`one_chunk`/`per_site`/`into_groups`) feeds the single
@@ -55,6 +64,34 @@ config dispatch is `TargetConfig` (llama8b) vs `LlamaSimpleMLPTargetConfig` in
 wildcards), target build in `run.py::main`. `jsp-export` (torch-format export) stays
 llama8b-only (guarded); the slow plot metrics are computed NATIVELY in JAX for the
 SimpleMLP target via `jsp-slow-eval` (`slow_eval.py`) — no torch export round-trip.
+`tms.py` is the third target and the **first non-LM one** (`leading_axes=()`, no position
+axis; the waist is `[B, n_features]`) — the proof the generic `[*leading, d]` core fits a
+positionless target. The TMS target is the Anthropic toy (`out = relu(linear2(linear1(x)))`,
+weights TIED) with an UNTIED 2-site decomposition (`linear1`/`linear2`, independent V/U);
+the recon comparison is `recon_loss_fn = tms_mse` (MSE on the post-ReLU output, NOT KL),
+there is NO prefix (the whole model is decomposed, residual = raw input `x`), and the
+frozen target is **pretrained from scratch in-process** (`pretrain_tms_target`, the
+`mean((|x|-out)²)` objective — no wandb/cache). `ci_fn_mlp.py` is the second CI-fn arch:
+the **layerwise per-site MLP** (`fn_type=mlp`, `expects_axes=()`, `LayerwiseMLPCIFn`) —
+one independent MLP per site mapping `site_input [B,d_in] -> [B,C]` logits through the
+same `lower/upper_leaky_hard` squashings; `run_state.init_train_state` dispatches CI-fn
+construction on `cfg.ci_fn` (`CIArch` transformer vs `MLPCIArch`) and uses replicated
+(not C-sharded) V/U + CI for the tiny TMS. Config dispatch: `config._is_tms_schema`
+(structural `target.n_features` marker) routes the canonical schema to
+`build_tms_experiment_config` (torch-free `param_decomp_config.tms.TMSExperimentConfig`);
+`TMSTargetConfig` / `TMSDataConfig` join the `AnyTargetConfig` / `AnyDataConfig` unions;
+`run.py::main` builds + pretrains the target and calls `train_tms` (the TMS composition
+over the unified core — same `init_train_state` / faith warmup / `make_train_step` /
+orbax checkpointing, but synthetic data + the ground-truth target-CI metric
+`tms.identity_ci_error` instead of the LM CEandKLLosses eval pass). Harvest / slow-eval /
+export over TMS are NOT wired (`load_run.build_target` / `export` / `slow_eval` assert
+LM). **Finding (axis-semantics):** the core needed ZERO change for TMS — only ADDED a
+target + a CI arch + dispatch. The one deviation from the torch `fn_type=mlp` is by
+design: torch's scalar `MLPCiFn` feeds `get_component_acts(x)=x@V` (per-component scalar),
+which couples the CI-fn input to the trained components and so does NOT fit the generic
+`ci_fn(site_inputs)` waist; the vector-input per-site MLP (consumes the raw `site_input`)
+fits the waist with no core change and recovers a clean identity in the non-superposed
+(`n_hidden==n_features`) regime (validated end-to-end in `tests/test_tms.py`).
 
 ## Invariants with sharp teeth (the ones that have actually bitten)
 

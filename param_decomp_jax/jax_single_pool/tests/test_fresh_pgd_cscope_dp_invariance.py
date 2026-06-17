@@ -69,7 +69,7 @@ def _ascend_cscope_source(
     # sign-ascent. Shapes match the masked forward's per-site (B, T, C) expectation.
     ci_lower = {s.name: jnp.zeros((gbatch, seq, s.C), jnp.float32) for s in sites}
 
-    init = init_fresh_pgd_sources(sites, "random", "c", gbatch, seq, random.PRNGKey(5))
+    init = init_fresh_pgd_sources(sites, "random", "c", (gbatch, seq), random.PRNGKey(5))
 
     def ascent_loss(sources: dict[str, jax.Array]) -> jax.Array:
         masks, delta_masks = source_masks(ci_lower, sources, lm.site_names)

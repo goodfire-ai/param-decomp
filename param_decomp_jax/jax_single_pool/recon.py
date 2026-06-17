@@ -49,9 +49,9 @@ from param_decomp_config.routing import (
 )
 
 Routes = dict[str, Array] | None
-RoutingSampler = Callable[[PRNGKeyArray, tuple[int, int]], tuple[Routes, ...]]
-"""`(key, (B, T)) -> (routes, ...)` — a STATICALLY-sized family of routing draws, each
-`{site: bool[B, T]}` (or None = route everywhere) becoming ONE forward. The torch
+RoutingSampler = Callable[[PRNGKeyArray, tuple[int, ...]], tuple[Routes, ...]]
+"""`(key, leading_shape) -> (routes, ...)` — a STATICALLY-sized family of routing draws,
+each `{site: bool[*leading]}` (or None = route everywhere) becoming ONE forward. The torch
 `Router.get_masks` made pure: fresh draws per step require the key threaded in —
 samplers run INSIDE the jitted step, so they must be traceable (SPEC R1). Returning
 several draws from one invocation enables JOINTLY-sampled families (independent
@@ -150,14 +150,14 @@ ReconLossTerms = tuple[ReconLossTerm, ...]
 
 
 def uniform_k_subset_routes(
-    key: PRNGKeyArray, live_sites: tuple[str, ...], batch_seq_shape: tuple[int, ...]
+    key: PRNGKeyArray, live_sites: tuple[str, ...], leading_shape: tuple[int, ...]
 ) -> dict[str, Array]:
     """Per position: `k ~ U{1..|live|}`, then a uniform k-subset of the live sites
     routes True (SPEC S11). Distributionally identical to torch's double-argsort ranks."""
     n_sites = len(live_sites)
     k_key, perm_key = random.split(key)
-    k = random.randint(k_key, batch_seq_shape, 1, n_sites + 1)
-    perms = random.uniform(perm_key, (n_sites, *batch_seq_shape)).argsort(axis=0)
+    k = random.randint(k_key, leading_shape, 1, n_sites + 1)
+    perms = random.uniform(perm_key, (n_sites, *leading_shape)).argsort(axis=0)
     routed = perms < k
     return {name: routed[j] for j, name in enumerate(live_sites)}
 
@@ -165,9 +165,9 @@ def uniform_k_subset_routes(
 def uniform_k_routing(live_sites: tuple[str, ...], n_draws: int) -> RoutingSampler:
     """`n_draws` independent per-position uniform-k-subset draws over `live_sites`."""
 
-    def sample(key: PRNGKeyArray, batch_seq_shape: tuple[int, int]) -> tuple[Routes, ...]:
+    def sample(key: PRNGKeyArray, leading_shape: tuple[int, ...]) -> tuple[Routes, ...]:
         return tuple(
-            uniform_k_subset_routes(draw_key, live_sites, batch_seq_shape)
+            uniform_k_subset_routes(draw_key, live_sites, leading_shape)
             for draw_key in random.split(key, n_draws)
         )
 
@@ -180,10 +180,10 @@ def static_probability_routing(
     """`n_draws` independent draws routing each position to each live site with
     probability `p` (torch `StaticProbabilityRouter`)."""
 
-    def sample(key: PRNGKeyArray, batch_seq_shape: tuple[int, int]) -> tuple[Routes, ...]:
+    def sample(key: PRNGKeyArray, leading_shape: tuple[int, ...]) -> tuple[Routes, ...]:
         return tuple(
             {
-                name: random.bernoulli(random.fold_in(draw_key, j), p, batch_seq_shape)
+                name: random.bernoulli(random.fold_in(draw_key, j), p, leading_shape)
                 for j, name in enumerate(live_sites)
             }
             for draw_key in random.split(key, n_draws)
@@ -195,7 +195,7 @@ def static_probability_routing(
 def route_all_n(n_draws: int) -> RoutingSampler:
     """`n_draws` forwards, each routing every position to every live site (`AllRoutingConfig`)."""
 
-    def sample(_key: PRNGKeyArray, _batch_seq_shape: tuple[int, int]) -> tuple[Routes, ...]:
+    def sample(_key: PRNGKeyArray, _leading_shape: tuple[int, ...]) -> tuple[Routes, ...]:
         return (None,) * n_draws
 
     return sample

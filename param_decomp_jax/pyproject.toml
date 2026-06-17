@@ -8,6 +8,7 @@ dependencies = [
     "equinox==0.13.8",
     "optax==0.2.8",
     "jaxtyping==0.3.10",
+    "beartype==0.22.2",
     "einops==0.8.2",
     "numpy==2.4.6",
     "safetensors==0.7.0",

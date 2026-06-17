@@ -6,12 +6,16 @@ pytrees. Everything at the boundary is keyed by site name (flat dicts, torch-mod
 style); how a target lays its parameters out internally (e.g. the Llama target's stacked
 layer axis) is its own business.
 
-The `[B,T,d]` residual is the FIXED WAIST: masking, routing, source scopes, imp-min, the
-CI fn, and normalization all operate on `(B,T)` and stay LM-shaped. Only the three EDGES
-are generic — the model's INPUT (whatever `site_inputs`/`clean_output`/`masked_output`
-read upstream of the residual; tokens for an LM, a dict for a bio target), the model's
-OUTPUT (`clean_output`/`masked_output` return `Any` — logits, a tuple of heads, coords),
-and the recon comparison (`recon_loss_fn`, default `kl_per_position`).
+The activation WAIST is generic: per decomposed site activations are `[*leading, d]`
+and masks/CI are `[*leading, C]`, where `leading = (batch,) + named position axes`
+(`leading_axes` names the position axes; `("sequence",)` for an LM, `()` for TMS). Batch
+is ever-present and semantics-free (the data/shard axis); CI is always independent over
+every leading axis. Masking, routing, source scopes, imp-min, and normalization all
+operate over the opaque `*leading` prefix. The three EDGES are generic too — the model's
+INPUT (whatever `site_inputs`/`clean_output`/`masked_output` read upstream of the
+residual; tokens for an LM, a dict for a bio target), the model's OUTPUT
+(`clean_output`/`masked_output` return `Any` — logits, a tuple of heads, coords), and the
+recon comparison (`recon_loss_fn`, default `kl_per_position`).
 
 Every function takes the frozen-target pytree as a RUNTIME argument. Never close over
 it: a frozen 8B target captured as a jit constant bakes multi-GB weights into the HLO.
@@ -25,9 +29,9 @@ from jaxtyping import Array, Bool, Float
 
 from jax_single_pool.losses import kl_per_position
 
-SiteMasks = dict[str, Float[Array, "B T C"]]
-SiteDeltaMasks = dict[str, Float[Array, "B T"]]
-SiteRoutes = dict[str, Bool[Array, "B T"]] | None
+SiteMasks = dict[str, Float[Array, "*leading C"]]
+SiteDeltaMasks = dict[str, Float[Array, "*leading"]]
+SiteRoutes = dict[str, Bool[Array, "*leading"]] | None
 """Per-site per-position routing; `None` routes every position to the decomposition
 (SPEC §1.3). Positions routing False take the frozen `x @ W` path."""
 
@@ -64,9 +68,14 @@ class DecomposedModel:
     `has_delta` (static) False skips the `x @ Δ` matmul for constant-source entries
     whose delta mask is a constant 0 (LOSS_PARITY_DESIGN §4b).
 
+    `leading_axes` names the position axes of the activation waist (batch is implicit and
+    always present): `("sequence",)` for an LM, `()` for a TMS-style target. At trainer
+    construction it must equal the CI fn's `expects_axes` (early fail) so the CI fn stays
+    per-domain without the generic loop adapting.
+
     `clean_output` is the all-frozen forward — the recon target (SPEC S3); never the
     `mask=1` decomposed identity. Its output (and `masked_output`') is `Any`: an LM
-    emits `[B,T,vocab]` logits, a bio target a tuple of heads or coordinates.
+    emits `[*leading, vocab]` logits, a bio target a tuple of heads or coordinates.
 
     `weight_deltas` returns fp32 `W − V@U` per site from fp32 master `vu` (SPEC N2).
 
@@ -84,13 +93,16 @@ class DecomposedModel:
     """
 
     sites: tuple[SiteSpec, ...]
-    clean_output: Callable[[Any, Float[Array, "B T d"]], Any]
-    site_inputs: Callable[[Any, Float[Array, "B T d"]], dict[str, Float[Array, "B T d_in"]]]
+    leading_axes: tuple[str, ...]
+    clean_output: Callable[[Any, Float[Array, "*leading d"]], Any]
+    site_inputs: Callable[
+        [Any, Float[Array, "*leading d"]], dict[str, Float[Array, "*leading d_in"]]
+    ]
     masked_output: Callable[
         [
             Any,
             Any,
-            Float[Array, "B T d"],
+            Float[Array, "*leading d"],
             SiteMasks,
             SiteDeltaMasks,
             SiteRoutes,
@@ -103,14 +115,14 @@ class DecomposedModel:
         [
             Any,
             Any,
-            Float[Array, "B T d"],
+            Float[Array, "*leading d"],
             SiteMasks,
             SiteDeltaMasks,
             SiteRoutes,
             tuple[str, ...],
             bool,
         ],
-        dict[str, Float[Array, "B T d_out"]],
+        dict[str, Float[Array, "*leading d_out"]],
     ]
     weight_deltas: Callable[[Any, Any], dict[str, Float[Array, "d_out d_in"]]]
     recon_loss_fn: Callable[[Any, Any], Float[Array, ""]] = field(default=kl_per_position)

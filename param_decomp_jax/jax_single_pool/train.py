@@ -22,10 +22,11 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
+from beartype import beartype
 from jax import random
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Bool, Float, PRNGKeyArray, jaxtyped
 
 from jax_single_pool.adversary import (
     SourcesAdamState,
@@ -34,6 +35,7 @@ from jax_single_pool.adversary import (
     sources_adam_ascend_project,
 )
 from jax_single_pool.ci_fn import CIFn, CIValues
+from jax_single_pool.ci_fn_mlp import LayerwiseMLPCIFn
 from jax_single_pool.lm import DecomposedModel
 from jax_single_pool.losses import (
     annealed_pnorm,
@@ -51,6 +53,11 @@ from jax_single_pool.recon import (
     StochasticSources,
 )
 from param_decomp_config.losses import AdamPGDConfig
+
+AnyCIFn = CIFn | LayerwiseMLPCIFn
+"""The two CI-fn families: the shared-transformer (`ci_fn.py`, `expects_axes=("sequence",)`)
+and the layerwise per-site MLP (`ci_fn_mlp.py`, `expects_axes=()`). Both expose
+`__call__(site_inputs) -> CIValues` + `expects_axes`, so the generic step is agnostic."""
 
 COMPUTE_DT = jnp.bfloat16
 
@@ -72,7 +79,7 @@ def _select_pytree(active: Array, when_active: Any, when_inactive: Any) -> Any:
 @dataclass(frozen=True)
 class TrainState:
     components: Any  # LM-specific trainable pytree (V/U), fp32 masters
-    ci_fn: CIFn  # fp32 masters
+    ci_fn: AnyCIFn  # fp32 masters
     components_opt_state: optax.OptState
     ci_fn_opt_state: optax.OptState
     sources: dict[str, dict[str, Array]]
@@ -161,16 +168,17 @@ def make_train_step(
             upper={site: batch_sharded(v) for site, v in ci_values.upper.items()},
         )
 
+    @jaxtyped(typechecker=beartype)
     def masked_forward(
         frozen: Any,
         components_bf16: Any,
-        residual: Array,
-        masks: dict[str, Array],
-        delta_masks: dict[str, Array],
-        routes: dict[str, Array] | None,
+        residual: Float[Array, "*leading d"],
+        masks: dict[str, Float[Array, "*leading _"]],
+        delta_masks: dict[str, Float[Array, "..."]],
+        routes: dict[str, Bool[Array, "*leading"]] | None,
         live_sites: tuple[str, ...],
         has_delta: bool,
-    ) -> Array:
+    ) -> Any:
         return batch_sharded(
             lm.masked_output(
                 frozen, components_bf16, residual, masks, delta_masks, routes, live_sites, has_delta
@@ -190,7 +198,7 @@ def make_train_step(
         strategy: StochasticSources,
         ci_lower: dict[str, Array],
         live_sites: tuple[str, ...],
-        batch_seq: tuple[int, int],
+        leading_shape: tuple[int, ...],
         draw_key: PRNGKeyArray,
     ) -> tuple[dict[str, Array], dict[str, Array]]:
         mask_source_key, delta_mask_key = random.split(draw_key)
@@ -208,7 +216,7 @@ def make_train_step(
                     )
             masks[site] = ci_site + (1.0 - ci_site) * stochastic_source
             delta_masks[site] = random.uniform(
-                random.fold_in(delta_mask_key, site_idx), batch_seq, COMPUTE_DT
+                random.fold_in(delta_mask_key, site_idx), leading_shape, COMPUTE_DT
             )
         return masks, delta_masks
 
@@ -254,12 +262,13 @@ def make_train_step(
         return total / len(routes_per_draw)
 
     @jax.jit
+    @jaxtyped(typechecker=beartype)
     def step(
-        state: TrainState, frozen: Any, residual: Float[Array, "b t d"], key: PRNGKeyArray
+        state: TrainState, frozen: Any, residual: Float[Array, "*leading d"], key: PRNGKeyArray
     ) -> tuple[TrainState, dict[str, Array]]:
         step_f32 = state.step.astype(jnp.float32)
         pnorm = annealed_pnorm(step_f32, total_steps, imp_min)
-        batch, seq = residual.shape[0], residual.shape[1]
+        leading = residual.shape[:-1]
 
         residual = batch_sharded(residual)
         clean_output = jax.lax.stop_gradient(batch_sharded(lm.clean_output(frozen, residual)))
@@ -349,11 +358,11 @@ def make_train_step(
                     continue
                 fresh_cfg = entry.sources
                 routing_key, init_key = random.split(random.fold_in(term_key, entry_idx))
-                routes_per_draw = entry.sample_routing(routing_key, (batch, seq))
+                routes_per_draw = entry.sample_routing(routing_key, leading)
                 fixed_routes[(term_idx, entry_idx)] = routes_per_draw
                 live_specs = tuple(s for s in lm.sites if s.name in entry.live_sites)
                 init = init_fresh_pgd_sources(
-                    live_specs, fresh_cfg.init, fresh_cfg.scope, batch, seq, init_key
+                    live_specs, fresh_cfg.init, fresh_cfg.scope, leading, init_key
                 )
 
                 def ascent_loss(
@@ -397,7 +406,7 @@ def make_train_step(
         # are NOT detached here, but components/ci grads through them are what torch
         # gets too (sources are leaves). ──
         def loss_fn(
-            trainable: tuple[Any, CIFn, dict[str, dict[str, Array]]],
+            trainable: tuple[Any, AnyCIFn, dict[str, dict[str, Array]]],
         ) -> tuple[Array, tuple[Array, Array, tuple[Array, ...]]]:
             components, ci_fn, persistent_sources = trainable
             components_bf16 = cast_floating(components, COMPUTE_DT)
@@ -418,13 +427,13 @@ def make_train_step(
                         case FreshPGDSources():
                             routes_per_draw = fixed_routes[(term_idx, entry_idx)]
                         case _:
-                            routes_per_draw = entry.sample_routing(routing_key, (batch, seq))
+                            routes_per_draw = entry.sample_routing(routing_key, leading)
                     for draw_idx, routes in enumerate(routes_per_draw):
                         draw_key = random.fold_in(entry_key, draw_idx)
                         match entry.sources:
                             case StochasticSources() as strategy:
                                 masks, delta_masks = stochastic_entry_masks(
-                                    strategy, ci.lower, entry.live_sites, (batch, seq), draw_key
+                                    strategy, ci.lower, entry.live_sites, leading, draw_key
                                 )
                             case ConstantSources() as strategy:
                                 masks, delta_masks = constant_entry_masks(

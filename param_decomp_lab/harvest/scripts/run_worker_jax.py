@@ -26,6 +26,7 @@ from pathlib import Path
 
 import jax.numpy as jnp
 import numpy as np
+from jax_single_pool.config import DataConfig
 from jax_single_pool.data import BatchSchedule, ShardServer, scan_shards
 from jax_single_pool.load_run import HarvestForward, LoadedJaxRun, open_jax_run
 
@@ -65,6 +66,7 @@ def harvest_jax_run(
     )
     activation_threshold = method_config.activation_threshold
     data, seed = run.config.data, run.config.seed
+    assert isinstance(data, DataConfig), f"JAX harvest is LM-only, got {type(data).__name__}"
     rank, world_size = rank_world_size if rank_world_size is not None else (0, 1)
     schedule = BatchSchedule(scan_shards(data.dir), config.batch_size, seed)
     server = ShardServer(schedule, data.seq_len, process_index=rank, process_count=world_size)

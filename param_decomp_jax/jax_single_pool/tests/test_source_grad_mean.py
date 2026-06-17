@@ -63,7 +63,7 @@ def _source_grad(sharded: bool) -> dict[str, jax.Array]:
     vu = init_decomp_vu(sites, random.PRNGKey(1))
     ci_fn = init_ci_fn(CIArch(16, 2, 2, 32), lm.sites, random.PRNGKey(2))
     src = init_persistent_sources(
-        lm.site_names, tuple(s.C for s in lm.sites), seq, 1, random.PRNGKey(3)
+        lm.site_names, tuple(s.C for s in lm.sites), (1, seq), random.PRNGKey(3)
     )
     resid = random.normal(random.PRNGKey(4), (gbatch, seq, cfg.n_embd)) * 0.5
 

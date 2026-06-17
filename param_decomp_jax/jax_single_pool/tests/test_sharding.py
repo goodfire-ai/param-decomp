@@ -104,7 +104,7 @@ def test_jitted_sharded_inits_match_eager_values():
     src_sharded = init_sources_sharded(
         site_names, site_Cs, 16, SCScope(), 1, jax.random.PRNGKey(3), mesh
     )
-    src_eager = init_persistent_sources(site_names, site_Cs, 16, 1, jax.random.PRNGKey(3))
+    src_eager = init_persistent_sources(site_names, site_Cs, (1, 16), jax.random.PRNGKey(3))
     for name in site_names:
         src_sharding = src_sharded[name].sharding
         assert isinstance(src_sharding, NamedSharding)
@@ -153,8 +153,8 @@ def test_fresh_pgd_c_bc_sources_are_replica_identical():
 
     for scope in ("c", "bc"):
         key = jax.random.PRNGKey(660)
-        eager = init_fresh_pgd_sources(sites, "random", scope, batch, seq, key)
-        init = partial(init_fresh_pgd_sources, sites, "random", scope, batch, seq)
+        eager = init_fresh_pgd_sources(sites, "random", scope, (batch, seq), key)
+        init = partial(init_fresh_pgd_sources, sites, "random", scope, (batch, seq))
         repl = NamedSharding(mesh, P())
         sharded = jax.jit(init, out_shardings=repl)(key)
         for site in sites:
