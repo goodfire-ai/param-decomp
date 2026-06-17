@@ -1,0 +1,216 @@
+# From-scratch 9-layer decomposition of Llama-3.1-8B MLP layers 18-26 inclusive
+# (9 layers x 3 matrices = 27 decomposition_targets). Derived from the single-layer-18
+# C49k run (torch/llama8b_l18_C49k_200k_1pool.yaml). DELIBERATE EDITS vs that base:
+#   1. decomposition_targets: 3 (layer 18) -> 27 (layers 18..26, gate/up/down each,
+#      canonical layer-major order), all C: 49152.
+#   2. pd.batch_size + eval.batch_size: 512 -> 64. The 1-D dp mesh shards batch over all
+#      64 devices, so batch must be >=64 and divisible by 64. B=128 (2/device) was the
+#      target, but the AOT probe (see the wrapper header) puts B=128 at 210 GiB/device,
+#      over the 180 GiB B200 cap; B=64 (1/device) at 179 GiB is the launchable point.
+#   3. recon term: StochasticReconSubsetLoss -> ChunkwiseSubsetReconLoss with
+#      sites_per_chunk: 9 (-> 3 chunks of 9 sites) and coeff 1.5 (= the base 0.5 x 3
+#      chunks, to undo the chunk-mean dilution and keep per-site recon pressure
+#      invariant to chunk count).
+#   4. lrs: components 1.26e-4, ci_fn 4.2e-5 — the B=128 precedent (components 1.5e-4 /
+#      ci_fn 5.0e-5, 3x ratio) dropped by the 4th root of the 8x batch ratio vs the 512
+#      baseline for B=64. Both cosine, final_val_frac 0.1, warmup_pct 0.0, as the base.
+# Everything else (C=49152, seq 2048, ImportanceMinimalityLoss coeff 5e-6 / beta 0.2 /
+# pnorm 2.0->0.4, PersistentPGDReconLoss one-chunk coeff 0.5 broadcast_across_batch,
+# FaithfulnessLoss 1e5, faith warmup, eval metric set, target.weights_dtype bfloat16,
+# 200k steps) is identical to the C49k base. remat is set on in the wrapper
+# (remat_recon_forwards: true) — 9 layers needs it.
+cadence:
+  keep_last_n_checkpoints: 2
+  save_every: 5000
+  train_log_every: 200
+data:
+  buffer_size: 1000
+  column_name: input_ids
+  data_files: /mnt/data/artifacts/mechanisms/param-decomp/datasets/fineweb_llama_tok_2048/*.parquet
+  dataset_name: parquet
+  eval_split: train
+  is_tokenized: true
+  max_seq_len: 2048
+  revision: null
+  shuffle_each_epoch: true
+  streaming: false
+  tokenizer_name: meta-llama/Llama-3.1-8B
+  train_split: train
+eval:
+  batch_size: 64
+  every: 1000
+  metrics:
+  - n_batches_accum: 1
+    type: CIHistograms
+  - ci_alive_threshold: 0.0
+    type: ComponentActivationDensity
+  - ci_alive_threshold: 0.0
+    groups: null
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  - type: CIMeanPerComponent
+  - coeff: null
+    type: StochasticHiddenActsReconLoss
+  - type: CIHiddenActsReconLoss
+  - coeff: null
+    init: random
+    mask_scope: shared_across_batch
+    n_steps: 20
+    step_size: 0.1
+    type: PGDReconLoss
+  n_steps: 1
+  slow_every: 10000
+  slow_on_first_step: true
+pd:
+  batch_size: 64
+  ci_config:
+    fn_type: global_shared_transformer
+    hidden_dims: null
+    mode: global
+    simple_transformer_ci_cfg:
+      attn_config:
+        max_len: 2048
+        n_heads: 64
+        rope_base: 10000.0
+      d_model: 4096
+      mlp_hidden_dim:
+      - 16384
+      n_blocks: 4
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: null
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 4.2e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 0.01
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 1.26e-04
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  decomposition_targets:
+  - C: 49152
+    module_pattern: model.layers.18.mlp.gate_proj
+  - C: 49152
+    module_pattern: model.layers.18.mlp.up_proj
+  - C: 49152
+    module_pattern: model.layers.18.mlp.down_proj
+  - C: 49152
+    module_pattern: model.layers.19.mlp.gate_proj
+  - C: 49152
+    module_pattern: model.layers.19.mlp.up_proj
+  - C: 49152
+    module_pattern: model.layers.19.mlp.down_proj
+  - C: 49152
+    module_pattern: model.layers.20.mlp.gate_proj
+  - C: 49152
+    module_pattern: model.layers.20.mlp.up_proj
+  - C: 49152
+    module_pattern: model.layers.20.mlp.down_proj
+  - C: 49152
+    module_pattern: model.layers.21.mlp.gate_proj
+  - C: 49152
+    module_pattern: model.layers.21.mlp.up_proj
+  - C: 49152
+    module_pattern: model.layers.21.mlp.down_proj
+  - C: 49152
+    module_pattern: model.layers.22.mlp.gate_proj
+  - C: 49152
+    module_pattern: model.layers.22.mlp.up_proj
+  - C: 49152
+    module_pattern: model.layers.22.mlp.down_proj
+  - C: 49152
+    module_pattern: model.layers.23.mlp.gate_proj
+  - C: 49152
+    module_pattern: model.layers.23.mlp.up_proj
+  - C: 49152
+    module_pattern: model.layers.23.mlp.down_proj
+  - C: 49152
+    module_pattern: model.layers.24.mlp.gate_proj
+  - C: 49152
+    module_pattern: model.layers.24.mlp.up_proj
+  - C: 49152
+    module_pattern: model.layers.24.mlp.down_proj
+  - C: 49152
+    module_pattern: model.layers.25.mlp.gate_proj
+  - C: 49152
+    module_pattern: model.layers.25.mlp.up_proj
+  - C: 49152
+    module_pattern: model.layers.25.mlp.down_proj
+  - C: 49152
+    module_pattern: model.layers.26.mlp.gate_proj
+  - C: 49152
+    module_pattern: model.layers.26.mlp.up_proj
+  - C: 49152
+    module_pattern: model.layers.26.mlp.down_proj
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 400
+  faithfulness_warmup_weight_decay: 0.0
+  identity_decomposition_targets: null
+  loss_metrics:
+  - beta: 0.2
+    coeff: 5.0e-06
+    eps: 1.0e-12
+    p_anneal_end_frac: 1.0
+    p_anneal_final_p: 0.4
+    p_anneal_start_frac: 0.0
+    pnorm: 2.0
+    type: ImportanceMinimalityLoss
+  - coeff: 1.5
+    n_samples: 1
+    routing:
+      type: uniform_k_subset
+    sites_per_chunk: 9
+    type: ChunkwiseSubsetReconLoss
+  - coeff: 0.5
+    n_samples: 1
+    n_warmup_steps: 2
+    optimizer:
+      beta1: 0.5
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        final_val_frac: 1.0
+        fn_type: constant
+        start_val: 0.01
+        warmup_pct: 0.025
+      type: adam
+    scope:
+      type: broadcast_across_batch
+    start_frac: 0.0
+    type: PersistentPGDReconLoss
+    use_sigmoid_parameterization: false
+  - coeff: 100000.0
+    type: FaithfulnessLoss
+  n_mask_samples: 1
+  sampling: continuous
+  seed: 0
+  sigmoid_type: leaky_hard
+  steps: 200000
+  tied_weights: null
+  use_delta_component: true
+runtime:
+  autocast_bf16: true
+  device: cuda:0
+  dp: 64
+target:
+  output_extract: logits
+  weights_dtype: bfloat16
+  spec:
+    kind: hf
+    model_class: transformers.LlamaForCausalLM
+    model_name: meta-llama/Llama-3.1-8B
+wandb:
+  entity: null
+  project: param-decomp-llama

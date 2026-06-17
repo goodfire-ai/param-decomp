@@ -1,0 +1,19 @@
+# From-scratch 9-layer decomposition of Llama-3.1-8B MLP layers 18-26 (27 targets,
+# C=49152, chunkwise recon with 3 chunks of 9 sites). See the referenced schema yaml's
+# header for the documented edits vs the C49k single-layer base.
+# remat ON: 9 layers' chunkwise recon forwards need rematerialization to fit.
+# AOT memory probe (jax_single_pool/experiments/mem_probe.py, 64 B200, remat on,
+# sites_per_chunk 9, no buffer donation — matching the trainer's non-donating @jax.jit
+# step) per-device peak HBM = temp + args + out:
+#   B=128 (2/device): 210.2 GiB  -> does NOT fit 180 GiB
+#   B=64  (1/device): 179.0 GiB  -> at the cliff, ~0 headroom
+# B=128 is over capacity, so the schema yaml carries B=64 (the only launchable point) with
+# LRs dropped to ci_fn 4.2e-5 / components 1.26e-4 (4th-root of the 8x batch ratio vs the
+# 512 baseline). NOTE: B=64 sits AT 179 GiB with ~0 headroom against the 180 GiB cap — a
+# real launch should re-confirm against live device HBM (XLA_PYTHON_CLIENT_MEM_FRACTION
+# leaves <180 GiB usable) and may need a larger mesh or fewer layers. See the PR for the
+# full probe table.
+torch_config: torch/llama8b_l18-26_9layer_chunkwise.yaml
+run_name: jax-l18-26-9layer-chunkwise
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/jax_runs
+remat_recon_forwards: true
