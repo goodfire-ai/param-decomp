@@ -3,9 +3,9 @@
 #SBATCH --gres=gpu:1
 #SBATCH --time=00:25:00
 #SBATCH --comment="smoke test: component MLP + persistent-adversarial (PPGD) 2nd loss term; d_expand=2, 4 steps, 0.5/0.5 coeffs, no wandb; oli/opus"
-#SBATCH --output=/mnt/polished-lake/home/oli/opus-param-decomp/wt-mlp0-compress/scratch/mlp_compress/smoke_component_adv_%j.log
+#SBATCH --output=/mnt/home/lucius/spd/scratch/mlp_compress/smoke_component_adv_%j.log
 
-cd /mnt/polished-lake/home/oli/opus-param-decomp/wt-mlp0-compress
+cd /mnt/home/lucius/spd
 source .venv/bin/activate
 cd scratch/mlp_compress
 python run_component.py --d_expand 2 --steps 4 \
