@@ -35,6 +35,7 @@ from jax_single_pool.adversary import (
     sources_adam_ascend_project,
 )
 from jax_single_pool.ci_fn import CIFn, CIValues
+from jax_single_pool.ci_fn_mlp import LayerwiseMLPCIFn
 from jax_single_pool.lm import DecomposedModel
 from jax_single_pool.losses import (
     annealed_pnorm,
@@ -52,6 +53,11 @@ from jax_single_pool.recon import (
     StochasticSources,
 )
 from param_decomp_config.losses import AdamPGDConfig
+
+AnyCIFn = CIFn | LayerwiseMLPCIFn
+"""The two CI-fn families: the shared-transformer (`ci_fn.py`, `expects_axes=("sequence",)`)
+and the layerwise per-site MLP (`ci_fn_mlp.py`, `expects_axes=()`). Both expose
+`__call__(site_inputs) -> CIValues` + `expects_axes`, so the generic step is agnostic."""
 
 COMPUTE_DT = jnp.bfloat16
 
@@ -73,7 +79,7 @@ def _select_pytree(active: Array, when_active: Any, when_inactive: Any) -> Any:
 @dataclass(frozen=True)
 class TrainState:
     components: Any  # LM-specific trainable pytree (V/U), fp32 masters
-    ci_fn: CIFn  # fp32 masters
+    ci_fn: AnyCIFn  # fp32 masters
     components_opt_state: optax.OptState
     ci_fn_opt_state: optax.OptState
     sources: dict[str, dict[str, Array]]
@@ -400,7 +406,7 @@ def make_train_step(
         # are NOT detached here, but components/ci grads through them are what torch
         # gets too (sources are leaves). ──
         def loss_fn(
-            trainable: tuple[Any, CIFn, dict[str, dict[str, Array]]],
+            trainable: tuple[Any, AnyCIFn, dict[str, dict[str, Array]]],
         ) -> tuple[Array, tuple[Array, Array, tuple[Array, ...]]]:
             components, ci_fn, persistent_sources = trainable
             components_bf16 = cast_floating(components, COMPUTE_DT)

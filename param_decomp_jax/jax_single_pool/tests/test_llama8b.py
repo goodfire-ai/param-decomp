@@ -14,7 +14,7 @@ import pytest
 from vendored_jax.llama import LlamaConfig, llama3_inv_freq
 
 from jax_single_pool.adversary import init_persistent_sources, init_sources_adam_state
-from jax_single_pool.ci_fn import CIArch, init_ci_fn
+from jax_single_pool.ci_fn import CIArch, CIFn, init_ci_fn
 from jax_single_pool.llama8b import (
     DecompVU,
     FrozenAttn,
@@ -351,6 +351,7 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
     assert isinstance(state.components, DecompVU)
     for V, U in state.components.vu.values():
         assert V.dtype == jnp.float32 and U.dtype == jnp.float32
+    assert isinstance(state.ci_fn, CIFn)
     assert state.ci_fn.in_proj_w.dtype == jnp.float32
 
 

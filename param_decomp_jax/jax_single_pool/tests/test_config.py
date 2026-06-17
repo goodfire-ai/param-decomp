@@ -11,6 +11,7 @@ import yaml
 from jax_single_pool.config import (
     WRAPPER_KEYS,
     WRAPPER_OPTIONAL_KEYS,
+    DataConfig,
     assert_supported_weights_dtype,
     build_experiment_config,
     load_run_dir_config,
@@ -310,10 +311,39 @@ def test_c49k_yaml_converts(tmp_path: Path):
     )
     assert converted.target.sites == mlp_family_site_cs(18, 18, 49152)
     assert converted.steps == 200000
+    assert isinstance(converted.data, DataConfig)
     assert converted.data.global_batch == 512 and converted.data.seq_len == 2048
     assert converted.vu_optimizer.lr == 7e-05 and converted.ci_optimizer.lr == 7e-05
     assert converted.eval is not None and converted.eval.pgd is not None
     assert converted.wandb is not None and converted.wandb.entity is None
+
+
+def test_tms_wrapper_converts(tmp_path: Path):
+    """The TMS wrapper dispatches to the TMS schema (structural `n_features` marker),
+    builds the vendored TMS target (untied linear1/linear2 sites), the layerwise-MLP CI
+    arch, and the positionless synthetic data config."""
+    from jax_single_pool.ci_fn_mlp import MLPCIArch
+    from jax_single_pool.config import TMSDataConfig, TMSTargetConfig
+
+    converted, _torch_path, _raw = load_wrapper(
+        _stamped_wrapper(tmp_path, CONFIGS / "tms_5-2_from_torch.yaml")
+    )
+    assert isinstance(converted.target, TMSTargetConfig)
+    assert converted.target.n_features == 5 and converted.target.n_hidden == 2
+    assert converted.target.sites == (SiteC("linear1", 20), SiteC("linear2", 20))
+    assert converted.target.pretrain_steps == 5000
+    assert isinstance(converted.data, TMSDataConfig)
+    assert converted.data.n_features == 5 and converted.data.global_batch == 4096
+    assert converted.data.feature_probability == 0.05
+    assert isinstance(converted.ci_fn, MLPCIArch) and converted.ci_fn.hidden_dims == (16,)
+    assert converted.eval is None  # TMS validates via the in-loop target-CI metric
+    # the shared recon-term builder accepts the TMS loss list (Stochastic + Layerwise + faith)
+    build_recon_terms(
+        converted.loss_metrics,
+        tuple(sc.name for sc in converted.target.sites),
+        converted.n_mask_samples,
+        converted.sampling,
+    )
 
 
 def test_fp32_frozen_target_is_refused(tmp_path: Path):
