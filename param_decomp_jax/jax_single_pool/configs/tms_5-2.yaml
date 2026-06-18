@@ -71,7 +71,6 @@ cadence:
 target:
   n_features: 5
   n_hidden: 2
-  n_hidden_layers: 0
   pretrain:
     steps: 5000
     batch_size: 2048

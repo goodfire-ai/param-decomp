@@ -113,7 +113,7 @@ from jax_single_pool.load_run import open_jax_run, run_metadata
 ```
 
 - `PDConfig` — algorithm config: seed, CI fn, loss metrics, optimizers, decomposition
-  targets, tied weights. The torch-free schema in `param_decomp_config`; the JAX trainer
+  targets, tied weights. The taorch-free schema in `param_decomp_config`; the JAX trainer
   reads it directly. (The eval-metric *config* classes likewise stay in
   `param_decomp_config`; only their torch `Metric` *impls* were dropped.)
 - `RuntimeConfig` — compute substrate: `autocast_bf16`, `device`, `dp`. Perturbs numerics

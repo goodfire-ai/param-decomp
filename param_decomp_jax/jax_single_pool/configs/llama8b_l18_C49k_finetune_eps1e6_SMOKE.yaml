@@ -1,0 +1,150 @@
+cadence:
+  keep_last_n_checkpoints: 3
+  save_every: 5
+  train_log_every: 5
+data:
+  buffer_size: 1000
+  column_name: input_ids
+  data_files: /mnt/data/artifacts/mechanisms/param-decomp/datasets/fineweb_llama_tok_2048/*.parquet
+  dataset_name: parquet
+  eval_split: train
+  is_tokenized: true
+  max_seq_len: 2048
+  revision: null
+  shuffle_each_epoch: true
+  streaming: false
+  tokenizer_name: meta-llama/Llama-3.1-8B
+  train_split: train
+eval:
+  batch_size: 512
+  every: 100000
+  metrics:
+  - n_batches_accum: 1
+    type: CIHistograms
+  - ci_alive_threshold: 0.0
+    type: ComponentActivationDensity
+  - ci_alive_threshold: 0.0
+    groups: null
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  - type: CIMeanPerComponent
+  - coeff: null
+    type: StochasticHiddenActsReconLoss
+  - type: CIHiddenActsReconLoss
+  - coeff: null
+    init: random
+    mask_scope: shared_across_batch
+    n_steps: 20
+    step_size: 0.1
+    type: PGDReconLoss
+  n_steps: 1
+  slow_every: 100000
+  slow_on_first_step: false
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/jax_runs
+pd:
+  batch_size: 512
+  ci_config:
+    fn_type: global_shared_transformer
+    hidden_dims: null
+    mode: global
+    simple_transformer_ci_cfg:
+      attn_config:
+        max_len: 2048
+        n_heads: 64
+        rope_base: 10000.0
+      d_model: 4096
+      mlp_hidden_dim:
+      - 16384
+      n_blocks: 4
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: null
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 7.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 0.01
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 7.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  decomposition_targets:
+  - C: 49152
+    module_pattern: model.layers.18.mlp.gate_proj
+  - C: 49152
+    module_pattern: model.layers.18.mlp.up_proj
+  - C: 49152
+    module_pattern: model.layers.18.mlp.down_proj
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 400
+  faithfulness_warmup_weight_decay: 0.0
+  identity_decomposition_targets: null
+  loss_metrics:
+  - beta: 0.2
+    coeff: 5.0e-06
+    eps: 1.0e-06
+    p_anneal_end_frac: 1.0
+    p_anneal_final_p: 0.6
+    p_anneal_start_frac: 0.0
+    pnorm: 0.6
+    type: ImportanceMinimalityLoss
+  - coeff: 0.5
+    routing:
+      type: uniform_k_subset
+    type: StochasticReconSubsetLoss
+  - coeff: 0.5
+    n_samples: 1
+    n_warmup_steps: 2
+    optimizer:
+      beta1: 0.5
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        final_val_frac: 1.0
+        fn_type: constant
+        start_val: 0.01
+        warmup_pct: 0.025
+      type: adam
+    scope:
+      type: broadcast_across_batch
+    start_frac: 0.0
+    type: PersistentPGDReconLoss
+  - coeff: 100000.0
+    type: FaithfulnessLoss
+  n_mask_samples: 1
+  sampling: continuous
+  seed: 0
+  sigmoid_type: leaky_hard
+  steps: 20
+  tied_weights: null
+  use_delta_component: true
+resume_provenance:
+  parent_run_dir: /mnt/data/artifacts/mechanisms/param-decomp/runs/p-bd3cd4d4
+  parent_step: 175000
+run_name: jax-l18-C49k-finetune-eps1e6-SMOKE
+runtime:
+  autocast_bf16: true
+  device: cuda:0
+  dp: 32
+  remat_recon_forwards: false
+target:
+  output_extract: logits
+  spec:
+    kind: hf
+    model_class: transformers.LlamaForCausalLM
+    model_name: meta-llama/Llama-3.1-8B
+  weights_dtype: bfloat16
+wandb:
+  entity: null
+  project: param-decomp-llama
