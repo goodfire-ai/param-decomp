@@ -63,7 +63,32 @@ class MuonPGDConfig(BaseConfig):
     lr_schedule: ScheduleConfig
 
 
-PGDOptimizerConfig = SignPGDConfig | AdamPGDConfig | MuonPGDConfig
+class SGDPGDConfig(BaseConfig):
+    """Plain SGD (gradient-ascent) PGD optimizer config — cheapest, no per-coordinate scale
+    normalization. `momentum=0` is raw gradient ascent (stateless); `momentum>0` is heavy-ball
+    (one buffer). NB: unlike Adam/RMSProp/Sign there is no normalization, so the right `lr`
+    depends on the raw source-gradient scale and differs a lot from Adam's ~unit-update lr.
+    """
+
+    type: Literal["sgd"] = "sgd"
+    momentum: Probability = Field(default=0.0, description="Heavy-ball momentum (0 = plain SGD)")
+    lr_schedule: ScheduleConfig
+
+
+class RMSPropPGDConfig(BaseConfig):
+    """RMSProp PGD optimizer config — Adam minus the first-moment (momentum) buffer. Keeps the
+    per-coordinate scale normalization (the part our beta2 sweep showed matters) at one buffer
+    instead of two, so cheaper than Adam. `alpha` is the second-moment decay (keep high, like
+    Adam's beta2); `lr` should transfer from Adam (updates are similarly ~unit-scaled).
+    """
+
+    type: Literal["rmsprop"] = "rmsprop"
+    alpha: Probability = Field(default=0.99, description="Second-moment (scale) decay for masks")
+    eps: NonNegativeFloat = Field(default=1e-8, description="RMSProp epsilon for masks")
+    lr_schedule: ScheduleConfig
+
+
+PGDOptimizerConfig = SignPGDConfig | AdamPGDConfig | MuonPGDConfig | SGDPGDConfig | RMSPropPGDConfig
 
 
 class SingleSourceScope(BaseConfig):
@@ -280,6 +305,88 @@ class MuonPGDOptimizer(PPGDOptimizer):
                 self._m[k].copy_(t.to(self._m[k].device))
 
 
+class SGDPGDOptimizer(PPGDOptimizer):
+    """Gradient-ascent SGD (optionally heavy-ball momentum). Cheapest adversary optimizer:
+    no per-coordinate normalization; stateless when `momentum=0`."""
+
+    def __init__(self, cfg: SGDPGDConfig) -> None:
+        self._lr = cfg.lr_schedule.start_val
+        self._momentum = cfg.momentum
+        self._buf: PPGDSources = {}
+
+    @override
+    def init_state(self, sources: PPGDSources) -> None:
+        if self._momentum:
+            for module_name, source in sources.items():
+                self._buf[module_name] = torch.zeros_like(source)
+
+    @override
+    def step(self, sources: PPGDSources, grads: PPGDSources) -> None:
+        for module_name, source in sources.items():
+            grad = grads[module_name]
+            if self._momentum:
+                buf = self._buf[module_name]
+                buf.mul_(self._momentum).add_(grad)
+                update = buf
+            else:
+                update = grad
+            source.add_(self._lr * update)  # ascent (adversary maximizes recon)
+
+    @override
+    def set_lr(self, lr: float) -> None:
+        self._lr = lr
+
+    @override
+    def state_dict(self) -> dict[str, Any]:
+        return {"buf": dict(self._buf)} if self._momentum else {}
+
+    @override
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        if not self._momentum:
+            return
+        with torch.no_grad():
+            for k, t in state["buf"].items():
+                self._buf[k].copy_(t.to(self._buf[k].device))
+
+
+class RMSPropPGDOptimizer(PPGDOptimizer):
+    """RMSProp gradient-ascent: Adam without the first-moment buffer. Keeps per-coordinate
+    scale normalization (one buffer) — cheaper than Adam."""
+
+    def __init__(self, cfg: RMSPropPGDConfig) -> None:
+        self._lr = cfg.lr_schedule.start_val
+        self._alpha = cfg.alpha
+        self._eps = cfg.eps
+        self._v: PPGDSources = {}
+
+    @override
+    def init_state(self, sources: PPGDSources) -> None:
+        for module_name, source in sources.items():
+            self._v[module_name] = torch.zeros_like(source)
+
+    @override
+    def step(self, sources: PPGDSources, grads: PPGDSources) -> None:
+        for module_name, source in sources.items():
+            grad = grads[module_name]
+            v = self._v[module_name]
+            v.mul_(self._alpha).addcmul_(grad, grad, value=1 - self._alpha)
+            source.add_(self._lr * grad / (v.sqrt().add_(self._eps)))  # ascent
+
+    @override
+    def set_lr(self, lr: float) -> None:
+        self._lr = lr
+
+    @override
+    def state_dict(self) -> dict[str, Any]:
+        return {"v": dict(self._v)}
+
+    @override
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        with torch.no_grad():
+            for k, t in state["v"].items():
+                self._v[k].copy_(t.to(self._v[k].device))
+
+
 def make_ppgd_optimizer(cfg: PGDOptimizerConfig) -> PPGDOptimizer:
     match cfg:
         case SignPGDConfig():
@@ -288,6 +395,10 @@ def make_ppgd_optimizer(cfg: PGDOptimizerConfig) -> PPGDOptimizer:
             return AdamPGDOptimizer(cfg)
         case MuonPGDConfig():
             return MuonPGDOptimizer(cfg)
+        case SGDPGDConfig():
+            return SGDPGDOptimizer(cfg)
+        case RMSPropPGDConfig():
+            return RMSPropPGDOptimizer(cfg)
 
 
 class PersistentPGDState:
