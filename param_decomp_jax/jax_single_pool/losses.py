@@ -1,13 +1,18 @@
 """The pure loss terms (SPEC §2) and their schedules — fp32 reductions, no state."""
 
 import math
+from collections.abc import Callable
 
 import jax
 import jax.numpy as jnp
 from beartype import beartype
 from jaxtyping import Array, Float, jaxtyped
 
-from param_decomp_config.losses import ImportanceMinimalityLossConfig
+from param_decomp_config.losses import (
+    AnyImportanceMinimalityLossConfig,
+    ImportanceMinimalityLossConfig,
+    SmoothL0ImportanceMinimalityLossConfig,
+)
 
 
 @jaxtyped(typechecker=beartype)
@@ -37,14 +42,16 @@ def faithfulness_loss(weight_deltas: dict[str, Float[Array, "_ _"]]) -> Float[Ar
     return numerator / denominator
 
 
-@jaxtyped(typechecker=beartype)
-def importance_minimality_terms(
-    ci_upper: dict[str, Float[Array, "*leading _"]], pnorm: Float[Array, ""], eps: float
+def _imp_min_terms(
+    ci_upper: dict[str, Float[Array, "*leading _"]],
+    per_value_penalty: Callable[[Float[Array, "*leading _"]], Float[Array, "*leading _"]],
 ) -> tuple[Float[Array, ""], Float[Array, ""]]:
-    """`(lp, entropy)` with per-site grouping and the global-batch sum inside the log2
-    (SPEC S7/S8); the loss is `lp + beta * entropy`. Torch's `_no_beta` diagnostic (`lp`
-    alone) is emitted only on the eval path (`Metric.compute`), never from the train
-    step, so this trainer does not log a `train/loss/*_no_beta` key.
+    """`(lp, entropy)` for any per-value penalty `psi`, with per-site grouping and the
+    global-batch sum inside the log2 (SPEC S7/S8); the loss is `lp + beta * entropy`.
+
+    `lp` is the mean-over-positions sparsity term `Σ_j mean_i psi(c_ij)`; `entropy` is the
+    frequency-minimality term `Σ_j mean_i psi · log2(1 + Σ_i psi)`. The two imp-min
+    penalties (`L_p`, smooth-L0) differ ONLY in `psi`.
 
     Under GSPMD the `*leading` axes are the global batch, so `jnp.sum` IS the exact
     global per-component sum — XLA reduces across shards inside the graph."""
@@ -54,20 +61,101 @@ def importance_minimality_terms(
         ci = ci.astype(jnp.float32)  # (*leading, C)
         leading_axes = tuple(range(ci.ndim - 1))
         n_positions = math.prod(ci.shape[:-1])
-        per_component_sums = jnp.sum((ci + eps) ** pnorm, axis=leading_axes)  # (C,)
+        per_component_sums = jnp.sum(per_value_penalty(ci), axis=leading_axes)  # (C,)
         per_component_means = per_component_sums / n_positions
         lp = lp + jnp.sum(per_component_means)
         entropy = entropy + jnp.sum(per_component_means * jnp.log2(1.0 + per_component_sums))
     return lp, entropy
 
 
+@jaxtyped(typechecker=beartype)
+def importance_minimality_terms(
+    ci_upper: dict[str, Float[Array, "*leading _"]], pnorm: Float[Array, ""], eps: float
+) -> tuple[Float[Array, ""], Float[Array, ""]]:
+    """`L_p` imp-min terms: per-value penalty `(c + eps)^pnorm`. Singular at `c=0` for
+    `pnorm < 1` (the `eps` floor caps the gradient there). Torch's `_no_beta` diagnostic
+    (`lp` alone) is emitted only on the eval path (`Metric.compute`), never from the train
+    step, so this trainer does not log a `train/loss/*_no_beta` key."""
+    return _imp_min_terms(ci_upper, lambda ci: (ci + eps) ** pnorm)
+
+
+@jaxtyped(typechecker=beartype)
+def smooth_l0_importance_minimality_terms(
+    ci_upper: dict[str, Float[Array, "*leading _"]], gamma: Float[Array, ""]
+) -> tuple[Float[Array, ""], Float[Array, ""]]:
+    """Geman–McClure smooth-L0 imp-min terms: per-value penalty `c^2 / (c^2 + gamma^2)`.
+    Flat at the origin (`phi'(0)=0`) and bounded (`|phi'| <= 0.65/gamma`) — no singularity,
+    no `eps` floor. Approaches the true `L_0` count as `gamma -> 0`."""
+    gamma_sq = gamma * gamma
+    return _imp_min_terms(ci_upper, lambda ci: ci**2 / (ci**2 + gamma_sq))
+
+
+def _linear_anneal(
+    step_f32: Array,
+    total_steps: int,
+    initial: float,
+    final: float,
+    start_frac: float,
+    end_frac: float,
+) -> Array:
+    span = max(end_frac - start_frac, 1e-9)
+    progress = jnp.clip((step_f32 / total_steps - start_frac) / span, 0.0, 1.0)
+    return jnp.asarray(initial + (final - initial) * progress)
+
+
 def annealed_pnorm(step_f32: Array, total_steps: int, cfg: ImportanceMinimalityLossConfig) -> Array:
     """`p` anneals linearly `pnorm → p_anneal_final_p` over
     `[p_anneal_start_frac, p_anneal_end_frac]` of training (SPEC S9)."""
     assert cfg.p_anneal_final_p is not None
-    span = max(cfg.p_anneal_end_frac - cfg.p_anneal_start_frac, 1e-9)
-    progress = jnp.clip((step_f32 / total_steps - cfg.p_anneal_start_frac) / span, 0.0, 1.0)
-    return jnp.asarray(cfg.pnorm + (cfg.p_anneal_final_p - cfg.pnorm) * progress)
+    return _linear_anneal(
+        step_f32,
+        total_steps,
+        cfg.pnorm,
+        cfg.p_anneal_final_p,
+        cfg.p_anneal_start_frac,
+        cfg.p_anneal_end_frac,
+    )
+
+
+def annealed_gamma(
+    step_f32: Array, total_steps: int, cfg: SmoothL0ImportanceMinimalityLossConfig
+) -> Array:
+    """`gamma` anneals linearly `gamma → gamma_anneal_final_gamma` over
+    `[gamma_anneal_start_frac, gamma_anneal_end_frac]` of training (SPEC S9')."""
+    assert cfg.gamma_anneal_final_gamma is not None
+    return _linear_anneal(
+        step_f32,
+        total_steps,
+        cfg.gamma,
+        cfg.gamma_anneal_final_gamma,
+        cfg.gamma_anneal_start_frac,
+        cfg.gamma_anneal_end_frac,
+    )
+
+
+def annealed_imp_min_param(
+    step_f32: Array, total_steps: int, cfg: AnyImportanceMinimalityLossConfig
+) -> Array:
+    """The annealed per-value-penalty parameter at this step (`p` for `L_p`, `gamma` for
+    smooth-L0). Pure function of the step, so it's hoisted out of the loss `grad`."""
+    match cfg:
+        case ImportanceMinimalityLossConfig():
+            return annealed_pnorm(step_f32, total_steps, cfg)
+        case SmoothL0ImportanceMinimalityLossConfig():
+            return annealed_gamma(step_f32, total_steps, cfg)
+
+
+def imp_min_terms(
+    ci_upper: dict[str, Float[Array, "*leading _"]],
+    cfg: AnyImportanceMinimalityLossConfig,
+    annealed_param: Array,
+) -> tuple[Float[Array, ""], Float[Array, ""]]:
+    """Dispatch `(lp, entropy)` on the imp-min penalty kind, given its annealed parameter."""
+    match cfg:
+        case ImportanceMinimalityLossConfig():
+            return importance_minimality_terms(ci_upper, annealed_param, cfg.eps)
+        case SmoothL0ImportanceMinimalityLossConfig():
+            return smooth_l0_importance_minimality_terms(ci_upper, annealed_param)
 
 
 def warmup_then_constant_lr(
