@@ -11,6 +11,7 @@ The submit side needs no JAX imports, so it lives with the other `pd-*` scripts 
 runs from the torch venv.
 """
 
+import os
 import shlex
 import subprocess
 from pathlib import Path
@@ -32,6 +33,15 @@ AnyRunConfig = LMExperimentConfig | TMSExperimentConfig | ResidMLPExperimentConf
 
 GPUS_PER_NODE = 8
 WORKSPACES_DIR = PARAM_DECOMP_OUT_DIR / "workspaces"
+
+# uv materializes a venv by hardlinking wheels from its cache when cache and venv share
+# one filesystem, else copying. The default per-user cache (~/.cache/uv) sits on the home
+# mount while workspaces live on the data mount — different PVCs — so every build copied
+# multi-GB CUDA wheels. Pinning the cache beside the workspaces (same PVC) makes the
+# venv materialization metadata-only hardlinks. Scoped to the build subprocesses below so
+# other uv usage on the cluster keeps its default cache. uv still auto-falls-back to copy
+# if this ever resolves cross-filesystem, so the change is safe everywhere.
+UV_CACHE_DIR = PARAM_DECOMP_OUT_DIR / "uv_cache"
 
 # Mirrors the validated llama8b.sbatch srun line: one task per GPU, block placement.
 _SRUN_FLAGS = (
@@ -179,9 +189,11 @@ def _build_workspace(
     workspace's single config yaml."""
     assert not workspace.exists(), f"workspace already exists: {workspace}"
     workspace.parent.mkdir(parents=True, exist_ok=True)
+    UV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    build_env = {**os.environ, "UV_CACHE_DIR": str(UV_CACHE_DIR)}
 
-    def run(args: list[str], cwd: Path) -> None:
-        subprocess.run(args, cwd=cwd, check=True)
+    def run(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> None:
+        subprocess.run(args, cwd=cwd, check=True, env=env)
 
     logger.info(f"Building workspace {workspace} ...")
     run(["git", "clone", "--quiet", str(REPO_ROOT), str(workspace)], cwd=REPO_ROOT)
@@ -194,9 +206,9 @@ def _build_workspace(
     (workspace / ".env").write_bytes(env_file.read_bytes())
 
     logger.info("torch venv: uv sync --all-packages --no-dev ...")
-    run(["uv", "sync", "--all-packages", "--no-dev", "--link-mode", "copy", "-q"], cwd=workspace)
+    run(["uv", "sync", "--all-packages", "--no-dev", "-q"], cwd=workspace, env=build_env)
     logger.info("jax venv: make install-jax-cuda ...")
-    run(["make", "install-jax-cuda"], cwd=workspace)
+    run(["make", "install-jax-cuda"], cwd=workspace, env=build_env)
 
     _stamp_config(workspace / config_rel, run_id, group, tags)
 
