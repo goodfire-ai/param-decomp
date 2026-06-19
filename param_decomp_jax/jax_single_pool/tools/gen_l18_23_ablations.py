@@ -4,7 +4,9 @@ Reads the baked-default config (`configs/llama8b_l18-23_6layer_ablation_base.yam
 emits one self-contained run yaml per ablation point into `configs/l18-23_ablations/`.
 Ablations are MULTIPLICATIVE factors around the baked default (the centre):
 
-  - learning rate   x[0.31, 3.1]   (scales BOTH components & ci_fn optimizer start_val)
+  - learning rate   x[0.31]        (scales BOTH components & ci_fn optimizer start_val.
+                                    The x3.1 up-factor is dropped: higher LR doesn't train
+                                    here — Lucius, 2026-06-19.)
   - tokens/batch    x[2, 4]        (scales pd.batch_size; seq_len held at 512. NB: the
                                     larger batches need a GPU-count / dp-layout change at
                                     launch — the team handles that, it is not in the yaml.)
@@ -34,7 +36,7 @@ CONFIGS_DIR = Path(__file__).resolve().parent.parent / "configs"
 BASE_CONFIG = CONFIGS_DIR / "llama8b_l18-23_6layer_ablation_base.yaml"
 OUT_DIR = CONFIGS_DIR / "l18-23_ablations"
 
-LR_FACTORS = [0.31, 3.1]
+LR_FACTORS = [0.31]
 BATCH_FACTORS = [2, 4]
 IMPMIN_FACTORS = [3.1, 10]
 
