@@ -38,9 +38,9 @@ from jax_single_pool.ci_fn import CIFn, CIValues
 from jax_single_pool.ci_fn_mlp import LayerwiseMLPCIFn
 from jax_single_pool.lm import DecomposedModel
 from jax_single_pool.losses import (
-    annealed_pnorm,
+    annealed_imp_min_param,
     faithfulness_loss,
-    importance_minimality_terms,
+    imp_min_terms,
     warmup_then_constant_lr,
 )
 from jax_single_pool.recon import (
@@ -136,7 +136,7 @@ def make_train_step(
     recon_terms = loss_spec.recon_terms
     imp_min = loss_spec.imp_min
     faith_coeff = loss_spec.faith_coeff
-    assert imp_min.coeff is not None and imp_min.p_anneal_final_p is not None
+    assert imp_min.coeff is not None
     imp_coeff = imp_min.coeff
     term_coeff_by_state_key = {
         entry.sources.state_key: term.coeff
@@ -267,7 +267,7 @@ def make_train_step(
         state: TrainState, frozen: Any, residual: Float[Array, "*leading d"], key: PRNGKeyArray
     ) -> tuple[TrainState, dict[str, Array]]:
         step_f32 = state.step.astype(jnp.float32)
-        pnorm = annealed_pnorm(step_f32, total_steps, imp_min)
+        imp_min_param = annealed_imp_min_param(step_f32, total_steps, imp_min)
         leading = residual.shape[:-1]
 
         residual = batch_sharded(residual)
@@ -413,7 +413,7 @@ def make_train_step(
             ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
             ci = batch_sharded_ci(ci_fn_bf16(site_inputs))
             faith_loss = faithfulness_loss(lm.weight_deltas(frozen, components))
-            imp_lp, imp_entropy = importance_minimality_terms(ci.upper, pnorm, imp_min.eps)
+            imp_lp, imp_entropy = imp_min_terms(ci.upper, imp_min, imp_min_param)
             imp_loss = imp_lp + imp_min.beta * imp_entropy
 
             term_losses: list[Array] = []
@@ -532,7 +532,7 @@ def make_train_step(
             "total": total_loss,
             "faith": faith_loss,
             "imp": imp_loss,
-            "p_imp": pnorm,
+            "p_imp": imp_min_param,
             **{f"loss/{t.name}": v for t, v in zip(recon_terms, term_losses, strict=True)},
             **grad_norm_metrics,
         }

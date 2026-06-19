@@ -21,7 +21,10 @@ from jax_single_pool.llama8b import mlp_family_site_cs
 from jax_single_pool.lm import SiteC
 from jax_single_pool.recon import build_recon_terms
 from param_decomp_config.lm import LMExperimentConfig
-from param_decomp_config.losses import PersistentPGDReconLossConfig
+from param_decomp_config.losses import (
+    ImportanceMinimalityLossConfig,
+    PersistentPGDReconLossConfig,
+)
 
 CONFIGS = Path(__file__).parent.parent / "configs"
 RUN_ID = "p-0123abcd"
@@ -55,6 +58,7 @@ def test_b128_config_converts(tmp_path: Path):
         converted.loss_metrics, tuple(sc.name for sc in converted.target.sites),
         converted.n_mask_samples, converted.sampling,
     )  # fmt: skip
+    assert isinstance(spec.imp_min, ImportanceMinimalityLossConfig)
     assert spec.faith_coeff == 1e5 and spec.imp_min.pnorm == 2.0
     (ppgd,) = spec.persistent.values()
     assert isinstance(ppgd, PersistentPGDReconLossConfig)

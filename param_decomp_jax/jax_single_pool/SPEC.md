@@ -135,9 +135,12 @@ def kl_per_position(masked_output, clean_output) =
 
 def faithfulness_loss(components) = ( Σ_s ‖W_s − V_s@U_s‖_F² ) / ( Σ_s numel(W_s) )        (S17)
 
-def importance_minimality_loss(ci_upper, pnorm):         # per-site grouping                (S7)
-    for s: per_component_sums[c] = Σ_{b,t} (ci_upper_s[b,t,c] + eps) ** pnorm           (S8,S9)
+def importance_minimality_loss(ci_upper, psi):           # per-site grouping                (S7)
+    for s: per_component_sums[c] = Σ_{b,t} psi(ci_upper_s[b,t,c])                        (S8,S9)
     return Σ_s Σ_c (per_component_sums[c]/(B·T)) · (1 + beta · log2(1 + per_component_sums[c]))
+    # psi is the per-value penalty; the two penalties differ ONLY in psi (S9'):
+    #   L_p        : psi(c) = (c + eps) ** pnorm                  pnorm anneals 2.0 → 0.4
+    #   smooth-L0  : psi(c) = c**2 / (c**2 + gamma**2)            gamma anneals 1.0 → 0.1
 
 # RECON_PLAN: a static list of entries (live_sites, SAMPLE_ROUTING); each entry's sampler
 # returns a statically-sized FAMILY of routing draws, each draw = one forward (§6).
@@ -238,6 +241,7 @@ on the clean path. Refs: `ci_fn.py` GELU line + `CI_FN_RMS_EPS`; torch
 | S7 | Imp-min groups per site: the `log2(1+sum)` consumes one site's per-component sum. Merging sites/layers into one group is incorrect (convexity). |
 | S8 | The per-component sums are over the **global batch**, accumulated before the `log2`. (Per-shard results combined after the log are incorrect — Jensen; see D2.) |
 | S9 | `pnorm(step)` anneals linearly `2.0 → 0.4` over the configured frac window; `eps` sits inside the power. **JAX narrowing:** annealing is REQUIRED — `annealed_pnorm` asserts `cfg.p_anneal_final_p is not None` (`losses.py:53`) and `train.py:122` asserts it too. Torch supports a constant-p config (`importance_minimality.py:16-37` returns `initial_p` when no annealing window). Constant-p in JAX is expressed by setting `p_anneal_final_p == pnorm` (a flat schedule); any other torch constant-p config is REFUSED (fail-fast assert), never silently approximated. |
+| S9′ | The imp-min slot accepts EITHER per-value penalty (one `ImportanceMinimalityLoss` *or* `SmoothL0ImportanceMinimalityLoss` in `loss_metrics`, never both — `build_recon_terms` asserts `imp_min is None` on the second). smooth-L0 (Geman–McClure) is `psi(c)=c²/(c²+γ²)`: `psi'(0)=0` (flat at the origin, NO `L_p` cliff, so no `eps` floor / no aggressive grad clip), `psi(γ)=½`, `|psi'|≤0.65/γ` with the peak at `c=γ/√3`, redescending for `c≫γ`. `γ` anneals linearly `gamma → gamma_anneal_final_gamma` over `[gamma_anneal_start_frac, gamma_anneal_end_frac]` (typically `1.0 → 0.1`); like S9 annealing is REQUIRED (`annealed_gamma` asserts `gamma_anneal_final_gamma is not None`; constant-γ is `final == gamma`). `γ>0` (denominator; pydantic `PositiveFloat`). Everything downstream of `psi` (per-site grouping S7, global-sum-before-log2 S8, `lp + beta·entropy`) is SHARED — `_imp_min_terms(ci_upper, psi)` is the one impl, dispatched by `imp_min_terms` / `annealed_imp_min_param` on the config type. The logged `train/p_imp` carries whichever parameter is live (`p` or `γ`). |
 | S10′ | The recon objective is a static tuple of coefficiented loss TERMS (one per configured recon loss metric, in config order). Each term is a static plan of `(live_sites, SAMPLE_ROUTING, MASK_SOURCE)` entries; the term's loss = mean over ALL its forwards (every draw of every entry) of `kl_per_position`; the total adds `coeff · term` per term. Plan structures (live-sets, sampler identities, family sizes, strategy kinds) are fixed across steps. The §4 pseudocode shows the production two-term instantiation (`stochastic_recon_loss` + `adversarial_recon_loss`). Recon KL direction is pinned by S25; the mean-over-forwards ≡ accumulator identity by S26. |
 | S11 | `uniform_k_routing`, per position: `k ~ U{1..|live_sites|}` then a uniform `k`-subset of the live sites routes True; non-live sites are not live at all. Routing draws are fresh per step, sampled inside the step. |
 | S12′ | An adversarial term's loss forward consumes its sources as LEAVES (no ascent-graph history); gradient flows to components and (through `ci_lower`) to the CI fn — and, for persistent sources, to the leaves themselves (S14′). The PRODUCTION adversarial term masks ALL sites and routes everywhere; subset-routed adversarial terms route per their plan. |
