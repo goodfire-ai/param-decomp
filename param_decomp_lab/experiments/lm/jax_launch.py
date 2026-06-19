@@ -34,13 +34,11 @@ AnyRunConfig = LMExperimentConfig | TMSExperimentConfig | ResidMLPExperimentConf
 GPUS_PER_NODE = 8
 WORKSPACES_DIR = PARAM_DECOMP_OUT_DIR / "workspaces"
 
-# uv materializes a venv by hardlinking wheels from its cache when cache and venv share
-# one filesystem, else copying. The default per-user cache (~/.cache/uv) sits on the home
-# mount while workspaces live on the data mount — different PVCs — so every build copied
-# multi-GB CUDA wheels. Pinning the cache beside the workspaces (same PVC) makes the
-# venv materialization metadata-only hardlinks. Scoped to the build subprocesses below so
-# other uv usage on the cluster keeps its default cache. uv still auto-falls-back to copy
-# if this ever resolves cross-filesystem, so the change is safe everywhere.
+# uv hardlinks wheels from its cache into a venv when both share a filesystem, else
+# copies. The default cache (~/.cache/uv, home mount) and the workspaces (data mount) are
+# different PVCs, so every build copied multi-GB CUDA wheels; co-locating the cache here
+# makes it hardlink instead. Set per-build (below), not globally, so other cluster uv
+# usage keeps its default cache. uv falls back to copy if ever cross-FS — safe anywhere.
 UV_CACHE_DIR = PARAM_DECOMP_OUT_DIR / "uv_cache"
 
 # Mirrors the validated llama8b.sbatch srun line: one task per GPU, block placement.
