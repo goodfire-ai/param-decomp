@@ -5,7 +5,8 @@ against the pre-restructure `feature/jax-single-pool-pd` code (stacked `DecompVU
 contiguous-MLP-only `llama_decomposed_lm`). This test rebuilds the identical model in
 the per-site representation and checks, for the same MLP-family site set:
 
-  * `clean_output` — BIT-identical (same op sequence on the frozen path).
+  * `clean_output` — fp32 reassociation tolerance (the forward is now a layer-`lax.scan`,
+    the compile fix for the full model; reassociates float ops vs the old unrolled loop).
   * `site_inputs` / `weight_deltas` / `masked_output` — to fp32 reassociation
     tolerance (SPEC D4: rel ~1e-5; observed essentially exact).
   * a 2-step training trajectory (metrics + final V/U + final adversary sources) —
@@ -119,12 +120,13 @@ def _assert_close(got: jnp.ndarray, want: np.ndarray, what: str) -> None:
     np.testing.assert_allclose(np.asarray(got), want, rtol=RTOL, atol=ATOL, err_msg=what)
 
 
-def test_clean_output_bit_identical():
+def test_clean_output_matches_stacked():
+    # Previously bit-identical to the stacked impl. The layer-`lax.scan` clean forward (the
+    # compile fix for the full model) reassociates float ops, so it now matches the stacked
+    # golden to fp32 tolerance (~6e-8 observed), not byte-for-byte.
     f, lm, tgt, _vu, resid = _load()
     clean = lm.clean_output(tgt, resid)
-    assert jnp.array_equal(clean, jnp.asarray(f["out::clean"])), (
-        "clean logits diverged from the stacked implementation (must be bit-identical)"
-    )
+    _assert_close(clean, f["out::clean"], "clean logits diverged from the stacked impl")
 
 
 def test_site_inputs_and_weight_deltas_match():

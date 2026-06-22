@@ -33,7 +33,9 @@ def faithfulness_loss(weight_deltas: dict[str, Float[Array, "_ _"]]) -> Float[Ar
         ((delta.astype(jnp.float32) ** 2).sum() for delta in weight_deltas.values()),
         start=jnp.zeros((), jnp.float32),
     )
-    denominator = sum(delta.size for delta in weight_deltas.values())
+    # float, not int: the full-model param total (Σ d_in·d_out ≈ 7e9) overflows the int32
+    # that jax materializes a Python int into under jit. A float normalizer is exact here.
+    denominator = float(sum(delta.size for delta in weight_deltas.values()))
     return numerator / denominator
 
 
