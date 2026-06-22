@@ -40,10 +40,13 @@ WORKSPACES_DIR = PARAM_DECOMP_OUT_DIR / "workspaces"
 # usage keeps its default cache. uv falls back to copy if ever cross-FS — safe anywhere.
 UV_CACHE_DIR = PARAM_DECOMP_OUT_DIR / "uv_cache"
 
-# Mirrors the validated llama8b.sbatch srun line: one task per GPU, block placement.
-_SRUN_FLAGS = (
-    "--kill-on-bad-exit=1 --ntasks-per-node=8 --cpus-per-task=8 --distribution=block:block"
-)
+# --distribution=block spreads tasks block across nodes (8 per node, so SLURM_LOCALID is
+# 0-7; without it srun packs all tasks onto one node — "SLURM_LOCALID >= 8 visible GPUs").
+# --cpu-bind=none disables CPU pinning (per org policy; the socket-level cpu-bind that the
+# old "block:block" + --cpus-per-task=8 requested is unsatisfiable against the h200 nodes'
+# CPU mask — "Unable to satisfy cpu bind request"). Each task still sees all 8 node GPUs
+# (no --gpu-bind) and indexes its device by SLURM_LOCALID.
+_SRUN_FLAGS = "--kill-on-bad-exit=1 --ntasks-per-node=8 --distribution=block --cpu-bind=none"
 
 # Default 0.75 caps the XLA pool too low for production steps (OOM, job 50644);
 # CUDA-graph capture (XLA command buffers) intermittently dies with
@@ -125,7 +128,6 @@ def main(
         n_gpus=GPUS_PER_NODE,
         n_nodes=nodes,
         ntasks_per_node=GPUS_PER_NODE,
-        cpus_per_task=8,
         time=time,
         signal="TERM@300",
         requeue=True,
