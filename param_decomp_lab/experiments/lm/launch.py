@@ -40,10 +40,13 @@ WORKSPACES_DIR = PARAM_DECOMP_OUT_DIR / "workspaces"
 # usage keeps its default cache. uv falls back to copy if ever cross-FS — safe anywhere.
 UV_CACHE_DIR = PARAM_DECOMP_OUT_DIR / "uv_cache"
 
-# Mirrors the validated llama8b.sbatch srun line: one task per GPU, block placement.
-_SRUN_FLAGS = (
-    "--kill-on-bad-exit=1 --ntasks-per-node=8 --cpus-per-task=8 --distribution=block:block"
-)
+# --distribution=block spreads tasks block across nodes (8 per node, so SLURM_LOCALID is
+# 0-7; without it srun packs all tasks onto one node — "SLURM_LOCALID >= 8 visible GPUs").
+# --cpu-bind=none disables CPU pinning (per org policy; the socket-level cpu-bind that the
+# old "block:block" + --cpus-per-task=8 requested is unsatisfiable against the h200 nodes'
+# CPU mask — "Unable to satisfy cpu bind request"). Each task still sees all 8 node GPUs
+# (no --gpu-bind) and indexes its device by SLURM_LOCALID.
+_SRUN_FLAGS = "--kill-on-bad-exit=1 --ntasks-per-node=8 --distribution=block --cpu-bind=none"
 
 # Default 0.75 caps the XLA pool too low for production steps (OOM, job 50644);
 # CUDA-graph capture (XLA command buffers) intermittently dies with
@@ -125,7 +128,6 @@ def main(
         n_gpus=GPUS_PER_NODE,
         n_nodes=nodes,
         ntasks_per_node=GPUS_PER_NODE,
-        cpus_per_task=8,
         time=time,
         signal="TERM@300",
         requeue=True,
@@ -134,7 +136,14 @@ def main(
     rank_env = _RANK_ENV
     if allocator is not None:
         rank_env = f"{rank_env}\nexport XLA_PYTHON_CLIENT_ALLOCATOR={allocator}"
-    command = f"srun {_SRUN_FLAGS} bash -c {shlex.quote(_rank_command(config_rel, rank_env))}"
+    # This cluster's SelectTypeParameters=CR_Pack_Nodes makes the step pack onto the
+    # minimum nodes (1) — srun then crams all `dp` tasks onto one node and the trainer
+    # asserts SLURM_LOCALID >= 8. Pin the step to the full node/task count so it can't
+    # pack, and clear any SLURM_DISTRIBUTION=pack / SLURM_CPU_BIND mask leaking into the
+    # batch env (the latter also caused "Unable to satisfy cpu bind request").
+    srun_unset = "unset SLURM_DISTRIBUTION SLURM_CPU_BIND SLURM_CPU_BIND_LIST SLURM_CPU_BIND_TYPE SLURM_CPU_BIND_VERBOSE"
+    srun = f"srun --nodes={nodes} --ntasks={dp} {_SRUN_FLAGS}"
+    command = f"{srun_unset}\n{srun} bash -c {shlex.quote(_rank_command(config_rel, rank_env))}"
     script = generate_script(slurm_config, command, setup=f'cd "{workspace}"')
     result = submit_slurm_job(script, "pd-lm")
 
