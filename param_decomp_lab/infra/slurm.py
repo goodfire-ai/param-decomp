@@ -67,10 +67,6 @@ class SlurmConfig:
     """Emit `#SBATCH --requeue` so SLURM re-runs this script on node failure /
     opportunistic preemption (same job id). The worker self-resumes from its latest
     consolidated checkpoint, so the requeue continues training rather than restarting."""
-    exclusive: bool = False
-    """Emit `#SBATCH --exclusive` so the job reserves whole nodes. Full-node GPU jobs
-    (`--gpus-per-node=8` on 8-GPU nodes) are NOT auto-exclusive here, so two co-submitted
-    jobs can land on the same nodes and collide on CPU binding; `--exclusive` prevents it."""
 
 
 @dataclass
@@ -269,8 +265,6 @@ def _common_sbatch_lines(config: SlurmConfig, log_pattern: str) -> list[str]:
         lines.append(f"#SBATCH --dependency=afterok:{config.dependency_job_id}")
     if config.requeue:
         lines.append("#SBATCH --requeue")
-    if config.exclusive:
-        lines.append("#SBATCH --exclusive")
     if config.comment:
         lines.append(f'#SBATCH --comment="{config.comment}"')
     return lines
