@@ -73,7 +73,7 @@ def next_token_cross_entropy(
 def make_eval_step(
     lm: DecomposedModel,
     rounding_threshold: float,
-    ci_alive_threshold: float,
+    l0_thresholds: tuple[float, ...],
     l0_group_patterns: dict[str, tuple[str, ...]] | None,
     pgd: tuple[int, float] | None,
     mesh: Mesh | None,
@@ -203,17 +203,18 @@ def make_eval_step(
             out[f"ce_kl/ce_unrecovered_{variant}"] = (ce[variant] - target_ce) / (
                 ce["zero_masked"] - target_ce
             )
-        site_l0 = {
-            site: (ci_lower[site] > ci_alive_threshold).astype(jnp.float32).sum(-1).mean()
-            for site in site_names
-        }
-        for site, value in site_l0.items():
-            out[f"l0/{ci_alive_threshold}_{site}"] = value
-        # torch CI_L0 groups: the group's L0 is the SUM of its member sites' L0s
-        for group_name, members in l0_groups.items():
-            out[f"l0/{ci_alive_threshold}_{group_name}"] = sum(
-                (site_l0[site] for site in members), start=jnp.zeros((), jnp.float32)
-            )
+        for threshold in l0_thresholds:
+            site_l0 = {
+                site: (ci_lower[site] > threshold).astype(jnp.float32).sum(-1).mean()
+                for site in site_names
+            }
+            for site, value in site_l0.items():
+                out[f"l0/{threshold}_{site}"] = value
+            # torch CI_L0 groups: the group's L0 is the SUM of its member sites' L0s
+            for group_name, members in l0_groups.items():
+                out[f"l0/{threshold}_{group_name}"] = sum(
+                    (site_l0[site] for site in members), start=jnp.zeros((), jnp.float32)
+                )
 
         if pgd is not None:
             pgd_n_steps, pgd_step_size = pgd
