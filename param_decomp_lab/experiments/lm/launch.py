@@ -66,10 +66,15 @@ export NCCL_SOCKET_IFNAME=eth0"""
 # CUDA-graph capture (XLA command buffers) intermittently dies with
 # CUDA_ERROR_STREAM_CAPTURE_INVALIDATED on disjoint allocations — disabling
 # measured ~0% cost (8,007 vs 8,015 tok/s/GPU).
+#
+# `--xla_gpu_force_compilation_parallelism=1`: all 8 per-GPU ranks on a node compile the
+# SAME executable simultaneously on a cold cache; each one's multi-threaded LLVM codegen of
+# the big chunkwise-step graph spikes host RAM, and 8x that OOMs the node even at --mem=0
+# (~2TB). Serializing each rank's codegen caps peak host RAM (slower one-time compile).
 _RANK_ENV = f"""\
 {_NCCL_IB_ENV}
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.92
-export XLA_FLAGS="--xla_gpu_enable_command_buffer=\""""
+export XLA_FLAGS="--xla_gpu_enable_command_buffer= --xla_gpu_force_compilation_parallelism=1\""""
 
 
 def _rank_command(config_rel: Path, rank_env: str) -> str:
