@@ -40,10 +40,11 @@ WORKSPACES_DIR = PARAM_DECOMP_OUT_DIR / "workspaces"
 # usage keeps its default cache. uv falls back to copy if ever cross-FS — safe anywhere.
 UV_CACHE_DIR = PARAM_DECOMP_OUT_DIR / "uv_cache"
 
-# Mirrors the validated llama8b.sbatch srun line: one task per GPU, block placement.
-_SRUN_FLAGS = (
-    "--kill-on-bad-exit=1 --ntasks-per-node=8 --cpus-per-task=8 --distribution=block:block"
-)
+# No --cpus-per-task / --distribution: the cluster's GRES defaults set CPUs+RAM per GPU,
+# and a custom cpu-bind ("block:block" pack) is unsatisfiable against the h200 nodes'
+# allocated CPU mask ("Unable to satisfy cpu bind request"). One task per GPU comes from
+# --ntasks-per-node=8 + --gpus-per-node=8.
+_SRUN_FLAGS = "--kill-on-bad-exit=1 --ntasks-per-node=8"
 
 # Default 0.75 caps the XLA pool too low for production steps (OOM, job 50644);
 # CUDA-graph capture (XLA command buffers) intermittently dies with
@@ -125,7 +126,6 @@ def main(
         n_gpus=GPUS_PER_NODE,
         n_nodes=nodes,
         ntasks_per_node=GPUS_PER_NODE,
-        cpus_per_task=8,
         time=time,
         signal="TERM@300",
         requeue=True,
