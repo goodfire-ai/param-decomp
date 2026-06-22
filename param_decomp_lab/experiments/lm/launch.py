@@ -152,6 +152,7 @@ def main(
         time=time,
         signal="TERM@300",
         requeue=True,
+        exclusive=True,
         comment=comment if comment is not None else (wandb_url or run_id),
         # --mem=0 = all node RAM. The default (DefMemPerCPU*cpus = 640G/node) suffices for
         # a warm XLA compile cache, but a cache MISS recompiles the full graph in 8 parallel
