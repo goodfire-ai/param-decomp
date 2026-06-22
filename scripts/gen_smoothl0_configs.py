@@ -65,6 +65,12 @@ def main() -> None:
             for metric in cfg["eval"]["metrics"]:
                 if metric.get("type") == "CI_L0":
                     metric["l0_thresholds"] = [0.0, 0.01]
+            # Disable the slow/plot eval tier: it crashes on multi-host GPU (cuDNN-fp32
+            # attention — see PR #885 — and an np.asarray-on-sharded-array bug at
+            # slow_eval.py:170). The comparison only needs the fast-eval scalars (L0@0/0.01,
+            # CE/KL) + the host-side L0 bar charts, all on the fast path.
+            cfg["eval"]["slow_on_first_step"] = False
+            cfg["eval"]["slow_every"] = cfg["pd"]["steps"] + 10000
             cfg.pop("run_id", None)  # minted fresh by pd-lm
             path = OUT_DIR / f"{run_name}.yaml"
             path.write_text(yaml.safe_dump(cfg, sort_keys=False, default_flow_style=False))
