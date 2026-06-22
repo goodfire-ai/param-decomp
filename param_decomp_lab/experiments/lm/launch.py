@@ -40,18 +40,24 @@ WORKSPACES_DIR = PARAM_DECOMP_OUT_DIR / "workspaces"
 # usage keeps its default cache. uv falls back to copy if ever cross-FS — safe anywhere.
 UV_CACHE_DIR = PARAM_DECOMP_OUT_DIR / "uv_cache"
 
-# Mirrors the validated llama8b.sbatch srun line: one task per GPU, block placement.
-_SRUN_FLAGS = (
-    "--kill-on-bad-exit=1 --ntasks-per-node=8 --cpus-per-task=8 --distribution=block:block"
-)
+# ONE srun task per node (the torch torchrun model): each task runs the trainer once and
+# `sharding.init_distributed` claims all 8 local GPUs for that one process. `--ntasks=N
+# --ntasks-per-node=1` makes the step unpackable on this cluster's CR_Pack_Nodes selection
+# (N whole-node tasks can't collapse onto one node), so no --distribution / --cpu-bind /
+# --cpus-per-task games are needed. (Earlier 8-tasks-per-node attempts packed onto one node
+# or hit "Unable to satisfy cpu bind request".)
+_SRUN_FLAGS = "--kill-on-bad-exit=1 --ntasks-per-node=1"
 
 # Default 0.75 caps the XLA pool too low for production steps (OOM, job 50644);
 # CUDA-graph capture (XLA command buffers) intermittently dies with
 # CUDA_ERROR_STREAM_CAPTURE_INVALIDATED on disjoint allocations — disabling
 # measured ~0% cost (8,007 vs 8,015 tok/s/GPU).
-_RANK_ENV = """\
-export XLA_PYTHON_CLIENT_MEM_FRACTION=0.92
-export XLA_FLAGS="--xla_gpu_enable_command_buffer=\""""
+# LD_LIBRARY_PATH: jax[cuda12]'s version check dlopens cuSPARSE et al. by soname and on
+# this cluster doesn't find the pip-installed nvidia libs ("Unable to load cuSPARSE") —
+# point the loader at the venv's nvidia/*/lib dirs.
+_RANK_ENV = r'''export XLA_PYTHON_CLIENT_MEM_FRACTION=0.92
+export XLA_FLAGS="--xla_gpu_enable_command_buffer="
+export LD_LIBRARY_PATH="$(python -c 'import nvidia, os, glob; print(":".join(sorted(glob.glob(os.path.join(list(nvidia.__path__)[0], "*", "lib")))))')${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"'''
 
 
 def _rank_command(config_rel: Path, rank_env: str) -> str:
@@ -124,8 +130,7 @@ def main(
         qos=qos,
         n_gpus=GPUS_PER_NODE,
         n_nodes=nodes,
-        ntasks_per_node=GPUS_PER_NODE,
-        cpus_per_task=8,
+        ntasks_per_node=1,
         time=time,
         signal="TERM@300",
         requeue=True,
@@ -134,7 +139,10 @@ def main(
     rank_env = _RANK_ENV
     if allocator is not None:
         rank_env = f"{rank_env}\nexport XLA_PYTHON_CLIENT_ALLOCATOR={allocator}"
-    command = f"srun {_SRUN_FLAGS} bash -c {shlex.quote(_rank_command(config_rel, rank_env))}"
+    # One task per node: `--nodes=N --ntasks=N` (N whole-node tasks) can't pack onto one
+    # node, so the trainer's single process per node claims all 8 local GPUs.
+    srun = f"srun --nodes={nodes} --ntasks={nodes} {_SRUN_FLAGS}"
+    command = f"{srun} bash -c {shlex.quote(_rank_command(config_rel, rank_env))}"
     script = generate_script(slurm_config, command, setup=f'cd "{workspace}"')
     result = submit_slurm_job(script, "pd-lm")
 
