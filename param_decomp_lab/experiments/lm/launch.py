@@ -148,6 +148,12 @@ def main(
         signal="TERM@300",
         requeue=True,
         comment=comment if comment is not None else (wandb_url or run_id),
+        # --mem=0 = all node RAM. The default (DefMemPerCPU*cpus = 640G/node) suffices for
+        # a warm XLA compile cache, but a cache MISS recompiles the full graph in 8 parallel
+        # per-GPU processes and spikes host RAM past 640G -> OOM (e.g. the first run of a
+        # new loss op). Nodes have ~2TB; grabbing it all is safe since these are whole-node
+        # (8-GPU) jobs anyway.
+        mem="0",
     )
     rank_env = _RANK_ENV
     if allocator is not None:
