@@ -219,7 +219,7 @@ def _make_lm_eval_fn(
     eval_step_fn = make_eval_step(
         lm,
         eval.rounding_threshold,
-        eval.ci_alive_threshold,
+        eval.l0_thresholds,
         eval.l0_groups,
         eval_pgd,
         mesh,
@@ -327,23 +327,25 @@ def _make_lm_eval_fn(
         if is_main and built.run.wandb is not None:
             # torch CI_L0.compute() emitted a per-layer L0 bar chart alongside the scalars;
             # rebuild it host-side from the `eval/l0/<thr>_<site|group>` scalars already in
-            # the record (the jitted eval can't construct wandb objects).
+            # the record (the jitted eval can't construct wandb objects). One chart per
+            # aliveness threshold (e.g. 0.0 and 0.01).
             import wandb
 
-            l0_prefix = f"eval/l0/{eval.ci_alive_threshold}_"
-            eval_record["eval/l0/bar_chart"] = wandb.plot.bar(
-                wandb.Table(
-                    columns=["layer", "l0"],
-                    data=[
-                        [k.removeprefix(l0_prefix), v]
-                        for k, v in eval_record.items()
-                        if k.startswith(l0_prefix)
-                    ],
-                ),
-                "layer",
-                "l0",
-                title=f"L0_{eval.ci_alive_threshold}",
-            )
+            for threshold in eval.l0_thresholds:
+                l0_prefix = f"eval/l0/{threshold}_"
+                eval_record[f"eval/l0/bar_chart_{threshold}"] = wandb.plot.bar(
+                    wandb.Table(
+                        columns=["layer", "l0"],
+                        data=[
+                            [k.removeprefix(l0_prefix), v]
+                            for k, v in eval_record.items()
+                            if k.startswith(l0_prefix)
+                        ],
+                    ),
+                    "layer",
+                    "l0",
+                    title=f"L0_{threshold}",
+                )
         if is_main:
             headline = {
                 k: eval_record[f"eval/{k}"]

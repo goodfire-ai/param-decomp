@@ -67,11 +67,11 @@ def test_eval_step_keys_identities_and_determinism():
     residual = jax.random.normal(jax.random.PRNGKey(4), (b, t, cfg.n_embd)) * 0.5
 
     # rounding_threshold=-1 makes the rounded mask all-ones == the unmasked variant;
-    # ci_alive_threshold=-1 makes every component alive -> L0 == C exactly.
+    # an L0 threshold of -1 makes every component alive -> L0 == C exactly.
     eval_step = make_eval_step(
         lm,
         rounding_threshold=-1.0,
-        ci_alive_threshold=-1.0,
+        l0_thresholds=(-1.0,),
         l0_group_patterns=None,
         pgd=None,
         mesh=None,
@@ -110,7 +110,7 @@ def test_eval_step_keys_identities_and_determinism():
     eval_step_dead = make_eval_step(
         lm,
         rounding_threshold=-1.0,
-        ci_alive_threshold=1.5,
+        l0_thresholds=(1.5,),
         l0_group_patterns=None,
         pgd=None,
         mesh=None,
@@ -141,7 +141,7 @@ def test_eval_step_fresh_pgd_probe():
     ascended = make_eval_step(
         lm,
         rounding_threshold=0.0,
-        ci_alive_threshold=0.0,
+        l0_thresholds=(0.0,),
         l0_group_patterns=None,
         pgd=(8, 0.1),
         mesh=None,
@@ -149,7 +149,7 @@ def test_eval_step_fresh_pgd_probe():
     unascended = make_eval_step(
         lm,
         rounding_threshold=0.0,
-        ci_alive_threshold=0.0,
+        l0_thresholds=(0.0,),
         l0_group_patterns=None,
         pgd=(0, 0.1),
         mesh=None,
@@ -200,11 +200,11 @@ def test_eval_step_fresh_pgd_probe_device_count_invariant():
     residual = jax.random.normal(jax.random.PRNGKey(4), (b, t, cfg.n_embd)) * 0.5
 
     single_step = make_eval_step(
-        lm, rounding_threshold=0.0, ci_alive_threshold=0.0,
+        lm, rounding_threshold=0.0, l0_thresholds=(0.0,),
         l0_group_patterns=None, pgd=(8, 0.1), mesh=None,
     )  # fmt: skip
     sharded_step = make_eval_step(
-        lm, rounding_threshold=0.0, ci_alive_threshold=0.0,
+        lm, rounding_threshold=0.0, l0_thresholds=(0.0,),
         l0_group_patterns=None, pgd=(8, 0.1), mesh=mesh,
     )  # fmt: skip
 
@@ -242,7 +242,7 @@ def test_eval_step_l0_groups_sum_member_sites():
 
     groups = {"layer_4": ("layers.4.*",), "total": ("*",)}
     eval_step = make_eval_step(
-        lm, rounding_threshold=0.0, ci_alive_threshold=0.0,
+        lm, rounding_threshold=0.0, l0_thresholds=(0.0,),
         l0_group_patterns=groups, pgd=None, mesh=None,
     )  # fmt: skip
     out = eval_step(vu, ci_fn, tgt, token_ids, residual, jax.random.PRNGKey(5))
@@ -254,7 +254,7 @@ def test_eval_step_l0_groups_sum_member_sites():
 
     with pytest.raises(AssertionError, match="matches no sites"):
         make_eval_step(
-            lm, rounding_threshold=0.0, ci_alive_threshold=0.0,
+            lm, rounding_threshold=0.0, l0_thresholds=(0.0,),
             l0_group_patterns={"ghost": ("layers.99.*",)}, pgd=None, mesh=None,
         )  # fmt: skip
 
@@ -266,6 +266,6 @@ def test_make_eval_step_rejects_positionless_target():
     assert lm.leading_axes == ()
     with pytest.raises(AssertionError, match="LM-only"):
         make_eval_step(
-            lm, rounding_threshold=0.0, ci_alive_threshold=0.0,
+            lm, rounding_threshold=0.0, l0_thresholds=(0.0,),
             l0_group_patterns=None, pgd=None, mesh=None,
         )  # fmt: skip

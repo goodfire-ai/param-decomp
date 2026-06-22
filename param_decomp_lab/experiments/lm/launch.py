@@ -45,11 +45,29 @@ _SRUN_FLAGS = (
     "--kill-on-bad-exit=1 --ntasks-per-node=8 --cpus-per-task=8 --distribution=block:block"
 )
 
+# btdr NCCL InfiniBand env. login.sh wires these into interactive shells only, so a
+# non-interactive sbatch submission (e.g. from an agent / a 1-CPU job) inherits the baked
+# NCCL_IB_HCA=ibp, which matches no device here (HCAs are mlx5_*) and silently drops NCCL
+# to TCP/eth0 (~10x slower inter-node). We set them per-rank so multi-node IB works
+# regardless of submit context. TEMPORARY: andromeda-scripts #414 makes this cluster-wide
+# via /etc/environment; drop this block once that lands. Values captured live from btdr.
+_NCCL_IB_ENV = """\
+export NCCL_IB_DISABLE=0
+export NCCL_IB_GDR_SUPPORT=1
+export NCCL_IB_HCA=mlx5_0,mlx5_1,mlx5_10,mlx5_11,mlx5_2,mlx5_7,mlx5_8,mlx5_9
+export NCCL_IB_PCI_RELAXED_ORDERING=1
+export NCCL_IB_QPS_PER_CONNECTION=4
+export NCCL_IB_RETRY_CNT=7
+export NCCL_IB_TIMEOUT=22
+export NCCL_NET_GDR_LEVEL=5
+export NCCL_SOCKET_IFNAME=eth0"""
+
 # Default 0.75 caps the XLA pool too low for production steps (OOM, job 50644);
 # CUDA-graph capture (XLA command buffers) intermittently dies with
 # CUDA_ERROR_STREAM_CAPTURE_INVALIDATED on disjoint allocations — disabling
 # measured ~0% cost (8,007 vs 8,015 tok/s/GPU).
-_RANK_ENV = """\
+_RANK_ENV = f"""\
+{_NCCL_IB_ENV}
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.92
 export XLA_FLAGS="--xla_gpu_enable_command_buffer=\""""
 

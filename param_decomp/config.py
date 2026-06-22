@@ -88,6 +88,9 @@ class EvalConfig:
     (None caps nothing). Read from the `CIHistograms` eval metric when present."""
     rounding_threshold: float
     ci_alive_threshold: float
+    l0_thresholds: tuple[float, ...]
+    """CI-L0 aliveness cutoffs (torch reported a single one; we report L0 at each, e.g.
+    0.0 and 0.01). `ci_alive_threshold` still drives the slow-tier activation-density count."""
     l0_groups: dict[str, tuple[str, ...]] | None
     """torch CI_L0 `groups`: fnmatch site patterns whose member L0s sum into a
     group-named key. None = per-site keys only."""

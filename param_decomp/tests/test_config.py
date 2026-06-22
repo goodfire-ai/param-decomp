@@ -11,7 +11,11 @@ import yaml
 from pydantic import ValidationError
 
 from param_decomp.config import DataConfig
-from param_decomp.configs import PDConfig, PersistentPGDReconLossConfig
+from param_decomp.configs import (
+    ImportanceMinimalityLossConfig,
+    PDConfig,
+    PersistentPGDReconLossConfig,
+)
 from param_decomp.llama8b import mlp_family_site_cs
 from param_decomp.lm import SiteC
 from param_decomp.recon import build_recon_terms
@@ -80,7 +84,8 @@ def test_b128_config_converts(tmp_path: Path):
         converted.pd.loss_metrics, tuple(sc.name for sc in converted.target.sites),
         converted.pd.n_mask_samples, converted.pd.sampling,
     )  # fmt: skip
-    assert spec.faith_coeff == 1e5 and spec.imp_min.pnorm == 2.0
+    assert spec.faith_coeff == 1e5
+    assert isinstance(spec.imp_min, ImportanceMinimalityLossConfig) and spec.imp_min.pnorm == 2.0
     (ppgd,) = spec.persistent.values()
     assert isinstance(ppgd, PersistentPGDReconLossConfig)
     assert ppgd.n_warmup_steps == 2
