@@ -23,7 +23,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # Container runs as different user than repo owner, causing "dubious ownership" errors.
       # Tests that run subprocesses (e.g. test_distributed.py) need git commands to work.
@@ -80,7 +80,7 @@ jobs:
         working-directory: param_decomp_lab/app/frontend
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install dependencies
         run: npm install
