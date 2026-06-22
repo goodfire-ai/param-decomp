@@ -54,6 +54,7 @@ import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 from jax import random
+from jax.experimental import multihost_utils
 from jaxtyping import Array, Float
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
@@ -168,8 +169,17 @@ def accumulate_site_reductions(
             density[site] = counts if batch_idx == 0 else density[site] + counts
             sums[site] = ci_sum if batch_idx == 0 else sums[site] + ci_sum
             if keep_sample:
-                lower_chunks.setdefault(site, []).append(np.asarray(flat_lower[site]))
-                logits_chunks.setdefault(site, []).append(np.asarray(flat_logits[site]))
+                # flat_lower/flat_logits keep the dp-sharded batch axis, so on >1 process
+                # they span non-addressable devices and a bare `np.asarray` raises. Gather
+                # the global sample across processes (counts/sums above are already
+                # all-reduced, hence addressable). `tiled=True` concatenates the per-process
+                # shards along axis 0 (order is irrelevant for the histogram sample).
+                lower_chunks.setdefault(site, []).append(
+                    np.asarray(multihost_utils.process_allgather(flat_lower[site], tiled=True))
+                )
+                logits_chunks.setdefault(site, []).append(
+                    np.asarray(multihost_utils.process_allgather(flat_logits[site], tiled=True))
+                )
 
     return {
         site: SiteReduction(
