@@ -184,10 +184,8 @@ class CIBlock(eqx.Module):
         cos, sin = rope_cos_sin(inv_freq, t, x.dtype)
         q, k = apply_rope(q, k, cos, sin)
         qt, kt, vt = (einops.rearrange(a, "b nh t hd -> b t nh hd") for a in (q, k, v))
-        # cuDNN flash only accepts fp16/bf16/fp8 (training + fast eval, both bf16); the
-        # slow-eval path reads the CI fn out in fp32 (slow_eval.py), which cuDNN rejects on
-        # GPU — fall back to the XLA impl there (correctness over the flash memory win,
-        # which only matters for the long-sequence target forward, not this CI transformer).
+        # cuDNN flash rejects fp32, which slow-eval feeds in (slow_eval.py); fall back to
+        # XLA there. Training + fast eval are bf16 and keep flash.
         impl = attn_implementation() if qt.dtype in (jnp.bfloat16, jnp.float16) else "xla"
         y = jax.nn.dot_product_attention(
             qt, kt, vt, is_causal=False, implementation=impl
