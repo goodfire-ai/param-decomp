@@ -1,0 +1,7 @@
+=== job 61202 | nodes=1 ntasks=1 | Mon Jun  8 02:59:56 PM UTC 2026 ===
+nodelist: h200-reserved-145-022
+clean  logits rel err: 9.694e-01
+masked logits rel err: 1.023e+00
+grad V worst rel err:  1.348e+00
+grad U worst rel err:  1.249e+00
+LLAMA PARITY (tol 2e-03): FAIL

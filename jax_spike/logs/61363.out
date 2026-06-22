@@ -1,0 +1,168 @@
+=== job 61363 | nodes=1 ntasks=8 | Mon Jun  8 06:48:15 PM UTC 2026 ===
+nodelist: h200-reserved-145-027
+W0608 18:51:31.597215  948983 hlo_rematerialization.cc:3233] Can't reduce memory use below 80.10GiB (86009728878 bytes) by rematerialization; only reduced to 107.93GiB (115890906632 bytes), down from 124.96GiB (134172209012 bytes) originally
+W0608 18:51:31.668034  948986 hlo_rematerialization.cc:3233] Can't reduce memory use below 80.10GiB (86009728878 bytes) by rematerialization; only reduced to 107.93GiB (115890906632 bytes), down from 124.96GiB (134172209012 bytes) originally
+W0608 18:51:31.736705  948984 hlo_rematerialization.cc:3233] Can't reduce memory use below 80.10GiB (86009728878 bytes) by rematerialization; only reduced to 107.93GiB (115890906632 bytes), down from 124.96GiB (134172209012 bytes) originally
+W0608 18:51:31.755555  948987 hlo_rematerialization.cc:3233] Can't reduce memory use below 80.10GiB (86009728878 bytes) by rematerialization; only reduced to 107.93GiB (115890906632 bytes), down from 124.96GiB (134172209012 bytes) originally
+W0608 18:51:31.770615  948981 hlo_rematerialization.cc:3233] Can't reduce memory use below 80.10GiB (86009728878 bytes) by rematerialization; only reduced to 107.93GiB (115890906632 bytes), down from 124.96GiB (134172209012 bytes) originally
+W0608 18:51:31.809452  948985 hlo_rematerialization.cc:3233] Can't reduce memory use below 80.10GiB (86009728878 bytes) by rematerialization; only reduced to 107.93GiB (115890906632 bytes), down from 124.96GiB (134172209012 bytes) originally
+W0608 18:51:31.942972  948982 hlo_rematerialization.cc:3233] Can't reduce memory use below 80.10GiB (86009728878 bytes) by rematerialization; only reduced to 107.93GiB (115890906632 bytes), down from 124.96GiB (134172209012 bytes) originally
+W0608 18:51:31.991109  948980 hlo_rematerialization.cc:3233] Can't reduce memory use below 80.10GiB (86009728878 bytes) by rematerialization; only reduced to 107.93GiB (115890906632 bytes), down from 124.96GiB (134172209012 bytes) originally
+W0608 18:51:51.278543  948983 bfc_allocator.cc:514] Allocator (GPU_2_bfc) ran out of memory trying to allocate 87.50GiB (rounded to 93950919936)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0608 18:51:51.278791  948983 bfc_allocator.cc:525] ***********************************_________________________________________________________________
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage10_real_pd_bench.py", line 544, in <module>
+    main()
+    ~~~~^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage10_real_pd_bench.py", line 511, in main
+    jax.block_until_ready((state.source, tot))
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/api.py", line 2584, in block_until_ready
+    xc.batched_block_until_ready(arrays)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 87.50GiB. [executable_name='jit_step'] [tf-allocator-allocation-error='']
+W0608 18:51:51.408774  948986 bfc_allocator.cc:514] Allocator (GPU_4_bfc) ran out of memory trying to allocate 87.50GiB (rounded to 93950919936)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0608 18:51:51.409015  948986 bfc_allocator.cc:525] ***********************************_________________________________________________________________
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage10_real_pd_bench.py", line 544, in <module>
+    main()
+    ~~~~^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage10_real_pd_bench.py", line 511, in main
+    jax.block_until_ready((state.source, tot))
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/api.py", line 2584, in block_until_ready
+    xc.batched_block_until_ready(arrays)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 87.50GiB. [tf-allocator-allocation-error=''] [executable_name='jit_step']
+W0608 18:51:51.550301  948987 bfc_allocator.cc:514] Allocator (GPU_5_bfc) ran out of memory trying to allocate 87.50GiB (rounded to 93950919936)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0608 18:51:51.550515  948987 bfc_allocator.cc:525] ***********************************_________________________________________________________________
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage10_real_pd_bench.py", line 544, in <module>
+    main()
+    ~~~~^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage10_real_pd_bench.py", line 511, in main
+    jax.block_until_ready((state.source, tot))
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/api.py", line 2584, in block_until_ready
+    xc.batched_block_until_ready(arrays)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 87.50GiB. [executable_name='jit_step'] [tf-allocator-allocation-error='']
+W0608 18:51:51.570510  948984 bfc_allocator.cc:514] Allocator (GPU_7_bfc) ran out of memory trying to allocate 87.50GiB (rounded to 93950919936)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0608 18:51:51.570714  948984 bfc_allocator.cc:525] ***********************************_________________________________________________________________
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage10_real_pd_bench.py", line 544, in <module>
+    main()
+    ~~~~^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage10_real_pd_bench.py", line 511, in main
+    jax.block_until_ready((state.source, tot))
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/api.py", line 2584, in block_until_ready
+    xc.batched_block_until_ready(arrays)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 87.50GiB. [tf-allocator-allocation-error=''] [executable_name='jit_step']
+W0608 18:51:51.599857  948981 bfc_allocator.cc:514] Allocator (GPU_3_bfc) ran out of memory trying to allocate 87.50GiB (rounded to 93950919936)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0608 18:51:51.600089  948981 bfc_allocator.cc:525] ***********************************_________________________________________________________________
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage10_real_pd_bench.py", line 544, in <module>
+    main()
+    ~~~~^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage10_real_pd_bench.py", line 511, in main
+    jax.block_until_ready((state.source, tot))
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/api.py", line 2584, in block_until_ready
+    xc.batched_block_until_ready(arrays)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 87.50GiB. [tf-allocator-allocation-error=''] [executable_name='jit_step']
+W0608 18:51:51.746294  948985 bfc_allocator.cc:514] Allocator (GPU_0_bfc) ran out of memory trying to allocate 87.50GiB (rounded to 93950919936)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0608 18:51:51.746556  948985 bfc_allocator.cc:525] ***********************************_________________________________________________________________
+[p0] STAGE10 real L18-MLP PD | 8 GPU | gbatch=32 seq=2048 C=24576 suffix_layers=14 n_pgd=1 shard=False
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage10_real_pd_bench.py", line 544, in <module>
+    main()
+    ~~~~^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage10_real_pd_bench.py", line 511, in main
+    jax.block_until_ready((state.source, tot))
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/api.py", line 2584, in block_until_ready
+    xc.batched_block_until_ready(arrays)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 87.50GiB. [executable_name='jit_step'] [tf-allocator-allocation-error='']
+W0608 18:51:51.795290  948982 bfc_allocator.cc:514] Allocator (GPU_6_bfc) ran out of memory trying to allocate 87.50GiB (rounded to 93950919936)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0608 18:51:51.795536  948982 bfc_allocator.cc:525] ***********************************_________________________________________________________________
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage10_real_pd_bench.py", line 544, in <module>
+    main()
+    ~~~~^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage10_real_pd_bench.py", line 511, in main
+    jax.block_until_ready((state.source, tot))
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/api.py", line 2584, in block_until_ready
+    xc.batched_block_until_ready(arrays)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 87.50GiB. [executable_name='jit_step'] [tf-allocator-allocation-error='']
+W0608 18:51:51.880944  948980 bfc_allocator.cc:514] Allocator (GPU_1_bfc) ran out of memory trying to allocate 87.50GiB (rounded to 93950919936)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0608 18:51:51.881236  948980 bfc_allocator.cc:525] ***********************************_________________________________________________________________
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage10_real_pd_bench.py", line 544, in <module>
+    main()
+    ~~~~^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage10_real_pd_bench.py", line 511, in main
+    jax.block_until_ready((state.source, tot))
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/api.py", line 2584, in block_until_ready
+    xc.batched_block_until_ready(arrays)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 87.50GiB. [executable_name='jit_step'] [tf-allocator-allocation-error='']
+W0608 18:51:52.250106  949583 pjrt_client.cc:1613] WatchTasksAsync failed for task 3: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"CANCELLED", grpc_status:1} [type.googleapis.com/tensorflow.DerivedStatus='']
+W0608 18:51:52.250101  949584 pjrt_client.cc:1613] WatchTasksAsync failed for task 6: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:1, grpc_message:"CANCELLED"} [type.googleapis.com/tensorflow.DerivedStatus='']
+W0608 18:51:52.250186  949587 pjrt_client.cc:1613] WatchTasksAsync failed for task 2: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"CANCELLED", grpc_status:1} [type.googleapis.com/tensorflow.DerivedStatus='']
+W0608 18:51:52.250230  949586 pjrt_client.cc:1613] WatchTasksAsync failed for task 1: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"CANCELLED", grpc_status:1} [type.googleapis.com/tensorflow.DerivedStatus='']
+W0608 18:51:52.250226  949580 pjrt_client.cc:1613] WatchTasksAsync failed for task 5: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:1, grpc_message:"CANCELLED"} [type.googleapis.com/tensorflow.DerivedStatus='']
+W0608 18:51:52.250246  949582 pjrt_client.cc:1613] WatchTasksAsync failed for task 0: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:1, grpc_message:"CANCELLED"} [type.googleapis.com/tensorflow.DerivedStatus='']
+W0608 18:51:52.250262  949585 pjrt_client.cc:1613] WatchTasksAsync failed for task 4: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"CANCELLED", grpc_status:1} [type.googleapis.com/tensorflow.DerivedStatus='']
+W0608 18:51:52.250271  949581 pjrt_client.cc:1613] WatchTasksAsync failed for task 7: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:1, grpc_message:"CANCELLED"} [type.googleapis.com/tensorflow.DerivedStatus='']
+srun: error: h200-reserved-145-027: tasks 0,2-7: Exited with exit code 1
+srun: Terminating StepId=61363.0
+slurmstepd: error: *** STEP 61363.0 ON h200-reserved-145-027 CANCELLED AT 2026-06-08T18:51:55 ***
+srun: error: h200-reserved-145-027: task 1: Terminated
+srun: Force Terminated StepId=61363.0

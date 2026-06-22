@@ -1,0 +1,25 @@
+=== job 61355 | nodes=1 ntasks=1 | Mon Jun  8 06:34:32 PM UTC 2026 ===
+nodelist: h200-reserved-145-016
+W0608 18:35:56.453947  957508 hlo_rematerialization.cc:3233] Can't reduce memory use below 80.04GiB (85945975457 bytes) by rematerialization; only reduced to 431.96GiB (463812325134 bytes), down from 509.60GiB (547175252978 bytes) originally
+W0608 18:36:14.609293  957508 bfc_allocator.cc:514] Allocator (GPU_0_bfc) ran out of memory trying to allocate 430.72GiB (rounded to 462486588416)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0608 18:36:14.609657  957508 bfc_allocator.cc:525] ***********************************_________________________________________________________________
+[p0] STAGE10 real L18-MLP PD | 1 GPU | gbatch=8 seq=2048 C=24576 suffix_layers=14 n_pgd=1 shard=False
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage10_real_pd_bench.py", line 541, in <module>
+    main()
+    ~~~~^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage10_real_pd_bench.py", line 508, in main
+    jax.block_until_ready((state.source, tot))
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/api.py", line 2584, in block_until_ready
+    xc.batched_block_until_ready(arrays)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 430.72GiB. [executable_name='jit_step'] [tf-allocator-allocation-error='']
+W0608 18:36:14.891124  957585 pjrt_client.cc:1613] WatchTasksAsync failed for task 0: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.212.31:65451: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.212.31:65451: Failed to connect to remote host: Connection refused", grpc_status:14}
+srun: error: h200-reserved-145-016: task 0: Exited with exit code 1
+srun: Terminating StepId=61355.0

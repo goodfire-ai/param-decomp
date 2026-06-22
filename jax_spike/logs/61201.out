@@ -1,0 +1,10 @@
+=== job 61201 | nodes=1 ntasks=1 | Mon Jun  8 02:59:31 PM UTC 2026 ===
+nodelist: h200-reserved-145-022
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/parity/check_llama_jax.py", line 9, in <module>
+    import equinox as eqx
+ModuleNotFoundError: No module named 'equinox'
+srun: error: h200-reserved-145-022: task 0: Exited with exit code 1
+srun: Terminating StepId=61201.0

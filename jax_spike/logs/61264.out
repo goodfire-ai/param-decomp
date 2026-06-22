@@ -1,0 +1,4 @@
+=== job 61264 | nodes=1 ntasks=1 | Mon Jun  8 04:19:05 PM UTC 2026 ===
+nodelist: h200-reserved-145-027
+srun: error: h200-reserved-145-027: task 0: Exited with exit code 2
+srun: Terminating StepId=61264.0

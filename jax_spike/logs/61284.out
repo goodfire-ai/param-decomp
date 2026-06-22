@@ -1,0 +1,6 @@
+=== torch job 61284 | nodes=2 ntasks=16 | master=h200-reserved-145-029 | Mon Jun  8 04:42:18 PM UTC 2026 ===
+srun: warning: can't honor --ntasks-per-node set to 8 which doesn't match the requested tasks 16 and -mpack, which forces min number of nodes to 1
+/mnt/polished-lake/home/oli/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/c10d_logger.py:83: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  return func(*args, **kwargs)
+[r0] 16 GPU | gbatch=128 seq=512 | compile=False
+[r0] 571.2 ms/step | 114,734 tok/s | 7,171 tok/s/GPU | loss 0.1206

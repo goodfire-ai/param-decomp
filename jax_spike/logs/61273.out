@@ -1,0 +1,248 @@
+=== job 61273 | nodes=1 ntasks=1 | Mon Jun  8 04:26:20 PM UTC 2026 ===
+nodelist: h200-reserved-145-027
+Finished tracing stage for jit in 0.000164986 sec
+Compiling jit(stage) with global shapes and types (ShapedArray(int32[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(stage) in 0.059202194 sec
+Finished XLA compilation of jit(stage) in 0.099390984 sec
+Finished tracing _threefry_seed for jit in 0.001695395 sec
+Compiling jit(_threefry_seed) with global shapes and types (ShapedArray(int32[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(_threefry_seed) in 0.005245924 sec
+Finished XLA compilation of jit(_threefry_seed) in 0.053253412 sec
+Finished tracing _threefry_split for jit in 0.000906706 sec
+Compiling jit(_threefry_split) with global shapes and types (ShapedArray(uint32[2]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(_threefry_split) in 0.016583920 sec
+Finished XLA compilation of jit(_threefry_split) in 0.108188152 sec
+Finished tracing convert_element_type for jit in 0.000161648 sec
+Compiling jit(convert_element_type) with global shapes and types (ShapedArray(float32[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(convert_element_type) in 0.002297640 sec
+Finished XLA compilation of jit(convert_element_type) in 0.011423826 sec
+Finished tracing iota for jit in 0.000168085 sec
+Compiling jit(iota) with global shapes and types (). Argument mapping: ().
+Finished jaxpr to MLIR module conversion jit(iota) in 0.002504587 sec
+Finished XLA compilation of jit(iota) in 0.025511265 sec
+Finished tracing mul for jit in 0.000180960 sec
+Compiling jit(mul) with global shapes and types (ShapedArray(float32[]), ShapedArray(float32[32])). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(mul) in 0.002521753 sec
+Finished XLA compilation of jit(mul) in 0.025997162 sec
+Finished tracing add for jit in 0.000168562 sec
+Compiling jit(add) with global shapes and types (ShapedArray(float32[]), ShapedArray(float32[32])). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(add) in 0.002548456 sec
+Finished XLA compilation of jit(add) in 0.025770187 sec
+Finished tracing true_divide for jit in 0.000324726 sec
+Compiling jit(true_divide) with global shapes and types (ShapedArray(float32[32]), ShapedArray(int32[], weak_type=True)). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(true_divide) in 0.002997875 sec
+Finished XLA compilation of jit(true_divide) in 0.028558493 sec
+Finished tracing _power for jit in 0.000284672 sec
+Compiling jit(_power) with global shapes and types (ShapedArray(float32[], weak_type=True), ShapedArray(float32[32])). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(_power) in 0.002978325 sec
+Finished XLA compilation of jit(_power) in 0.044259548 sec
+Finished tracing true_divide for jit in 0.000245810 sec
+Compiling jit(true_divide) with global shapes and types (ShapedArray(float32[], weak_type=True), ShapedArray(float32[32])). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(true_divide) in 0.002907991 sec
+Finished XLA compilation of jit(true_divide) in 0.027346611 sec
+Finished tracing greater for jit in 0.000299931 sec
+Compiling jit(greater) with global shapes and types (ShapedArray(float32[32]), ShapedArray(float32[], weak_type=True)). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(greater) in 0.003015995 sec
+Finished XLA compilation of jit(greater) in 0.026536226 sec
+Finished tracing true_divide for jit in 0.000204802 sec
+Compiling jit(true_divide) with global shapes and types (ShapedArray(float32[32]), ShapedArray(float32[], weak_type=True)). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(true_divide) in 0.002923012 sec
+Finished XLA compilation of jit(true_divide) in 0.026720524 sec
+Finished tracing _where for jit in 0.000461340 sec
+Compiling jit(_where) with global shapes and types (ShapedArray(bool[32]), ShapedArray(float32[32]), ShapedArray(float32[32])). Argument mapping: (UnspecifiedValue, UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(_where) in 0.003055334 sec
+Finished XLA compilation of jit(_where) in 0.026696682 sec
+Finished tracing true_divide for jit in 0.000223398 sec
+Compiling jit(true_divide) with global shapes and types (ShapedArray(int32[], weak_type=True), ShapedArray(float32[32])). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(true_divide) in 0.002894878 sec
+Finished XLA compilation of jit(true_divide) in 0.027037144 sec
+Finished tracing subtract for jit in 0.000232697 sec
+Compiling jit(subtract) with global shapes and types (ShapedArray(float32[32]), ShapedArray(float32[], weak_type=True)). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(subtract) in 0.002954245 sec
+Finished XLA compilation of jit(subtract) in 0.026259184 sec
+Finished tracing subtract for jit in 0.000276566 sec
+Compiling jit(subtract) with global shapes and types (ShapedArray(int32[], weak_type=True), ShapedArray(float32[32])). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(subtract) in 0.002897263 sec
+Finished XLA compilation of jit(subtract) in 0.027799368 sec
+Finished tracing multiply for jit in 0.000214100 sec
+Compiling jit(multiply) with global shapes and types (ShapedArray(float32[32]), ShapedArray(float32[32])). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(multiply) in 0.002763033 sec
+Finished XLA compilation of jit(multiply) in 0.026279688 sec
+Finished tracing add for jit in 0.000217676 sec
+Compiling jit(add) with global shapes and types (ShapedArray(float32[32]), ShapedArray(float32[32])). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(add) in 0.002761602 sec
+Finished XLA compilation of jit(add) in 0.025523901 sec
+Finished tracing less for jit in 0.000262737 sec
+Compiling jit(less) with global shapes and types (ShapedArray(float32[32]), ShapedArray(float32[], weak_type=True)). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(less) in 0.002995491 sec
+Finished XLA compilation of jit(less) in 0.025978327 sec
+Finished tracing invert for jit in 0.000175238 sec
+Compiling jit(invert) with global shapes and types (ShapedArray(bool[32]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(invert) in 0.002689362 sec
+Finished XLA compilation of jit(invert) in 0.026327372 sec
+Finished tracing multiply for jit in 0.000228167 sec
+Compiling jit(multiply) with global shapes and types (ShapedArray(bool[32]), ShapedArray(bool[32])). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(multiply) in 0.002722740 sec
+Finished XLA compilation of jit(multiply) in 0.025781870 sec
+Finished tracing unstack for jit in 0.000312567 sec
+Compiling jit(unstack) with global shapes and types (ShapedArray(uint32[27,2]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(unstack) in 0.003648520 sec
+Finished XLA compilation of jit(unstack) in 0.111147165 sec
+Finished tracing _normal for jit in 0.002973318 sec
+Compiling jit(_normal) with global shapes and types (ShapedArray(key<fry>[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(_normal) in 0.016413212 sec
+Finished XLA compilation of jit(_normal) in 0.130755901 sec
+Finished tracing multiply for jit in 0.000273943 sec
+Compiling jit(multiply) with global shapes and types (ShapedArray(float32[512,32]), ShapedArray(float32[], weak_type=True)). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(multiply) in 0.002896547 sec
+Finished XLA compilation of jit(multiply) in 0.026464939 sec
+Finished tracing _normal for jit in 0.002272606 sec
+Compiling jit(_normal) with global shapes and types (ShapedArray(key<fry>[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(_normal) in 0.015505791 sec
+Finished XLA compilation of jit(_normal) in 0.129632950 sec
+Finished tracing multiply for jit in 0.000504494 sec
+Compiling jit(multiply) with global shapes and types (ShapedArray(float32[32,512]), ShapedArray(float32[], weak_type=True)). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(multiply) in 0.003229618 sec
+Finished XLA compilation of jit(multiply) in 0.027084112 sec
+Finished tracing _normal for jit in 0.002246141 sec
+Compiling jit(_normal) with global shapes and types (ShapedArray(key<fry>[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(_normal) in 0.015428782 sec
+Finished XLA compilation of jit(_normal) in 0.130569696 sec
+Finished tracing multiply for jit in 0.000241518 sec
+Compiling jit(multiply) with global shapes and types (ShapedArray(float32[512,512]), ShapedArray(float32[], weak_type=True)). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(multiply) in 0.002821922 sec
+Finished XLA compilation of jit(multiply) in 0.026736975 sec
+Finished tracing _normal for jit in 0.002210379 sec
+Compiling jit(_normal) with global shapes and types (ShapedArray(key<fry>[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(_normal) in 0.017702341 sec
+Finished XLA compilation of jit(_normal) in 0.128546000 sec
+Finished tracing multiply for jit in 0.000239849 sec
+Compiling jit(multiply) with global shapes and types (ShapedArray(float32[32,256]), ShapedArray(float32[], weak_type=True)). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(multiply) in 0.002791882 sec
+Finished XLA compilation of jit(multiply) in 0.026750803 sec
+Finished tracing _normal for jit in 0.002206802 sec
+Compiling jit(_normal) with global shapes and types (ShapedArray(key<fry>[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(_normal) in 0.015483856 sec
+Finished XLA compilation of jit(_normal) in 0.132770777 sec
+Finished tracing multiply for jit in 0.000250578 sec
+Compiling jit(multiply) with global shapes and types (ShapedArray(float32[256,512]), ShapedArray(float32[], weak_type=True)). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(multiply) in 0.002873182 sec
+Finished XLA compilation of jit(multiply) in 0.026741982 sec
+Finished tracing _normal for jit in 0.002197981 sec
+Compiling jit(_normal) with global shapes and types (ShapedArray(key<fry>[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(_normal) in 0.015411615 sec
+Finished XLA compilation of jit(_normal) in 0.131114244 sec
+Finished tracing multiply for jit in 0.000243187 sec
+Compiling jit(multiply) with global shapes and types (ShapedArray(float32[32,1024]), ShapedArray(float32[], weak_type=True)). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(multiply) in 0.002875566 sec
+Finished XLA compilation of jit(multiply) in 0.026903152 sec
+Finished tracing _normal for jit in 0.002204180 sec
+Compiling jit(_normal) with global shapes and types (ShapedArray(key<fry>[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(_normal) in 0.015338421 sec
+Finished XLA compilation of jit(_normal) in 0.208592892 sec
+Finished tracing multiply for jit in 0.000355721 sec
+Compiling jit(multiply) with global shapes and types (ShapedArray(float32[1024,512]), ShapedArray(float32[], weak_type=True)). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(multiply) in 0.003873825 sec
+Finished XLA compilation of jit(multiply) in 0.029224634 sec
+Finished tracing _normal for jit in 0.002400875 sec
+Compiling jit(_normal) with global shapes and types (ShapedArray(key<fry>[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(_normal) in 0.015747070 sec
+Finished XLA compilation of jit(_normal) in 0.131305695 sec
+Finished tracing multiply for jit in 0.000245094 sec
+Compiling jit(multiply) with global shapes and types (ShapedArray(float32[1024,32]), ShapedArray(float32[], weak_type=True)). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(multiply) in 0.002907276 sec
+Finished XLA compilation of jit(multiply) in 0.026642323 sec
+Finished tracing _normal for jit in 0.002254963 sec
+Compiling jit(_normal) with global shapes and types (ShapedArray(key<fry>[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(_normal) in 0.015498638 sec
+Finished XLA compilation of jit(_normal) in 0.203288794 sec
+Finished tracing multiply for jit in 0.000233889 sec
+Compiling jit(multiply) with global shapes and types (ShapedArray(float32[512,1024]), ShapedArray(float32[], weak_type=True)). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(multiply) in 0.002835274 sec
+Finished XLA compilation of jit(multiply) in 0.028608561 sec
+Finished tracing broadcast_in_dim for jit in 0.000196457 sec
+Compiling jit(broadcast_in_dim) with global shapes and types (ShapedArray(float32[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(broadcast_in_dim) in 0.002621889 sec
+Finished XLA compilation of jit(broadcast_in_dim) in 0.025376797 sec
+Finished tracing _normal for jit in 0.002372742 sec
+Compiling jit(_normal) with global shapes and types (ShapedArray(key<fry>[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(_normal) in 0.015632153 sec
+Finished XLA compilation of jit(_normal) in 0.207989454 sec
+Finished tracing multiply for jit in 0.000242233 sec
+Compiling jit(multiply) with global shapes and types (ShapedArray(float32[32768,512]), ShapedArray(float32[], weak_type=True)). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(multiply) in 0.003068686 sec
+Finished XLA compilation of jit(multiply) in 0.028362036 sec
+Finished tracing _threefry_split for jit in 0.000638723 sec
+Compiling jit(_threefry_split) with global shapes and types (ShapedArray(uint32[2]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(_threefry_split) in 0.013055563 sec
+Finished XLA compilation of jit(_threefry_split) in 0.112733603 sec
+Finished tracing unstack for jit in 0.000168562 sec
+Compiling jit(unstack) with global shapes and types (ShapedArray(uint32[2,2]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(unstack) in 0.002799511 sec
+Finished XLA compilation of jit(unstack) in 0.027197838 sec
+Finished tracing _normal for jit in 0.002275467 sec
+Compiling jit(_normal) with global shapes and types (ShapedArray(key<fry>[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(_normal) in 0.015312910 sec
+Finished XLA compilation of jit(_normal) in 0.128471613 sec
+Finished tracing multiply for jit in 0.000231028 sec
+Compiling jit(multiply) with global shapes and types (ShapedArray(float32[512,224]), ShapedArray(float32[], weak_type=True)). Argument mapping: (UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(multiply) in 0.002926350 sec
+Finished XLA compilation of jit(multiply) in 0.026528597 sec
+Finished tracing broadcast_in_dim for jit in 0.000161409 sec
+Compiling jit(broadcast_in_dim) with global shapes and types (ShapedArray(float32[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(broadcast_in_dim) in 0.002568722 sec
+Finished XLA compilation of jit(broadcast_in_dim) in 0.025462389 sec
+Finished tracing broadcast_in_dim for jit in 0.000168324 sec
+Compiling jit(broadcast_in_dim) with global shapes and types (ShapedArray(float32[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(broadcast_in_dim) in 0.002522945 sec
+Finished XLA compilation of jit(broadcast_in_dim) in 0.025473356 sec
+Finished tracing broadcast_in_dim for jit in 0.000168562 sec
+Compiling jit(broadcast_in_dim) with global shapes and types (ShapedArray(float32[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(broadcast_in_dim) in 0.002529144 sec
+Finished XLA compilation of jit(broadcast_in_dim) in 0.025402784 sec
+Finished tracing broadcast_in_dim for jit in 0.000168800 sec
+Compiling jit(broadcast_in_dim) with global shapes and types (ShapedArray(float32[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(broadcast_in_dim) in 0.002759457 sec
+Finished XLA compilation of jit(broadcast_in_dim) in 0.025834799 sec
+Finished tracing broadcast_in_dim for jit in 0.000164986 sec
+Compiling jit(broadcast_in_dim) with global shapes and types (ShapedArray(float32[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(broadcast_in_dim) in 0.002814770 sec
+Finished XLA compilation of jit(broadcast_in_dim) in 0.027298450 sec
+Finished tracing convert_element_type for jit in 0.000160694 sec
+Compiling jit(convert_element_type) with global shapes and types (ShapedArray(int32[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(convert_element_type) in 0.002461672 sec
+Finished XLA compilation of jit(convert_element_type) in 0.011683941 sec
+Finished tracing broadcast_in_dim for jit in 0.000394106 sec
+Compiling jit(broadcast_in_dim) with global shapes and types (ShapedArray(float32[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(broadcast_in_dim) in 0.002816916 sec
+Finished XLA compilation of jit(broadcast_in_dim) in 0.026541948 sec
+Finished tracing broadcast_in_dim for jit in 0.000173092 sec
+Compiling jit(broadcast_in_dim) with global shapes and types (ShapedArray(float32[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(broadcast_in_dim) in 0.002760172 sec
+Finished XLA compilation of jit(broadcast_in_dim) in 0.026206017 sec
+Finished tracing broadcast_in_dim for jit in 0.000179768 sec
+Compiling jit(broadcast_in_dim) with global shapes and types (ShapedArray(float32[]),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(broadcast_in_dim) in 0.002770185 sec
+Finished XLA compilation of jit(broadcast_in_dim) in 0.026146889 sec
+Finished tracing stage for jit in 0.000093222 sec
+Compiling jit(stage) with global shapes and types (ShapedArray(int32[], weak_type=True),). Argument mapping: (UnspecifiedValue,).
+Finished jaxpr to MLIR module conversion jit(stage) in 0.002505779 sec
+Finished XLA compilation of jit(stage) in 0.011765718 sec
+Finished tracing _randint for jit in 0.004750729 sec
+Compiling jit(_randint) with global shapes and types (ShapedArray(key<fry>[]), ShapedArray(int32[], weak_type=True), ShapedArray(int32[], weak_type=True)). Argument mapping: (UnspecifiedValue, UnspecifiedValue, UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(_randint) in 0.031858921 sec
+Finished XLA compilation of jit(_randint) in 0.279976845 sec
+Finished tracing step for jit in 0.328063250 sec
+Compiling jit(step) with global shapes and types (ShapedArray(float32[512,32]), ShapedArray(float32[32,512]), ShapedArray(float32[512,32]), ShapedArray(float32[32,256]), ShapedArray(float32[512,32]), ShapedArray(float32[32,256]), ShapedArray(float32[512,32]), ShapedArray(float32[32,512]), ShapedArray(float32[512,32]), ShapedArray(float32[32,1024]), ShapedArray(float32[512,32]), ShapedArray(float32[32,1024]), ShapedArray(float32[1024,32]), ShapedArray(float32[32,512]), ShapedArray(float32[32768,512]), ShapedArray(float32[512]), ShapedArray(float32[512]), ShapedArray(float32[512,512]), ShapedArray(float32[256,512]), ShapedArray(float32[256,512]), ShapedArray(float32[512,512]), ShapedArray(float32[32]), ShapedArray(float32[1024,512]), ShapedArray(float32[1024,512]), ShapedArray(float32[512,1024]), ShapedArray(float32[512]), ShapedArray(float32[32768,512]), ShapedArray(float32[512,512]), ShapedArray(float32[512,224]), ShapedArray(int32[]), ShapedArray(float32[512,32]), ShapedArray(float32[32,512]), ShapedArray(float32[512,32]), ShapedArray(float32[32,256]), ShapedArray(float32[512,32]), ShapedArray(float32[32,256]), ShapedArray(float32[512,32]), ShapedArray(float32[32,512]), ShapedArray(float32[512,32]), ShapedArray(float32[32,1024]), ShapedArray(float32[512,32]), ShapedArray(float32[32,1024]), ShapedArray(float32[1024,32]), ShapedArray(float32[32,512]), ShapedArray(float32[512,32]), ShapedArray(float32[32,512]), ShapedArray(float32[512,32]), ShapedArray(float32[32,256]), ShapedArray(float32[512,32]), ShapedArray(float32[32,256]), ShapedArray(float32[512,32]), ShapedArray(float32[32,512]), ShapedArray(float32[512,32]), ShapedArray(float32[32,1024]), ShapedArray(float32[512,32]), ShapedArray(float32[32,1024]), ShapedArray(float32[1024,32]), ShapedArray(float32[32,512]), ShapedArray(int32[]), ShapedArray(float32[512,512]), ShapedArray(float32[512,224]), ShapedArray(float32[512,512]), ShapedArray(float32[512,224]), ShapedArray(float32[2,128,32]), ShapedArray(float32[2,128,32]), ShapedArray(float32[2,128,32]), ShapedArray(float32[2,128,32]), ShapedArray(float32[2,128,32]), ShapedArray(float32[2,128,32]), ShapedArray(float32[2,128,32]), ShapedArray(int32[], weak_type=True), ShapedArray(int32[2,128]), ShapedArray(uint32[2])). Argument mapping: (NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P('dp',), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P('dp',), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P('dp',), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P('dp',), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P('dp',), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P('dp',), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P('dp',), memory_kind=device), UnspecifiedValue, NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P('dp',), memory_kind=device), UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(step) in 0.134542704 sec
+Finished XLA compilation of jit(step) in 81.187804222 sec
+Finished tracing step for jit in 0.172173262 sec
+Compiling jit(step) with global shapes and types (ShapedArray(float32[512,32]), ShapedArray(float32[32,512]), ShapedArray(float32[512,32]), ShapedArray(float32[32,256]), ShapedArray(float32[512,32]), ShapedArray(float32[32,256]), ShapedArray(float32[512,32]), ShapedArray(float32[32,512]), ShapedArray(float32[512,32]), ShapedArray(float32[32,1024]), ShapedArray(float32[512,32]), ShapedArray(float32[32,1024]), ShapedArray(float32[1024,32]), ShapedArray(float32[32,512]), ShapedArray(float32[32768,512]), ShapedArray(float32[512]), ShapedArray(float32[512]), ShapedArray(float32[512,512]), ShapedArray(float32[256,512]), ShapedArray(float32[256,512]), ShapedArray(float32[512,512]), ShapedArray(float32[32]), ShapedArray(float32[1024,512]), ShapedArray(float32[1024,512]), ShapedArray(float32[512,1024]), ShapedArray(float32[512]), ShapedArray(float32[32768,512]), ShapedArray(float32[512,512]), ShapedArray(float32[512,224]), ShapedArray(int32[]), ShapedArray(float32[512,32]), ShapedArray(float32[32,512]), ShapedArray(float32[512,32]), ShapedArray(float32[32,256]), ShapedArray(float32[512,32]), ShapedArray(float32[32,256]), ShapedArray(float32[512,32]), ShapedArray(float32[32,512]), ShapedArray(float32[512,32]), ShapedArray(float32[32,1024]), ShapedArray(float32[512,32]), ShapedArray(float32[32,1024]), ShapedArray(float32[1024,32]), ShapedArray(float32[32,512]), ShapedArray(float32[512,32]), ShapedArray(float32[32,512]), ShapedArray(float32[512,32]), ShapedArray(float32[32,256]), ShapedArray(float32[512,32]), ShapedArray(float32[32,256]), ShapedArray(float32[512,32]), ShapedArray(float32[32,512]), ShapedArray(float32[512,32]), ShapedArray(float32[32,1024]), ShapedArray(float32[512,32]), ShapedArray(float32[32,1024]), ShapedArray(float32[1024,32]), ShapedArray(float32[32,512]), ShapedArray(int32[]), ShapedArray(float32[512,512]), ShapedArray(float32[512,224]), ShapedArray(float32[512,512]), ShapedArray(float32[512,224]), ShapedArray(float32[2,128,32]), ShapedArray(float32[2,128,32]), ShapedArray(float32[2,128,32]), ShapedArray(float32[2,128,32]), ShapedArray(float32[2,128,32]), ShapedArray(float32[2,128,32]), ShapedArray(float32[2,128,32]), ShapedArray(int32[], weak_type=True), ShapedArray(int32[2,128]), ShapedArray(uint32[2])). Argument mapping: (NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P(), memory_kind=device), NamedSharding(mesh=Mesh('dp': 1, axis_types=(Auto,)), spec=P('dp',), memory_kind=device), UnspecifiedValue).
+Finished jaxpr to MLIR module conversion jit(step) in 0.131718159 sec
+Finished XLA compilation of jit(step) in 13.327003479 sec
+W0608 16:28:07.029615  932516 pjrt_client.cc:1613] WatchTasksAsync failed for task 0: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.120.130:65369: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.120.130:65369: Failed to connect to remote host: Connection refused"}
+[p0] 1 GPU | gbatch=2 seq=128 | L1 d512 ffn1024 C32 n_warmup2 | sites=7
+[p0] 2732.5 ms/step | 94 tok/s | 94 tok/s/GPU | final loss 0.7877
+[p0] STAGE 9 (1 GPU): OK

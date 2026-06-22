@@ -1,0 +1,14 @@
+=== job 61204 | nodes=1 ntasks=1 | Mon Jun  8 03:02:29 PM UTC 2026 ===
+nodelist: h200-reserved-145-022
+--- stage-by-stage (clean) ---
+emb           rel err: 0.000e+00
+h_layer0      rel err: 9.497e-02
+h_layer1      rel err: 1.424e+00
+h_pre_norm    rel err: 1.424e+00
+h_post_norm   rel err: 1.424e+00
+--- full ---
+clean  logits rel err: 9.694e-01
+masked logits rel err: 1.023e+00
+grad V worst rel err:  1.348e+00
+grad U worst rel err:  1.249e+00
+LLAMA PARITY (tol 2e-03): FAIL

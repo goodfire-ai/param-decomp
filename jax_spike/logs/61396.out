@@ -1,0 +1,52 @@
+=== job 61396 | nodes=1 ntasks=2 | Mon Jun  8 06:55:15 PM UTC 2026 ===
+nodelist: h200-reserved-145-049
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage11_real_pd_2pool.py:34: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage11_real_pd_2pool.py:34: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+W0608 18:58:31.046342 1635024 hlo_rematerialization.cc:3233] Can't reduce memory use below 80.12GiB (86024828372 bytes) by rematerialization; only reduced to 321.00GiB (344673714823 bytes), down from 378.16GiB (406047283588 bytes) originally
+W0608 18:58:31.208849 1635025 hlo_rematerialization.cc:3233] Can't reduce memory use below 80.12GiB (86024828372 bytes) by rematerialization; only reduced to 321.00GiB (344673714823 bytes), down from 378.16GiB (406047283588 bytes) originally
+W0608 18:58:50.940766 1635025 bfc_allocator.cc:514] Allocator (GPU_0_bfc) ran out of memory trying to allocate 310.67GiB (rounded to 333580060672)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0608 18:58:50.940919 1635024 bfc_allocator.cc:514] Allocator (GPU_1_bfc) ran out of memory trying to allocate 310.67GiB (rounded to 333580060672)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0608 18:58:50.941038 1635025 bfc_allocator.cc:525] ***********************************_________________________________________________________________
+W0608 18:58:50.941200 1635024 bfc_allocator.cc:525] ***********************************_________________________________________________________________
+[p0] STAGE11 2-pool real L18-MLP PD | 2 pools (1 GPU each) | per_pool_batch=4 seq=2048 C=24576 suffix=14 n_pgd=1
+Traceback (most recent call last):
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage11_real_pd_2pool.py", line 250, in <module>
+    main()
+    ~~~~^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage11_real_pd_2pool.py", line 225, in main
+    jax.block_until_ready((state.source, loss))
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/api.py", line 2584, in block_until_ready
+    xc.batched_block_until_ready(arrays)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage11_real_pd_2pool.py", line 250, in <module>
+    main()
+    ~~~~^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage11_real_pd_2pool.py", line 225, in main
+    jax.block_until_ready((state.source, loss))
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/api.py", line 2584, in block_until_ready
+    xc.batched_block_until_ready(arrays)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 310.67GiB. [tf-allocator-allocation-error=''] [executable_name='jit_step']
+jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 310.67GiB. [tf-allocator-allocation-error=''] [executable_name='jit_step']
+W0608 18:58:51.323869 1635351 pjrt_client.cc:1613] WatchTasksAsync failed for task 1: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:1, grpc_message:"CANCELLED"} [type.googleapis.com/tensorflow.DerivedStatus='']
+W0608 18:58:51.324112 1635350 pjrt_client.cc:1613] WatchTasksAsync failed for task 0: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.218.176:65492: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.218.176:65492: Failed to connect to remote host: Connection refused", grpc_status:14}
+srun: error: h200-reserved-145-049: task 0: Exited with exit code 1
+srun: Terminating StepId=61396.0
+slurmstepd: error: *** STEP 61396.0 ON h200-reserved-145-049 CANCELLED AT 2026-06-08T18:58:52 ***
+srun: error: h200-reserved-145-049: task 1: Terminated
+srun: Force Terminated StepId=61396.0

@@ -1,0 +1,7 @@
+=== job 61350 | nodes=1 ntasks=1 | Mon Jun  8 06:24:39 PM UTC 2026 ===
+nodelist: h200-reserved-145-016
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/interpreters/mlir.py:1194: UserWarning: A large amount of constants were captured during lowering (7.16GB total). If this is intentional, disable this warning by setting JAX_CAPTURED_CONSTANTS_WARN_BYTES=-1. To obtain a report of where these constants were encountered, set JAX_CAPTURED_CONSTANTS_REPORT_FRAMES=-1.
+  warnings.warn(message)
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+slurmstepd: error: *** STEP 61350.0 ON h200-reserved-145-016 CANCELLED AT 2026-06-08T18:33:56 ***
+slurmstepd: error: *** JOB 61350 ON h200-reserved-145-016 CANCELLED AT 2026-06-08T18:33:56 ***

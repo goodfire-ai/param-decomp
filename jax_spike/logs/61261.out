@@ -1,0 +1,8 @@
+=== job 61261 | nodes=1 ntasks=1 | Mon Jun  8 04:09:52 PM UTC 2026 ===
+nodelist: h200-reserved-145-027
+W0608 16:14:01.899927  923794 pjrt_client.cc:1613] WatchTasksAsync failed for task 0: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.120.130:65357: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.120.130:65357: Failed to connect to remote host: Connection refused", grpc_status:14}
+[p0] 1 GPU | gbatch=8 seq=512 | L12 d2048 ffn8192 C32 n_warmup5 | sites=84
+[p0] 4516.9 ms/step | 907 tok/s | 907 tok/s/GPU | final loss 2.7512
+[p0] STAGE 9 (1 GPU): OK

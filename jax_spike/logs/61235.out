@@ -1,0 +1,23 @@
+=== job 61235 | nodes=1 ntasks=1 | Mon Jun  8 03:31:57 PM UTC 2026 ===
+nodelist: h200-reserved-145-023
+--- stage-by-stage (clean) ---
+emb           rel err: 0.000e+00
+b0_ln1        rel err: 1.996e-07
+b0_attn       rel err: 1.092e-03
+b0_xmid       rel err: 1.360e-04
+b0_ln2        rel err: 1.360e-04
+b0_mlp        rel err: 4.112e-02
+  b0_qproj    rel err: 3.733e-05
+  b0_cos      rel err: 6.141e-06
+  b0_sin      rel err: 9.691e-07
+  b0_y_attend rel err: 5.422e-04
+h_layer0      rel err: 2.716e-04
+h_layer1      rel err: 1.135e-04
+h_pre_norm    rel err: 1.135e-04
+h_post_norm   rel err: 1.135e-04
+--- full ---
+clean  logits  rel-L2 1.740e-07   (max-rel 3.192e-04)
+masked logits  rel-L2 1.805e-07   (max-rel 9.054e-04)
+grad V (worst) rel-L2 1.160e-06
+grad U (worst) rel-L2 8.408e-07
+LLAMA PARITY (rel-L2 tol 2e-03): PASS

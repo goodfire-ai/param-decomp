@@ -1,0 +1,87 @@
+=== job 61173 | nodes=2 ntasks=16 | Mon Jun  8 01:09:44 PM UTC 2026 ===
+nodelist: h200-reserved-145-[044,046]
+srun: warning: can't honor --ntasks-per-node set to 8 which doesn't match the requested tasks 16 and -mpack, which forces min number of nodes to 1
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:16: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:16: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:16: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:16: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:16: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:16: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:16: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:16: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:16: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:16: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:16: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:16: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:16: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:16: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:16: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:16: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+W0608 13:09:59.921825 1709591 pjrt_client.cc:1613] WatchTasksAsync failed for task 3: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused", grpc_status:14}
+W0608 13:09:59.921886 1709596 pjrt_client.cc:1613] WatchTasksAsync failed for task 6: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused"}
+W0608 13:09:59.921903 1709597 pjrt_client.cc:1613] WatchTasksAsync failed for task 7: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused", grpc_status:14}
+W0608 13:09:59.920917 3261318 pjrt_client.cc:1613] WatchTasksAsync failed for task 12: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused"}
+W0608 13:09:59.921915 1709594 pjrt_client.cc:1613] WatchTasksAsync failed for task 2: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused", grpc_status:14}
+W0608 13:09:59.920969 3261321 pjrt_client.cc:1613] WatchTasksAsync failed for task 8: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused", grpc_status:14}
+W0608 13:09:59.921993 1709595 pjrt_client.cc:1613] WatchTasksAsync failed for task 4: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused"}
+W0608 13:09:59.921051 3261315 pjrt_client.cc:1613] WatchTasksAsync failed for task 11: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused"}
+W0608 13:09:59.922016 1709593 pjrt_client.cc:1613] WatchTasksAsync failed for task 1: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused", grpc_status:14}
+W0608 13:09:59.921045 3261317 pjrt_client.cc:1613] WatchTasksAsync failed for task 13: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused", grpc_status:14}
+W0608 13:09:59.922052 1709592 pjrt_client.cc:1613] WatchTasksAsync failed for task 5: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused"}
+W0608 13:09:59.921128 3261320 pjrt_client.cc:1613] WatchTasksAsync failed for task 10: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused", grpc_status:14}
+W0608 13:09:59.922171 1709590 pjrt_client.cc:1613] WatchTasksAsync failed for task 0: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused"}
+W0608 13:09:59.921369 3261314 pjrt_client.cc:1613] WatchTasksAsync failed for task 9: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused"}
+W0608 13:09:59.921466 3261316 pjrt_client.cc:1613] WatchTasksAsync failed for task 15: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused", grpc_status:14}
+W0608 13:09:59.921494 3261319 pjrt_client.cc:1613] WatchTasksAsync failed for task 14: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65269: Failed to connect to remote host: Connection refused", grpc_status:14}
+[p0] processes=16 global_devices=16 local_per_proc=1
+[p0] device kinds: ['NVIDIA H200']
+[p0] psum(device_ids) across 16 devices = 120, expected 120
+[p0] STAGE 7 (16 procs, 16 GPUs): PASS

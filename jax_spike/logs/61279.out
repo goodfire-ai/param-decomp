@@ -1,0 +1,5 @@
+=== torch job 61279 | nodes=1 ntasks=1 | master=h200-reserved-145-024 | Mon Jun  8 04:36:45 PM UTC 2026 ===
+/mnt/polished-lake/home/oli/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/c10d_logger.py:83: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  return func(*args, **kwargs)
+[r0] 1 GPU | gbatch=8 seq=512 | compile=True
+[r0] 340.3 ms/step | 12,035 tok/s | 12,035 tok/s/GPU | loss 0.1254
