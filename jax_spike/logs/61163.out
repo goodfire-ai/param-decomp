@@ -1,0 +1,387 @@
+=== job 61163 | nodes=1 ntasks=8 | Mon Jun  8 12:58:41 PM UTC 2026 ===
+nodelist: h200-reserved-145-044
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:15: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:15: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:15: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:15: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:15: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:15: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:15: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py:15: DeprecationWarning: jax.experimental.shard_map is deprecated in v0.8.0. Used jax.shard_map instead.
+  from jax.experimental.shard_map import shard_map
+E0608 12:59:01.253062 1704448 platform_util.cc:270] Failed to create stream executor for device CUDA:3: CUDA error: Failed call to cuDeviceGet: CUDA_ERROR_INVALID_DEVICE: invalid device ordinal
+E0608 12:59:01.256474 1704450 platform_util.cc:270] Failed to create stream executor for device CUDA:7: CUDA error: Failed call to cuDeviceGet: CUDA_ERROR_INVALID_DEVICE: invalid device ordinal
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 826, in backends
+    backend = _init_backend(platform)
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 910, in _init_backend
+    backend = registration.factory()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 573, in make_pjrt_c_api_client
+    return xla_client.make_c_api_client(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        plugin_name,
+        ^^^^^^^^^^^^
+    ...<4 lines>...
+        SORT_DEVICES_BY_PROCESS_INDEX.value,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jaxlib/xla_client.py", line 158, in make_c_api_client
+    return _xla.get_c_api_client(
+           ~~~~~~~~~~~~~~~~~~~~~^
+        plugin_name,
+        ^^^^^^^^^^^^
+    ...<4 lines>...
+        sort_devices_by_process_index,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+Traceback (most recent call last):
+jax.errors.JaxRuntimeError: INTERNAL: no supported devices found for platform CUDA
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py", line 21, in <module>
+    pid = jax.process_index()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 1114, in process_index
+    return get_backend(backend).process_index()
+           ~~~~~~~~~~~^^^^^^^^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 958, in get_backend
+    return _get_backend_uncached(platform)
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 937, in _get_backend_uncached
+    bs = backends()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 842, in backends
+    raise RuntimeError(err_msg)
+E0608 12:59:01.258093 1704449 platform_util.cc:270] Failed to create stream executor for device CUDA:5: CUDA error: Failed call to cuDeviceGet: CUDA_ERROR_INVALID_DEVICE: invalid device ordinal
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 826, in backends
+    backend = _init_backend(platform)
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 910, in _init_backend
+    backend = registration.factory()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 573, in make_pjrt_c_api_client
+    return xla_client.make_c_api_client(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        plugin_name,
+        ^^^^^^^^^^^^
+    ...<4 lines>...
+        SORT_DEVICES_BY_PROCESS_INDEX.value,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jaxlib/xla_client.py", line 158, in make_c_api_client
+    return _xla.get_c_api_client(
+           ~~~~~~~~~~~~~~~~~~~~~^
+        plugin_name,
+        ^^^^^^^^^^^^
+    ...<4 lines>...
+        sort_devices_by_process_index,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+RuntimeError: Unable to initialize backend 'cuda': INTERNAL: no supported devices found for platform CUDA (you may need to uninstall the failing plugin package, or set JAX_PLATFORMS=cpu to skip this backend.)
+jax.errors.JaxRuntimeError: INTERNAL: no supported devices found for platform CUDA
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py", line 21, in <module>
+    pid = jax.process_index()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 1114, in process_index
+    return get_backend(backend).process_index()
+           ~~~~~~~~~~~^^^^^^^^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 958, in get_backend
+    return _get_backend_uncached(platform)
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 937, in _get_backend_uncached
+    bs = backends()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 842, in backends
+    raise RuntimeError(err_msg)
+RuntimeError: Unable to initialize backend 'cuda': INTERNAL: no supported devices found for platform CUDA (you may need to uninstall the failing plugin package, or set JAX_PLATFORMS=cpu to skip this backend.)
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 826, in backends
+    backend = _init_backend(platform)
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 910, in _init_backend
+    backend = registration.factory()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 573, in make_pjrt_c_api_client
+    return xla_client.make_c_api_client(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        plugin_name,
+        ^^^^^^^^^^^^
+    ...<4 lines>...
+        SORT_DEVICES_BY_PROCESS_INDEX.value,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jaxlib/xla_client.py", line 158, in make_c_api_client
+    return _xla.get_c_api_client(
+           ~~~~~~~~~~~~~~~~~~~~~^
+        plugin_name,
+        ^^^^^^^^^^^^
+    ...<4 lines>...
+        sort_devices_by_process_index,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+jax.errors.JaxRuntimeError: INTERNAL: no supported devices found for platform CUDA
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py", line 21, in <module>
+    pid = jax.process_index()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 1114, in process_index
+    return get_backend(backend).process_index()
+           ~~~~~~~~~~~^^^^^^^^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 958, in get_backend
+    return _get_backend_uncached(platform)
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 937, in _get_backend_uncached
+    bs = backends()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 842, in backends
+    raise RuntimeError(err_msg)
+RuntimeError: Unable to initialize backend 'cuda': INTERNAL: no supported devices found for platform CUDA (you may need to uninstall the failing plugin package, or set JAX_PLATFORMS=cpu to skip this backend.)
+E0608 12:59:01.269809 1704451 platform_util.cc:270] Failed to create stream executor for device CUDA:6: CUDA error: Failed call to cuDeviceGet: CUDA_ERROR_INVALID_DEVICE: invalid device ordinal
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 826, in backends
+    backend = _init_backend(platform)
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 910, in _init_backend
+    backend = registration.factory()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 573, in make_pjrt_c_api_client
+    return xla_client.make_c_api_client(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        plugin_name,
+        ^^^^^^^^^^^^
+    ...<4 lines>...
+        SORT_DEVICES_BY_PROCESS_INDEX.value,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jaxlib/xla_client.py", line 158, in make_c_api_client
+    return _xla.get_c_api_client(
+           ~~~~~~~~~~~~~~~~~~~~~^
+        plugin_name,
+        ^^^^^^^^^^^^
+    ...<4 lines>...
+        sort_devices_by_process_index,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+jax.errors.JaxRuntimeError: INTERNAL: no supported devices found for platform CUDA
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py", line 21, in <module>
+    pid = jax.process_index()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 1114, in process_index
+    return get_backend(backend).process_index()
+           ~~~~~~~~~~~^^^^^^^^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 958, in get_backend
+    return _get_backend_uncached(platform)
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 937, in _get_backend_uncached
+    bs = backends()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 842, in backends
+    raise RuntimeError(err_msg)
+RuntimeError: Unable to initialize backend 'cuda': INTERNAL: no supported devices found for platform CUDA (you may need to uninstall the failing plugin package, or set JAX_PLATFORMS=cpu to skip this backend.)
+E0608 12:59:01.273102 1704446 platform_util.cc:270] Failed to create stream executor for device CUDA:4: CUDA error: Failed call to cuDeviceGet: CUDA_ERROR_INVALID_DEVICE: invalid device ordinal
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 826, in backends
+    backend = _init_backend(platform)
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 910, in _init_backend
+    backend = registration.factory()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 573, in make_pjrt_c_api_client
+    return xla_client.make_c_api_client(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        plugin_name,
+        ^^^^^^^^^^^^
+    ...<4 lines>...
+        SORT_DEVICES_BY_PROCESS_INDEX.value,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jaxlib/xla_client.py", line 158, in make_c_api_client
+    return _xla.get_c_api_client(
+           ~~~~~~~~~~~~~~~~~~~~~^
+        plugin_name,
+        ^^^^^^^^^^^^
+    ...<4 lines>...
+        sort_devices_by_process_index,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+jax.errors.JaxRuntimeError: INTERNAL: no supported devices found for platform CUDA
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py", line 21, in <module>
+    pid = jax.process_index()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 1114, in process_index
+    return get_backend(backend).process_index()
+           ~~~~~~~~~~~^^^^^^^^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 958, in get_backend
+    return _get_backend_uncached(platform)
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 937, in _get_backend_uncached
+    bs = backends()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 842, in backends
+    raise RuntimeError(err_msg)
+RuntimeError: Unable to initialize backend 'cuda': INTERNAL: no supported devices found for platform CUDA (you may need to uninstall the failing plugin package, or set JAX_PLATFORMS=cpu to skip this backend.)
+E0608 12:59:01.280586 1704453 platform_util.cc:270] Failed to create stream executor for device CUDA:2: CUDA error: Failed call to cuDeviceGet: CUDA_ERROR_INVALID_DEVICE: invalid device ordinal
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 826, in backends
+    backend = _init_backend(platform)
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 910, in _init_backend
+    backend = registration.factory()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 573, in make_pjrt_c_api_client
+    return xla_client.make_c_api_client(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        plugin_name,
+        ^^^^^^^^^^^^
+    ...<4 lines>...
+        SORT_DEVICES_BY_PROCESS_INDEX.value,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jaxlib/xla_client.py", line 158, in make_c_api_client
+    return _xla.get_c_api_client(
+           ~~~~~~~~~~~~~~~~~~~~~^
+        plugin_name,
+        ^^^^^^^^^^^^
+    ...<4 lines>...
+        sort_devices_by_process_index,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+jax.errors.JaxRuntimeError: INTERNAL: no supported devices found for platform CUDA
+E0608 12:59:01.282244 1704452 platform_util.cc:270] Failed to create stream executor for device CUDA:1: CUDA error: Failed call to cuDeviceGet: CUDA_ERROR_INVALID_DEVICE: invalid device ordinal
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py", line 21, in <module>
+    pid = jax.process_index()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 1114, in process_index
+    return get_backend(backend).process_index()
+           ~~~~~~~~~~~^^^^^^^^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 958, in get_backend
+    return _get_backend_uncached(platform)
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 937, in _get_backend_uncached
+    bs = backends()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 842, in backends
+    raise RuntimeError(err_msg)
+RuntimeError: Unable to initialize backend 'cuda': INTERNAL: no supported devices found for platform CUDA (you may need to uninstall the failing plugin package, or set JAX_PLATFORMS=cpu to skip this backend.)
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 826, in backends
+    backend = _init_backend(platform)
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 910, in _init_backend
+    backend = registration.factory()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 573, in make_pjrt_c_api_client
+    return xla_client.make_c_api_client(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        plugin_name,
+        ^^^^^^^^^^^^
+    ...<4 lines>...
+        SORT_DEVICES_BY_PROCESS_INDEX.value,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jaxlib/xla_client.py", line 158, in make_c_api_client
+    return _xla.get_c_api_client(
+           ~~~~~~~~~~~~~~~~~~~~~^
+        plugin_name,
+        ^^^^^^^^^^^^
+    ...<4 lines>...
+        sort_devices_by_process_index,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+jax.errors.JaxRuntimeError: INTERNAL: no supported devices found for platform CUDA
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py", line 21, in <module>
+    pid = jax.process_index()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 1114, in process_index
+    return get_backend(backend).process_index()
+           ~~~~~~~~~~~^^^^^^^^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 958, in get_backend
+    return _get_backend_uncached(platform)
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 937, in _get_backend_uncached
+    bs = backends()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 842, in backends
+    raise RuntimeError(err_msg)
+RuntimeError: Unable to initialize backend 'cuda': INTERNAL: no supported devices found for platform CUDA (you may need to uninstall the failing plugin package, or set JAX_PLATFORMS=cpu to skip this backend.)
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 826, in backends
+    backend = _init_backend(platform)
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 910, in _init_backend
+    backend = registration.factory()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 573, in make_pjrt_c_api_client
+    return xla_client.make_c_api_client(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        plugin_name,
+        ^^^^^^^^^^^^
+    ...<4 lines>...
+        SORT_DEVICES_BY_PROCESS_INDEX.value,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jaxlib/xla_client.py", line 158, in make_c_api_client
+    return _xla.get_c_api_client(
+           ~~~~~~~~~~~~~~~~~~~~~^
+        plugin_name,
+        ^^^^^^^^^^^^
+    ...<4 lines>...
+        sort_devices_by_process_index,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+jax.errors.JaxRuntimeError: INTERNAL: Getting local topologies failed: Error 1: GetKeyValue() timed out with key: cuda:local_topology/cuda/1 and duration: 2m
+
+Error 2: GetKeyValue() timed out with key: cuda:local_topology/cuda/2 and duration: 2m
+
+Error 3: GetKeyValue() timed out with key: cuda:local_topology/cuda/3 and duration: 2m
+
+Error 4: GetKeyValue() timed out with key: cuda:local_topology/cuda/4 and duration: 2m
+
+Error 5: GetKeyValue() timed out with key: cuda:local_topology/cuda/5 and duration: 2m
+
+Error 6: GetKeyValue() timed out with key: cuda:local_topology/cuda/6 and duration: 2m
+
+Error 7: GetKeyValue() timed out with key: cuda:local_topology/cuda/7 and duration: 2m
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/stage7_distributed_hello.py", line 21, in <module>
+    pid = jax.process_index()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 1114, in process_index
+    return get_backend(backend).process_index()
+           ~~~~~~~~~~~^^^^^^^^^
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 958, in get_backend
+    return _get_backend_uncached(platform)
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 937, in _get_backend_uncached
+    bs = backends()
+  File "/mnt/polished-lake/home/oli/pd-nano-jax/jax_spike/.venv-cuda/lib/python3.13/site-packages/jax/_src/xla_bridge.py", line 842, in backends
+    raise RuntimeError(err_msg)
+RuntimeError: Unable to initialize backend 'cuda': INTERNAL: Getting local topologies failed: Error 1: GetKeyValue() timed out with key: cuda:local_topology/cuda/1 and duration: 2m
+
+Error 2: GetKeyValue() timed out with key: cuda:local_topology/cuda/2 and duration: 2m
+
+Error 3: GetKeyValue() timed out with key: cuda:local_topology/cuda/3 and duration: 2m
+
+Error 4: GetKeyValue() timed out with key: cuda:local_topology/cuda/4 and duration: 2m
+
+Error 5: GetKeyValue() timed out with key: cuda:local_topology/cuda/5 and duration: 2m
+
+Error 6: GetKeyValue() timed out with key: cuda:local_topology/cuda/6 and duration: 2m
+
+Error 7: GetKeyValue() timed out with key: cuda:local_topology/cuda/7 and duration: 2m (you may need to uninstall the failing plugin package, or set JAX_PLATFORMS=cpu to skip this backend.)
+srun: error: h200-reserved-145-044: tasks 0-7: Exited with exit code 1
+srun: Terminating StepId=61163.0

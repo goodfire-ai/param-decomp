@@ -1,0 +1,23 @@
+=== job 61211 | nodes=1 ntasks=1 | Mon Jun  8 03:06:52 PM UTC 2026 ===
+nodelist: h200-reserved-145-022
+--- stage-by-stage (clean) ---
+emb           rel err: 0.000e+00
+b0_ln1        rel err: 2.330e-07
+b0_attn       rel err: 3.198e-04
+b0_xmid       rel err: 1.343e-04
+b0_ln2        rel err: 1.343e-04
+b0_mlp        rel err: 1.086e-03
+  b0_qproj    rel err: 1.207e-05
+  b0_cos      rel err: 6.141e-06
+  b0_sin      rel err: 9.691e-07
+  b0_y_attend rel err: 1.049e-04
+h_layer0      rel err: 6.897e-05
+h_layer1      rel err: 7.537e-04
+h_pre_norm    rel err: 7.537e-04
+h_post_norm   rel err: 7.537e-04
+--- full ---
+clean  logits rel err: 8.649e-03
+masked logits rel err: 1.144e-02
+grad V worst rel err:  3.298e-03
+grad U worst rel err:  8.972e-03
+LLAMA PARITY (tol 2e-03): FAIL

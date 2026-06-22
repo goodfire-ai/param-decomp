@@ -1,0 +1,54 @@
+=== job 61245 | nodes=2 ntasks=16 | Mon Jun  8 03:59:44 PM UTC 2026 ===
+nodelist: h200-reserved-145-[027-028]
+srun: warning: can't honor --ntasks-per-node set to 8 which doesn't match the requested tasks 16 and -mpack, which forces min number of nodes to 1
+W0608 16:03:03.522758  911546 pjrt_client.cc:1613] WatchTasksAsync failed for task 7: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:1, grpc_message:"CANCELLED"} [type.googleapis.com/tensorflow.DerivedStatus='']
+W0608 16:03:03.522975  911552 pjrt_client.cc:1613] WatchTasksAsync failed for task 6: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:1, grpc_message:"CANCELLED"} [type.googleapis.com/tensorflow.DerivedStatus='']
+W0608 16:03:03.523004  911553 pjrt_client.cc:1613] WatchTasksAsync failed for task 2: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"CANCELLED", grpc_status:1} [type.googleapis.com/tensorflow.DerivedStatus='']
+W0608 16:03:03.523025  911549 pjrt_client.cc:1613] WatchTasksAsync failed for task 1: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:1, grpc_message:"CANCELLED"} [type.googleapis.com/tensorflow.DerivedStatus='']
+W0608 16:03:03.523125  911551 pjrt_client.cc:1613] WatchTasksAsync failed for task 4: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:1, grpc_message:"CANCELLED"} [type.googleapis.com/tensorflow.DerivedStatus='']
+W0608 16:03:03.523208  911550 pjrt_client.cc:1613] WatchTasksAsync failed for task 0: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:1, grpc_message:"CANCELLED"} [type.googleapis.com/tensorflow.DerivedStatus='']
+W0608 16:03:03.523408  911547 pjrt_client.cc:1613] WatchTasksAsync failed for task 5: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.120.130:65341: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.120.130:65341: Failed to connect to remote host: Connection refused", grpc_status:14}
+W0608 16:03:03.521897  269605 pjrt_client.cc:1613] WatchTasksAsync failed for task 12: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:1, grpc_message:"CANCELLED"} [type.googleapis.com/tensorflow.DerivedStatus='']
+W0608 16:03:03.521967  269610 pjrt_client.cc:1613] WatchTasksAsync failed for task 8: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"CANCELLED", grpc_status:1} [type.googleapis.com/tensorflow.DerivedStatus='']
+W0608 16:03:03.521921  269608 pjrt_client.cc:1613] WatchTasksAsync failed for task 10: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:1, grpc_message:"CANCELLED"} [type.googleapis.com/tensorflow.DerivedStatus='']
+W0608 16:03:03.521968  269604 pjrt_client.cc:1613] WatchTasksAsync failed for task 11: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"CANCELLED", grpc_status:1} [type.googleapis.com/tensorflow.DerivedStatus='']
+W0608 16:03:03.523529  911548 pjrt_client.cc:1613] WatchTasksAsync failed for task 3: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.120.130:65341: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.120.130:65341: Failed to connect to remote host: Connection refused"}
+W0608 16:03:03.522019  269609 pjrt_client.cc:1613] WatchTasksAsync failed for task 14: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"CANCELLED", grpc_status:1} [type.googleapis.com/tensorflow.DerivedStatus='']
+W0608 16:03:03.522015  269607 pjrt_client.cc:1613] WatchTasksAsync failed for task 15: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:1, grpc_message:"CANCELLED"} [type.googleapis.com/tensorflow.DerivedStatus='']
+W0608 16:03:03.522250  269606 pjrt_client.cc:1613] WatchTasksAsync failed for task 9: CANCELLED: CANCELLED
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"CANCELLED", grpc_status:1} [type.googleapis.com/tensorflow.DerivedStatus='']
+W0608 16:03:03.522188  269603 pjrt_client.cc:1613] WatchTasksAsync failed for task 13: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.120.130:65341: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.120.130:65341: Failed to connect to remote host: Connection refused", grpc_status:14}
+[p0] 16 GPU | gbatch=128 seq=512 | L12 d2048 ffn8192 C32 n_warmup5 | sites=84
+[p0] 5005.5 ms/step | 13,093 tok/s | 818 tok/s/GPU | final loss 3.0562
+[p0] STAGE 9 (16 GPU): OK

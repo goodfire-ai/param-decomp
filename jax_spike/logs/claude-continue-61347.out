@@ -1,0 +1,30 @@
+=== claude-continue on h200-reserved-145-012 @ Mon Jun  8 06:05:09 PM UTC 2026 ===
+The full 4-way matrix is complete, committed (`f2cc7b609`, in sync with origin), and documented in lore. Here's the summary.
+
+## 4-way `{jax,torch}×{1-pool,2-pool}` — done
+
+**Real Llama-3.1-8B L18-MLP PD workload** (C=24576, seq 2048, bf16, 4-block d4096 CI transformer, layerwise stoch + persistent broadcast PGD). The cluster was ~90% full with no opportunistic QoS, so I ran a **controlled small-topology** comparison (per-rank batch matched to the real config; tok/s/GPU is the per-GPU metric) and anchored the torch 2-pool headline on the existing 80-GPU lore baseline.
+
+| cell | tok/s/GPU | fit / notes |
+|---|---|---|
+| **torch 2-pool** | **~3,050** | 80-GPU lore baseline (4.86 s/step), 14-layer suffix |
+| **torch 1-pool** | **1,658** (bf16, bl2) | full 32-layer hook model — **OOMs at bl8** (even fp32, 137 GB) |
+| **jax 1-pool** | **2,864** (bl4) | 14-layer suffix — **bl8 OOMs** (173 GB); device-bound, 2.86 s/step |
+| **jax 2-pool** | **1,183** (bl2) | `ppermute` pool-split works at real scale |
+
+### Headline (answers the handoff's key question)
+**JAX single-pool ≈ torch two-pool per GPU on the same workload (2,864 vs ~3,050) — without the pool split**, at *half* the per-rank batch (jax is memory-limited to bl4 replicated). At equal batch jax would likely edge ahead.
+
+### The real story is memory, not throughput/GPU
+The replicated 1-pool is **memory-bound in both frameworks** (torch 1-pool OOMs even at bl2/fp32). That's *why* production uses the 2-pool — it's a **memory** tool (shards V/U), not a per-GPU throughput win: at matched batch, 2-pool tok/s/GPU is necessarily ≤ 1-pool (1,183 < 2,864), which the jax 2-pool confirms. The notable JAX result is that `jax.lax.ppermute` reproduces the torch 2-pool's cross-pool seam in ~30 lines with zero manual cotangent plumbing or P2P-ordering.
+
+### Delivered
+- Code on `feature/nano-pd-jax`: `stage10_real_pd_bench.py` (1-pool), `stage11_real_pd_2pool.py` (2-pool), torch bench configs.
+- Lore: `2026-06-08--4way-results-jax-torch-1pool-2pool` + `--4way-jax-2pool-result-followup` + `--4way-controlled-topology-plan` + `--torch-ddp-snapshot-zdiff3-gotcha` (all linked); HANDOFF + daily log updated.
+
+### Two honest TODOs (documented for the next agent)
+1. **jax 1-pool multi-GPU OOMs** — replicated params+Adam ≈ 80 GB/GPU floor, and GSPMD materializes a global-batch tensor instead of sharding it. Needs FSDP-style param/optimizer sharding (`shard_map` / `with_sharding_constraint`); the `--shard_params` flag is stubbed. This blocked the jax weak-scaling number.
+2. **Same-hardware A/B** — when the cluster frees up, run torch 2-pool fresh + jax 1-pool at equal GPU count / global batch (current torch-2pool is the 80-GPU lore number).
+
+Infra fixes along the way: `uv sync --all-packages` (lab pkg/wandb), `git config merge.conflictstyle diff3` (compute-node git 2.34 rejects zdiff3 → all torch DDP launches were failing in 5 s), and passing the frozen suffix as a jit arg instead of a 7 GB HLO constant.
+=== claude-continue exited @ Mon Jun  8 07:14:32 PM UTC 2026 ===

@@ -1,0 +1,7 @@
+=== job 61216 | nodes=1 ntasks=1 | Mon Jun  8 03:17:50 PM UTC 2026 ===
+nodelist: h200-reserved-145-022
+clean  logits  rel-L2 2.466e-07
+masked logits  rel-L2 5.378e-07
+grad V (worst) rel-L2 1.218e-06
+grad U (worst) rel-L2 1.243e-06
+GPT2 PARITY (rel-L2 tol 2e-03): PASS

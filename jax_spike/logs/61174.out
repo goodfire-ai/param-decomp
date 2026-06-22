@@ -1,0 +1,18 @@
+=== job 61174 | nodes=1 ntasks=1 | Mon Jun  8 01:11:10 PM UTC 2026 ===
+nodelist: h200-reserved-145-044
+W0608 13:11:37.000776 1709996 pjrt_client.cc:1613] WatchTasksAsync failed for task 0: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65270: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.110.52.83:65270: Failed to connect to remote host: Connection refused"}
+[p0] mesh: 1 devices | global_batch=256 S=12 d=512 C=64 n_warmup=10
+[p0] step   0 | total 43.71632 | faith 1.425e-01 imp 0.4577 stoch 9.203e+00 ppgd 3.423e+01
+[p0] step   1 | total 32.56154 | faith 1.312e-01 imp 0.4776 stoch 6.738e+00 ppgd 2.555e+01
+[p0] step   2 | total 24.91766 | faith 1.215e-01 imp 0.4872 stoch 5.061e+00 ppgd 1.959e+01
+[p0] step   3 | total 19.18390 | faith 1.133e-01 imp 0.4930 stoch 3.830e+00 ppgd 1.509e+01
+[p0] step   4 | total 14.83485 | faith 1.063e-01 imp 0.4970 stoch 2.901e+00 ppgd 1.168e+01
+[p0] step  10 | total 3.84967 | faith 8.086e-02 imp 0.5103 stoch 5.858e-01 ppgd 3.030e+00
+[p0] step  20 | total 1.24580 | faith 6.576e-02 imp 0.5193 stoch 1.457e-01 ppgd 8.785e-01
+[p0] step  30 | total 0.68388 | faith 5.957e-02 imp 0.5218 stoch 8.318e-02 ppgd 3.846e-01
+[p0] TRAJECTORY[:6] = [43.71632, 32.56154, 24.91766, 19.1839, 14.83485, 11.53532]
+[p0] final total 0.45582 (start 43.71632); faith 5.652e-02
+[p0] 99.16 ms/step | 2,582 samples/s across 1 GPU(s)
+[p0] STAGE 8 (1 GPU): PASS
