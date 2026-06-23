@@ -30,5 +30,8 @@
     },
     "dependencies": {
         "marked": "^17.0.1"
+    },
+    "allowScripts": {
+        "esbuild@0.25.12": true
     }
 }
