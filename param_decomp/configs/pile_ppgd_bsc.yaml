@@ -49,7 +49,7 @@ eval:
     type: CIHistograms
   - ci_alive_threshold: 0.0
     type: ComponentActivationDensity
-  - ci_alive_threshold: 0.0
+  - ci_alive_thresholds: [0.0, 0.01]
     groups:
       layer_0:
       - h.0.*
