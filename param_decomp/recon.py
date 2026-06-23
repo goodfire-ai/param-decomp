@@ -20,6 +20,7 @@ from jaxtyping import Array, PRNGKeyArray
 
 from param_decomp.configs import (
     AllRoutingConfig,
+    AnyImportanceMinimalityLossConfig,
     AnyLossMetricConfig,
     ChunkwiseSubsetReconLossConfig,
     CIMaskedReconLayerwiseLossConfig,
@@ -33,6 +34,7 @@ from param_decomp.configs import (
     PGDReconLayerwiseLossConfig,
     PGDReconLossConfig,
     PGDReconSubsetLossConfig,
+    SmoothL0ImportanceMinimalityLossConfig,
     StaticProbabilityRoutingConfig,
     StochasticReconLayerwiseLossConfig,
     StochasticReconLossConfig,
@@ -270,7 +272,7 @@ class LossSpec:
     (state_key -> shared config; SPEC S23: each key feeds exactly one term)."""
 
     faith_coeff: float
-    imp_min: ImportanceMinimalityLossConfig
+    imp_min: AnyImportanceMinimalityLossConfig
     recon_terms: ReconLossTerms
     persistent: dict[str, PersistentPGDReconLossConfig]
 
@@ -286,7 +288,7 @@ def build_recon_terms(
     Term ORDER follows the config list (recon terms only) — per-term RNG keys are
     derived from that order, so it is semantically load-bearing (SPEC R1)."""
     faith_coeff: float | None = None
-    imp_min: ImportanceMinimalityLossConfig | None = None
+    imp_min: AnyImportanceMinimalityLossConfig | None = None
     terms: list[ReconLossTerm] = []
     persistent: dict[str, PersistentPGDReconLossConfig] = {}
 
@@ -304,6 +306,10 @@ def build_recon_terms(
             case ImportanceMinimalityLossConfig():
                 assert imp_min is None
                 assert cfg.p_anneal_final_p is not None
+                imp_min = cfg
+            case SmoothL0ImportanceMinimalityLossConfig():
+                assert imp_min is None
+                assert cfg.gamma_anneal_final_gamma is not None
                 imp_min = cfg
             case UnmaskedReconLossConfig() | CIMaskedReconLossConfig():
                 value = 1.0 if isinstance(cfg, UnmaskedReconLossConfig) else 0.0
@@ -381,7 +387,8 @@ def build_recon_terms(
                 raise AssertionError(f"unsupported training loss {cfg.type!r}")
 
     assert faith_coeff is not None and imp_min is not None, (
-        f"need FaithfulnessLoss + ImportanceMinimalityLoss, got {[m.type for m in loss_metrics]}"
+        "need FaithfulnessLoss + an importance-minimality loss (ImportanceMinimalityLoss | "
+        f"SmoothL0ImportanceMinimalityLoss), got {[m.type for m in loss_metrics]}"
     )
     assert terms, "no recon loss terms configured"
     for term in terms:
