@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=comp-mlp-adv-dexp4-ddp
-#SBATCH --nodes=2
+#SBATCH --nodes=4
 #SBATCH --gres=gpu:8
-#SBATCH --time=24:00:00
-#SBATCH --comment="Disentangled component MLP, d_expand=4, multi-node DDP (nodes*8 GPUs). 2-term loss 0.5*relmse(stochastic) + 0.5*relmse(persistent adversarial, per_batch_per_position PPGD). s-55ea3f9b; oli/opus"
+#SBATCH --time=7-00:00:00
+#SBATCH --comment="Disentangled component MLP, d_expand=4, multi-node DDP (nodes*8 GPUs). 2-term output-KL loss 0.5*KL(stochastic recon subset over MLP blocks) + 0.5*KL(persistent adversarial full-layer, per_batch_per_position PPGD); KL is original-masked vs replacement-masked at the final logits. s-55ea3f9b; oli/opus"
 #SBATCH --output=/mnt/home/lucius/spd/scratch/mlp_compress/ddp_component_adv_dexp4_%j.log
 
 # Tuning config for the adversarial ComponentMLP run. Edit the values below and resubmit
@@ -17,22 +17,22 @@
 # sources are per-rank (per_batch_per_position is local to each rank).
 
 # --- target / architecture ---
-D_EXPAND=4              # GeLU neurons per output subcomponent (0 = bypass-only)
+D_EXPAND=8              # GeLU neurons per output subcomponent (0 = bypass-only)
 
 # --- optimisation (the replacement MLPs) ---
 STEPS=200000
-BATCH_SIZE=64           # per-rank; effective batch = nodes * 8 * BATCH_SIZE
+BATCH_SIZE=32           # per-rank; effective batch = nodes * 8 * BATCH_SIZE
 LR=5e-5                 # base lr, cosine schedule
 WARMUP_STEPS=200
 FINAL_LR_FRAC=0.1
 
-# --- loss term coefficients ---
-STOCHASTIC_COEFF=0.5    # relmse under one stochastic mask draw
-ADVERSARIAL_COEFF=0.5   # relmse under persistent adversarial (PPGD) masks; 0 disables
+# --- loss term coefficients (output-KL: original-masked vs replacement-masked at final logits) ---
+STOCHASTIC_COEFF=0.5    # KL under one stochastic mask draw, subset-routed over the MLP blocks
+ADVERSARIAL_COEFF=0.5   # KL under persistent adversarial (PPGD) full-layer masks; 0 disables
 
 # --- persistent adversary (PPGD ascent on the mask sources) ---
 ADV_LR=0.01
-ADV_BETA1=0.5
+ADV_BETA1=0.01
 ADV_BETA2=0.99
 ADV_N_WARMUP=2          # extra source updates/step (total = ADV_N_WARMUP + 1)
 ADV_SCOPE=per_batch_per_position   # or shared_across_batch
@@ -59,7 +59,7 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
 # One torchrun per node (--ntasks-per-node=1); each spawns 8 local ranks. node_rank comes
 # from SLURM_PROCID, which under --ntasks-per-node=1 is exactly the node index 0..N-1.
-srun --ntasks-per-node=1 --kill-on-bad-exit=1 bash -c '
+srun --nodes=$SLURM_NNODES --ntasks=$SLURM_NNODES --ntasks-per-node=1 --kill-on-bad-exit=1 bash -c '
   cd /mnt/home/lucius/spd
   source .venv/bin/activate
   cd scratch/mlp_compress

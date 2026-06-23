@@ -17,16 +17,22 @@ activations arise from input subcomponent activations:
 
 Input/output subcomponent spaces stay frozen (`V_cfc`, `U_down` from the decomposition);
 only `W_in`, `w_neuron`, `W_bypass` train. Attention is left untouched (runs masked by the
-same masks via the component model). The objective is a sum of 8 residual-stream relative
-MSEs (student vs teacher under the same masks) across the 4 blocks, optionally split across
-two masking regimes:
+same masks via the component model). The objective is the output-logit KL of the replacement
+(student) forward against the original-MLP (teacher) forward under the *same* masks — i.e.
+KL(original-masked ‖ replacement-masked) at the final logits — optionally split across two
+masking regimes:
 
-  - `stochastic_coeff` weights relmse under one *stochastic* mask draw (masks in `[ci, 1]`).
-  - `adversarial_coeff` weights relmse under *persistent adversarial* masks (`ci + (1-ci)*src`),
-    where per-component sources persist across training steps and ascend (Adam) to maximize the
-    replacement's relmse — PD's PPGD-Recon adversary, but scoring the replacement's fidelity.
+  - `stochastic_coeff` weights KL under one *stochastic* mask draw (masks in `[ci, 1]`) with
+    *subset routing over the MLP blocks*: each position routes a uniform-k random subset of the
+    4 block MLPs to the masked path; the rest fall back to the original full MLP (attention is
+    masked everywhere). This is PD's stochastic-recon-subset regime at the MLP-block granularity.
+  - `adversarial_coeff` weights KL under *persistent adversarial* full-layer masks
+    (`ci + (1-ci)*src`), where per-component sources persist across training steps and ascend
+    (Adam) to maximize the replacement's KL — PD's PPGD-Recon adversary, but scoring the
+    replacement's output fidelity. No subset routing here (every layer masked).
 
 With `adversarial_coeff == 0` (default) only the stochastic term runs. No sparsity penalty.
+Residual-stream relative MSEs are still logged as evals (`eval/resid_relmse_total`).
 
 Run: python scratch/mlp_compress/run_component.py --d_expand D [--steps N] ...
 """
@@ -56,7 +62,13 @@ from param_decomp.distributed import (
     is_main_process,
     seed_per_rank,
 )
-from param_decomp.masks import AllLayersRouter, calc_stochastic_component_mask_info, make_mask_infos
+from param_decomp.masks import (
+    AllLayersRouter,
+    ComponentsMaskInfo,
+    calc_stochastic_component_mask_info,
+    make_mask_infos,
+    sample_uniform_k_subset_routing_masks,
+)
 from param_decomp.metrics.persistent_pgd_state import AdamPGDConfig, make_ppgd_optimizer
 from param_decomp.metrics.pgd_utils import get_pgd_init_tensor
 from param_decomp.schedule import ScheduleConfig
@@ -144,7 +156,7 @@ class ComponentMLP(nn.Module):
 
 def compute_stochastic_masks(
     comp_model: ComponentModel, batch: Tensor
-) -> tuple[dict[str, object], dict[str, Tensor], Tensor]:
+) -> tuple[dict[str, ComponentsMaskInfo], dict[str, Tensor], Tensor]:
     """Target forward -> CI (lower_leaky) -> one stochastic mask draw in [ci, 1].
 
     Returns (stochastic_mask_infos, ci_lower_leaky, target_logits). The mask draw is shared
@@ -155,6 +167,44 @@ def compute_stochastic_masks(
     ci = comp_model.calc_causal_importances(out.cache, sampling="continuous").lower_leaky
     stoch = calc_stochastic_component_mask_info(ci, "continuous", None, AllLayersRouter())
     return stoch, ci, out.output
+
+
+def compute_stochastic_subset_masks(
+    comp_model: ComponentModel, batch: Tensor, n_blocks: int
+) -> tuple[dict[str, ComponentsMaskInfo], dict[str, Tensor], Tensor, dict[int, Tensor]]:
+    """Target forward -> CI -> one stochastic mask draw, with subset routing over the MLP blocks.
+
+    Attention components route everywhere (`"all"`); each block's MLP is routed as a unit via a
+    uniform-k subset draw (its `c_fc` and `c_proj` share one per-position routing mask). At
+    positions where a block's MLP is not routed, both teacher and student fall back to the
+    original full MLP, so the masked replacement is only scored where the block is routed.
+
+    Returns (mask_infos, ci_lower_leaky, target_logits, mlp_routing). `mlp_routing[block]` is the
+    per-position bool mask the student hook uses to blend the replacement against the original MLP.
+    """
+    out = comp_model(batch, cache_type="input")
+    ci = comp_model.calc_causal_importances(out.cache, sampling="continuous").lower_leaky
+    leading_dims = tuple(next(iter(ci.values())).shape[:-1])
+    device = next(iter(ci.values())).device
+    block_routing = sample_uniform_k_subset_routing_masks(
+        leading_dims, [str(b) for b in range(n_blocks)], device
+    )
+    name_to_routing: dict[str, Tensor] = {}
+    mlp_routing: dict[int, Tensor] = {}
+    for b in range(n_blocks):
+        cfc_name, down_name = mlp_module_names(b)
+        routing = block_routing[str(b)]
+        name_to_routing[cfc_name] = routing
+        name_to_routing[down_name] = routing
+        mlp_routing[b] = routing
+    mask_infos = {
+        name: ComponentsMaskInfo(
+            component_mask=c + (1 - c) * torch.rand_like(c),
+            routing_mask=name_to_routing.get(name, "all"),
+        )
+        for name, c in ci.items()
+    }
+    return mask_infos, ci, out.output, mlp_routing
 
 
 AdvSourceScope = Literal["per_batch_per_position", "shared_across_batch"]
@@ -215,19 +265,30 @@ def mlp_blocks_replaced(
     mlp_modules: dict[int, nn.Module],
     component_mlps: dict[int, ComponentMLP],
     mlp_masks: dict[int, tuple[Tensor, Tensor]],
+    mlp_routing: dict[int, Tensor] | None,
 ) -> Iterator[None]:
+    """Swap each block's MLP for its `ComponentMLP`. With `mlp_routing`, blend the replacement
+    against the original MLP per position (replacement where routed, original elsewhere); with
+    `None`, the replacement output is used everywhere.
+    """
     handles = []
     for block, mlp in mlp_modules.items():
         compressed = component_mlps[block]
         m_cfc, m_down = mlp_masks[block]
+        routing = None if mlp_routing is None else mlp_routing[block]
 
-        def make_hook(compressed: ComponentMLP, m_cfc: Tensor, m_down: Tensor):
-            def hook(_module: nn.Module, args: tuple[Tensor, ...], _output: Tensor) -> Tensor:
-                return compressed(args[0], m_cfc, m_down)
+        def make_hook(
+            compressed: ComponentMLP, m_cfc: Tensor, m_down: Tensor, routing: Tensor | None
+        ):
+            def hook(_module: nn.Module, args: tuple[Tensor, ...], output: Tensor) -> Tensor:
+                replaced = compressed(args[0], m_cfc, m_down)
+                if routing is None:
+                    return replaced
+                return torch.where(routing[..., None], replaced, output)
 
             return hook
 
-        handles.append(mlp.register_forward_hook(make_hook(compressed, m_cfc, m_down)))
+        handles.append(mlp.register_forward_hook(make_hook(compressed, m_cfc, m_down, routing)))
     try:
         yield
     finally:
@@ -238,15 +299,17 @@ def mlp_blocks_replaced(
 def student_forward(
     comp_model: ComponentModel,
     batch: Tensor,
-    stoch: dict[str, object],
+    stoch: dict[str, ComponentsMaskInfo],
     mlp_modules: dict[int, nn.Module],
     component_mlps: dict[int, ComponentMLP],
+    mlp_routing: dict[int, Tensor] | None,
 ) -> Tensor:
     """Stochastic-masked forward with every block's MLP swapped for its `ComponentMLP`.
 
     Attention components keep their stochastic masks (run normally); MLP component keys are
     dropped from `mask_infos` and the MLP modules are hooked to emit the replacement output
-    gated by the same stochastic masks.
+    gated by the same stochastic masks. `mlp_routing` blends the replacement against the
+    original MLP per position (`None` = replace everywhere).
     """
     drop: set[str] = set()
     mlp_masks: dict[int, tuple[Tensor, Tensor]] = {}
@@ -256,28 +319,30 @@ def student_forward(
         drop.add(down_name)
         mlp_masks[block] = (stoch[cfc_name].component_mask, stoch[down_name].component_mask)
     student_mask_infos = {k: v for k, v in stoch.items() if k not in drop}
-    with mlp_blocks_replaced(mlp_modules, component_mlps, mlp_masks):
+    with mlp_blocks_replaced(mlp_modules, component_mlps, mlp_masks, mlp_routing):
         return comp_model(batch, mask_infos=student_mask_infos)
 
 
-def masked_resid_relmse_terms(
+def masked_student_kl_to_teacher(
     comp_model: ComponentModel,
     batch: Tensor,
-    mask_infos: dict[str, object],
+    mask_infos: dict[str, ComponentsMaskInfo],
     mlp_modules: dict[int, nn.Module],
     component_mlps: dict[int, ComponentMLP],
-    n_blocks: int,
-    point_names: list[str],
-) -> dict[str, Tensor]:
-    """Per-resid-point relative MSE of the replacement (student) vs original MLP (teacher), both
-    gated by `mask_infos`. Teacher is a detached target; gradient flows through the student only.
+    mlp_routing: dict[int, Tensor] | None,
+) -> Tensor:
+    """KL(original-masked forward ‖ replacement-masked forward) at the output logits.
+
+    Teacher (original MLPs under `mask_infos`) is a detached target; gradient flows through the
+    replacement (student) only. `mlp_routing` blends the replacement against the original MLP per
+    position (`None` = replace the MLP everywhere).
     """
-    with torch.no_grad(), capture_residuals(comp_model, n_blocks) as tr:
-        comp_model(batch, mask_infos=mask_infos)
-    teacher_resids = {k: v.detach() for k, v in tr.items()}
-    with capture_residuals(comp_model, n_blocks) as sr:
-        student_forward(comp_model, batch, mask_infos, mlp_modules, component_mlps)
-    return {k: relative_mse(sr[k].float(), teacher_resids[k].float()) for k in point_names}
+    with torch.no_grad():
+        teacher_logits = comp_model(batch, mask_infos=mask_infos)
+    student_logits = student_forward(
+        comp_model, batch, mask_infos, mlp_modules, component_mlps, mlp_routing
+    )
+    return calc_kl_divergence_lm(pred=student_logits.float(), target=teacher_logits.float())
 
 
 def masked_student_kl_to_target(
@@ -290,7 +355,7 @@ def masked_student_kl_to_target(
 ) -> float:
     """KL(replacement forward under `component_masks` ‖ original target model)."""
     student_logits = student_forward(
-        comp_model, batch, make_mask_infos(component_masks), mlp_modules, component_mlps
+        comp_model, batch, make_mask_infos(component_masks), mlp_modules, component_mlps, None
     )
     return calc_kl_divergence_lm(pred=student_logits.float(), target=target_logits.float()).item()
 
@@ -325,7 +390,7 @@ def adversarial_student_kl_to_target(
     def student_kl() -> Tensor:
         masks = {k: ci[k] + (1 - ci[k]) * sources[k].expand(*batch_dims, -1) for k in ci}
         student_logits = student_forward(
-            comp_model, batch, make_mask_infos(masks), mlp_modules, component_mlps
+            comp_model, batch, make_mask_infos(masks), mlp_modules, component_mlps, None
         )
         return calc_kl_divergence_lm(pred=student_logits.float(), target=target_logits.float())
 
@@ -413,7 +478,9 @@ def main(
     C_out = comp_model.components[mlp_module_names(0)[1]].C
     config = {
         "run": "s-55ea3f9b (via p-55ea3f9b)",
-        "objective": "residual_stream_relative_mse",
+        "objective": "output_kl_divergence",
+        "stochastic_regime": "stochastic_recon_subset_over_mlp_blocks",
+        "adversarial_regime": "persistent_pgd_full_layer",
         "stochastic_coeff": stochastic_coeff,
         "adversarial_coeff": adversarial_coeff,
         "adv_lr": adv_lr,
@@ -455,7 +522,7 @@ def main(
             project="spd",
             name=f"component-mlp-{mode_tag}-dexp{d_expand}-s-55ea3f9b",
             group=f"component_mlp_{mode_tag}_dexpand_sweep",
-            tags=["component_mlp", mode_tag, "resid_relmse"],
+            tags=["component_mlp", mode_tag, "output_kl"],
             config=config,
         )
         print(f"wandb: {wb.url}")
@@ -526,7 +593,7 @@ def main(
             for b, stoch, ci, target_logits, teacher_logits, teacher_resids in eval_ctx:
                 with capture_residuals(comp_model, n_blocks) as sr:
                     student_logits = student_forward(
-                        comp_model, b, stoch, mlp_modules, component_mlps
+                        comp_model, b, stoch, mlp_modules, component_mlps, None
                     )
                 kl_vs_teacher += calc_kl_divergence_lm(
                     pred=student_logits.float(), target=teacher_logits.float()
@@ -590,44 +657,39 @@ def main(
         batch = next(train_iter).to(device)
 
         with torch.no_grad(), autocast():
-            stoch, ci, _ = compute_stochastic_masks(comp_model, batch)
-        with autocast():
-            stoch_terms = masked_resid_relmse_terms(
-                comp_model, batch, stoch, mlp_modules, component_mlps, n_blocks, point_names
+            subset_mask_infos, ci, _, mlp_routing = compute_stochastic_subset_masks(
+                comp_model, batch, n_blocks
             )
-        relmse_stoch = sum(stoch_terms.values())
-        loss = stochastic_coeff * relmse_stoch
+        with autocast():
+            kl_stoch = masked_student_kl_to_teacher(
+                comp_model, batch, subset_mask_infos, mlp_modules, component_mlps, mlp_routing
+            )
+        loss = stochastic_coeff * kl_stoch
 
-        relmse_adv = None
+        kl_adv = None
         if adversarial is not None:
             for _ in range(adv_n_warmup):
                 with autocast():
-                    warm_loss = adversarial_coeff * sum(
-                        masked_resid_relmse_terms(
-                            comp_model,
-                            batch,
-                            make_mask_infos(adversarial.masks(ci)),
-                            mlp_modules,
-                            component_mlps,
-                            n_blocks,
-                            point_names,
-                        ).values()
-                    )
-                warm_grads = torch.autograd.grad(warm_loss, list(adversarial.sources.values()))
-                adversarial.ascend(dict(zip(adversarial.sources, warm_grads, strict=True)))
-            with autocast():
-                relmse_adv = sum(
-                    masked_resid_relmse_terms(
+                    warm_loss = adversarial_coeff * masked_student_kl_to_teacher(
                         comp_model,
                         batch,
                         make_mask_infos(adversarial.masks(ci)),
                         mlp_modules,
                         component_mlps,
-                        n_blocks,
-                        point_names,
-                    ).values()
+                        None,
+                    )
+                warm_grads = torch.autograd.grad(warm_loss, list(adversarial.sources.values()))
+                adversarial.ascend(dict(zip(adversarial.sources, warm_grads, strict=True)))
+            with autocast():
+                kl_adv = masked_student_kl_to_teacher(
+                    comp_model,
+                    batch,
+                    make_mask_infos(adversarial.masks(ci)),
+                    mlp_modules,
+                    component_mlps,
+                    None,
                 )
-            loss = loss + adversarial_coeff * relmse_adv
+            loss = loss + adversarial_coeff * kl_adv
 
         opt.zero_grad(set_to_none=True)
         if adversarial is not None:
@@ -646,12 +708,10 @@ def main(
 
         train_scalars: dict[str, float] = {
             "train/loss": loss.item(),
-            "train/stochastic_relmse": relmse_stoch.item(),
+            "train/stochastic_subset_kl": kl_stoch.item(),
         }
-        if relmse_adv is not None:
-            train_scalars["train/adversarial_relmse"] = relmse_adv.item()
-        for k, v in stoch_terms.items():
-            train_scalars[f"train/relmse_stoch_{k}"] = v.item()
+        if kl_adv is not None:
+            train_scalars["train/adversarial_kl"] = kl_adv.item()
         train_scalars = dict(avg_metrics_across_ranks(train_scalars, device))
 
         if not is_main_process():
@@ -667,7 +727,7 @@ def main(
             now = time.time()
             record["steps_per_s"] = eval_every / (now - last_log_time)
             last_log_time = now
-            print(json.dumps({k: record[k] for k in record if not k.startswith("train/relmse_")}))
+            print(json.dumps(record))
             with metrics_path.open("a") as f:
                 f.write(json.dumps(record) + "\n")
         if wb is not None:
