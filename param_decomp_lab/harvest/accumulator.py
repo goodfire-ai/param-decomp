@@ -217,10 +217,10 @@ class Harvester:
         np.add.at(self.input_cooccurrence, (fire_comp, tokens_flat[fire_pos]), 1)
         np.add.at(self.input_marginals, tokens_flat, 1)
 
-        # outputs accumulate predicted probability mass over vocab
-        self.output_cooccurrence += einsum(
-            firing_flat.astype(np.float64), probs_flat, "S lc, S v -> lc v"
-        )
+        # outputs accumulate predicted probability mass over vocab. A plain matmul
+        # (firingᵀ @ probs) dispatches to multithreaded BLAS dgemm; the equivalent
+        # np.einsum runs a naive single-threaded loop (~37x slower at LM vocab sizes).
+        self.output_cooccurrence += firing_flat.astype(np.float64).T @ probs_flat
         self.output_marginals += reduce(probs_flat, "S v -> v", "sum")
 
     def _collect_activation_examples(
