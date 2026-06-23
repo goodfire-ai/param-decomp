@@ -76,7 +76,7 @@ def next_token_cross_entropy(
 def make_eval_step(
     lm: DecomposedModel,
     rounding_threshold: float,
-    ci_alive_threshold: float,
+    ci_alive_thresholds: tuple[float, ...],
     l0_group_patterns: dict[str, tuple[str, ...]] | None,
     pgd: EvalPGDConfig | None,
     mesh: Mesh | None,
@@ -181,6 +181,18 @@ def make_eval_step(
             {site: jnp.zeros_like(ci_lower[site]) for site in site_names},
             zeros_delta,
         )
+        # ci_masked with every CI in (0, thr] zeroed: KL vs plain ci_masked shows whether
+        # those tiny-CI components matter. KL-only (no ce_difference / ce_unrecovered).
+        kl_only_variants: set[str] = set()
+        for thr in ci_alive_thresholds:
+            if thr <= 0.0:
+                continue
+            name = f"ci_masked_zeroed_{thr}"
+            kl_only_variants.add(name)
+            variant_masks[name] = (
+                {site: jnp.where(ci_lower[site] > thr, ci_lower[site], 0.0) for site in site_names},
+                zeros_delta,
+            )
 
         kl: dict[str, Array] = {}
         ce: dict[str, Array] = {}
@@ -193,24 +205,27 @@ def make_eval_step(
         out: dict[str, Array] = {}
         for variant in variant_masks:
             out[f"ce_kl/kl_{variant}"] = kl[variant]
-        difference_variants = tuple(v for v in variant_masks if v != "zero_masked")
+        difference_variants = tuple(
+            v for v in variant_masks if v != "zero_masked" and v not in kl_only_variants
+        )
         for variant in difference_variants:
             out[f"ce_kl/ce_difference_{variant}"] = ce[variant] - target_ce
         for variant in difference_variants:
             out[f"ce_kl/ce_unrecovered_{variant}"] = (ce[variant] - target_ce) / (
                 ce["zero_masked"] - target_ce
             )
-        site_l0 = {
-            site: (ci_lower[site] > ci_alive_threshold).astype(jnp.float32).sum(-1).mean()
-            for site in site_names
-        }
-        for site, value in site_l0.items():
-            out[f"l0/{ci_alive_threshold}_{site}"] = value
-        # torch CI_L0 groups: the group's L0 is the SUM of its member sites' L0s
-        for group_name, members in l0_groups.items():
-            out[f"l0/{ci_alive_threshold}_{group_name}"] = sum(
-                (site_l0[site] for site in members), start=jnp.zeros((), jnp.float32)
-            )
+        for threshold in ci_alive_thresholds:
+            site_l0 = {
+                site: (ci_lower[site] > threshold).astype(jnp.float32).sum(-1).mean()
+                for site in site_names
+            }
+            for site, value in site_l0.items():
+                out[f"l0/{threshold}_{site}"] = value
+            # torch CI_L0 groups: the group's L0 is the SUM of its member sites' L0s
+            for group_name, members in l0_groups.items():
+                out[f"l0/{threshold}_{group_name}"] = sum(
+                    (site_l0[site] for site in members), start=jnp.zeros((), jnp.float32)
+                )
 
         if pgd is not None:
             pgd_n_steps = pgd.n_steps

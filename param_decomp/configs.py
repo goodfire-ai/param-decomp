@@ -429,7 +429,10 @@ class CI_L0Config(BaseConfig):
 
     type: Literal["CI_L0"] = "CI_L0"
     groups: dict[str, list[str]] | None
-    ci_alive_threshold: float = 0.0
+    ci_alive_thresholds: tuple[float, ...] = (0.0, 0.01)
+    """CI-aliveness cutoffs; L0 (+ a `kl_ci_masked_zeroed_<thr>` diagnostic per nonzero one)
+    is reported at each. 0.0 counts any nonzero CI; 0.01 ignores tiny sediment values. The
+    first is primary (also the slow-tier activation-density cutoff)."""
 
 
 class _AttnPatternsBaseConfig(BaseConfig):
