@@ -428,6 +428,11 @@ def run_decomposition_training(
     "token" has no meaning) omits the perf keys."""
     is_main = jax.process_index() == 0
     ndev = mesh.devices.size
+    # Activate the mesh so bare-PartitionSpec `with_sharding_constraint`s inside the forward
+    # resolve (the attn q/k/v batch-sharding pin in `FrozenAttn.core`, needed for cuDNN
+    # flash attention under the scan+cond masked forward). Explicit NamedShardings elsewhere
+    # are unaffected.
+    jax.set_mesh(mesh)
     assert cadence.save_every is not None and cadence.keep_last_n_checkpoints is not None, cadence
     save_every = cadence.save_every
 

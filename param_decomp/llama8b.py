@@ -178,6 +178,14 @@ class FrozenAttn(eqx.Module):
         q, k = apply_rope(q, k, cos, sin)
         k = repeat_kv(k, self.n_rep)
         v = repeat_kv(v, self.n_rep)
+        # cuDNN flash attention's custom partitioner requires q/k/v identically sharded.
+        # Under the scan+cond masked forward, XLA shards q but REPLICATES the smaller GQA
+        # k/v -> "Query, key and value should have same sharding". Pin all three to the
+        # batch-sharded layout. Guarded so it's a no-op off-mesh (CPU tests / single device).
+        # Validated on GPU: job 108953 (no-fix=error, with-constraint=compiles).
+        if not jax.sharding.get_abstract_mesh().empty:
+            bt = jax.sharding.PartitionSpec("dp", None, None, None)
+            q, k, v = (jax.lax.with_sharding_constraint(a, bt) for a in (q, k, v))
         return causal_sdpa(q, k, v).transpose(0, 2, 1, 3).reshape(b, t, self.n_head * self.head_dim)
 
     def __call__(self, x: Float[Array, "b t d"], inv_freq: Array) -> Array:
@@ -320,12 +328,25 @@ def _clean_mlp_out(suffix_layer: SuffixLayer, mlp_in: Array) -> Array:
     ) @ suffix_layer.Wd.T
 
 
+def _stack_layers(layers: list[SuffixLayer]) -> SuffixLayer:
+    """Stack a per-layer `SuffixLayer` list into one whose array leaves carry a leading
+    layer axis — the `xs` for a `lax.scan` over the (homogeneous) layer stack. Static
+    fields (attn head counts) ride in the treedef, shared across iterations."""
+    return jax.tree.map(lambda *per_layer: jnp.stack(per_layer), *layers)
+
+
 def clean_suffix_logits(target: Target, resid: Float[Array, "b t d"]) -> Array:
-    """The all-frozen suffix forward — the recon target (SPEC S3)."""
-    x = resid
-    for suffix_layer in target.layers:
-        x = x + suffix_layer.attn(rms_norm(x, suffix_layer.ln1, target.eps), target.inv_freq)
-        x = x + _clean_mlp_out(suffix_layer, rms_norm(x, suffix_layer.ln2, target.eps))
+    """The all-frozen suffix forward — the recon target (SPEC S3). `lax.scan` over the
+    layer stack so XLA compiles one block body instead of unrolling every layer (the
+    scan reassociates float ops vs the old unrolled loop — within tolerance, not
+    byte-identical; SPEC N-numerics hold via the torch-equivalence suite)."""
+
+    def block(x: Array, layer: SuffixLayer) -> tuple[Array, None]:
+        x = x + layer.attn(rms_norm(x, layer.ln1, target.eps), target.inv_freq)
+        x = x + _clean_mlp_out(layer, rms_norm(x, layer.ln2, target.eps))
+        return x, None
+
+    x, _ = jax.lax.scan(block, resid, _stack_layers(target.layers))
     x = rms_norm(x, target.norm, target.eps)
     return x @ target.lm_head.T
 
@@ -391,7 +412,78 @@ def _masked_site_out(
     return out
 
 
-def _run_masked_suffix(
+def _stack_per_kind_masked_inputs(
+    components: DecompVU,
+    first_layer: int,
+    n_layers: int,
+    leading: tuple[int, ...],
+    masks: dict[str, Array],
+    delta_masks: dict[str, Array],
+    routes: dict[str, Array] | None,
+    live_set: frozenset[str],
+    has_delta: bool,
+) -> dict[str, dict[str, Array]]:
+    """Per decomposed KIND, the layer-stacked `(V, U, live, mask[, delta][, route])` arrays
+    the scan body consumes — leading layer axis, one homogeneous body across layers. Sites
+    absent from `live` get dummy mask/delta/route (the `cond` frozen branch ignores them);
+    `masks`/`delta_masks`/`routes` exist only for live sites (recon builds them per-chunk).
+    Per-kind dims (d_in, C, d_out) must be uniform across layers — asserted."""
+    kind_dims: dict[str, tuple[int, int, int]] = {}
+    for name, (V, U) in components.vu.items():
+        kind = parse_site_name(name)[1]
+        dims = (V.shape[0], V.shape[1], U.shape[1])
+        assert kind_dims.setdefault(kind, dims) == dims, (
+            f"per-kind dims must be uniform across layers for the scan: {kind} {dims}"
+        )
+    vu_dt = next(iter(components.vu.values()))[0].dtype
+    # Dummy mask/delta/route shapes match the REAL entries (the source scope sets the
+    # leading shape: `sc` broadcasts over batch as `(1, T)`, not `resid`'s `(B, T)`).
+    a_mask = next(iter(masks.values())) if masks else None
+    mask_lead = a_mask.shape[:-1] if a_mask is not None else leading
+    mask_dt = a_mask.dtype if a_mask is not None else vu_dt
+    a_delta = next(iter(delta_masks.values())) if (has_delta and delta_masks) else None
+    a_route = next(iter(routes.values())) if (routes and len(routes)) else None
+
+    def name_at(offset: int, kind: str) -> str:
+        return site_name(first_layer + offset, kind)
+
+    per_kind: dict[str, dict[str, Array]] = {}
+    for kind, (d_in, C, d_out) in kind_dims.items():
+        names = [name_at(o, kind) for o in range(n_layers)]
+        live_flags = jnp.array([n in live_set for n in names])
+        Vs = jnp.stack([components.vu[n][0] if n in components.vu else jnp.zeros((d_in, C), vu_dt) for n in names])
+        Us = jnp.stack([components.vu[n][1] if n in components.vu else jnp.zeros((C, d_out), vu_dt) for n in names])
+        masks_k = jnp.stack([masks[n] if n in live_set else jnp.ones((*mask_lead, C), mask_dt) for n in names])
+        entry: dict[str, Array] = {"V": Vs, "U": Us, "live": live_flags, "mask": masks_k}
+        if has_delta:
+            # Fall back to `leading` when nothing is live (no real delta to size from); the
+            # dummy is never read — every site takes the cond frozen branch.
+            d_shape = a_delta.shape if a_delta is not None else leading
+            d_dt = a_delta.dtype if a_delta is not None else mask_dt
+            entry["delta"] = jnp.stack([delta_masks[n] if n in live_set else jnp.zeros(d_shape, d_dt) for n in names])
+        if routes is not None:
+            r_shape = a_route.shape if a_route is not None else leading
+            r_dt = a_route.dtype if a_route is not None else jnp.bool_
+            entry["route"] = jnp.stack([routes[n] if n in live_set else jnp.zeros(r_shape, r_dt) for n in names])
+        per_kind[kind] = entry
+    return per_kind
+
+
+def _per_kind_dims_uniform(components: DecompVU) -> bool:
+    """Whether every decomposed site of a given kind has identical `(d_in, C, d_out)` — the
+    precondition for the layer-`lax.scan` masked forward (it stacks per kind across layers).
+    True for the dense full-model decomposition; false for heterogeneous-C configs, which
+    fall back to the unrolled forward."""
+    kind_dims: dict[str, tuple[int, int, int]] = {}
+    for name, (V, U) in components.vu.items():
+        kind = parse_site_name(name)[1]
+        dims = (V.shape[0], V.shape[1], U.shape[1])
+        if kind_dims.setdefault(kind, dims) != dims:
+            return False
+    return True
+
+
+def _run_masked_suffix_unrolled(
     target: Target,
     components: DecompVU,
     first_layer: int,
@@ -403,12 +495,8 @@ def _run_masked_suffix(
     has_delta: bool,
     collect: dict[str, Array] | None,
 ) -> Array:
-    """The masked decomposed suffix forward shared by `masked_suffix_logits` and
-    `masked_suffix_site_outputs` (SPEC §1.3, S2): sites in `live` run their decomposed
-    forward with `masks[s]` / `delta_masks[s]` / `routes[s]`; every other site — and every
-    site absent from the decomposition entirely — runs the frozen `x @ W` path. `live` and
-    `has_delta` are static under jit; `has_delta` False skips the `x @ Δ` matmul
-    (LOSS_PARITY_DESIGN §4b). A non-None `collect` gathers per-site decomposed outputs."""
+    """Unrolled fallback for heterogeneous-C decompositions (the scan can't stack them).
+    Per-layer Python loop with static `live_kinds` gating (SPEC §1.3, S2)."""
     live_set = frozenset(live)
     x = resid
     for layer_offset, suffix_layer in enumerate(target.layers):
@@ -445,6 +533,104 @@ def _run_masked_suffix(
         x = post_attn + mlp_out
     x = rms_norm(x, target.norm, target.eps)
     return x @ target.lm_head.T
+
+
+def _run_masked_suffix(
+    target: Target,
+    components: DecompVU,
+    first_layer: int,
+    resid: Float[Array, "b t d"],
+    masks: dict[str, Array],
+    delta_masks: dict[str, Array],
+    routes: dict[str, Array] | None,
+    live: tuple[str, ...],
+    has_delta: bool,
+    collect: dict[str, Array] | None,
+) -> Array:
+    """Dispatch: the layer-`lax.scan` forward when per-kind dims are uniform (full model —
+    the compile win), else the unrolled fallback (heterogeneous-C configs)."""
+    args = (target, components, first_layer, resid, masks, delta_masks, routes, live, has_delta, collect)
+    if _per_kind_dims_uniform(components):
+        return _run_masked_suffix_scan(*args)
+    return _run_masked_suffix_unrolled(*args)
+
+
+def _run_masked_suffix_scan(
+    target: Target,
+    components: DecompVU,
+    first_layer: int,
+    resid: Float[Array, "b t d"],
+    masks: dict[str, Array],
+    delta_masks: dict[str, Array],
+    routes: dict[str, Array] | None,
+    live: tuple[str, ...],
+    has_delta: bool,
+    collect: dict[str, Array] | None,
+) -> Array:
+    """The masked decomposed suffix forward (SPEC §1.3, S2), as a `lax.scan` over the layer
+    stack with a per-site `lax.cond`: a site in `live` runs its decomposed forward
+    (`masks[s]`/`delta_masks[s]`/`routes[s]`), every other site — and every site absent from
+    the decomposition — runs the frozen `x @ W`. One block body compiles regardless of depth
+    / chunk count; `cond` runs only the taken branch so frozen sites do no V@U. `live` /
+    `has_delta` are static; a non-None `collect` gathers per-live-site decomposed outputs."""
+    live_set = frozenset(live)
+    n_layers = len(target.layers)
+    leading = resid.shape[:-1]
+    per_kind = _stack_per_kind_masked_inputs(
+        components, first_layer, n_layers, leading, masks, delta_masks, routes, live_set, has_delta
+    )
+    decomposed_kinds = frozenset(per_kind)
+    want_collect = collect is not None
+
+    def site_out(x_in: Array, kind: str, W: Array, pk: dict[str, dict[str, Array]]) -> tuple[Array, Array | None]:
+        if kind not in decomposed_kinds:
+            return x_in @ W.T, None
+        e = pk[kind]
+        delta = e.get("delta")
+        route = e.get("route")
+
+        def decomp(_: None) -> Array:
+            return _site_out(x_in, e["V"], e["U"], W, e["mask"], delta, route)
+
+        def frozen(_: None) -> Array:
+            return x_in @ W.T
+
+        out = jax.lax.cond(e["live"], decomp, frozen, None)
+        return out, (out if want_collect else None)
+
+    def block(x: Array, layer_in: tuple[SuffixLayer, dict[str, dict[str, Array]]]):
+        sl, pk = layer_in
+        attn = sl.attn
+        h1 = rms_norm(x, sl.ln1, target.eps)
+        q, qc = site_out(h1, "q", attn.wq, pk)
+        k, kc = site_out(h1, "k", attn.wk, pk)
+        v, vc = site_out(h1, "v", attn.wv, pk)
+        attn_y = attn.core(q, k, v, target.inv_freq)
+        o, oc = site_out(attn_y, "o", attn.wo, pk)
+        post_attn = x + o
+        h2 = rms_norm(post_attn, sl.ln2, target.eps)
+        g, gc = site_out(h2, "gate", sl.Wg, pk)
+        u, uc = site_out(h2, "up", sl.Wu, pk)
+        down_in = jax.nn.silu(g) * u
+        d, dc = site_out(down_in, "down", sl.Wd, pk)
+        x = post_attn + d
+        collected = (
+            {kc_name: c for kc_name, c in (("q", qc), ("k", kc), ("v", vc), ("o", oc),
+                                          ("gate", gc), ("up", uc), ("down", dc))
+             if c is not None}
+            if want_collect else None
+        )  # fmt: skip
+        return x, collected
+
+    x, ys = jax.lax.scan(block, resid, (_stack_layers(target.layers), per_kind))
+    x = rms_norm(x, target.norm, target.eps)
+    logits = x @ target.lm_head.T
+    if collect is not None:
+        assert ys is not None  # collect requested -> the scan emitted per-kind outputs
+        for site in live:
+            layer, kind = parse_site_name(site)
+            collect[site] = ys[kind][layer - first_layer]
+    return logits
 
 
 def masked_suffix_logits(
