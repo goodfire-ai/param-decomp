@@ -88,6 +88,7 @@ class Harvester:
         context_tokens_per_side: int,
         max_examples_per_batch_per_component: int,
         collect_component_cooccurrence: bool,
+        selected_global_indices: Int[np.ndarray, " n_selected"] | None = None,
         seed: int = 0,
     ):
         self.layers = layers
@@ -103,8 +104,24 @@ class Harvester:
         for layer, c in layers:
             self.layer_offsets[layer] = offset
             offset += c
+        n_full = offset
 
-        n_components = offset
+        full_layout = [(layer, i) for layer, c in layers for i in range(c)]
+        if selected_global_indices is None:
+            self.gather_index: Int[np.ndarray, " n_selected"] | None = None
+            self.component_layout = full_layout
+        else:
+            sel = np.asarray(selected_global_indices)
+            assert sel.ndim == 1 and sel.size > 0, f"bad selection shape {sel.shape}"
+            assert np.issubdtype(sel.dtype, np.integer), (
+                f"selection must be integer, got {sel.dtype}"
+            )
+            assert (sel >= 0).all() and (sel < n_full).all(), "selection out of range"
+            assert np.unique(sel).size == sel.size, "selected indices must be unique"
+            self.gather_index = sel
+            self.component_layout = [full_layout[g] for g in sel.tolist()]
+
+        n_components = len(self.component_layout)
 
         window_size = 2 * context_tokens_per_side + 1
 
@@ -146,7 +163,7 @@ class Harvester:
 
     @property
     def component_keys(self) -> list[str]:
-        return [f"{layer}:{i}" for layer, c in self.layers for i in range(c)]
+        return [f"{layer}:{i}" for layer, i in self.component_layout]
 
     # -- Batch processing --------------------------------------------------
 
@@ -163,7 +180,6 @@ class Harvester:
         probs_flat = rearrange(output_probs, "b s v -> (b s) v").astype(np.float64)
 
         firings_cat = np.concatenate([firings[layer] for layer in self.layer_names], axis=-1)
-        firings_flat = rearrange(firings_cat, "b s lc -> (b s) lc")
 
         act_types = list(activations[self.layer_names[0]].keys())
         activations_cat: dict[str, Float[np.ndarray, "B S LC"]] = {}
@@ -171,6 +187,12 @@ class Harvester:
             activations_cat[act_type] = np.concatenate(
                 [activations[layer][act_type] for layer in self.layer_names], axis=-1
             )
+
+        if self.gather_index is not None:
+            firings_cat = firings_cat[..., self.gather_index]
+            activations_cat = {at: a[..., self.gather_index] for at, a in activations_cat.items()}
+
+        firings_flat = rearrange(firings_cat, "b s lc -> (b s) lc")
 
         self.firing_counts += reduce(firings_cat.astype(np.int64), "b s lc -> lc", "sum")
 
@@ -225,6 +247,7 @@ class Harvester:
             "max_examples_per_component": self.max_examples_per_component,
             "context_tokens_per_side": self.context_tokens_per_side,
             "max_examples_per_batch_per_component": self.max_examples_per_batch_per_component,
+            "gather_index": self.gather_index,
             "total_tokens_processed": self.total_tokens_processed,
             "reservoir": self.reservoir.state_dict(),
             "firing_counts": self.firing_counts,
@@ -249,6 +272,7 @@ class Harvester:
             context_tokens_per_side=d["context_tokens_per_side"],
             max_examples_per_batch_per_component=d["max_examples_per_batch_per_component"],
             collect_component_cooccurrence=d["collect_component_cooccurrence"],
+            selected_global_indices=d["gather_index"],
         )
         h.total_tokens_processed = d["total_tokens_processed"]
         h.firing_counts = d["firing_counts"]
@@ -266,6 +290,7 @@ class Harvester:
         assert other.layer_names == self.layer_names
         assert other.c_per_layer == self.c_per_layer
         assert other.vocab_size == self.vocab_size
+        assert other.component_layout == self.component_layout, "mismatched component selection"
 
         assert (self.cooccurrence_counts is None) == (other.cooccurrence_counts is None), (
             "Cannot merge harvesters with mismatched component-cooccurrence collection"
@@ -296,41 +321,38 @@ class Harvester:
 
         _log_base_rate_summary(self.firing_counts, self.input_marginals)
 
-        for layer, layer_c in self.layers:
-            offset = self.layer_offsets[layer]
+        for flat_idx, (layer, component_idx) in enumerate(
+            tqdm.tqdm(self.component_layout, desc="Building components")
+        ):
+            n_firings = float(self.firing_counts[flat_idx])
+            if n_firings == 0:
+                continue
 
-            for component_idx in tqdm.tqdm(range(layer_c), desc="Building components"):
-                flat_idx = offset + component_idx
-
-                n_firings = float(self.firing_counts[flat_idx])
-                if n_firings == 0:
-                    continue
-
-                yield ComponentData(
-                    component_key=f"{layer}:{component_idx}",
-                    layer=layer,
-                    component_idx=component_idx,  # as in, the index of the component within the layer
-                    firing_density=n_firings / self.total_tokens_processed,
-                    mean_activations={
-                        act_type: float(mean_activations[act_type][flat_idx])
-                        for act_type in mean_activations
-                    },
-                    activation_examples=list(self.reservoir.examples(flat_idx)),
-                    input_token_pmi=_compute_token_pmi(
-                        self.input_cooccurrence[flat_idx].astype(np.float64),
-                        self.input_marginals.astype(np.float64),
-                        n_firings,
-                        self.total_tokens_processed,
-                        pmi_top_k_tokens,
-                    ),
-                    output_token_pmi=_compute_token_pmi(
-                        self.output_cooccurrence[flat_idx],
-                        self.output_marginals,
-                        n_firings,
-                        self.total_tokens_processed,
-                        pmi_top_k_tokens,
-                    ),
-                )
+            yield ComponentData(
+                component_key=f"{layer}:{component_idx}",
+                layer=layer,
+                component_idx=component_idx,  # as in, the index of the component within the layer
+                firing_density=n_firings / self.total_tokens_processed,
+                mean_activations={
+                    act_type: float(mean_activations[act_type][flat_idx])
+                    for act_type in mean_activations
+                },
+                activation_examples=list(self.reservoir.examples(flat_idx)),
+                input_token_pmi=_compute_token_pmi(
+                    self.input_cooccurrence[flat_idx].astype(np.float64),
+                    self.input_marginals.astype(np.float64),
+                    n_firings,
+                    self.total_tokens_processed,
+                    pmi_top_k_tokens,
+                ),
+                output_token_pmi=_compute_token_pmi(
+                    self.output_cooccurrence[flat_idx],
+                    self.output_marginals,
+                    n_firings,
+                    self.total_tokens_processed,
+                    pmi_top_k_tokens,
+                ),
+            )
 
 
 # ---------------------------------------------------------------------------

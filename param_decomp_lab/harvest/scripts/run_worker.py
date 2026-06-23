@@ -54,11 +54,31 @@ def harvest_batch_from_forward(
     )
 
 
+def global_indices_for_keys(layers: list[tuple[str, int]], keys: list[str]) -> np.ndarray:
+    """Map `<site>:<idx>` component keys to their index in the concatenated component axis."""
+    offsets: dict[str, int] = {}
+    sizes: dict[str, int] = {}
+    offset = 0
+    for name, c in layers:
+        offsets[name] = offset
+        sizes[name] = c
+        offset += c
+    indices = []
+    for key in keys:
+        site, idx_str = key.rsplit(":", 1)
+        assert site in offsets, f"unknown site {site!r} (sites: {list(offsets)})"
+        idx = int(idx_str)
+        assert 0 <= idx < sizes[site], f"idx {idx} out of range for {site} (C={sizes[site]})"
+        indices.append(offsets[site] + idx)
+    return np.array(sorted(indices), dtype=np.int64)
+
+
 def harvest_jax_run(
     run: LoadedJaxRun,
     config: HarvestConfig,
     output_dir: Path,
     rank_world_size: tuple[int, int] | None,
+    selected_global_indices: np.ndarray | None,
 ) -> None:
     method_config = config.method_config
     assert isinstance(method_config, ParamDecompHarvestConfig), (
@@ -78,6 +98,7 @@ def harvest_jax_run(
         context_tokens_per_side=config.activation_context_tokens_per_side,
         max_examples_per_batch_per_component=config.max_examples_per_batch_per_component,
         collect_component_cooccurrence=config.collect_component_cooccurrence,
+        selected_global_indices=selected_global_indices,
     )
 
     assert isinstance(config.n_batches, int), "JAX harvest needs an explicit n_batches"
@@ -149,10 +170,26 @@ def main() -> None:
         action="store_true",
         help="skip the O(C²) component-cooccurrence matrix (slow on CPU; on for production)",
     )
+    ap.add_argument(
+        "--selected_keys_file",
+        type=Path,
+        default=None,
+        help="newline-delimited `<site>:<idx>` keys; harvest only these components",
+    )
     args = ap.parse_args()
     assert (args.rank is None) == (args.world_size is None)
 
     run = open_jax_run(args.run_dir, args.step)
+
+    selected_global_indices = None
+    if args.selected_keys_file is not None:
+        lines = args.selected_keys_file.read_text().splitlines()
+        keys = [s.strip() for s in lines if s.strip() and not s.lstrip().startswith("#")]
+        selected_global_indices = global_indices_for_keys(run.layer_activation_sizes, keys)
+        logger.info(
+            f"Harvesting {len(selected_global_indices)} selected components "
+            f"of {sum(c for _, c in run.layer_activation_sizes)} total"
+        )
     subrun_id = args.subrun_id or "h-" + datetime.now().strftime("%Y%m%d_%H%M%S")
     config = HarvestConfig(
         method_config=ParamDecompHarvestConfig(
@@ -170,7 +207,7 @@ def main() -> None:
         )
     else:
         logger.info(f"JAX harvest: run {run.run_id} step {run.step}, subrun {subrun_id}")
-    harvest_jax_run(run, config, output_dir, rank_world_size)
+    harvest_jax_run(run, config, output_dir, rank_world_size, selected_global_indices)
 
 
 if __name__ == "__main__":

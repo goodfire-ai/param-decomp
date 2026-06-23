@@ -123,6 +123,12 @@ The only worker. Opens a JAX run, runs its frozen forward, accumulates into the 
   final results directly.
 - `--subrun_id`: Sub-run identifier (auto-generated `h-YYYYMMDD_HHMMSS` if omitted)
 - `--no_cooccurrence`: skip the dense component co-occurrence matrix
+- `--selected_keys_file`: newline-delimited `<site>:<idx>` keys (dotted site names, e.g.
+  `layers.18.mlp.gate_proj:45194`; `#` comments allowed). Harvest only these components.
+  The forward still runs over all components; the accumulator gathers down to the selection
+  before building its per-component × {vocab, examples, cooccurrence} arrays. This is what
+  makes a top-K-per-matrix harvest tractable on a full-vocab LM run — harvesting all
+  147k components would need ~150 GB host arrays for the token stats alone.
 
 ### Merge Script (`scripts/run_merge.py`)
 
