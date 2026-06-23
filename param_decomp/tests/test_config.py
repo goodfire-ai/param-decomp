@@ -89,7 +89,7 @@ def test_eval_block_maps_slow_tier_and_defers_offline_only_metrics(
         "slow_on_first_step": True,
         "metrics": [
             {"type": "CEandKLLosses", "rounding_threshold": 0.0},
-            {"type": "CI_L0", "groups": None, "ci_alive_threshold": 0.0},
+            {"type": "CI_L0", "groups": None, "ci_alive_thresholds": [0.0, 0.01]},
             {
                 "type": "PGDReconLoss",
                 "coeff": None,
@@ -109,7 +109,7 @@ def test_eval_block_maps_slow_tier_and_defers_offline_only_metrics(
     assert (cfg.eval.batch_size, cfg.eval.every, cfg.eval.n_steps) == (128, 1000, 1)
     assert (cfg.eval.slow_every, cfg.eval.slow_on_first_step) == (10000, True)
     assert cfg.eval.slow_n_batches_accum == 7  # read off the CIHistograms metric
-    assert cfg.eval.rounding_threshold == 0.0 and cfg.eval.ci_alive_threshold == 0.0
+    assert cfg.eval.rounding_threshold == 0.0 and cfg.eval.ci_alive_thresholds == (0.0, 0.01)
     assert cfg.eval.pgd is not None and (cfg.eval.pgd.n_steps, cfg.eval.pgd.step_size) == (20, 0.1)
     # the plot / permutation / UV / identity metrics all run in-loop — `_eval` accepts them
     # without raising, and nothing is deferred (no offline path)
