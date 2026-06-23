@@ -48,8 +48,11 @@ _SRUN_FLAGS = (
 # Default 0.75 caps the XLA pool too low for production steps (OOM, job 50644);
 # CUDA-graph capture (XLA command buffers) intermittently dies with
 # CUDA_ERROR_STREAM_CAPTURE_INVALIDATED on disjoint allocations — disabling
-# measured ~0% cost (8,007 vs 8,015 tok/s/GPU).
+# measured ~0% cost (8,007 vs 8,015 tok/s/GPU). NCCL_DEBUG=WARN overrides the cluster
+# default (NCCL_DEBUG=INFO / NCCL_DEBUG_SUBSYS=ALL), which logs every collective and
+# bloats the slurm logs to tens of GB per run.
 _RANK_ENV = """\
+export NCCL_DEBUG=WARN
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.92
 export XLA_FLAGS="--xla_gpu_enable_command_buffer=\""""
 
