@@ -120,6 +120,8 @@ def make_slow_eval_step(lm: DecomposedModel, ci_alive_threshold: float) -> SlowE
     ) -> tuple[dict[str, Array], dict[str, Array], Array, dict[str, Array], dict[str, Array]]:
         taps = model.read_activations(residual, ci_fn.input_names)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
+        # bf16 weights (training/cuDNN), f32 readout: bf16 host reductions over ~B*T
+        # positions lose precision, and matplotlib rejects bfloat16.
         logits = {s: v.astype(jnp.float32) for s, v in ci_fn_bf16(taps).logits.items()}
         lower = {s: lower_leaky_hard_sigmoid(logits[s]) for s in site_names}
 
@@ -209,6 +211,8 @@ def make_position_ci_step(lm: DecomposedModel) -> PositionCIStep:
     ) -> tuple[dict[str, Array], dict[str, Array], Array]:
         taps = model.read_activations(residual, ci_fn.input_names)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
+        # bf16 weights (training/cuDNN), f32 readout: bf16 host reductions over ~B*T
+        # positions lose precision, and matplotlib rejects bfloat16.
         logits = {s: v.astype(jnp.float32) for s, v in ci_fn_bf16(taps).logits.items()}
         lower = {s: lower_leaky_hard_sigmoid(logits[s]) for s in site_names}
         upper = {s: upper_leaky_hard_sigmoid(logits[s]) for s in site_names}
