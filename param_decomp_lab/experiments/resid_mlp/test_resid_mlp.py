@@ -253,7 +253,7 @@ def _make_state_and_step(
         components=vu, ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        sources={}, sources_opt_state={}, step=jnp.zeros((), jnp.int32),
+        adversaries={}, step=jnp.zeros((), jnp.int32),
     )  # fmt: skip
     loss_terms = build_loss_terms(_loss_metrics(), lm.site_names)
     step = make_train_step(
@@ -278,7 +278,7 @@ def test_step_trains_positionless_no_persistent_sources():
         losses.append({k: float(v) for k, v in m.items()})
     assert all(jnp.isfinite(jnp.array(list(m.values()))).all() for m in losses)
     assert int(state.step) == 6
-    assert state.sources == {}  # no persistent sources for the stochastic configs
+    assert state.adversaries == {}  # no persistent sources for the stochastic configs
     assert isinstance(state.components, DecompVU)
     for V, U in state.components.vu.values():
         assert V.dtype == jnp.float32 and U.dtype == jnp.float32
@@ -363,7 +363,7 @@ def _faith_warmed_state(
         components=vu, ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        sources={}, sources_opt_state={}, step=jnp.zeros((), jnp.int32),
+        adversaries={}, step=jnp.zeros((), jnp.int32),
     )  # fmt: skip
     loss_terms = build_loss_terms(_recovery_loss_metrics(), lm.site_names)
     step = make_train_step(

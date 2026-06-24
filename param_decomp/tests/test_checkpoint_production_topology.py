@@ -10,7 +10,7 @@ topology:
   * the V/U + Adam states are C-SHARDED and the sources/moments REPLICATED over a
     multi-device `dp` mesh (`llama8b_sharding.py`), exactly as `init_train_state` places
     them — so the test exercises the sharded save/restore path, not the all-on-one path;
-  * MULTIPLE persistent terms (SPEC S23: one `sources_opt_state` entry per term), so a
+  * MULTIPLE persistent terms (SPEC S23: one `adversaries` entry per term), so a
     per-term moment tree that got dropped would surface;
   * an explicit structural assertion that the RESTORED pytree carries `m`, `v`, and a
     non-zero `step_count` for every persistent term and every site — not just that the
@@ -31,7 +31,11 @@ import optax
 import pytest
 from jax.sharding import NamedSharding
 
-from param_decomp.adversary import SourcesAdamState, init_sources_adam_state
+from param_decomp.adversary import (
+    PersistentAdversary,
+    SourcesAdamState,
+    init_sources_adam_state,
+)
 from param_decomp.checkpoint import make_checkpoint_manager, restore_latest, save_state
 from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch
 from param_decomp.configs import (
@@ -100,8 +104,11 @@ def _build_sharded(seed: int):
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
     site_cs = tuple(s.C for s in lm.sites)
-    sources = {
-        name: init_sources_sharded(
+    ppgd_cfgs = (_persistent_cfg(None), _persistent_cfg("ppgd_second"))
+    adversaries: dict[str, PersistentAdversary] = {}
+    for i, (state_key, ppgd_cfg) in enumerate(zip(PERSISTENT_TERMS, ppgd_cfgs, strict=True)):
+        assert ppgd_cfg.coeff is not None
+        src = init_sources_sharded(
             lm.site_names,
             site_cs,
             seq,
@@ -110,14 +117,20 @@ def _build_sharded(seed: int):
             jax.random.fold_in(jax.random.PRNGKey(seed + 2), i),
             mesh,
         )
-        for i, name in enumerate(PERSISTENT_TERMS)
-    }
+        adversaries[state_key] = PersistentAdversary(
+            sources=src,
+            opt_state=init_sources_adam_state(src),
+            state_key=state_key,
+            coeff=ppgd_cfg.coeff,
+            adam=ppgd_cfg.optimizer,
+            start_frac=ppgd_cfg.start_frac,
+            n_warmup=ppgd_cfg.n_warmup_steps,
+        )
     state = TrainState(
         components=vu, ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        sources=sources,
-        sources_opt_state={k: init_sources_adam_state(v) for k, v in sources.items()},
+        adversaries=adversaries,
         step=jnp.zeros((), jnp.int32),
     )  # fmt: skip
     # run.py:185 — normalize eager scalar stragglers (Adam `count`, `step`) onto the mesh
@@ -133,8 +146,7 @@ def _build_sharded(seed: int):
                 p_anneal_start_frac=0.0, p_anneal_final_p=0.4, p_anneal_end_frac=1.0,
             ),
             ChunkwiseSubsetReconLossConfig(routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=3, n_samples=1),
-            _persistent_cfg(None),
-            _persistent_cfg("ppgd_second"),
+            *ppgd_cfgs,
         ),
         lm.site_names,
     )  # fmt: skip
@@ -154,19 +166,17 @@ def _build_sharded(seed: int):
     return lm, state, step, resid
 
 
-def _assert_moments_present(
-    sources: dict[str, dict[str, jax.Array]],
-    sources_opt_state: dict[str, SourcesAdamState],
-) -> None:
+def _assert_moments_present(adversaries: dict[str, PersistentAdversary]) -> None:
     """SPEC S22/S23: every persistent term carries m, v (one leaf per source site, same
     shape as the source) and a non-zero step_count."""
-    assert tuple(sources_opt_state) == PERSISTENT_TERMS, sources_opt_state.keys()
+    assert tuple(adversaries) == PERSISTENT_TERMS, adversaries.keys()
     for term in PERSISTENT_TERMS:
-        adam = sources_opt_state[term]
+        adv = adversaries[term]
+        adam = adv.opt_state
         assert isinstance(adam, SourcesAdamState)
-        assert set(adam.m) == set(sources[term]), (term, adam.m.keys())
-        assert set(adam.v) == set(sources[term]), (term, adam.v.keys())
-        for site, src in sources[term].items():
+        assert set(adam.m) == set(adv.sources), (term, adam.m.keys())
+        assert set(adam.v) == set(adv.sources), (term, adam.v.keys())
+        for site, src in adv.sources.items():
             assert adam.m[site].shape == src.shape, (term, site)
             assert adam.v[site].shape == src.shape, (term, site)
         assert float(adam.step_count) > 0.0, (term, float(adam.step_count))
@@ -180,7 +190,7 @@ def test_sharded_roundtrip_persists_source_moments(tmp_path: Path):
     for i in range(2):
         state, _ = step(lm, state, resid, jax.random.PRNGKey(i))
     # The ascents must have advanced each term's Adam counter before we save.
-    _assert_moments_present(state.sources, state.sources_opt_state)
+    _assert_moments_present(state.adversaries)
 
     mgr = make_checkpoint_manager(tmp_path / "ckpts", keep_last=2)
     save_state(mgr, 2, state)
@@ -194,7 +204,7 @@ def test_sharded_roundtrip_persists_source_moments(tmp_path: Path):
     assert ckpt_step == 2
 
     # The persisted pytree itself carries the moments + step_count for every term.
-    _assert_moments_present(loaded.sources, loaded.sources_opt_state)
+    _assert_moments_present(loaded.adversaries)
 
     # Values come from disk, and each leaf is reconstructed onto the REFERENCE sharding.
     # Pull leaves to host before comparing: a sharded leaf and a single-device leaf can't

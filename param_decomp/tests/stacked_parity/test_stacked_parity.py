@@ -27,7 +27,11 @@ import optax
 import pytest
 from jax import random
 
-from param_decomp.adversary import init_persistent_sources, init_sources_adam_state
+from param_decomp.adversary import (
+    PersistentAdversary,
+    init_persistent_sources,
+    init_sources_adam_state,
+)
 from param_decomp.components import DecompVU
 from param_decomp.configs import (
     AdamPGDConfig,
@@ -215,12 +219,32 @@ def test_train_trajectory_matches():
 
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
+    ppgd_cfg = PersistentPGDReconLossConfig(
+        coeff=0.5,
+        scope=SCScope(),
+        optimizer=AdamPGDConfig(
+            beta1=0.5,
+            beta2=0.99,
+            lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
+        ),
+        n_warmup_steps=n_warmup,
+    )
+    assert ppgd_cfg.coeff is not None
     state = TrainState(
         components=vu, ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        sources={"PersistentPGDReconLoss": sources},
-        sources_opt_state={"PersistentPGDReconLoss": init_sources_adam_state(sources)},
+        adversaries={
+            ppgd_cfg.type: PersistentAdversary(
+                sources=sources,
+                opt_state=init_sources_adam_state(sources),
+                state_key=ppgd_cfg.type,
+                coeff=ppgd_cfg.coeff,
+                adam=ppgd_cfg.optimizer,
+                start_frac=ppgd_cfg.start_frac,
+                n_warmup=ppgd_cfg.n_warmup_steps,
+            )
+        },
         step=jnp.zeros((), jnp.int32),
     )  # fmt: skip
     loss_terms = build_loss_terms(
@@ -237,16 +261,7 @@ def test_train_trajectory_matches():
             ChunkwiseSubsetReconLossConfig(
                 routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=3, n_samples=1
             ),
-            PersistentPGDReconLossConfig(
-                coeff=0.5,
-                scope=SCScope(),
-                optimizer=AdamPGDConfig(
-                    beta1=0.5,
-                    beta2=0.99,
-                    lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
-                ),
-                n_warmup_steps=n_warmup,
-            ),
+            ppgd_cfg,
         ),
         lm.site_names,
     )
@@ -275,6 +290,6 @@ def test_train_trajectory_matches():
         V, U = state.components.site(name)
         _assert_close(V, f[f"out::final_V::{name}"], f"final V {name}")
         _assert_close(U, f[f"out::final_U::{name}"], f"final U {name}")
-    final_sources = state.sources["PersistentPGDReconLoss"]
+    final_sources = state.adversaries["PersistentPGDReconLoss"].sources
     for name in lm.site_names:
         _assert_close(final_sources[name], f[f"out::final_src::{name}"], f"final src {name}")

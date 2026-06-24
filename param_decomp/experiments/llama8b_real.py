@@ -38,7 +38,11 @@ from jax import random
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from param_decomp.adversary import init_persistent_sources, init_sources_adam_state
+from param_decomp.adversary import (
+    PersistentAdversary,
+    init_persistent_sources,
+    init_sources_adam_state,
+)
 from param_decomp.ci_fn import (
     Chunk,
     ChunkwiseTransformerCIArch,
@@ -230,13 +234,33 @@ def main():
                 f"final faith {float(wloss):.3e}"
             )
 
+    ppgd_cfg = PersistentPGDReconLossConfig(
+        coeff=0.5,
+        scope=SCScope(),
+        optimizer=AdamPGDConfig(
+            beta1=0.5,
+            beta2=0.99,
+            lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
+        ),
+        n_warmup_steps=args.n_warmup,
+    )
+    assert ppgd_cfg.coeff is not None
     state = TrainState(
         components=vu,
         ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        sources={"PersistentPGDReconLoss": src},
-        sources_opt_state={"PersistentPGDReconLoss": init_sources_adam_state(src)},
+        adversaries={
+            ppgd_cfg.type: PersistentAdversary(
+                sources=src,
+                opt_state=init_sources_adam_state(src),
+                state_key=ppgd_cfg.type,
+                coeff=ppgd_cfg.coeff,
+                adam=ppgd_cfg.optimizer,
+                start_frac=ppgd_cfg.start_frac,
+                n_warmup=ppgd_cfg.n_warmup_steps,
+            )
+        },
         step=jnp.zeros((), jnp.int32),
     )
     loss_terms = build_loss_terms(
@@ -253,16 +277,7 @@ def main():
             ChunkwiseSubsetReconLossConfig(
                 routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=3, n_samples=1
             ),
-            PersistentPGDReconLossConfig(
-                coeff=0.5,
-                scope=SCScope(),
-                optimizer=AdamPGDConfig(
-                    beta1=0.5,
-                    beta2=0.99,
-                    lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
-                ),
-                n_warmup_steps=args.n_warmup,
-            ),
+            ppgd_cfg,
         ),
         lm.site_names,
     )
@@ -279,13 +294,13 @@ def main():
     m: dict[str, jax.Array] = {}
     for _ in range(2):
         state, m = step(lm, state, resid, random.PRNGKey(7))
-        jax.block_until_ready((state.sources, m["total"]))
+        jax.block_until_ready((state.adversaries, m["total"]))
 
     per = []
     for s in range(args.steps):
         t = time.time()
         state, m = step(lm, state, resid, random.PRNGKey(1000 + s))
-        jax.block_until_ready((state.sources, m["total"]))
+        jax.block_until_ready((state.adversaries, m["total"]))
         per.append(time.time() - t)
     blocked = sum(per) / len(per)
 
@@ -293,7 +308,7 @@ def main():
     for s in range(args.steps):
         state, m = step(lm, state, resid, random.PRNGKey(2000 + s))
     dispatch = (time.time() - t) / args.steps
-    jax.block_until_ready((state.sources, m["total"]))
+    jax.block_until_ready((state.adversaries, m["total"]))
 
     peak_gb = max(
         d.memory_stats()["peak_bytes_in_use"] / 1e9

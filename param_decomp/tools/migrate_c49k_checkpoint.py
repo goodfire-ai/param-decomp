@@ -21,12 +21,12 @@ The remap (OLD leaf -> NEW leaf), confirmed against orbax metadata of both trees
 
   ci_fn / ci_fn_opt_state   IDENTICAL leaf names old and new -> straight copy.
 
-  sources / sources_opt_state
+  adversaries
                         OLD sources.<short_site>                  (no state-key level)
-                        NEW sources.<state_key>.<short_site>      state_key = the
-                        PersistentPGD term's instance key ("PersistentPGDReconLoss").
+                        NEW adversaries.<state_key>.sources.<short_site>   state_key =
+                        the PersistentPGD term's instance key ("PersistentPGDReconLoss").
                         OLD sources_adam_state.{m,v}.<site> + .step_count
-                        NEW sources_opt_state.<state_key>.{m,v}.<site> + .step_count.
+                        NEW adversaries.<state_key>.opt_state.{m,v}.<site> + .step_count.
                         Site names already match (short `layers.18.mlp.*_proj`).
 
   step                  scalar, copied through (restores as 175000).
@@ -128,12 +128,13 @@ def _flatten_old(old: dict[str, Any]) -> dict[str, Array]:
     add_ci_fn(".ci_fn_opt_state[0].nu", cio[0]["nu"])
 
     adam = old["sources_adam_state"]
+    adv = f".adversaries['{SOURCE_STATE_KEY}']"
     for site, src in old["sources"].items():
-        out[f".sources['{SOURCE_STATE_KEY}']['{site}']"] = src
+        out[f"{adv}.sources['{site}']"] = src
     for moment in ("m", "v"):
         for site, value in adam[moment].items():
-            out[f".sources_opt_state['{SOURCE_STATE_KEY}'].{moment}['{site}']"] = value
-    out[f".sources_opt_state['{SOURCE_STATE_KEY}'].step_count"] = adam["step_count"]
+            out[f"{adv}.opt_state.{moment}['{site}']"] = value
+    out[f"{adv}.opt_state.step_count"] = adam["step_count"]
 
     out[".step"] = old["step"]
     return out
@@ -220,7 +221,7 @@ def _verify(dst_run_dir: Path, reference: TrainState, lm: Any, cfg: Any) -> None
         assert jnp.all(jnp.isfinite(V)) and jnp.all(jnp.isfinite(U)), f"{site}: non-finite V/U"
     print(f"  components shapes + finiteness OK for {list(lm.site_names)}")
 
-    src = state.sources[SOURCE_STATE_KEY]["layers.18.mlp.gate_proj"]
+    src = state.adversaries[SOURCE_STATE_KEY].sources["layers.18.mlp.gate_proj"]
     assert jnp.all((src >= 0.0) & (src <= 1.0)), "source values out of [0,1]"
     print(f"  sources in [0,1]; gate source shape {src.shape}")
 

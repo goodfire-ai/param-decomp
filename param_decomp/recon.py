@@ -88,10 +88,10 @@ class FreshPGDSources:
 
 @dataclass(frozen=True)
 class PersistentSources:
-    """Sources living in `TrainState.sources[state_key]` across steps (PPGD). Carries
+    """Sources living in `TrainState.adversaries[state_key]` across steps (PPGD). Carries
     the shared `PersistentPGDReconLossConfig` so the term is self-describing — the step
     reads its scope/optimizer/warmup/`start_frac` straight off `cfg`. `state_key` indexes
-    `TrainState.sources` / `.sources_opt_state` (one key per persistent term, SPEC S23)."""
+    `TrainState.adversaries` (one key per persistent term, SPEC S23)."""
 
     state_key: str
     cfg: PersistentPGDReconLossConfig

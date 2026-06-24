@@ -32,7 +32,11 @@ from jax import random
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from param_decomp.adversary import init_persistent_sources, init_sources_adam_state
+from param_decomp.adversary import (
+    PersistentAdversary,
+    init_persistent_sources,
+    init_sources_adam_state,
+)
 from param_decomp.ci_fn import (
     Chunk,
     ChunkwiseTransformerCIArch,
@@ -78,7 +82,8 @@ def _place_state(typed: TrainState, mesh: Mesh) -> TrainState:
     """Attach the trainer's GSPMD shardings to the typed abstract `TrainState`, reusing each
     param owner's OWN `.shardings` (so the probe sees the exact production placement, incl.
     the chunkwise CI fn's Megatron layout). The Adam mu/nu mirror their params' shardings;
-    every other leaf (sources/SCScope, scalars/1-D, opt counts) replicates."""
+    every other leaf (the adversaries' sources + Adam moments, scalars/1-D, opt counts)
+    replicates."""
     comp_shardings = typed.components.shardings(mesh)
     ci_shardings = typed.ci_fn.shardings(mesh)
     components = _attach(typed.components, comp_shardings)
@@ -87,11 +92,10 @@ def _place_state(typed: TrainState, mesh: Mesh) -> TrainState:
     ci_fn_opt_state = _place_adam_state(typed.ci_fn_opt_state, ci_shardings, mesh)
     return eqx.tree_at(
         lambda s: (s.components, s.ci_fn, s.components_opt_state, s.ci_fn_opt_state,
-                   s.sources, s.sources_opt_state, s.step),
+                   s.adversaries, s.step),
         typed,
         (components, ci_fn, components_opt_state, ci_fn_opt_state,
-         _abstract_replicated(typed.sources, mesh),
-         _abstract_replicated(typed.sources_opt_state, mesh),
+         _abstract_replicated(typed.adversaries, mesh),
          _abstract_replicated(typed.step, mesh)),
     )  # fmt: skip
 
@@ -125,6 +129,7 @@ def _typed_state_struct(
     opt_vu: Any,
     opt_ci: Any,
     ci_arch: ChunkwiseTransformerCIArch,
+    ppgd_cfg: PersistentPGDReconLossConfig,
     src_leading: tuple[int, int],
     key: Any,
 ) -> TrainState:
@@ -136,12 +141,22 @@ def _typed_state_struct(
     sources = init_persistent_sources(
         lm.site_names, tuple(s.C for s in lm.sites), src_leading, random.fold_in(key, 2)
     )
+    assert ppgd_cfg.coeff is not None
     return TrainState(
         components=components, ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(components, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        sources={"PersistentPGDReconLoss": sources},
-        sources_opt_state={"PersistentPGDReconLoss": init_sources_adam_state(sources)},
+        adversaries={
+            ppgd_cfg.type: PersistentAdversary(
+                sources=sources,
+                opt_state=init_sources_adam_state(sources),
+                state_key=ppgd_cfg.type,
+                coeff=ppgd_cfg.coeff,
+                adam=ppgd_cfg.optimizer,
+                start_frac=ppgd_cfg.start_frac,
+                n_warmup=ppgd_cfg.n_warmup_steps,
+            )
+        },
         step=jnp.zeros((), jnp.int32),
     )  # fmt: skip
 
@@ -208,6 +223,8 @@ def main() -> None:
             n_warmup_steps=2,
         ),
     )  # fmt: skip
+    ppgd_cfg = loss_metrics[-1]
+    assert isinstance(ppgd_cfg, PersistentPGDReconLossConfig)
     loss_terms = build_loss_terms(loss_metrics, lm.site_names)
 
     ci_arch = ChunkwiseTransformerCIArch(
@@ -221,7 +238,8 @@ def main() -> None:
     key_repl = jax.ShapeDtypeStruct((2,), jnp.uint32, sharding=NamedSharding(mesh, P()))
 
     typed = jax.eval_shape(
-        lambda k: _typed_state_struct(lm, opt_vu, opt_ci, ci_arch, (1, seq), k), key_repl
+        lambda k: _typed_state_struct(lm, opt_vu, opt_ci, ci_arch, ppgd_cfg, (1, seq), k),
+        key_repl,
     )
     state_in = _place_state(typed, mesh)
 

@@ -11,11 +11,13 @@ else (SPEC §3):
 - **Fresh PGD** — `PGDReconLossConfig` (torch `PGDReconLoss` as a TRAINING loss).
   Sources are re-initialized every step, ascended `n_steps` times by
   `step_size * sign(grad)` with clamp to [0,1], and carry NO state across steps —
-  `TrainState.sources` stays empty for this variant.
+  `TrainState.adversaries` stays empty for this variant.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import random
@@ -23,6 +25,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from param_decomp.components import SiteSpec
 from param_decomp.configs import AdamPGDConfig, MaskScopeLiteral, PGDInitStrategy
+from param_decomp.losses import warmup_then_constant_lr
 
 
 @jax.tree_util.register_dataclass
@@ -138,3 +141,81 @@ def source_masks(
         masks[site] = ci_lower[site] + (1.0 - ci_lower[site]) * source[..., :-1]
         delta_masks[site] = source[..., -1]
     return masks, delta_masks
+
+
+class PersistentAdversary(eqx.Module):
+    """One persistent-PGD adversary (SPEC §3): the per-site sources + their Adam moments
+    that persist across steps, plus the lifecycle the trainer drives around the shared
+    backward. `sources` / `opt_state` are dynamic state; the rest is static config.
+
+    Per step: `warmup_ascend` (n_warmup supplemental ascents vs a scoring forward, params
+    + CI detached) → the warmed sources enter the main `value_and_grad` as leaves →
+    `final_ascend` (one more ascent from the SAME backward's source-grad, unscaled by the
+    term's `coeff` — exact since one source bundle feeds exactly one term, SPEC S23).
+    `start_frac` freezes every update until `step/total_steps >= start_frac` (SPEC S32)."""
+
+    sources: dict[str, Array]  # site -> source in [0,1], `(*scope_leading, C+1)`
+    opt_state: SourcesAdamState
+    state_key: str = eqx.field(static=True)
+    coeff: float = eqx.field(static=True)
+    adam: AdamPGDConfig = eqx.field(static=True)
+    start_frac: float = eqx.field(static=True)
+    n_warmup: int = eqx.field(static=True)
+
+    def source_lr(self, step_f32: Array, total_steps: int) -> Array:
+        return warmup_then_constant_lr(
+            step_f32,
+            total_steps,
+            self.adam.lr_schedule.start_val,
+            self.adam.lr_schedule.warmup_pct,
+        )
+
+    def _gate[T](self, step_f32: Array, total_steps: int, updated: T, base: T) -> T:
+        """Freeze updates until `start_frac` of training (SPEC S32). No-op (zero-overhead)
+        when `start_frac == 0.0`; otherwise `where`-selects per leaf."""
+        if self.start_frac == 0.0:
+            return updated
+        active = step_f32 >= self.start_frac * total_steps
+        return jax.tree.map(lambda u, b: jnp.where(active, u, b), updated, base)
+
+    def warmup_ascend(
+        self, scoring_loss: Callable[[dict[str, Array]], Array], step_f32: Array, total_steps: int
+    ) -> "PersistentAdversary":
+        """`n_warmup` supplemental Adam ascents on the sources vs `scoring_loss` (the
+        route-all all-sites recon forward, params/CI detached — provided by the step). The
+        warmed sources are `stop_gradient`'d: they enter the main backward as leaves, so
+        the main graph differentiates w.r.t. them, not back through this scan."""
+        lr = self.source_lr(step_f32, total_steps)
+
+        def body(
+            carry: tuple[dict[str, Array], SourcesAdamState], _: None
+        ) -> tuple[tuple[dict[str, Array], SourcesAdamState], None]:
+            sources, opt = carry
+            grad = jax.grad(scoring_loss)(sources)
+            return sources_adam_ascend_project(sources, grad, opt, lr, self.adam), None
+
+        (warmed, warmed_opt), _ = jax.lax.scan(
+            body, (self.sources, self.opt_state), None, length=self.n_warmup
+        )
+        warmed, warmed_opt = self._gate(
+            step_f32, total_steps, (warmed, warmed_opt), (self.sources, self.opt_state)
+        )
+        return eqx.tree_at(
+            lambda a: (a.sources, a.opt_state), self, (jax.lax.stop_gradient(warmed), warmed_opt)
+        )
+
+    def final_ascend(
+        self, source_grad_scaled: dict[str, Array], step_f32: Array, total_steps: int
+    ) -> "PersistentAdversary":
+        """One final ascent from the shared backward's source-grad (SPEC S13'/S14'). The
+        backward saw `coeff·L_term`, so the grad is unscaled by `coeff` to ascend on
+        `L_term` itself (exact: each source bundle feeds exactly one term, SPEC S23)."""
+        lr = self.source_lr(step_f32, total_steps)
+        grad = {s: g / self.coeff for s, g in source_grad_scaled.items()}
+        ascended, ascended_opt = sources_adam_ascend_project(
+            self.sources, grad, self.opt_state, lr, self.adam
+        )
+        ascended, ascended_opt = self._gate(
+            step_f32, total_steps, (ascended, ascended_opt), (self.sources, self.opt_state)
+        )
+        return eqx.tree_at(lambda a: (a.sources, a.opt_state), self, (ascended, ascended_opt))

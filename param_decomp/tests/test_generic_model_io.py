@@ -201,8 +201,7 @@ def _initial_state(lm: DecomposedModel, components: DecompVU, ci_arch: Chunkwise
         ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(components, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        sources={},
-        sources_opt_state={},
+        adversaries={},
         step=jnp.zeros((), jnp.int32),
     )
     return state, opt_vu, opt_ci

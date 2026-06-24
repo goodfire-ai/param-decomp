@@ -11,6 +11,7 @@ import optax
 from jax.sharding import Mesh
 
 from param_decomp.adversary import (
+    PersistentAdversary,
     init_persistent_sources,
     init_sources_adam_state,
     sources_adam_ascend_project,
@@ -54,6 +55,31 @@ from param_decomp.train import TrainState, make_train_step
 from vendored_jax.llama import LlamaConfig
 
 
+def _ppgd_cfg(n_warmup: int) -> PersistentPGDReconLossConfig:
+    return PersistentPGDReconLossConfig(
+        coeff=0.5,
+        scope=SCScope(),
+        optimizer=AdamPGDConfig(
+            beta1=0.5, beta2=0.99,
+            lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
+        ),
+        n_warmup_steps=n_warmup,
+    )  # fmt: skip
+
+
+def _adversary(src: dict[str, jax.Array], cfg: PersistentPGDReconLossConfig) -> PersistentAdversary:
+    assert cfg.coeff is not None
+    return PersistentAdversary(
+        sources=src,
+        opt_state=init_sources_adam_state(src),
+        state_key=cfg.type,
+        coeff=cfg.coeff,
+        adam=cfg.optimizer,
+        start_frac=cfg.start_frac,
+        n_warmup=cfg.n_warmup_steps,
+    )
+
+
 def _chunkwise_arch(lm: DecomposedModel, cfg: LlamaConfig) -> ChunkwiseTransformerCIArch:
     """The old `CIArch(16, 2, 2, 32)` → one chunk reading the residual entering the first
     decomposed block and emitting CI for every site; `input_dim` is the residual width."""
@@ -81,12 +107,12 @@ def _build(seed: int):
     src = init_persistent_sources(
         lm.site_names, tuple(s.C for s in lm.sites), (1, seq), jax.random.PRNGKey(seed + 2)
     )
+    ppgd_cfg = _ppgd_cfg(n_warmup=1)
     state = TrainState(
         components=vu, ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        sources={"PersistentPGDReconLoss": src},
-        sources_opt_state={"PersistentPGDReconLoss": init_sources_adam_state(src)},
+        adversaries={ppgd_cfg.type: _adversary(src, ppgd_cfg)},
         step=jnp.zeros((), jnp.int32),
     )  # fmt: skip
     loss_terms = build_loss_terms(
@@ -97,15 +123,7 @@ def _build(seed: int):
                 p_anneal_start_frac=0.0, p_anneal_final_p=0.4, p_anneal_end_frac=1.0,
             ),
             ChunkwiseSubsetReconLossConfig(routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=3, n_samples=1),
-            PersistentPGDReconLossConfig(
-                coeff=0.5,
-                scope=SCScope(),
-                optimizer=AdamPGDConfig(
-                    beta1=0.5, beta2=0.99,
-                    lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
-                ),
-                n_warmup_steps=1,
-            ),
+            ppgd_cfg,
         ),
         lm.site_names,
     )  # fmt: skip
@@ -158,7 +176,7 @@ def test_persistent_adam_step_count_roundtrip_and_post_resume_bias_correction(tm
     for i in range(3):
         state, _ = step(lm, state, resid, jax.random.PRNGKey(i))
 
-    pre_save = state.sources_opt_state[state_key]
+    pre_save = state.adversaries[state_key].opt_state
     n_ascents = int(pre_save.step_count)
     # Each train step runs n_warmup_steps (1) supplemental ascents + 1 final ascent.
     assert n_ascents == 3 * (1 + 1)
@@ -170,10 +188,10 @@ def test_persistent_adam_step_count_roundtrip_and_post_resume_bias_correction(tm
     restored = restore_latest(mgr, fresh)
     assert restored is not None
     loaded, _ = restored
-    loaded_adam = loaded.sources_opt_state[state_key]
+    loaded_adam = loaded.adversaries[state_key].opt_state
 
     # (a) the step_count leaf survived the round-trip: present, fp32 scalar, value N.
-    assert state_key in loaded.sources_opt_state
+    assert state_key in loaded.adversaries
     assert loaded_adam.step_count.dtype == jnp.float32
     assert loaded_adam.step_count.shape == ()
     assert float(loaded_adam.step_count) == float(n_ascents)
@@ -187,9 +205,10 @@ def test_persistent_adam_step_count_roundtrip_and_post_resume_bias_correction(tm
     adam_cfg = AdamPGDConfig(
         beta1=beta1, beta2=beta2, lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025)
     )
-    grads = {site: jnp.ones_like(v) for site, v in loaded.sources[state_key].items()}
+    loaded_sources = loaded.adversaries[state_key].sources
+    grads = {site: jnp.ones_like(v) for site, v in loaded_sources.items()}
     _, post_resume = sources_adam_ascend_project(
-        loaded.sources[state_key], grads, loaded_adam, jnp.asarray(0.01), adam_cfg
+        loaded_sources, grads, loaded_adam, jnp.asarray(0.01), adam_cfg
     )
     assert float(post_resume.step_count) == float(n_ascents + 1)
     expected_bc1 = 1.0 - beta1 ** (n_ascents + 1)
@@ -234,12 +253,12 @@ def _build_sharded(seed: int, mesh: Mesh):
         jax.random.PRNGKey(seed + 2),
         mesh,
     )
+    ppgd_cfg = _ppgd_cfg(n_warmup=1)
     state = TrainState(
         components=vu, ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        sources={"PersistentPGDReconLoss": src},
-        sources_opt_state={"PersistentPGDReconLoss": init_sources_adam_state(src)},
+        adversaries={ppgd_cfg.type: _adversary(src, ppgd_cfg)},
         step=jnp.asarray(7, jnp.int32),
     )  # fmt: skip
     return state

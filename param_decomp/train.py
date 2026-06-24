@@ -28,20 +28,17 @@ from jax.sharding import Mesh
 from jaxtyping import Array, Bool, Float, PRNGKeyArray, jaxtyped
 
 from param_decomp.adversary import (
-    SourcesAdamState,
+    PersistentAdversary,
     init_fresh_pgd_sources,
     source_masks,
-    sources_adam_ascend_project,
 )
 from param_decomp.ci_fn import CI, CIFn
 from param_decomp.components import DecompVU
-from param_decomp.configs import AdamPGDConfig
 from param_decomp.lm import DecomposedModel
 from param_decomp.losses import (
     annealed_pnorm,
     faithfulness_loss,
     importance_minimality_terms,
-    warmup_then_constant_lr,
 )
 from param_decomp.recon import (
     ConstantSources,
@@ -54,7 +51,6 @@ from param_decomp.recon import (
     ReconLossTerm,
     Routes,
     StochasticSources,
-    persistent_configs,
 )
 from param_decomp.sharding import batch_shard_leading
 
@@ -65,15 +61,6 @@ def cast_floating(tree: Any, dtype: Any) -> Any:
     return jax.tree.map(lambda a: a.astype(dtype) if eqx.is_inexact_array(a) else a, tree)
 
 
-def _select_pytree(active: Array, when_active: Any, when_inactive: Any) -> Any:
-    """Element-wise `where(active, when_active, when_inactive)` over matching pytrees.
-
-    Gates a persistent term's source/optimizer updates on `start_frac` (SPEC S32):
-    when inactive the leaf is left untouched, matching torch's `update()`-returns-None
-    (the term is absent, its state frozen at init until `step/total >= start_frac`)."""
-    return jax.tree.map(lambda a, b: jnp.where(active, a, b), when_active, when_inactive)
-
-
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class TrainState:
@@ -81,11 +68,10 @@ class TrainState:
     ci_fn: CIFn  # fp32 masters
     components_opt_state: optax.OptState
     ci_fn_opt_state: optax.OptState
-    sources: dict[str, dict[str, Array]]
-    """Persistent adversarial sources, `state_key -> site -> source` in [0,1]; per-site
-    shape spells the scope (`sc` -> `(1, T, C+1)`, `bsc` -> `(B, T, C+1)` batch-sharded).
-    One state_key per persistent loss term (SPEC S23); empty when no persistent term."""
-    sources_opt_state: dict[str, SourcesAdamState]
+    adversaries: dict[str, PersistentAdversary]
+    """Persistent-PGD adversaries, `state_key -> adversary` (each owns its sources + Adam
+    state + static config). One state_key per persistent loss term (SPEC S23); empty when
+    no persistent term."""
     step: Array
 
 
@@ -144,20 +130,6 @@ def make_train_step(
     imp_min = imp_term.cfg
     imp_coeff = imp_term.coeff
     assert imp_min.p_anneal_final_p is not None
-
-    persistent = persistent_configs(loss_terms)
-    term_coeff_by_state_key = {
-        entry.sources.state_key: term.coeff
-        for term in recon_terms
-        for entry in term.plan
-        if isinstance(entry.sources, PersistentSources)
-    }
-    assert set(term_coeff_by_state_key) == set(persistent)
-    persistent_adams: dict[str, AdamPGDConfig] = {}
-    for state_key, ppgd_cfg in persistent.items():
-        optimizer = ppgd_cfg.optimizer
-        assert isinstance(optimizer, AdamPGDConfig)
-        persistent_adams[state_key] = optimizer
 
     def batch_sharded(x: Array) -> Array:
         return batch_shard_leading(x, mesh)
@@ -282,72 +254,21 @@ def make_train_step(
         ci_fn_detached = jax.lax.stop_gradient(cast_floating(state.ci_fn, COMPUTE_DT))
         ci_lower_detached = batch_sharded_ci(ci_fn_detached(taps)).lower
 
-        # Persistent terms: n_warmup supplemental Adam ascents each, against the
-        # route-ALL all-sites forward (SPEC S24 — torch warmup parity, NOT the term's
-        # loss plan), sequential per term as in torch.
-        source_lrs: dict[str, Array] = {}
-        warmed_sources: dict[str, dict[str, Array]] = {}
-        warmup_opt_states: dict[str, SourcesAdamState] = {}
-        # `start_frac` gating (SPEC S32): a term contributes nothing — no loss, no
-        # source/optimizer update — until `step/total_steps >= start_frac`. `start_frac`
-        # is a static config float, so the no-gating common case (`== 0.0`) keeps the
-        # zero-overhead path; a positive `start_frac` pays the adversary forward before
-        # activation and `where`-gates every state update (LOSS_PARITY_DESIGN Q3).
-        term_active: dict[str, Array] = {}
-        for state_key, ppgd_cfg in persistent.items():
-            adam = persistent_adams[state_key]
-            if ppgd_cfg.start_frac > 0.0:
-                term_active[state_key] = step_f32 >= ppgd_cfg.start_frac * total_steps
-            source_lr = warmup_then_constant_lr(
-                step_f32,
-                total_steps,
-                adam.lr_schedule.start_val,
-                adam.lr_schedule.warmup_pct,
+        # ── persistent adversaries: each runs its supplemental ascents vs the route-ALL
+        # all-sites forward (SPEC S24 — torch warmup parity, NOT the term's loss plan),
+        # params + CI detached. The warmed sources then enter the main backward as leaves;
+        # the LR schedule + `start_frac` gating (SPEC S32) live in `PersistentAdversary`. ──
+        def warmup_scoring_loss(sources: dict[str, Array]) -> Array:
+            masks, delta_masks = source_masks(ci_lower_detached, sources, site_names)
+            masked = masked_forward(
+                model, components_detached, residual, masks, delta_masks, None, site_names, True
             )
-            source_lrs[state_key] = source_lr
+            return recon_loss_fn(masked, clean_output)
 
-            def warmup_loss(sources: dict[str, Array]) -> Array:
-                masks, delta_masks = source_masks(ci_lower_detached, sources, site_names)
-                masked = masked_forward(
-                    model,
-                    components_detached,
-                    residual,
-                    masks,
-                    delta_masks,
-                    None,
-                    site_names,
-                    True,
-                )
-                return recon_loss_fn(masked, clean_output)
-
-            def warmup_body(
-                carry: tuple[dict[str, Array], SourcesAdamState],
-                _: None,
-                source_lr: Array = source_lr,
-                adam: AdamPGDConfig = adam,
-                warmup_loss: Callable[[dict[str, Array]], Array] = warmup_loss,
-            ) -> tuple[tuple[dict[str, Array], SourcesAdamState], None]:
-                sources, adam_state = carry
-                sources_grad = jax.grad(warmup_loss)(sources)
-                sources, adam_state = sources_adam_ascend_project(
-                    sources, sources_grad, adam_state, source_lr, adam
-                )
-                return (sources, adam_state), None
-
-            base_sources = state.sources[state_key]
-            base_opt = state.sources_opt_state[state_key]
-            (warmed, warmed_opt), _ = jax.lax.scan(
-                warmup_body,
-                (base_sources, base_opt),
-                None,
-                length=ppgd_cfg.n_warmup_steps,
-            )
-            if ppgd_cfg.start_frac > 0.0:
-                warmed, warmed_opt = _select_pytree(
-                    term_active[state_key], (warmed, warmed_opt), (base_sources, base_opt)
-                )
-            warmed_sources[state_key] = jax.lax.stop_gradient(warmed)
-            warmup_opt_states[state_key] = warmed_opt
+        warmed_advs = {
+            state_key: adv.warmup_ascend(warmup_scoring_loss, step_f32, total_steps)
+            for state_key, adv in state.adversaries.items()
+        }
 
         # Fresh-PGD entries: ONE routing draw per entry per step, shared by all
         # ascents and the main loss forward (SPEC S24); sign-ascend `n_steps`, then
@@ -467,11 +388,10 @@ def make_train_step(
                 assert n_forwards > 0, f"term {term.name!r} produced no forwards"
                 term_loss = total / n_forwards
                 first_sources = term.plan[0].sources
-                if (
-                    isinstance(first_sources, PersistentSources)
-                    and persistent[first_sources.state_key].start_frac > 0.0
-                ):
-                    term_loss = term_active[first_sources.state_key] * term_loss
+                if isinstance(first_sources, PersistentSources):
+                    start_frac = state.adversaries[first_sources.state_key].start_frac
+                    if start_frac > 0.0:
+                        term_loss = (step_f32 >= start_frac * total_steps) * term_loss
                 term_losses.append(term_loss)
 
             total_loss = faith_coeff * faith_loss + imp_coeff * imp_loss
@@ -481,35 +401,19 @@ def make_train_step(
 
         (total_loss, (faith_loss, imp_loss, term_losses)), grads = eqx.filter_value_and_grad(
             loss_fn, has_aux=True
-        )((state.components, state.ci_fn, warmed_sources))
+        )((state.components, state.ci_fn, {k: a.sources for k, a in warmed_advs.items()}))
         components_grad, ci_fn_grad, persistent_grads_scaled = grads
         grad_norm_metrics = _grad_norm_metrics(components_grad, ci_fn_grad)
 
-        # ── each persistent term's final ascent, from the fused graph (SPEC S13'/S14');
-        # the backward saw coeff·L_term, the adversary ascends on L_term itself, and the
-        # division is exact because each source bundle feeds exactly one term (S23). ──
-        new_sources: dict[str, dict[str, Array]] = {}
-        new_sources_opt_state: dict[str, SourcesAdamState] = {}
-        for state_key in persistent:
-            coeff = term_coeff_by_state_key[state_key]
-            sources_grad = {
-                site: g / coeff for site, g in persistent_grads_scaled[state_key].items()
-            }
-            ascended, ascended_opt = sources_adam_ascend_project(
-                warmed_sources[state_key],
-                sources_grad,
-                warmup_opt_states[state_key],
-                source_lrs[state_key],
-                persistent_adams[state_key],
+        # ── each adversary's final ascent from the fused graph (SPEC S13'/S14'): the
+        # backward saw coeff·L_term, so it ascends on L_term itself (unscaled by its coeff
+        # inside `final_ascend`, exact since one source bundle feeds one term, S23). ──
+        new_adversaries = {
+            state_key: warmed_advs[state_key].final_ascend(
+                persistent_grads_scaled[state_key], step_f32, total_steps
             )
-            if persistent[state_key].start_frac > 0.0:
-                ascended, ascended_opt = _select_pytree(
-                    term_active[state_key],
-                    (ascended, ascended_opt),
-                    (warmed_sources[state_key], warmup_opt_states[state_key]),
-                )
-            new_sources[state_key] = ascended
-            new_sources_opt_state[state_key] = ascended_opt
+            for state_key in warmed_advs
+        }
 
         components_updates, new_components_opt_state = components_optimizer.update(
             components_grad,
@@ -527,8 +431,7 @@ def make_train_step(
             ci_fn=new_ci_fn,
             components_opt_state=new_components_opt_state,
             ci_fn_opt_state=new_ci_fn_opt_state,
-            sources=new_sources,
-            sources_opt_state=new_sources_opt_state,
+            adversaries=new_adversaries,
             step=state.step + 1,
         )
         metrics = {
@@ -538,6 +441,9 @@ def make_train_step(
             "p_imp": pnorm,
             **{f"loss/{t.name}": v for t, v in zip(recon_terms, term_losses, strict=True)},
             **grad_norm_metrics,
+        }
+        source_lrs = {
+            k: adv.source_lr(step_f32, total_steps) for k, adv in state.adversaries.items()
         }
         if len(source_lrs) == 1:
             metrics["src_lr"] = next(iter(source_lrs.values()))

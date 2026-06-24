@@ -123,17 +123,18 @@ def build_leaf_pairs() -> list[LeafPair]:
     for moment in ("mu", "nu"):
         pairs += _ci_fn_pairs("ci_fn_opt_state", f"{cio_dst}['{moment}']", f"{cio_src}['{moment}']")
 
+    adv_dst = f"['adversaries']['{SOURCE_STATE_KEY}']"
     sites = [f"layers.18.mlp.{suffix}" for suffix in KIND_TO_SITE_SUFFIX.values()]
     for site in sites:
         pairs.append(
             LeafPair(
                 "sources",
-                f"['sources']['{SOURCE_STATE_KEY}']['{site}']",
+                f"{adv_dst}['sources']['{site}']",
                 f"['sources']['{site}']",
                 False,
             )
         )
-    so_dst = f"['sources_opt_state']['{SOURCE_STATE_KEY}']"
+    so_dst = f"{adv_dst}['opt_state']"
     for moment in ("m", "v"):
         for site in sites:
             pairs.append(

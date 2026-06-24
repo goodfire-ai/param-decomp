@@ -203,7 +203,7 @@ def _make_state_and_step(
         components=vu, ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        sources={}, sources_opt_state={}, step=jnp.zeros((), jnp.int32),
+        adversaries={}, step=jnp.zeros((), jnp.int32),
     )  # fmt: skip
     loss_terms = build_loss_terms(_loss_metrics(), lm.site_names)
     step = make_train_step(
@@ -229,7 +229,7 @@ def test_step_trains_positionless_no_persistent_sources():
     assert all(jnp.isfinite(jnp.array(list(m.values()))).all() for m in losses)
     assert int(state.step) == 6
     # no persistent sources for the TMS stochastic configs
-    assert state.sources == {}
+    assert state.adversaries == {}
     # fp32 masters preserved
     assert isinstance(state.components, DecompVU)
     for V, U in state.components.vu.values():
@@ -307,7 +307,7 @@ def _faith_warmed_state(
         components=vu, ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        sources={}, sources_opt_state={}, step=jnp.zeros((), jnp.int32),
+        adversaries={}, step=jnp.zeros((), jnp.int32),
     )  # fmt: skip
     loss_terms = build_loss_terms(_recovery_loss_metrics(), lm.site_names)
     step = make_train_step(

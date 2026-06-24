@@ -25,7 +25,11 @@ import jax.numpy as jnp
 import optax
 from jax import random
 
-from param_decomp.adversary import init_persistent_sources, init_sources_adam_state
+from param_decomp.adversary import (
+    PersistentAdversary,
+    init_persistent_sources,
+    init_sources_adam_state,
+)
 from param_decomp.ci_fn import (
     Chunk,
     ChunkwiseTransformerCIArch,
@@ -78,12 +82,31 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
     if mesh is not None:
         resid = shard_batch(resid, mesh, batch_axis=0)
 
+    ppgd_cfg = PersistentPGDReconLossConfig(
+        coeff=0.5,
+        scope=SCScope(),
+        optimizer=AdamPGDConfig(
+            beta1=0.5, beta2=0.99,
+            lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
+        ),
+        n_warmup_steps=2,
+    )  # fmt: skip
+    assert ppgd_cfg.coeff is not None
     state = TrainState(
         components=vu, ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        sources={"PersistentPGDReconLoss": src},
-        sources_opt_state={"PersistentPGDReconLoss": init_sources_adam_state(src)},
+        adversaries={
+            ppgd_cfg.type: PersistentAdversary(
+                sources=src,
+                opt_state=init_sources_adam_state(src),
+                state_key=ppgd_cfg.type,
+                coeff=ppgd_cfg.coeff,
+                adam=ppgd_cfg.optimizer,
+                start_frac=ppgd_cfg.start_frac,
+                n_warmup=ppgd_cfg.n_warmup_steps,
+            )
+        },
         step=jnp.zeros((), jnp.int32),
     )  # fmt: skip
     loss_terms = build_loss_terms(
@@ -94,15 +117,7 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
                 p_anneal_start_frac=0.0, p_anneal_final_p=0.4, p_anneal_end_frac=1.0,
             ),
             ChunkwiseSubsetReconLossConfig(routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=3, n_samples=1),
-            PersistentPGDReconLossConfig(
-                coeff=0.5,
-                scope=SCScope(),
-                optimizer=AdamPGDConfig(
-                    beta1=0.5, beta2=0.99,
-                    lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
-                ),
-                n_warmup_steps=2,
-            ),
+            ppgd_cfg,
         ),
         lm.site_names,
     )  # fmt: skip

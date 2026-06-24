@@ -62,8 +62,7 @@ def _build_step_and_args():
         ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(components, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        sources={},
-        sources_opt_state={},
+        adversaries={},
         step=jnp.zeros((), jnp.int32),
     )
     loss_terms = build_loss_terms(

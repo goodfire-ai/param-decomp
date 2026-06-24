@@ -12,7 +12,11 @@ import jax.numpy as jnp
 import optax
 import pytest
 
-from param_decomp.adversary import init_persistent_sources, init_sources_adam_state
+from param_decomp.adversary import (
+    PersistentAdversary,
+    init_persistent_sources,
+    init_sources_adam_state,
+)
 from param_decomp.ci_fn import (
     Chunk,
     ChunkwiseTransformerCIArch,
@@ -307,12 +311,32 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
     src = init_persistent_sources(
         lm.site_names, tuple(s.C for s in lm.sites), (1, seq), jax.random.PRNGKey(3)
     )
+    ppgd_cfg = PersistentPGDReconLossConfig(
+        coeff=0.5,
+        scope=SCScope(),
+        optimizer=AdamPGDConfig(
+            beta1=0.5,
+            beta2=0.99,
+            lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
+        ),
+        n_warmup_steps=n_warmup,
+    )
+    assert ppgd_cfg.coeff is not None
     state = TrainState(
         components=vu, ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        sources={"PersistentPGDReconLoss": src},
-        sources_opt_state={"PersistentPGDReconLoss": init_sources_adam_state(src)},
+        adversaries={
+            ppgd_cfg.type: PersistentAdversary(
+                sources=src,
+                opt_state=init_sources_adam_state(src),
+                state_key=ppgd_cfg.type,
+                coeff=ppgd_cfg.coeff,
+                adam=ppgd_cfg.optimizer,
+                start_frac=ppgd_cfg.start_frac,
+                n_warmup=ppgd_cfg.n_warmup_steps,
+            )
+        },
         step=jnp.zeros((), jnp.int32),
     )  # fmt: skip
     loss_terms = build_loss_terms(
@@ -329,16 +353,7 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
             ChunkwiseSubsetReconLossConfig(
                 routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=3, n_samples=1
             ),
-            PersistentPGDReconLossConfig(
-                coeff=0.5,
-                scope=SCScope(),
-                optimizer=AdamPGDConfig(
-                    beta1=0.5,
-                    beta2=0.99,
-                    lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
-                ),
-                n_warmup_steps=n_warmup,
-            ),
+            ppgd_cfg,
         ),
         lm.site_names,
     )
@@ -362,10 +377,10 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
     assert all(jnp.isfinite(jnp.array(list(m.values()))).all() for m in losses)
     assert int(state.step) == n_steps
     # SPEC S13: n_warmup + 1 source-Adam updates per training step, moments persist.
-    ppgd_opt_state = state.sources_opt_state["PersistentPGDReconLoss"]
-    assert float(ppgd_opt_state.step_count) == n_steps * (n_warmup + 1)
+    ppgd_adv = state.adversaries["PersistentPGDReconLoss"]
+    assert float(ppgd_adv.opt_state.step_count) == n_steps * (n_warmup + 1)
     # SPEC S15: sources stay projected to [0,1].
-    for v in state.sources["PersistentPGDReconLoss"].values():
+    for v in ppgd_adv.sources.values():
         assert float(v.min()) >= 0.0 and float(v.max()) <= 1.0
     # SPEC S9: p annealed below its 2.0 start by step 4 of 100.
     assert losses[-1]["p_imp"] < 2.0
@@ -434,7 +449,7 @@ def test_fresh_pgd_adversary_step():
             components=vu, ci_fn=ci_fn,
             components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
             ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-            sources={}, sources_opt_state={},
+            adversaries={},
             step=jnp.zeros((), jnp.int32),
         )  # fmt: skip
 
@@ -486,8 +501,7 @@ def test_fresh_pgd_adversary_step():
             ]
         )
     ).all()
-    assert state.sources == {}, "fresh adversary carries no persistent sources"
-    assert state.sources_opt_state == {}
+    assert state.adversaries == {}, "fresh adversary carries no persistent sources"
     assert int(state.step) == 1
 
     _, metrics_unascended = run_step(n_ascent_steps=0)

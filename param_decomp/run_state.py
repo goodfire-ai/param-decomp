@@ -18,12 +18,17 @@ from jax.sharding import Mesh
 from jax.typing import ArrayLike
 from jaxtyping import Array, PRNGKeyArray
 
-from param_decomp.adversary import init_sources_adam_state
+from param_decomp.adversary import PersistentAdversary, init_sources_adam_state
 from param_decomp.built_run import DataConfig
 from param_decomp.ci_fn import CIFnArch
-from param_decomp.configs import OptimizerConfig, PDConfig
+from param_decomp.configs import AdamPGDConfig, OptimizerConfig, PDConfig
 from param_decomp.lm import DecomposedModel
-from param_decomp.recon import build_loss_terms, persistent_configs
+from param_decomp.recon import (
+    PersistentSources,
+    ReconLossTerm,
+    build_loss_terms,
+    persistent_configs,
+)
 from param_decomp.targets.llama8b_sharding import (
     init_ci_fn_placed,
     init_decomp_vu_placed,
@@ -123,31 +128,48 @@ def init_train_state(
     assert ci_fn.expects_axes == lm.leading_axes, (
         f"CI fn expects leading axes {ci_fn.expects_axes} but model has {lm.leading_axes}"
     )
-    persistent = persistent_configs(build_loss_terms(pd.loss_metrics, lm.site_names))
-    sources: dict[str, dict[str, Array]] = {}
+    loss_terms = build_loss_terms(pd.loss_metrics, lm.site_names)
+    persistent = persistent_configs(loss_terms)
+    term_coeff_by_state_key = {
+        entry.sources.state_key: term.coeff
+        for term in loss_terms
+        if isinstance(term, ReconLossTerm)
+        for entry in term.plan
+        if isinstance(entry.sources, PersistentSources)
+    }
+    assert set(term_coeff_by_state_key) == set(persistent)
+    adversaries: dict[str, PersistentAdversary] = {}
     if persistent:
         # Persistent sources live on a position axis; TMS (no position axis) carries none.
         assert isinstance(data, DataConfig), (
             "persistent PGD sources need a sequence axis; TMS (leading_axes=()) has none"
         )
-        sources = {
-            state_key: init_sources_sharded(
+        for term_idx, state_key in enumerate(persistent):
+            cfg = persistent[state_key]
+            assert isinstance(cfg.optimizer, AdamPGDConfig)
+            sources = init_sources_sharded(
                 lm.site_names,
                 tuple(s.C for s in lm.sites),
                 data.seq_len,
-                persistent[state_key].scope,
+                cfg.scope,
                 data.global_batch,
                 random.fold_in(src_key, term_idx),
                 mesh,
             )
-            for term_idx, state_key in enumerate(persistent)
-        }
+            adversaries[state_key] = PersistentAdversary(
+                sources=sources,
+                opt_state=init_sources_adam_state(sources),
+                state_key=state_key,
+                coeff=term_coeff_by_state_key[state_key],
+                adam=cfg.optimizer,
+                start_frac=cfg.start_frac,
+                n_warmup=cfg.n_warmup_steps,
+            )
     return TrainState(
         components=components,
         ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(components, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        sources=sources,
-        sources_opt_state={k: init_sources_adam_state(v) for k, v in sources.items()},
+        adversaries=adversaries,
         step=jnp.zeros((), jnp.int32),
     )
