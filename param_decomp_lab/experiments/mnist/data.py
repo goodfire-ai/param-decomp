@@ -113,15 +113,22 @@ class MnistMemorizedDataset(IterableDataset[tuple[Tensor, Tensor]]):
     @override
     def __iter__(self) -> Iterator[tuple[Tensor, Tensor]]:
         n = self.images.shape[0]
+        # Always emit full `batch_size` batches (drop the partial remainder). VPD's
+        # persistent-PGD adversary sizes its per-datapoint sources from the first batch,
+        # so a smaller final batch would break the expand. With reshuffling every epoch
+        # all examples are still seen across epochs. If the set is smaller than one batch,
+        # fall back to a single full-set batch.
+        n_full = (n // self.batch_size) * self.batch_size
         gen = torch.Generator(device=self.device).manual_seed(self.seed)
-        epoch = 0
         while True:
             order = (
                 torch.randperm(n, generator=gen, device=self.device)
                 if self.shuffle
                 else torch.arange(n, device=self.device)
             )
-            for start in range(0, n, self.batch_size):
+            if n_full == 0:
+                yield self.images, self.labels
+                continue
+            for start in range(0, n_full, self.batch_size):
                 idx = order[start : start + self.batch_size]
                 yield self.images[idx], self.labels[idx]
-            epoch += 1
