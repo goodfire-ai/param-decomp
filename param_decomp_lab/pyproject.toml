@@ -83,7 +83,6 @@ packages = [
     "param_decomp_lab.investigate",
     "param_decomp_lab.investigate.scripts",
     "param_decomp_lab.postprocess",
-    "param_decomp_lab.scripts",
     "param_decomp_lab.topology",
 ]
 
