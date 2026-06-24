@@ -122,6 +122,37 @@ def _weightless_rms_norm(x: Array, eps: float) -> Array:
     return rms_norm(x, jnp.ones((x.shape[-1],), x.dtype), eps)
 
 
+def _attention(
+    h: Float[Array, "B s d"],
+    wq: Array,
+    wk: Array,
+    wv: Array,
+    wo: Array,
+    n_head: int,
+    inv_freq: Array | None,
+) -> Float[Array, "B s d"]:
+    """Multi-head bidirectional attention over axis `s` of an already-normed `[B, s, d]`
+    (every axis but the attended one and the feature axis merged into `B`). RoPE is applied
+    iff `inv_freq is not None` (the token axis); the block axis passes `None` and relies on
+    an external learned absolute position embedding. Projections are `[d_out, d_in]` (the
+    `o i` einsum), matching `CIBlock`. Returns the attention output (pre-residual)."""
+    s = h.shape[1]
+
+    def heads(w: Array) -> Array:  # [B, s, d] -> [B, nh, s, hd]  (RoPE layout)
+        proj = einops.einsum(h, w, "B s i, o i -> B s o")
+        return einops.rearrange(proj, "B s (nh hd) -> B nh s hd", nh=n_head)
+
+    q, k, v = heads(wq), heads(wk), heads(wv)
+    if inv_freq is not None:
+        cos, sin = rope_cos_sin(inv_freq, s, h.dtype)
+        q, k = apply_rope(q, k, cos, sin)
+    qt, kt, vt = (einops.rearrange(a, "B nh s hd -> B s nh hd") for a in (q, k, v))
+    y = jax.nn.dot_product_attention(
+        qt, kt, vt, is_causal=False, implementation=attn_implementation()
+    )  # bidirectional
+    return einops.einsum(einops.rearrange(y, "B s nh hd -> B s (nh hd)"), wo, "B s i, o i -> B s o")
+
+
 class CIBlock(eqx.Module):
     """Pre-norm block: weightless-RMSNorm → bidirectional RoPE MHA → residual;
     weightless-RMSNorm → Linear+b → GELU → Linear+b → residual."""
@@ -173,23 +204,8 @@ class CIBlock(eqx.Module):
         )
 
     def __call__(self, x: Float[Array, "b t d"], inv_freq: Array) -> Array:
-        t = x.shape[1]
         h = _weightless_rms_norm(x, self.eps)
-
-        def heads(w: Array) -> Array:  # [b, t, d] -> [b, nh, t, hd]  (RoPE layout)
-            proj = einops.einsum(h, w, "b t i, o i -> b t o")
-            return einops.rearrange(proj, "b t (nh hd) -> b nh t hd", nh=self.n_head)
-
-        q, k, v = heads(self.wq), heads(self.wk), heads(self.wv)
-        cos, sin = rope_cos_sin(inv_freq, t, x.dtype)
-        q, k = apply_rope(q, k, cos, sin)
-        qt, kt, vt = (einops.rearrange(a, "b nh t hd -> b t nh hd") for a in (q, k, v))
-        y = jax.nn.dot_product_attention(
-            qt, kt, vt, is_causal=False, implementation=attn_implementation()
-        )  # bidirectional
-        x = x + einops.einsum(
-            einops.rearrange(y, "b t nh hd -> b t (nh hd)"), self.wo, "b t i, o i -> b t o"
-        )
+        x = x + _attention(h, self.wq, self.wk, self.wv, self.wo, self.n_head, inv_freq)
         h = _weightless_rms_norm(x, self.eps)
         hidden = jax.nn.gelu(
             einops.einsum(h, self.w1, "b t i, i o -> b t o") + self.b1, approximate=False
@@ -407,6 +423,278 @@ def init_chunkwise_transformer_ci_fn(
     )
 
 
+# ----------------------------- global-chunkwise hybrid -----------------------------
+
+
+@dataclass(frozen=True)
+class GlobalChunkwiseHybridCIArch:
+    """Resolved global-chunkwise-hybrid arch: ONE shared CI transformer whose `nb` axis is
+    the model-block index. Unlike the chunkwise arch (n independent per-chunk transformers),
+    params are SHARED across blocks and a per-layer block-axis attention lets blocks exchange
+    information. `block_taps` are the residual taps in `nb`-axis order; `block_site_prefixes`
+    the parallel site-name prefixes; `site_layout` the shared per-block `(suffix, C)` head
+    split (homogeneous across blocks — the shared head emits one `c_chunk = Σ C` per block).
+    `block_attention` gates the block-axis sublayer (ablation: off ⇒ shared-across-blocks
+    transformer with no cross-block flow)."""
+
+    block_taps: tuple[str, ...]
+    block_site_prefixes: tuple[str, ...]
+    site_layout: tuple[tuple[str, int], ...]
+    n_embd: int
+    n_model_blocks: int
+    d_model: int
+    n_blocks: int
+    n_heads: int
+    mlp_hidden: int
+    block_attention: bool
+
+
+class HybridCIBlock(eqx.Module):
+    """Pre-norm hybrid block over `[b, t, nb, d]` (no leading `n_chunks` axis — one shared
+    transformer): RMSNorm → token RoPE-attn over `t` (independent per block) → residual;
+    RMSNorm → block-attn over `nb`, NO RoPE (independent per token) → residual [iff
+    `block_attention`]; RMSNorm → GELU MLP → residual. The block-attn sublayer sits AFTER
+    the token attention and BEFORE the MLP, each with its own pre-norm."""
+
+    t_wq: Float[Array, "d d"]
+    t_wk: Float[Array, "d d"]
+    t_wv: Float[Array, "d d"]
+    t_wo: Float[Array, "d d"]
+    b_wq: Float[Array, "d d"] | None
+    b_wk: Float[Array, "d d"] | None
+    b_wv: Float[Array, "d d"] | None
+    b_wo: Float[Array, "d d"] | None
+    w1: Float[Array, "d mlp"]
+    b1: Float[Array, " mlp"]
+    w2: Float[Array, "mlp d"]
+    b2: Float[Array, " d"]
+    n_head: int = eqx.field(static=True)
+    eps: float = eqx.field(static=True)
+
+    def shardings(self, mesh: Mesh) -> "HybridCIBlock":
+        """Megatron placement on 2-D arrays (no leading `n_chunks` axis): qkv `[out, in]`
+        shard their OUTPUT (head) dim (axis 0); out-proj `[out, in]` shards its INPUT (head)
+        dim (axis 1); MLP up `[d, mlp]` shards `mlp` (axis 1), down `[mlp, d]` shards `mlp`
+        (axis 0). Biases replicate. The `None` block-attn leaves (ablation) are left
+        untouched."""
+        shard_out = NamedSharding(mesh, P("dp", None))  # qkv: output (head) dim
+        shard_in = NamedSharding(mesh, P(None, "dp"))  # out-proj: input (head) dim
+        repl = NamedSharding(mesh, P())
+        for w in (self.t_wq, self.t_wk, self.t_wv):
+            assert_divisible(w.shape[0], mesh, "HybridCIBlock token attn qkv out (head dim)")
+        assert_divisible(self.t_wo.shape[1], mesh, "HybridCIBlock token out-proj in (head dim)")
+        assert_divisible(self.w1.shape[1], mesh, "HybridCIBlock mlp up-proj out (mlp_hidden)")
+        assert_divisible(self.w2.shape[0], mesh, "HybridCIBlock mlp down-proj in (mlp_hidden)")
+        out = eqx.tree_at(
+            lambda b: (b.t_wq, b.t_wk, b.t_wv, b.t_wo, b.w1, b.b1, b.w2, b.b2),
+            self,
+            (shard_out, shard_out, shard_out, shard_in, shard_out, repl, shard_in, repl),
+        )
+        if self.b_wq is not None:
+            assert self.b_wk is not None and self.b_wv is not None and self.b_wo is not None
+            for w in (self.b_wq, self.b_wk, self.b_wv):
+                assert_divisible(w.shape[0], mesh, "HybridCIBlock block attn qkv out (head dim)")
+            assert_divisible(self.b_wo.shape[1], mesh, "HybridCIBlock block out-proj in (head dim)")
+            out = eqx.tree_at(
+                lambda b: (b.b_wq, b.b_wk, b.b_wv, b.b_wo),
+                out,
+                (shard_out, shard_out, shard_out, shard_in),
+            )
+        return out
+
+    def __call__(self, x: Float[Array, "b t nb d"], inv_freq: Array) -> Float[Array, "b t nb d"]:
+        b = x.shape[0]
+        h = _weightless_rms_norm(x, self.eps)
+        token_in = einops.rearrange(h, "b t nb d -> (b nb) t d")
+        token_out = _attention(
+            token_in, self.t_wq, self.t_wk, self.t_wv, self.t_wo, self.n_head, inv_freq
+        )
+        x = x + einops.rearrange(token_out, "(b nb) t d -> b t nb d", b=b)
+
+        if self.b_wq is not None:
+            assert self.b_wk is not None and self.b_wv is not None and self.b_wo is not None
+            h = _weightless_rms_norm(x, self.eps)
+            block_in = einops.rearrange(h, "b t nb d -> (b t) nb d")
+            block_out = _attention(
+                block_in, self.b_wq, self.b_wk, self.b_wv, self.b_wo, self.n_head, None
+            )
+            x = x + einops.rearrange(block_out, "(b t) nb d -> b t nb d", b=b)
+
+        h = _weightless_rms_norm(x, self.eps)
+        hidden = jax.nn.gelu(
+            einops.einsum(h, self.w1, "b t nb i, i o -> b t nb o") + self.b1, approximate=False
+        )
+        return x + einops.einsum(hidden, self.w2, "b t nb i, i o -> b t nb o") + self.b2
+
+
+class HybridTransformer(eqx.Module):
+    """The shared CI transformer: in_proj → +learned block-pos-emb → `HybridCIBlock`s →
+    head. Arrays carry NO leading `n_chunks` axis (one shared transformer, not vmapped)."""
+
+    in_proj_w: Float[Array, "n_embd d_model"]
+    in_proj_b: Float[Array, " d_model"]
+    block_pos_emb: Float[Array, "n_model_blocks d_model"]
+    blocks: list[HybridCIBlock]
+    out_w: Float[Array, "d_model c_chunk"]
+    out_b: Float[Array, " c_chunk"]
+
+    def shardings(self, mesh: Mesh) -> "HybridTransformer":
+        """`in_proj_w [n_embd, d_model]` shards `d_model` (axis 1); `out_w [d_model, c_chunk]`
+        shards `c_chunk` (axis 1); blocks delegate; `block_pos_emb` + biases replicate (the
+        pos-emb is added on the un-sharded `d_model` activation, so replicating avoids a
+        partial-sum)."""
+        shard_last = NamedSharding(mesh, P(None, "dp"))
+        repl = NamedSharding(mesh, P())
+        assert_divisible(self.in_proj_w.shape[1], mesh, "HybridTransformer in_proj_w d_model")
+        assert_divisible(self.out_w.shape[1], mesh, "HybridTransformer out_w c_chunk")
+        return eqx.tree_at(
+            lambda h: (h.in_proj_w, h.in_proj_b, h.block_pos_emb, h.blocks, h.out_w, h.out_b),
+            self,
+            (shard_last, repl, repl, [b.shardings(mesh) for b in self.blocks], shard_last, repl),
+        )
+
+
+class GlobalChunkwiseHybridCIFn(eqx.Module):
+    """ONE shared `HybridTransformer` over `[b, t, nb, d]` — the model-block index `nb` is a
+    sequence axis with learned absolute position embeddings + per-layer block-axis attention.
+    Each block reads its residual tap (RMS-normed), stacked along `nb`; the shared head emits
+    `c_chunk` logits per block, split per site by the shared `site_layout`."""
+
+    transformer: HybridTransformer
+    inv_freq: Array  # shared RoPE buffer (token axis); NOT a param (stop-gradient in call)
+
+    input_names: tuple[str, ...] = eqx.field(static=True)  # dedup taps (for read_activations)
+    output_names: tuple[str, ...] = eqx.field(static=True)  # all sites, flat (block-major)
+    block_taps: tuple[str, ...] = eqx.field(static=True)  # resid tap per block, in nb order
+    block_site_prefixes: tuple[str, ...] = eqx.field(static=True)  # site prefix per block
+    site_layout: tuple[tuple[str, int], ...] = eqx.field(static=True)  # shared (suffix, C)
+    eps: float = eqx.field(static=True)
+    expects_axes: tuple[str, ...] = eqx.field(static=True)
+
+    def shardings(self, mesh: Mesh) -> "GlobalChunkwiseHybridCIFn":
+        return eqx.tree_at(
+            lambda f: (f.transformer, f.inv_freq),
+            self,
+            (self.transformer.shardings(mesh), NamedSharding(mesh, P())),
+        )
+
+    def __call__(self, taps: dict[str, Array]) -> CI:
+        per_block = [_weightless_rms_norm(taps[tap], self.eps) for tap in self.block_taps]
+        x = jnp.stack(per_block, axis=-2)  # [b, t, nb, n_embd]
+        tr = self.transformer
+        x = einops.einsum(x, tr.in_proj_w, "... i, i o -> ... o") + tr.in_proj_b
+        x = x + tr.block_pos_emb  # [nb, d] broadcasts over [b, t, nb, d]
+        inv_freq = jax.lax.stop_gradient(self.inv_freq)
+        for block in tr.blocks:
+            x = block(x, inv_freq)
+        logits = einops.einsum(x, tr.out_w, "... i, i o -> ... o") + tr.out_b  # [b,t,nb,c_chunk]
+        return CI.from_logits(self._split(logits))
+
+    def _split(self, logits: Float[Array, "*leading nb c_chunk"]) -> SiteDict:
+        """Static per-block, per-site split of the shared head's `[*leading, nb, c_chunk]`."""
+        out: SiteDict = {}
+        for block_idx, prefix in enumerate(self.block_site_prefixes):
+            offset = 0
+            for suffix, c in self.site_layout:
+                out[f"{prefix}.{suffix}"] = logits[..., block_idx, offset : offset + c]
+                offset += c
+            assert offset == logits.shape[-1], (offset, logits.shape[-1])  # full slab consumed
+        return out
+
+
+def _init_hybrid_transformer(
+    arch: GlobalChunkwiseHybridCIArch, c_chunk: int, key: PRNGKeyArray
+) -> HybridTransformer:
+    """Same Kaiming scheme as `_init_chunk_transformer`: relu-gain (√2) on in_proj / MLP-in,
+    linear gain (1) on out / MLP-out, PyTorch-default `U(±1/√fan_in)` on the attention
+    projections, zero biases. `block_pos_emb ~ N(0, 0.02²)` (GPT-2 learned-pos convention).
+    Built ONCE (no vmap/stack). Key split: `n_blocks + 3` outer (in + out + pos + per block);
+    10 within a block when `block_attention` (4 token + 4 block + 2 MLP), else 6."""
+    relu_gain = 2.0**0.5
+    d, mlp = arch.d_model, arch.mlp_hidden
+
+    def kaiming(k: PRNGKeyArray, shape: tuple[int, ...], fan_in: int, gain: float) -> Array:
+        return jax.random.normal(k, shape) * (gain / fan_in**0.5)
+
+    def attn_default(k: PRNGKeyArray, shape: tuple[int, ...], fan_in: int) -> Array:
+        bound = 1.0 / fan_in**0.5
+        return jax.random.uniform(k, shape, minval=-bound, maxval=bound)
+
+    def block(bkey: PRNGKeyArray) -> HybridCIBlock:
+        ks = jax.random.split(bkey, 10 if arch.block_attention else 6)
+        t_wq, t_wk, t_wv, t_wo = (attn_default(ks[i], (d, d), d) for i in range(4))
+        if arch.block_attention:
+            b_wq, b_wk, b_wv, b_wo = (attn_default(ks[i], (d, d), d) for i in range(4, 8))
+            k1, k2 = ks[8], ks[9]
+        else:
+            b_wq = b_wk = b_wv = b_wo = None
+            k1, k2 = ks[4], ks[5]
+        return HybridCIBlock(
+            t_wq=t_wq, t_wk=t_wk, t_wv=t_wv, t_wo=t_wo,
+            b_wq=b_wq, b_wk=b_wk, b_wv=b_wv, b_wo=b_wo,
+            w1=kaiming(k1, (d, mlp), d, relu_gain), b1=jnp.zeros((mlp,)),
+            w2=kaiming(k2, (mlp, d), mlp, 1.0), b2=jnp.zeros((d,)),
+            n_head=arch.n_heads, eps=CI_FN_RMS_EPS,
+        )  # fmt: skip
+
+    in_key, out_key, pos_key, *block_keys = jax.random.split(key, arch.n_blocks + 3)
+    return HybridTransformer(
+        in_proj_w=kaiming(in_key, (arch.n_embd, d), arch.n_embd, relu_gain),
+        in_proj_b=jnp.zeros((d,)),
+        block_pos_emb=jax.random.normal(pos_key, (arch.n_model_blocks, d)) * 0.02,
+        blocks=[block(bk) for bk in block_keys],
+        out_w=kaiming(out_key, (d, c_chunk), d, 1.0),
+        out_b=jnp.zeros((c_chunk,)),
+    )
+
+
+def init_global_chunkwise_hybrid_ci_fn(
+    arch: GlobalChunkwiseHybridCIArch, sites: tuple[SiteSpec, ...], key: PRNGKeyArray
+) -> GlobalChunkwiseHybridCIFn:
+    """Validate the output partition + per-block homogeneity, then build the shared transformer.
+
+    - structure: `len(block_taps) == len(block_site_prefixes) == n_model_blocks`.
+    - partition: the `{prefix}.{suffix}` product over blocks × layout is disjoint, covers
+      every model site, and each site's `C` matches the shared `site_layout`.
+    """
+    site_c = {s.name: s.C for s in sites}
+    assert len(arch.block_taps) == len(arch.block_site_prefixes) == arch.n_model_blocks, (
+        len(arch.block_taps),
+        len(arch.block_site_prefixes),
+        arch.n_model_blocks,
+    )
+    assert arch.site_layout, "hybrid CI fn needs at least one site per block"
+    c_chunk = sum(c for _, c in arch.site_layout)
+
+    covered: list[str] = []
+    for prefix in arch.block_site_prefixes:
+        for suffix, c in arch.site_layout:
+            name = f"{prefix}.{suffix}"
+            covered.append(name)
+            assert name in site_c, f"hybrid output site {name!r} not in model sites"
+            assert site_c[name] == c, (name, site_c[name], c)
+    assert sorted(covered) == sorted(s.name for s in sites), (
+        "hybrid sites must partition model sites"
+    )
+    assert len(covered) == len(set(covered)), "hybrid output sites overlap"
+
+    hd = arch.d_model // arch.n_heads
+    assert arch.d_model % arch.n_heads == 0 and hd % 2 == 0, (arch.d_model, arch.n_heads)
+    inv_freq = 1.0 / (10000.0 ** (jnp.arange(0, hd, 2, dtype=jnp.float32) / hd))
+
+    return GlobalChunkwiseHybridCIFn(
+        transformer=_init_hybrid_transformer(arch, c_chunk, key),
+        inv_freq=inv_freq,
+        input_names=tuple(sorted(set(arch.block_taps))),
+        output_names=tuple(covered),
+        block_taps=arch.block_taps,
+        block_site_prefixes=arch.block_site_prefixes,
+        site_layout=arch.site_layout,
+        eps=CI_FN_RMS_EPS,
+        expects_axes=("sequence",),
+    )
+
+
 # ------------------- per-site / global MLPs (positionless `expects_axes=()`) -------------------
 
 
@@ -575,7 +863,7 @@ def init_global_mlp_ci_fn(
 # ----------------------------- construction (placement-agnostic) -----------------------------
 
 
-CIFnArch = ChunkwiseTransformerCIArch | MLPCIArch | GlobalMLPCIArch
+CIFnArch = ChunkwiseTransformerCIArch | GlobalChunkwiseHybridCIArch | MLPCIArch | GlobalMLPCIArch
 """Every CI-fn architecture. Construction goes through `build_ci_fn`; sharding/placement is
 a separate, scale-driven concern (see `llama8b_sharding`), never coupled to arch type."""
 
@@ -586,6 +874,8 @@ def build_ci_fn(arch: CIFnArch, sites: tuple[SiteSpec, ...], key: PRNGKeyArray) 
     match arch:
         case ChunkwiseTransformerCIArch():
             return init_chunkwise_transformer_ci_fn(arch, sites, key)
+        case GlobalChunkwiseHybridCIArch():
+            return init_global_chunkwise_hybrid_ci_fn(arch, sites, key)
         case MLPCIArch():
             return init_layerwise_mlp_ci_fn(arch, sites, key)
         case GlobalMLPCIArch():

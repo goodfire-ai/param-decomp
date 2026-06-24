@@ -111,9 +111,37 @@ class ChunkwiseTransformerCiConfig(BaseConfig):
         return self
 
 
+class GlobalChunkwiseHybridCiConfig(BaseConfig):
+    """Global-chunkwise hybrid CI fn (LMs): ONE shared CI transformer whose `nb` axis is the
+    model-block index. Unlike the chunkwise CI fn (one independent transformer per chunk),
+    params are SHARED across blocks; learned absolute block-position embeddings + a per-layer
+    block-axis attention (after the existing token attention) let blocks exchange information.
+    `d_model`/`n_blocks`/`n_heads`/`mlp_hidden` size the shared transformer (`n_blocks` =
+    depth; `d_model % n_heads == 0`; head_dim even for token-axis RoPE). `block_attention`
+    gates the block-axis sublayer (off ⇒ shared-across-blocks transformer, no cross-block
+    flow — the clean ablation). There is no `blocks_per_chunk`: the block axis IS the model
+    block axis (one position per block)."""
+
+    type: Literal["global_chunkwise_hybrid"] = "global_chunkwise_hybrid"
+    d_model: PositiveInt
+    n_blocks: PositiveInt
+    n_heads: PositiveInt
+    mlp_hidden: PositiveInt
+    block_attention: bool = True
+
+    @model_validator(mode="after")
+    def validate_heads(self) -> Self:
+        assert self.d_model % self.n_heads == 0, (self.d_model, self.n_heads)
+        assert (self.d_model // self.n_heads) % 2 == 0, "head_dim must be even for RoPE"
+        return self
+
+
 # Flat discriminated union (by `type`): one self-contained config per CI fn.
 CiConfig = Annotated[
-    LayerwiseMlpCiConfig | GlobalMlpCiConfig | ChunkwiseTransformerCiConfig,
+    LayerwiseMlpCiConfig
+    | GlobalMlpCiConfig
+    | ChunkwiseTransformerCiConfig
+    | GlobalChunkwiseHybridCiConfig,
     Field(discriminator="type"),
 ]
 

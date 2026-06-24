@@ -24,7 +24,7 @@ from param_decomp.built_run import (
     EvalPGDConfig,
     WeightsDtype,
 )
-from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch
+from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch, GlobalChunkwiseHybridCIArch
 from param_decomp.components import SiteC
 from param_decomp.configs import (
     CEandKLLossesConfig,
@@ -32,6 +32,7 @@ from param_decomp.configs import (
     CI_L0Config,
     CIHistogramsConfig,
     CIMaskedAttnPatternsReconLossConfig,
+    GlobalChunkwiseHybridCiConfig,
     PGDReconLossConfig,
     StochasticAttnPatternsReconLossConfig,
 )
@@ -298,6 +299,57 @@ def _resolve_chunkwise_ci_arch(
     )
 
 
+def _block_prefix_and_suffix(target: AnyLMTargetConfig, site_name: str) -> tuple[str, str]:
+    """Split a decomposition site name into its `(block_prefix, suffix)` — e.g.
+    `h.0.attn.q_proj` -> (`h.0`, `attn.q_proj`), `layers.3.self_attn.q_proj` ->
+    (`layers.3`, `self_attn.q_proj`). The block index is the SECOND token in both target
+    grammars; the suffix is shared across blocks (homogeneous topology)."""
+    layer = _block_of_site(target, site_name)
+    tokens = site_name.split(".")
+    assert tokens[1] == str(layer), (site_name, layer)  # block index is the 2nd token
+    return ".".join(tokens[:2]), ".".join(tokens[2:])
+
+
+def _resolve_hybrid_ci_arch(
+    target: AnyLMTargetConfig, ci: GlobalChunkwiseHybridCiConfig
+) -> GlobalChunkwiseHybridCIArch:
+    """Resolve the global-chunkwise-hybrid arch against the LM target: one residual tap per
+    block (`resid.{block}`, in `nb`-axis order) + the shared per-block `(suffix, C)` head
+    layout (asserted homogeneous across blocks — the shared head needs identical site
+    structure per block) + the residual width (`_resolve_d_resid`)."""
+    specs_by_block: dict[int, list[SiteC]] = {}
+    for spec in target.sites:
+        specs_by_block.setdefault(_block_of_site(target, spec.name), []).append(spec)
+    blocks = sorted(specs_by_block)
+
+    def block_layout(block: int) -> tuple[tuple[str, int], ...]:
+        return tuple(
+            (_block_prefix_and_suffix(target, spec.name)[1], spec.C)
+            for spec in specs_by_block[block]
+        )
+
+    ref_layout = block_layout(blocks[0])
+    for block in blocks:
+        assert block_layout(block) == ref_layout, (
+            f"global_chunkwise_hybrid needs homogeneous per-block sites; block {block} "
+            f"layout {block_layout(block)} != block {blocks[0]} layout {ref_layout}"
+        )
+    return GlobalChunkwiseHybridCIArch(
+        block_taps=tuple(f"resid.{block}" for block in blocks),
+        block_site_prefixes=tuple(
+            _block_prefix_and_suffix(target, specs_by_block[block][0].name)[0] for block in blocks
+        ),
+        site_layout=ref_layout,
+        n_embd=_resolve_d_resid(target),
+        n_model_blocks=len(blocks),
+        d_model=ci.d_model,
+        n_blocks=ci.n_blocks,
+        n_heads=ci.n_heads,
+        mlp_hidden=ci.mlp_hidden,
+        block_attention=ci.block_attention,
+    )
+
+
 def _assert_losses_supported(cfg: LMExperimentConfig, site_names: tuple[str, ...]) -> None:
     """Run the schema's loss configs through `build_loss_terms` so unsupported metrics
     refuse at convert time rather than on the GPUs. The engine reads `pd.loss_metrics`
@@ -418,7 +470,11 @@ def build_experiment_config(cfg: LMExperimentConfig, run_id: str) -> BuiltRun:
         run=run_instance(cfg, run_id),
         target=target,
         data=data,
-        ci_fn=ci_arch(cfg.pd.ci_config, lambda ci: _resolve_chunkwise_ci_arch(target, ci)),
+        ci_fn=ci_arch(
+            cfg.pd.ci_config,
+            lambda ci: _resolve_chunkwise_ci_arch(target, ci),
+            lambda ci: _resolve_hybrid_ci_arch(target, ci),
+        ),
         eval=_eval(cfg),
     )
 

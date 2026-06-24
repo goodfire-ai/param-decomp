@@ -75,7 +75,7 @@ def build_tms_built_run(cfg: TMSExperimentConfig, run_id: str) -> BuiltRun:
         run=run_instance(cfg, run_id),
         target=target,
         data=None,
-        ci_fn=ci_arch(cfg.pd.ci_config, resolve_chunkwise=None),
+        ci_fn=ci_arch(cfg.pd.ci_config, resolve_chunkwise=None, resolve_hybrid=None),
         eval=None,
     )
 

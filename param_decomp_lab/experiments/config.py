@@ -20,6 +20,7 @@ from param_decomp.built_run import RunInstance
 from param_decomp.ci_fn import (
     ChunkwiseTransformerCIArch,
     CIFnArch,
+    GlobalChunkwiseHybridCIArch,
     GlobalMLPCIArch,
     MLPCIArch,
 )
@@ -28,6 +29,7 @@ from param_decomp.configs import (
     Cadence,
     ChunkwiseTransformerCiConfig,
     CiConfig,
+    GlobalChunkwiseHybridCiConfig,
     GlobalMlpCiConfig,
     LayerwiseMlpCiConfig,
     OptimizerConfig,
@@ -109,12 +111,13 @@ _RUN_ID_PATTERN = re.compile(r"^p-[0-9a-f]{8}$")
 def ci_arch(
     ci_config: CiConfig,
     resolve_chunkwise: "Callable[[ChunkwiseTransformerCiConfig], ChunkwiseTransformerCIArch] | None",
+    resolve_hybrid: "Callable[[GlobalChunkwiseHybridCiConfig], GlobalChunkwiseHybridCIArch] | None",
 ) -> CIFnArch:
     """The single config→arch converter. The MLP/global archs ARE their pydantic config
-    (strip `type`, list→tuple); the chunkwise arch RESOLVES against the LM target, so the
-    caller supplies `resolve_chunkwise` (a closure binding the resolved target — the chunk
-    generator + residual-width logic stays LM-side). The positionless toys never hit the
-    chunkwise branch and pass `resolve_chunkwise=None`."""
+    (strip `type`, list→tuple); the chunkwise and global-chunkwise-hybrid archs RESOLVE
+    against the LM target, so the caller supplies their resolvers (closures binding the
+    resolved target — the chunk / block authoring + residual-width logic stays LM-side). The
+    positionless toys never hit those branches and pass `None` for both."""
     match ci_config:
         case LayerwiseMlpCiConfig():
             return MLPCIArch(hidden_dims=tuple(ci_config.hidden_dims))
@@ -126,6 +129,12 @@ def ci_arch(
                 "the positionless toys can't request it"
             )
             return resolve_chunkwise(ci_config)
+        case GlobalChunkwiseHybridCiConfig():
+            assert resolve_hybrid is not None, (
+                "global_chunkwise_hybrid CI fn needs an LM target to resolve against; "
+                "the positionless toys can't request it"
+            )
+            return resolve_hybrid(ci_config)
 
 
 def _assert_cosine_to_tenth(schedule: ScheduleConfig, who: str) -> None:

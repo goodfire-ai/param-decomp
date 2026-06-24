@@ -76,7 +76,7 @@ def build_resid_mlp_built_run(cfg: ResidMLPExperimentConfig, run_id: str) -> Bui
         run=run_instance(cfg, run_id),
         target=target,
         data=None,
-        ci_fn=ci_arch(cfg.pd.ci_config, resolve_chunkwise=None),
+        ci_fn=ci_arch(cfg.pd.ci_config, resolve_chunkwise=None, resolve_hybrid=None),
         eval=None,
     )
 
