@@ -116,7 +116,7 @@ def attn_implementation() -> Literal["cudnn", "xla"]:
     """cuDNN flash attention on GPU; the XLA composite elsewhere (CPU tests). The
     composite MATERIALIZES (B, H, T, T) score matrices — at seq 2048 that is ~2 GiB
     per suffix forward per layer and was the dominant term in the trainer's OOM."""
-    return "cudnn" if jax.default_backend() == "gpu" else "xla"
+    return "xla"  # DEBUG: isolate the non-attn reshard
 
 
 def causal_sdpa(q: Array, k: Array, v: Array) -> Array:
