@@ -173,6 +173,14 @@ class _PathSchema(ABC):
                 return f"{base}.{self.mlp.render(ffn_w)}"
 
 
+class _LlamaPathSchema(_PathSchema):
+    embedding_path = "embed_tokens"
+    blocks = "layers"
+    attn = _SeparateAttnPathSchema(base="self_attn", q="q_proj", k="k_proj", v="v_proj", o="o_proj")
+    mlp = _GLUPathSchema(base="mlp", gate="gate_proj", up="up_proj", down="down_proj")
+    unembed_path = "lm_head"
+
+
 class _LlamaSimplePathSchema(_PathSchema):
     embedding_path = "wte"
     blocks = "h"
@@ -206,6 +214,7 @@ class _GPT2PathSchema(_PathSchema):
 
 
 _MODEL_TYPE_PATH_SCHEMAS: dict[str, type[_PathSchema]] = {
+    "Llama": _LlamaPathSchema,
     "LlamaSimple": _LlamaSimplePathSchema,
     "LlamaSimpleMLP": _LlamaSimpleMLPPathSchema,
     "GPT2Simple": _GPT2SimplePathSchema,
