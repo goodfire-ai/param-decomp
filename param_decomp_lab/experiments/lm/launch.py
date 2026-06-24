@@ -60,6 +60,7 @@ _SRUN_FLAGS = "--kill-on-bad-exit=1 --ntasks-per-node=1"
 # (somewhat slower steps) but makes the one-time compile tractable; the compile is cached.
 _RANK_ENV = r'''export XLA_PYTHON_CLIENT_MEM_FRACTION=0.92
 export XLA_FLAGS="--xla_gpu_enable_command_buffer= --xla_gpu_autotune_level=0"
+[ "${SLURM_PROCID:-0}" = "0" ] && export XLA_FLAGS="$XLA_FLAGS --xla_dump_to=/mnt/data/artifacts/mechanisms/param-decomp/hlo_dump"
 export LD_LIBRARY_PATH="$(python -c 'import nvidia, os, glob; print(":".join(sorted(glob.glob(os.path.join(list(nvidia.__path__)[0], "*", "lib")))))')${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"'''
 
 
