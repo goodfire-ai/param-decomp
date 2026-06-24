@@ -24,7 +24,7 @@
 run_name: jax-full32L-allmat-seq512-b128-dp128
 cadence:
   keep_last_n_checkpoints: 2
-  save_every: 5000
+  save_every: 500
   train_log_every: 200
 data:
   buffer_size: 1000
@@ -546,7 +546,7 @@ pd:
   - C: 10240
     module_pattern: model.layers.31.mlp.down_proj
   faithfulness_warmup_lr: 0.001
-  faithfulness_warmup_steps: 400
+  faithfulness_warmup_steps: 0
   faithfulness_warmup_weight_decay: 0.0
   identity_decomposition_targets: null
   loss_metrics:
