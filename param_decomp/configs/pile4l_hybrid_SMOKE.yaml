@@ -12,7 +12,7 @@ data:
   dataset_name: parquet
   eval_split: train
   is_tokenized: true
-  max_seq_len: 128
+  max_seq_len: 512
   revision: null
   shuffle_each_epoch: true
   streaming: false
