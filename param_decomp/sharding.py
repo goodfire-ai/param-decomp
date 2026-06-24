@@ -19,6 +19,8 @@ import numpy as np
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 
+_GPUS_PER_NODE = 8
+
 
 def init_distributed(dp: int | None) -> bool:
     """Bring up `jax.distributed` iff `dp` is set. Distributedness is config-driven
@@ -26,24 +28,27 @@ def init_distributed(dp: int | None) -> bool:
     every process on a SLURM box (incl. a pytest worker), so sniffing it would wrongly
     fire `jax.distributed.initialize` mid-test.
 
-    `dp is None` → single device, no-op (return False). Otherwise the cluster recipe (from
-    the spike): all GPUs visible per task (`--gres=gpu:8`), each process claims
-    `local_device_ids=[SLURM_LOCALID]`, and the realized world size must equal `dp`. SLURM
-    env is read ONLY for the rank info, once `dp` has decided we're distributed.
+    `dp is None` → single device, no-op (return False). Otherwise the cluster recipe:
+    ONE process per node, each owning all its local GPUs (mirrors the torch torchrun
+    model — the launcher runs srun `--ntasks-per-node=1`). jax auto-detects the SLURM
+    topology (process_id = node rank, num_processes = node count) but its SLURM cluster
+    env claims only ONE device per process by default, so we pass the full local device
+    list explicitly (`CUDA_VISIBLE_DEVICES`, set to all 8 by `--gpus-per-node=8`). The
+    realized total device count must equal `dp`. This avoids the 8-tasks-per-node srun
+    placement that the cluster's `CR_Pack_Nodes` selection packs onto one node. `dp`
+    (config) decides distributedness; SLURM env only supplies the topology.
     """
     if dp is None:
         return False
-    local_id = int(os.environ["SLURM_LOCALID"])
-    n_visible = len(os.environ.get("CUDA_VISIBLE_DEVICES", "").split(","))
-    assert local_id < n_visible, (
-        f"SLURM_LOCALID={local_id} >= {n_visible} visible GPUs — srun packed tasks onto "
-        f"too few nodes (job 50416 failure mode); launch steps with an explicit "
-        f"--ntasks-per-node=<gpus-per-node>"
-    )
-    jax.distributed.initialize(local_device_ids=[local_id])
-    assert jax.process_count() == dp, (
-        f"runtime.dp={dp} != realized world size {jax.process_count()} — the config's "
-        f"declared world size must match the launch topology (nodes × 8)"
+    assert dp % _GPUS_PER_NODE == 0, f"dp={dp} must be a multiple of {_GPUS_PER_NODE} (GPUs/node)"
+    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    n_local = len([d for d in cuda_visible.split(",") if d]) or _GPUS_PER_NODE
+    jax.distributed.initialize(local_device_ids=list(range(n_local)))
+    assert jax.device_count() == dp, (
+        f"runtime.dp={dp} != realized device count {jax.device_count()} "
+        f"({jax.process_count()} procs × {jax.local_device_count()} local GPUs; "
+        f"CUDA_VISIBLE_DEVICES={cuda_visible!r}) — the config's declared world size must "
+        f"match the launch topology (nodes × {_GPUS_PER_NODE})"
     )
     return True
 
