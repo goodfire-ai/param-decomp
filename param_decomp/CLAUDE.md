@@ -120,11 +120,19 @@ from the canonical schema and calls `run_decomposition_training`). They are posi
 (`leading_axes=()`) and use the MLP CI fns. All CI-fn architectures live together in
 `ci_fn.py`: `LayerwiseMLPCIFn` (`expects_axes=()`, one independent MLP per site mapping
 `site_input [B,d_in] -> [B,C]`), `GlobalMLPCIFn` (`expects_axes=()`, one shared MLP over all
-sites jointly, concat/split in canonical site order), and the LM `ChunkwiseTransformerCIFn`
+sites jointly, concat/split in canonical site order), the LM `ChunkwiseTransformerCIFn`
 (`expects_axes=("sequence",)`, per-chunk transformers reading residual taps, stacked +
-`filter_vmap`). `run_state.init_train_state` dispatches CI-fn construction on `cfg.ci_fn`
-(`MLPCIArch` / `GlobalMLPCIArch` / `ChunkwiseTransformerCIArch`) and uses replicated (not
-C-sharded) V/U + CI for the tiny toys; the core `config.CIFnArch` admits all three and the
+`filter_vmap`), and the LM `GlobalChunkwiseHybridCIFn` (`expects_axes=("sequence",)`, ONE
+shared transformer over `[batch, token, n_model_blocks, d_model]` — the block index is a
+second sequence axis with learned absolute block-pos embeddings + a per-layer block-axis
+attention sublayer after the existing token RoPE attention; `block_attention: bool` gates
+that sublayer via `None` leaves, the cross-block-flow ablation. Shares params across blocks
+where chunkwise keeps them independent; the token + block sublayers reuse one `_attention`
+helper, extracted from `CIBlock`). `run_state.init_train_state` dispatches CI-fn
+construction on `cfg.ci_fn`
+(`MLPCIArch` / `GlobalMLPCIArch` / `ChunkwiseTransformerCIArch` / `GlobalChunkwiseHybridCIArch`)
+and uses replicated (not
+C-sharded) V/U + CI for the tiny toys; the core `config.CIFnArch` admits all of them and the
 lab `experiments.config.ci_arch` builds the layerwise / global arch from the toy
 ci_config (validated end-to-end on CPU via
 `pd-resid-mlp`). Harvest / slow-eval / export over the toys are NOT wired
