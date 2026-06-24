@@ -9,28 +9,12 @@ It handles:
 - Job submission with script renaming and log file creation
 """
 
-import shlex
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from param_decomp_lab.infra.settings import REPO_ROOT, SBATCH_SCRIPTS_DIR, SLURM_LOGS_DIR
-
-# Recommended CUDA / NCCL environment for distributed training.
-# `NCCL_DEBUG=WARN` keeps logs quiet but surfaces real problems; the async-error flag
-# makes NCCL collectives fail fast rather than hang on first-error. `PYTHONUNBUFFERED`
-# forces line-buffered Python stdout — without this, slurm logs look frozen during
-# silent setup phases.
-CUDA_FLAGS: dict[str, str] = {
-    "NCCL_DEBUG": "WARN",
-    "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
-    "PYTHONUNBUFFERED": "1",
-}
-
-# B200 nodes ship with 8 GPUs each. Multi-node DDP requires ``n_gpus`` to be a
-# multiple of this — single-node DDP otherwise.
-GPUS_PER_NODE: int = 8
 
 # Bash expressions that uniquely identify a job invocation, used to name per-job /tmp
 # workspaces. Exposed so other modules building SLURM commands (e.g. multi-node DDP
@@ -370,72 +354,3 @@ def _submit_script(script_path: Path) -> str:
     # Extract job ID from sbatch output (format: "Submitted batch job 12345")
     job_id = result.stdout.strip().split()[-1]
     return job_id
-
-
-def torchrun_command(
-    *,
-    job_name: str,
-    snapshot_ref: str,
-    python_module: str,
-    script_args: str,
-    n_gpus: int,
-    master_port: int = 29500,
-) -> str:
-    """Build the right launch command for ``n_gpus``, dispatching by scale.
-
-    * ``n_gpus == 1``: plain ``python -m <module> <args>``.
-    * ``1 < n_gpus <= GPUS_PER_NODE``: single-node DDP via
-      ``torchrun --standalone --nproc_per_node=N --master_port=P``.
-    * ``n_gpus > GPUS_PER_NODE`` (must be a multiple of ``GPUS_PER_NODE``):
-      multi-node DDP via ``srun --nodes=N --ntasks=N --ntasks-per-node=1
-      bash -c '<setup>; torchrun ...'`` with each node's torchrun pulling
-      ``--node_rank`` from ``$SLURM_PROCID`` and ``--master_addr`` from
-      ``$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)``.
-
-    Args:
-        job_name: Namespace per-node ``/tmp`` workspace in multi-node mode.
-        snapshot_ref: Fully-qualified git ref to checkout
-            (e.g. ``refs/runs/snapshot/<id>``).
-        python_module: Module to launch (e.g.
-            ``param_decomp_lab.harvest.scripts.run_worker``).
-        script_args: Positional args passed to the module. **Pass paths to
-            in-repo files as paths RELATIVE to REPO_ROOT** — the snapshot
-            setup ``cd``'s into the per-node snapshot checkout, so relative
-            paths resolve correctly.
-        n_gpus: Total GPU count. > ``GPUS_PER_NODE`` must be a multiple of
-            ``GPUS_PER_NODE``.
-        master_port: TCP port for torch elastic rendezvous. Pick a unique
-            value per job if multiple multi-GPU jobs may share a host.
-
-    Returns:
-        A bash command string. Embed inside an SBATCH script via
-        ``generate_script``. Caller's ``SlurmConfig`` must set ``n_gpus`` /
-        ``n_nodes`` consistently with ``n_gpus`` here.
-    """
-    if n_gpus == 1:
-        return f"python -m {python_module} {script_args}"
-
-    if n_gpus <= GPUS_PER_NODE:
-        return (
-            f"torchrun --standalone --nproc_per_node={n_gpus} --master_port={master_port} "
-            f"-m {python_module} {script_args}"
-        )
-
-    assert n_gpus % GPUS_PER_NODE == 0, (
-        f"multi-node DDP requires n_gpus to be a multiple of {GPUS_PER_NODE}; got {n_gpus}"
-    )
-    n_nodes = n_gpus // GPUS_PER_NODE
-    work_dir = f"/tmp/param-decomp/workspace-{job_name}-$SLURM_JOB_ID-node$SLURM_PROCID"
-    setup = generate_git_snapshot_setup(work_dir, snapshot_ref)
-    torchrun_cmd = (
-        f"torchrun "
-        f"--nnodes={n_nodes} "
-        f"--node_rank=$SLURM_PROCID "
-        f"--nproc_per_node={GPUS_PER_NODE} "
-        f'--master_addr=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1) '
-        f"--master_port={master_port} "
-        f"-m {python_module} {script_args}"
-    )
-    srun_flags = f"--nodes={n_nodes} --ntasks={n_nodes} --ntasks-per-node=1 --kill-on-bad-exit=1"
-    inner = f"{setup}\n{torchrun_cmd}"
-    return f"srun {srun_flags} bash -c {shlex.quote(inner)}"
