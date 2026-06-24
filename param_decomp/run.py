@@ -21,6 +21,7 @@ import io
 import json
 import math
 import signal
+import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -42,6 +43,7 @@ from jax import random
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import PRNGKeyArray
+from tqdm import tqdm
 
 from param_decomp.built_run import DataConfig, RunInstance
 from param_decomp.checkpoint import (
@@ -194,10 +196,8 @@ class MetricsSink:
         scalars = {k: v for k, v in record.items() if isinstance(v, float)}
         self._jsonl.write(json.dumps({"step": step, **scalars}) + "\n")
         self._jsonl.flush()
-        print(
-            f"[step {step}] " + " ".join(f"{k}={v:.4g}" for k, v in scalars.items()),
-            flush=True,
-        )
+        # tqdm.write, not print: writing through tqdm keeps the train loop's live bar intact.
+        tqdm.write(f"[step {step}] " + " ".join(f"{k}={v:.4g}" for k, v in scalars.items()))
         if self._wandb is not None:
             _log_wandb_safe(self._wandb, record, step, "log")
 
@@ -468,7 +468,23 @@ def run_decomposition_training(
     window_t0 = time.time()
     last_logged = start_step
 
-    for step in range(start_step, pd.steps):
+    # Bar on stdout (where the metric lines go), not tqdm's default stderr — under SLURM
+    # stderr merges into the same .out, and a split across the two streams interleaves the
+    # bar with the writes. Only rank 0 renders. Off a TTY (a SLURM log) every refresh is a
+    # fresh line rather than an in-place redraw, so throttle to a periodic heartbeat instead
+    # of one line per step; tqdm.write still refreshes the bar next to each metric line.
+    on_tty = sys.stdout.isatty()
+    pbar = tqdm(
+        range(start_step, pd.steps),
+        initial=start_step,
+        total=pd.steps,
+        ncols=0,
+        disable=not is_main,
+        desc="train",
+        file=sys.stdout,
+        mininterval=0.1 if on_tty else 30.0,
+    )
+    for step in pbar:
         residual = sample_batch(step)
         state, metrics = step_fn(lm, state, residual, random.fold_in(run_key, step))
 
@@ -490,6 +506,7 @@ def run_decomposition_training(
                     f"non-finite loss {loss_name!r} at step {now_step}: {record[loss_name]}"
                 )
             record["step_time_s"] = per_step
+            pbar.set_postfix({"loss": f"{record['total']:.4g}"}, refresh=False)
             record["train/schedules/lr/components"] = float(jnp.asarray(sched_vu(now_step)))
             record["train/schedules/lr/ci_fn"] = float(jnp.asarray(sched_ci(now_step)))
             mem_stats = jax.local_devices()[0].memory_stats()
@@ -509,9 +526,11 @@ def run_decomposition_training(
         if now_step % save_every == 0 or now_step == pd.steps or _sigterm_received:
             save_state(checkpoint_manager, now_step, state)
             if is_main:
-                print(f"checkpoint saved @ step {now_step}", flush=True)
+                tqdm.write(f"checkpoint saved @ step {now_step}")
             window_t0 = time.time()
         if _sigterm_received:
             if is_main:
-                print("SIGTERM: checkpoint saved, exiting for requeue", flush=True)
+                tqdm.write("SIGTERM: checkpoint saved, exiting for requeue")
             break
+
+    pbar.close()

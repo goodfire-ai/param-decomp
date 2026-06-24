@@ -1,0 +1,280 @@
+================================================================
+SLURM job:      161
+Allocated:      ac-bitdeer-cloud-h100-reserved-001-[003-004]
+Date:           2026-05-14T12:42:54+00:00
+Repo:           /var/spool/slurmd
+================================================================
+
+--- per-node diagnostics ---
+==== ac-bitdeer-cloud-h100-reserved-001-003 ====
+ulimit -l: 8192
+ulimit -n: 16384
+
+-- nvidia-smi --
+==== ac-bitdeer-cloud-h100-reserved-001-004 ====
+ulimit -l: 8192
+ulimit -n: 16384
+
+-- nvidia-smi --
+0, NVIDIA H100 80GB HBM3, 580.126.20
+1, NVIDIA H100 80GB HBM3, 580.126.20
+2, NVIDIA H100 80GB HBM3, 580.126.20
+3, NVIDIA H100 80GB HBM3, 580.126.20
+4, NVIDIA H100 80GB HBM3, 580.126.20
+5, NVIDIA H100 80GB HBM3, 580.126.20
+6, NVIDIA H100 80GB HBM3, 580.126.20
+7, NVIDIA H100 80GB HBM3, 580.126.20
+
+-- IB devices (ibstat) --
+0, NVIDIA H100 80GB HBM3, 580.126.20
+1, NVIDIA H100 80GB HBM3, 580.126.20
+2, NVIDIA H100 80GB HBM3, 580.126.20
+3, NVIDIA H100 80GB HBM3, 580.126.20
+4, NVIDIA H100 80GB HBM3, 580.126.20
+5, NVIDIA H100 80GB HBM3, 580.126.20
+6, NVIDIA H100 80GB HBM3, 580.126.20
+7, NVIDIA H100 80GB HBM3, 580.126.20
+
+-- IB devices (ibstat) --
+CA 'mlx5_0'
+	CA type: MT4129
+	Number of ports: 1
+	Firmware version: 28.39.1002
+	Hardware version: 0
+	Node GUID: 0xa088c2030069788a
+	System image GUID: 0xa088c2030069788a
+	Port 1:
+		State: Active
+		Physical state: LinkUp
+		Rate: 400
+		Base lid: 1466
+		LMC: 0
+		SM lid: 1
+		Capability mask: 0xa751e848
+		Port GUID: 0xa088c2030069788a
+		Link layer: InfiniBand
+CA 'mlx5_1'
+	CA type: MT4129
+	Number of ports: 1
+	Firmware version: 28.39.1002
+	Hardware version: 0
+	Node GUID: 0xa088c2030069776a
+	System image GUID: 0xa088c2030069776a
+	Port 1:
+		State: Active
+		Physical state: LinkUp
+		Rate: 400
+		Base lid: 1467
+		LMC: 0
+		SM lid: 1
+		Capability mask: 0xa751e848
+		Port GUID: 0xa088c2030069776a
+		Link layer: InfiniBand
+CA 'mlx5_10'
+	CA type: MT4129
+	Number of ports: 1
+	Firmware version: 28.39.1002
+	Hardware version: 0
+	Node GUID: 0xa088c2030069b992
+	System image GUID: 0xa088c2030069b992
+	Port 1:
+		State: Active
+		Physical state: LinkUp
+		Rate: 400
+		Base lid: 1472
+		LMC: 0
+		SM lid: 1
+		Capability mask: 0xa751e848
+		Port GUID: 0xa088c2030069b992
+		Link layer: InfiniBand
+CA 'mlx5_11'
+	CA type: MT4129
+	Number of ports: 1
+	Firmware version: 28.39.1002
+	Hardware version: 0
+	Node GUID: 0xa088c2030069b9a2
+	System image GUID: 0xa088c2030069b9a2
+	Port 1:
+		State: Active
+
+-- ibv_devinfo (truncated) --
+hca_id:	mlx5_0
+	transport:			InfiniBand (0)
+	fw_ver:				28.39.1002
+	node_guid:			a088:c203:0069:788a
+	sys_image_guid:			a088:c203:0069:788a
+	vendor_id:			0x02c9
+	vendor_part_id:			4129
+	hw_ver:				0x0
+	board_id:			MT_0000000838
+	phys_port_cnt:			1
+		port:	1
+			state:			PORT_ACTIVE (4)
+			max_mtu:		4096 (5)
+			active_mtu:		4096 (5)
+			sm_lid:			1
+			port_lid:		1466
+			port_lmc:		0x00
+			link_layer:		InfiniBand
+
+hca_id:	mlx5_1
+	transport:			InfiniBand (0)
+	fw_ver:				28.39.1002
+	node_guid:			a088:c203:0069:776a
+	sys_image_guid:			a088:c203:0069:776a
+	vendor_id:			0x02c9
+	vendor_part_id:			4129
+	hw_ver:				0x0
+	board_id:			MT_0000000838
+	phys_port_cnt:			1
+		port:	1
+			state:			PORT_ACTIVE (4)
+			max_mtu:		4096 (5)
+			active_mtu:		4096 (5)
+			sm_lid:			1
+			port_lid:		1467
+			port_lmc:		0x00
+			link_layer:		InfiniBand
+
+hca_id:	mlx5_2
+	transport:			InfiniBand (0)
+CA 'mlx5_0'
+	CA type: MT4129
+	Number of ports: 1
+	Firmware version: 28.39.1002
+	Hardware version: 0
+	Node GUID: 0xa088c2030069c1fa
+	System image GUID: 0xa088c2030069c1fa
+	Port 1:
+		State: Active
+		Physical state: LinkUp
+		Rate: 400
+		Base lid: 2180
+		LMC: 0
+		SM lid: 1
+		Capability mask: 0xa751e848
+		Port GUID: 0xa088c2030069c1fa
+		Link layer: InfiniBand
+CA 'mlx5_1'
+	CA type: MT4129
+	Number of ports: 1
+	Firmware version: 28.39.1002
+	Hardware version: 0
+	Node GUID: 0xa088c2030069be92
+	System image GUID: 0xa088c2030069be92
+	Port 1:
+		State: Active
+		Physical state: LinkUp
+		Rate: 400
+		Base lid: 2183
+		LMC: 0
+		SM lid: 1
+		Capability mask: 0xa751e848
+		Port GUID: 0xa088c2030069be92
+		Link layer: InfiniBand
+CA 'mlx5_10'
+	CA type: MT4129
+	Number of ports: 1
+	Firmware version: 28.39.1002
+	Hardware version: 0
+	Node GUID: 0xa088c2030069bd7a
+	System image GUID: 0xa088c2030069bd7a
+	Port 1:
+		State: Active
+		Physical state: LinkUp
+		Rate: 400
+		Base lid: 2197
+		LMC: 0
+		SM lid: 1
+		Capability mask: 0xa751e848
+		Port GUID: 0xa088c2030069bd7a
+		Link layer: InfiniBand
+CA 'mlx5_11'
+	CA type: MT4129
+	Number of ports: 1
+	Firmware version: 28.39.1002
+	Hardware version: 0
+	Node GUID: 0xa088c2030069c332
+	System image GUID: 0xa088c2030069c332
+	Port 1:
+		State: Active
+
+-- ibv_devinfo (truncated) --
+
+hca_id:	mlx5_0
+	transport:			InfiniBand (0)
+	fw_ver:				28.39.1002
+	node_guid:			a088:c203:0069:c1fa
+	sys_image_guid:			a088:c203:0069:c1fa
+	vendor_id:			0x02c9
+	vendor_part_id:			4129
+	hw_ver:				0x0
+	board_id:			MT_0000000838
+	phys_port_cnt:			1
+		port:	1
+			state:			PORT_ACTIVE (4)
+			max_mtu:		4096 (5)
+			active_mtu:		4096 (5)
+			sm_lid:			1
+			port_lid:		2180
+			port_lmc:		0x00
+			link_layer:		InfiniBand
+
+hca_id:	mlx5_1
+	transport:			InfiniBand (0)
+	fw_ver:				28.39.1002
+	node_guid:			a088:c203:0069:be92
+	sys_image_guid:			a088:c203:0069:be92
+	vendor_id:			0x02c9
+	vendor_part_id:			4129
+	hw_ver:				0x0
+	board_id:			MT_0000000838
+	phys_port_cnt:			1
+		port:	1
+			state:			PORT_ACTIVE (4)
+			max_mtu:		4096 (5)
+			active_mtu:		4096 (5)
+			sm_lid:			1
+			port_lid:		2183
+			port_lmc:		0x00
+			link_layer:		InfiniBand
+
+hca_id:	mlx5_2
+	transport:			InfiniBand (0)
+
+
+--- torch / NCCL versions ---
+/var/spool/slurmd/job00161/slurm_script: line 56: .venv/bin/activate: No such file or directory
+/var/spool/slurmd/job00161/slurm_script: line 57: python: command not found
+MASTER_ADDR=ac-bitdeer-cloud-h100-reserved-001-003 MASTER_PORT=29500
+/var/spool/slurmd/job00161/slurm_script: line 70: /var/spool/slurmd/scripts/.nccl_ib_repro_workload.py: No such file or directory
+
+================================================================
+RUN: default (NCCL chooses IB)
+Env overrides: 
+================================================================
+/usr/bin/bash: line 3: .venv/bin/activate: No such file or directory
+/usr/bin/bash: line 6: torchrun: command not found
+/usr/bin/bash: line 3: .venv/bin/activate: No such file or directory
+/usr/bin/bash: line 6: torchrun: command not found
+srun: error: ac-bitdeer-cloud-h100-reserved-001-003: task 0: Exited with exit code 127
+srun: error: ac-bitdeer-cloud-h100-reserved-001-004: task 1: Exited with exit code 127
+exit code: 127
+
+================================================================
+RUN: NCCL_IB_DISABLE=1 (TCP fallback)
+Env overrides: NCCL_IB_DISABLE=1
+================================================================
+/usr/bin/bash: line 3: .venv/bin/activate: No such file or directory
+/usr/bin/bash: line 6: torchrun: command not found
+srun: error: ac-bitdeer-cloud-h100-reserved-001-004: task 1: Exited with exit code 127
+/usr/bin/bash: line 3: .venv/bin/activate: No such file or directory
+/usr/bin/bash: line 6: torchrun: command not found
+srun: error: ac-bitdeer-cloud-h100-reserved-001-003: task 0: Exited with exit code 127
+exit code: 127
+
+================================================================
+Summary
+  default (IB):              exit 127
+  NCCL_IB_DISABLE=1 (TCP):   exit 127
+================================================================
