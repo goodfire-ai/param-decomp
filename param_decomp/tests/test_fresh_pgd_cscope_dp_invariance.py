@@ -12,8 +12,8 @@ under test is `sign(avg(g)) == sign(sum(g))`: both pick the same sign per source
 entry, so the ascended source — and therefore the materialized mask — is BIT-identical
 across device layouts. Sign is an exact decision, so no float tolerance is needed.
 
-This pins the missing multi-device invariance for fresh-PGD c-scope (PARITY_MATRIX
-§7/§1; Part 2 open question #7). It exercises the SAME ascent body as production:
+This pins the missing multi-device invariance for fresh-PGD c-scope. It exercises
+the SAME ascent body as production:
 a genuine batch-reduced `kl_per_position` loss whose source grad, for a c-scope
 `(1, 1, C+1)` source, must be reduced across the sharded batch axis.
 

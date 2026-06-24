@@ -169,7 +169,7 @@ def test_unsupported_settings_refuse():
 
 
 def test_unsupported_model_family_refuses_and_supported_families_dispatch():
-    """E23 (PARITY_MATRIX §11 row 2): only Llama-3.1-8B (`hf`/`hf_weights_in_vendored`
+    """E23: only Llama-3.1-8B (`hf`/`hf_weights_in_vendored`
     → `TargetConfig`) and `LlamaSimpleMLP` (`pretrained` →
     `LlamaSimpleMLPTargetConfig`) convert; every other family is refused at convert
     time. The schema's `LMTargetSpec` discriminated union still validates a GPT-2 spec

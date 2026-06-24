@@ -38,7 +38,7 @@ HLO constant; see "HLO-baking rule" below). The activation waist is GENERIC `[*l
 `[*leading, C]`), `leading = (batch,) + named position axes`: masking / routing / sources
 / imp-min all read an opaque `leading = residual.shape[:-1]`; reductions are
 `math.prod(shape[:-1])` / `axis=tuple(range(ndim-1))`. CI is independent over every leading
-axis (no per-axis CI semantics, only axis NAMES — see AXIS_SEMANTICS_DESIGN.md).
+axis (no per-axis CI semantics, only axis NAMES).
 `DecomposedModel.leading_axes` names the position axes (`("sequence",)` for LM, `()` for
 TMS); `CIFn.expects_axes` mirrors it, and `init_train_state` asserts they're equal (early
 fail) so the CI fn stays per-domain (RoPE over `sequence`) without the core adapting. The

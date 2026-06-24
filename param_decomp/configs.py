@@ -333,7 +333,7 @@ class PersistentPGDReconLossConfig(LossMetricConfig):
 
     `update()` returns `None` before `start_frac` of training. Sources are clamped to
     `[0, 1]` after each step — the only implemented parameterization. (A sigmoid
-    parameterization was removed; see param_decomp/MIGRATION_HOLES.md to re-add it.)
+    parameterization was removed.)
     """
 
     @model_validator(mode="before")
@@ -344,8 +344,7 @@ class PersistentPGDReconLossConfig(LossMetricConfig):
         # it so those configs still load. A True value was never supported -> reject.
         if isinstance(data, dict) and "use_sigmoid_parameterization" in data:
             assert not data.pop("use_sigmoid_parameterization"), (
-                "use_sigmoid_parameterization was removed (clamp-only); see "
-                "param_decomp/MIGRATION_HOLES.md to re-add the sigmoid parameterization"
+                "use_sigmoid_parameterization was removed (clamp-only)"
             )
         return data
 
@@ -547,7 +546,7 @@ class RuntimeConfig(BaseConfig):
         # Shared-storage shim (provenance): stored run config.yamls carry torch-trainer
         # runtime fields the JAX trainer no longer has (`device`, `autocast_bf16` — bf16 is
         # unconditional, device is JAX-managed). Strip them so existing runs still load;
-        # reject a non-supported value loudly. See param_decomp/MIGRATION_HOLES.md.
+        # reject a non-supported value loudly.
         if not isinstance(data, dict):
             return data
         data.pop("device", None)
@@ -599,7 +598,7 @@ class PDConfig(BaseConfig):
         # Shared-storage shim (provenance): stored run config.yamls carry fields the JAX
         # trainer no longer has — each only ever had ONE supported value. Strip them so
         # existing runs still load (harvest / autointerp / fine-tune / run_metadata); reject
-        # a non-supported value loudly. See param_decomp/MIGRATION_HOLES.md.
+        # a non-supported value loudly.
         if not isinstance(data, dict):
             return data
         if "sigmoid_type" in data:

@@ -10,8 +10,8 @@ set to layer-ascending, then `KIND_ORDER` within a layer — independent of the 
 order in the yaml.
 
 Site order is RNG- and concat/split-load-bearing (S10), so the resolved SET must match
-torch exactly. The ORDER convention is a separate, still-open decision (PARITY_MATRIX
-§11 row 1, status partial): this test asserts SET-equality unconditionally and PINS the
+torch exactly. The ORDER convention is a separate, still-open decision: this test
+asserts SET-equality unconditionally and PINS the
 ORDER divergence for the configs where it bites, so a silent convergence/regression is
 caught.
 
@@ -127,7 +127,7 @@ def test_simple_mlp_wildcard_mixed_set_matches_torch():
 
     assert set(jax_sites) == set(torch_sites)
 
-    # ORDER divergence (PARITY_MATRIX §11 row 1, partial) — pinned, not yet reconciled.
+    # ORDER divergence — pinned, not yet reconciled.
     # JAX: layer-ascending then KIND_ORDER. torch: pattern-major (all c_fc, then all
     # down_proj, ...), then layer-ascending within a pattern.
     assert jax_sites != torch_sites

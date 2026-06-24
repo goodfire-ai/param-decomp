@@ -84,9 +84,7 @@ is no `pd-slow-eval` CLI.)
 
 **Training is JAX now.** The torch `Trainer` was retired from HEAD (the JAX single-pool
 trainer is faster and is what we run; the torch trainer is preserved as the *semantic
-oracle* at git tag `torch-oracle`). The pivot and its scope are documented in
-[`param_decomp/TRANSITION.md`](param_decomp/TRANSITION.md);
-that's the settled plan, read it first.
+oracle* at git tag `torch-oracle`).
 
 The trainer lives in `param_decomp/` (the core of the root `param-decomp` distribution,
 the one venv). The semantics source of truth is its `SPEC.md` (normative pseudocode +

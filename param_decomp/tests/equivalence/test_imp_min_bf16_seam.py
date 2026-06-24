@@ -1,4 +1,4 @@
-"""Bounds the N3 bf16-input imp-min cast-point seam (SPEC_AUDIT §1 N3, §2(c)).
+"""Bounds the N3 bf16-input imp-min cast-point seam.
 
 The fp32-only equivalence fixtures never push a bf16 ci through the power, so the one
 remaining imp-min asymmetry is unmeasured: under autocast torch forms
@@ -52,7 +52,7 @@ def test_imp_min_bf16_input_seam_within_tolerance():
         assert rel <= SEAM_RTOL, (
             f"imp-min {name} bf16-input seam exceeded tolerance: "
             f"jax (fp32-first) {jax_value!r} vs torch (bf16 pow intermediate) "
-            f"{torch_value!r} rel {rel:.3e} > {SEAM_RTOL:.0e} (SPEC_AUDIT §1 N3)"
+            f"{torch_value!r} rel {rel:.3e} > {SEAM_RTOL:.0e}"
         )
 
     print(f"\nN3 imp-min bf16-input seam worst-case rel error: {worst_rel:.3e}")
