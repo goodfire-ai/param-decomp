@@ -54,6 +54,7 @@ from param_decomp.tests.test_llama8b import (
     _tiny_cfg,
     _tiny_decomposed_lm,
 )
+from param_decomp.train import COMPUTE_DT, cast_floating
 
 
 def _build_ci_fn(lm: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
@@ -89,8 +90,11 @@ def test_reductions_match_hand_rolled_per_component():
 
     reductions = accumulate_site_reductions(step, lm, ci_fn, [residual], n_batches_accum=None)
 
+    # mirror slow_eval's bf16 CI-fn compute (SPEC: slow eval runs the CI fn in bf16, like
+    # training, then upcasts the logits) so the hand-rolled reference sees the same CI values.
     taps = lm.read_activations(residual, ci_fn.input_names)
-    logits = ci_fn(taps).logits
+    ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
+    logits = {s: v.astype(np.float32) for s, v in ci_fn_bf16(taps).logits.items()}
     lower = {s: lower_leaky_hard_sigmoid(logits[s]) for s in lm.site_names}
     for site in lm.site_names:
         flat = np.asarray(lower[site]).reshape(-1, C).astype(np.float32)
