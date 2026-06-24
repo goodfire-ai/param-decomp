@@ -58,7 +58,11 @@ _SRUN_FLAGS = "--kill-on-bad-exit=1 --ntasks-per-node=1"
 # --xla_gpu_autotune_level=0: autotuning the full-model step (224 sites) is the entire GPU
 # compile wall — 1h+ on, ~15 min off (measured, job 107604). Off uses default kernels
 # (somewhat slower steps) but makes the one-time compile tractable; the compile is cached.
+# XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB: XLA's pinned host-staging pool defaults to 64 GB, which
+# the full-model step blows past right after the faith warmup (job 127622). The b200 nodes
+# carry ~2 TB RAM, so raise the ceiling generously (it is a cap, allocated on demand).
 _RANK_ENV = r'''export XLA_PYTHON_CLIENT_MEM_FRACTION=0.92
+export XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB=1024
 export XLA_FLAGS="--xla_gpu_enable_command_buffer= --xla_gpu_autotune_level=0"
 export LD_LIBRARY_PATH="$(python -c 'import nvidia, os, glob; print(":".join(sorted(glob.glob(os.path.join(list(nvidia.__path__)[0], "*", "lib")))))')${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"'''
 
