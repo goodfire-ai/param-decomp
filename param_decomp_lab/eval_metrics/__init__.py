@@ -15,6 +15,7 @@ from param_decomp.metrics.stochastic_hidden_acts_recon import (
     StochasticHiddenActsReconLoss,
     StochasticHiddenActsReconLossConfig,
 )
+from param_decomp.metrics.unmasked_recon import UnmaskedReconLoss, UnmaskedReconLossConfig
 from param_decomp_lab.eval_metrics.attn_patterns_recon_loss import (
     CIMaskedAttnPatternsReconLoss,
     CIMaskedAttnPatternsReconLossConfig,
@@ -53,6 +54,7 @@ AnyEvalMetricConfig = Annotated[
     | PGDReconLossConfig
     | StochasticAttnPatternsReconLossConfig
     | StochasticHiddenActsReconLossConfig
+    | UnmaskedReconLossConfig
     | UVPlotsConfig,
     Discriminator("type"),
 ]
@@ -72,6 +74,7 @@ EVAL_METRIC_CLASSES: dict[str, type[Metric[Any]]] = {
         PGDReconLoss,
         StochasticAttnPatternsReconLoss,
         StochasticHiddenActsReconLoss,
+        UnmaskedReconLoss,
         UVPlots,
     )
 }

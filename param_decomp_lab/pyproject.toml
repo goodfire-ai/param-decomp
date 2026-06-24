@@ -32,6 +32,8 @@ dependencies = [
 # Per-experiment runners — directly invoke the experiment's `main`.
 pd-tms = "param_decomp_lab.experiments.tms.run:cli"
 pd-resid-mlp = "param_decomp_lab.experiments.resid_mlp.run:cli"
+pd-mnist-pretrain = "param_decomp_lab.experiments.mnist.train_mnist:cli"
+pd-mnist = "param_decomp_lab.experiments.mnist.run:cli"
 pd-lm = "param_decomp_lab.experiments.lm.run:cli"
 pd-lm-layerwise = "param_decomp_lab.experiments.lm.layerwise:cli"
 pd-pretrain = "param_decomp_lab.experiments.lm.pretrain.cli:cli"
@@ -76,6 +78,7 @@ packages = [
     "param_decomp_lab.experiments.lm",
     "param_decomp_lab.experiments.lm.pretrain",
     "param_decomp_lab.experiments.lm.pretrain.models",
+    "param_decomp_lab.experiments.mnist",
     "param_decomp_lab.experiments.resid_mlp",
     "param_decomp_lab.experiments.tms",
     "param_decomp_lab.graph_interp",
