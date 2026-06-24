@@ -23,6 +23,11 @@ _PILE = (
     "web pages, and other sources."
 )
 
+_FINEWEB = (
+    "FineWeb: a large, deduplicated, quality-filtered corpus of English web pages "
+    "derived from CommonCrawl."
+)
+
 # Maps a (possibly implementation-detail-laden) dataset id to a clean, model-recognisable
 # description. Looked up via `dataset_description`, which fails fast on an unregistered
 # dataset rather than leaking the raw id into the prompt.
@@ -34,6 +39,8 @@ DATASET_DESCRIPTIONS: dict[str, str] = {
     "danbraunai/pile-uncopyrighted-tok-shuffled": _PILE,
     "danbraunai/pile-uncopyrighted-tok": _PILE,
     "pile_neox_tok_512": _PILE,
+    "fineweb_llama_tok_2048": _FINEWEB,
+    "fineweb_llama_tok_512": _FINEWEB,
     "apollo-research/Skylion007-openwebtext-tokenizer-gpt2": (
         "OpenWebText: web pages linked from Reddit (GPT-2's pretraining distribution)."
     ),
