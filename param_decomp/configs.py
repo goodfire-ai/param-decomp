@@ -161,6 +161,38 @@ class ImportanceMinimalityLossConfig(LossMetricConfig):
     eps: NonNegativeFloat = 1e-12
 
 
+class SmoothL0ImportanceMinimalityLossConfig(LossMetricConfig):
+    """Geman–McClure smooth-L0 importance-minimality penalty on upper-leaky CI values.
+
+    Per-value penalty `phi_gamma(c) = c^2 / (c^2 + gamma^2)` — a smooth approximation to
+    the active-component count `1[c>0]`, exact only as `gamma -> 0` — fed through the same
+    per-site `lp + beta * mean * log2(1 + sum)` structure as `ImportanceMinimalityLoss`.
+    Differs from the `L_p` penalty only in the per-value shape: `phi'(0) = 0` and
+    `|phi'| <= 0.65/gamma` everywhere, so there is no singularity at the origin (no `eps`
+    floor, no aggressive grad clip) — the gradient is localized on the threshold band
+    `c ~ gamma/sqrt(3)` and redescends for clearly-on components.
+
+    `gamma` is annealed linearly toward `gamma_anneal_final_gamma` between
+    `gamma_anneal_start_frac` and `gamma_anneal_end_frac` of training; annealing it down
+    sharpens the count. A constant schedule is `gamma_anneal_final_gamma == gamma`.
+    """
+
+    type: Literal["SmoothL0ImportanceMinimalityLoss"] = "SmoothL0ImportanceMinimalityLoss"
+    gamma: PositiveFloat
+    beta: NonNegativeFloat
+    gamma_anneal_start_frac: Probability = 1.0
+    gamma_anneal_final_gamma: PositiveFloat | None = None
+    gamma_anneal_end_frac: Probability = 1.0
+
+
+# The two imp-min penalties share the `coeff`/`beta` surface and the `lp + beta * entropy`
+# aggregation; they differ only in the per-value penalty shape and its annealed parameter
+# (`p` vs `gamma`). The trainer's single imp-min slot accepts either.
+AnyImportanceMinimalityLossConfig = (
+    ImportanceMinimalityLossConfig | SmoothL0ImportanceMinimalityLossConfig
+)
+
+
 class CIMaskedReconLossConfig(LossMetricConfig):
     type: Literal["CIMaskedReconLoss"] = "CIMaskedReconLoss"
 
@@ -529,6 +561,7 @@ AnyLossMetricConfig = Annotated[
     | PGDReconLayerwiseLossConfig
     | PGDReconLossConfig
     | PGDReconSubsetLossConfig
+    | SmoothL0ImportanceMinimalityLossConfig
     | StochasticHiddenActsReconLossConfig
     | StochasticReconLayerwiseLossConfig
     | StochasticReconLossConfig

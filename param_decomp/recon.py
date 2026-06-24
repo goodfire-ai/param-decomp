@@ -21,6 +21,7 @@ from jaxtyping import Array, PRNGKeyArray
 
 from param_decomp.configs import (
     AllRoutingConfig,
+    AnyImportanceMinimalityLossConfig,
     AnyLossMetricConfig,
     ChunkwiseSubsetReconLossConfig,
     CIMaskedReconLayerwiseLossConfig,
@@ -34,6 +35,7 @@ from param_decomp.configs import (
     PGDReconLayerwiseLossConfig,
     PGDReconLossConfig,
     PGDReconSubsetLossConfig,
+    SmoothL0ImportanceMinimalityLossConfig,
     StaticProbabilityRoutingConfig,
     StochasticReconLayerwiseLossConfig,
     StochasticReconLossConfig,
@@ -146,12 +148,13 @@ class FaithfulnessTerm:
 
 @dataclass(frozen=True)
 class ImportanceMinimalityTerm:
-    """CI-space `L_p` + entropy term (SPEC S7-S9). Carries the config so the step reads
-    `pnorm` / p-anneal / `beta` / `eps` straight off `cfg`."""
+    """CI-space imp-min + entropy term (SPEC S7-S9). Carries the config so the step reads
+    the annealed penalty parameter (`pnorm` / `gamma`) and `beta` straight off `cfg`. The
+    config is either of the two imp-min penalties (`L_p` or smooth-L0)."""
 
     name: str
     coeff: float
-    cfg: ImportanceMinimalityLossConfig
+    cfg: AnyImportanceMinimalityLossConfig
 
 
 LossTerm = FaithfulnessTerm | ImportanceMinimalityTerm | ReconLossTerm
@@ -341,6 +344,11 @@ def build_loss_terms(
             case ImportanceMinimalityLossConfig():
                 assert not has_imp_min
                 assert cfg.p_anneal_final_p is not None
+                has_imp_min = True
+                terms.append(ImportanceMinimalityTerm(unique_name(cfg), cfg.coeff, cfg))
+            case SmoothL0ImportanceMinimalityLossConfig():
+                assert not has_imp_min
+                assert cfg.gamma_anneal_final_gamma is not None
                 has_imp_min = True
                 terms.append(ImportanceMinimalityTerm(unique_name(cfg), cfg.coeff, cfg))
             case UnmaskedReconLossConfig() | CIMaskedReconLossConfig():
