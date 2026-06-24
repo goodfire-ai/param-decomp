@@ -23,7 +23,7 @@ root with sibling packages `pretrain/` (the in-house target-LM pretrainer) and
 | `train.py` | the step factory: one fused jit step over faith + imp-min + the recon loss TERMS, per-persistent-term fused final ascents, fp32 masters + bf16 compute |
 | `losses.py` | the pure loss terms (KL/(B·T), faithfulness, imp-min lp+entropy split) + schedules (p-anneal, source-LR warmup) |
 | `adversary.py` | adversarial source machinery: persistent state + Adam ascents, fresh sign-PGD init, `source_masks` |
-| `recon.py` | the unified recon model (LOSS_PARITY_DESIGN.md): mask-source strategies × plans × routing samplers, `ReconLossTerm`, and `build_recon_terms` — the shared torch loss configs mapped onto terms |
+| `recon.py` | the flat loss surface (LOSS_PARITY_DESIGN.md): the self-describing `LossTerm` union (`FaithfulnessTerm` / `ImportanceMinimalityTerm` / `ReconLossTerm`), mask-source strategies × plans × routing samplers, and `build_loss_terms` — the shared torch loss configs mapped onto a flat tuple of terms |
 | `ci_fn.py` | shared-transformer CI fn over ordered site specs; the two leaky-hard squashings (SPEC §4.6, S5/S6) |
 | `checkpoint.py` | orbax sharded save/resume of `TrainState` (adversary sources + moments included, no full-gather on the loop, SPEC S22) |
 | `eval.py` | in-loop eval pass: the six CE/KL masking variants + per-site CI-L0 in one jitted step, logged under the torch `EvalLoop` keys (`eval/ce_kl/*`, `eval/l0/*`) — enabled by the optional `eval:` config block |

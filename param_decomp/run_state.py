@@ -23,7 +23,7 @@ from param_decomp.built_run import DataConfig
 from param_decomp.ci_fn import CIFnArch
 from param_decomp.configs import OptimizerConfig, PDConfig
 from param_decomp.lm import DecomposedModel
-from param_decomp.recon import build_loss_spec
+from param_decomp.recon import build_loss_terms, persistent_configs
 from param_decomp.targets.llama8b_sharding import (
     init_ci_fn_placed,
     init_decomp_vu_placed,
@@ -123,9 +123,9 @@ def init_train_state(
     assert ci_fn.expects_axes == lm.leading_axes, (
         f"CI fn expects leading axes {ci_fn.expects_axes} but model has {lm.leading_axes}"
     )
-    loss_spec = build_loss_spec(pd.loss_metrics, lm.site_names, pd.n_mask_samples)
+    persistent = persistent_configs(build_loss_terms(pd.loss_metrics, lm.site_names))
     sources: dict[str, dict[str, Array]] = {}
-    if loss_spec.persistent:
+    if persistent:
         # Persistent sources live on a position axis; TMS (no position axis) carries none.
         assert isinstance(data, DataConfig), (
             "persistent PGD sources need a sequence axis; TMS (leading_axes=()) has none"
@@ -135,12 +135,12 @@ def init_train_state(
                 lm.site_names,
                 tuple(s.C for s in lm.sites),
                 data.seq_len,
-                loss_spec.persistent[state_key].scope,
+                persistent[state_key].scope,
                 data.global_batch,
                 random.fold_in(src_key, term_idx),
                 mesh,
             )
-            for term_idx, state_key in enumerate(loss_spec.persistent)
+            for term_idx, state_key in enumerate(persistent)
         }
     return TrainState(
         components=components,

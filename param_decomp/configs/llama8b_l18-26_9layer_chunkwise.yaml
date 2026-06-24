@@ -203,7 +203,6 @@ pd:
     use_sigmoid_parameterization: false
   - coeff: 100000.0
     type: FaithfulnessLoss
-  n_mask_samples: 1
   seed: 0
   steps: 40000
 runtime:

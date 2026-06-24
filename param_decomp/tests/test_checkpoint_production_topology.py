@@ -43,7 +43,7 @@ from param_decomp.configs import (
     SCScope,
     UniformKSubsetRoutingConfig,
 )
-from param_decomp.recon import build_loss_spec
+from param_decomp.recon import build_loss_terms, persistent_configs
 from param_decomp.run import _ensure_global
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.targets.llama8b import llama_site_specs, mlp_family_site_cs
@@ -125,7 +125,7 @@ def _build_sharded(seed: int):
     state = _ensure_global(state, mesh)
     assert isinstance(state, TrainState)
 
-    loss_spec = build_loss_spec(
+    loss_terms = build_loss_terms(
         (
             FaithfulnessLossConfig(coeff=1e5),
             ImportanceMinimalityLossConfig(
@@ -137,13 +137,12 @@ def _build_sharded(seed: int):
             _persistent_cfg("ppgd_second"),
         ),
         lm.site_names,
-        n_mask_samples=1,
     )  # fmt: skip
-    assert tuple(loss_spec.persistent) == PERSISTENT_TERMS, loss_spec.persistent
+    assert tuple(persistent_configs(loss_terms)) == PERSISTENT_TERMS, loss_terms
 
     step = make_train_step(
         lm=lm,
-        loss_spec=loss_spec,
+        loss_terms=loss_terms,
         components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
         total_steps=100,
         remat_recon_forwards=True, mesh=mesh,

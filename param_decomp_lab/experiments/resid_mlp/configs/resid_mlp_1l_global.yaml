@@ -9,7 +9,6 @@ run_name: jax-resid-mlp-1l-global
 # pd-resid-mlp.
 pd:
   seed: 0
-  n_mask_samples: 1
   ci_config:
     type: global_mlp
     hidden_dims:

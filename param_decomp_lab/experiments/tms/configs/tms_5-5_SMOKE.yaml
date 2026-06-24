@@ -5,7 +5,6 @@ run_name: jax-tms-5-5-smoke
 # faith warmup → step loop → checkpoint → in-loop target-CI metric). 1 GPU / CPU.
 pd:
   seed: 0
-  n_mask_samples: 1
   ci_config:
     type: layerwise_mlp
     hidden_dims:

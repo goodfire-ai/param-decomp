@@ -13,7 +13,13 @@ from pydantic import ValidationError
 from param_decomp.built_run import DataConfig
 from param_decomp.components import SiteC
 from param_decomp.configs import PDConfig, PersistentPGDReconLossConfig
-from param_decomp.recon import build_loss_spec
+from param_decomp.recon import (
+    FaithfulnessTerm,
+    ImportanceMinimalityTerm,
+    ReconLossTerm,
+    build_loss_terms,
+    persistent_configs,
+)
 from param_decomp.targets.llama8b import mlp_family_site_cs
 from param_decomp_lab.experiments.lm.config import (
     LMExperimentConfig,
@@ -56,22 +62,45 @@ def test_removed_pdconfig_fields_strip_from_stored_configs_but_reject_bad_values
             PDConfig.model_validate({**pd, **bad})
 
 
+def test_legacy_top_level_n_mask_samples_pushes_onto_stochastic_terms():
+    # Provenance shim: `n_mask_samples` moved from a `pd`-level knob onto the stochastic
+    # loss configs. A stored config carrying it at `pd` level loads and its value lands on
+    # each stochastic recon term that doesn't set its own; an explicit per-term value wins.
+    pd = yaml.safe_load((CONFIGS / "llama8b_l18_b128_cmp32.yaml").read_text())["pd"]
+    pd = {
+        **pd,
+        "n_mask_samples": 4,
+        "loss_metrics": [
+            {"type": "FaithfulnessLoss", "coeff": 1.0},
+            {"type": "ImportanceMinimalityLoss", "coeff": 1.0, "pnorm": 2.0, "beta": 0.0},
+            {"type": "StochasticReconLoss", "coeff": 1.0},
+            {"type": "StochasticReconSubsetLoss", "coeff": 1.0, "n_mask_samples": 7},
+        ],
+    }
+    validated = PDConfig.model_validate(pd)
+    assert not hasattr(validated, "n_mask_samples")
+    by_type = {m.type: m for m in validated.loss_metrics}
+    assert by_type["StochasticReconLoss"].n_mask_samples == 4  # pyright: ignore[reportAttributeAccessIssue]
+    assert by_type["StochasticReconSubsetLoss"].n_mask_samples == 7  # pyright: ignore[reportAttributeAccessIssue]
+
+
 def test_b128_config_converts():
     converted, raw = load_config(CONFIGS / "llama8b_l18_b128_cmp32.yaml", RUN_ID)
     assert raw["pd"]["batch_size"] == 128
     assert converted.run.run_name == "jax-l18-b128-cmp32-from-torch"
     assert converted.data is not None and converted.data.global_batch == 128
     assert converted.target.sites == mlp_family_site_cs(18, 18, 24576)
-    spec = build_loss_spec(
-        converted.pd.loss_metrics, tuple(sc.name for sc in converted.target.sites),
-        converted.pd.n_mask_samples,
-    )  # fmt: skip
-    assert spec.faith_coeff == 1e5 and spec.imp_min.pnorm == 2.0
-    (ppgd,) = spec.persistent.values()
+    terms = build_loss_terms(
+        converted.pd.loss_metrics, tuple(sc.name for sc in converted.target.sites)
+    )
+    (faith,) = (t for t in terms if isinstance(t, FaithfulnessTerm))
+    (imp,) = (t for t in terms if isinstance(t, ImportanceMinimalityTerm))
+    assert faith.coeff == 1e5 and imp.cfg.pnorm == 2.0
+    (ppgd,) = persistent_configs(terms).values()
     assert isinstance(ppgd, PersistentPGDReconLossConfig)
     assert ppgd.n_warmup_steps == 2
     assert converted.pd.components_optimizer.grad_clip_norm == 0.01
-    assert [t.name for t in spec.recon_terms] == [
+    assert [t.name for t in terms if isinstance(t, ReconLossTerm)] == [
         "StochasticReconSubsetLoss",
         "PersistentPGDReconLoss",
     ]

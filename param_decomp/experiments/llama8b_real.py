@@ -54,7 +54,7 @@ from param_decomp.configs import (
     SCScope,
     UniformKSubsetRoutingConfig,
 )
-from param_decomp.recon import build_loss_spec
+from param_decomp.recon import build_loss_terms
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.sharding import init_distributed
 from param_decomp.targets.llama8b import (
@@ -239,7 +239,7 @@ def main():
         sources_opt_state={"PersistentPGDReconLoss": init_sources_adam_state(src)},
         step=jnp.zeros((), jnp.int32),
     )
-    loss_spec = build_loss_spec(
+    loss_terms = build_loss_terms(
         (
             FaithfulnessLossConfig(coeff=1e5),
             ImportanceMinimalityLossConfig(
@@ -265,11 +265,10 @@ def main():
             ),
         ),
         lm.site_names,
-        n_mask_samples=1,
     )
     step = make_train_step(
         lm=lm,
-        loss_spec=loss_spec,
+        loss_terms=loss_terms,
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=args.total_steps,

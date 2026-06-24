@@ -35,7 +35,7 @@ from param_decomp.configs import (
     PGDReconLossConfig,
     StochasticAttnPatternsReconLossConfig,
 )
-from param_decomp.recon import build_loss_spec
+from param_decomp.recon import build_loss_terms
 from param_decomp.targets import llama8b, llama_simple_mlp
 from param_decomp.targets.llama8b import SITE_NAME_PATTERN, canonical_site_cs
 from param_decomp_lab.experiments.config import (
@@ -299,10 +299,10 @@ def _resolve_chunkwise_ci_arch(
 
 
 def _assert_losses_supported(cfg: LMExperimentConfig, site_names: tuple[str, ...]) -> None:
-    """Run the schema's loss configs through `build_loss_spec` so unsupported metrics
+    """Run the schema's loss configs through `build_loss_terms` so unsupported metrics
     refuse at convert time rather than on the GPUs. The engine reads `pd.loss_metrics`
     verbatim (yaml order is RNG-load-bearing), so nothing is returned."""
-    build_loss_spec(cfg.pd.loss_metrics, site_names, cfg.pd.n_mask_samples)
+    build_loss_terms(cfg.pd.loss_metrics, site_names)
 
 
 def _data(cfg: LMExperimentConfig) -> DataConfig:
@@ -336,6 +336,7 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
         return None
     ce_kl = ci_l0 = pgd = None
     attn_ci = attn_stoch = False
+    attn_stoch_n_mask_samples = 1
     slow_n_batches_accum: int | None = None
     for metric in cfg.eval.metrics:
         match metric:
@@ -352,6 +353,7 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
             case StochasticAttnPatternsReconLossConfig():
                 _assert_separate_qk_attn_paths(metric)
                 attn_stoch = True
+                attn_stoch_n_mask_samples = metric.n_mask_samples
             case CIHistogramsConfig():
                 slow_n_batches_accum = metric.n_batches_accum
             case _ if metric.type in SLOW_TIER_EVAL_METRIC_TYPES:
@@ -377,7 +379,11 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
         ),
         pgd=pgd,
         attn_patterns=(
-            AttnPatternsEvalConfig(ci_masked=attn_ci, stochastic=attn_stoch)
+            AttnPatternsEvalConfig(
+                ci_masked=attn_ci,
+                stochastic=attn_stoch,
+                stochastic_n_mask_samples=attn_stoch_n_mask_samples,
+            )
             if attn_ci or attn_stoch
             else None
         ),

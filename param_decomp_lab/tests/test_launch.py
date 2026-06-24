@@ -17,7 +17,6 @@ _MINIMAL_LM = {
     "run_name": "r",
     "pd": {
         "seed": 0,
-        "n_mask_samples": 1,
         "ci_config": {
             "type": "chunkwise_transformer",
             "blocks_per_chunk": 1,

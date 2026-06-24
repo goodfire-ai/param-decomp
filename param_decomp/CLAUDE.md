@@ -51,10 +51,11 @@ comparison (`recon_loss_fn(clean_output, masked_output) -> scalar`, default
 tensors in one forward share one `*leading` prefix) is enforced at trace time by
 `@jaxtyped(typechecker=beartype)` on the core `step`, `masked_forward`, and the loss fns.
 `train.py` is the generic step factory
-(fp32 masters / bf16 compute) over a static tuple of recon loss TERMS (S10′ — the
-torch loss-class cartesian product factored as chunking × routing × mask-source
-strategy: a chunking helper (`one_chunk`/`per_site`/`into_groups`) feeds the single
-`make_plan` constructor, built from the shared configs by `recon.build_recon_terms`;
+(fp32 masters / bf16 compute) over a flat tuple of self-describing loss TERMS
+(`recon.LossTerms` — faithfulness, importance-minimality, and the recon terms, iterated
+uniformly; S10′ — the recon loss-class cartesian product factored as chunking × routing ×
+mask-source strategy: a chunking helper (`one_chunk`/`per_site`/`into_groups`) feeds the
+single `make_plan` constructor, built from the shared configs by `recon.build_loss_terms`;
 see LOSS_PARITY_DESIGN.md),
 consuming `losses.py` (pure loss terms + schedules) and `adversary.py` (persistent
 vs fresh source machinery — semantically distinct adversaries sharing only

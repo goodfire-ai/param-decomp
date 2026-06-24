@@ -61,6 +61,9 @@ class AttnPatternsEvalConfig:
 
     ci_masked: bool
     stochastic: bool
+    stochastic_n_mask_samples: int
+    """Stochastic-variant mask-sample count (from `StochasticAttnPatternsReconLossConfig`);
+    moot when `stochastic` is False."""
 
 
 @dataclass(frozen=True)

@@ -686,3 +686,15 @@ def eval_metrics_from_run_dir(run_dir: Path) -> list[Any]:
     raw = yaml.safe_load((run_dir / "config.yaml").read_text())
     adapter = TypeAdapter(AnyEvalMetricConfig)
     return [adapter.validate_python(m) for m in raw["eval"]["metrics"]]
+
+
+def stochastic_hidden_acts_n_mask_samples(eval_metrics: list[Any]) -> int:
+    """The `n_mask_samples` for the stochastic hidden-acts slow-eval metric, read off its
+    `StochasticHiddenActsReconLossConfig` in the run's `eval.metrics` (1 when the config
+    omits it). The slow tier always computes hidden-acts; absent the metric, the count is
+    moot but defaults to 1."""
+    from param_decomp.configs import StochasticHiddenActsReconLossConfig
+
+    matches = [m for m in eval_metrics if isinstance(m, StochasticHiddenActsReconLossConfig)]
+    assert len(matches) <= 1, f"multiple StochasticHiddenActsReconLoss eval metrics: {matches}"
+    return matches[0].n_mask_samples if matches else 1

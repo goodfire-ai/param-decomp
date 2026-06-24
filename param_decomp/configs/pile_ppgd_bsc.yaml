@@ -157,7 +157,6 @@ pd:
     type: PersistentPGDReconLoss
   - coeff: 10000000.0
     type: FaithfulnessLoss
-  n_mask_samples: 1
   seed: 0
   steps: 400000
 runtime:

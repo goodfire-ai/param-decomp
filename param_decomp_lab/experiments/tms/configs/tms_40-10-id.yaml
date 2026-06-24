@@ -6,7 +6,6 @@
 run_name: jax-tms-40-10-id
 pd:
   seed: 0
-  n_mask_samples: 1
   ci_config:
     type: layerwise_mlp
     hidden_dims:

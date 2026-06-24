@@ -30,7 +30,7 @@ from param_decomp.configs import (
     StochasticReconLossConfig,
 )
 from param_decomp.lm import DecomposedModel
-from param_decomp.recon import build_loss_spec
+from param_decomp.recon import build_loss_terms
 from param_decomp.train import TrainState, make_faith_warmup_step, make_train_step
 from param_decomp_lab.experiments.resid_mlp.model import (
     ResidMLPConfig,
@@ -255,9 +255,9 @@ def _make_state_and_step(
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
         sources={}, sources_opt_state={}, step=jnp.zeros((), jnp.int32),
     )  # fmt: skip
-    loss_spec = build_loss_spec(_loss_metrics(), lm.site_names, n_mask_samples=1)
+    loss_terms = build_loss_terms(_loss_metrics(), lm.site_names)
     step = make_train_step(
-        lm=lm, loss_spec=loss_spec, components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
+        lm=lm, loss_terms=loss_terms, components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
         total_steps=total_steps, remat_recon_forwards=False, mesh=None,
     )  # fmt: skip
     return lm, state, step
@@ -365,9 +365,9 @@ def _faith_warmed_state(
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
         sources={}, sources_opt_state={}, step=jnp.zeros((), jnp.int32),
     )  # fmt: skip
-    loss_spec = build_loss_spec(_recovery_loss_metrics(), lm.site_names, 1)
+    loss_terms = build_loss_terms(_recovery_loss_metrics(), lm.site_names)
     step = make_train_step(
-        lm=lm, loss_spec=loss_spec, components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
+        lm=lm, loss_terms=loss_terms, components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
         total_steps=total_steps, remat_recon_forwards=False, mesh=None,
     )  # fmt: skip
     return state, step

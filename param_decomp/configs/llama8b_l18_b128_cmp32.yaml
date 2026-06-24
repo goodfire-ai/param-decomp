@@ -13,7 +13,6 @@ run_name: jax-l18-b128-cmp32-from-torch
 # Launch: pd-lm param_decomp_lab/experiments/lm/_llama8b/llama8b_l18_b128_cmp32_1pool.yaml --dp 32
 pd:
   seed: 0
-  n_mask_samples: 1
   ci_config:
     type: chunkwise_transformer
     blocks_per_chunk: 1

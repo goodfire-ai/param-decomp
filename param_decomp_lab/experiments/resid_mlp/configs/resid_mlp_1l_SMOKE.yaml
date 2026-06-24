@@ -7,7 +7,6 @@ run_name: jax-resid-mlp-1l-smoke
 # checkpoint -> in-loop target-CI metric). 1 GPU / CPU.
 pd:
   seed: 0
-  n_mask_samples: 1
   ci_config:
     type: layerwise_mlp
     hidden_dims:

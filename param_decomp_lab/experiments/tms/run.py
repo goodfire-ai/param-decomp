@@ -25,7 +25,7 @@ from jax.sharding import PartitionSpec as P
 from param_decomp.built_run import BuiltRun
 from param_decomp.components import SiteC
 from param_decomp.log import setup_logger
-from param_decomp.recon import build_loss_spec
+from param_decomp.recon import build_loss_terms
 from param_decomp.run import run_decomposition_training
 from param_decomp.sharding import dp_mesh
 from param_decomp.train import TrainState
@@ -49,10 +49,9 @@ def build_tms_built_run(cfg: TMSExperimentConfig, run_id: str) -> BuiltRun:
         tuple(SiteC(t.module_pattern, t.C) for t in cfg.pd.decomposition_targets)
     )
     assert_canonical_algorithm_config(cfg)
-    build_loss_spec(
+    build_loss_terms(
         cfg.pd.loss_metrics,
         tuple(sc.name for sc in site_cs),
-        cfg.pd.n_mask_samples,
     )
     target = tms.TMSTargetConfig(
         n_features=cfg.target.n_features,

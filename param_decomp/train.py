@@ -45,12 +45,16 @@ from param_decomp.losses import (
 )
 from param_decomp.recon import (
     ConstantSources,
+    FaithfulnessTerm,
     FreshPGDSources,
-    LossSpec,
+    ImportanceMinimalityTerm,
+    LossTerms,
     PersistentSources,
     ReconForward,
+    ReconLossTerm,
     Routes,
     StochasticSources,
+    persistent_configs,
 )
 from param_decomp.sharding import batch_shard_leading
 
@@ -113,7 +117,7 @@ def _grad_norm_metrics(components_grad: DecompVU, ci_fn_grad: Any) -> dict[str, 
 def make_train_step(
     lm: DecomposedModel,
     *,
-    loss_spec: LossSpec,
+    loss_terms: LossTerms,
     components_optimizer: optax.GradientTransformation,
     ci_fn_optimizer: optax.GradientTransformation,
     total_steps: int,
@@ -124,27 +128,33 @@ def make_train_step(
 
     `model` is the jit ARG (frozen 8B weights traced as array leaves, never baked); the
     factory closes over only static config (`site_names`, `recon_loss_fn`, term wiring) read
-    off `lm` here. `loss_spec` (from `build_loss_spec`) carries the SHARED torch loss
-    configs mapped onto recon terms; the supported subset is asserted there. `mesh` (when
-    given) pins every batch-leading activation to `P('dp', ...)` so the masked re-forwards
-    stay on per-device sub-batches (activation memory 1/n_dev)."""
+    off `lm` here. `loss_terms` (from `build_loss_terms`) is the flat tuple of self-describing
+    loss terms — faithfulness, importance-minimality, and the recon terms; the supported
+    subset is asserted there. `mesh` (when given) pins every batch-leading activation to
+    `P('dp', ...)` so the masked re-forwards stay on per-device sub-batches (activation
+    memory 1/n_dev)."""
     site_names = lm.site_names
     sites = lm.sites
     recon_loss_fn = lm.recon_loss_fn  # static method: pure, holds no arrays — safe to close
-    recon_terms = loss_spec.recon_terms
-    imp_min = loss_spec.imp_min
-    faith_coeff = loss_spec.faith_coeff
-    assert imp_min.coeff is not None and imp_min.p_anneal_final_p is not None
-    imp_coeff = imp_min.coeff
+    recon_terms = tuple(t for t in loss_terms if isinstance(t, ReconLossTerm))
+
+    (faith_term,) = (t for t in loss_terms if isinstance(t, FaithfulnessTerm))
+    (imp_term,) = (t for t in loss_terms if isinstance(t, ImportanceMinimalityTerm))
+    faith_coeff = faith_term.coeff
+    imp_min = imp_term.cfg
+    imp_coeff = imp_term.coeff
+    assert imp_min.p_anneal_final_p is not None
+
+    persistent = persistent_configs(loss_terms)
     term_coeff_by_state_key = {
         entry.sources.state_key: term.coeff
         for term in recon_terms
         for entry in term.plan
         if isinstance(entry.sources, PersistentSources)
     }
-    assert set(term_coeff_by_state_key) == set(loss_spec.persistent)
+    assert set(term_coeff_by_state_key) == set(persistent)
     persistent_adams: dict[str, AdamPGDConfig] = {}
-    for state_key, ppgd_cfg in loss_spec.persistent.items():
+    for state_key, ppgd_cfg in persistent.items():
         optimizer = ppgd_cfg.optimizer
         assert isinstance(optimizer, AdamPGDConfig)
         persistent_adams[state_key] = optimizer
@@ -284,7 +294,7 @@ def make_train_step(
         # zero-overhead path; a positive `start_frac` pays the adversary forward before
         # activation and `where`-gates every state update (LOSS_PARITY_DESIGN Q3).
         term_active: dict[str, Array] = {}
-        for state_key, ppgd_cfg in loss_spec.persistent.items():
+        for state_key, ppgd_cfg in persistent.items():
             adam = persistent_adams[state_key]
             if ppgd_cfg.start_frac > 0.0:
                 term_active[state_key] = step_f32 >= ppgd_cfg.start_frac * total_steps
@@ -459,7 +469,7 @@ def make_train_step(
                 first_sources = term.plan[0].sources
                 if (
                     isinstance(first_sources, PersistentSources)
-                    and loss_spec.persistent[first_sources.state_key].start_frac > 0.0
+                    and persistent[first_sources.state_key].start_frac > 0.0
                 ):
                     term_loss = term_active[first_sources.state_key] * term_loss
                 term_losses.append(term_loss)
@@ -480,7 +490,7 @@ def make_train_step(
         # division is exact because each source bundle feeds exactly one term (S23). ──
         new_sources: dict[str, dict[str, Array]] = {}
         new_sources_opt_state: dict[str, SourcesAdamState] = {}
-        for state_key in loss_spec.persistent:
+        for state_key in persistent:
             coeff = term_coeff_by_state_key[state_key]
             sources_grad = {
                 site: g / coeff for site, g in persistent_grads_scaled[state_key].items()
@@ -492,7 +502,7 @@ def make_train_step(
                 source_lrs[state_key],
                 persistent_adams[state_key],
             )
-            if loss_spec.persistent[state_key].start_frac > 0.0:
+            if persistent[state_key].start_frac > 0.0:
                 ascended, ascended_opt = _select_pytree(
                     term_active[state_key],
                     (ascended, ascended_opt),

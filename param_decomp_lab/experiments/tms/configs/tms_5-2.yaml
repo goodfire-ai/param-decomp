@@ -11,7 +11,6 @@ run_name: jax-tms-5-2
 # tied. CI fn: layerwise per-site MLP (type=layerwise_mlp, hidden_dims=[16]). Runs on 1 GPU.
 pd:
   seed: 0
-  n_mask_samples: 1
   ci_config:
     type: layerwise_mlp
     hidden_dims:
