@@ -95,7 +95,7 @@ def test_jitted_sharded_inits_match_eager_values():
     for spec in sites:
         V, U = vu_placed.site(spec.name)
         assert isinstance(V.sharding, NamedSharding) and isinstance(U.sharding, NamedSharding)
-        assert V.sharding.spec == P("dp", "tp"), spec.name
+        assert V.sharding.spec == P(None, "tp"), spec.name
         assert U.sharding.spec == P("tp", None), spec.name
     for got, want in zip(jax.tree.leaves(vu_placed), jax.tree.leaves(vu_eager), strict=True):
         assert got.shape == want.shape and got.dtype == want.dtype
