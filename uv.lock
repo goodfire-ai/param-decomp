@@ -1582,6 +1582,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "safetensors" },
+    { name = "tqdm" },
     { name = "wandb" },
 ]
 
@@ -1622,6 +1623,7 @@ requires-dist = [
     { name = "pydantic", specifier = "<2.12" },
     { name = "pyyaml", specifier = "==6.0.2" },
     { name = "safetensors", specifier = "==0.7.0" },
+    { name = "tqdm", specifier = "==4.67.1" },
     { name = "wandb", specifier = "==0.21.0" },
 ]
 provides-extras = ["cuda"]
