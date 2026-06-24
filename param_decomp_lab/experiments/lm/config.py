@@ -35,7 +35,7 @@ from param_decomp.configs import (
     PGDReconLossConfig,
     StochasticAttnPatternsReconLossConfig,
 )
-from param_decomp.recon import build_recon_terms
+from param_decomp.recon import build_loss_spec
 from param_decomp.targets import llama8b, llama_simple_mlp
 from param_decomp.targets.llama8b import SITE_NAME_PATTERN, canonical_site_cs
 from param_decomp_lab.experiments.config import (
@@ -299,10 +299,10 @@ def _resolve_chunkwise_ci_arch(
 
 
 def _assert_losses_supported(cfg: LMExperimentConfig, site_names: tuple[str, ...]) -> None:
-    """Run the schema's loss configs through `build_recon_terms` so unsupported metrics
+    """Run the schema's loss configs through `build_loss_spec` so unsupported metrics
     refuse at convert time rather than on the GPUs. The engine reads `pd.loss_metrics`
     verbatim (yaml order is RNG-load-bearing), so nothing is returned."""
-    build_recon_terms(cfg.pd.loss_metrics, site_names, cfg.pd.n_mask_samples)
+    build_loss_spec(cfg.pd.loss_metrics, site_names, cfg.pd.n_mask_samples)
 
 
 def _data(cfg: LMExperimentConfig) -> DataConfig:

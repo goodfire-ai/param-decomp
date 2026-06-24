@@ -31,7 +31,7 @@ from param_decomp.configs import (
     UniformKSubsetRoutingConfig,
 )
 from param_decomp.lm import DecomposedModel
-from param_decomp.recon import build_recon_terms
+from param_decomp.recon import build_loss_spec
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.targets.llama8b import (
     FrozenAttn,
@@ -315,7 +315,7 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
         sources_opt_state={"PersistentPGDReconLoss": init_sources_adam_state(src)},
         step=jnp.zeros((), jnp.int32),
     )  # fmt: skip
-    loss_spec = build_recon_terms(
+    loss_spec = build_loss_spec(
         (
             FaithfulnessLossConfig(coeff=1e5),
             ImportanceMinimalityLossConfig(
@@ -440,7 +440,7 @@ def test_fresh_pgd_adversary_step():
         )  # fmt: skip
 
     def run_step(n_ascent_steps: int) -> tuple[TrainState, dict[str, jax.Array]]:
-        loss_spec = build_recon_terms(
+        loss_spec = build_loss_spec(
             (
                 FaithfulnessLossConfig(coeff=1e7),
                 ImportanceMinimalityLossConfig(

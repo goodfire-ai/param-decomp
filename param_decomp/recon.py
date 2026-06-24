@@ -1,6 +1,6 @@
 """Recon loss terms (SPEC S10'): plans (which sites go live per forward, how positions
 route), mask-SOURCE strategies (where the [0,1] source values come from), and the
-mapping from the shared torch loss configs onto them (`build_recon_terms`).
+mapping from the shared torch loss configs onto them (`build_loss_spec`).
 
 A plan is built from two orthogonal choices: how the sites are CHUNKED (a chunking
 helper `tuple[str, ...] -> list[Chunk]`) and how each chunk is turned into routed
@@ -275,7 +275,7 @@ class LossSpec:
     persistent: dict[str, PersistentPGDReconLossConfig]
 
 
-def build_recon_terms(
+def build_loss_spec(
     loss_metrics: Sequence[AnyLossMetricConfig],
     site_names: tuple[str, ...],
     n_mask_samples: int,

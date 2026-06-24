@@ -209,7 +209,7 @@ class ChunkwiseSubsetReconLossConfig(LossMetricConfig):
     clean logits (when `use_fused_kl`). The total is the mean over all chunk forwards of
     `recon_loss / n_positions`, matching the 2-pool's per-step recon.
 
-    The JAX single-pool trainer implements this natively: `recon.build_recon_terms`
+    The JAX single-pool trainer implements this natively: `recon.build_loss_spec`
     maps this `type` onto `recon.subset_chunk_plan` (a parameterization of the one
     `chunkwise_plan` builder), and the jitted step runs the chunk forwards directly —
     no vendored `LMComponentModel` or lab recon-plan machinery is involved.

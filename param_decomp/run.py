@@ -54,7 +54,7 @@ from param_decomp.checkpoint import (
 from param_decomp.ci_fn import CIFnArch
 from param_decomp.configs import Cadence, PDConfig, flatten_typed_lists
 from param_decomp.lm import DecomposedModel
-from param_decomp.recon import build_recon_terms
+from param_decomp.recon import build_loss_spec
 from param_decomp.run_state import build_optimizers, init_train_state
 from param_decomp.slow_eval import (
     PermutationMetricSpec,
@@ -449,7 +449,7 @@ def run_decomposition_training(
 
     step_fn = make_train_step(
         lm=lm,
-        loss_spec=build_recon_terms(pd.loss_metrics, lm.site_names, pd.n_mask_samples),
+        loss_spec=build_loss_spec(pd.loss_metrics, lm.site_names, pd.n_mask_samples),
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=pd.steps,

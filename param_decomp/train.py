@@ -124,7 +124,7 @@ def make_train_step(
 
     `model` is the jit ARG (frozen 8B weights traced as array leaves, never baked); the
     factory closes over only static config (`site_names`, `recon_loss_fn`, term wiring) read
-    off `lm` here. `loss_spec` (from `build_recon_terms`) carries the SHARED torch loss
+    off `lm` here. `loss_spec` (from `build_loss_spec`) carries the SHARED torch loss
     configs mapped onto recon terms; the supported subset is asserted there. `mesh` (when
     given) pins every batch-leading activation to `P('dp', ...)` so the masked re-forwards
     stay on per-device sub-batches (activation memory 1/n_dev)."""

@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from param_decomp.built_run import DataConfig
 from param_decomp.components import SiteC
 from param_decomp.configs import PDConfig, PersistentPGDReconLossConfig
-from param_decomp.recon import build_recon_terms
+from param_decomp.recon import build_loss_spec
 from param_decomp.targets.llama8b import mlp_family_site_cs
 from param_decomp_lab.experiments.lm.config import (
     LMExperimentConfig,
@@ -62,7 +62,7 @@ def test_b128_config_converts():
     assert converted.run.run_name == "jax-l18-b128-cmp32-from-torch"
     assert converted.data is not None and converted.data.global_batch == 128
     assert converted.target.sites == mlp_family_site_cs(18, 18, 24576)
-    spec = build_recon_terms(
+    spec = build_loss_spec(
         converted.pd.loss_metrics, tuple(sc.name for sc in converted.target.sites),
         converted.pd.n_mask_samples,
     )  # fmt: skip

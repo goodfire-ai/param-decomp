@@ -51,7 +51,7 @@ from param_decomp.configs import (
 from param_decomp.experiments.llama8b_real import (
     _random_decomposed_lm,
 )
-from param_decomp.recon import build_recon_terms
+from param_decomp.recon import build_loss_spec
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.sharding import init_distributed
 from param_decomp.targets.llama8b import (
@@ -208,7 +208,7 @@ def main() -> None:
             n_warmup_steps=2,
         ),
     )  # fmt: skip
-    loss_spec = build_recon_terms(loss_metrics, lm.site_names, n_mask_samples=1)
+    loss_spec = build_loss_spec(loss_metrics, lm.site_names, n_mask_samples=1)
 
     ci_arch = ChunkwiseTransformerCIArch(
         chunks=(Chunk(input_taps=(f"resid.{args.first_layer}",), output_sites=lm.site_names),),

@@ -17,7 +17,7 @@ from param_decomp.configs import (
     ImportanceMinimalityLossConfig,
     StochasticReconLossConfig,
 )
-from param_decomp.recon import build_recon_terms
+from param_decomp.recon import build_loss_spec
 from param_decomp.tests.test_generic_model_io import SyntheticDecomposedModel
 from param_decomp.train import TrainState, make_train_step
 
@@ -66,7 +66,7 @@ def _build_step_and_args():
         sources_opt_state={},
         step=jnp.zeros((), jnp.int32),
     )
-    loss_spec = build_recon_terms(
+    loss_spec = build_loss_spec(
         (
             FaithfulnessLossConfig(coeff=1.0),
             ImportanceMinimalityLossConfig(coeff=1e-4, pnorm=2.0, beta=0.0, p_anneal_final_p=1.0),

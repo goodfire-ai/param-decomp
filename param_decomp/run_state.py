@@ -23,7 +23,7 @@ from param_decomp.built_run import DataConfig
 from param_decomp.ci_fn import CIFnArch
 from param_decomp.configs import OptimizerConfig, PDConfig
 from param_decomp.lm import DecomposedModel
-from param_decomp.recon import build_recon_terms
+from param_decomp.recon import build_loss_spec
 from param_decomp.targets.llama8b_sharding import (
     init_ci_fn_placed,
     init_decomp_vu_placed,
@@ -123,7 +123,7 @@ def init_train_state(
     assert ci_fn.expects_axes == lm.leading_axes, (
         f"CI fn expects leading axes {ci_fn.expects_axes} but model has {lm.leading_axes}"
     )
-    loss_spec = build_recon_terms(pd.loss_metrics, lm.site_names, pd.n_mask_samples)
+    loss_spec = build_loss_spec(pd.loss_metrics, lm.site_names, pd.n_mask_samples)
     sources: dict[str, dict[str, Array]] = {}
     if loss_spec.persistent:
         # Persistent sources live on a position axis; TMS (no position axis) carries none.

@@ -39,7 +39,7 @@ from param_decomp.configs import (
     UniformKSubsetRoutingConfig,
 )
 from param_decomp.lm import DecomposedModel
-from param_decomp.recon import StochasticSources, build_recon_terms, subset_chunk_plan
+from param_decomp.recon import StochasticSources, build_loss_spec, subset_chunk_plan
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.targets.llama8b import (
     FrozenAttn,
@@ -223,7 +223,7 @@ def test_train_trajectory_matches():
         sources_opt_state={"PersistentPGDReconLoss": init_sources_adam_state(sources)},
         step=jnp.zeros((), jnp.int32),
     )  # fmt: skip
-    loss_spec = build_recon_terms(
+    loss_spec = build_loss_spec(
         (
             FaithfulnessLossConfig(coeff=1e5),
             ImportanceMinimalityLossConfig(

@@ -40,7 +40,7 @@ from param_decomp.configs import (
     StochasticReconLossConfig,
 )
 from param_decomp.lm import DecomposedModel
-from param_decomp.recon import build_recon_terms
+from param_decomp.recon import build_loss_spec
 from param_decomp.train import TrainState, make_train_step
 
 B, T, D, C = 2, 3, 8, 5
@@ -226,7 +226,7 @@ def test_train_step_runs_through_generic_target():
     )
     state, opt_vu, opt_ci = _initial_state(lm, components, ci_arch)
 
-    loss_spec = build_recon_terms(
+    loss_spec = build_loss_spec(
         (
             FaithfulnessLossConfig(coeff=1.0),
             ImportanceMinimalityLossConfig(coeff=1e-4, pnorm=2.0, beta=0.0, p_anneal_final_p=1.0),
