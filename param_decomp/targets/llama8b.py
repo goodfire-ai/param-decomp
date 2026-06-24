@@ -188,7 +188,7 @@ class FrozenAttn(eqx.Module):
         # replicated (the old 1-D behavior). Validated on GPU: 1-D was job 108953; the 2-D
         # head-parallel form is the fix for the `dp/tp` mesh's "same sharding" partitioner error.
         if not jax.sharding.get_abstract_mesh().empty:
-            qkv_spec = jax.sharding.PartitionSpec("dp", "tp", None, None)
+            qkv_spec = jax.sharding.PartitionSpec("dp", None, None, None)  # TEMP: heads-replicated (batch-parallel attn) to avoid the head-on-tp reshard; pair with xla attn
             q, k, v = (jax.lax.with_sharding_constraint(a, qkv_spec) for a in (q, k, v))
         return causal_sdpa(q, k, v).transpose(0, 2, 1, 3).reshape(b, t, self.n_head * self.head_dim)
 
