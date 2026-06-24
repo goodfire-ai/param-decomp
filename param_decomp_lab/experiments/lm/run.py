@@ -121,7 +121,6 @@ def assert_finetune_structural_compat(built: BuiltRun, prov: ResumeProvenance) -
 
 def train(
     built: BuiltRun,
-    raw_cfg: dict[str, object],
     lm: DecomposedModel,
     prefix: AnyPrefix,
     prefix_residual_fn: Callable[[Any, Any], jax.Array],
@@ -174,7 +173,6 @@ def train(
         pd=built.pd,
         cadence=built.cadence,
         run=built.run,
-        raw_cfg=raw_cfg,
         lm=lm,
         ci_fn=built.ci_fn,
         data=data,
@@ -182,7 +180,6 @@ def train(
         sample_batch=sample_batch,
         eval_fn=eval_fn,
         eval_every=eval_every,
-        perf_tokens_per_step=data.global_batch * data.seq_len,
         mesh=mesh,
     )
 
@@ -363,7 +360,7 @@ def _pin_config_copy(run_dir: Path, name: str, source: Path) -> None:
 
 def main(config: Path, run_id: str) -> None:
     config = Path(config)
-    built, raw_cfg = load_config(config, run_id)
+    built, _raw_cfg = load_config(config, run_id)
 
     install_sigterm_flag()
     init_distributed(built.runtime.dp)
@@ -397,7 +394,7 @@ def main(config: Path, run_id: str) -> None:
     # so the function-table era's separate `frozen` object is gone.
     lm, prefix, prefix_residual_fn, _vocab_size = build_target(built, mesh)
 
-    train(built, raw_cfg, lm, prefix, prefix_residual_fn, mesh)
+    train(built, lm, prefix, prefix_residual_fn, mesh)
 
     if jax.process_count() > 1:
         import jax.experimental.multihost_utils as mhu

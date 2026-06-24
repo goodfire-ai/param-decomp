@@ -156,7 +156,6 @@ def run_tms_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) 
         pd=built.pd,
         cadence=built.cadence,
         run=built.run,
-        raw_cfg=raw_cfg,
         lm=lm,
         ci_fn=built.ci_fn,
         data=built.data,
@@ -164,7 +163,6 @@ def run_tms_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) 
         sample_batch=sample_batch,
         eval_fn=eval_fn,
         eval_every=built.cadence.train_log_every,
-        perf_tokens_per_step=None,
         mesh=mesh,
     )
 

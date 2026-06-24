@@ -1,14 +1,13 @@
 """The generic VPD decomposition-training ENGINE — the one train loop every target
 (LM, TMS, ResidMLP, …) runs through.
 
-`run_decomposition_training(pd, cadence, run, raw_cfg, lm, ci_fn, data,
-remat_recon_forwards, sample_batch, eval_fn, eval_every, perf_tokens_per_step, mesh)` owns
+`run_decomposition_training(pd, cadence, run, lm, ci_fn, data,
+remat_recon_forwards, sample_batch, eval_fn, eval_every, mesh)` owns
 the generic machinery: init / restore / fine-tune init / faith warmup
 (`_init_or_restore_state`), the recon-grid step factory, orbax checkpointing, schedules,
 metrics fan-out (`MetricsSink`), the in-loop slow/plot renderer (`SlowEvalRenderer`), and
 SIGTERM-save for SLURM requeue. It reads the pydantic `PDConfig` / `Cadence` DIRECTLY; the
-target injects three seams: the data source (`sample_batch`), the eval metric (`eval_fn`),
-and the perf token count.
+target injects two seams: the data source (`sample_batch`) and the eval metric (`eval_fn`).
 
 This module is a pure library — it has NO `main()` and reads no YAML. The per-domain
 composition root (read the run YAML → build the target / data loader / `BuiltRun` → call
@@ -131,8 +130,6 @@ _METRIC_KEYS = {
     "p_imp": "train/schedules/p_imp",
     "src_lr": "train/schedules/lr/src",
     "step_time_s": "train/perf/step_time_s",
-    "tok_per_s": "train/perf/tok_per_s",
-    "tok_per_s_per_gpu": "train/perf/tok_per_s_per_gpu",
 }
 
 
@@ -387,7 +384,6 @@ def run_decomposition_training(
     pd: PDConfig,
     cadence: Cadence,
     run: RunInstance,
-    raw_cfg: dict[str, object],
     lm: DecomposedModel,
     ci_fn: CIFnArch,
     data: DataConfig | None,
@@ -395,7 +391,6 @@ def run_decomposition_training(
     sample_batch: Callable[[int], jax.Array],
     eval_fn: "Callable[[TrainState, int], LogRecord] | None",
     eval_every: int,
-    perf_tokens_per_step: int | None,
     mesh: Mesh,
 ) -> None:
     """The generic VPD decomposition-training engine — the ONE train loop every target
@@ -422,9 +417,7 @@ def run_decomposition_training(
     Everything generic — `init_train_state`, fine-tune init, faith warmup, the recon-grid
     step factory, orbax checkpointing, schedules, SIGTERM-save — lives here. The step
     numerics are identical across targets; only the data source and the eval metric differ.
-
-    `perf_tokens_per_step` drives the tok/s perf record; `None` (toys, where a synthetic
-    "token" has no meaning) omits the perf keys."""
+    """
     is_main = jax.process_index() == 0
     ndev = mesh.devices.size
     assert cadence.save_every is not None and cadence.keep_last_n_checkpoints is not None, cadence
@@ -457,13 +450,11 @@ def run_decomposition_training(
         mesh=mesh,
     )
 
-    # the raw torch yaml's runtime block describes the UPSTREAM run (e.g. dp: 32);
     # record what this run actually executes on so wandb never lies about topology.
     # flatten the metric lists into the same flat keys torch logs (E14) so cross-impl
     # wandb config queries line up.
     wandb_config = flatten_typed_lists(
         dict(
-            raw_cfg,
             jax_runtime={
                 "n_devices": ndev,
                 "n_processes": jax.process_count(),
@@ -499,9 +490,6 @@ def run_decomposition_training(
                     f"non-finite loss {loss_name!r} at step {now_step}: {record[loss_name]}"
                 )
             record["step_time_s"] = per_step
-            if perf_tokens_per_step is not None:
-                record["tok_per_s"] = perf_tokens_per_step / per_step
-                record["tok_per_s_per_gpu"] = perf_tokens_per_step / per_step / ndev
             record["train/schedules/lr/components"] = float(jnp.asarray(sched_vu(now_step)))
             record["train/schedules/lr/ci_fn"] = float(jnp.asarray(sched_ci(now_step)))
             mem_stats = jax.local_devices()[0].memory_stats()
