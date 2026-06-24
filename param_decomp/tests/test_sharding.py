@@ -45,11 +45,11 @@ def test_shard_batch_requires_divisible_batch():
 
 
 def test_jitted_sharded_inits_match_eager_values():
-    """`init_*_placed` with `shardable=True` must be a placement-only change: same values as
-    the host (unsharded) init fns (threefry is partitionable, so generating under jit with
-    `out_shardings` cannot perturb the stream — only op fusion can reassociate the scaling,
-    SPEC D4: rel ~1e-7), with the expected per-site placements (V shards C on axis 1, U on
-    axis 0) — for a heterogeneous-C site set spanning attention and MLP matrices."""
+    """`init_*_placed` (model-owned `.shardings`) must be a placement-only change: same
+    values as the host (unsharded) init fns (threefry is partitionable, so generating under
+    jit with `out_shardings` cannot perturb the stream — only op fusion can reassociate the
+    scaling, SPEC D4: rel ~1e-7), with the expected per-site placements (V shards C on axis
+    1, U on axis 0) — for a heterogeneous-C site set spanning attention and MLP matrices."""
     from jax.sharding import NamedSharding
     from jax.sharding import PartitionSpec as P
 
