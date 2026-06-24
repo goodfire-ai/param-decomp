@@ -86,8 +86,6 @@ def _build_sharded(seed: int):
     sites = llama_site_specs(cfg, mlp_family_site_cs(3, 4, C))
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
 
-    n = mesh.devices.size
-    shardable = n > 1 and all(s.C % n == 0 for s in lm.sites)
     first_block = min(int(s.name.split(".")[1]) for s in lm.sites)
     ci_arch = ChunkwiseTransformerCIArch(
         chunks=(Chunk(input_taps=(f"resid.{first_block}",), output_sites=lm.site_names),),
@@ -97,8 +95,8 @@ def _build_sharded(seed: int):
         n_heads=2,
         mlp_hidden=32,
     )
-    vu = init_decomp_vu_placed(lm.sites, jax.random.PRNGKey(seed), mesh, shardable)
-    ci_fn = init_ci_fn_placed(ci_arch, lm.sites, jax.random.PRNGKey(seed + 1), mesh, shardable)
+    vu = init_decomp_vu_placed(lm.sites, jax.random.PRNGKey(seed), mesh)
+    ci_fn = init_ci_fn_placed(ci_arch, lm.sites, jax.random.PRNGKey(seed + 1), mesh)
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
     site_cs = tuple(s.C for s in lm.sites)

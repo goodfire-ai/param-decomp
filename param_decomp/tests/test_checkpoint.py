@@ -220,10 +220,9 @@ def _build_sharded(seed: int, mesh: Mesh):
     C, seq = 8 * n, 16
     sites = llama_site_specs(cfg, mlp_family_site_cs(3, 4, C))
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    shardable = n > 1 and all(s.C % n == 0 for s in sites)
-    vu = init_decomp_vu_placed(sites, jax.random.PRNGKey(seed), mesh, shardable)
+    vu = init_decomp_vu_placed(sites, jax.random.PRNGKey(seed), mesh)
     ci_fn = init_ci_fn_placed(
-        _chunkwise_arch(lm, cfg), lm.sites, jax.random.PRNGKey(seed + 1), mesh, shardable
+        _chunkwise_arch(lm, cfg), lm.sites, jax.random.PRNGKey(seed + 1), mesh
     )
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)

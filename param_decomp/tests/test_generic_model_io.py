@@ -63,6 +63,10 @@ class SyntheticDecomposedModel(eqx.Module):
     def site_names(self) -> tuple[str, ...]:
         return tuple(s.name for s in self.sites)
 
+    def shardings(self, mesh: "jax.sharding.Mesh") -> "SyntheticDecomposedModel":
+        repl = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
+        return jax.tree.map(lambda _a: repl, self)
+
     @staticmethod
     def recon_loss_fn(
         masked_output: tuple[Array, Array], clean_output: tuple[Array, Array]

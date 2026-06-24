@@ -56,6 +56,10 @@ class _PositionlessStub(eqx.Module):
     def site_names(self) -> tuple[str, ...]:
         return tuple(s.name for s in self.sites)
 
+    def shardings(self, mesh: Any) -> "_PositionlessStub":
+        del mesh
+        raise AssertionError("positionless stub fn must not be called")
+
     def recon_loss_fn(self, masked_output: Any, clean_output: Any) -> jax.Array:
         del masked_output, clean_output
         raise AssertionError("positionless stub fn must not be called")

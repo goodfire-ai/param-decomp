@@ -322,6 +322,12 @@ class SimpleMLPDecomposedModel(eqx.Module):
     def site_names(self) -> tuple[str, ...]:
         return tuple(s.name for s in self.sites)
 
+    def shardings(self, mesh: Mesh) -> "SimpleMLPDecomposedModel":
+        """Replicate every frozen leaf on the `dp` mesh — this target is small (~67M
+        params), so replicating it is the whole frozen-weight sharding story."""
+        repl = NamedSharding(mesh, P())
+        return jax.tree.map(lambda _a: repl, self)
+
     @staticmethod
     def recon_loss_fn(masked_output: Array, clean_output: Array) -> Array:
         return kl_per_position(masked_output, clean_output)
@@ -647,11 +653,9 @@ def load_prefix_from_pretrain_cache(
     return prefix_from_weights(_checkpoint_weight_getter(cache_dir, dtype), cfg, first_layer)
 
 
-def replicate_frozen[FrozenTree: (SimpleMLPDecomposedModel, SimpleMLPPrefix)](
-    tree: FrozenTree, mesh: Mesh
-) -> FrozenTree:
-    """This target is small (~67M params); replicating the frozen weights on every
-    device is the whole sharding story (the `llama8b_sharding.replicate_target`
-    analog). V/U / CI / source placement reuses the generic per-site plan."""
+def replicate_prefix(prefix: SimpleMLPPrefix, mesh: Mesh) -> SimpleMLPPrefix:
+    """Replicate the small frozen prefix (embedding + earlier blocks) on every device — it
+    only harvests the residual entering the suffix, never enters a gradient graph. The
+    decomposed model itself owns its placement via `SimpleMLPDecomposedModel.shardings`."""
     repl = NamedSharding(mesh, P())
-    return jax.tree.map(lambda a: jax.device_put(a, repl) if eqx.is_array(a) else a, tree)
+    return jax.tree.map(lambda a: jax.device_put(a, repl) if eqx.is_array(a) else a, prefix)

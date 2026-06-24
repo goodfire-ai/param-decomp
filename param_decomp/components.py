@@ -13,7 +13,11 @@ from dataclasses import dataclass
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float
+
+from param_decomp.sharding import assert_divisible
 
 
 @dataclass(frozen=True)
@@ -42,6 +46,18 @@ class DecompVU(eqx.Module):
 
     def site(self, name: str) -> tuple[Array, Array]:
         return self.vu[name]
+
+    def shardings(self, mesh: "Mesh") -> "DecompVU":
+        """Per-leaf `dp` placement matching this tree's structure: V `(d_in, C)` shards its
+        C axis (axis 1), U `(C, d_out)` shards its C axis (axis 0). Asserts every site's C
+        tiles the mesh."""
+        shard_V = NamedSharding(mesh, P(None, "dp"))
+        shard_U = NamedSharding(mesh, P("dp", None))
+        placed: dict[str, tuple[NamedSharding, NamedSharding]] = {}
+        for name, (V, _U) in self.vu.items():
+            assert_divisible(V.shape[1], mesh, f"DecompVU[{name}].V.C")
+            placed[name] = (shard_V, shard_U)
+        return DecompVU(vu=placed)  # pyright: ignore[reportArgumentType]
 
 
 def init_decomp_vu(sites: tuple[SiteSpec, ...], key: Array) -> DecompVU:

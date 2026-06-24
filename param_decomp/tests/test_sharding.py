@@ -83,30 +83,30 @@ def test_jitted_sharded_inits_match_eager_values():
             )
         ),
     )
-    # The caller's scale decision (run_state.init_train_state): shard only when the mesh
-    # tiles and every C divides it. At n==1 this is False → the placed init replicates.
-    shardable = n > 1 and all(s.C % n == 0 for s in sites)
-
-    vu_placed = init_decomp_vu_placed(sites, jax.random.PRNGKey(1), mesh, shardable)
+    # Placement is MODEL-OWNED and uniform across mesh sizes: V/U always declare their C
+    # axis sharded (`P(None,"dp")` / `P("dp",None)`); at n==1 the dp axis has size 1 so it
+    # is trivially divisible and effectively replicated, but the SPEC is still C-sharded.
+    vu_placed = init_decomp_vu_placed(sites, jax.random.PRNGKey(1), mesh)
     vu_eager = init_decomp_vu(sites, jax.random.PRNGKey(1))
     for spec in sites:
         V, U = vu_placed.site(spec.name)
         assert isinstance(V.sharding, NamedSharding) and isinstance(U.sharding, NamedSharding)
-        if shardable:
-            assert V.sharding.spec == P(None, "dp"), spec.name
-            assert U.sharding.spec == P("dp", None), spec.name
-        else:
-            assert V.sharding.spec == P(), spec.name
-            assert U.sharding.spec == P(), spec.name
+        assert V.sharding.spec == P(None, "dp"), spec.name
+        assert U.sharding.spec == P("dp", None), spec.name
     for got, want in zip(jax.tree.leaves(vu_placed), jax.tree.leaves(vu_eager), strict=True):
         assert got.shape == want.shape and got.dtype == want.dtype
         assert jnp.allclose(jnp.asarray(got), want, rtol=1e-6, atol=0)
 
-    # A C not divisible by the mesh is not shardable: the caller's predicate is False, so
-    # the placed init replicates rather than tiling the C axis.
+    # A declared shard axis that does NOT tile the mesh is a loud crash inside `.shardings`
+    # (fail-fast), not a silent replicate. (Only observable at n > 1.)
     if n > 1:
         indivisible = llama_site_specs(cfg, (SiteC("layers.2.mlp.gate_proj", n + 1),))
-        assert not all(s.C % n == 0 for s in indivisible)
+        try:
+            init_decomp_vu_placed(indivisible, jax.random.PRNGKey(1), mesh)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("expected a non-dividing C to fail in DecompVU.shardings")
 
     first_block = min(int(s.name.split(".")[1]) for s in sites)
     arch = ChunkwiseTransformerCIArch(
@@ -119,7 +119,7 @@ def test_jitted_sharded_inits_match_eager_values():
         n_heads=2,
         mlp_hidden=8 * n,
     )
-    ci_placed = init_ci_fn_placed(arch, sites, jax.random.PRNGKey(2), mesh, shardable)
+    ci_placed = init_ci_fn_placed(arch, sites, jax.random.PRNGKey(2), mesh)
     ci_eager = build_ci_fn(arch, sites, jax.random.PRNGKey(2))
     for got, want in zip(jax.tree.leaves(ci_placed), jax.tree.leaves(ci_eager), strict=True):
         assert got.shape == want.shape and got.dtype == want.dtype

@@ -116,13 +116,10 @@ def init_train_state(
     mesh: Mesh,
 ) -> TrainState:
     ci_key = random.fold_in(init_key, 1)
-    # Sharding is a SCALE decision, not an arch one: C-shard V/U + CI when the mesh has >1
-    # device and every site's C tiles it; otherwise replicate (single-device / toy meshes,
-    # or C not dividing the mesh). Same path for every CI-fn arch.
-    n = mesh.devices.size
-    shardable = n > 1 and all(s.C % n == 0 for s in lm.sites)
-    components = init_decomp_vu_placed(lm.sites, init_key, mesh, shardable)
-    ci_fn = init_ci_fn_placed(ci_fn_arch, lm.sites, ci_key, mesh, shardable)
+    # Placement is MODEL-OWNED: V/U + CI declare their own per-leaf shardings (asserting
+    # divisibility), uniformly across mesh sizes — no scale inference, no replicate fallback.
+    components = init_decomp_vu_placed(lm.sites, init_key, mesh)
+    ci_fn = init_ci_fn_placed(ci_fn_arch, lm.sites, ci_key, mesh)
     assert ci_fn.expects_axes == lm.leading_axes, (
         f"CI fn expects leading axes {ci_fn.expects_axes} but model has {lm.leading_axes}"
     )

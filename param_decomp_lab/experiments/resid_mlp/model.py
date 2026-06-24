@@ -369,6 +369,11 @@ class ResidMLPDecomposedModel(eqx.Module):
     def site_names(self) -> tuple[str, ...]:
         return tuple(s.name for s in self.sites)
 
+    def shardings(self, mesh: Mesh) -> "ResidMLPDecomposedModel":
+        """Replicate every frozen leaf on the `dp` mesh — ResidualMLP weights are tiny."""
+        repl = NamedSharding(mesh, P())
+        return jax.tree.map(lambda _a: repl, self)
+
     @staticmethod
     def recon_loss_fn(
         masked_output: Float[Array, "B n_features"], clean_output: Float[Array, "B n_features"]

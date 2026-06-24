@@ -52,6 +52,29 @@ def dp_mesh() -> Mesh:
     return Mesh(np.array(jax.devices()), axis_names=("dp",))
 
 
+def place_via_shardings[T](tree: T, shardings: T) -> T:
+    """Eager `device_put` of each array leaf of `tree` onto the matching `NamedSharding`
+    leaf of `shardings` (a same-structure pytree, e.g. from a model's `.shardings(mesh)`).
+    Static / non-array leaves pass through. The apply path for an already-loaded frozen
+    model (vs the jitted `out_shardings` init path for freshly-seeded params)."""
+    is_array = lambda x: hasattr(x, "shape") and hasattr(x, "dtype")  # noqa: E731
+    return jax.tree.map(
+        lambda a, s: jax.device_put(a, s) if is_array(a) else a,
+        tree,
+        shardings,
+        is_leaf=lambda x: isinstance(x, NamedSharding),
+    )
+
+
+def assert_divisible(dim: int, mesh: Mesh, what: str) -> None:
+    """Fail loud if a declared `dp`-shard axis cannot tile the mesh. Uniform across mesh
+    sizes — at `n == 1` it is trivially true, so there is no single-device special case.
+    `what` names the model / field / axis so a non-dividing dim crashes with a clear
+    message rather than silently replicating."""
+    n = mesh.devices.size
+    assert dim % n == 0, f"{what}: dim {dim} not divisible by mesh size {n}"
+
+
 def batch_shard_leading(x: jax.Array, mesh: Mesh | None) -> jax.Array:
     """In-jit `with_sharding_constraint` pinning the LEADING (batch) axis to `'dp'`, the
     rest replicated. `mesh is None` (single device) is a passthrough. Keeps the masked

@@ -24,6 +24,8 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float
 from safetensors import safe_open
 
@@ -314,6 +316,13 @@ class LlamaDecomposedModel(eqx.Module):
     @property
     def site_names(self) -> tuple[str, ...]:
         return tuple(s.name for s in self.sites)
+
+    def shardings(self, mesh: "Mesh") -> "LlamaDecomposedModel":
+        """Replicate every frozen leaf on the `dp` mesh (the FSDP-style memory story: the
+        ~3.6B bf16 suffix is small vs activations, so replicating avoids all-gathering the
+        target each forward)."""
+        repl = NamedSharding(mesh, P())
+        return jax.tree.map(lambda _a: repl, self)
 
     @staticmethod
     def recon_loss_fn(masked_output: Array, clean_output: Array) -> Array:

@@ -26,6 +26,7 @@ frozen 8B target captured as a constant bakes multi-GB weights into the HLO.
 from typing import Any, Protocol, runtime_checkable
 
 import jax.numpy as jnp
+from jax.sharding import Mesh
 from jaxtyping import Array, Bool, Float
 
 from param_decomp.components import DecompVU, SiteSpec
@@ -75,6 +76,13 @@ class DecomposedModel(Protocol):
 
     @property
     def site_names(self) -> tuple[str, ...]: ...
+
+    def shardings(self, mesh: Mesh) -> "DecomposedModel":
+        """Per-leaf `dp` placement of the frozen target weights, matching this model's
+        pytree structure (each array leaf → a `NamedSharding`). The frozen target is
+        REPLICATED on every device (small relative to activations; replicating avoids
+        all-gathering it every forward). Applied via `jax.jit(..., out_shardings=...)`."""
+        ...
 
     def recon_loss_fn(self, masked_output: Any, clean_output: Any) -> Float[Array, ""]:
         """Recon comparison the step minimizes (SPEC §2.3). LM: `kl_per_position`."""

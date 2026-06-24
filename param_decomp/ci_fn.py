@@ -30,9 +30,12 @@ import einops
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from param_decomp.components import SiteSpec
+from param_decomp.sharding import assert_divisible
 from vendored_jax.llama import apply_rope, attn_implementation, rms_norm, rope_cos_sin
 
 CI_FN_RMS_EPS = float(jnp.finfo(jnp.float32).eps)
@@ -105,6 +108,12 @@ class CIFn(Protocol):
 
     def __call__(self, taps: dict[str, Array]) -> CI: ...
 
+    def shardings(self, mesh: Mesh) -> "CIFn":
+        """Per-leaf `dp` placement matching this CI fn's pytree structure (each array leaf
+        → a `NamedSharding`; `P()` to replicate). Asserts every declared shard axis tiles
+        the mesh. Applied via `jax.jit(init, out_shardings=...)`."""
+        ...
+
 
 # ----------------------------- transformer building blocks -----------------------------
 
@@ -127,6 +136,41 @@ class CIBlock(eqx.Module):
     b2: Array
     n_head: int = eqx.field(static=True)
     eps: float = eqx.field(static=True)
+
+    def shardings(self, mesh: Mesh) -> "CIBlock":
+        """Megatron-style placement, with a leading un-sharded `n_chunks` axis (flat dp;
+        chunk-parallel out of scope). All arrays are stored `[n_chunks, ...]`.
+
+        Attention col/row-parallel: qkv (`[nc, out, in]`) shard their OUTPUT (head) dim
+        (axis 1) so each device owns a head slab; the out-proj shards its INPUT dim (axis 2),
+        so the per-head attention output flows sharded and a single all-reduce closes it.
+
+        MLP row-parallel: up-proj `w1 [nc, d_model, mlp_hidden]` shards its OUTPUT
+        (`mlp_hidden`, axis 2); down-proj `w2 [nc, mlp_hidden, d_model]` shards its INPUT
+        (`mlp_hidden`, axis 1). The hidden flows sharded; no intermediate gather. Biases
+        replicate."""
+        shard_axis1 = NamedSharding(mesh, P(None, "dp", None))
+        shard_axis2 = NamedSharding(mesh, P(None, None, "dp"))
+        repl = NamedSharding(mesh, P())
+        for w in (self.wq, self.wk, self.wv):
+            assert_divisible(w.shape[1], mesh, "CIBlock attn qkv out (head dim)")
+        assert_divisible(self.wo.shape[2], mesh, "CIBlock attn out-proj in (head dim)")
+        assert_divisible(self.w1.shape[2], mesh, "CIBlock mlp up-proj out (mlp_hidden)")
+        assert_divisible(self.w2.shape[1], mesh, "CIBlock mlp down-proj in (mlp_hidden)")
+        return eqx.tree_at(
+            lambda b: (b.wq, b.wk, b.wv, b.wo, b.w1, b.b1, b.w2, b.b2),
+            self,
+            (
+                shard_axis1,
+                shard_axis1,
+                shard_axis1,
+                shard_axis2,
+                shard_axis2,
+                repl,
+                shard_axis1,
+                repl,
+            ),
+        )
 
     def __call__(self, x: Float[Array, "b t d"], inv_freq: Array) -> Array:
         t = x.shape[1]
@@ -206,6 +250,20 @@ class ChunkTransformer(eqx.Module):
     out_w: Float[Array, "d_model c_chunk"]
     out_b: Float[Array, " c_chunk"]
 
+    def shardings(self, mesh: Mesh) -> "ChunkTransformer":
+        """Per-leaf `dp` placement, leading un-sharded `n_chunks` axis. `in_proj_w
+        [nc, total_d_in, d_model]` shards `d_model` (axis 2); `out_w [nc, d_model, c_chunk]`
+        shards `c_chunk` (axis 2); blocks delegate to `CIBlock.shardings`; biases replicate."""
+        shard_last = NamedSharding(mesh, P(None, None, "dp"))
+        repl = NamedSharding(mesh, P())
+        assert_divisible(self.in_proj_w.shape[2], mesh, "ChunkTransformer in_proj_w d_model")
+        assert_divisible(self.out_w.shape[2], mesh, "ChunkTransformer out_w c_chunk")
+        return eqx.tree_at(
+            lambda ct: (ct.in_proj_w, ct.in_proj_b, ct.blocks, ct.out_w, ct.out_b),
+            self,
+            (shard_last, repl, [b.shardings(mesh) for b in self.blocks], shard_last, repl),
+        )
+
     def __call__(self, x: Float[Array, "*leading total_d_in"], inv_freq: Array) -> Array:
         x = einops.einsum(x, self.in_proj_w, "... i, i o -> ... o") + self.in_proj_b
         for block in self.blocks:
@@ -227,6 +285,15 @@ class ChunkwiseTransformerCIFn(eqx.Module):
     chunk_meta: tuple[_ChunkMeta, ...] = eqx.field(static=True)  # per-chunk routing
     eps: float = eqx.field(static=True)
     expects_axes: tuple[str, ...] = eqx.field(static=True)
+
+    def shardings(self, mesh: Mesh) -> "ChunkwiseTransformerCIFn":
+        """The stacked per-chunk transformer's Megatron layout (`ChunkTransformer.shardings`,
+        leading `n_chunks` axis un-sharded); `inv_freq` (a 1-D RoPE buffer) replicates."""
+        return eqx.tree_at(
+            lambda f: (f.chunks, f.inv_freq),
+            self,
+            (self.chunks.shardings(mesh), NamedSharding(mesh, P())),
+        )
 
     def __call__(self, taps: dict[str, Array]) -> CI:
         per_chunk_in = [
@@ -361,6 +428,19 @@ class SiteMLP(eqx.Module):
     weights: list[Float[Array, "d_in d_out"]]
     biases: list[Float[Array, " d_out"]]
 
+    def shardings(self, mesh: Mesh) -> "SiteMLP":
+        """Each `[d_in, d_out]` weight shards its OUTPUT axis (axis 1) over `dp`; 1-D biases
+        replicate. Asserts every output dim tiles the mesh."""
+        shard_out = NamedSharding(mesh, P(None, "dp"))
+        repl = NamedSharding(mesh, P())
+        for layer_idx, w in enumerate(self.weights):
+            assert_divisible(w.shape[1], mesh, f"SiteMLP.weights[{layer_idx}].d_out")
+        return eqx.tree_at(
+            lambda m: (m.weights, m.biases),
+            self,
+            ([shard_out] * len(self.weights), [repl] * len(self.biases)),
+        )
+
     def __call__(self, x: Float[Array, "*leading d_in"]) -> Float[Array, "*leading C"]:
         n_hidden = len(self.weights) - 1
         for layer_idx, (w, b) in enumerate(zip(self.weights, self.biases, strict=True)):
@@ -378,6 +458,13 @@ class LayerwiseMLPCIFn(eqx.Module):
     input_names: tuple[str, ...] = eqx.field(static=True)
     output_names: tuple[str, ...] = eqx.field(static=True)
     expects_axes: tuple[str, ...] = eqx.field(static=True)
+
+    def shardings(self, mesh: Mesh) -> "LayerwiseMLPCIFn":
+        return eqx.tree_at(
+            lambda f: f.site_mlps,
+            self,
+            {name: mlp.shardings(mesh) for name, mlp in self.site_mlps.items()},
+        )
 
     def site_logits(self, taps: dict[str, Array]) -> dict[str, Array]:
         assert set(taps) == set(self.input_names), (
@@ -439,6 +526,9 @@ class GlobalMLPCIFn(eqx.Module):
     in_sizes: tuple[int, ...] = eqx.field(static=True)
     c_sizes: tuple[int, ...] = eqx.field(static=True)
     expects_axes: tuple[str, ...] = eqx.field(static=True)
+
+    def shardings(self, mesh: Mesh) -> "GlobalMLPCIFn":
+        return eqx.tree_at(lambda f: f.mlp, self, self.mlp.shardings(mesh))
 
     def site_logits(self, taps: dict[str, Array]) -> dict[str, Array]:
         assert set(taps) == set(self.input_names), (

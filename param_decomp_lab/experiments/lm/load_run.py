@@ -41,7 +41,7 @@ from param_decomp.ci_fn import CIFn
 from param_decomp.components import DecompVU
 from param_decomp.lm import DecomposedModel
 from param_decomp.run_state import build_optimizers, init_train_state
-from param_decomp.sharding import dp_mesh
+from param_decomp.sharding import dp_mesh, place_via_shardings
 from param_decomp.targets import llama_simple_mlp
 from param_decomp.targets.llama8b import (
     first_decomposed_layer,
@@ -51,7 +51,7 @@ from param_decomp.targets.llama8b import (
     load_prefix_from_hf,
     prefix_residual,
 )
-from param_decomp.targets.llama8b_sharding import replicate_target
+from param_decomp.targets.llama8b_sharding import place_target
 from param_decomp.targets.target_aliases import AnyPrefix
 from param_decomp.train import COMPUTE_DT, TrainState, cast_floating
 from param_decomp_lab.experiments.lm.config import (
@@ -86,14 +86,12 @@ def build_target(
             cache_dir = llama_simple_mlp.pretrain_cache_dir(cfg.target.pretrain_run_path)
             simple_cfg = llama_simple_mlp.load_model_config(cache_dir)
             sites = llama_simple_mlp.site_specs(simple_cfg, cfg.target.sites)
-            lm = llama_simple_mlp.replicate_frozen(
-                llama_simple_mlp.load_decomposed_lm_from_pretrain_cache(
-                    cache_dir, simple_cfg, sites, jnp.bfloat16
-                ),
-                mesh,
+            loaded_lm = llama_simple_mlp.load_decomposed_lm_from_pretrain_cache(
+                cache_dir, simple_cfg, sites, jnp.bfloat16
             )
+            lm = place_via_shardings(loaded_lm, loaded_lm.shardings(mesh))
             first_layer = llama_simple_mlp.first_decomposed_layer(lm.site_names)
-            prefix = llama_simple_mlp.replicate_frozen(
+            prefix = llama_simple_mlp.replicate_prefix(
                 llama_simple_mlp.load_prefix_from_pretrain_cache(
                     cache_dir, simple_cfg, first_layer, jnp.bfloat16
                 ),
@@ -103,7 +101,7 @@ def build_target(
         case TargetConfig():
             llama_cfg = llama31_8b_config()
             sites = llama_site_specs(llama_cfg, cfg.target.sites)
-            lm = replicate_target(
+            lm = place_target(
                 load_decomposed_lm_from_hf(cfg.target.model_name, llama_cfg, sites), mesh
             )
             first_layer = first_decomposed_layer(lm.site_names)

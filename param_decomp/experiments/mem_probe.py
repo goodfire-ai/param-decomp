@@ -63,35 +63,60 @@ from param_decomp.targets.llama8b_sharding import dp_mesh
 from param_decomp.train import TrainState, make_train_step
 
 
+def _attach(leaves_tree: Any, shardings_tree: Any) -> Any:
+    """Re-attach a same-structure tree of `NamedSharding`s onto a tree of abstract
+    `ShapeDtypeStruct` leaves."""
+    return jax.tree.map(
+        lambda leaf, sharding: jax.ShapeDtypeStruct(leaf.shape, leaf.dtype, sharding=sharding),
+        leaves_tree,
+        shardings_tree,
+        is_leaf=lambda x: isinstance(x, jax.ShapeDtypeStruct),
+    )
+
+
 def _place_state(typed: TrainState, mesh: Mesh) -> TrainState:
-    """Attach the trainer's GSPMD shardings to the typed abstract `TrainState`,
-    re-deriving the `llama8b_sharding.py` placement per leaf from its field group +
-    shape (so the Adam mu/nu mirror their params):
+    """Attach the trainer's GSPMD shardings to the typed abstract `TrainState`, reusing each
+    param owner's OWN `.shardings` (so the probe sees the exact production placement, incl.
+    the chunkwise CI fn's Megatron layout). The Adam mu/nu mirror their params' shardings;
+    every other leaf (sources/SCScope, scalars/1-D, opt counts) replicates."""
+    comp_shardings = typed.components.shardings(mesh)
+    ci_shardings = typed.ci_fn.shardings(mesh)
+    components = _attach(typed.components, comp_shardings)
+    ci_fn = _attach(typed.ci_fn, ci_shardings)
+    components_opt_state = _place_adam_state(typed.components_opt_state, comp_shardings, mesh)
+    ci_fn_opt_state = _place_adam_state(typed.ci_fn_opt_state, ci_shardings, mesh)
+    return eqx.tree_at(
+        lambda s: (s.components, s.ci_fn, s.components_opt_state, s.ci_fn_opt_state,
+                   s.sources, s.sources_opt_state, s.step),
+        typed,
+        (components, ci_fn, components_opt_state, ci_fn_opt_state,
+         _abstract_replicated(typed.sources, mesh),
+         _abstract_replicated(typed.sources_opt_state, mesh),
+         _abstract_replicated(typed.step, mesh)),
+    )  # fmt: skip
 
-      components V `(d_in, C)` -> P(None, 'dp'); U `(C, d_out)` -> P('dp', None)
-      ci_fn 2-D weight with `dp`-divisible last axis -> P(None, 'dp'); else replicate
-      sources (SCScope), all scalars/1-D, opt counts -> replicate
-    """
-    n = mesh.devices.size
-    repl = NamedSharding(mesh, P())
-    model_dims = {4096, 14336}  # Llama-8B d_model / d_mlp; the C axis is neither
 
-    def place(path: tuple[Any, ...], leaf: Any) -> Any:
-        group = str(getattr(path[0], "key", getattr(path[0], "name", getattr(path[0], "idx", ""))))
-        if leaf.ndim == 2 and group.startswith("components"):
-            # V `(d_in, C)` shards axis 1, U `(C, d_out)` shards axis 0; the C axis is
-            # the one NOT a model dim (V/U Adam mu/nu share their param's layout).
-            c_axis = 0 if leaf.shape[0] not in model_dims else 1
-            spec = ["dp" if ax == c_axis else None for ax in range(2)]
-            sharding = NamedSharding(mesh, P(*spec))
-        elif leaf.ndim == 2 and group.startswith("ci_fn") and leaf.shape[-1] % n == 0:
-            sharding = NamedSharding(mesh, P(None, "dp"))
-        else:
-            sharding = repl
-        return jax.ShapeDtypeStruct(leaf.shape, leaf.dtype, sharding=sharding)
+def _place_adam_state(opt_state: Any, param_shardings: Any, mesh: Mesh) -> Any:
+    """Place an optax AdamW state: the `mu`/`nu` param-shaped subtrees mirror their params'
+    shardings; every scalar (the `count`s, the global-norm clip's `EmptyState`) replicates.
+    The param-shaped subtrees are exactly the members of `opt_state` whose pytree structure
+    equals `param_shardings`."""
+    param_treedef = jax.tree.structure(
+        param_shardings, is_leaf=lambda x: isinstance(x, NamedSharding)
+    )
 
-    return jax.tree_util.tree_map_with_path(
-        place, typed, is_leaf=lambda x: isinstance(x, jax.ShapeDtypeStruct)
+    def is_param_subtree(member: Any) -> bool:
+        return (
+            jax.tree.structure(member, is_leaf=lambda x: isinstance(x, jax.ShapeDtypeStruct))
+            == param_treedef
+        )
+
+    return jax.tree.map(
+        lambda m: _attach(m, param_shardings)
+        if is_param_subtree(m)
+        else _abstract_replicated(m, mesh),
+        opt_state,
+        is_leaf=is_param_subtree,
     )
 
 

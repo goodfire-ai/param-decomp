@@ -21,10 +21,19 @@ The memory consumers, and how each is placed on the 1-D `dp` mesh:
 Sharding V/U over the C axis keeps every einsum valid: `x @ V` contracts d_in and
 produces a C-sharded result; `(.) @ U` contracts the sharded C and `jax.jit` inserts
 the reduce-scatter / all-reduce. No manual collectives.
+
+Placement is MODEL-OWNED: each param owner declares its per-leaf `NamedSharding` via a
+`.shardings(mesh)` method (V/U on `DecompVU`, the Megatron layout on the chunkwise CI fn,
+all-replicate on the frozen target). The helpers below only drive the apply: compute the
+shardings on the `eqx.filter_eval_shape`'d abstract model, then run the seeded init under
+`jax.jit(init, out_shardings=...)` so each device generates only its own shard and no
+host-side full tree exists — eager `device_put` of a host tree onto a multi-process
+non-replicated sharding triggers a `process_allgather` (a 168 GiB allocation for a
+12-layer chunk at C=24576). A non-dividing declared shard axis is a loud crash inside
+`.shardings` (fail-fast), never a silent replicate.
 """
 
 from functools import partial
-from typing import Any
 
 import equinox as eqx
 import jax
@@ -36,14 +45,13 @@ from param_decomp.adversary import init_persistent_sources
 from param_decomp.ci_fn import CIFn, CIFnArch, build_ci_fn
 from param_decomp.components import DecompVU, SiteSpec, init_decomp_vu
 from param_decomp.configs import BSCScope, SCScope
-from param_decomp.log import logger
-from param_decomp.sharding import dp_mesh
+from param_decomp.sharding import dp_mesh, place_via_shardings
 from param_decomp.sharding import shard_batch as _generic_shard_batch
 from param_decomp.targets.llama8b import LlamaDecomposedModel
 
 __all__ = [
     "dp_mesh",
-    "replicate_target",
+    "place_target",
     "init_decomp_vu_placed",
     "init_ci_fn_placed",
     "init_sources_sharded",
@@ -51,85 +59,29 @@ __all__ = [
 ]
 
 
-def _put(x: Any, sharding: NamedSharding) -> Any:
-    return jax.device_put(x, sharding) if eqx.is_array(x) else x
+def place_target(tgt: LlamaDecomposedModel, mesh: Mesh) -> LlamaDecomposedModel:
+    """Eager `device_put` of the already-loaded frozen target onto its own declared
+    placement (`tgt.shardings(mesh)` — all-replicate)."""
+    return place_via_shardings(tgt, tgt.shardings(mesh))
 
 
-def replicate_target(tgt: LlamaDecomposedModel, mesh: Mesh) -> LlamaDecomposedModel:
-    repl = NamedSharding(mesh, P())
-    return jax.tree.map(lambda a: _put(a, repl), tgt)
-
-
-def init_decomp_vu_placed(
-    sites: tuple[SiteSpec, ...], key: PRNGKeyArray, mesh: Mesh, shardable: bool
-) -> DecompVU:
-    """Seeded per-site V/U init, placed by SCALE (not by CI-fn arch). `shardable` (the
-    caller's scale decision: mesh > 1 and every C divides it) → C-sharded; else replicated.
-
-    Either way the init runs under jit with `out_shardings`, so each device generates only
-    its own shard and no host-side full tree exists — eager `device_put` of a host tree onto
-    a multi-process non-replicated sharding triggers a `process_allgather` (a 168 GiB
-    allocation for a 12-layer chunk at C=24576). When sharded, per site: V `(d_in, C_s)` on
-    axis 1; U `(C_s, d_out)` on axis 0."""
+def init_decomp_vu_placed(sites: tuple[SiteSpec, ...], key: PRNGKeyArray, mesh: Mesh) -> DecompVU:
+    """Seeded per-site V/U init placed by `DecompVU.shardings` (V `(d_in, C)` shards axis 1,
+    U `(C, d_out)` shards axis 0). The shardings are computed on the abstract model and the
+    init runs under jit with `out_shardings`."""
     init = partial(init_decomp_vu, sites)
-    if not shardable:
-        return jax.jit(init, out_shardings=NamedSharding(mesh, P()))(key)
-    site_c = {spec.name: spec.C for spec in sites}
-    shard_V = NamedSharding(mesh, P(None, "dp"))
-    shard_U = NamedSharding(mesh, P("dp", None))
-
-    def place(path: tuple[Any, ...], shape: jax.ShapeDtypeStruct) -> NamedSharding:
-        *_, site_key, vu_key = path
-        assert isinstance(site_key, jax.tree_util.DictKey), path
-        assert isinstance(vu_key, jax.tree_util.SequenceKey), path
-        is_V = vu_key.idx == 0
-        assert shape.shape[1 if is_V else 0] == site_c[site_key.key], (path, shape.shape)
-        return shard_V if is_V else shard_U
-
-    out_shardings = jax.tree_util.tree_map_with_path(place, jax.eval_shape(init, key))
+    out_shardings = eqx.filter_eval_shape(init, key).shardings(mesh)
     return jax.jit(init, out_shardings=out_shardings)(key)
 
 
-def _shard_last_axis(mesh: Mesh, ndim: int) -> NamedSharding:
-    """Tile an array's LAST axis over `dp`, replicating every earlier axis."""
-    return NamedSharding(mesh, P(*([None] * (ndim - 1)), "dp"))
-
-
 def init_ci_fn_placed(
-    arch: CIFnArch, sites: tuple[SiteSpec, ...], key: PRNGKeyArray, mesh: Mesh, shardable: bool
+    arch: CIFnArch, sites: tuple[SiteSpec, ...], key: PRNGKeyArray, mesh: Mesh
 ) -> CIFn:
-    """Seeded CI-fn init (any arch, via `build_ci_fn`), placed by SCALE — not arch type.
-    `shardable` → shard every 2-D+ matrix on its LAST axis where it tiles the mesh (the
-    chunkwise `out_w` ΣC axis, attention / in_proj output axes; 1-D vectors replicate);
-    else replicate everything. Same jit + `out_shardings` no-host-tree rationale as V/U.
-
-    A 2-D+ matrix whose last axis does NOT tile the mesh falls back to replication — fine
-    for correctness but a potential memory surprise at scale, so it's logged rather than
-    silent."""
-    n = mesh.devices.size
-    repl = NamedSharding(mesh, P())
+    """Seeded CI-fn init (any arch, via `build_ci_fn`) placed by the CI fn's own
+    `.shardings` (the chunkwise transformer's Megatron layout; the toy MLPs shard each
+    weight's output axis). Shardings computed on the abstract model, init under jit."""
     init = partial(build_ci_fn, arch, sites)
-    if not shardable:
-        return jax.jit(init, out_shardings=repl)(key)
-
-    untiled: list[tuple[int, ...]] = []  # 2-D+ matrices whose last axis isn't mesh-divisible
-
-    def place(shape: jax.ShapeDtypeStruct) -> NamedSharding:
-        if shape.ndim < 2:
-            return repl  # 1-D vectors (biases, inv_freq) always replicate
-        if shape.shape[-1] % n == 0:
-            return _shard_last_axis(mesh, shape.ndim)
-        untiled.append(shape.shape)
-        return repl
-
-    out_shardings = jax.tree.map(place, jax.eval_shape(init, key))
-    if untiled:
-        logger.info(
-            "ci_fn placement: %d matrices replicated (last axis not divisible by mesh=%d): %s",
-            len(untiled),
-            n,
-            untiled,
-        )
+    out_shardings = eqx.filter_eval_shape(init, key).shardings(mesh)
     return jax.jit(init, out_shardings=out_shardings)(key)
 
 

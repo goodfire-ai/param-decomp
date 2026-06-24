@@ -75,7 +75,7 @@ from param_decomp.targets.llama8b_sharding import (
     init_ci_fn_placed,
     init_decomp_vu_placed,
     init_sources_sharded,
-    replicate_target,
+    place_target,
     shard_batch,
 )
 from param_decomp.train import TrainState, make_faith_warmup_step, make_train_step
@@ -191,13 +191,12 @@ def main():
     )
     opt_ci = optax.adamw(sched_ci, b1=0.9, b2=0.999, eps=1e-8, weight_decay=0.0)
 
-    lm = replicate_target(lm, mesh)
+    lm = place_target(lm, mesh)
     site_Cs = tuple(s.C for s in lm.sites)
     # fp32 masters; source init U[0,1] (SPEC S15), trailing channel = the weight-delta source.
     if args.shard:
-        shardable = ndev > 1 and all(s.C % ndev == 0 for s in lm.sites)
-        vu = init_decomp_vu_placed(lm.sites, random.PRNGKey(1), mesh, shardable)
-        ci_fn = init_ci_fn_placed(arch, lm.sites, random.PRNGKey(2), mesh, shardable)
+        vu = init_decomp_vu_placed(lm.sites, random.PRNGKey(1), mesh)
+        ci_fn = init_ci_fn_placed(arch, lm.sites, random.PRNGKey(2), mesh)
         src = init_sources_sharded(
             lm.site_names, site_Cs, args.seq, SCScope(), 1, random.PRNGKey(3), mesh
         )
