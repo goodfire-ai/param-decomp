@@ -35,7 +35,6 @@ from vendored_jax.llama import (
     apply_rope,
     causal_sdpa,
     llama3_inv_freq,
-    repeat_kv,
     rms_norm,
     rope_cos_sin,
 )
@@ -173,15 +172,17 @@ class FrozenAttn(eqx.Module):
         v = v_flat.reshape(b, t, self.n_kv_head, self.head_dim).transpose(0, 2, 1, 3)
         cos, sin = rope_cos_sin(inv_freq, t, q_flat.dtype)
         q, k = apply_rope(q, k, cos, sin)
-        k = repeat_kv(k, self.n_rep)
-        v = repeat_kv(v, self.n_rep)
+        # Native GQA: do NOT repeat_kv — `dot_product_attention` handles the q-heads:kv-heads
+        # grouping internally. Repeating k/v to n_head and THEN sharding makes the SPMD
+        # partitioner derive the repeated-k/v layout from the small n_kv_head source,
+        # inconsistent with q -> cuDNN "Query, key and value should have same sharding" (forward
+        # AND its rematerialized backward). Real GQA keeps q (n_head) and k/v (n_kv_head) as
+        # independent head-parallel tensors with the SAME spec (different head COUNTS is fine).
         # cuDNN flash attention's custom partitioner requires q/k/v IDENTICALLY sharded.
         # On the 2-D (dp, tp) mesh, pin all three head-parallel: batch on `dp`, HEADS on `tp`
         # (`P("dp","tp",None,None)` for `[b, heads, t, hd]`). Heads are independent, so this is
-        # clean tensor-parallel attention, and the identical layout is exactly what cuDNN
-        # demands. It MUST come after `repeat_kv` — k/v are now expanded to `n_head` (matching
-        # q), so all three shard the same 64 heads on `tp`; constraining the raw `n_kv_head`
-        # k/v would give a layout inconsistent with q. The q/k/v projection outputs are
+        # clean tensor-parallel attention, and the identical spec is exactly what cuDNN
+        # demands (n_head % tp == 0 and n_kv_head % tp == 0). The q/k/v projection outputs are
         # `d_out`-replicated (U = `P("tp",None)`); this constraint does the replicated->head-
         # on-tp reshard right here. Guarded so it's a no-op off-mesh (CPU tests / single
         # device); `run.py` sets the global mesh. At `tp=1` heads land on a size-1 axis =
