@@ -1,0 +1,159 @@
+================================================================
+SLURM job:  2008
+Nodes:      ac-bitdeer-cloud-h100-reserved-001-[012-013]
+Date:       2026-06-06T22:21:14+00:00
+================================================================
+
+--- IB devices per node (ibstat -l) ---
+==== ac-bitdeer-cloud-h100-reserved-001-012 ====
+mlx5_0
+mlx5_1
+mlx5_10
+mlx5_11
+mlx5_2
+mlx5_3
+mlx5_4
+mlx5_5
+mlx5_6
+mlx5_7
+mlx5_8
+mlx5_9
+  mlx5_0:		State: Active		Rate: 400
+  mlx5_1:		State: Active		Rate: 400
+  mlx5_10:		State: Active		Rate: 400
+  mlx5_11:		State: Active		Rate: 400
+  mlx5_2:		State: Active		Rate: 400
+  mlx5_3:		State: Active		Rate: 25
+  mlx5_4:		State: Active		Rate: 100
+  mlx5_5:		State: Active		Rate: 25
+  mlx5_6:		State: Active		Rate: 100
+  mlx5_7:		State: Active		Rate: 400
+  mlx5_8:		State: Active		Rate: 400
+==== ac-bitdeer-cloud-h100-reserved-001-013 ====
+  mlx5_9:		State: Active		Rate: 400
+mlx5_0
+mlx5_1
+mlx5_10
+mlx5_11
+mlx5_2
+mlx5_3
+mlx5_4
+mlx5_5
+mlx5_6
+mlx5_7
+mlx5_8
+mlx5_9
+  mlx5_0:		State: Active		Rate: 400
+  mlx5_1:		State: Active		Rate: 400
+  mlx5_10:		State: Active		Rate: 400
+  mlx5_11:		State: Active		Rate: 400
+  mlx5_2:		State: Active		Rate: 400
+  mlx5_3:		State: Active		Rate: 25
+  mlx5_4:		State: Active		Rate: 100
+  mlx5_5:		State: Active		Rate: 25
+  mlx5_6:		State: Active		Rate: 100
+  mlx5_7:		State: Active		Rate: 400
+  mlx5_8:		State: Active		Rate: 400
+  mlx5_9:		State: Active		Rate: 400
+
+--- torch / NCCL versions ---
+torch 2.8.0+cu128 cuda 12.8 nccl (2, 27, 3)
+MASTER_ADDR=ac-bitdeer-cloud-h100-reserved-001-012 MASTER_PORT=29500
+
+================================================================
+Running 2-node x 8-GPU all_reduce over IB
+================================================================
+W0606 22:21:23.806000 2056014 torch/distributed/run.py:774] 
+W0606 22:21:23.806000 2056014 torch/distributed/run.py:774] *****************************************
+W0606 22:21:23.806000 2056014 torch/distributed/run.py:774] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0606 22:21:23.806000 2056014 torch/distributed/run.py:774] *****************************************
+W0606 22:21:25.067000 1568514 torch/distributed/run.py:774] 
+W0606 22:21:25.067000 1568514 torch/distributed/run.py:774] *****************************************
+W0606 22:21:25.067000 1568514 torch/distributed/run.py:774] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0606 22:21:25.067000 1568514 torch/distributed/run.py:774] *****************************************
+[rank 9/16] host=ac-bitdeer-cloud-h100-reserved-001-013 local_rank=1
+[rank 12/16] host=ac-bitdeer-cloud-h100-reserved-001-013 local_rank=4
+[rank 2/16] host=ac-bitdeer-cloud-h100-reserved-001-012 local_rank=2
+[rank 14/16] host=ac-bitdeer-cloud-h100-reserved-001-013 local_rank=6
+[rank 1/16] host=ac-bitdeer-cloud-h100-reserved-001-012 local_rank=1
+[rank 6/16] host=ac-bitdeer-cloud-h100-reserved-001-012 local_rank=6
+[rank 15/16] host=ac-bitdeer-cloud-h100-reserved-001-013 local_rank=7
+[rank 8/16] host=ac-bitdeer-cloud-h100-reserved-001-013 local_rank=0
+[rank 13/16] host=ac-bitdeer-cloud-h100-reserved-001-013 local_rank=5
+[rank 10/16] host=ac-bitdeer-cloud-h100-reserved-001-013 local_rank=2
+[rank 11/16] host=ac-bitdeer-cloud-h100-reserved-001-013 local_rank=3
+[rank 7/16] host=ac-bitdeer-cloud-h100-reserved-001-012 local_rank=7
+[rank 5/16] host=ac-bitdeer-cloud-h100-reserved-001-012 local_rank=5
+[rank 0/16] host=ac-bitdeer-cloud-h100-reserved-001-012 local_rank=0
+[rank 3/16] host=ac-bitdeer-cloud-h100-reserved-001-012 local_rank=3
+[rank 4/16] host=ac-bitdeer-cloud-h100-reserved-001-012 local_rank=4
+/mnt/delicate-frog/home/braun/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/distributed_c10d.py:4807: UserWarning: No device id is provided via `init_process_group` or `barrier `. Using the current device set by the user. 
+  warnings.warn(  # warn only once
+/mnt/delicate-frog/home/braun/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/distributed_c10d.py:4807: UserWarning: No device id is provided via `init_process_group` or `barrier `. Using the current device set by the user. 
+  warnings.warn(  # warn only once
+/mnt/delicate-frog/home/braun/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/distributed_c10d.py:4807: UserWarning: No device id is provided via `init_process_group` or `barrier `. Using the current device set by the user. 
+  warnings.warn(  # warn only once
+/mnt/delicate-frog/home/braun/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/distributed_c10d.py:4807: UserWarning: No device id is provided via `init_process_group` or `barrier `. Using the current device set by the user. 
+  warnings.warn(  # warn only once
+/mnt/delicate-frog/home/braun/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/distributed_c10d.py:4807: UserWarning: No device id is provided via `init_process_group` or `barrier `. Using the current device set by the user. 
+  warnings.warn(  # warn only once
+/mnt/delicate-frog/home/braun/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/distributed_c10d.py:4807: UserWarning: No device id is provided via `init_process_group` or `barrier `. Using the current device set by the user. 
+  warnings.warn(  # warn only once
+/mnt/delicate-frog/home/braun/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/distributed_c10d.py:4807: UserWarning: No device id is provided via `init_process_group` or `barrier `. Using the current device set by the user. 
+  warnings.warn(  # warn only once
+/mnt/delicate-frog/home/braun/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/distributed_c10d.py:4807: UserWarning: No device id is provided via `init_process_group` or `barrier `. Using the current device set by the user. 
+  warnings.warn(  # warn only once
+/mnt/delicate-frog/home/braun/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/distributed_c10d.py:4807: UserWarning: No device id is provided via `init_process_group` or `barrier `. Using the current device set by the user. 
+  warnings.warn(  # warn only once
+/mnt/delicate-frog/home/braun/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/distributed_c10d.py:4807: UserWarning: No device id is provided via `init_process_group` or `barrier `. Using the current device set by the user. 
+  warnings.warn(  # warn only once
+/mnt/delicate-frog/home/braun/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/distributed_c10d.py:4807: UserWarning: No device id is provided via `init_process_group` or `barrier `. Using the current device set by the user. 
+  warnings.warn(  # warn only once
+/mnt/delicate-frog/home/braun/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/distributed_c10d.py:4807: UserWarning: No device id is provided via `init_process_group` or `barrier `. Using the current device set by the user. 
+  warnings.warn(  # warn only once
+/mnt/delicate-frog/home/braun/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/distributed_c10d.py:4807: UserWarning: No device id is provided via `init_process_group` or `barrier `. Using the current device set by the user. 
+  warnings.warn(  # warn only once
+/mnt/delicate-frog/home/braun/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/distributed_c10d.py:4807: UserWarning: No device id is provided via `init_process_group` or `barrier `. Using the current device set by the user. 
+  warnings.warn(  # warn only once
+/mnt/delicate-frog/home/braun/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/distributed_c10d.py:4807: UserWarning: No device id is provided via `init_process_group` or `barrier `. Using the current device set by the user. 
+  warnings.warn(  # warn only once
+/mnt/delicate-frog/home/braun/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/distributed_c10d.py:4807: UserWarning: No device id is provided via `init_process_group` or `barrier `. Using the current device set by the user. 
+  warnings.warn(  # warn only once
+all_reduce OK across 16 ranks | 1.07 GB in 4.9 ms/iter | algbw 217.4 GB/s | busbw 407.5 GB/s
+all_reduce exit code: 0
+
+================================================================
+Transport selected by NCCL (from logs)
+================================================================
+IB transport lines:
+   5152 GPU Direct RDMA
+   3504 NET/IB
+    640 NET/IBext
+Socket transport lines:
+  (none)
+
+Any ibv errors in logs:
+  (none)
+
+Per-rank 'NET/IB : Using' lines (one per rank if IB is live):
+ac-bitdeer-cloud-h100-reserved-001-012:2056076:2056152 [6] NCCL INFO NET/IB : Using [0]mlx5_0:1/IB/SHARP [1]mlx5_1:1/IB/SHARP [2]mlx5_2:1/IB/SHARP [3]mlx5_7:1/IB/SHARP [4]mlx5_8:1/IB/SHARP [5]mlx5_9:1/IB/SHARP [6]mlx5_10:1/IB/SHARP [7]mlx5_11:1/IB/SHARP [RO]; OOB eth0:10.42.13.67<0>
+ac-bitdeer-cloud-h100-reserved-001-012:2056076:2056245 [6] NCCL INFO Channel 00/0 : 14[6] -> 6[6] [receive] via NET/IBext_v10/6/GDRDMA
+ac-bitdeer-cloud-h100-reserved-001-012:2056076:2056245 [6] NCCL INFO Channel 01/0 : 14[6] -> 6[6] [receive] via NET/IBext_v10/6/GDRDMA
+ac-bitdeer-cloud-h100-reserved-001-012:2056076:2056245 [6] NCCL INFO Channel 02/0 : 14[6] -> 6[6] [receive] via NET/IBext_v10/6/GDRDMA
+ac-bitdeer-cloud-h100-reserved-001-012:2056076:2056245 [6] NCCL INFO Channel 03/0 : 14[6] -> 6[6] [receive] via NET/IBext_v10/6/GDRDMA
+ac-bitdeer-cloud-h100-reserved-001-012:2056076:2056245 [6] NCCL INFO Channel 04/0 : 14[6] -> 6[6] [receive] via NET/IBext_v10/6/GDRDMA
+ac-bitdeer-cloud-h100-reserved-001-012:2056076:2056245 [6] NCCL INFO Channel 05/0 : 14[6] -> 6[6] [receive] via NET/IBext_v10/6/GDRDMA
+ac-bitdeer-cloud-h100-reserved-001-012:2056076:2056245 [6] NCCL INFO Channel 06/0 : 14[6] -> 6[6] [receive] via NET/IBext_v10/6/GDRDMA
+ac-bitdeer-cloud-h100-reserved-001-012:2056076:2056245 [6] NCCL INFO Channel 07/0 : 14[6] -> 6[6] [receive] via NET/IBext_v10/6/GDRDMA
+ac-bitdeer-cloud-h100-reserved-001-012:2056076:2056245 [6] NCCL INFO Channel 08/0 : 14[6] -> 6[6] [receive] via NET/IBext_v10/6/GDRDMA
+ac-bitdeer-cloud-h100-reserved-001-012:2056076:2056245 [6] NCCL INFO Channel 09/0 : 14[6] -> 6[6] [receive] via NET/IBext_v10/6/GDRDMA
+ac-bitdeer-cloud-h100-reserved-001-012:2056076:2056245 [6] NCCL INFO Channel 10/0 : 14[6] -> 6[6] [receive] via NET/IBext_v10/6/GDRDMA
+ac-bitdeer-cloud-h100-reserved-001-012:2056076:2056245 [6] NCCL INFO Channel 11/0 : 14[6] -> 6[6] [receive] via NET/IBext_v10/6/GDRDMA
+ac-bitdeer-cloud-h100-reserved-001-012:2056076:2056245 [6] NCCL INFO Channel 12/0 : 14[6] -> 6[6] [receive] via NET/IBext_v10/6/GDRDMA
+ac-bitdeer-cloud-h100-reserved-001-012:2056076:2056245 [6] NCCL INFO Channel 13/0 : 14[6] -> 6[6] [receive] via NET/IBext_v10/6/GDRDMA
+ac-bitdeer-cloud-h100-reserved-001-012:2056076:2056245 [6] NCCL INFO Channel 14/0 : 14[6] -> 6[6] [receive] via NET/IBext_v10/6/GDRDMA
+
+================================================================
+VERDICT: InfiniBand is WORKING (all_reduce passed + NCCL used NET/IB).
+NCCL logs kept in: /mnt/delicate-frog/home/braun/param-decomp/scripts/.ib_check_nccl_logs
+================================================================
