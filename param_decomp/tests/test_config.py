@@ -12,7 +12,11 @@ from pydantic import ValidationError
 
 from param_decomp.built_run import DataConfig
 from param_decomp.components import SiteC
-from param_decomp.configs import PDConfig, PersistentPGDReconLossConfig
+from param_decomp.configs import (
+    ImportanceMinimalityLossConfig,
+    PDConfig,
+    PersistentPGDReconLossConfig,
+)
 from param_decomp.recon import (
     FaithfulnessTerm,
     ImportanceMinimalityTerm,
@@ -95,7 +99,8 @@ def test_b128_config_converts():
     )
     (faith,) = (t for t in terms if isinstance(t, FaithfulnessTerm))
     (imp,) = (t for t in terms if isinstance(t, ImportanceMinimalityTerm))
-    assert faith.coeff == 1e5 and imp.cfg.pnorm == 2.0
+    assert faith.coeff == 1e5
+    assert isinstance(imp.cfg, ImportanceMinimalityLossConfig) and imp.cfg.pnorm == 2.0
     (ppgd,) = persistent_configs(terms).values()
     assert isinstance(ppgd, PersistentPGDReconLossConfig)
     assert ppgd.n_warmup_steps == 2

@@ -38,9 +38,9 @@ from param_decomp.components import DecompVU
 from param_decomp.configs import AdamPGDConfig
 from param_decomp.lm import DecomposedModel
 from param_decomp.losses import (
-    annealed_pnorm,
+    annealed_imp_min_param,
     faithfulness_loss,
-    importance_minimality_terms,
+    imp_min_terms,
     warmup_then_constant_lr,
 )
 from param_decomp.recon import (
@@ -143,7 +143,6 @@ def make_train_step(
     faith_coeff = faith_term.coeff
     imp_min = imp_term.cfg
     imp_coeff = imp_term.coeff
-    assert imp_min.p_anneal_final_p is not None
 
     persistent = persistent_configs(loss_terms)
     term_coeff_by_state_key = {
@@ -270,7 +269,7 @@ def make_train_step(
         key: PRNGKeyArray,
     ) -> tuple[TrainState, dict[str, Array]]:
         step_f32 = state.step.astype(jnp.float32)
-        pnorm = annealed_pnorm(step_f32, total_steps, imp_min)
+        imp_min_param = annealed_imp_min_param(step_f32, total_steps, imp_min)
         leading = residual.shape[:-1]
 
         residual = batch_sharded(residual)
@@ -416,7 +415,7 @@ def make_train_step(
             ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
             ci = batch_sharded_ci(ci_fn_bf16(taps))
             faith_loss = faithfulness_loss(model.weight_deltas(components))
-            imp_lp, imp_entropy = importance_minimality_terms(ci.upper, pnorm, imp_min.eps)
+            imp_lp, imp_entropy = imp_min_terms(ci.upper, imp_min, imp_min_param)
             imp_loss = imp_lp + imp_min.beta * imp_entropy
 
             term_losses: list[Array] = []
@@ -535,7 +534,7 @@ def make_train_step(
             "total": total_loss,
             "faith": faith_loss,
             "imp": imp_loss,
-            "p_imp": pnorm,
+            "p_imp": imp_min_param,
             **{f"loss/{t.name}": v for t, v in zip(recon_terms, term_losses, strict=True)},
             **grad_norm_metrics,
         }
