@@ -130,7 +130,19 @@ _METRIC_KEYS = {
     "p_imp": "train/schedules/p_imp",
     "src_lr": "train/schedules/lr/src",
     "step_time_s": "train/perf/step_time_s",
+    "elapsed_s": "train/perf/elapsed_s",
+    "eta_s": "train/perf/eta_s",
 }
+
+
+def _fmt_duration(seconds: float) -> str:
+    h, rem = divmod(int(seconds), 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def _is_verbose_grad_norm(key: str) -> bool:
+    return key.startswith("train/grad_norms/") and not key.startswith("train/grad_norms/summary/")
 
 
 class MetricsSink:
@@ -194,10 +206,14 @@ class MetricsSink:
         scalars = {k: v for k, v in record.items() if isinstance(v, float)}
         self._jsonl.write(json.dumps({"step": step, **scalars}) + "\n")
         self._jsonl.flush()
-        print(
-            f"[step {step}] " + " ".join(f"{k}={v:.4g}" for k, v in scalars.items()),
-            flush=True,
-        )
+        # The console line drops the per-param grad norms — the full breakdown still rides to
+        # wandb + jsonl.
+        console = {k: v for k, v in scalars.items() if not _is_verbose_grad_norm(k)}
+        head = f"[step {step}]"
+        if "train/perf/eta_s" in console:  # train logs carry the paired timing; eval logs don't
+            elapsed, eta = console.pop("train/perf/elapsed_s"), console.pop("train/perf/eta_s")
+            head += f" {_fmt_duration(elapsed)}<{_fmt_duration(eta)}"
+        print(head + " " + " ".join(f"{k}={v:.4g}" for k, v in console.items()), flush=True)
         if self._wandb is not None:
             _log_wandb_safe(self._wandb, record, step, "log")
 
@@ -465,7 +481,7 @@ def run_decomposition_training(
         )
     )
     sink = MetricsSink.for_run(run, wandb_config, is_main)
-    window_t0 = time.time()
+    window_t0 = loop_t0 = time.time()
     last_logged = start_step
 
     for step in range(start_step, pd.steps):
@@ -490,6 +506,8 @@ def run_decomposition_training(
                     f"non-finite loss {loss_name!r} at step {now_step}: {record[loss_name]}"
                 )
             record["step_time_s"] = per_step
+            record["elapsed_s"] = time.time() - loop_t0
+            record["eta_s"] = (pd.steps - now_step) * per_step
             record["train/schedules/lr/components"] = float(jnp.asarray(sched_vu(now_step)))
             record["train/schedules/lr/ci_fn"] = float(jnp.asarray(sched_ci(now_step)))
             mem_stats = jax.local_devices()[0].memory_stats()
