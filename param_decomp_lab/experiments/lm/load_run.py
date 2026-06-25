@@ -71,6 +71,20 @@ class HarvestForward:
     output_probs: Float[Array, "B T vocab"]
 
 
+def _replicate_host_pytree[T](tree: T, mesh: jax.sharding.Mesh) -> T:
+    """Replicate an identical-on-every-host pytree without JAX's cross-host equality check.
+    `jax.device_put(host_array, P())` runs `assert_equal` (a `process_allgather(tiled=True)`)
+    that tiles the prefix's ~1 GB embedding to ~`process_count` GB and OOMs at dp>=64; the
+    prefix is the same cached weights on every host, so build it from the local copy."""
+    repl = NamedSharding(mesh, P())
+    return jax.tree.map(
+        lambda a: jax.make_array_from_callback(a.shape, repl, lambda _idx: a)
+        if eqx.is_array(a)
+        else a,
+        tree,
+    )
+
+
 def build_target(
     cfg: BuiltRun, mesh: jax.sharding.Mesh
 ) -> tuple[DecomposedModel, AnyPrefix, Callable[[Any, Any], jax.Array], int]:
@@ -105,9 +119,8 @@ def build_target(
                 load_decomposed_lm_from_hf(cfg.target.model_name, llama_cfg, sites), mesh
             )
             first_layer = first_decomposed_layer(lm.site_names)
-            prefix = jax.device_put(
-                load_prefix_from_hf(cfg.target.model_name, llama_cfg, first_layer),
-                NamedSharding(mesh, P()),
+            prefix = _replicate_host_pytree(
+                load_prefix_from_hf(cfg.target.model_name, llama_cfg, first_layer), mesh
             )
             return lm, prefix, prefix_residual, llama_cfg.vocab_size
         case _:
