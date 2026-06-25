@@ -172,14 +172,14 @@ def compute_jax_terms(f: dict[str, np.ndarray]) -> dict[str, float]:
         masks = {s: ci_lower[s] + (1.0 - ci_lower[s]) * stoch_u[s] for s in chunk}
         delta_masks = {s: stoch_delta[s] for s in chunk}
         routes = {site_name(i, k): jnp.asarray(f[f"route_chunk{i}_{k}"]) for k in MLP_KINDS}
-        pred = lm.masked_output(vu, resid, masks, delta_masks, routes, chunk, True)
+        pred = lm.masked_output(vu, resid, masks, delta_masks, routes, chunk, True, remat=False)
         stoch_total += float(kl_per_position(pred, clean))
     stoch = stoch_total / n_layers
 
     # ---- ppgd (FIXED sources) ----
     source = per_site("ppgd_source")  # {site: (1, T, C+1)}
     masks, delta_masks = source_masks(ci_lower, source, lm.site_names)
-    pred = lm.masked_output(vu, resid, masks, delta_masks, None, lm.site_names, True)
+    pred = lm.masked_output(vu, resid, masks, delta_masks, None, lm.site_names, True, remat=False)
     ppgd = float(kl_per_position(pred, clean))
 
     return {"faith": faith, "imp": imp, "stoch": stoch, "ppgd": ppgd}
@@ -249,7 +249,7 @@ def chunk_plan_static_gate_kl(f: dict[str, np.ndarray]) -> tuple[float, float]:
     masks = {s: ci_lower[s] + (1.0 - ci_lower[s]) * stoch_u[s] for s in live}
     delta_masks = {s: stoch_delta[s] for s in live}
 
-    gate_pred = lm.masked_output(vu, resid, masks, delta_masks, None, live, True)
+    gate_pred = lm.masked_output(vu, resid, masks, delta_masks, None, live, True, remat=False)
     ref_pred = _suffix_with_split_mlp(
         lm, vu, resid, live_layer, live_kinds, masks, delta_masks, n_layers
     )
