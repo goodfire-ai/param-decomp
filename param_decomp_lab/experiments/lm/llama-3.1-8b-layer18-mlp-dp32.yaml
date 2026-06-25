@@ -102,6 +102,7 @@ target:
     model_class: transformers.LlamaForCausalLM
     model_name: meta-llama/Llama-3.1-8B
   output_extract: logits
+  weights_dtype: bfloat16
 data:
   dataset_name: parquet
   data_files: /mnt/delicate-frog/artifacts/mechanisms/param-decomp/datasets/fineweb_llama_tok_2048/*.parquet
