@@ -266,11 +266,55 @@ class SmoothL0ImportanceMinimalityLossConfig(LossMetricConfig):
     gamma_anneal_end_frac: Probability = 1.0
 
 
-# The two importance-minimality penalties share the `coeff`/`beta` surface and the
+class FractionImportanceMinimalityLossConfig(LossMetricConfig):
+    """Fractional (q=1) imp-min penalty `phi(c) = c / (c + gamma)` on upper-leaky CI. Like
+    smooth-L0 but first-order in c, so `phi'(0) = 1/gamma > 0`: a nonzero kill-force at the
+    origin that drives small-but-positive CI to exactly 0 (via the hard floor), while still
+    redescending for clearly-on components. `gamma` annealed as in smooth-L0."""
+
+    type: Literal["FractionImportanceMinimalityLoss"] = "FractionImportanceMinimalityLoss"
+    gamma: PositiveFloat
+    beta: NonNegativeFloat
+    gamma_anneal_start_frac: Probability = 1.0
+    gamma_anneal_final_gamma: PositiveFloat | None = None
+    gamma_anneal_end_frac: Probability = 1.0
+
+
+class MCPImportanceMinimalityLossConfig(LossMetricConfig):
+    """Minimax-concave imp-min penalty: `phi(c) = (c/gamma)(2 - c/gamma)` up to the knee
+    `c = gamma`, flat (=1) above. `phi'(0) = 2/gamma > 0` (kills the tail), `phi' = 0` for
+    `c > gamma` (zero bias on clearly-on components), bounded throughout."""
+
+    type: Literal["MCPImportanceMinimalityLoss"] = "MCPImportanceMinimalityLoss"
+    gamma: PositiveFloat
+    beta: NonNegativeFloat
+    gamma_anneal_start_frac: Probability = 1.0
+    gamma_anneal_final_gamma: PositiveFloat | None = None
+    gamma_anneal_end_frac: Probability = 1.0
+
+
+class ArctanImportanceMinimalityLossConfig(LossMetricConfig):
+    """Arctan imp-min penalty `phi(c) = arctan(c/gamma)/(pi/2)`. `phi'(0) = 2/(pi*gamma) > 0`
+    (a gentler kill-force than fraction/MCP), smooth, redescending. `gamma` annealed as in
+    smooth-L0."""
+
+    type: Literal["ArctanImportanceMinimalityLoss"] = "ArctanImportanceMinimalityLoss"
+    gamma: PositiveFloat
+    beta: NonNegativeFloat
+    gamma_anneal_start_frac: Probability = 1.0
+    gamma_anneal_final_gamma: PositiveFloat | None = None
+    gamma_anneal_end_frac: Probability = 1.0
+
+
+# The importance-minimality penalties share the `coeff`/`beta` surface and the
 # `lp + beta * entropy` aggregation; they differ only in the per-value penalty shape and
-# its annealed parameter (`p` vs `gamma`). The trainer's imp-min slot accepts either.
+# its annealed parameter. The trainer's imp-min slot accepts any of them.
 AnyImportanceMinimalityLossConfig = (
-    ImportanceMinimalityLossConfig | SmoothL0ImportanceMinimalityLossConfig
+    ImportanceMinimalityLossConfig
+    | SmoothL0ImportanceMinimalityLossConfig
+    | FractionImportanceMinimalityLossConfig
+    | MCPImportanceMinimalityLossConfig
+    | ArctanImportanceMinimalityLossConfig
 )
 
 
@@ -669,6 +713,9 @@ AnyLossMetricConfig = Annotated[
     | PGDReconLossConfig
     | PGDReconSubsetLossConfig
     | SmoothL0ImportanceMinimalityLossConfig
+    | FractionImportanceMinimalityLossConfig
+    | MCPImportanceMinimalityLossConfig
+    | ArctanImportanceMinimalityLossConfig
     | StochasticHiddenActsReconLossConfig
     | StochasticReconLayerwiseLossConfig
     | StochasticReconLossConfig
