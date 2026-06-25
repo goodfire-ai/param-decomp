@@ -119,7 +119,9 @@ def make_eval_step(
         delta_masks: dict[str, Array],
     ) -> Array:  # fmt: skip
         return batch_sharded(
-            model.masked_output(components_bf16, tokens, masks, delta_masks, None, site_names, True)
+            model.masked_output(
+                components_bf16, tokens, masks, delta_masks, None, site_names, True, remat=False
+            )
         )
 
     @eqx.filter_jit
