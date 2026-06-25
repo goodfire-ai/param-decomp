@@ -147,6 +147,9 @@ def make_train_step(
             upper={site: batch_sharded(v) for site, v in ci.upper.items()},
         )
 
+    # The adversary ascents (warmup + fresh-PGD) backprop only to the SOURCES — params and
+    # CI are detached — so there are no param activations worth recomputing; ascents run the
+    # un-rematted forward.
     @jaxtyped(typechecker=beartype)
     def masked_forward(
         model: DecomposedModel,
@@ -160,18 +163,45 @@ def make_train_step(
     ) -> Any:
         return batch_sharded(
             model.masked_output(
-                components_bf16, batch, masks, delta_masks, routes, live_sites, has_delta
+                components_bf16,
+                batch,
+                masks,
+                delta_masks,
+                routes,
+                live_sites,
+                has_delta,
+                remat=False,
             )
         )
 
-    # Recomputing each masked forward in backward bounds activation memory to one
-    # forward at a time (the torch 2-pool streaming profile) at the cost of the
-    # recompute; with few recon forwards and memory headroom, remat off is faster.
-    checkpointed_masked_forward = (
-        jax.checkpoint(masked_forward, static_argnums=(6, 7))
-        if remat_recon_forwards
-        else masked_forward
-    )
+    # The main backward path: `remat_recon_forwards` gates gradient-checkpointing inside the
+    # target's `masked_output`, at the target's natural granularity (a deep target rematerializes
+    # per-layer, recomputing one layer at a time instead of storing every layer's activations —
+    # the dominant step-memory term at depth). Remat off stores all activations: faster when
+    # memory allows.
+    @jaxtyped(typechecker=beartype)
+    def checkpointed_masked_forward(
+        model: DecomposedModel,
+        components_bf16: DecompVU,
+        batch: Any,
+        masks: dict[str, Float[Array, "*leading _"]],
+        delta_masks: dict[str, Float[Array, "..."]],
+        routes: dict[str, Bool[Array, "*leading"]] | None,
+        live_sites: tuple[str, ...],
+        has_delta: bool,
+    ) -> Any:
+        return batch_sharded(
+            model.masked_output(
+                components_bf16,
+                batch,
+                masks,
+                delta_masks,
+                routes,
+                live_sites,
+                has_delta,
+                remat=remat_recon_forwards,
+            )
+        )
 
     # The CI-fn forward's activations (4-block transformer × n_chunks) are stored for the
     # backward unless rematerialized. They scale with batch, so recomputing the CI fn in the
