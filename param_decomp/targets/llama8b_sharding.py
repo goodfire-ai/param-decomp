@@ -47,7 +47,7 @@ from param_decomp.components import DecompVU, SiteSpec, init_decomp_vu
 from param_decomp.configs import BSCScope, SCScope
 from param_decomp.sharding import dp_mesh, place_via_shardings
 from param_decomp.sharding import shard_batch as _generic_shard_batch
-from param_decomp.targets.llama8b import LlamaDecomposedModel
+from param_decomp.targets.llama8b import LlamaDecomposedModel, parse_site_name
 
 __all__ = [
     "dp_mesh",
@@ -65,12 +65,19 @@ def place_target(tgt: LlamaDecomposedModel, mesh: Mesh) -> LlamaDecomposedModel:
     return place_via_shardings(tgt, tgt.shardings(mesh))
 
 
+def _replicate_u_dout_sites(sites: tuple[SiteSpec, ...]) -> frozenset[str]:
+    """Attention q/k/v sites, whose U d_out is the head dim: it can't FSDP on `dp` (the head
+    layout re-shards to `tp` at the attention seam, and `tp` is taken by C), so its d_out
+    stays replicated. o_proj/MLP d_out are plain features and FSDP normally."""
+    return frozenset(s.name for s in sites if parse_site_name(s.name)[1] in ("q", "k", "v"))
+
+
 def init_decomp_vu_placed(sites: tuple[SiteSpec, ...], key: PRNGKeyArray, mesh: Mesh) -> DecompVU:
-    """Seeded per-site V/U init placed by `DecompVU.shardings` (V `(d_in, C)` shards axis 1,
-    U `(C, d_out)` shards axis 0). The shardings are computed on the abstract model and the
-    init runs under jit with `out_shardings`."""
+    """Seeded per-site V/U init placed by `DecompVU.shardings` (uniform FSDP(`dp`)×TP(`tp`);
+    q/k/v U d_out replicated). Shardings computed on the abstract model, init under jit."""
     init = partial(init_decomp_vu, sites)
-    out_shardings = eqx.filter_eval_shape(init, key).shardings(mesh)
+    replicate_u_dout = _replicate_u_dout_sites(sites)
+    out_shardings = eqx.filter_eval_shape(init, key).shardings(mesh, replicate_u_dout)
     return jax.jit(init, out_shardings=out_shardings)(key)
 
 

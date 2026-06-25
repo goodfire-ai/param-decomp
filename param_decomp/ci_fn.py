@@ -138,43 +138,34 @@ class CIBlock(eqx.Module):
     eps: float = eqx.field(static=True)
 
     def shardings(self, mesh: Mesh) -> "CIBlock":
-        """2-D `(dp, tp)` placement. The leading `n_chunks` axis (axis 0) is CHUNK-parallel
-        on `dp`; the within-chunk Megatron dims are tensor-parallel on `tp`. All arrays are
-        stored `[n_chunks, ...]`.
+        """Uniform FSDP(`dp`)×TP(`tp`); the leading `n_chunks` axis (axis 0) is UNSHARDED — a
+        plain vmap axis, not a sharding dim (the mesh-simplification: every param shards the
+        same way regardless of the chunk structure). Each weight keeps its Megatron dim on
+        `tp` and FSDP's the other matmul dim on `dp`:
 
-        Attention col/row-parallel: qkv (`[nc, out, in]`) shard their OUTPUT (head) dim
-        (axis 1) on `tp` so each device owns a head slab; the out-proj shards its INPUT dim
-        (axis 2) on `tp`, so the per-head attention output flows sharded and a single
-        all-reduce closes it.
+        - qkv (`[nc, head_out, d_model_in]`): head on `tp` (col-parallel), d_model FSDP on `dp`.
+        - out-proj (`[nc, d_model_out, head_in]`): head on `tp` (row-parallel), d_model FSDP on `dp`.
+        - w1 up-proj (`[nc, d_model_in, mlp_hidden_out]`): mlp_hidden on `tp`, d_model FSDP on `dp`.
+        - w2 down-proj (`[nc, mlp_hidden_in, d_model_out]`): mlp_hidden on `tp`, d_model FSDP on `dp`.
 
-        MLP row-parallel: up-proj `w1 [nc, d_model, mlp_hidden]` shards its OUTPUT
-        (`mlp_hidden`, axis 2) on `tp`; down-proj `w2 [nc, mlp_hidden, d_model]` shards its
-        INPUT (`mlp_hidden`, axis 1) on `tp`. The hidden flows sharded; no intermediate
-        gather. Biases chunk-shard on `dp`, `tp`-replicated (GSPMD broadcasts them over the
-        tp-sharded activation)."""
-        tp_axis1 = NamedSharding(mesh, P("dp", "tp", None))
-        tp_axis2 = NamedSharding(mesh, P("dp", None, "tp"))
-        chunk_only = NamedSharding(mesh, P("dp", None))
-        for w in (self.wq, self.wk, self.wv, self.wo, self.w1, self.w2):
-            assert_divisible(w.shape[0], mesh, "dp", "CIBlock n_chunks")
+        Biases replicate (GSPMD broadcasts over the tp-sharded activation). The FSDP dim is
+        all-gathered per matmul, bounded by `/tp` (TP keeps its half)."""
+        col = NamedSharding(mesh, P(None, "tp", "dp"))  # axis1 (out) on tp, axis2 (in) FSDP on dp
+        row = NamedSharding(mesh, P(None, "dp", "tp"))  # axis1 (out) FSDP on dp, axis2 (in) on tp
+        repl = NamedSharding(mesh, P())
         for w in (self.wq, self.wk, self.wv):
-            assert_divisible(w.shape[1], mesh, "tp", "CIBlock attn qkv out (head dim)")
-        assert_divisible(self.wo.shape[2], mesh, "tp", "CIBlock attn out-proj in (head dim)")
-        assert_divisible(self.w1.shape[2], mesh, "tp", "CIBlock mlp up-proj out (mlp_hidden)")
-        assert_divisible(self.w2.shape[1], mesh, "tp", "CIBlock mlp down-proj in (mlp_hidden)")
+            assert_divisible(w.shape[1], mesh, "tp", "CIBlock qkv out (head dim)")
+            assert_divisible(w.shape[2], mesh, "dp", "CIBlock qkv in (d_model)")
+        assert_divisible(self.wo.shape[1], mesh, "dp", "CIBlock out-proj out (d_model)")
+        assert_divisible(self.wo.shape[2], mesh, "tp", "CIBlock out-proj in (head dim)")
+        assert_divisible(self.w1.shape[1], mesh, "dp", "CIBlock w1 in (d_model)")
+        assert_divisible(self.w1.shape[2], mesh, "tp", "CIBlock w1 out (mlp_hidden)")
+        assert_divisible(self.w2.shape[1], mesh, "tp", "CIBlock w2 in (mlp_hidden)")
+        assert_divisible(self.w2.shape[2], mesh, "dp", "CIBlock w2 out (d_model)")
         return eqx.tree_at(
             lambda b: (b.wq, b.wk, b.wv, b.wo, b.w1, b.b1, b.w2, b.b2),
             self,
-            (
-                tp_axis1,
-                tp_axis1,
-                tp_axis1,
-                tp_axis2,
-                tp_axis2,
-                chunk_only,
-                tp_axis1,
-                chunk_only,
-            ),
+            (col, col, col, row, row, repl, col, repl),
         )
 
     def __call__(self, x: Float[Array, "b t d"], inv_freq: Array) -> Array:
@@ -259,21 +250,21 @@ class ChunkTransformer(eqx.Module):
     out_b: Float[Array, " c_chunk"]
 
     def shardings(self, mesh: Mesh) -> "ChunkTransformer":
-        """2-D `(dp, tp)` placement: the leading `n_chunks` axis (axis 0) is CHUNK-parallel
-        on `dp`; the within-chunk hidden dims are tensor-parallel on `tp`. `in_proj_w
-        [nc, total_d_in, d_model]` shards `d_model` (axis 2) on `tp`; `out_w
-        [nc, d_model, c_chunk]` shards `c_chunk` (axis 2) on `tp`; blocks delegate to
-        `CIBlock.shardings`; biases chunk-shard on `dp` (`tp`-replicated, GSPMD broadcasts)."""
-        tp_last = NamedSharding(mesh, P("dp", None, "tp"))
-        chunk_only = NamedSharding(mesh, P("dp", None))
-        for w in (self.in_proj_w, self.out_w):
-            assert_divisible(w.shape[0], mesh, "dp", "ChunkTransformer n_chunks")
+        """Uniform FSDP(`dp`)×TP(`tp`); leading `n_chunks` axis (axis 0) UNSHARDED. `in_proj_w
+        [nc, total_d_in, d_model]`: d_model on `tp` (col-parallel out), total_d_in FSDP on `dp`.
+        `out_w [nc, d_model, c_chunk]`: c_chunk on `tp` (col-parallel out — the C-on-`tp` that
+        aligns with V/U and the mask), d_model FSDP on `dp`. Blocks delegate to
+        `CIBlock.shardings`; biases replicate (GSPMD broadcasts over the tp-sharded output)."""
+        row = NamedSharding(mesh, P(None, "dp", "tp"))  # axis1 (in) FSDP on dp, axis2 (out) on tp
+        repl = NamedSharding(mesh, P())
+        assert_divisible(self.in_proj_w.shape[1], mesh, "dp", "ChunkTransformer in_proj_w total_d_in")
         assert_divisible(self.in_proj_w.shape[2], mesh, "tp", "ChunkTransformer in_proj_w d_model")
+        assert_divisible(self.out_w.shape[1], mesh, "dp", "ChunkTransformer out_w d_model")
         assert_divisible(self.out_w.shape[2], mesh, "tp", "ChunkTransformer out_w c_chunk")
         return eqx.tree_at(
             lambda ct: (ct.in_proj_w, ct.in_proj_b, ct.blocks, ct.out_w, ct.out_b),
             self,
-            (tp_last, chunk_only, [b.shardings(mesh) for b in self.blocks], tp_last, chunk_only),
+            (row, repl, [b.shardings(mesh) for b in self.blocks], row, repl),
         )
 
     def __call__(self, x: Float[Array, "*leading total_d_in"], inv_freq: Array) -> Array:
