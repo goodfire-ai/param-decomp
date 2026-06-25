@@ -130,14 +130,14 @@ def test_clean_path_and_masked_identity():
     assert clean.shape == (b, cfg.n_features)
 
     # SPEC S2: live=() is the exact frozen path.
-    none_masked = lm.masked_output(vu, resid, {}, {}, None, (), True)
+    none_masked = lm.masked_output(vu, resid, {}, {}, None, (), True, remat=False)
     assert jnp.array_equal(clean, none_masked), "live=() must be the exact frozen path"
 
     # All-live, masks=1, delta=1 reconstructs the frozen path up to decomposition rounding.
     names = lm.site_names
     ones_masks = {s.name: jnp.ones((b, s.C)) for s in lm.sites}
     ones_delta = {s: jnp.ones((b,)) for s in names}
-    full = lm.masked_output(vu, resid, ones_masks, ones_delta, None, names, True)
+    full = lm.masked_output(vu, resid, ones_masks, ones_delta, None, names, True, remat=False)
     assert jnp.allclose(clean, full, atol=1e-4), "mask=1 identity drifted"
 
     # site_inputs: mlp_in reads the residual entering its layer, mlp_out the post-act hidden.
@@ -170,7 +170,7 @@ def test_zero_masking_one_site_changes_output():
     C = {s.name: s.C for s in sites}["layers.0.mlp_out"]
     ablated = lm.masked_output(
         vu, resid, {"layers.0.mlp_out": jnp.zeros((b, C))},
-        {"layers.0.mlp_out": jnp.zeros((b,))}, None, ("layers.0.mlp_out",), True,
+        {"layers.0.mlp_out": jnp.zeros((b,))}, None, ("layers.0.mlp_out",), True, remat=False,
     )  # fmt: skip
     assert not jnp.allclose(clean, ablated, atol=1e-5), "ablating mlp_out did nothing"
 
@@ -484,12 +484,12 @@ def test_three_layer_clean_and_masked_forward():
 
     names = lm.site_names
     assert len(names) == 6  # mlp_in + mlp_out per layer
-    none_masked = lm.masked_output(vu, resid, {}, {}, None, (), True)
+    none_masked = lm.masked_output(vu, resid, {}, {}, None, (), True, remat=False)
     assert jnp.array_equal(clean, none_masked)
 
     ones_masks = {s.name: jnp.ones((b, s.C)) for s in lm.sites}
     ones_delta = {s: jnp.ones((b,)) for s in names}
-    full = lm.masked_output(vu, resid, ones_masks, ones_delta, None, names, True)
+    full = lm.masked_output(vu, resid, ones_masks, ones_delta, None, names, True, remat=False)
     assert jnp.allclose(clean, full, atol=1e-4)
 
     site_in = site_inputs(target, resid)

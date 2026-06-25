@@ -97,14 +97,14 @@ def test_clean_path_and_masked_identity():
     assert jnp.all(clean >= 0.0), "TMS output is post-ReLU, non-negative"
 
     # SPEC S2: live=() is the exact frozen path.
-    none_masked = lm.masked_output(vu, x, {}, {}, None, (), True)
+    none_masked = lm.masked_output(vu, x, {}, {}, None, (), True, remat=False)
     assert jnp.array_equal(clean, none_masked), "live=() must be the exact frozen path"
 
     # All-live, masks=1, delta=1 reconstructs the frozen path up to decomposition rounding.
     names = lm.site_names
     ones_masks = {s.name: jnp.ones((b, s.C)) for s in lm.sites}
     ones_delta = {s: jnp.ones((b,)) for s in names}
-    full = lm.masked_output(vu, x, ones_masks, ones_delta, None, names, True)
+    full = lm.masked_output(vu, x, ones_masks, ones_delta, None, names, True, remat=False)
     assert jnp.allclose(clean, full, atol=1e-4), "mask=1 identity drifted"
 
     # site_inputs: linear1 reads x, linear2 reads frozen linear1(x).
@@ -135,7 +135,7 @@ def test_zero_masking_one_site_changes_output():
     C = {s.name: s.C for s in sites}["linear1"]
     ablated = lm.masked_output(
         vu, x, {"linear1": jnp.zeros((b, C))}, {"linear1": jnp.zeros((b,))},
-        None, ("linear1",), True,
+        None, ("linear1",), True, remat=False,
     )  # fmt: skip
     assert not jnp.allclose(clean, ablated, atol=1e-5), "ablating linear1 did nothing"
 
@@ -421,7 +421,7 @@ def test_deeper_clean_and_masked_forward_with_identity_hidden_layers():
     assert jnp.allclose(clean, ref, atol=1e-5), "identity hidden layers changed the frozen path"
 
     # SPEC S2: live=() is the exact frozen path.
-    none_masked = lm.masked_output(vu, x, {}, {}, None, (), True)
+    none_masked = lm.masked_output(vu, x, {}, {}, None, (), True, remat=False)
     assert jnp.array_equal(clean, none_masked)
 
     # site_inputs threads through the hidden layers: each hidden-layer site reads the chain
