@@ -30,6 +30,7 @@ from safetensors import safe_open
 
 from param_decomp.components import DecompVU, SiteC, SiteSpec, site_out
 from param_decomp.losses import kl_per_position
+from param_decomp.sharding import assert_divisible
 from vendored_jax.llama import (
     LlamaConfig,
     apply_rope,
@@ -154,6 +155,21 @@ class FrozenAttn(eqx.Module):
     head_dim: int = eqx.field(static=True)
     n_rep: int = eqx.field(static=True)
 
+    def shardings(self, mesh: "Mesh") -> "FrozenAttn":
+        """Stacked (leading `n_layer`, UNSHARDED — the scan axis) FSDP on `dp`: the `d` dim
+        shards on `dp` (gathered per layer in the scan); the HEAD dim stays REPLICATED (NOT
+        TP'd). `core` runs batch-parallel attention (q/k/v constrained to `P("dp",...)`,
+        heads replicated — that identical spec is what cuDNN's partitioner requires), so the
+        projections must come out heads-replicated; TP'ing the head dim makes q (n_head) and
+        k/v (n_kv_head) shard to different per-rank head counts → cuDNN rejects them as
+        not-same-sharding. Attention weights are small, so dp-only sharding is plenty."""
+        in_dp = NamedSharding(mesh, P(None, None, "dp"))  # qkv [nc, head(repl), d on dp]
+        out_dp = NamedSharding(mesh, P(None, "dp", None))  # wo [nc, d on dp, head(repl)]
+        for w in (self.wq, self.wk, self.wv):
+            assert_divisible(w.shape[2], mesh, "dp", "FrozenAttn qkv in (d)")
+        assert_divisible(self.wo.shape[1], mesh, "dp", "FrozenAttn out-proj out (d)")
+        return eqx.tree_at(lambda a: (a.wq, a.wk, a.wv, a.wo), self, (in_dp, in_dp, in_dp, out_dp))
+
     def core(
         self,
         q_flat: Float[Array, "b t qd"],
@@ -211,6 +227,23 @@ class LlamaLayer(eqx.Module):
     Wg: Float[Array, "di d"]
     Wu: Float[Array, "di d"]
     Wd: Float[Array, "d di"]
+
+    def shardings(self, mesh: "Mesh") -> "LlamaLayer":
+        """Stacked FSDP on `dp` (no TP): every MLP weight shards its `d`-dim (4096) on `dp`,
+        the intermediate (14336) stays replicated; gathered per layer in the scan. (TP on the
+        target would Megatron the intermediate but add reshards through the replicated
+        residual for a frozen 16 GB model — dp-only `/dp` is ample: 16 GB → 0.5 GB at dp=32.)
+        Norms replicate (tiny); attn delegates to `FrozenAttn.shardings`."""
+        in_dp = NamedSharding(mesh, P(None, None, "dp"))  # Wg/Wu [nc, di(repl), d on dp]
+        out_dp = NamedSharding(mesh, P(None, "dp", None))  # Wd [nc, d on dp, di(repl)]
+        repl = NamedSharding(mesh, P())
+        assert_divisible(self.Wg.shape[2], mesh, "dp", "Wg in (d)")
+        assert_divisible(self.Wd.shape[1], mesh, "dp", "Wd out (d)")
+        return eqx.tree_at(
+            lambda layer: (layer.ln1, layer.ln2, layer.attn, layer.Wg, layer.Wu, layer.Wd),
+            self,
+            (repl, repl, self.attn.shardings(mesh), in_dp, in_dp, out_dp),
+        )
 
 
 def _frozen_site_weight(layer: LlamaLayer, kind: str) -> Array:
@@ -372,11 +405,19 @@ class LlamaDecomposedModel(eqx.Module):
         return [jax.tree.map(lambda a, idx=i: a[idx], self.stacked) for i in range(self.n_layer)]
 
     def shardings(self, mesh: "Mesh") -> "LlamaDecomposedModel":
-        """Replicate every frozen leaf on the `dp` mesh (the FSDP-style memory story: the
-        ~3.6B bf16 target is small vs activations, so replicating avoids all-gathering the
-        target each forward)."""
+        """FSDP(`dp`)×TP(`tp`) the per-layer weights (`stacked.shardings` — `d` on `dp`,
+        head/intermediate on `tp`; the ~14 GB layer bulk shards `/(dp·tp)`, gathered per layer
+        inside the scan). embed / lm_head / norm / inv_freq REPLICATE — the ~2 GB embed+head
+        is small and vocab-parallel logits/lookup aren't worth the complexity. (The old
+        all-replicate justification — "the target is small vs activations" — is stale: at the
+        full 32-layer model the replicated target + its backward/remat copies dominate the
+        step's peak, which is what this shards away.)"""
         repl = NamedSharding(mesh, P())
-        return jax.tree.map(lambda _a: repl, self)
+        return eqx.tree_at(
+            lambda m: (m.embed, m.norm, m.lm_head, m.inv_freq, m.stacked),
+            self,
+            (repl, repl, repl, repl, self.stacked.shardings(mesh)),
+        )
 
     @staticmethod
     def recon_loss_fn(masked_output: Array, clean_output: Array) -> Array:
