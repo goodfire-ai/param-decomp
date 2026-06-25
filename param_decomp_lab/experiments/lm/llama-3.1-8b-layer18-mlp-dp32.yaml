@@ -14,7 +14,7 @@ pd:
   - module_pattern: model.layers.18.mlp.up_proj
     C: 8000
   - module_pattern: model.layers.18.mlp.down_proj
-    C: 10000
+    C: 10016 # dp32 requires C divisible by 32 (FSDP shards C over the mesh); 10016=313*32
   components_optimizer:
     lr_schedule:
       start_val: 5.0e-05
