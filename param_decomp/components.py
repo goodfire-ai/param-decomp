@@ -48,21 +48,17 @@ class DecompVU(eqx.Module):
         return self.vu[name]
 
     def shardings(self, mesh: "Mesh") -> "DecompVU":
-        """V FSDP-on-`dp` × Megatron-on-`tp`; U Megatron-on-`tp` only. V `(d_in, C)` shards
-        `d_in` (axis 0) on `dp` and C (axis 1) on `tp` (storage `/(dp·tp)`, `d_in` gathered
-        per-site for compute, ZeRO-3). U `(C, d_out)` shards only C (axis 0) on `tp`, with
-        `d_out` REPLICATED — deliberately NOT FSDP'd: `d_out` is the q/k/v site outputs'
-        head dim, and sharding it on `dp` makes GSPMD resolve the attention q/k/v shardings
-        inconsistently (v keeps `d_out` on `dp`, q/k gather it), which cuDNN flash-attn's
-        custom partitioner rejects ("Query, key and value should have same sharding").
-        Replicated `d_out` keeps all of q/k/v batch-on-`dp` / `d_out`-replicated → consistent.
-        C stays on `tp` so it aligns with the CI fn's output C (no mask reshard). Asserts
-        d_in tiles `dp` and C tiles `tp`."""
-        shard_V = NamedSharding(mesh, P("dp", "tp"))
+        """V/U Megatron-on-`tp` ONLY (C-sharded): V `(d_in, C)` shards C (axis 1) on `tp`,
+        d_in replicated; U `(C, d_out)` shards C (axis 0) on `tp`, d_out replicated. C on `tp`
+        aligns with the CI fn's output C (no mask reshard). NOT FSDP'd on `dp`: sharding
+        `d_in` on `dp` makes the masked forward's weight-delta (`%sub` -> transpose) reshard
+        `{[2,1,8]}->{[1,8,2]T(1,0)}` (a device-axis transpose), which GSPMD resolves by
+        replicate-then-repartition -> OOM. d_out-on-dp likewise breaks the cuDNN GQA q/k/v
+        layout. So V/U live only on `tp` (/tp per device, dp-replicated). Asserts C tiles `tp`."""
+        shard_V = NamedSharding(mesh, P(None, "tp"))
         shard_U = NamedSharding(mesh, P("tp", None))
         placed: dict[str, tuple[NamedSharding, NamedSharding]] = {}
         for name, (V, _U) in self.vu.items():
-            assert_divisible(V.shape[0], mesh, "dp", f"DecompVU[{name}].V.d_in")
             assert_divisible(V.shape[1], mesh, "tp", f"DecompVU[{name}].V.C")
             placed[name] = (shard_V, shard_U)
         return DecompVU(vu=placed)  # pyright: ignore[reportArgumentType]
