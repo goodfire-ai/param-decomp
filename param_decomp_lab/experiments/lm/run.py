@@ -129,8 +129,10 @@ def train(
     data = built.data
     assert isinstance(data, DataConfig), "train() is the LM (parquet) data path"
     n_proc = jax.process_count()
-    ndev = mesh.devices.size
-    assert data.global_batch % ndev == 0, (data.global_batch, ndev)
+    # The batch shards over the dp AXIS only (tp positions get batch-replicas), so it must
+    # tile dp, NOT the full device count. At tp=1 dp-axis == ndev (the old invariant).
+    dp_axis = mesh.shape["dp"]
+    assert data.global_batch % dp_axis == 0, (data.global_batch, dp_axis)
     is_main = jax.process_index() == 0
 
     key = random.PRNGKey(built.pd.seed)
@@ -138,9 +140,11 @@ def train(
 
     schedule = BatchSchedule(scan_shards(data.dir), data.global_batch, built.pd.seed)
     server = ShardServer(schedule, data.seq_len, jax.process_index(), n_proc)
-    assert server.per_process % jax.local_device_count() == 0, (
-        server.per_process, jax.local_device_count(),
-    )  # fmt: skip
+    # Each process (node) owns local_device_count // tp dp-positions; its per-process batch
+    # must split across those (tp devices are batch-replicas). At tp=1 this is the old
+    # `% local_device_count` invariant.
+    local_dp = jax.local_device_count() // mesh.shape["tp"]
+    assert server.per_process % local_dp == 0, (server.per_process, local_dp)
 
     def sample_batch(step: int) -> jax.Array:
         return _global_token_batch(server.local_batch(step), mesh, data.global_batch)
@@ -193,9 +197,8 @@ def _make_lm_eval_fn(
     assert isinstance(data, DataConfig)
     eval_schedule = BatchSchedule(scan_shards(data.dir), eval.batch_size, pd.seed + 1)
     eval_server = ShardServer(eval_schedule, data.seq_len, jax.process_index(), n_proc)
-    assert eval_server.per_process % jax.local_device_count() == 0, (
-        eval_server.per_process, jax.local_device_count(),
-    )  # fmt: skip
+    local_dp = jax.local_device_count() // mesh.shape["tp"]
+    assert eval_server.per_process % local_dp == 0, (eval_server.per_process, local_dp)
     eval_step_fn = make_eval_step(
         lm,
         eval.rounding_threshold,

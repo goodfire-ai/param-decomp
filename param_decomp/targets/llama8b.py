@@ -35,7 +35,6 @@ from vendored_jax.llama import (
     apply_rope,
     causal_sdpa,
     llama3_inv_freq,
-    repeat_kv,
     rms_norm,
     rope_cos_sin,
 )
@@ -173,22 +172,24 @@ class FrozenAttn(eqx.Module):
         v = v_flat.reshape(b, t, self.n_kv_head, self.head_dim).transpose(0, 2, 1, 3)
         cos, sin = rope_cos_sin(inv_freq, t, q_flat.dtype)
         q, k = apply_rope(q, k, cos, sin)
-        k = repeat_kv(k, self.n_rep)
-        v = repeat_kv(v, self.n_rep)
+        # Native GQA: do NOT repeat_kv — `dot_product_attention` handles the q-heads:kv-heads
+        # grouping internally. Repeating k/v to n_head and THEN sharding makes the SPMD
+        # partitioner derive the repeated-k/v layout from the small n_kv_head source,
+        # inconsistent with q -> cuDNN "Query, key and value should have same sharding" (forward
+        # AND its rematerialized backward). Real GQA keeps q (n_head) and k/v (n_kv_head) as
+        # independent head-parallel tensors with the SAME spec (different head COUNTS is fine).
         # cuDNN flash attention's custom partitioner requires q/k/v IDENTICALLY sharded.
         # On the 2-D (dp, tp) mesh, pin all three head-parallel: batch on `dp`, HEADS on `tp`
         # (`P("dp","tp",None,None)` for `[b, heads, t, hd]`). Heads are independent, so this is
-        # clean tensor-parallel attention, and the identical layout is exactly what cuDNN
-        # demands. It MUST come after `repeat_kv` — k/v are now expanded to `n_head` (matching
-        # q), so all three shard the same 64 heads on `tp`; constraining the raw `n_kv_head`
-        # k/v would give a layout inconsistent with q. The q/k/v projection outputs are
+        # clean tensor-parallel attention, and the identical spec is exactly what cuDNN
+        # demands (n_head % tp == 0 and n_kv_head % tp == 0). The q/k/v projection outputs are
         # `d_out`-replicated (U = `P("tp",None)`); this constraint does the replicated->head-
         # on-tp reshard right here. Guarded so it's a no-op off-mesh (CPU tests / single
         # device); `run.py` sets the global mesh. At `tp=1` heads land on a size-1 axis =
         # replicated (the old 1-D behavior). Validated on GPU: 1-D was job 108953; the 2-D
         # head-parallel form is the fix for the `dp/tp` mesh's "same sharding" partitioner error.
         if not jax.sharding.get_abstract_mesh().empty:
-            qkv_spec = jax.sharding.PartitionSpec("dp", "tp", None, None)
+            qkv_spec = jax.sharding.PartitionSpec("dp", None, None, None)  # batch-parallel: q/k/v IDENTICAL spec -> cuDNN happy; flash = no score materialization
             q, k, v = (jax.lax.with_sharding_constraint(a, qkv_spec) for a in (q, k, v))
         return causal_sdpa(q, k, v).transpose(0, 2, 1, 3).reshape(b, t, self.n_head * self.head_dim)
 
@@ -346,7 +347,11 @@ class LlamaDecomposedModel(eqx.Module):
     `sites` / `leading_axes` are static config."""
 
     embed: Float[Array, "vocab d"]
-    layers: list[LlamaLayer]
+    stacked: LlamaLayer  # the per-layer weights stacked on a leading layer axis (the scan
+    # `xs`). Stored pre-stacked so `_stack_layers` is NOT recomputed inside each forward — XLA
+    # re-stacked the full ~16 GB target every recon/faith/PGD forward AND in the rematerialized
+    # backward (~10×, ~160 GB OOM at 32L). As a model field it is a saved input: 1 copy.
+    n_layer: int = eqx.field(static=True)
     norm: Float[Array, " d"]
     lm_head: Float[Array, "vocab d"]
     inv_freq: Float[Array, " hd2"]
@@ -357,6 +362,12 @@ class LlamaDecomposedModel(eqx.Module):
     @property
     def site_names(self) -> tuple[str, ...]:
         return tuple(s.name for s in self.sites)
+
+    @property
+    def layers(self) -> list[LlamaLayer]:
+        """Per-layer view of `stacked` (slices the leading layer axis). For non-hot
+        consumers (attn-patterns recipe, equivalence harness); the forwards use `stacked`."""
+        return [jax.tree.map(lambda a, idx=i: a[idx], self.stacked) for i in range(self.n_layer)]
 
     def shardings(self, mesh: "Mesh") -> "LlamaDecomposedModel":
         """Replicate every frozen leaf on the `dp` mesh (the FSDP-style memory story: the
@@ -383,7 +394,7 @@ class LlamaDecomposedModel(eqx.Module):
             x = x + _clean_mlp_out(layer, rms_norm(x, layer.ln2, self.eps))
             return x, None
 
-        x, _ = jax.lax.scan(block, self.embed_tokens(inputs), _stack_layers(self.layers))
+        x, _ = jax.lax.scan(block, self.embed_tokens(inputs), self.stacked)
         x = rms_norm(x, self.norm, self.eps)
         return x @ self.lm_head.T
 
@@ -404,7 +415,8 @@ class LlamaDecomposedModel(eqx.Module):
         last = max(_tap_layer(key) for key in wanted)
         taps: dict[str, Array] = {}
         x = self.embed_tokens(inputs)
-        for layer, block in enumerate(self.layers):
+        for layer in range(self.n_layer):
+            block = jax.tree.map(lambda a, l=layer: a[l], self.stacked)
             if f"resid.{layer}" in wanted_set:
                 taps[f"resid.{layer}"] = x
             attn = block.attn
@@ -449,7 +461,7 @@ class LlamaDecomposedModel(eqx.Module):
         resid = self.embed_tokens(inputs)
         leading = resid.shape[:-1]
         per_kind = _stack_per_kind_masked_inputs(
-            vu, len(self.layers), leading, masks, delta_masks, routes, live_set, has_delta
+            vu, self.n_layer, leading, masks, delta_masks, routes, live_set, has_delta
         )
         decomposed_kinds = frozenset(per_kind)
         want_collect = collect is not None
@@ -499,7 +511,7 @@ class LlamaDecomposedModel(eqx.Module):
             )  # fmt: skip
             return x, collected
 
-        x, ys = jax.lax.scan(block, resid, (_stack_layers(self.layers), per_kind))
+        x, ys = jax.lax.scan(block, resid, (self.stacked, per_kind))
         x = rms_norm(x, self.norm, self.eps)
         logits = x @ self.lm_head.T
         if collect is not None:
@@ -545,7 +557,7 @@ class LlamaDecomposedModel(eqx.Module):
         out: dict[str, Array] = {}
         for spec in self.sites:
             layer, kind = parse_site_name(spec.name)
-            W = _frozen_site_weight(self.layers[layer], kind)
+            W = _frozen_site_weight(jax.tree.map(lambda a, l=layer: a[l], self.stacked), kind)
             V, U = vu.site(spec.name)
             out[spec.name] = (
                 W.astype(jnp.float32) - (V.astype(jnp.float32) @ U.astype(jnp.float32)).T
@@ -628,7 +640,8 @@ def build_decomposed_lm(
     )
     return LlamaDecomposedModel(
         embed=embed,
-        layers=layers,
+        stacked=_stack_layers(layers),
+        n_layer=len(layers),
         norm=norm,
         lm_head=lm_head,
         inv_freq=inv_freq,

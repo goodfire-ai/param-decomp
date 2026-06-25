@@ -36,7 +36,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from param_decomp.components import SiteSpec
 from param_decomp.sharding import assert_divisible
-from vendored_jax.llama import apply_rope, attn_implementation, rms_norm, rope_cos_sin
+from vendored_jax.llama import apply_rope, rms_norm, rope_cos_sin
 
 CI_FN_RMS_EPS = float(jnp.finfo(jnp.float32).eps)
 """Matches torch's `F.rms_norm` default eps (`finfo(fp32).eps` ~1.19e-7); RMS upcasts to
@@ -189,9 +189,12 @@ class CIBlock(eqx.Module):
         cos, sin = rope_cos_sin(inv_freq, t, x.dtype)
         q, k = apply_rope(q, k, cos, sin)
         qt, kt, vt = (einops.rearrange(a, "b nh t hd -> b t nh hd") for a in (q, k, v))
-        y = jax.nn.dot_product_attention(
-            qt, kt, vt, is_causal=False, implementation=attn_implementation()
-        )  # bidirectional
+        # xla (not cuDNN flash): the CI fn's attention weights are Megatron-sharded (heads on
+        # `tp`) under the 2-D mesh, and cuDNN's custom partitioner rejects that q/k/v layout
+        # ("Query, key and value should have same sharding"). The CI fn is small (low d_model,
+        # short seq) so the xla path's (B,H,T,T) score is tens of MB — no OOM, unlike the
+        # target's attention which keeps cuDNN flash. Bidirectional.
+        y = jax.nn.dot_product_attention(qt, kt, vt, is_causal=False, implementation="xla")
         x = x + einops.einsum(
             einops.rearrange(y, "b t nh hd -> b t (nh hd)"), self.wo, "b t i, o i -> b t o"
         )
