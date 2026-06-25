@@ -114,12 +114,17 @@ class DecomposedModel(Protocol):
         routes: SiteRoutes,
         live: tuple[str, ...],
         has_delta: bool,
+        *,
+        remat: bool,
     ) -> Any:
         """The masked decomposed forward (SPEC §1.3, S2). `live` (static under jit) lists
         the sites running their decomposed forward; all other sites run the frozen `x @ W`
         path. `masks`/`delta_masks` may broadcast over the batch dim (the PPGD source case).
         `has_delta` (static) False skips the `x @ Δ` matmul for constant-source entries
-        whose delta mask is a constant 0 (LOSS_PARITY_DESIGN §4b)."""
+        whose delta mask is a constant 0 (LOSS_PARITY_DESIGN §4b). `remat` (static) gates
+        gradient-checkpointing the forward at the model's natural granularity (a deep target
+        rematerializes per-layer, recomputing one layer at a time in the backward instead of
+        storing every layer's activations — the dominant step-memory term at depth)."""
         ...
 
     def masked_site_outputs(

@@ -426,10 +426,26 @@ class SimpleMLPDecomposedModel(eqx.Module):
         routes: dict[str, Array] | None,
         live: tuple[str, ...],
         has_delta: bool,
+        *,
+        remat: bool,
     ) -> Array:
-        return self._run_masked_forward(
-            vu, inputs, masks, delta_masks, routes, live, has_delta, None
-        )
+        # This arch's forward is an unrolled Python loop (heterogeneous per-layer live sites),
+        # not a scan, so its natural remat granularity is the whole forward: recompute it in
+        # the backward rather than store its activations. `live`/`has_delta` are closed over
+        # (static); the checkpoint sees only array/pytree leaves.
+        def forward(
+            vu: DecompVU,
+            inputs: Array,
+            masks: dict[str, Array],
+            delta_masks: dict[str, Array],
+            routes: dict[str, Array] | None,
+        ) -> Array:
+            return self._run_masked_forward(
+                vu, inputs, masks, delta_masks, routes, live, has_delta, None
+            )
+
+        forward = jax.checkpoint(forward) if remat else forward
+        return forward(vu, inputs, masks, delta_masks, routes)
 
     def masked_site_outputs(
         self,

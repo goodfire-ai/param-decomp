@@ -119,7 +119,10 @@ class ShardServer:
             # Rows may carry one extra token (the pile artifact is 513 = 512+label
             # wide); truncate to the leading seq_len exactly like the torch loader's
             # `x[column_name][:max_seq_len]`. Anything else is the wrong artifact.
-            assert tokens.shape[1] in (self.seq_len, self.seq_len + 1), (
+            # TEMP HACK (tp re-sweep): allow truncating a WIDER parquet down to seq_len
+            # so the seq-64 gbsweep configs can read the seq-512 artifact. Revert to
+            # `in (self.seq_len, self.seq_len + 1)` after the sweep.
+            assert tokens.shape[1] >= self.seq_len, (
                 f"{shard.path} rows have seq {tokens.shape[1]}, config says {self.seq_len}"
             )
             self._tokens = tokens[:, : self.seq_len]
