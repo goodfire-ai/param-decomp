@@ -78,19 +78,12 @@ def install_sigterm_flag() -> None:
     signal.signal(signal.SIGTERM, handler)
 
 
-def sigterm_received() -> bool:
-    """Whether a SIGTERM has landed. A composition root's eval pass reads this to abandon
-    a partial eval cleanly (the engine's save block then checkpoints + exits for requeue)."""
-    return _sigterm_received
-
-
 def _sigterm_consensus() -> bool:
-    """Cross-rank-agreed SIGTERM flag for collective decision points (faith-warmup exit, eval
-    entry, orbax save). SLURM delivers SIGTERM per task with no simultaneity guarantee, so a
-    per-rank read at a collective gate can differ across ranks and hang the collective. OR-reduce
-    the flag across processes so every rank takes the same branch; reconciled once per step into a
-    local the handler can't mutate. The per-step all-gather of one bool is negligible and runs
-    only when distributed."""
+    """Cross-rank-agreed SIGTERM flag. SLURM delivers SIGTERM per task with no simultaneity
+    guarantee, so reading the per-process flag independently at a collective gate (faith-warmup
+    exit, eval entry, orbax save) can diverge ranks and hang. OR-reduce it across processes;
+    callers read it once per step into a local the handler can't mutate mid-step. No-op when not
+    distributed."""
     if jax.process_count() == 1:
         return _sigterm_received
     import jax.experimental.multihost_utils as mhu
@@ -489,8 +482,6 @@ def run_decomposition_training(
         state, metrics = step_fn(lm, state, residual, random.fold_in(run_key, step))
 
         now_step = step + 1
-        # One cross-rank-agreed SIGTERM read per step, used at every collective gate below
-        # (eval entry, orbax save, break) so ranks never diverge on a collective.
         sigterm = _sigterm_consensus()
         dense = cadence.dense_log_phase
         log_now = (
@@ -509,8 +500,7 @@ def run_decomposition_training(
                     f"non-finite loss {loss_name!r} at step {now_step}: {record[loss_name]}"
                 )
             record["step_time_s"] = per_step
-            # log the LR the just-completed step actually applied (optax count == pre-increment
-            # `step` == now_step - 1), not next step's value.
+            # the LR this step applied (optax count is the pre-increment `step` == now_step - 1)
             record["train/schedules/lr/components"] = float(jnp.asarray(sched_vu(now_step - 1)))
             record["train/schedules/lr/ci_fn"] = float(jnp.asarray(sched_ci(now_step - 1)))
             mem_stats = jax.local_devices()[0].memory_stats()
@@ -520,8 +510,6 @@ def run_decomposition_training(
             window_t0 = time.time()
 
         if eval_fn is not None and now_step % eval_every == 0 and not sigterm:
-            # All ranks agreed (consensus above) to enter this collective eval pass together,
-            # so it runs forward-only to completion in lockstep — no mid-pass per-rank abandon.
             eval_record = eval_fn(state, now_step)
             sink.log(now_step, eval_record)
             window_t0 = time.time()

@@ -245,9 +245,8 @@ def _make_lm_eval_fn(
         # docstring for the per-key parity argument (cites SPEC S8/D2).
         metric_sums: dict[str, jax.Array] = {}
         eval_residuals: list[jax.Array] = []
-        # The engine admits this eval pass only after a cross-rank SIGTERM consensus, so it runs
-        # forward-only to completion on every rank in lockstep — no per-rank mid-pass abandon
-        # (which would desync the collective device->host gathers below).
+        # No per-rank SIGTERM abandon inside this loop — it would desync the collective
+        # device->host gathers below; the engine gates pass entry on cross-rank consensus.
         for j in range(eval.n_steps):
             eval_tokens = _global_token_batch(
                 eval_server.local_batch(eval_pass_index * eval.n_steps + j),
