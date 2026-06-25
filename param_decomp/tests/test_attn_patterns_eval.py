@@ -238,8 +238,10 @@ class _PositionlessStub(eqx.Module):
         routes: Any,
         live: tuple[str, ...],
         has_delta: bool,
+        *,
+        remat: bool,
     ) -> Any:
-        del vu, resid, masks, delta_masks, routes, live, has_delta
+        del vu, resid, masks, delta_masks, routes, live, has_delta, remat
         raise AssertionError("positionless stub fn must not be called")
 
     def masked_site_outputs(
