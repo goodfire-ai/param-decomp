@@ -30,6 +30,7 @@ from safetensors import safe_open
 
 from param_decomp.components import DecompVU, SiteC, SiteSpec, site_out
 from param_decomp.losses import kl_per_position
+from param_decomp.sharding import assert_divisible
 from vendored_jax.llama import (
     LlamaConfig,
     apply_rope,
@@ -154,6 +155,20 @@ class FrozenAttn(eqx.Module):
     head_dim: int = eqx.field(static=True)
     n_rep: int = eqx.field(static=True)
 
+    def shardings(self, mesh: "Mesh") -> "FrozenAttn":
+        """Stacked (leading `n_layer`, UNSHARDED — the scan axis) FSDP(`dp`)×TP(`tp`): q/k/v
+        project to head-on-`tp` (col-parallel — so cuDNN's head-parallel q/k/v constraint is
+        met; `n_kv_head % tp == 0`), out-proj is row-parallel (head in on `tp`). The `d` dim
+        is FSDP'd on `dp` for all four (gathered per layer inside the scan)."""
+        col = NamedSharding(mesh, P(None, "tp", "dp"))  # out (head) on tp, in (d) FSDP on dp
+        row = NamedSharding(mesh, P(None, "dp", "tp"))  # out (d) FSDP on dp, in (head) on tp
+        for w in (self.wq, self.wk, self.wv):
+            assert_divisible(w.shape[1], mesh, "tp", "FrozenAttn qkv out (head dim)")
+            assert_divisible(w.shape[2], mesh, "dp", "FrozenAttn qkv in (d)")
+        assert_divisible(self.wo.shape[1], mesh, "dp", "FrozenAttn out-proj out (d)")
+        assert_divisible(self.wo.shape[2], mesh, "tp", "FrozenAttn out-proj in (head dim)")
+        return eqx.tree_at(lambda a: (a.wq, a.wk, a.wv, a.wo), self, (col, col, col, row))
+
     def core(
         self,
         q_flat: Float[Array, "b t qd"],
@@ -211,6 +226,23 @@ class LlamaLayer(eqx.Module):
     Wg: Float[Array, "di d"]
     Wu: Float[Array, "di d"]
     Wd: Float[Array, "d di"]
+
+    def shardings(self, mesh: "Mesh") -> "LlamaLayer":
+        """Stacked FSDP(`dp`)×TP(`tp`): MLP gate/up col-parallel (intermediate on `tp`, `d`
+        FSDP on `dp`), down row-parallel (intermediate in on `tp`, `d` FSDP on `dp`); norms
+        replicate (tiny); attn delegates to `FrozenAttn.shardings`."""
+        col = NamedSharding(mesh, P(None, "tp", "dp"))  # out (di) on tp, in (d) FSDP on dp
+        row = NamedSharding(mesh, P(None, "dp", "tp"))  # out (d) FSDP on dp, in (di) on tp
+        repl = NamedSharding(mesh, P())
+        assert_divisible(self.Wg.shape[1], mesh, "tp", "Wg out (di)")
+        assert_divisible(self.Wg.shape[2], mesh, "dp", "Wg in (d)")
+        assert_divisible(self.Wd.shape[1], mesh, "dp", "Wd out (d)")
+        assert_divisible(self.Wd.shape[2], mesh, "tp", "Wd in (di)")
+        return eqx.tree_at(
+            lambda layer: (layer.ln1, layer.ln2, layer.attn, layer.Wg, layer.Wu, layer.Wd),
+            self,
+            (repl, repl, self.attn.shardings(mesh), col, col, row),
+        )
 
 
 def _frozen_site_weight(layer: LlamaLayer, kind: str) -> Array:
@@ -372,11 +404,19 @@ class LlamaDecomposedModel(eqx.Module):
         return [jax.tree.map(lambda a, idx=i: a[idx], self.stacked) for i in range(self.n_layer)]
 
     def shardings(self, mesh: "Mesh") -> "LlamaDecomposedModel":
-        """Replicate every frozen leaf on the `dp` mesh (the FSDP-style memory story: the
-        ~3.6B bf16 target is small vs activations, so replicating avoids all-gathering the
-        target each forward)."""
+        """FSDP(`dp`)×TP(`tp`) the per-layer weights (`stacked.shardings` — `d` on `dp`,
+        head/intermediate on `tp`; the ~14 GB layer bulk shards `/(dp·tp)`, gathered per layer
+        inside the scan). embed / lm_head / norm / inv_freq REPLICATE — the ~2 GB embed+head
+        is small and vocab-parallel logits/lookup aren't worth the complexity. (The old
+        all-replicate justification — "the target is small vs activations" — is stale: at the
+        full 32-layer model the replicated target + its backward/remat copies dominate the
+        step's peak, which is what this shards away.)"""
         repl = NamedSharding(mesh, P())
-        return jax.tree.map(lambda _a: repl, self)
+        return eqx.tree_at(
+            lambda m: (m.embed, m.norm, m.lm_head, m.inv_freq, m.stacked),
+            self,
+            (repl, repl, repl, repl, self.stacked.shardings(mesh)),
+        )
 
     @staticmethod
     def recon_loss_fn(masked_output: Array, clean_output: Array) -> Array:
