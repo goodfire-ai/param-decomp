@@ -283,15 +283,16 @@ def permute_to_dense(ci_vals: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 def identity_ci_error(ci_vals: np.ndarray, tolerance: float) -> int:
     """Discrete identity-CI distance (torch `IdentityCIPattern.distance_from`,
     generalizing the toy `tms`/`resid_mlp` `identity_ci_error`): permute columns toward
-    identity, then over the `min(shape)` square block count off-diagonal entries
-    `> tolerance` plus on-diagonal entries `< 1 - tolerance`."""
+    identity, then over the FULL matrix minus the `min(shape)` block diagonal count entries
+    `> tolerance` plus on-diagonal entries `< 1 - tolerance` (torch parity — trailing
+    overcomplete columns/rows count as off-diagonal errors)."""
     ci = ci_vals.astype(np.float64)
     permuted, _ = permute_to_identity(ci)
     size = min(permuted.shape)
-    block = permuted[:size, :size]
-    off_diag = ~np.eye(size, dtype=bool)
-    off_diag_errors = int((block[off_diag] > tolerance).sum())
-    on_diag_errors = int((np.diagonal(block) < (1 - tolerance)).sum())
+    off_diag = np.ones(permuted.shape, dtype=bool)
+    off_diag[:size, :size] &= ~np.eye(size, dtype=bool)
+    off_diag_errors = int((permuted[off_diag] > tolerance).sum())
+    on_diag_errors = int((np.diagonal(permuted[:size, :size]) < (1 - tolerance)).sum())
     return off_diag_errors + on_diag_errors
 
 
@@ -495,18 +496,18 @@ def plot_permuted_ci_heatmaps(
     position_ci: dict[str, PositionCI], permutation: dict[str, "Literal['identity', 'dense']"]
 ) -> tuple[bytes, bytes]:
     """The `PermutedCIPlots` figures: per-site `(position, C)` CI heatmaps with columns
-    permuted toward each site's target shape (identity / dense). Lower-leaky (`Blues`) and
-    upper-leaky (`Reds`) views of the SAME permutation (derived from upper-leaky, as in
-    torch). Returns `(lower_png, upper_png)`."""
+    permuted toward each site's target shape (identity / dense). The lower-leaky (`Blues`) and
+    upper-leaky (`Reds`) views are each permuted by their OWN-derived permutation (torch parity:
+    `plot_causal_importance_vals` permutes the lower plot by a lower-derived perm, the upper by
+    an upper-derived one). Returns `(lower_png, upper_png)`."""
     assert set(permutation) <= set(position_ci), "permutation sites must be a subset of CI sites"
     lower_permuted: dict[str, np.ndarray] = {}
     upper_permuted: dict[str, np.ndarray] = {}
     for name, target in permutation.items():
         pci = position_ci[name]
         permute = permute_to_identity if target == "identity" else permute_to_dense
-        _, perm = permute(pci.upper)
-        lower_permuted[name] = pci.lower[:, perm]
-        upper_permuted[name] = pci.upper[:, perm]
+        lower_permuted[name], _ = permute(pci.lower)
+        upper_permuted[name], _ = permute(pci.upper)
     lower_png = _plot_ci_matrices(lower_permuted, "Blues", "Importance values lower leaky relu")
     upper_png = _plot_ci_matrices(upper_permuted, "Reds", "Importance values")
     return lower_png, upper_png

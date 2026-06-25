@@ -668,8 +668,10 @@ def pretrain_resid_mlp_target(
 
 def identity_ci_error(ci_vals: Float[Array, "n_features C"], tolerance: float) -> int:
     """Discrete identity-CI distance (torch `IdentityCIPattern.distance_from`): permute
-    columns toward identity (Hungarian on `-ci`), then over the `min(shape)` square block
-    count off-diagonal entries `> tolerance` plus on-diagonal entries `< 1 - tolerance`.
+    columns toward identity (Hungarian on `-ci`), then over the FULL matrix minus the
+    `min(shape)` block diagonal count entries `> tolerance` plus on-diagonal entries
+    `< 1 - tolerance` (torch parity — trailing overcomplete columns/rows count as
+    off-diagonal errors).
 
     `ci_vals` is the `lower_leaky` CI of the single-feature probe (one row per feature)."""
     from scipy.optimize import linear_sum_assignment
@@ -684,10 +686,10 @@ def identity_ci_error(ci_vals: Float[Array, "n_features C"], tolerance: float) -
     perm = np.array(assigned + remaining, dtype=np.int64)
     ci = ci[:, perm]
 
-    block = ci[:size, :size]
-    off_diag_mask = ~np.eye(size, dtype=bool)
-    off_diag_errors = int((block[off_diag_mask] > tolerance).sum())
-    on_diag_errors = int((np.diagonal(block) < (1 - tolerance)).sum())
+    off_diag_mask = np.ones(ci.shape, dtype=bool)
+    off_diag_mask[:size, :size] &= ~np.eye(size, dtype=bool)
+    off_diag_errors = int((ci[off_diag_mask] > tolerance).sum())
+    on_diag_errors = int((np.diagonal(ci[:size, :size]) < (1 - tolerance)).sum())
     return off_diag_errors + on_diag_errors
 
 

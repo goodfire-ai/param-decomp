@@ -84,6 +84,20 @@ def sigterm_received() -> bool:
     return _sigterm_received
 
 
+def _sigterm_consensus() -> bool:
+    """Cross-rank-agreed SIGTERM flag for collective decision points (faith-warmup exit, eval
+    entry, orbax save). SLURM delivers SIGTERM per task with no simultaneity guarantee, so a
+    per-rank read at a collective gate can differ across ranks and hang the collective. OR-reduce
+    the flag across processes so every rank takes the same branch; reconciled once per step into a
+    local the handler can't mutate. The per-step all-gather of one bool is negligible and runs
+    only when distributed."""
+    if jax.process_count() == 1:
+        return _sigterm_received
+    import jax.experimental.multihost_utils as mhu
+
+    return bool(np.asarray(mhu.process_allgather(np.asarray(_sigterm_received))).any())
+
+
 def _log_wandb_safe(wandb_module: "ModuleType", payload: "LogRecord", step: int, what: str) -> None:
     """`wandb.log` swallowing `CommError` only — a transient wandb-server outage must not
     kill a multi-day run, while genuine misuse (e.g. a non-dict record) still raises. The
@@ -344,7 +358,9 @@ def _init_or_restore_state(
         return state, 0
 
     if pd.faithfulness_warmup_steps > 0:
-        faith_warmup_optimizer = optax.adamw(pd.faithfulness_warmup_lr, weight_decay=0.0)
+        faith_warmup_optimizer = optax.adamw(
+            pd.faithfulness_warmup_lr, weight_decay=pd.faithfulness_warmup_weight_decay
+        )
         faith_warmup_opt_state = faith_warmup_optimizer.init(
             eqx.filter(state.components, eqx.is_array)
         )
@@ -356,7 +372,7 @@ def _init_or_restore_state(
             warmed_components, faith_warmup_opt_state, faith_warmup_loss = faith_warmup_step(
                 lm, warmed_components, faith_warmup_opt_state
             )
-            if _sigterm_received:
+            if _sigterm_consensus():
                 # No valid checkpoint exists yet (the step-0 save happens only after warmup
                 # completes, and resume skips warmup whenever a checkpoint is present — a
                 # partially-warmed step-0 save would resume as if fully warmed). Exit
@@ -473,6 +489,9 @@ def run_decomposition_training(
         state, metrics = step_fn(lm, state, residual, random.fold_in(run_key, step))
 
         now_step = step + 1
+        # One cross-rank-agreed SIGTERM read per step, used at every collective gate below
+        # (eval entry, orbax save, break) so ranks never diverge on a collective.
+        sigterm = _sigterm_consensus()
         dense = cadence.dense_log_phase
         log_now = (
             now_step % cadence.train_log_every == 0
@@ -490,28 +509,29 @@ def run_decomposition_training(
                     f"non-finite loss {loss_name!r} at step {now_step}: {record[loss_name]}"
                 )
             record["step_time_s"] = per_step
-            record["train/schedules/lr/components"] = float(jnp.asarray(sched_vu(now_step)))
-            record["train/schedules/lr/ci_fn"] = float(jnp.asarray(sched_ci(now_step)))
+            # log the LR the just-completed step actually applied (optax count == pre-increment
+            # `step` == now_step - 1), not next step's value.
+            record["train/schedules/lr/components"] = float(jnp.asarray(sched_vu(now_step - 1)))
+            record["train/schedules/lr/ci_fn"] = float(jnp.asarray(sched_ci(now_step - 1)))
             mem_stats = jax.local_devices()[0].memory_stats()
             if mem_stats is not None:
                 record["train/mem/peak_gb_per_rank"] = mem_stats["peak_bytes_in_use"] / 1e9
             sink.log(now_step, record)
             window_t0 = time.time()
 
-        if eval_fn is not None and now_step % eval_every == 0 and not _sigterm_received:
+        if eval_fn is not None and now_step % eval_every == 0 and not sigterm:
+            # All ranks agreed (consensus above) to enter this collective eval pass together,
+            # so it runs forward-only to completion in lockstep — no mid-pass per-rank abandon.
             eval_record = eval_fn(state, now_step)
-            # A SIGTERM raised DURING the eval pass abandons its partial record unlogged and
-            # falls through to the save block (synchronous save of the completed `now_step`).
-            if not _sigterm_received:
-                sink.log(now_step, eval_record)
-                window_t0 = time.time()
+            sink.log(now_step, eval_record)
+            window_t0 = time.time()
 
-        if now_step % save_every == 0 or now_step == pd.steps or _sigterm_received:
+        if now_step % save_every == 0 or now_step == pd.steps or sigterm:
             save_state(checkpoint_manager, now_step, state)
             if is_main:
                 print(f"checkpoint saved @ step {now_step}", flush=True)
             window_t0 = time.time()
-        if _sigterm_received:
+        if sigterm:
             if is_main:
                 print("SIGTERM: checkpoint saved, exiting for requeue", flush=True)
             break
