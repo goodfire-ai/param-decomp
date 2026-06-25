@@ -490,6 +490,7 @@ class LlamaDecomposedModel(eqx.Module):
         routes: dict[str, Array] | None,
         live: tuple[str, ...],
         has_delta: bool,
+        remat: bool,
         collect: dict[str, Array] | None,
     ) -> Array:
         """The masked decomposed forward shared by `masked_output` and `masked_site_outputs`
@@ -554,7 +555,14 @@ class LlamaDecomposedModel(eqx.Module):
             )  # fmt: skip
             return x, collected
 
-        x, ys = jax.lax.scan(block, resid, (self.stacked, per_kind))
+        # Per-LAYER remat: checkpoint the scan BODY so the backward recomputes one layer at a
+        # time, storing only the carry (the residual) — NOT all `n_layer` layers' activations.
+        # Whole-forward remat instead stacks every layer's activations `[n_layer, ...]` in the
+        # backward to backprop the scan, which dominated the step's peak (the MLP-hidden
+        # `[32,1,512,14336]` etc). This is the textbook way to grad-checkpoint a deep scan;
+        # pure recompute, no numerics change.
+        scan_body = jax.checkpoint(block) if remat else block
+        x, ys = jax.lax.scan(scan_body, resid, (self.stacked, per_kind))
         x = rms_norm(x, self.norm, self.eps)
         logits = x @ self.lm_head.T
         if collect is not None:
@@ -573,9 +581,11 @@ class LlamaDecomposedModel(eqx.Module):
         routes: dict[str, Array] | None,
         live: tuple[str, ...],
         has_delta: bool,
+        *,
+        remat: bool,
     ) -> Array:
         return self._run_masked_forward(
-            vu, inputs, masks, delta_masks, routes, live, has_delta, None
+            vu, inputs, masks, delta_masks, routes, live, has_delta, remat, None
         )
 
     def masked_site_outputs(
@@ -591,7 +601,9 @@ class LlamaDecomposedModel(eqx.Module):
         """Per-`live`-site decomposed output of the masked forward (SPEC S31). Runs the
         exact `masked_output` forward, discards the logits, returns the collected outputs."""
         collect: dict[str, Array] = {}
-        self._run_masked_forward(vu, inputs, masks, delta_masks, routes, live, has_delta, collect)
+        self._run_masked_forward(
+            vu, inputs, masks, delta_masks, routes, live, has_delta, False, collect
+        )
         assert set(collect) == set(live), (sorted(collect), sorted(live))
         return collect
 

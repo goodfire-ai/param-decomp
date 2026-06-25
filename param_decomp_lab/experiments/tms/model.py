@@ -330,8 +330,22 @@ class TMSDecomposedModel(eqx.Module):
         routes: dict[str, Array] | None,
         live: tuple[str, ...],
         has_delta: bool,
+        *,
+        remat: bool,
     ) -> Array:
-        return masked_output(self.target, vu, resid, masks, delta_masks, routes, live, has_delta)
+        def forward(
+            vu: DecompVU,
+            resid: Array,
+            masks: dict[str, Array],
+            delta_masks: dict[str, Array],
+            routes: dict[str, Array] | None,
+        ) -> Array:
+            return masked_output(
+                self.target, vu, resid, masks, delta_masks, routes, live, has_delta
+            )
+
+        forward = jax.checkpoint(forward) if remat else forward
+        return forward(vu, resid, masks, delta_masks, routes)
 
     def masked_site_outputs(
         self,
