@@ -387,6 +387,13 @@ class PersistentPGDReconLossConfig(LossMetricConfig):
     type: Literal["PersistentPGDReconLoss"] = "PersistentPGDReconLoss"
     optimizer: AdamPGDConfig
     scope: PersistentPGDSourceScope
+    source_dtype: Literal["float32", "bfloat16"] = "float32"
+    """Storage dtype for the persistent PPGD source tensors AND their Adam moments
+    (`m`/`v`). `float32` (default) is SPEC N1 (fp32 SRC_STEP moments) and the only
+    oracle-parity path. `bfloat16` halves the resident source+moment footprint (~21 GiB
+    on the full-32L step, the dominant f32 transient there) at some numerical risk: the
+    second-moment `v` accumulates squared grads, which can underflow in bf16 for small
+    grads — opt in only as an experiment."""
     n_warmup_steps: NonNegativeInt = Field(
         default=0,
         description=(

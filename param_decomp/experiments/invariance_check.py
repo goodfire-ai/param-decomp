@@ -74,7 +74,7 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
     src = init_persistent_sources(
-        lm.site_names, tuple(s.C for s in lm.sites), (1, seq), random.PRNGKey(3)
+        lm.site_names, tuple(s.C for s in lm.sites), (1, seq), jnp.float32, random.PRNGKey(3)
     )
     resid = random.normal(random.PRNGKey(4), (gbatch, seq, cfg.n_embd)) * 0.5
 

@@ -135,9 +135,11 @@ def test_jitted_sharded_inits_match_eager_values():
     site_names = tuple(s.name for s in sites)
     site_Cs = tuple(s.C for s in sites)
     src_sharded = init_sources_sharded(
-        site_names, site_Cs, 16, SCScope(), 1, jax.random.PRNGKey(3), mesh
+        site_names, site_Cs, 16, SCScope(), 1, jnp.float32, jax.random.PRNGKey(3), mesh
     )
-    src_eager = init_persistent_sources(site_names, site_Cs, (1, 16), jax.random.PRNGKey(3))
+    src_eager = init_persistent_sources(
+        site_names, site_Cs, (1, 16), jnp.float32, jax.random.PRNGKey(3)
+    )
     for name in site_names:
         src_sharding = src_sharded[name].sharding
         assert isinstance(src_sharding, NamedSharding)
@@ -147,7 +149,14 @@ def test_jitted_sharded_inits_match_eager_values():
     # bsc: one source per batch element, batch-sharded over dp (axis 0), no cross-rank sync.
     bsc_global_batch = 4 * n
     src_bsc = init_sources_sharded(
-        site_names, site_Cs, 16, BSCScope(), bsc_global_batch, jax.random.PRNGKey(3), mesh
+        site_names,
+        site_Cs,
+        16,
+        BSCScope(),
+        bsc_global_batch,
+        jnp.float32,
+        jax.random.PRNGKey(3),
+        mesh,
     )
     for name, C in zip(site_names, site_Cs, strict=True):
         assert src_bsc[name].shape == (bsc_global_batch, 16, C + 1), name

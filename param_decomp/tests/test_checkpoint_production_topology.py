@@ -121,6 +121,7 @@ def _build_sharded(seed: int):
             seq,
             SCScope(),
             mesh.devices.size,
+            jnp.float32,
             jax.random.fold_in(jax.random.PRNGKey(seed + 2), i),
             mesh,
         )

@@ -39,6 +39,7 @@ import equinox as eqx
 import jax
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
+from jax.typing import DTypeLike
 from jaxtyping import Array, PRNGKeyArray
 
 from param_decomp.adversary import init_persistent_sources
@@ -98,6 +99,7 @@ def init_sources_sharded(
     seq_len: int,
     scope: SCScope | BSCScope,
     global_batch: int,
+    source_dtype: DTypeLike,
     key: PRNGKeyArray,
     mesh: Mesh,
 ) -> dict[str, Array]:
@@ -124,7 +126,9 @@ def init_sources_sharded(
         case BSCScope():
             leading_shape = (global_batch, seq_len)
             placement = NamedSharding(mesh, P("dp", None, None))
-    init = partial(init_persistent_sources, site_names, site_component_counts, leading_shape)
+    init = partial(
+        init_persistent_sources, site_names, site_component_counts, leading_shape, source_dtype
+    )
     return jax.jit(init, out_shardings=placement)(key)
 
 

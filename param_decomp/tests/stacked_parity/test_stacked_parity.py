@@ -229,7 +229,7 @@ def test_train_trajectory_matches():
 
     ci_fn = _build_trajectory_ci_fn(lm, random.PRNGKey(2))
     sources = init_persistent_sources(
-        lm.site_names, tuple(s.C for s in lm.sites), (1, T), random.PRNGKey(3)
+        lm.site_names, tuple(s.C for s in lm.sites), (1, T), jnp.float32, random.PRNGKey(3)
     )
     for name, source in sources.items():
         np.testing.assert_array_equal(np.asarray(source), f[f"src::{name}"])

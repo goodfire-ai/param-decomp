@@ -70,7 +70,7 @@ def _source_grad(sharded: bool) -> dict[str, jax.Array]:
     )
     ci_fn = build_ci_fn(ci_arch, lm.sites, random.PRNGKey(2))
     src = init_persistent_sources(
-        lm.site_names, tuple(s.C for s in lm.sites), (1, seq), random.PRNGKey(3)
+        lm.site_names, tuple(s.C for s in lm.sites), (1, seq), jnp.float32, random.PRNGKey(3)
     )
     resid = random.randint(random.PRNGKey(4), (gbatch, seq), 0, cfg.vocab_size)
 
