@@ -16,6 +16,7 @@ Multi-process: launched one process per GPU under SLURM (`init_distributed`); ev
 process computes the same global schedule and contributes its local batch slice.
 """
 
+import os
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -94,6 +95,25 @@ def _enable_persistent_compilation_cache(out_dir: Path) -> Path:
     jax.config.update("jax_persistent_cache_min_compile_time_secs", 60.0)
     jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
     return cache_dir
+
+
+def _enable_hlo_dump(run_dir: Path) -> None:
+    """Dump the step modules' optimized HLO + buffer assignment to `<run_dir>/hlo` (rank 0).
+
+    Must run BEFORE `init_distributed` — XLA reads `XLA_FLAGS` when the backend initializes,
+    so a later mutation is ignored. Rank-gated via `SLURM_PROCID` (read pre-jax-init, only to
+    pick the writer — NOT to decide distributedness, which stays `runtime.dp`-driven) so a
+    single rank writes; `xla_dump_hlo_module_re` filters to the big `*step*` modules to keep
+    the dump to ~100s of MB. The buffer-assignment dump survives an exec-time OOM (compile
+    completes first), so this is how we name the buffer that blows the allocator."""
+    if os.environ.get("SLURM_PROCID", "0") != "0":
+        return
+    hlo_dir = run_dir / "hlo"
+    hlo_dir.mkdir(parents=True, exist_ok=True)
+    existing = os.environ.get("XLA_FLAGS", "")
+    os.environ["XLA_FLAGS"] = (
+        f"{existing} --xla_dump_to={hlo_dir} --xla_dump_hlo_module_re=.*step.*"
+    ).strip()
 
 
 def _global_token_batch(local: np.ndarray, mesh: Mesh, global_batch: int) -> jax.Array:
@@ -352,6 +372,7 @@ def main(config: Path, run_id: str) -> None:
     built, _raw_cfg = load_config(config, run_id)
 
     install_sigterm_flag()
+    _enable_hlo_dump(built.run.run_dir)
     init_distributed(built.runtime.dp)
     # Harden the cold-cache HF weight load against the 8N-rank startup burst before any
     # per-rank Hub call (no-op when huggingface_hub is absent / cache is pre-warmed).
