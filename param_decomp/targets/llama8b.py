@@ -156,19 +156,20 @@ class FrozenAttn(eqx.Module):
     n_rep: int = eqx.field(static=True)
 
     def shardings(self, mesh: "Mesh") -> "FrozenAttn":
-        """Stacked (leading `n_layer`, UNSHARDED — the scan axis) FSDP on `dp`: the `d` dim
-        shards on `dp` (gathered per layer in the scan); the HEAD dim stays REPLICATED (NOT
-        TP'd). `core` runs batch-parallel attention (q/k/v constrained to `P("dp",...)`,
-        heads replicated — that identical spec is what cuDNN's partitioner requires), so the
-        projections must come out heads-replicated; TP'ing the head dim makes q (n_head) and
-        k/v (n_kv_head) shard to different per-rank head counts → cuDNN rejects them as
-        not-same-sharding. Attention weights are small, so dp-only sharding is plenty."""
-        in_dp = NamedSharding(mesh, P(None, None, "dp"))  # qkv [nc, head(repl), d on dp]
-        out_dp = NamedSharding(mesh, P(None, "dp", None))  # wo [nc, d on dp, head(repl)]
+        """Stacked (leading `n_layer`, UNSHARDED — the scan axis) FSDP on `fsdp`: the `d` dim
+        shards on `fsdp` (gathered per layer in the scan, on NVLink); the HEAD dim stays
+        REPLICATED. `core` runs batch-parallel attention (q/k/v constrained batch over the
+        full mesh, heads replicated — that identical spec is what cuDNN's partitioner
+        requires), so the projections must come out heads-replicated. Attention weights are
+        small, so FSDP-on-`fsdp` sharding is plenty."""
+        in_fsdp = NamedSharding(mesh, P(None, None, "fsdp"))  # qkv [nc, head(repl), d on fsdp]
+        out_fsdp = NamedSharding(mesh, P(None, "fsdp", None))  # wo [nc, d on fsdp, head(repl)]
         for w in (self.wq, self.wk, self.wv):
-            assert_divisible(w.shape[2], mesh, "dp", "FrozenAttn qkv in (d)")
-        assert_divisible(self.wo.shape[1], mesh, "dp", "FrozenAttn out-proj out (d)")
-        return eqx.tree_at(lambda a: (a.wq, a.wk, a.wv, a.wo), self, (in_dp, in_dp, in_dp, out_dp))
+            assert_divisible(w.shape[2], mesh, "fsdp", "FrozenAttn qkv in (d)")
+        assert_divisible(self.wo.shape[1], mesh, "fsdp", "FrozenAttn out-proj out (d)")
+        return eqx.tree_at(
+            lambda a: (a.wq, a.wk, a.wv, a.wo), self, (in_fsdp, in_fsdp, in_fsdp, out_fsdp)
+        )
 
     def core(
         self,
@@ -195,18 +196,17 @@ class FrozenAttn(eqx.Module):
         # AND its rematerialized backward). Real GQA keeps q (n_head) and k/v (n_kv_head) as
         # independent head-parallel tensors with the SAME spec (different head COUNTS is fine).
         # cuDNN flash attention's custom partitioner requires q/k/v IDENTICALLY sharded.
-        # On the 2-D (dp, tp) mesh, pin all three head-parallel: batch on `dp`, HEADS on `tp`
-        # (`P("dp","tp",None,None)` for `[b, heads, t, hd]`). Heads are independent, so this is
-        # clean tensor-parallel attention, and the identical spec is exactly what cuDNN
-        # demands (n_head % tp == 0 and n_kv_head % tp == 0). The q/k/v projection outputs are
-        # `d_out`-replicated (U = `P("tp",None)`); this constraint does the replicated->head-
-        # on-tp reshard right here. Guarded so it's a no-op off-mesh (CPU tests / single
-        # device); `run.py` sets the global mesh. At `tp=1` heads land on a size-1 axis =
-        # replicated (the old 1-D behavior). Validated on GPU: 1-D was job 108953; the 2-D
-        # head-parallel form is the fix for the `dp/tp` mesh's "same sharding" partitioner error.
+        # Pure HSDP: pin all three batch-parallel over the FULL mesh, HEADS replicated
+        # (`P(('replicate','fsdp'), None, None, None)` for `[b, heads, t, hd]`). The identical
+        # q/k/v spec is exactly what cuDNN's flash partitioner demands; heads-replicated keeps
+        # q (n_head) and k/v (n_kv_head) consistently sharded (no head TP that would split them
+        # to different per-rank counts). The q/k/v projection outputs are `d_out`-replicated
+        # (U FSDP's the C side, not d_out's head); this constraint pins the batch right here.
+        # Guarded so it's a no-op off-mesh (CPU tests / single device); `run.py` sets the
+        # global mesh.
         if not jax.sharding.get_abstract_mesh().empty:
             qkv_spec = jax.sharding.PartitionSpec(
-                "dp", None, None, None
+                ("replicate", "fsdp"), None, None, None
             )  # batch-parallel: q/k/v IDENTICAL spec -> cuDNN happy; flash = no score materialization
             q, k, v = (jax.lax.with_sharding_constraint(a, qkv_spec) for a in (q, k, v))
         return causal_sdpa(q, k, v).transpose(0, 2, 1, 3).reshape(b, t, self.n_head * self.head_dim)
@@ -229,20 +229,19 @@ class LlamaLayer(eqx.Module):
     Wd: Float[Array, "d di"]
 
     def shardings(self, mesh: "Mesh") -> "LlamaLayer":
-        """Stacked FSDP on `dp` (no TP): every MLP weight shards its `d`-dim (4096) on `dp`,
-        the intermediate (14336) stays replicated; gathered per layer in the scan. (TP on the
-        target would Megatron the intermediate but add reshards through the replicated
-        residual for a frozen 16 GB model — dp-only `/dp` is ample: 16 GB → 0.5 GB at dp=32.)
-        Norms replicate (tiny); attn delegates to `FrozenAttn.shardings`."""
-        in_dp = NamedSharding(mesh, P(None, None, "dp"))  # Wg/Wu [nc, di(repl), d on dp]
-        out_dp = NamedSharding(mesh, P(None, "dp", None))  # Wd [nc, d on dp, di(repl)]
+        """Stacked FSDP on `fsdp` (no TP): every MLP weight shards its `d`-dim (4096) on
+        `fsdp`, the intermediate (14336) stays replicated; gathered per layer in the scan, on
+        NVLink. (`/fsdp` is ample for a frozen 16 GB model: 16 GB → 2 GB at fsdp=8.) Norms
+        replicate (tiny); attn delegates to `FrozenAttn.shardings`."""
+        in_fsdp = NamedSharding(mesh, P(None, None, "fsdp"))  # Wg/Wu [nc, di(repl), d on fsdp]
+        out_fsdp = NamedSharding(mesh, P(None, "fsdp", None))  # Wd [nc, d on fsdp, di(repl)]
         repl = NamedSharding(mesh, P())
-        assert_divisible(self.Wg.shape[2], mesh, "dp", "Wg in (d)")
-        assert_divisible(self.Wd.shape[1], mesh, "dp", "Wd out (d)")
+        assert_divisible(self.Wg.shape[2], mesh, "fsdp", "Wg in (d)")
+        assert_divisible(self.Wd.shape[1], mesh, "fsdp", "Wd out (d)")
         return eqx.tree_at(
             lambda layer: (layer.ln1, layer.ln2, layer.attn, layer.Wg, layer.Wu, layer.Wd),
             self,
-            (repl, repl, self.attn.shardings(mesh), in_dp, in_dp, out_dp),
+            (repl, repl, self.attn.shardings(mesh), in_fsdp, in_fsdp, out_fsdp),
         )
 
 
@@ -405,12 +404,12 @@ class LlamaDecomposedModel(eqx.Module):
         return [jax.tree.map(lambda a, idx=i: a[idx], self.stacked) for i in range(self.n_layer)]
 
     def shardings(self, mesh: "Mesh") -> "LlamaDecomposedModel":
-        """FSDP(`dp`)×TP(`tp`) the per-layer weights (`stacked.shardings` — `d` on `dp`,
-        head/intermediate on `tp`; the ~14 GB layer bulk shards `/(dp·tp)`, gathered per layer
-        inside the scan). embed / lm_head / norm / inv_freq REPLICATE — the ~2 GB embed+head
-        is small and vocab-parallel logits/lookup aren't worth the complexity. (The old
-        all-replicate justification — "the target is small vs activations" — is stale: at the
-        full 32-layer model the replicated target + its backward/remat copies dominate the
+        """FSDP-on-`fsdp` the per-layer weights (`stacked.shardings` — `d` on `fsdp`,
+        head/intermediate replicated; the ~14 GB layer bulk shards `/fsdp`, gathered per layer
+        inside the scan, on NVLink). embed / lm_head / norm / inv_freq REPLICATE — the ~2 GB
+        embed+head is small and vocab-parallel logits/lookup aren't worth the complexity. (The
+        old all-replicate justification — "the target is small vs activations" — is stale: at
+        the full 32-layer model the replicated target + its backward/remat copies dominate the
         step's peak, which is what this shards away.)"""
         repl = NamedSharding(mesh, P())
         return eqx.tree_at(

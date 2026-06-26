@@ -123,8 +123,11 @@ from the canonical schema and calls `run_decomposition_training`). They are posi
 sites jointly, concat/split in canonical site order), and the LM `ChunkwiseTransformerCIFn`
 (`expects_axes=("sequence",)`, per-chunk transformers reading residual taps, stacked +
 `lax.scan`'d with per-chunk remat, and **N per-site output heads** (one `[d_model, C_j]` per
-site-slot, each born C-on-`tp` — no glued-ΣC head whose per-site slice fell mid-`tp`-shard and
-forced a `collective-permute`; the CI stays C-on-`tp` end-to-end, matching `site_out`'s `x@V`).
+site-slot). NOTE: this is the pure-HSDP backup branch — the mesh is `(replicate, fsdp)` with
+NO tensor-parallel / Megatron-C axis. V/U + the CI fn are FSDP-sharded on `fsdp` (the 8
+intra-node NVLink GPUs), replicated on `replicate` (across nodes); the CI output C axis is
+NEVER sharded, so the per-site heads are a layout convenience here (they were load-bearing
+under the prior TP layout, which sliced a tp-sharded glued-ΣC head mid-site).
 `run_state.init_train_state` dispatches CI-fn construction on `cfg.ci_fn`
 (`MLPCIArch` / `GlobalMLPCIArch` / `ChunkwiseTransformerCIArch`) and uses replicated (not
 C-sharded) V/U + CI for the tiny toys; the core `config.CIFnArch` admits all three and the

@@ -25,7 +25,7 @@ from param_decomp.components import SiteC
 from param_decomp.log import setup_logger
 from param_decomp.recon import build_loss_terms
 from param_decomp.run import run_decomposition_training
-from param_decomp.sharding import dp_mesh
+from param_decomp.sharding import hsdp_mesh
 from param_decomp.train import TrainState
 from param_decomp_lab.experiments import toy_uv_eval
 from param_decomp_lab.experiments.config import (
@@ -136,7 +136,9 @@ def run_resid_mlp_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: 
             target_cfg.data_generation_type,
         )
         residual = resid_mlp.resid_mlp_input_residual(tgt, x)
-        return jax.lax.with_sharding_constraint(residual, NamedSharding(mesh, P("dp")))
+        return jax.lax.with_sharding_constraint(
+            residual, NamedSharding(mesh, P(("replicate", "fsdp")))
+        )
 
     def sample_batch(step: int) -> jax.Array:
         return sample_residual(lm.target, random.fold_in(data_key, step))
@@ -196,7 +198,7 @@ def main(config: str, group: str | None = None, tags: str | None = None) -> None
     built.run.run_dir.mkdir(parents=True, exist_ok=True)
     setup_logger(built.run.run_dir / "logs.log")
     (built.run.run_dir / "config.yaml").write_text(yaml.safe_dump(schema_raw, sort_keys=False))
-    mesh = dp_mesh()
+    mesh = hsdp_mesh()
     run_resid_mlp_decomposition(built, schema_raw, mesh)
 
 

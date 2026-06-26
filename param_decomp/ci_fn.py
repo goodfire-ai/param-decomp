@@ -140,34 +140,30 @@ class CIBlock(eqx.Module):
     eps: float = eqx.field(static=True)
 
     def shardings(self, mesh: Mesh) -> "CIBlock":
-        """Uniform FSDP(`dp`)×TP(`tp`); the leading `n_chunks` axis (axis 0) is UNSHARDED — a
-        plain vmap axis, not a sharding dim (the mesh-simplification: every param shards the
-        same way regardless of the chunk structure). Each weight keeps its Megatron dim on
-        `tp` and FSDP's the other matmul dim on `dp`:
+        """Pure HSDP (FSDP on `fsdp`, replicated on `replicate`); the leading `n_chunks` axis
+        (axis 0) is UNSHARDED — a plain vmap axis, not a sharding dim. Every weight FSDP-shards
+        its `d_model` dim on `fsdp` and replicates the head / mlp_hidden dim (no TP / Megatron
+        axis):
 
-        - qkv (`[nc, head_out, d_model_in]`): head on `tp` (col-parallel), d_model FSDP on `dp`.
-        - out-proj (`[nc, d_model_out, head_in]`): head on `tp` (row-parallel), d_model FSDP on `dp`.
-        - w1 up-proj (`[nc, d_model_in, mlp_hidden_out]`): mlp_hidden on `tp`, d_model FSDP on `dp`.
-        - w2 down-proj (`[nc, mlp_hidden_in, d_model_out]`): mlp_hidden on `tp`, d_model FSDP on `dp`.
+        - qkv (`[nc, head_out, d_model_in]`): d_model FSDP on `fsdp`, head replicated.
+        - out-proj (`[nc, d_model_out, head_in]`): d_model FSDP on `fsdp`, head replicated.
+        - w1 up-proj (`[nc, d_model_in, mlp_hidden_out]`): d_model FSDP on `fsdp`, mlp_hidden replicated.
+        - w2 down-proj (`[nc, mlp_hidden_in, d_model_out]`): d_model FSDP on `fsdp`, mlp_hidden replicated.
 
-        Biases replicate (GSPMD broadcasts over the tp-sharded activation). The FSDP dim is
-        all-gathered per matmul, bounded by `/tp` (TP keeps its half)."""
-        col = NamedSharding(mesh, P(None, "tp", "dp"))  # axis1 (out) on tp, axis2 (in) FSDP on dp
-        row = NamedSharding(mesh, P(None, "dp", "tp"))  # axis1 (out) FSDP on dp, axis2 (in) on tp
+        Biases replicate. The FSDP dim is all-gathered per matmul on NVLink, bounded by
+        `/fsdp` (8)."""
+        din_fsdp = NamedSharding(mesh, P(None, None, "fsdp"))  # axis2 (d_model in) FSDP on fsdp
+        dout_fsdp = NamedSharding(mesh, P(None, "fsdp", None))  # axis1 (d_model out) FSDP on fsdp
         repl = NamedSharding(mesh, P())
         for w in (self.wq, self.wk, self.wv):
-            assert_divisible(w.shape[1], mesh, "tp", "CIBlock qkv out (head dim)")
-            assert_divisible(w.shape[2], mesh, "dp", "CIBlock qkv in (d_model)")
-        assert_divisible(self.wo.shape[1], mesh, "dp", "CIBlock out-proj out (d_model)")
-        assert_divisible(self.wo.shape[2], mesh, "tp", "CIBlock out-proj in (head dim)")
-        assert_divisible(self.w1.shape[1], mesh, "dp", "CIBlock w1 in (d_model)")
-        assert_divisible(self.w1.shape[2], mesh, "tp", "CIBlock w1 out (mlp_hidden)")
-        assert_divisible(self.w2.shape[1], mesh, "tp", "CIBlock w2 in (mlp_hidden)")
-        assert_divisible(self.w2.shape[2], mesh, "dp", "CIBlock w2 out (d_model)")
+            assert_divisible(w.shape[2], mesh, "fsdp", "CIBlock qkv in (d_model)")
+        assert_divisible(self.wo.shape[1], mesh, "fsdp", "CIBlock out-proj out (d_model)")
+        assert_divisible(self.w1.shape[1], mesh, "fsdp", "CIBlock w1 in (d_model)")
+        assert_divisible(self.w2.shape[2], mesh, "fsdp", "CIBlock w2 out (d_model)")
         return eqx.tree_at(
             lambda b: (b.wq, b.wk, b.wv, b.wo, b.w1, b.b1, b.w2, b.b2),
             self,
-            (col, col, col, row, row, repl, col, repl),
+            (din_fsdp, din_fsdp, din_fsdp, dout_fsdp, din_fsdp, repl, dout_fsdp, repl),
         )
 
     def __call__(self, x: Float[Array, "b t d"], inv_freq: Array) -> Array:
@@ -243,10 +239,11 @@ class ChunkTransformer(eqx.Module):
     in_proj → RoPE blocks → one output head PER site-slot.
 
     One head per site-slot (`out_ws[j] [d_model, C_j]` / `out_bs[j] [C_j]`) instead of a
-    single glued `[d_model, ΣC]` head: each head's output IS that site's CI, born C_j-on-`tp`
-    (matching `x@V` / the mask, SPEC §4.1 `site_out`), so there is no glued ΣC axis to slice
-    out — the per-site slice of a tp-sharded glued axis fell mid-site (the tp boundary `ΣC/tp`
-    is unrelated to the cumulative site offsets), forcing a `collective-permute` per slice.
+    single glued `[d_model, ΣC]` head: each head's output IS that site's CI, born already
+    split per site (matching `x@V` / the mask, SPEC §4.1 `site_out`). Under pure HSDP the C
+    axis is replicated (not sharded), so the split is a pure layout convenience; it was
+    load-bearing under the prior TP layout (a tp-sharded glued ΣC axis sliced mid-site),
+    and is kept harmlessly.
 
     In the bundle every array below carries a leading `n_chunks` axis and the module is
     run under `jax.lax.scan` over that axis, so this body is written for a single chunk."""
@@ -258,28 +255,27 @@ class ChunkTransformer(eqx.Module):
     out_bs: tuple[Float[Array, " _C"], ...]
 
     def shardings(self, mesh: Mesh) -> "ChunkTransformer":
-        """Uniform FSDP(`dp`)×TP(`tp`); leading `n_chunks` axis (axis 0) UNSHARDED. `in_proj_w
-        [nc, total_d_in, d_model]`: d_model on `tp` (col-parallel out), total_d_in FSDP on `dp`.
-        Each `out_ws[j] [nc, d_model, C_j]`: C_j on `tp` (col-parallel out — the C-on-`tp` that
-        aligns with V/U and the mask), d_model FSDP on `dp`. Blocks delegate to
-        `CIBlock.shardings`; biases replicate (GSPMD broadcasts over the tp-sharded output)."""
-        row = NamedSharding(mesh, P(None, "dp", "tp"))  # axis1 (in) FSDP on dp, axis2 (out) on tp
+        """Pure HSDP (FSDP on `fsdp`, replicated on `replicate`); leading `n_chunks` axis
+        (axis 0) UNSHARDED. `in_proj_w [nc, total_d_in, d_model]`: d_model FSDP on `fsdp`,
+        total_d_in replicated. Each `out_ws[j] [nc, d_model, C_j]`: d_model FSDP on `fsdp`,
+        C_j REPLICATED (no TP axis — the CI output C is never sharded, so the downstream mask
+        multiply needs no reshard). Blocks delegate to `CIBlock.shardings`; biases replicate."""
+        dmodel_out_fsdp = NamedSharding(mesh, P(None, None, "fsdp"))  # axis2 (d_model out) on fsdp
+        dmodel_in_fsdp = NamedSharding(mesh, P(None, "fsdp", None))  # axis1 (d_model in) on fsdp
         repl = NamedSharding(mesh, P())
         assert_divisible(
-            self.in_proj_w.shape[1], mesh, "dp", "ChunkTransformer in_proj_w total_d_in"
+            self.in_proj_w.shape[2], mesh, "fsdp", "ChunkTransformer in_proj_w d_model"
         )
-        assert_divisible(self.in_proj_w.shape[2], mesh, "tp", "ChunkTransformer in_proj_w d_model")
         for slot, w in enumerate(self.out_ws):
-            assert_divisible(w.shape[1], mesh, "dp", f"ChunkTransformer out_ws[{slot}] d_model")
-            assert_divisible(w.shape[2], mesh, "tp", f"ChunkTransformer out_ws[{slot}] C")
+            assert_divisible(w.shape[1], mesh, "fsdp", f"ChunkTransformer out_ws[{slot}] d_model")
         return eqx.tree_at(
             lambda ct: (ct.in_proj_w, ct.in_proj_b, ct.blocks, ct.out_ws, ct.out_bs),
             self,
             (
-                row,
+                dmodel_out_fsdp,
                 repl,
                 [b.shardings(mesh) for b in self.blocks],
-                tuple(row for _ in self.out_ws),
+                tuple(dmodel_in_fsdp for _ in self.out_ws),
                 tuple(repl for _ in self.out_bs),
             ),
         )
@@ -314,7 +310,7 @@ class ChunkwiseTransformerCIFn(eqx.Module):
     expects_axes: tuple[str, ...] = eqx.field(static=True)
 
     def shardings(self, mesh: Mesh) -> "ChunkwiseTransformerCIFn":
-        """The stacked per-chunk transformer's Megatron layout (`ChunkTransformer.shardings`,
+        """The stacked per-chunk transformer's HSDP layout (`ChunkTransformer.shardings`,
         leading `n_chunks` axis un-sharded); `inv_freq` (a 1-D RoPE buffer) replicates."""
         return eqx.tree_at(
             lambda f: (f.chunks, f.inv_freq),
@@ -489,12 +485,12 @@ class SiteMLP(eqx.Module):
     biases: list[Float[Array, " d_out"]]
 
     def shardings(self, mesh: Mesh) -> "SiteMLP":
-        """Each `[d_in, d_out]` weight shards its OUTPUT axis (axis 1) over `dp`; 1-D biases
-        replicate. Asserts every output dim tiles the mesh."""
-        shard_out = NamedSharding(mesh, P(None, "dp"))
+        """Each `[d_in, d_out]` weight FSDP-shards its OUTPUT axis (axis 1) over `fsdp`; 1-D
+        biases replicate. Asserts every output dim tiles `fsdp`."""
+        shard_out = NamedSharding(mesh, P(None, "fsdp"))
         repl = NamedSharding(mesh, P())
         for layer_idx, w in enumerate(self.weights):
-            assert_divisible(w.shape[1], mesh, "dp", f"SiteMLP.weights[{layer_idx}].d_out")
+            assert_divisible(w.shape[1], mesh, "fsdp", f"SiteMLP.weights[{layer_idx}].d_out")
         return eqx.tree_at(
             lambda m: (m.weights, m.biases),
             self,
