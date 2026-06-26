@@ -345,7 +345,9 @@ def _init_or_restore_state(
         return state, 0
 
     if pd.faithfulness_warmup_steps > 0:
-        faith_warmup_optimizer = optax.adamw(pd.faithfulness_warmup_lr, weight_decay=0.0)
+        faith_warmup_optimizer = optax.adamw(
+            pd.faithfulness_warmup_lr, weight_decay=pd.faithfulness_warmup_weight_decay
+        )
         faith_warmup_opt_state = faith_warmup_optimizer.init(
             eqx.filter(state.components, eqx.is_array)
         )

@@ -259,9 +259,9 @@ class ChunkwiseSubsetReconLossConfig(LossMetricConfig):
     The decomposed sites (`model.target_module_paths`, in order) are grouped into
     chunks of `sites_per_chunk`; each chunk runs `SubsetReconPlan(routing, n_samples)`
     — one masked forward per generated routing, all the chunk's sites swapped in
-    with a per-position routing draw — and the recon is the fused-linear-KL against the
-    clean logits (when `use_fused_kl`). The total is the mean over all chunk forwards of
-    `recon_loss / n_positions`, matching the 2-pool's per-step recon.
+    with a per-position routing draw — and the recon is KL against the clean logits. The
+    total is the mean over all chunk forwards of `recon_loss / n_positions`, matching the
+    2-pool's per-step recon.
 
     The JAX single-pool trainer implements this natively: `recon.build_loss_terms`
     maps this `type` onto `recon.subset_chunk_plan` (a parameterization of the one
@@ -275,7 +275,6 @@ class ChunkwiseSubsetReconLossConfig(LossMetricConfig):
         UniformKSubsetRoutingConfig()
     )
     n_samples: PositiveInt = 1
-    use_fused_kl: bool = True
 
 
 PGDInitStrategy = Literal["random", "ones", "zeroes"]
