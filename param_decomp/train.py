@@ -115,8 +115,9 @@ def make_train_step(
     factory closes over only static config (`site_names`, `recon_loss_fn`, term wiring) read
     off `lm` here. `losses` (from `build_loss_terms`) is the `LossSurface` record — the
     faithfulness + importance-minimality singletons and the recon Σ, read by name. `mesh`
-    (when given) pins every batch-leading activation to `P('dp', ...)` so the masked
-    re-forwards stay on per-device sub-batches (activation memory 1/n_dev)."""
+    (when given) pins every batch-leading activation over the full mesh
+    (`P(('replicate', 'fsdp'), ...)`) so the masked re-forwards stay on per-rank sub-batches
+    (activation memory 1/N)."""
     site_names = lm.site_names
     sites = lm.sites
     recon_loss_fn = lm.recon_loss_fn  # static method: pure, holds no arrays — safe to close
@@ -132,22 +133,19 @@ def make_train_step(
         return batch_shard_leading(x, mesh)
 
     def ci_shard(x: Array) -> Array:
-        """Pin a CI / mask tensor `[batch, *positions, C]` batch-on-`dp`, C-on-`tp`. No-op
-        off-mesh (single device / toys)."""
+        """Pin a CI / mask tensor `[batch, *positions, C]` batch over the full mesh, C
+        REPLICATED. No-op off-mesh (single device / toys)."""
         if mesh is None:
             return x
-        spec = ("dp", *((None,) * (x.ndim - 2)), "tp")
+        spec = (("replicate", "fsdp"), *((None,) * (x.ndim - 1)))
         return jax.lax.with_sharding_constraint(x, NamedSharding(mesh, P(*spec)))
 
-    def ci_C_on_tp(ci: CI) -> CI:
-        """Pin the CI-fn output batch-on-`dp`, C-on-`tp` — the layout `site_out` pins `x@V`
-        to (SPEC §4.1), so the downstream mask multiply `xV * mask` needs no reshard. The
-        per-site output heads (`ChunkTransformer.out_ws`, each C_j-on-`tp`) already BORN the
-        CI in this layout; the explicit constraint stops GSPMD re-deciding it in the backward
-        (same rationale as `site_out`'s activation pin, bf072ef01). This REPLACES the old
-        C→batch reshard, which FOUGHT the alignment — it moved C off `tp` only for GSPMD to
-        reshard it back at the multiply. `logits` is passed through (unused in the step — only
-        the squashings are; DCE drops it)."""
+    def ci_batch_sharded(ci: CI) -> CI:
+        """Pin the CI-fn output batch over the full mesh, C REPLICATED — the layout `site_out`
+        pins `x@V` to (SPEC §4.1), so the downstream mask multiply `xV * mask` needs no
+        reshard. The explicit constraint stops GSPMD re-deciding it in the backward (same
+        rationale as `site_out`'s activation pin, bf072ef01). `logits` is passed through
+        (unused in the step — only the squashings are; DCE drops it)."""
         return CI(
             logits=ci.logits,
             lower={site: ci_shard(v) for site, v in ci.lower.items()},
@@ -269,7 +267,7 @@ def make_train_step(
         # ── adversary ascents: params + CI detached (SPEC §4.5) ──
         components_detached = jax.lax.stop_gradient(cast_floating(state.components, COMPUTE_DT))
         ci_fn_detached = jax.lax.stop_gradient(cast_floating(state.ci_fn, COMPUTE_DT))
-        ci_lower_detached = ci_C_on_tp(ci_fn_detached(taps, remat=False)).lower
+        ci_lower_detached = ci_batch_sharded(ci_fn_detached(taps, remat=False)).lower
 
         # ── persistent adversaries: each runs its supplemental ascents vs the route-ALL
         # all-sites forward (SPEC S24 — torch warmup parity, NOT the term's loss plan),
@@ -352,7 +350,7 @@ def make_train_step(
             components, ci_fn, persistent_sources = trainable
             components_bf16 = cast_floating(components, COMPUTE_DT)
             ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
-            ci = ci_C_on_tp(ci_fn_bf16(taps, remat=remat_ci_fn))
+            ci = ci_batch_sharded(ci_fn_bf16(taps, remat=remat_ci_fn))
             faith_loss = faithfulness_loss(model.weight_deltas(components))
             imp_lp, imp_freq = imp_min_terms(ci.upper, imp_min, imp_min_param)
 
