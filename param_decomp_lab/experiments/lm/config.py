@@ -373,7 +373,7 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
         slow_on_first_step=cfg.eval.slow_on_first_step,
         slow_n_batches_accum=slow_n_batches_accum,
         rounding_threshold=ce_kl.rounding_threshold,
-        ci_alive_threshold=ci_l0.ci_alive_threshold,
+        ci_alive_threshold=cfg.eval.ci_alive_threshold,
         l0_groups=(
             {group: tuple(patterns) for group, patterns in ci_l0.groups.items()}
             if ci_l0.groups is not None

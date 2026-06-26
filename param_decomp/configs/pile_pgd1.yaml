@@ -40,10 +40,8 @@ eval:
   metrics:
   - n_batches_accum: 1
     type: CIHistograms
-  - ci_alive_threshold: 0.0
-    type: ComponentActivationDensity
-  - ci_alive_threshold: 0.0
-    groups:
+  - type: ComponentActivationDensity
+  - groups:
       layer_0:
       - h.0.*
       layer_1:

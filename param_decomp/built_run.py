@@ -72,7 +72,8 @@ class EvalConfig:
     `every` steps; the SLOW/plot tier (CI histograms, activation density, mean-CI,
     hidden-acts recon) runs every `slow_every` steps, reusing the same eval batches
     (SPEC S28/S29). `rounding_threshold` binarises CI for the CE/KL `rounded_masked`
-    variant; `ci_alive_threshold` is the CI-L0 aliveness cutoff."""
+    variant; `ci_alive_threshold` is the eval-global aliveness cutoff shared by the CI-L0
+    metric and the activation-density slow-eval step."""
 
     batch_size: int
     every: int
