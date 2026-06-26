@@ -249,7 +249,13 @@ def apply_rope(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
 
 
 class CIAttention(nn.Module):
-    """Bidirectional multi-head self-attention with RoPE on Q, K."""
+    """Causal multi-head self-attention with RoPE on Q, K.
+
+    Causal (not bidirectional) is load-bearing in the no-target / next-token-CE setting:
+    the mask at position t must depend only on tokens <= t, otherwise the CI function can
+    leak token t+1 into the position-t mask and the masked forward predicts the next token
+    for free (masked CE collapses far below the honest unmasked CE).
+    """
 
     def __init__(self, d_model: int, n_heads: int) -> None:
         super().__init__()
@@ -269,7 +275,7 @@ class CIAttention(nn.Module):
         v = self.v_proj(x).view(B, S, self.n_heads, self.head_dim).transpose(1, 2)
         q = apply_rope(q, cos, sin)
         k = apply_rope(k, cos, sin)
-        out = F.scaled_dot_product_attention(q, k, v, is_causal=False)
+        out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         out = out.transpose(1, 2).reshape(B, S, self.n_heads * self.head_dim)
         return self.o_proj(out)
 
