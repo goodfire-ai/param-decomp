@@ -116,13 +116,13 @@ def make_eval_step(
         return batch_shard_leading(x, mesh)
 
     def ci_shard(x: Array) -> Array:
-        """Pin a CI / mask tensor `[batch, *positions, C]` batch-on-`dp`, C-on-`tp` — the
-        layout `site_out` pins `x@V` to, so the masked re-forward needs no reshard (matches
-        train.py `ci_C_on_tp`). No-op off-mesh."""
+        """Pin a CI / mask tensor `[batch, *positions, C]` batch over the full mesh, C
+        REPLICATED — the layout `site_out` pins `x@V` to, so the masked re-forward needs no
+        reshard (matches train.py `ci_batch_sharded`). No-op off-mesh."""
         if mesh is None:
             return x
         return jax.lax.with_sharding_constraint(
-            x, NamedSharding(mesh, P("dp", *((None,) * (x.ndim - 2)), "tp"))
+            x, NamedSharding(mesh, P(("replicate", "fsdp"), *((None,) * (x.ndim - 1))))
         )
 
     def masked_forward(
