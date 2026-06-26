@@ -97,8 +97,6 @@ if __name__ == "__main__":
         ci_n_blocks=4,
         ci_n_heads=8,
         ci_mlp_hidden=2048,
-        main_lr=1e-3,
-        coeff_imp=1e-3,
         use_wandb=True,
         wandb_run_name="from_scratch_simplestories_2L",
     )

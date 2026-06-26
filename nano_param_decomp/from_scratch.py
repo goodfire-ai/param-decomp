@@ -7,11 +7,15 @@ and *all* parameters — components (V/U), the CI transformer, embeddings, and n
 are trained jointly. The reconstruction objective is next-token cross-entropy, not
 KL-vs-target.
 
-Losses:
+Training losses:
   - importance minimality (with the log-description frequency term)
-  - next-token CE on the unmasked forward (the LM-fitting anchor)
   - next-token CE under stochastic-subset masking (decomposability pressure)
   - next-token CE under adversarial (persistent PGD) masking
+
+The unmasked-forward next-token CE is *eval-only* (reported as `UnmaskedReconLoss`), not a
+training term: stochastic-subset routing already trains non-selected layers at mask=1.0, so
+the ones-mask anchor is exercised partially without a dedicated term. We watch the eval to
+decide whether to add it back.
 
 What's deliberately gone vs `run.py`: the target model, the weight-delta / spillover
 component, faithfulness loss + warmup, KL losses, and the target/component mode toggle.
@@ -66,16 +70,18 @@ class Config:
     seq_len: int = 512
     seed: int = 0
 
-    # Main optimizer (AdamW over *all* trainable params)
-    main_lr: float = 1e-3
+    # Main optimizer (AdamW over *all* trainable params). The low LR is inherited from the
+    # decompose-a-frozen-target setting: components (V/U) and the CI fn must move slowly so the
+    # persistent adversary can track them. Here it also governs the from-scratch scaffold
+    # (embeddings, norms), which trains at the same low rate.
+    main_lr: float = 5e-5
     main_lr_final_frac: float = 0.1
     main_warmup_pct: float = 0.01
     weight_decay: float = 0.01  # applied to dim>=2 params (V/U, embed, CI matrices) only
     grad_clip: float = 1.0
 
-    # Loss coefficients
+    # Loss coefficients (unmasked-forward CE is eval-only, not trained — see module docstring)
     coeff_imp: float = 1e-3
-    coeff_unmasked: float = 1.0
     coeff_stoch: float = 1.0
     coeff_ppgd: float = 1.0
 
@@ -659,17 +665,13 @@ def decompose(
                 cfg.imp_beta,
                 world_size,
             )
-            loss_unmasked = ce_next_token(logits, input_ids)
             loss_stoch = stochastic_recon_loss(model, wrappers, input_ids, ci_lower)
             loss_ppgd = ppgd.recon_loss(model, wrappers, input_ids, ci_lower)
+            # Unmasked CE is not trained (eval-only); computed here only for the train log.
+            loss_unmasked = ce_next_token(logits, input_ids)
 
         # Total-loss summation runs outside autocast so the coeff*loss sum stays in fp32.
-        total = (
-            cfg.coeff_imp * loss_imp
-            + cfg.coeff_unmasked * loss_unmasked
-            + cfg.coeff_stoch * loss_stoch
-            + cfg.coeff_ppgd * loss_ppgd
-        )
+        total = cfg.coeff_imp * loss_imp + cfg.coeff_stoch * loss_stoch + cfg.coeff_ppgd * loss_ppgd
 
         # Extract PPGD source grads before the main backward. Per-rank, no all-reduce.
         ppgd_grads = torch.autograd.grad(loss_ppgd, list(ppgd.sources.values()), retain_graph=True)
