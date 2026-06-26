@@ -38,7 +38,7 @@ from param_decomp.ci_fn import CIFn
 from param_decomp.components import DecompVU
 from param_decomp.lm import DecomposedModel
 from param_decomp.run_state import build_optimizers, init_train_state
-from param_decomp.sharding import dp_mesh, place_via_shardings
+from param_decomp.sharding import hsdp_mesh, place_via_shardings
 from param_decomp.targets import llama_simple_mlp
 from param_decomp.targets.llama8b import (
     llama31_8b_config,
@@ -145,7 +145,7 @@ class LoadedJaxRun:
 def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
     """Open the run at `run_dir`; restore checkpoint `step` (latest if None)."""
     cfg = load_run_dir_config(run_dir)
-    mesh = dp_mesh(cfg.runtime.tp)
+    mesh = hsdp_mesh()
     lm, vocab_size = build_target(cfg, mesh)
 
     opt_vu, opt_ci, _ = build_optimizers(cfg.pd)
