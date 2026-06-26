@@ -80,7 +80,7 @@ def test_mesh_is_3d_hsdp_tp():
     for got, want in zip(jax.tree.leaves(vu), jax.tree.leaves(eager), strict=True):
         assert jnp.allclose(jnp.asarray(got), want, rtol=1e-6, atol=0)  # placement-only
 
-    # the Adam moments carry the master sharding => ÷N optimizer state.
+    # the V/U Adam moments carry the master sharding => ÷N optimizer state.
     opt = optax.adamw(1e-3, weight_decay=0.0)
     ostate = opt.init(eqx.filter(vu, eqx.is_array))
     moment_specs = {
@@ -89,6 +89,39 @@ def test_mesh_is_3d_hsdp_tp():
         if eqx.is_array(leaf) and leaf.ndim == 2  # mu/nu for the 2-D V/U, not scalar counts
     }
     assert moment_specs == {str(P(DATA_AXES, "tp")), str(P("tp", DATA_AXES))}, moment_specs
+
+    # the CI fn (the ~32B transformer) is ALSO ÷N: its weights' FSDP leg carries DATA_AXES,
+    # so its Adam mu/nu shard ÷ the full mesh too — the dominant optimizer-state memory.
+    from param_decomp.ci_fn import (
+        Chunk,
+        ChunkwiseTransformerCIArch,
+    )
+    from param_decomp.targets.llama8b import parse_site_name
+    from param_decomp.targets.llama8b_sharding import init_ci_fn_placed
+
+    first_block = min(parse_site_name(s.name)[0] for s in sites)
+    arch = ChunkwiseTransformerCIArch(
+        chunks=(
+            Chunk(input_taps=(f"resid.{first_block}",), output_sites=tuple(s.name for s in sites)),
+        ),
+        input_dim=cfg.n_embd,
+        d_model=8 * mesh.shape["tp"] * mesh.shape["replicate"] * mesh.shape["dp"],
+        n_blocks=1,
+        n_heads=2,
+        mlp_hidden=8 * mesh.shape["tp"],
+    )  # d_model tiles tp AND replicate·dp (so it shards both ways)
+    ci_fn = init_ci_fn_placed(arch, sites, jax.random.PRNGKey(2), mesh)
+    ci_ostate = optax.adamw(1e-3, weight_decay=0.0).init(eqx.filter(ci_fn, eqx.is_array))
+    # every CI-fn weight whose FSDP (d_model / total_d_in) leg is sharded must name DATA_AXES
+    # in its mu/nu spec (the leading n_chunks axis is unsharded; tp on the Megatron dim).
+    ci_specs = {
+        str(leaf.sharding.spec)
+        for leaf in jax.tree.leaves(ci_ostate)
+        if eqx.is_array(leaf) and leaf.ndim == 3  # the [n_chunks, in, out] stacked weights
+    }
+    assert all("replicate" in s and "dp" in s for s in ci_specs), ci_specs
+    # at least one weight is sharded both ways (FSDP ÷N + tp Megatron):
+    assert any(("replicate" in s and "tp" in s) for s in ci_specs), ci_specs
 
 
 def test_shard_batch_requires_divisible_batch():

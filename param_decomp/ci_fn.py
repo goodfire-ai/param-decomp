@@ -37,7 +37,7 @@ from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from param_decomp.components import SiteSpec
-from param_decomp.sharding import assert_divisible
+from param_decomp.sharding import DATA_AXES, assert_divisible
 from vendored_jax.llama import apply_rope, rms_norm, rope_cos_sin
 
 CI_FN_RMS_EPS = float(jnp.finfo(jnp.float32).eps)
@@ -140,30 +140,34 @@ class CIBlock(eqx.Module):
     eps: float = eqx.field(static=True)
 
     def shardings(self, mesh: Mesh) -> "CIBlock":
-        """Uniform FSDP(`dp`)×TP(`tp`); the leading `n_chunks` axis (axis 0) is UNSHARDED — a
-        plain vmap axis, not a sharding dim (the mesh-simplification: every param shards the
-        same way regardless of the chunk structure). Each weight keeps its Megatron dim on
-        `tp` and FSDP's the other matmul dim on `dp`:
+        """ZeRO-1 ÷N FSDP(`DATA_AXES = replicate × dp`)×TP(`tp`) for the STORED master; the
+        leading `n_chunks` axis (axis 0) is UNSHARDED — a plain vmap axis, not a sharding dim
+        (the mesh-simplification: every param shards the same way regardless of the chunk
+        structure). Each weight keeps its Megatron dim on `tp` and FSDP's the other matmul dim
+        over BOTH data axes (so master + Adam mu/nu memory ÷ replicate·dp·tp = ÷N):
 
-        - qkv (`[nc, head_out, d_model_in]`): head on `tp` (col-parallel), d_model FSDP on `dp`.
-        - out-proj (`[nc, d_model_out, head_in]`): head on `tp` (row-parallel), d_model FSDP on `dp`.
-        - w1 up-proj (`[nc, d_model_in, mlp_hidden_out]`): mlp_hidden on `tp`, d_model FSDP on `dp`.
-        - w2 down-proj (`[nc, mlp_hidden_in, d_model_out]`): mlp_hidden on `tp`, d_model FSDP on `dp`.
+        - qkv (`[nc, head_out, d_model_in]`): head on `tp` (col-parallel), d_model FSDP on `DATA_AXES`.
+        - out-proj (`[nc, d_model_out, head_in]`): head on `tp` (row-parallel), d_model FSDP on `DATA_AXES`.
+        - w1 up-proj (`[nc, d_model_in, mlp_hidden_out]`): mlp_hidden on `tp`, d_model FSDP on `DATA_AXES`.
+        - w2 down-proj (`[nc, mlp_hidden_in, d_model_out]`): mlp_hidden on `tp`, d_model FSDP on `DATA_AXES`.
 
-        Biases replicate (GSPMD broadcasts over the tp-sharded activation). The FSDP dim is
-        all-gathered per matmul, bounded by `/tp` (TP keeps its half)."""
-        col = NamedSharding(mesh, P(None, "tp", "dp"))  # axis1 (out) on tp, axis2 (in) FSDP on dp
-        row = NamedSharding(mesh, P(None, "dp", "tp"))  # axis1 (out) FSDP on dp, axis2 (in) on tp
+        Biases replicate (GSPMD broadcasts over the tp-sharded activation). COMPUTE re-pins
+        the d_model leg to `dp`-only before the chunk scan (`_reconstruct_ci_compute_weights`,
+        the ZeRO-1 reconstruction); the per-matmul intra-node `dp` gather then runs in the scan
+        body, bounded by `/tp`. d_model must tile `replicate·dp`."""
+        col = NamedSharding(mesh, P(None, "tp", DATA_AXES))  # axis1 (out) tp, axis2 (in) FSDP ÷N
+        row = NamedSharding(mesh, P(None, DATA_AXES, "tp"))  # axis1 (out) FSDP ÷N, axis2 (in) tp
         repl = NamedSharding(mesh, P())
+        n_fsdp = mesh.shape["replicate"] * mesh.shape["dp"]
         for w in (self.wq, self.wk, self.wv):
             assert_divisible(w.shape[1], mesh, "tp", "CIBlock qkv out (head dim)")
-            assert_divisible(w.shape[2], mesh, "dp", "CIBlock qkv in (d_model)")
-        assert_divisible(self.wo.shape[1], mesh, "dp", "CIBlock out-proj out (d_model)")
+            assert w.shape[2] % n_fsdp == 0, f"CIBlock qkv in (d_model) {w.shape[2]} % {n_fsdp}"
+        assert self.wo.shape[1] % n_fsdp == 0, f"CIBlock out-proj out (d_model) {self.wo.shape[1]}"
         assert_divisible(self.wo.shape[2], mesh, "tp", "CIBlock out-proj in (head dim)")
-        assert_divisible(self.w1.shape[1], mesh, "dp", "CIBlock w1 in (d_model)")
+        assert self.w1.shape[1] % n_fsdp == 0, f"CIBlock w1 in (d_model) {self.w1.shape[1]}"
         assert_divisible(self.w1.shape[2], mesh, "tp", "CIBlock w1 out (mlp_hidden)")
         assert_divisible(self.w2.shape[1], mesh, "tp", "CIBlock w2 in (mlp_hidden)")
-        assert_divisible(self.w2.shape[2], mesh, "dp", "CIBlock w2 out (d_model)")
+        assert self.w2.shape[2] % n_fsdp == 0, f"CIBlock w2 out (d_model) {self.w2.shape[2]}"
         return eqx.tree_at(
             lambda b: (b.wq, b.wk, b.wv, b.wo, b.w1, b.b1, b.w2, b.b2),
             self,
@@ -258,19 +262,25 @@ class ChunkTransformer(eqx.Module):
     out_bs: tuple[Float[Array, " _C"], ...]
 
     def shardings(self, mesh: Mesh) -> "ChunkTransformer":
-        """Uniform FSDP(`dp`)×TP(`tp`); leading `n_chunks` axis (axis 0) UNSHARDED. `in_proj_w
-        [nc, total_d_in, d_model]`: d_model on `tp` (col-parallel out), total_d_in FSDP on `dp`.
-        Each `out_ws[j] [nc, d_model, C_j]`: C_j on `tp` (col-parallel out — the C-on-`tp` that
-        aligns with V/U and the mask), d_model FSDP on `dp`. Blocks delegate to
-        `CIBlock.shardings`; biases replicate (GSPMD broadcasts over the tp-sharded output)."""
-        row = NamedSharding(mesh, P(None, "dp", "tp"))  # axis1 (in) FSDP on dp, axis2 (out) on tp
+        """ZeRO-1 ÷N FSDP(`DATA_AXES = replicate × dp`)×TP(`tp`); leading `n_chunks` axis (axis
+        0) UNSHARDED. `in_proj_w [nc, total_d_in, d_model]`: d_model on `tp` (col-parallel out),
+        total_d_in FSDP on `DATA_AXES`. Each `out_ws[j] [nc, d_model, C_j]`: C_j on `tp`
+        (col-parallel out — the C-on-`tp` that aligns with V/U and the mask), d_model FSDP on
+        `DATA_AXES`. So master + Adam mu/nu memory ÷ replicate·dp·tp = ÷N. Blocks delegate to
+        `CIBlock.shardings`; biases replicate. COMPUTE re-pins the FSDP leg to `dp`-only before
+        the chunk scan (`_reconstruct_ci_compute_weights`); the FSDP dim must tile
+        `replicate·dp`."""
+        row = NamedSharding(mesh, P(None, DATA_AXES, "tp"))  # axis1 (in) FSDP ÷N, axis2 (out) tp
         repl = NamedSharding(mesh, P())
-        assert_divisible(
-            self.in_proj_w.shape[1], mesh, "dp", "ChunkTransformer in_proj_w total_d_in"
+        n_fsdp = mesh.shape["replicate"] * mesh.shape["dp"]
+        assert self.in_proj_w.shape[1] % n_fsdp == 0, (
+            f"ChunkTransformer in_proj_w total_d_in {self.in_proj_w.shape[1]} % {n_fsdp}"
         )
         assert_divisible(self.in_proj_w.shape[2], mesh, "tp", "ChunkTransformer in_proj_w d_model")
         for slot, w in enumerate(self.out_ws):
-            assert_divisible(w.shape[1], mesh, "dp", f"ChunkTransformer out_ws[{slot}] d_model")
+            assert w.shape[1] % n_fsdp == 0, (
+                f"ChunkTransformer out_ws[{slot}] d_model {w.shape[1]} % {n_fsdp}"
+            )
             assert_divisible(w.shape[2], mesh, "tp", f"ChunkTransformer out_ws[{slot}] C")
         return eqx.tree_at(
             lambda ct: (ct.in_proj_w, ct.in_proj_b, ct.blocks, ct.out_ws, ct.out_bs),
@@ -294,6 +304,54 @@ class ChunkTransformer(eqx.Module):
             einops.einsum(x, w, "... i, i o -> ... o") + b
             for w, b in zip(self.out_ws, self.out_bs, strict=True)
         )
+
+
+def _reconstruct_ci_compute_weights(chunks: "ChunkTransformer") -> "ChunkTransformer":
+    """The ZeRO-1 reconstruction for the CI fn (mirrors V/U's `_reconstruct_zero1_replicate`).
+    The stacked per-chunk weights' FSDP dim (d_model / total_d_in) arrives sharded ÷N over the
+    FULL mesh (master `P(..., DATA_AXES, ...)` with `tp` on the Megatron dim); reconstruct them
+    to the `dp`-sharded (÷fsdp) COMPUTE layout here, BEFORE the chunk scan: gather the
+    cross-node `replicate` leg ONCE per step in ENTRY (landing a SMALL ÷fsdp-resident bf16
+    stack, NOT the full CI fn), then the per-matmul intra-node `dp` gather runs in the scan
+    body, transiently (NVLink, freed each chunk). `tp` is UNTOUCHED (Megatron stays sharded).
+    Pattern per leaf: constrain to MASTER (`DATA_AXES`) → `optimization_barrier` (keeps it
+    bf16, XLA can't sink the cast past the gather) → constrain to COMPUTE (`dp` leg) →
+    `optimization_barrier` (freezes the ÷fsdp layout so XLA can't fuse the per-matmul `dp`
+    gather up into a full-d_model stack — the OOM shape). No-op off-mesh."""
+    if jax.sharding.get_abstract_mesh().empty:
+        return chunks
+    # FSDP dim at axis2 (matmul input), tp at axis1: wq/wk/wv, w2.
+    axis2 = P(None, "tp", "dp")
+    # FSDP dim at axis1 (matmul output), tp at axis2: wo, w1, in_proj_w, out_ws.
+    axis1 = P(None, "dp", "tp")
+    master_axis2 = P(None, "tp", DATA_AXES)
+    master_axis1 = P(None, DATA_AXES, "tp")
+
+    def pin(x: Array, master: "P", compute: "P") -> Array:
+        x = jax.lax.with_sharding_constraint(x.astype(jnp.bfloat16), master)
+        x = jax.lax.optimization_barrier(x)
+        x = jax.lax.with_sharding_constraint(x, compute)
+        return jax.lax.optimization_barrier(x)
+
+    pinned_blocks = [
+        eqx.tree_at(
+            lambda b: (b.wq, b.wk, b.wv, b.wo, b.w1, b.w2),
+            blk,
+            (pin(blk.wq, master_axis2, axis2), pin(blk.wk, master_axis2, axis2),
+             pin(blk.wv, master_axis2, axis2), pin(blk.wo, master_axis1, axis1),
+             pin(blk.w1, master_axis1, axis1), pin(blk.w2, master_axis2, axis2)),
+        )
+        for blk in chunks.blocks
+    ]  # fmt: skip
+    return eqx.tree_at(
+        lambda ct: (ct.in_proj_w, ct.blocks, ct.out_ws),
+        chunks,
+        (
+            pin(chunks.in_proj_w, master_axis1, axis1),  # [nc, total_d_in(FSDP), d_model(tp)]
+            pinned_blocks,
+            tuple(pin(w, master_axis1, axis1) for w in chunks.out_ws),  # [nc, d_model(FSDP), C(tp)]
+        ),
+    )
 
 
 class ChunkwiseTransformerCIFn(eqx.Module):
@@ -331,13 +389,19 @@ class ChunkwiseTransformerCIFn(eqx.Module):
         ]
         stacked_in = jnp.stack(per_chunk_in, axis=0)  # [n_chunks, *leading, total_d_in]
         inv_freq = jax.lax.stop_gradient(self.inv_freq)
+        # ZeRO-1 reconstruction: the master shards the FSDP dim (d_model / total_d_in) ÷N over
+        # the FULL mesh; pin the compute weights `dp`-ONLY here, BEFORE the chunk scan, so
+        # GSPMD gathers the cross-node `replicate` shard ONCE per step in ENTRY (off the hot
+        # path, landing a SMALL ÷fsdp bf16 stack) and the per-chunk scan body gathers only on
+        # the intra-node `dp` axis (NVLink), transiently. No-op off-mesh (goldens unchanged).
+        chunks = _reconstruct_ci_compute_weights(self.chunks)
         # `lax.scan` (not `filter_vmap`) over the leading `n_chunks` axis so XLA lowers the
         # chunk iteration as a loop: one chunk's FSDP weight all-gather (∝ ΣC/tp) is live at
         # a time, then freed, instead of every chunk's gathered weights materialized at once
         # (the vmap unrolls, hoisting all n_chunks gathers into the flat entry computation).
         # Same math as the vmap — scan stacks per-iteration outputs exactly as vmap maps
         # them; results match up to fp32 reassociation (XLA picks different matmul layouts).
-        chunk_arrays, chunk_static = eqx.partition(self.chunks, eqx.is_array)
+        chunk_arrays, chunk_static = eqx.partition(chunks, eqx.is_array)
 
         def run_chunk(
             _: None, scanned: tuple[ChunkTransformer, Array]
