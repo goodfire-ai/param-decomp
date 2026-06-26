@@ -18,6 +18,7 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array
 
+from param_decomp import fp8
 from param_decomp.sharding import assert_divisible
 
 
@@ -107,10 +108,12 @@ def site_out(
     against the frozen `x @ W.T`. `mask` may be None (fully on); `route` None routes
     everywhere. `delta_mask` None drops the delta path entirely (constant-source entries
     carry no delta, LOSS_PARITY_DESIGN §4b). `delta_mask`/`route` broadcast over batch;
-    trailing dim added here."""
-    xV = x @ V
+    trailing dim added here. The decomposition GEMMs (`x@V`, `(.)@U`) run in fp8 when
+    enabled (`fp8.configure`); the frozen `x@W` path stays bf16."""
+    comp_dot = fp8.matmul if fp8.components_enabled() else lambda p, q: p @ q
+    xV = comp_dot(x, V)
     acts = xV * mask if mask is not None else xV
-    out = acts @ U
+    out = comp_dot(acts, U)
     if delta_mask is not None:
         # `(x @ Δ.T)` for `Δ = W − (V@U).T`, expanded to activation space as
         # `x@W.T − (x@V)@U` so the `[d_out, d_in]` weight delta is NEVER formed. Under
@@ -119,7 +122,7 @@ def site_out(
         # activation-space form is all activation×weight matmuls that shard cleanly.
         # (Still a bf16-rounding DIVERGENCE vs the fp32 oracle delta — accepted; the
         # faithfulness loss uses the fp32 `weight_deltas`, SPEC N2, not this path.)
-        out = out + delta_mask[..., None] * (x @ W.T - xV @ U)
+        out = out + delta_mask[..., None] * (x @ W.T - comp_dot(xV, U))
     if route is not None:
         out = jnp.where(route[..., None], out, x @ W.T)
     return out
