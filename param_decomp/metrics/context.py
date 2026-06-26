@@ -35,6 +35,7 @@ class MetricContext:
     n_mask_samples: int
     reconstruction_loss: ReconstructionLoss
     is_eval: bool
+    train_without_target_model: bool = False
 
     @property
     def current_frac_of_training(self) -> float:

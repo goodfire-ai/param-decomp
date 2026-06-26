@@ -161,6 +161,16 @@ class PDConfig(BaseConfig):
         "model and component weights.",
     )
 
+    train_without_target_model: bool = Field(
+        default=False,
+        description="Train a decomposable model from scratch with no target to reconstruct. "
+        "Pre-weight activations come from the assembled (all-components) forward instead of a "
+        "frozen target's, and the reconstruction target is the next token (conventional LM "
+        "pretraining) rather than a target model's output. Requires `use_delta_component=False` "
+        "and no faithfulness (both need a target). The wrapped model still supplies the "
+        "non-decomposed scaffold (embeddings, norms, attention) at its frozen init weights.",
+    )
+
     tied_weights: list[tuple[str, str]] | None = Field(
         default=None,
         description="Pairs (src, tgt) of component module names whose weights should be tied. "
@@ -208,6 +218,23 @@ class PDConfig(BaseConfig):
         assert self.loss_metrics, "loss_metrics must contain at least one training loss"
         for cfg in self.loss_metrics:
             assert cfg.coeff is not None, f"loss_metrics.{cfg.type!r} must set `coeff`"
+        return self
+
+    @model_validator(mode="after")
+    def validate_train_without_target_model(self) -> Self:
+        if not self.train_without_target_model:
+            return self
+        assert not self.use_delta_component, (
+            "train_without_target_model requires use_delta_component=False: there is no target "
+            "model to take a weight-delta against."
+        )
+        assert self.faithfulness_warmup_steps == 0, (
+            "train_without_target_model is incompatible with faithfulness warmup (no target)."
+        )
+        for cfg in self.loss_metrics:
+            assert not isinstance(cfg, FaithfulnessLossConfig), (
+                "train_without_target_model is incompatible with FaithfulnessLoss (no target)."
+            )
         return self
 
 

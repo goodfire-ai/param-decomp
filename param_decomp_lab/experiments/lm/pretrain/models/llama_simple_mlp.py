@@ -7,7 +7,7 @@ standard GELU MLP (like GPT-2).
 import inspect
 import math
 from pathlib import Path
-from typing import Literal, override
+from typing import Any, Literal, override
 
 import torch
 import torch.nn as nn
@@ -376,6 +376,15 @@ class LlamaSimpleMLP(nn.Module):
         state_dict = torch.load(run_info.checkpoint_path, map_location="cpu", weights_only=True)
         model.load_state_dict(state_dict, strict=True)
         return model
+
+    @classmethod
+    def from_config_dict(cls, model_config_dict: dict[str, Any]) -> "LlamaSimpleMLP":
+        """Build a freshly (randomly) initialized model from an architecture config dict.
+
+        Unlike `from_run_info`, no checkpoint is loaded — used for from-scratch decomposable
+        training where the target model is only a fixed scaffold, never a model to reconstruct.
+        """
+        return cls(LlamaSimpleMLPConfig(**model_config_dict))
 
     @classmethod
     def from_pretrained(cls, model_path: str | Path) -> "LlamaSimpleMLP":

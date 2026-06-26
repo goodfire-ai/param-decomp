@@ -135,7 +135,7 @@ class _PersistentPGDReconBase[
     def _ensure_state(self, ctx: MetricContext) -> None:
         if self.state is not None:
             return
-        batch_dims = ctx.target_out.shape[:-1]
+        batch_dims = next(iter(ctx.ci.lower_leaky.values())).shape[:-1]
         self.state = PersistentPGDState(
             module_to_c=self.model.module_to_c,
             batch_dims=batch_dims,
@@ -192,7 +192,10 @@ class _PersistentPGDReconBase[
         if ctx.is_eval:
             self._recon_sum_loss += sum_loss.detach()
             self._recon_n_examples += n_examples
-            self._accum_hidden_acts(ctx, wd)
+            # Hidden-acts MSE compares masked activations against the target's; with no target
+            # model there is nothing to compare against, so skip it.
+            if not ctx.train_without_target_model:
+                self._accum_hidden_acts(ctx, wd)
 
         return sum_loss / n_examples
 
@@ -203,7 +206,7 @@ class _PersistentPGDReconBase[
     ) -> None:
         assert self.state is not None
         target_acts = self.model(ctx.batch, cache_type="output").cache
-        batch_dims = ctx.target_out.shape[:-1]
+        batch_dims = next(iter(ctx.ci.lower_leaky.values())).shape[:-1]
         mask_infos = get_ppgd_mask_infos(
             ci=ctx.ci.lower_leaky,
             weight_deltas=weight_deltas,

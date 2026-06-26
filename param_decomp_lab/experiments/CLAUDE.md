@@ -60,10 +60,27 @@ target:
     model_class: param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
     run_path: goodfire/spd/runs/<run_id>
   output_extract: 0
+
+# or
+target:
+  spec:
+    kind: from_scratch                  # fresh random init; no checkpoint loaded
+    model_class: param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
+    arch_from_run_path: goodfire/spd/runs/<run_id>
+  output_extract: 0
 ```
 
 `output_extract` (default `"logits"`) is the key/index `make_run_batch` uses to pull
 the prediction tensor out of the model's forward output.
+
+`kind: from_scratch` builds a randomly-initialized model whose architecture is copied
+from a prior run's `model_config.yaml` (via `arch_from_run_path`) — the checkpoint is
+ignored. It pairs with `pd.train_without_target_model=true`: the model is never a target
+to reconstruct, only a fixed scaffold (embeddings, norms, attention at frozen init) whose
+shape defines the decomposition targets. In that mode the reconstruction loss is
+next-token cross-entropy (`recon_loss_ce_next_token`) instead of KL-vs-target
+(`recon_loss_kl`), pre-weight activations come from the assembled all-components forward,
+and `use_delta_component` / faithfulness must be off (no target to delta against).
 
 ## Anatomy of `run.py`
 

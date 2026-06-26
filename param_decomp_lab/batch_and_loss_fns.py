@@ -7,7 +7,7 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
-from jaxtyping import Float
+from jaxtyping import Float, Int
 from torch import Tensor, nn
 
 from param_decomp.base_config import runtime_cast
@@ -68,3 +68,23 @@ def recon_loss_kl(
     p = torch.softmax(target, dim=-1)  # P
     n_positions = pred.numel() // pred.shape[-1]
     return F.kl_div(log_q, p, reduction="sum"), n_positions
+
+
+def recon_loss_ce_next_token(
+    pred: Float[Tensor, "... seq vocab"],
+    target: Int[Tensor, "... seq"],
+) -> tuple[Float[Tensor, ""], int]:
+    """Next-token cross-entropy returning `(sum_ce, n_predicted_positions)`.
+
+    `pred` are logits, `target` are the input token ids: position `t` predicts token
+    `t + 1`, so the final logit and the first token are dropped. Used as the `target`-free
+    reconstruction loss for from-scratch decomposable training (conventional LM pretraining
+    objective), in place of `recon_loss_kl` vs a target model's logits.
+    """
+    assert pred.shape[:-1] == target.shape, (pred.shape, target.shape)
+    logits = pred[..., :-1, :]
+    labels = target[..., 1:]
+    flat_logits = logits.reshape(-1, logits.shape[-1])
+    flat_labels = labels.reshape(-1).long()
+    sum_ce = F.cross_entropy(flat_logits, flat_labels, reduction="sum")
+    return sum_ce, flat_labels.numel()

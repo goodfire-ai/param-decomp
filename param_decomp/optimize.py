@@ -44,6 +44,7 @@ from param_decomp.distributed import (
 )
 from param_decomp.faithfulness_warmup import run_faithfulness_warmup
 from param_decomp.log import logger
+from param_decomp.masks import make_mask_infos
 from param_decomp.metrics.base import LossMetricConfig, Metric
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.dispatch import instantiate_metrics
@@ -51,7 +52,11 @@ from param_decomp.metrics.output import collect_metric_outputs
 from param_decomp.metrics.persistent_pgd_recon import validate_pgd_scope
 from param_decomp.run_sink import RunSink
 from param_decomp.schedule import get_scheduled_value
-from param_decomp.torch_helpers import bf16_autocast, loop_dataloader
+from param_decomp.torch_helpers import (
+    autocast_cache_disabled,
+    bf16_autocast,
+    loop_dataloader,
+)
 from param_decomp.training_state import TrainingState
 
 
@@ -145,17 +150,40 @@ def _build_metric_context(
     # The wrapped_model(...) call here is what registers DDP gradient hooks for this step.
     # Required even if no metric uses the DDP wrapper directly.
     batch = move_batch_to_device(batch, device)
-    target_model_output: OutputWithCache = wrapped_model(batch, cache_type="input")
+
+    if config.train_without_target_model:
+        # No target to reconstruct: register DDP via the frozen scaffold forward (output
+        # discarded), then derive pre-weight acts from the assembled (all-components) forward
+        # so CI sees the trained model's own activations, not the frozen scaffold's. The
+        # reconstruction target is the next token (the batch itself).
+        wrapped_model(batch)
+        all_ones_mask_infos = make_mask_infos(
+            {
+                module_path: torch.ones(component_model.module_to_c[module_path], device=device)
+                for module_path in component_model.target_module_paths
+            }
+        )
+        # cache disabled so this no_grad forward's bf16 casts of V/U don't poison the
+        # autocast weight cache for the grad-carrying recon forwards later this step.
+        with torch.no_grad(), autocast_cache_disabled():
+            assembled = component_model(batch, mask_infos=all_ones_mask_infos, cache_type="input")
+        pre_weight_acts = assembled.cache
+        target_out: Tensor = batch
+    else:
+        target_model_output: OutputWithCache = wrapped_model(batch, cache_type="input")
+        pre_weight_acts = target_model_output.cache
+        target_out = target_model_output.output
+
     ci = component_model.calc_causal_importances(
-        pre_weight_acts=target_model_output.cache,
-        detach_inputs=False,
+        pre_weight_acts=pre_weight_acts,
+        detach_inputs=config.train_without_target_model,
         sampling=config.sampling,
     )
     return MetricContext(
         model=component_model,
         batch=batch,
-        target_out=target_model_output.output,
-        pre_weight_acts=target_model_output.cache,
+        target_out=target_out,
+        pre_weight_acts=pre_weight_acts,
         ci=ci,
         weight_deltas=weight_deltas,
         step=step,
@@ -165,6 +193,7 @@ def _build_metric_context(
         n_mask_samples=config.n_mask_samples,
         reconstruction_loss=reconstruction_loss,
         is_eval=is_eval,
+        train_without_target_model=config.train_without_target_model,
     )
 
 

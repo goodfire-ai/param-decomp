@@ -25,13 +25,14 @@ from pydantic import Discriminator
 from torch.utils.data import DataLoader
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.batch_and_loss_fns import RunBatch
+from param_decomp.batch_and_loss_fns import ReconstructionLoss, RunBatch
 from param_decomp.component_model import ComponentModel
+from param_decomp.configs import PDConfig
 from param_decomp.distributed import DistributedState, is_main_process
 from param_decomp.log import logger
 from param_decomp.optimize import EvalLoop, Trainer
 from param_decomp_lab.batch_and_loss_fns import make_run_batch as _make_run_batch
-from param_decomp_lab.batch_and_loss_fns import recon_loss_kl
+from param_decomp_lab.batch_and_loss_fns import recon_loss_ce_next_token, recon_loss_kl
 from param_decomp_lab.component_model_io import load_component_model
 from param_decomp_lab.distributed import (
     ensure_cached_and_call,
@@ -96,8 +97,23 @@ class PretrainedTarget(BaseConfig):
     run_path: ModelPath
 
 
+class FromScratchTarget(BaseConfig):
+    """Build a freshly (randomly) initialized model — no weights are loaded.
+
+    For from-scratch decomposable training (`pd.train_without_target_model=True`): the
+    model is never reconstructed, only used as a fixed scaffold whose architecture defines
+    the decomposition targets. The architecture is copied from a prior pretrained run's
+    `model_config.yaml` (via `arch_from_run_path`) so it matches an existing setup exactly,
+    but its checkpoint is ignored.
+    """
+
+    kind: Literal["from_scratch"] = "from_scratch"
+    model_class: str
+    arch_from_run_path: ModelPath
+
+
 LMTargetSpec = Annotated[
-    HFTarget | PretrainedTarget,
+    HFTarget | PretrainedTarget | FromScratchTarget,
     Discriminator("kind"),
 ]
 
@@ -132,6 +148,13 @@ def build_target(target_cfg: LMTargetConfig) -> nn.Module:
             if "model_type" not in run_info.model_config_dict:
                 run_info.model_config_dict["model_type"] = spec.model_class.rsplit(".", 1)[-1]
             target_model = cls.from_run_info(run_info)
+        case FromScratchTarget():
+            from param_decomp_lab.experiments.lm.pretrain.run_info import PretrainRunInfo
+
+            run_info = ensure_cached_and_call(PretrainRunInfo.from_path, spec.arch_from_run_path)
+            if "model_type" not in run_info.model_config_dict:
+                run_info.model_config_dict["model_type"] = spec.model_class.rsplit(".", 1)[-1]
+            target_model = cls.from_config_dict(run_info.model_config_dict)
     target_model.eval()
     return target_model
 
@@ -167,6 +190,11 @@ def build_lm_loader(
 
 def make_run_batch(target_cfg: LMTargetConfig) -> RunBatch:
     return _make_run_batch(target_cfg.output_extract)
+
+
+def _reconstruction_loss_for(pd_config: PDConfig) -> ReconstructionLoss:
+    """CE-vs-next-token when training from scratch, else KL-vs-target-model."""
+    return recon_loss_ce_next_token if pd_config.train_without_target_model else recon_loss_kl
 
 
 @dataclass(frozen=True)
@@ -292,7 +320,7 @@ def _fresh_main(
         trainer = Trainer(
             target_model=target_model,
             run_batch=make_run_batch(cfg.target),
-            reconstruction_loss=recon_loss_kl,
+            reconstruction_loss=_reconstruction_loss_for(cfg.pd),
             pd_config=cfg.pd,
             runtime_config=cfg.runtime,
         )
@@ -361,7 +389,7 @@ def _resume_main(
             snapshot,
             target_model=target_model,
             run_batch=make_run_batch(effective_cfg.target),
-            reconstruction_loss=recon_loss_kl,
+            reconstruction_loss=_reconstruction_loss_for(effective_cfg.pd),
         )
         trainer.run(train_loader, sink, effective_cfg.cadence, eval_loop)
     finally:

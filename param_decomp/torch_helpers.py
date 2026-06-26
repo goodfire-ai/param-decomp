@@ -22,6 +22,25 @@ def bf16_autocast(enabled: bool = True) -> torch.amp.autocast_mode.autocast:
     return torch.autocast(device_type=device_type, dtype=torch.bfloat16, enabled=enabled)
 
 
+def autocast_cache_disabled() -> torch.amp.autocast_mode.autocast:
+    """Re-enter the current autocast region with the weight-cast cache disabled.
+
+    Autocast caches fp32→bf16 weight casts within an enabled region. A forward run
+    under `no_grad()` caches a *detached* cast; a later grad-carrying forward that
+    reuses the same parameter then picks up the detached cast and silently loses its
+    gradient connection. Wrapping the no_grad forward in this context stops its casts
+    from entering the cache, so the later forward re-casts the weight with grad. The
+    region inherits the surrounding autocast's enabled state and dtype.
+    """
+    device_type = "cuda" if torch.cuda.is_available() else "cpu"
+    return torch.autocast(
+        device_type=device_type,
+        dtype=torch.bfloat16,
+        enabled=torch.is_autocast_enabled(device_type),
+        cache_enabled=False,
+    )
+
+
 def loop_dataloader[T](dl: DataLoader[T]) -> Generator[T]:
     """Yield batches from `dl` forever, recreating the iterator on exhaustion.
 

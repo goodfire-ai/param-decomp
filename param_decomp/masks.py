@@ -259,3 +259,40 @@ def calc_stochastic_component_mask_info(
         weight_deltas_and_masks=weight_deltas_and_masks,
         routing_masks=routing_masks,
     )
+
+
+def calc_stochastic_subset_mask_info_no_target(
+    causal_importances: dict[str, Float[Tensor, "... C"]],
+    component_mask_sampling: SamplingType,
+    router: Router,
+) -> dict[str, ComponentsMaskInfo]:
+    """Subset stochastic masks for from-scratch training (no target module to fall back to).
+
+    Standard subset routing gates each position between the components and the *target
+    module* output; with no target, an unrouted position would fall back to the frozen
+    scaffold's output, which is meaningless. Here every position routes to components
+    everywhere, and the subset router instead selects which layers get a stochastic
+    `ci + (1 - ci) * source` mask — unselected layers run their full components (mask 1.0).
+    """
+    ci_sample = next(iter(causal_importances.values()))
+    leading_dims = ci_sample.shape[:-1]
+    device = ci_sample.device
+
+    routing = router.get_masks(list(causal_importances.keys()), leading_dims)
+    assert isinstance(routing, dict), (
+        "no-target subset masking needs per-module routing masks, not the 'all' sentinel"
+    )
+
+    component_masks: dict[str, Float[Tensor, "... C"]] = {}
+    for layer, ci in causal_importances.items():
+        match component_mask_sampling:
+            case "binomial":
+                stochastic_source = torch.randint(0, 2, ci.shape, device=device).float()
+            case "continuous":
+                stochastic_source = torch.rand_like(ci)
+        stochastic_mask = ci + (1 - ci) * stochastic_source
+        component_masks[layer] = torch.where(
+            routing[layer][..., None], stochastic_mask, torch.ones_like(stochastic_mask)
+        )
+
+    return make_mask_infos(component_masks=component_masks, routing_masks="all")

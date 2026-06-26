@@ -15,6 +15,7 @@ from param_decomp.masks import (
     SubsetRoutingType,
     UniformKSubsetRoutingConfig,
     calc_stochastic_component_mask_info,
+    calc_stochastic_subset_mask_info_no_target,
     get_subset_router,
 )
 from param_decomp.metrics.base import LossMetricConfig, Metric, MetricResult
@@ -39,19 +40,31 @@ def _stochastic_recon_subset_loss_update(
     weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
     router: Router,
     reconstruction_loss: ReconstructionLoss,
+    train_without_target_model: bool,
 ) -> tuple[Float[Tensor, ""], int]:
     assert ci, "Empty ci"
     sum_loss = torch.zeros((), device=get_obj_device(ci))
     n_examples = 0
-    stoch_mask_infos_list = [
-        calc_stochastic_component_mask_info(
-            causal_importances=ci,
-            component_mask_sampling=sampling,
-            weight_deltas=weight_deltas,
-            router=router,
-        )
-        for _ in range(n_mask_samples)
-    ]
+    if train_without_target_model:
+        assert weight_deltas is None, "no-target subset loss must not use weight deltas"
+        stoch_mask_infos_list = [
+            calc_stochastic_subset_mask_info_no_target(
+                causal_importances=ci,
+                component_mask_sampling=sampling,
+                router=router,
+            )
+            for _ in range(n_mask_samples)
+        ]
+    else:
+        stoch_mask_infos_list = [
+            calc_stochastic_component_mask_info(
+                causal_importances=ci,
+                component_mask_sampling=sampling,
+                weight_deltas=weight_deltas,
+                router=router,
+            )
+            for _ in range(n_mask_samples)
+        ]
     for stoch_mask_infos in stoch_mask_infos_list:
         out = model(batch, mask_infos=stoch_mask_infos)
         loss, batch_n = reconstruction_loss(out, target_out)
@@ -82,6 +95,7 @@ def stochastic_recon_subset_loss(
         weight_deltas=weight_deltas,
         router=get_subset_router(routing, device=get_obj_device(model)),
         reconstruction_loss=reconstruction_loss,
+        train_without_target_model=False,
     )
     return sum_loss / n
 
@@ -118,6 +132,7 @@ class StochasticReconSubsetLoss(Metric[StochasticReconSubsetLossConfig]):
             weight_deltas=wd,
             router=self.router,
             reconstruction_loss=ctx.reconstruction_loss,
+            train_without_target_model=ctx.train_without_target_model,
         )
         self.sum_loss += sum_loss.detach()
         self.n_examples += n
