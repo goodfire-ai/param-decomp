@@ -115,8 +115,9 @@ def make_train_step(
     factory closes over only static config (`site_names`, `recon_loss_fn`, term wiring) read
     off `lm` here. `losses` (from `build_loss_terms`) is the `LossSurface` record — the
     faithfulness + importance-minimality singletons and the recon Σ, read by name. `mesh`
-    (when given) pins every batch-leading activation to `P('dp', ...)` so the masked
-    re-forwards stay on per-device sub-batches (activation memory 1/n_dev)."""
+    (when given) pins every batch-leading activation over the full mesh
+    (`P(('replicate', 'fsdp'), ...)`) so the masked re-forwards stay on per-rank sub-batches
+    (activation memory 1/N)."""
     site_names = lm.site_names
     sites = lm.sites
     recon_loss_fn = lm.recon_loss_fn  # static method: pure, holds no arrays — safe to close
@@ -132,22 +133,19 @@ def make_train_step(
         return batch_shard_leading(x, mesh)
 
     def ci_shard(x: Array) -> Array:
-        """Pin a CI / mask tensor `[batch, *positions, C]` batch-on-`dp`, C-on-`tp`. No-op
-        off-mesh (single device / toys)."""
+        """Pin a CI / mask tensor `[batch, *positions, C]` batch over the full mesh, C
+        REPLICATED. No-op off-mesh (single device / toys)."""
         if mesh is None:
             return x
-        spec = ("dp", *((None,) * (x.ndim - 2)), "tp")
+        spec = (("replicate", "fsdp"), *((None,) * (x.ndim - 1)))
         return jax.lax.with_sharding_constraint(x, NamedSharding(mesh, P(*spec)))
 
-    def ci_C_on_tp(ci: CI) -> CI:
-        """Pin the CI-fn output batch-on-`dp`, C-on-`tp` — the layout `site_out` pins `x@V`
-        to (SPEC §4.1), so the downstream mask multiply `xV * mask` needs no reshard. The
-        per-site output heads (`ChunkTransformer.out_ws`, each C_j-on-`tp`) already BORN the
-        CI in this layout; the explicit constraint stops GSPMD re-deciding it in the backward
-        (same rationale as `site_out`'s activation pin, bf072ef01). This REPLACES the old
-        C→batch reshard, which FOUGHT the alignment — it moved C off `tp` only for GSPMD to
-        reshard it back at the multiply. `logits` is passed through (unused in the step — only
-        the squashings are; DCE drops it)."""
+    def ci_batch_sharded(ci: CI) -> CI:
+        """Pin the CI-fn output batch over the full mesh, C REPLICATED — the layout `site_out`
+        pins `x@V` to (SPEC §4.1), so the downstream mask multiply `xV * mask` needs no
+        reshard. The explicit constraint stops GSPMD re-deciding it in the backward (same
+        rationale as `site_out`'s activation pin, bf072ef01). `logits` is passed through
+        (unused in the step — only the squashings are; DCE drops it)."""
         return CI(
             logits=ci.logits,
             lower={site: ci_shard(v) for site, v in ci.lower.items()},
@@ -259,8 +257,10 @@ def make_train_step(
         imp_min_param = annealed_imp_min_param(step_f32, total_steps, imp_min)
 
         batch = batch_sharded(batch)
-        clean_output = jax.lax.stop_gradient(batch_sharded(model.clean_output(batch)))
-        taps = model.read_activations(batch, state.ci_fn.input_names)
+        with jax.named_scope("pd_clean_fwd"):
+            clean_output = jax.lax.stop_gradient(batch_sharded(model.clean_output(batch)))
+        with jax.named_scope("pd_read_taps"):
+            taps = model.read_activations(batch, state.ci_fn.input_names)
         # `leading` (batch, *positions) — the shape masks/sources/routes live in. Sourced
         # from a tap (always `[*leading, d_tap]`), not the opaque batch, so the engine never
         # assumes the batch's rank/feature dim.
@@ -269,7 +269,8 @@ def make_train_step(
         # ── adversary ascents: params + CI detached (SPEC §4.5) ──
         components_detached = jax.lax.stop_gradient(cast_floating(state.components, COMPUTE_DT))
         ci_fn_detached = jax.lax.stop_gradient(cast_floating(state.ci_fn, COMPUTE_DT))
-        ci_lower_detached = ci_C_on_tp(ci_fn_detached(taps, remat=False)).lower
+        with jax.named_scope("pd_ci_fn_fwd_detached"):
+            ci_lower_detached = ci_batch_sharded(ci_fn_detached(taps, remat=False)).lower
 
         # ── persistent adversaries: each runs its supplemental ascents vs the route-ALL
         # all-sites forward (SPEC S24 — torch warmup parity, NOT the term's loss plan),
@@ -282,10 +283,11 @@ def make_train_step(
             )
             return recon_loss_fn(masked, clean_output)
 
-        warmed_advs = {
-            state_key: adv.warmup_ascend(warmup_scoring_loss, step_f32, total_steps)
-            for state_key, adv in state.adversaries.items()
-        }
+        with jax.named_scope("pd_pgd_warmup_ascend"):
+            warmed_advs = {
+                state_key: adv.warmup_ascend(warmup_scoring_loss, step_f32, total_steps)
+                for state_key, adv in state.adversaries.items()
+            }
 
         # Fresh-PGD entries: ONE routing draw per entry per step, shared by all
         # ascents and the main loss forward (SPEC S24); sign-ascend `n_steps`, then
@@ -339,7 +341,10 @@ def make_train_step(
                         for site in sources
                     }, None
 
-                ascended, _ = jax.lax.scan(sign_ascend_body, init, None, length=fresh_cfg.n_steps)
+                with jax.named_scope("pd_fresh_pgd_ascend"):
+                    ascended, _ = jax.lax.scan(
+                        sign_ascend_body, init, None, length=fresh_cfg.n_steps
+                    )
                 fresh_sources[(term_idx, entry_idx)] = jax.lax.stop_gradient(ascended)
 
         # ── main losses: live components/ci; the PERSISTENT sources participate in
@@ -352,7 +357,8 @@ def make_train_step(
             components, ci_fn, persistent_sources = trainable
             components_bf16 = cast_floating(components, COMPUTE_DT)
             ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
-            ci = ci_C_on_tp(ci_fn_bf16(taps, remat=remat_ci_fn))
+            with jax.named_scope("pd_ci_fn_fwd_main"):
+                ci = ci_batch_sharded(ci_fn_bf16(taps, remat=remat_ci_fn))
             faith_loss = faithfulness_loss(model.weight_deltas(components))
             imp_lp, imp_freq = imp_min_terms(ci.upper, imp_min, imp_min_param)
 
@@ -389,16 +395,17 @@ def make_train_step(
                                 masks, delta_masks = source_masks(
                                     ci.lower, persistent_sources[state_key], entry.live_sites
                                 )
-                        masked = masked_forward(
-                            model,
-                            components_bf16,
-                            batch,
-                            masks,
-                            delta_masks,
-                            routes,
-                            entry.live_sites,
-                            entry.has_delta,
-                        )
+                        with jax.named_scope("pd_recon_masked_fwd"):
+                            masked = masked_forward(
+                                model,
+                                components_bf16,
+                                batch,
+                                masks,
+                                delta_masks,
+                                routes,
+                                entry.live_sites,
+                                entry.has_delta,
+                            )
                         total = total + recon_loss_fn(masked, clean_output)
                         n_forwards += 1
                 assert n_forwards > 0, f"term {term.name!r} produced no forwards"
@@ -415,11 +422,12 @@ def make_train_step(
                 total_loss = total_loss + term.coeff * term_loss
             return total_loss, (faith_loss, imp_lp, imp_freq, tuple(term_losses))
 
-        (total_loss, (faith_loss, imp_lp, imp_freq, term_losses)), grads = (
-            eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-                (state.components, state.ci_fn, {k: a.sources for k, a in warmed_advs.items()})
+        with jax.named_scope("pd_value_and_grad"):
+            (total_loss, (faith_loss, imp_lp, imp_freq, term_losses)), grads = (
+                eqx.filter_value_and_grad(loss_fn, has_aux=True)(
+                    (state.components, state.ci_fn, {k: a.sources for k, a in warmed_advs.items()})
+                )
             )
-        )
         components_grad, ci_fn_grad, persistent_grads_scaled = grads
         grad_norm_metrics = _grad_norm_metrics(components_grad, ci_fn_grad)
 

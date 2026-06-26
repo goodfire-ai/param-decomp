@@ -480,9 +480,44 @@ def run_decomposition_training(
     window_t0 = time.time()
     last_logged = start_step
 
+    # SCRATCH PROFILER HOOK (revertable): env-gated jax.profiler.trace over a window of
+    # steady-state steps + per-step block_until_ready wall-clock. PD_PROFILE_TRACE=1 enables;
+    # PD_PROFILE_START / PD_PROFILE_STEPS pick the window (default start at first post-warmup
+    # step, 3 steps). Trace lands in run_dir/profile (rank-0 dir is the one to pull).
+    import os as _os
+
+    _profile_on = _os.environ.get("PD_PROFILE_TRACE", "") == "1"
+    _profile_start = int(_os.environ.get("PD_PROFILE_START", str(start_step + 2)))
+    _profile_steps = int(_os.environ.get("PD_PROFILE_STEPS", "3"))
+    _profile_dir = str(run.run_dir / "profile")
+    _profiling = False
+    _prof_t0 = 0.0
+
     for step in range(start_step, pd.steps):
+        if _profile_on and step == _profile_start:
+            jax.block_until_ready(state)
+            jax.profiler.start_trace(_profile_dir)
+            _profiling = True
+            _prof_t0 = time.time()
+            if is_main:
+                print(f"PD_PROFILE: start_trace @ step {step} -> {_profile_dir}", flush=True)
+
         batch = sample_batch(step)
         state, metrics = step_fn(lm, state, batch, random.fold_in(run_key, step))
+
+        if _profiling:
+            jax.block_until_ready((state, metrics["total"]))
+            if is_main:
+                print(
+                    f"PD_PROFILE: step {step} wall {time.time() - _prof_t0:.3f}s (cumulative)",
+                    flush=True,
+                )
+            _prof_t0 = time.time()
+            if step + 1 >= _profile_start + _profile_steps:
+                jax.profiler.stop_trace()
+                _profiling = False
+                if is_main:
+                    print(f"PD_PROFILE: stop_trace @ step {step}", flush=True)
 
         now_step = step + 1
         dense = cadence.dense_log_phase
