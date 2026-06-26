@@ -143,40 +143,17 @@ def make_train_step(
             upper={site: batch_sharded(v) for site, v in ci.upper.items()},
         )
 
-    # The adversary ascents (warmup + fresh-PGD) backprop only to the SOURCES — params and
-    # CI are detached — so there are no param activations worth recomputing; ascents run the
-    # un-rematted forward.
+    # ONE masked re-forward for recon AND the adversary ascents, sharing the same remat policy.
+    # `remat_recon_forwards` gates gradient-checkpointing inside the target's `masked_output` at
+    # the target's natural granularity (a deep target recomputes one layer at a time in the
+    # backward instead of storing every layer's activations). This is load-bearing for the
+    # ASCENTS too: though they backprop only to the SOURCES (params + CI detached), the source
+    # gradient still flows through the per-layer activations (the masks MULTIPLY them), so an
+    # un-rematted ascent forward stacks `[n_layer, *leading, d_ff]` MLP intermediates — measured
+    # as the dominant step-memory term at depth (~6.6x peak vs rematted; the full-32L OOM).
+    # Remat off stores all activations: faster when memory allows.
     @jaxtyped(typechecker=beartype)
     def masked_forward(
-        model: DecomposedModel,
-        components_bf16: DecompVU,
-        batch: Any,
-        masks: dict[str, Float[Array, "*leading _"]],
-        delta_masks: dict[str, Float[Array, "..."]],
-        routes: dict[str, Bool[Array, "*leading"]] | None,
-        live_sites: tuple[str, ...],
-        has_delta: bool,
-    ) -> Any:
-        return batch_sharded(
-            model.masked_output(
-                components_bf16,
-                batch,
-                masks,
-                delta_masks,
-                routes,
-                live_sites,
-                has_delta,
-                remat=False,
-            )
-        )
-
-    # The main backward path: `remat_recon_forwards` gates gradient-checkpointing inside the
-    # target's `masked_output`, at the target's natural granularity (a deep target rematerializes
-    # per-layer, recomputing one layer at a time instead of storing every layer's activations —
-    # the dominant step-memory term at depth). Remat off stores all activations: faster when
-    # memory allows.
-    @jaxtyped(typechecker=beartype)
-    def checkpointed_masked_forward(
         model: DecomposedModel,
         components_bf16: DecompVU,
         batch: Any,
@@ -410,7 +387,7 @@ def make_train_step(
                                 masks, delta_masks = source_masks(
                                     ci.lower, persistent_sources[state_key], entry.live_sites
                                 )
-                        masked = checkpointed_masked_forward(
+                        masked = masked_forward(
                             model,
                             components_bf16,
                             batch,
