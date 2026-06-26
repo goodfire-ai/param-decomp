@@ -33,8 +33,12 @@ def test_shard_batch_preserves_global_data():
 
 def test_mesh_is_3d_hsdp_tp():
     """The mesh is 3-D `(replicate, dp, tp)`: `dp · tp` tiles the node size, `replicate`
-    carries the rest. Weights (V) name only `dp`+`tp` (never `replicate`); the batch shards
-    over `DATA_AXES` (`replicate × dp`). Most informative at >8 sim devices (replicate>1)."""
+    carries the rest. ZeRO-1 ÷N: V/U master + Adam state shard the FSDP dim over BOTH
+    data-parallel axes (`DATA_AXES = replicate × dp`) + C on `tp`, so the master is ÷ the
+    FULL mesh (carries `replicate`). The batch shards over `DATA_AXES`. Most informative at
+    >8 sim devices (replicate>1)."""
+    import equinox as eqx
+    import optax
     from jax.sharding import NamedSharding
     from jax.sharding import PartitionSpec as P
 
@@ -62,20 +66,29 @@ def test_mesh_is_3d_hsdp_tp():
     assert sharded.sharding.spec == P(None, DATA_AXES, None)
     assert jnp.allclose(jnp.asarray(sharded), full)  # global data preserved
 
-    # weights name only dp + tp — never replicate (no cross-node weight collective).
+    # ZeRO-1 ÷N: V FSDP-shards d_in over DATA_AXES (carries replicate) + C on tp; the Adam
+    # mu/nu inherit the master spec (so the optimizer state is ÷ the full mesh).
     cfg = _tiny_cfg()
-    sites = llama_site_specs(
-        cfg, canonical_site_cs((SiteC("layers.0.mlp.gate_proj", 8 * mesh.shape["tp"]),))
-    )
+    c = 8 * mesh.shape["tp"]
+    sites = llama_site_specs(cfg, canonical_site_cs((SiteC("layers.0.mlp.gate_proj", c),)))
     vu = init_decomp_vu_placed(sites, jax.random.PRNGKey(1), mesh)
     eager = init_decomp_vu(sites, jax.random.PRNGKey(1))
     for name, (V, U) in vu.vu.items():
         assert isinstance(V.sharding, NamedSharding) and isinstance(U.sharding, NamedSharding)
-        assert "replicate" not in V.sharding.spec, name
-        assert "replicate" not in U.sharding.spec, name
-        assert V.sharding.spec == P("dp", "tp"), name
+        assert V.sharding.spec == P(DATA_AXES, "tp"), name  # d_in ÷ replicate·dp, C on tp
+        assert U.sharding.spec == P("tp", DATA_AXES), name  # gate_proj (MLP): d_out ÷ DATA_AXES
     for got, want in zip(jax.tree.leaves(vu), jax.tree.leaves(eager), strict=True):
         assert jnp.allclose(jnp.asarray(got), want, rtol=1e-6, atol=0)  # placement-only
+
+    # the Adam moments carry the master sharding => ÷N optimizer state.
+    opt = optax.adamw(1e-3, weight_decay=0.0)
+    ostate = opt.init(eqx.filter(vu, eqx.is_array))
+    moment_specs = {
+        str(leaf.sharding.spec)
+        for leaf in jax.tree.leaves(ostate)
+        if eqx.is_array(leaf) and leaf.ndim == 2  # mu/nu for the 2-D V/U, not scalar counts
+    }
+    assert moment_specs == {str(P(DATA_AXES, "tp")), str(P("tp", DATA_AXES))}, moment_specs
 
 
 def test_shard_batch_requires_divisible_batch():
@@ -133,19 +146,22 @@ def test_jitted_sharded_inits_match_eager_values():
             )
         ),
     )
-    # Placement is MODEL-OWNED and uniform: V FSDP-shards d_in on `dp` + C on `tp`
-    # (`P("dp","tp")`); U shards C on `tp` + d_out FSDP on `dp` (`P("tp","dp")`), EXCEPT the
+    # Placement is MODEL-OWNED and uniform (ZeRO-1 ÷N): V FSDP-shards d_in over BOTH
+    # data-parallel axes `DATA_AXES = replicate × dp` + C on `tp` (`P(DATA_AXES,"tp")`); U
+    # shards C on `tp` + d_out FSDP over `DATA_AXES` (`P("tp",DATA_AXES)`), EXCEPT the
     # attention q/k/v sites keep d_out REPLICATED (`P("tp",None)`) — d_out there is the head
     # dim, re-sharded to `tp` at the attention seam. At an axis of size 1 the shard is
     # trivially replicated; the SPEC is unchanged.
+    from param_decomp.sharding import DATA_AXES
+
     vu_placed = init_decomp_vu_placed(sites, jax.random.PRNGKey(1), mesh)
     vu_eager = init_decomp_vu(sites, jax.random.PRNGKey(1))
     qkv = {"layers.2.self_attn.q_proj"}  # the only q/k/v site in this set (d_out replicated)
     for spec in sites:
         V, U = vu_placed.site(spec.name)
         assert isinstance(V.sharding, NamedSharding) and isinstance(U.sharding, NamedSharding)
-        assert V.sharding.spec == P("dp", "tp"), spec.name
-        want_u = P("tp", None) if spec.name in qkv else P("tp", "dp")
+        assert V.sharding.spec == P(DATA_AXES, "tp"), spec.name
+        want_u = P("tp", None) if spec.name in qkv else P("tp", DATA_AXES)
         assert U.sharding.spec == want_u, spec.name
     for got, want in zip(jax.tree.leaves(vu_placed), jax.tree.leaves(vu_eager), strict=True):
         assert got.shape == want.shape and got.dtype == want.dtype

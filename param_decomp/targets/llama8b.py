@@ -305,41 +305,53 @@ def _per_kind_dims(components: DecompVU) -> dict[str, tuple[int, int, int]]:
     return kind_dims
 
 
-def _hoist_vu_gather(per_kind: dict[str, dict[str, Array]]) -> dict[str, dict[str, Array]]:
-    """Hoist the FSDP (`dp`) all-gather of the stacked bf16 compute V/U OUT of the per-layer
-    scan and force it bf16. The stacked `V [n_layer, d_in, C]` shards d_in on `dp` (C on
-    `tp`); `U [n_layer, C, d_out]` shards d_out on `dp` (C on `tp`), or d_out replicated for
-    the q/k/v sites. For each, constrain to the MASTER (`dp`-sharded) layout, drop an
-    `optimization_barrier` (so XLA can't sink the bf16 cast PAST the gather — keeping the
-    gathered weight bf16, half the NVLink bytes), then constrain to the COMPUTE layout
-    (`dp` axis replicated) — forcing the all-gather HERE, ONCE, rather than once per scan
-    iteration inside the `lax.scan` body. No-op off-mesh (CPU tests / single device). The C
-    (`tp`) axis is untouched (Megatron stays sharded). The gathered weight is `∝ ΣC/tp`
-    bf16 — small vs the per-layer activations the scan rematerializes."""
+def _reconstruct_zero1_replicate(
+    per_kind: dict[str, dict[str, Array]],
+) -> dict[str, dict[str, Array]]:
+    """ZeRO-1 reconstruction of the stacked bf16 compute V/U: gather the `replicate` leg of
+    the master's `DATA_AXES = replicate × dp` FSDP sharding ONCE per step in ENTRY, leaving
+    the INTRA-node `dp` (fsdp) leg SHARDED. The masters are ÷N (over `replicate·dp·tp`); this
+    reconstructs the ÷fsdp weight (a small resident bf16 stack, `∝ params/(fsdp·tp)`), NOT the
+    full V/U — the full-d_in gather was a 73 GiB OOM at 8B (an IB-era idea wrong for
+    intra-node FSDP). The per-layer `dp` (fsdp) gather then happens INSIDE the scan, one layer
+    at a time over NVLink (transient, freed each iteration) — driven by `site_out`'s activation
+    pin. So the only cross-node `replicate` weight collective is this once/step ÷fsdp gather in
+    ENTRY; the hot path stays intra-node, and peak has NO `[n_layer, full_d_in, full_C]` stack.
+
+    Stacked `V [n_layer, d_in, C]`: d_in on `DATA_AXES`, C on `tp`. `U [n_layer, C, d_out]`:
+    d_out on `DATA_AXES`, C on `tp` (or d_out replicated for q/k/v). For each leaf, constrain
+    to the MASTER layout, `optimization_barrier` (so XLA can't sink the bf16 cast PAST the
+    gather — keeps it bf16), then constrain to the COMPUTE layout with the FSDP leg as `dp`
+    only (replicate gathered, dp still sharded). No-op off-mesh (CPU / single device)."""
     if jax.sharding.get_abstract_mesh().empty:
         return per_kind
 
-    def hoist(arr: Array, fsdp_axis: int, c_axis: int) -> Array:
-        master: list[str | None] = [None] * arr.ndim
-        master[fsdp_axis] = "dp"
+    def reconstruct(arr: Array, fsdp_axis: int, c_axis: int) -> Array:
+        master: list[object] = [None] * arr.ndim
+        master[fsdp_axis] = DATA_AXES  # replicate × dp (the ÷N master layout)
         master[c_axis] = "tp"
-        compute: list[str | None] = [None] * arr.ndim
+        compute: list[object] = [None] * arr.ndim
+        compute[fsdp_axis] = "dp"  # replicate GATHERED, intra-node dp still sharded
         compute[c_axis] = "tp"
         arr = jax.lax.with_sharding_constraint(arr, P(*master))
-        arr = jax.lax.optimization_barrier(arr)
-        return jax.lax.with_sharding_constraint(arr, P(*compute))
+        arr = jax.lax.with_sharding_constraint(arr, P(*compute))
+        # barrier AFTER the compute constraint freezes the ÷fsdp (`dp`-sharded d_in) layout,
+        # so XLA can't fuse the per-layer `dp` gather UP into a full-d_in stack gather (which
+        # would be the [n_layer, full_d_in, *] OOM buffer) — the dp gather must stay in the
+        # scan body, per layer.
+        return jax.lax.optimization_barrier(arr)
 
-    hoisted: dict[str, dict[str, Array]] = {}
+    out: dict[str, dict[str, Array]] = {}
     for kind, e in per_kind.items():
         new_e = dict(e)
-        new_e["V"] = hoist(e["V"], fsdp_axis=1, c_axis=2)  # [nl, d_in(dp), C(tp)]
-        # q/k/v U keep d_out REPLICATED (head dim, re-sharded to `tp` at the attn seam, so
-        # NOT FSDP on `dp`) — only its C(`tp`) is sharded, no `dp` gather to hoist. o/MLP U
-        # FSDP d_out on `dp`: hoist that gather like V.
+        new_e["V"] = reconstruct(e["V"], fsdp_axis=1, c_axis=2)  # [nl, d_in, C(tp)]
+        # q/k/v U keep d_out REPLICATED (head dim, re-sharded to `tp` at the attn seam, NOT
+        # FSDP) — no replicate leg to gather. o/MLP U FSDP d_out on DATA_AXES: gather its
+        # replicate leg like V.
         if kind in ("o", "gate", "up", "down"):
-            new_e["U"] = hoist(e["U"], fsdp_axis=2, c_axis=1)  # [nl, C(tp), d_out(dp)]
-        hoisted[kind] = new_e
-    return hoisted
+            new_e["U"] = reconstruct(e["U"], fsdp_axis=2, c_axis=1)  # [nl, C(tp), d_out]
+        out[kind] = new_e
+    return out
 
 
 def _stack_per_kind_masked_inputs(
@@ -544,7 +556,7 @@ class LlamaDecomposedModel(eqx.Module):
         per_kind = _stack_per_kind_masked_inputs(
             vu, self.n_layer, leading, masks, delta_masks, routes, live_set, has_delta
         )
-        per_kind = _hoist_vu_gather(per_kind)
+        per_kind = _reconstruct_zero1_replicate(per_kind)
         decomposed_kinds = frozenset(per_kind)
         want_collect = collect is not None
 

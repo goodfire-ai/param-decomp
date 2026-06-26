@@ -59,26 +59,34 @@ class DecompVU(eqx.Module, Generic[VULeaf]):
     def shardings(
         self: "DecompVU[Array]", mesh: "Mesh", replicate_u_dout: frozenset[str]
     ) -> "DecompVU[NamedSharding]":
-        """Uniform FSDP(`dp`)×TP(`tp`) for the STORED masters: V `(d_in, C)` shards d_in on
-        `dp` + C on `tp`; U `(C, d_out)` shards C on `tp` + d_out on `dp`. This is the
-        PERSISTENCE layout (master + optimizer-state memory ÷ dp·tp); `site_out` gathers the
-        `dp`-sharded d_in/d_out for COMPUTE (its `with_sharding_constraint` forces all-gather
-        in / reduce-scatter out), so the hot matmuls run batch-DP + C-on-`tp`. C-on-`tp`
-        aligns with the CI mask (no mask reshard). EXCEPTION: sites in `replicate_u_dout`
-        (the attention q/k/v projections — d_out is the head dim, and `tp` is already taken
-        by C, so it can't live there) keep d_out REPLICATED and re-shard to head-on-`tp` at
-        the attention seam. Asserts each sharded axis tiles its mesh axis."""
-        shard_V = NamedSharding(mesh, P("dp", "tp"))
-        shard_U_fsdp = NamedSharding(mesh, P("tp", "dp"))
+        """ZeRO-1 ÷N FSDP(`replicate × dp`)×TP(`tp`) for the STORED masters: V `(d_in, C)`
+        shards d_in over BOTH data-parallel axes (`DATA_AXES = replicate × dp`) + C on `tp`;
+        U `(C, d_out)` shards C on `tp` + d_out over `DATA_AXES`. This is the PERSISTENCE
+        layout — master + Adam mu/nu memory ÷ (replicate·dp·tp) = ÷N over the FULL mesh (the
+        612 GB → ~5 GB/GPU win). `_hoist_vu_gather` gathers the `DATA_AXES`-sharded d_in/d_out
+        ONCE per step in ENTRY (the ZeRO-1 reconstruction, incl. the cross-node `replicate`
+        leg — off the hot path); the per-layer scan body then runs batch-DP + C-on-`tp` with
+        NO weight gather. C-on-`tp` aligns with the CI mask (no mask reshard). EXCEPTION:
+        sites in `replicate_u_dout` (the attention q/k/v projections — d_out is the head dim,
+        and `tp` is already taken by C, so it can't live there) keep d_out REPLICATED and
+        re-shard to head-on-`tp` at the attention seam. Asserts each sharded axis tiles its
+        mesh — d_in/d_out must tile `replicate·dp` (the product of the two FSDP axes)."""
+        shard_V = NamedSharding(mesh, P(DATA_AXES, "tp"))
+        shard_U_fsdp = NamedSharding(mesh, P("tp", DATA_AXES))
         shard_U_repl = NamedSharding(mesh, P("tp", None))
+        n_fsdp = mesh.shape["replicate"] * mesh.shape["dp"]
         placed: dict[str, tuple[NamedSharding, NamedSharding]] = {}
         for name, (V, U) in self.vu.items():
-            assert_divisible(V.shape[0], mesh, "dp", f"DecompVU[{name}].V.d_in")
+            assert V.shape[0] % n_fsdp == 0, (
+                f"DecompVU[{name}].V.d_in {V.shape[0]} not divisible by replicate·dp {n_fsdp}"
+            )
             assert_divisible(V.shape[1], mesh, "tp", f"DecompVU[{name}].V.C")
             if name in replicate_u_dout:
                 placed[name] = (shard_V, shard_U_repl)
             else:
-                assert_divisible(U.shape[1], mesh, "dp", f"DecompVU[{name}].U.d_out")
+                assert U.shape[1] % n_fsdp == 0, (
+                    f"DecompVU[{name}].U.d_out {U.shape[1]} not divisible by replicate·dp {n_fsdp}"
+                )
                 placed[name] = (shard_V, shard_U_fsdp)
         return DecompVU(vu=placed)
 
@@ -112,12 +120,14 @@ def site_out(
     trailing dim added here."""
     # Pin the decomposed matmuls DATA-PARALLEL over both DP axes (`replicate × dp`): the
     # d_in/d_out-space activation `x` stays batch-on-`DATA_AXES`, feature-replicated, and the
-    # component-space activation `x@V` stays batch-on-`DATA_AXES`, C-on-`tp`. This forces the
-    # `dp`-sharded V/U masters to be GATHERED (on the intra-node `dp`/FSDP axis only) for
-    # compute and their grads reduce-scattered back (symmetric FSDP); the cross-node
-    # `replicate` axis carries only the batch and so only the grad all-reduce (no weight
-    # collective). WITHOUT pinning `x`, the weight-grad backward is free to instead shard
-    # `x`'s feature dim on `dp` and REPLICATE the global batch (the forward gathers V, the
+    # component-space activation `x@V` stays batch-on-`DATA_AXES`, C-on-`tp`. The V/U masters
+    # are sharded over `DATA_AXES` (ZeRO-1 ÷N); `_reconstruct_zero1_replicate` gathers only the
+    # cross-node `replicate` leg once/step in ENTRY (the ÷fsdp weight stays resident, small),
+    # so inside this matmul the compute weight is still `dp`(fsdp)-SHARDED — and this activation
+    # pin forces the per-layer `dp` gather to happen HERE, one layer at a time over NVLink
+    # (transient, freed each scan iteration; never the full V/U stack). The weight-grad then
+    # reduce-scatters back over `DATA_AXES`. WITHOUT pinning `x`, the weight-grad backward is free to instead
+    # shard `x`'s feature dim and REPLICATE the global batch (the forward gathers V, the
     # backward does not), which GSPMD can't reshard cheaply -> involuntary full
     # rematerialization -> OOM at tp>1. Pinning the activations (not V/U) keeps the weights as
     # plain matmul args. Guarded so it's a no-op off-mesh (CPU tests / single device);

@@ -3,16 +3,21 @@
 The single-pool SPMD design: a 3-D device mesh `(replicate, dp, tp)` (`dp_mesh`), where
 `(dp, tp)` are the two INTRA-node axes (`dp · tp = node size = 8`) and `replicate` is the
 CROSS-node data-parallel axis. Data is sharded over BOTH data-parallel axes
-(`P(DATA_AXES, ...)` = `replicate × dp`); params are placed with explicit `NamedSharding`s
-that name only `dp` (FSDP) + `tp` (Megatron) — never `replicate`, so weights replicate
-cross-node and NO weight collective crosses IB. `jax.jit` inserts every collective: the
-weight all-gather lands on the intra-node `dp` (NVLink), the C/Megatron reductions on `tp`
-(NVLink), and the grad all-reduce on `replicate × dp` (the mean loss reduces over the
+(`P(DATA_AXES, ...)` = `replicate x dp`). ZeRO-1 ÷N: params (V/U master + Adam state) shard
+the FSDP dim over BOTH data axes (`DATA_AXES`) + C on `tp`, so the optimizer state is ÷ the
+FULL mesh (`replicate·dp·tp`). The bf16 COMPUTE weight is reconstructed in TWO stages so
+peak never holds the full V/U (a 73 GiB OOM at 8B): `_reconstruct_zero1_replicate` gathers
+ONLY the cross-node `replicate` leg once/step in ENTRY (-> the ÷fsdp weight, small + bf16),
+then the per-layer INTRA-node `dp` (fsdp) gather runs INSIDE the scan, one layer at a time
+over NVLink (transient, freed each iteration). `replicate` also carries the grad all-reduce.
+`jax.jit` inserts every collective: the once/step ÷fsdp `replicate` weight all-gather in
+ENTRY, the per-layer `dp` gather in the scan body (NVLink), the C/Megatron reductions on
+`tp` (NVLink), and the grad all-reduce on `replicate x dp` (the mean loss reduces over the
 sharded batch). No manual NCCL, no pool-coordination code.
 
 Placement is MODEL-OWNED: target-specific plans (like `llama8b_sharding.py`) place params
-with d_in/d_out FSDP-on-`dp` + C-on-`tp`; `shard_batch` / `batch_shard_leading` shard the
-data axis over `DATA_AXES`. `tp = 1` ⇒ pure HSDP (`dp = 8`); `tp = 8` ⇒ pure intra-node TP
+with d_in/d_out FSDP-on-`DATA_AXES` + C-on-`tp`; `shard_batch` / `batch_shard_leading`
+shard the data axis over `DATA_AXES`. `tp = 1` ⇒ pure HSDP (`dp = 8`); `tp = 8` ⇒ pure intra-node TP
 + cross-node replicate-DP (`dp = 1`); a single node ⇒ `replicate = 1` (the old 2-D
 `(dp, tp)` mesh, weights placed identically).
 """

@@ -6,13 +6,20 @@ memory consumers, and how each is placed:
   * frozen target: FSDP-sharded over `dp` (the ~14 GB layer bulk shards `/(dp·tp)`,
     gathered per layer in the scan), embed/lm_head/norm REPLICATED. Replicated over
     `replicate` (no cross-node gather).
-  * components (V/U) + their Adam states: SHARDED over `dp` (FSDP: V's d_in / U's d_out)
-    + `tp` (Megatron: C). The fp32 masters + fp32 Adam m/v are the dominant non-activation
-    footprint; this splits all three `/(dp·tp)` per rank — ZeRO-1 over the INTRA-node mesh.
-    Replicated over `replicate` (the bf16 compute weight gathers on `dp` only — no weight
-    collective crosses IB; the proven HSDP×TP repro's tradeoff: master replicated cross-node
-    so `replicate` carries ONLY the grad all-reduce, not a weight gather).
-  * CI fn + Adam states: SHARDED over `dp` (FSDP) + `tp` (Megatron), same story.
+  * components (V/U) + their Adam states: ZeRO-1 ÷N — SHARDED over BOTH data-parallel axes
+    (`DATA_AXES = replicate × dp`, FSDP: V's d_in / U's d_out) + `tp` (Megatron: C). The
+    fp32 masters + fp32 Adam m/v are the dominant non-actuation footprint; this splits all
+    three `/(replicate·dp·tp) = /N` per rank — the single most important memory property
+    (a 612 GB optimizer goes from a fixed 76.5 GB/GPU at ÷8 to ~5 GB/GPU at ÷N and SCALING).
+    The bf16 compute weight is reconstructed in two stages: `_reconstruct_zero1_replicate`
+    gathers ONLY the cross-node `replicate` leg once/step in ENTRY (-> the ÷fsdp weight, a
+    SMALL resident bf16 stack — NOT the full V/U, which was a 73 GiB OOM at 8B); the per-layer
+    INTRA-node `dp` (fsdp) gather then happens INSIDE the scan, one layer at a time over NVLink
+    (transient, freed each iteration). So the only cross-node `replicate` weight collective is
+    the once/step ÷fsdp reconstruction; `replicate` also carries the grad all-reduce.
+  * CI fn + Adam states: SHARDED over `dp` (FSDP) + `tp` (Megatron) — NOTE: the CI fn is NOT
+    yet ÷N (its `.shardings` still names only `dp`); a follow-up to extend it to `DATA_AXES`
+    like V/U. The CI fn is small relative to V/U so its optimizer footprint is secondary.
   * PGD source (broadcast scope, `{site: (1,T,C+1)}`): REPLICATED. A single adversarial
     source shared across the global batch; it combines elementwise with the batch-sharded
     CI and its grad reduction falls out of the global-mean loss (torch
