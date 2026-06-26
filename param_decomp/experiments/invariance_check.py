@@ -125,7 +125,7 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
     )  # fmt: skip
     step = make_train_step(
         lm=lm,
-        loss_terms=loss_terms,
+        losses=loss_terms,
         components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
         total_steps=100,
         remat_recon_forwards=True, remat_ci_fn=False, mesh=mesh,

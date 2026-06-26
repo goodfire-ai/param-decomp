@@ -240,7 +240,7 @@ def test_train_step_runs_through_generic_target():
     )
     step_fn = make_train_step(
         lm=lm,
-        loss_terms=loss_terms,
+        losses=loss_terms,
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=10,

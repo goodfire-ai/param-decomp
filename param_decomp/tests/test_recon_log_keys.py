@@ -75,7 +75,7 @@ def _recon_terms(recon_configs: tuple[object, ...]) -> tuple[ReconLossTerm, ...]
         (*_non_recon_configs(), *recon_configs),  # pyright: ignore[reportArgumentType]
         site_names=SITE_NAMES,
     )
-    return tuple(t for t in terms if isinstance(t, ReconLossTerm))
+    return terms.recon
 
 
 def test_recon_term_name_is_config_type_by_default():

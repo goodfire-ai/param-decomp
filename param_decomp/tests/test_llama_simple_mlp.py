@@ -35,7 +35,7 @@ from param_decomp.configs import (
     UniformKSubsetRoutingConfig,
 )
 from param_decomp.lm import DecomposedModel
-from param_decomp.recon import ReconLossTerm, build_loss_terms
+from param_decomp.recon import build_loss_terms
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.targets.llama8b import FrozenAttn
 from param_decomp.targets.llama_simple_mlp import (
@@ -410,7 +410,7 @@ def test_step_trains_and_has_vpd_signature():
     )
     step = make_train_step(
         lm=lm,
-        loss_terms=loss_terms,
+        losses=loss_terms,
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=100,
@@ -535,11 +535,7 @@ def test_pretrained_target_converts_with_wildcards():
         cfg.pd.loss_metrics,
         tuple(sc.name for sc in target.sites),
     )
-    (stoch_term,) = [
-        t
-        for t in loss_terms
-        if isinstance(t, ReconLossTerm) and t.name == "StochasticReconSubsetLoss"
-    ]
+    (stoch_term,) = [t for t in loss_terms.recon if t.name == "StochasticReconSubsetLoss"]
     (stoch_entry,) = stoch_term.plan
     assert len(stoch_entry.live_sites) == 24
     assert isinstance(cfg.data, DataConfig)

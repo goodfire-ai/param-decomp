@@ -18,9 +18,6 @@ from param_decomp.configs import (
     PersistentPGDReconLossConfig,
 )
 from param_decomp.recon import (
-    FaithfulnessTerm,
-    ImportanceMinimalityTerm,
-    ReconLossTerm,
     build_loss_terms,
     persistent_configs,
 )
@@ -94,18 +91,17 @@ def test_b128_config_converts():
     assert converted.run.run_name == "jax-l18-b128-cmp32-from-torch"
     assert converted.data is not None and converted.data.global_batch == 128
     assert converted.target.sites == mlp_family_site_cs(18, 18, 24576)
-    terms = build_loss_terms(
+    losses = build_loss_terms(
         converted.pd.loss_metrics, tuple(sc.name for sc in converted.target.sites)
     )
-    (faith,) = (t for t in terms if isinstance(t, FaithfulnessTerm))
-    (imp,) = (t for t in terms if isinstance(t, ImportanceMinimalityTerm))
+    faith, imp = losses.faith, losses.imp
     assert isinstance(imp.cfg, ImportanceMinimalityLossConfig)
     assert faith.coeff == 1e5 and imp.cfg.pnorm == 2.0
-    (ppgd,) = persistent_configs(terms).values()
+    (ppgd,) = persistent_configs(losses.recon).values()
     assert isinstance(ppgd, PersistentPGDReconLossConfig)
     assert ppgd.n_warmup_steps == 2
     assert converted.pd.components_optimizer.grad_clip_norm == 0.01
-    assert [t.name for t in terms if isinstance(t, ReconLossTerm)] == [
+    assert [t.name for t in losses.recon] == [
         "StochasticReconSubsetLoss",
         "PersistentPGDReconLoss",
     ]

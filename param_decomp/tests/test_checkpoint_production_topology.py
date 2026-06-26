@@ -158,11 +158,11 @@ def _build_sharded(seed: int):
         ),
         lm.site_names,
     )  # fmt: skip
-    assert tuple(persistent_configs(loss_terms)) == PERSISTENT_TERMS, loss_terms
+    assert tuple(persistent_configs(loss_terms.recon)) == PERSISTENT_TERMS, loss_terms
 
     step = make_train_step(
         lm=lm,
-        loss_terms=loss_terms,
+        losses=loss_terms,
         components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
         total_steps=100,
         remat_recon_forwards=True, remat_ci_fn=False, mesh=mesh,

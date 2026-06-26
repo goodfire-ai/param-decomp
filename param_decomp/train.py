@@ -42,13 +42,10 @@ from param_decomp.losses import (
 )
 from param_decomp.recon import (
     ConstantSources,
-    FaithfulnessTerm,
     FreshPGDSources,
-    ImportanceMinimalityTerm,
-    LossTerms,
+    LossSurface,
     PersistentSources,
     ReconForward,
-    ReconLossTerm,
     Routes,
     StochasticSources,
 )
@@ -103,7 +100,7 @@ def _grad_norm_metrics(components_grad: DecompVU, ci_fn_grad: Any) -> dict[str, 
 def make_train_step(
     lm: DecomposedModel,
     *,
-    loss_terms: LossTerms,
+    losses: LossSurface,
     components_optimizer: optax.GradientTransformation,
     ci_fn_optimizer: optax.GradientTransformation,
     total_steps: int,
@@ -115,18 +112,16 @@ def make_train_step(
 
     `model` is the jit ARG (frozen 8B weights traced as array leaves, never baked); the
     factory closes over only static config (`site_names`, `recon_loss_fn`, term wiring) read
-    off `lm` here. `loss_terms` (from `build_loss_terms`) is the flat tuple of self-describing
-    loss terms — faithfulness, importance-minimality, and the recon terms; the supported
-    subset is asserted there. `mesh` (when given) pins every batch-leading activation to
-    `P('dp', ...)` so the masked re-forwards stay on per-device sub-batches (activation
-    memory 1/n_dev)."""
+    off `lm` here. `losses` (from `build_loss_terms`) is the `LossSurface` record — the
+    faithfulness + importance-minimality singletons and the recon Σ, read by name. `mesh`
+    (when given) pins every batch-leading activation to `P('dp', ...)` so the masked
+    re-forwards stay on per-device sub-batches (activation memory 1/n_dev)."""
     site_names = lm.site_names
     sites = lm.sites
     recon_loss_fn = lm.recon_loss_fn  # static method: pure, holds no arrays — safe to close
-    recon_terms = tuple(t for t in loss_terms if isinstance(t, ReconLossTerm))
-
-    (faith_term,) = (t for t in loss_terms if isinstance(t, FaithfulnessTerm))
-    (imp_term,) = (t for t in loss_terms if isinstance(t, ImportanceMinimalityTerm))
+    recon_terms = losses.recon
+    faith_term = losses.faith
+    imp_term = losses.imp
     faith_coeff = faith_term.coeff
     imp_min = imp_term.cfg
     imp_coeff = imp_term.coeff

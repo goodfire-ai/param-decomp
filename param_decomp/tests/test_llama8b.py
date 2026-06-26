@@ -359,7 +359,7 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
     )
     step = make_train_step(
         lm=lm,
-        loss_terms=loss_terms,
+        losses=loss_terms,
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=100,
@@ -480,7 +480,7 @@ def test_fresh_pgd_adversary_step():
         )
         step = make_train_step(
             lm=lm,
-            loss_terms=loss_terms,
+            losses=loss_terms,
             components_optimizer=opt_vu,
             ci_fn_optimizer=opt_ci,
             total_steps=100,
