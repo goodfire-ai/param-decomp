@@ -1,0 +1,142 @@
+# Ablation off p-13c22bca (jax-l18-b64-200k-eps1e6): the L18-MLP C49k/200k run with
+# autointerp labels. ONLY DELTA vs that base: imp-min frequency strength raised as if the
+# old rolled `beta` 0.2 -> 0.3. The rolled beta was refactored out (commit 67462638a) into
+# a standalone frequency term whose coeff = old_imp.coeff * beta, with reference_token_count
+# = global B*T. So beta 0.2->0.3 is frequency.coeff 1.0e-6 -> 1.5e-6 (= 5e-6 * 0.3).
+# Faithful-b64 reproduction of the base in the current schema (vs the b512 C49k template):
+#   - pd.batch_size + eval.batch_size: 512 -> 64.
+#   - ImportanceMinimalityLoss.eps: 1e-12 -> 1e-6 (the base's explicit eps override).
+#   - frequency.reference_token_count: 1048576 -> 131072 (= 64*2048, this run's B*T).
+run_name: jax-l18-b64-200k-beta0p3
+cadence:
+  keep_last_n_checkpoints: 2
+  save_every: 5000
+  train_log_every: 200
+data:
+  buffer_size: 1000
+  column_name: input_ids
+  data_files: /mnt/data/artifacts/mechanisms/param-decomp/datasets/fineweb_llama_tok_2048/*.parquet
+  dataset_name: parquet
+  eval_split: train
+  is_tokenized: true
+  max_seq_len: 2048
+  revision: null
+  shuffle_each_epoch: true
+  streaming: false
+  tokenizer_name: meta-llama/Llama-3.1-8B
+  train_split: train
+eval:
+  batch_size: 64
+  every: 1000
+  metrics:
+  - n_batches_accum: 1
+    type: CIHistograms
+  - ci_alive_threshold: 0.0
+    type: ComponentActivationDensity
+  - ci_alive_threshold: 0.0
+    groups: null
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  - type: CIMeanPerComponent
+  - coeff: null
+    type: StochasticHiddenActsReconLoss
+  - type: CIHiddenActsReconLoss
+  - coeff: null
+    init: random
+    mask_scope: shared_across_batch
+    n_steps: 20
+    step_size: 0.1
+    type: PGDReconLoss
+  n_steps: 1
+  slow_every: 10000
+  slow_on_first_step: true
+pd:
+  batch_size: 64
+  ci_config:
+    type: chunkwise_transformer
+    blocks_per_chunk: 1
+    d_model: 4096
+    n_blocks: 4
+    n_heads: 64
+    mlp_hidden: 16384
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: null
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 7.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 0.01
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 7.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  decomposition_targets:
+  - C: 49152
+    module_pattern: model.layers.18.mlp.gate_proj
+  - C: 49152
+    module_pattern: model.layers.18.mlp.up_proj
+  - C: 49152
+    module_pattern: model.layers.18.mlp.down_proj
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 400
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - frequency:
+      coeff: 1.5e-06
+      reference_token_count: 131072
+    coeff: 5.0e-06
+    eps: 1.0e-6
+    p_anneal_end_frac: 1.0
+    p_anneal_final_p: 0.4
+    p_anneal_start_frac: 0.0
+    pnorm: 2.0
+    type: ImportanceMinimalityLoss
+  - coeff: 0.5
+    routing:
+      type: uniform_k_subset
+    type: StochasticReconSubsetLoss
+  - coeff: 0.5
+    n_samples: 1
+    n_warmup_steps: 2
+    optimizer:
+      beta1: 0.5
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        final_val_frac: 1.0
+        fn_type: constant
+        start_val: 0.01
+        warmup_pct: 0.025
+      type: adam
+    scope:
+      type: broadcast_across_batch
+    start_frac: 0.0
+    type: PersistentPGDReconLoss
+  - coeff: 100000.0
+    type: FaithfulnessLoss
+  seed: 0
+  steps: 200000
+runtime:
+  remat_recon_forwards: false
+  dp: 32
+target:
+  weights_dtype: bfloat16
+  spec:
+    kind: hf
+    model_class: transformers.LlamaForCausalLM
+    model_name: meta-llama/Llama-3.1-8B
+wandb:
+  entity: null
+  project: param-decomp-llama
