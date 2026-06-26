@@ -217,8 +217,7 @@ class _ChunkMeta:
     """Per-chunk static routing, index-aligned with the stacked `chunks` leading axis."""
 
     input_taps: tuple[str, ...]  # taps to RMS-norm + concatenate as this chunk's input
-    output_sites: tuple[str, ...]  # output sites this chunk scores
-    c: tuple[int, ...]  # C per output site (splits the head's c_chunk slab)
+    output_sites: tuple[str, ...]  # output sites this chunk scores, in C-per-slot order
 
 
 @dataclass(frozen=True)
@@ -240,7 +239,14 @@ class ChunkwiseTransformerCIArch:
 
 class ChunkTransformer(eqx.Module):
     """ONE chunk: its (already RMS-normed, concatenated) input `[*leading, total_d_in]` →
-    `[*leading, c_chunk]` logits, via in_proj → RoPE blocks → head.
+    a TUPLE of per-output-site logits (`out` of `[*leading, C_j]` per site-slot j), via
+    in_proj → RoPE blocks → one output head PER site-slot.
+
+    One head per site-slot (`out_ws[j] [d_model, C_j]` / `out_bs[j] [C_j]`) instead of a
+    single glued `[d_model, ΣC]` head: each head's output IS that site's CI, born C_j-on-`tp`
+    (matching `x@V` / the mask, SPEC §4.1 `site_out`), so there is no glued ΣC axis to slice
+    out — the per-site slice of a tp-sharded glued axis fell mid-site (the tp boundary `ΣC/tp`
+    is unrelated to the cumulative site offsets), forcing a `collective-permute` per slice.
 
     In the bundle every array below carries a leading `n_chunks` axis and the module is
     run under `jax.lax.scan` over that axis, so this body is written for a single chunk."""
@@ -248,13 +254,13 @@ class ChunkTransformer(eqx.Module):
     in_proj_w: Float[Array, "total_d_in d_model"]
     in_proj_b: Float[Array, " d_model"]
     blocks: list[CIBlock]
-    out_w: Float[Array, "d_model c_chunk"]
-    out_b: Float[Array, " c_chunk"]
+    out_ws: tuple[Float[Array, "d_model _C"], ...]
+    out_bs: tuple[Float[Array, " _C"], ...]
 
     def shardings(self, mesh: Mesh) -> "ChunkTransformer":
         """Uniform FSDP(`dp`)×TP(`tp`); leading `n_chunks` axis (axis 0) UNSHARDED. `in_proj_w
         [nc, total_d_in, d_model]`: d_model on `tp` (col-parallel out), total_d_in FSDP on `dp`.
-        `out_w [nc, d_model, c_chunk]`: c_chunk on `tp` (col-parallel out — the C-on-`tp` that
+        Each `out_ws[j] [nc, d_model, C_j]`: C_j on `tp` (col-parallel out — the C-on-`tp` that
         aligns with V/U and the mask), d_model FSDP on `dp`. Blocks delegate to
         `CIBlock.shardings`; biases replicate (GSPMD broadcasts over the tp-sharded output)."""
         row = NamedSharding(mesh, P(None, "dp", "tp"))  # axis1 (in) FSDP on dp, axis2 (out) on tp
@@ -263,19 +269,31 @@ class ChunkTransformer(eqx.Module):
             self.in_proj_w.shape[1], mesh, "dp", "ChunkTransformer in_proj_w total_d_in"
         )
         assert_divisible(self.in_proj_w.shape[2], mesh, "tp", "ChunkTransformer in_proj_w d_model")
-        assert_divisible(self.out_w.shape[1], mesh, "dp", "ChunkTransformer out_w d_model")
-        assert_divisible(self.out_w.shape[2], mesh, "tp", "ChunkTransformer out_w c_chunk")
+        for slot, w in enumerate(self.out_ws):
+            assert_divisible(w.shape[1], mesh, "dp", f"ChunkTransformer out_ws[{slot}] d_model")
+            assert_divisible(w.shape[2], mesh, "tp", f"ChunkTransformer out_ws[{slot}] C")
         return eqx.tree_at(
-            lambda ct: (ct.in_proj_w, ct.in_proj_b, ct.blocks, ct.out_w, ct.out_b),
+            lambda ct: (ct.in_proj_w, ct.in_proj_b, ct.blocks, ct.out_ws, ct.out_bs),
             self,
-            (row, repl, [b.shardings(mesh) for b in self.blocks], row, repl),
+            (
+                row,
+                repl,
+                [b.shardings(mesh) for b in self.blocks],
+                tuple(row for _ in self.out_ws),
+                tuple(repl for _ in self.out_bs),
+            ),
         )
 
-    def __call__(self, x: Float[Array, "*leading total_d_in"], inv_freq: Array) -> Array:
+    def __call__(
+        self, x: Float[Array, "*leading total_d_in"], inv_freq: Array
+    ) -> tuple[Float[Array, "*leading _C"], ...]:
         x = einops.einsum(x, self.in_proj_w, "... i, i o -> ... o") + self.in_proj_b
         for block in self.blocks:
             x = block(x, inv_freq)
-        return einops.einsum(x, self.out_w, "... i, i o -> ... o") + self.out_b
+        return tuple(
+            einops.einsum(x, w, "... i, i o -> ... o") + b
+            for w, b in zip(self.out_ws, self.out_bs, strict=True)
+        )
 
 
 class ChunkwiseTransformerCIFn(eqx.Module):
@@ -283,7 +301,8 @@ class ChunkwiseTransformerCIFn(eqx.Module):
     `jax.lax.scan` over that axis (lowers as a loop so one chunk's FSDP weight gather is live
     at a time, not all `n_chunks` at once). Each chunk's input is its `chunk_input_taps`
     RMS-normed per tap and concatenated. Requires homogeneous chunks (equal total input width
-    and `c_chunk`) so the stack is rectangular — asserted at init."""
+    and an identical per-slot C tuple — same C-per-output-site ORDER) so the stack, including
+    the per-slot output heads, is rectangular — asserted at init."""
 
     chunks: ChunkTransformer  # arrays stacked along leading n_chunks
     inv_freq: Array  # shared across chunks (RoPE buffer); NOT mapped
@@ -320,7 +339,9 @@ class ChunkwiseTransformerCIFn(eqx.Module):
         # them; results match up to fp32 reassociation (XLA picks different matmul layouts).
         chunk_arrays, chunk_static = eqx.partition(self.chunks, eqx.is_array)
 
-        def run_chunk(_: None, scanned: tuple[ChunkTransformer, Array]) -> tuple[None, Array]:
+        def run_chunk(
+            _: None, scanned: tuple[ChunkTransformer, Array]
+        ) -> tuple[None, tuple[Array, ...]]:
             chunk_array, chunk_input = scanned
             chunk = eqx.combine(chunk_array, chunk_static)
             return None, chunk(chunk_input, inv_freq)
@@ -332,32 +353,33 @@ class ChunkwiseTransformerCIFn(eqx.Module):
         # f32 score slab that dominated the full-model step. Same fix shape as the target's
         # per-layer remat.)
         body = jax.checkpoint(run_chunk) if remat else run_chunk
-        _, stacked_logits = jax.lax.scan(
-            body, None, (chunk_arrays, stacked_in)
-        )  # [n_chunks, *leading, c_chunk]
-        return CI.from_logits(self._split(stacked_logits))
-
-    def _split(self, stacked: Array) -> SiteDict:
-        """Static per-chunk, per-site split of the `[n_chunks, *leading, c_chunk]` slab."""
-        out: SiteDict = {}
+        # Each per-slot head stacks over the scanned axis: `stacked_per_slot[j]` is
+        # `[n_chunks, *leading, C_j]`. No glued ΣC axis, so no slice — site `(chunk i, slot j)`
+        # is `stacked_per_slot[j][i]` directly (chunks are slot-homogeneous in C-per-site
+        # ORDER, asserted at init, so slot j carries one C_j across every chunk).
+        _, stacked_per_slot = jax.lax.scan(body, None, (chunk_arrays, stacked_in))
+        logits: SiteDict = {}
         for chunk_idx, m in enumerate(self.chunk_meta):
-            offset = 0
-            for site, c in zip(m.output_sites, m.c, strict=True):
-                out[site] = stacked[chunk_idx, ..., offset : offset + c]
-                offset += c
-            assert offset == stacked.shape[-1], (offset, stacked.shape[-1])  # full slab consumed
-        return out
+            for slot, site in enumerate(m.output_sites):
+                logits[site] = stacked_per_slot[slot][chunk_idx]
+        return CI.from_logits(logits)
 
 
 def _init_chunk_transformer(
     arch: ChunkwiseTransformerCIArch,
     total_d_in: int,
-    c_chunk: int,
+    slot_cs: tuple[int, ...],
     key: PRNGKeyArray,
 ) -> ChunkTransformer:
     """One chunk's params, same Kaiming scheme as the old global transformer: relu-gain
     (√2) on in_proj / MLP-in, linear gain (1) on out / MLP-out, PyTorch-default
     `U(±1/√fan_in)` on the attention projections, zero biases.
+
+    The per-site output heads are SLICES of a single glued `[d, ΣC]` Kaiming draw (drawn with
+    the same `out_key`, `gain 1`): head j = columns `[offset_j : offset_j + C_j]`. This keeps
+    the RNG consumption (one `(d, ΣC)` normal + one `(ΣC,)` zero bias) and the values bit-for-
+    bit identical to the old single glued head, so the equivalence goldens are unchanged —
+    the math is the same, only the partitioning differs.
 
     Each consumer takes its OWN explicit key — the split count lives next to its use
     (`n_blocks + 2` at the top = in_proj + out + one per block; 6 within a block), so it
@@ -383,12 +405,18 @@ def _init_chunk_transformer(
         )  # fmt: skip
 
     in_key, out_key, *block_keys = jax.random.split(key, arch.n_blocks + 2)
+    c_chunk = sum(slot_cs)
+    glued_w = kaiming(out_key, (d, c_chunk), d, 1.0)
+    glued_b = jnp.zeros((c_chunk,))
+    offsets = [0]
+    for c in slot_cs:
+        offsets.append(offsets[-1] + c)
     return ChunkTransformer(
         in_proj_w=kaiming(in_key, (total_d_in, d), total_d_in, relu_gain),
         in_proj_b=jnp.zeros((d,)),
         blocks=[block(bk) for bk in block_keys],
-        out_w=kaiming(out_key, (d, c_chunk), d, 1.0),
-        out_b=jnp.zeros((c_chunk,)),
+        out_ws=tuple(glued_w[:, offsets[j] : offsets[j + 1]] for j in range(len(slot_cs))),
+        out_bs=tuple(glued_b[offsets[j] : offsets[j + 1]] for j in range(len(slot_cs))),
     )
 
 
@@ -398,16 +426,22 @@ def init_chunkwise_transformer_ci_fn(
     """Validate the output partition + chunk homogeneity, then build STACKED chunk params.
 
     - partition: the chunks' output sites are disjoint and cover every model site.
-    - homogeneity: equal tap count (→ equal total input width) and equal `Σ C` per chunk,
-      so the per-chunk params stack rectangularly along the scanned `n_chunks` axis.
+    - homogeneity: equal tap count (→ equal total input width) and an identical per-SLOT C
+      tuple (same C-per-output-site in the same ORDER) across every chunk, so the per-chunk
+      params — including the per-slot output heads — stack rectangularly along the scanned
+      `n_chunks` axis. The per-slot heads stack slot-by-slot, so a mismatched C ORDER would
+      silently misalign sites across chunks: fail fast.
     """
     site_c = {s.name: s.C for s in sites}
     covered = [name for ch in arch.chunks for name in ch.output_sites]
     assert sorted(covered) == sorted(s.name for s in sites), "chunks must partition sites"
     assert len(covered) == len(set(covered)), "chunks overlap on an output site"
-    c_per_chunk = {sum(site_c[n] for n in ch.output_sites) for ch in arch.chunks}
-    assert len(c_per_chunk) == 1, f"chunks not homogeneous in Σ C (vmap needs equal): {c_per_chunk}"
-    (c_chunk,) = c_per_chunk
+    slot_cs_per_chunk = {tuple(site_c[n] for n in ch.output_sites) for ch in arch.chunks}
+    assert len(slot_cs_per_chunk) == 1, (
+        f"chunks not homogeneous in per-slot C tuple (the per-slot heads stack slot-by-slot "
+        f"across chunks — equal C-per-site ORDER required): {slot_cs_per_chunk}"
+    )
+    (slot_cs,) = slot_cs_per_chunk
     assert all(ch.input_taps for ch in arch.chunks), "each chunk needs at least one input tap"
     # Per-chunk cat width must equal `arch.input_dim` (lab guarantees it; the runtime
     # `jnp.stack` / in_proj einsum fails loud if a chunk's taps don't sum to it).
@@ -417,7 +451,7 @@ def init_chunkwise_transformer_ci_fn(
     inv_freq = 1.0 / (10000.0 ** (jnp.arange(0, hd, 2, dtype=jnp.float32) / hd))
 
     per_chunk = [
-        _init_chunk_transformer(arch, arch.input_dim, c_chunk, jax.random.fold_in(key, i))
+        _init_chunk_transformer(arch, arch.input_dim, slot_cs, jax.random.fold_in(key, i))
         for i in range(len(arch.chunks))
     ]
     stacked: ChunkTransformer = jax.tree.map(lambda *xs: jnp.stack(xs), *per_chunk)
@@ -427,10 +461,7 @@ def init_chunkwise_transformer_ci_fn(
         inv_freq=inv_freq,
         input_names=tuple(sorted({tap for ch in arch.chunks for tap in ch.input_taps})),
         output_names=tuple(name for ch in arch.chunks for name in ch.output_sites),
-        chunk_meta=tuple(
-            _ChunkMeta(ch.input_taps, ch.output_sites, tuple(site_c[n] for n in ch.output_sites))
-            for ch in arch.chunks
-        ),
+        chunk_meta=tuple(_ChunkMeta(ch.input_taps, ch.output_sites) for ch in arch.chunks),
         eps=CI_FN_RMS_EPS,
         expects_axes=("sequence",),
     )

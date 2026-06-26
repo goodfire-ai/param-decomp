@@ -24,7 +24,8 @@ import jax.numpy as jnp
 import optax
 from beartype import beartype
 from jax import random
-from jax.sharding import Mesh
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Bool, Float, PRNGKeyArray, jaxtyped
 
 from param_decomp.adversary import (
@@ -130,17 +131,27 @@ def make_train_step(
     def batch_sharded(x: Array) -> Array:
         return batch_shard_leading(x, mesh)
 
-    def batch_sharded_ci(ci: CI) -> CI:
-        """Reshard the CI-fn output to batch-sharded ONCE, here. The CI head's `out_w`
-        is ΣC-sharded, so its output is born C-sharded; without a single producer-side
-        pin, GSPMD inserts a separate C→batch reshard for every consumer (each plan
-        forward, the adversaries, imp-min — forward and backward), and those
-        all-to-all buffers dominate the temp arena at scale. `logits` is passed through
-        (unused in the step — only the squashings are; DCE drops it)."""
+    def ci_shard(x: Array) -> Array:
+        """Pin a CI / mask tensor `[batch, *positions, C]` batch-on-`dp`, C-on-`tp`. No-op
+        off-mesh (single device / toys)."""
+        if mesh is None:
+            return x
+        spec = ("dp", *((None,) * (x.ndim - 2)), "tp")
+        return jax.lax.with_sharding_constraint(x, NamedSharding(mesh, P(*spec)))
+
+    def ci_C_on_tp(ci: CI) -> CI:
+        """Pin the CI-fn output batch-on-`dp`, C-on-`tp` — the layout `site_out` pins `x@V`
+        to (SPEC §4.1), so the downstream mask multiply `xV * mask` needs no reshard. The
+        per-site output heads (`ChunkTransformer.out_ws`, each C_j-on-`tp`) already BORN the
+        CI in this layout; the explicit constraint stops GSPMD re-deciding it in the backward
+        (same rationale as `site_out`'s activation pin, bf072ef01). This REPLACES the old
+        C→batch reshard, which FOUGHT the alignment — it moved C off `tp` only for GSPMD to
+        reshard it back at the multiply. `logits` is passed through (unused in the step — only
+        the squashings are; DCE drops it)."""
         return CI(
             logits=ci.logits,
-            lower={site: batch_sharded(v) for site, v in ci.lower.items()},
-            upper={site: batch_sharded(v) for site, v in ci.upper.items()},
+            lower={site: ci_shard(v) for site, v in ci.lower.items()},
+            upper={site: ci_shard(v) for site, v in ci.upper.items()},
         )
 
     # ONE masked re-forward for recon AND the adversary ascents, sharing the same remat policy.
@@ -258,7 +269,7 @@ def make_train_step(
         # ── adversary ascents: params + CI detached (SPEC §4.5) ──
         components_detached = jax.lax.stop_gradient(cast_floating(state.components, COMPUTE_DT))
         ci_fn_detached = jax.lax.stop_gradient(cast_floating(state.ci_fn, COMPUTE_DT))
-        ci_lower_detached = batch_sharded_ci(ci_fn_detached(taps, remat=False)).lower
+        ci_lower_detached = ci_C_on_tp(ci_fn_detached(taps, remat=False)).lower
 
         # ── persistent adversaries: each runs its supplemental ascents vs the route-ALL
         # all-sites forward (SPEC S24 — torch warmup parity, NOT the term's loss plan),
@@ -341,7 +352,7 @@ def make_train_step(
             components, ci_fn, persistent_sources = trainable
             components_bf16 = cast_floating(components, COMPUTE_DT)
             ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
-            ci = batch_sharded_ci(ci_fn_bf16(taps, remat=remat_ci_fn))
+            ci = ci_C_on_tp(ci_fn_bf16(taps, remat=remat_ci_fn))
             faith_loss = faithfulness_loss(model.weight_deltas(components))
             imp_lp, imp_freq = imp_min_terms(ci.upper, imp_min, imp_min_param)
 
