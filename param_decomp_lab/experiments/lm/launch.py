@@ -154,7 +154,16 @@ def main(
     # node, so the trainer's single process per node claims all 8 local GPUs.
     srun = f"srun --nodes={nodes} --ntasks={nodes} {_SRUN_FLAGS}"
     command = f"{srun} bash -c {shlex.quote(_rank_command(config_rel, run_id, rank_env))}"
-    script = generate_script(slurm_config, command, setup=f'cd "{workspace}"')
+    # When pd-lm is invoked from inside a SLURM allocation, the outer job's resource-spec
+    # SLURM_* env (mem/cpu/tres) leak into this sbatch and the inner srun fatals (mem vars
+    # "mutually exclusive"; SLURM_CPUS_PER_TASK vs SLURM_TRES_PER_TASK "set by two different
+    # environment variables"). Clear them so the cluster's per-GPU defaults apply.
+    leaked_resource_env = (
+        "SLURM_MEM_PER_CPU SLURM_MEM_PER_GPU SLURM_MEM_PER_NODE "
+        "SLURM_CPUS_PER_TASK SLURM_TRES_PER_TASK"
+    )
+    setup = f'unset {leaked_resource_env}\ncd "{workspace}"'
+    script = generate_script(slurm_config, command, setup=setup)
     result = submit_slurm_job(script, "pd-lm")
 
     logger.section("pd-lm job submitted!")
