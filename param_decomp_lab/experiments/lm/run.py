@@ -57,7 +57,7 @@ from param_decomp.run import (
     sigterm_received,
     slow_eval_due,
 )
-from param_decomp.sharding import dp_mesh, init_distributed
+from param_decomp.sharding import hsdp_mesh, init_distributed
 from param_decomp.slow_eval import (
     IDENTITY_CI_ERROR_TOLERANCE,
     PositionCI,
@@ -117,7 +117,7 @@ def _enable_hlo_dump(run_dir: Path) -> None:
 
 
 def _global_token_batch(local: np.ndarray, mesh: Mesh, global_batch: int) -> jax.Array:
-    sharding = NamedSharding(mesh, P("dp"))
+    sharding = NamedSharding(mesh, P(("replicate", "fsdp")))
     return jax.make_array_from_process_local_data(sharding, local, (global_batch, local.shape[1]))
 
 
@@ -149,10 +149,13 @@ def train(
     data = built.data
     assert isinstance(data, DataConfig), "train() is the LM (parquet) data path"
     n_proc = jax.process_count()
-    # The batch shards over the dp AXIS only (tp positions get batch-replicas), so it must
-    # tile dp, NOT the full device count. At tp=1 dp-axis == ndev (the old invariant).
-    dp_axis = mesh.shape["dp"]
-    assert data.global_batch % dp_axis == 0, (data.global_batch, dp_axis)
+    # Pure HSDP: the batch shards over the FULL mesh (both axes), so it must tile the full
+    # device count, and the per-rank batch is B/N. Constraint: B >= N (per-rank >= 1).
+    n_dev = mesh.devices.size
+    assert data.global_batch % n_dev == 0, (data.global_batch, n_dev)
+    assert data.global_batch >= n_dev, (
+        f"global batch {data.global_batch} < device count {n_dev}: per-rank batch must be >= 1"
+    )
     is_main = jax.process_index() == 0
 
     key = random.PRNGKey(built.pd.seed)
@@ -160,11 +163,11 @@ def train(
 
     schedule = BatchSchedule(scan_shards(data.dir), data.global_batch, built.pd.seed)
     server = ShardServer(schedule, data.seq_len, jax.process_index(), n_proc)
-    # Each process (node) owns local_device_count // tp dp-positions; its per-process batch
-    # must split across those (tp devices are batch-replicas). At tp=1 this is the old
-    # `% local_device_count` invariant.
-    local_dp = jax.local_device_count() // mesh.shape["tp"]
-    assert server.per_process % local_dp == 0, (server.per_process, local_dp)
+    # Each process (node) owns all its local devices; its per-process batch splits across them.
+    assert server.per_process % jax.local_device_count() == 0, (
+        server.per_process,
+        jax.local_device_count(),
+    )
 
     def sample_batch(step: int) -> jax.Array:
         return _global_token_batch(server.local_batch(step), mesh, data.global_batch)
@@ -218,8 +221,10 @@ def _make_lm_eval_fn(
     assert isinstance(data, DataConfig)
     eval_schedule = BatchSchedule(scan_shards(data.dir), eval.batch_size, pd.seed + 1)
     eval_server = ShardServer(eval_schedule, data.seq_len, jax.process_index(), n_proc)
-    local_dp = jax.local_device_count() // mesh.shape["tp"]
-    assert eval_server.per_process % local_dp == 0, (eval_server.per_process, local_dp)
+    assert eval_server.per_process % jax.local_device_count() == 0, (
+        eval_server.per_process,
+        jax.local_device_count(),
+    )
     eval_step_fn = make_eval_step(
         lm,
         eval.rounding_threshold,
@@ -377,7 +382,7 @@ def main(config: Path, run_id: str) -> None:
     # Harden the cold-cache HF weight load against the 8N-rank startup burst before any
     # per-rank Hub call (no-op when huggingface_hub is absent / cache is pre-warmed).
     configure_hf_http_retries()
-    mesh = dp_mesh(built.runtime.tp)
+    mesh = hsdp_mesh()
 
     if built.run.resume_provenance is not None:
         assert_finetune_structural_compat(built, built.run.resume_provenance)
