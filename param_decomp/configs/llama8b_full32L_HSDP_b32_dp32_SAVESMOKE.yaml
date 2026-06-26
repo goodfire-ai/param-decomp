@@ -1,0 +1,613 @@
+# First full-model decomposition of Llama-3.1-8B: ALL 32 layers x 7 matrices
+# (q/k/v/o/gate/up/down) = 224 sites. De-risking launch — get it compiling, fitting
+# memory at the 128-GPU topology, and producing a sane training signal; then dial in
+# GPU count / chunking / LRs.
+#
+# Derived from the l18-23 6L reference run p-2112148d ("jax-l18-23-6L-ablbase-200k"):
+# same algorithm (chunkwise subset recon + persistent-PGD + faith + imp-min), same CI
+# fn arch, same LRs/coeffs/eval set. DELIBERATE EDITS vs that reference:
+#   1. sites: 18 (MLP, layers 18-23) -> 224 (all matrices, all 32 layers). Per-matrix C
+#      from the 2026-06-22 full-llama8b BOTEC, rounded UP to multiples of 128 (the V/U
+#      C-axis shards over the dp=128 mesh; init asserts C % dp == 0):
+#      q/k 2048, v/o 4096, gate/up 8192, down 10240. ΣC=1,245,184; V/U=18.3B params
+#      (~1.1x the reference's 16.3B — params shard cheaply, not the binding constraint).
+#   2. runtime.dp: 64 -> 128 (16 nodes). batch 128 -> per-rank 1 (vs 2 in the reference);
+#      the botec puts per-rank-1 at ~105 GiB, safe under the 180 GiB B200 cap.
+#   3. ChunkwiseSubsetReconLoss sites_per_chunk: 9 -> 56 (8 layers/chunk -> 4 chunks).
+#      Fewer, larger chunks for the first launch: minimises compile time and per-step
+#      compute (each chunk's suffix forward now spans the full network). coeff scaled
+#      0.5 x n_chunks = 2.0 to keep per-site recon pressure chunk-count-invariant.
+#      THIS IS THE KNOB TO RE-TUNE once we know step time (finer chunks = better signal).
+#   4. remat_recon_forwards: true (224 sites' full-network chunk forwards need it).
+#   5. remat_ci_fn: true (checkpoint the ~31B CI fn; without it the step is the GPU
+#      compile wall — ~80 min + near-OOM — since the whole CI forward materialises).
+#   6. data seq 512 (fineweb_llama_tok_512), matching the reference's seq.
+# out_dir / run_id are minted by pd-lm.
+run_name: jax-full32L-HSDP-savesmoke
+cadence:
+  keep_last_n_checkpoints: 2
+  save_every: 100
+  train_log_every: 10
+data:
+  buffer_size: 1000
+  column_name: input_ids
+  data_files: /mnt/data/artifacts/mechanisms/param-decomp/datasets/fineweb_llama_tok_512/*.parquet
+  dataset_name: parquet
+  eval_split: train
+  is_tokenized: true
+  max_seq_len: 512
+  revision: null
+  shuffle_each_epoch: true
+  streaming: false
+  tokenizer_name: meta-llama/Llama-3.1-8B
+  train_split: train
+eval:
+  batch_size: 32
+  every: 1000
+  metrics:
+  - n_batches_accum: 1
+    type: CIHistograms
+  - ci_alive_threshold: 0.0
+    type: ComponentActivationDensity
+  - ci_alive_threshold: 0.0
+    groups: null
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  - type: CIMeanPerComponent
+  - coeff: null
+    type: StochasticHiddenActsReconLoss
+  - type: CIHiddenActsReconLoss
+  - coeff: null
+    init: random
+    mask_scope: shared_across_batch
+    n_steps: 20
+    step_size: 0.1
+    type: PGDReconLoss
+  n_steps: 1
+  slow_every: 10000
+  slow_on_first_step: true
+pd:
+  batch_size: 32
+  ci_config:
+    type: chunkwise_transformer
+    blocks_per_chunk: 1
+    d_model: 4096
+    n_blocks: 4
+    n_heads: 64
+    mlp_hidden: 16384
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: null
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 2.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 0.01
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 2.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  decomposition_targets:
+  - C: 2048
+    module_pattern: model.layers.0.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.0.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.0.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.0.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.0.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.0.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.0.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.1.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.1.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.1.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.1.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.1.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.1.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.1.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.2.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.2.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.2.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.2.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.2.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.2.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.2.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.3.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.3.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.3.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.3.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.3.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.3.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.3.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.4.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.4.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.4.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.4.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.4.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.4.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.4.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.5.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.5.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.5.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.5.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.5.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.5.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.5.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.6.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.6.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.6.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.6.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.6.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.6.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.6.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.7.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.7.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.7.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.7.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.7.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.7.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.7.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.8.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.8.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.8.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.8.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.8.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.8.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.8.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.9.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.9.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.9.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.9.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.9.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.9.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.9.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.10.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.10.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.10.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.10.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.10.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.10.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.10.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.11.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.11.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.11.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.11.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.11.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.11.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.11.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.12.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.12.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.12.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.12.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.12.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.12.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.12.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.13.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.13.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.13.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.13.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.13.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.13.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.13.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.14.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.14.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.14.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.14.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.14.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.14.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.14.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.15.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.15.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.15.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.15.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.15.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.15.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.15.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.16.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.16.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.16.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.16.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.16.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.16.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.16.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.17.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.17.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.17.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.17.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.17.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.17.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.17.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.18.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.18.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.18.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.18.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.18.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.18.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.18.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.19.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.19.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.19.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.19.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.19.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.19.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.19.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.20.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.20.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.20.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.20.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.20.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.20.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.20.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.21.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.21.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.21.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.21.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.21.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.21.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.21.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.22.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.22.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.22.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.22.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.22.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.22.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.22.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.23.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.23.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.23.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.23.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.23.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.23.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.23.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.24.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.24.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.24.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.24.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.24.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.24.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.24.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.25.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.25.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.25.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.25.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.25.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.25.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.25.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.26.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.26.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.26.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.26.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.26.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.26.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.26.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.27.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.27.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.27.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.27.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.27.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.27.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.27.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.28.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.28.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.28.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.28.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.28.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.28.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.28.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.29.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.29.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.29.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.29.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.29.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.29.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.29.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.30.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.30.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.30.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.30.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.30.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.30.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.30.mlp.down_proj
+  - C: 2048
+    module_pattern: model.layers.31.self_attn.q_proj
+  - C: 2048
+    module_pattern: model.layers.31.self_attn.k_proj
+  - C: 4096
+    module_pattern: model.layers.31.self_attn.v_proj
+  - C: 4096
+    module_pattern: model.layers.31.self_attn.o_proj
+  - C: 8192
+    module_pattern: model.layers.31.mlp.gate_proj
+  - C: 8192
+    module_pattern: model.layers.31.mlp.up_proj
+  - C: 10240
+    module_pattern: model.layers.31.mlp.down_proj
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 0
+  faithfulness_warmup_weight_decay: 0.0
+  identity_decomposition_targets: null
+  loss_metrics:
+  - frequency:
+      coeff: 1.0e-06
+      reference_token_count: 65536
+    coeff: 5.0e-06
+    eps: 1.0e-06
+    p_anneal_end_frac: 1.0
+    p_anneal_final_p: 0.4
+    p_anneal_start_frac: 0.0
+    pnorm: 2.0
+    type: ImportanceMinimalityLoss
+  - coeff: 2.0
+    n_samples: 1
+    routing:
+      type: uniform_k_subset
+    sites_per_chunk: 56
+    type: ChunkwiseSubsetReconLoss
+  - coeff: 0.5
+    n_samples: 1
+    n_warmup_steps: 2
+    optimizer:
+      beta1: 0.01
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        final_val_frac: 1.0
+        fn_type: constant
+        start_val: 0.01
+        warmup_pct: 0.025
+      type: adam
+    scope:
+      type: per_batch_per_position
+    start_frac: 0.0
+    type: PersistentPGDReconLoss
+  - coeff: 1000000.0
+    type: FaithfulnessLoss
+  seed: 0
+  steps: 250
+runtime:
+  dp: 32
+  tp: 1
+  remat_recon_forwards: true
+  remat_ci_fn: true
+target:
+  output_extract: logits
+  weights_dtype: bfloat16
+  spec:
+    kind: hf
+    model_class: transformers.LlamaForCausalLM
+    model_name: meta-llama/Llama-3.1-8B
+wandb:
+  entity: null
+  project: param-decomp-llama
+  group: full32L
+  tags:
+  - full-model
+  - 32L
+  - allmat
+  - dp128
+  - seq512
