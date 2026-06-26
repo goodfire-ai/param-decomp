@@ -50,7 +50,7 @@ from param_decomp.recon import (
     Routes,
     StochasticSources,
 )
-from param_decomp.sharding import batch_shard_leading
+from param_decomp.sharding import DATA_AXES, batch_shard_leading
 
 COMPUTE_DT = jnp.bfloat16
 
@@ -132,11 +132,11 @@ def make_train_step(
         return batch_shard_leading(x, mesh)
 
     def ci_shard(x: Array) -> Array:
-        """Pin a CI / mask tensor `[batch, *positions, C]` batch-on-`dp`, C-on-`tp`. No-op
-        off-mesh (single device / toys)."""
+        """Pin a CI / mask tensor `[batch, *positions, C]` batch-on-`DATA_AXES`
+        (`replicate × dp`), C-on-`tp`. No-op off-mesh (single device / toys)."""
         if mesh is None:
             return x
-        spec = ("dp", *((None,) * (x.ndim - 2)), "tp")
+        spec = (DATA_AXES, *((None,) * (x.ndim - 2)), "tp")
         return jax.lax.with_sharding_constraint(x, NamedSharding(mesh, P(*spec)))
 
     def ci_C_on_tp(ci: CI) -> CI:

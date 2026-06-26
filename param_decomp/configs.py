@@ -634,13 +634,16 @@ class RuntimeConfig(BaseConfig):
         default=1,
         le=8,
         description=(
-            "Tensor-parallel degree (the intra-node Megatron axis). The device mesh is 2-D "
-            "`(dp // tp, tp)`: the `tp` axis tensor-parallel-shards the per-block weights "
-            "(target + CI fn) and must stay on NVLink — so `tp <= 8`, the per-node GPU count "
-            "on every cluster we run (asserted). The `dp` axis carries data-parallelism for "
-            "the target/V-U AND chunk-parallelism for the chunkwise CI fn (reinterpreted via "
-            "one reshard at the CI boundary). `tp = 1` (default) is a degenerate single-column "
-            "mesh = pure `dp`. `dp` must be divisible by `tp`."
+            "Tensor-parallel degree (the intra-node Megatron axis). The device mesh is 3-D "
+            "HSDP×TP `(replicate, fsdp, tp)` where `fsdp · tp = 8` (the per-node GPU count) "
+            "and `replicate = dp // 8` (cross-node). The `tp` axis tensor-parallel-shards the "
+            "per-block weights (target + CI fn, C-on-`tp`) and must stay on NVLink — so "
+            "`tp <= 8` (asserted). The intra-node `fsdp` axis (= `8 // tp`) FSDP-shards V's "
+            "d_in / U's d_out (gathered on NVLink); `replicate` replicates the weights "
+            "(no weight collective crosses IB) and carries the grad all-reduce. The batch "
+            "shards over `replicate × fsdp`. `tp = 1` ⇒ pure HSDP (fsdp = 8); `tp = 8` ⇒ "
+            "pure intra-node TP + cross-node replicate-DP (fsdp = 1). `8` (= node size) must "
+            "be divisible by `tp`."
         ),
     )
     remat_recon_forwards: bool = Field(
@@ -665,9 +668,13 @@ class RuntimeConfig(BaseConfig):
     def validate_dp(self) -> Self:
         if self.dp is not None:
             assert self.dp >= 2, "if set, dp must be at least 2 (pass None for single device)."
-            assert self.dp % self.tp == 0, (
-                f"dp={self.dp} must be divisible by tp={self.tp} (the mesh is (dp//tp, tp))"
+            assert self.dp % 8 == 0, (
+                f"dp={self.dp} must be a multiple of 8 (node size; the mesh is (dp//8, 8//tp, tp))"
             )
+        # node size (8) splits into the intra-node (fsdp, tp) factors; tp must tile it.
+        assert 8 % self.tp == 0, (
+            f"tp={self.tp} must divide the node size 8 (the intra-node mesh is (8//tp, tp))"
+        )
         return self
 
 

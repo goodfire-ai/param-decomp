@@ -30,7 +30,7 @@ from safetensors import safe_open
 
 from param_decomp.components import DecompVU, SiteC, SiteSpec, site_out
 from param_decomp.losses import kl_per_position
-from param_decomp.sharding import assert_divisible
+from param_decomp.sharding import DATA_AXES, assert_divisible
 from vendored_jax.llama import (
     LlamaConfig,
     apply_rope,
@@ -158,7 +158,7 @@ class FrozenAttn(eqx.Module):
     def shardings(self, mesh: "Mesh") -> "FrozenAttn":
         """Stacked (leading `n_layer`, UNSHARDED — the scan axis) FSDP on `dp`: the `d` dim
         shards on `dp` (gathered per layer in the scan); the HEAD dim stays REPLICATED (NOT
-        TP'd). `core` runs batch-parallel attention (q/k/v constrained to `P("dp",...)`,
+        TP'd). `core` runs batch-parallel attention (q/k/v constrained to `P(DATA_AXES,...)`,
         heads replicated — that identical spec is what cuDNN's partitioner requires), so the
         projections must come out heads-replicated; TP'ing the head dim makes q (n_head) and
         k/v (n_kv_head) shard to different per-rank head counts → cuDNN rejects them as
@@ -206,8 +206,8 @@ class FrozenAttn(eqx.Module):
         # head-parallel form is the fix for the `dp/tp` mesh's "same sharding" partitioner error.
         if not jax.sharding.get_abstract_mesh().empty:
             qkv_spec = jax.sharding.PartitionSpec(
-                "dp", None, None, None
-            )  # batch-parallel: q/k/v IDENTICAL spec -> cuDNN happy; flash = no score materialization
+                DATA_AXES, None, None, None
+            )  # batch-parallel over replicate×dp: q/k/v IDENTICAL spec -> cuDNN happy; flash = no score materialization
             q, k, v = (jax.lax.with_sharding_constraint(a, qkv_spec) for a in (q, k, v))
         return causal_sdpa(q, k, v).transpose(0, 2, 1, 3).reshape(b, t, self.n_head * self.head_dim)
 
@@ -303,6 +303,43 @@ def _per_kind_dims(components: DecompVU) -> dict[str, tuple[int, int, int]]:
             f"{kind} {dims} != {kind_dims[kind]}"
         )
     return kind_dims
+
+
+def _hoist_vu_gather(per_kind: dict[str, dict[str, Array]]) -> dict[str, dict[str, Array]]:
+    """Hoist the FSDP (`dp`) all-gather of the stacked bf16 compute V/U OUT of the per-layer
+    scan and force it bf16. The stacked `V [n_layer, d_in, C]` shards d_in on `dp` (C on
+    `tp`); `U [n_layer, C, d_out]` shards d_out on `dp` (C on `tp`), or d_out replicated for
+    the q/k/v sites. For each, constrain to the MASTER (`dp`-sharded) layout, drop an
+    `optimization_barrier` (so XLA can't sink the bf16 cast PAST the gather — keeping the
+    gathered weight bf16, half the NVLink bytes), then constrain to the COMPUTE layout
+    (`dp` axis replicated) — forcing the all-gather HERE, ONCE, rather than once per scan
+    iteration inside the `lax.scan` body. No-op off-mesh (CPU tests / single device). The C
+    (`tp`) axis is untouched (Megatron stays sharded). The gathered weight is `∝ ΣC/tp`
+    bf16 — small vs the per-layer activations the scan rematerializes."""
+    if jax.sharding.get_abstract_mesh().empty:
+        return per_kind
+
+    def hoist(arr: Array, fsdp_axis: int, c_axis: int) -> Array:
+        master: list[str | None] = [None] * arr.ndim
+        master[fsdp_axis] = "dp"
+        master[c_axis] = "tp"
+        compute: list[str | None] = [None] * arr.ndim
+        compute[c_axis] = "tp"
+        arr = jax.lax.with_sharding_constraint(arr, P(*master))
+        arr = jax.lax.optimization_barrier(arr)
+        return jax.lax.with_sharding_constraint(arr, P(*compute))
+
+    hoisted: dict[str, dict[str, Array]] = {}
+    for kind, e in per_kind.items():
+        new_e = dict(e)
+        new_e["V"] = hoist(e["V"], fsdp_axis=1, c_axis=2)  # [nl, d_in(dp), C(tp)]
+        # q/k/v U keep d_out REPLICATED (head dim, re-sharded to `tp` at the attn seam, so
+        # NOT FSDP on `dp`) — only its C(`tp`) is sharded, no `dp` gather to hoist. o/MLP U
+        # FSDP d_out on `dp`: hoist that gather like V.
+        if kind in ("o", "gate", "up", "down"):
+            new_e["U"] = hoist(e["U"], fsdp_axis=2, c_axis=1)  # [nl, C(tp), d_out(dp)]
+        hoisted[kind] = new_e
+    return hoisted
 
 
 def _stack_per_kind_masked_inputs(
@@ -507,6 +544,7 @@ class LlamaDecomposedModel(eqx.Module):
         per_kind = _stack_per_kind_masked_inputs(
             vu, self.n_layer, leading, masks, delta_masks, routes, live_set, has_delta
         )
+        per_kind = _hoist_vu_gather(per_kind)
         decomposed_kinds = frozenset(per_kind)
         want_collect = collect is not None
 

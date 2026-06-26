@@ -57,7 +57,7 @@ from param_decomp.run import (
     sigterm_received,
     slow_eval_due,
 )
-from param_decomp.sharding import dp_mesh, init_distributed
+from param_decomp.sharding import DATA_AXES, dp_mesh, init_distributed
 from param_decomp.slow_eval import (
     IDENTITY_CI_ERROR_TOLERANCE,
     PositionCI,
@@ -117,7 +117,7 @@ def _enable_hlo_dump(run_dir: Path) -> None:
 
 
 def _global_token_batch(local: np.ndarray, mesh: Mesh, global_batch: int) -> jax.Array:
-    sharding = NamedSharding(mesh, P("dp"))
+    sharding = NamedSharding(mesh, P(DATA_AXES))
     return jax.make_array_from_process_local_data(sharding, local, (global_batch, local.shape[1]))
 
 
@@ -149,10 +149,11 @@ def train(
     data = built.data
     assert isinstance(data, DataConfig), "train() is the LM (parquet) data path"
     n_proc = jax.process_count()
-    # The batch shards over the dp AXIS only (tp positions get batch-replicas), so it must
-    # tile dp, NOT the full device count. At tp=1 dp-axis == ndev (the old invariant).
-    dp_axis = mesh.shape["dp"]
-    assert data.global_batch % dp_axis == 0, (data.global_batch, dp_axis)
+    # The batch shards over the two DATA axes (replicate × dp); the tp positions get
+    # batch-replicas. So it must tile replicate·dp, NOT the full device count (which includes
+    # tp). At tp=1, single node, this is ndev (the old invariant).
+    n_data = mesh.shape["replicate"] * mesh.shape["dp"]
+    assert data.global_batch % n_data == 0, (data.global_batch, n_data)
     is_main = jax.process_index() == 0
 
     key = random.PRNGKey(built.pd.seed)

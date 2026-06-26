@@ -58,7 +58,7 @@ from param_decomp.built_run import EvalPGDConfig
 from param_decomp.components import DecompVU
 from param_decomp.lm import DecomposedModel
 from param_decomp.losses import kl_per_position
-from param_decomp.sharding import batch_shard_leading
+from param_decomp.sharding import DATA_AXES, batch_shard_leading
 from param_decomp.train import COMPUTE_DT, cast_floating
 
 
@@ -116,13 +116,13 @@ def make_eval_step(
         return batch_shard_leading(x, mesh)
 
     def ci_shard(x: Array) -> Array:
-        """Pin a CI / mask tensor `[batch, *positions, C]` batch-on-`dp`, C-on-`tp` — the
-        layout `site_out` pins `x@V` to, so the masked re-forward needs no reshard (matches
-        train.py `ci_C_on_tp`). No-op off-mesh."""
+        """Pin a CI / mask tensor `[batch, *positions, C]` batch-on-`DATA_AXES`
+        (`replicate × dp`), C-on-`tp` — the layout `site_out` pins `x@V` to, so the masked
+        re-forward needs no reshard (matches train.py `ci_C_on_tp`). No-op off-mesh."""
         if mesh is None:
             return x
         return jax.lax.with_sharding_constraint(
-            x, NamedSharding(mesh, P("dp", *((None,) * (x.ndim - 2)), "tp"))
+            x, NamedSharding(mesh, P(DATA_AXES, *((None,) * (x.ndim - 2)), "tp"))
         )
 
     def masked_forward(

@@ -31,6 +31,53 @@ def test_shard_batch_preserves_global_data():
     assert jnp.allclose(jnp.asarray(sharded), full)
 
 
+def test_mesh_is_3d_hsdp_tp():
+    """The mesh is 3-D `(replicate, dp, tp)`: `dp · tp` tiles the node size, `replicate`
+    carries the rest. Weights (V) name only `dp`+`tp` (never `replicate`); the batch shards
+    over `DATA_AXES` (`replicate × dp`). Most informative at >8 sim devices (replicate>1)."""
+    from jax.sharding import NamedSharding
+    from jax.sharding import PartitionSpec as P
+
+    from param_decomp.components import SiteC, init_decomp_vu
+    from param_decomp.sharding import DATA_AXES
+    from param_decomp.targets.llama8b import canonical_site_cs, llama_site_specs
+    from param_decomp.targets.llama8b_sharding import init_decomp_vu_placed
+    from param_decomp.tests.test_llama8b import _tiny_cfg
+
+    n = jax.device_count()
+    node = min(n, 8)
+    tp = 2 if node % 2 == 0 else 1
+    mesh = dp_mesh(tp=tp)
+    assert mesh.axis_names == ("replicate", "dp", "tp")
+    assert mesh.shape["tp"] == tp
+    assert mesh.shape["dp"] == node // tp
+    assert mesh.shape["replicate"] == n // node
+    assert mesh.shape["replicate"] * mesh.shape["dp"] * mesh.shape["tp"] == n
+
+    # batch shards over replicate × dp, NOT tp.
+    n_data = mesh.shape["replicate"] * mesh.shape["dp"]
+    full = jax.random.normal(jax.random.PRNGKey(0), (1, 8 * n_data, 4))
+    sharded = shard_batch(full, mesh, batch_axis=1)
+    assert isinstance(sharded.sharding, NamedSharding)
+    assert sharded.sharding.spec == P(None, DATA_AXES, None)
+    assert jnp.allclose(jnp.asarray(sharded), full)  # global data preserved
+
+    # weights name only dp + tp — never replicate (no cross-node weight collective).
+    cfg = _tiny_cfg()
+    sites = llama_site_specs(
+        cfg, canonical_site_cs((SiteC("layers.0.mlp.gate_proj", 8 * mesh.shape["tp"]),))
+    )
+    vu = init_decomp_vu_placed(sites, jax.random.PRNGKey(1), mesh)
+    eager = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    for name, (V, U) in vu.vu.items():
+        assert isinstance(V.sharding, NamedSharding) and isinstance(U.sharding, NamedSharding)
+        assert "replicate" not in V.sharding.spec, name
+        assert "replicate" not in U.sharding.spec, name
+        assert V.sharding.spec == P("dp", "tp"), name
+    for got, want in zip(jax.tree.leaves(vu), jax.tree.leaves(eager), strict=True):
+        assert jnp.allclose(jnp.asarray(got), want, rtol=1e-6, atol=0)  # placement-only
+
+
 def test_shard_batch_requires_divisible_batch():
     mesh = dp_mesh()
     n = mesh.devices.size
@@ -146,7 +193,10 @@ def test_jitted_sharded_inits_match_eager_values():
         assert src_sharding.spec == P()
         assert jnp.allclose(jnp.asarray(src_sharded[name]), src_eager[name], rtol=1e-6, atol=0)
 
-    # bsc: one source per batch element, batch-sharded over dp (axis 0), no cross-rank sync.
+    # bsc: one source per batch element, batch-sharded over the data axes (replicate × dp,
+    # axis 0), no cross-rank sync.
+    from param_decomp.sharding import DATA_AXES
+
     bsc_global_batch = 4 * n
     src_bsc = init_sources_sharded(
         site_names,
@@ -162,7 +212,7 @@ def test_jitted_sharded_inits_match_eager_values():
         assert src_bsc[name].shape == (bsc_global_batch, 16, C + 1), name
         bsc_sharding = src_bsc[name].sharding
         assert isinstance(bsc_sharding, NamedSharding)
-        assert bsc_sharding.spec == P("dp", None, None), name
+        assert bsc_sharding.spec == P(DATA_AXES, None, None), name
 
 
 def test_fresh_pgd_c_bc_sources_are_replica_identical():

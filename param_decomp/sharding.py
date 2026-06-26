@@ -1,15 +1,20 @@
-"""GSPMD sharding helpers — the JAX analog of FSDP2.
+"""GSPMD sharding helpers — the JAX analog of HSDP×TP (FSDP2 + Megatron + replicate-DP).
 
-The single-pool SPMD design (the recommended JAX target, see
-`jax_spike/SYNTHESIS.md`): data is sharded `P('dp')` over a 1-D device mesh,
-params + PGD sources are placed with an explicit sharding, and `jax.jit` inserts
-every collective (the grad all-reduce, the source-grad reduction) automatically
-because the mean-losses reduce over the sharded batch axis. No manual NCCL, no
-pool-coordination code.
+The single-pool SPMD design: a 3-D device mesh `(replicate, dp, tp)` (`dp_mesh`), where
+`(dp, tp)` are the two INTRA-node axes (`dp · tp = node size = 8`) and `replicate` is the
+CROSS-node data-parallel axis. Data is sharded over BOTH data-parallel axes
+(`P(DATA_AXES, ...)` = `replicate × dp`); params are placed with explicit `NamedSharding`s
+that name only `dp` (FSDP) + `tp` (Megatron) — never `replicate`, so weights replicate
+cross-node and NO weight collective crosses IB. `jax.jit` inserts every collective: the
+weight all-gather lands on the intra-node `dp` (NVLink), the C/Megatron reductions on `tp`
+(NVLink), and the grad all-reduce on `replicate × dp` (the mean loss reduces over the
+sharded batch). No manual NCCL, no pool-coordination code.
 
-Placement is expressed as `NamedSharding`: target-specific plans (like
-`llama8b_sharding.py`) place params with layer C-sharding; `shard_batch` shards the
-data axis.
+Placement is MODEL-OWNED: target-specific plans (like `llama8b_sharding.py`) place params
+with d_in/d_out FSDP-on-`dp` + C-on-`tp`; `shard_batch` / `batch_shard_leading` shard the
+data axis over `DATA_AXES`. `tp = 1` ⇒ pure HSDP (`dp = 8`); `tp = 8` ⇒ pure intra-node TP
++ cross-node replicate-DP (`dp = 1`); a single node ⇒ `replicate = 1` (the old 2-D
+`(dp, tp)` mesh, weights placed identically).
 """
 
 import os
@@ -20,6 +25,12 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 
 _GPUS_PER_NODE = 8
+
+DATA_AXES = ("replicate", "dp")
+"""The two data-parallel mesh axes the batch shards over (cross-node `replicate` ×
+intra-node FSDP `dp`). A `PartitionSpec` entry of this tuple shards one tensor axis over
+BOTH — `P(DATA_AXES, ...)`. The grad all-reduce falls out over both (the mean loss reduces
+the batch); weights, sharded only on `dp`+`tp`, are replicated over `replicate`."""
 
 
 def init_distributed(dp: int | None) -> bool:
@@ -54,15 +65,37 @@ def init_distributed(dp: int | None) -> bool:
 
 
 def dp_mesh(tp: int = 1) -> Mesh:
-    """The 2-D device mesh `(dp, tp)`. `tp` is the tensor-parallel degree (intra-node
-    Megatron axis); `dp` (= n_devices // tp) carries data-parallelism for the target/V-U and
-    chunk-parallelism for the chunkwise CI fn. `tp = 1` is a degenerate single-column mesh —
-    the `dp` axis has the full device count, identical to the old 1-D mesh for any
-    `"dp"`-only sharding."""
+    """The 3-D HSDP×TP device mesh `(replicate, dp, tp)` — the two intra-node axes
+    `(dp, tp)` partition each node's `_GPUS_PER_NODE` GPUs, `replicate` is the cross-node
+    data-parallel axis.
+
+      * `tp` — intra-node Megatron tensor-parallel degree (C-on-`tp`; on NVLink).
+      * `dp` — intra-node FSDP degree (`= _GPUS_PER_NODE // tp`); shards V's d_in / U's
+        d_out, gathered on NVLink. This is the FSDP axis the weight `.shardings` specs
+        name (`P("dp", "tp")` etc.) — UNCHANGED by the 3-D split.
+      * `replicate` — cross-node DP (`= n_devices // _GPUS_PER_NODE`); weights are
+        REPLICATED here (no weight collective crosses IB), it carries only the grad
+        all-reduce. Sized from the realized device count.
+
+    Data shards over BOTH data-parallel axes `(replicate, dp)`; the masked re-forwards run
+    on B/(replicate·dp) per rank. `tp = _GPUS_PER_NODE` ⇒ `dp = 1` (pure TP intra-node +
+    cross-node replicate-DP); `tp = 1` ⇒ `dp = _GPUS_PER_NODE` (pure HSDP). With a single
+    node (`n == _GPUS_PER_NODE`) `replicate` is size 1 — a degenerate axis, identical to the
+    old 2-D `(dp, tp)` mesh for any sharding that doesn't name `replicate` (so weights,
+    which never name it, are placed identically; the equivalence goldens are unchanged).
+
+    A CPU sim (`--xla_force_host_platform_device_count=N`) presents N devices in ONE
+    process, so the whole N tiles `_GPUS_PER_NODE`-worth intra-node and `replicate =
+    N // _GPUS_PER_NODE`; at `N < _GPUS_PER_NODE` the node size collapses to N (no
+    cross-node axis) so the 3-D mesh stays well-formed at any sim count."""
     devices = np.array(jax.devices())
     n = devices.size
-    assert n % tp == 0, f"device count {n} not divisible by tp={tp}"
-    return Mesh(devices.reshape(n // tp, tp), axis_names=("dp", "tp"))
+    node = min(n, _GPUS_PER_NODE)
+    assert n % node == 0, f"device count {n} not divisible by node size {node}"
+    assert node % tp == 0, f"node size {node} not divisible by tp={tp}"
+    fsdp = node // tp
+    replicate = n // node
+    return Mesh(devices.reshape(replicate, fsdp, tp), axis_names=("replicate", "dp", "tp"))
 
 
 def place_via_shardings[T](tree: T, shardings: T) -> T:
@@ -89,13 +122,14 @@ def assert_divisible(dim: int, mesh: Mesh, axis: str, what: str) -> None:
 
 
 def batch_shard_leading(x: jax.Array, mesh: Mesh | None) -> jax.Array:
-    """In-jit `with_sharding_constraint` pinning the LEADING (batch) axis to `'dp'`, the
-    rest replicated. `mesh is None` (single device) is a passthrough. Keeps the masked
-    re-forwards on per-device sub-batches (activation memory 1/n_dev)."""
+    """In-jit `with_sharding_constraint` pinning the LEADING (batch) axis to the two
+    data-parallel axes `DATA_AXES` (`replicate × dp`), the rest replicated. `mesh is None`
+    (single device) is a passthrough. Keeps the masked re-forwards on per-rank sub-batches
+    (activation memory 1/(replicate·dp))."""
     if mesh is None:
         return x
-    spec = ["dp"] + [None] * (x.ndim - 1)
-    return jax.lax.with_sharding_constraint(x, NamedSharding(mesh, P(*spec)))
+    rest: list[None] = [None] * (x.ndim - 1)
+    return jax.lax.with_sharding_constraint(x, NamedSharding(mesh, P(DATA_AXES, *rest)))
 
 
 def shard_batch(full_global: jax.Array, mesh: Mesh, batch_axis: int) -> jax.Array:
@@ -111,11 +145,13 @@ def shard_batch(full_global: jax.Array, mesh: Mesh, batch_axis: int) -> jax.Arra
     """
     n_proc = jax.process_count()
     B = full_global.shape[batch_axis]
-    assert B % mesh.devices.size == 0, (
-        f"batch {B} (axis {batch_axis}) not divisible by mesh size {mesh.devices.size}"
+    n_data = mesh.shape["replicate"] * mesh.shape["dp"]
+    assert B % n_data == 0, (
+        f"batch {B} (axis {batch_axis}) not divisible by data-parallel size {n_data} "
+        f"(replicate={mesh.shape['replicate']} × dp={mesh.shape['dp']})"
     )
-    spec: list[str | None] = [None] * full_global.ndim
-    spec[batch_axis] = "dp"
+    spec: list[object] = [None] * full_global.ndim
+    spec[batch_axis] = DATA_AXES
     sharding = NamedSharding(mesh, P(*spec))
 
     per_proc = B // n_proc

@@ -1,22 +1,26 @@
-"""GSPMD sharding plan for the Llama-8B single-pool step — the FSDP-style memory story.
+"""GSPMD sharding plan for the Llama-8B single-pool step — the HSDP×TP memory story.
 
-The memory consumers, and how each is placed on the 1-D `dp` mesh:
+The mesh is 3-D `(replicate, dp, tp)` (`dp·tp = node size`, `replicate` cross-node). The
+memory consumers, and how each is placed:
 
-  * frozen target: REPLICATED. ~3.6B bf16 params (all blocks + lm_head) ~=
-    7.3GB/device. Small relative to activations; replicating avoids all-gathering the
-    target every forward.
-  * components (V/U) + their Adam states: SHARDED over `dp` (the FSDP analog). The fp32
-    masters + fp32 Adam m/v are the dominant non-activation footprint; sharding each
-    site's C axis splits all three across devices -> 1/n_dev per device.
-  * CI fn + Adam states: SHARDED over `dp` along the largest axis (out head, in_proj).
+  * frozen target: FSDP-sharded over `dp` (the ~14 GB layer bulk shards `/(dp·tp)`,
+    gathered per layer in the scan), embed/lm_head/norm REPLICATED. Replicated over
+    `replicate` (no cross-node gather).
+  * components (V/U) + their Adam states: SHARDED over `dp` (FSDP: V's d_in / U's d_out)
+    + `tp` (Megatron: C). The fp32 masters + fp32 Adam m/v are the dominant non-activation
+    footprint; this splits all three `/(dp·tp)` per rank — ZeRO-1 over the INTRA-node mesh.
+    Replicated over `replicate` (the bf16 compute weight gathers on `dp` only — no weight
+    collective crosses IB; the proven HSDP×TP repro's tradeoff: master replicated cross-node
+    so `replicate` carries ONLY the grad all-reduce, not a weight gather).
+  * CI fn + Adam states: SHARDED over `dp` (FSDP) + `tp` (Megatron), same story.
   * PGD source (broadcast scope, `{site: (1,T,C+1)}`): REPLICATED. A single adversarial
     source shared across the global batch; it combines elementwise with the batch-sharded
     CI and its grad reduction falls out of the global-mean loss (torch
     `reduce_source_grads` analog). Tiny vs activations, so replicating costs nothing;
     the C+1 axis is odd and cannot tile the mesh anyway. `SrcAdamState` mirrors it.
-  * token input + all activations: BATCH-sharded over `dp`. The masked
-    re-forwards then run on per-device sub-batches -> activation memory scales 1/n_dev.
-    This is what unlocks a global batch that OOMs replicated on one device.
+  * token input + all activations: BATCH-sharded over `DATA_AXES` (`replicate × dp`). The
+    masked re-forwards then run on per-rank sub-batches -> activation memory scales
+    1/(replicate·dp). This is what unlocks a global batch that OOMs replicated on one device.
 
 Sharding V/U over the C axis keeps every einsum valid: `x @ V` contracts d_in and
 produces a C-sharded result; `(.) @ U` contracts the sharded C and `jax.jit` inserts
@@ -46,7 +50,7 @@ from param_decomp.adversary import init_persistent_sources
 from param_decomp.ci_fn import CIFn, CIFnArch, build_ci_fn
 from param_decomp.components import DecompVU, SiteSpec, init_decomp_vu
 from param_decomp.configs import BSCScope, SCScope
-from param_decomp.sharding import dp_mesh, place_via_shardings
+from param_decomp.sharding import DATA_AXES, dp_mesh, place_via_shardings
 from param_decomp.sharding import shard_batch as _generic_shard_batch
 from param_decomp.targets.llama8b import LlamaDecomposedModel, parse_site_name
 
@@ -111,11 +115,11 @@ def init_sources_sharded(
     elementwise with the batch-sharded CI (`mask = ci + (1-ci)*source[..., :-1]`) and its
     grad is AVG-reduced across shards (torch `reduce_source_grads`).
 
-    `bsc`: `{site: (B, T, C+1)}` BATCH-SHARDED over `dp` (axis 0), aligning each batch
-    element's source with that element's `shard_batch`-placed residual/CI. The source is
-    independent per element, so the per-element grad is already shard-local — NO
-    cross-rank reduction, matching torch's `_skip_all_reduce`. (Requires
-    `global_batch % n_dev == 0`, the same divisibility `shard_batch` needs.)
+    `bsc`: `{site: (B, T, C+1)}` BATCH-SHARDED over `DATA_AXES` (`replicate × dp`, axis 0),
+    aligning each batch element's source with that element's `shard_batch`-placed
+    residual/CI. The source is independent per element, so the per-element grad is already
+    shard-local — NO cross-rank reduction, matching torch's `_skip_all_reduce`. (Requires
+    `global_batch % (replicate·dp) == 0`, the same divisibility `shard_batch` needs.)
 
     Sharding the trailing C+1 axis is invalid for either scope: with the weight-delta
     channel C+1 is odd and not divisible by the mesh size, and would also fight the
@@ -125,7 +129,7 @@ def init_sources_sharded(
             leading_shape, placement = (1, seq_len), NamedSharding(mesh, P())
         case BSCScope():
             leading_shape = (global_batch, seq_len)
-            placement = NamedSharding(mesh, P("dp", None, None))
+            placement = NamedSharding(mesh, P(DATA_AXES, None, None))
     init = partial(
         init_persistent_sources, site_names, site_component_counts, leading_shape, source_dtype
     )

@@ -18,7 +18,7 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array
 
-from param_decomp.sharding import assert_divisible
+from param_decomp.sharding import DATA_AXES, assert_divisible
 
 
 @dataclass(frozen=True)
@@ -110,23 +110,25 @@ def site_out(
     everywhere. `delta_mask` None drops the delta path entirely (constant-source entries
     carry no delta, LOSS_PARITY_DESIGN §4b). `delta_mask`/`route` broadcast over batch;
     trailing dim added here."""
-    # Pin the decomposed matmuls DATA-PARALLEL: the d_in/d_out-space activation `x` stays
-    # batch-on-`dp`, feature-replicated, and the component-space activation `x@V` stays
-    # batch-on-`dp`, C-on-`tp`. This forces the `dp`-sharded V/U masters to be GATHERED for
-    # compute and their grads reduce-scattered back (symmetric FSDP — the intended layout).
-    # WITHOUT pinning `x`, the weight-grad backward is free to instead shard `x`'s feature
-    # dim on `dp` and REPLICATE the global batch (the forward gathers V, the backward does
-    # not), which GSPMD can't reshard cheaply -> involuntary full rematerialization -> OOM at
-    # tp>1. Pinning the activations (not V/U) keeps the weights as plain matmul args. Guarded
-    # so it's a no-op off-mesh (CPU tests / single device); `run.py` sets the global mesh.
-    # waist is `[*leading, d]`, leading = (batch, *position): pin batch->`dp` (positions +
-    # feature replicated for `x`; C-on-`tp` for `x@V`).
+    # Pin the decomposed matmuls DATA-PARALLEL over both DP axes (`replicate × dp`): the
+    # d_in/d_out-space activation `x` stays batch-on-`DATA_AXES`, feature-replicated, and the
+    # component-space activation `x@V` stays batch-on-`DATA_AXES`, C-on-`tp`. This forces the
+    # `dp`-sharded V/U masters to be GATHERED (on the intra-node `dp`/FSDP axis only) for
+    # compute and their grads reduce-scattered back (symmetric FSDP); the cross-node
+    # `replicate` axis carries only the batch and so only the grad all-reduce (no weight
+    # collective). WITHOUT pinning `x`, the weight-grad backward is free to instead shard
+    # `x`'s feature dim on `dp` and REPLICATE the global batch (the forward gathers V, the
+    # backward does not), which GSPMD can't reshard cheaply -> involuntary full
+    # rematerialization -> OOM at tp>1. Pinning the activations (not V/U) keeps the weights as
+    # plain matmul args. Guarded so it's a no-op off-mesh (CPU tests / single device);
+    # `run.py` sets the global mesh. waist is `[*leading, d]`, leading = (batch, *position):
+    # pin batch->`DATA_AXES` (positions + feature replicated for `x`; C-on-`tp` for `x@V`).
     on_mesh = not jax.sharding.get_abstract_mesh().empty
     if on_mesh:
-        x = jax.lax.with_sharding_constraint(x, P("dp", *(None,) * (x.ndim - 1)))
+        x = jax.lax.with_sharding_constraint(x, P(DATA_AXES, *(None,) * (x.ndim - 1)))
     xV = x @ V
     if on_mesh:
-        xV = jax.lax.with_sharding_constraint(xV, P("dp", *(None,) * (xV.ndim - 2), "tp"))
+        xV = jax.lax.with_sharding_constraint(xV, P(DATA_AXES, *(None,) * (xV.ndim - 2), "tp"))
     acts = xV * mask if mask is not None else xV
     out = acts @ U
     if delta_mask is not None:
