@@ -52,7 +52,7 @@ from param_decomp.run import _ensure_global
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.targets.llama8b import llama_site_specs, mlp_family_site_cs
 from param_decomp.targets.llama8b_sharding import (
-    dp_mesh,
+    hsdp_mesh,
     init_ci_fn_placed,
     init_decomp_vu_placed,
     init_sources_sharded,
@@ -82,11 +82,11 @@ def _persistent_cfg(name: str | None) -> PersistentPGDReconLossConfig:
 
 def _build_sharded(seed: int):
     """A TrainState placed exactly as `init_train_state` places a production run on the 2-D
-    `(dp, tp)` mesh: V/U + their Adam moments C-sharded over `tp`, the CI fn chunk-parallel
-    over `dp` + Megatron over `tp`, sources + their Adam moments replicated, with TWO
-    persistent terms. On the 4-device sim: `dp=2, tp=2`; `C=8` tiles `tp`, and the CI fn's
-    two per-layer chunks tile `dp`."""
-    mesh = dp_mesh(tp=2)
+    `(replicate, fsdp)` HSDP mesh: V/U + their Adam moments sharded ÷N over the FULL mesh
+    (V d_in, U d_out; C replicated), the CI fn ÷N over the full mesh (d_model), sources + their
+    Adam moments replicated, with TWO persistent terms. On the 4-device sim: `replicate=1,
+    fsdp=4` (N=4); `C=8` and the V d_in / U d_out tile N."""
+    mesh = hsdp_mesh()
     cfg = _tiny_cfg()
     C, seq = 8, 16
     sites = llama_site_specs(cfg, mlp_family_site_cs(3, 4, C))
@@ -169,7 +169,7 @@ def _build_sharded(seed: int):
     )  # fmt: skip
     tokens = jax.device_put(
         jax.random.randint(jax.random.PRNGKey(9), (4, seq), 0, cfg.vocab_size),
-        NamedSharding(mesh, jax.sharding.PartitionSpec("dp")),
+        NamedSharding(mesh, jax.sharding.PartitionSpec(("replicate", "fsdp"))),
     )
     return lm, state, step, tokens
 
