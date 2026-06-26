@@ -84,7 +84,7 @@ def _source_grad(sharded: bool) -> dict[str, jax.Array]:
     components_bf16 = cast_floating(vu, COMPUTE_DT)
     ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
     taps = lm.read_activations(resid, ci_fn.input_names)
-    ci_lower = ci_fn_bf16(taps).lower
+    ci_lower = ci_fn_bf16(taps, remat=False).lower
     clean_output = jax.lax.stop_gradient(lm.clean_output(resid))
 
     def source_loss(sources: dict[str, jax.Array]) -> jax.Array:

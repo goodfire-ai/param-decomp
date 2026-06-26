@@ -176,15 +176,6 @@ def make_train_step(
             )
         )
 
-    # The CI-fn forward's activations (4-block transformer × n_chunks) are stored for the
-    # backward unless rematerialized. They scale with batch, so recomputing the CI fn in the
-    # backward is the main activation-memory lever for larger batch. `eqx.filter_checkpoint`
-    # handles the CIFn module's static/dynamic split.
-    def _apply_ci_fn(ci_fn: CIFn, taps: dict[str, Array]) -> CI:
-        return ci_fn(taps)
-
-    apply_ci_fn = eqx.filter_checkpoint(_apply_ci_fn) if remat_ci_fn else _apply_ci_fn
-
     def stochastic_entry_masks(
         ci_lower: dict[str, Array],
         live_sites: tuple[str, ...],
@@ -267,7 +258,7 @@ def make_train_step(
         # ── adversary ascents: params + CI detached (SPEC §4.5) ──
         components_detached = jax.lax.stop_gradient(cast_floating(state.components, COMPUTE_DT))
         ci_fn_detached = jax.lax.stop_gradient(cast_floating(state.ci_fn, COMPUTE_DT))
-        ci_lower_detached = batch_sharded_ci(ci_fn_detached(taps)).lower
+        ci_lower_detached = batch_sharded_ci(ci_fn_detached(taps, remat=False)).lower
 
         # ── persistent adversaries: each runs its supplemental ascents vs the route-ALL
         # all-sites forward (SPEC S24 — torch warmup parity, NOT the term's loss plan),
@@ -350,7 +341,7 @@ def make_train_step(
             components, ci_fn, persistent_sources = trainable
             components_bf16 = cast_floating(components, COMPUTE_DT)
             ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
-            ci = batch_sharded_ci(apply_ci_fn(ci_fn_bf16, taps))
+            ci = batch_sharded_ci(ci_fn_bf16(taps, remat=remat_ci_fn))
             faith_loss = faithfulness_loss(model.weight_deltas(components))
             imp_lp, imp_freq = imp_min_terms(ci.upper, imp_min, imp_min_param)
 
