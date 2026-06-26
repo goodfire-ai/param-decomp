@@ -122,7 +122,10 @@ from the canonical schema and calls `run_decomposition_training`). They are posi
 `site_input [B,d_in] -> [B,C]`), `GlobalMLPCIFn` (`expects_axes=()`, one shared MLP over all
 sites jointly, concat/split in canonical site order), and the LM `ChunkwiseTransformerCIFn`
 (`expects_axes=("sequence",)`, per-chunk transformers reading residual taps, stacked +
-`filter_vmap`). `run_state.init_train_state` dispatches CI-fn construction on `cfg.ci_fn`
+`lax.scan`'d with per-chunk remat, and **N per-site output heads** (one `[d_model, C_j]` per
+site-slot, each born C-on-`tp` — no glued-ΣC head whose per-site slice fell mid-`tp`-shard and
+forced a `collective-permute`; the CI stays C-on-`tp` end-to-end, matching `site_out`'s `x@V`).
+`run_state.init_train_state` dispatches CI-fn construction on `cfg.ci_fn`
 (`MLPCIArch` / `GlobalMLPCIArch` / `ChunkwiseTransformerCIArch`) and uses replicated (not
 C-sharded) V/U + CI for the tiny toys; the core `config.CIFnArch` admits all three and the
 lab `experiments.config.ci_arch` builds the layerwise / global arch from the toy

@@ -50,7 +50,8 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import random
-from jax.sharding import Mesh
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from param_decomp.built_run import EvalPGDConfig
@@ -114,6 +115,16 @@ def make_eval_step(
     def batch_sharded(x: Array) -> Array:
         return batch_shard_leading(x, mesh)
 
+    def ci_shard(x: Array) -> Array:
+        """Pin a CI / mask tensor `[batch, *positions, C]` batch-on-`dp`, C-on-`tp` — the
+        layout `site_out` pins `x@V` to, so the masked re-forward needs no reshard (matches
+        train.py `ci_C_on_tp`). No-op off-mesh."""
+        if mesh is None:
+            return x
+        return jax.lax.with_sharding_constraint(
+            x, NamedSharding(mesh, P("dp", *((None,) * (x.ndim - 2)), "tp"))
+        )
+
     def masked_forward(
         model: DecomposedModel, components_bf16: DecompVU, tokens: Array, masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -138,10 +149,8 @@ def make_eval_step(
 
         components_bf16 = cast_floating(components, COMPUTE_DT)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
-        # one explicit C-shard -> batch-shard reshard; see train.py batch_sharded_ci
-        ci_lower = {
-            site: batch_sharded(v) for site, v in ci_fn_bf16(taps, remat=False).lower.items()
-        }
+        # keep CI C-on-`tp` (matches `x@V` in `site_out`); see train.py `ci_C_on_tp`
+        ci_lower = {site: ci_shard(v) for site, v in ci_fn_bf16(taps, remat=False).lower.items()}
 
         leading = token_ids.shape
         zeros_delta = {site: jnp.zeros(leading, COMPUTE_DT) for site in site_names}
