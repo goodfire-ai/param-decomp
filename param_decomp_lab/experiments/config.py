@@ -49,36 +49,6 @@ class EvalConfig(BaseConfig):
     slow_every: PositiveInt
     slow_on_first_step: bool = True
     metrics: list[AnyEvalMetricConfig] = Field(default_factory=list)
-    ci_alive_threshold: float = 0.0
-    """CI aliveness cutoff shared by the CI-L0 metric and the activation-density slow-eval
-    step (a CI strictly above this counts as alive). Eval-global, not per-metric."""
-
-    @model_validator(mode="before")
-    @classmethod
-    def _lift_ci_alive_threshold_from_metrics(cls, data: object) -> object:
-        # Back-compat (shared-storage): ci_alive_threshold used to live on the CI_L0 /
-        # ComponentActivationDensity metrics and was hoisted to eval scope at build time. It
-        # is now an eval-global field. Lift any metric-level value up so stored/old configs
-        # load, asserting all sources agree (no silent value loss).
-        if not isinstance(data, dict):
-            return data
-        metrics = data.get("metrics")
-        if not isinstance(metrics, list):
-            return data
-        from_metrics = {
-            m.pop("ci_alive_threshold")
-            for m in metrics
-            if isinstance(m, dict) and "ci_alive_threshold" in m
-        }
-        if from_metrics:
-            assert len(from_metrics) == 1, (
-                f"conflicting metric-level ci_alive_threshold values: {from_metrics}"
-            )
-            lifted = from_metrics.pop()
-            assert data.setdefault("ci_alive_threshold", lifted) == lifted, (
-                f"eval.ci_alive_threshold ({data['ci_alive_threshold']}) != metric-level ({lifted})"
-            )
-        return data
 
     @model_validator(mode="after")
     def validate_slow_every_multiple_of_every(self) -> Self:

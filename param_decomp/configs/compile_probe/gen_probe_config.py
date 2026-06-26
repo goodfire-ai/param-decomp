@@ -59,7 +59,7 @@ def main(n_layers: int, dp: int, out_path: str, seq: int = 256, batch: int | Non
             "batch_size": batch,
             "every": 100000,
             "metrics": [
-                {"groups": None, "type": "CI_L0"},
+                {"ci_alive_threshold": 0.0, "groups": None, "type": "CI_L0"},
                 {"rounding_threshold": 0.0, "type": "CEandKLLosses"},
             ],
             "n_steps": 1,

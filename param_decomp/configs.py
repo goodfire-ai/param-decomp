@@ -453,6 +453,7 @@ class CI_L0Config(BaseConfig):
 
     type: Literal["CI_L0"] = "CI_L0"
     groups: dict[str, list[str]] | None
+    ci_alive_threshold: float = 0.0
 
 
 class _AttnPatternsBaseConfig(BaseConfig):
@@ -495,6 +496,7 @@ class CIMeanPerComponentConfig(BaseConfig):
 
 class ComponentActivationDensityConfig(BaseConfig):
     type: Literal["ComponentActivationDensity"] = "ComponentActivationDensity"
+    ci_alive_threshold: float = 0.0
 
 
 class IdentityCITargetSpec(BaseConfig):

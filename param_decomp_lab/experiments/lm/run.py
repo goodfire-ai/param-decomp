@@ -223,7 +223,7 @@ def _make_lm_eval_fn(
     eval_step_fn = make_eval_step(
         lm,
         eval.rounding_threshold,
-        eval.ci_alive_threshold,
+        eval.l0_ci_alive_threshold,
         eval.l0_groups,
         eval.pgd,
         mesh,
@@ -238,7 +238,7 @@ def _make_lm_eval_fn(
                 lm, pattern_fn, eval.attn_patterns.stochastic_n_mask_samples
             )
 
-    slow_eval_step = make_slow_eval_step(lm, eval.ci_alive_threshold)
+    slow_eval_step = make_slow_eval_step(lm, eval.density_ci_alive_threshold)
     slow_renderer = SlowEvalRenderer(is_main)
     # The CI-heatmap / permutation / UV / identity-error metrics read off the run's typed
     # `eval.metrics` (re-validated from the pinned config.yaml: the trainer's `EvalConfig`
@@ -331,7 +331,7 @@ def _make_lm_eval_fn(
             # the record (the jitted eval can't construct wandb objects).
             import wandb
 
-            l0_prefix = f"eval/l0/{eval.ci_alive_threshold}_"
+            l0_prefix = f"eval/l0/{eval.l0_ci_alive_threshold}_"
             eval_record["eval/l0/bar_chart"] = wandb.plot.bar(
                 wandb.Table(
                     columns=["layer", "l0"],
@@ -343,7 +343,7 @@ def _make_lm_eval_fn(
                 ),
                 "layer",
                 "l0",
-                title=f"L0_{eval.ci_alive_threshold}",
+                title=f"L0_{eval.l0_ci_alive_threshold}",
             )
         if is_main:
             headline = {

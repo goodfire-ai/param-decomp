@@ -129,7 +129,8 @@ def test_eval_block_maps_slow_tier_and_defers_offline_only_metrics(
                 "step_size": 0.1,
             },
             {"type": "CIHistograms", "n_batches_accum": 7},  # in-loop slow tier now
-            {"type": "ComponentActivationDensity", "ci_alive_threshold": 0.0},  # slow tier
+            # distinct cutoff: pins that density reads its OWN ci_alive_threshold, not CI_L0's
+            {"type": "ComponentActivationDensity", "ci_alive_threshold": 0.05},  # slow tier
             {"type": "IdentityCIError", "identity_ci": None, "dense_ci": None},  # in-loop slow
             {"type": "UVPlots", "identity_patterns": None, "dense_patterns": None},  # in-loop slow
         ],
@@ -139,7 +140,8 @@ def test_eval_block_maps_slow_tier_and_defers_offline_only_metrics(
     assert (cfg.eval.batch_size, cfg.eval.every, cfg.eval.n_steps) == (128, 1000, 1)
     assert (cfg.eval.slow_every, cfg.eval.slow_on_first_step) == (10000, True)
     assert cfg.eval.slow_n_batches_accum == 7  # read off the CIHistograms metric
-    assert cfg.eval.rounding_threshold == 0.0 and cfg.eval.ci_alive_threshold == 0.0
+    assert cfg.eval.rounding_threshold == 0.0
+    assert cfg.eval.l0_ci_alive_threshold == 0.0 and cfg.eval.density_ci_alive_threshold == 0.05
     assert cfg.eval.pgd is not None and (cfg.eval.pgd.n_steps, cfg.eval.pgd.step_size) == (20, 0.1)
     # the plot / permutation / UV / identity metrics all run in-loop — `_eval` accepts them
     # without raising, and nothing is deferred (no offline path)
