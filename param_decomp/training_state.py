@@ -31,4 +31,5 @@ class TrainingState:
     component_model: dict[str, Tensor]
     components_optimizer: dict[str, dict[str, Any]]
     ci_fn_optimizer: dict[str, dict[str, Any]]
+    scaffold_optimizer: dict[str, dict[str, Any]]
     loss_metrics: dict[str, dict[str, Any]]

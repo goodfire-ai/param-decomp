@@ -76,11 +76,13 @@ the prediction tensor out of the model's forward output.
 `kind: from_scratch` builds a randomly-initialized model whose architecture is copied
 from a prior run's `model_config.yaml` (via `arch_from_run_path`) — the checkpoint is
 ignored. It pairs with `pd.train_without_target_model=true`: the model is never a target
-to reconstruct, only a fixed scaffold (embeddings, norms, attention at frozen init) whose
-shape defines the decomposition targets. In that mode the reconstruction loss is
-next-token cross-entropy (`recon_loss_ce_next_token`) instead of KL-vs-target
-(`recon_loss_kl`), pre-weight activations come from the assembled all-components forward,
-and `use_delta_component` / faithfulness must be off (no target to delta against).
+to reconstruct. Its decomposed modules (`mlp.c_fc`/`down_proj`, `attn.{q,k,v,o}_proj`)
+are replaced by components; the non-decomposed scaffold (tied embeddings/unembedding +
+RMSNorms) is *trained from scratch* by a dedicated `pd.scaffold_optimizer` (embeddings
+weight-decayed, norms not). In that mode the reconstruction loss is next-token
+cross-entropy (`recon_loss_ce_next_token`) instead of KL-vs-target (`recon_loss_kl`),
+pre-weight activations come from the assembled all-components forward, and
+`use_delta_component` / faithfulness must be off (no target to delta against).
 
 ## Anatomy of `run.py`
 

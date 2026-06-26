@@ -166,9 +166,10 @@ class PDConfig(BaseConfig):
         description="Train a decomposable model from scratch with no target to reconstruct. "
         "Pre-weight activations come from the assembled (all-components) forward instead of a "
         "frozen target's, and the reconstruction target is the next token (conventional LM "
-        "pretraining) rather than a target model's output. Requires `use_delta_component=False` "
-        "and no faithfulness (both need a target). The wrapped model still supplies the "
-        "non-decomposed scaffold (embeddings, norms, attention) at its frozen init weights.",
+        "pretraining) rather than a target model's output. Requires `use_delta_component=False`, "
+        "no faithfulness (both need a target), and a `scaffold_optimizer`. The non-decomposed "
+        "scaffold params (embeddings/unembedding and norms) are trained from scratch by that "
+        "optimizer; the decomposed modules' weights are replaced by their components.",
     )
 
     tied_weights: list[tuple[str, str]] | None = Field(
@@ -192,6 +193,13 @@ class PDConfig(BaseConfig):
     )
     ci_fn_optimizer: OptimizerConfig = Field(
         ..., description="Optimizer config for the CI function parameters"
+    )
+    scaffold_optimizer: OptimizerConfig | None = Field(
+        default=None,
+        description="Optimizer config for the trainable non-decomposed scaffold parameters "
+        "(embeddings/unembedding and norms) in `train_without_target_model` mode. Required iff "
+        "that mode is on. Embedding/matrix params (ndim>=2) get this config's `weight_decay`; "
+        "norm/bias params (ndim<2) are excluded from weight decay.",
     )
     steps: PositiveInt = Field(..., description="Total number of optimisation steps")
     batch_size: PositiveInt = Field(
@@ -223,7 +231,14 @@ class PDConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_train_without_target_model(self) -> Self:
         if not self.train_without_target_model:
+            assert self.scaffold_optimizer is None, (
+                "scaffold_optimizer is only meaningful with train_without_target_model=True."
+            )
             return self
+        assert self.scaffold_optimizer is not None, (
+            "train_without_target_model requires a scaffold_optimizer to train the non-decomposed "
+            "scaffold params (embeddings/norms) — otherwise they stay frozen at random init."
+        )
         assert not self.use_delta_component, (
             "train_without_target_model requires use_delta_component=False: there is no target "
             "model to take a weight-delta against."

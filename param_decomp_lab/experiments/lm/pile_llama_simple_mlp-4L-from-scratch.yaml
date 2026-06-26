@@ -46,6 +46,14 @@ pd:
       warmup_pct: 0.0
       final_val_frac: 0.1
       fn_type: cosine
+  scaffold_optimizer:
+    lr_schedule:
+      start_val: 1.0e-03
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+    weight_decay: 0.01
+    grad_clip_norm: 1.0
   steps: 400000
   batch_size: 64
   faithfulness_warmup_steps: 0

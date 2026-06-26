@@ -302,6 +302,7 @@ class Trainer:
     component_model: ComponentModel
     components_optimizer: optim.Optimizer
     ci_fn_optimizer: optim.Optimizer
+    scaffold_optimizer: optim.Optimizer | None
     loss_metrics: dict[str, Metric[Any]]
     step: int
 
@@ -349,6 +350,13 @@ class Trainer:
         )
         model.to(device)
 
+        # Unfreeze the non-decomposed scaffold (embeddings/norms) BEFORE DDP wraps the model:
+        # DDP's reducer captures the requires_grad param set at construction, so an unfreeze
+        # after wrapping would leave scaffold grads un-synced across ranks.
+        self._scaffold_named: list[tuple[str, nn.Parameter]] = []
+        if pd_config.train_without_target_model:
+            self._scaffold_named = self._unfreeze_scaffold_params(model)
+
         # Diverge global RNG per rank so stochastic masks/sources differ across DP workers.
         seed_per_rank(pd_config.seed)
 
@@ -392,6 +400,11 @@ class Trainer:
             weight_decay=pd_config.ci_fn_optimizer.weight_decay,
         )
 
+        self.scaffold_optimizer = None
+        if pd_config.train_without_target_model:
+            assert self._scaffold_named, "scaffold params must be unfrozen before DDP wrapping"
+            self.scaffold_optimizer = self._build_scaffold_optimizer(pd_config)
+
         self.loss_metrics, _ = instantiate_metrics(pd_config, component_model, device)
 
     # ============================ Named-param accessors for optimizer state ============================
@@ -413,6 +426,49 @@ class Trainer:
         """The ``(name, param)`` pairs for ``ci_fn_optimizer``."""
         assert self.component_model.ci_fn is not None
         return [(f"ci_fn.{n}", p) for n, p in self.component_model.ci_fn.named_parameters()]
+
+    def _scaffold_optimizer_named_params(self) -> list[tuple[str, nn.Parameter]]:
+        """The ``(name, param)`` pairs for ``scaffold_optimizer``, in optimizer-add order.
+
+        Empty unless ``train_without_target_model``. Names are ``scaffold.<target_param_name>``
+        (e.g. ``scaffold.wte.weight``). The order matches the two param groups (decay params
+        first, then no-decay) so the integer-indexed optimizer state round-trips correctly.
+        """
+        return [(f"scaffold.{n}", p) for n, p in self._scaffold_named]
+
+    def _unfreeze_scaffold_params(
+        self, component_model: ComponentModel
+    ) -> list[tuple[str, nn.Parameter]]:
+        """Unfreeze the non-decomposed target params (embeddings/unembedding + norms) so they
+        train from scratch alongside the components. Decomposed-module weights stay frozen — the
+        components replace them. Returns the unfrozen ``(name, param)`` pairs ordered with
+        weight-decayed params (ndim>=2) first, then weight-decay-excluded params (ndim<2).
+        """
+        decomposed = set(component_model.target_module_paths)
+        decay: list[tuple[str, nn.Parameter]] = []
+        no_decay: list[tuple[str, nn.Parameter]] = []
+        for name, p in component_model.target_model.named_parameters():
+            module_path = name.rsplit(".", 1)[0]
+            if module_path in decomposed:
+                continue
+            p.requires_grad_(True)
+            (decay if p.ndim >= 2 else no_decay).append((name, p))
+        assert decay, "no decayable scaffold params (embeddings) found to train"
+        return decay + no_decay
+
+    def _build_scaffold_optimizer(self, pd_config: PDConfig) -> optim.Optimizer:
+        cfg = pd_config.scaffold_optimizer
+        assert cfg is not None
+        decay = [p for _, p in self._scaffold_named if p.ndim >= 2]
+        no_decay = [p for _, p in self._scaffold_named if p.ndim < 2]
+        return optim.AdamW(
+            [
+                {"params": decay, "weight_decay": cfg.weight_decay},
+                {"params": no_decay, "weight_decay": 0.0},
+            ],
+            lr=cfg.lr_schedule.start_val,
+            betas=cfg.betas,
+        )
 
     def _build_all_metric_instances(
         self,
@@ -465,6 +521,13 @@ class Trainer:
             ci_fn_optimizer=optimizer_state_by_name(
                 self.ci_fn_optimizer, self._ci_fn_optimizer_named_params()
             ),
+            scaffold_optimizer=(
+                optimizer_state_by_name(
+                    self.scaffold_optimizer, self._scaffold_optimizer_named_params()
+                )
+                if self.scaffold_optimizer is not None
+                else {}
+            ),
             loss_metrics={n: m.state_dict() for n, m in self.loss_metrics.items()},
         )
 
@@ -512,6 +575,12 @@ class Trainer:
             self._ci_fn_optimizer_named_params(),
             state.ci_fn_optimizer,
         )
+        if self.scaffold_optimizer is not None:
+            load_optimizer_state_by_name(
+                self.scaffold_optimizer,
+                self._scaffold_optimizer_named_params(),
+                state.scaffold_optimizer,
+            )
         for name, m in self.loss_metrics.items():
             m.load_state_dict(state.loss_metrics[name])
 
@@ -556,6 +625,8 @@ class Trainer:
             self.step = step
             self.components_optimizer.zero_grad()
             self.ci_fn_optimizer.zero_grad()
+            if self.scaffold_optimizer is not None:
+                self.scaffold_optimizer.zero_grad()
 
             components_lr = get_scheduled_value(
                 step=step,
@@ -571,6 +642,16 @@ class Trainer:
                 group["lr"] = components_lr
             for group in self.ci_fn_optimizer.param_groups:
                 group["lr"] = ci_fn_lr
+            scaffold_lr: float | None = None
+            if self.scaffold_optimizer is not None:
+                assert pd_config.scaffold_optimizer is not None
+                scaffold_lr = get_scheduled_value(
+                    step=step,
+                    total_steps=pd_config.steps,
+                    config=pd_config.scaffold_optimizer.lr_schedule,
+                )
+                for group in self.scaffold_optimizer.param_groups:
+                    group["lr"] = scaffold_lr
 
             batch_log_data: defaultdict[str, float] = defaultdict(float)
 
@@ -635,6 +716,8 @@ class Trainer:
                 batch_log_data.update(grad_norm_log_data)
                 batch_log_data["schedules/lr/components"] = components_lr
                 batch_log_data["schedules/lr/ci_fn"] = ci_fn_lr
+                if scaffold_lr is not None:
+                    batch_log_data["schedules/lr/scaffold"] = scaffold_lr
 
                 sink.console(
                     f"--- Step {step} ---",
@@ -695,8 +778,17 @@ class Trainer:
                     )
                 if pd_config.ci_fn_optimizer.grad_clip_norm is not None:
                     clip_grad_norm_(self._ci_fn_params, pd_config.ci_fn_optimizer.grad_clip_norm)
+                if self.scaffold_optimizer is not None:
+                    assert pd_config.scaffold_optimizer is not None
+                    if pd_config.scaffold_optimizer.grad_clip_norm is not None:
+                        clip_grad_norm_(
+                            [p for _, p in self._scaffold_named],
+                            pd_config.scaffold_optimizer.grad_clip_norm,
+                        )
                 self.components_optimizer.step()
                 self.ci_fn_optimizer.step()
+                if self.scaffold_optimizer is not None:
+                    self.scaffold_optimizer.step()
 
         if is_main_process():
             logger.info("Finished training loop.")
