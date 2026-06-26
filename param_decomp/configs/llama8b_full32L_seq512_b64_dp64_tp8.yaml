@@ -27,7 +27,7 @@ run_name: jax-full32L-allmat-seq512-b64-dp64-tp8
 cadence:
   keep_last_n_checkpoints: 2
   save_every: 5000
-  train_log_every: 200
+  train_log_every: 25
 data:
   buffer_size: 1000
   column_name: input_ids
