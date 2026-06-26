@@ -24,12 +24,12 @@ from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
 from param_decomp.losses import importance_minimality_terms
-from param_decomp.sharding import dp_mesh, shard_batch
+from param_decomp.sharding import hsdp_mesh, shard_batch
 
 
 def _global_ci_upper() -> dict[str, jax.Array]:
     """Two heterogeneous-C sites; batch B divisible by any visible device count."""
-    mesh = dp_mesh()
+    mesh = hsdp_mesh()
     n = mesh.devices.size
     B, T = 8 * n, 16
     return {
@@ -49,12 +49,12 @@ def test_imp_min_global_reduction_invariant_to_device_count():
         ci_upper, pnorm, eps, reference_token_count=n_positions
     )
 
-    mesh = dp_mesh()
+    mesh = hsdp_mesh()
 
     @jax.jit
     def sharded_terms(ci: dict[str, jax.Array]) -> tuple[jax.Array, jax.Array]:
         ci = {
-            site: jax.lax.with_sharding_constraint(v, NamedSharding(mesh, P("dp", None, None)))
+            site: jax.lax.with_sharding_constraint(v, NamedSharding(mesh, P(("replicate", "fsdp"), None, None)))
             for site, v in ci.items()
         }
         return importance_minimality_terms(ci, pnorm, eps, reference_token_count=n_positions)
