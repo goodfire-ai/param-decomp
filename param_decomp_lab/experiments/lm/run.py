@@ -35,6 +35,7 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import PRNGKeyArray
 
+from param_decomp import fp8
 from param_decomp.attn_patterns_eval import (
     accumulate_attn_patterns,
     attn_pattern_for,
@@ -365,6 +366,7 @@ def main(config: Path, run_id: str) -> None:
 
     install_sigterm_flag()
     init_distributed(built.runtime.dp)
+    fp8.configure(built.runtime.fp8_scope, built.runtime.fp8_mode)
     # Harden the cold-cache HF weight load against the 8N-rank startup burst before any
     # per-rank Hub call (no-op when huggingface_hub is absent / cache is pre-warmed).
     configure_hf_http_retries()

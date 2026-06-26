@@ -17,6 +17,7 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float
 
+from param_decomp import fp8
 from param_decomp.sharding import assert_divisible
 
 
@@ -86,11 +87,13 @@ def site_out(
     against the frozen `x @ W.T`. `mask` may be None (fully on); `route` None routes
     everywhere. `delta_mask` None drops the delta path entirely (constant-source entries
     carry no delta, LOSS_PARITY_DESIGN §4b). `delta_mask`/`route` broadcast over batch;
-    trailing dim added here."""
-    acts = x @ V
+    trailing dim added here. The two decomposition GEMMs (`x@V`, `(.)@U`) run in fp8 when
+    enabled (`fp8.configure`); the frozen `x@W` / delta paths stay bf16."""
+    comp_dot = fp8.matmul if fp8.components_enabled() else lambda p, q: p @ q
+    acts = comp_dot(x, V)
     if mask is not None:
         acts = acts * mask
-    out = acts @ U
+    out = comp_dot(acts, U)
     if delta_mask is not None:
         # DIVERGENCE vs the autocast oracle (documented, accepted): this delta is
         # computed in bf16 from the cast components; the oracle computes W − V@U in fp32 then
