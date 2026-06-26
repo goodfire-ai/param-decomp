@@ -90,7 +90,7 @@ def test_reductions_match_hand_rolled_per_component():
     reductions = accumulate_site_reductions(step, lm, ci_fn, [residual], n_batches_accum=None)
 
     taps = lm.read_activations(residual, ci_fn.input_names)
-    logits = ci_fn(taps).logits
+    logits = ci_fn(taps, remat=False).logits
     lower = {s: lower_leaky_hard_sigmoid(logits[s]) for s in lm.site_names}
     for site in lm.site_names:
         flat = np.asarray(lower[site]).reshape(-1, C).astype(np.float32)

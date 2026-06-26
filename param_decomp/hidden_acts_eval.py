@@ -81,7 +81,7 @@ def make_ci_hidden_acts_step(lm: DecomposedModel) -> HiddenActsStep:
         taps = model.read_activations(residual, ci_fn.input_names)
         components_bf16 = cast_floating(components, COMPUTE_DT)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
-        ci_lower = ci_fn_bf16(taps).lower
+        ci_lower = ci_fn_bf16(taps, remat=False).lower
 
         leading = residual.shape[:-1]
         zeros_delta = {s: jnp.zeros(leading, COMPUTE_DT) for s in site_names}
@@ -118,7 +118,7 @@ def make_stochastic_hidden_acts_step(lm: DecomposedModel, n_mask_samples: int) -
         taps = model.read_activations(residual, ci_fn.input_names)
         components_bf16 = cast_floating(components, COMPUTE_DT)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
-        ci_lower = ci_fn_bf16(taps).lower
+        ci_lower = ci_fn_bf16(taps, remat=False).lower
 
         leading = residual.shape[:-1]
         clean = model.masked_site_outputs(
