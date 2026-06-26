@@ -612,6 +612,11 @@ class RuntimeConfig(BaseConfig):
         if not isinstance(data, dict):
             return data
         data.pop("device", None)
+        # `tp` (the TP/Megatron-C degree) is dropped on this pure-HSDP branch: the mesh is
+        # fixed `(replicate, fsdp)` with `fsdp` = the intra-node GPUs, derived from the device
+        # count, so there is no tensor-parallel degree to configure. Strip it from stored
+        # configs (it only ever carried 1 or 2 in practice; the layout is now invariant).
+        data.pop("tp", None)
         if "autocast_bf16" in data:
             assert data.pop("autocast_bf16") is True, (
                 "autocast_bf16 was removed (the JAX trainer always computes in bf16)"
@@ -628,19 +633,6 @@ class RuntimeConfig(BaseConfig):
             "equals it. NEVER inferred from ambient SLURM env. None means a single device "
             "(the launcher runs the trainer inline, no jax.distributed). The batch is "
             "sharded data-parallel across the workers."
-        ),
-    )
-    tp: PositiveInt = Field(
-        default=1,
-        le=8,
-        description=(
-            "Tensor-parallel degree (the intra-node Megatron axis). The device mesh is 2-D "
-            "`(dp // tp, tp)`: the `tp` axis tensor-parallel-shards the per-block weights "
-            "(target + CI fn) and must stay on NVLink — so `tp <= 8`, the per-node GPU count "
-            "on every cluster we run (asserted). The `dp` axis carries data-parallelism for "
-            "the target/V-U AND chunk-parallelism for the chunkwise CI fn (reinterpreted via "
-            "one reshard at the CI boundary). `tp = 1` (default) is a degenerate single-column "
-            "mesh = pure `dp`. `dp` must be divisible by `tp`."
         ),
     )
     remat_recon_forwards: bool = Field(
@@ -665,9 +657,6 @@ class RuntimeConfig(BaseConfig):
     def validate_dp(self) -> Self:
         if self.dp is not None:
             assert self.dp >= 2, "if set, dp must be at least 2 (pass None for single device)."
-            assert self.dp % self.tp == 0, (
-                f"dp={self.dp} must be divisible by tp={self.tp} (the mesh is (dp//tp, tp))"
-            )
         return self
 
 
