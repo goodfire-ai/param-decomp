@@ -123,7 +123,7 @@ def make_slow_eval_step(lm: DecomposedModel, ci_alive_threshold: float) -> SlowE
             k: x.astype(jnp.float32)
             for k, x in model.read_activations(residual, ci_fn.input_names).items()
         }
-        logits = ci_fn(taps).logits
+        logits = ci_fn(taps, remat=False).logits
         lower = {s: lower_leaky_hard_sigmoid(logits[s]) for s in site_names}
 
         density_counts = {
@@ -207,7 +207,7 @@ def make_position_ci_step(lm: DecomposedModel) -> PositionCIStep:
             k: x.astype(jnp.float32)
             for k, x in model.read_activations(residual, ci_fn.input_names).items()
         }
-        logits = ci_fn(taps).logits
+        logits = ci_fn(taps, remat=False).logits
         lower = {s: lower_leaky_hard_sigmoid(logits[s]) for s in site_names}
         upper = {s: upper_leaky_hard_sigmoid(logits[s]) for s in site_names}
         first = lower[site_names[0]]

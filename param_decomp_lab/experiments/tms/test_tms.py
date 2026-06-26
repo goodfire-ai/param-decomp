@@ -151,7 +151,7 @@ def test_mlp_ci_fn_per_site_logits_and_values():
         jax.random.PRNGKey(2), b, cfg.n_features, 0.3, "at_least_zero_active"
     )
     inputs = lm.read_activations(x, ci_fn.input_names)
-    values = ci_fn(inputs)
+    values = ci_fn(inputs, remat=False)
     assert isinstance(values, CI)
     assert values.lower["linear1"].shape == (b, 8)
     assert values.lower["linear2"].shape == (b, 6)

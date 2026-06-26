@@ -108,7 +108,7 @@ class CIFn(Protocol):
     output_names: tuple[str, ...]
     expects_axes: tuple[str, ...]
 
-    def __call__(self, taps: dict[str, Array]) -> CI: ...
+    def __call__(self, taps: dict[str, Array], *, remat: bool) -> CI: ...
 
     def shardings(self, mesh: Mesh) -> "CIFn":
         """Per-leaf `dp` placement matching this CI fn's pytree structure (each array leaf
@@ -303,7 +303,7 @@ class ChunkwiseTransformerCIFn(eqx.Module):
             (self.chunks.shardings(mesh), NamedSharding(mesh, P())),
         )
 
-    def __call__(self, taps: dict[str, Array]) -> CI:
+    def __call__(self, taps: dict[str, Array], *, remat: bool) -> CI:
         per_chunk_in = [
             jnp.concatenate(
                 [_weightless_rms_norm(taps[k], self.eps) for k in m.input_taps], axis=-1
@@ -325,8 +325,15 @@ class ChunkwiseTransformerCIFn(eqx.Module):
             chunk = eqx.combine(chunk_array, chunk_static)
             return None, chunk(chunk_input, inv_freq)
 
+        # Per-CHUNK remat: checkpoint the scan BODY so the backward recomputes one chunk at a
+        # time, keeping only the carry — NOT all `n_chunks` chunks' attention scores + MLP
+        # hidden states stacked `[n_chunks, ...]`. (Whole-CI-fn checkpointing does not bound
+        # the scan: the recompute still stacks every chunk — the `[n_chunks, *, seq, seq]`
+        # f32 score slab that dominated the full-model step. Same fix shape as the target's
+        # per-layer remat.)
+        body = jax.checkpoint(run_chunk) if remat else run_chunk
         _, stacked_logits = jax.lax.scan(
-            run_chunk, None, (chunk_arrays, stacked_in)
+            body, None, (chunk_arrays, stacked_in)
         )  # [n_chunks, *leading, c_chunk]
         return CI.from_logits(self._split(stacked_logits))
 
@@ -494,7 +501,8 @@ class LayerwiseMLPCIFn(eqx.Module):
         )
         return {name: self.site_mlps[name](taps[name]) for name in self.output_names}
 
-    def __call__(self, taps: dict[str, Array]) -> CI:
+    def __call__(self, taps: dict[str, Array], *, remat: bool) -> CI:
+        del remat  # single-shot (no scan to bound) -> remat is a no-op for the MLP CI fns
         return CI.from_logits(self.site_logits(taps))
 
 
@@ -570,7 +578,8 @@ class GlobalMLPCIFn(eqx.Module):
             for i, name in enumerate(self.output_names)
         }
 
-    def __call__(self, taps: dict[str, Array]) -> CI:
+    def __call__(self, taps: dict[str, Array], *, remat: bool) -> CI:
+        del remat  # single-shot (no scan to bound) -> remat is a no-op for the MLP CI fns
         return CI.from_logits(self.site_logits(taps))
 
 

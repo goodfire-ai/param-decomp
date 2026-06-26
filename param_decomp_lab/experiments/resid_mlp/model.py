@@ -68,7 +68,7 @@ class CIFnCallable(Protocol):
 
     input_names: tuple[str, ...]
 
-    def __call__(self, taps: dict[str, Array]) -> CI: ...
+    def __call__(self, taps: dict[str, Array], *, remat: bool) -> CI: ...
 
 
 @dataclass(frozen=True)
@@ -722,4 +722,4 @@ def single_feature_ci(
     """Feed the single-feature probe (embedded through `W_E`) and read the `lower_leaky`
     CI per site, `{site: [n_features, C]}`."""
     resid = single_feature_probe(n_features) @ lm.target.W_E
-    return ci_fn(lm.read_activations(resid, ci_fn.input_names)).lower
+    return ci_fn(lm.read_activations(resid, ci_fn.input_names), remat=False).lower

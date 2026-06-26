@@ -57,7 +57,7 @@ class CIFnCallable(Protocol):
 
     input_names: tuple[str, ...]
 
-    def __call__(self, taps: dict[str, Array]) -> CI: ...
+    def __call__(self, taps: dict[str, Array], *, remat: bool) -> CI: ...
 
 
 @dataclass(frozen=True)
@@ -595,7 +595,7 @@ def single_feature_ci(
     """Feed the single-feature probe and read the `lower_leaky` CI per site,
     `{site: [n_features, C]}`."""
     probe = single_feature_probe(n_features)
-    return ci_fn(lm.read_activations(probe, ci_fn.input_names)).lower
+    return ci_fn(lm.read_activations(probe, ci_fn.input_names), remat=False).lower
 
 
 # ----------------------------- visualizations -----------------------------

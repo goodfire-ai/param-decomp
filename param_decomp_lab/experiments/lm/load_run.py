@@ -182,7 +182,7 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
 
         components_bf16 = cast_floating(components, COMPUTE_DT)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
-        lower_ci = ci_fn_bf16(taps).lower
+        lower_ci = ci_fn_bf16(taps, remat=False).lower
 
         component_acts = {}
         for site in site_names:
