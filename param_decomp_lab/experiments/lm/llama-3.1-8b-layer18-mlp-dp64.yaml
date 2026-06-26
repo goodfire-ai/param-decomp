@@ -67,7 +67,7 @@ pd:
     coeff: 100000.0
 runtime:
   dp: 64
-  remat_recon_forwards: false
+  remat_recon_forwards: true
 cadence:
   train_log_every: 200
   save_every: 5000
