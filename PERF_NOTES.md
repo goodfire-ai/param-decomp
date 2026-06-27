@@ -65,3 +65,8 @@ Intuition: <20% MFU = poor, 40–55% = well-tuned, 60% = excellent. This step is
 - **WIN banked: autotune → 12.5s/step (from ~20s), ~1.6×, occupancy 40%.** Should be the production default (XLA_FLAGS drop `--xla_gpu_autotune_level=0`; ~5min one-time autotune compile, cached).
 - **Remaining: the 7.5s serial cross-node tail = 60% of the step = the MFU ceiling.** Flag-resistant. The fixes are STRUCTURAL (likely bf16-grad-reduce / gradient-overlap-bucketing / less cross-node recon data) — these touch numerics/semantics, so they're YOUR call, not a safe overnight unilateral change. Codex is pinning the exact op + the best fix class; I'll write up the options + recommendation.
 - TP parked; cuDNN-flash = negligible (deferred); save+resume validated; fabric warning benign.
+
+## ★ Codex breakthrough: the 7.5s tail = tiny loss-scalar all-reduce over the broken NVLS/fabric path
+- Tail op = `%all-reduce-done.77`: a **128-byte f32[32] all-reduce of the scalar losses over ALL 32 devices** (axis_0, crosses IB), root-tuple dependency. Floor = nanoseconds; takes 7.5s EVERY step.
+- Connection: full-32 group spans NVLink → NCCL tries NVLS (NVLink SHARP) → hits this cluster's broken fabric memory (the "benign" cuMemCreate FABRIC warning) → slow fallback every step. Grad all-reduces (over `replicate`/4-node only) avoid NVLS → fast.
+- TEST: NCCL_NVLS_ENABLE=0 + NCCL_CUMEM_ENABLE=0 → skip the fabric path. Expect the 7.5s to vanish → ~5s step, ~80% occupancy.
