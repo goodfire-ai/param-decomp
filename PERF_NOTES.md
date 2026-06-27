@@ -70,3 +70,8 @@ Intuition: <20% MFU = poor, 40–55% = well-tuned, 60% = excellent. This step is
 - Tail op = `%all-reduce-done.77`: a **128-byte f32[32] all-reduce of the scalar losses over ALL 32 devices** (axis_0, crosses IB), root-tuple dependency. Floor = nanoseconds; takes 7.5s EVERY step.
 - Connection: full-32 group spans NVLink → NCCL tries NVLS (NVLink SHARP) → hits this cluster's broken fabric memory (the "benign" cuMemCreate FABRIC warning) → slow fallback every step. Grad all-reduces (over `replicate`/4-node only) avoid NVLS → fast.
 - TEST: NCCL_NVLS_ENABLE=0 + NCCL_CUMEM_ENABLE=0 → skip the fabric path. Expect the 7.5s to vanish → ~5s step, ~80% occupancy.
+
+## Note: the 64 fabric WARNINGS are XLA's allocator, NOT NCCL
+- NCCL_NVLS/CUMEM=0 did NOT remove the cuMemCreate-FABRIC warnings (still 64) → those come from XLA's `cuda_vmm_allocator` at alloc time, independent of NCCL. (Benign — falls back to POSIX_FD.)
+- The PERF tail is a separate thing: the NCCL all-reduce (%all-reduce-done.77). Whether NCCL_NVLS=0 fixes THAT is the open question — needs step-2+ time (step 1 is the ~300s autotune search).
+- WATCHER GOTCHA (made twice): do NOT grep `CUDA_ERROR` / `CUDA_ERROR_NOT` as a failure — it matches the benign fabric warning. Real failures = STREAM_CAPTURE_INVALIDATED | Traceback | oom-kill | RESOURCE_EXHAUSTED | srun: error | sacct FAILED.
