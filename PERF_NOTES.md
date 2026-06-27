@@ -75,3 +75,9 @@ Intuition: <20% MFU = poor, 40–55% = well-tuned, 60% = excellent. This step is
 - NCCL_NVLS/CUMEM=0 did NOT remove the cuMemCreate-FABRIC warnings (still 64) → those come from XLA's `cuda_vmm_allocator` at alloc time, independent of NCCL. (Benign — falls back to POSIX_FD.)
 - The PERF tail is a separate thing: the NCCL all-reduce (%all-reduce-done.77). Whether NCCL_NVLS=0 fixes THAT is the open question — needs step-2+ time (step 1 is the ~300s autotune search).
 - WATCHER GOTCHA (made twice): do NOT grep `CUDA_ERROR` / `CUDA_ERROR_NOT` as a failure — it matches the benign fabric warning. Real failures = STREAM_CAPTURE_INVALIDATED | Traceback | oom-kill | RESOURCE_EXHAUSTED | srun: error | sacct FAILED.
+
+## Result: NCCL_NVLS=0 + NCCL_CUMEM=0 — NO EFFECT (refuted). 5th flag to fail.
+- 12.7s = autotune-alone. The tail is NOT NCCL's NVLS/fabric path.
+- Reverted ALL refuted flags. **Banked config = autotune-only (XLA_FLAGS="--xla_gpu_enable_command_buffer="): 12.5s, 40% occupancy, ~1.6× over 20s baseline.** Non-semantic, landable.
+- **The 7.5s tail is flag-resistant (combine/LHS/pipelined/NVLS/CUMEM all failed) → structural.** A 128-byte loss all-reduce can't be 7.5s on its own → likely the GRAD reduce-scatter chain it transitively depends on. Codex deciding loss-vs-grad + the safe fix.
+- **Production run NOT launched** (Oli's condition = a working perf fix; not met). 12.5s/40%-occ would be ~14-day tail-bound run. Hold for the fix.
