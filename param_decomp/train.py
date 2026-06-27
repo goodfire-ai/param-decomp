@@ -14,6 +14,7 @@ Per-term RNG: term i draws from `fold_in(step_key, 1 + i)` in config-list order
 (SPEC R1) — this reproduces the pre-unification production key derivation exactly.
 """
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -429,6 +430,13 @@ def make_train_step(
                 )
             )
         components_grad, ci_fn_grad, persistent_grads_scaled = grads
+        if mesh is not None and os.environ.get("PD_REPLICATE_WEIGHTS", "") == "1":
+            # ZeRO-1 with replicated compute weights: the grad arrives REPLICATED (full V/U);
+            # reduce-scatter it back to the ÷N master layout BEFORE the sharded optimizer
+            # update, else the optimizer gathers master+Adam to full-replicated → OOM.
+            components_grad = jax.lax.with_sharding_constraint(
+                components_grad, state.components.shardings(mesh)
+            )
         grad_norm_metrics = _grad_norm_metrics(components_grad, ci_fn_grad)
 
         # ── each adversary's final ascent from the fused graph (SPEC S13'/S14'): the
