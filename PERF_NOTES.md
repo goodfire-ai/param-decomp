@@ -783,3 +783,20 @@ hoist+autotune-ON b32 (131422, COMPLETED) = **11.4s**. Full matrix (b32):
   at larger scale / when comm-bound). The b64 unlock + collective reduction may matter more than the 9%.
 - Lesson (again): measure at the PRODUCTION setting (autotune-on) before quoting a win; autotune-off
   deltas overstate any gather/idle fix because autotune independently mitigates it.
+
+## ⚠️ CORRECTION (trace, 131423) — production step is NOT compute-bound; still 37% occ, gather-dominated
+Traced the production (hoist+autotune-on) b32 step (p-15870537/profile). My "compute-bound post-hoist"
+claim (inferred from b32→b64 2× scaling) is WRONG. Trace facts:
+- **GPU occupancy = 37%** (busy 4.56s / span 12.26s) → ~63% IDLE remains.
+- **Dominant GPU op: `ncclDevKernel_AllGather_RING_LL` = 15.5s summed** (×8 GPU streams) vs top gemm
+  fusion ~6.1s. So the step is **gather/collective-bound**, not compute-bound.
+- Interpretation: the hoist removed the REDUNDANT ÷N→÷fsdp re-gathers (the ~9% win + b64 unlock), but
+  the **per-layer ÷fsdp→full FSDP gathers inside the scan** (the "43k small gathers" / collective-
+  progression) still dominate and don't overlap compute → the residual ~63% idle. This is the ORIGINAL
+  arithmetic-intensity-floor problem (per-layer gather doesn't hide behind per-layer compute at 1 seq/GPU).
+- ⇒ The cron's "~11s GPU-idle / collective-progression / 43k-gather fragmentation" is REAL and LARGELY
+  REMAINS post-hoist. The next lever is gather↔compute OVERLAP or fewer/bigger per-layer gathers
+  (combine-threshold, remat-policy overlap, or the in-scan gather structure) — NOT batch (which the
+  trace-corrected picture shows won't help via amortization here either).
+- METHODOLOGY (4th correction this session): I inferred compute-bound from batch-scaling; the TRACE
+  refuted it. Profile, don't infer occupancy.
