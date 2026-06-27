@@ -383,3 +383,17 @@ The replicate OOM is per-forward V/U-stack duplication (5 live copies). Determin
 4. `train.py`: call `per_kind_vu = model.reconstruct_compute_vu(components_bf16)` ONCE (line ~270), pass to all masked_forward calls (recon 281-ish, PGD 399-ish).
 Result: ONE reconstructed compute-V/U buffer (37GB replicated, fits) reused by all ~5 forwards, vs 5 copies (185GB, OOM). Also trims the ÷fsdp path (minor). Then MEASURE: does replicate (no per-forward gather) actually drop the 12.5s — the still-unproven original hypothesis.
 NOTE: low-regret (reconstruct-once is a general improvement) but it's interface surgery — do it focused, not at the tail of a marathon session.
+
+## ★ GOVERNING METHODOLOGY (Oli): verify the COMPILED strategy, never trust config→strategy
+A sharding config is a REQUEST to GSPMD, not a guarantee. NEVER hypothesize "strategy X should do Y", launch a config you HOPE compiles to X, then attribute the result to X — without first verifying from the compiled HLO that GSPMD actually produced X's structure. (This retro-invalidates the parked TP "7× slower" verdict AND my replicate conclusions: neither verified the compiled strategy.)
+
+### TP verification GATE — before ANY conclusion about tp=8:
+Launch tp=8 short run with HLO/buffer dump, then CONFIRM from the dump (not the config, not comments):
+1. Weights STAY tp-sharded — the per-layer full-gather buffers are ABSENT (no `bf16[14336,10240]` per-layer full gathers; in ÷fsdp we measured 70× of them).
+2. Per-layer comm is an ACTIVATION all-reduce over the tp axis (Megatron pattern), NOT a weight all-gather. Census collectives by mesh axis + op_name.
+3. The intended C-on-tp / heads-on-tp sharding actually materialized (check the V/U + CI-fn buffer shapes are tp-sharded).
+4. Per-GPU batch is 8 (global 32 / DP 4), and it FITS (memreport peak < HBM) — the open memory question (8 seq/GPU; big intermediates tp-sharded so ~comparable, but verify).
+ONLY if 1–4 hold does the step-time number reflect "TP". Otherwise the config didn't compile to TP and the result says nothing about TP.
+
+### Sequence parallelism (SP) — deferred (Oli)
+SP is the standard layer on top of TP: shard the residual-stream activations along the SEQUENCE dim in the regions between TP blocks (all-gather/reduce-scatter at the TP boundaries instead of all-reduce). It directly attacks the "residual is 8× per GPU" memory term I flagged. Worth it IF the activation memory is the binding constraint after TP — but defer until TP itself is verified working; uncertain how cleanly it fits our recon/PGD/scan structure.
