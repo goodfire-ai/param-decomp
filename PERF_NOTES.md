@@ -36,3 +36,8 @@ Intuition: <20% MFU = poor, 40–55% = well-tuned, 60% = excellent. This step is
   `--xla_gpu_all_reduce_combine_threshold_bytes` (raise these to fuse the fragments).
 - Cheap flag test (no code change); doesn't touch the allocator (so shouldn't re-trip the fabric path).
 - Gate on the 130711 autotune trace first (confirm the 43k AllGathers + idle persist with autotune).
+
+## Result: collective-combine thresholds — NO EFFECT (refuted)
+- autotune + 1GB combine thresholds = 12.44–12.56s = identical to autotune-alone (12.5s).
+- So the ~11s idle is NOT un-combined gather fragmentation. Either XLA can't merge them (data deps) or merging doesn't touch the idle.
+- Reverted the combine flags. Next: the 130711 autotune trace to see the actual 12.5s GPU-busy-vs-idle split + the host-thread activity during the idle (Codex: host blocked in "Wait for LaunchOnDevice completion").
