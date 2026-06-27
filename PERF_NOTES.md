@@ -840,3 +840,13 @@ bf16[4096,4096]×219, bf16[4096,14336]×126 (the per-layer ÷fsdp→full weight 
 - Recommended as the next FOCUSED task (a second hot-path structural change — better done Oli-aware
   with the branch→repro→Codex→trace loop than slammed unilaterally overnight). NOT a config/recon-
   granularity change (the scan unroll is invisible to the math + the recon chunking).
+
+## prize-bound attempt (replicate-weights, K=all) OOM'd → gather is memory-load-bearing; unroll-by-K is the only feasible form
+Tried PD_REPLICATE_WEIGHTS=1 at b32 to cheaply bound the per-layer-gather-elimination prize (full weight
+resident → no per-layer gather). It OOM'd (222GB single alloc — the full replicated V/U+CI-fn). So K=all
+is infeasible; this CONFIRMS the per-layer ÷fsdp gather is necessary for memory (can't trade it away
+wholesale). ⇒ the gather-coalesce lever only exists as the MIDDLE ground (unroll-by-K, K=2-4: gather a
+few layers' weights at once, K× transient, not all 32). The full-replicate run can't stand in for it, so
+the prize can't be cheaply bounded — it needs an actual unroll-by-K prototype + trace. Recommend that as
+the next focused task (Oli-aware: it touches the recon-forward scan, numerics-preserving, branch→repro→
+Codex→trace loop). NOT launching more speculative runs — the cheap prize-bound is exhausted.
