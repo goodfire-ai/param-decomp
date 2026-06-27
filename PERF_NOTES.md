@@ -701,3 +701,14 @@ value_and_grad / per-chunk remat) region, so XLA recomputes the gather per use. 
 reconstructed ÷fsdp compute weight is computed once OUTSIDE the per-forward/per-chunk path and threaded in
 as a shared value the recon grid + adversary all reuse, with remat NOT set to recompute it. Verify by
 re-running liverange_peak: the forward [32,8192,1792] count should drop ~10→~1-2.
+
+### Lever-1 fix precisely located (llama8b.py:546-549)
+`_run_masked_forward` runs `_stack_per_kind_masked_inputs` (MASK-DEPENDENT, per-forward) then
+`_reconstruct_compute_weights` (the ÷N→÷fsdp gather + bf16 cast — MASK-INDEPENDENT, depends only on V/U).
+The mask-independent reconstruction is bundled inside the per-forward fn ⇒ redone every forward ⇒ the 10×.
+FIX (config-preserving hoist): split the V/U reconstruction (do ONCE at step entry, outside the remat
+region) from the per-forward mask bundling; thread the reconstructed ÷fsdp V/U into all masked_output calls
+(recon grid + adversary + faithfulness). Touches `masked_output`/`_run_masked_forward` signatures + train.py.
+VERIFY: CPU 4-sim-device HLO dump — the [32,8192,1792] all-gather count in jvp(pd_recon_masked_fwd) drops
+~10→~1; numerics bit-identical (same reconstruction, shared). Watch the remat interaction: the recon
+forwards are remat'd, so the shared weight must be a saved input to the remat region, not recomputed inside it.
