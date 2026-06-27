@@ -67,7 +67,7 @@ _RANK_ENV = r'''export NCCL_DEBUG=WARN
 export MALLOC_ARENA_MAX=2
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.92
 export XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB=1024
-export XLA_FLAGS="--xla_gpu_enable_command_buffer= --xla_dump_to=/mnt/data/artifacts/mechanisms/param-decomp/hlo_broadcast_test --xla_dump_hlo_pass_re=spmd"
+export XLA_FLAGS="--xla_gpu_enable_command_buffer= --xla_dump_to=/mnt/data/artifacts/mechanisms/param-decomp/hlo_bcast_combine --xla_gpu_all_reduce_combine_threshold_bytes=1073741824 --xla_gpu_all_gather_combine_threshold_bytes=1073741824 --xla_gpu_reduce_scatter_combine_threshold_bytes=1073741824"
 export PD_PROFILE_TRACE=0
 export PD_PROFILE_START=5
 export PD_CI_BROADCAST=1
