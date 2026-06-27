@@ -532,3 +532,33 @@ remat on, b32, dp32 — verified from its config.yaml; single jit_step module, p
   MFU should still rise. Fully hiding the gather needs ~5 seq/GPU (infeasible on memory) — which
   is the real argument that the gather may be structurally exposed at any feasible batch (the
   honest case FOR eventually revisiting TP/activation-comm). Measure b64 first.
+
+## ⛔ b64 + platform allocator (131384) ALSO OOM'd — b64 is genuinely infeasible at dp=32, not just fragmentation
+Both allocators fail: platform tried a 105GiB cudaMalloc, BFC tried 73.46GiB — neither fits.
+So the runtime working set for b64 genuinely exceeds 180GB (the modeled 139GB undercounts the
+real runtime peak by ~40GB+; the ~73GB single transient is the trigger, and it's NOT in the
+after-opt buffer report so it's a runtime/collective/arena allocation). **2 seq/GPU at dp=32 is
+infeasible without real memory reduction — the allocator swap was not enough.**
+
+## ⮕ SYNTHESIS / DECISION POINT (state at end of this measurement pass)
+The night's measurements, all verified, converge on a hard structural picture:
+1. **TP is not a win** and can't even be isolation-tested (both single-node legs OOM); at the
+   feasible frontier HSDP beats it ~3-4× (the "3.3× per-GPU" was a units error).
+2. **HSDP b32 (1 seq/GPU) is the feasible operating point** (96GB, fits). **b64 (2 seq/GPU) is
+   infeasible** (OOMs under both allocators; needs ~73GB more than fits).
+3. **Batch-amortization — the lever to hide the gather — is blocked two ways:** (a) b64 doesn't
+   fit, and (b) EVEN b64 (1024 tok/GPU) is below the ~2,500 tok/GPU overlap floor; fully hiding
+   the gather needs ~5 seq/GPU, which is far out of memory reach. So the FSDP weight-gather is
+   **structurally exposed at every feasible batch on this model+topology.**
+4. The banked, shipped win remains **autotune (1.6×, 20→12.5s)**. Everything beyond it is a big bet.
+
+The remaining real options, all substantial:
+- **(A) Reduce the gather VOLUME, not hide it:** revisit TP/activation-comm done right (+ SP for
+  its activation memory). Big build; the only path that attacks the exposed gather head-on.
+- **(B) Memory surgery to fit b64:** hunt + shrink the ~73GB runtime transient and/or collapse
+  the 5×-duplicated weight stacks (hoist refactor). Wins at most a partial-overlap b64 (still
+  below the floor) → modest MFU gain, NOT a step change. But it's HSDP-native and lower-risk.
+- **(C) Accept ~12.5s/40%-occupancy as near the practical ceiling** for this config and stop
+  spending on MFU. The data says the easy/medium wins are exhausted.
+This is a strategic fork for Oli — A (big/structural), B (modest/safe), or C (stop). The
+measurement to justify the choice is done; the next step is a decision, not another probe.
