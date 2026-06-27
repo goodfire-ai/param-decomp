@@ -416,3 +416,13 @@ tp8 b8 (global 8 → 2 seq/GPU) FITS, ~12.0s/step (autotune-OFF). Matched autotu
 - **TP is ~3.3× more efficient PER-GPU** (autotune-off matched). BUT global throughput still favors HSDP (1.6 vs 0.67) because TP is memory-capped at 2 seq/GPU (8 seq/GPU OOM'd) → smaller global batch. The per-GPU win is real; converting it to a global win needs a bigger per-GPU batch.
 - NEXT: sweep TP global batch up (16=4/GPU, 24=6/GPU) to find max fit; add autotune (was OFF); SP for the full 8/GPU. Compare global seq/s head-to-head vs HSDP 1.6 (or autotune-on 2.56).
 - METHODOLOGY held: gate verified real TP before any timing claim; both numbers autotune-off for a fair compare.
+
+## ★★★★★★ TP BATCH SWEEP — TP alone is memory-capped at ~2 seq/GPU → SP is REQUIRED, not optional
+- tp8 b8 (2 seq/GPU): FITS, 12s autotune-off.
+- tp8 b16 (4 seq/GPU): **OOM** (49.86GiB over).
+- tp8 b32 (8 seq/GPU): OOM (211GB).
+So TP fits only ~2 seq/GPU. Note TP fits 2× the seq/GPU as HSDP (HSDP OOMs at 2/GPU) — it IS more memory-efficient per-seq — but the binding issue is the DP COUNT:
+- **TP8×DP4 has only 4 data-parallel replicas** (the 8 in-node GPUs are TP, not DP), vs HSDP's 32. So global batch = 4 × seq/GPU. To match HSDP's global 32, TP needs 8 seq/GPU → OOM.
+- TP capped at 2 seq/GPU → global batch 8 → 0.67 seq/s, vs HSDP's 32 → 1.6 seq/s. **TP-alone LOSES on global throughput** despite 3.3× better per-GPU efficiency.
+- **The only way TP wins: SP.** Sequence parallelism shards the per-GPU activations along seq, relieving exactly the activation memory that caps TP at 2 seq/GPU → lets TP run 8 seq/GPU → global batch 32 at TP's 3.3× per-GPU efficiency → ~2-3× faster than HSDP. So SP is REQUIRED for the TP path to pay off (un-defer it).
+- Verdict: TP verified correct + per-GPU efficient, but it trades DP replicas for model-parallelism, so it needs a bigger per-GPU batch than memory allows WITHOUT SP. SP is the unlock, not an optional add-on.
