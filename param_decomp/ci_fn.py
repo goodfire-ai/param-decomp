@@ -400,12 +400,28 @@ class ChunkwiseTransformerCIFn(eqx.Module):
         # the scan: the recompute still stacks every chunk — the `[n_chunks, *, seq, seq]`
         # f32 score slab that dominated the full-model step. Same fix shape as the target's
         # per-layer remat.)
-        body = jax.checkpoint(run_chunk) if remat else run_chunk
-        # Each per-slot head stacks over the scanned axis: `stacked_per_slot[j]` is
+        # Each per-slot head stacks over the chunk axis: `stacked_per_slot[j]` is
         # `[n_chunks, *leading, C_j]`. No glued ΣC axis, so no slice — site `(chunk i, slot j)`
         # is `stacked_per_slot[j][i]` directly (chunks are slot-homogeneous in C-per-site
         # ORDER, asserted at init, so slot j carries one C_j across every chunk).
-        _, stacked_per_slot = jax.lax.scan(body, None, (chunk_arrays, stacked_in))
+        import os as _os
+
+        if _os.environ.get("PD_CI_BROADCAST", "") == "1":
+            # EXPERIMENT: broadcast all chunks at once (vmap, no loop) so XLA sees one network
+            # and consolidates the per-chunk cross-node grad reduces into one. Trades the scan's
+            # memory bound for fewer collectives — per-chunk remat still drops intermediates.
+            def run_chunk_v(chunk_array: ChunkTransformer, chunk_input: Array) -> tuple[Array, ...]:
+                chunk = eqx.combine(chunk_array, chunk_static)
+                return chunk(chunk_input, inv_freq)
+
+            fn = jax.checkpoint(run_chunk_v) if remat else run_chunk_v
+            stacked_per_slot = jax.vmap(fn)(chunk_arrays, stacked_in)
+        else:
+            # Per-CHUNK remat: checkpoint the scan BODY so the backward recomputes one chunk at a
+            # time, keeping only the carry — NOT all `n_chunks` chunks' attention scores + MLP
+            # hidden states stacked `[n_chunks, ...]`.
+            body = jax.checkpoint(run_chunk) if remat else run_chunk
+            _, stacked_per_slot = jax.lax.scan(body, None, (chunk_arrays, stacked_in))
         logits: SiteDict = {}
         for chunk_idx, m in enumerate(self.chunk_meta):
             for slot, site in enumerate(m.output_sites):
