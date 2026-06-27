@@ -20,6 +20,7 @@ import dataclasses
 import io
 import json
 import math
+import os
 import signal
 import threading
 import time
@@ -379,7 +380,8 @@ def _init_or_restore_state(
                 f"final faith {float(faith_warmup_loss):.3e}",
                 flush=True,
             )
-    save_state(checkpoint_manager, 0, state)
+    if os.environ.get("PD_NO_CHECKPOINT", "") != "1":  # profiling runs skip all saves
+        save_state(checkpoint_manager, 0, state)
     return state, 0
 
 
@@ -633,7 +635,10 @@ def run_decomposition_training(
                 sink.log(now_step, eval_record)
                 window_t0 = time.time()
 
-        if now_step % save_every == 0 or now_step == pd.steps or _sigterm_received:
+        _skip_save = os.environ.get("PD_NO_CHECKPOINT", "") == "1"  # profiling runs skip all saves
+        if not _skip_save and (
+            now_step % save_every == 0 or now_step == pd.steps or _sigterm_received
+        ):
             save_state(checkpoint_manager, now_step, state)
             if is_main:
                 print(f"checkpoint saved @ step {now_step}", flush=True)
