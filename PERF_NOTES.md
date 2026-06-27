@@ -712,3 +712,34 @@ region) from the per-forward mask bundling; thread the reconstructed ÷fsdp V/U 
 VERIFY: CPU 4-sim-device HLO dump — the [32,8192,1792] all-gather count in jvp(pd_recon_masked_fwd) drops
 ~10→~1; numerics bit-identical (same reconstruction, shared). Watch the remat interaction: the recon
 forwards are remat'd, so the shared weight must be a saved input to the remat region, not recomputed inside it.
+
+## ★★★★★★★★★★ HOIST SHIPPED (branch perf/hoist-vu-reconstruction) — verification in flight
+The lever-1 fix is implemented + Codex-reviewed + green: `prepare_compute_weights(vu)` on
+`DecomposedModel` does the mask-INDEPENDENT V/U stack + ÷N→÷fsdp gather + bf16 cast ONCE per
+step; `masked_output`/`masked_site_outputs` take the shared `prepared` and only attach per-forward
+masks. train.py builds it once (live + detached). Toys/SimpleMLP prepare = identity. Numerics
+bit-identical (equivalence goldens pass). Codex verdict: remat boundary clean (prepare is outside
+the per-forward checkpoint), gradients correct, detached/live correct; it caught 2 stale test call
+sites (fixed). Commits a9f3bc720 + a6be2eea9.
+GPU verification (validate-the-HLO, NOT claimed until measured): **131420 hoist-b32** (peak should
+drop ~96→~70GB; the [32,8192,1792] copies should fall ~20→~few) + **131421 hoist-b64** (does 2
+seq/GPU now FIT?). Autotune-off, distinct HLO dumps (hlo_hoist_b32 / hlo_hoist_b64).
+
+## ⚠️ FLOOR CORRECTION — it MISSED the PPGD source state (~7GB resident)
+The 33GB floor counted V/U+CI optimizer + compute weights + frozen + 1-fwd acts, but NOT the
+persistent PGD sources. Production (`sc` / shared_across_batch, source_dtype=f32): source
+`(1,T,C+1)` per site = 2.38GB + Adam m,v = **7.13GB/GPU, REPLICATED**. So true resident floor ≈ 40GB.
+(At peak the `f32[1,512,C+1]` source buffers also show ~×3/site from the 3 ascents ≈ +7GB transient.)
+
+## PPGD source-state sharding (Oli's "sources ~ optimizer state" lens) — one real inconsistency
+- `sc` source itself: REPLICATED (`P()`) — CORRECT (shared across batch, in every forward's mask).
+- `sc` source GRAD: AVG all-reduced across DP every ascent (3×/step). Small, real collective.
+- `sc` source ADAM (m,v ~4.76GB f32): **REPLICATED, NOT ÷N-sharded** — unlike the weight optimizer
+  (ZeRO-1 ÷N). This is the asymmetry: sources ARE optimizer state but don't get the ÷N treatment.
+  m,v are only used in the source UPDATE (never the forward) → could ÷N-shard + gather at update →
+  **~4.6GB/GPU back, semantics-preserving** (memory↔one-small-gather trade). Candidate lever-3.
+- `bsc` (Oli's proposal): `(B,T,C+1)` batch-sharded over DP → eliminates the source all-reduce
+  (grad shard-local, `_skip_all_reduce`) AND shards Adam naturally. BUT (1) SEMANTIC change
+  (independent per-example adversary vs shared) — a method decision, not a free opt; (2) its source
+  memory GROWS with per-GPU batch (sc is batch-independent). Do (a) ÷N-source-Adam regardless;
+  (b) bsc only if per-example adversaries are wanted on merits.
