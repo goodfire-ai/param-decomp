@@ -822,3 +822,21 @@ Checked the production HLO (hlo_hoist_b32_autotune) for whether the gathers can 
 - HONEST END-STATE of the flag-level MFU push: banked = hoist (~9% + b64 unlock + fewer collectives)
   + autotune (1.6×). Beyond that needs a structural change. Recommend: merge the hoist, pause flag-level
   tuning (exhausted), and treat the structural levers as a separate scoped decision.
+
+## ➡️ NEXT STRUCTURAL LEVER (numerics-preserving): coalesce the per-layer gathers (scan unroll-by-K)
+Characterized the production all-gathers (hlo_hoist_b32_autotune): **1,848 all-gather-start/step,
+median 16MB, 30% (572) are <8MB** — fragmented + overhead-bound (they dominate at 37% occ but move
+modest bytes over NVLink, so the cost is per-launch/progression × 1848, not bandwidth). Top shapes:
+bf16[4096,4096]×219, bf16[4096,14336]×126 (the per-layer ÷fsdp→full weight gathers).
+- **Why flags can't fix it:** the gathers are inside the serialized `lax.scan` over layers; the
+  combine-threshold only merges INDEPENDENT collectives, not loop-body ones (that's why the earlier
+  combine-threshold test was null). Confirmed: async+pipelined already on; this is a STRUCTURAL limit.
+- **The lever:** process K layers per scan iteration (unroll-by-K) and co-gather their weights → ~1848/K
+  gathers, each K× bigger → far less collective-progression overhead → higher occupancy. Numerics-
+  preserving (same gathers, batched). Cost: K layers' transient weight memory (headroom exists post-hoist).
+- **Directly targets the cron's "43k-gather fragmentation."** This is the MFU lever beyond the (now
+  exhausted) flags. Prize needs a prototype+trace to bound (the gather-overhead share of the 63% idle),
+  but the fragmentation (30% <8MB, 1848 launches) is the clear culprit.
+- Recommended as the next FOCUSED task (a second hot-path structural change — better done Oli-aware
+  with the branch→repro→Codex→trace loop than slammed unilaterally overnight). NOT a config/recon-
+  granularity change (the scan unroll is invisible to the math + the recon chunking).
