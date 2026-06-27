@@ -175,3 +175,13 @@ What the 7.5s GPU-idle IS (best current understanding) and why it's hard:
 - **This needs nsys (not on login PATH; available on compute nodes?) or CoreWeave input** to name the exact stalling op and whether it's a straggler vs a genuinely slow collective. Beyond what flag/config A/B can reach.
 
 Production run: **HELD** — Oli's condition was a working perf fix; autotune is banked but the 7.5s GPU-idle (the MFU ceiling) is unresolved. A 12.5s/step × 100k run is ~14.5 days. Don't launch until the idle is addressed.
+
+## Gather-hoist lever investigated (code reading) — likely NOT the win
+Question: is the cross-`replicate` (IB) ÷N V/U reconstruction redundantly recomputed per recon chunk?
+- `targets/llama8b.py::_run_masked_forward` calls `_reconstruct_compute_weights(per_kind)` at line 541, BEFORE the scan. The remat is **per-LAYER** (line 596: `jax.checkpoint(block)` wraps only the scan body, NOT the whole forward). → **the reconstruction is OUTSIDE the remat region; it is NOT recomputed by remat within a forward.**
+- Across the N recon chunks (N separate masked forwards), the reconstruction is a PURE function of `vu` (identical inputs; masks differ but are handled separately) and is not under remat → **XLA CSE is eligible to dedupe it to 1× per step.**
+- → The "hoist the V/U gather out of the per-chunk recompute" idea (CLAUDE.md candidate) is largely a no-op: the structure already avoids the within-forward recompute, and cross-chunk is CSE-able. NOT the 7.5s lever.
+- Step HLO (recent full-step dump) carries ~1089 all-gather-start + ~1790 all-reduce ops/step — dominated by the per-layer FSDP gathers (intra-node NVLink, cheap each), not the few big cross-node V/U gathers. Classifying them precisely (cross-node vs intra-node replica groups) needs proper HLO tooling / nsys — the XLA dump's replica_group format didn't grep cleanly here.
+
+### Net: the 7.5s GPU-idle remains the MFU ceiling and is NOT addressable by the cheap/structural levers tried
+Refuted now: all scheduling/transport flags, NVLS/CUMEM, 3 allocators, MALLOC_ARENA, batch-amortization (memory-capped), AND the gather-hoist (reconstruction already outside remat). The idle is a cross-node collective rendezvous/sync stall whose root cause needs **nsys** (compute-node only) or **CoreWeave** to pin (straggler vs slow-collective). autotune (20→12.5s) stands as the banked, landable win. Production held.
