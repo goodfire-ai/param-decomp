@@ -875,3 +875,24 @@ VERIFY: HLO all-gather count drops 1848→~1848/K; trace occupancy >37%; memrepo
 equivalence goldens bit-identical; Codex review. Effort: moderate (one function + the reshape).
 STATUS: scoped + ready; held pending green-light — it's a 2nd hot-path structural change with an
 uncertain (possibly-wash) prize, so it warrants a deliberate go rather than an overnight slam.
+
+## ★★★★★ CRITICAL-PATH DECOMPOSITION (trace 131436, named-scope) — answers "do we understand the critical path"
+GPU-busy time by pd_* phase (summed across 8 GPUs; per-GPU: 4.6s busy + 7.6s idle = 12.2s wall, 38% occ):
+| phase | GPU-busy | gemm | all-gather |
+|---|---|---|---|
+| pd_pgd_warmup_ascend (ADVERSARY) | **20.4s (56%)** | **14.4s** | 5.5s |
+| pd_value_and_grad (main recon+bwd) | 11.2s (31%) | 2.7s | 6.0s |
+| pd_ci_fn_fwd_detached | 2.5s | 0.6s | 1.7s |
+| clean_fwd + read_taps | 2.5s | 1.8s | 0.7s |
+**Critical path has TWO parts:**
+1. **Wall-clock is IDLE-dominated** (~7.6s/GPU of 12.2s) = gather-progression bubbles from the 1848
+   per-layer gathers. ⇒ **unroll-by-K is correctly aimed** (at the idle). Ceiling ~2.4× if ALL idle
+   removed (wall→4.6s busy floor); realistically the gather-bubble fraction.
+2. **BUSY is ADVERSARY-dominated** (pd_pgd_warmup_ascend 20.4s = 56%, and COMPUTE-heavy: 14.4s gemm —
+   the all-sites route-all forward, every site's V@U, run n_warmup=2×). The CI-fn all-reduce I feared
+   would co-dominate is only 2.5s → RULED OUT as a major factor.
+- ⇒ unroll-by-K is the right lever FOR THE CURRENT CONFIG (targets the idle). The single biggest
+  step-change lever overall is the ADVERSARY forward (20.4s busy, compute-bound) — but that's
+  config/semantic (n_warmup, or chunk the all-sites forward to match the recon grid), fenced off.
+- Decision (Oli): build unroll-by-K (idle lever, correctly targeted); the adversary is the bigger but
+  semantic prize if the MFU push ever reopens the config.
