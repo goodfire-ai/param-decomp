@@ -365,3 +365,10 @@ The HSDP×TP 3-D mesh `(replicate, dp, tp)` with `dp·tp=8` (both in-node) EXIST
 - BUT the parked configs only tested **tp=2 / tp=4 = HYBRIDS** (dp=4/2 FSDP + tp): keep the FSDP weight-gather AND add TP overhead = worst of both → the "7× slower" verdict. **tp=8 (pure in-node TP, dp=1) was NEVER tested.**
 - Current branch (perf/hsdp-mfu) is pure-HSDP 2-D `(replicate, fsdp)` — the TP axis was stripped when the team parked TP. So testing tp=8 = revive the afabd20f HSDP×TP code + config tp=8 (4 nodes → replicate=4, dp=1, tp=8).
 **→ The convergent recommendation (TP) is already 90% built and was abandoned after testing the wrong (hybrid) config. The prescribed tp=8 is a revive + config experiment, not a rebuild.**
+
+## ★★★ RIGOROUS (buffer-assignment dump, not arithmetic): 358GB OOM = 5 LIVE COPIES of the replicated weights
+The grad-reshard fix did NOT help (same 358GB OOM) → my optimizer-gather arithmetic was WRONG (per Oli's caution). The buffer-assignment + memory-usage-report dump (`--xla_dump_to`) shows the truth:
+- Peak 411GiB, dominated by `5×bf16[32,14336,10240]` (down_proj V replicated, 9.4GB each) + `5×bf16[32,8192,14336]` (gate/up) + `5×bf16[32,4096,4096]` (o_proj) — i.e. ~5 LIVE COPIES of each replicated weight, NOT the optimizer, NOT one tensor.
+- Cause (llama8b.py:307 `_stack_per_kind_masked_inputs`): each masked_forward (~5/step: recon chunks + PGD ascents) re-stacks the V/U into `[n_layer,d_in,C]` BUNDLED with that forward's masks → XLA can't CSE the (identical, mask-independent) V/U across forwards → 5 stacked copies. With ÷fsdp each copy is 1/8 size (never bit); replicated, 5×9.4GB/kind = OOM.
+- **FIX**: hoist the V/U stack+reconstruct to ONCE per step (mask-independent), pass the shared compute V/U to all forwards; per-forward builds only masks. 1 copy (37GB) not 5 (185GB). Model-interface refactor (masked_output signature) — numerics-identical, validate via tests/equivalence.
+- This earlier per-forward-duplication hypothesis was right; I'd wrongly talked myself into the optimizer story via byte-arithmetic. LESSON: read the buffer-assignment dump, never attribute memory by shape-arithmetic.
