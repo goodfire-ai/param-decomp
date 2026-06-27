@@ -124,3 +124,21 @@ Sampled `/proc/<pid>/task/*/{status,wchan,stat}` of the live rank-0 python (PID,
 
 ### Tooling notes
 - py-spy IS installed (~/.local/bin) but ptrace_scope=1 + no passwordless sudo → "Permission Denied" attaching to the trainer (launched by a different srun tree). `/proc/.../status`+`wchan` are the ptrace-free fallback that worked.
+
+## ★★★★ ROOT CAUSE (definitive, PD_TIME + PD_LEAVES, job 130723/130724): the step is DISPATCH-BOUND, not compute-bound
+Per-step attribution at the full32L topology (dp=32, 4 nodes, autotune, steady state):
+```
+sample_batch = 0.02s   |   step_fn dispatch(py) = 12.5s   |   compute(dev)=block_until_ready = 0.02s
+PD_LEAVES: state=2169 leaves   lm=13   eqx.partition(lm,state)=0.003s
+```
+- **The whole 12.5s is the `step_fn(...)` call returning — i.e. jax's host-side DISPATCH. The device does ~nothing per step (block after = 0.02s); GPU is idle ~the whole step.** This is the `main=R` single-threaded phase from /proc — the GIL-held main thread grinding through dispatch.
+- **`state` has 2169 sharded array leaves** (224 sites × {V,U} = 448 params + Adam mu/nu mirror + CI-fn + sources). `eqx.partition` is 0.003s → NOT the Python partition. The 12.5s is jax's **C++ dispatch over 2169 sharded arrays on the 32-GPU multi-host mesh** (~5.7 ms/leaf: per-array sharding validation + transfer scheduling + output `Array` construction). A well-known jax "many small sharded arrays" cost.
+- **Why every prior lever failed**: combine/LHS/pipelined/NVLS/CUMEM + 3 allocators all target the DEVICE/network. The cost was never there. The "7.5s tail" and "11s idle" were always host-side dispatch.
+- **Why it appeared at full32L and not the smaller pile runs**: leaf count scales with sites. 4–9-layer LlamaSimpleMLP has ~tens of sites → dispatch ~sub-second, invisible. 32 layers × 7 kinds = 224 sites → 2169 leaves → 12.5s.
+
+### THE FIX: store the trainable state STACKED per-kind (leading layer axis), mirroring the frozen model
+- The frozen model (`lm`) is ALREADY scan-stacked → only 13 leaves. `targets/llama8b.py::_reconstruct_compute_weights` already STACKS the per-site `vu` dict into per-kind `[n_layer, ...]` arrays INSIDE the jit. The waste is that `state` is STORED as the per-site dict, so the dispatch boundary sees 2169 leaves.
+- Change `DecompVU.vu: dict[str,(V,U)]` (448 leaves) → per-kind stacked arrays (7 kinds × {V,U} = 14 leaves; V:[n_layer,d_in,C], U:[n_layer,C,d_out] — layers within a kind are uniform, the scan precondition). The Adam state + CI-fn follow the same collapse. **state: 2169 → ~60 leaves (~35×).**
+- Predicted: dispatch 12.5s → ~0.3–0.5s; step becomes device-bound. Enables much larger batch at high MFU (the real goal).
+- **Touches**: `components.py` (DecompVU + shardings + init), `targets/llama8b.py` (masked-forward indexing `components.vu[name]` → stacked slice — much of `_reconstruct_compute_weights` becomes a no-op), the optimizer state, `ci_fn.py`, and the **orbax checkpoint format** (existing ckpts need migration or it's fresh-runs-only).
+- **Numerics-PRESERVING** (same arrays, relayout) → verifiable via `tests/equivalence/`. But the checkpoint-format change makes this OLI'S CALL, not a safe overnight unilateral change (per the standing guidance). Isolation + proof done; refactor pending approval.
