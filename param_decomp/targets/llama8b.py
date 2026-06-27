@@ -385,8 +385,16 @@ def _reconstruct_compute_weights(
     unsharded. No-op off-mesh (CPU / single device); `run.py` sets the global mesh."""
     if jax.sharding.get_abstract_mesh().empty:
         return per_kind
-    v_spec = P(None, "fsdp", None)  # [n_layer, d_in ÷fsdp, C] — replicate gathered once/step
-    u_spec = P(None, None, "fsdp")  # [n_layer, C, d_out ÷fsdp]
+    import os as _os
+
+    if _os.environ.get("PD_REPLICATE_WEIGHTS", "") == "1":
+        # EXPERIMENT: replicate the bf16 COMPUTE weights (optimizer masters stay ÷N) so the
+        # per-layer FSDP all-gather vanishes — trades HBM (full V/U resident) for no gather.
+        v_spec = P(None, None, None)
+        u_spec = P(None, None, None)
+    else:
+        v_spec = P(None, "fsdp", None)  # [n_layer, d_in ÷fsdp, C] — replicate gathered once/step
+        u_spec = P(None, None, "fsdp")  # [n_layer, C, d_out ÷fsdp]
     out: dict[str, dict[str, Array]] = {}
     for kind, entry in per_kind.items():
         pinned = dict(entry)

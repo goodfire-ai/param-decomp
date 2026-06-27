@@ -294,3 +294,74 @@ Parsed the actual GPU timeline (scratchpad_trace_analyze.py on the chrome trace.
 1. **PGD ascent (~8s)**: 2 all-sites route-all forwards/step re-gather all FSDP weights. Weights are FIXED during the ascent (only the source/mask updates) → gathering once and reusing across ascents could cut ~2-3× of those gathers. Or reduce n_warmup_steps (semantic). Quantify via ablation first.
 2. **Backward (~10.6s)**: FSDP weight re-gathers during grad (remat recompute). Inherent-ish; overlap or gather-granularity.
 3. General: combine/coarsen the FSDP AllGathers (the RING_LL many-small pattern); reduce cross-node SendRecv.
+
+## ★ PGD ascent quantified: no-PGD ablation = 7.6s vs full 12.5s → PGD ascent is ~4.9s (~40% of step)
+no-PGD config (PersistentPGDReconLoss removed) steady step = 7.62s (vs 12.5s full). **The PGD ascent costs ~4.9s/step — the single biggest lever.** Matches the trace (pd_pgd_warmup_ascend was the top AllGather consumer).
+- Mechanism (train.py:279 `warmup_scoring_loss`): each ascent runs the full all-sites `masked_forward` (re-gathers ALL FSDP weights), with `components` FIXED and only `sources` (mask) varying. n_warmup_steps=2 supplemental + 1 final = ~3 gather-heavy all-sites forwards/step.
+- The remaining 7.6s (no-PGD) is also gather-bound (backward FSDP re-gathers).
+- **Root structural issue: FSDP re-gathers all 32 layers' weights for EVERY forward pass, and the step has many (clean + recon chunks + 2-3 PGD ascents + backward recompute).** That's the 16.5s AllGather.
+- Levers: (a) reduce n_warmup_steps [SEMANTIC — adversary quality, Oli's call; measuring the cost curve via sweep], (b) gather-reuse across ascents [numerics-preserving but HARD: keeping all 32 layers gathered = the OOM FSDP avoids], (c) reduce per-forward gather cost / overlap.
+
+## PGD ascent cost curve (n_warmup_steps sweep)
+| ascents/step | step | Δ |
+|---|---|---|
+| 0 (no-PGD) | 7.62s | — |
+| 1 (nw=0, final only) | 9.37s | +1.75s |
+| 3 (nw=2, full) | 12.5s | +4.9s |
+~1.6s per gather-bound all-sites ascent forward. nw=2→0 saves ~3.1s (SEMANTIC — adversary quality, Oli's call). Floor without PGD = 7.6s (backward+recon gathers).
+
+## Why combining the FSDP gathers doesn't work (and the structural wall)
+The 16.5s AllGather is `RING_LL` (small-message protocol) = MANY small per-layer gathers INSIDE the layer scan (while-body). Combine-threshold flags (tested at 1GB in broadcast+combine) DON'T reach them — same reason as the CI-fn reduces: the combiner can't merge collectives inside a `while` body. Unrolling the 32-layer scan would expose them to the combiner but materializes all layers' weights = the OOM FSDP exists to avoid. So: can't combine (in-loop), can't unroll (memory). The accessible levers are (a) PGD n_warmup (semantic), (b) NCCL protocol/algo tuning for the per-gather efficiency [TESTING], (c) deep gather-granularity restructure.
+
+## NCCL_PROTO=Simple — NO EFFECT (12.6s vs 12.5s). Gathers not protocol-bound. Flag dead-end.
+## Structural tests in flight: PD_REPLICATE_WEIGHTS (replicate V/U compute, kill per-forward gather) + 4-chunk CI fn (blocks_per_chunk=8, shrink CI fn ~8x). These change memory/size, not flags.
+
+## ★ REPLICATE-WEIGHTS OOM (358 GiB) — reframes the whole problem
+PD_REPLICATE_WEIGHTS=1 (replicate V/U compute, only shard optimizer) → OOM trying to allocate **358.85 GiB**. The V/U decomposition compute weights are ~358GB — MUCH bigger than the 8B target.
+- **So "the model is 8B, just replicate it / don't FSDP" is WRONG here.** The TRAINABLE state (V/U ~358GB + CI fn ~31B ≈ 400GB+) is the real scale, not the frozen 8B target. It genuinely MUST be sharded; the per-forward gather is largely inherent to a 400GB decomposition on 32 GPU.
+- Current ÷fsdp V/U = ~45GB/GPU resident; replicated = 358GB/GPU (OOM). FSDP is necessary, not over-engineering.
+- → The lever is NOT "stop sharding" — it's (a) shrink the decomposition/CI fn (4-chunk test in flight), (b) OVERLAP the necessary gathers with compute (if XLA isn't, because they're in scan), (c) fewer forwards (PGD ascents). The "small model over-sharded" framing is wrong; correcting the research agents/Codex accordingly.
+
+## ★★★ RESEARCH (collective-overlap agent) — why flags failed + 2 new concrete levers
+1. **Flags are no-ops because collectives live inside `lax.scan`.** XLA latency-hiding + collective-pipeliner operate on the FLAT graph; they can't overlap/combine collectives across un-unrolled loop iterations. (jax #22210; the pipeliner that tries is buggy w/ while-loop double-buffering.) Confirms our in-scan finding — explains combine/LHS/pipelined all no-op.
+2. **KNOWN XLA:GPU BUG (xla #14397 / jax #22252): per-layer `jax.remat` with a fine-grained save policy (`save_only_these_names`) SERIALIZES async collectives onto the compute stream** → no overlap. WE USE per-layer remat. → CHEAPEST high-value test: switch remat policy to `nothing_saveable`/empty, re-profile, see if all-gather overlaps.
+3. **Arithmetic-intensity floor: all-gather is only hideable above ~2,200 tokens/GPU** (C/W_collective ≈ 990e12/450e9). We run **512 tokens/GPU** (1 seq × 512) — 4× BELOW the floor → the gather is on the critical path NO MATTER THE FLAGS. Fix = MORE batch per GPU.
+- **Connects the whole strategy**: we're memory-capped at ~1 seq/GPU (B=64 OOM) → below the overlap floor. Shrinking the CI fn (4-chunk) frees memory → bigger per-GPU batch → above floor → gathers overlap behind compute → high MFU. Coherent plan: shrink CI fn + raise per-GPU batch + fix remat-policy overlap.
+4. Other levers: `unroll=2` on the layer scan (exposes overlap to scheduler, jax #22210 workaround); `shard_map` + explicit async collectives for the dominant layer (GSPMD won't overlap in loops); gather-once-reuse across microbatches.
+Sources: jax-ml/scaling-book gpus.md, jax#22210, xla#14397, openxla flags_guidance.
+
+## ★★★ RESEARCH (scaling-strategy agent) — CONVERGES with the overlap agent; adds mesh layout
+Both agents independently agree:
+- **LHS is OFF by default on GPU + can't reach into scan; per-layer remat (fine save policy) serializes collectives onto the main stream (xla #14397) — kills overlap.** [audit our remat]
+- **Arithmetic-intensity floor ~2,500 tokens/GPU** (H100 const; recompute for B200). We're at 512 → comm-bound regardless of flags. Fix = more batch/GPU OR add TP.
+- **Realistic GPU MFU = 35–47%, ~40% planning number** (Llama-3 405B = 41% on 16k H100; at 4 nodes the IB hop is the wall). Don't benchmark vs TPU/MaxText (55–65%). Our ~37% occupancy may be closer to the realistic envelope than assumed — BUT we're comm-bound, not compute-bound, so there's room.
+NEW insight — **MESH LAYOUT**: bind **TP=8 to the in-node NVLink axis + FSDP/DP=4 to the cross-node IB axis**. TP is batch-INDEPENDENT → keeps you compute-bound at LOW per-GPU batch (8× lower than pure FSDP). When batch is memory-capped (our case), ADD TP rather than widen FSDP. (Reconcile with our earlier "TP parked, 7× slower" — that may have been wrong axis-binding / cross-node TP; worth revisiting with TP pinned in-node.) NVIDIA: "TP across nodes is almost always a loss."
+- ZeRO-1 (replicate weights) is the win WHEN the model fits replicated — but our V/U is 358GB (doesn't fit) → ZeRO-1-replicate is out, confirmed by OOM. TP is the alternative lever for the low-batch regime.
+- Keep `lax.scan` (unrolling caused 4–5× LHS memory blowup on a 300B MoE; jax#20763). Size combine thresholds to ONE layer's bytes (not arbitrary 1GB).
+Sources: jax-ml/scaling-book (gpus/training), HF ZeRO analysis, jax#22210/#20763/#25404, xla#14397, NVIDIA Megatron-Bridge.
+
+## SYNTHESIS — the externally-validated plan (both agents + our measurements)
+1. **Audit the per-layer remat** (xla#14397) — cheapest test; likely serializing our collectives. [NEXT]
+2. **We're 4× below the overlap floor** (512 vs ~2500 tok/GPU) — the root comm-bound cause. Levers to raise effective intensity: (a) shrink CI fn → free memory → bigger batch (4-chunk test in flight), (b) ADD TP=8 in-node (revisit the parked TP with correct axis binding).
+3. **Verify LHS/overlap actually fires in the HLO** (silently regresses) — set -O1 / LHS + pipelined + double-buffering, confirm via dump.
+4. Target ~40% MFU (realistic GPU envelope), not 60%.
+
+## ★★★★ CODEX (architecture review) — CONVERGES with both research agents: wrong comm SHAPE, switch to TP
+- Current FSDP-all-gather-of-large-weights INSIDE the layer scan is the WRONG SHAPE for THIS workload: it's not one forward/backward, it's MANY forwards through the same fixed weights (clean + 4 recon suffix chunks + ~3 PGD ascents + backward) → "all-gather weights once per layer per forward" is multiplied. FSDP trades memory for repeated weight all-gathers; that only pays when memory is the binding constraint, which it isn't for the reuse pattern.
+- **THE STRATEGIC REDIRECT (all 3 sources agree): TENSOR PARALLELISM.** Shard the large weights across the 8 in-node NVLink GPUs (column/row parallel: QKV/up column-parallel, out/down row-parallel) and communicate ACTIVATIONS (small) per layer instead of gathering WEIGHTS (huge) per forward. "For repeated forwards with fixed weights, resident or tensor-parallel weights have a better communication shape than repeated all-gathered weights." Mesh: data=4 across nodes (IB), model/TP=8 in-node (NVLink).
+- No compiler-only fix for scan+all-gather — must change the PROGRAM (replicate / TP / blocked residency). Blocked scan (gather k layers, sub-scan) = middle ground.
+- 31B CI fn = architectural red flag; shrink it (4-chunk directionally right).
+- CAVEAT we measured: Codex/research assumed the trained weights are ~8B/16GB and "just replicate" — but the V/U decomposition is ~358GB (OOM-confirmed), ~22× the target. So REPLICATE is OUT; TP (÷8, activation-comm) is the lever, not replication. TP doesn't cut memory vs FSDP but changes comm shape (activations not weights).
+
+## 4-chunk CI fn result: 12.5s → 10.79s (modest ~14% direct; main value = frees memory for batch)
+Shrinking the CI fn 32→4 chunks helps but isn't the big win — confirms the V/U gathers (recon/PGD forwards), not the CI fn, dominate. Its real value: memory headroom → bigger per-GPU batch → toward the overlap floor.
+
+## ★★★★★ STRATEGIC CONCLUSION (step-back deliverable)
+We've been optimizing FSDP gather COST within the wrong comm SHAPE. The convergent external view: switch the large-weight path to **tensor parallelism (in-node, communicate activations not weights)** — this is the structural fix the flags/combine/overlap could never reach. Supporting levers: shrink CI fn (4-chunk), fix the per-layer-remat collective serialization (xla#14397), raise per-GPU batch (512<<2500 floor). NOTE: full32L HAD a (dp,tp) TP path that was PARKED as "7× slower" — but that was likely misconfigured (wrong axis / cross-node / weights-still-gathered); proper in-node activation-comm TP is what all 3 sources prescribe. Revisit TP correctly. Realistic target ~40% MFU (GPU envelope), not 60%.
+
+## ★★★★★★ THE RESOLUTION: TP was parked after testing the WRONG config; tp=8 (the prescribed fix) never tried
+The HSDP×TP 3-D mesh `(replicate, dp, tp)` with `dp·tp=8` (both in-node) EXISTS — on worktree branch `worktree-agent-afabd20f3300f05c7` (commits 574530f3f, 6bc5e2cd2, d8843c1bd …). It's proper Megatron TP: V/U C-on-tp (column/row parallel), CI-fn heads-on-tp, activation all-reduce on tp (NVLink). Revive-not-rebuild.
+- `tp=8` ⇒ pure intra-node TP, `dp=1` → **eliminates the in-node FSDP weight-gather** (the 16.5s bottleneck); weights sharded only on tp, communication is ACTIVATIONS. This is EXACTLY what all 3 external sources prescribe.
+- BUT the parked configs only tested **tp=2 / tp=4 = HYBRIDS** (dp=4/2 FSDP + tp): keep the FSDP weight-gather AND add TP overhead = worst of both → the "7× slower" verdict. **tp=8 (pure in-node TP, dp=1) was NEVER tested.**
+- Current branch (perf/hsdp-mfu) is pure-HSDP 2-D `(replicate, fsdp)` — the TP axis was stripped when the team parked TP. So testing tp=8 = revive the afabd20f HSDP×TP code + config tp=8 (4 nodes → replicate=4, dp=1, tp=8).
+**→ The convergent recommendation (TP) is already 90% built and was abandoned after testing the wrong (hybrid) config. The prescribed tp=8 is a revive + config experiment, not a rebuild.**
