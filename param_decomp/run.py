@@ -549,7 +549,7 @@ def run_decomposition_training(
     for step in range(start_step, pd.steps):
         if _profile_on and step == _profile_start:
             jax.block_until_ready(state)
-            jax.profiler.start_trace(_profile_dir)
+            jax.profiler.start_trace(_profile_dir, create_perfetto_trace=True)
             _profiling = True
             _prof_t0 = time.time()
             if is_main:
