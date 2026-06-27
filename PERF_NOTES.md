@@ -155,3 +155,23 @@ The "dispatch-bound / stack the state" conclusion (the 2169-leaf section) is **W
   1. **Bigger batch** — amortize the fixed per-step overhead. First-order. (Oli wants B=64–128 anyway.) Measuring step-time vs batch finds the MFU knee.
   2. **Reduce fixed device overhead** — coarsen/bucket the 43k gathers, cut recon recompute. Second-order, structural.
 - NEXT: batch-scaling sweep (B=32→64→128 at dp=32, step-time each) to quantify the amortization + locate the MFU-optimal batch; then a device profile of where the 12.5s goes.
+
+## Batch-scaling sweep (130727/130728): BLOCKED by per-GPU memory — batch is NOT a usable MFU lever here
+- **B=64 dp=32 (2 seq/GPU)**: compiled (remat floor 129.0GiB, "can't reduce below 123.97GiB") then OOM'd at runtime step 2 → one rank died → coordination-service cascade (grpc "connection refused" on the others is the SYMPTOM, not cause).
+- **B=128 dp=32 (4 seq/GPU)**: remat floor **187.4GiB** (> B200 ~180GB) → OOM before stepping.
+- **Conclusion**: at dp=32 the feasible batch is ~1 seq/GPU (B=32). The full32L step is memory-capped at ~1/GPU (matches the reference B=128 dp=128 = 1/GPU). Bigger GLOBAL batch needs more nodes (dp=64/128) at the SAME 1 seq/GPU → adds GPUs but does NOT raise per-GPU MFU (each GPU still does 1 seq, still overhead-bound). So **batch amortization is not available** to fix per-GPU MFU; the lever is reducing the per-step device overhead.
+
+## HONEST STANDING ASSESSMENT (corrected, end of session)
+What is now SOLID:
+- The full32L step is **DEVICE-bound at ~12.5s/step** (PD_ASYNC: each synchronous step_fn call ≈12.5s, final block 0.017s). NOT host-dispatch-bound (PD_BENCH: 448 sharded leaves dispatch in 18ms; leaf count is a red herring). `main=R` /proc was a spin-wait.
+- Device timeline (earlier trace p-902af596): ~5s GPU-busy + **~7.5s GPU-IDLE** per step. The 7.5s GPU-idle is the MFU ceiling (occupancy ~40%).
+- **autotune banked**: 20→12.5s device-kernel win, config-only, landable.
+- Per-GPU batch is memory-capped at ~1 seq/GPU → batch can't amortize the overhead.
+
+What the 7.5s GPU-idle IS (best current understanding) and why it's hard:
+- A per-step span where the GPU is idle and the host spin-waits (main=R) — consistent with waiting on a cross-node collective whose completion is off-GPU (NCCL proxy / IB), NOT a GPU kernel. The loss-scalar all-reduce was named earlier but is only 128B (can't be 7.5s on size) → likely a RENDEZVOUS/sync stall, not bandwidth.
+- Flag/config/allocator-RESISTANT: refuted = collective-combine, latency-hiding, pipelined collectives, NVLS, CUMEM, 3 allocators (platform/cuda_async/default), MALLOC_ARENA_MAX. None moved the 12.5s.
+- Remaining structural candidates (NOT yet tried; device-side): coarsen/bucket the ~43k in-scan FSDP AllGathers (recon layer-loop + CI chunk-loop), and check for a per-step straggler (sample /proc on ALL ranks simultaneously — is one rank lagging 7.5s, or do all idle at one collective?).
+- **This needs nsys (not on login PATH; available on compute nodes?) or CoreWeave input** to name the exact stalling op and whether it's a straggler vs a genuinely slow collective. Beyond what flag/config A/B can reach.
+
+Production run: **HELD** — Oli's condition was a working perf fix; autotune is banked but the 7.5s GPU-idle (the MFU ceiling) is unresolved. A 12.5s/step × 100k run is ~14.5 days. Don't launch until the idle is addressed.
