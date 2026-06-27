@@ -607,3 +607,27 @@ Investigated the b64 OOM properly (HLO + b32-vs-b64 buffer diff) instead of decl
   recon-grid/PGD backward so per-layer component activations don't stack `[n_layer,...]`,
   (3) reduce/Combine the 1,724 collectives (comms + scratch). Localizing next with a zero-code
   nw=0 (no-PGD) b64 probe to size the PGD-forward contribution.
+
+## ★★★★★★★ LOCALIZED — b64 (2 seq/GPU) FITS without PGD; the PGD adversary is THE blocker (Oli vindicated)
+noPGD b64/dp32 (131387) **RUNS and trains** — steady **15.7s/step** (autotune-off), modeled
+peak **98.4GiB**. vs PGD b64 = 139GiB (OOM). So:
+- **The PGD persistent-adversary forward adds ~40GB at b64** — and noPGD-b64 (98GB) ≈ PGD-b32
+  (96GB): **the adversary costs about as much memory as doubling the batch.**
+- Root: `warmup_scoring_loss` (train.py:280) is a **route-all ALL-224-SITES forward** (SPEC S24
+  torch-warmup parity), run `n_warmup_steps=2` times as Adam ascents (each a fwd+bwd). It's
+  ALREADY rematted (`remat=remat_recon_forwards`) — so remat isn't the gap; the cost is the
+  extra all-sites fwd+bwd passes. The recon grid by contrast chunks 224 sites into 4×56.
+- **⇒ The batch ceiling is NOT fundamental — it's the PGD warmup ascents.** HSDP runs 2 seq/GPU fine without them.
+
+### Levers to fit b64 WITH the full algorithm (risk order)
+1. **`n_warmup_steps` 2→1 or 0** — fewest extra all-sites fwd+bwd. SEMANTIC (adversary quality),
+   Oli's call. Already a TIME lever (~3.1s, line 311); now also THE memory lever for b64. The
+   FINAL ascent reuses the main backward (S14, no extra forward), so only the warmups are extra.
+2. **Chunk the route-all adversary forward** to match the recon grid (4×56 not all-224). Bigger
+   structural change + semantic care (route-all is SPEC S24) but keeps adversary strength.
+3. Combine/reduce the 1,724 collectives (orthogonal comms win).
+
+### Payoff check (running): does b64 actually raise throughput via gather amortization?
+noPGD b64 = 64 seq / 15.7s = **4.08 seq/s**. If noPGD b32 ≈ 32/~12s = ~2.7 seq/s, b64 is ~1.5×
+better throughput (fixed gather amortized over 2× batch — Oli's point). Launching noPGD b32
+(autotune-off) for the matched baseline to CONFIRM before recommending the n_warmup change.
