@@ -450,3 +450,12 @@ Both strategies run on the SAME 32 GPUs, so the only honest per-GPU number is `g
   matched autotune. That isolates gather-vs-activation-comm with zero confound. Only if TP-8
   beats FSDP-8 here is the TP(+SP) direction worth pursuing; if not, the whole TP path is dead.
   → running this next.
+
+## ⏳ IN FLIGHT — decisive single-node A/B (both on afabd20f worktree, autotune-OFF, mesh = only variable)
+Launched 2026-06-27. The afabd20f mesh `(replicate, dp, tp)` collapses to single-node when
+runtime.dp=8 (replicate=1), so both legs are 8 GPUs / global batch 8, differing ONLY in mesh:
+- **131381 FSDP-8**: `dp=8, tp=1` → weights FSDP-sharded on `dp`, per-layer weight-gather over NVLink. config `llama8b_full32L_AB_fsdp8_b8_PROFILE.yaml`. HLO dump `hlo_AB_fsdp8`.
+- **131382 TP-8**: `dp=8, tp=8` → weights C-sharded on `tp`, activation all-reduce over NVLink. config `llama8b_full32L_AB_tp8_b8_PROFILE.yaml`. HLO dump `hlo_AB_tp8`.
+GATE before trusting timings: verify FSDP leg shows per-layer weight-gathers + no C-shard;
+TP leg shows C-sharded V/U + activation all-reduces + no weight-gather. THEN compare step time.
+Decision rule: TP-8 step < FSDP-8 step ⇒ activation-comm beats weight-gather per token ⇒ TP(+SP) worth it. Else ⇒ TP path dead, refocus on the HSDP gather/overlap levers.
