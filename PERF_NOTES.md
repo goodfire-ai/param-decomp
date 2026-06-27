@@ -562,3 +562,25 @@ The remaining real options, all substantial:
   spending on MFU. The data says the easy/medium wins are exhausted.
 This is a strategic fork for Oli — A (big/structural), B (modest/safe), or C (stop). The
 measurement to justify the choice is done; the next step is a decision, not another probe.
+
+## ✅ Option B sized from the b32 dump — it CANNOT unlock b64, so it's not an MFU lever
+Analyzed p-f928808d buffer-assignment (leading-dim classification; weight stacks
+`bf16[32,d_in_shard,C]` vs per-layer activations `bf16[32,1,512,hidden]`):
+- One full copy of the ÷fsdp bf16 compute weights ≈ 5GB/GPU (V/U 18.3B → 36GB unsharded ÷8).
+  Held ~5× at peak (the duplication seen in the after-opt report) ⇒ hoist/collapse saves ~20GB.
+- b64's MEASURED activation growth over b32 = +43GB (96→139GB modeled). **~20GB prize < +43GB
+  need ⇒ B does NOT fit b64.** It only lowers the b32 peak (96→~78GB), which buys ZERO MFU
+  (b32 already fits; same batch, same step time). (The ~20GB is an estimate bounded by total
+  weight memory; exact figure needs the hoist built+measured, but it's strictly < the +43GB.)
+- ⇒ **Fork narrows to A (TP+SP, the only structural fix for the exposed gather) or C (accept the
+  ceiling).** B is off the table as an MFU play. No further probe will change this; it's a decision.
+
+## 🏁 DURABLE CONCLUSION of the full32L MFU investigation
+The full-model HSDP step is ~12.5s at ~40% occupancy because the FSDP per-layer weight-gather
+is on the critical path and CANNOT be hidden: hiding needs ~5 seq/GPU (≥2,500 tok/GPU floor),
+memory caps us at 1 seq/GPU (b64=2/GPU OOMs under both allocators; collapsing weight duplication
+saves ~20GB < the +43GB b64 needs). TP removes the gather but loses ~3-4× on global throughput
+(memory-capped at ~2 seq/GPU via only 4 DP replicas) UNLESS paired with SP. Banked win: autotune
+(1.6×). Net: 12.5s/~40% is near the practical ceiling for THIS config; the only step-change left
+is a structural rewrite (TP+SP), which is a multi-day bet. Recommendation: bank autotune, treat
+~40% as the working ceiling unless/until the TP+SP investment is greenlit.
