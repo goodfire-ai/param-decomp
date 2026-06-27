@@ -743,3 +743,26 @@ persistent PGD sources. Production (`sc` / shared_across_batch, source_dtype=f32
   (independent per-example adversary vs shared) — a method decision, not a free opt; (2) its source
   memory GROWS with per-GPU batch (sc is batch-independent). Do (a) ÷N-source-Adam regardless;
   (b) bsc only if per-example adversaries are wanted on merits.
+
+## ✅✅ HOIST VERIFIED ON GPU (131420 b32 / 131421 b64) — step-time win + b64 unlock, both REAL
+Matched autotune-off, full PGD config:
+| config | step | seq/s | modeled peak | live-range peak | gate/up-U copies | down-V copies | result |
+|--------|------|-------|--------------|-----------------|------------------|---------------|--------|
+| baseline b32 | ~20s | 1.60 | 96GB | 79.7GB | ×20 | ×10 | runs |
+| HOIST b32 | **13.0s** | 2.46 | 99GB | 77.5GB | **×12** | **×6** | runs |
+| baseline b64 | — | — | 139GB | — | — | — | **OOM** |
+| HOIST b64 | 27.5s | 2.33 | **124GB** | — | — | — | **FITS + COMPLETED** |
+- **b64 (2 seq/GPU) now FITS with the full PGD config** (124GB modeled vs 139 baseline; job COMPLETED,
+  zero OOM) — the headline: HSDP-no-TP reaches 2 seq/GPU under the current config. The hoist's ~15GB
+  modeled reduction at b64 was exactly enough to clear the runtime cliff.
+- **Step time b32: ~20s → 13s (~35% faster, ~1.5×).** The hoist removed the redundant FORWARD
+  cross-node gathers (part of the ~11s idle). Mechanism confirmed: forward weight-copies collapsed
+  (gate/up-U ×20→×12, down-V ×10→×6 = the ~10/~5 forward re-gathers dropped to ~1-2; the remaining
+  ~10/~5 are the BACKWARD grad-accumulators = lever-2, untouched).
+- **Batch does NOT help throughput post-hoist** (b32 2.46 vs b64 2.33 seq/s): once the redundant
+  gathers are gone the step is compute-bound (2× batch → 2× time). So the MFU win is the HOIST itself,
+  not bigger batch. (b64's value is headroom / larger effective batch, not speed.)
+- Caveat: baseline-b32 20s is the session AB measurement (same config+autotune, hoist the only delta),
+  not a fresh re-run — can nail it with one matched baseline job if needed.
+- Lever-2 (backward grad-accumulators, the remaining ×10/×5) is the next memory target; lever-3
+  (÷N-shard source Adam, ~4.6GB) is orthogonal + semantics-preserving.
