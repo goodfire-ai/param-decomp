@@ -294,3 +294,10 @@ Parsed the actual GPU timeline (scratchpad_trace_analyze.py on the chrome trace.
 1. **PGD ascent (~8s)**: 2 all-sites route-all forwards/step re-gather all FSDP weights. Weights are FIXED during the ascent (only the source/mask updates) → gathering once and reusing across ascents could cut ~2-3× of those gathers. Or reduce n_warmup_steps (semantic). Quantify via ablation first.
 2. **Backward (~10.6s)**: FSDP weight re-gathers during grad (remat recompute). Inherent-ish; overlap or gather-granularity.
 3. General: combine/coarsen the FSDP AllGathers (the RING_LL many-small pattern); reduce cross-node SendRecv.
+
+## ★ PGD ascent quantified: no-PGD ablation = 7.6s vs full 12.5s → PGD ascent is ~4.9s (~40% of step)
+no-PGD config (PersistentPGDReconLoss removed) steady step = 7.62s (vs 12.5s full). **The PGD ascent costs ~4.9s/step — the single biggest lever.** Matches the trace (pd_pgd_warmup_ascend was the top AllGather consumer).
+- Mechanism (train.py:279 `warmup_scoring_loss`): each ascent runs the full all-sites `masked_forward` (re-gathers ALL FSDP weights), with `components` FIXED and only `sources` (mask) varying. n_warmup_steps=2 supplemental + 1 final = ~3 gather-heavy all-sites forwards/step.
+- The remaining 7.6s (no-PGD) is also gather-bound (backward FSDP re-gathers).
+- **Root structural issue: FSDP re-gathers all 32 layers' weights for EVERY forward pass, and the step has many (clean + recon chunks + 2-3 PGD ascents + backward recompute).** That's the 16.5s AllGather.
+- Levers: (a) reduce n_warmup_steps [SEMANTIC — adversary quality, Oli's call; measuring the cost curve via sweep], (b) gather-reuse across ascents [numerics-preserving but HARD: keeping all 32 layers gathered = the OOM FSDP avoids], (c) reduce per-forward gather cost / overlap.
