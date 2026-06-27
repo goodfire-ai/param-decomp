@@ -654,3 +654,31 @@ Matched autotune-off:
   3. **n_warmup 2→1/0** — removes whole adversary fwd+bwd passes (semantic, Oli's call).
 - This is the coherent end: the ~40% MFU / ~11s idle is the PGD adversary's gather-bound all-sites
   forward. Optimize THAT (chunk + combine) for the real HSDP-native MFU win; batch is secondary.
+
+## ★★★★★★★★★ TRANSIENT GAP ATTRIBUTED (live-range sweep) — peak is dominated by RE-MATERIALIZED compute-weight copies
+Floor ≈33GB (validated, c78e9d28a/f47444e04) vs measured 96GB ⇒ ~63GB reducible. To attribute it,
+built `param_decomp/tools/liverange_peak.py` (5b16c0125): joins buffer-assignment (size+shape) with
+the live-range file (start-end program point), sweeps to the TRUE peak, decomposes co-residency.
+The static slab report can't do this (slabs share offsets across disjoint buffers — it misled me earlier).
+
+On p-f928808d (b32/dp32) peak working set = **79.7GiB** at program point 15169 (+~17GB optimizer,
+which lives as donated params spread over many small ÷N f32 shards, not in the step buffers → 79.7+17≈96 ✓).
+Composition at peak:
+| GiB | count | shape | identity |
+|-----|-------|-------|----------|
+| 17.5 | **×20** | bf16[32,8192,1792] | gate/up **U** stack (÷fsdp) |
+| 10.9 | **×10** | bf16[32,1792,10240] | down **V** stack |
+| 5.0 | ×20 | bf16[32,512,8192] | activation |
+| 5.0 | ×20 | bf16[32,1,512,8192] | activation |
+| 3.0 | ×192 | f32[1,512,8193] | f32 intermediate |
+- **Claim: the peak is dominated by 10–20 CO-RESIDENT COPIES of the bf16 compute-weight stacks
+  (~30GB+ across shapes).** 20 buffers of one shape all live at one program point CANNOT be
+  offset-sharing (that needs disjoint lifetimes) ⇒ real physical duplication. The ÷fsdp compute
+  weight is reconstructed once in ENTRY but then RE-MATERIALIZED per-forward (4 recon chunks +
+  PGD adversary all-sites + faithfulness + backward) instead of being shared/CSE'd across them.
+- **⇒ The #1 reducible transient is compute-weight re-materialization, not activations.** This is the
+  HSDP-native, config-preserving lever: make the forwards SHARE one reconstructed ÷fsdp compute
+  weight (donation / CSE / hoist the reconstruction so XLA doesn't recompute the cast+gather per
+  forward). Recovering ~25-35GB would take peak 96→~65GB and likely fit b64 WITH the full config.
+- Caveat (under async validation): live-range join is 88% (28908/32988); the ×20 count + the
+  "re-materialized per forward, not aliasing" interpretation is the thing to verify.
