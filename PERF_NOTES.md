@@ -850,3 +850,28 @@ few layers' weights at once, K× transient, not all 32). The full-replicate run 
 the prize can't be cheaply bounded — it needs an actual unroll-by-K prototype + trace. Recommend that as
 the next focused task (Oli-aware: it touches the recon-forward scan, numerics-preserving, branch→repro→
 Codex→trace loop). NOT launching more speculative runs — the cheap prize-bound is exhausted.
+
+## 📋 SHOVEL-READY PLAN — unroll-by-K gather coalesce (the one live MFU lever; green-light to build)
+Implementation (in `llama8b._run_masked_forward`, numerics-preserving, NOT a config/recon change):
+1. Reshape the scanned arrays `self.stacked` + `per_kind[kind][...]` from `[n_layer, …]` to
+   `[n_layer/K, K, …]` (n_layer=32; K∈{2,4,8} all divide 32).
+2. `lax.scan` over `n_layer/K` iterations; the body processes K layers via an inner Python loop
+   (residual threads through all K, exactly as the current per-layer body does).
+3. At the body START, explicitly gather the K-layer V/U together — one `with_sharding_constraint`
+   to full d_in on the `[K, d/8, C]` slice → XLA emits ONE all-gather of `[K,…]` instead of K
+   separate ones. This is the coalesce: 1848 gathers → ~1848/K.
+4. `jax.checkpoint` the K-layer body (replaces the per-layer checkpoint).
+
+TRADEOFF (why it needs measurement, not assumption):
+- WIN: ~1848/K fewer gather launches → less collective-progression overhead (the 37%-occupancy idle).
+  Rough: ~1.9s/GPU gather is ~1ms × 1848 launches; ÷K could save ~1.4s at K=4 + reduce bubbles → ~10-20%.
+- COST: the checkpointed body now recomputes K layers in the backward → **K× the per-layer recompute
+  activation transient** ([K,1,512,14336] MLP-hidden etc). At K=2-4 that's +a few GB on the 96GB b32 peak
+  (under budget), but it MUST be verified — peak regression is the risk.
+- ⚠️ PRECEDENT: remat/recompute tradeoffs have surprised before (the 3-pool LW work measured ~0% from
+  similar dtype/ckpt changes — recompute dominated). So the prize is genuinely uncertain; build a K=2 and
+  K=4 prototype and MEASURE (trace occupancy + peak + step) before trusting it.
+VERIFY: HLO all-gather count drops 1848→~1848/K; trace occupancy >37%; memreport peak still <180GB;
+equivalence goldens bit-identical; Codex review. Effort: moderate (one function + the reshape).
+STATUS: scoped + ready; held pending green-light — it's a 2nd hot-path structural change with an
+uncertain (possibly-wash) prize, so it warrants a deliberate go rather than an overnight slam.
