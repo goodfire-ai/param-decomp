@@ -498,3 +498,20 @@ Neither strategy fits this model on 8 GPUs. You need ≥16-32 GPUs just to shard
 enough to fit, after which activations pin HSDP at ~1 seq/GPU. → MEMORY is the lever, decisively.
 Next: run `param_decomp.tools.memreport` on a PRODUCTION HSDP dump to attribute the top memory
 terms FACTUALLY (not byte-arithmetic) before picking which memory lever to land.
+
+## ✅ MEASURED — production HSDP b32/dp32 peaks at 96.4GiB, NOT ~180. "Hard memory cap" was overstated too.
+`memreport` on p-f928808d (the real production step: PGD nw=2, sites_per_chunk=56 / 4 chunks,
+remat on, b32, dp32 — verified from its config.yaml; single jit_step module, peak 96.37GiB):
+- **There is ~84GB of headroom at b32 on paper.** So the dp=8 AB OOMs (178/287GB) were NOT
+  representative — they carry 4× the optimizer state of production dp=32. My "memory binding
+  decisively, capped at 1 seq/GPU" claim above was built on those + a stale b64 note. Overstated.
+- The peak is dominated by many `bf16[32,...]` buffers each held in **5–19 live copies**
+  (e.g. `bf16[32,512,4096]` ×19, `bf16[32,512,8192]` ×18, plus `5×bf16[...]` grouped buckets).
+  Whether the leading 32 is n_layer (weight stacks) or global-batch (activations) is NOT
+  certain from shapes alone (see [[feedback_hlo_stack_frame_unreliable]]) — do NOT theorize the
+  identity; measure. But many-live-copies ⇒ likely reducible duplication.
+- **Reframed problem (narrow + tractable):** the step is only 96GB, yet b64/dp32 (2 seq/GPU —
+  the doubling that crosses the ~2,500 tok/GPU gather-overlap floor) reportedly OOMs at RUNTIME
+  (old note: ~129GB modeled). So the target is NOT "reduce memory in general" — it's the
+  specific b32→b64 runtime gap. Re-measuring b64 directly (does it still OOM? peak? dominant
+  term that doesn't fit?) to replace the stale note and size the lever exactly. → launching b64.
