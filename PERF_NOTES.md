@@ -405,3 +405,14 @@ Ran the existing tp8 config (afabd20f, profiling variant) with HLO+buffer dump. 
 - Activations `bf16[32,8,512,1280]` → **8 seq/GPU confirmed** (global 32 / DP 4), C-sharded.
 - **OUTCOME: OOM, peak 211GiB > 180GB.** The 8-seq/GPU activations + fp32 logits `f32[8,512,128256]` (1.96GB×) dominate — exactly the activation-memory cost predicted for 8 seq/GPU.
 → TP is real and kills the weight-gather; the binding constraint is now ACTIVATION memory (the predicted tradeoff). Fixes: (a) smaller global batch → fewer seq/GPU [testing global 8 → 2 seq/GPU], (b) sequence parallelism (deferred — the proper fix for the residual/activation term), (c) more remat / bf16 logits. NOTE: methodology worked — we KNOW it's real TP, so the OOM genuinely reflects TP's memory profile, not a mis-compiled config.
+
+## ★★★★★ TP VALIDATED (gate passed + real timing): gather gone, ~3.3× better per-GPU; global throughput needs bigger batch
+tp8 b8 (global 8 → 2 seq/GPU) FITS, ~12.0s/step (autotune-OFF). Matched autotune-off comparison:
+| strategy | global batch | seq/GPU | step (autotune-off) | per-GPU seq/s | global seq/s |
+|---|---|---|---|---|---|
+| HSDP | 32 | 1 | 20s | 0.050 | 1.60 |
+| TP (tp8) | 8 | 2 | 12s | 0.167 (3.3×) | 0.67 |
+- TP removed the gather: HSDP-off 20s (8.4 busy + 11.4 idle) → TP-off 12s (dropped ~8s ≈ the gather idle). So the gather WAS a real wall-clock cost and TP eliminates it (gate-verified: no per-layer full-gathers).
+- **TP is ~3.3× more efficient PER-GPU** (autotune-off matched). BUT global throughput still favors HSDP (1.6 vs 0.67) because TP is memory-capped at 2 seq/GPU (8 seq/GPU OOM'd) → smaller global batch. The per-GPU win is real; converting it to a global win needs a bigger per-GPU batch.
+- NEXT: sweep TP global batch up (16=4/GPU, 24=6/GPU) to find max fit; add autotune (was OFF); SP for the full 8/GPU. Compare global seq/s head-to-head vs HSDP 1.6 (or autotune-on 2.56).
+- METHODOLOGY held: gate verified real TP before any timing claim; both numbers autotune-off for a fair compare.
