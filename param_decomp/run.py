@@ -504,6 +504,19 @@ def run_decomposition_training(
                 print(f"PD_PROFILE: start_trace @ step {step} -> {_profile_dir}", flush=True)
 
         if _time_steps and is_main and step < start_step + 8:
+            if step == start_step:
+                import equinox as _eqx
+
+                _pp0 = time.perf_counter()
+                _arrs, _ = _eqx.partition((lm, state), _eqx.is_array)
+                _pp1 = time.perf_counter()
+                _nl_state = len(jax.tree_util.tree_leaves(state))
+                _nl_lm = len(jax.tree_util.tree_leaves(lm))
+                print(
+                    f"PD_LEAVES: state={_nl_state} lm={_nl_lm} "
+                    f"eqx.partition(lm,state)={_pp1 - _pp0:.3f}s",
+                    flush=True,
+                )
             _ts0 = time.perf_counter()
             batch = sample_batch(step)
             _ts1 = time.perf_counter()
