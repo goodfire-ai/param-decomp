@@ -208,3 +208,19 @@ nsys confirmed unavailable (not in cuda bin, nowhere on FS) → used the after_s
 - Audit `ci_fn._reconstruct_ci_compute_weights` + the CI-fn forward sharding: the reconstruction is meant to gather the `replicate` axis to a ÷fsdp compute layout BEFORE the per-chunk scan (like the target weights) so NO forward matmul contracts over `replicate`. The 32 axis_2 all-reduces in `pd_ci_fn_fwd_main` show a replicate-sharded contraction REMAINS — find which CI-fn weight/activation dim is still `replicate`-sharded at forward time and pin it replicate-LOCAL (gather once in entry, like llama8b does for V/U). Should remove the 32 cross-node reduces → kill most of the 7.5s.
 - Numerics-preserving (pure relayout) → verify via `tests/equivalence/`. This is the concrete lever that replaces the earlier "needs nsys/CoreWeave" handoff: the culprit is named (CI-fn forward cross-node reduces from ÷N leak), the fix is a sharding pin.
 - Caveat: HLO is from a recent full-model step module (mesh [8,1,4]=32, Llama-8B dims); if it's not the exact perf-branch config, the CI-fn-forward cross-node-reduce structure is architectural and still applies — confirm the axis_2 count on a fresh perf-branch HLO dump first.
+
+## ✅ CONFIRMED on the perf-branch config + REFINED: 32 cross-node reduces are the CI-fn BACKWARD (remat'd, per-chunk)
+Verified on p-adaf8a8e (the ACTUAL perf-branch run: dp=32, jax-full32L-HSDP-b32-dp32-PROFILE) — mesh `[axis_0=fsdp=8, axis_1=tp=1, axis_2=replicate=4]`, identical census: 49 axis_2 (cross-node) all-reduces/step, **32 of them under `pd_ci_fn_fwd`**. Caveat from the prior section is RESOLVED — not a wrong-config artifact.
+
+REFINEMENT (op_name detail of the 32): they are NOT the plain forward — they're under
+`pd_value_and_grad/transpose(jvp(pd_ci_fn_fwd_main))/while/body/closed_call/checkpoint/{abc,dc->abd | abc,cd->abd | ...a,ab->...b}`:
+- `transpose(jvp(...))` = the **BACKWARD** (VJP) of the CI-fn forward.
+- `while/body` = inside the **per-chunk scan**.
+- `checkpoint` = under **remat** (the CI-fn per-chunk recompute).
+- → The CI-fn BACKWARD, recomputed under remat per chunk, issues **32 cross-node (IB) all-reduces** contracting over a `replicate`-sharded dim. These are the IB collectives; at IB rendezvous+transfer latency × 32, ≈ the 7.5s GPU-idle, and they land in the backward — matching the trace's "late SendRecv + long host wait" phase.
+
+### TWO fix candidates (next session; both numerics-preserving, perf-branch)
+1. **Sharding audit**: find which tensor in the CI-fn backward is still `replicate`-sharded at contraction time. The forward weights ARE re-pinned to ÷fsdp by `_reconstruct_ci_compute_weights` (entry, before scan), so the leak is likely an ACTIVATION (a tap / intermediate) or a grad tensor that stays `replicate`-sharded into the backward matmul. Pin it replicate-local (`with_sharding_constraint` to ÷fsdp / replicated) so the backward contracts intra-node only (axis_0), not cross-node (axis_2). Expected: removes the 32 IB reduces → kills most of the 7.5s.
+2. **Remat interaction**: the reduces are under `checkpoint` (CI-fn per-chunk remat). Test whether the recompute re-introduces the cross-node contraction that the entry reconstruction removed — i.e. the remat recomputes the forward WITHOUT the ÷fsdp pin (the pin is outside the checkpoint region). If so, either pin inside the remat region or mark the reconstructed weights as remat-saved (not recomputed). A/B: CI-fn remat off (memory cost) should drop the axis_2 count if remat is the cause.
+
+This NAMES the lever concretely (CI-fn backward cross-node reduces from a ÷N sharding leak, remat-interacting) — a real structural fix, not an environmental dead-end. nsys/CoreWeave NOT required to proceed; a fresh perf-branch HLO dump confirms the axis_2 count after any fix.
