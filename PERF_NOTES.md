@@ -96,3 +96,17 @@ Intuition: <20% MFU = poor, 40–55% = well-tuned, 60% = excellent. This step is
 - **WIN, landable now: autotune → 12.5s (from ~20s), 40% occupancy.** Config-only (XLA_FLAGS drop autotune-off; ~5min one-time autotune compile, cached). Recommend as production default regardless of the tail.
 - **The 7.5s tail: extensively isolated, mechanism still not definitively pinned.** Ruled out: NVLS, socket (it's IB+GDR), the loss all-reduce, grad-transport-bandwidth, and 3 scheduling flags. Direct /proc evidence shows a mprotect/mm-lock storm but its per-step-causality is unconfirmed. This likely needs a dedicated NCCL/CUDA profiler (nsys) or CoreWeave input — beyond clean isolation tonight.
 - **Production run: HELD** (condition = a working tail fix; not yet met). autotune-alone (12.5s/40%) would be a ~14-day run — your call whether that's worth launching vs waiting for the tail fix.
+
+## ★ cuda_async allocator REFUTES the mprotect-storm hypothesis (130720: 12.5–13s)
+- cuda_async (cudaMallocAsync pools, NON-cuMem, no FABRIC path) = 12.5–13.0s = identical to autotune-alone.
+- If the 7.5s tail were the cuMem/VMM FABRIC→mprotect storm, a non-cuMem allocator would have killed it. It didn't.
+- → **The allocator is NOT the tail cause.** The intermittent mprotect storm in /proc was the orbax/tensorstore ckpt-I/O red herring I'd flagged (it's periodic, not per-step). MALLOC_ARENA_MAX=2 (130722) attacks the same glibc-arena angle → expected no-op (running, for completeness).
+- **Refutation tally: scheduling flags (combine/LHS/pipelined), NVLS/CUMEM, 3 allocators (platform OOM, cuda_async, default). The tail survives ALL env/flag/allocator A/B.**
+
+## Definitive next step: py-spy --native on the live rank-0 process (in progress)
+- py-spy IS available (~/.local/bin/py-spy, shared FS → on compute nodes). `dump --native` gives the merged Python+C stack of the training process DURING the 7.5s idle.
+- Distinguishes: (a) native device/collective wait — Python frozen on the jitted step call, C stack in cuStreamSynchronize/NCCL → confirms a genuine serial cross-node op; vs (b) Python-side work — frames moving through orbax/logging/a host barrier → the "tail" is host bookkeeping, not a collective.
+- This is the real observation (not flag-guessing) — sampling rank-0 across ~3 steps via `srun --overlap --jobid`.
+
+## Git state RESOLVED (was the blocker)
+- The pure-HSDP ÷N refactor (V/U + CI-fn _reconstruct_ci_compute_weights, 24 files) was UNCOMMITTED working-tree state — present in run snapshots (pd-lm snapshots the tree) but never on a branch; my earlier add-all + failed commit (unreachable-code from a grad-norm test edit) left it staged. FIXED: reverted the test edit, committed the working tree (b08dbe363). ÷N now durable; tree clean. Nothing lost.
