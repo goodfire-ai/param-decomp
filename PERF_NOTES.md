@@ -41,3 +41,11 @@ Intuition: <20% MFU = poor, 40–55% = well-tuned, 60% = excellent. This step is
 - autotune + 1GB combine thresholds = 12.44–12.56s = identical to autotune-alone (12.5s).
 - So the ~11s idle is NOT un-combined gather fragmentation. Either XLA can't merge them (data deps) or merging doesn't touch the idle.
 - Reverted the combine flags. Next: the 130711 autotune trace to see the actual 12.5s GPU-busy-vs-idle split + the host-thread activity during the idle (Codex: host blocked in "Wait for LaunchOnDevice completion").
+
+## Autotune trace breakdown (p-902af596, 12.6s step)
+- GPU-busy 5.07s (kernels contiguous, done at 4.83s) + **7.55s TERMINAL IDLE** (host blocked, GPU idle, zero kernels) + 0.23 head. **Occupancy 40%.**
+- autotune sped compute (8.4→5.07s) AND shrank idle (11.4→7.55s) as a side effect.
+- 5399 AllGathers on GPU:0 (~43k total), 2.5s NCCL kernel time — but these are IN-SCAN (recon layer-loop + CI chunk-loop), so the combine pass can't merge them (refuted above).
+- **The 7.55s tail idle is THE MFU killer.** Hypothesis: un-overlapped cross-node ÷N grad-reduce after the backward → test latency-hiding scheduler / pipelined collectives.
+
+## Test: XLA latency-hiding scheduler + pipelined collectives (overlap the tail)
