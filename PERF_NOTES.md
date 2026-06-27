@@ -459,3 +459,33 @@ runtime.dp=8 (replicate=1), so both legs are 8 GPUs / global batch 8, differing 
 GATE before trusting timings: verify FSDP leg shows per-layer weight-gathers + no C-shard;
 TP leg shows C-sharded V/U + activation all-reduces + no weight-gather. THEN compare step time.
 Decision rule: TP-8 step < FSDP-8 step ⇒ activation-comm beats weight-gather per token ⇒ TP(+SP) worth it. Else ⇒ TP path dead, refocus on the HSDP gather/overlap levers.
+
+## ⛔ FSDP-8 leg OOM'd — the single-node A/B is INFEASIBLE on the FSDP side (and that's itself informative)
+131381 FSDP-8 compiled then OOM'd in `jit_step` (178.3GB args > 176.2GB base limit warning at
+compile → RESOURCE_EXHAUSTED at run). Cause: single-node shards the optimizer only **÷8**, not
+the production **÷32** — ~4× heavier per-GPU master+Adam state for ~49B trainable params
+(18.3B V/U + ~31B CI fn). Global batch 8 / 1-seq-per-GPU is already FSDP's MINIMUM (can't
+shrink further), so single-node FSDP simply can't hold this model. **The clean per-token
+gather-vs-activation-comm isolation test is not runnable this way.**
+
+### The deeper reason the A/B keeps being un-runnable: incompatible memory profiles
+HSDP and TP never fit the SAME (GPU-count, global-batch) point, so a matched comparison
+doesn't exist on this hardware:
+- HSDP min global batch = #GPUs (1 seq/GPU floor); raising it OOMs (B=64 dp=32 OOM'd). Capped ~1 seq/GPU.
+- TP needs MANY seq/GPU to use its few DP replicas, but 8 seq/GPU OOMs. Capped ~2 seq/GPU.
+They are memory-capped at opposite, non-overlapping operating points.
+
+### What the data we ALREADY have actually says (no new run needed)
+At each strategy's BEST FEASIBLE point on 32 GPUs: HSDP global-32 @ 12.5s (autotune-on) =
+2.56 seq/s vs TP global-8 @ ~12s = ~0.67 seq/s. **HSDP wins ~3-4× at the feasible frontier.**
+TP's only hope (SP, to reach 8 seq/GPU) is speculative and a large build.
+
+### REFRAME — the binding constraint is MEMORY, not the gather per se
+The causal chain for low MFU: **memory cap → stuck at ~1 seq/GPU → below the ~2,500 tok/GPU
+arithmetic-intensity floor → weight-gather can't overlap behind compute → exposed on the
+critical path → low MFU.** The gather being "exposed" is a SYMPTOM; the cause is too few
+tokens/GPU, which is caused by the memory cap. So the highest-EV lever is **per-step memory
+reduction on the (already-winning) HSDP path** to reach 2 seq/GPU and cross the overlap floor —
+NOT a speculative TP+SP build. Candidate memory levers (per prior full32L memory model — VERIFY
+each before claiming): f32→bf16 grad-accum (~41GiB), hoisted CI gather (∝param/tp), bf16 logits.
+Freeing ~41GiB/GPU could unlock 2 seq/GPU on HSDP → directly attacks the actual bottleneck.
