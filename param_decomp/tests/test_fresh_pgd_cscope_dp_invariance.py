@@ -72,7 +72,14 @@ def _ascend_cscope_source(
     def ascent_loss(sources: dict[str, jax.Array]) -> jax.Array:
         masks, delta_masks = source_masks(ci_lower, sources, lm.site_names)
         masked = lm.masked_output(
-            components, residual, masks, delta_masks, None, lm.site_names, True, remat=False
+            lm.prepare_compute_weights(components),
+            residual,
+            masks,
+            delta_masks,
+            None,
+            lm.site_names,
+            True,
+            remat=False,
         )
         return kl_per_position(masked, clean_output)
 
