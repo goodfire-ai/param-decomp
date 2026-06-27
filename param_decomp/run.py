@@ -525,6 +525,27 @@ def run_decomposition_training(
                 flush=True,
             )
 
+    if _os.environ.get("PD_ASYNC_TEST", "") == "1":
+        _atk = random.fold_in(run_key, start_step)
+        _ab = sample_batch(start_step)
+        _aa0 = time.perf_counter()
+        _as1, _am1 = step_fn(lm, state, _ab, _atk)
+        _aa1 = time.perf_counter()
+        _as2, _am2 = step_fn(lm, _as1, _ab, _atk)
+        _aa2 = time.perf_counter()
+        _as3, _am3 = step_fn(lm, _as2, _ab, _atk)
+        _aa3 = time.perf_counter()
+        jax.block_until_ready((_as3, _am3["total"]))
+        _aa4 = time.perf_counter()
+        if is_main:
+            print(
+                f"PD_ASYNC: call1={_aa1 - _aa0:.3f}s call2={_aa2 - _aa1:.3f}s "
+                f"call3={_aa3 - _aa2:.3f}s final_block={_aa4 - _aa3:.3f}s "
+                f"(async/device-bound => calls small + big final_block; "
+                f"sync/host-bound => each call big)",
+                flush=True,
+            )
+
     for step in range(start_step, pd.steps):
         if _profile_on and step == _profile_start:
             jax.block_until_ready(state)
