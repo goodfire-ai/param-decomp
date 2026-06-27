@@ -489,3 +489,12 @@ reduction on the (already-winning) HSDP path** to reach 2 seq/GPU and cross the 
 NOT a speculative TP+SP build. Candidate memory levers (per prior full32L memory model — VERIFY
 each before claiming): f32→bf16 grad-accum (~41GiB), hoisted CI gather (∝param/tp), bf16 logits.
 Freeing ~41GiB/GPU could unlock 2 seq/GPU on HSDP → directly attacks the actual bottleneck.
+
+### BOTH single-node legs OOM'd — confirms memory is binding (not a strategy choice)
+- FSDP-8 (131381): args 178.3GB, OOM in jit_step. **Optimizer-dominated** (÷8, 1 seq/GPU).
+- TP-8 (131382): args **287.7GB**, OOM in jit_step. **Activation-dominated**: single-node TP has
+  dp_axis=1, so all 8 seq run on every TP rank → 8 seq/GPU activations + the same ÷8 optimizer.
+Neither strategy fits this model on 8 GPUs. You need ≥16-32 GPUs just to shard the optimizer
+enough to fit, after which activations pin HSDP at ~1 seq/GPU. → MEMORY is the lever, decisively.
+Next: run `param_decomp.tools.memreport` on a PRODUCTION HSDP dump to attribute the top memory
+terms FACTUALLY (not byte-arithmetic) before picking which memory lever to land.
