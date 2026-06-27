@@ -18,7 +18,6 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array
 
-from param_decomp.sharding import assert_divisible
 
 
 @dataclass(frozen=True)
@@ -56,30 +55,26 @@ class DecompVU(eqx.Module, Generic[VULeaf]):
     def site(self, name: str) -> tuple[VULeaf, VULeaf]:
         return self.vu[name]
 
-    def shardings(
-        self: "DecompVU[Array]", mesh: "Mesh", replicate_u_dout: frozenset[str]
-    ) -> "DecompVU[NamedSharding]":
-        """Uniform FSDP(`dp`)×TP(`tp`) for the STORED masters: V `(d_in, C)` shards d_in on
-        `dp` + C on `tp`; U `(C, d_out)` shards C on `tp` + d_out on `dp`. This is the
-        PERSISTENCE layout (master + optimizer-state memory ÷ dp·tp); `site_out` gathers the
-        `dp`-sharded d_in/d_out for COMPUTE (its `with_sharding_constraint` forces all-gather
-        in / reduce-scatter out), so the hot matmuls run batch-DP + C-on-`tp`. C-on-`tp`
-        aligns with the CI mask (no mask reshard). EXCEPTION: sites in `replicate_u_dout`
-        (the attention q/k/v projections — d_out is the head dim, and `tp` is already taken
-        by C, so it can't live there) keep d_out REPLICATED and re-shard to head-on-`tp` at
-        the attention seam. Asserts each sharded axis tiles its mesh axis."""
-        shard_V = NamedSharding(mesh, P("dp", "tp"))
-        shard_U_fsdp = NamedSharding(mesh, P("tp", "dp"))
-        shard_U_repl = NamedSharding(mesh, P("tp", None))
+    def shardings(self: "DecompVU[Array]", mesh: "Mesh") -> "DecompVU[NamedSharding]":
+        """True ÷N ZeRO-1 PERSISTENCE layout for the STORED masters: V `(d_in, C)` shards d_in
+        over the FULL mesh `("replicate", "fsdp")`; U `(C, d_out)` shards d_out over the full
+        mesh. C is NEVER sharded (no TP / Megatron-C axis). The fp32 masters AND their Adam
+        m/v (which inherit this sharding via `opt.init`) thus shard ÷(replicate·fsdp) = ÷N —
+        the dominant memory term goes from ÷fsdp (≈76 GB/GPU fixed) to ÷N (≈5 GB, scaling).
+
+        COMPUTE re-pins to `fsdp` only: the bf16 compute weights are reconstructed to the
+        `fsdp`-sharded layout ONCE per step in ENTRY (the ZeRO-1 gather across `replicate`,
+        off the hot path — `llama8b._run_masked_forward` / `ci_fn` pin the stacked weights
+        `P(None, "fsdp", ...)` before the scan), so the per-layer scan body gathers only on
+        `fsdp` (intra-node NVLink). Asserts each sharded dim tiles the full device count."""
+        shard_V = NamedSharding(mesh, P(("replicate", "fsdp"), None))  # d_in ÷N, C replicated
+        shard_U = NamedSharding(mesh, P(None, ("replicate", "fsdp")))  # C replicated, d_out ÷N
+        n = mesh.devices.size
         placed: dict[str, tuple[NamedSharding, NamedSharding]] = {}
         for name, (V, U) in self.vu.items():
-            assert_divisible(V.shape[0], mesh, "dp", f"DecompVU[{name}].V.d_in")
-            assert_divisible(V.shape[1], mesh, "tp", f"DecompVU[{name}].V.C")
-            if name in replicate_u_dout:
-                placed[name] = (shard_V, shard_U_repl)
-            else:
-                assert_divisible(U.shape[1], mesh, "dp", f"DecompVU[{name}].U.d_out")
-                placed[name] = (shard_V, shard_U_fsdp)
+            assert V.shape[0] % n == 0, f"DecompVU[{name}].V.d_in {V.shape[0]} not ÷ N={n}"
+            assert U.shape[1] % n == 0, f"DecompVU[{name}].U.d_out {U.shape[1]} not ÷ N={n}"
+            placed[name] = (shard_V, shard_U)
         return DecompVU(vu=placed)
 
 
@@ -110,23 +105,25 @@ def site_out(
     everywhere. `delta_mask` None drops the delta path entirely (constant-source entries
     carry no delta, LOSS_PARITY_DESIGN §4b). `delta_mask`/`route` broadcast over batch;
     trailing dim added here."""
-    # Pin the decomposed matmuls DATA-PARALLEL: the d_in/d_out-space activation `x` stays
-    # batch-on-`dp`, feature-replicated, and the component-space activation `x@V` stays
-    # batch-on-`dp`, C-on-`tp`. This forces the `dp`-sharded V/U masters to be GATHERED for
-    # compute and their grads reduce-scattered back (symmetric FSDP — the intended layout).
+    # Pin the decomposed matmuls DATA-PARALLEL over the FULL mesh: the d_in/d_out-space
+    # activation `x` stays batch-sharded over `('replicate', 'fsdp')`, feature-replicated, and
+    # the component-space activation `x@V` stays batch-sharded, C-REPLICATED (no TP axis).
+    # This forces the `fsdp`-sharded V/U masters to be GATHERED for compute and their grads
+    # reduce-scattered back on `fsdp` (symmetric FSDP on NVLink — the intended layout).
     # WITHOUT pinning `x`, the weight-grad backward is free to instead shard `x`'s feature
-    # dim on `dp` and REPLICATE the global batch (the forward gathers V, the backward does
-    # not), which GSPMD can't reshard cheaply -> involuntary full rematerialization -> OOM at
-    # tp>1. Pinning the activations (not V/U) keeps the weights as plain matmul args. Guarded
-    # so it's a no-op off-mesh (CPU tests / single device); `run.py` sets the global mesh.
-    # waist is `[*leading, d]`, leading = (batch, *position): pin batch->`dp` (positions +
-    # feature replicated for `x`; C-on-`tp` for `x@V`).
+    # dim on `fsdp` and REPLICATE the batch (the forward gathers V, the backward does not),
+    # which GSPMD can't reshard cheaply -> involuntary full rematerialization -> OOM. Pinning
+    # the activations (not V/U) keeps the weights as plain matmul args. Guarded so it's a
+    # no-op off-mesh (CPU tests / single device); `run.py` sets the global mesh. waist is
+    # `[*leading, d]`, leading = (batch, *position): pin batch over the full mesh (positions +
+    # feature replicated for `x`; C replicated for `x@V`).
     on_mesh = not jax.sharding.get_abstract_mesh().empty
+    batch_axes = ("replicate", "fsdp")
     if on_mesh:
-        x = jax.lax.with_sharding_constraint(x, P("dp", *(None,) * (x.ndim - 1)))
+        x = jax.lax.with_sharding_constraint(x, P(batch_axes, *(None,) * (x.ndim - 1)))
     xV = x @ V
     if on_mesh:
-        xV = jax.lax.with_sharding_constraint(xV, P("dp", *(None,) * (xV.ndim - 2), "tp"))
+        xV = jax.lax.with_sharding_constraint(xV, P(batch_axes, *(None,) * (xV.ndim - 1)))
     acts = xV * mask if mask is not None else xV
     out = acts @ U
     if delta_mask is not None:
