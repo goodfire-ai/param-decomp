@@ -246,3 +246,19 @@ Re-read `ci_fn.py` CIBlock/ChunkTransformer `.shardings`: the CI-fn weights carr
 
 ### Net (most accurate statement): 
 The 7.5s GPU-idle ≈ the CI-fn per-chunk weight-grad cross-node (IB) all-reduces, placed un-batched inside the scan. autotune banked. The fix is to batch/hoist that data-parallel reduce out of the per-chunk loop — numerics-preserving, validated by `tests/equivalence/` + a before/after HLO `axis_2` count, no nsys needed. Whether GSPMD cooperates needs a fresh perf-branch run per attempt; that's the next session's empirical loop.
+
+## Toy repro of the scan-grad reduce placement — did NOT cleanly reproduce; fix needs real-model HLO iteration
+Built a minimal repro (scratchpad/scan_reduce_repro{,2}.py): `lax.scan` over stacked per-chunk
+weights `W[nc,d,d]` (d ÷fsdp, input batch over full `(replicate,fsdp)` mesh), grad over W,
+on a 4-device sim mesh (2×2). Swept {carry-accumulate vs emit-stacked-ys} × {remat vs no-remat}.
+- Result: 3 data-parallel all-reduces, lowers to a `while` loop, but NONE clearly land inside the
+  while body in the toy — i.e. a plain scan-over-stacked-DP-weights does NOT obviously reproduce
+  the real CI-fn's inside-`while/body` reduce placement.
+- → The real CI-fn's inside-scan placement depends on a feature the toy lacks (most likely the
+  per-chunk remat RECOMPUTE interacting with the data-axis reduce, and/or the exact tap/CI
+  activation sharding `ci_batch_sharded` pins). A faithful toy would need to mirror those.
+- **Conclusion**: the fix can't be nailed from a toy — it needs an empirical loop on the REAL CI fn
+  (change → launch perf-branch run → dump HLO → check `axis_2` all-reduce count inside `while/body`
+  drops → confirm `tests/equivalence/`). That's the concrete next-session task; the diagnosis
+  (CI-fn per-chunk weight-grad cross-node reduces, un-batched in the scan) is solid and points
+  exactly where to work. Stopped the toy line here to avoid circling (per the "step back" guidance).
