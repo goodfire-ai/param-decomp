@@ -262,3 +262,10 @@ on a 4-device sim mesh (2×2). Swept {carry-accumulate vs emit-stacked-ys} × {r
   drops → confirm `tests/equivalence/`). That's the concrete next-session task; the diagnosis
   (CI-fn per-chunk weight-grad cross-node reduces, un-batched in the scan) is solid and points
   exactly where to work. Stopped the toy line here to avoid circling (per the "step back" guidance).
+
+## Broadcast experiment (Oli's idea: drop the scan) — FITS but doesn't consolidate alone
+PD_CI_BROADCAST=1 replaces the CI-fn chunk `lax.scan` with `vmap` (all 32 chunks at once).
+- **Memory: FITS** (no OOM, surprising — per-chunk remat keeps the 32-chunk broadcast in budget). My OOM prediction was wrong; measured it.
+- **Step time: UNCHANGED (~11.7–12.4s vs scan 12.5s)** — no speedup alone.
+- **Why**: HLO shows ~32 cross-node syncs STILL present — broadcast UNROLLED them (out of the `while` body into the flat graph) but XLA did NOT auto-COMBINE them. 32 independent chunk computations → 32 independent grad syncs side-by-side instead of looped. So "drop the scan" is necessary (frees the syncs from the loop) but not sufficient.
+- **Unlock**: earlier the collective-combine flags were a no-op BECAUSE the syncs were trapped in the `while` body (combiner can't reach into loops). Now that broadcast lifted them to the flat graph, the combiner SHOULD be able to merge them. → testing broadcast + raised all-reduce-combine threshold (1GB) [131175].
