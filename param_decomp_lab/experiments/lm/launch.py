@@ -64,6 +64,7 @@ _SRUN_FLAGS = "--kill-on-bad-exit=1 --ntasks-per-node=1"
 # the full-model step blows past right after the faith warmup (job 127622). The b200 nodes
 # carry ~2 TB RAM, so raise the ceiling generously (it is a cap, allocated on demand).
 _RANK_ENV = r'''export NCCL_DEBUG=WARN
+export MALLOC_ARENA_MAX=2
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.92
 export XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB=1024
 export XLA_FLAGS="--xla_gpu_enable_command_buffer="
