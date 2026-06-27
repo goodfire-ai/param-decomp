@@ -397,3 +397,11 @@ ONLY if 1–4 hold does the step-time number reflect "TP". Otherwise the config 
 
 ### Sequence parallelism (SP) — deferred (Oli)
 SP is the standard layer on top of TP: shard the residual-stream activations along the SEQUENCE dim in the regions between TP blocks (all-gather/reduce-scatter at the TP boundaries instead of all-reduce). It directly attacks the "residual is 8× per GPU" memory term I flagged. Worth it IF the activation memory is the binding constraint after TP — but defer until TP itself is verified working; uncertain how cleanly it fits our recon/PGD/scan structure.
+
+## ★★★★★ TP=8 VERIFIED TO COMPILE TO REAL TP (gate passed) — but OOMs on 8-seq/GPU activations
+Ran the existing tp8 config (afabd20f, profiling variant) with HLO+buffer dump. GATE check (from the dump, not the config):
+- V/U = `bf16[32,14336,1280]` = [n_layer, d_in, C/tp=10240/8] → **C-sharded on tp (Megatron-C)** ✓ (NOT the fsdp `[32,1792,10240]`).
+- **Per-layer weight full-gather `bf16[14336,10240]`: ZERO** ✓✓ — the 16.5s weight-gather bottleneck is ELIMINATED. This is genuine TP, unlike the parked tp2/4 hybrids.
+- Activations `bf16[32,8,512,1280]` → **8 seq/GPU confirmed** (global 32 / DP 4), C-sharded.
+- **OUTCOME: OOM, peak 211GiB > 180GB.** The 8-seq/GPU activations + fp32 logits `f32[8,512,128256]` (1.96GB×) dominate — exactly the activation-memory cost predicted for 8 seq/GPU.
+→ TP is real and kills the weight-gather; the binding constraint is now ACTIVATION memory (the predicted tradeoff). Fixes: (a) smaller global batch → fewer seq/GPU [testing global 8 → 2 seq/GPU], (b) sequence parallelism (deferred — the proper fix for the residual/activation term), (c) more remat / bf16 logits. NOTE: methodology worked — we KNOW it's real TP, so the OOM genuinely reflects TP's memory profile, not a mis-compiled config.
