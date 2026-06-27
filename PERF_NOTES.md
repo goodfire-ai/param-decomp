@@ -110,3 +110,17 @@ Intuition: <20% MFU = poor, 40–55% = well-tuned, 60% = excellent. This step is
 
 ## Git state RESOLVED (was the blocker)
 - The pure-HSDP ÷N refactor (V/U + CI-fn _reconstruct_ci_compute_weights, 24 files) was UNCOMMITTED working-tree state — present in run snapshots (pd-lm snapshots the tree) but never on a branch; my earlier add-all + failed commit (unreachable-code from a grad-norm test edit) left it staged. FIXED: reverted the test edit, committed the working tree (b08dbe363). ÷N now durable; tree clean. Nothing lost.
+
+## ★★★ BREAKTHROUGH (direct /proc thread-state sampling): the tail is HOST-SIDE, main thread CPU-bound
+Sampled `/proc/<pid>/task/*/{status,wchan,stat}` of the live rank-0 python (PID, 266 threads) every ~0.3s across steps (ptrace-free — `status`/`wchan` readable same-user even at ptrace_scope=1; `stack` and py-spy are NOT — yama blocks attach to a non-descendant). Two clean phases per step:
+- **Compute**: `main=S:futex_wait_queue` (sleeping), 8–17 `py_xla_execute` threads in State R (driving the GPU).
+- **Tail**: `main=R` (on-CPU, RUNNING), **R=1 in 33/38 R-samples → single-threaded**; all 263 other threads asleep. NOT futex, NOT mprotect, NOT a syscall.
+- **The 7.5s "GPU-idle tail" is ONE python thread burning ONE core.** This is why EVERY device-side lever failed (combine/LHS/pipelined/NVLS/CUMEM + 3 allocators): the cost was never on the device.
+
+### Narrowing the host-side cost
+- Model uses **scan-over-layers with STACKED params** (leading n_layer axis = scan xs) → LOW leaf count (~tens) → **pytree-flatten / eqx.filter_jit-partition is NOT the 7s** (it's O(n_leaves)=cheap).
+- Remaining candidates: (a) **GC churn**, (b) **CPU spin-wait** — PjRt/NCCL busy-polling (State R) for a cross-node collective whose data moves off-GPU on the NCCL proxy/NIC, GPU idle. (b) reconciles host-bound-R with the earlier "late SendRecv + Wait-for-LaunchOnDevice" trace finding.
+- **DISAMBIGUATOR LAUNCHED (130723, PD_TIME_STEPS=1)**: splits each step into `sample_batch / dispatch(py) / compute(dev=block_until_ready)`. compute(dev) large → device/collective (spin-waited), the fix is the collective; dispatch(py)/sample large → genuine host Python (GC/dispatch).
+
+### Tooling notes
+- py-spy IS installed (~/.local/bin) but ptrace_scope=1 + no passwordless sudo → "Permission Denied" attaching to the trainer (launched by a different srun tree). `/proc/.../status`+`wchan` are the ptrace-free fallback that worked.
