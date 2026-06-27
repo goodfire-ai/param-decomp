@@ -494,6 +494,37 @@ def run_decomposition_training(
     _prof_t0 = 0.0
     _time_steps = _os.environ.get("PD_TIME_STEPS", "") == "1"
 
+    if _os.environ.get("PD_LEAF_BENCH", "") == "1":
+        import collections as _collections
+
+        _ident = jax.jit(lambda s: s)
+
+        def _bench_dispatch(tree: object, n: int = 15) -> float:
+            jax.block_until_ready(_ident(tree))  # compile
+            _b0 = time.perf_counter()
+            for _ in range(n):
+                jax.block_until_ready(_ident(tree))
+            return (time.perf_counter() - _b0) / n
+
+        _vu = state.components.vu
+        _by_kind: dict[str, list[tuple[Array, Array]]] = _collections.defaultdict(list)
+        for _name, _VU in _vu.items():
+            _by_kind[_name.split(".")[-1]].append(_VU)
+        _stacked = {
+            _k: (jnp.stack([_v for _v, _u in _lst]), jnp.stack([_u for _v, _u in _lst]))
+            for _k, _lst in _by_kind.items()
+        }
+        _t_dict = _bench_dispatch(_vu)
+        _t_stacked = _bench_dispatch(_stacked)
+        if is_main:
+            print(
+                f"PD_BENCH identity-dispatch: per-site-dict("
+                f"{len(jax.tree_util.tree_leaves(_vu))} leaves)={_t_dict:.3f}s  "
+                f"stacked-per-kind({len(jax.tree_util.tree_leaves(_stacked))} leaves)="
+                f"{_t_stacked:.3f}s  speedup={_t_dict / max(_t_stacked, 1e-6):.1f}x",
+                flush=True,
+            )
+
     for step in range(start_step, pd.steps):
         if _profile_on and step == _profile_start:
             jax.block_until_ready(state)
