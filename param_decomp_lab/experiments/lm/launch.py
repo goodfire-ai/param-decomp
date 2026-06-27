@@ -68,7 +68,7 @@ export NCCL_NVLS_ENABLE=0
 export NCCL_CUMEM_ENABLE=0
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.92
 export XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB=1024
-export XLA_FLAGS="--xla_gpu_enable_command_buffer= --xla_gpu_autotune_level=0"
+export XLA_FLAGS="--xla_gpu_enable_command_buffer= --xla_gpu_autotune_level=0 --xla_dump_to=/mnt/data/artifacts/mechanisms/param-decomp/hlo_AB_fsdp8"
 export LD_LIBRARY_PATH="$(python -c 'import nvidia, os, glob; print(":".join(sorted(glob.glob(os.path.join(list(nvidia.__path__)[0], "*", "lib")))))')${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"'''
 
 
