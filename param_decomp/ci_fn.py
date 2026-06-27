@@ -405,7 +405,7 @@ class ChunkwiseTransformerCIFn(eqx.Module):
         # `[n_chunks, *leading, C_j]`. No glued ΣC axis, so no slice — site `(chunk i, slot j)`
         # is `stacked_per_slot[j][i]` directly (chunks are slot-homogeneous in C-per-site
         # ORDER, asserted at init, so slot j carries one C_j across every chunk).
-        _, stacked_per_slot = jax.lax.scan(body, None, (chunk_arrays, stacked_in))
+        _, stacked_per_slot = jax.lax.scan(body, None, (chunk_arrays, stacked_in), unroll=2)
         logits: SiteDict = {}
         for chunk_idx, m in enumerate(self.chunk_meta):
             for slot, site in enumerate(m.output_sites):
