@@ -372,3 +372,14 @@ The grad-reshard fix did NOT help (same 358GB OOM) → my optimizer-gather arith
 - Cause (llama8b.py:307 `_stack_per_kind_masked_inputs`): each masked_forward (~5/step: recon chunks + PGD ascents) re-stacks the V/U into `[n_layer,d_in,C]` BUNDLED with that forward's masks → XLA can't CSE the (identical, mask-independent) V/U across forwards → 5 stacked copies. With ÷fsdp each copy is 1/8 size (never bit); replicated, 5×9.4GB/kind = OOM.
 - **FIX**: hoist the V/U stack+reconstruct to ONCE per step (mask-independent), pass the shared compute V/U to all forwards; per-forward builds only masks. 1 copy (37GB) not 5 (185GB). Model-interface refactor (masked_output signature) — numerics-identical, validate via tests/equivalence.
 - This earlier per-forward-duplication hypothesis was right; I'd wrongly talked myself into the optimizer story via byte-arithmetic. LESSON: read the buffer-assignment dump, never attribute memory by shape-arithmetic.
+
+## FIX SPEC: hoist V/U stack+reconstruct to once-per-step (makes replicate fit; helps any sharding)
+The replicate OOM is per-forward V/U-stack duplication (5 live copies). Deterministic fix (numerics-identical; validate via tests/equivalence BEFORE any GPU launch):
+1. `llama8b._stack_per_kind_masked_inputs` (line 307): SPLIT into
+   - `_stack_compute_vu(components, n_layers)` → `{kind: {V:[nl,d_in,C], U:[nl,C,d_out]}}` (mask-INDEPENDENT), then `_reconstruct_compute_weights` on it. Computed ONCE.
+   - `_stack_masks(masks, delta, routes, live, n_layers, leading)` → `{kind: {live, mask, delta, route}}` (per-forward, small).
+2. `_run_masked_forward` (523): take pre-built `per_kind_vu` as an arg; build only `per_kind_masks` per call; merge for the scan.
+3. `masked_output`/`masked_site_outputs` (lm.py protocol + llama8b 615/644): accept `per_kind_vu` instead of `vu` (or add a `model.reconstruct_compute_vu(components)` method returning it).
+4. `train.py`: call `per_kind_vu = model.reconstruct_compute_vu(components_bf16)` ONCE (line ~270), pass to all masked_forward calls (recon 281-ish, PGD 399-ish).
+Result: ONE reconstructed compute-V/U buffer (37GB replicated, fits) reused by all ~5 forwards, vs 5 copies (185GB, OOM). Also trims the ÷fsdp path (minor). Then MEASURE: does replicate (no per-forward gather) actually drop the 12.5s — the still-unproven original hypothesis.
+NOTE: low-regret (reconstruct-once is a general improvement) but it's interface surgery — do it focused, not at the tail of a marathon session.
