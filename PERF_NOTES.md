@@ -294,3 +294,21 @@ Parsed the actual GPU timeline (scratchpad_trace_analyze.py on the chrome trace.
 1. **PGD ascent (~8s)**: 2 all-sites route-all forwards/step re-gather all FSDP weights. Weights are FIXED during the ascent (only the source/mask updates) → gathering once and reusing across ascents could cut ~2-3× of those gathers. Or reduce n_warmup_steps (semantic). Quantify via ablation first.
 2. **Backward (~10.6s)**: FSDP weight re-gathers during grad (remat recompute). Inherent-ish; overlap or gather-granularity.
 3. General: combine/coarsen the FSDP AllGathers (the RING_LL many-small pattern); reduce cross-node SendRecv.
+
+## ★ PGD ascent quantified: no-PGD ablation = 7.6s vs full 12.5s → PGD ascent is ~4.9s (~40% of step)
+no-PGD config (PersistentPGDReconLoss removed) steady step = 7.62s (vs 12.5s full). **The PGD ascent costs ~4.9s/step — the single biggest lever.** Matches the trace (pd_pgd_warmup_ascend was the top AllGather consumer).
+- Mechanism (train.py:279 `warmup_scoring_loss`): each ascent runs the full all-sites `masked_forward` (re-gathers ALL FSDP weights), with `components` FIXED and only `sources` (mask) varying. n_warmup_steps=2 supplemental + 1 final = ~3 gather-heavy all-sites forwards/step.
+- The remaining 7.6s (no-PGD) is also gather-bound (backward FSDP re-gathers).
+- **Root structural issue: FSDP re-gathers all 32 layers' weights for EVERY forward pass, and the step has many (clean + recon chunks + 2-3 PGD ascents + backward recompute).** That's the 16.5s AllGather.
+- Levers: (a) reduce n_warmup_steps [SEMANTIC — adversary quality, Oli's call; measuring the cost curve via sweep], (b) gather-reuse across ascents [numerics-preserving but HARD: keeping all 32 layers gathered = the OOM FSDP avoids], (c) reduce per-forward gather cost / overlap.
+
+## PGD ascent cost curve (n_warmup_steps sweep)
+| ascents/step | step | Δ |
+|---|---|---|
+| 0 (no-PGD) | 7.62s | — |
+| 1 (nw=0, final only) | 9.37s | +1.75s |
+| 3 (nw=2, full) | 12.5s | +4.9s |
+~1.6s per gather-bound all-sites ascent forward. nw=2→0 saves ~3.1s (SEMANTIC — adversary quality, Oli's call). Floor without PGD = 7.6s (backward+recon gathers).
+
+## Why combining the FSDP gathers doesn't work (and the structural wall)
+The 16.5s AllGather is `RING_LL` (small-message protocol) = MANY small per-layer gathers INSIDE the layer scan (while-body). Combine-threshold flags (tested at 1GB in broadcast+combine) DON'T reach them — same reason as the CI-fn reduces: the combiner can't merge collectives inside a `while` body. Unrolling the 32-layer scan would expose them to the combiner but materializes all layers' weights = the OOM FSDP exists to avoid. So: can't combine (in-loop), can't unroll (memory). The accessible levers are (a) PGD n_warmup (semantic), (b) NCCL protocol/algo tuning for the per-gather efficiency [TESTING], (c) deep gather-granularity restructure.
