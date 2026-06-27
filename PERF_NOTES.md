@@ -81,3 +81,8 @@ Intuition: <20% MFU = poor, 40–55% = well-tuned, 60% = excellent. This step is
 - Reverted ALL refuted flags. **Banked config = autotune-only (XLA_FLAGS="--xla_gpu_enable_command_buffer="): 12.5s, 40% occupancy, ~1.6× over 20s baseline.** Non-semantic, landable.
 - **The 7.5s tail is flag-resistant (combine/LHS/pipelined/NVLS/CUMEM all failed) → structural.** A 128-byte loss all-reduce can't be 7.5s on its own → likely the GRAD reduce-scatter chain it transitively depends on. Codex deciding loss-vs-grad + the safe fix.
 - **Production run NOT launched** (Oli's condition = a working perf fix; not met). 12.5s/40%-occ would be ~14-day tail-bound run. Hold for the fix.
+
+## ★★ CRACKED (direct /proc evidence): the 7.5s tail is a per-step mprotect/mm-lock storm
+- /proc/<pid>/task/*/stack during the tail: swarm of `ts_pool_worker` threads in `do_mprotect_pkey` + `lock_mm_and_find_vma` (mm-lock contention). A per-step mmap/mprotect storm, host-side.
+- Mechanism: cuMemCreate(FABRIC) fails (no fabric on HGX) → VMM allocator retries with a different handle type → re-maps memory (mprotect) → dozens of threads serialize on the kernel mm_lock → ~7.5s. The FABRIC fallback IS the cost (not benign). Explains flag-immunity (not GPU/net/schedule) + fixed-per-step + invisible-to-compute.
+- FIX TO TEST: XLA_PYTHON_CLIENT_ALLOCATOR=platform (cudaMalloc, no VMM/cuMem → no FABRIC → no per-step mprotect). Never cleanly tested (false-flagged on TP). Testing on pure-HSDP autotune now.
