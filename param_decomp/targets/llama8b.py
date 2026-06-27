@@ -42,6 +42,14 @@ from vendored_jax.llama import (
 
 DT = jnp.bfloat16
 
+GATHER_UNROLL_K = 2
+"""Layers per masked-forward scan iteration. K>1 COALESCES the per-layer ÷fsdp→full weight
+gather: one all-gather of the `[K, d/8, C]` slice instead of K separate per-layer gathers,
+cutting the ~1848 fragmented gathers/step (the collective-progression idle) to ~÷K. Numerics-
+identical (same per-layer ops, just grouped + the gather batched). Trade: the checkpointed
+K-layer body recomputes K layers' activations in the backward (K× the per-layer recompute
+transient). Must divide n_layer. K=1 == the per-layer behavior."""
+
 KIND_ORDER = ("q", "k", "v", "o", "gate", "up", "down")
 """Within-layer canonical site order = computation order. The canonical site order
 (`llama_site_specs`) is layer-ascending, then this."""
@@ -419,6 +427,16 @@ def _reconstruct_compute_weights(
     return out
 
 
+def _gather_full(a: Array) -> Array:
+    """Pin a ÷fsdp-sharded K-layer weight slice `[K, …]` to FULL (replicated) in ONE all-gather
+    — the unroll-by-K coalesce (`_run_masked_forward`): replaces K separate per-layer gathers
+    with one over the grouped `[K, …]`. Replicating all axes only moves the one ÷fsdp dim (the
+    rest are already replicated). No-op off-mesh (CPU / single device)."""
+    if jax.sharding.get_abstract_mesh().empty:
+        return a
+    return jax.lax.with_sharding_constraint(a, P())
+
+
 class LlamaDecomposedModel(eqx.Module):
     """The Llama-8B `DecomposedModel` (the `lm.py` contract; SPEC §1).
 
@@ -613,18 +631,52 @@ class LlamaDecomposedModel(eqx.Module):
             )  # fmt: skip
             return x, collected
 
-        # Per-LAYER remat: checkpoint the scan BODY so the backward recomputes one layer at a
-        # time, storing only the carry (the residual) — NOT all `n_layer` layers' activations.
-        # Whole-forward remat instead stacks every layer's activations `[n_layer, ...]` in the
-        # backward to backprop the scan, which dominated the step's peak (the MLP-hidden
-        # `[32,1,512,14336]` etc). This is the textbook way to grad-checkpoint a deep scan;
-        # pure recompute, no numerics change.
-        scan_body = jax.checkpoint(block) if remat else block
-        x, ys = jax.lax.scan(scan_body, resid, (self.stacked, per_kind))
+        # GATHER COALESCING (unroll-by-K): the scan steps over GROUPS of K layers. The K-layer
+        # body gathers all K layers' ÷fsdp V/U to full d in ONE all-gather (the explicit
+        # `with_sharding_constraint` below), then runs the K per-layer `block`s off the gathered
+        # weights — so the ~1848 fragmented per-layer gathers/step coalesce to ~÷K (the
+        # collective-progression idle). Numerics-identical to K=1 (same per-layer ops, batched gather).
+        K = GATHER_UNROLL_K
+        assert self.n_layer % K == 0, (self.n_layer, K)
+
+        def _group(a: Array) -> Array:
+            return a.reshape(self.n_layer // K, K, *a.shape[1:])
+
+        stacked_g = jax.tree.map(_group, self.stacked)
+        per_kind_g = {kind: {f: _group(v) for f, v in e.items()} for kind, e in per_kind.items()}
+
+        def kblock(
+            x: Array, group_in: tuple[LlamaLayer, dict[str, dict[str, Array]]]
+        ) -> tuple[Array, dict[str, Array] | None]:
+            sl_g, pk_g = group_in
+            # ONE all-gather of the K-layer ÷fsdp V/U → full d (the coalesce). Mask/live/delta/
+            # route are not d-sharded, so they pass through; only V/U are pinned to replicated-d.
+            pk_full = {
+                kind: {**e, "V": _gather_full(e["V"]), "U": _gather_full(e["U"])}
+                for kind, e in pk_g.items()
+            }
+            collected_k: list[dict[str, Array] | None] = []
+            for k in range(K):
+                sl = jax.tree.map(lambda a, k=k: a[k], sl_g)
+                pk = {kind: {f: v[k] for f, v in e.items()} for kind, e in pk_full.items()}
+                x, c = block(x, (sl, pk))
+                collected_k.append(c)
+            grouped: dict[str, Array] | None = None
+            if want_collect:
+                cols = [c for c in collected_k if c is not None]
+                grouped = {name: jnp.stack([c[name] for c in cols]) for name in cols[0]}
+            return x, grouped
+
+        # Per-GROUP remat: checkpoint the K-layer body so the backward recomputes K layers at a
+        # time, storing only the carry (the residual) between groups — the deep-scan grad-checkpoint,
+        # now at K-layer granularity (K× the per-layer recompute transient; numerics unchanged).
+        scan_body = jax.checkpoint(kblock) if remat else kblock
+        x, ys = jax.lax.scan(scan_body, resid, (stacked_g, per_kind_g))
         x = rms_norm(x, self.norm, self.eps)
         logits = x @ self.lm_head.T
         if collect is not None:
             assert ys is not None  # collect requested -> the scan emitted per-kind outputs
+            ys = {kind: v.reshape(self.n_layer, *v.shape[2:]) for kind, v in ys.items()}
             for site in live:
                 layer, kind = parse_site_name(site)
                 collect[site] = ys[kind][layer]
