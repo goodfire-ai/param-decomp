@@ -417,9 +417,15 @@ class SimpleMLPDecomposedModel(eqx.Module):
         x = rms_norm(x, self.norm, self.eps)
         return x @ self.lm_head.T
 
+    def prepare_compute_weights(self, vu: DecompVU) -> DecompVU:
+        """Identity: this arch reads `vu` per-site in its unrolled forward (no layer-stacked
+        ÷N→÷fsdp reconstruction to share), so there is nothing to hoist — the per-step
+        compute weights ARE the (already bf16) `vu`."""
+        return vu
+
     def masked_output(
         self,
-        vu: DecompVU,
+        prepared: DecompVU,
         inputs: Int[Array, "b t"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -445,11 +451,11 @@ class SimpleMLPDecomposedModel(eqx.Module):
             )
 
         forward = jax.checkpoint(forward) if remat else forward
-        return forward(vu, inputs, masks, delta_masks, routes)
+        return forward(prepared, inputs, masks, delta_masks, routes)
 
     def masked_site_outputs(
         self,
-        vu: DecompVU,
+        prepared: DecompVU,
         inputs: Int[Array, "b t"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -460,7 +466,9 @@ class SimpleMLPDecomposedModel(eqx.Module):
         """Per-`live`-site decomposed output of the masked forward (SPEC S31). Runs the
         exact `masked_output` forward, discards the logits, returns the collected outputs."""
         collect: dict[str, Array] = {}
-        self._run_masked_forward(vu, inputs, masks, delta_masks, routes, live, has_delta, collect)
+        self._run_masked_forward(
+            prepared, inputs, masks, delta_masks, routes, live, has_delta, collect
+        )
         assert set(collect) == set(live), (sorted(collect), sorted(live))
         return collect
 

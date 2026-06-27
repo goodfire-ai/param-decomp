@@ -88,6 +88,9 @@ class SyntheticDecomposedModel(eqx.Module):
         assert wanted == (SITE,), wanted
         return {SITE: resid}
 
+    def prepare_compute_weights(self, vu: DecompVU) -> DecompVU:
+        return vu
+
     def masked_output(
         self,
         vu: DecompVU,

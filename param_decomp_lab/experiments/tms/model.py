@@ -321,9 +321,13 @@ class TMSDecomposedModel(eqx.Module):
         inputs = site_inputs(self.target, resid)
         return {k: inputs[k] for k in wanted}
 
+    def prepare_compute_weights(self, vu: DecompVU) -> DecompVU:
+        """Identity: TMS weights are tiny + replicated, nothing to stack/gather/share."""
+        return vu
+
     def masked_output(
         self,
-        vu: DecompVU,
+        prepared: DecompVU,
         resid: Float[Array, "B n_features"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -345,11 +349,11 @@ class TMSDecomposedModel(eqx.Module):
             )
 
         forward = jax.checkpoint(forward) if remat else forward
-        return forward(vu, resid, masks, delta_masks, routes)
+        return forward(prepared, resid, masks, delta_masks, routes)
 
     def masked_site_outputs(
         self,
-        vu: DecompVU,
+        prepared: DecompVU,
         resid: Float[Array, "B n_features"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -358,7 +362,7 @@ class TMSDecomposedModel(eqx.Module):
         has_delta: bool,
     ) -> dict[str, Array]:
         return masked_site_outputs(
-            self.target, vu, resid, masks, delta_masks, routes, live, has_delta
+            self.target, prepared, resid, masks, delta_masks, routes, live, has_delta
         )
 
     def weight_deltas(self, vu: DecompVU) -> dict[str, Array]:

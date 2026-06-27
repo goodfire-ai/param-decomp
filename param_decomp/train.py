@@ -165,7 +165,7 @@ def make_train_step(
     @jaxtyped(typechecker=beartype)
     def masked_forward(
         model: DecomposedModel,
-        components_bf16: DecompVU,
+        prepared: Any,
         batch: Any,
         masks: dict[str, Float[Array, "*leading _"]],
         delta_masks: dict[str, Float[Array, "..."]],
@@ -173,9 +173,11 @@ def make_train_step(
         live_sites: tuple[str, ...],
         has_delta: bool,
     ) -> Any:
+        # `prepared` = `model.prepare_compute_weights(components_bf16)`, built ONCE per step and
+        # shared across all forwards (the ÷N→÷fsdp gather is not re-run per forward).
         return batch_sharded(
             model.masked_output(
-                components_bf16,
+                prepared,
                 batch,
                 masks,
                 delta_masks,
@@ -222,20 +224,21 @@ def make_train_step(
         sources: dict[str, Array],
         routes_per_draw: tuple[Routes, ...],
         model: DecomposedModel,
-        components_bf16: DecompVU,
+        prepared: Any,
         ci_lower: dict[str, Array],
         batch: Any,
         clean_output: Array,
         forward_fn: Any,
     ) -> Array:
         """Mean KL over the entry's draws with FIXED source values — the adversarial
-        ascent objective (shared by fresh and persistent ascents, SPEC S12')."""
+        ascent objective (shared by fresh and persistent ascents, SPEC S12'). `prepared` is
+        the shared per-step compute weights (`prepare_compute_weights`)."""
         masks, delta_masks = source_masks(ci_lower, sources, entry.live_sites)
         total = jnp.zeros((), jnp.float32)
         for routes in routes_per_draw:
             masked = forward_fn(
                 model,
-                components_bf16,
+                prepared,
                 batch,
                 masks,
                 delta_masks,
@@ -269,6 +272,7 @@ def make_train_step(
 
         # ── adversary ascents: params + CI detached (SPEC §4.5) ──
         components_detached = jax.lax.stop_gradient(cast_floating(state.components, COMPUTE_DT))
+        prepared_detached = model.prepare_compute_weights(components_detached)
         ci_fn_detached = jax.lax.stop_gradient(cast_floating(state.ci_fn, COMPUTE_DT))
         with jax.named_scope("pd_ci_fn_fwd_detached"):
             ci_lower_detached = ci_batch_sharded(ci_fn_detached(taps, remat=False)).lower
@@ -280,7 +284,7 @@ def make_train_step(
         def warmup_scoring_loss(sources: dict[str, Array]) -> Array:
             masks, delta_masks = source_masks(ci_lower_detached, sources, site_names)
             masked = masked_forward(
-                model, components_detached, batch, masks, delta_masks, None, site_names, True
+                model, prepared_detached, batch, masks, delta_masks, None, site_names, True
             )
             return recon_loss_fn(masked, clean_output)
 
@@ -319,7 +323,7 @@ def make_train_step(
                         sources,
                         routes,
                         model,
-                        components_detached,
+                        prepared_detached,
                         ci_lower_detached,
                         batch,
                         clean_output,
@@ -357,6 +361,9 @@ def make_train_step(
         ) -> tuple[Array, tuple[Array, Array, Array, tuple[Array, ...]]]:
             components, ci_fn, persistent_sources = trainable
             components_bf16 = cast_floating(components, COMPUTE_DT)
+            # ONE ÷N→÷fsdp reconstruction for the whole recon grid (shared by every forward +
+            # its backward), instead of re-gathering per forward — the hoist.
+            prepared = model.prepare_compute_weights(components_bf16)
             ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
             with jax.named_scope("pd_ci_fn_fwd_main"):
                 ci = ci_batch_sharded(ci_fn_bf16(taps, remat=remat_ci_fn))
@@ -399,7 +406,7 @@ def make_train_step(
                         with jax.named_scope("pd_recon_masked_fwd"):
                             masked = masked_forward(
                                 model,
-                                components_bf16,
+                                prepared,
                                 batch,
                                 masks,
                                 delta_masks,

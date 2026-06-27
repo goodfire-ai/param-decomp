@@ -126,12 +126,12 @@ def make_eval_step(
         )
 
     def masked_forward(
-        model: DecomposedModel, components_bf16: DecompVU, tokens: Array, masks: dict[str, Array],
+        model: DecomposedModel, prepared: Any, tokens: Array, masks: dict[str, Array],
         delta_masks: dict[str, Array],
     ) -> Array:  # fmt: skip
         return batch_sharded(
             model.masked_output(
-                components_bf16, tokens, masks, delta_masks, None, site_names, True, remat=False
+                prepared, tokens, masks, delta_masks, None, site_names, True, remat=False
             )
         )
 
@@ -148,6 +148,7 @@ def make_eval_step(
         taps = model.read_activations(token_ids, ci_fn.input_names)
 
         components_bf16 = cast_floating(components, COMPUTE_DT)
+        prepared = model.prepare_compute_weights(components_bf16)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
         # keep CI C-on-`tp` (matches `x@V` in `site_out`); see train.py `ci_C_on_tp`
         ci_lower = {site: ci_shard(v) for site, v in ci_fn_bf16(taps, remat=False).lower.items()}
@@ -195,7 +196,7 @@ def make_eval_step(
         kl: dict[str, Array] = {}
         ce: dict[str, Array] = {}
         for variant, (masks, delta_masks) in variant_masks.items():
-            variant_logits = masked_forward(model, components_bf16, token_ids, masks, delta_masks)
+            variant_logits = masked_forward(model, prepared, token_ids, masks, delta_masks)
             kl[variant] = kl_per_position(variant_logits, clean_output)
             ce[variant] = next_token_cross_entropy(variant_logits, token_ids)
         target_ce = next_token_cross_entropy(clean_output, token_ids)
@@ -234,7 +235,7 @@ def make_eval_step(
                     ci_site = ci_lower[site]
                     masks[site] = ci_site + (1.0 - ci_site) * source[..., :-1]
                     delta_masks[site] = source[..., -1]
-                masked = masked_forward(model, components_bf16, token_ids, masks, delta_masks)
+                masked = masked_forward(model, prepared, token_ids, masks, delta_masks)
                 return kl_per_position(masked, clean_output)
 
             def ascend(

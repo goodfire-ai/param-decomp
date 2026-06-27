@@ -147,7 +147,7 @@ def _clean_patterns(
     model: DecomposedModel,
     pattern_fn: AttnPatternFn,
     layer_pairs: tuple[tuple[str, str], ...],
-    components_bf16: DecompVU,
+    prepared: Any,
     tokens: Int[Array, "*leading"],
     ci_lower: dict[str, Array],
 ) -> dict[str, Array]:
@@ -157,7 +157,7 @@ def _clean_patterns(
     site_names = model.site_names
     leading = tokens.shape
     clean_outputs = model.masked_site_outputs(
-        components_bf16, tokens,
+        prepared, tokens,
         {s: jnp.ones_like(ci_lower[s]) for s in site_names},
         {s: jnp.zeros(leading, COMPUTE_DT) for s in site_names},
         all_false_routes(site_names, leading), site_names, False,
@@ -204,16 +204,17 @@ def make_ci_attn_patterns_step(lm: DecomposedModel, pattern_fn: AttnPatternFn) -
     ) -> tuple[dict[str, Array], dict[str, int]]:
         taps = model.read_activations(tokens, ci_fn.input_names)
         components_bf16 = cast_floating(components, COMPUTE_DT)
+        prepared = model.prepare_compute_weights(components_bf16)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
         ci_lower = ci_fn_bf16(taps, remat=False).lower
 
         target_patterns = _clean_patterns(
-            model, pattern_fn, layer_pairs, components_bf16, tokens, ci_lower
+            model, pattern_fn, layer_pairs, prepared, tokens, ci_lower
         )
         leading = tokens.shape
         zeros_delta = {s: jnp.zeros(leading, COMPUTE_DT) for s in site_names}
         masked_outputs = model.masked_site_outputs(
-            components_bf16, tokens, ci_lower, zeros_delta, None, site_names, False
+            prepared, tokens, ci_lower, zeros_delta, None, site_names, False
         )
         sum_kl = _masked_patterns_kl(pattern_fn, layer_pairs, masked_outputs, target_patterns)
         n_distributions = {q: int(np.prod(target_patterns[q].shape[:3])) for q, _ in layer_pairs}
@@ -243,11 +244,12 @@ def make_stochastic_attn_patterns_step(
     ) -> tuple[dict[str, Array], dict[str, int]]:
         taps = model.read_activations(tokens, ci_fn.input_names)
         components_bf16 = cast_floating(components, COMPUTE_DT)
+        prepared = model.prepare_compute_weights(components_bf16)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
         ci_lower = ci_fn_bf16(taps, remat=False).lower
 
         target_patterns = _clean_patterns(
-            model, pattern_fn, layer_pairs, components_bf16, tokens, ci_lower
+            model, pattern_fn, layer_pairs, prepared, tokens, ci_lower
         )
         leading = tokens.shape
 
@@ -265,7 +267,7 @@ def make_stochastic_attn_patterns_step(
                     random.fold_in(delta_key, site_idx), leading, COMPUTE_DT
                 )
             masked_outputs = model.masked_site_outputs(
-                components_bf16, tokens, masks, delta_masks, None, site_names, True
+                prepared, tokens, masks, delta_masks, None, site_names, True
             )
             draw_kl = _masked_patterns_kl(pattern_fn, layer_pairs, masked_outputs, target_patterns)
             sum_kl = {q: sum_kl[q] + draw_kl[q] for q, _ in layer_pairs}

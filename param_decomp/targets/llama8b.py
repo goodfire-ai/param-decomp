@@ -304,35 +304,18 @@ def _per_kind_dims(components: DecompVU) -> dict[str, tuple[int, int, int]]:
     return kind_dims
 
 
-def _stack_per_kind_masked_inputs(
-    components: DecompVU,
-    n_layers: int,
-    leading: tuple[int, ...],
-    masks: dict[str, Array],
-    delta_masks: dict[str, Array],
-    routes: dict[str, Array] | None,
-    live_set: frozenset[str],
-    has_delta: bool,
-) -> dict[str, dict[str, Array]]:
-    """Per decomposed KIND, the layer-stacked `(V, U, live, mask[, delta][, route])` arrays
-    the scan body consumes — a leading layer axis, one homogeneous body across layers. Sites
-    absent from `live` get dummy mask/delta/route (the `cond` frozen branch ignores them);
-    `masks`/`delta_masks`/`routes` exist only for live sites (recon builds them per-chunk).
+def _stack_per_kind_vu(components: DecompVU, n_layers: int) -> dict[str, dict[str, Array]]:
+    """Per decomposed KIND, the layer-stacked `(V, U)` arrays — the MASK-INDEPENDENT part of
+    the scan inputs (a leading layer axis, one homogeneous body across layers). Mask/live/
+    delta/route are attached per-forward by `_attach_per_kind_masks`; the V/U stack +
+    `_reconstruct_compute_weights` (the ÷N→÷fsdp cross-node gather) are the same for EVERY
+    forward in a step, so they are built ONCE via `prepare_compute_weights` and shared.
     Per-kind dims (d_in, C, d_out) must be uniform across layers (asserted in `_per_kind_dims`)."""
     kind_dims = _per_kind_dims(components)
     vu_dt = next(iter(components.vu.values()))[0].dtype
-    # Dummy mask/delta/route shapes match the REAL entries (the source scope sets the leading
-    # shape: `sc` broadcasts over batch as `(1, T)`, not the full `(B, T)`).
-    a_mask = next(iter(masks.values())) if masks else None
-    mask_lead = a_mask.shape[:-1] if a_mask is not None else leading
-    mask_dt = a_mask.dtype if a_mask is not None else vu_dt
-    a_delta = next(iter(delta_masks.values())) if (has_delta and delta_masks) else None
-    a_route = next(iter(routes.values())) if (routes and len(routes)) else None
-
     per_kind: dict[str, dict[str, Array]] = {}
     for kind, (d_in, C, d_out) in kind_dims.items():
         names = [site_name(layer, kind) for layer in range(n_layers)]
-        live_flags = jnp.array([n in live_set for n in names])
         Vs = jnp.stack(
             [
                 components.vu[n][0] if n in components.vu else jnp.zeros((d_in, C), vu_dt)
@@ -345,10 +328,41 @@ def _stack_per_kind_masked_inputs(
                 for n in names
             ]
         )
+        per_kind[kind] = {"V": Vs, "U": Us}
+    return per_kind
+
+
+def _attach_per_kind_masks(
+    prepared: dict[str, dict[str, Array]],
+    n_layers: int,
+    leading: tuple[int, ...],
+    masks: dict[str, Array],
+    delta_masks: dict[str, Array],
+    routes: dict[str, Array] | None,
+    live_set: frozenset[str],
+    has_delta: bool,
+) -> dict[str, dict[str, Array]]:
+    """Attach the per-forward `(live, mask[, delta][, route])` stacks to the shared, already
+    stacked + ÷fsdp-reconstructed `prepared` per-kind `(V, U)` weights. Sites absent from
+    `live` get dummy mask/delta/route (the `cond` frozen branch ignores them); `masks`/
+    `delta_masks`/`routes` exist only for live sites (recon builds them per-chunk)."""
+    # Dummy mask/delta/route shapes match the REAL entries (the source scope sets the leading
+    # shape: `sc` broadcasts over batch as `(1, T)`, not the full `(B, T)`).
+    a_mask = next(iter(masks.values())) if masks else None
+    mask_lead = a_mask.shape[:-1] if a_mask is not None else leading
+    a_delta = next(iter(delta_masks.values())) if (has_delta and delta_masks) else None
+    a_route = next(iter(routes.values())) if (routes and len(routes)) else None
+
+    per_kind: dict[str, dict[str, Array]] = {}
+    for kind, vu_entry in prepared.items():
+        C = vu_entry["V"].shape[-1]
+        mask_dt = a_mask.dtype if a_mask is not None else vu_entry["V"].dtype
+        names = [site_name(layer, kind) for layer in range(n_layers)]
+        live_flags = jnp.array([n in live_set for n in names])
         masks_k = jnp.stack(
             [masks[n] if n in live_set else jnp.ones((*mask_lead, C), mask_dt) for n in names]
         )
-        entry: dict[str, Array] = {"V": Vs, "U": Us, "live": live_flags, "mask": masks_k}
+        entry: dict[str, Array] = {**vu_entry, "live": live_flags, "mask": masks_k}
         if has_delta:
             d_shape = a_delta.shape if a_delta is not None else leading
             d_dt = a_delta.dtype if a_delta is not None else mask_dt
@@ -522,7 +536,7 @@ class LlamaDecomposedModel(eqx.Module):
 
     def _run_masked_forward(
         self,
-        vu: DecompVU,
+        prepared: dict[str, dict[str, Array]],
         inputs: Int[Array, "b t"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -539,14 +553,18 @@ class LlamaDecomposedModel(eqx.Module):
         `x @ W`. One block body compiles regardless of depth / chunk count; `cond` runs only
         the taken branch so frozen sites do no V@U. `live`/`has_delta` are static; a non-None
         `collect` gathers per-live-site decomposed outputs (SPEC S31). Requires per-kind dims
-        uniform across layers (asserted) — the layer stack must be homogeneous to scan."""
+        uniform across layers (asserted) — the layer stack must be homogeneous to scan.
+
+        `prepared` is the shared, stacked + ÷fsdp-reconstructed per-kind `(V, U)` from
+        `prepare_compute_weights` (built ONCE per step) — this fn only ATTACHES the per-forward
+        masks, so the ÷N→÷fsdp cross-node gather is not re-run here (SPEC unchanged; numerics
+        identical — the reconstruction is mask-independent and the same for every forward)."""
         live_set = frozenset(live)
         resid = self.embed_tokens(inputs)
         leading = resid.shape[:-1]
-        per_kind = _stack_per_kind_masked_inputs(
-            vu, self.n_layer, leading, masks, delta_masks, routes, live_set, has_delta
+        per_kind = _attach_per_kind_masks(
+            prepared, self.n_layer, leading, masks, delta_masks, routes, live_set, has_delta
         )
-        per_kind = _reconstruct_compute_weights(per_kind)
         decomposed_kinds = frozenset(per_kind)
         want_collect = collect is not None
 
@@ -612,9 +630,19 @@ class LlamaDecomposedModel(eqx.Module):
                 collect[site] = ys[kind][layer]
         return logits
 
+    def prepare_compute_weights(self, vu: DecompVU) -> dict[str, dict[str, Array]]:
+        """Build the shared per-kind compute weights ONCE per step (SPEC unchanged): stack the
+        per-site V/U into the layer-stacked `[n_layer, …]` form and run the ÷N→÷fsdp cross-node
+        reconstruction + bf16 cast. The result is mask-independent and identical for every
+        forward in the step, so the engine builds it once and threads it into all
+        `masked_output` / `masked_site_outputs` calls — the cross-node gather then runs ONCE per
+        step (ENTRY) instead of once per forward (the per-forward re-gather was ~10 co-resident
+        copies of the ÷fsdp stack at peak)."""
+        return _reconstruct_compute_weights(_stack_per_kind_vu(vu, self.n_layer))
+
     def masked_output(
         self,
-        vu: DecompVU,
+        prepared: dict[str, dict[str, Array]],
         inputs: Int[Array, "b t"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -625,12 +653,12 @@ class LlamaDecomposedModel(eqx.Module):
         remat: bool,
     ) -> Array:
         return self._run_masked_forward(
-            vu, inputs, masks, delta_masks, routes, live, has_delta, remat, None
+            prepared, inputs, masks, delta_masks, routes, live, has_delta, remat, None
         )
 
     def masked_site_outputs(
         self,
-        vu: DecompVU,
+        prepared: dict[str, dict[str, Array]],
         inputs: Int[Array, "b t"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -642,7 +670,7 @@ class LlamaDecomposedModel(eqx.Module):
         exact `masked_output` forward, discards the logits, returns the collected outputs."""
         collect: dict[str, Array] = {}
         self._run_masked_forward(
-            vu, inputs, masks, delta_masks, routes, live, has_delta, False, collect
+            prepared, inputs, masks, delta_masks, routes, live, has_delta, False, collect
         )
         assert set(collect) == set(live), (sorted(collect), sorted(live))
         return collect

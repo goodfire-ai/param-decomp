@@ -104,9 +104,19 @@ class DecomposedModel(Protocol):
         interpreter; core just routes by key."""
         ...
 
+    def prepare_compute_weights(self, vu: DecompVU) -> Any:
+        """Build the per-step COMPUTE weights from the fp32 ÷N master `vu`, ONCE per step
+        (SPEC unchanged — a read-only compute view). Mask-INDEPENDENT, so the result is shared
+        by every forward in the step: the engine calls this once and passes the result as the
+        `prepared` arg to all `masked_output` / `masked_site_outputs` calls. For a sharded LM
+        target this is where the ÷N→÷fsdp cross-node gather (+ bf16 cast) happens — once, off
+        the hot path, instead of once per forward. For an unsharded toy it is identity (returns
+        `vu`). The opaque return type is the target's own — only it consumes it."""
+        ...
+
     def masked_output(
         self,
-        vu: DecompVU,
+        prepared: Any,
         inputs: Any,
         /,
         masks: SiteMasks,
@@ -117,10 +127,11 @@ class DecomposedModel(Protocol):
         *,
         remat: bool,
     ) -> Any:
-        """The masked decomposed forward (SPEC §1.3, S2). `live` (static under jit) lists
-        the sites running their decomposed forward; all other sites run the frozen `x @ W`
-        path. `masks`/`delta_masks` may broadcast over the batch dim (the PPGD source case).
-        `has_delta` (static) False skips the `x @ Δ` matmul for constant-source entries
+        """The masked decomposed forward (SPEC §1.3, S2). `prepared` is the output of
+        `prepare_compute_weights` (the shared per-step compute weights). `live` (static under
+        jit) lists the sites running their decomposed forward; all other sites run the frozen
+        `x @ W` path. `masks`/`delta_masks` may broadcast over the batch dim (the PPGD source
+        case). `has_delta` (static) False skips the `x @ Δ` matmul for constant-source entries
         whose delta mask is a constant 0 (LOSS_PARITY_DESIGN §4b). `remat` (static) gates
         gradient-checkpointing the forward at the model's natural granularity (a deep target
         rematerializes per-layer, recomputing one layer at a time in the backward instead of
@@ -129,7 +140,7 @@ class DecomposedModel(Protocol):
 
     def masked_site_outputs(
         self,
-        vu: DecompVU,
+        prepared: Any,
         inputs: Any,
         /,
         masks: SiteMasks,
@@ -139,8 +150,9 @@ class DecomposedModel(Protocol):
         has_delta: bool,
     ) -> dict[str, Float[Array, "*leading d_out"]]:
         """Per-`live`-site decomposed LINEAR OUTPUT of `masked_output`'s forward
-        (`((x@V)*m)@U + (x@Δ)*d`), keyed by site (SPEC S31). For the offline hidden-acts
-        recon eval metrics only — never the recon grid, which stays KL-on-final-logits."""
+        (`((x@V)*m)@U + (x@Δ)*d`), keyed by site (SPEC S31). `prepared` is the output of
+        `prepare_compute_weights`. For the offline hidden-acts recon eval metrics only — never
+        the recon grid, which stays KL-on-final-logits."""
         ...
 
     def weight_deltas(self, vu: DecompVU) -> dict[str, Float[Array, "d_out d_in"]]:
