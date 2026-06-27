@@ -250,9 +250,9 @@ def test_eval_step_fresh_pgd_probe_device_count_invariant():
     `XLA_FLAGS=--xla_force_host_platform_device_count=4`.
     """
     from param_decomp.components import init_decomp_vu
-    from param_decomp.sharding import dp_mesh
+    from param_decomp.sharding import hsdp_mesh
 
-    mesh = dp_mesh()
+    mesh = hsdp_mesh()
     n_dev = mesh.devices.size
 
     cfg = _tiny_cfg()
