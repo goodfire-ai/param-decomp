@@ -515,3 +515,20 @@ remat on, b32, dp32 — verified from its config.yaml; single jit_step module, p
   (old note: ~129GB modeled). So the target is NOT "reduce memory in general" — it's the
   specific b32→b64 runtime gap. Re-measuring b64 directly (does it still OOM? peak? dominant
   term that doesn't fit?) to replace the stale note and size the lever exactly. → launching b64.
+
+## ✅ MEASURED b64/dp32 (131383): modeled peak 139GiB (FITS on paper) — runtime OOM is FRAGMENTATION, not a wall
+`memreport` on hlo_b64_probe (sharded ÷N path, same module_51640 HLO as b32 production):
+- **b64 modeled peak = 138.99GiB** vs b32's 96.37GiB → +42.6GB for the batch doubling. Both
+  under the 180GB ceiling on paper. Resident is the SAME weight-stack buffers, batch-independent
+  (`5×bf16[32,1792,10240]` etc. recur), + the batch-scaling activation/logit terms (`bf16[2,512,128256]` etc.).
+- **Runtime OOM was on a single 72.08GiB allocation.** 139GB modeled + a 72GB contiguous
+  transient under the default BFC allocator = classic FRAGMENTATION OOM (BFC can't find 72GB
+  contiguous though free total suffices), NOT a true capacity wall. Known zero-code lever:
+  `XLA_PYTHON_CLIENT_ALLOCATOR=platform` (cudaMalloc, no BFC arena fragmentation) — launch.py
+  already exposes `--allocator platform`. Also flagged in [[project_9layer_40k_save_oom]].
+  → testing b64 + platform allocator next; if it fits we get 2 seq/GPU with NO code change.
+- CAVEAT on the payoff: 2 seq/GPU = 1024 tok/GPU, still BELOW the ~2,500 tok/GPU overlap floor,
+  so the gather won't FULLY hide — but 2× batch amortizes the fixed gather over 2× the work, so
+  MFU should still rise. Fully hiding the gather needs ~5 seq/GPU (infeasible on memory) — which
+  is the real argument that the gather may be structurally exposed at any feasible batch (the
+  honest case FOR eventually revisiting TP/activation-comm). Measure b64 first.
