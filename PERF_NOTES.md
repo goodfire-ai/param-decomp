@@ -800,3 +800,25 @@ claim (inferred from b32→b64 2× scaling) is WRONG. Trace facts:
   trace-corrected picture shows won't help via amortization here either).
 - METHODOLOGY (4th correction this session): I inferred compute-bound from batch-scaling; the TRACE
   refuted it. Profile, don't infer occupancy.
+
+## 🧱 FLAG-LEVEL COLLECTIVE LEVERS EXHAUSTED — residual 63% idle is STRUCTURAL
+Checked the production HLO (hlo_hoist_b32_autotune) for whether the gathers can be overlapped more:
+- All-gathers are **already ASYNC** (1848 all-gather-start / 2168 -done, **zero sync** all-gathers)
+  and **pipelined** (1357 hits) → the **latency-hiding scheduler is already ON**; XLA already overlaps
+  collectives as far as the dependency graph allows. Yet occupancy is 37%.
+- Combined with the earlier result (autotune + 1GB combine-threshold = no change vs autotune-alone),
+  the **flag-level collective levers (autotune, async/pipelined collectives, combine-threshold) are
+  all already applied or tested-null.** The residual idle is NOT a missing flag.
+- ROOT (structural): the per-layer ÷fsdp→full gathers live inside a `lax.scan` over 32 layers and feed
+  their OWN layer's matmul — so each gather can't hide behind its consumer, and the scan serializes
+  iterations (layer N+1's gather can't freely prefetch behind layer N's compute). At 1 seq/GPU the
+  per-layer compute is too small to hide the gather (the arithmetic-intensity floor). This is the same
+  structural wall the early investigation hit — the hoist removed the REDUNDANT part, not this part.
+- ⇒ Remaining MFU levers are all STRUCTURAL (Oli's call), not flags:
+  (1) fewer/bigger gathers via a different weight layout (e.g. gather >1 layer at once = more memory,
+      the replicate-weights tradeoff), (2) restructure/unroll the scan for cross-iteration prefetch,
+      (3) more tokens/GPU to cross the overlap floor (memory-gated; b64 fits post-hoist but trace still
+      gather-bound), or (4) TP (communicate activations not weights — the other structural path).
+- HONEST END-STATE of the flag-level MFU push: banked = hoist (~9% + b64 unlock + fewer collectives)
+  + autotune (1.6×). Beyond that needs a structural change. Recommend: merge the hoist, pause flag-level
+  tuning (exhausted), and treat the structural levers as a separate scoped decision.
