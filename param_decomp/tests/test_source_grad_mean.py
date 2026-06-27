@@ -41,7 +41,7 @@ from param_decomp.adversary import init_persistent_sources, source_masks
 from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch, build_ci_fn
 from param_decomp.components import init_decomp_vu
 from param_decomp.losses import kl_per_position
-from param_decomp.sharding import dp_mesh, shard_batch
+from param_decomp.sharding import hsdp_mesh, shard_batch
 from param_decomp.targets.llama8b import (
     llama_site_specs,
     mlp_family_site_cs,
@@ -74,7 +74,7 @@ def _source_grad(sharded: bool) -> dict[str, jax.Array]:
     )
     resid = random.randint(random.PRNGKey(4), (gbatch, seq), 0, cfg.vocab_size)
 
-    mesh = dp_mesh() if sharded else None
+    mesh = hsdp_mesh() if sharded else None
     if mesh is not None:
         resid = shard_batch(resid, mesh, batch_axis=0)
         # The source leaf is REPLICATED across `dp` — exactly `init_sources_sharded`'s
