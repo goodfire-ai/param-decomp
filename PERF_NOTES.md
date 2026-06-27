@@ -269,3 +269,10 @@ PD_CI_BROADCAST=1 replaces the CI-fn chunk `lax.scan` with `vmap` (all 32 chunks
 - **Step time: UNCHANGED (~11.7–12.4s vs scan 12.5s)** — no speedup alone.
 - **Why**: HLO shows ~32 cross-node syncs STILL present — broadcast UNROLLED them (out of the `while` body into the flat graph) but XLA did NOT auto-COMBINE them. 32 independent chunk computations → 32 independent grad syncs side-by-side instead of looped. So "drop the scan" is necessary (frees the syncs from the loop) but not sufficient.
 - **Unlock**: earlier the collective-combine flags were a no-op BECAUSE the syncs were trapped in the `while` body (combiner can't reach into loops). Now that broadcast lifted them to the flat graph, the combiner SHOULD be able to merge them. → testing broadcast + raised all-reduce-combine threshold (1GB) [131175].
+
+## ⚠️⚠️ DIAGNOSIS REFUTED: CI-fn cross-node syncs are NOT the bottleneck (broadcast+combine = no speedup)
+broadcast + combine (1GB thresholds) HLO: the CI-fn axis_2 reduces are now **17 batched `bf16[32,4096,4096]`/`[32,4096,16384]`** — the leading `[32,...]` proves the combine CONSOLIDATED the 32 per-chunk syncs into one-per-weight-over-all-chunks. The mechanism worked.
+- **Step time UNCHANGED: ~11.6–12.3s** (scan 12.5, broadcast-alone ~12, broadcast+combine ~12). Consolidating the CI-fn cross-node syncs → ZERO speedup.
+- **→ The CI-fn weight-grad cross-node syncs were NEVER the 7.5s bottleneck.** The entire "CI-fn per-chunk reduce" diagnosis is refuted by direct measurement (changed the sync structure completely; step invariant). I over-fit the HLO collective census without confirming it was on the critical path.
+- The 7.5s GPU-idle is something ELSE — candidates not yet isolated: the TARGET/recon path (chunkwise suffix forwards over 32 layers + their own collectives), the recon grid, or PGD. The 17 NON-ci_fn axis_2 reduces (target/recon) were untouched by the CI-fn broadcast.
+- NEXT: real profiler trace (jax.profiler) of the current step to find what the GPU actually waits on in the 7.5s idle — stop inferring from HLO collective counts, look at the timeline.
