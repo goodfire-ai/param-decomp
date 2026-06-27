@@ -55,3 +55,13 @@ Intuition: <20% MFU = poor, 40–55% = well-tuned, 60% = excellent. This step is
 - Late inter-node `SendRecv`/collective-permute under `pd_value_and_grad/pd_recon_masked_fwd` runs ~4.55–4.73s (just before quiescence). No labeled reduce-scatter/all-reduce.
 - Best explanation: a late cross-node collective whose IB data movement completes OFF-GPU (proxy thread, untraced) → host blocks ~7.5s.
 - Lever ranking: (1) latency-hiding scheduler [TESTING 130714], (2) reduce cross-node data volume, (3) hoist V/U reconstruction so it isn't re-done per recon chunk (XLA may already CSE it — need the all-gather count to confirm), (4) NCCL tuning (weakest — no proxy events visible).
+
+## Result: latency-hiding + pipelined collectives — NO EFFECT (refuted)
+- autotune + LHS + pipelined_{all_reduce,reduce_scatter,all_gather} = 12.55–12.91s = identical to autotune-alone.
+- **Three scheduling-flag levers now refuted: collective-combine, latency-hiding, pipelined.** The 7.5s tail is NOT an XLA-scheduling problem — it's a genuine SERIAL cross-node op at the step end that can't be overlapped.
+- Stepped back from flag-guessing. Codex now doing the definitive HLO-schedule analysis (p-902af596 dumps) to NAME + SIZE the serial tail op (grad reduce-scatter over `replicate`? recon-backward collective-permute?) and classify the fix (NCCL transport tuning vs reduce-volume/bf16-grad vs restructure).
+
+## STATE for Oli (morning)
+- **WIN banked: autotune → 12.5s/step (from ~20s), ~1.6×, occupancy 40%.** Should be the production default (XLA_FLAGS drop `--xla_gpu_autotune_level=0`; ~5min one-time autotune compile, cached).
+- **Remaining: the 7.5s serial cross-node tail = 60% of the step = the MFU ceiling.** Flag-resistant. The fixes are STRUCTURAL (likely bf16-grad-reduce / gradient-overlap-bucketing / less cross-node recon data) — these touch numerics/semantics, so they're YOUR call, not a safe overnight unilateral change. Codex is pinning the exact op + the best fix class; I'll write up the options + recommendation.
+- TP parked; cuDNN-flash = negligible (deferred); save+resume validated; fabric warning benign.
