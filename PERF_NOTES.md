@@ -919,3 +919,19 @@ help gather-bound MFU). The residual idle is the per-layer FSDP gather, which is
 (XLA double-gathers; sequential residual blocks batching). The ONLY remaining step-change lever is the
 config-protected ADVERSARY forward (20.4s busy, compute-bound, all-sites route-all × n_warmup) — a
 SEMANTIC change (chunk it / reduce n_warmup), Oli's call. For the current config, ~11.4s/37% is the floor.
+
+## ★★★★★★ ASYNC TEST (131438) — the step is HOST/COLLECTIVE-SYNCHRONOUS, not device-bound (THE reframe)
+PD_ASYNC_TEST (3 step_fn calls without blocking + 1 final block), hoist b32 autotune-off:
+`call1=271.8s(compile) call2=15.46s call3=15.37s final_block=0.013s`.
+- **Each steady call ≈ the full step time; final block ≈ 0.** That's the HOST-SYNCHRONOUS signature
+  (device-async would be: small calls + big final block). ⇒ the step is bottlenecked on COLLECTIVE
+  COORDINATION (host-side launch of ~2800 collectives/step + cross-host sync), GPU idle waiting for
+  the host. CONFIRMS the cron's "host-side GPU-idle" framing. (Multi-host caveat: "big calls" could be
+  host-launch OR cross-host collective sync; both implicate the ~2800 collectives, not GPU compute/bw.)
+- **EXPLAINS every gather lever underdelivering:** the bottleneck is collective COUNT/coordination, not
+  gather bandwidth. unroll-by-K ADDED collectives (1848→2302) ⇒ regressed. The hoist helped because it
+  REMOVED collectives (redundant re-gathers). So the metric that matters is COLLECTIVE COUNT, not bytes.
+- ⇒ Lever: FEWER host launches. Canonical fix = CUDA graphs / XLA command buffers, currently DISABLED
+  (`--xla_gpu_enable_command_buffer=` empty; turned off earlier as "~0% + capture crashes" — but that
+  predates knowing it's host-launch-bound). RE-TESTING command buffers ON now. Also: any lever that cuts
+  collective COUNT (vs bandwidth) is the right class.
