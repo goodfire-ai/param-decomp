@@ -48,7 +48,7 @@ from param_decomp.configs import (
 )
 from param_decomp.recon import build_loss_terms
 from param_decomp.schedule import ScheduleConfig
-from param_decomp.sharding import dp_mesh, shard_batch
+from param_decomp.sharding import hsdp_mesh, shard_batch
 from param_decomp.targets.llama8b import (
     llama_site_specs,
     mlp_family_site_cs,
@@ -79,7 +79,7 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
     )
     resid = random.normal(random.PRNGKey(4), (gbatch, seq, cfg.n_embd)) * 0.5
 
-    mesh = dp_mesh() if sharded else None
+    mesh = hsdp_mesh() if sharded else None
     if mesh is not None:
         resid = shard_batch(resid, mesh, batch_axis=0)
 

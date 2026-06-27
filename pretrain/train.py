@@ -2,7 +2,7 @@
 
 The composition root and only I/O layer for pretraining; the step stays pure. Reuses the
 decomposition trainer's substrate — `param_decomp.data` (offline pre-tokenized parquet,
-never streamed), `param_decomp.sharding` (`init_distributed` / `dp_mesh`) — but the
+never streamed), `param_decomp.sharding` (`init_distributed` / `hsdp_mesh`) — but the
 trajectory is a plain LM: fp32 master params, AdamW (weight-decay on 2D weights only,
 matching the torch `configure_optimizers` grouping), cosine LR + warmup, grad clip,
 next-token cross-entropy. Data-parallel only: the model is small and replicated on every
@@ -38,7 +38,7 @@ from jaxtyping import Array, Float, Int
 from orbax.checkpoint.type_handlers import ArrayHandler, register_type_handler
 
 from param_decomp.data import BatchSchedule, ShardServer, scan_shards
-from param_decomp.sharding import dp_mesh, init_distributed
+from param_decomp.sharding import hsdp_mesh, init_distributed
 from pretrain.cache import (
     cache_dir_for,
     torch_model_config_dict,
@@ -167,7 +167,7 @@ def _replicate(tree: PretrainModel, mesh: Mesh) -> PretrainModel:
 
 
 def _global_token_batch(local: np.ndarray, mesh: Mesh, global_batch: int) -> jax.Array:
-    sharding = NamedSharding(mesh, P("dp"))
+    sharding = NamedSharding(mesh, P(("replicate", "fsdp")))
     return jax.make_array_from_process_local_data(sharding, local, (global_batch, local.shape[1]))
 
 
@@ -240,7 +240,7 @@ class MetricsSink:
 def train(cfg: PretrainConfig) -> None:
     _install_sigterm_flag()
     is_distributed = init_distributed(cfg.dp)
-    mesh = dp_mesh()
+    mesh = hsdp_mesh()
     n_proc = jax.process_count()
     ndev = mesh.devices.size
     is_main = jax.process_index() == 0
