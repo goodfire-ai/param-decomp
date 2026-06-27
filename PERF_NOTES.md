@@ -682,3 +682,22 @@ Composition at peak:
   forward). Recovering ~25-35GB would take peak 96→~65GB and likely fit b64 WITH the full config.
 - Caveat (under async validation): live-range join is 88% (28908/32988); the ×20 count + the
   "re-materialized per forward, not aliasing" interpretation is the thing to verify.
+
+## ✅ VALIDATED (skeptical async, PASS) — peak compute-weight duplication is REAL; refined to 10 fwd + 10 bwd
+The ×20 `bf16[32,8192,1792]` co-resident at peak sit at 20 DISTINCT offsets (agent tried to break it via
+offset-aliasing, couldn't). Decomposition refined:
+- **10 FORWARD copies** = ÷N→÷fsdp reconstruction all-gather (448→1792) RE-EMITTED per forward context
+  (`jvp(pd_recon_masked_fwd)/stack`; 10 recon + 2 PGD across the program), NOT once in ENTRY as intended.
+  → LEVER 1: share one reconstruction across the recon-grid/adversary forwards (CSE/donate/hoist) — config-preserving.
+- **10 BACKWARD copies** = weight-grad accumulators (`broadcast(0)` + dynamic_update_slice in the bwd while).
+  → LEVER 2: grad-accumulation/remat strategy (separate from CSE).
+~28GiB on these two shapes alone; tens of GB total. Both levers preserve the config (pure compile/structure).
+
+### Fix scoping (next branch)
+Lever 1 is the cleaner first target: the ÷N→÷fsdp gather is supposed to run ONCE in ENTRY
+(`_reconstruct_compute_weights`, llama8b.py:368) landing a shared ÷fsdp stack, but the HLO shows it
+re-emitted inside each `jvp(pd_recon_masked_fwd)` — i.e. it's INSIDE the per-forward (and likely the
+value_and_grad / per-chunk remat) region, so XLA recomputes the gather per use. The fix: ensure the
+reconstructed ÷fsdp compute weight is computed once OUTSIDE the per-forward/per-chunk path and threaded in
+as a shared value the recon grid + adversary all reuse, with remat NOT set to recompute it. Verify by
+re-running liverange_peak: the forward [32,8192,1792] count should drop ~10→~1-2.
