@@ -142,3 +142,16 @@ PD_LEAVES: state=2169 leaves   lm=13   eqx.partition(lm,state)=0.003s
 - Predicted: dispatch 12.5s → ~0.3–0.5s; step becomes device-bound. Enables much larger batch at high MFU (the real goal).
 - **Touches**: `components.py` (DecompVU + shardings + init), `targets/llama8b.py` (masked-forward indexing `components.vu[name]` → stacked slice — much of `_reconstruct_compute_weights` becomes a no-op), the optimizer state, `ci_fn.py`, and the **orbax checkpoint format** (existing ckpts need migration or it's fresh-runs-only).
 - **Numerics-PRESERVING** (same arrays, relayout) → verifiable via `tests/equivalence/`. But the checkpoint-format change makes this OLI'S CALL, not a safe overnight unilateral change (per the standing guidance). Isolation + proof done; refactor pending approval.
+
+## ⚠️ CORRECTION (PD_BENCH + PD_ASYNC refute the dispatch-bound conclusion above)
+The "dispatch-bound / stack the state" conclusion (the 2169-leaf section) is **WRONG**. Two controls killed it:
+- **PD_BENCH**: identity-jit dispatch over the 448-leaf per-site vu dict = **0.018s** (stacked-14 = 0.002s). jax dispatch over hundreds of sharded arrays is milliseconds, not seconds → 2169 leaves ≈ 90ms, NOT 12.5s. Leaf count is not the cost. (Stacking the state is still a fine micro-opt — ~12× on a tiny absolute — but it is NOT the lever.)
+- **PD_ASYNC** (3 unblocked dispatches + 1 block): call1=324s (compile), **call2=12.6s, call3=12.4s, final_block=0.017s**. Each step_fn blocks for the full step → the wall is **DEVICE EXECUTION (~12.5s/step)**, not host dispatch. The `main=R` single-threaded /proc phase was a **spin-wait** on the synchronous device step, not Python CPU work. (Lesson: `main=R` ≠ "python-bound"; jax block/dispatch busy-polls. Confirm device-vs-host with an unblocked-dispatch test, not /proc state.)
+
+### Corrected picture — DEVICE-bound, overhead-dominated at tiny per-GPU batch
+- Step ≈ 12.5s of device time. autotune's 20→12.5s was a device-kernel win (consistent).
+- At **B=32 / 32 GPU = 1 seq/GPU**, useful FLOPs per step are tiny; the 12.5s is dominated by **fixed per-step device overhead**: the ÷N cross-`replicate` gather, the ~43k in-scan FSDP AllGathers (recon layer-loop + CI chunk-loop), recon recompute across the 4 chunks, and collective/launch bubbles. → intrinsically low MFU.
+- **The two real MFU levers** (both device-side, the original investigation's targets):
+  1. **Bigger batch** — amortize the fixed per-step overhead. First-order. (Oli wants B=64–128 anyway.) Measuring step-time vs batch finds the MFU knee.
+  2. **Reduce fixed device overhead** — coarsen/bucket the 43k gathers, cut recon recompute. Second-order, structural.
+- NEXT: batch-scaling sweep (B=32→64→128 at dp=32, step-time each) to quantify the amortization + locate the MFU-optimal batch; then a device profile of where the 12.5s goes.
