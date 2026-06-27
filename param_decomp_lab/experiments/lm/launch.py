@@ -68,8 +68,9 @@ export MALLOC_ARENA_MAX=2
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.92
 export XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB=1024
 export XLA_FLAGS="--xla_gpu_enable_command_buffer="
-export PD_PROFILE_TRACE=1
+export PD_PROFILE_TRACE=0
 export PD_PROFILE_START=5
+export PD_TIME_STEPS=1
 export LD_LIBRARY_PATH="$(python -c 'import nvidia, os, glob; print(":".join(sorted(glob.glob(os.path.join(list(nvidia.__path__)[0], "*", "lib")))))')${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"'''
 
 

@@ -492,6 +492,7 @@ def run_decomposition_training(
     _profile_dir = str(run.run_dir / "profile")
     _profiling = False
     _prof_t0 = 0.0
+    _time_steps = _os.environ.get("PD_TIME_STEPS", "") == "1"
 
     for step in range(start_step, pd.steps):
         if _profile_on and step == _profile_start:
@@ -502,8 +503,22 @@ def run_decomposition_training(
             if is_main:
                 print(f"PD_PROFILE: start_trace @ step {step} -> {_profile_dir}", flush=True)
 
-        batch = sample_batch(step)
-        state, metrics = step_fn(lm, state, batch, random.fold_in(run_key, step))
+        if _time_steps and is_main and step < start_step + 8:
+            _ts0 = time.perf_counter()
+            batch = sample_batch(step)
+            _ts1 = time.perf_counter()
+            state, metrics = step_fn(lm, state, batch, random.fold_in(run_key, step))
+            _ts2 = time.perf_counter()
+            jax.block_until_ready((state, metrics["total"]))
+            _ts3 = time.perf_counter()
+            print(
+                f"PD_TIME step {step}: sample={_ts1 - _ts0:.3f}s dispatch(py)={_ts2 - _ts1:.3f}s "
+                f"compute(dev)={_ts3 - _ts2:.3f}s total={_ts3 - _ts0:.3f}s",
+                flush=True,
+            )
+        else:
+            batch = sample_batch(step)
+            state, metrics = step_fn(lm, state, batch, random.fold_in(run_key, step))
 
         if _profiling:
             jax.block_until_ready((state, metrics["total"]))
