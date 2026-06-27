@@ -935,3 +935,27 @@ PD_ASYNC_TEST (3 step_fn calls without blocking + 1 final block), hoist b32 auto
   (`--xla_gpu_enable_command_buffer=` empty; turned off earlier as "~0% + capture crashes" — but that
   predates knowing it's host-launch-bound). RE-TESTING command buffers ON now. Also: any lever that cuts
   collective COUNT (vs bandwidth) is the right class.
+
+## ✅ COMMAND BUFFERS = ~0% (clean, pure-hoist) — NOT host-launch-bound; it's the SERIAL collective chain
+Clean test (PURE hoist, no unroll confound, cmdbuf ON): **12.9s vs 13s OFF = ~0%**, zero capture errors.
+⇒ command buffers (which collapse host LAUNCHES into a graph replay) do NOT help → the step is NOT
+host-LAUNCH-bound. Combined with the async test (host-synchronous) + command-buffers-null:
+- The host-synchronous ~15s/call is the host/GPU WAITING on the SERIALIZED per-layer collective chain
+  (each layer's ÷fsdp→full NVLink gather → its matmul → next layer's gather; scan-serialized), NOT
+  issuing launches and NOT Python.
+- 37% occupancy = the per-layer gathers don't overlap their per-layer compute (too little compute/gather
+  at 1 seq/GPU — the arithmetic-intensity floor), and the scan serializes layers so no cross-iteration
+  prefetch. This is the same structural wall, now RIGOROUSLY pinned: not Python, not host-launch
+  (cmdbuf ~0%), not bandwidth (gathers are overhead/serialization, not bytes) — it's collective-progression.
+
+## 🏁🏁 DEFINITIVE CRITICAL-PATH VERDICT
+RULED OUT (measured): Python (single jit step), host-launch (command buffers ~0%), gather bandwidth,
+CI-fn all-reduce, flag-level collective tuning (async/pipelined already on), gather-coalesce (unroll-by-K
+regresses — XLA double-gathers). BANKED: hoist (~9% — removed redundant collectives) + autotune (1.6×).
+ROOT: the SERIAL per-layer NVLink gather→matmul chain (collective-progression), un-overlappable at
+1 seq/GPU (arithmetic-intensity floor) + scan serialization. The metric that moves it is COLLECTIVE
+COUNT on the critical chain, not bytes/launch/python. Structural frontiers (Oli's call): (a) more
+tokens/GPU to cross the overlap floor (memory-capped; b64 fits post-hoist), (b) restructure the scan for
+cross-iteration gather prefetch (hard; unroll-by-K's naive form failed), (c) the config-protected
+ADVERSARY forward (biggest single phase, 20.4s, compute+collectives). For the current config: ~12.9s/37%
+is the floor; hoist+autotune is the banked win.
