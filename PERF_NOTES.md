@@ -276,3 +276,21 @@ broadcast + combine (1GB thresholds) HLO: the CI-fn axis_2 reduces are now **17 
 - **→ The CI-fn weight-grad cross-node syncs were NEVER the 7.5s bottleneck.** The entire "CI-fn per-chunk reduce" diagnosis is refuted by direct measurement (changed the sync structure completely; step invariant). I over-fit the HLO collective census without confirming it was on the critical path.
 - The 7.5s GPU-idle is something ELSE — candidates not yet isolated: the TARGET/recon path (chunkwise suffix forwards over 32 layers + their own collectives), the recon grid, or PGD. The 17 NON-ci_fn axis_2 reduces (target/recon) were untouched by the CI-fn broadcast.
 - NEXT: real profiler trace (jax.profiler) of the current step to find what the GPU actually waits on in the 7.5s idle — stop inferring from HLO collective counts, look at the timeline.
+
+## ★★★★★★★ REAL BOTTLENECK (perfetto trace, p-2bc5e6cd, scan/default): COMMUNICATION-bound, FSDP AllGather-dominated
+Parsed the actual GPU timeline (scratchpad_trace_analyze.py on the chrome trace.json.gz). 37% occupancy (5.0s busy / 13.4s ≈ 3 steps). Top GPU kernels by total time:
+- **ncclDevKernel_AllGather_RING_LL: 16,544 ms** (dominant — FSDP per-layer weight gathers)
+- **ncclDevKernel_SendRecv: 5,318 ms** (cross-node collective-permute)
+- gemm matmuls: ~15,000 ms summed
+→ **The GPU spends MORE time in NCCL collectives (AllGather+SendRecv ≈ 22s) than in matmuls.** The step is COMMUNICATION-bound on FSDP weight all-gathers. (This is the ORIGINAL "collective-progression / 43k-gather fragmentation" hypothesis — correct all along; the CI-fn grad-reduce was a red herring I chased via HLO inference.)
+
+### Collective time by phase (pd-scope):
+- **AllGather pd_pgd_warmup_ascend: 7,110 ms** + SendRecv 1,021 ms  → PGD ascent ~8.1s
+- **AllGather pd_value_and_grad: 6,900 ms** + SendRecv 3,660 ms  → backward ~10.6s
+- AllGather pd_ci_fn_fwd_detached: 1,766; clean_fwd 348; read_taps 339
+- **`pd_pgd_warmup_ascend` is PER-STEP** (adversary.py:9 — "each step runs n_warmup_steps supplemental ascents + one final"), NOT a startup artifact. n_warmup_steps=2 → 2 all-sites "route-all" recon forwards/step, each re-gathering ALL FSDP weights.
+
+### Levers (to MEASURE, not assume — burned once already):
+1. **PGD ascent (~8s)**: 2 all-sites route-all forwards/step re-gather all FSDP weights. Weights are FIXED during the ascent (only the source/mask updates) → gathering once and reusing across ascents could cut ~2-3× of those gathers. Or reduce n_warmup_steps (semantic). Quantify via ablation first.
+2. **Backward (~10.6s)**: FSDP weight re-gathers during grad (remat recompute). Inherent-ish; overlap or gather-granularity.
+3. General: combine/coarsen the FSDP AllGathers (the RING_LL many-small pattern); reduce cross-node SendRecv.
