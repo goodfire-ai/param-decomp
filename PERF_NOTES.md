@@ -86,3 +86,13 @@ Intuition: <20% MFU = poor, 40–55% = well-tuned, 60% = excellent. This step is
 - /proc/<pid>/task/*/stack during the tail: swarm of `ts_pool_worker` threads in `do_mprotect_pkey` + `lock_mm_and_find_vma` (mm-lock contention). A per-step mmap/mprotect storm, host-side.
 - Mechanism: cuMemCreate(FABRIC) fails (no fabric on HGX) → VMM allocator retries with a different handle type → re-maps memory (mprotect) → dozens of threads serialize on the kernel mm_lock → ~7.5s. The FABRIC fallback IS the cost (not benign). Explains flag-immunity (not GPU/net/schedule) + fixed-per-step + invisible-to-compute.
 - FIX TO TEST: XLA_PYTHON_CLIENT_ALLOCATOR=platform (cudaMalloc, no VMM/cuMem → no FABRIC → no per-step mprotect). Never cleanly tested (false-flagged on TP). Testing on pure-HSDP autotune now.
+
+## Allocator tests for the mprotect-storm hypothesis
+- **platform allocator: OOM** (57 GiB, no pooling → fragmentation) — inconclusive on the tail.
+- **mprotect storm is INTERMITTENT** (2 of ~10 /proc samples), while the tail is every-step → it's a strong lead but NOT yet proven to be the 7.5s (could be periodic background). `tensorstore` IS installed → `ts_pool_worker` may be orbax/ckpt I/O (periodic), which would make the mprotect bursts NOT the per-step tail.
+- **cuda_async allocator (pooling, non-cuMem): TESTING (130720)** — the clean test. If it drops the step to ~5s, the cuMem/VMM allocator (FABRIC→mprotect) WAS the tail. If not, the tail is non-allocator (and the mprotect storm is a red herring too).
+
+## Honest standing assessment (for Oli)
+- **WIN, landable now: autotune → 12.5s (from ~20s), 40% occupancy.** Config-only (XLA_FLAGS drop autotune-off; ~5min one-time autotune compile, cached). Recommend as production default regardless of the tail.
+- **The 7.5s tail: extensively isolated, mechanism still not definitively pinned.** Ruled out: NVLS, socket (it's IB+GDR), the loss all-reduce, grad-transport-bandwidth, and 3 scheduling flags. Direct /proc evidence shows a mprotect/mm-lock storm but its per-step-causality is unconfirmed. This likely needs a dedicated NCCL/CUDA profiler (nsys) or CoreWeave input — beyond clean isolation tonight.
+- **Production run: HELD** (condition = a working tail fix; not yet met). autotune-alone (12.5s/40%) would be a ~14-day run — your call whether that's worth launching vs waiting for the tail fix.
