@@ -185,3 +185,12 @@ Question: is the cross-`replicate` (IB) ÷N V/U reconstruction redundantly recom
 
 ### Net: the 7.5s GPU-idle remains the MFU ceiling and is NOT addressable by the cheap/structural levers tried
 Refuted now: all scheduling/transport flags, NVLS/CUMEM, 3 allocators, MALLOC_ARENA, batch-amortization (memory-capped), AND the gather-hoist (reconstruction already outside remat). The idle is a cross-node collective rendezvous/sync stall whose root cause needs **nsys** (compute-node only) or **CoreWeave** to pin (straggler vs slow-collective). autotune (20→12.5s) stands as the banked, landable win. Production held.
+
+## ★ All-ranks straggler check (job 130731, clean 10Hz /proc across all 4 nodes) — NO straggler, main SLEEPS
+Sampled the trainer python main-thread State on ALL 4 ranks simultaneously at 10Hz for 30s (4 parallel single-node `srun --overlap -w <node>`; the multi-node `-N4` overlap step only grabs 1 node — use 4 separate sruns):
+```
+node 065: 10 R / 290 S    node 107: 10 R / 290 S    node 129: 9 R / 291 S    node 131: 7 R / 293 S
+```
+- **No straggler**: all 4 ranks are statistically identical (~3% R, ~97% S). The 7.5s GPU-idle is a SYMMETRIC cost all ranks pay together → a genuine collective/rendezvous wait, NOT one slow rank.
+- **Main thread SLEEPS (S/futex_wait) ~97%, does NOT spin (R).** This CORRECTS the earlier "main=R spin-wait" reading — that was an artifact of the slow ~1s/sample sampler (266-thread read overhead) + post-cancellation zombie samples. At clean 10Hz the main thread is overwhelmingly blocked-sleeping, waiting for the synchronous device step. Fully consistent with device-bound.
+- **Net**: device-bound 12.5s; ~40% GPU occupancy; the 7.5s GPU-idle is a symmetric cross-node collective/rendezvous wait (all ranks block together, GPU idle, NCCL progresses off-GPU on the NIC). This is the "genuine slow collective" branch → needs nsys (compute-node) / CoreWeave to name the op + why it's slow. Not a straggler, not host-Python, not leaf-count, not allocator, not flags.
