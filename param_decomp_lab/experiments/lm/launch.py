@@ -63,7 +63,8 @@ _SRUN_FLAGS = "--kill-on-bad-exit=1 --ntasks-per-node=1"
 # XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB: XLA's pinned host-staging pool defaults to 64 GB, which
 # the full-model step blows past right after the faith warmup (job 127622). The b200 nodes
 # carry ~2 TB RAM, so raise the ceiling generously (it is a cap, allocated on demand).
-_RANK_ENV = r'''export NCCL_DEBUG=WARN
+_RANK_ENV = r'''export NCCL_DEBUG=INFO
+export NCCL_DEBUG_SUBSYS=NET,INIT
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.92
 export XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB=1024
 export XLA_FLAGS="--xla_gpu_enable_command_buffer="
