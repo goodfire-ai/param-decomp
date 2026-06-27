@@ -49,3 +49,9 @@ Intuition: <20% MFU = poor, 40–55% = well-tuned, 60% = excellent. This step is
 - **The 7.55s tail idle is THE MFU killer.** Hypothesis: un-overlapped cross-node ÷N grad-reduce after the backward → test latency-hiding scheduler / pipelined collectives.
 
 ## Test: XLA latency-hiding scheduler + pipelined collectives (overlap the tail)
+
+## Codex tail-idle diagnosis (p-902af596)
+- The 7.55s tail = ONE unbroken PjRt "Wait for LaunchOnDevice completion" span, GPU idle, NO child events (no kernels, no visible NCCL proxy). The innermost scan `while.1897` closes at ~5.0s; then nothing until the outer span closes at ~12.4s.
+- Late inter-node `SendRecv`/collective-permute under `pd_value_and_grad/pd_recon_masked_fwd` runs ~4.55–4.73s (just before quiescence). No labeled reduce-scatter/all-reduce.
+- Best explanation: a late cross-node collective whose IB data movement completes OFF-GPU (proxy thread, untraced) → host blocks ~7.5s.
+- Lever ranking: (1) latency-hiding scheduler [TESTING 130714], (2) reduce cross-node data volume, (3) hoist V/U reconstruction so it isn't re-done per recon chunk (XLA may already CSE it — need the all-gather count to confirm), (4) NCCL tuning (weakest — no proxy events visible).
