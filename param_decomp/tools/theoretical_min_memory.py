@@ -12,8 +12,8 @@ dims, and labelled EXACT vs ASSUMED. Run:
     python -m param_decomp.tools.theoretical_min_memory param_decomp/configs/<cfg>.yaml [--dp 32 --fsdp 8]
 
 Claim under validation (see lore `state--full32l-mfu`): for the production config
-(llama8b_full32L_HSDP_b32_dp32, dp=32, fsdp=8) the floor is ~31 GB vs a measured 96 GB
-peak ⇒ ~65 GB is reducible transient. Validate by re-running against the cited commit.
+(llama8b_full32L_HSDP_b32_dp32, dp=32, fsdp=8) the floor is ~33 GB vs a measured 96 GB
+peak ⇒ ~63 GB is reducible transient. Validate by re-running against the cited commit.
 """
 
 import sys
@@ -92,27 +92,34 @@ def main() -> None:
     ci = ci_fn_params(cfg)
     trainable = vu + ci
     target = N_LAYERS * sum(d_in * d_out for d_in, d_out in KIND_DIMS.values())
+    # embed + lm_head are NOT decomposed and are REPLICATED (not ÷fsdp) on the frozen target
+    # (targets/llama8b.py:449-450) — full-resident per GPU. Llama-8B does not tie them.
+    embed_lmhead = 2 * VOCAB * D_MODEL
 
     GB = 1024**3
     # ZeRO-1 ÷N: fp32 master + Adam m + Adam v = 12 B/param, sharded over the full mesh.
     opt = trainable * 12 / dp / GB  # EXACT (sharding.py: master+m+v ÷N)
     vu_bf16 = vu * 2 / fsdp / GB  # ÷fsdp resident compute weight (EXACT layout)
     ci_bf16 = ci * 2 / fsdp / GB  # ÷fsdp resident compute weight (EXACT layout)
-    tgt_bf16 = target * 2 / fsdp / GB  # ASSUMED ÷fsdp (minimum; verify current residency)
+    tgt_bf16 = target * 2 / fsdp / GB  # EXACT: layer weights ÷fsdp (targets/llama8b.py:236-244)
+    embed_bf16 = embed_lmhead * 2 / GB  # EXACT: embed+lm_head REPLICATED (full-resident)
     # ONE forward's activations (per-layer remat => residual carry stack + logits), per GPU.
     resid_stack = N_LAYERS * seq_per_gpu * SEQ * D_MODEL * 2 / GB  # bf16 [L,b,t,d] carry
     logits = 2 * seq_per_gpu * SEQ * VOCAB * 4 / GB  # f32 clean+masked [b,t,V]
     acts = resid_stack + logits  # ASSUMED floor (perfect remat, 1 live forward)
 
-    floor = opt + vu_bf16 + ci_bf16 + tgt_bf16 + acts
+    floor = opt + vu_bf16 + ci_bf16 + tgt_bf16 + embed_bf16 + acts
     print(f"config: {cfg_path.name}   dp={dp} fsdp={fsdp}  batch={batch} ({seq_per_gpu} seq/GPU)")
     print(f"trainable params: V/U={vu / 1e9:.2f}B + CI-fn={ci / 1e9:.2f}B = {trainable / 1e9:.2f}B")
-    print(f"frozen target:    {target / 1e9:.2f}B\n")
+    print(
+        f"frozen target:    {target / 1e9:.2f}B (layers) + {embed_lmhead / 1e9:.2f}B (embed+lm_head)\n"
+    )
     print("per-GPU theoretical-minimum peak (GB):")
-    print(f"  optimizer ÷N (master+m+v, fp32)  {opt:6.2f}   EXACT")
+    print(f"  optimizer ÷N (master+m+v, fp32)   {opt:6.2f}   EXACT")
     print(f"  V/U bf16 compute ÷fsdp            {vu_bf16:6.2f}   EXACT")
     print(f"  CI-fn bf16 compute ÷fsdp          {ci_bf16:6.2f}   EXACT")
-    print(f"  frozen target bf16 ÷fsdp          {tgt_bf16:6.2f}   ASSUMED (min; verify)")
+    print(f"  frozen layers bf16 ÷fsdp          {tgt_bf16:6.2f}   EXACT")
+    print(f"  frozen embed+lm_head bf16 (repl)  {embed_bf16:6.2f}   EXACT (replicated)")
     print(f"  activations (1 fwd: carry+logits) {acts:6.2f}   ASSUMED (perfect remat)")
     print(f"  {'-' * 44}")
     print(f"  FLOOR                             {floor:6.2f}")
