@@ -766,3 +766,20 @@ Matched autotune-off, full PGD config:
   not a fresh re-run — can nail it with one matched baseline job if needed.
 - Lever-2 (backward grad-accumulators, the remaining ×10/×5) is the next memory target; lever-3
   (÷N-shard source Adam, ~4.6GB) is orthogonal + semantics-preserving.
+
+## ⚠️ HONESTY CORRECTION — hoist + autotune-on = 11.4s; the production-relative win is ~9%, NOT ~35%
+hoist+autotune-ON b32 (131422, COMPLETED) = **11.4s**. Full matrix (b32):
+| | autotune-off | autotune-on |
+|---|---|---|
+| baseline | ~20s | **12.5s** |
+| hoist | 13s | **11.4s** |
+- autotune alone: 20→12.5 (1.6×). hoist alone: 20→13 (1.54×). hoist+autotune: 20→11.4 (1.75×).
+- **The hoist and autotune OVERLAP** (both attack the gather idle) — they do NOT stack. The ~35%
+  hoist win was measured at autotune-OFF, where the redundant gathers are fully exposed. At PRODUCTION
+  (autotune-on), autotune already hides most of that cost, so the hoist's marginal step-time win is
+  **12.5→11.4 ≈ 9%**. Don't quote ~1.5× as a production number — it's ~9% on step time.
+- The hoist's DURABLE value is therefore: (1) ~9% production step time, (2) the **b64 memory unlock**
+  (2 seq/GPU fits — headroom for larger effective batch), (3) ~10 fewer collectives/step (helps more
+  at larger scale / when comm-bound). The b64 unlock + collective reduction may matter more than the 9%.
+- Lesson (again): measure at the PRODUCTION setting (autotune-on) before quoting a win; autotune-off
+  deltas overstate any gather/idle fix because autotune independently mitigates it.
