@@ -896,3 +896,26 @@ GPU-busy time by pd_* phase (summed across 8 GPUs; per-GPU: 4.6s busy + 7.6s idl
   config/semantic (n_warmup, or chunk the all-sites forward to match the recon grid), fenced off.
 - Decision (Oli): build unroll-by-K (idle lever, correctly targeted); the adversary is the bigger but
   semantic prize if the MFU push ever reopens the config.
+
+## ❌ unroll-by-K (gather coalesce) — MEASURED FAILURE, path closed (branch perf/gather-coalesce-unroll-k, NOT merged)
+Built GATHER_UNROLL_K=2 (scan over K-layer groups, explicit `with_sharding_constraint(P())` to gather
+the K-layer V/U in one all-gather). Numerics bit-identical (equivalence goldens pass). GPU result (b32,
+autotune-off, 131437): REGRESSION on all three —
+- step 13s → **15.4s** (slower), gathers 1848 → **2302** (UP), peak 96 → **113GB** (the K× recompute).
+- ROOT (HLO diagnosis): XLA **double-gathers**. The explicit `[2,…]` coalesced gathers appear
+  (bf16[2,4096,4096]×72 etc.) but the per-layer ones are NOT eliminated — bf16[4096,4096] gathers rose
+  to 490 (from 219). Slicing `[k]` out of the pre-gathered `[K,d,C]` doesn't stop the matmul re-gathering
+  per layer, and the K layers can't be batched-matmul'd (sequential residual dependency). So the explicit
+  gather is pure ADDED work on top of the unchanged implicit per-layer gathers + K× recompute peak.
+- ⇒ The gather-coalesce-via-scan-unroll path is CLOSED (this mechanism). Stays on its branch, unmerged.
+- The wash-risk flagged up front (LW precedent) MATERIALIZED — measured before claiming, reverted by
+  non-merge. perf/hsdp-mfu keeps the hoist (the banked win); no regression on the canonical branch.
+
+## 🏁 MFU SPRINT END-STATE (honest)
+BANKED (on perf/hsdp-mfu, verified): hoist (~9% prod step + b64/2-seq-per-GPU unlock + fewer collectives)
++ autotune (1.6×). Production step ~11.4s, 37% occ. CLOSED/exhausted: flag-level collective levers
+(async/pipelined already on), gather-coalesce (unroll-by-K regresses), lever-3 (memory-only, doesn't
+help gather-bound MFU). The residual idle is the per-layer FSDP gather, which is NOT cheaply coalesceable
+(XLA double-gathers; sequential residual blocks batching). The ONLY remaining step-change lever is the
+config-protected ADVERSARY forward (20.4s busy, compute-bound, all-sites route-all × n_warmup) — a
+SEMANTIC change (chunk it / reduce n_warmup), Oli's call. For the current config, ~11.4s/37% is the floor.
