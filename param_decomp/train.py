@@ -80,6 +80,9 @@ def _grad_norm_metrics(components_grad: DecompVU, ci_fn_grad: Any) -> dict[str, 
     layout, vs torch's per-site names) and the overlay-critical
     `grad_norms/summary/{components,ci_fns,total}`."""
     out: dict[str, Array] = {}
+    return (
+        out  # PERF TEST: disable per-step grad-norm all-reduces (hundreds of full-mesh reductions)
+    )
 
     def family(grad_tree: Any, prefix: str) -> Array:
         sum_sq = jnp.zeros((), jnp.float32)
