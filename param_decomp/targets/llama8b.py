@@ -42,7 +42,7 @@ from vendored_jax.llama import (
 
 DT = jnp.bfloat16
 
-GATHER_UNROLL_K = 2
+GATHER_UNROLL_K = 1
 """Layers per masked-forward scan iteration. K>1 COALESCES the per-layer ÷fsdp→full weight
 gather: one all-gather of the `[K, d/8, C]` slice instead of K separate per-layer gathers,
 cutting the ~1848 fragmented gathers/step (the collective-progression idle) to ~÷K. Numerics-
