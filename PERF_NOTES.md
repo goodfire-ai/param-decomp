@@ -584,3 +584,26 @@ saves ~20GB < the +43GB b64 needs). TP removes the gather but loses ~3-4× on gl
 (1.6×). Net: 12.5s/~40% is near the practical ceiling for THIS config; the only step-change left
 is a structural rewrite (TP+SP), which is a multi-day bet. Recommendation: bank autotune, treat
 ~40% as the working ceiling unless/until the TP+SP investment is greenlit.
+
+## ↩ REOPENED (Oli's intuition: HSDP should reach higher local batch w/ memory+comms right) — and the evidence agrees
+Investigated the b64 OOM properly (HLO + b32-vs-b64 buffer diff) instead of declaring it fundamental:
+- **No single tensor > 1.17GB** in the whole step (largest HLO output = a down_proj weight stack).
+  So the ~73GB OOM alloc is the **BFC allocator growing its arena**, i.e. total working set +
+  many concurrent collective scratch buffers — NOT one giant buffer.
+- **~1,724 all-gathers + ~982 all-reduces PER STEP** (HLO op census). The all-gathers ≈ one per
+  site (224) per forward × the recon-grid forwards — the FSDP weight gather is NOT shared across
+  the recon-grid/PGD forwards. This is the comms half of the cap (scratch fragmentation + overhead).
+- **b32→b64 buffer diff — what actually scales with batch (sum, identifies composition):**
+  `bf16[32,2,512,8192]` +50GB, `f32[2,512,8193]` +45GB, `bf16[32,2,512,4096]` +34GB,
+  `bf16[32,2,512,10240]` +32GB, `f32[2,512,10241]` +28GB, `f32[2,512,4097]` +23GB.
+  Two reducible families: (a) **f32 per-layer component intermediates `[batch,seq,C+1]`** (could
+  be bf16 → ~half), (b) **`[n_layer,batch,seq,C]` per-layer component-activation stacks** from the
+  scan's checkpointed BACKWARD (recompute/scan-structure artifact, not the forward — training-step
+  forward runs collect=None so it emits no stack).
+- **Conclusion: the batch cap is reducible activation memory + arena/collective fragmentation, NOT
+  fundamental weight/optimizer memory** (those are batch-independent: V/U+CI-fn+Adam are ÷N and
+  fixed). So HSDP CAN plausibly reach higher local batch — supports Oli. Candidate levers:
+  (1) bf16 the f32 `[batch,seq,C]` intermediates (numerics-check vs SPEC), (2) tighten the
+  recon-grid/PGD backward so per-layer component activations don't stack `[n_layer,...]`,
+  (3) reduce/Combine the 1,724 collectives (comms + scratch). Localizing next with a zero-code
+  nw=0 (no-PGD) b64 probe to size the PGD-forward contribution.
