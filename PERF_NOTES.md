@@ -631,3 +631,26 @@ peak **98.4GiB**. vs PGD b64 = 139GiB (OOM). So:
 noPGD b64 = 64 seq / 15.7s = **4.08 seq/s**. If noPGD b32 ≈ 32/~12s = ~2.7 seq/s, b64 is ~1.5×
 better throughput (fixed gather amortized over 2× batch — Oli's point). Launching noPGD b32
 (autotune-off) for the matched baseline to CONFIRM before recommending the n_warmup change.
+
+## ★★★★★★★★ MATCHED noPGD b32 vs b64 — batch is a WEAK lever (~12%); the PGD ADVERSARY is the real MFU+memory sink
+Matched autotune-off:
+| config     | seq/GPU | step   | seq/s | peak  |
+|------------|---------|--------|-------|-------|
+| noPGD b32  | 1       | 8.78s  | 3.64  | 85GB  |
+| noPGD b64  | 2       | 15.7s  | 4.08  | 98GB  |
+- **noPGD step is COMPUTE-bound**: 2× batch → 1.79× step (8.78→15.7). So batch amortization buys
+  only ~12% throughput (3.64→4.08 seq/s). Raising batch is NOT a strong MFU lever — corrects my
+  "~1.5×" projection (I'd guessed noPGD b32≈12s; it's 8.78s).
+- **The real signal**: noPGD b32 = 8.78s vs production PGD b32 ≈ 20s (autotune-off) ⇒ **the PGD
+  adversary adds ~11s** — and that ~11s IS the long-flagged "~11s GPU-idle." The PGD adversary's
+  route-all all-224-sites forward (warmup_scoring_loss, train.py:280) is BOTH the +40GB memory
+  blocker AND the gather-bound idle sink (its share of the 1,724 collectives). The base recon is
+  healthy + compute-bound.
+- **⇒ The single highest-value target is the PGD adversary forward, not batch and not generic
+  memory.** Fixing it pays twice (time AND memory):
+  1. **Chunk the route-all adversary forward** to match the recon grid (4×56 vs all-224) — cuts its
+     peak gathers/activations; SPEC-S24 semantic care needed (route-all parity).
+  2. **Combine its collectives** (the all-gathers in the all-sites forward) — comms/idle win.
+  3. **n_warmup 2→1/0** — removes whole adversary fwd+bwd passes (semantic, Oli's call).
+- This is the coherent end: the ~40% MFU / ~11s idle is the PGD adversary's gather-bound all-sites
+  forward. Optimize THAT (chunk + combine) for the real HSDP-native MFU win; batch is secondary.
