@@ -426,3 +426,27 @@ So TP fits only ~2 seq/GPU. Note TP fits 2× the seq/GPU as HSDP (HSDP OOMs at 2
 - TP capped at 2 seq/GPU → global batch 8 → 0.67 seq/s, vs HSDP's 32 → 1.6 seq/s. **TP-alone LOSES on global throughput** despite 3.3× better per-GPU efficiency.
 - **The only way TP wins: SP.** Sequence parallelism shards the per-GPU activations along seq, relieving exactly the activation memory that caps TP at 2 seq/GPU → lets TP run 8 seq/GPU → global batch 32 at TP's 3.3× per-GPU efficiency → ~2-3× faster than HSDP. So SP is REQUIRED for the TP path to pay off (un-defer it).
 - Verdict: TP verified correct + per-GPU efficient, but it trades DP replicas for model-parallelism, so it needs a bigger per-GPU batch than memory allows WITHOUT SP. SP is the unlock, not an optional add-on.
+
+## ⛔ CORRECTION — the "3.3× better per-GPU" above is a UNITS ERROR; TP is currently SLOWER, full stop
+The "per-GPU seq/s" column was computed with inconsistent denominators: HSDP's throughput
+was divided by **32** (all GPUs), TP's by **4** (DP replicas only). Apples-to-oranges.
+Both strategies run on the SAME 32 GPUs, so the only honest per-GPU number is `global_seq_s / 32`:
+| strategy | GPUs | global batch | step (autotune-off) | global seq/s | seq/s/GPU (÷32) |
+|---|---|---|---|---|---|
+| HSDP | 32 | 32 | 20s | 1.60 | **0.050** |
+| TP (tp8) | 32 | 8 | 12s | 0.67 | **0.021** |
+- On identical hardware + wall-clock, HSDP does 2.4× the throughput. You CANNOT be "more
+  efficient per-GPU" AND lower total throughput at the same GPU count — the claim was
+  self-contradictory. **TP is currently ~2.4× slower per token, not 3.3× faster.**
+- What TP genuinely showed (HLO-verified, still true): it REMOVES the weight-gather. But that
+  did not pay off, because TP's structure costs 3/4 of the data-parallel width (DP=4 not 32)
+  and still takes 12s.
+- **The decisive comparison was never run.** On 32 GPUs the two strategies occupy DISJOINT
+  batch regimes (HSDP min = global-32 at 1 seq/GPU; TP max = global-8) so they can't be
+  compared at matched batch there. "Is activation-comm cheaper than weight-gather PER TOKEN?"
+  is still UNMEASURED. Everything about SP downstream rests on that unmeasured per-token claim.
+- **Clean test = single node, 8 GPUs, global batch 8, both ways**: pure FSDP-8 (weight-gather
+  over NVLink) vs TP-8 (activation-comm over the same NVLink), everything else identical,
+  matched autotune. That isolates gather-vs-activation-comm with zero confound. Only if TP-8
+  beats FSDP-8 here is the TP(+SP) direction worth pursuing; if not, the whole TP path is dead.
+  → running this next.
