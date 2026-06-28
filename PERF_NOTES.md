@@ -959,3 +959,16 @@ tokens/GPU to cross the overlap floor (memory-capped; b64 fits post-hoist), (b) 
 cross-iteration gather prefetch (hard; unroll-by-K's naive form failed), (c) the config-protected
 ADVERSARY forward (biggest single phase, 20.4s, compute+collectives). For the current config: ~12.9s/37%
 is the floor; hoist+autotune is the banked win.
+
+## 🔬 EXPLORE — b64 occupancy 37%→45%: overlap IS arithmetic-intensity-limited (more-tokens path has a prize)
+Traced hoist-b64 (autotune-off): occupancy **45%** (12.5s busy / 28s) vs b32 **37%**. The AllGather is
+~batch-INDEPENDENT (16.8s/node ≈ b32's 15.5s — same weights), so 2× compute hides more of the fixed
+gather → overlap improves. So the root-cause idle IS the arithmetic-intensity floor (per-layer gather
+not hidden by too-little per-layer compute), NOT a fundamentally un-overlappable serialization.
+- BUT 2 seq/GPU isn't enough: b64 throughput 2.33 vs b32 2.46 seq/s (compute doubled, gather not yet
+  amortized). The crossover where more-tokens nets FASTER is higher (~5 seq/GPU / the ~2,500 tok/GPU floor).
+- ⇒ **The more-tokens/GPU structural path (B) has a REAL prize** (occupancy-confirmed), but needs to reach
+  ~5 seq/GPU, which is memory-gated (b64 fits, b128 OOMs). The canonical way to free the activation memory
+  for more seq/GPU is **SEQUENCE PARALLELISM** (shard activations along seq). So SP — earlier deferred — is
+  the principled structural lever for the root cause, not just a TP add-on. This REFINES the frontier:
+  B (more tokens via SP) is occupancy-justified; A (adversary, config-protected) remains the other big one.
