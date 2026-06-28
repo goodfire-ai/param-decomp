@@ -620,7 +620,7 @@ class LlamaDecomposedModel(eqx.Module):
         # `[32,1,512,14336]` etc). This is the textbook way to grad-checkpoint a deep scan;
         # pure recompute, no numerics change.
         scan_body = jax.checkpoint(block) if remat else block
-        x, ys = jax.lax.scan(scan_body, resid, (self.stacked, per_kind))
+        x, ys = jax.lax.scan(scan_body, resid, (self.stacked, per_kind), unroll=2)
         x = rms_norm(x, self.norm, self.eps)
         logits = x @ self.lm_head.T
         if collect is not None:
