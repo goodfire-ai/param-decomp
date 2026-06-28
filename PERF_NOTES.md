@@ -1032,3 +1032,9 @@ baseline was autotune-ON) — not a real overlap gain. Reverted (no benefit + ex
 own matmul; XLA won't prefetch across the dependency). The ONLY lever left for the root cause is reducing
 activation memory to fit more tokens/GPU (cross the overlap floor) = SEQUENCE PARALLELISM. Scan-level
 tuning space now also exhausted.
+
+## ❌ NCCL NVLS = ~0% (didn't engage) — testing PROTO next
+NCCL_NVLS_ENABLE=1 (hoist b32): step ~13s (unchanged), AllGather kernel STILL `RING_LL` (NVLS did not
+engage — 16MB intra-node gathers below NVLS threshold / unsupported for this all-gather). Collective-
+ALGORITHM tuning (NVLS) closed. Note: the regime is serialization-bound (host-synchronous chain), so NCCL
+tuning addresses gather BANDWIDTH not the serialization — low EV. Testing NCCL_PROTO=Simple (last knob).
