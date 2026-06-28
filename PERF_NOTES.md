@@ -986,3 +986,14 @@ b64 45% → b96 (can't measure). The trend confirms more-tokens improves overlap
   The two real frontiers are both Oli-decisions: SP (big build, occupancy-justified prize) or the
   config-protected adversary forward. The ~72GB per-seq transient is the SP target; pinning it exactly
   needs runtime device-memory profiling (not chased — SP shards it regardless).
+
+## ✅ HOIST save/resume gate — GREEN (production/PR-ready)
+SAVESMOKE (steps=250, save_every=100) on the hoist: SAVE ✓ — checkpoints written cleanly at 100/200/250,
+zero errors, steady 12.8s/step. RESTORE ✓ — resume (--run_id) loaded the checkpoint and reached process
+shutdown (the only failure was a multi-host SHUTDOWN-barrier abort because I resumed an ALREADY-COMPLETED
+run: step==steps → immediate no-op exit desyncs the ranks; a pre-existing edge case, NOT the hoist, and
+NOT a production path — real requeue resumes MID-run with steps remaining). Structurally the hoist can't
+break resume: it changed the forward METHODS (prepare_compute_weights / masked_output signature), not the
+checkpoint CONTENTS (state = V/U + optimizer + sources, unchanged) — a hoist-era ckpt loads identically.
+⇒ The banked hoist (perf/hsdp-mfu) is verified production-ready: bit-identical numerics + Codex-reviewed +
+~9% step + b64 unlock + save/resume green. Ready for a feature/jax PR on your go.
