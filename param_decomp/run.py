@@ -548,6 +548,28 @@ def run_decomposition_training(
                 flush=True,
             )
 
+    if _os.environ.get("PD_MEM_PROFILE", "") == "1":
+        _mb = sample_batch(start_step)
+        _mk = random.fold_in(run_key, start_step)
+        _compiled = step_fn.lower(lm, state, _mb, _mk).compile()
+        _ma = _compiled.memory_analysis()
+        if is_main:
+            _gib = 1024**3
+            print(
+                "PD_MEM compiled.memory_analysis(): "
+                f"argument={_ma.argument_size_in_bytes / _gib:.2f}GiB "
+                f"output={_ma.output_size_in_bytes / _gib:.2f}GiB "
+                f"temp={_ma.temp_size_in_bytes / _gib:.2f}GiB "
+                f"alias={_ma.alias_size_in_bytes / _gib:.2f}GiB "
+                f"host_temp={_ma.host_temp_size_in_bytes / _gib:.2f}GiB",
+                flush=True,
+            )
+        jax.block_until_ready(state)
+        _prof_path = str(run.run_dir / f"device_memory_{jax.process_index()}.prof")
+        jax.profiler.save_device_memory_profile(_prof_path)
+        if is_main:
+            print(f"PD_MEM: resident device-memory profile -> {_prof_path}", flush=True)
+
     for step in range(start_step, pd.steps):
         if _profile_on and step == _profile_start:
             jax.block_until_ready(state)
