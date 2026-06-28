@@ -71,7 +71,7 @@ export XLA_FLAGS="--xla_gpu_enable_command_buffer="
 export PD_PROFILE_TRACE=0
 export PD_PROFILE_START=5
 export PD_PROFILE_STEPS=3
-export PD_REPLICATE_WEIGHTS=1
+export PD_MEM_PROFILE=1
 export PD_NO_CHECKPOINT=1
 # ^^^ PROFILING MODE: skips ALL checkpoint saves to avoid storage churn from throwaway runs.
 # ⚠️ REMOVE PD_NO_CHECKPOINT before any real/production run or it will train without saving.
