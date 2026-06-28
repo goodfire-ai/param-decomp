@@ -1049,3 +1049,38 @@ native ~0%), replicate-weights (OOM), more-tokens (memory-capped @2 seq/GPU), NC
 lever for the root cause (serial per-layer gather chain, arithmetic-intensity-limited) is SEQUENCE
 PARALLELISM — relieve activation memory → more tokens/GPU → gathers overlap. Multi-day build, attention-
 partitioner-risk, scoped above. STOPPING the knob-sweep (further cheap runs just re-confirm null).
+
+---
+
+## 2026-06-28 — THE DONATION WIN (buffer aliasing) — memory wall was self-inflicted
+
+Oli pushed back on "memory-capped @2 seq/GPU" ("don't buy we can't fit more"). Re-measured
+with PROPER tools: instrumented the trainer (`PD_MEM_PROFILE`) with `compiled.memory_analysis()`
+(static argument/output/temp; note: eqx.filter_jit's compiled wraps jax's — reach it via
+`.compiled`) + `device.memory_stats()['peak_bytes_in_use']` (TRUE runtime high-water) +
+`save_device_memory_profile` (NB: pprof source-attribution is a JAX DEAD-END — every array routes
+through pxla.py, no user frames). Also: `liverange_peak` reports argument+temp only, NOT the
+output-state held live alongside the input → it UNDERCOUNTS the real peak (77.5 vs 124 measured).
+
+AUTHORITATIVE runtime peaks (dp32, of 164 GiB limit):
+  no-donation:  b32 124.0  | b64 155.9 (8 GiB from wall — THIS is why b96 OOMs)
+Root cause: the train step is a bare `@eqx.filter_jit` with **NO buffer donation**. It maps
+old_state→new_state (argument≈28, output≈24.5 GiB, near-identical buffers) but XLA can't alias
+them, so BOTH stay live + the post-step resident doubles (in_use 66.9 = old+new state).
+
+FIX (1 line): `@eqx.filter_jit(donate="all-except-first")` on `make_train_step`'s `step`
+(train.py:252) — keeps the frozen `model` (arg 1), donates state/batch/key. Pure memory, ZERO
+numerics change (XLA aliasing). Production loop reassigns `state` + fresh batch/key → contract safe.
+
+MEASURED with donation:
+  b64  155.9 -> 102.4 GiB  (saved 53; in_use 66.9->35.3; alias=31.66 confirms in->out aliasing)
+  b96  OOM   -> 125.8 GiB  (NOW FITS, 38 GiB to spare)
+  peak is now clean `resident + temp`; scales ~+23 GiB / seq-GPU.
+=> b128 (4 seq/GPU, the arithmetic-intensity crossover) predicted ~149 GiB → should FIT (testing).
+
+Validation: equivalence goldens PASS (numerics bit-preserved), train-step tests green (fixed
+test_generic_model_io.py to host-copy V_before — it reused the donated input). So the "SP is the
+ONLY lever / memory-capped @2 seq/GPU" conclusion above is SUPERSEDED: donation alone ~doubles the
+feasible local batch (2->4 seq/GPU) with no SP, no config change. Next: confirm b128 fits + TIMING
+run to verify the higher batch actually lifts MFU (occupancy was 37->45% b32->b64; the gather should
+start hiding behind compute at 4 seq/GPU).
