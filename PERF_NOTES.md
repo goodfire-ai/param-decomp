@@ -972,3 +972,17 @@ not hidden by too-little per-layer compute), NOT a fundamentally un-overlappable
   for more seq/GPU is **SEQUENCE PARALLELISM** (shard activations along seq). So SP — earlier deferred — is
   the principled structural lever for the root cause, not just a TP add-on. This REFINES the frontier:
   B (more tokens via SP) is occupancy-justified; A (adversary, config-protected) remains the other big one.
+
+## 🔬 EXPLORE — b96 (3 seq/GPU) OOMs (71.7GB transient): more-tokens path is memory-capped at 2 seq/GPU
+hoist-b96 OOM'd (same ~72GB runtime transient as pre-hoist b64). So post-hoist the memory cliff is
+between 2 and 3 seq/GPU: b64 (2/GPU) fits (124GB), b96 (3/GPU) OOMs. Occupancy trajectory: b32 37% →
+b64 45% → b96 (can't measure). The trend confirms more-tokens improves overlap, but we CANNOT reach the
+~5 seq/GPU crossover where it nets faster — memory caps it at 2/GPU.
+- ⇒ CONVERGED: the more-tokens path (B) has a real, occupancy-validated prize but is HARD-GATED behind
+  freeing activation memory. **Sequence parallelism (SP)** — shard activations along seq — is the
+  principled unlock (the ~72GB transient is per-seq activation/recompute, exactly what SP shards). The
+  memory levers I noted (f32→bf16 grad-accum ~41GiB, bf16 logits) are too small for the ~72GB transient.
+- EXPLORATION VERDICT: within numerics-preserving + non-config + non-big-build, the space is exhausted.
+  The two real frontiers are both Oli-decisions: SP (big build, occupancy-justified prize) or the
+  config-protected adversary forward. The ~72GB per-seq transient is the SP target; pinning it exactly
+  needs runtime device-memory profiling (not chased — SP shards it regardless).
