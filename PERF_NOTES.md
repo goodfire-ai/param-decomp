@@ -1038,3 +1038,14 @@ NCCL_NVLS_ENABLE=1 (hoist b32): step ~13s (unchanged), AllGather kernel STILL `R
 engage — 16MB intra-node gathers below NVLS threshold / unsupported for this all-gather). Collective-
 ALGORITHM tuning (NVLS) closed. Note: the regime is serialization-bound (host-synchronous chain), so NCCL
 tuning addresses gather BANDWIDTH not the serialization — low EV. Testing NCCL_PROTO=Simple (last knob).
+
+## ❌ NCCL_PROTO=Simple = ~0% — NCCL angle fully CLOSED; cheap-knob sweep DONE
+PROTO=Simple (hoist b32): step ~12.9-13.8s = ~0% vs LL's 13s. So both NCCL knobs (NVLS no-engage, PROTO
+no-help) are null → confirms the regime is SERIALIZATION-bound (host-synchronous gather chain), not
+gather-BANDWIDTH-bound, so collective tuning can't move it. Probe scaffolding reset to clean.
+**CHEAP-KNOB SPACE DEFINITIVELY EXHAUSTED** (measured null/closed, this session): autotune (banked 1.6×),
+async/pipelined collectives (on), combine-threshold, command buffers, scan-unroll (manual REGRESSED +
+native ~0%), replicate-weights (OOM), more-tokens (memory-capped @2 seq/GPU), NCCL NVLS + PROTO. The ONE
+lever for the root cause (serial per-layer gather chain, arithmetic-intensity-limited) is SEQUENCE
+PARALLELISM — relieve activation memory → more tokens/GPU → gathers overlap. Multi-day build, attention-
+partitioner-risk, scoped above. STOPPING the knob-sweep (further cheap runs just re-confirm null).
