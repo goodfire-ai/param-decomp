@@ -249,7 +249,7 @@ def make_train_step(
             total = total + recon_loss_fn(masked, clean_output)
         return total / len(routes_per_draw)
 
-    @eqx.filter_jit
+    @eqx.filter_jit(donate="all-except-first")
     @jaxtyped(typechecker=beartype)
     def step(
         model: DecomposedModel,
