@@ -252,7 +252,7 @@ def test_train_step_runs_through_generic_target():
         mesh=None,
     )
 
-    V_before = state.components.site(SITE)[0]
+    V_before = jax.device_get(state.components.site(SITE)[0])  # host copy survives step donation
     run_key = random.PRNGKey(3)
     for step_idx in range(2):
         state, metrics = step_fn(lm, state, resid, random.fold_in(run_key, step_idx))
