@@ -1021,3 +1021,14 @@ occupancy-validated prize). What it touches in THIS codebase, and the risk:
   (1) (dp,sp) mesh + seq-shard residual/MLP only, attention via gather-seq→flash→reshard; (2) trace
   occupancy at 4-5 seq/GPU; (3) confirm flash survives the gather/reshard (else the win may evaporate).
   ⇒ Recommend explicit go + a scoped prototype phase (not a blind multi-day commit). For now: NOT built.
+
+## ❌ native scan unroll=2 — ~0% (step 13s, both autotune-off); scan-level overlap tricks all fail
+Tested `jax.lax.scan(..., unroll=2)` (XLA native unroll, distinct from the manual unroll-by-K): numerics
+bit-identical (equiv goldens pass), step ≈12.9-13.4s = ~0% vs hoist 13s (autotune-off, clean compare).
+The 51% occupancy reading is a CONFOUND (autotune-OFF slower kernels fill more of the span; the 37%
+baseline was autotune-ON) — not a real overlap gain. Reverted (no benefit + extra compile).
+⇒ Both scan-level overlap attempts fail: manual unroll-by-K REGRESSED (double-gather), native unroll=2
+~0%. The per-layer gather→matmul→next-layer chain is un-overlappable by scan tricks (the gather feeds its
+own matmul; XLA won't prefetch across the dependency). The ONLY lever left for the root cause is reducing
+activation memory to fit more tokens/GPU (cross the overlap floor) = SEQUENCE PARALLELISM. Scan-level
+tuning space now also exhausted.
