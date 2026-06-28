@@ -997,3 +997,27 @@ break resume: it changed the forward METHODS (prepare_compute_weights / masked_o
 checkpoint CONTENTS (state = V/U + optimizer + sources, unchanged) — a hoist-era ckpt loads identically.
 ⇒ The banked hoist (perf/hsdp-mfu) is verified production-ready: bit-identical numerics + Codex-reviewed +
 ~9% step + b64 unlock + save/resume green. Ready for a feature/jax PR on your go.
+
+## 🧭 SP FEASIBILITY SCOPE (the validated lever — de-risking before any build)
+SP shards the per-seq activations to fit more seq/GPU → cross the ~2,500 tok/GPU overlap floor (the
+occupancy-validated prize). What it touches in THIS codebase, and the risk:
+1. **Mesh:** needs a (dp, sp) split (dp·sp = 32) — trade data-parallel degree for a seq-parallel sub-axis
+   (analogous to how tp carves out a TP axis). Shard the residual/activations on the sp axis.
+2. **⚠️ ATTENTION is the crux risk.** `FrozenAttn.core` runs cuDNN flash SDPA, which needs the FULL
+   sequence and a CAREFULLY-TUNED sharding (q/k/v IDENTICAL, batch-parallel over the full mesh, heads
+   REPLICATED — the code has extensive comments: "Query, key and value should have same sharding",
+   flash partitioner is finicky). Seq-sharding REQUIRES all-gathering seq before attention (un-shard),
+   running attention, re-sharding after — which fights the flash partitioner and risks (a) partitioner
+   errors / (b) losing flash attention → non-flash fallback (materializes scores, slower). This is the
+   single biggest SP risk and where a prototype would most likely break (cf. the cuDNN sharding battles
+   already in the code + the unroll-by-K XLA-double-gather surprise).
+3. **Per-token ops are easy:** RMSNorm, MLP, the V/U/frozen matmuls all work on seq-sharded activations
+   (the weight gather is unchanged; activation just smaller/rank). RoPE per-position is fine.
+4. **Loss + sources:** KL is per-position → seq-sharded reduce (mean over the sp axis). PPGD `sc` sources
+   `(1,T,C+1)` → shard T on sp; the source all-reduce becomes an sp-reduce. Mechanical but must be exact.
+- **Verdict:** SP is the right lever (occupancy-validated prize), but it's a genuinely HIGH-RISK multi-day
+  build in this codebase — the cuDNN flash-attention partitioner is the load-bearing risk, and SP's own
+  seq-all-gather-for-attention overhead could partially offset the gain (must be measured). Prototype path:
+  (1) (dp,sp) mesh + seq-shard residual/MLP only, attention via gather-seq→flash→reshard; (2) trace
+  occupancy at 4-5 seq/GPU; (3) confirm flash survives the gather/reshard (else the win may evaporate).
+  ⇒ Recommend explicit go + a scoped prototype phase (not a blind multi-day commit). For now: NOT built.
