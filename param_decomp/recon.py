@@ -38,6 +38,9 @@ from param_decomp.configs import (
     SamplingType,
     SCScope,
     SmoothL0ImportanceMinimalityLossConfig,
+    FractionImportanceMinimalityLossConfig,
+    MCPImportanceMinimalityLossConfig,
+    ArctanImportanceMinimalityLossConfig,
     StaticProbabilityRoutingConfig,
     StochasticReconLayerwiseLossConfig,
     StochasticReconLossConfig,
@@ -327,7 +330,12 @@ def build_recon_terms(
                 assert imp_min is None
                 assert cfg.p_anneal_final_p is not None
                 imp_min = cfg
-            case SmoothL0ImportanceMinimalityLossConfig():
+            case (
+                SmoothL0ImportanceMinimalityLossConfig()
+                | FractionImportanceMinimalityLossConfig()
+                | MCPImportanceMinimalityLossConfig()
+                | ArctanImportanceMinimalityLossConfig()
+            ):
                 assert imp_min is None
                 assert cfg.gamma_anneal_final_gamma is not None
                 imp_min = cfg
