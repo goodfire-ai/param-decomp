@@ -118,10 +118,8 @@ def make_slow_eval_step(lm: DecomposedModel, ci_alive_threshold: float) -> SlowE
     def slow_eval_step(
         model: DecomposedModel, ci_fn: Any, residual: Float[Array, "*leading d"]
     ) -> tuple[dict[str, Array], dict[str, Array], Array, dict[str, Array], dict[str, Array]]:
-        # Read the CI fn in TRAINING precision (bf16), matching train.py / eval.py and the
-        # hidden-acts + attn-pattern tiers: the readout reflects the deployed (bf16) model,
-        # and cuDNN flash attention (which rejects fp32) is used. Reductions/returns are
-        # upcast to fp32 so the host accumulation is unchanged.
+        # Read the CI fn in training precision (bf16), like train.py / eval.py: the readout
+        # reflects the deployed model, and cuDNN flash attention rejects fp32.
         ci_fn = cast_floating(ci_fn, COMPUTE_DT)
         taps = {
             k: x.astype(COMPUTE_DT)
@@ -172,11 +170,8 @@ def accumulate_site_reductions(
             density[site] = counts if batch_idx == 0 else density[site] + counts
             sums[site] = ci_sum if batch_idx == 0 else sums[site] + ci_sum
             if keep_sample:
-                # flat_lower/flat_logits keep the dp-sharded batch axis, so on >1 process
-                # they span non-addressable devices and a bare `np.asarray` raises. Gather
-                # the global sample across processes (counts/sums above are already
-                # all-reduced, hence addressable). `tiled=True` concatenates the per-process
-                # shards along axis 0 (order is irrelevant for the histogram sample).
+                # The sample keeps the dp-sharded batch axis; on >1 process a bare np.asarray
+                # spans non-addressable devices, so gather it (counts/sums are already reduced).
                 lower_chunks.setdefault(site, []).append(
                     np.asarray(multihost_utils.process_allgather(flat_lower[site], tiled=True))
                 )
