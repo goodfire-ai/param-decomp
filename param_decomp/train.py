@@ -271,8 +271,11 @@ def make_train_step(
         leading = next(iter(taps.values())).shape[:-1]
 
         # ── adversary ascents: params + CI detached (SPEC §4.5) ──
-        components_detached = jax.lax.stop_gradient(cast_floating(state.components, COMPUTE_DT))
-        prepared_detached = model.prepare_compute_weights(components_detached)
+        prepared, recon_vjp = jax.vjp(
+            lambda c: model.prepare_compute_weights(cast_floating(c, COMPUTE_DT)),
+            state.components,
+        )
+        prepared_detached = jax.lax.stop_gradient(prepared)
         ci_fn_detached = jax.lax.stop_gradient(cast_floating(state.ci_fn, COMPUTE_DT))
         with jax.named_scope("pd_ci_fn_fwd_detached"):
             ci_lower_detached = ci_batch_sharded(ci_fn_detached(taps, remat=False)).lower
@@ -357,13 +360,9 @@ def make_train_step(
         # are NOT detached here, but components/ci grads through them are what torch
         # gets too (sources are leaves). ──
         def loss_fn(
-            trainable: tuple[DecompVU, CIFn, dict[str, dict[str, Array]]],
+            trainable: tuple[Any, DecompVU, CIFn, dict[str, dict[str, Array]]],
         ) -> tuple[Array, tuple[Array, Array, Array, tuple[Array, ...]]]:
-            components, ci_fn, persistent_sources = trainable
-            components_bf16 = cast_floating(components, COMPUTE_DT)
-            # ONE ÷N→÷fsdp reconstruction for the whole recon grid (shared by every forward +
-            # its backward), instead of re-gathering per forward — the hoist.
-            prepared = model.prepare_compute_weights(components_bf16)
+            prepared, components, ci_fn, persistent_sources = trainable
             ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
             with jax.named_scope("pd_ci_fn_fwd_main"):
                 ci = ci_batch_sharded(ci_fn_bf16(taps, remat=remat_ci_fn))
@@ -433,10 +432,21 @@ def make_train_step(
         with jax.named_scope("pd_value_and_grad"):
             (total_loss, (faith_loss, imp_lp, imp_freq, term_losses)), grads = (
                 eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-                    (state.components, state.ci_fn, {k: a.sources for k, a in warmed_advs.items()})
+                    (
+                        prepared,
+                        state.components,
+                        state.ci_fn,
+                        {k: a.sources for k, a in warmed_advs.items()},
+                    )
                 )
             )
-        components_grad, ci_fn_grad, persistent_grads_scaled = grads
+        prepared_grad, components_grad_faith, ci_fn_grad, persistent_grads_scaled = grads
+        components_grad_recon = recon_vjp(prepared_grad)[0]
+        components_grad = jax.tree.map(
+            lambda recon_g, faith_g: recon_g + faith_g,
+            components_grad_recon,
+            components_grad_faith,
+        )
         if mesh is not None and os.environ.get("PD_REPLICATE_WEIGHTS", "") == "1":
             # ZeRO-1 with replicated compute weights: the grad arrives REPLICATED (full V/U);
             # reduce-scatter it back to the ÷N master layout BEFORE the sharded optimizer

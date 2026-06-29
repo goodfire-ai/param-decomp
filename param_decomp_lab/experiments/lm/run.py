@@ -89,7 +89,7 @@ def _enable_persistent_compilation_cache(out_dir: Path) -> Path:
     `process_id == 0` to avoid shared-FS write contention); every rank reads. Must run
     after `init_distributed` (the rank gate reads the distributed state) and before the
     first compile."""
-    cache_dir = out_dir.parent / "xla_compilation_cache"
+    cache_dir = Path(os.environ["PD_XLA_CACHE_DIR"]) if "PD_XLA_CACHE_DIR" in os.environ else out_dir.parent / "xla_compilation_cache"
     jax.config.update("jax_compilation_cache_dir", str(cache_dir))
     jax.config.update("jax_persistent_cache_min_compile_time_secs", 60.0)
     jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
@@ -381,7 +381,7 @@ def main(config: Path, run_id: str) -> None:
     # Harden the cold-cache HF weight load against the 8N-rank startup burst before any
     # per-rank Hub call (no-op when huggingface_hub is absent / cache is pre-warmed).
     configure_hf_http_retries()
-    mesh = hsdp_mesh()
+    mesh = hsdp_mesh(built.runtime.tp)
 
     if built.run.resume_provenance is not None:
         assert_finetune_structural_compat(built, built.run.resume_provenance)
