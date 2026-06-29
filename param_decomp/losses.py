@@ -10,7 +10,10 @@ from jaxtyping import Array, Float, jaxtyped
 
 from param_decomp.configs import (
     AnyImportanceMinimalityLossConfig,
+    ArctanImportanceMinimalityLossConfig,
+    FractionImportanceMinimalityLossConfig,
     ImportanceMinimalityLossConfig,
+    MCPImportanceMinimalityLossConfig,
     SmoothL0ImportanceMinimalityLossConfig,
 )
 
@@ -87,6 +90,36 @@ def smooth_l0_importance_minimality_terms(
     return _imp_min_terms(ci_upper, lambda ci: ci**2 / (ci**2 + gamma_sq))
 
 
+@jaxtyped(typechecker=beartype)
+def fraction_importance_minimality_terms(
+    ci_upper: dict[str, Float[Array, "*leading _"]], gamma: Float[Array, ""]
+) -> tuple[Float[Array, ""], Float[Array, ""]]:
+    """Fractional (q=1) penalty `c / (c + gamma)`: `phi'(0) = 1/gamma > 0` (a kill-force at
+    the origin that drives small CI to exactly 0 via the hard floor), redescends for large
+    c. Bounded, no singularity."""
+    return _imp_min_terms(ci_upper, lambda ci: ci / (ci + gamma))
+
+
+@jaxtyped(typechecker=beartype)
+def mcp_importance_minimality_terms(
+    ci_upper: dict[str, Float[Array, "*leading _"]], gamma: Float[Array, ""]
+) -> tuple[Float[Array, ""], Float[Array, ""]]:
+    """MCP penalty: `(c/gamma)(2 - c/gamma)` up to the knee `c = gamma`, flat (=1) above.
+    `phi'(0) = 2/gamma > 0`; `phi' = 0` for `c > gamma` (zero bias on clearly-on)."""
+    return _imp_min_terms(
+        ci_upper, lambda ci: jnp.where(ci < gamma, (ci / gamma) * (2.0 - ci / gamma), 1.0)
+    )
+
+
+@jaxtyped(typechecker=beartype)
+def arctan_importance_minimality_terms(
+    ci_upper: dict[str, Float[Array, "*leading _"]], gamma: Float[Array, ""]
+) -> tuple[Float[Array, ""], Float[Array, ""]]:
+    """Arctan penalty `arctan(c/gamma)/(pi/2)`: `phi'(0) = 2/(pi*gamma) > 0` (gentler than
+    fraction/MCP), smooth, redescending."""
+    return _imp_min_terms(ci_upper, lambda ci: jnp.arctan(ci / gamma) / (jnp.pi / 2.0))
+
+
 def _linear_anneal(
     step_f32: Array,
     total_steps: int,
@@ -138,7 +171,12 @@ def annealed_imp_min_param(
     match cfg:
         case ImportanceMinimalityLossConfig():
             return annealed_pnorm(step_f32, total_steps, cfg)
-        case SmoothL0ImportanceMinimalityLossConfig():
+        case (
+            SmoothL0ImportanceMinimalityLossConfig()
+            | FractionImportanceMinimalityLossConfig()
+            | MCPImportanceMinimalityLossConfig()
+            | ArctanImportanceMinimalityLossConfig()
+        ):
             return annealed_gamma(step_f32, total_steps, cfg)
 
 
@@ -153,6 +191,12 @@ def imp_min_terms(
             return importance_minimality_terms(ci_upper, annealed_param, cfg.eps)
         case SmoothL0ImportanceMinimalityLossConfig():
             return smooth_l0_importance_minimality_terms(ci_upper, annealed_param)
+        case FractionImportanceMinimalityLossConfig():
+            return fraction_importance_minimality_terms(ci_upper, annealed_param)
+        case MCPImportanceMinimalityLossConfig():
+            return mcp_importance_minimality_terms(ci_upper, annealed_param)
+        case ArctanImportanceMinimalityLossConfig():
+            return arctan_importance_minimality_terms(ci_upper, annealed_param)
 
 
 def warmup_then_constant_lr(
