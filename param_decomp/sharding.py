@@ -71,11 +71,9 @@ def place_via_shardings[T](tree: T, shardings: T) -> T:
     leaves pass through. The apply path for an already-loaded frozen model (vs the jitted
     `out_shardings` init path for freshly-seeded params).
 
-    Replicated leaves are built from the host-local copy (`make_array_from_callback`) rather
-    than `device_put`: `device_put` of a host array onto a replicated multi-process sharding
-    runs JAX's cross-host equality check (`assert_equal` -> `process_allgather(tiled=True)`),
-    which tiles a ~1 GB embedding to ~`process_count` GB and OOMs at dp>=64. The frozen target
-    is the same on-disk weights on every host, so the local copy is the replicated array."""
+    Replicated leaves go through `make_array_from_callback`, not `device_put`: `device_put`
+    onto a replicated multi-process sharding runs a cross-host equality allgather that OOMs at
+    dp>=64. The frozen target is identical on every host, so the local copy IS the global one."""
     is_array = lambda x: hasattr(x, "shape") and hasattr(x, "dtype")  # noqa: E731
     place = lambda a, s: (  # noqa: E731
         jax.make_array_from_callback(a.shape, s, lambda _idx: a)
