@@ -317,7 +317,11 @@ def _reconstruct_ci_compute_weights(chunks: "ChunkTransformer") -> "ChunkTransfo
     d_axis1 = P(None, "fsdp", None)  # d_model is axis1 (matmul output dim)
 
     def pin(x: Array, spec: "P") -> Array:
-        return jax.lax.with_sharding_constraint(x.astype(jnp.bfloat16), spec)
+        # optimization_barrier: cast bf16 BEFORE the gather (else XLA sinks the convert past
+        # the all-gather and moves the f32 master — 2x the comm).
+        return jax.lax.with_sharding_constraint(
+            jax.lax.optimization_barrier(x.astype(jnp.bfloat16)), spec
+        )
 
     pinned_blocks = [
         eqx.tree_at(
