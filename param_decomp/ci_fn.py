@@ -317,7 +317,11 @@ def _reconstruct_ci_compute_weights(chunks: "ChunkTransformer") -> "ChunkTransfo
     d_axis1 = P(None, "fsdp", None)  # d_model is axis1 (matmul output dim)
 
     def pin(x: Array, spec: "P") -> Array:
-        return jax.lax.with_sharding_constraint(x.astype(jnp.bfloat16), spec)
+        # optimization_barrier: cast bf16 BEFORE the gather (else XLA sinks the convert past
+        # the all-gather and moves the f32 master — 2x the comm).
+        return jax.lax.with_sharding_constraint(
+            jax.lax.optimization_barrier(x.astype(jnp.bfloat16)), spec
+        )
 
     pinned_blocks = [
         eqx.tree_at(
@@ -406,6 +410,19 @@ class ChunkwiseTransformerCIFn(eqx.Module):
         # ORDER, asserted at init, so slot j carries one C_j across every chunk).
         import os as _os
 
+        # Per-CHUNK checkpoint of the scan BODY in BOTH modes — `remat` controls ONLY whether
+        # the chunk ACTIVATIONS are recomputed; it NEVER controls the ÷fsdp→full weight gather.
+        # `remat=True` → nothing_saveable: recompute activations AND re-gather (min memory, the
+        # `[n_chunks, *, seq, seq]` f32 score slab never stacks). `remat=False` → dots_saveable:
+        # SAVE the activation matmuls, still re-gather the weights (a collective, not a dot) — i.e.
+        # plain FSDP. WITHOUT any checkpoint the backward would instead stack every chunk's full
+        # gathered weights `[n_chunks, …]` as residuals → DDP-stack OOM, so we always checkpoint.
+        policy = (
+            jax.checkpoint_policies.nothing_saveable
+            if remat
+            else jax.checkpoint_policies.dots_saveable
+        )
+
         if _os.environ.get("PD_CI_BROADCAST", "") == "1":
             # EXPERIMENT: broadcast all chunks at once (vmap, no loop) so XLA sees one network
             # and consolidates the per-chunk cross-node grad reduces into one. Trades the scan's
@@ -414,13 +431,10 @@ class ChunkwiseTransformerCIFn(eqx.Module):
                 chunk = eqx.combine(chunk_array, chunk_static)
                 return chunk(chunk_input, inv_freq)
 
-            fn = jax.checkpoint(run_chunk_v) if remat else run_chunk_v
+            fn = jax.checkpoint(run_chunk_v, policy=policy)
             stacked_per_slot = jax.vmap(fn)(chunk_arrays, stacked_in)
         else:
-            # Per-CHUNK remat: checkpoint the scan BODY so the backward recomputes one chunk at a
-            # time, keeping only the carry — NOT all `n_chunks` chunks' attention scores + MLP
-            # hidden states stacked `[n_chunks, ...]`.
-            body = jax.checkpoint(run_chunk) if remat else run_chunk
+            body = jax.checkpoint(run_chunk, policy=policy)
             _, stacked_per_slot = jax.lax.scan(body, None, (chunk_arrays, stacked_in))
         logits: SiteDict = {}
         for chunk_idx, m in enumerate(self.chunk_meta):
