@@ -38,14 +38,20 @@ def test_imp_min_bf16_input_seam_within_tolerance():
     reference = json.loads((HERE / "imp_min_bf16_reference.json").read_text())
     ci_upper = _load_bf16_ci()
 
-    lp, entropy = importance_minimality_terms(
-        ci_upper, jnp.asarray(reference["pnorm"]), reference["eps"]
+    # a' = B·T (the full leading count) reproduces the old rolled `log2(1 + B·T·f_c)`,
+    # so `freq` equals the `torch_entropy` golden the fixture was generated against.
+    n_positions = int(np.prod(next(iter(ci_upper.values())).shape[:-1]))
+    lp, freq = importance_minimality_terms(
+        ci_upper,
+        jnp.asarray(reference["pnorm"]),
+        reference["eps"],
+        reference_token_count=n_positions,
     )
 
     worst_rel = 0.0
     for name, jax_value, torch_value in (
         ("lp", float(lp), reference["torch_lp"]),
-        ("entropy", float(entropy), reference["torch_entropy"]),
+        ("entropy", float(freq), reference["torch_entropy"]),
     ):
         rel = abs(jax_value - torch_value) / abs(torch_value)
         worst_rel = max(worst_rel, rel)

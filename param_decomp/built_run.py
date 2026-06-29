@@ -72,7 +72,8 @@ class EvalConfig:
     `every` steps; the SLOW/plot tier (CI histograms, activation density, mean-CI,
     hidden-acts recon) runs every `slow_every` steps, reusing the same eval batches
     (SPEC S28/S29). `rounding_threshold` binarises CI for the CE/KL `rounded_masked`
-    variant; `ci_alive_threshold` is the CI-L0 aliveness cutoff."""
+    variant; the CI-L0 metric and the activation-density step each carry their own aliveness
+    cutoff (`l0_ci_alive_threshold` / `density_ci_alive_threshold`)."""
 
     batch_size: int
     every: int
@@ -87,7 +88,12 @@ class EvalConfig:
     """The torch `CIHistograms.n_batches_accum` cap on the histogram raw-value sample
     (None caps nothing). Read from the `CIHistograms` eval metric when present."""
     rounding_threshold: float
-    ci_alive_threshold: float
+    l0_ci_alive_threshold: float
+    """CI aliveness cutoff for the CI-L0 metric (fast pass), from `CI_L0Config`."""
+    density_ci_alive_threshold: float
+    """CI aliveness cutoff for the activation-density slow-eval step, from
+    `ComponentActivationDensityConfig` — independent of the CI-L0 cutoff (each metric owns
+    its own, as on the torch oracle)."""
     l0_groups: dict[str, tuple[str, ...]] | None
     """torch CI_L0 `groups`: fnmatch site patterns whose member L0s sum into a
     group-named key. None = per-site keys only."""

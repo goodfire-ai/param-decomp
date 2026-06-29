@@ -88,6 +88,9 @@ class SyntheticDecomposedModel(eqx.Module):
         assert wanted == (SITE,), wanted
         return {SITE: resid}
 
+    def prepare_compute_weights(self, vu: DecompVU) -> DecompVU:
+        return vu
+
     def masked_output(
         self,
         vu: DecompVU,
@@ -97,7 +100,10 @@ class SyntheticDecomposedModel(eqx.Module):
         routes: dict[str, Array] | None,
         live: tuple[str, ...],
         has_delta: bool,
+        *,
+        remat: bool,
     ) -> tuple[Array, Array]:
+        del remat  # single-site stub forward; nothing to checkpoint
         assert live == (SITE,) and routes is None, (live, routes)
         V, U = vu.site(SITE)
         W = self.W
@@ -185,7 +191,9 @@ def test_tuple_output_and_geometric_loss_flow():
 
     masks = {SITE: jnp.ones((B, T, C))}
     delta_masks = {SITE: jnp.zeros((B, T))}
-    masked = lm.masked_output(components, resid, masks, delta_masks, None, (SITE,), False)
+    masked = lm.masked_output(
+        components, resid, masks, delta_masks, None, (SITE,), False, remat=False
+    )
     assert isinstance(masked, tuple) and len(masked) == 2
 
     loss = lm.recon_loss_fn(masked, clean)
@@ -228,22 +236,23 @@ def test_train_step_runs_through_generic_target():
     loss_terms = build_loss_terms(
         (
             FaithfulnessLossConfig(coeff=1.0),
-            ImportanceMinimalityLossConfig(coeff=1e-4, pnorm=2.0, beta=0.0, p_anneal_final_p=1.0),
+            ImportanceMinimalityLossConfig(coeff=1e-4, pnorm=2.0, p_anneal_final_p=1.0),
             StochasticReconLossConfig(coeff=1.0),
         ),
         lm.site_names,
     )
     step_fn = make_train_step(
         lm=lm,
-        loss_terms=loss_terms,
+        losses=loss_terms,
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=10,
         remat_recon_forwards=False,
+        remat_ci_fn=False,
         mesh=None,
     )
 
-    V_before = state.components.site(SITE)[0]
+    V_before = jax.device_get(state.components.site(SITE)[0])  # host copy survives step donation
     run_key = random.PRNGKey(3)
     for step_idx in range(2):
         state, metrics = step_fn(lm, state, resid, random.fold_in(run_key, step_idx))

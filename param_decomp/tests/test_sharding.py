@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from param_decomp.sharding import dp_mesh, shard_batch
+from param_decomp.sharding import hsdp_mesh, shard_batch
 
 # Needs >1 jax device; hangs at the default 1 device, so gated behind --runmultidevice.
 # Run via `make test-multidevice` (sets XLA_FLAGS for simulated CPU devices). See conftest.
@@ -20,7 +20,7 @@ pytestmark = pytest.mark.multidevice
 
 
 def test_shard_batch_preserves_global_data():
-    mesh = dp_mesh()
+    mesh = hsdp_mesh()
     n = mesh.devices.size
     B = 8 * n
     full = jax.random.normal(jax.random.PRNGKey(0), (3, B, 5))
@@ -32,7 +32,7 @@ def test_shard_batch_preserves_global_data():
 
 
 def test_shard_batch_requires_divisible_batch():
-    mesh = dp_mesh()
+    mesh = hsdp_mesh()
     n = mesh.devices.size
     if n == 1:
         return  # any batch divides 1
@@ -48,8 +48,9 @@ def test_jitted_sharded_inits_match_eager_values():
     """`init_*_placed` (model-owned `.shardings`) must be a placement-only change: same
     values as the host (unsharded) init fns (threefry is partitionable, so generating under
     jit with `out_shardings` cannot perturb the stream — only op fusion can reassociate the
-    scaling, SPEC D4: rel ~1e-7), with the expected per-site placements (V shards C on axis
-    1, U on axis 0) — for a heterogeneous-C site set spanning attention and MLP matrices."""
+    scaling, SPEC D4: rel ~1e-7), with the expected pure-HSDP placements (V FSDP d_in on
+    `fsdp`, U FSDP d_out on `fsdp`, C never sharded) — for a heterogeneous-C site set
+    spanning attention and MLP matrices."""
     from jax.sharding import NamedSharding
     from jax.sharding import PartitionSpec as P
 
@@ -69,8 +70,12 @@ def test_jitted_sharded_inits_match_eager_values():
     )
     from param_decomp.tests.test_llama8b import _tiny_cfg
 
-    mesh = dp_mesh()
-    n = mesh.devices.size
+    # The HSDP mesh `(replicate, fsdp)`: on the n-device CPU sim with n not a multiple of 8,
+    # `fsdp` takes the full count and `replicate` is 1. V FSDP-shards d_in on `fsdp`, U FSDP
+    # d_out on `fsdp`; C is never sharded. The tiny target's matrix dims (n_embd=32,
+    # n_intermediate=64, qkv head dims) all tile the sim device counts (1/2/4).
+    n = jax.device_count()
+    mesh = hsdp_mesh()
     cfg = _tiny_cfg()
     sites = llama_site_specs(
         cfg,
@@ -83,30 +88,35 @@ def test_jitted_sharded_inits_match_eager_values():
             )
         ),
     )
-    # Placement is MODEL-OWNED and uniform across mesh sizes: V/U always declare their C
-    # axis sharded (`P(None,"dp")` / `P("dp",None)`); at n==1 the dp axis has size 1 so it
-    # is trivially divisible and effectively replicated, but the SPEC is still C-sharded.
+    # Placement is MODEL-OWNED and true ÷N ZeRO-1: V shards d_in over the FULL mesh, C
+    # replicated (`P(("replicate","fsdp"), None)`); U shards d_out over the full mesh, C
+    # replicated (`P(None, ("replicate","fsdp"))`). No q/k/v exception (C is never on a mesh
+    # axis). The master + Adam state thus shard ÷(replicate·fsdp) = ÷N.
+    full = ("replicate", "fsdp")
     vu_placed = init_decomp_vu_placed(sites, jax.random.PRNGKey(1), mesh)
     vu_eager = init_decomp_vu(sites, jax.random.PRNGKey(1))
     for spec in sites:
         V, U = vu_placed.site(spec.name)
         assert isinstance(V.sharding, NamedSharding) and isinstance(U.sharding, NamedSharding)
-        assert V.sharding.spec == P(None, "dp"), spec.name
-        assert U.sharding.spec == P("dp", None), spec.name
+        assert V.sharding.spec == P(full, None), (spec.name, V.sharding.spec)
+        assert U.sharding.spec == P(None, full), (spec.name, U.sharding.spec)
     for got, want in zip(jax.tree.leaves(vu_placed), jax.tree.leaves(vu_eager), strict=True):
         assert got.shape == want.shape and got.dtype == want.dtype
         assert jnp.allclose(jnp.asarray(got), want, rtol=1e-6, atol=0)
 
-    # A declared shard axis that does NOT tile the mesh is a loud crash inside `.shardings`
-    # (fail-fast), not a silent replicate. (Only observable at n > 1.)
+    # A declared ÷N shard dim that does NOT tile the device count is a loud crash inside
+    # `.shardings` (fail-fast), not a silent replicate. (Only observable at n > 1.)
     if n > 1:
-        indivisible = llama_site_specs(cfg, (SiteC("layers.2.mlp.gate_proj", n + 1),))
+        from param_decomp.components import SiteSpec
+
+        # d_in = n+1 (does not tile N=n) -> DecompVU.shardings must crash.
+        indivisible = (SiteSpec("layers.2.mlp.gate_proj", n + 1, 8 * n, 16),)
         try:
             init_decomp_vu_placed(indivisible, jax.random.PRNGKey(1), mesh)
         except AssertionError:
             pass
         else:
-            raise AssertionError("expected a non-dividing C to fail in DecompVU.shardings")
+            raise AssertionError("expected a non-dividing d_in to fail in DecompVU.shardings")
 
     first_block = min(int(s.name.split(".")[1]) for s in sites)
     arch = ChunkwiseTransformerCIArch(
@@ -128,25 +138,35 @@ def test_jitted_sharded_inits_match_eager_values():
     site_names = tuple(s.name for s in sites)
     site_Cs = tuple(s.C for s in sites)
     src_sharded = init_sources_sharded(
-        site_names, site_Cs, 16, SCScope(), 1, jax.random.PRNGKey(3), mesh
+        site_names, site_Cs, 16, SCScope(), 1, jnp.float32, jax.random.PRNGKey(3), mesh
     )
-    src_eager = init_persistent_sources(site_names, site_Cs, (1, 16), jax.random.PRNGKey(3))
+    src_eager = init_persistent_sources(
+        site_names, site_Cs, (1, 16), jnp.float32, jax.random.PRNGKey(3)
+    )
     for name in site_names:
         src_sharding = src_sharded[name].sharding
         assert isinstance(src_sharding, NamedSharding)
         assert src_sharding.spec == P()
         assert jnp.allclose(jnp.asarray(src_sharded[name]), src_eager[name], rtol=1e-6, atol=0)
 
-    # bsc: one source per batch element, batch-sharded over dp (axis 0), no cross-rank sync.
+    # bsc: one source per batch element, batch-sharded over the full mesh (axis 0), no
+    # cross-rank sync.
     bsc_global_batch = 4 * n
     src_bsc = init_sources_sharded(
-        site_names, site_Cs, 16, BSCScope(), bsc_global_batch, jax.random.PRNGKey(3), mesh
+        site_names,
+        site_Cs,
+        16,
+        BSCScope(),
+        bsc_global_batch,
+        jnp.float32,
+        jax.random.PRNGKey(3),
+        mesh,
     )
     for name, C in zip(site_names, site_Cs, strict=True):
         assert src_bsc[name].shape == (bsc_global_batch, 16, C + 1), name
         bsc_sharding = src_bsc[name].sharding
         assert isinstance(bsc_sharding, NamedSharding)
-        assert bsc_sharding.spec == P("dp", None, None), name
+        assert bsc_sharding.spec == P(("replicate", "fsdp"), None, None), name
 
 
 def test_fresh_pgd_c_bc_sources_are_replica_identical():
@@ -168,7 +188,7 @@ def test_fresh_pgd_c_bc_sources_are_replica_identical():
     from param_decomp.adversary import init_fresh_pgd_sources
     from param_decomp.components import SiteSpec
 
-    mesh = dp_mesh()
+    mesh = hsdp_mesh()
     n = mesh.devices.size
     batch = 4 * n
     seq = 7

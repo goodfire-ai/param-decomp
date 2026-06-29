@@ -52,7 +52,7 @@ from param_decomp.run import _ensure_global
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.targets.llama8b import llama_site_specs, mlp_family_site_cs
 from param_decomp.targets.llama8b_sharding import (
-    dp_mesh,
+    hsdp_mesh,
     init_ci_fn_placed,
     init_decomp_vu_placed,
     init_sources_sharded,
@@ -81,18 +81,25 @@ def _persistent_cfg(name: str | None) -> PersistentPGDReconLossConfig:
 
 
 def _build_sharded(seed: int):
-    """A TrainState placed exactly as `init_train_state` places a production run: V/U +
-    their Adam moments C-sharded over `dp`, sources + their Adam moments replicated, with
-    TWO persistent terms. `C=8` so the C axis tiles a 4-device mesh."""
-    mesh = dp_mesh()
+    """A TrainState placed exactly as `init_train_state` places a production run on the 2-D
+    `(replicate, fsdp)` HSDP mesh: V/U + their Adam moments sharded ÷N over the FULL mesh
+    (V d_in, U d_out; C replicated), the CI fn ÷N over the full mesh (d_model), sources + their
+    Adam moments replicated, with TWO persistent terms. On the 4-device sim: `replicate=1,
+    fsdp=4` (N=4); `C=8` and the V d_in / U d_out tile N."""
+    mesh = hsdp_mesh()
     cfg = _tiny_cfg()
     C, seq = 8, 16
     sites = llama_site_specs(cfg, mlp_family_site_cs(3, 4, C))
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
 
-    first_block = min(int(s.name.split(".")[1]) for s in lm.sites)
+    by_layer: dict[int, list[str]] = {}
+    for name in lm.site_names:
+        by_layer.setdefault(int(name.split(".")[1]), []).append(name)
     ci_arch = ChunkwiseTransformerCIArch(
-        chunks=(Chunk(input_taps=(f"resid.{first_block}",), output_sites=lm.site_names),),
+        chunks=tuple(
+            Chunk(input_taps=(f"resid.{layer}",), output_sites=tuple(names))
+            for layer, names in sorted(by_layer.items())
+        ),
         input_dim=cfg.n_embd,
         d_model=16,
         n_blocks=2,
@@ -114,6 +121,7 @@ def _build_sharded(seed: int):
             seq,
             SCScope(),
             mesh.devices.size,
+            jnp.float32,
             jax.random.fold_in(jax.random.PRNGKey(seed + 2), i),
             mesh,
         )
@@ -142,7 +150,7 @@ def _build_sharded(seed: int):
         (
             FaithfulnessLossConfig(coeff=1e5),
             ImportanceMinimalityLossConfig(
-                coeff=5e-6, pnorm=2.0, beta=0.2,
+                coeff=5e-6, pnorm=2.0, 
                 p_anneal_start_frac=0.0, p_anneal_final_p=0.4, p_anneal_end_frac=1.0,
             ),
             ChunkwiseSubsetReconLossConfig(routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=3, n_samples=1),
@@ -150,20 +158,20 @@ def _build_sharded(seed: int):
         ),
         lm.site_names,
     )  # fmt: skip
-    assert tuple(persistent_configs(loss_terms)) == PERSISTENT_TERMS, loss_terms
+    assert tuple(persistent_configs(loss_terms.recon)) == PERSISTENT_TERMS, loss_terms
 
     step = make_train_step(
         lm=lm,
-        loss_terms=loss_terms,
+        losses=loss_terms,
         components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
         total_steps=100,
-        remat_recon_forwards=True, mesh=mesh,
+        remat_recon_forwards=True, remat_ci_fn=False, mesh=mesh,
     )  # fmt: skip
-    resid = jax.device_put(
-        jax.random.normal(jax.random.PRNGKey(9), (4, seq, cfg.n_embd)) * 0.5,
-        NamedSharding(mesh, jax.sharding.PartitionSpec("dp")),
+    tokens = jax.device_put(
+        jax.random.randint(jax.random.PRNGKey(9), (4, seq), 0, cfg.vocab_size),
+        NamedSharding(mesh, jax.sharding.PartitionSpec(("replicate", "fsdp"))),
     )
-    return lm, state, step, resid
+    return lm, state, step, tokens
 
 
 def _assert_moments_present(adversaries: dict[str, PersistentAdversary]) -> None:
@@ -218,10 +226,17 @@ def test_sharded_roundtrip_persists_source_moments(tmp_path: Path):
         assert np.array_equal(np.asarray(saved), np.asarray(got))
         assert got.sharding == ref.sharding, (got.sharding, ref.sharding)
 
-    # SPEC S22: the restored state continues the EXACT trajectory.
+    # SPEC S22: the restored state continues the trajectory. To fp tolerance, not bit-
+    # identically: `state` and `loaded` carry distinct-but-equivalent shardings, so the step
+    # jits to distinct executables, and the FSDP V all-gather/reduce is not bit-reproducible
+    # — both reassociate the same math (observed rel ~1e-7).
     state_cont, m_cont = step(lm, state, resid, jax.random.PRNGKey(100))
     loaded_cont, m_load = step(lm, loaded, resid, jax.random.PRNGKey(100))
     for k in m_cont:
-        assert float(m_cont[k]) == float(m_load[k]), k
+        assert np.allclose(float(m_cont[k]), float(m_load[k]), rtol=1e-5, atol=1e-6), (
+            k,
+            float(m_cont[k]),
+            float(m_load[k]),
+        )
     for a, b in zip(jax.tree.leaves(state_cont), jax.tree.leaves(loaded_cont), strict=True):
-        assert np.array_equal(np.asarray(a), np.asarray(b))
+        assert np.allclose(np.asarray(a), np.asarray(b), rtol=1e-5, atol=1e-6)

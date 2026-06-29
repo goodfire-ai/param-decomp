@@ -26,13 +26,10 @@ trained model's; output probs are fp32 from the fp32-upcast frozen forward.
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jax.sharding import NamedSharding
-from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, Int
 
 from param_decomp.built_run import BuiltRun
@@ -41,18 +38,14 @@ from param_decomp.ci_fn import CIFn
 from param_decomp.components import DecompVU
 from param_decomp.lm import DecomposedModel
 from param_decomp.run_state import build_optimizers, init_train_state
-from param_decomp.sharding import dp_mesh, place_via_shardings
+from param_decomp.sharding import hsdp_mesh, place_via_shardings
 from param_decomp.targets import llama_simple_mlp
 from param_decomp.targets.llama8b import (
-    first_decomposed_layer,
     llama31_8b_config,
     llama_site_specs,
     load_decomposed_lm_from_hf,
-    load_prefix_from_hf,
-    prefix_residual,
 )
 from param_decomp.targets.llama8b_sharding import place_target
-from param_decomp.targets.target_aliases import AnyPrefix
 from param_decomp.train import COMPUTE_DT, TrainState, cast_floating
 from param_decomp_lab.experiments.lm.config import (
     LlamaSimpleMLPTargetConfig,
@@ -71,13 +64,11 @@ class HarvestForward:
     output_probs: Float[Array, "B T vocab"]
 
 
-def build_target(
-    cfg: BuiltRun, mesh: jax.sharding.Mesh
-) -> tuple[DecomposedModel, AnyPrefix, Callable[[Any, Any], jax.Array], int]:
-    """`(lm, prefix, prefix_residual_fn, vocab_size)` for the run's target config. The `lm`
-    (an `eqx.Module`) IS the frozen target — it carries the suffix weights as fields. SimpleMLP
-    reads its local pretrain cache (no network); llama8b reads the HF snapshot (frozen bf16
-    weights + fp32-compute, matching `run.py::main`).
+def build_target(cfg: BuiltRun, mesh: jax.sharding.Mesh) -> tuple[DecomposedModel, int]:
+    """`(lm, vocab_size)` for the run's target config. The `lm` (an `eqx.Module`) IS the
+    frozen target — it carries the full model weights (embedding included) as fields and
+    embeds its token input internally. SimpleMLP reads its local pretrain cache (no network);
+    llama8b reads the HF snapshot (frozen bf16 weights + fp32-compute, matching `run.py::main`).
 
     LM-only: harvest/slow-eval over the toy (TMS/ResidMLP) targets is not wired — those
     validate via their in-loop target-CI metric in the lab provider, not this path."""
@@ -90,26 +81,14 @@ def build_target(
                 cache_dir, simple_cfg, sites, jnp.bfloat16
             )
             lm = place_via_shardings(loaded_lm, loaded_lm.shardings(mesh))
-            first_layer = llama_simple_mlp.first_decomposed_layer(lm.site_names)
-            prefix = llama_simple_mlp.replicate_prefix(
-                llama_simple_mlp.load_prefix_from_pretrain_cache(
-                    cache_dir, simple_cfg, first_layer, jnp.bfloat16
-                ),
-                mesh,
-            )
-            return lm, prefix, llama_simple_mlp.prefix_residual, simple_cfg.vocab_size
+            return lm, simple_cfg.vocab_size
         case TargetConfig():
             llama_cfg = llama31_8b_config()
             sites = llama_site_specs(llama_cfg, cfg.target.sites)
             lm = place_target(
                 load_decomposed_lm_from_hf(cfg.target.model_name, llama_cfg, sites), mesh
             )
-            first_layer = first_decomposed_layer(lm.site_names)
-            prefix = jax.device_put(
-                load_prefix_from_hf(cfg.target.model_name, llama_cfg, first_layer),
-                NamedSharding(mesh, P()),
-            )
-            return lm, prefix, prefix_residual, llama_cfg.vocab_size
+            return lm, llama_cfg.vocab_size
         case _:
             raise AssertionError(f"build_target is LM-only; got target {type(cfg.target).__name__}")
 
@@ -135,9 +114,8 @@ class LoadedJaxRun:
     config: BuiltRun
     vocab_size: int
     _state: TrainState
-    _prefix: AnyPrefix
     _forward: Callable[
-        [DecomposedModel, AnyPrefix, DecompVU, CIFn, Int[Array, "B T"]],
+        [DecomposedModel, DecompVU, CIFn, Int[Array, "B T"]],
         tuple[dict[str, Array], dict[str, Array], Array],
     ]
 
@@ -155,7 +133,7 @@ class LoadedJaxRun:
         ci_fn = self._state.ci_fn
         assert isinstance(ci_fn, CIFn), "harvest is the transformer-CI-fn (LM) path only"
         lower_leaky_ci, component_acts, output_probs = self._forward(
-            self.lm, self._prefix, self._state.components, ci_fn, token_ids
+            self.lm, self._state.components, ci_fn, token_ids
         )
         return HarvestForward(
             lower_leaky_ci=lower_leaky_ci,
@@ -167,8 +145,8 @@ class LoadedJaxRun:
 def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
     """Open the run at `run_dir`; restore checkpoint `step` (latest if None)."""
     cfg = load_run_dir_config(run_dir)
-    mesh = dp_mesh()
-    lm, prefix, prefix_residual_fn, vocab_size = build_target(cfg, mesh)
+    mesh = hsdp_mesh()
+    lm, vocab_size = build_target(cfg, mesh)
 
     opt_vu, opt_ci, _ = build_optimizers(cfg.pd)
     init_key, src_key = jax.random.split(jax.random.PRNGKey(cfg.pd.seed))
@@ -189,25 +167,22 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
     site_names = lm.site_names
     u_norms = _u_norms(state.components, site_names)
 
-    # `model` is the filter_jit ARG (frozen weights traced, not baked); `prefix` rides as a
-    # captured constant here — it is a forward-only harvest helper, not in any gradient graph,
-    # but threading it keeps it off the HLO too.
+    # `model` is the filter_jit ARG (frozen weights traced, not baked). It embeds the token
+    # ids internally — the harvest forward feeds tokens straight in, no prefix.
     @eqx.filter_jit
     def forward(
         model: DecomposedModel,
-        prefix_: AnyPrefix,
         components: DecompVU,
         ci_fn: CIFn,
         token_ids: Int[Array, "B T"],
     ) -> tuple[dict[str, Array], dict[str, Array], Array]:
-        residual = prefix_residual_fn(prefix_, token_ids)
-        clean_output = model.clean_output(residual)
-        taps = model.read_activations(residual, ci_fn.input_names)
-        site_inputs = model.read_activations(residual, site_names)
+        clean_output = model.clean_output(token_ids)
+        taps = model.read_activations(token_ids, ci_fn.input_names)
+        site_inputs = model.read_activations(token_ids, site_names)
 
         components_bf16 = cast_floating(components, COMPUTE_DT)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
-        lower_ci = ci_fn_bf16(taps).lower
+        lower_ci = ci_fn_bf16(taps, remat=False).lower
 
         component_acts = {}
         for site in site_names:
@@ -228,7 +203,6 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
         config=cfg,
         vocab_size=vocab_size,
         _state=state,
-        _prefix=prefix,
         _forward=forward,
     )
 

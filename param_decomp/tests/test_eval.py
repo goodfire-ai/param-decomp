@@ -72,6 +72,9 @@ class _PositionlessStub(eqx.Module):
         del resid, wanted
         raise AssertionError("positionless stub fn must not be called")
 
+    def prepare_compute_weights(self, vu: Any) -> Any:
+        return vu
+
     def masked_output(
         self,
         vu: Any,
@@ -81,8 +84,10 @@ class _PositionlessStub(eqx.Module):
         routes: Any,
         live: tuple[str, ...],
         has_delta: bool,
+        *,
+        remat: bool,
     ) -> Any:
-        del vu, resid, masks, delta_masks, routes, live, has_delta
+        del vu, resid, masks, delta_masks, routes, live, has_delta, remat
         raise AssertionError("positionless stub fn must not be called")
 
     def masked_site_outputs(
@@ -134,7 +139,6 @@ def test_eval_step_keys_identities_and_determinism():
 
     b, t = 2, 16
     token_ids = jax.random.randint(jax.random.PRNGKey(3), (b, t), 0, cfg.vocab_size)
-    residual = jax.random.normal(jax.random.PRNGKey(4), (b, t, cfg.n_embd)) * 0.5
 
     # rounding_threshold=-1 makes the rounded mask all-ones == the unmasked variant;
     # ci_alive_threshold=-1 makes every component alive -> L0 == C exactly.
@@ -146,7 +150,7 @@ def test_eval_step_keys_identities_and_determinism():
         pgd=None,
         mesh=None,
     )
-    out = eval_step(lm, vu, ci_fn, token_ids, residual, jax.random.PRNGKey(5))
+    out = eval_step(lm, vu, ci_fn, token_ids, jax.random.PRNGKey(5))
 
     variants = ("ci_masked", "unmasked", "stoch_masked", "random_masked", "rounded_masked")
     expected_keys = (
@@ -170,9 +174,9 @@ def test_eval_step_keys_identities_and_determinism():
         assert float(out[f"l0/-1.0_{site}"]) == C
 
     # deterministic in the key; key-independent variants unchanged under a new key
-    out_same = eval_step(lm, vu, ci_fn, token_ids, residual, jax.random.PRNGKey(5))
+    out_same = eval_step(lm, vu, ci_fn, token_ids, jax.random.PRNGKey(5))
     assert all(jnp.array_equal(out[k], out_same[k]) for k in out)
-    out_other = eval_step(lm, vu, ci_fn, token_ids, residual, jax.random.PRNGKey(6))
+    out_other = eval_step(lm, vu, ci_fn, token_ids, jax.random.PRNGKey(6))
     for variant in ("ci_masked", "unmasked", "rounded_masked", "zero_masked"):
         assert jnp.array_equal(out[f"ce_kl/kl_{variant}"], out_other[f"ce_kl/kl_{variant}"])
     assert not jnp.array_equal(out["ce_kl/kl_stoch_masked"], out_other["ce_kl/kl_stoch_masked"])
@@ -185,7 +189,7 @@ def test_eval_step_keys_identities_and_determinism():
         pgd=None,
         mesh=None,
     )
-    out_dead = eval_step_dead(lm, vu, ci_fn, token_ids, residual, jax.random.PRNGKey(5))
+    out_dead = eval_step_dead(lm, vu, ci_fn, token_ids, jax.random.PRNGKey(5))
     for site in lm.site_names:
         assert float(out_dead[f"l0/1.5_{site}"]) == 0
 
@@ -204,7 +208,6 @@ def test_eval_step_fresh_pgd_probe():
     ci_fn = _build_ci_fn(lm, cfg.n_embd, jax.random.PRNGKey(2))
     b, t = 2, 16
     token_ids = jax.random.randint(jax.random.PRNGKey(3), (b, t), 0, cfg.vocab_size)
-    residual = jax.random.normal(jax.random.PRNGKey(4), (b, t, cfg.n_embd)) * 0.5
 
     ascended = make_eval_step(
         lm,
@@ -222,15 +225,15 @@ def test_eval_step_fresh_pgd_probe():
         pgd=EvalPGDConfig(n_steps=0, step_size=0.1),
         mesh=None,
     )
-    out = ascended(lm, vu, ci_fn, token_ids, residual, jax.random.PRNGKey(5))
-    out0 = unascended(lm, vu, ci_fn, token_ids, residual, jax.random.PRNGKey(5))
+    out = ascended(lm, vu, ci_fn, token_ids, jax.random.PRNGKey(5))
+    out0 = unascended(lm, vu, ci_fn, token_ids, jax.random.PRNGKey(5))
 
     assert "loss/PGDReconLoss" in out
     assert jnp.isfinite(out["loss/PGDReconLoss"])
     assert float(out["loss/PGDReconLoss"]) >= float(out0["loss/PGDReconLoss"]), (
         "8 sign-ascent steps must not be less adversarial than the raw random source"
     )
-    out_same = ascended(lm, vu, ci_fn, token_ids, residual, jax.random.PRNGKey(5))
+    out_same = ascended(lm, vu, ci_fn, token_ids, jax.random.PRNGKey(5))
     assert jnp.array_equal(out["loss/PGDReconLoss"], out_same["loss/PGDReconLoss"])
 
 
@@ -250,9 +253,9 @@ def test_eval_step_fresh_pgd_probe_device_count_invariant():
     `XLA_FLAGS=--xla_force_host_platform_device_count=4`.
     """
     from param_decomp.components import init_decomp_vu
-    from param_decomp.sharding import dp_mesh, shard_batch
+    from param_decomp.sharding import hsdp_mesh
 
-    mesh = dp_mesh()
+    mesh = hsdp_mesh()
     n_dev = mesh.devices.size
 
     cfg = _tiny_cfg()
@@ -263,7 +266,6 @@ def test_eval_step_fresh_pgd_probe_device_count_invariant():
 
     b, t = 4 * n_dev, 16
     token_ids = jax.random.randint(jax.random.PRNGKey(3), (b, t), 0, cfg.vocab_size)
-    residual = jax.random.normal(jax.random.PRNGKey(4), (b, t, cfg.n_embd)) * 0.5
 
     single_step = make_eval_step(
         lm, rounding_threshold=0.0, ci_alive_threshold=0.0,
@@ -274,10 +276,8 @@ def test_eval_step_fresh_pgd_probe_device_count_invariant():
         l0_group_patterns=None, pgd=EvalPGDConfig(n_steps=8, step_size=0.1), mesh=mesh,
     )  # fmt: skip
 
-    out_single = single_step(lm, vu, ci_fn, token_ids, residual, jax.random.PRNGKey(5))
-    out_sharded = sharded_step(
-        lm, vu, ci_fn, token_ids, shard_batch(residual, mesh, batch_axis=0), jax.random.PRNGKey(5)
-    )
+    out_single = single_step(lm, vu, ci_fn, token_ids, jax.random.PRNGKey(5))
+    out_sharded = sharded_step(lm, vu, ci_fn, token_ids, jax.random.PRNGKey(5))
 
     single_kl = float(out_single["loss/PGDReconLoss"])
     sharded_kl = float(out_sharded["loss/PGDReconLoss"])
@@ -302,14 +302,13 @@ def test_eval_step_l0_groups_sum_member_sites():
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     ci_fn = _build_ci_fn(lm, cfg.n_embd, jax.random.PRNGKey(2))
     token_ids = jax.random.randint(jax.random.PRNGKey(3), (2, 16), 0, cfg.vocab_size)
-    residual = jax.random.normal(jax.random.PRNGKey(4), (2, 16, cfg.n_embd)) * 0.5
 
     groups = {"layer_4": ("layers.4.*",), "total": ("*",)}
     eval_step = make_eval_step(
         lm, rounding_threshold=0.0, ci_alive_threshold=0.0,
         l0_group_patterns=groups, pgd=None, mesh=None,
     )  # fmt: skip
-    out = eval_step(lm, vu, ci_fn, token_ids, residual, jax.random.PRNGKey(5))
+    out = eval_step(lm, vu, ci_fn, token_ids, jax.random.PRNGKey(5))
     layer4_sites = [s for s in lm.site_names if s.startswith("layers.4.")]
     expected_layer4 = sum(float(out[f"l0/0.0_{s}"]) for s in layer4_sites)
     expected_total = sum(float(out[f"l0/0.0_{s}"]) for s in lm.site_names)

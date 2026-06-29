@@ -21,6 +21,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import random
+from jax.typing import DTypeLike
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from param_decomp.components import SiteSpec
@@ -40,16 +41,20 @@ def init_persistent_sources(
     site_names: tuple[str, ...],
     site_component_counts: tuple[int, ...],
     leading_shape: tuple[int, ...],
+    source_dtype: DTypeLike,
     key: PRNGKeyArray,
 ) -> dict[str, Array]:
     """Per-site PPGD sources `(*leading_shape, C+1)`, init U[0,1] (SPEC S15; clamp
     parameterization); trailing channel = the weight-delta source. `leading_shape` spells
     the scope over the model's leading axes (SPEC §1.6): for an LM `(1, T)` for `sc`
     (batch axis collapsed -> shared across batch, free per position) and `(B, T)` for `bsc`
-    (independent per batch element and position)."""
+    (independent per batch element and position).
+
+    `source_dtype` is the resident storage dtype (SPEC N1 fp32 for oracle parity; bf16 to
+    halve footprint). Drawing in fp32 then casting keeps the U[0,1] draw dtype-stable."""
     keys = random.split(key, len(site_names))
     return {
-        name: random.uniform(k, (*leading_shape, c + 1), jnp.float32)
+        name: random.uniform(k, (*leading_shape, c + 1), jnp.float32).astype(source_dtype)
         for name, c, k in zip(site_names, site_component_counts, keys, strict=True)
     }
 
@@ -108,17 +113,19 @@ def sources_adam_ascend_project(
     The variation point `SRC_STEP` (SPEC §6): a `sign` variant would replace the Adam
     update with `lr * sign(grad)` (stateless) — same projection contract."""
     step_count = adam_state.step_count + 1.0
-    m = {s: adam.beta1 * adam_state.m[s] + (1 - adam.beta1) * sources_grad[s] for s in sources}
-    v = {
-        s: adam.beta2 * adam_state.v[s] + (1 - adam.beta2) * sources_grad[s] * sources_grad[s]
-        for s in sources
-    }
+    # `sources_grad` arrives in the masked-forward compute dtype (bf16); cast to the moment
+    # dtype so the persistent `m`/`v` keep their declared storage dtype across steps.
+    grad = {s: sources_grad[s].astype(adam_state.m[s].dtype) for s in sources}
+    m = {s: adam.beta1 * adam_state.m[s] + (1 - adam.beta1) * grad[s] for s in sources}
+    v = {s: adam.beta2 * adam_state.v[s] + (1 - adam.beta2) * grad[s] * grad[s] for s in sources}
     bias_correction1 = 1 - adam.beta1**step_count
     bias_correction2 = 1 - adam.beta2**step_count
     new_sources = {
         s: jnp.clip(
             sources[s]
-            + lr * (m[s] / bias_correction1) / (jnp.sqrt(v[s] / bias_correction2) + adam.eps),
+            + (
+                lr * (m[s] / bias_correction1) / (jnp.sqrt(v[s] / bias_correction2) + adam.eps)
+            ).astype(sources[s].dtype),
             0.0,
             1.0,
         )

@@ -50,7 +50,9 @@ pd:
   - type: ImportanceMinimalityLoss
     coeff: 0.000001
     pnorm: 2.0
-    beta: 0.5
+    frequency:
+      coeff: 5.0e-07
+      reference_token_count: 32768
     p_anneal_start_frac: 0.0
     p_anneal_final_p: 0.4
     p_anneal_end_frac: 1.0

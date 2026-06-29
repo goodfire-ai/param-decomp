@@ -18,9 +18,6 @@ from param_decomp.configs import (
     PersistentPGDReconLossConfig,
 )
 from param_decomp.recon import (
-    FaithfulnessTerm,
-    ImportanceMinimalityTerm,
-    ReconLossTerm,
     build_loss_terms,
     persistent_configs,
 )
@@ -76,7 +73,7 @@ def test_legacy_top_level_n_mask_samples_pushes_onto_stochastic_terms():
         "n_mask_samples": 4,
         "loss_metrics": [
             {"type": "FaithfulnessLoss", "coeff": 1.0},
-            {"type": "ImportanceMinimalityLoss", "coeff": 1.0, "pnorm": 2.0, "beta": 0.0},
+            {"type": "ImportanceMinimalityLoss", "coeff": 1.0, "pnorm": 2.0},
             {"type": "StochasticReconLoss", "coeff": 1.0},
             {"type": "StochasticReconSubsetLoss", "coeff": 1.0, "n_mask_samples": 7},
         ],
@@ -94,18 +91,17 @@ def test_b128_config_converts():
     assert converted.run.run_name == "jax-l18-b128-cmp32-from-torch"
     assert converted.data is not None and converted.data.global_batch == 128
     assert converted.target.sites == mlp_family_site_cs(18, 18, 24576)
-    terms = build_loss_terms(
+    losses = build_loss_terms(
         converted.pd.loss_metrics, tuple(sc.name for sc in converted.target.sites)
     )
-    (faith,) = (t for t in terms if isinstance(t, FaithfulnessTerm))
-    (imp,) = (t for t in terms if isinstance(t, ImportanceMinimalityTerm))
+    faith, imp = losses.faith, losses.imp
     assert isinstance(imp.cfg, ImportanceMinimalityLossConfig)
     assert faith.coeff == 1e5 and imp.cfg.pnorm == 2.0
-    (ppgd,) = persistent_configs(terms).values()
+    (ppgd,) = persistent_configs(losses.recon).values()
     assert isinstance(ppgd, PersistentPGDReconLossConfig)
     assert ppgd.n_warmup_steps == 2
     assert converted.pd.components_optimizer.grad_clip_norm == 0.01
-    assert [t.name for t in terms if isinstance(t, ReconLossTerm)] == [
+    assert [t.name for t in losses.recon] == [
         "StochasticReconSubsetLoss",
         "PersistentPGDReconLoss",
     ]
@@ -133,7 +129,8 @@ def test_eval_block_maps_slow_tier_and_defers_offline_only_metrics(
                 "step_size": 0.1,
             },
             {"type": "CIHistograms", "n_batches_accum": 7},  # in-loop slow tier now
-            {"type": "ComponentActivationDensity", "ci_alive_threshold": 0.0},  # slow tier
+            # distinct cutoff: pins that density reads its OWN ci_alive_threshold, not CI_L0's
+            {"type": "ComponentActivationDensity", "ci_alive_threshold": 0.05},  # slow tier
             {"type": "IdentityCIError", "identity_ci": None, "dense_ci": None},  # in-loop slow
             {"type": "UVPlots", "identity_patterns": None, "dense_patterns": None},  # in-loop slow
         ],
@@ -143,7 +140,8 @@ def test_eval_block_maps_slow_tier_and_defers_offline_only_metrics(
     assert (cfg.eval.batch_size, cfg.eval.every, cfg.eval.n_steps) == (128, 1000, 1)
     assert (cfg.eval.slow_every, cfg.eval.slow_on_first_step) == (10000, True)
     assert cfg.eval.slow_n_batches_accum == 7  # read off the CIHistograms metric
-    assert cfg.eval.rounding_threshold == 0.0 and cfg.eval.ci_alive_threshold == 0.0
+    assert cfg.eval.rounding_threshold == 0.0
+    assert cfg.eval.l0_ci_alive_threshold == 0.0 and cfg.eval.density_ci_alive_threshold == 0.05
     assert cfg.eval.pgd is not None and (cfg.eval.pgd.n_steps, cfg.eval.pgd.step_size) == (20, 0.1)
     # the plot / permutation / UV / identity metrics all run in-loop — `_eval` accepts them
     # without raising, and nothing is deferred (no offline path)

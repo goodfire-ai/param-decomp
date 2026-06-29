@@ -68,7 +68,7 @@ class CIFnCallable(Protocol):
 
     input_names: tuple[str, ...]
 
-    def __call__(self, taps: dict[str, Array]) -> CI: ...
+    def __call__(self, taps: dict[str, Array], *, remat: bool) -> CI: ...
 
 
 @dataclass(frozen=True)
@@ -389,21 +389,39 @@ class ResidMLPDecomposedModel(eqx.Module):
         inputs = site_inputs(self.target, resid)
         return {k: inputs[k] for k in wanted}
 
+    def prepare_compute_weights(self, vu: DecompVU) -> DecompVU:
+        """Identity: ResidMLP weights are tiny + replicated, nothing to stack/gather/share."""
+        return vu
+
     def masked_output(
         self,
-        vu: DecompVU,
+        prepared: DecompVU,
         resid: Float[Array, "B d_embed"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
         routes: dict[str, Array] | None,
         live: tuple[str, ...],
         has_delta: bool,
+        *,
+        remat: bool,
     ) -> Array:
-        return masked_output(self.target, vu, resid, masks, delta_masks, routes, live, has_delta)
+        def forward(
+            vu: DecompVU,
+            resid: Array,
+            masks: dict[str, Array],
+            delta_masks: dict[str, Array],
+            routes: dict[str, Array] | None,
+        ) -> Array:
+            return masked_output(
+                self.target, vu, resid, masks, delta_masks, routes, live, has_delta
+            )
+
+        forward = jax.checkpoint(forward) if remat else forward
+        return forward(prepared, resid, masks, delta_masks, routes)
 
     def masked_site_outputs(
         self,
-        vu: DecompVU,
+        prepared: DecompVU,
         resid: Float[Array, "B d_embed"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -412,7 +430,7 @@ class ResidMLPDecomposedModel(eqx.Module):
         has_delta: bool,
     ) -> dict[str, Array]:
         return masked_site_outputs(
-            self.target, vu, resid, masks, delta_masks, routes, live, has_delta
+            self.target, prepared, resid, masks, delta_masks, routes, live, has_delta
         )
 
     def weight_deltas(self, vu: DecompVU) -> dict[str, Array]:
@@ -710,4 +728,4 @@ def single_feature_ci(
     """Feed the single-feature probe (embedded through `W_E`) and read the `lower_leaky`
     CI per site, `{site: [n_features, C]}`."""
     resid = single_feature_probe(n_features) @ lm.target.W_E
-    return ci_fn(lm.read_activations(resid, ci_fn.input_names)).lower
+    return ci_fn(lm.read_activations(resid, ci_fn.input_names), remat=False).lower

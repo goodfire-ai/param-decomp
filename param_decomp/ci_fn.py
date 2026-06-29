@@ -17,8 +17,10 @@ for bf16 compute.
 The chunkwise-transformer (`ChunkwiseTransformerCIFn`) is the LM impl: each chunk reads
 one or more residual taps (RMS-normed per tap, then concatenated) and emits CI for the
 matrix sites it covers, via an independent pre-norm bidirectional-RoPE transformer. The
-per-chunk transformers are stacked along a leading `n_chunks` axis and run under a single
-`eqx.filter_vmap`. The positionless toys use the MLP impls below (`LayerwiseMLPCIFn` /
+per-chunk transformers are stacked along a leading `n_chunks` axis and run under a
+`jax.lax.scan` over that axis (so the chunk iteration lowers as a loop — one chunk's FSDP
+weight gather live at a time, not all `n_chunks` hoisted into the flat entry computation).
+The positionless toys use the MLP impls below (`LayerwiseMLPCIFn` /
 `GlobalMLPCIFn`); every impl satisfies the same `CIFn` protocol and is equally core — the
 architectures differ by domain (sequence vs positionless), not by status.
 """
@@ -35,8 +37,7 @@ from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from param_decomp.components import SiteSpec
-from param_decomp.sharding import assert_divisible
-from vendored_jax.llama import apply_rope, attn_implementation, rms_norm, rope_cos_sin
+from vendored_jax.llama import apply_rope, rms_norm, rope_cos_sin
 
 CI_FN_RMS_EPS = float(jnp.finfo(jnp.float32).eps)
 """Matches torch's `F.rms_norm` default eps (`finfo(fp32).eps` ~1.19e-7); RMS upcasts to
@@ -106,7 +107,7 @@ class CIFn(Protocol):
     output_names: tuple[str, ...]
     expects_axes: tuple[str, ...]
 
-    def __call__(self, taps: dict[str, Array]) -> CI: ...
+    def __call__(self, taps: dict[str, Array], *, remat: bool) -> CI: ...
 
     def shardings(self, mesh: Mesh) -> "CIFn":
         """Per-leaf `dp` placement matching this CI fn's pytree structure (each array leaf
@@ -138,38 +139,35 @@ class CIBlock(eqx.Module):
     eps: float = eqx.field(static=True)
 
     def shardings(self, mesh: Mesh) -> "CIBlock":
-        """Megatron-style placement, with a leading un-sharded `n_chunks` axis (flat dp;
-        chunk-parallel out of scope). All arrays are stored `[n_chunks, ...]`.
+        """True ÷N ZeRO-1 PERSISTENCE layout (master + Adam m/v shard over the FULL mesh
+        `("replicate","fsdp")`); the leading `n_chunks` axis (axis 0) is UNSHARDED. Every
+        weight shards its `d_model` dim ÷N and replicates the head / mlp_hidden dim (no TP /
+        Megatron axis):
 
-        Attention col/row-parallel: qkv (`[nc, out, in]`) shard their OUTPUT (head) dim
-        (axis 1) so each device owns a head slab; the out-proj shards its INPUT dim (axis 2),
-        so the per-head attention output flows sharded and a single all-reduce closes it.
+        - qkv (`[nc, head_out, d_model_in]`): d_model ÷N, head replicated.
+        - out-proj (`[nc, d_model_out, head_in]`): d_model ÷N, head replicated.
+        - w1 up-proj (`[nc, d_model_in, mlp_hidden_out]`): d_model ÷N, mlp_hidden replicated.
+        - w2 down-proj (`[nc, mlp_hidden_in, d_model_out]`): d_model ÷N, mlp_hidden replicated.
 
-        MLP row-parallel: up-proj `w1 [nc, d_model, mlp_hidden]` shards its OUTPUT
-        (`mlp_hidden`, axis 2); down-proj `w2 [nc, mlp_hidden, d_model]` shards its INPUT
-        (`mlp_hidden`, axis 1). The hidden flows sharded; no intermediate gather. Biases
-        replicate."""
-        shard_axis1 = NamedSharding(mesh, P(None, "dp", None))
-        shard_axis2 = NamedSharding(mesh, P(None, None, "dp"))
+        Biases replicate. COMPUTE re-pins to `fsdp`-only before the chunk scan (the ZeRO-1
+        reconstruction, once/step in ENTRY — `ChunkwiseTransformerCIFn.__call__`), so the
+        per-chunk gather is intra-node NVLink. Asserts each ÷N dim tiles the device count."""
+        full = ("replicate", "fsdp")
+        din = NamedSharding(mesh, P(None, None, full))  # axis2 (d_model in) ÷N
+        dout = NamedSharding(mesh, P(None, full, None))  # axis1 (d_model out) ÷N
         repl = NamedSharding(mesh, P())
+        n = mesh.devices.size
         for w in (self.wq, self.wk, self.wv):
-            assert_divisible(w.shape[1], mesh, "CIBlock attn qkv out (head dim)")
-        assert_divisible(self.wo.shape[2], mesh, "CIBlock attn out-proj in (head dim)")
-        assert_divisible(self.w1.shape[2], mesh, "CIBlock mlp up-proj out (mlp_hidden)")
-        assert_divisible(self.w2.shape[1], mesh, "CIBlock mlp down-proj in (mlp_hidden)")
+            assert w.shape[2] % n == 0, f"CIBlock qkv in (d_model) {w.shape[2]} not ÷ N={n}"
+        assert self.wo.shape[1] % n == 0, (
+            f"CIBlock out-proj out (d_model) {self.wo.shape[1]} not ÷ N={n}"
+        )
+        assert self.w1.shape[1] % n == 0, f"CIBlock w1 in (d_model) {self.w1.shape[1]} not ÷ N={n}"
+        assert self.w2.shape[2] % n == 0, f"CIBlock w2 out (d_model) {self.w2.shape[2]} not ÷ N={n}"
         return eqx.tree_at(
             lambda b: (b.wq, b.wk, b.wv, b.wo, b.w1, b.b1, b.w2, b.b2),
             self,
-            (
-                shard_axis1,
-                shard_axis1,
-                shard_axis1,
-                shard_axis2,
-                shard_axis2,
-                repl,
-                shard_axis1,
-                repl,
-            ),
+            (din, din, din, dout, din, repl, dout, repl),
         )
 
     def __call__(self, x: Float[Array, "b t d"], inv_freq: Array) -> Array:
@@ -184,9 +182,12 @@ class CIBlock(eqx.Module):
         cos, sin = rope_cos_sin(inv_freq, t, x.dtype)
         q, k = apply_rope(q, k, cos, sin)
         qt, kt, vt = (einops.rearrange(a, "b nh t hd -> b t nh hd") for a in (q, k, v))
-        y = jax.nn.dot_product_attention(
-            qt, kt, vt, is_causal=False, implementation=attn_implementation()
-        )  # bidirectional
+        # xla (not cuDNN flash): the CI fn's attention weights are Megatron-sharded (heads on
+        # `tp`) under the 2-D mesh, and cuDNN's custom partitioner rejects that q/k/v layout
+        # ("Query, key and value should have same sharding"). The CI fn is small (low d_model,
+        # short seq) so the xla path's (B,H,T,T) score is tens of MB — no OOM, unlike the
+        # target's attention which keeps cuDNN flash. Bidirectional.
+        y = jax.nn.dot_product_attention(qt, kt, vt, is_causal=False, implementation="xla")
         x = x + einops.einsum(
             einops.rearrange(y, "b t nh hd -> b t (nh hd)"), self.wo, "b t i, o i -> b t o"
         )
@@ -216,8 +217,7 @@ class _ChunkMeta:
     """Per-chunk static routing, index-aligned with the stacked `chunks` leading axis."""
 
     input_taps: tuple[str, ...]  # taps to RMS-norm + concatenate as this chunk's input
-    output_sites: tuple[str, ...]  # output sites this chunk scores
-    c: tuple[int, ...]  # C per output site (splits the head's c_chunk slab)
+    output_sites: tuple[str, ...]  # output sites this chunk scores, in C-per-slot order
 
 
 @dataclass(frozen=True)
@@ -239,43 +239,113 @@ class ChunkwiseTransformerCIArch:
 
 class ChunkTransformer(eqx.Module):
     """ONE chunk: its (already RMS-normed, concatenated) input `[*leading, total_d_in]` →
-    `[*leading, c_chunk]` logits, via in_proj → RoPE blocks → head.
+    a TUPLE of per-output-site logits (`out` of `[*leading, C_j]` per site-slot j), via
+    in_proj → RoPE blocks → one output head PER site-slot.
+
+    One head per site-slot (`out_ws[j] [d_model, C_j]` / `out_bs[j] [C_j]`) instead of a
+    single glued `[d_model, ΣC]` head: each head's output IS that site's CI, born already
+    split per site (matching `x@V` / the mask, SPEC §4.1 `site_out`). Under pure HSDP the C
+    axis is replicated (not sharded), so the split is a pure layout convenience; it was
+    load-bearing under the prior TP layout (a tp-sharded glued ΣC axis sliced mid-site),
+    and is kept harmlessly.
 
     In the bundle every array below carries a leading `n_chunks` axis and the module is
-    run under `eqx.filter_vmap`, so this body is written for a single chunk."""
+    run under `jax.lax.scan` over that axis, so this body is written for a single chunk."""
 
     in_proj_w: Float[Array, "total_d_in d_model"]
     in_proj_b: Float[Array, " d_model"]
     blocks: list[CIBlock]
-    out_w: Float[Array, "d_model c_chunk"]
-    out_b: Float[Array, " c_chunk"]
+    out_ws: tuple[Float[Array, "d_model _C"], ...]
+    out_bs: tuple[Float[Array, " _C"], ...]
 
     def shardings(self, mesh: Mesh) -> "ChunkTransformer":
-        """Per-leaf `dp` placement, leading un-sharded `n_chunks` axis. `in_proj_w
-        [nc, total_d_in, d_model]` shards `d_model` (axis 2); `out_w [nc, d_model, c_chunk]`
-        shards `c_chunk` (axis 2); blocks delegate to `CIBlock.shardings`; biases replicate."""
-        shard_last = NamedSharding(mesh, P(None, None, "dp"))
+        """True ÷N ZeRO-1 PERSISTENCE layout (master + Adam shard over the FULL mesh); leading
+        `n_chunks` axis (axis 0) UNSHARDED. `in_proj_w [nc, total_d_in, d_model]`: d_model ÷N,
+        total_d_in replicated. Each `out_ws[j] [nc, d_model, C_j]`: d_model ÷N, C_j REPLICATED
+        (no TP axis — the CI output C is never sharded, so the mask multiply needs no reshard).
+        Blocks delegate to `CIBlock.shardings`; biases replicate. COMPUTE re-pins fsdp-only
+        before the chunk scan (`ChunkwiseTransformerCIFn.__call__`)."""
+        full = ("replicate", "fsdp")
+        dmodel_out = NamedSharding(mesh, P(None, None, full))  # axis2 (d_model out) ÷N
+        dmodel_in = NamedSharding(mesh, P(None, full, None))  # axis1 (d_model in) ÷N
         repl = NamedSharding(mesh, P())
-        assert_divisible(self.in_proj_w.shape[2], mesh, "ChunkTransformer in_proj_w d_model")
-        assert_divisible(self.out_w.shape[2], mesh, "ChunkTransformer out_w c_chunk")
+        n = mesh.devices.size
+        assert self.in_proj_w.shape[2] % n == 0, (
+            f"ChunkTransformer in_proj_w d_model {self.in_proj_w.shape[2]} not ÷ N={n}"
+        )
+        for slot, w in enumerate(self.out_ws):
+            assert w.shape[1] % n == 0, (
+                f"ChunkTransformer out_ws[{slot}] d_model {w.shape[1]} not ÷ N={n}"
+            )
         return eqx.tree_at(
-            lambda ct: (ct.in_proj_w, ct.in_proj_b, ct.blocks, ct.out_w, ct.out_b),
+            lambda ct: (ct.in_proj_w, ct.in_proj_b, ct.blocks, ct.out_ws, ct.out_bs),
             self,
-            (shard_last, repl, [b.shardings(mesh) for b in self.blocks], shard_last, repl),
+            (
+                dmodel_out,
+                repl,
+                [b.shardings(mesh) for b in self.blocks],
+                tuple(dmodel_in for _ in self.out_ws),
+                tuple(repl for _ in self.out_bs),
+            ),
         )
 
-    def __call__(self, x: Float[Array, "*leading total_d_in"], inv_freq: Array) -> Array:
+    def __call__(
+        self, x: Float[Array, "*leading total_d_in"], inv_freq: Array
+    ) -> tuple[Float[Array, "*leading _C"], ...]:
         x = einops.einsum(x, self.in_proj_w, "... i, i o -> ... o") + self.in_proj_b
         for block in self.blocks:
             x = block(x, inv_freq)
-        return einops.einsum(x, self.out_w, "... i, i o -> ... o") + self.out_b
+        return tuple(
+            einops.einsum(x, w, "... i, i o -> ... o") + b
+            for w, b in zip(self.out_ws, self.out_bs, strict=True)
+        )
+
+
+def _reconstruct_ci_compute_weights(chunks: "ChunkTransformer") -> "ChunkTransformer":
+    """The ZeRO-1 reconstruction for the CI fn: the stacked per-chunk weights arrive with
+    their `d_model` dim sharded ÷N over the FULL mesh (the master is `P(..., ("replicate",
+    "fsdp"), ...)`); reconstruct them to the `fsdp`-sharded (÷fsdp) COMPUTE layout here,
+    BEFORE the chunk scan, so the cross-`replicate` gather runs ONCE per step in ENTRY
+    (landing a SMALL ÷fsdp-resident weight stack, NOT the full CI fn) and the per-chunk scan
+    body gathers only on `fsdp` (intra-node NVLink), transiently. Cast to bf16 here so the
+    ÷fsdp-resident stack is half-size (no f32 full copy). Mirrors the `.shardings` axis
+    positions (leading `n_chunks` axis unsharded) with `"fsdp"` in place of the full-mesh
+    tuple. No-op off-mesh."""
+    if jax.sharding.get_abstract_mesh().empty:
+        return chunks
+    d_axis2 = P(None, None, "fsdp")  # d_model is axis2 (matmul input dim)
+    d_axis1 = P(None, "fsdp", None)  # d_model is axis1 (matmul output dim)
+
+    def pin(x: Array, spec: "P") -> Array:
+        return jax.lax.with_sharding_constraint(x.astype(jnp.bfloat16), spec)
+
+    pinned_blocks = [
+        eqx.tree_at(
+            lambda b: (b.wq, b.wk, b.wv, b.wo, b.w1, b.w2),
+            blk,
+            (pin(blk.wq, d_axis2), pin(blk.wk, d_axis2), pin(blk.wv, d_axis2),
+             pin(blk.wo, d_axis1), pin(blk.w1, d_axis2), pin(blk.w2, d_axis1)),
+        )
+        for blk in chunks.blocks
+    ]  # fmt: skip
+    return eqx.tree_at(
+        lambda ct: (ct.in_proj_w, ct.blocks, ct.out_ws),
+        chunks,
+        (
+            pin(chunks.in_proj_w, d_axis2),  # [nc, total_d_in, d_model] — d_model axis2 on fsdp
+            pinned_blocks,
+            tuple(pin(w, d_axis1) for w in chunks.out_ws),  # [nc, d_model, C_j] — d_model axis1
+        ),
+    )
 
 
 class ChunkwiseTransformerCIFn(eqx.Module):
-    """Per-chunk `ChunkTransformer`s stacked along a leading `n_chunks` axis, run under one
-    `eqx.filter_vmap`. Each chunk's input is its `chunk_input_taps` RMS-normed per tap and
-    concatenated. Requires homogeneous chunks (equal total input width and `c_chunk`) so
-    the stack is rectangular — asserted at init."""
+    """Per-chunk `ChunkTransformer`s stacked along a leading `n_chunks` axis, iterated by a
+    `jax.lax.scan` over that axis (lowers as a loop so one chunk's FSDP weight gather is live
+    at a time, not all `n_chunks` at once). Each chunk's input is its `chunk_input_taps`
+    RMS-normed per tap and concatenated. Requires homogeneous chunks (equal total input width
+    and an identical per-slot C tuple — same C-per-output-site ORDER) so the stack, including
+    the per-slot output heads, is rectangular — asserted at init."""
 
     chunks: ChunkTransformer  # arrays stacked along leading n_chunks
     inv_freq: Array  # shared across chunks (RoPE buffer); NOT mapped
@@ -287,7 +357,7 @@ class ChunkwiseTransformerCIFn(eqx.Module):
     expects_axes: tuple[str, ...] = eqx.field(static=True)
 
     def shardings(self, mesh: Mesh) -> "ChunkwiseTransformerCIFn":
-        """The stacked per-chunk transformer's Megatron layout (`ChunkTransformer.shardings`,
+        """The stacked per-chunk transformer's HSDP layout (`ChunkTransformer.shardings`,
         leading `n_chunks` axis un-sharded); `inv_freq` (a 1-D RoPE buffer) replicates."""
         return eqx.tree_at(
             lambda f: (f.chunks, f.inv_freq),
@@ -295,7 +365,7 @@ class ChunkwiseTransformerCIFn(eqx.Module):
             (self.chunks.shardings(mesh), NamedSharding(mesh, P())),
         )
 
-    def __call__(self, taps: dict[str, Array]) -> CI:
+    def __call__(self, taps: dict[str, Array], *, remat: bool) -> CI:
         per_chunk_in = [
             jnp.concatenate(
                 [_weightless_rms_norm(taps[k], self.eps) for k in m.input_taps], axis=-1
@@ -304,31 +374,76 @@ class ChunkwiseTransformerCIFn(eqx.Module):
         ]
         stacked_in = jnp.stack(per_chunk_in, axis=0)  # [n_chunks, *leading, total_d_in]
         inv_freq = jax.lax.stop_gradient(self.inv_freq)
-        run = eqx.filter_vmap(lambda ct, x: ct(x, inv_freq))
-        stacked_logits = run(self.chunks, stacked_in)  # [n_chunks, *leading, c_chunk]
-        return CI.from_logits(self._split(stacked_logits))
+        # ZeRO-1 reconstruction: the master shards d_model ÷N over the FULL mesh; pin the
+        # compute weights `fsdp`-ONLY here, BEFORE the chunk scan, so GSPMD gathers the
+        # `replicate` shard ONCE per step in ENTRY (off the hot path) and the per-chunk scan
+        # body gathers only on `fsdp` (intra-node NVLink). No-op off-mesh.
+        chunks = _reconstruct_ci_compute_weights(self.chunks)
+        # `lax.scan` (not `filter_vmap`) over the leading `n_chunks` axis so XLA lowers the
+        # chunk iteration as a loop: one chunk's FSDP weight all-gather (∝ ΣC/tp) is live at
+        # a time, then freed, instead of every chunk's gathered weights materialized at once
+        # (the vmap unrolls, hoisting all n_chunks gathers into the flat entry computation).
+        # Same math as the vmap — scan stacks per-iteration outputs exactly as vmap maps
+        # them; results match up to fp32 reassociation (XLA picks different matmul layouts).
+        chunk_arrays, chunk_static = eqx.partition(chunks, eqx.is_array)
 
-    def _split(self, stacked: Array) -> SiteDict:
-        """Static per-chunk, per-site split of the `[n_chunks, *leading, c_chunk]` slab."""
-        out: SiteDict = {}
+        def run_chunk(
+            _: None, scanned: tuple[ChunkTransformer, Array]
+        ) -> tuple[None, tuple[Array, ...]]:
+            chunk_array, chunk_input = scanned
+            chunk = eqx.combine(chunk_array, chunk_static)
+            return None, chunk(chunk_input, inv_freq)
+
+        # Per-CHUNK remat: checkpoint the scan BODY so the backward recomputes one chunk at a
+        # time, keeping only the carry — NOT all `n_chunks` chunks' attention scores + MLP
+        # hidden states stacked `[n_chunks, ...]`. (Whole-CI-fn checkpointing does not bound
+        # the scan: the recompute still stacks every chunk — the `[n_chunks, *, seq, seq]`
+        # f32 score slab that dominated the full-model step. Same fix shape as the target's
+        # per-layer remat.)
+        # Each per-slot head stacks over the chunk axis: `stacked_per_slot[j]` is
+        # `[n_chunks, *leading, C_j]`. No glued ΣC axis, so no slice — site `(chunk i, slot j)`
+        # is `stacked_per_slot[j][i]` directly (chunks are slot-homogeneous in C-per-site
+        # ORDER, asserted at init, so slot j carries one C_j across every chunk).
+        import os as _os
+
+        if _os.environ.get("PD_CI_BROADCAST", "") == "1":
+            # EXPERIMENT: broadcast all chunks at once (vmap, no loop) so XLA sees one network
+            # and consolidates the per-chunk cross-node grad reduces into one. Trades the scan's
+            # memory bound for fewer collectives — per-chunk remat still drops intermediates.
+            def run_chunk_v(chunk_array: ChunkTransformer, chunk_input: Array) -> tuple[Array, ...]:
+                chunk = eqx.combine(chunk_array, chunk_static)
+                return chunk(chunk_input, inv_freq)
+
+            fn = jax.checkpoint(run_chunk_v) if remat else run_chunk_v
+            stacked_per_slot = jax.vmap(fn)(chunk_arrays, stacked_in)
+        else:
+            # Per-CHUNK remat: checkpoint the scan BODY so the backward recomputes one chunk at a
+            # time, keeping only the carry — NOT all `n_chunks` chunks' attention scores + MLP
+            # hidden states stacked `[n_chunks, ...]`.
+            body = jax.checkpoint(run_chunk) if remat else run_chunk
+            _, stacked_per_slot = jax.lax.scan(body, None, (chunk_arrays, stacked_in))
+        logits: SiteDict = {}
         for chunk_idx, m in enumerate(self.chunk_meta):
-            offset = 0
-            for site, c in zip(m.output_sites, m.c, strict=True):
-                out[site] = stacked[chunk_idx, ..., offset : offset + c]
-                offset += c
-            assert offset == stacked.shape[-1], (offset, stacked.shape[-1])  # full slab consumed
-        return out
+            for slot, site in enumerate(m.output_sites):
+                logits[site] = stacked_per_slot[slot][chunk_idx]
+        return CI.from_logits(logits)
 
 
 def _init_chunk_transformer(
     arch: ChunkwiseTransformerCIArch,
     total_d_in: int,
-    c_chunk: int,
+    slot_cs: tuple[int, ...],
     key: PRNGKeyArray,
 ) -> ChunkTransformer:
     """One chunk's params, same Kaiming scheme as the old global transformer: relu-gain
     (√2) on in_proj / MLP-in, linear gain (1) on out / MLP-out, PyTorch-default
     `U(±1/√fan_in)` on the attention projections, zero biases.
+
+    The per-site output heads are SLICES of a single glued `[d, ΣC]` Kaiming draw (drawn with
+    the same `out_key`, `gain 1`): head j = columns `[offset_j : offset_j + C_j]`. This keeps
+    the RNG consumption (one `(d, ΣC)` normal + one `(ΣC,)` zero bias) and the values bit-for-
+    bit identical to the old single glued head, so the equivalence goldens are unchanged —
+    the math is the same, only the partitioning differs.
 
     Each consumer takes its OWN explicit key — the split count lives next to its use
     (`n_blocks + 2` at the top = in_proj + out + one per block; 6 within a block), so it
@@ -354,12 +469,18 @@ def _init_chunk_transformer(
         )  # fmt: skip
 
     in_key, out_key, *block_keys = jax.random.split(key, arch.n_blocks + 2)
+    c_chunk = sum(slot_cs)
+    glued_w = kaiming(out_key, (d, c_chunk), d, 1.0)
+    glued_b = jnp.zeros((c_chunk,))
+    offsets = [0]
+    for c in slot_cs:
+        offsets.append(offsets[-1] + c)
     return ChunkTransformer(
         in_proj_w=kaiming(in_key, (total_d_in, d), total_d_in, relu_gain),
         in_proj_b=jnp.zeros((d,)),
         blocks=[block(bk) for bk in block_keys],
-        out_w=kaiming(out_key, (d, c_chunk), d, 1.0),
-        out_b=jnp.zeros((c_chunk,)),
+        out_ws=tuple(glued_w[:, offsets[j] : offsets[j + 1]] for j in range(len(slot_cs))),
+        out_bs=tuple(glued_b[offsets[j] : offsets[j + 1]] for j in range(len(slot_cs))),
     )
 
 
@@ -369,16 +490,22 @@ def init_chunkwise_transformer_ci_fn(
     """Validate the output partition + chunk homogeneity, then build STACKED chunk params.
 
     - partition: the chunks' output sites are disjoint and cover every model site.
-    - homogeneity: equal tap count (→ equal total input width) and equal `Σ C` per chunk,
-      so the per-chunk params stack rectangularly for `filter_vmap`.
+    - homogeneity: equal tap count (→ equal total input width) and an identical per-SLOT C
+      tuple (same C-per-output-site in the same ORDER) across every chunk, so the per-chunk
+      params — including the per-slot output heads — stack rectangularly along the scanned
+      `n_chunks` axis. The per-slot heads stack slot-by-slot, so a mismatched C ORDER would
+      silently misalign sites across chunks: fail fast.
     """
     site_c = {s.name: s.C for s in sites}
     covered = [name for ch in arch.chunks for name in ch.output_sites]
     assert sorted(covered) == sorted(s.name for s in sites), "chunks must partition sites"
     assert len(covered) == len(set(covered)), "chunks overlap on an output site"
-    c_per_chunk = {sum(site_c[n] for n in ch.output_sites) for ch in arch.chunks}
-    assert len(c_per_chunk) == 1, f"chunks not homogeneous in Σ C (vmap needs equal): {c_per_chunk}"
-    (c_chunk,) = c_per_chunk
+    slot_cs_per_chunk = {tuple(site_c[n] for n in ch.output_sites) for ch in arch.chunks}
+    assert len(slot_cs_per_chunk) == 1, (
+        f"chunks not homogeneous in per-slot C tuple (the per-slot heads stack slot-by-slot "
+        f"across chunks — equal C-per-site ORDER required): {slot_cs_per_chunk}"
+    )
+    (slot_cs,) = slot_cs_per_chunk
     assert all(ch.input_taps for ch in arch.chunks), "each chunk needs at least one input tap"
     # Per-chunk cat width must equal `arch.input_dim` (lab guarantees it; the runtime
     # `jnp.stack` / in_proj einsum fails loud if a chunk's taps don't sum to it).
@@ -388,7 +515,7 @@ def init_chunkwise_transformer_ci_fn(
     inv_freq = 1.0 / (10000.0 ** (jnp.arange(0, hd, 2, dtype=jnp.float32) / hd))
 
     per_chunk = [
-        _init_chunk_transformer(arch, arch.input_dim, c_chunk, jax.random.fold_in(key, i))
+        _init_chunk_transformer(arch, arch.input_dim, slot_cs, jax.random.fold_in(key, i))
         for i in range(len(arch.chunks))
     ]
     stacked: ChunkTransformer = jax.tree.map(lambda *xs: jnp.stack(xs), *per_chunk)
@@ -398,10 +525,7 @@ def init_chunkwise_transformer_ci_fn(
         inv_freq=inv_freq,
         input_names=tuple(sorted({tap for ch in arch.chunks for tap in ch.input_taps})),
         output_names=tuple(name for ch in arch.chunks for name in ch.output_sites),
-        chunk_meta=tuple(
-            _ChunkMeta(ch.input_taps, ch.output_sites, tuple(site_c[n] for n in ch.output_sites))
-            for ch in arch.chunks
-        ),
+        chunk_meta=tuple(_ChunkMeta(ch.input_taps, ch.output_sites) for ch in arch.chunks),
         eps=CI_FN_RMS_EPS,
         expects_axes=("sequence",),
     )
@@ -429,12 +553,18 @@ class SiteMLP(eqx.Module):
     biases: list[Float[Array, " d_out"]]
 
     def shardings(self, mesh: Mesh) -> "SiteMLP":
-        """Each `[d_in, d_out]` weight shards its OUTPUT axis (axis 1) over `dp`; 1-D biases
-        replicate. Asserts every output dim tiles the mesh."""
-        shard_out = NamedSharding(mesh, P(None, "dp"))
+        """Each `[d_in, d_out]` weight shards its OUTPUT axis (axis 1) ÷N over the FULL mesh
+        (`("replicate","fsdp")`) — the master + Adam state shard ÷N. 1-D biases replicate.
+        The toy MLP is single-shot (no scan), so there is no compute reconstruction; GSPMD
+        gathers as needed (trivial at the toy's small device count). Asserts every output dim
+        tiles the device count."""
+        shard_out = NamedSharding(mesh, P(None, ("replicate", "fsdp")))
         repl = NamedSharding(mesh, P())
+        n = mesh.devices.size
         for layer_idx, w in enumerate(self.weights):
-            assert_divisible(w.shape[1], mesh, f"SiteMLP.weights[{layer_idx}].d_out")
+            assert w.shape[1] % n == 0, (
+                f"SiteMLP.weights[{layer_idx}].d_out {w.shape[1]} not ÷ N={n}"
+            )
         return eqx.tree_at(
             lambda m: (m.weights, m.biases),
             self,
@@ -472,7 +602,8 @@ class LayerwiseMLPCIFn(eqx.Module):
         )
         return {name: self.site_mlps[name](taps[name]) for name in self.output_names}
 
-    def __call__(self, taps: dict[str, Array]) -> CI:
+    def __call__(self, taps: dict[str, Array], *, remat: bool) -> CI:
+        del remat  # single-shot (no scan to bound) -> remat is a no-op for the MLP CI fns
         return CI.from_logits(self.site_logits(taps))
 
 
@@ -548,7 +679,8 @@ class GlobalMLPCIFn(eqx.Module):
             for i, name in enumerate(self.output_names)
         }
 
-    def __call__(self, taps: dict[str, Array]) -> CI:
+    def __call__(self, taps: dict[str, Array], *, remat: bool) -> CI:
+        del remat  # single-shot (no scan to bound) -> remat is a no-op for the MLP CI fns
         return CI.from_logits(self.site_logits(taps))
 
 

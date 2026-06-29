@@ -109,10 +109,10 @@ def test_attn_pattern_for_refuses_non_attention_target():
 def _llama_attn_setup():
     cfg = _llama_cfg()
     site_cs = (
-        SiteC("layers.4.self_attn.q_proj", 6),
+        SiteC("layers.4.self_attn.q_proj", 8),
         SiteC("layers.4.self_attn.k_proj", 6),
         SiteC("layers.5.self_attn.q_proj", 8),
-        SiteC("layers.5.self_attn.k_proj", 8),
+        SiteC("layers.5.self_attn.k_proj", 6),
     )
     from param_decomp.targets.llama8b import canonical_site_cs
 
@@ -128,7 +128,7 @@ def test_ci_step_clean_equals_masked_when_ci_all_one_gives_finite_kl():
     pattern_fn = attn_pattern_for(lm)
     step = make_ci_attn_patterns_step(lm, pattern_fn)
     b, t = 2, 12
-    residual = jax.random.normal(jax.random.PRNGKey(4), (b, t, cfg.n_embd)) * 0.5
+    residual = jax.random.randint(jax.random.PRNGKey(4), (b, t), 0, cfg.vocab_size)
 
     sum_kl, n_dist = step(lm, components, ci_fn, residual, jax.random.PRNGKey(0))
 
@@ -144,8 +144,8 @@ def test_accumulate_is_token_weighted_and_combines():
     cfg, lm, components, ci_fn = _llama_attn_setup()
     pattern_fn = attn_pattern_for(lm)
     step = make_ci_attn_patterns_step(lm, pattern_fn)
-    res_a = jax.random.normal(jax.random.PRNGKey(4), (2, 10, cfg.n_embd)) * 0.5
-    res_b = jax.random.normal(jax.random.PRNGKey(5), (2, 10, cfg.n_embd)) * 0.5
+    res_a = jax.random.randint(jax.random.PRNGKey(4), (2, 10), 0, cfg.vocab_size)
+    res_b = jax.random.randint(jax.random.PRNGKey(5), (2, 10), 0, cfg.vocab_size)
 
     one = accumulate_attn_patterns(step, lm, components, ci_fn, [res_a], jax.random.PRNGKey(0))
     other = accumulate_attn_patterns(step, lm, components, ci_fn, [res_b], jax.random.PRNGKey(0))
@@ -177,7 +177,7 @@ def test_stochastic_step_runs_and_scales_n_by_draws():
     n_draws = 3
     step = make_stochastic_attn_patterns_step(lm, pattern_fn, n_draws)
     b, t = 2, 8
-    residual = jax.random.normal(jax.random.PRNGKey(4), (b, t, cfg.n_embd)) * 0.5
+    residual = jax.random.randint(jax.random.PRNGKey(4), (b, t), 0, cfg.vocab_size)
 
     sum_kl, n_dist = step(lm, components, ci_fn, residual, jax.random.PRNGKey(0))
     for q in (s for s in lm.site_names if s.endswith("q_proj")):
@@ -194,7 +194,7 @@ def test_simple_mlp_step_runs_end_to_end():
     ci_fn = _build_ci_fn(lm, cfg.n_embd, jax.random.PRNGKey(2))
     step = make_ci_attn_patterns_step(lm, attn_pattern_for(lm))
     b, t = 2, 10
-    residual = jax.random.normal(jax.random.PRNGKey(4), (b, t, cfg.n_embd)) * 0.5
+    residual = jax.random.randint(jax.random.PRNGKey(4), (b, t), 0, cfg.vocab_size)
 
     sum_kl, n_dist = step(lm, components, ci_fn, residual, jax.random.PRNGKey(0))
     assert set(sum_kl) == {"h.0.attn.q_proj"}
@@ -229,6 +229,9 @@ class _PositionlessStub(eqx.Module):
         del resid, wanted
         raise AssertionError("positionless stub fn must not be called")
 
+    def prepare_compute_weights(self, vu: Any) -> Any:
+        return vu
+
     def masked_output(
         self,
         vu: Any,
@@ -238,8 +241,10 @@ class _PositionlessStub(eqx.Module):
         routes: Any,
         live: tuple[str, ...],
         has_delta: bool,
+        *,
+        remat: bool,
     ) -> Any:
-        del vu, resid, masks, delta_masks, routes, live, has_delta
+        del vu, resid, masks, delta_masks, routes, live, has_delta, remat
         raise AssertionError("positionless stub fn must not be called")
 
     def masked_site_outputs(

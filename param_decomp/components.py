@@ -9,15 +9,14 @@ Protocol references `DecompVU`/`SiteSpec`) or any one target.
 """
 
 from dataclasses import dataclass
+from typing import Generic, TypeVar
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
-from jaxtyping import Array, Float
-
-from param_decomp.sharding import assert_divisible
+from jaxtyping import Array
 
 
 @dataclass(frozen=True)
@@ -38,26 +37,44 @@ class SiteSpec:
     C: int
 
 
-class DecompVU(eqx.Module):
-    """fp32 master V `(d_in, C_s)` / U `(C_s, d_out)` per decomposed site, keyed by
-    site name."""
+# The V/U leaf type: `Array` for the real fp32 masters (the default — so bare `DecompVU`
+# means `DecompVU[Array]` and no call site needs the parameter), or `NamedSharding` for the
+# same-structure placement tree `.shardings` returns for `jax.jit(out_shardings=...)`.
+VULeaf = TypeVar("VULeaf", default=Array)
 
-    vu: dict[str, tuple[Float[Array, "d_in C"], Float[Array, "C d_out"]]]
 
-    def site(self, name: str) -> tuple[Array, Array]:
+class DecompVU(eqx.Module, Generic[VULeaf]):
+    """Per-decomposed-site V `(d_in, C_s)` / U `(C_s, d_out)`, keyed by site name. The leaves
+    are fp32 master Arrays (`DecompVU[Array]`), or `NamedSharding`s in the placement tree
+    returned by `.shardings` (`DecompVU[NamedSharding]`) — same pytree structure, sharding
+    leaves, for `jax.jit(out_shardings=...)`."""
+
+    vu: dict[str, tuple[VULeaf, VULeaf]]
+
+    def site(self, name: str) -> tuple[VULeaf, VULeaf]:
         return self.vu[name]
 
-    def shardings(self, mesh: "Mesh") -> "DecompVU":
-        """Per-leaf `dp` placement matching this tree's structure: V `(d_in, C)` shards its
-        C axis (axis 1), U `(C, d_out)` shards its C axis (axis 0). Asserts every site's C
-        tiles the mesh."""
-        shard_V = NamedSharding(mesh, P(None, "dp"))
-        shard_U = NamedSharding(mesh, P("dp", None))
+    def shardings(self: "DecompVU[Array]", mesh: "Mesh") -> "DecompVU[NamedSharding]":
+        """True ÷N ZeRO-1 PERSISTENCE layout for the STORED masters: V `(d_in, C)` shards d_in
+        over the FULL mesh `("replicate", "fsdp")`; U `(C, d_out)` shards d_out over the full
+        mesh. C is NEVER sharded (no TP / Megatron-C axis). The fp32 masters AND their Adam
+        m/v (which inherit this sharding via `opt.init`) thus shard ÷(replicate·fsdp) = ÷N —
+        the dominant memory term goes from ÷fsdp (≈76 GB/GPU fixed) to ÷N (≈5 GB, scaling).
+
+        COMPUTE re-pins to `fsdp` only: the bf16 compute weights are reconstructed to the
+        `fsdp`-sharded layout ONCE per step in ENTRY (the ZeRO-1 gather across `replicate`,
+        off the hot path — `llama8b._run_masked_forward` / `ci_fn` pin the stacked weights
+        `P(None, "fsdp", ...)` before the scan), so the per-layer scan body gathers only on
+        `fsdp` (intra-node NVLink). Asserts each sharded dim tiles the full device count."""
+        shard_V = NamedSharding(mesh, P(("replicate", "fsdp"), None))  # d_in ÷N, C replicated
+        shard_U = NamedSharding(mesh, P(None, ("replicate", "fsdp")))  # C replicated, d_out ÷N
+        n = mesh.devices.size
         placed: dict[str, tuple[NamedSharding, NamedSharding]] = {}
-        for name, (V, _U) in self.vu.items():
-            assert_divisible(V.shape[1], mesh, f"DecompVU[{name}].V.C")
+        for name, (V, U) in self.vu.items():
+            assert V.shape[0] % n == 0, f"DecompVU[{name}].V.d_in {V.shape[0]} not ÷ N={n}"
+            assert U.shape[1] % n == 0, f"DecompVU[{name}].U.d_out {U.shape[1]} not ÷ N={n}"
             placed[name] = (shard_V, shard_U)
-        return DecompVU(vu=placed)  # pyright: ignore[reportArgumentType]
+        return DecompVU(vu=placed)
 
 
 def init_decomp_vu(sites: tuple[SiteSpec, ...], key: Array) -> DecompVU:
@@ -87,17 +104,36 @@ def site_out(
     everywhere. `delta_mask` None drops the delta path entirely (constant-source entries
     carry no delta, LOSS_PARITY_DESIGN §4b). `delta_mask`/`route` broadcast over batch;
     trailing dim added here."""
-    acts = x @ V
-    if mask is not None:
-        acts = acts * mask
+    # Pin the decomposed matmuls DATA-PARALLEL over the FULL mesh: the d_in/d_out-space
+    # activation `x` stays batch-sharded over `('replicate', 'fsdp')`, feature-replicated, and
+    # the component-space activation `x@V` stays batch-sharded, C-REPLICATED (no TP axis).
+    # This forces the `fsdp`-sharded V/U masters to be GATHERED for compute and their grads
+    # reduce-scattered back on `fsdp` (symmetric FSDP on NVLink — the intended layout).
+    # WITHOUT pinning `x`, the weight-grad backward is free to instead shard `x`'s feature
+    # dim on `fsdp` and REPLICATE the batch (the forward gathers V, the backward does not),
+    # which GSPMD can't reshard cheaply -> involuntary full rematerialization -> OOM. Pinning
+    # the activations (not V/U) keeps the weights as plain matmul args. Guarded so it's a
+    # no-op off-mesh (CPU tests / single device); `run.py` sets the global mesh. waist is
+    # `[*leading, d]`, leading = (batch, *position): pin batch over the full mesh (positions +
+    # feature replicated for `x`; C replicated for `x@V`).
+    on_mesh = not jax.sharding.get_abstract_mesh().empty
+    batch_axes = ("replicate", "fsdp")
+    if on_mesh:
+        x = jax.lax.with_sharding_constraint(x, P(batch_axes, *(None,) * (x.ndim - 1)))
+    xV = x @ V
+    if on_mesh:
+        xV = jax.lax.with_sharding_constraint(xV, P(batch_axes, *(None,) * (xV.ndim - 1)))
+    acts = xV * mask if mask is not None else xV
     out = acts @ U
     if delta_mask is not None:
-        # DIVERGENCE vs the autocast oracle (documented, accepted): this delta is
-        # computed in bf16 from the cast components; the oracle computes W − V@U in fp32 then
-        # casts at the einsum. bf16-rounding-level difference on the delta PATH only —
-        # the faithfulness loss uses the fp32 `weight_deltas` (SPEC N2), not this.
-        delta = W - (V @ U).T  # (d_out, d_in)
-        out = out + delta_mask[..., None] * (x @ delta.T)
+        # `(x @ Δ.T)` for `Δ = W − (V@U).T`, expanded to activation space as
+        # `x@W.T − (x@V)@U` so the `[d_out, d_in]` weight delta is NEVER formed. Under
+        # FSDP that delta would mix V's dp-sharded d_in with U's dp-sharded d_out (two dims
+        # demanding the dp axis) and force a replicate-then-repartition reshard; the
+        # activation-space form is all activation×weight matmuls that shard cleanly.
+        # (Still a bf16-rounding DIVERGENCE vs the fp32 oracle delta — accepted; the
+        # faithfulness loss uses the fp32 `weight_deltas`, SPEC N2, not this path.)
+        out = out + delta_mask[..., None] * (x @ W.T - xV @ U)
     if route is not None:
         out = jnp.where(route[..., None], out, x @ W.T)
     return out

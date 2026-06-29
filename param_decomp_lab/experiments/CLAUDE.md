@@ -73,7 +73,6 @@ target:
     kind: hf                            # HuggingFace model
     model_class: transformers.GPT2LMHeadModel
     model_name: openai-community/gpt2
-  output_extract: logits
 
 # or
 target:
@@ -81,7 +80,6 @@ target:
     kind: pretrained                    # in-repo lab-pretrained model
     model_class: param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
     run_path: goodfire/spd/runs/<run_id>
-  output_extract: 0
 
 # or
 target:
@@ -89,15 +87,14 @@ target:
     kind: hf_weights_in_vendored        # HF weights loaded into a vendored, componentizable arch
     model_class: param_decomp_lab.experiments.lm.vendored.llama_3_1.model.VendoredLlama
     model_name: meta-llama/Llama-3.1-8B
-  output_extract: 0
 ```
 
-`output_extract` (default `"logits"`) is the key/index used to pull the prediction
-tensor out of the model's forward output. The `model_class` strings are NOT imported by
-the JAX trainer — `param_decomp.built_run` only asserts the class-name suffix and routes
-to its own vendored JAX arch (`pretrained` LlamaSimpleMLP -> the pretrain-cache loader,
-`hf_weights_in_vendored` Llama -> `vendored_jax`). The dotted `model_class` is a stable
-identifier only, never imported.
+The JAX prediction tensor is always the final logits (there is no `output_extract` —
+it was a torch-era field, stripped on load for back-compat). The `model_class` strings
+are NOT imported by the JAX trainer — `param_decomp.built_run` only asserts the class-name
+suffix and routes to its own vendored JAX arch (`pretrained` LlamaSimpleMLP -> the
+pretrain-cache loader, `hf_weights_in_vendored` Llama -> `vendored_jax`). The dotted
+`model_class` is a stable identifier only, never imported.
 
 The path schemas (`topology/path_schemas.py`) cover the GPT-2 and `LlamaSimple*` archs —
 so `PDAdapter`'s layer-description path is exercised by `kind: pretrained` runs (the

@@ -38,53 +38,66 @@ def faithfulness_loss(weight_deltas: dict[str, Float[Array, "_ _"]]) -> Float[Ar
         ((delta.astype(jnp.float32) ** 2).sum() for delta in weight_deltas.values()),
         start=jnp.zeros((), jnp.float32),
     )
-    denominator = sum(delta.size for delta in weight_deltas.values())
+    # float, not int: the full-model param total (Σ d_in·d_out ≈ 7e9) overflows the int32
+    # that jax materializes a Python int into under jit. A float normalizer is exact here.
+    denominator = float(sum(delta.size for delta in weight_deltas.values()))
     return numerator / denominator
 
 
 def _imp_min_terms(
     ci_upper: dict[str, Float[Array, "*leading _"]],
     per_value_penalty: Callable[[Float[Array, "*leading _"]], Float[Array, "*leading _"]],
+    reference_token_count: int | None,
 ) -> tuple[Float[Array, ""], Float[Array, ""]]:
-    """`(lp, entropy)` for any per-value penalty `psi`, with per-site grouping and the
-    global-batch sum inside the log2 (SPEC S7/S8); the loss is `lp + beta * entropy`. The
-    two imp-min penalties (`L_p`, smooth-L0) differ ONLY in `psi`.
+    """`(lp, freq)` for any per-value penalty `psi`, with per-site grouping (SPEC S7/S8):
 
-    Under GSPMD the `*leading` axes are the global batch, so `jnp.sum` IS the exact
-    global per-component sum — XLA reduces across shards inside the graph."""
+    - `lp = Σ_s Σ_c f_c`, the bare per-component mean firing rate `f_c = (Σ_{b,t} psi(c)) / B·T`.
+    - `freq = Σ_s Σ_c f_c · log2(1 + a' · f_c)`, the batch-invariant frequency penalty with
+      `a' = reference_token_count`; `0.0` when `reference_token_count is None`.
+
+    The two imp-min penalties (`L_p`, smooth-L0) differ ONLY in `psi`. Under GSPMD the
+    `*leading` axes are the global batch, so `jnp.sum` IS the exact global per-component
+    sum — XLA reduces across shards inside the graph, so `f_c` is the true full-batch
+    frequency inside the convex `log2` (a per-shard `f_c` would give a Jensen bias)."""
     lp = jnp.zeros((), jnp.float32)
-    entropy = jnp.zeros((), jnp.float32)
+    freq = jnp.zeros((), jnp.float32)
     for ci in ci_upper.values():
         ci = ci.astype(jnp.float32)  # (*leading, C)
         leading_axes = tuple(range(ci.ndim - 1))
         n_positions = math.prod(ci.shape[:-1])
         per_component_sums = jnp.sum(per_value_penalty(ci), axis=leading_axes)  # (C,)
-        per_component_means = per_component_sums / n_positions
+        per_component_means = per_component_sums / n_positions  # f_c
         lp = lp + jnp.sum(per_component_means)
-        entropy = entropy + jnp.sum(per_component_means * jnp.log2(1.0 + per_component_sums))
-    return lp, entropy
+        if reference_token_count is not None:
+            freq = freq + jnp.sum(
+                per_component_means * jnp.log2(1.0 + reference_token_count * per_component_means)
+            )
+    return lp, freq
 
 
 @jaxtyped(typechecker=beartype)
 def importance_minimality_terms(
-    ci_upper: dict[str, Float[Array, "*leading _"]], pnorm: Float[Array, ""], eps: float
+    ci_upper: dict[str, Float[Array, "*leading _"]],
+    pnorm: Float[Array, ""],
+    eps: float,
+    reference_token_count: int | None,
 ) -> tuple[Float[Array, ""], Float[Array, ""]]:
     """`L_p` imp-min terms: per-value penalty `(c + eps)^pnorm`, singular at `c=0` for
-    `pnorm < 1` (the `eps` floor caps the gradient there). Torch's `_no_beta` diagnostic
-    (`lp` alone) is emitted only on the eval path, never from the train step, so this
-    trainer does not log a `train/loss/*_no_beta` key."""
-    return _imp_min_terms(ci_upper, lambda ci: (ci + eps) ** pnorm)
+    `pnorm < 1` (the `eps` floor caps the gradient there)."""
+    return _imp_min_terms(ci_upper, lambda ci: (ci + eps) ** pnorm, reference_token_count)
 
 
 @jaxtyped(typechecker=beartype)
 def smooth_l0_importance_minimality_terms(
-    ci_upper: dict[str, Float[Array, "*leading _"]], gamma: Float[Array, ""]
+    ci_upper: dict[str, Float[Array, "*leading _"]],
+    gamma: Float[Array, ""],
+    reference_token_count: int | None,
 ) -> tuple[Float[Array, ""], Float[Array, ""]]:
     """Geman–McClure smooth-L0 imp-min terms: per-value penalty `c^2 / (c^2 + gamma^2)`.
     Flat at the origin (`phi'(0)=0`) and bounded (`|phi'| <= 0.65/gamma`) — no singularity,
     no `eps` floor. Approaches the true `L_0` count as `gamma -> 0`."""
     gamma_sq = gamma * gamma
-    return _imp_min_terms(ci_upper, lambda ci: ci**2 / (ci**2 + gamma_sq))
+    return _imp_min_terms(ci_upper, lambda ci: ci**2 / (ci**2 + gamma_sq), reference_token_count)
 
 
 def _linear_anneal(
@@ -148,12 +161,14 @@ def imp_min_terms(
     cfg: AnyImportanceMinimalityLossConfig,
     annealed_param: Array,
 ) -> tuple[Float[Array, ""], Float[Array, ""]]:
-    """Dispatch `(lp, entropy)` on the imp-min penalty kind, given its annealed parameter."""
+    """Dispatch `(lp, freq)` on the imp-min penalty kind, given its annealed parameter; the
+    `freq` term is `0.0` unless `cfg.frequency` is configured."""
+    ref = cfg.frequency.reference_token_count if cfg.frequency is not None else None
     match cfg:
         case ImportanceMinimalityLossConfig():
-            return importance_minimality_terms(ci_upper, annealed_param, cfg.eps)
+            return importance_minimality_terms(ci_upper, annealed_param, cfg.eps, ref)
         case SmoothL0ImportanceMinimalityLossConfig():
-            return smooth_l0_importance_minimality_terms(ci_upper, annealed_param)
+            return smooth_l0_importance_minimality_terms(ci_upper, annealed_param, ref)
 
 
 def warmup_then_constant_lr(

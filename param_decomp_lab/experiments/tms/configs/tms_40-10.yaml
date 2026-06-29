@@ -20,7 +20,6 @@ pd:
   - type: ImportanceMinimalityLoss
     coeff: 1e-4
     pnorm: 2.0
-    beta: 0.0
     p_anneal_start_frac: 0.0
     p_anneal_final_p: 1.0
     p_anneal_end_frac: 1.0

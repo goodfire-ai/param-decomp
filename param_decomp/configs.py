@@ -143,18 +143,36 @@ class FaithfulnessLossConfig(LossMetricConfig):
     type: Literal["FaithfulnessLoss"] = "FaithfulnessLoss"
 
 
+class FrequencyMinimalityConfig(BaseConfig):
+    """The frequency-minimality penalty riding on an imp-min term: a component's per-token
+    firing frequency `f_c` (over the whole global batch) penalized by
+    `f_c * log2(1 + reference_token_count * f_c)`, summed over components and scaled by
+    `coeff`.
+
+    `reference_token_count` (`a'`) is the token count the penalty is normalized against, so
+    the curvature is invariant to batch size at a fixed firing rate. Setting it to the run's
+    global `batch_size * seq_len` reproduces the implicit `B*T` the old rolled `beta` term
+    baked inside its `log2`; coefficients then transfer as `coeff = old imp.coeff * old
+    beta`. The `f=0 -> 0` cutoff is inherent to the form.
+    """
+
+    coeff: NonNegativeFloat
+    reference_token_count: PositiveInt
+
+
 class ImportanceMinimalityLossConfig(LossMetricConfig):
     """Config for the `L_p`-style importance-minimality penalty on upper-leaky CI values.
 
-    `pnorm` is the initial `p`; `beta` weights the entropy-like `mean * log2(1 + sum)`
-    term added on top of the `L_p` term. `pnorm` is linearly annealed toward
-    `p_anneal_final_p` between `p_anneal_start_frac` and `p_anneal_end_frac` of training
-    (no-op when `p_anneal_final_p is None` or `p_anneal_start_frac == 1.0`).
+    `pnorm` is the initial `p`, linearly annealed toward `p_anneal_final_p` between
+    `p_anneal_start_frac` and `p_anneal_end_frac` of training (no-op when
+    `p_anneal_final_p is None` or `p_anneal_start_frac == 1.0`). `frequency` (when present)
+    adds the batch-invariant frequency-minimality penalty over the same `(c + eps)^p`
+    per-component sums.
     """
 
     type: Literal["ImportanceMinimalityLoss"] = "ImportanceMinimalityLoss"
     pnorm: NonNegativeFloat
-    beta: NonNegativeFloat
+    frequency: FrequencyMinimalityConfig | None = None
     p_anneal_start_frac: Probability = 1.0
     p_anneal_final_p: NonNegativeFloat | None = None
     p_anneal_end_frac: Probability = 1.0
@@ -166,7 +184,7 @@ class SmoothL0ImportanceMinimalityLossConfig(LossMetricConfig):
 
     Per-value penalty `phi_gamma(c) = c^2 / (c^2 + gamma^2)` — a smooth approximation to
     the active-component count `1[c>0]`, exact only as `gamma -> 0` — fed through the same
-    per-site `lp + beta * mean * log2(1 + sum)` structure as `ImportanceMinimalityLoss`.
+    per-site `lp` mean (plus the optional `frequency` term) as `ImportanceMinimalityLoss`.
     Differs from the `L_p` penalty only in the per-value shape: `phi'(0) = 0` and
     `|phi'| <= 0.65/gamma` everywhere, so there is no singularity at the origin (no `eps`
     floor, no aggressive grad clip) — the gradient is localized on the threshold band
@@ -179,15 +197,15 @@ class SmoothL0ImportanceMinimalityLossConfig(LossMetricConfig):
 
     type: Literal["SmoothL0ImportanceMinimalityLoss"] = "SmoothL0ImportanceMinimalityLoss"
     gamma: PositiveFloat
-    beta: NonNegativeFloat
+    frequency: FrequencyMinimalityConfig | None = None
     gamma_anneal_start_frac: Probability = 1.0
     gamma_anneal_final_gamma: PositiveFloat | None = None
     gamma_anneal_end_frac: Probability = 1.0
 
 
-# The two imp-min penalties share the `coeff`/`beta` surface and the `lp + beta * entropy`
-# aggregation; they differ only in the per-value penalty shape and its annealed parameter
-# (`p` vs `gamma`). The trainer's single imp-min slot accepts either.
+# The two imp-min penalties share the `coeff` + optional `frequency` surface and the
+# `lp` mean aggregation; they differ only in the per-value penalty shape and its annealed
+# parameter (`p` vs `gamma`). The trainer's single imp-min slot accepts either.
 AnyImportanceMinimalityLossConfig = (
     ImportanceMinimalityLossConfig | SmoothL0ImportanceMinimalityLossConfig
 )
@@ -240,10 +258,10 @@ class ChunkwiseSubsetReconLossConfig(LossMetricConfig):
 
     The decomposed sites (`model.target_module_paths`, in order) are grouped into
     chunks of `sites_per_chunk`; each chunk runs `SubsetReconPlan(routing, n_samples)`
-    — one masked suffix forward per generated routing, all the chunk's sites swapped in
-    with a per-position routing draw — and the recon is the fused-linear-KL against the
-    clean logits (when `use_fused_kl`). The total is the mean over all chunk forwards of
-    `recon_loss / n_positions`, matching the 2-pool's per-step recon.
+    — one masked forward per generated routing, all the chunk's sites swapped in
+    with a per-position routing draw — and the recon is KL against the clean logits. The
+    total is the mean over all chunk forwards of `recon_loss / n_positions`, matching the
+    2-pool's per-step recon.
 
     The JAX single-pool trainer implements this natively: `recon.build_loss_terms`
     maps this `type` onto `recon.subset_chunk_plan` (a parameterization of the one
@@ -257,7 +275,6 @@ class ChunkwiseSubsetReconLossConfig(LossMetricConfig):
         UniformKSubsetRoutingConfig()
     )
     n_samples: PositiveInt = 1
-    use_fused_kl: bool = True
 
 
 PGDInitStrategy = Literal["random", "ones", "zeroes"]
@@ -387,6 +404,13 @@ class PersistentPGDReconLossConfig(LossMetricConfig):
     type: Literal["PersistentPGDReconLoss"] = "PersistentPGDReconLoss"
     optimizer: AdamPGDConfig
     scope: PersistentPGDSourceScope
+    source_dtype: Literal["float32", "bfloat16"] = "float32"
+    """Storage dtype for the persistent PPGD source tensors AND their Adam moments
+    (`m`/`v`). `float32` (default) is SPEC N1 (fp32 SRC_STEP moments) and the only
+    oracle-parity path. `bfloat16` halves the resident source+moment footprint (~21 GiB
+    on the full-32L step, the dominant f32 transient there) at some numerical risk: the
+    second-moment `v` accumulates squared grads, which can underflow in bf16 for small
+    grads — opt in only as an experiment."""
     n_warmup_steps: NonNegativeInt = Field(
         default=0,
         description=(
@@ -588,6 +612,11 @@ class RuntimeConfig(BaseConfig):
         if not isinstance(data, dict):
             return data
         data.pop("device", None)
+        # `tp` (the TP/Megatron-C degree) is dropped on this pure-HSDP branch: the mesh is
+        # fixed `(replicate, fsdp)` with `fsdp` = the intra-node GPUs, derived from the device
+        # count, so there is no tensor-parallel degree to configure. Strip it from stored
+        # configs (it only ever carried 1 or 2 in practice; the layout is now invariant).
+        data.pop("tp", None)
         if "autocast_bf16" in data:
             assert data.pop("autocast_bf16") is True, (
                 "autocast_bf16 was removed (the JAX trainer always computes in bf16)"
@@ -610,8 +639,17 @@ class RuntimeConfig(BaseConfig):
         default=False,
         description=(
             "JAX trainer memory/compute trade: rematerialize the recon-loss masked "
-            "forwards under the suffix model (deep targets need it to fit). Compute "
+            "forwards under the full model (deep targets need it to fit). Compute "
             "substrate knob, no algorithm effect."
+        ),
+    )
+    remat_ci_fn: bool = Field(
+        default=False,
+        description=(
+            "JAX trainer memory/compute trade: rematerialize the CI-fn forward "
+            "(recompute it in the backward instead of storing its activations). The "
+            "CI-fn activations scale with batch, so this is the main lever for larger "
+            "batch on big targets. Compute substrate knob, no algorithm effect."
         ),
     )
 
