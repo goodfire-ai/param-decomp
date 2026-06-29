@@ -54,6 +54,7 @@ import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 from jax import random
+from jax.experimental import multihost_utils
 from jaxtyping import Array, Float
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
@@ -73,6 +74,7 @@ from param_decomp.hidden_acts_eval import (
     make_stochastic_hidden_acts_step,
 )
 from param_decomp.lm import DecomposedModel
+from param_decomp.train import COMPUTE_DT, cast_floating
 
 IDENTITY_CI_ERROR_TOLERANCE = 0.1
 """Torch `IdentityCIPattern.distance_from` / `compute_target_metrics` default tolerance —
@@ -116,14 +118,14 @@ def make_slow_eval_step(lm: DecomposedModel, ci_alive_threshold: float) -> SlowE
     def slow_eval_step(
         model: DecomposedModel, ci_fn: Any, residual: Float[Array, "*leading d"]
     ) -> tuple[dict[str, Array], dict[str, Array], Array, dict[str, Array], dict[str, Array]]:
-        # CI fn stays fp32 (its master dtype): torch offline-eval keeps V/U + CI fn fp32,
-        # casting only the frozen target to bf16. The slow plot metrics are a
-        # fp32-CI-fn readout, so we don't take eval.py's bf16-compute path here.
+        # Read the CI fn in training precision (bf16), like train.py / eval.py: the readout
+        # reflects the deployed model, and cuDNN flash attention rejects fp32.
+        ci_fn = cast_floating(ci_fn, COMPUTE_DT)
         taps = {
-            k: x.astype(jnp.float32)
+            k: x.astype(COMPUTE_DT)
             for k, x in model.read_activations(residual, ci_fn.input_names).items()
         }
-        logits = ci_fn(taps).logits
+        logits = {s: v.astype(jnp.float32) for s, v in ci_fn(taps, remat=False).logits.items()}
         lower = {s: lower_leaky_hard_sigmoid(logits[s]) for s in site_names}
 
         density_counts = {
@@ -168,8 +170,14 @@ def accumulate_site_reductions(
             density[site] = counts if batch_idx == 0 else density[site] + counts
             sums[site] = ci_sum if batch_idx == 0 else sums[site] + ci_sum
             if keep_sample:
-                lower_chunks.setdefault(site, []).append(np.asarray(flat_lower[site]))
-                logits_chunks.setdefault(site, []).append(np.asarray(flat_logits[site]))
+                # The sample keeps the dp-sharded batch axis; on >1 process a bare np.asarray
+                # spans non-addressable devices, so gather it (counts/sums are already reduced).
+                lower_chunks.setdefault(site, []).append(
+                    np.asarray(multihost_utils.process_allgather(flat_lower[site], tiled=True))
+                )
+                logits_chunks.setdefault(site, []).append(
+                    np.asarray(multihost_utils.process_allgather(flat_logits[site], tiled=True))
+                )
 
     return {
         site: SiteReduction(
@@ -203,11 +211,13 @@ def make_position_ci_step(lm: DecomposedModel) -> PositionCIStep:
     def position_ci_step(
         model: DecomposedModel, ci_fn: Any, residual: Float[Array, "*leading d"]
     ) -> tuple[dict[str, Array], dict[str, Array], Array]:
+        # Training precision (bf16) readout — see make_slow_eval_step; logits upcast to fp32.
+        ci_fn = cast_floating(ci_fn, COMPUTE_DT)
         taps = {
-            k: x.astype(jnp.float32)
+            k: x.astype(COMPUTE_DT)
             for k, x in model.read_activations(residual, ci_fn.input_names).items()
         }
-        logits = ci_fn(taps).logits
+        logits = {s: v.astype(jnp.float32) for s, v in ci_fn(taps, remat=False).logits.items()}
         lower = {s: lower_leaky_hard_sigmoid(logits[s]) for s in site_names}
         upper = {s: upper_leaky_hard_sigmoid(logits[s]) for s in site_names}
         first = lower[site_names[0]]
@@ -283,15 +293,16 @@ def permute_to_dense(ci_vals: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 def identity_ci_error(ci_vals: np.ndarray, tolerance: float) -> int:
     """Discrete identity-CI distance (torch `IdentityCIPattern.distance_from`,
     generalizing the toy `tms`/`resid_mlp` `identity_ci_error`): permute columns toward
-    identity, then over the `min(shape)` square block count off-diagonal entries
-    `> tolerance` plus on-diagonal entries `< 1 - tolerance`."""
+    identity, then over the FULL matrix minus the `min(shape)` block diagonal count entries
+    `> tolerance` plus on-diagonal entries `< 1 - tolerance` (torch parity — trailing
+    overcomplete columns/rows count as off-diagonal errors)."""
     ci = ci_vals.astype(np.float64)
     permuted, _ = permute_to_identity(ci)
     size = min(permuted.shape)
-    block = permuted[:size, :size]
-    off_diag = ~np.eye(size, dtype=bool)
-    off_diag_errors = int((block[off_diag] > tolerance).sum())
-    on_diag_errors = int((np.diagonal(block) < (1 - tolerance)).sum())
+    off_diag = np.ones(permuted.shape, dtype=bool)
+    off_diag[:size, :size] &= ~np.eye(size, dtype=bool)
+    off_diag_errors = int((permuted[off_diag] > tolerance).sum())
+    on_diag_errors = int((np.diagonal(permuted[:size, :size]) < (1 - tolerance)).sum())
     return off_diag_errors + on_diag_errors
 
 
@@ -495,18 +506,18 @@ def plot_permuted_ci_heatmaps(
     position_ci: dict[str, PositionCI], permutation: dict[str, "Literal['identity', 'dense']"]
 ) -> tuple[bytes, bytes]:
     """The `PermutedCIPlots` figures: per-site `(position, C)` CI heatmaps with columns
-    permuted toward each site's target shape (identity / dense). Lower-leaky (`Blues`) and
-    upper-leaky (`Reds`) views of the SAME permutation (derived from upper-leaky, as in
-    torch). Returns `(lower_png, upper_png)`."""
+    permuted toward each site's target shape (identity / dense). The lower-leaky (`Blues`) and
+    upper-leaky (`Reds`) views are each permuted by their OWN-derived permutation (torch parity:
+    `plot_causal_importance_vals` permutes the lower plot by a lower-derived perm, the upper by
+    an upper-derived one). Returns `(lower_png, upper_png)`."""
     assert set(permutation) <= set(position_ci), "permutation sites must be a subset of CI sites"
     lower_permuted: dict[str, np.ndarray] = {}
     upper_permuted: dict[str, np.ndarray] = {}
     for name, target in permutation.items():
         pci = position_ci[name]
         permute = permute_to_identity if target == "identity" else permute_to_dense
-        _, perm = permute(pci.upper)
-        lower_permuted[name] = pci.lower[:, perm]
-        upper_permuted[name] = pci.upper[:, perm]
+        lower_permuted[name], _ = permute(pci.lower)
+        upper_permuted[name], _ = permute(pci.upper)
     lower_png = _plot_ci_matrices(lower_permuted, "Blues", "Importance values lower leaky relu")
     upper_png = _plot_ci_matrices(upper_permuted, "Reds", "Importance values")
     return lower_png, upper_png

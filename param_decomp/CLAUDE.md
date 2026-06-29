@@ -122,7 +122,21 @@ from the canonical schema and calls `run_decomposition_training`). They are posi
 `site_input [B,d_in] -> [B,C]`), `GlobalMLPCIFn` (`expects_axes=()`, one shared MLP over all
 sites jointly, concat/split in canonical site order), and the LM `ChunkwiseTransformerCIFn`
 (`expects_axes=("sequence",)`, per-chunk transformers reading residual taps, stacked +
-`filter_vmap`). `run_state.init_train_state` dispatches CI-fn construction on `cfg.ci_fn`
+`lax.scan`'d with per-chunk remat, and **N per-site output heads** (one `[d_model, C_j]` per
+site-slot). NOTE: this is the pure-HSDP backup branch — the mesh is `(replicate, fsdp)` with
+NO tensor-parallel / Megatron-C axis (`fsdp` = the 8 intra-node NVLink GPUs, `replicate` =
+across nodes). The CI output C axis is NEVER sharded, so the per-site heads are a layout
+convenience here (they were load-bearing under the prior TP layout, which sliced a tp-sharded
+glued-ΣC head mid-site). **ZeRO-1 ÷N**: the trainable V/U + CI-fn fp32 masters AND their Adam
+m/v shard ÷N over the FULL mesh (`("replicate","fsdp")` on V's d_in / U's d_out / the CI fn's
+d_model) — the dominant optimizer-state memory scales 1/N, not the fixed 1/fsdp. The bf16
+COMPUTE weights are reconstructed to the `fsdp`-sharded (÷fsdp) layout ONCE per step in ENTRY
+(the cross-`replicate` gather, off the hot path — `llama8b._reconstruct_compute_weights` /
+`ci_fn._reconstruct_ci_compute_weights` pin `P(None,"fsdp",...)` BEFORE the per-layer /
+per-chunk scan), landing a SMALL ÷fsdp-resident stack; the scan body then gathers ONE layer's
+`fsdp` shard to full d_in transiently (NVLink, freed each iteration) — NEVER a
+full-model `[n_layer, full_d_in, C]` weight stack resident.
+`run_state.init_train_state` dispatches CI-fn construction on `cfg.ci_fn`
 (`MLPCIArch` / `GlobalMLPCIArch` / `ChunkwiseTransformerCIArch`) and uses replicated (not
 C-sharded) V/U + CI for the tiny toys; the core `config.CIFnArch` admits all three and the
 lab `experiments.config.ci_arch` builds the layerwise / global arch from the toy

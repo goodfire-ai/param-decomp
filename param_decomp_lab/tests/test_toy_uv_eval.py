@@ -33,7 +33,7 @@ def _toy_setup():
     ci_fn = init_layerwise_mlp_ci_fn(MLPCIArch(hidden_dims=(16,)), sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     probe = single_feature_probe(cfg.n_features)
-    probe_upper = ci_fn(lm.read_activations(probe, ci_fn.input_names)).upper
+    probe_upper = ci_fn(lm.read_activations(probe, ci_fn.input_names), remat=False).upper
     return lm, vu, probe_upper
 
 

@@ -38,6 +38,7 @@ from param_decomp.adversary import (  # noqa: E402
 from param_decomp.ci_fn import CIArch, init_ci_fn  # noqa: E402
 from param_decomp.configs import (  # noqa: E402
     AdamPGDConfig,
+    FrequencyMinimalityConfig,
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
     SCScope,
@@ -102,7 +103,7 @@ def main() -> None:
     vu = init_decomp_vu(cfg, C, layer_range.n_layers, random.PRNGKey(1))
     ci_fn = init_ci_fn(CI_ARCH, lm.sites, random.PRNGKey(2))
     sources = init_persistent_sources(
-        lm.site_names, tuple(s.C for s in lm.sites), (1, T), random.PRNGKey(3)
+        lm.site_names, tuple(s.C for s in lm.sites), (1, T), jax.numpy.float32, random.PRNGKey(3)
     )
     resid = random.normal(random.PRNGKey(4), (B, T, cfg.n_embd)) * 0.5
 
@@ -175,7 +176,7 @@ def main() -> None:
         imp_min=ImportanceMinimalityLossConfig(
             coeff=5e-6,
             pnorm=2.0,
-            beta=0.2,
+            frequency=FrequencyMinimalityConfig(coeff=1e-6, reference_token_count=32),
             p_anneal_start_frac=0.0,
             p_anneal_final_p=0.4,
             p_anneal_end_frac=1.0,
@@ -195,6 +196,7 @@ def main() -> None:
         total_steps=100,
         recon_plan=subset_chunk_plan(lm.site_names, 3, 1),
         remat_recon_forwards=False,
+        remat_ci_fn=False,
         mesh=None,
     )
     run_key = random.PRNGKey(7)

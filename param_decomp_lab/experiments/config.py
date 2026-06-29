@@ -32,6 +32,7 @@ from param_decomp.configs import (
     LayerwiseMlpCiConfig,
     OptimizerConfig,
     PDConfig,
+    PersistentPGDReconLossConfig,
     ResumeProvenance,
     RuntimeConfig,
     WandbConfig,
@@ -148,8 +149,6 @@ def assert_canonical_algorithm_config(cfg: "ExperimentConfig[Any, Any]") -> None
     sigmoid, the always-built delta component, and no tied weights are now enforced by
     REMOVAL of those fields from `PDConfig` — `extra=forbid` rejects any attempt to set
     them.)"""
-    assert cfg.pd.faithfulness_warmup_weight_decay == 0.0
-
     vu_opt = cfg.pd.components_optimizer
     ci_opt = cfg.pd.ci_fn_optimizer
     _assert_cosine_to_tenth(vu_opt.lr_schedule, "components_optimizer")
@@ -158,6 +157,15 @@ def assert_canonical_algorithm_config(cfg: "ExperimentConfig[Any, Any]") -> None
     _assert_plain_adamw(ci_opt, "ci_fn_optimizer")
     assert vu_opt.grad_clip_norm is not None, "components grad clip is part of the method"
     assert ci_opt.grad_clip_norm is None, "CI-fn grad clip unsupported"
+
+    # The persistent-PGD source LR is constant-after-warmup only — `source_lr` ignores
+    # `fn_type` / `final_val_frac`, so a decaying source schedule would be silently flattened.
+    for metric in cfg.pd.loss_metrics:
+        if isinstance(metric, PersistentPGDReconLossConfig):
+            sched = metric.optimizer.lr_schedule
+            assert sched.fn_type == "constant", (
+                f"persistent-PGD source LR is constant-only, got {sched.fn_type!r}"
+            )
 
     cadence = cfg.cadence
     assert cadence.save_every is not None and cadence.keep_last_n_checkpoints is not None, cadence

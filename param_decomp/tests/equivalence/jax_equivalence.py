@@ -38,7 +38,7 @@ from param_decomp.targets.llama8b import (  # noqa: E402
     MLP_KINDS,
     FrozenAttn,
     LlamaDecomposedModel,
-    SuffixLayer,
+    LlamaLayer,
     _clean_mlp_out,  # noqa: E402  (reference suffix forward in the chunk-plan gate check)
     build_decomposed_lm,
     llama_site_specs,
@@ -81,7 +81,7 @@ def _build(f: dict[str, np.ndarray]):
     C = int(f[f"Vg_0"].shape[-1])  # noqa: F541
 
     decomp_layers = [
-        SuffixLayer(
+        LlamaLayer(
             ln1=a(f"ln1_{i}"),
             ln2=a(f"ln2_{i}"),
             attn=_zero_attn(d, di),
@@ -92,7 +92,7 @@ def _build(f: dict[str, np.ndarray]):
         for i in range(n_layers)
     ]
     tail = [
-        SuffixLayer(
+        LlamaLayer(
             ln1=a(f"tail_ln1_{j}"),
             ln2=a(f"tail_ln2_{j}"),
             attn=_zero_attn(d, di),
@@ -127,6 +127,7 @@ def _build(f: dict[str, np.ndarray]):
         rope_original_max_position_embeddings=128,
     )
     lm = build_decomposed_lm(
+        embed=jnp.zeros((cfg.vocab_size, cfg.n_embd), jnp.float32),
         layers=decomp_layers + tail,
         norm=a("norm"),
         lm_head=a("lm_head"),
@@ -157,10 +158,16 @@ def compute_jax_terms(f: dict[str, np.ndarray]) -> dict[str, float]:
     faith = float(faithfulness_loss(lm.weight_deltas(vu)))
 
     # ---- imp ----
-    imp_lp, imp_entropy = importance_minimality_terms(
-        ci_upper, jnp.asarray(float(f["_scalar_IMP_P"])), float(f["_scalar_IMP_EPS"])
+    # a' = B·T reproduces the old rolled `log2(1 + B·T·f_c)`, so `imp_lp + beta·freq`
+    # equals the old `imp_lp + beta·entropy` the golden was generated against.
+    n_positions = int(np.prod(next(iter(ci_upper.values())).shape[:-1]))
+    imp_lp, imp_freq = importance_minimality_terms(
+        ci_upper,
+        jnp.asarray(float(f["_scalar_IMP_P"])),
+        float(f["_scalar_IMP_EPS"]),
+        reference_token_count=n_positions,
     )
-    imp = float(imp_lp + float(f["_scalar_IMP_BETA"]) * imp_entropy)
+    imp = float(imp_lp + float(f["_scalar_IMP_BETA"]) * imp_freq)
 
     # ---- stoch (per-chunk, FIXED masks) ----
     stoch_u = per_site("stoch_u")
@@ -171,14 +178,32 @@ def compute_jax_terms(f: dict[str, np.ndarray]) -> dict[str, float]:
         masks = {s: ci_lower[s] + (1.0 - ci_lower[s]) * stoch_u[s] for s in chunk}
         delta_masks = {s: stoch_delta[s] for s in chunk}
         routes = {site_name(i, k): jnp.asarray(f[f"route_chunk{i}_{k}"]) for k in MLP_KINDS}
-        pred = lm.masked_output(vu, resid, masks, delta_masks, routes, chunk, True)
+        pred = lm.masked_output(
+            lm.prepare_compute_weights(vu),
+            resid,
+            masks,
+            delta_masks,
+            routes,
+            chunk,
+            True,
+            remat=False,
+        )
         stoch_total += float(kl_per_position(pred, clean))
     stoch = stoch_total / n_layers
 
     # ---- ppgd (FIXED sources) ----
     source = per_site("ppgd_source")  # {site: (1, T, C+1)}
     masks, delta_masks = source_masks(ci_lower, source, lm.site_names)
-    pred = lm.masked_output(vu, resid, masks, delta_masks, None, lm.site_names, True)
+    pred = lm.masked_output(
+        lm.prepare_compute_weights(vu),
+        resid,
+        masks,
+        delta_masks,
+        None,
+        lm.site_names,
+        True,
+        remat=False,
+    )
     ppgd = float(kl_per_position(pred, clean))
 
     return {"faith": faith, "imp": imp, "stoch": stoch, "ppgd": ppgd}
@@ -200,12 +225,11 @@ def _suffix_with_split_mlp(
     explicit S2 realization the production `subset_chunk_plan` relies on when a chunk
     boundary splits a layer's MLP — a reference for `masked_output(..., live=...)`."""
     x = resid
-    for layer_offset, suffix_layer in enumerate(tgt.layers):
-        layer = layer_offset  # first decomposed layer is 0 in this harness
+    for layer, block in enumerate(tgt.layers):
         post_attn = x  # attn is zeroed -> contributes 0 (SPEC harness invariant)
-        mlp_in = rms_norm(post_attn, suffix_layer.ln2, tgt.eps)
+        mlp_in = rms_norm(post_attn, block.ln2, tgt.eps)
         if layer != live_layer or layer >= n_decomp_layers:
-            mlp_out = _clean_mlp_out(suffix_layer, mlp_in)
+            mlp_out = _clean_mlp_out(block, mlp_in)
         else:
 
             def frozen_or_live(kind: str, W: jnp.ndarray, x_in: jnp.ndarray) -> jnp.ndarray:
@@ -215,10 +239,10 @@ def _suffix_with_split_mlp(
                 V, U = vu.site(site)
                 return site_out(x_in, V, U, W, masks[site], delta_masks[site], None)
 
-            gate = frozen_or_live("gate", suffix_layer.Wg, mlp_in)
-            up = frozen_or_live("up", suffix_layer.Wu, mlp_in)
+            gate = frozen_or_live("gate", block.Wg, mlp_in)
+            up = frozen_or_live("up", block.Wu, mlp_in)
             down_in = jax.nn.silu(gate) * up
-            mlp_out = frozen_or_live("down", suffix_layer.Wd, down_in)
+            mlp_out = frozen_or_live("down", block.Wd, down_in)
         x = post_attn + mlp_out
     x = rms_norm(x, tgt.norm, tgt.eps)
     return x @ tgt.lm_head.T
@@ -249,7 +273,9 @@ def chunk_plan_static_gate_kl(f: dict[str, np.ndarray]) -> tuple[float, float]:
     masks = {s: ci_lower[s] + (1.0 - ci_lower[s]) * stoch_u[s] for s in live}
     delta_masks = {s: stoch_delta[s] for s in live}
 
-    gate_pred = lm.masked_output(vu, resid, masks, delta_masks, None, live, True)
+    gate_pred = lm.masked_output(
+        lm.prepare_compute_weights(vu), resid, masks, delta_masks, None, live, True, remat=False
+    )
     ref_pred = _suffix_with_split_mlp(
         lm, vu, resid, live_layer, live_kinds, masks, delta_masks, n_layers
     )

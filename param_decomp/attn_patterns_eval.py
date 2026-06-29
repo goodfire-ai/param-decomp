@@ -35,7 +35,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import random
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from param_decomp.components import DecompVU
 from param_decomp.lm import DecomposedModel, all_false_routes
@@ -75,9 +75,9 @@ def _attn_pattern_from_config(
 
 
 def _frozen_attn(target: LlamaDecomposedModel | SimpleMLPDecomposedModel) -> FrozenAttn:
-    """The first suffix layer's attention — every layer shares the same attn config, so
+    """The first layer's attention — every layer shares the same attn config, so
     one `FrozenAttn` fixes `n_head`/`n_kv_head`/`head_dim`/`n_rep` for the recipe."""
-    assert target.layers, "attn-patterns metric needs at least one suffix layer"
+    assert target.layers, "attn-patterns metric needs at least one layer"
     return target.layers[0].attn
 
 
@@ -135,10 +135,10 @@ def _pattern_kl(target_pattern: Array, masked_pattern: Array) -> Array:
 
 
 AttnPatternsStep = Callable[
-    [DecomposedModel, Any, Any, Float[Array, "*leading d"], PRNGKeyArray],
+    [DecomposedModel, Any, Any, Int[Array, "*leading"], PRNGKeyArray],
     tuple[dict[str, Array], dict[str, int]],
 ]
-"""`(model, components, ci_fn, residual, key) -> ({q_site: sum_kl}, {q_site: n_dists})`
+"""`(model, components, ci_fn, tokens, key) -> ({q_site: sum_kl}, {q_site: n_dists})`
 — one batch's per-layer summed KL (fp32) and distribution counts. `key` is unused by the
 deterministic CI step. `model` (frozen-weight-bearing) is the jit ARG."""
 
@@ -147,17 +147,17 @@ def _clean_patterns(
     model: DecomposedModel,
     pattern_fn: AttnPatternFn,
     layer_pairs: tuple[tuple[str, str], ...],
-    components_bf16: DecompVU,
-    residual: Array,
+    prepared: Any,
+    tokens: Int[Array, "*leading"],
     ci_lower: dict[str, Array],
 ) -> dict[str, Array]:
     """Per-layer target pattern from the clean (frozen `x @ W`) Q/K — `masked_site_outputs`
     with every site live but routed FALSE everywhere falls onto the frozen path (the same
     seam reuse `hidden_acts_eval` uses for its clean target)."""
     site_names = model.site_names
-    leading = residual.shape[:-1]
+    leading = tokens.shape
     clean_outputs = model.masked_site_outputs(
-        components_bf16, residual,
+        prepared, tokens,
         {s: jnp.ones_like(ci_lower[s]) for s in site_names},
         {s: jnp.zeros(leading, COMPUTE_DT) for s in site_names},
         all_false_routes(site_names, leading), site_names, False,
@@ -199,21 +199,22 @@ def make_ci_attn_patterns_step(lm: DecomposedModel, pattern_fn: AttnPatternFn) -
         model: DecomposedModel,
         components: DecompVU,
         ci_fn: Any,
-        residual: Float[Array, "*leading d"],
+        tokens: Int[Array, "*leading"],
         _key: PRNGKeyArray,
     ) -> tuple[dict[str, Array], dict[str, int]]:
-        taps = model.read_activations(residual, ci_fn.input_names)
+        taps = model.read_activations(tokens, ci_fn.input_names)
         components_bf16 = cast_floating(components, COMPUTE_DT)
+        prepared = model.prepare_compute_weights(components_bf16)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
-        ci_lower = ci_fn_bf16(taps).lower
+        ci_lower = ci_fn_bf16(taps, remat=False).lower
 
         target_patterns = _clean_patterns(
-            model, pattern_fn, layer_pairs, components_bf16, residual, ci_lower
+            model, pattern_fn, layer_pairs, prepared, tokens, ci_lower
         )
-        leading = residual.shape[:-1]
+        leading = tokens.shape
         zeros_delta = {s: jnp.zeros(leading, COMPUTE_DT) for s in site_names}
         masked_outputs = model.masked_site_outputs(
-            components_bf16, residual, ci_lower, zeros_delta, None, site_names, False
+            prepared, tokens, ci_lower, zeros_delta, None, site_names, False
         )
         sum_kl = _masked_patterns_kl(pattern_fn, layer_pairs, masked_outputs, target_patterns)
         n_distributions = {q: int(np.prod(target_patterns[q].shape[:3])) for q, _ in layer_pairs}
@@ -238,18 +239,19 @@ def make_stochastic_attn_patterns_step(
         model: DecomposedModel,
         components: DecompVU,
         ci_fn: Any,
-        residual: Float[Array, "*leading d"],
+        tokens: Int[Array, "*leading"],
         key: PRNGKeyArray,
     ) -> tuple[dict[str, Array], dict[str, int]]:
-        taps = model.read_activations(residual, ci_fn.input_names)
+        taps = model.read_activations(tokens, ci_fn.input_names)
         components_bf16 = cast_floating(components, COMPUTE_DT)
+        prepared = model.prepare_compute_weights(components_bf16)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
-        ci_lower = ci_fn_bf16(taps).lower
+        ci_lower = ci_fn_bf16(taps, remat=False).lower
 
         target_patterns = _clean_patterns(
-            model, pattern_fn, layer_pairs, components_bf16, residual, ci_lower
+            model, pattern_fn, layer_pairs, prepared, tokens, ci_lower
         )
-        leading = residual.shape[:-1]
+        leading = tokens.shape
 
         sum_kl = {q: jnp.zeros((), jnp.float32) for q, _ in layer_pairs}
         for draw_idx in range(n_mask_samples):
@@ -265,7 +267,7 @@ def make_stochastic_attn_patterns_step(
                     random.fold_in(delta_key, site_idx), leading, COMPUTE_DT
                 )
             masked_outputs = model.masked_site_outputs(
-                components_bf16, residual, masks, delta_masks, None, site_names, True
+                prepared, tokens, masks, delta_masks, None, site_names, True
             )
             draw_kl = _masked_patterns_kl(pattern_fn, layer_pairs, masked_outputs, target_patterns)
             sum_kl = {q: sum_kl[q] + draw_kl[q] for q, _ in layer_pairs}
@@ -283,18 +285,18 @@ def accumulate_attn_patterns(
     model: DecomposedModel,
     components: DecompVU,
     ci_fn: Any,
-    residual_batches: list[Float[Array, "*leading d"]],
+    token_batches: list[Int[Array, "*leading"]],
     base_key: PRNGKeyArray,
 ) -> dict[str, LayerKLReduction]:
     """Drive `step` over the eval batches, host-accumulating `(Σ sum_kl, Σ n)` per layer
     (the density/mean/hidden-acts accumulator pattern). Per-batch RNG is
     `fold_in(base_key, batch_idx)`."""
-    assert residual_batches, "attn-patterns eval needs at least one batch"
+    assert token_batches, "attn-patterns eval needs at least one batch"
     sums: dict[str, float] = {}
     counts: dict[str, int] = {}
-    for batch_idx, residual in enumerate(residual_batches):
+    for batch_idx, tokens in enumerate(token_batches):
         batch_sum, batch_n = step(
-            model, components, ci_fn, residual, random.fold_in(base_key, batch_idx)
+            model, components, ci_fn, tokens, random.fold_in(base_key, batch_idx)
         )
         for site in batch_sum:
             sums[site] = sums.get(site, 0.0) + float(np.asarray(batch_sum[site]))

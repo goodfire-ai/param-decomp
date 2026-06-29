@@ -40,6 +40,7 @@ from param_decomp.configs import (
     AdamPGDConfig,
     ChunkwiseSubsetReconLossConfig,
     FaithfulnessLossConfig,
+    FrequencyMinimalityConfig,
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
     SCScope,
@@ -47,7 +48,7 @@ from param_decomp.configs import (
 )
 from param_decomp.recon import build_loss_terms
 from param_decomp.schedule import ScheduleConfig
-from param_decomp.sharding import dp_mesh, shard_batch
+from param_decomp.sharding import hsdp_mesh, shard_batch
 from param_decomp.targets.llama8b import (
     llama_site_specs,
     mlp_family_site_cs,
@@ -74,11 +75,11 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
     src = init_persistent_sources(
-        lm.site_names, tuple(s.C for s in lm.sites), (1, seq), random.PRNGKey(3)
+        lm.site_names, tuple(s.C for s in lm.sites), (1, seq), jnp.float32, random.PRNGKey(3)
     )
     resid = random.normal(random.PRNGKey(4), (gbatch, seq, cfg.n_embd)) * 0.5
 
-    mesh = dp_mesh() if sharded else None
+    mesh = hsdp_mesh() if sharded else None
     if mesh is not None:
         resid = shard_batch(resid, mesh, batch_axis=0)
 
@@ -113,7 +114,8 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
         (
             FaithfulnessLossConfig(coeff=1e5),
             ImportanceMinimalityLossConfig(
-                coeff=5e-6, pnorm=2.0, beta=0.2,
+                coeff=5e-6, pnorm=2.0,
+                frequency=FrequencyMinimalityConfig(coeff=1e-6, reference_token_count=128),
                 p_anneal_start_frac=0.0, p_anneal_final_p=0.4, p_anneal_end_frac=1.0,
             ),
             ChunkwiseSubsetReconLossConfig(routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=3, n_samples=1),
@@ -123,10 +125,10 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
     )  # fmt: skip
     step = make_train_step(
         lm=lm,
-        loss_terms=loss_terms,
+        losses=loss_terms,
         components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
         total_steps=100,
-        remat_recon_forwards=True, mesh=mesh,
+        remat_recon_forwards=True, remat_ci_fn=False, mesh=mesh,
     )  # fmt: skip
 
     out = []

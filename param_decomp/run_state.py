@@ -25,7 +25,6 @@ from param_decomp.configs import AdamPGDConfig, OptimizerConfig, PDConfig
 from param_decomp.lm import DecomposedModel
 from param_decomp.recon import (
     PersistentSources,
-    ReconLossTerm,
     build_loss_terms,
     persistent_configs,
 )
@@ -128,12 +127,11 @@ def init_train_state(
     assert ci_fn.expects_axes == lm.leading_axes, (
         f"CI fn expects leading axes {ci_fn.expects_axes} but model has {lm.leading_axes}"
     )
-    loss_terms = build_loss_terms(pd.loss_metrics, lm.site_names)
-    persistent = persistent_configs(loss_terms)
+    losses = build_loss_terms(pd.loss_metrics, lm.site_names)
+    persistent = persistent_configs(losses.recon)
     term_coeff_by_state_key = {
         entry.sources.state_key: term.coeff
-        for term in loss_terms
-        if isinstance(term, ReconLossTerm)
+        for term in losses.recon
         for entry in term.plan
         if isinstance(entry.sources, PersistentSources)
     }
@@ -153,6 +151,7 @@ def init_train_state(
                 data.seq_len,
                 cfg.scope,
                 data.global_batch,
+                jnp.dtype(cfg.source_dtype),
                 random.fold_in(src_key, term_idx),
                 mesh,
             )

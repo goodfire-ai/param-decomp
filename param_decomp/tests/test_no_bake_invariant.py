@@ -68,18 +68,19 @@ def _build_step_and_args():
     loss_terms = build_loss_terms(
         (
             FaithfulnessLossConfig(coeff=1.0),
-            ImportanceMinimalityLossConfig(coeff=1e-4, pnorm=2.0, beta=0.0, p_anneal_final_p=1.0),
+            ImportanceMinimalityLossConfig(coeff=1e-4, pnorm=2.0, p_anneal_final_p=1.0),
             StochasticReconLossConfig(coeff=1.0),
         ),
         lm.site_names,
     )
     step_fn = make_train_step(
         lm=lm,
-        loss_terms=loss_terms,
+        losses=loss_terms,
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=10,
         remat_recon_forwards=False,
+        remat_ci_fn=False,
         mesh=None,
     )
     return step_fn, lm, state, resid

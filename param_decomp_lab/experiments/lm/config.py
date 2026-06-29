@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import yaml
-from pydantic import Discriminator, Field, PositiveInt
+from pydantic import Discriminator, Field, PositiveInt, model_validator
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.built_run import (
@@ -32,6 +32,7 @@ from param_decomp.configs import (
     CI_L0Config,
     CIHistogramsConfig,
     CIMaskedAttnPatternsReconLossConfig,
+    ComponentActivationDensityConfig,
     PGDReconLossConfig,
     StochasticAttnPatternsReconLossConfig,
 )
@@ -87,25 +88,27 @@ LMTargetSpec = Annotated[
 
 
 class LMTargetConfig(BaseConfig):
-    """Config for the LM target model and how to extract the prediction tensor.
-
-    `output_extract` (passed to `make_run_batch`) pulls the prediction tensor out of the
-    model's forward output (default `"logits"`).
-    """
+    """Config for the LM target model."""
 
     spec: LMTargetSpec
-    output_extract: int | str | None = "logits"
-    activation_checkpointing: bool = False
-    """If True and the target exposes `enable_activation_checkpointing()`, turn on
-    per-block gradient checkpointing on the frozen target forward. Trades ~33% extra
-    compute for ~10–15x less stored activation memory under 3-pool — the main lever for
-    raising `b_per_rank` on deep targets."""
     weights_dtype: Literal["float32", "bfloat16"] = "float32"
     """dtype for the FROZEN target weights. `bfloat16` halves the target's resident footprint
     on every pool (the dominant resident term for an 8B target) — for natively-bf16 models the
     matmuls already run bf16 under autocast, so this only changes residual/norm accumulation
     precision (measured ~5e-4 nats KL on Llama-3.1-8B clean logits, negligible vs recon KLs).
     Only the frozen target is cast; trained V/U components stay fp32 (their AdamW master)."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_removed_torch_era_fields(cls, data: object) -> object:
+        # Shared-storage back-compat: `output_extract` / `activation_checkpointing` were
+        # torch-era fields the JAX path never reads (the JAX prediction tensor is always the
+        # final logits; remat is `runtime.remat_recon_forwards`). Drop them so stored run
+        # configs and the live yamls that still set them load.
+        if isinstance(data, dict):
+            data.pop("output_extract", None)
+            data.pop("activation_checkpointing", None)
+        return data
 
 
 class LMDataConfig(BaseConfig):
@@ -334,7 +337,7 @@ def _assert_separate_qk_attn_paths(
 def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
     if cfg.eval is None:
         return None
-    ce_kl = ci_l0 = pgd = None
+    ce_kl = ci_l0 = density = pgd = None
     attn_ci = attn_stoch = False
     attn_stoch_n_mask_samples = 1
     slow_n_batches_accum: int | None = None
@@ -356,6 +359,8 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
                 attn_stoch_n_mask_samples = metric.n_mask_samples
             case CIHistogramsConfig():
                 slow_n_batches_accum = metric.n_batches_accum
+            case ComponentActivationDensityConfig():
+                density = metric  # slow-tier; we read only its aliveness cutoff here
             case _ if metric.type in SLOW_TIER_EVAL_METRIC_TYPES:
                 pass  # rendered by the in-loop slow tier (run.py reads them off the raw cfg)
             case _:
@@ -371,7 +376,8 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
         slow_on_first_step=cfg.eval.slow_on_first_step,
         slow_n_batches_accum=slow_n_batches_accum,
         rounding_threshold=ce_kl.rounding_threshold,
-        ci_alive_threshold=ci_l0.ci_alive_threshold,
+        l0_ci_alive_threshold=ci_l0.ci_alive_threshold,
+        density_ci_alive_threshold=(density.ci_alive_threshold if density is not None else 0.0),
         l0_groups=(
             {group: tuple(patterns) for group, patterns in ci_l0.groups.items()}
             if ci_l0.groups is not None

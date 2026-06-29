@@ -80,18 +80,19 @@ def make_ci_hidden_acts_step(lm: DecomposedModel) -> HiddenActsStep:
     ) -> tuple[dict[str, Array], dict[str, int]]:
         taps = model.read_activations(residual, ci_fn.input_names)
         components_bf16 = cast_floating(components, COMPUTE_DT)
+        prepared = model.prepare_compute_weights(components_bf16)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
-        ci_lower = ci_fn_bf16(taps).lower
+        ci_lower = ci_fn_bf16(taps, remat=False).lower
 
         leading = residual.shape[:-1]
         zeros_delta = {s: jnp.zeros(leading, COMPUTE_DT) for s in site_names}
         clean = model.masked_site_outputs(
-            components_bf16, residual,
+            prepared, residual,
             {s: jnp.ones_like(ci_lower[s]) for s in site_names}, zeros_delta,
             all_false_routes(site_names, leading), site_names, False,
         )  # fmt: skip
         masked = model.masked_site_outputs(
-            components_bf16, residual, ci_lower, zeros_delta, None, site_names, False
+            prepared, residual, ci_lower, zeros_delta, None, site_names, False
         )
         sum_mse = _per_site_sum_mse(masked, clean, site_names)
         n_elements = {s: clean[s].size for s in site_names}
@@ -117,12 +118,13 @@ def make_stochastic_hidden_acts_step(lm: DecomposedModel, n_mask_samples: int) -
     ) -> tuple[dict[str, Array], dict[str, int]]:
         taps = model.read_activations(residual, ci_fn.input_names)
         components_bf16 = cast_floating(components, COMPUTE_DT)
+        prepared = model.prepare_compute_weights(components_bf16)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
-        ci_lower = ci_fn_bf16(taps).lower
+        ci_lower = ci_fn_bf16(taps, remat=False).lower
 
         leading = residual.shape[:-1]
         clean = model.masked_site_outputs(
-            components_bf16, residual,
+            prepared, residual,
             {s: jnp.ones_like(ci_lower[s]) for s in site_names},
             {s: jnp.zeros(leading, COMPUTE_DT) for s in site_names},
             all_false_routes(site_names, leading), site_names, False,
@@ -142,7 +144,7 @@ def make_stochastic_hidden_acts_step(lm: DecomposedModel, n_mask_samples: int) -
                     random.fold_in(delta_key, site_idx), leading, COMPUTE_DT
                 )
             masked = model.masked_site_outputs(
-                components_bf16, residual, masks, delta_masks, None, site_names, True
+                prepared, residual, masks, delta_masks, None, site_names, True
             )
             draw_sum = _per_site_sum_mse(masked, clean, site_names)
             sum_mse = {s: sum_mse[s] + draw_sum[s] for s in site_names}

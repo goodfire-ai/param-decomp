@@ -68,7 +68,7 @@ class CIFnCallable(Protocol):
 
     input_names: tuple[str, ...]
 
-    def __call__(self, taps: dict[str, Array]) -> CI: ...
+    def __call__(self, taps: dict[str, Array], *, remat: bool) -> CI: ...
 
 
 @dataclass(frozen=True)
@@ -389,21 +389,39 @@ class ResidMLPDecomposedModel(eqx.Module):
         inputs = site_inputs(self.target, resid)
         return {k: inputs[k] for k in wanted}
 
+    def prepare_compute_weights(self, vu: DecompVU) -> DecompVU:
+        """Identity: ResidMLP weights are tiny + replicated, nothing to stack/gather/share."""
+        return vu
+
     def masked_output(
         self,
-        vu: DecompVU,
+        prepared: DecompVU,
         resid: Float[Array, "B d_embed"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
         routes: dict[str, Array] | None,
         live: tuple[str, ...],
         has_delta: bool,
+        *,
+        remat: bool,
     ) -> Array:
-        return masked_output(self.target, vu, resid, masks, delta_masks, routes, live, has_delta)
+        def forward(
+            vu: DecompVU,
+            resid: Array,
+            masks: dict[str, Array],
+            delta_masks: dict[str, Array],
+            routes: dict[str, Array] | None,
+        ) -> Array:
+            return masked_output(
+                self.target, vu, resid, masks, delta_masks, routes, live, has_delta
+            )
+
+        forward = jax.checkpoint(forward) if remat else forward
+        return forward(prepared, resid, masks, delta_masks, routes)
 
     def masked_site_outputs(
         self,
-        vu: DecompVU,
+        prepared: DecompVU,
         resid: Float[Array, "B d_embed"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -412,7 +430,7 @@ class ResidMLPDecomposedModel(eqx.Module):
         has_delta: bool,
     ) -> dict[str, Array]:
         return masked_site_outputs(
-            self.target, vu, resid, masks, delta_masks, routes, live, has_delta
+            self.target, prepared, resid, masks, delta_masks, routes, live, has_delta
         )
 
     def weight_deltas(self, vu: DecompVU) -> dict[str, Array]:
@@ -668,8 +686,10 @@ def pretrain_resid_mlp_target(
 
 def identity_ci_error(ci_vals: Float[Array, "n_features C"], tolerance: float) -> int:
     """Discrete identity-CI distance (torch `IdentityCIPattern.distance_from`): permute
-    columns toward identity (Hungarian on `-ci`), then over the `min(shape)` square block
-    count off-diagonal entries `> tolerance` plus on-diagonal entries `< 1 - tolerance`.
+    columns toward identity (Hungarian on `-ci`), then over the FULL matrix minus the
+    `min(shape)` block diagonal count entries `> tolerance` plus on-diagonal entries
+    `< 1 - tolerance` (torch parity — trailing overcomplete columns/rows count as
+    off-diagonal errors).
 
     `ci_vals` is the `lower_leaky` CI of the single-feature probe (one row per feature)."""
     from scipy.optimize import linear_sum_assignment
@@ -684,10 +704,10 @@ def identity_ci_error(ci_vals: Float[Array, "n_features C"], tolerance: float) -
     perm = np.array(assigned + remaining, dtype=np.int64)
     ci = ci[:, perm]
 
-    block = ci[:size, :size]
-    off_diag_mask = ~np.eye(size, dtype=bool)
-    off_diag_errors = int((block[off_diag_mask] > tolerance).sum())
-    on_diag_errors = int((np.diagonal(block) < (1 - tolerance)).sum())
+    off_diag_mask = np.ones(ci.shape, dtype=bool)
+    off_diag_mask[:size, :size] &= ~np.eye(size, dtype=bool)
+    off_diag_errors = int((ci[off_diag_mask] > tolerance).sum())
+    on_diag_errors = int((np.diagonal(ci[:size, :size]) < (1 - tolerance)).sum())
     return off_diag_errors + on_diag_errors
 
 
@@ -708,4 +728,4 @@ def single_feature_ci(
     """Feed the single-feature probe (embedded through `W_E`) and read the `lower_leaky`
     CI per site, `{site: [n_features, C]}`."""
     resid = single_feature_probe(n_features) @ lm.target.W_E
-    return ci_fn(lm.read_activations(resid, ci_fn.input_names)).lower
+    return ci_fn(lm.read_activations(resid, ci_fn.input_names), remat=False).lower

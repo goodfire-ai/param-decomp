@@ -40,7 +40,7 @@ from param_decomp.configs import (
 from param_decomp.lm import DecomposedModel
 from param_decomp.recon import build_loss_terms
 from param_decomp.schedule import ScheduleConfig
-from param_decomp.sharding import dp_mesh
+from param_decomp.sharding import hsdp_mesh
 from param_decomp.targets.llama8b import (
     llama_site_specs,
     mlp_family_site_cs,
@@ -105,7 +105,11 @@ def _build(seed: int):
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
     src = init_persistent_sources(
-        lm.site_names, tuple(s.C for s in lm.sites), (1, seq), jax.random.PRNGKey(seed + 2)
+        lm.site_names,
+        tuple(s.C for s in lm.sites),
+        (1, seq),
+        jnp.float32,
+        jax.random.PRNGKey(seed + 2),
     )
     ppgd_cfg = _ppgd_cfg(n_warmup=1)
     state = TrainState(
@@ -119,7 +123,7 @@ def _build(seed: int):
         (
             FaithfulnessLossConfig(coeff=1e5),
             ImportanceMinimalityLossConfig(
-                coeff=5e-6, pnorm=2.0, beta=0.2,
+                coeff=5e-6, pnorm=2.0, 
                 p_anneal_start_frac=0.0, p_anneal_final_p=0.4, p_anneal_end_frac=1.0,
             ),
             ChunkwiseSubsetReconLossConfig(routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=3, n_samples=1),
@@ -129,12 +133,12 @@ def _build(seed: int):
     )  # fmt: skip
     step = make_train_step(
         lm=lm,
-        loss_terms=loss_terms,
+        losses=loss_terms,
         components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
         total_steps=100,
-        remat_recon_forwards=True, mesh=None,
+        remat_recon_forwards=True, remat_ci_fn=False, mesh=None,
     )  # fmt: skip
-    resid = jax.random.normal(jax.random.PRNGKey(9), (2, seq, cfg.n_embd)) * 0.5
+    resid = jax.random.randint(jax.random.PRNGKey(9), (2, seq), 0, cfg.vocab_size)
     return lm, state, step, resid
 
 
@@ -250,6 +254,7 @@ def _build_sharded(seed: int, mesh: Mesh):
         seq,
         SCScope(),
         n,
+        jnp.float32,
         jax.random.PRNGKey(seed + 2),
         mesh,
     )
@@ -274,7 +279,7 @@ def test_sharded_roundtrip_bit_equal(tmp_path: Path):
     case (still a real save->restore, just one shard)."""
     from jax.sharding import NamedSharding
 
-    mesh = dp_mesh()
+    mesh = hsdp_mesh()
     state = _build_sharded(seed=1, mesh=mesh)
 
     # The big V/U + ci_fn + sources leaves must be genuinely C-sharded over the mesh

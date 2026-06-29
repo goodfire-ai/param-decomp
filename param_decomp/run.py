@@ -20,6 +20,7 @@ import dataclasses
 import io
 import json
 import math
+import os
 import signal
 import threading
 import time
@@ -78,10 +79,17 @@ def install_sigterm_flag() -> None:
     signal.signal(signal.SIGTERM, handler)
 
 
-def sigterm_received() -> bool:
-    """Whether a SIGTERM has landed. A composition root's eval pass reads this to abandon
-    a partial eval cleanly (the engine's save block then checkpoints + exits for requeue)."""
-    return _sigterm_received
+def _sigterm_consensus() -> bool:
+    """Cross-rank-agreed SIGTERM flag. SLURM delivers SIGTERM per task with no simultaneity
+    guarantee, so reading the per-process flag independently at a collective gate (faith-warmup
+    exit, eval entry, orbax save) can diverge ranks and hang. OR-reduce it across processes;
+    callers read it once per step into a local the handler can't mutate mid-step. No-op when not
+    distributed."""
+    if jax.process_count() == 1:
+        return _sigterm_received
+    import jax.experimental.multihost_utils as mhu
+
+    return bool(np.asarray(mhu.process_allgather(np.asarray(_sigterm_received))).any())
 
 
 def _log_wandb_safe(wandb_module: "ModuleType", payload: "LogRecord", step: int, what: str) -> None:
@@ -127,10 +135,23 @@ _METRIC_KEYS = {
     "total": "train/loss/total",
     "faith": "train/loss/FaithfulnessLoss",
     "imp": "train/loss/ImportanceMinimalityLoss",
+    "freq": "train/loss/FrequencyMinimalityLoss",
     "p_imp": "train/schedules/p_imp",
     "src_lr": "train/schedules/lr/src",
     "step_time_s": "train/perf/step_time_s",
+    "elapsed_s": "train/perf/elapsed_s",
+    "eta_s": "train/perf/eta_s",
 }
+
+
+def _fmt_duration(seconds: float) -> str:
+    h, rem = divmod(int(seconds), 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def _is_verbose_grad_norm(key: str) -> bool:
+    return key.startswith("train/grad_norms/") and not key.startswith("train/grad_norms/summary/")
 
 
 class MetricsSink:
@@ -194,10 +215,14 @@ class MetricsSink:
         scalars = {k: v for k, v in record.items() if isinstance(v, float)}
         self._jsonl.write(json.dumps({"step": step, **scalars}) + "\n")
         self._jsonl.flush()
-        print(
-            f"[step {step}] " + " ".join(f"{k}={v:.4g}" for k, v in scalars.items()),
-            flush=True,
-        )
+        # The console line drops the per-param grad norms — the full breakdown still rides to
+        # wandb + jsonl.
+        console = {k: v for k, v in scalars.items() if not _is_verbose_grad_norm(k)}
+        head = f"[step {step}]"
+        if "train/perf/eta_s" in console:  # train logs carry the paired timing; eval logs don't
+            elapsed, eta = console.pop("train/perf/elapsed_s"), console.pop("train/perf/eta_s")
+            head += f" {_fmt_duration(elapsed)}<{_fmt_duration(eta)}"
+        print(head + " " + " ".join(f"{k}={v:.4g}" for k, v in console.items()), flush=True)
         if self._wandb is not None:
             _log_wandb_safe(self._wandb, record, step, "log")
 
@@ -344,7 +369,9 @@ def _init_or_restore_state(
         return state, 0
 
     if pd.faithfulness_warmup_steps > 0:
-        faith_warmup_optimizer = optax.adamw(pd.faithfulness_warmup_lr, weight_decay=0.0)
+        faith_warmup_optimizer = optax.adamw(
+            pd.faithfulness_warmup_lr, weight_decay=pd.faithfulness_warmup_weight_decay
+        )
         faith_warmup_opt_state = faith_warmup_optimizer.init(
             eqx.filter(state.components, eqx.is_array)
         )
@@ -356,7 +383,7 @@ def _init_or_restore_state(
             warmed_components, faith_warmup_opt_state, faith_warmup_loss = faith_warmup_step(
                 lm, warmed_components, faith_warmup_opt_state
             )
-            if _sigterm_received:
+            if _sigterm_consensus():
                 # No valid checkpoint exists yet (the step-0 save happens only after warmup
                 # completes, and resume skips warmup whenever a checkpoint is present — a
                 # partially-warmed step-0 save would resume as if fully warmed). Exit
@@ -376,7 +403,8 @@ def _init_or_restore_state(
                 f"final faith {float(faith_warmup_loss):.3e}",
                 flush=True,
             )
-    save_state(checkpoint_manager, 0, state)
+    if os.environ.get("PD_NO_CHECKPOINT", "") != "1":  # profiling runs skip all saves
+        save_state(checkpoint_manager, 0, state)
     return state, 0
 
 
@@ -388,7 +416,8 @@ def run_decomposition_training(
     ci_fn: CIFnArch,
     data: DataConfig | None,
     remat_recon_forwards: bool,
-    sample_batch: Callable[[int], jax.Array],
+    remat_ci_fn: bool,
+    sample_batch: Callable[[int], Any],
     eval_fn: "Callable[[TrainState, int], LogRecord] | None",
     eval_every: int,
     mesh: Mesh,
@@ -406,9 +435,10 @@ def run_decomposition_training(
 
     The target supplies only its three injectable seams:
 
-    - `sample_batch(step) -> residual [*leading, d]`: the residual entering the decomposed
-      model for `step`, already mesh-placed on `P("dp")`. An LM harvests it from the frozen
-      prefix over a parquet token batch; a toy generates it synthetically.
+    - `sample_batch(step) -> batch`: the opaque per-step model input (a pure function of
+      `step`, for O(1) resume). The model interprets it (an LM's token ids `[B, T]` → embed;
+      a toy's feature vector, which already is the `[*leading, d]` waist). The engine only
+      assumes axis 0 is the batch/`dp` axis (for sharding); it never names tokens or `d`.
     - `eval_fn(state, now_step) -> dict[str, float]`: an in-loop eval pass run every
       `eval_every` completed steps, its record logged under that step. `None` disables it.
     - `eval_every`: the eval cadence. For an LM this is `eval.every`; a toy folds its
@@ -420,6 +450,11 @@ def run_decomposition_training(
     """
     is_main = jax.process_index() == 0
     ndev = mesh.devices.size
+    # Activate the mesh so bare-PartitionSpec `with_sharding_constraint`s inside the forward
+    # resolve (the attn q/k/v batch-sharding pin in `FrozenAttn.core`, needed for cuDNN
+    # flash attention under the scan+cond masked forward). Explicit NamedShardings elsewhere
+    # are unaffected.
+    jax.set_mesh(mesh)
     assert cadence.save_every is not None and cadence.keep_last_n_checkpoints is not None, cadence
     save_every = cadence.save_every
 
@@ -442,11 +477,12 @@ def run_decomposition_training(
 
     step_fn = make_train_step(
         lm=lm,
-        loss_terms=build_loss_terms(pd.loss_metrics, lm.site_names),
+        losses=build_loss_terms(pd.loss_metrics, lm.site_names),
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=pd.steps,
         remat_recon_forwards=remat_recon_forwards,
+        remat_ci_fn=remat_ci_fn,
         mesh=mesh,
     )
 
@@ -459,20 +495,176 @@ def run_decomposition_training(
                 "n_devices": ndev,
                 "n_processes": jax.process_count(),
                 "remat_recon_forwards": remat_recon_forwards,
+                "remat_ci_fn": remat_ci_fn,
                 "run_id": run.run_id,
                 "run_dir": str(run.run_dir),
             },
         )
     )
     sink = MetricsSink.for_run(run, wandb_config, is_main)
-    window_t0 = time.time()
+    window_t0 = loop_t0 = time.time()
     last_logged = start_step
 
+    # SCRATCH PROFILER HOOK (revertable): env-gated jax.profiler.trace over a window of
+    # steady-state steps + per-step block_until_ready wall-clock. PD_PROFILE_TRACE=1 enables;
+    # PD_PROFILE_START / PD_PROFILE_STEPS pick the window (default start at first post-warmup
+    # step, 3 steps). Trace lands in run_dir/profile (rank-0 dir is the one to pull).
+    import os as _os
+
+    _profile_on = _os.environ.get("PD_PROFILE_TRACE", "") == "1"
+    _profile_start = int(_os.environ.get("PD_PROFILE_START", str(start_step + 2)))
+    _profile_steps = int(_os.environ.get("PD_PROFILE_STEPS", "3"))
+    _profile_dir = str(run.run_dir / "profile")
+    _profiling = False
+    _prof_t0 = 0.0
+    _time_steps = _os.environ.get("PD_TIME_STEPS", "") == "1"
+
+    if _os.environ.get("PD_LEAF_BENCH", "") == "1":
+        import collections as _collections
+
+        _ident = jax.jit(lambda s: s)
+
+        def _bench_dispatch(tree: object, n: int = 15) -> float:
+            jax.block_until_ready(_ident(tree))  # compile
+            _b0 = time.perf_counter()
+            for _ in range(n):
+                jax.block_until_ready(_ident(tree))
+            return (time.perf_counter() - _b0) / n
+
+        _vu = state.components.vu
+        _by_kind: dict[str, list[tuple[jax.Array, jax.Array]]] = _collections.defaultdict(list)
+        for _name, _VU in _vu.items():
+            _by_kind[_name.split(".")[-1]].append(_VU)
+        _stacked = {
+            _k: (jnp.stack([_v for _v, _u in _lst]), jnp.stack([_u for _v, _u in _lst]))
+            for _k, _lst in _by_kind.items()
+        }
+        _t_dict = _bench_dispatch(_vu)
+        _t_stacked = _bench_dispatch(_stacked)
+        if is_main:
+            print(
+                f"PD_BENCH identity-dispatch: per-site-dict("
+                f"{len(jax.tree_util.tree_leaves(_vu))} leaves)={_t_dict:.3f}s  "
+                f"stacked-per-kind({len(jax.tree_util.tree_leaves(_stacked))} leaves)="
+                f"{_t_stacked:.3f}s  speedup={_t_dict / max(_t_stacked, 1e-6):.1f}x",
+                flush=True,
+            )
+
+    if _os.environ.get("PD_ASYNC_TEST", "") == "1":
+        _atk = random.fold_in(run_key, start_step)
+        _ab = sample_batch(start_step)
+        _aa0 = time.perf_counter()
+        _as1, _am1 = step_fn(lm, state, _ab, _atk)
+        _aa1 = time.perf_counter()
+        _as2, _am2 = step_fn(lm, _as1, _ab, _atk)
+        _aa2 = time.perf_counter()
+        _as3, _am3 = step_fn(lm, _as2, _ab, _atk)
+        _aa3 = time.perf_counter()
+        jax.block_until_ready((_as3, _am3["total"]))
+        _aa4 = time.perf_counter()
+        if is_main:
+            print(
+                f"PD_ASYNC: call1={_aa1 - _aa0:.3f}s call2={_aa2 - _aa1:.3f}s "
+                f"call3={_aa3 - _aa2:.3f}s final_block={_aa4 - _aa3:.3f}s "
+                f"(async/device-bound => calls small + big final_block; "
+                f"sync/host-bound => each call big)",
+                flush=True,
+            )
+
+    if _os.environ.get("PD_MEM_PROFILE", "") == "1":
+        _gib = 1024**3
+        _mb = sample_batch(start_step)
+        _mk = random.fold_in(run_key, start_step)
+        _step_jit: Any = (
+            step_fn  # eqx.filter_jit object exposes .lower(); the Callable alias hides it
+        )
+        _compiled = _step_jit.lower(lm, state, _mb, _mk).compile()
+        _ma = getattr(_compiled, "compiled", _compiled).memory_analysis()
+        if is_main:
+            print(
+                "PD_MEM static memory_analysis(): "
+                f"argument={_ma.argument_size_in_bytes / _gib:.2f}GiB "
+                f"output={_ma.output_size_in_bytes / _gib:.2f}GiB "
+                f"temp={_ma.temp_size_in_bytes / _gib:.2f}GiB "
+                f"alias={_ma.alias_size_in_bytes / _gib:.2f}GiB",
+                flush=True,
+            )
+        _dev = jax.local_devices()[0]
+        _dev.memory_stats()  # reset peak baseline read
+        _ms_state, _ms_metrics = step_fn(lm, state, _mb, _mk)
+        _ms_state, _ms_metrics = step_fn(lm, _ms_state, _mb, _mk)
+        jax.block_until_ready((_ms_state, _ms_metrics["total"]))
+        _ms = _dev.memory_stats()
+        if is_main and _ms is not None:
+            print(
+                "PD_MEM runtime memory_stats(): "
+                f"peak={_ms.get('peak_bytes_in_use', 0) / _gib:.2f}GiB "
+                f"in_use={_ms.get('bytes_in_use', 0) / _gib:.2f}GiB "
+                f"largest_alloc={_ms.get('largest_alloc_size', 0) / _gib:.2f}GiB "
+                f"limit={_ms.get('bytes_limit', 0) / _gib:.2f}GiB",
+                flush=True,
+            )
+        _prof_path = str(run.run_dir / f"device_memory_{jax.process_index()}.prof")
+        jax.profiler.save_device_memory_profile(_prof_path)
+        if is_main:
+            print(f"PD_MEM: resident device-memory profile -> {_prof_path}", flush=True)
+        _os._exit(0)  # profiling-only path; donation has consumed `state`, so don't enter the loop
+
     for step in range(start_step, pd.steps):
-        residual = sample_batch(step)
-        state, metrics = step_fn(lm, state, residual, random.fold_in(run_key, step))
+        if _profile_on and step == _profile_start:
+            jax.block_until_ready(state)
+            jax.profiler.start_trace(_profile_dir, create_perfetto_trace=True)
+            _profiling = True
+            _prof_t0 = time.time()
+            if is_main:
+                print(f"PD_PROFILE: start_trace @ step {step} -> {_profile_dir}", flush=True)
+
+        if _time_steps and is_main and step < start_step + 8:
+            if step == start_step:
+                import equinox as _eqx
+
+                _pp0 = time.perf_counter()
+                _arrs, _ = _eqx.partition((lm, state), _eqx.is_array)
+                _pp1 = time.perf_counter()
+                _nl_state = len(jax.tree_util.tree_leaves(state))
+                _nl_lm = len(jax.tree_util.tree_leaves(lm))
+                print(
+                    f"PD_LEAVES: state={_nl_state} lm={_nl_lm} "
+                    f"eqx.partition(lm,state)={_pp1 - _pp0:.3f}s",
+                    flush=True,
+                )
+            _ts0 = time.perf_counter()
+            batch = sample_batch(step)
+            _ts1 = time.perf_counter()
+            state, metrics = step_fn(lm, state, batch, random.fold_in(run_key, step))
+            _ts2 = time.perf_counter()
+            jax.block_until_ready((state, metrics["total"]))
+            _ts3 = time.perf_counter()
+            print(
+                f"PD_TIME step {step}: sample={_ts1 - _ts0:.3f}s dispatch(py)={_ts2 - _ts1:.3f}s "
+                f"compute(dev)={_ts3 - _ts2:.3f}s total={_ts3 - _ts0:.3f}s",
+                flush=True,
+            )
+        else:
+            batch = sample_batch(step)
+            state, metrics = step_fn(lm, state, batch, random.fold_in(run_key, step))
+
+        if _profiling:
+            jax.block_until_ready((state, metrics["total"]))
+            if is_main:
+                print(
+                    f"PD_PROFILE: step {step} wall {time.time() - _prof_t0:.3f}s (cumulative)",
+                    flush=True,
+                )
+            _prof_t0 = time.time()
+            if step + 1 >= _profile_start + _profile_steps:
+                jax.profiler.stop_trace()
+                _profiling = False
+                if is_main:
+                    print(f"PD_PROFILE: stop_trace @ step {step}", flush=True)
 
         now_step = step + 1
+        sigterm = _sigterm_consensus()
         dense = cadence.dense_log_phase
         log_now = (
             now_step % cadence.train_log_every == 0
@@ -490,28 +682,29 @@ def run_decomposition_training(
                     f"non-finite loss {loss_name!r} at step {now_step}: {record[loss_name]}"
                 )
             record["step_time_s"] = per_step
-            record["train/schedules/lr/components"] = float(jnp.asarray(sched_vu(now_step)))
-            record["train/schedules/lr/ci_fn"] = float(jnp.asarray(sched_ci(now_step)))
+            record["elapsed_s"] = time.time() - loop_t0
+            record["eta_s"] = (pd.steps - now_step) * per_step
+            # the LR this step applied (optax count is the pre-increment `step` == now_step - 1)
+            record["train/schedules/lr/components"] = float(jnp.asarray(sched_vu(now_step - 1)))
+            record["train/schedules/lr/ci_fn"] = float(jnp.asarray(sched_ci(now_step - 1)))
             mem_stats = jax.local_devices()[0].memory_stats()
             if mem_stats is not None:
                 record["train/mem/peak_gb_per_rank"] = mem_stats["peak_bytes_in_use"] / 1e9
             sink.log(now_step, record)
             window_t0 = time.time()
 
-        if eval_fn is not None and now_step % eval_every == 0 and not _sigterm_received:
+        if eval_fn is not None and now_step % eval_every == 0 and not sigterm:
             eval_record = eval_fn(state, now_step)
-            # A SIGTERM raised DURING the eval pass abandons its partial record unlogged and
-            # falls through to the save block (synchronous save of the completed `now_step`).
-            if not _sigterm_received:
-                sink.log(now_step, eval_record)
-                window_t0 = time.time()
+            sink.log(now_step, eval_record)
+            window_t0 = time.time()
 
-        if now_step % save_every == 0 or now_step == pd.steps or _sigterm_received:
+        _skip_save = os.environ.get("PD_NO_CHECKPOINT", "") == "1"  # profiling runs skip all saves
+        if not _skip_save and (now_step % save_every == 0 or now_step == pd.steps or sigterm):
             save_state(checkpoint_manager, now_step, state)
             if is_main:
                 print(f"checkpoint saved @ step {now_step}", flush=True)
             window_t0 = time.time()
-        if _sigterm_received:
+        if sigterm:
             if is_main:
                 print("SIGTERM: checkpoint saved, exiting for requeue", flush=True)
             break
