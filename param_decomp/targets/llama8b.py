@@ -613,14 +613,25 @@ class LlamaDecomposedModel(eqx.Module):
             )  # fmt: skip
             return x, collected
 
-        # Per-LAYER remat: checkpoint the scan BODY so the backward recomputes one layer at a
-        # time, storing only the carry (the residual) — NOT all `n_layer` layers' activations.
-        # Whole-forward remat instead stacks every layer's activations `[n_layer, ...]` in the
-        # backward to backprop the scan, which dominated the step's peak (the MLP-hidden
-        # `[32,1,512,14336]` etc). This is the textbook way to grad-checkpoint a deep scan;
-        # pure recompute, no numerics change.
-        scan_body = jax.checkpoint(block) if remat else block
-        x, ys = jax.lax.scan(scan_body, resid, (self.stacked, per_kind))
+        # Per-LAYER checkpoint of the scan BODY in BOTH modes — `remat` controls ONLY whether
+        # the layer ACTIVATIONS are recomputed; it NEVER controls the ÷fsdp→full V/U gather.
+        # `site_out`'s matmuls run on the per-layer V/U gathered (all-gathered on `fsdp`,
+        # NVLink) from the ÷fsdp `prepared` shard; that full `[d_in, C]` / `[C, d_out]` weight
+        # is a NON-dot collective, so under both policies below it is NEVER a saved residual —
+        # it is re-gathered (recomputed) in the backward, transient one layer at a time. Without
+        # any checkpoint, XLA instead keeps every layer's full gathered V/U live across the
+        # whole scan for the backward (`[n_layer, d_in, C]` stacks → OOM).
+        #   remat=True  → nothing_saveable: recompute activations AND the gather (min memory).
+        #   remat=False → dots_saveable: SAVE the activation matmuls (every site output, the
+        #     attention output, mlp hidden — all `dot_general`/flash with NO batch dims here, so
+        #     they qualify) but still recompute the gather (a collective, not a dot) and the
+        #     cheap elementwise. Pure recompute either way; zero numerics change.
+        policy = (
+            jax.checkpoint_policies.nothing_saveable
+            if remat
+            else jax.checkpoint_policies.dots_saveable
+        )
+        x, ys = jax.lax.scan(jax.checkpoint(block, policy=policy), resid, (self.stacked, per_kind))
         x = rms_norm(x, self.norm, self.eps)
         logits = x @ self.lm_head.T
         if collect is not None:
