@@ -45,7 +45,7 @@ pd:
       final_val_frac: 0.1
       fn_type: cosine
   steps: 400000
-  batch_size: 64
+  batch_size: 1024
   faithfulness_warmup_steps: 400
   faithfulness_warmup_lr: 0.001
   faithfulness_warmup_weight_decay: 0.0
