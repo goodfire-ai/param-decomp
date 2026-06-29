@@ -54,6 +54,7 @@ import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 from jax import random
+from jax.experimental import multihost_utils
 from jaxtyping import Array, Float
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
@@ -73,6 +74,7 @@ from param_decomp.hidden_acts_eval import (
     make_stochastic_hidden_acts_step,
 )
 from param_decomp.lm import DecomposedModel
+from param_decomp.train import COMPUTE_DT, cast_floating
 
 IDENTITY_CI_ERROR_TOLERANCE = 0.1
 """Torch `IdentityCIPattern.distance_from` / `compute_target_metrics` default tolerance —
@@ -116,14 +118,16 @@ def make_slow_eval_step(lm: DecomposedModel, ci_alive_threshold: float) -> SlowE
     def slow_eval_step(
         model: DecomposedModel, ci_fn: Any, residual: Float[Array, "*leading d"]
     ) -> tuple[dict[str, Array], dict[str, Array], Array, dict[str, Array], dict[str, Array]]:
-        # CI fn stays fp32 (its master dtype): torch offline-eval keeps V/U + CI fn fp32,
-        # casting only the frozen target to bf16. The slow plot metrics are a
-        # fp32-CI-fn readout, so we don't take eval.py's bf16-compute path here.
+        # Read the CI fn in TRAINING precision (bf16), matching train.py / eval.py and the
+        # hidden-acts + attn-pattern tiers: the readout reflects the deployed (bf16) model,
+        # and cuDNN flash attention (which rejects fp32) is used. Reductions/returns are
+        # upcast to fp32 so the host accumulation is unchanged.
+        ci_fn = cast_floating(ci_fn, COMPUTE_DT)
         taps = {
-            k: x.astype(jnp.float32)
+            k: x.astype(COMPUTE_DT)
             for k, x in model.read_activations(residual, ci_fn.input_names).items()
         }
-        logits = ci_fn(taps).logits
+        logits = {s: v.astype(jnp.float32) for s, v in ci_fn(taps).logits.items()}
         lower = {s: lower_leaky_hard_sigmoid(logits[s]) for s in site_names}
 
         density_counts = {
@@ -168,8 +172,17 @@ def accumulate_site_reductions(
             density[site] = counts if batch_idx == 0 else density[site] + counts
             sums[site] = ci_sum if batch_idx == 0 else sums[site] + ci_sum
             if keep_sample:
-                lower_chunks.setdefault(site, []).append(np.asarray(flat_lower[site]))
-                logits_chunks.setdefault(site, []).append(np.asarray(flat_logits[site]))
+                # flat_lower/flat_logits keep the dp-sharded batch axis, so on >1 process
+                # they span non-addressable devices and a bare `np.asarray` raises. Gather
+                # the global sample across processes (counts/sums above are already
+                # all-reduced, hence addressable). `tiled=True` concatenates the per-process
+                # shards along axis 0 (order is irrelevant for the histogram sample).
+                lower_chunks.setdefault(site, []).append(
+                    np.asarray(multihost_utils.process_allgather(flat_lower[site], tiled=True))
+                )
+                logits_chunks.setdefault(site, []).append(
+                    np.asarray(multihost_utils.process_allgather(flat_logits[site], tiled=True))
+                )
 
     return {
         site: SiteReduction(
@@ -203,11 +216,13 @@ def make_position_ci_step(lm: DecomposedModel) -> PositionCIStep:
     def position_ci_step(
         model: DecomposedModel, ci_fn: Any, residual: Float[Array, "*leading d"]
     ) -> tuple[dict[str, Array], dict[str, Array], Array]:
+        # Training precision (bf16) readout — see make_slow_eval_step; logits upcast to fp32.
+        ci_fn = cast_floating(ci_fn, COMPUTE_DT)
         taps = {
-            k: x.astype(jnp.float32)
+            k: x.astype(COMPUTE_DT)
             for k, x in model.read_activations(residual, ci_fn.input_names).items()
         }
-        logits = ci_fn(taps).logits
+        logits = {s: v.astype(jnp.float32) for s, v in ci_fn(taps).logits.items()}
         lower = {s: lower_leaky_hard_sigmoid(logits[s]) for s in site_names}
         upper = {s: upper_leaky_hard_sigmoid(logits[s]) for s in site_names}
         first = lower[site_names[0]]
