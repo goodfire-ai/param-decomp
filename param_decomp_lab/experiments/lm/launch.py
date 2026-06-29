@@ -11,6 +11,11 @@ one CUDA venv, built at submit time on the login node — all nodes share the on
 workspace, so in-job cloning would race), stamps the run id (+ out_dir / wandb group /
 tags) into the workspace's single config yaml, and sbatches. Requeues re-enter the same
 immutable workspace.
+
+The rank env (XLA flags, NCCL/host-memory knobs, `PD_*` profiling toggles) is rendered from
+the config's `runtime.launch_env` (single source of truth, defaults in `LaunchEnv`), plus a
+submit-time-computed `LD_LIBRARY_PATH`. So a run's `config.yaml` fully captures the
+environment it ran with, and A/B-ing a flag is a config edit, not a launcher edit.
 """
 
 import os
@@ -22,6 +27,7 @@ from pathlib import Path
 import fire
 import yaml
 
+from param_decomp.configs import LaunchEnv
 from param_decomp.log import logger
 from param_decomp_lab.experiments.lm.config import LMExperimentConfig
 from param_decomp_lab.infra.git import create_git_snapshot
@@ -48,33 +54,25 @@ UV_CACHE_DIR = PARAM_DECOMP_OUT_DIR / "uv_cache"
 # or hit "Unable to satisfy cpu bind request".)
 _SRUN_FLAGS = "--kill-on-bad-exit=1 --ntasks-per-node=1"
 
-# Default 0.75 caps the XLA pool too low for production steps (OOM, job 50644);
-# CUDA-graph capture (XLA command buffers) intermittently dies with
-# CUDA_ERROR_STREAM_CAPTURE_INVALIDATED on disjoint allocations — disabling
-# measured ~0% cost (8,007 vs 8,015 tok/s/GPU).
-# NCCL_DEBUG=WARN overrides the cluster default (NCCL_DEBUG=INFO / NCCL_DEBUG_SUBSYS=ALL),
-# which logs every collective and bloats the slurm logs to tens of GB per run.
-# LD_LIBRARY_PATH: jax[cuda12]'s version check dlopens cuSPARSE et al. by soname and on
-# this cluster doesn't find the pip-installed nvidia libs ("Unable to load cuSPARSE") —
-# point the loader at the venv's nvidia/*/lib dirs.
-# --xla_gpu_autotune_level=0: autotuning the full-model step (224 sites) is the entire GPU
-# compile wall — 1h+ on, ~15 min off (measured, job 107604). Off uses default kernels
-# (somewhat slower steps) but makes the one-time compile tractable; the compile is cached.
-# XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB: XLA's pinned host-staging pool defaults to 64 GB, which
-# the full-model step blows past right after the faith warmup (job 127622). The b200 nodes
-# carry ~2 TB RAM, so raise the ceiling generously (it is a cap, allocated on demand).
-_RANK_ENV = r'''export NCCL_DEBUG=WARN
-export MALLOC_ARENA_MAX=2
-export XLA_PYTHON_CLIENT_MEM_FRACTION=0.92
-export XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB=1024
-export XLA_FLAGS="--xla_gpu_enable_command_buffer="
-export PD_PROFILE_TRACE=0
-# Env-gated profiling hooks (run.py), all DEFAULT-OFF: PD_MEM_PROFILE=1 (memory_analysis +
-# memory_stats peak + device_memory_profile, then exits), PD_TIME_STEPS=1 (per-step wall),
-# PD_PROFILE_TRACE=1 (perfetto window via PD_PROFILE_START/STEPS), PD_ASYNC_TEST=1. Add
-# PD_NO_CHECKPOINT=1 alongside any of these for throwaway profiling runs (skips ALL saves —
-# NEVER for a real run).
-export LD_LIBRARY_PATH="$(python -c 'import nvidia, os, glob; print(":".join(sorted(glob.glob(os.path.join(list(nvidia.__path__)[0], "*", "lib")))))')${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"'''
+# jax[cuda12]'s version check dlopens cuSPARSE et al. by soname and on this cluster doesn't
+# find the pip-installed nvidia libs ("Unable to load cuSPARSE") — point the loader at the
+# venv's nvidia/*/lib dirs. Computed at submit time (machine-specific), so it stays here
+# rather than in the tracked `runtime.launch_env`.
+_LD_LIBRARY_PATH_EXPORT = (
+    "export LD_LIBRARY_PATH=\"$(python -c 'import nvidia, os, glob; "
+    'print(":".join(sorted(glob.glob(os.path.join(list(nvidia.__path__)[0], "*", "lib")))))\')'
+    '${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"'
+)
+
+
+def _render_rank_env(launch_env: LaunchEnv) -> str:
+    """The bash `export` block for a rank, from the config's `runtime.launch_env` plus the
+    submit-time-computed `LD_LIBRARY_PATH`. The typed knobs are the single source of truth
+    (defaults in `LaunchEnv`); shell-quote each value so spaces (e.g. multi-flag `XLA_FLAGS`)
+    survive."""
+    exports = [f"export {k}={shlex.quote(v)}" for k, v in launch_env.as_env().items()]
+    exports.append(_LD_LIBRARY_PATH_EXPORT)
+    return "\n".join(exports)
 
 
 def _rank_command(config_rel: Path, run_id: str, rank_env: str) -> str:
@@ -94,7 +92,6 @@ def main(
     group: str | None = None,
     tags: str | None = None,
     comment: str | None = None,
-    allocator: str | None = None,
 ) -> None:
     """Launch a decomposition trainer (`param_decomp_lab.experiments.lm.run`) run. The mode
     (inline vs SLURM) is a pure function of the config's `runtime.dp`.
@@ -114,9 +111,9 @@ def main(
         group: wandb UI group (no-op when the config omits `wandb:`).
         tags: Comma-separated wandb tags (no-op when `wandb:` is omitted).
         comment: SLURM `--comment`; defaults to the wandb run URL (or run id).
-        allocator: `XLA_PYTHON_CLIENT_ALLOCATOR` override (e.g. `platform` for the
-            on-demand cudaMalloc allocator, which avoids BFC fragmentation OOMs on
-            runs near the HBM cap, at some per-alloc cost). None leaves the default BFC.
+
+    The rank env (XLA flags, NCCL/host-memory knobs, profiling toggles) is config-driven
+    via `runtime.launch_env` — set it in the YAML, not here (so `config.yaml` records it).
     """
     config_rel = _config_path_relative_to_repo(config_path)
     cfg, run_name = _validate_config(REPO_ROOT / config_rel)
@@ -154,9 +151,7 @@ def main(
         requeue=True,
         comment=comment if comment is not None else (wandb_url or run_id),
     )
-    rank_env = _RANK_ENV
-    if allocator is not None:
-        rank_env = f"{rank_env}\nexport XLA_PYTHON_CLIENT_ALLOCATOR={allocator}"
+    rank_env = _render_rank_env(cfg.runtime.launch_env)
     # One task per node: `--nodes=N --ntasks=N` (N whole-node tasks) can't pack onto one
     # node, so the trainer's single process per node claims all 8 local GPUs.
     srun = f"srun --nodes={nodes} --ntasks={nodes} {_SRUN_FLAGS}"

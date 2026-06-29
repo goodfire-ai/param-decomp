@@ -595,11 +595,135 @@ AnyLossMetricConfig = Annotated[
 ]
 
 
-class RuntimeConfig(BaseConfig):
-    """Compute substrate: data-parallelism degree, rematerialization.
+class ProfileConfig(BaseConfig):
+    """Profiling/instrumentation toggles the trainer reads from `PD_*` env vars (`run.py`).
 
-    Perturbs numerics but doesn't change the algorithm. Future home for NCCL flags,
-    gradient accumulation steps, fp8 variants, etc.
+    A profiling run is then a CONFIG, not an env hack: the launcher renders these into the
+    rank env, so the pinned `config.yaml` records exactly which hooks ran. All hooks are
+    DEFAULT-OFF; the empty `ProfileConfig()` exports nothing of consequence (the trainer
+    treats missing/`"0"` `PD_*` vars as off).
+
+    Each field maps to one `PD_*` var read in `run.py` / `ci_fn.py` / `train.py`:
+    `mem_profile`→PD_MEM_PROFILE (static + runtime memory analysis, then exits),
+    `time_steps`→PD_TIME_STEPS (per-step wall breakdown), `trace`→PD_PROFILE_TRACE
+    (perfetto trace over `trace_start`..`trace_start+trace_steps`), `async_test`→PD_ASYNC_TEST,
+    `leaf_bench`→PD_LEAF_BENCH, `no_checkpoint`→PD_NO_CHECKPOINT (skip ALL saves — throwaway
+    profiling only), `replicate_weights`→PD_REPLICATE_WEIGHTS, `ci_broadcast`→PD_CI_BROADCAST.
+    """
+
+    mem_profile: bool = False
+    time_steps: bool = False
+    trace: bool = False
+    trace_start: PositiveInt | None = None
+    """First step of the perfetto trace window; `None` lets `run.py` default it to the first
+    post-warmup step. Only meaningful when `trace` is set."""
+    trace_steps: PositiveInt | None = None
+    """Number of steps to trace; `None` lets `run.py` default it (3). Only with `trace`."""
+    async_test: bool = False
+    leaf_bench: bool = False
+    no_checkpoint: bool = False
+    replicate_weights: bool = False
+    ci_broadcast: bool = False
+
+    def as_env(self) -> dict[str, str]:
+        """The `PD_*` exports this profiling config requests (only the set toggles)."""
+        env: dict[str, str] = {}
+        if self.mem_profile:
+            env["PD_MEM_PROFILE"] = "1"
+        if self.time_steps:
+            env["PD_TIME_STEPS"] = "1"
+        if self.trace:
+            env["PD_PROFILE_TRACE"] = "1"
+        if self.trace_start is not None:
+            env["PD_PROFILE_START"] = str(self.trace_start)
+        if self.trace_steps is not None:
+            env["PD_PROFILE_STEPS"] = str(self.trace_steps)
+        if self.async_test:
+            env["PD_ASYNC_TEST"] = "1"
+        if self.leaf_bench:
+            env["PD_LEAF_BENCH"] = "1"
+        if self.no_checkpoint:
+            env["PD_NO_CHECKPOINT"] = "1"
+        if self.replicate_weights:
+            env["PD_REPLICATE_WEIGHTS"] = "1"
+        if self.ci_broadcast:
+            env["PD_CI_BROADCAST"] = "1"
+        return env
+
+
+class LaunchEnv(BaseConfig):
+    """The process-environment surface a SLURM-launched rank runs with — XLA flags, the XLA
+    client knobs, NCCL/glibc tuning, and the `PD_*` profiling toggles — lifted into the run
+    config so a run's `config.yaml` fully captures its environment (tracking + repro), and
+    A/B-ing a flag is a config edit, not a launcher edit.
+
+    The launcher (`experiments/lm/launch.py`) renders this into the rank env it exports;
+    `LD_LIBRARY_PATH` is NOT here (it is computed at submit time from the workspace venv's
+    nvidia libs — machine-specific, not a tracked decision). Defaults mirror the values the
+    launcher used to hardcode; they are the single source of truth.
+    """
+
+    xla_flags: dict[str, str] = Field(
+        default_factory=lambda: {"gpu_enable_command_buffer": ""},
+        description=(
+            "Flags rendered into the single `XLA_FLAGS` env var as `--xla_<key>=<value>` "
+            "(in declared order). Empty-string value emits `--xla_<key>=` (e.g. "
+            "`gpu_enable_command_buffer: ''` disables CUDA-graph capture — measured ~0% cost, "
+            "avoids CUDA_ERROR_STREAM_CAPTURE_INVALIDATED). `xla_gpu_autotune_level: '0'` "
+            "skips the multi-hour full-model autotune. `run.py` APPENDS its HLO-dump flags "
+            "to whatever this produces."
+        ),
+    )
+    xla_python_client_mem_fraction: PositiveFloat = 0.92
+    """`XLA_PYTHON_CLIENT_MEM_FRACTION` — the BFC pool cap as a fraction of HBM. The XLA
+    default 0.75 caps production steps too low (OOM, job 50644)."""
+    xla_python_client_allocator: str | None = None
+    """`XLA_PYTHON_CLIENT_ALLOCATOR` — e.g. `platform` for the on-demand cudaMalloc allocator
+    (avoids BFC fragmentation OOMs near the HBM cap, at some per-alloc cost). `None` leaves
+    the XLA default (BFC). Replaces the old `pd-lm --allocator` flag."""
+    xla_pjrt_gpu_host_memory_limit_gb: PositiveInt = 1024
+    """`XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB` — cap on XLA's pinned host-staging pool (allocated
+    on demand). The 64 GB default is blown past right after faith warmup on the full-model
+    step (job 127622); the b200 nodes carry ~2 TB RAM."""
+    nccl_debug: str = "WARN"
+    """`NCCL_DEBUG` — overrides the cluster default (INFO + SUBSYS=ALL), which logs every
+    collective and bloats slurm logs to tens of GB per run."""
+    malloc_arena_max: PositiveInt = 2
+    """`MALLOC_ARENA_MAX` — caps glibc malloc arenas to bound host RSS under many threads."""
+    env: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Arbitrary extra exports merged into the rank env LAST (after the typed knobs "
+            "and profiling toggles), so it can override any of them. The escape hatch for a "
+            "one-off var without a schema field."
+        ),
+    )
+    profile: ProfileConfig = Field(default_factory=ProfileConfig)
+
+    def as_env(self) -> dict[str, str]:
+        """Render the full ordered `{VAR: value}` map the launcher exports (sans the
+        submit-time-computed `LD_LIBRARY_PATH`). Later keys override earlier ones, so the
+        free-form `env` block wins last."""
+        xla_flags_str = " ".join(f"--xla_{k}={v}" for k, v in self.xla_flags.items())
+        rendered: dict[str, str] = {
+            "NCCL_DEBUG": self.nccl_debug,
+            "MALLOC_ARENA_MAX": str(self.malloc_arena_max),
+            "XLA_PYTHON_CLIENT_MEM_FRACTION": str(self.xla_python_client_mem_fraction),
+            "XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB": str(self.xla_pjrt_gpu_host_memory_limit_gb),
+            "XLA_FLAGS": xla_flags_str,
+        }
+        if self.xla_python_client_allocator is not None:
+            rendered["XLA_PYTHON_CLIENT_ALLOCATOR"] = self.xla_python_client_allocator
+        rendered |= self.profile.as_env()
+        rendered |= self.env
+        return rendered
+
+
+class RuntimeConfig(BaseConfig):
+    """Compute substrate: data-parallelism degree, rematerialization, and the launch-time
+    env/XLA-flag surface (`launch_env`).
+
+    Perturbs numerics but doesn't change the algorithm.
     """
 
     @model_validator(mode="before")
@@ -652,6 +776,10 @@ class RuntimeConfig(BaseConfig):
             "batch on big targets. Compute substrate knob, no algorithm effect."
         ),
     )
+    launch_env: LaunchEnv = Field(default_factory=LaunchEnv)
+    """The XLA-flag / env-var / profiling surface the SLURM launcher exports into the rank
+    env (single source of truth; defaults mirror the formerly-hardcoded launcher block).
+    Ignored on the inline `dp is None` path (which inherits the caller's environment)."""
 
     @model_validator(mode="after")
     def validate_dp(self) -> Self:

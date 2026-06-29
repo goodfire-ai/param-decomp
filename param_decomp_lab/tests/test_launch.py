@@ -7,8 +7,10 @@ from pathlib import Path
 import pytest
 import yaml
 
+from param_decomp.configs import LaunchEnv, ProfileConfig
 from param_decomp_lab.experiments.lm.launch import (
     _rank_command,
+    _render_rank_env,
     _stamp_config,
     _validate_config,
 )
@@ -85,3 +87,37 @@ def test_stamp_config_noop_without_wandb_knobs(tmp_path: Path):
     raw = yaml.safe_load(config.read_text())
     assert "run_id" not in raw and "out_dir" not in raw
     assert "group" not in raw["wandb"] and "tags" not in raw["wandb"]
+
+
+def test_default_launch_env_matches_legacy_hardcoded_block():
+    env = LaunchEnv().as_env()
+    assert env == {
+        "NCCL_DEBUG": "WARN",
+        "MALLOC_ARENA_MAX": "2",
+        "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.92",
+        "XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB": "1024",
+        "XLA_FLAGS": "--xla_gpu_enable_command_buffer=",
+    }
+
+
+def test_launch_env_renders_allocator_profile_and_free_form_overrides():
+    env = LaunchEnv(
+        xla_flags={"gpu_enable_command_buffer": "", "gpu_autotune_level": "0"},
+        xla_python_client_allocator="platform",
+        profile=ProfileConfig(trace=True, trace_start=10, trace_steps=5, no_checkpoint=True),
+        env={"NCCL_DEBUG": "INFO"},  # free-form block overrides a typed knob (merged last)
+    ).as_env()
+    assert env["XLA_FLAGS"] == "--xla_gpu_enable_command_buffer= --xla_gpu_autotune_level=0"
+    assert env["XLA_PYTHON_CLIENT_ALLOCATOR"] == "platform"
+    assert env["PD_PROFILE_TRACE"] == "1"
+    assert env["PD_PROFILE_START"] == "10" and env["PD_PROFILE_STEPS"] == "5"
+    assert env["PD_NO_CHECKPOINT"] == "1"
+    assert env["NCCL_DEBUG"] == "INFO"
+
+
+def test_render_rank_env_shell_quotes_multiflag_and_appends_ld_library_path():
+    block = _render_rank_env(
+        LaunchEnv(xla_flags={"gpu_enable_command_buffer": "", "gpu_autotune_level": "0"})
+    )
+    assert "export XLA_FLAGS='--xla_gpu_enable_command_buffer= --xla_gpu_autotune_level=0'" in block
+    assert block.splitlines()[-1].startswith("export LD_LIBRARY_PATH=")

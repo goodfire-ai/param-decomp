@@ -100,6 +100,27 @@ The path schemas (`topology/path_schemas.py`) cover the GPT-2 and `LlamaSimple*`
 so `PDAdapter`'s layer-description path is exercised by `kind: pretrained` runs (the
 pile `LlamaSimpleMLP` decompositions), the production target.
 
+## `runtime.launch_env` (rank env / XLA flags)
+
+The SLURM rank env (XLA flags, NCCL/host-memory knobs, `PD_*` profiling toggles) is
+config-driven via `runtime.launch_env` (`param_decomp.configs.LaunchEnv`), so `config.yaml`
+fully captures the environment a run executed with — A/B a flag in the YAML, not in
+`launch.py`. `launch.py::_render_rank_env` renders `LaunchEnv.as_env()` into the exported
+bash block; `LD_LIBRARY_PATH` is computed at submit time (machine-specific) and stays in the
+launcher. A profiling run is a config (`runtime.launch_env.profile`), not an env hack. The
+defaults mirror the values the launcher used to hardcode. Applies to the SLURM path only;
+the inline `dp is None` path inherits the caller's environment.
+
+```yaml
+runtime:
+  dp: 32
+  launch_env:
+    xla_flags: { gpu_enable_command_buffer: "", gpu_autotune_level: "0" }
+    xla_python_client_allocator: platform   # was the old `pd-lm --allocator` flag
+    profile: { mem_profile: true, no_checkpoint: true }
+    env: { SOME_ONE_OFF_VAR: "1" }           # escape hatch, merged last (overrides)
+```
+
 ## `--group` and `--tags`
 
 Every `pd-*` run command accepts `--group <id>` and `--tags a,b,c` (no-ops when

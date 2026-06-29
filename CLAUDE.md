@@ -129,8 +129,10 @@ from param_decomp_lab.experiments.lm.load_run import open_jax_run, run_metadata
   derived runtime `ExperimentConfig` (`param_decomp.built_run`). (The eval-metric *config*
   classes likewise live in `param_decomp.configs`; only their torch `Metric` *impls* were
   dropped.)
-- `RuntimeConfig` — compute substrate: `autocast_bf16`, `device`, `dp`. Perturbs numerics
-  without changing the algorithm.
+- `RuntimeConfig` — compute substrate: `dp`, `remat_recon_forwards` / `remat_ci_fn`, and
+  `launch_env` (the XLA-flag / env-var / `PD_*`-profiling surface the SLURM launcher exports
+  into each rank — single source of truth, so `config.yaml` captures the run's environment).
+  Perturbs numerics without changing the algorithm.
 - `param_decomp.log` — the logger every consumer uses (folded into the core trainer
   package).
 - `param_decomp_lab.experiments.lm.load_run.{open_jax_run, run_metadata}` — the JAX
