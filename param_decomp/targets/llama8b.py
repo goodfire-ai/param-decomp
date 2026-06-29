@@ -412,8 +412,15 @@ def _reconstruct_compute_weights(
     out: dict[str, dict[str, Array]] = {}
     for kind, entry in per_kind.items():
         pinned = dict(entry)
-        v = jax.lax.with_sharding_constraint(entry["V"].astype(jnp.bfloat16), v_spec)
-        u = jax.lax.with_sharding_constraint(entry["U"].astype(jnp.bfloat16), u_spec)
+        # optimization_barrier forces the bf16 cast to materialize BEFORE the ÷N→÷fsdp gather,
+        # so the collective moves bf16 — XLA otherwise sinks the convert past the all-gather
+        # and gathers the f32 master (2x the comm; the convert_element_type gathers in the HLO).
+        v = jax.lax.with_sharding_constraint(
+            jax.lax.optimization_barrier(entry["V"].astype(jnp.bfloat16)), v_spec
+        )
+        u = jax.lax.with_sharding_constraint(
+            jax.lax.optimization_barrier(entry["U"].astype(jnp.bfloat16)), u_spec
+        )
         pinned["V"], pinned["U"] = v, u
         out[kind] = pinned
     return out
