@@ -736,11 +736,6 @@ class RuntimeConfig(BaseConfig):
         if not isinstance(data, dict):
             return data
         data.pop("device", None)
-        # `tp` (the TP/Megatron-C degree) is dropped on this pure-HSDP branch: the mesh is
-        # fixed `(replicate, fsdp)` with `fsdp` = the intra-node GPUs, derived from the device
-        # count, so there is no tensor-parallel degree to configure. Strip it from stored
-        # configs (it only ever carried 1 or 2 in practice; the layout is now invariant).
-        data.pop("tp", None)
         if "autocast_bf16" in data:
             assert data.pop("autocast_bf16") is True, (
                 "autocast_bf16 was removed (the JAX trainer always computes in bf16)"
@@ -757,6 +752,18 @@ class RuntimeConfig(BaseConfig):
             "equals it. NEVER inferred from ambient SLURM env. None means a single device "
             "(the launcher runs the trainer inline, no jax.distributed). The batch is "
             "sharded data-parallel across the workers."
+        ),
+    )
+    tp: int = Field(
+        default=1,
+        ge=1,
+        le=8,
+        description=(
+            "Tensor-parallel (Megatron) degree, carved from the intra-node GPUs so "
+            "`fsdp * tp = GPUS_PER_NODE` — both stay on NVLink. Shards the component C axis "
+            "(V/U, CI-fn output heads) and the CI-fn MLP hidden, halving the per-layer weight "
+            "all-gather. `tp = 1` (default) is the pure-HSDP layout (degenerate tp axis, "
+            "behaviour-preserving). Must divide both the device count and GPUS_PER_NODE."
         ),
     )
     remat_recon_forwards: bool = Field(
