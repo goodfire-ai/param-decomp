@@ -6,12 +6,11 @@ contiguous-MLP-only `llama_decomposed_lm`). This test rebuilds the identical mod
 the per-site representation and checks, for the same MLP-family site set:
 
   * `clean_output` / per-site INPUTS (served by `lm.read_activations` for site-name keys) /
-    `weight_deltas` / `masked_output` — to fp32 reassociation tolerance (SPEC D4: rel
-    ~1e-4; essentially exact). These pins are CI-fn-INDEPENDENT — pure target-model
-    forwards — so they still hold against the committed fixtures. The tolerance is portable,
+    `weight_deltas` / `masked_output` — to a portable fp32 reassociation tolerance (SPEC D4),
     not bit-exact: float32 matmul reduction order differs across CPU microarchitectures, so
     the same op sequence diverges by ~1 ULP between the fixture-generating host and a given
-    CI runner (`ubuntu-latest` is a heterogeneous pool).
+    CI runner (`ubuntu-latest` is a heterogeneous pool). These pins are CI-fn-INDEPENDENT —
+    pure target-model forwards — so they still hold against the committed fixtures.
 
 The trajectory test (`test_train_trajectory_matches`) is SKIPPED: the CI fn moved from the
 old per-site-concat `CIArch` to the chunkwise transformer reading RESIDUAL taps, which
