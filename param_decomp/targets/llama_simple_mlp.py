@@ -15,9 +15,8 @@ pinned by the torch-fixture equivalence test (`tests/simple_mlp_equivalence/`).
 Decomposed sites are torch-module-path named: `h.{i}.attn.{q,k,v,o}_proj`,
 `h.{i}.mlp.c_fc`, `h.{i}.mlp.down_proj`, each with its own C. q/k/v sites are
 decomposed BEFORE RoPE/SDPA; o after; c_fc before the GELU; down_proj after. The
-frozen residual-start suffix runs from the lowest decomposed layer; the prefix
-(embedding + earlier blocks) only harvests the residual. With sites at layer 0 the
-"residual" is the embedding output.
+model is the full frozen network — embedding through every block to the (tied) LM head;
+blocks without a decomposed site run the plain frozen path.
 
 Weights load from the torch pretrain cache
 (`$PARAM_DECOMP_OUT_DIR/pretrain_cache/<project>-<run_id>/`), converted once to
@@ -193,16 +192,10 @@ def site_specs(cfg: LlamaSimpleMLPConfig, site_cs: tuple[SiteC, ...]) -> tuple[S
     return tuple(specs)
 
 
-def first_decomposed_layer(site_names: tuple[str, ...]) -> int:
-    """The residual-start boundary: the suffix runs from the lowest decomposed layer."""
-    assert site_names
-    return min(parse_site_name(name)[0] for name in site_names)
+# ----------------------------- frozen layers -----------------------------
 
 
-# ----------------------------- frozen suffix / prefix -----------------------------
-
-
-class SimpleMLPSuffixLayer(eqx.Module):
+class SimpleMLPLayer(eqx.Module):
     """One layer's frozen weights — norms, rotary GQA attention (`FrozenAttn` is
     target-agnostic: weights + RoPE/SDPA core), GELU MLP. Decomposed sites read their
     frozen target W from here at forward time; weights pass as a runtime arg."""
@@ -214,19 +207,7 @@ class SimpleMLPSuffixLayer(eqx.Module):
     Wdown: Float[Array, "d di"]
 
 
-class SimpleMLPPrefix(eqx.Module):
-    """The frozen 0..first-1 prefix: embedding + blocks. Used only to harvest the
-    residual entering the suffix — never in any gradient graph. With sites at layer 0
-    `blocks` is empty and the residual is the raw embedding output."""
-
-    embed: Float[Array, "vocab d"]
-    blocks: list[SimpleMLPSuffixLayer]
-    inv_freq: Float[Array, " hd2"]
-    eps: float = eqx.field(static=True)
-    n_ctx: int = eqx.field(static=True)
-
-
-def _frozen_site_weight(layer: SimpleMLPSuffixLayer, kind: str) -> Array:
+def _frozen_site_weight(layer: SimpleMLPLayer, kind: str) -> Array:
     match kind:
         case "q_proj":
             return layer.attn.wq
@@ -253,13 +234,13 @@ def _gelu_tanh(x: Array) -> Array:
     return jax.nn.gelu(x, approximate=True)
 
 
-def _clean_mlp_out(layer: SimpleMLPSuffixLayer, mlp_in: Array) -> Array:
+def _clean_mlp_out(layer: SimpleMLPLayer, mlp_in: Array) -> Array:
     """Frozen target MLP — exactly `W` applied, not the `V@U + (W−V@U)` identity, so
     non-live sites carry no V/U gradient and no decomposition rounding (SPEC S2/S3)."""
     return _gelu_tanh(mlp_in @ layer.Wfc.T) @ layer.Wdown.T
 
 
-def _clean_block(layer: SimpleMLPSuffixLayer, x: Array, inv_freq: Array, eps: float) -> Array:
+def _clean_block(layer: SimpleMLPLayer, x: Array, inv_freq: Array, eps: float) -> Array:
     x = x + layer.attn(rms_norm(x, layer.ln1, eps), inv_freq)
     return x + _clean_mlp_out(layer, rms_norm(x, layer.ln2, eps))
 
@@ -302,19 +283,20 @@ def _masked_site_out(
 class SimpleMLPDecomposedModel(eqx.Module):
     """The `LlamaSimpleMLP` `DecomposedModel` (the `lm.py` contract; SPEC §1).
 
-    Carries the FROZEN residual-start suffix (layers `first_layer..n_layer-1`, final norm,
-    tied lm_head) as array fields — threaded into the jitted step as a pytree arg, weights
-    traced not baked. The TRAINABLE V/U (`vu: DecompVU`) is an explicit method arg, NOT a
-    field (separate lifecycle). `sites` / `leading_axes` / `first_layer` / `n_ctx` / `eps`
-    are static config."""
+    Carries the FROZEN full model (tied embedding, all blocks, final norm, lm_head) as array
+    fields — threaded into the jitted step as a pytree arg, weights traced not baked. Forward
+    methods take token `inputs` and embed internally; blocks with no decomposed site run the
+    plain frozen block. The TRAINABLE V/U (`vu: DecompVU`) is an
+    explicit method arg, NOT a field (separate lifecycle). `sites` / `leading_axes` / `n_ctx`
+    / `eps` are static config."""
 
-    layers: list[SimpleMLPSuffixLayer]
+    embed: Float[Array, "vocab d"]
+    layers: list[SimpleMLPLayer]
     norm: Float[Array, " d"]
     lm_head: Float[Array, "vocab d"]
     inv_freq: Float[Array, " hd2"]
     sites: tuple[SiteSpec, ...] = eqx.field(static=True)
     leading_axes: tuple[str, ...] = eqx.field(static=True)
-    first_layer: int = eqx.field(static=True)
     eps: float = eqx.field(static=True)
     n_ctx: int = eqx.field(static=True)
 
@@ -332,17 +314,20 @@ class SimpleMLPDecomposedModel(eqx.Module):
     def recon_loss_fn(masked_output: Array, clean_output: Array) -> Array:
         return kl_per_position(masked_output, clean_output)
 
-    def clean_output(self, resid: Float[Array, "b t d"]) -> Array:
-        """The all-frozen suffix forward — the recon target (SPEC S3)."""
-        assert resid.shape[1] <= self.n_ctx, (resid.shape, self.n_ctx)
-        x = resid
+    def embed_tokens(self, tokens: Int[Array, "b t"]) -> Float[Array, "b t d"]:
+        return self.embed[tokens]
+
+    def clean_output(self, inputs: Int[Array, "b t"]) -> Array:
+        """The all-frozen forward — the recon target (SPEC S3)."""
+        assert inputs.shape[1] <= self.n_ctx, (inputs.shape, self.n_ctx)
+        x = self.embed_tokens(inputs)
         for layer in self.layers:
             x = _clean_block(layer, x, self.inv_freq, self.eps)
         x = rms_norm(x, self.norm, self.eps)
         return x @ self.lm_head.T
 
     def read_activations(
-        self, resid: Float[Array, "b t d"], wanted: tuple[str, ...]
+        self, inputs: Int[Array, "b t"], wanted: tuple[str, ...]
     ) -> dict[str, Array]:
         """Frozen-path activation accessor (CI input side, SPEC S4; harvest's per-site
         matrix inputs).
@@ -353,13 +338,12 @@ class SimpleMLPDecomposedModel(eqx.Module):
         `o_proj` ← the attention output, `c_fc` ← post-LN2 residual, `down_proj` ←
         `gelu_tanh(mlp_in @ Wfc)`). The residual is threaded identically to `clean_output`;
         the per-site intermediates come from the same RMSNorm/attn/MLP math."""
-        assert resid.shape[1] <= self.n_ctx, (resid.shape, self.n_ctx)
+        assert inputs.shape[1] <= self.n_ctx, (inputs.shape, self.n_ctx)
         wanted_set = frozenset(wanted)
         last = max(_tap_layer(key) for key in wanted)
         taps: dict[str, Array] = {}
-        x = resid
-        for layer_offset, layer in enumerate(self.layers):
-            layer_idx = self.first_layer + layer_offset
+        x = self.embed_tokens(inputs)
+        for layer_idx, layer in enumerate(self.layers):
             if f"resid.{layer_idx}" in wanted_set:
                 taps[f"resid.{layer_idx}"] = x
             attn = layer.attn
@@ -381,10 +365,10 @@ class SimpleMLPDecomposedModel(eqx.Module):
         assert set(taps) == wanted_set, (sorted(taps), sorted(wanted))
         return taps
 
-    def _run_masked_suffix(
+    def _run_masked_forward(
         self,
         vu: DecompVU,
-        resid: Float[Array, "b t d"],
+        inputs: Int[Array, "b t"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
         routes: dict[str, Array] | None,
@@ -392,18 +376,17 @@ class SimpleMLPDecomposedModel(eqx.Module):
         has_delta: bool,
         collect: dict[str, Array] | None,
     ) -> Array:
-        """The masked decomposed suffix forward shared by `masked_output` and
+        """The masked decomposed forward shared by `masked_output` and
         `masked_site_outputs` (SPEC §4.1, S2): sites in `live` run their decomposed forward
         with `masks[s]` / `delta_masks[s]` / `routes[s]`; every other site — and every site
         absent from the decomposition entirely — runs the frozen `x @ W` path. `live` and
         `has_delta` are static under jit; `has_delta` False skips the `x @ Δ` matmul
         (LOSS_PARITY_DESIGN §4b). A non-None `collect` gathers per-site decomposed
         outputs."""
-        assert resid.shape[1] <= self.n_ctx, (resid.shape, self.n_ctx)
+        assert inputs.shape[1] <= self.n_ctx, (inputs.shape, self.n_ctx)
         live_set = frozenset(live)
-        x = resid
-        for layer_offset, layer in enumerate(self.layers):
-            layer_idx = self.first_layer + layer_offset
+        x = self.embed_tokens(inputs)
+        for layer_idx, layer in enumerate(self.layers):
             live_kinds = {kind for kind in KIND_ORDER if site_name(layer_idx, kind) in live_set}
             attn = layer.attn
             site_args = (masks, delta_masks, routes, live_set, has_delta, collect)
@@ -437,19 +420,37 @@ class SimpleMLPDecomposedModel(eqx.Module):
     def masked_output(
         self,
         vu: DecompVU,
-        resid: Float[Array, "b t d"],
+        inputs: Int[Array, "b t"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
         routes: dict[str, Array] | None,
         live: tuple[str, ...],
         has_delta: bool,
+        *,
+        remat: bool,
     ) -> Array:
-        return self._run_masked_suffix(vu, resid, masks, delta_masks, routes, live, has_delta, None)
+        # This arch's forward is an unrolled Python loop (heterogeneous per-layer live sites),
+        # not a scan, so its natural remat granularity is the whole forward: recompute it in
+        # the backward rather than store its activations. `live`/`has_delta` are closed over
+        # (static); the checkpoint sees only array/pytree leaves.
+        def forward(
+            vu: DecompVU,
+            inputs: Array,
+            masks: dict[str, Array],
+            delta_masks: dict[str, Array],
+            routes: dict[str, Array] | None,
+        ) -> Array:
+            return self._run_masked_forward(
+                vu, inputs, masks, delta_masks, routes, live, has_delta, None
+            )
+
+        forward = jax.checkpoint(forward) if remat else forward
+        return forward(vu, inputs, masks, delta_masks, routes)
 
     def masked_site_outputs(
         self,
         vu: DecompVU,
-        resid: Float[Array, "b t d"],
+        inputs: Int[Array, "b t"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
         routes: dict[str, Array] | None,
@@ -459,7 +460,7 @@ class SimpleMLPDecomposedModel(eqx.Module):
         """Per-`live`-site decomposed output of the masked forward (SPEC S31). Runs the
         exact `masked_output` forward, discards the logits, returns the collected outputs."""
         collect: dict[str, Array] = {}
-        self._run_masked_suffix(vu, resid, masks, delta_masks, routes, live, has_delta, collect)
+        self._run_masked_forward(vu, inputs, masks, delta_masks, routes, live, has_delta, collect)
         assert set(collect) == set(live), (sorted(collect), sorted(live))
         return collect
 
@@ -468,22 +469,12 @@ class SimpleMLPDecomposedModel(eqx.Module):
         out: dict[str, Array] = {}
         for spec in self.sites:
             layer_idx, kind = parse_site_name(spec.name)
-            W = _frozen_site_weight(self.layers[layer_idx - self.first_layer], kind)
+            W = _frozen_site_weight(self.layers[layer_idx], kind)
             V, U = vu.site(spec.name)
             out[spec.name] = (
                 W.astype(jnp.float32) - (V.astype(jnp.float32) @ U.astype(jnp.float32)).T
             )
         return out
-
-
-def prefix_residual(prefix: SimpleMLPPrefix, idx: Int[Array, "b t"]) -> Array:
-    """Pure prefix forward: token ids `(b, t)` -> residual entering the suffix
-    `(b, t, d)`. The trainer jits this with `prefix` as a runtime arg."""
-    assert idx.shape[1] <= prefix.n_ctx, (idx.shape, prefix.n_ctx)
-    x = prefix.embed[idx]
-    for layer in prefix.blocks:
-        x = _clean_block(layer, x, prefix.inv_freq, prefix.eps)
-    return x
 
 
 # ----------------------------- weight loading -----------------------------
@@ -541,8 +532,8 @@ def _checkpoint_weight_getter(cache_dir: Path, dtype: DTypeLike) -> WeightGetter
 
 def _layer_from_weights(
     get: WeightGetter, layer_idx: int, cfg: LlamaSimpleMLPConfig
-) -> SimpleMLPSuffixLayer:
-    return SimpleMLPSuffixLayer(
+) -> SimpleMLPLayer:
+    return SimpleMLPLayer(
         ln1=get(f"h.{layer_idx}.rms_1.weight"),
         ln2=get(f"h.{layer_idx}.rms_2.weight"),
         attn=FrozenAttn(
@@ -561,26 +552,27 @@ def _layer_from_weights(
 
 
 def build_decomposed_simple_mlp(
-    layers: list[SimpleMLPSuffixLayer],
+    embed: Array,
+    layers: list[SimpleMLPLayer],
     norm: Array,
     lm_head: Array,
     cfg: LlamaSimpleMLPConfig,
     sites: tuple[SiteSpec, ...],
 ) -> SimpleMLPDecomposedModel:
-    """Assemble a `SimpleMLPDecomposedModel` from frozen suffix arrays + decomposition
+    """Assemble a `SimpleMLPDecomposedModel` from the frozen full-model arrays + decomposition
     config. `sites` must be canonical-ordered with dims matching `cfg`."""
     site_cs = tuple(SiteC(s.name, s.C) for s in sites)
     assert sites == site_specs(cfg, canonical_site_cs(site_cs)), (
         f"sites are not the canonical specs for this config: {sites}"
     )
     return SimpleMLPDecomposedModel(
+        embed=embed,
         layers=layers,
         norm=norm,
         lm_head=lm_head,
         inv_freq=plain_rope_inv_freq(cfg),
         sites=sites,
         leading_axes=("sequence",),
-        first_layer=first_decomposed_layer(tuple(s.name for s in sites)),
         eps=cfg.rms_norm_eps,
         n_ctx=cfg.n_ctx,
     )
@@ -595,14 +587,13 @@ def all_site_specs(cfg: LlamaSimpleMLPConfig) -> tuple[SiteSpec, ...]:
     return site_specs(cfg, canonical_site_cs(site_cs))
 
 
-def target_from_weights(
-    get: WeightGetter, cfg: LlamaSimpleMLPConfig, first_layer: int
-) -> SimpleMLPDecomposedModel:
+def target_from_weights(get: WeightGetter, cfg: LlamaSimpleMLPConfig) -> SimpleMLPDecomposedModel:
     """Build a forward-only decomposed model from checkpoint-keyed weights, with the full
     decomposable site set. Used by the torch-parity equivalence test (it only calls
     `clean_output`, which is independent of the site config)."""
     return build_decomposed_simple_mlp(
-        layers=[_layer_from_weights(get, i, cfg) for i in range(first_layer, cfg.n_layer)],
+        embed=get("wte.weight"),
+        layers=[_layer_from_weights(get, i, cfg) for i in range(cfg.n_layer)],
         norm=get("ln_f.weight"),
         lm_head=get("wte.weight"),
         cfg=cfg,
@@ -610,52 +601,26 @@ def target_from_weights(
     )
 
 
-def prefix_from_weights(
-    get: WeightGetter, cfg: LlamaSimpleMLPConfig, first_layer: int
-) -> SimpleMLPPrefix:
-    return SimpleMLPPrefix(
-        embed=get("wte.weight"),
-        blocks=[_layer_from_weights(get, i, cfg) for i in range(first_layer)],
-        inv_freq=plain_rope_inv_freq(cfg),
-        eps=cfg.rms_norm_eps,
-        n_ctx=cfg.n_ctx,
-    )
-
-
 def load_target_from_pretrain_cache(
-    cache_dir: Path, cfg: LlamaSimpleMLPConfig, first_layer: int, dtype: DTypeLike
+    cache_dir: Path, cfg: LlamaSimpleMLPConfig, dtype: DTypeLike
 ) -> SimpleMLPDecomposedModel:
     """Forward-only decomposed model from the pretrain cache (full site set). For the
     torch-parity equivalence test; the real PD path uses
     `load_decomposed_lm_from_pretrain_cache`."""
-    return target_from_weights(_checkpoint_weight_getter(cache_dir, dtype), cfg, first_layer)
+    return target_from_weights(_checkpoint_weight_getter(cache_dir, dtype), cfg)
 
 
 def load_decomposed_lm_from_pretrain_cache(
     cache_dir: Path, cfg: LlamaSimpleMLPConfig, sites: tuple[SiteSpec, ...], dtype: DTypeLike
 ) -> SimpleMLPDecomposedModel:
-    """Load the `SimpleMLP` `DecomposedModel`: the frozen suffix as fields plus the static
-    decomposition config (`sites` / `first_layer`)."""
-    first_layer = first_decomposed_layer(tuple(s.name for s in sites))
+    """Load the `SimpleMLP` `DecomposedModel`: the full frozen model (tied embedding, all
+    blocks, final norm, lm_head) as fields plus the static decomposition `sites`."""
     get = _checkpoint_weight_getter(cache_dir, dtype)
     return build_decomposed_simple_mlp(
-        layers=[_layer_from_weights(get, i, cfg) for i in range(first_layer, cfg.n_layer)],
+        embed=get("wte.weight"),
+        layers=[_layer_from_weights(get, i, cfg) for i in range(cfg.n_layer)],
         norm=get("ln_f.weight"),
         lm_head=get("wte.weight"),
         cfg=cfg,
         sites=sites,
     )
-
-
-def load_prefix_from_pretrain_cache(
-    cache_dir: Path, cfg: LlamaSimpleMLPConfig, first_layer: int, dtype: DTypeLike
-) -> SimpleMLPPrefix:
-    return prefix_from_weights(_checkpoint_weight_getter(cache_dir, dtype), cfg, first_layer)
-
-
-def replicate_prefix(prefix: SimpleMLPPrefix, mesh: Mesh) -> SimpleMLPPrefix:
-    """Replicate the small frozen prefix (embedding + earlier blocks) on every device — it
-    only harvests the residual entering the suffix, never enters a gradient graph. The
-    decomposed model itself owns its placement via `SimpleMLPDecomposedModel.shardings`."""
-    repl = NamedSharding(mesh, P())
-    return jax.tree.map(lambda a: jax.device_put(a, repl) if eqx.is_array(a) else a, prefix)

@@ -76,7 +76,7 @@ def test_legacy_top_level_n_mask_samples_pushes_onto_stochastic_terms():
         "n_mask_samples": 4,
         "loss_metrics": [
             {"type": "FaithfulnessLoss", "coeff": 1.0},
-            {"type": "ImportanceMinimalityLoss", "coeff": 1.0, "pnorm": 2.0, "beta": 0.0},
+            {"type": "ImportanceMinimalityLoss", "coeff": 1.0, "pnorm": 2.0},
             {"type": "StochasticReconLoss", "coeff": 1.0},
             {"type": "StochasticReconSubsetLoss", "coeff": 1.0, "n_mask_samples": 7},
         ],

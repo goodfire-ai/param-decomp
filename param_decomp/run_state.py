@@ -153,6 +153,7 @@ def init_train_state(
                 data.seq_len,
                 cfg.scope,
                 data.global_batch,
+                jnp.dtype(cfg.source_dtype),
                 random.fold_in(src_key, term_idx),
                 mesh,
             )

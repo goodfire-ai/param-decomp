@@ -66,7 +66,7 @@ RECON_CONFIGS = (
 def _non_recon_configs() -> tuple[FaithfulnessLossConfig, ImportanceMinimalityLossConfig]:
     return (
         FaithfulnessLossConfig(coeff=1.0),
-        ImportanceMinimalityLossConfig(coeff=1.0, pnorm=0.9, beta=0.0, p_anneal_final_p=0.9),
+        ImportanceMinimalityLossConfig(coeff=1.0, pnorm=0.9, p_anneal_final_p=0.9),
     )
 
 

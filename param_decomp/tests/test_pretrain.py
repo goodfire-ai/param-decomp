@@ -89,10 +89,9 @@ def test_cache_round_trip_matches_decomposition_loader():
         cache = Path(td) / "pretrain_cache" / "proj-t-abc"
         write_pretrain_cache(cache, model, torch_model_config_dict(cfg), step=5)
         loaded_cfg = lsm.load_model_config(cache)
-        target = lsm.load_target_from_pretrain_cache(cache, loaded_cfg, 0, jnp.float32)
-        prefix = lsm.load_prefix_from_pretrain_cache(cache, loaded_cfg, 0, jnp.float32)
+        target = lsm.load_target_from_pretrain_cache(cache, loaded_cfg, jnp.float32)
         idx = jnp.arange(2 * 16, dtype=jnp.int32).reshape(2, 16) % mc.vocab_size
-        loaded_logits = target.clean_output(lsm.prefix_residual(prefix, idx))
+        loaded_logits = target.clean_output(idx)
         assert jnp.allclose(loaded_logits, model(idx), atol=1e-4)
 
 
@@ -146,7 +145,7 @@ def test_training_smoke_loss_decreases():
         # the produced cache loads into the decomposition trainer
         cache = root / "pretrain_cache" / "pretrain-t-smoke"
         loaded_cfg = lsm.load_model_config(cache)
-        target = lsm.load_target_from_pretrain_cache(cache, loaded_cfg, 0, jnp.float32)
+        target = lsm.load_target_from_pretrain_cache(cache, loaded_cfg, jnp.float32)
         assert target.lm_head.shape == (mc.vocab_size, mc.n_embd)
 
 

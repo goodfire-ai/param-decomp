@@ -41,15 +41,11 @@ from param_decomp.targets.llama8b import FrozenAttn
 from param_decomp.targets.llama_simple_mlp import (
     LlamaSimpleMLPConfig,
     SimpleMLPDecomposedModel,
-    SimpleMLPPrefix,
-    SimpleMLPSuffixLayer,
+    SimpleMLPLayer,
     build_decomposed_simple_mlp,
     canonical_site_cs,
     expand_wildcard_site_cs,
-    first_decomposed_layer,
     parse_site_name,
-    plain_rope_inv_freq,
-    prefix_residual,
     site_name,
     site_specs,
 )
@@ -70,7 +66,7 @@ def _tiny_cfg() -> LlamaSimpleMLPConfig:
     )
 
 
-def _tiny_layers(cfg: LlamaSimpleMLPConfig, n: int, key: jax.Array) -> list[SimpleMLPSuffixLayer]:
+def _tiny_layers(cfg: LlamaSimpleMLPConfig, n: int, key: jax.Array) -> list[SimpleMLPLayer]:
     ks = iter(jax.random.split(key, 1024))
     d, di = cfg.n_embd, cfg.n_intermediate
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
@@ -79,7 +75,7 @@ def _tiny_layers(cfg: LlamaSimpleMLPConfig, n: int, key: jax.Array) -> list[Simp
         return jax.random.normal(next(ks), shape) * d**-0.5
 
     return [
-        SimpleMLPSuffixLayer(
+        SimpleMLPLayer(
             ln1=jnp.ones((d,)),
             ln2=jnp.ones((d,)),
             attn=FrozenAttn(
@@ -102,14 +98,13 @@ def _tiny_layers(cfg: LlamaSimpleMLPConfig, n: int, key: jax.Array) -> list[Simp
 def _tiny_decomposed_model(
     cfg: LlamaSimpleMLPConfig, sites: tuple[SiteSpec, ...], key: jax.Array
 ) -> SimpleMLPDecomposedModel:
-    """A tiny random `SimpleMLPDecomposedModel` carrying a random frozen suffix from
-    `first_decomposed_layer(sites)..end` plus the decomposition `sites`."""
-    first_layer = first_decomposed_layer(tuple(s.name for s in sites))
+    """A tiny random `SimpleMLPDecomposedModel` carrying a random embedding + full frozen
+    layer stack plus the decomposition `sites`."""
     layers_key, embed_key = jax.random.split(key)
     layers = _tiny_layers(cfg, cfg.n_layer, layers_key)
     embed = jax.random.normal(embed_key, (cfg.vocab_size, cfg.n_embd)) * 0.02
     return build_decomposed_simple_mlp(
-        layers=layers[first_layer:], norm=jnp.ones((cfg.n_embd,)), lm_head=embed,
+        embed=embed, layers=layers, norm=jnp.ones((cfg.n_embd,)), lm_head=embed,
         cfg=cfg, sites=sites,
     )  # fmt: skip
 
@@ -166,7 +161,6 @@ def test_site_name_helpers():
     )
     with pytest.raises(AssertionError):
         canonical_site_cs((SiteC("h.0.mlp.c_fc", 4), SiteC("h.0.mlp.c_fc", 8)))
-    assert first_decomposed_layer(("h.5.mlp.c_fc", "h.3.attn.k_proj")) == 3
 
 
 def test_expand_wildcard_site_cs():
@@ -203,44 +197,13 @@ def test_site_specs_dims():
         site_specs(cfg, (SiteC("h.2.mlp.c_fc", 4), SiteC("h.2.attn.q_proj", 4)))
 
 
-def test_prefix_suffix_threading_matches_full_forward():
-    cfg = _tiny_cfg()
-    idx = jax.random.randint(jax.random.PRNGKey(3), (2, 16), 0, cfg.vocab_size)
-    layers_key, embed_key = jax.random.split(jax.random.PRNGKey(0))
-    layers = _tiny_layers(cfg, cfg.n_layer, layers_key)
-    embed = jax.random.normal(embed_key, (cfg.vocab_size, cfg.n_embd)) * 0.02
-    inv_freq = plain_rope_inv_freq(cfg)
-    norm = jnp.ones((cfg.n_embd,))
-
-    full_sites = site_specs(cfg, (SiteC(site_name(0, "q_proj"), 1),))
-    target_full = build_decomposed_simple_mlp(
-        layers=layers, norm=norm, lm_head=embed, cfg=cfg, sites=full_sites
-    )
-    prefix_full = SimpleMLPPrefix(
-        embed=embed, blocks=[], inv_freq=inv_freq, eps=cfg.rms_norm_eps, n_ctx=cfg.n_ctx
-    )
-    full_logits = target_full.clean_output(prefix_residual(prefix_full, idx))
-
-    first_layer = 2
-    split_sites = site_specs(cfg, (SiteC(site_name(first_layer, "q_proj"), 1),))
-    target_split = build_decomposed_simple_mlp(
-        layers=layers[first_layer:], norm=norm, lm_head=embed, cfg=cfg, sites=split_sites
-    )
-    prefix_split = SimpleMLPPrefix(
-        embed=embed, blocks=layers[:first_layer], inv_freq=inv_freq,
-        eps=cfg.rms_norm_eps, n_ctx=cfg.n_ctx,
-    )  # fmt: skip
-    split_logits = target_split.clean_output(prefix_residual(prefix_split, idx))
-    assert jnp.array_equal(full_logits, split_logits), "prefix/suffix split drifted"
-
-
 def test_clean_path_and_masked_identity():
     cfg = _tiny_cfg()
     sites = site_specs(cfg, _MIXED_SITE_CS)
     lm = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
-    resid = jax.random.normal(jax.random.PRNGKey(2), (b, t, cfg.n_embd)) * 0.5
+    tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
     # per-site heterogeneous C is preserved end to end
     assert {s.name: s.C for s in lm.sites} == {s.name: s.C for s in _MIXED_SITE_CS}
@@ -248,11 +211,11 @@ def test_clean_path_and_masked_identity():
         V, U = vu.site(spec.name)
         assert V.shape == (spec.d_in, spec.C) and U.shape == (spec.C, spec.d_out)
 
-    clean = lm.clean_output(resid)
+    clean = lm.clean_output(tokens)
     assert clean.shape == (b, t, cfg.vocab_size)
 
     # SPEC S2: a masked forward with NO live sites is the frozen path — bit-identical.
-    none_masked = lm.masked_output(vu, resid, {}, {}, None, (), True)
+    none_masked = lm.masked_output(vu, tokens, {}, {}, None, (), True, remat=False)
     assert jnp.array_equal(clean, none_masked), "live=() must be the exact frozen path"
 
     # All-live, masks=1, delta=1, route-everywhere reconstructs the frozen path up to
@@ -260,10 +223,10 @@ def test_clean_path_and_masked_identity():
     names = lm.site_names
     ones_masks = {s.name: jnp.ones((b, t, s.C)) for s in lm.sites}
     ones_delta = {s: jnp.ones((b, t)) for s in names}
-    full = lm.masked_output(vu, resid, ones_masks, ones_delta, None, names, True)
+    full = lm.masked_output(vu, tokens, ones_masks, ones_delta, None, names, True, remat=False)
     assert jnp.allclose(clean, full, atol=1e-4), "mask=1 identity drifted"
 
-    site_in = lm.read_activations(resid, lm.site_names)
+    site_in = lm.read_activations(tokens, lm.site_names)
     assert set(site_in) == set(names)
     # q and v read the same post-LN1 residual; down_proj reads the post-GELU acts
     assert jnp.array_equal(site_in["h.2.attn.q_proj"], site_in["h.2.attn.v_proj"])
@@ -288,14 +251,14 @@ def test_zero_masking_one_site_changes_logits(ablated_site: str):
     lm = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
-    resid = jax.random.normal(jax.random.PRNGKey(2), (b, t, cfg.n_embd)) * 0.5
+    tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
-    clean = lm.clean_output(resid)
+    clean = lm.clean_output(tokens)
     C = {s.name: s.C for s in _MIXED_SITE_CS}[ablated_site]
     ablated = lm.masked_output(
-        vu, resid,
+        vu, tokens,
         {ablated_site: jnp.zeros((b, t, C))}, {ablated_site: jnp.zeros((b, t))},
-        None, (ablated_site,), True,
+        None, (ablated_site,), True, remat=False,
     )  # fmt: skip
     assert not jnp.allclose(clean, ablated, atol=1e-4), f"ablating {ablated_site} did nothing"
 
@@ -311,15 +274,15 @@ def test_masked_site_outputs_frozen_when_routed_false_or_unmasked():
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     names = lm.site_names
     b, t = 2, 16
-    resid = jax.random.normal(jax.random.PRNGKey(2), (b, t, cfg.n_embd)) * 0.5
+    tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
-    site_in = lm.read_activations(resid, lm.site_names)
+    site_in = lm.read_activations(tokens, lm.site_names)
     ones_masks = {s.name: jnp.ones((b, t, s.C)) for s in lm.sites}
     zeros_delta = {s: jnp.zeros((b, t)) for s in names}
     false_routes = {s: jnp.zeros((b, t), bool) for s in names}
 
     clean_outs = lm.masked_site_outputs(
-        vu, resid, ones_masks, zeros_delta, false_routes, names, False
+        vu, tokens, ones_masks, zeros_delta, false_routes, names, False
     )
     assert set(clean_outs) == set(names)
     # frozen `x @ W` per site, reconstructed independently from weight_deltas + V@U.
@@ -344,14 +307,14 @@ def test_masked_site_outputs_match_hand_computed_masked_linear(site_name_str: st
     names = lm.site_names
     s = site_name_str
     b, t = 2, 16
-    resid = jax.random.normal(jax.random.PRNGKey(2), (b, t, cfg.n_embd)) * 0.5
+    tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
-    x_in = lm.read_activations(resid, (s,))[s]
+    x_in = lm.read_activations(tokens, (s,))[s]
     V, U = vu.site(s)
     mask = jax.random.uniform(jax.random.PRNGKey(7), (b, t, sites_cs[0].C))
 
     no_delta = lm.masked_site_outputs(
-        vu, resid, {s: mask}, {s: jnp.zeros((b, t))}, None, names, False
+        vu, tokens, {s: mask}, {s: jnp.zeros((b, t))}, None, names, False
     )
     hand = ((x_in @ V) * mask) @ U
     assert jnp.allclose(no_delta[s], hand, atol=1e-4), s
@@ -359,7 +322,7 @@ def test_masked_site_outputs_match_hand_computed_masked_linear(site_name_str: st
     # delta path: + delta_mask · (x @ Δ), Δ = W − V@U == lm.weight_deltas (fp32 oracle)
     delta_in = lm.weight_deltas(vu)[s]
     delta_mask = jax.random.uniform(jax.random.PRNGKey(9), (b, t))
-    with_delta = lm.masked_site_outputs(vu, resid, {s: mask}, {s: delta_mask}, None, names, True)
+    with_delta = lm.masked_site_outputs(vu, tokens, {s: mask}, {s: delta_mask}, None, names, True)
     hand_delta = delta_mask[..., None] * (x_in.astype(jnp.float32) @ delta_in.T)
     expected = hand.astype(jnp.float32) + hand_delta
     assert jnp.allclose(with_delta[s].astype(jnp.float32), expected, atol=1e-3), s
@@ -372,16 +335,16 @@ def test_o_site_masks_attention_output():
     lm = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
-    resid = jax.random.normal(jax.random.PRNGKey(2), (b, t, cfg.n_embd)) * 0.5
+    tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
-    clean = lm.clean_output(resid)
+    clean = lm.clean_output(tokens)
     ones = lm.masked_output(
-        vu, resid, {o_site: jnp.ones((b, t, 8))}, {o_site: jnp.ones((b, t))}, None,
-        (o_site,), True,
+        vu, tokens, {o_site: jnp.ones((b, t, 8))}, {o_site: jnp.ones((b, t))}, None,
+        (o_site,), True, remat=False,
     )  # fmt: skip
     assert jnp.allclose(clean, ones, atol=1e-4)
     # o's clean site input is the pre-o_proj attention output, shape (b, t, qd)
-    site_in = lm.read_activations(resid, lm.site_names)
+    site_in = lm.read_activations(tokens, lm.site_names)
     assert site_in[o_site].shape == (b, t, cfg.n_head * cfg.head_dim)
 
 
@@ -398,7 +361,7 @@ def test_step_trains_and_has_vpd_signature():
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
 
     src = init_persistent_sources(
-        lm.site_names, tuple(s.C for s in lm.sites), (1, seq), jax.random.PRNGKey(3)
+        lm.site_names, tuple(s.C for s in lm.sites), (1, seq), jnp.float32, jax.random.PRNGKey(3)
     )
     ppgd_cfg = PersistentPGDReconLossConfig(
         coeff=0.5,
@@ -434,7 +397,6 @@ def test_step_trains_and_has_vpd_signature():
             ImportanceMinimalityLossConfig(
                 coeff=5e-6,
                 pnorm=2.0,
-                beta=0.2,
                 p_anneal_start_frac=0.0,
                 p_anneal_final_p=0.4,
                 p_anneal_end_frac=1.0,
@@ -453,14 +415,15 @@ def test_step_trains_and_has_vpd_signature():
         ci_fn_optimizer=opt_ci,
         total_steps=100,
         remat_recon_forwards=True,
+        remat_ci_fn=False,
         mesh=None,
     )
 
-    resid = jax.random.normal(jax.random.PRNGKey(4), (2, seq, cfg.n_embd)) * 0.5
+    tokens = jax.random.randint(jax.random.PRNGKey(4), (2, seq), 0, cfg.vocab_size)
     n_steps = 4
     losses = []
     for i in range(n_steps):
-        state, m = step(lm, state, resid, jax.random.PRNGKey(100 + i))
+        state, m = step(lm, state, tokens, jax.random.PRNGKey(100 + i))
         losses.append({k: float(v) for k, v in m.items()})
 
     assert all(jnp.isfinite(jnp.array(list(m.values()))).all() for m in losses)

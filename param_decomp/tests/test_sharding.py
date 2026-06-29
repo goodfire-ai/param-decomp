@@ -69,8 +69,11 @@ def test_jitted_sharded_inits_match_eager_values():
     )
     from param_decomp.tests.test_llama8b import _tiny_cfg
 
-    mesh = dp_mesh()
-    n = mesh.devices.size
+    # All devices on the `tp` axis (dp=1): V/U C-shard and the CI fn's within-chunk Megatron
+    # both live on `tp`, and the single test chunk (n_chunks=1) trivially tiles dp=1.
+    # chunk-on-dp tiling (n_chunks % dp) is exercised by the CPU multi-device mesh sim.
+    n = jax.device_count()
+    mesh = dp_mesh(tp=n)
     cfg = _tiny_cfg()
     sites = llama_site_specs(
         cfg,
@@ -83,16 +86,20 @@ def test_jitted_sharded_inits_match_eager_values():
             )
         ),
     )
-    # Placement is MODEL-OWNED and uniform across mesh sizes: V/U always declare their C
-    # axis sharded (`P(None,"dp")` / `P("dp",None)`); at n==1 the dp axis has size 1 so it
-    # is trivially divisible and effectively replicated, but the SPEC is still C-sharded.
+    # Placement is MODEL-OWNED and uniform: V FSDP-shards d_in on `dp` + C on `tp`
+    # (`P("dp","tp")`); U shards C on `tp` + d_out FSDP on `dp` (`P("tp","dp")`), EXCEPT the
+    # attention q/k/v sites keep d_out REPLICATED (`P("tp",None)`) — d_out there is the head
+    # dim, re-sharded to `tp` at the attention seam. At an axis of size 1 the shard is
+    # trivially replicated; the SPEC is unchanged.
     vu_placed = init_decomp_vu_placed(sites, jax.random.PRNGKey(1), mesh)
     vu_eager = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    qkv = {"layers.2.self_attn.q_proj"}  # the only q/k/v site in this set (d_out replicated)
     for spec in sites:
         V, U = vu_placed.site(spec.name)
         assert isinstance(V.sharding, NamedSharding) and isinstance(U.sharding, NamedSharding)
-        assert V.sharding.spec == P(None, "dp"), spec.name
-        assert U.sharding.spec == P("dp", None), spec.name
+        assert V.sharding.spec == P("dp", "tp"), spec.name
+        want_u = P("tp", None) if spec.name in qkv else P("tp", "dp")
+        assert U.sharding.spec == want_u, spec.name
     for got, want in zip(jax.tree.leaves(vu_placed), jax.tree.leaves(vu_eager), strict=True):
         assert got.shape == want.shape and got.dtype == want.dtype
         assert jnp.allclose(jnp.asarray(got), want, rtol=1e-6, atol=0)
@@ -128,9 +135,11 @@ def test_jitted_sharded_inits_match_eager_values():
     site_names = tuple(s.name for s in sites)
     site_Cs = tuple(s.C for s in sites)
     src_sharded = init_sources_sharded(
-        site_names, site_Cs, 16, SCScope(), 1, jax.random.PRNGKey(3), mesh
+        site_names, site_Cs, 16, SCScope(), 1, jnp.float32, jax.random.PRNGKey(3), mesh
     )
-    src_eager = init_persistent_sources(site_names, site_Cs, (1, 16), jax.random.PRNGKey(3))
+    src_eager = init_persistent_sources(
+        site_names, site_Cs, (1, 16), jnp.float32, jax.random.PRNGKey(3)
+    )
     for name in site_names:
         src_sharding = src_sharded[name].sharding
         assert isinstance(src_sharding, NamedSharding)
@@ -140,7 +149,14 @@ def test_jitted_sharded_inits_match_eager_values():
     # bsc: one source per batch element, batch-sharded over dp (axis 0), no cross-rank sync.
     bsc_global_batch = 4 * n
     src_bsc = init_sources_sharded(
-        site_names, site_Cs, 16, BSCScope(), bsc_global_batch, jax.random.PRNGKey(3), mesh
+        site_names,
+        site_Cs,
+        16,
+        BSCScope(),
+        bsc_global_batch,
+        jnp.float32,
+        jax.random.PRNGKey(3),
+        mesh,
     )
     for name, C in zip(site_names, site_Cs, strict=True):
         assert src_bsc[name].shape == (bsc_global_batch, 16, C + 1), name

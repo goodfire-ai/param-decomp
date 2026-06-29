@@ -42,8 +42,12 @@ def test_imp_min_global_reduction_invariant_to_device_count():
     pnorm = jnp.asarray(2.0)
     eps = 1e-12
     ci_upper = _global_ci_upper()
+    sample = next(iter(ci_upper.values()))
+    n_positions = sample.shape[0] * sample.shape[1]
 
-    lp_single, entropy_single = importance_minimality_terms(ci_upper, pnorm, eps)
+    lp_single, freq_single = importance_minimality_terms(
+        ci_upper, pnorm, eps, reference_token_count=n_positions
+    )
 
     mesh = dp_mesh()
 
@@ -53,15 +57,15 @@ def test_imp_min_global_reduction_invariant_to_device_count():
             site: jax.lax.with_sharding_constraint(v, NamedSharding(mesh, P("dp", None, None)))
             for site, v in ci.items()
         }
-        return importance_minimality_terms(ci, pnorm, eps)
+        return importance_minimality_terms(ci, pnorm, eps, reference_token_count=n_positions)
 
     ci_sharded = {site: shard_batch(v, mesh, batch_axis=0) for site, v in ci_upper.items()}
-    lp_sharded, entropy_sharded = sharded_terms(ci_sharded)
+    lp_sharded, freq_sharded = sharded_terms(ci_sharded)
 
-    # entropy is the Jensen-sensitive term (global sum INSIDE log2); lp is linear.
+    # freq is the Jensen-sensitive term (global f_c INSIDE log2); lp is linear.
     for name, single, sharded in (
         ("lp", lp_single, lp_sharded),
-        ("entropy", entropy_single, entropy_sharded),
+        ("freq", freq_single, freq_sharded),
     ):
         single_f, sharded_f = float(single), float(sharded)
         rel = abs(single_f - sharded_f) / (abs(single_f) + 1e-30)

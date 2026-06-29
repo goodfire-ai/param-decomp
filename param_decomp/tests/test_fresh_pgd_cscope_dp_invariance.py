@@ -57,7 +57,7 @@ def _ascend_cscope_source(
         lambda x: jax.lax.stop_gradient(x), init_decomp_vu(sites, random.PRNGKey(1))
     )
 
-    residual = random.normal(random.PRNGKey(4), (gbatch, seq, cfg.n_embd)) * 0.5
+    residual = random.randint(random.PRNGKey(4), (gbatch, seq), 0, cfg.vocab_size)
     mesh = dp_mesh() if sharded else None
     if mesh is not None:
         residual = shard_batch(residual, mesh, batch_axis=0)
@@ -72,7 +72,7 @@ def _ascend_cscope_source(
     def ascent_loss(sources: dict[str, jax.Array]) -> jax.Array:
         masks, delta_masks = source_masks(ci_lower, sources, lm.site_names)
         masked = lm.masked_output(
-            components, residual, masks, delta_masks, None, lm.site_names, True
+            components, residual, masks, delta_masks, None, lm.site_names, True, remat=False
         )
         return kl_per_position(masked, clean_output)
 

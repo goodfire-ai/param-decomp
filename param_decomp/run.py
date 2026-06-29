@@ -127,10 +127,23 @@ _METRIC_KEYS = {
     "total": "train/loss/total",
     "faith": "train/loss/FaithfulnessLoss",
     "imp": "train/loss/ImportanceMinimalityLoss",
+    "freq": "train/loss/FrequencyMinimalityLoss",
     "p_imp": "train/schedules/p_imp",
     "src_lr": "train/schedules/lr/src",
     "step_time_s": "train/perf/step_time_s",
+    "elapsed_s": "train/perf/elapsed_s",
+    "eta_s": "train/perf/eta_s",
 }
+
+
+def _fmt_duration(seconds: float) -> str:
+    h, rem = divmod(int(seconds), 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def _is_verbose_grad_norm(key: str) -> bool:
+    return key.startswith("train/grad_norms/") and not key.startswith("train/grad_norms/summary/")
 
 
 class MetricsSink:
@@ -194,10 +207,14 @@ class MetricsSink:
         scalars = {k: v for k, v in record.items() if isinstance(v, float)}
         self._jsonl.write(json.dumps({"step": step, **scalars}) + "\n")
         self._jsonl.flush()
-        print(
-            f"[step {step}] " + " ".join(f"{k}={v:.4g}" for k, v in scalars.items()),
-            flush=True,
-        )
+        # The console line drops the per-param grad norms — the full breakdown still rides to
+        # wandb + jsonl.
+        console = {k: v for k, v in scalars.items() if not _is_verbose_grad_norm(k)}
+        head = f"[step {step}]"
+        if "train/perf/eta_s" in console:  # train logs carry the paired timing; eval logs don't
+            elapsed, eta = console.pop("train/perf/elapsed_s"), console.pop("train/perf/eta_s")
+            head += f" {_fmt_duration(elapsed)}<{_fmt_duration(eta)}"
+        print(head + " " + " ".join(f"{k}={v:.4g}" for k, v in console.items()), flush=True)
         if self._wandb is not None:
             _log_wandb_safe(self._wandb, record, step, "log")
 
@@ -388,7 +405,8 @@ def run_decomposition_training(
     ci_fn: CIFnArch,
     data: DataConfig | None,
     remat_recon_forwards: bool,
-    sample_batch: Callable[[int], jax.Array],
+    remat_ci_fn: bool,
+    sample_batch: Callable[[int], Any],
     eval_fn: "Callable[[TrainState, int], LogRecord] | None",
     eval_every: int,
     mesh: Mesh,
@@ -406,9 +424,10 @@ def run_decomposition_training(
 
     The target supplies only its three injectable seams:
 
-    - `sample_batch(step) -> residual [*leading, d]`: the residual entering the decomposed
-      model for `step`, already mesh-placed on `P("dp")`. An LM harvests it from the frozen
-      prefix over a parquet token batch; a toy generates it synthetically.
+    - `sample_batch(step) -> batch`: the opaque per-step model input (a pure function of
+      `step`, for O(1) resume). The model interprets it (an LM's token ids `[B, T]` → embed;
+      a toy's feature vector, which already is the `[*leading, d]` waist). The engine only
+      assumes axis 0 is the batch/`dp` axis (for sharding); it never names tokens or `d`.
     - `eval_fn(state, now_step) -> dict[str, float]`: an in-loop eval pass run every
       `eval_every` completed steps, its record logged under that step. `None` disables it.
     - `eval_every`: the eval cadence. For an LM this is `eval.every`; a toy folds its
@@ -420,6 +439,11 @@ def run_decomposition_training(
     """
     is_main = jax.process_index() == 0
     ndev = mesh.devices.size
+    # Activate the mesh so bare-PartitionSpec `with_sharding_constraint`s inside the forward
+    # resolve (the attn q/k/v batch-sharding pin in `FrozenAttn.core`, needed for cuDNN
+    # flash attention under the scan+cond masked forward). Explicit NamedShardings elsewhere
+    # are unaffected.
+    jax.set_mesh(mesh)
     assert cadence.save_every is not None and cadence.keep_last_n_checkpoints is not None, cadence
     save_every = cadence.save_every
 
@@ -447,6 +471,7 @@ def run_decomposition_training(
         ci_fn_optimizer=opt_ci,
         total_steps=pd.steps,
         remat_recon_forwards=remat_recon_forwards,
+        remat_ci_fn=remat_ci_fn,
         mesh=mesh,
     )
 
@@ -459,18 +484,19 @@ def run_decomposition_training(
                 "n_devices": ndev,
                 "n_processes": jax.process_count(),
                 "remat_recon_forwards": remat_recon_forwards,
+                "remat_ci_fn": remat_ci_fn,
                 "run_id": run.run_id,
                 "run_dir": str(run.run_dir),
             },
         )
     )
     sink = MetricsSink.for_run(run, wandb_config, is_main)
-    window_t0 = time.time()
+    window_t0 = loop_t0 = time.time()
     last_logged = start_step
 
     for step in range(start_step, pd.steps):
-        residual = sample_batch(step)
-        state, metrics = step_fn(lm, state, residual, random.fold_in(run_key, step))
+        batch = sample_batch(step)
+        state, metrics = step_fn(lm, state, batch, random.fold_in(run_key, step))
 
         now_step = step + 1
         dense = cadence.dense_log_phase
@@ -490,6 +516,8 @@ def run_decomposition_training(
                     f"non-finite loss {loss_name!r} at step {now_step}: {record[loss_name]}"
                 )
             record["step_time_s"] = per_step
+            record["elapsed_s"] = time.time() - loop_t0
+            record["eta_s"] = (pd.steps - now_step) * per_step
             record["train/schedules/lr/components"] = float(jnp.asarray(sched_vu(now_step)))
             record["train/schedules/lr/ci_fn"] = float(jnp.asarray(sched_ci(now_step)))
             mem_stats = jax.local_devices()[0].memory_stats()

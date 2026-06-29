@@ -1,6 +1,6 @@
 """smooth-L0 (Geman–McClure) importance-minimality penalty (SPEC S7/S8/S9').
 
-The penalty shares the per-site `lp + beta * mean * log2(1 + sum)` structure with the
+The penalty shares the per-site `lp` mean (plus the optional frequency term) with the
 `L_p` penalty and differs ONLY in the per-value shape `phi_gamma(c) = c^2/(c^2+gamma^2)`.
 These checks pin the properties that motivate it over `L_p`: flat at the origin
 (`phi'(0)=0`, no singularity to clip), bounded gradient (`|phi'| <= 0.65/gamma`),
@@ -10,7 +10,10 @@ redescent for clearly-on components, and the half-saturation crossover `phi(gamm
 import jax
 import jax.numpy as jnp
 
-from param_decomp.configs import SmoothL0ImportanceMinimalityLossConfig
+from param_decomp.configs import (
+    FrequencyMinimalityConfig,
+    SmoothL0ImportanceMinimalityLossConfig,
+)
 from param_decomp.losses import (
     annealed_gamma,
     annealed_imp_min_param,
@@ -51,24 +54,27 @@ def test_terms_match_manual_per_site_structure():
         "b": jnp.array([[0.3], [0.7]]),
     }
     gamma = 0.1
-    lp, entropy = smooth_l0_importance_minimality_terms(ci, jnp.asarray(gamma))
+    n_positions = 2  # both sites have 2 rows; a' = B·T reproduces the old `log2(1 + sum)`
+    lp, freq = smooth_l0_importance_minimality_terms(
+        ci, jnp.asarray(gamma), reference_token_count=n_positions
+    )
 
     exp_lp = jnp.zeros(())
-    exp_entropy = jnp.zeros(())
+    exp_freq = jnp.zeros(())
     for v in ci.values():
         sums = _phi(v, gamma).sum(axis=0)
         means = sums / v.shape[0]
         exp_lp = exp_lp + means.sum()
-        exp_entropy = exp_entropy + (means * jnp.log2(1.0 + sums)).sum()
+        exp_freq = exp_freq + (means * jnp.log2(1.0 + n_positions * means)).sum()
     assert jnp.allclose(lp, exp_lp)
-    assert jnp.allclose(entropy, exp_entropy)
+    assert jnp.allclose(freq, exp_freq)
 
 
 def test_anneal_and_dispatch():
     cfg = SmoothL0ImportanceMinimalityLossConfig(
         coeff=2e-4,
         gamma=1.0,
-        beta=0.5,
+        frequency=FrequencyMinimalityConfig(coeff=1e-4, reference_token_count=64),
         gamma_anneal_start_frac=0.0,
         gamma_anneal_final_gamma=0.1,
         gamma_anneal_end_frac=1.0,
@@ -81,6 +87,6 @@ def test_anneal_and_dispatch():
     ci = {"a": jnp.array([[0.0, 0.5, 1.0], [0.2, 0.0, 0.9]])}
     param = annealed_imp_min_param(jnp.asarray(float(total)), total, cfg)
     via_dispatch = imp_min_terms(ci, cfg, param)
-    direct = smooth_l0_importance_minimality_terms(ci, param)
+    direct = smooth_l0_importance_minimality_terms(ci, param, reference_token_count=64)
     assert jnp.allclose(via_dispatch[0], direct[0])
     assert jnp.allclose(via_dispatch[1], direct[1])

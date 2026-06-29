@@ -2,7 +2,7 @@
 
 The memory consumers, and how each is placed on the 1-D `dp` mesh:
 
-  * frozen suffix (`Target`): REPLICATED. ~3.6B bf16 params (14 blocks + lm_head) ~=
+  * frozen target: REPLICATED. ~3.6B bf16 params (all blocks + lm_head) ~=
     7.3GB/device. Small relative to activations; replicating avoids all-gathering the
     target every forward.
   * components (V/U) + their Adam states: SHARDED over `dp` (the FSDP analog). The fp32
@@ -14,7 +14,7 @@ The memory consumers, and how each is placed on the 1-D `dp` mesh:
     CI and its grad reduction falls out of the global-mean loss (torch
     `reduce_source_grads` analog). Tiny vs activations, so replicating costs nothing;
     the C+1 axis is odd and cannot tile the mesh anyway. `SrcAdamState` mirrors it.
-  * residual input + all activations: BATCH-sharded over `dp`. The masked suffix
+  * token input + all activations: BATCH-sharded over `dp`. The masked
     re-forwards then run on per-device sub-batches -> activation memory scales 1/n_dev.
     This is what unlocks a global batch that OOMs replicated on one device.
 
@@ -39,6 +39,7 @@ import equinox as eqx
 import jax
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
+from jax.typing import DTypeLike
 from jaxtyping import Array, PRNGKeyArray
 
 from param_decomp.adversary import init_persistent_sources
@@ -47,7 +48,7 @@ from param_decomp.components import DecompVU, SiteSpec, init_decomp_vu
 from param_decomp.configs import BSCScope, SCScope
 from param_decomp.sharding import dp_mesh, place_via_shardings
 from param_decomp.sharding import shard_batch as _generic_shard_batch
-from param_decomp.targets.llama8b import LlamaDecomposedModel
+from param_decomp.targets.llama8b import LlamaDecomposedModel, parse_site_name
 
 __all__ = [
     "dp_mesh",
@@ -65,12 +66,19 @@ def place_target(tgt: LlamaDecomposedModel, mesh: Mesh) -> LlamaDecomposedModel:
     return place_via_shardings(tgt, tgt.shardings(mesh))
 
 
+def _replicate_u_dout_sites(sites: tuple[SiteSpec, ...]) -> frozenset[str]:
+    """Attention q/k/v sites, whose U d_out is the head dim: it can't FSDP on `dp` (the head
+    layout re-shards to `tp` at the attention seam, and `tp` is taken by C), so its d_out
+    stays replicated. o_proj/MLP d_out are plain features and FSDP normally."""
+    return frozenset(s.name for s in sites if parse_site_name(s.name)[1] in ("q", "k", "v"))
+
+
 def init_decomp_vu_placed(sites: tuple[SiteSpec, ...], key: PRNGKeyArray, mesh: Mesh) -> DecompVU:
-    """Seeded per-site V/U init placed by `DecompVU.shardings` (V `(d_in, C)` shards axis 1,
-    U `(C, d_out)` shards axis 0). The shardings are computed on the abstract model and the
-    init runs under jit with `out_shardings`."""
+    """Seeded per-site V/U init placed by `DecompVU.shardings` (uniform FSDP(`dp`)×TP(`tp`);
+    q/k/v U d_out replicated). Shardings computed on the abstract model, init under jit."""
     init = partial(init_decomp_vu, sites)
-    out_shardings = eqx.filter_eval_shape(init, key).shardings(mesh)
+    replicate_u_dout = _replicate_u_dout_sites(sites)
+    out_shardings = eqx.filter_eval_shape(init, key).shardings(mesh, replicate_u_dout)
     return jax.jit(init, out_shardings=out_shardings)(key)
 
 
@@ -91,6 +99,7 @@ def init_sources_sharded(
     seq_len: int,
     scope: SCScope | BSCScope,
     global_batch: int,
+    source_dtype: DTypeLike,
     key: PRNGKeyArray,
     mesh: Mesh,
 ) -> dict[str, Array]:
@@ -117,7 +126,9 @@ def init_sources_sharded(
         case BSCScope():
             leading_shape = (global_batch, seq_len)
             placement = NamedSharding(mesh, P("dp", None, None))
-    init = partial(init_persistent_sources, site_names, site_component_counts, leading_shape)
+    init = partial(
+        init_persistent_sources, site_names, site_component_counts, leading_shape, source_dtype
+    )
     return jax.jit(init, out_shardings=placement)(key)
 
 

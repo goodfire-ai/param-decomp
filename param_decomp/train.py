@@ -108,9 +108,10 @@ def make_train_step(
     ci_fn_optimizer: optax.GradientTransformation,
     total_steps: int,
     remat_recon_forwards: bool,
+    remat_ci_fn: bool,
     mesh: Mesh | None,
 ):
-    """Build the `eqx.filter_jit`'d `step(model, state, residual, key) -> (state, metrics)`.
+    """Build the `eqx.filter_jit`'d `step(model, state, batch, key) -> (state, metrics)`.
 
     `model` is the jit ARG (frozen 8B weights traced as array leaves, never baked); the
     factory closes over only static config (`site_names`, `recon_loss_fn`, term wiring) read
@@ -129,6 +130,7 @@ def make_train_step(
     faith_coeff = faith_term.coeff
     imp_min = imp_term.cfg
     imp_coeff = imp_term.coeff
+    freq_coeff = imp_min.frequency.coeff if imp_min.frequency is not None else 0.0
 
     def batch_sharded(x: Array) -> Array:
         return batch_shard_leading(x, mesh)
@@ -146,11 +148,14 @@ def make_train_step(
             upper={site: batch_sharded(v) for site, v in ci.upper.items()},
         )
 
+    # The adversary ascents (warmup + fresh-PGD) backprop only to the SOURCES — params and
+    # CI are detached — so there are no param activations worth recomputing; ascents run the
+    # un-rematted forward.
     @jaxtyped(typechecker=beartype)
     def masked_forward(
         model: DecomposedModel,
         components_bf16: DecompVU,
-        residual: Float[Array, "*leading d"],
+        batch: Any,
         masks: dict[str, Float[Array, "*leading _"]],
         delta_masks: dict[str, Float[Array, "..."]],
         routes: dict[str, Bool[Array, "*leading"]] | None,
@@ -159,18 +164,54 @@ def make_train_step(
     ) -> Any:
         return batch_sharded(
             model.masked_output(
-                components_bf16, residual, masks, delta_masks, routes, live_sites, has_delta
+                components_bf16,
+                batch,
+                masks,
+                delta_masks,
+                routes,
+                live_sites,
+                has_delta,
+                remat=False,
             )
         )
 
-    # Recomputing each masked forward in backward bounds activation memory to one
-    # forward at a time (the torch 2-pool streaming profile) at the cost of the
-    # recompute; with few recon forwards and memory headroom, remat off is faster.
-    checkpointed_masked_forward = (
-        jax.checkpoint(masked_forward, static_argnums=(6, 7))
-        if remat_recon_forwards
-        else masked_forward
-    )
+    # The main backward path: `remat_recon_forwards` gates gradient-checkpointing inside the
+    # target's `masked_output`, at the target's natural granularity (a deep target rematerializes
+    # per-layer, recomputing one layer at a time instead of storing every layer's activations —
+    # the dominant step-memory term at depth). Remat off stores all activations: faster when
+    # memory allows.
+    @jaxtyped(typechecker=beartype)
+    def checkpointed_masked_forward(
+        model: DecomposedModel,
+        components_bf16: DecompVU,
+        batch: Any,
+        masks: dict[str, Float[Array, "*leading _"]],
+        delta_masks: dict[str, Float[Array, "..."]],
+        routes: dict[str, Bool[Array, "*leading"]] | None,
+        live_sites: tuple[str, ...],
+        has_delta: bool,
+    ) -> Any:
+        return batch_sharded(
+            model.masked_output(
+                components_bf16,
+                batch,
+                masks,
+                delta_masks,
+                routes,
+                live_sites,
+                has_delta,
+                remat=remat_recon_forwards,
+            )
+        )
+
+    # The CI-fn forward's activations (4-block transformer × n_chunks) are stored for the
+    # backward unless rematerialized. They scale with batch, so recomputing the CI fn in the
+    # backward is the main activation-memory lever for larger batch. `eqx.filter_checkpoint`
+    # handles the CIFn module's static/dynamic split.
+    def _apply_ci_fn(ci_fn: CIFn, taps: dict[str, Array]) -> CI:
+        return ci_fn(taps)
+
+    apply_ci_fn = eqx.filter_checkpoint(_apply_ci_fn) if remat_ci_fn else _apply_ci_fn
 
     def stochastic_entry_masks(
         ci_lower: dict[str, Array],
@@ -210,7 +251,7 @@ def make_train_step(
         model: DecomposedModel,
         components_bf16: DecompVU,
         ci_lower: dict[str, Array],
-        residual: Array,
+        batch: Any,
         clean_output: Array,
         forward_fn: Any,
     ) -> Array:
@@ -222,7 +263,7 @@ def make_train_step(
             masked = forward_fn(
                 model,
                 components_bf16,
-                residual,
+                batch,
                 masks,
                 delta_masks,
                 routes,
@@ -237,16 +278,19 @@ def make_train_step(
     def step(
         model: DecomposedModel,
         state: TrainState,
-        residual: Float[Array, "*leading d"],
+        batch: Any,
         key: PRNGKeyArray,
     ) -> tuple[TrainState, dict[str, Array]]:
         step_f32 = state.step.astype(jnp.float32)
         imp_min_param = annealed_imp_min_param(step_f32, total_steps, imp_min)
-        leading = residual.shape[:-1]
 
-        residual = batch_sharded(residual)
-        clean_output = jax.lax.stop_gradient(batch_sharded(model.clean_output(residual)))
-        taps = model.read_activations(residual, state.ci_fn.input_names)
+        batch = batch_sharded(batch)
+        clean_output = jax.lax.stop_gradient(batch_sharded(model.clean_output(batch)))
+        taps = model.read_activations(batch, state.ci_fn.input_names)
+        # `leading` (batch, *positions) — the shape masks/sources/routes live in. Sourced
+        # from a tap (always `[*leading, d_tap]`), not the opaque batch, so the engine never
+        # assumes the batch's rank/feature dim.
+        leading = next(iter(taps.values())).shape[:-1]
 
         # ── adversary ascents: params + CI detached (SPEC §4.5) ──
         components_detached = jax.lax.stop_gradient(cast_floating(state.components, COMPUTE_DT))
@@ -260,7 +304,7 @@ def make_train_step(
         def warmup_scoring_loss(sources: dict[str, Array]) -> Array:
             masks, delta_masks = source_masks(ci_lower_detached, sources, site_names)
             masked = masked_forward(
-                model, components_detached, residual, masks, delta_masks, None, site_names, True
+                model, components_detached, batch, masks, delta_masks, None, site_names, True
             )
             return recon_loss_fn(masked, clean_output)
 
@@ -300,7 +344,7 @@ def make_train_step(
                         model,
                         components_detached,
                         ci_lower_detached,
-                        residual,
+                        batch,
                         clean_output,
                         masked_forward,
                     )
@@ -330,14 +374,13 @@ def make_train_step(
         # gets too (sources are leaves). ──
         def loss_fn(
             trainable: tuple[DecompVU, CIFn, dict[str, dict[str, Array]]],
-        ) -> tuple[Array, tuple[Array, Array, tuple[Array, ...]]]:
+        ) -> tuple[Array, tuple[Array, Array, Array, tuple[Array, ...]]]:
             components, ci_fn, persistent_sources = trainable
             components_bf16 = cast_floating(components, COMPUTE_DT)
             ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
-            ci = batch_sharded_ci(ci_fn_bf16(taps))
+            ci = batch_sharded_ci(apply_ci_fn(ci_fn_bf16, taps))
             faith_loss = faithfulness_loss(model.weight_deltas(components))
-            imp_lp, imp_entropy = imp_min_terms(ci.upper, imp_min, imp_min_param)
-            imp_loss = imp_lp + imp_min.beta * imp_entropy
+            imp_lp, imp_freq = imp_min_terms(ci.upper, imp_min, imp_min_param)
 
             term_losses: list[Array] = []
             for term_idx, term in enumerate(recon_terms):
@@ -375,7 +418,7 @@ def make_train_step(
                         masked = checkpointed_masked_forward(
                             model,
                             components_bf16,
-                            residual,
+                            batch,
                             masks,
                             delta_masks,
                             routes,
@@ -393,14 +436,16 @@ def make_train_step(
                         term_loss = (step_f32 >= start_frac * total_steps) * term_loss
                 term_losses.append(term_loss)
 
-            total_loss = faith_coeff * faith_loss + imp_coeff * imp_loss
+            total_loss = faith_coeff * faith_loss + imp_coeff * imp_lp + freq_coeff * imp_freq
             for term, term_loss in zip(recon_terms, term_losses, strict=True):
                 total_loss = total_loss + term.coeff * term_loss
-            return total_loss, (faith_loss, imp_loss, tuple(term_losses))
+            return total_loss, (faith_loss, imp_lp, imp_freq, tuple(term_losses))
 
-        (total_loss, (faith_loss, imp_loss, term_losses)), grads = eqx.filter_value_and_grad(
-            loss_fn, has_aux=True
-        )((state.components, state.ci_fn, {k: a.sources for k, a in warmed_advs.items()}))
+        (total_loss, (faith_loss, imp_lp, imp_freq, term_losses)), grads = (
+            eqx.filter_value_and_grad(loss_fn, has_aux=True)(
+                (state.components, state.ci_fn, {k: a.sources for k, a in warmed_advs.items()})
+            )
+        )
         components_grad, ci_fn_grad, persistent_grads_scaled = grads
         grad_norm_metrics = _grad_norm_metrics(components_grad, ci_fn_grad)
 
@@ -436,7 +481,8 @@ def make_train_step(
         metrics = {
             "total": total_loss,
             "faith": faith_loss,
-            "imp": imp_loss,
+            "imp": imp_lp,
+            "freq": imp_freq,
             "p_imp": imp_min_param,
             **{f"loss/{t.name}": v for t, v in zip(recon_terms, term_losses, strict=True)},
             **grad_norm_metrics,

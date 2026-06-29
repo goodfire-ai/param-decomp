@@ -2,10 +2,9 @@
 
 The decomposed sites are any per-layer weight matrices (SPEC §1/§3) named torch-style:
 `layers.{i}.self_attn.{q,k,v,o}_proj` and `layers.{i}.mlp.{gate,up,down}_proj`, each
-with its own C. `LlamaDecomposedModel` (an `eqx.Module`) carries the frozen residual-start
-suffix — from the lowest decomposed layer (`first_decomposed_layer`) to the LM head — as
-array fields, threaded into the jitted step as a pytree arg; suffix layers without sites
-run the plain frozen block.
+with its own C. `LlamaDecomposedModel` (an `eqx.Module`) carries the full frozen model —
+embedding through every layer to the LM head — as array fields, threaded into the jitted
+step as a pytree arg; layers without sites run the plain frozen block.
 
 q/k/v sites are decomposed BEFORE RoPE/SDPA (the masked site output feeds the
 attention math); the o site applies to the attention output. V/U masters are fp32
@@ -26,17 +25,17 @@ import jax.numpy as jnp
 import numpy as np
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, Int
 from safetensors import safe_open
 
 from param_decomp.components import DecompVU, SiteC, SiteSpec, site_out
 from param_decomp.losses import kl_per_position
+from param_decomp.sharding import assert_divisible
 from vendored_jax.llama import (
     LlamaConfig,
     apply_rope,
     causal_sdpa,
     llama3_inv_freq,
-    repeat_kv,
     rms_norm,
     rope_cos_sin,
 )
@@ -143,13 +142,7 @@ def llama_site_specs(cfg: LlamaConfig, site_cs: tuple[SiteC, ...]) -> tuple[Site
     return tuple(specs)
 
 
-def first_decomposed_layer(site_names: tuple[str, ...]) -> int:
-    """The residual-start boundary: the suffix runs from the lowest decomposed layer."""
-    assert site_names
-    return min(parse_site_name(name)[0] for name in site_names)
-
-
-# ----------------------------- frozen suffix -----------------------------
+# ----------------------------- frozen layers -----------------------------
 
 
 class FrozenAttn(eqx.Module):
@@ -161,6 +154,21 @@ class FrozenAttn(eqx.Module):
     n_kv_head: int = eqx.field(static=True)
     head_dim: int = eqx.field(static=True)
     n_rep: int = eqx.field(static=True)
+
+    def shardings(self, mesh: "Mesh") -> "FrozenAttn":
+        """Stacked (leading `n_layer`, UNSHARDED — the scan axis) FSDP on `dp`: the `d` dim
+        shards on `dp` (gathered per layer in the scan); the HEAD dim stays REPLICATED (NOT
+        TP'd). `core` runs batch-parallel attention (q/k/v constrained to `P("dp",...)`,
+        heads replicated — that identical spec is what cuDNN's partitioner requires), so the
+        projections must come out heads-replicated; TP'ing the head dim makes q (n_head) and
+        k/v (n_kv_head) shard to different per-rank head counts → cuDNN rejects them as
+        not-same-sharding. Attention weights are small, so dp-only sharding is plenty."""
+        in_dp = NamedSharding(mesh, P(None, None, "dp"))  # qkv [nc, head(repl), d on dp]
+        out_dp = NamedSharding(mesh, P(None, "dp", None))  # wo [nc, d on dp, head(repl)]
+        for w in (self.wq, self.wk, self.wv):
+            assert_divisible(w.shape[2], mesh, "dp", "FrozenAttn qkv in (d)")
+        assert_divisible(self.wo.shape[1], mesh, "dp", "FrozenAttn out-proj out (d)")
+        return eqx.tree_at(lambda a: (a.wq, a.wk, a.wv, a.wo), self, (in_dp, in_dp, in_dp, out_dp))
 
     def core(
         self,
@@ -180,40 +188,35 @@ class FrozenAttn(eqx.Module):
         v = v_flat.reshape(b, t, self.n_kv_head, self.head_dim).transpose(0, 2, 1, 3)
         cos, sin = rope_cos_sin(inv_freq, t, q_flat.dtype)
         q, k = apply_rope(q, k, cos, sin)
-        k = repeat_kv(k, self.n_rep)
-        v = repeat_kv(v, self.n_rep)
+        # Native GQA: do NOT repeat_kv — `dot_product_attention` handles the q-heads:kv-heads
+        # grouping internally. Repeating k/v to n_head and THEN sharding makes the SPMD
+        # partitioner derive the repeated-k/v layout from the small n_kv_head source,
+        # inconsistent with q -> cuDNN "Query, key and value should have same sharding" (forward
+        # AND its rematerialized backward). Real GQA keeps q (n_head) and k/v (n_kv_head) as
+        # independent head-parallel tensors with the SAME spec (different head COUNTS is fine).
+        # cuDNN flash attention's custom partitioner requires q/k/v IDENTICALLY sharded.
+        # On the 2-D (dp, tp) mesh, pin all three head-parallel: batch on `dp`, HEADS on `tp`
+        # (`P("dp","tp",None,None)` for `[b, heads, t, hd]`). Heads are independent, so this is
+        # clean tensor-parallel attention, and the identical spec is exactly what cuDNN
+        # demands (n_head % tp == 0 and n_kv_head % tp == 0). The q/k/v projection outputs are
+        # `d_out`-replicated (U = `P("tp",None)`); this constraint does the replicated->head-
+        # on-tp reshard right here. Guarded so it's a no-op off-mesh (CPU tests / single
+        # device); `run.py` sets the global mesh. At `tp=1` heads land on a size-1 axis =
+        # replicated (the old 1-D behavior). Validated on GPU: 1-D was job 108953; the 2-D
+        # head-parallel form is the fix for the `dp/tp` mesh's "same sharding" partitioner error.
+        if not jax.sharding.get_abstract_mesh().empty:
+            qkv_spec = jax.sharding.PartitionSpec(
+                "dp", None, None, None
+            )  # batch-parallel: q/k/v IDENTICAL spec -> cuDNN happy; flash = no score materialization
+            q, k, v = (jax.lax.with_sharding_constraint(a, qkv_spec) for a in (q, k, v))
         return causal_sdpa(q, k, v).transpose(0, 2, 1, 3).reshape(b, t, self.n_head * self.head_dim)
 
     def __call__(self, x: Float[Array, "b t d"], inv_freq: Array) -> Array:
         return self.core(x @ self.wq.T, x @ self.wk.T, x @ self.wv.T, inv_freq) @ self.wo.T
 
 
-class FrozenMLP(eqx.Module):
-    wg: Float[Array, "di d"]
-    wu: Float[Array, "di d"]
-    wd: Float[Array, "d di"]
-
-    def __call__(self, x: Array) -> Array:
-        return (jax.nn.silu(x @ self.wg.T) * (x @ self.wu.T)) @ self.wd.T
-
-
-class FrozenBlock(eqx.Module):
-    """A fully-frozen transformer block — the `Prefix` building block."""
-
-    ln1: Float[Array, " d"]
-    ln2: Float[Array, " d"]
-    attn: FrozenAttn
-    mlp: FrozenMLP
-    eps: float = eqx.field(static=True)
-
-    def __call__(self, x: Array, inv_freq: Array) -> Array:
-        x = x + self.attn(rms_norm(x, self.ln1, self.eps), inv_freq)
-        x = x + self.mlp(rms_norm(x, self.ln2, self.eps))
-        return x
-
-
-class SuffixLayer(eqx.Module):
-    """One suffix layer's frozen weights — norms, attention, MLP. Decomposed sites read
+class LlamaLayer(eqx.Module):
+    """One layer's frozen weights — norms, attention, MLP. Decomposed sites read
     their frozen target W from here at forward time; layers without sites run the
     plain frozen block from the same fields. Weights pass as a runtime arg — never
     baked into the HLO as a multi-GB constant."""
@@ -225,23 +228,40 @@ class SuffixLayer(eqx.Module):
     Wu: Float[Array, "di d"]
     Wd: Float[Array, "d di"]
 
+    def shardings(self, mesh: "Mesh") -> "LlamaLayer":
+        """Stacked FSDP on `dp` (no TP): every MLP weight shards its `d`-dim (4096) on `dp`,
+        the intermediate (14336) stays replicated; gathered per layer in the scan. (TP on the
+        target would Megatron the intermediate but add reshards through the replicated
+        residual for a frozen 16 GB model — dp-only `/dp` is ample: 16 GB → 0.5 GB at dp=32.)
+        Norms replicate (tiny); attn delegates to `FrozenAttn.shardings`."""
+        in_dp = NamedSharding(mesh, P(None, None, "dp"))  # Wg/Wu [nc, di(repl), d on dp]
+        out_dp = NamedSharding(mesh, P(None, "dp", None))  # Wd [nc, d on dp, di(repl)]
+        repl = NamedSharding(mesh, P())
+        assert_divisible(self.Wg.shape[2], mesh, "dp", "Wg in (d)")
+        assert_divisible(self.Wd.shape[1], mesh, "dp", "Wd out (d)")
+        return eqx.tree_at(
+            lambda layer: (layer.ln1, layer.ln2, layer.attn, layer.Wg, layer.Wu, layer.Wd),
+            self,
+            (repl, repl, self.attn.shardings(mesh), in_dp, in_dp, out_dp),
+        )
 
-def _frozen_site_weight(suffix_layer: SuffixLayer, kind: str) -> Array:
+
+def _frozen_site_weight(layer: LlamaLayer, kind: str) -> Array:
     match kind:
         case "q":
-            return suffix_layer.attn.wq
+            return layer.attn.wq
         case "k":
-            return suffix_layer.attn.wk
+            return layer.attn.wk
         case "v":
-            return suffix_layer.attn.wv
+            return layer.attn.wv
         case "o":
-            return suffix_layer.attn.wo
+            return layer.attn.wo
         case "gate":
-            return suffix_layer.Wg
+            return layer.Wg
         case "up":
-            return suffix_layer.Wu
+            return layer.Wu
         case "down":
-            return suffix_layer.Wd
+            return layer.Wd
         case _:
             raise AssertionError(f"unknown kind {kind!r}")
 
@@ -249,12 +269,17 @@ def _frozen_site_weight(suffix_layer: SuffixLayer, kind: str) -> Array:
 # ----------------------------- forwards -----------------------------
 
 
-def _clean_mlp_out(suffix_layer: SuffixLayer, mlp_in: Array) -> Array:
+def _clean_mlp_out(layer: LlamaLayer, mlp_in: Array) -> Array:
     """Frozen target MLP — exactly `W` applied, not the `V@U + (W−V@U)` identity, so
     non-live sites carry no V/U gradient and no decomposition rounding (SPEC S2/S3)."""
-    return (
-        jax.nn.silu(mlp_in @ suffix_layer.Wg.T) * (mlp_in @ suffix_layer.Wu.T)
-    ) @ suffix_layer.Wd.T
+    return (jax.nn.silu(mlp_in @ layer.Wg.T) * (mlp_in @ layer.Wu.T)) @ layer.Wd.T
+
+
+def _stack_layers(layers: list[LlamaLayer]) -> LlamaLayer:
+    """Stack a per-layer `LlamaLayer` list into one whose array leaves carry a leading
+    layer axis — the `xs` for a `lax.scan` over the (homogeneous) block stack. Static
+    fields (attn head counts) ride in the treedef, shared across iterations."""
+    return jax.tree.map(lambda *per_layer: jnp.stack(per_layer), *layers)
 
 
 def _tap_layer(key: str) -> int:
@@ -265,105 +290,184 @@ def _tap_layer(key: str) -> int:
     return parse_site_name(key)[0]
 
 
-def _masked_site_out(
+def _per_kind_dims(components: DecompVU) -> dict[str, tuple[int, int, int]]:
+    """Per decomposed KIND, the `(d_in, C, d_out)` shared across its layers — asserting
+    uniformity, the precondition for the layer-`lax.scan` masked forward (it stacks each
+    kind across layers, so every layer's matrix of that kind must be the same shape)."""
+    kind_dims: dict[str, tuple[int, int, int]] = {}
+    for name, (V, U) in components.vu.items():
+        kind = parse_site_name(name)[1]
+        dims = (V.shape[0], V.shape[1], U.shape[1])
+        assert kind_dims.setdefault(kind, dims) == dims, (
+            f"per-kind dims must be uniform across layers for the scan masked forward: "
+            f"{kind} {dims} != {kind_dims[kind]}"
+        )
+    return kind_dims
+
+
+def _stack_per_kind_masked_inputs(
     components: DecompVU,
-    site: str,
-    W: Array,
-    x_in: Array,
+    n_layers: int,
+    leading: tuple[int, ...],
     masks: dict[str, Array],
     delta_masks: dict[str, Array],
     routes: dict[str, Array] | None,
     live_set: frozenset[str],
     has_delta: bool,
-    collect: dict[str, Array] | None,
-) -> Array:
-    """One site's output in the masked forward; if `collect` is given, the per-`live`-site
-    decomposed output is recorded there (the hidden-acts recon material, SPEC S31).
-    Non-live sites take the frozen `x @ W` path and are NOT collected."""
-    if site not in live_set:
-        return x_in @ W.T
-    V, U = components.site(site)
-    out = site_out(
-        x_in, V, U, W, masks[site], delta_masks[site] if has_delta else None,
-        None if routes is None else routes[site],
-    )  # fmt: skip
-    if collect is not None:
-        collect[site] = out
-    return out
+) -> dict[str, dict[str, Array]]:
+    """Per decomposed KIND, the layer-stacked `(V, U, live, mask[, delta][, route])` arrays
+    the scan body consumes — a leading layer axis, one homogeneous body across layers. Sites
+    absent from `live` get dummy mask/delta/route (the `cond` frozen branch ignores them);
+    `masks`/`delta_masks`/`routes` exist only for live sites (recon builds them per-chunk).
+    Per-kind dims (d_in, C, d_out) must be uniform across layers (asserted in `_per_kind_dims`)."""
+    kind_dims = _per_kind_dims(components)
+    vu_dt = next(iter(components.vu.values()))[0].dtype
+    # Dummy mask/delta/route shapes match the REAL entries (the source scope sets the leading
+    # shape: `sc` broadcasts over batch as `(1, T)`, not the full `(B, T)`).
+    a_mask = next(iter(masks.values())) if masks else None
+    mask_lead = a_mask.shape[:-1] if a_mask is not None else leading
+    mask_dt = a_mask.dtype if a_mask is not None else vu_dt
+    a_delta = next(iter(delta_masks.values())) if (has_delta and delta_masks) else None
+    a_route = next(iter(routes.values())) if (routes and len(routes)) else None
+
+    per_kind: dict[str, dict[str, Array]] = {}
+    for kind, (d_in, C, d_out) in kind_dims.items():
+        names = [site_name(layer, kind) for layer in range(n_layers)]
+        live_flags = jnp.array([n in live_set for n in names])
+        Vs = jnp.stack(
+            [
+                components.vu[n][0] if n in components.vu else jnp.zeros((d_in, C), vu_dt)
+                for n in names
+            ]
+        )
+        Us = jnp.stack(
+            [
+                components.vu[n][1] if n in components.vu else jnp.zeros((C, d_out), vu_dt)
+                for n in names
+            ]
+        )
+        masks_k = jnp.stack(
+            [masks[n] if n in live_set else jnp.ones((*mask_lead, C), mask_dt) for n in names]
+        )
+        entry: dict[str, Array] = {"V": Vs, "U": Us, "live": live_flags, "mask": masks_k}
+        if has_delta:
+            d_shape = a_delta.shape if a_delta is not None else leading
+            d_dt = a_delta.dtype if a_delta is not None else mask_dt
+            entry["delta"] = jnp.stack(
+                [delta_masks[n] if n in live_set else jnp.zeros(d_shape, d_dt) for n in names]
+            )
+        if routes is not None:
+            r_shape = a_route.shape if a_route is not None else leading
+            r_dt = a_route.dtype if a_route is not None else jnp.bool_
+            entry["route"] = jnp.stack(
+                [routes[n] if n in live_set else jnp.zeros(r_shape, r_dt) for n in names]
+            )
+        per_kind[kind] = entry
+    return per_kind
 
 
 class LlamaDecomposedModel(eqx.Module):
     """The Llama-8B `DecomposedModel` (the `lm.py` contract; SPEC §1).
 
-    Carries the FROZEN residual-start suffix (layers `first_layer..n_layer-1`, final norm,
-    lm_head) as array fields — so it threads into the jitted step as a pytree arg, its
-    weights traced not baked. The TRAINABLE V/U (`vu: DecompVU`) is passed to the forward
-    methods explicitly: separate lifecycle (own optimizer + checkpoint, C-sharded while
-    these weights replicate), so it is NOT a field here.
+    Carries the FROZEN full model (embedding, all blocks, final norm, lm_head) as array
+    fields — so it threads into the jitted step as a pytree arg, its weights traced not
+    baked. The TRAINABLE V/U (`vu: DecompVU`) is passed to the forward methods explicitly:
+    separate lifecycle (own optimizer + checkpoint, C-sharded while these weights
+    replicate), so it is NOT a field here.
 
-    `sites` / `leading_axes` / `first_layer` are static config — `first_layer` indexes the
-    suffix and never enters the gradient graph."""
+    Forward methods take token `inputs` and embed internally. Blocks with no decomposed
+    site run the plain frozen path — so a subset decomposition just leaves the rest
+    frozen.
 
-    layers: list[SuffixLayer]
+    `sites` / `leading_axes` are static config."""
+
+    embed: Float[Array, "vocab d"]
+    stacked: LlamaLayer  # the per-layer weights stacked on a leading layer axis (the scan
+    # `xs`). Stored pre-stacked so `_stack_layers` is NOT recomputed inside each forward — XLA
+    # re-stacked the full ~16 GB target every recon/faith/PGD forward AND in the rematerialized
+    # backward (~10×, ~160 GB OOM at 32L). As a model field it is a saved input: 1 copy.
+    n_layer: int = eqx.field(static=True)
     norm: Float[Array, " d"]
     lm_head: Float[Array, "vocab d"]
     inv_freq: Float[Array, " hd2"]
     sites: tuple[SiteSpec, ...] = eqx.field(static=True)
     leading_axes: tuple[str, ...] = eqx.field(static=True)
-    first_layer: int = eqx.field(static=True)
     eps: float = eqx.field(static=True)
 
     @property
     def site_names(self) -> tuple[str, ...]:
         return tuple(s.name for s in self.sites)
 
+    @property
+    def layers(self) -> list[LlamaLayer]:
+        """Per-layer view of `stacked` (slices the leading layer axis). For non-hot
+        consumers (attn-patterns recipe, equivalence harness); the forwards use `stacked`."""
+        return [jax.tree.map(lambda a, idx=i: a[idx], self.stacked) for i in range(self.n_layer)]
+
     def shardings(self, mesh: "Mesh") -> "LlamaDecomposedModel":
-        """Replicate every frozen leaf on the `dp` mesh (the FSDP-style memory story: the
-        ~3.6B bf16 suffix is small vs activations, so replicating avoids all-gathering the
-        target each forward)."""
+        """FSDP(`dp`)×TP(`tp`) the per-layer weights (`stacked.shardings` — `d` on `dp`,
+        head/intermediate on `tp`; the ~14 GB layer bulk shards `/(dp·tp)`, gathered per layer
+        inside the scan). embed / lm_head / norm / inv_freq REPLICATE — the ~2 GB embed+head
+        is small and vocab-parallel logits/lookup aren't worth the complexity. (The old
+        all-replicate justification — "the target is small vs activations" — is stale: at the
+        full 32-layer model the replicated target + its backward/remat copies dominate the
+        step's peak, which is what this shards away.)"""
         repl = NamedSharding(mesh, P())
-        return jax.tree.map(lambda _a: repl, self)
+        return eqx.tree_at(
+            lambda m: (m.embed, m.norm, m.lm_head, m.inv_freq, m.stacked),
+            self,
+            (repl, repl, repl, repl, self.stacked.shardings(mesh)),
+        )
 
     @staticmethod
     def recon_loss_fn(masked_output: Array, clean_output: Array) -> Array:
         return kl_per_position(masked_output, clean_output)
 
-    def clean_output(self, resid: Float[Array, "b t d"]) -> Array:
-        """The all-frozen suffix forward — the recon target (SPEC S3)."""
-        x = resid
-        for suffix_layer in self.layers:
-            x = x + suffix_layer.attn(rms_norm(x, suffix_layer.ln1, self.eps), self.inv_freq)
-            x = x + _clean_mlp_out(suffix_layer, rms_norm(x, suffix_layer.ln2, self.eps))
+    def embed_tokens(self, tokens: Int[Array, "b t"]) -> Float[Array, "b t d"]:
+        return self.embed[tokens]
+
+    def clean_output(self, inputs: Int[Array, "b t"]) -> Array:
+        """The all-frozen forward — the recon target (SPEC S3). A `lax.scan` over the block
+        stack so XLA compiles one block body instead of unrolling all 32 layers (the compile
+        fix for the full model; the scan reassociates float ops vs an unrolled loop, within
+        fp32 tolerance)."""
+
+        def block(x: Array, layer: LlamaLayer) -> tuple[Array, None]:
+            x = x + layer.attn(rms_norm(x, layer.ln1, self.eps), self.inv_freq)
+            x = x + _clean_mlp_out(layer, rms_norm(x, layer.ln2, self.eps))
+            return x, None
+
+        x, _ = jax.lax.scan(block, self.embed_tokens(inputs), self.stacked)
         x = rms_norm(x, self.norm, self.eps)
         return x @ self.lm_head.T
 
     def read_activations(
-        self, resid: Float[Array, "b t d"], wanted: tuple[str, ...]
+        self, inputs: Int[Array, "b t"], wanted: tuple[str, ...]
     ) -> dict[str, Array]:
         """Frozen-path activation accessor (CI input side, SPEC S4; harvest's per-site
         matrix inputs).
 
-        `wanted` keys are either `resid.{global_layer}` (residual stream ENTERING that block
-        — the chunkwise CI fn's `input_names`) or a decomposed SITE NAME (the activation
-        entering that site's weight on the frozen path: `q/k/v_proj` ← post-LN1 residual,
-        `o_proj` ← the attention output, `gate/up_proj` ← post-LN2 residual, `down_proj` ←
+        `wanted` keys are either `resid.{layer}` (residual stream ENTERING that block — the
+        chunkwise CI fn's `input_names`) or a decomposed SITE NAME (the activation entering
+        that site's weight on the frozen path: `q/k/v_proj` ← post-LN1 residual, `o_proj` ←
+        the attention output, `gate/up_proj` ← post-LN2 residual, `down_proj` ←
         `silu(gate)·up`). The residual is threaded identically to `clean_output`; the
         per-site intermediates come from the same RMSNorm/attn/MLP math. Stops once the last
         requested key's block is fully covered (no wasted block compute past it)."""
         wanted_set = frozenset(wanted)
         last = max(_tap_layer(key) for key in wanted)
         taps: dict[str, Array] = {}
-        x = resid
-        for layer_offset, suffix_layer in enumerate(self.layers):
-            layer = self.first_layer + layer_offset
+        x = self.embed_tokens(inputs)
+        for layer in range(self.n_layer):
+            block = jax.tree.map(lambda a, li=layer: a[li], self.stacked)
             if f"resid.{layer}" in wanted_set:
                 taps[f"resid.{layer}"] = x
-            attn = suffix_layer.attn
-            h1 = rms_norm(x, suffix_layer.ln1, self.eps)
+            attn = block.attn
+            h1 = rms_norm(x, block.ln1, self.eps)
             attn_y = attn.core(h1 @ attn.wq.T, h1 @ attn.wk.T, h1 @ attn.wv.T, self.inv_freq)
             post_attn = x + attn_y @ attn.wo.T
-            mlp_in = rms_norm(post_attn, suffix_layer.ln2, self.eps)
-            down_in = jax.nn.silu(mlp_in @ suffix_layer.Wg.T) * (mlp_in @ suffix_layer.Wu.T)
+            mlp_in = rms_norm(post_attn, block.ln2, self.eps)
+            down_in = jax.nn.silu(mlp_in @ block.Wg.T) * (mlp_in @ block.Wu.T)
             for kind, site_input in (
                 ("q", h1), ("k", h1), ("v", h1), ("o", attn_y),
                 ("gate", mlp_in), ("up", mlp_in), ("down", down_in),
@@ -371,81 +475,123 @@ class LlamaDecomposedModel(eqx.Module):
                 name = site_name(layer, kind)
                 if name in wanted_set:
                     taps[name] = site_input
-            x = post_attn + down_in @ suffix_layer.Wd.T
+            x = post_attn + down_in @ block.Wd.T
             if layer == last:
                 break
         assert set(taps) == wanted_set, (sorted(taps), sorted(wanted))
         return taps
 
-    def _run_masked_suffix(
+    def _run_masked_forward(
         self,
         vu: DecompVU,
-        resid: Float[Array, "b t d"],
+        inputs: Int[Array, "b t"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
         routes: dict[str, Array] | None,
         live: tuple[str, ...],
         has_delta: bool,
+        remat: bool,
         collect: dict[str, Array] | None,
     ) -> Array:
-        """The masked decomposed suffix forward shared by `masked_output` and
-        `masked_site_outputs` (SPEC §1.3, S2): sites in `live` run their decomposed forward
-        with `masks[s]` / `delta_masks[s]` / `routes[s]`; every other site — and every site
-        absent from the decomposition entirely — runs the frozen `x @ W` path. `live` and
-        `has_delta` are static under jit; `has_delta` False skips the `x @ Δ` matmul
-        (LOSS_PARITY_DESIGN §4b). A non-None `collect` gathers per-site decomposed
-        outputs."""
+        """The masked decomposed forward shared by `masked_output` and `masked_site_outputs`
+        (SPEC §1.3, S2), as a `lax.scan` over the block stack with a per-site `lax.cond`: a
+        site in `live` runs its decomposed forward (`masks[s]`/`delta_masks[s]`/`routes[s]`),
+        every other site — and every site absent from the decomposition — runs the frozen
+        `x @ W`. One block body compiles regardless of depth / chunk count; `cond` runs only
+        the taken branch so frozen sites do no V@U. `live`/`has_delta` are static; a non-None
+        `collect` gathers per-live-site decomposed outputs (SPEC S31). Requires per-kind dims
+        uniform across layers (asserted) — the layer stack must be homogeneous to scan."""
         live_set = frozenset(live)
-        x = resid
-        for layer_offset, suffix_layer in enumerate(self.layers):
-            layer = self.first_layer + layer_offset
-            live_kinds = {kind for kind in KIND_ORDER if site_name(layer, kind) in live_set}
-            attn = suffix_layer.attn
-            site_args = (masks, delta_masks, routes, live_set, has_delta, collect)
-            h1 = rms_norm(x, suffix_layer.ln1, self.eps)
-            if not live_kinds & set(ATTN_KINDS):
-                attn_out = attn(h1, self.inv_freq)
-            else:
-                q = _masked_site_out(vu, site_name(layer, "q"), attn.wq, h1, *site_args)
-                k = _masked_site_out(vu, site_name(layer, "k"), attn.wk, h1, *site_args)
-                v = _masked_site_out(vu, site_name(layer, "v"), attn.wv, h1, *site_args)
-                attn_y = attn.core(q, k, v, self.inv_freq)
-                attn_out = _masked_site_out(vu, site_name(layer, "o"), attn.wo, attn_y, *site_args)
-            post_attn = x + attn_out
-            mlp_in = rms_norm(post_attn, suffix_layer.ln2, self.eps)
-            if not live_kinds & set(MLP_KINDS):
-                mlp_out = _clean_mlp_out(suffix_layer, mlp_in)
-            else:
-                gate = _masked_site_out(
-                    vu, site_name(layer, "gate"), suffix_layer.Wg, mlp_in, *site_args
-                )
-                up = _masked_site_out(
-                    vu, site_name(layer, "up"), suffix_layer.Wu, mlp_in, *site_args
-                )
-                down_in = jax.nn.silu(gate) * up
-                mlp_out = _masked_site_out(
-                    vu, site_name(layer, "down"), suffix_layer.Wd, down_in, *site_args
-                )
-            x = post_attn + mlp_out
+        resid = self.embed_tokens(inputs)
+        leading = resid.shape[:-1]
+        per_kind = _stack_per_kind_masked_inputs(
+            vu, self.n_layer, leading, masks, delta_masks, routes, live_set, has_delta
+        )
+        decomposed_kinds = frozenset(per_kind)
+        want_collect = collect is not None
+
+        def masked_site(
+            x_in: Array, kind: str, W: Array, pk: dict[str, dict[str, Array]]
+        ) -> tuple[Array, Array | None]:
+            if kind not in decomposed_kinds:
+                return x_in @ W.T, None
+            e = pk[kind]
+
+            def decomp(_: None) -> Array:
+                return site_out(x_in, e["V"], e["U"], W, e["mask"], e.get("delta"), e.get("route"))
+
+            def frozen(_: None) -> Array:
+                return x_in @ W.T
+
+            out = jax.lax.cond(e["live"], decomp, frozen, None)
+            return out, (out if want_collect else None)
+
+        def block(
+            x: Array, layer_in: tuple[LlamaLayer, dict[str, dict[str, Array]]]
+        ) -> tuple[Array, dict[str, Array] | None]:
+            sl, pk = layer_in
+            attn = sl.attn
+            h1 = rms_norm(x, sl.ln1, self.eps)
+            q, qc = masked_site(h1, "q", attn.wq, pk)
+            k, kc = masked_site(h1, "k", attn.wk, pk)
+            v, vc = masked_site(h1, "v", attn.wv, pk)
+            attn_y = attn.core(q, k, v, self.inv_freq)
+            o, oc = masked_site(attn_y, "o", attn.wo, pk)
+            post_attn = x + o
+            h2 = rms_norm(post_attn, sl.ln2, self.eps)
+            g, gc = masked_site(h2, "gate", sl.Wg, pk)
+            u, uc = masked_site(h2, "up", sl.Wu, pk)
+            d, dc = masked_site(jax.nn.silu(g) * u, "down", sl.Wd, pk)
+            x = post_attn + d
+            collected = (
+                {
+                    name: c
+                    for name, c in (("q", qc), ("k", kc), ("v", vc), ("o", oc),
+                                    ("gate", gc), ("up", uc), ("down", dc))
+                    if c is not None
+                }
+                if want_collect
+                else None
+            )  # fmt: skip
+            return x, collected
+
+        # Per-LAYER remat: checkpoint the scan BODY so the backward recomputes one layer at a
+        # time, storing only the carry (the residual) — NOT all `n_layer` layers' activations.
+        # Whole-forward remat instead stacks every layer's activations `[n_layer, ...]` in the
+        # backward to backprop the scan, which dominated the step's peak (the MLP-hidden
+        # `[32,1,512,14336]` etc). This is the textbook way to grad-checkpoint a deep scan;
+        # pure recompute, no numerics change.
+        scan_body = jax.checkpoint(block) if remat else block
+        x, ys = jax.lax.scan(scan_body, resid, (self.stacked, per_kind))
         x = rms_norm(x, self.norm, self.eps)
-        return x @ self.lm_head.T
+        logits = x @ self.lm_head.T
+        if collect is not None:
+            assert ys is not None  # collect requested -> the scan emitted per-kind outputs
+            for site in live:
+                layer, kind = parse_site_name(site)
+                collect[site] = ys[kind][layer]
+        return logits
 
     def masked_output(
         self,
         vu: DecompVU,
-        resid: Float[Array, "b t d"],
+        inputs: Int[Array, "b t"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
         routes: dict[str, Array] | None,
         live: tuple[str, ...],
         has_delta: bool,
+        *,
+        remat: bool,
     ) -> Array:
-        return self._run_masked_suffix(vu, resid, masks, delta_masks, routes, live, has_delta, None)
+        return self._run_masked_forward(
+            vu, inputs, masks, delta_masks, routes, live, has_delta, remat, None
+        )
 
     def masked_site_outputs(
         self,
         vu: DecompVU,
-        resid: Float[Array, "b t d"],
+        inputs: Int[Array, "b t"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
         routes: dict[str, Array] | None,
@@ -455,7 +601,9 @@ class LlamaDecomposedModel(eqx.Module):
         """Per-`live`-site decomposed output of the masked forward (SPEC S31). Runs the
         exact `masked_output` forward, discards the logits, returns the collected outputs."""
         collect: dict[str, Array] = {}
-        self._run_masked_suffix(vu, resid, masks, delta_masks, routes, live, has_delta, collect)
+        self._run_masked_forward(
+            vu, inputs, masks, delta_masks, routes, live, has_delta, False, collect
+        )
         assert set(collect) == set(live), (sorted(collect), sorted(live))
         return collect
 
@@ -464,7 +612,7 @@ class LlamaDecomposedModel(eqx.Module):
         out: dict[str, Array] = {}
         for spec in self.sites:
             layer, kind = parse_site_name(spec.name)
-            W = _frozen_site_weight(self.layers[layer - self.first_layer], kind)
+            W = _frozen_site_weight(jax.tree.map(lambda a, li=layer: a[li], self.stacked), kind)
             V, U = vu.site(spec.name)
             out[spec.name] = (
                 W.astype(jnp.float32) - (V.astype(jnp.float32) @ U.astype(jnp.float32)).T
@@ -515,25 +663,10 @@ def _load_attn(w: _HFWeights, i: int, cfg: LlamaConfig) -> FrozenAttn:
     )
 
 
-def _load_block(w: _HFWeights, i: int, cfg: LlamaConfig) -> FrozenBlock:
-    pre = "model.layers"
-    return FrozenBlock(
-        ln1=w.get(f"{pre}.{i}.input_layernorm.weight"),
-        ln2=w.get(f"{pre}.{i}.post_attention_layernorm.weight"),
-        attn=_load_attn(w, i, cfg),
-        mlp=FrozenMLP(
-            wg=w.get(f"{pre}.{i}.mlp.gate_proj.weight"),
-            wu=w.get(f"{pre}.{i}.mlp.up_proj.weight"),
-            wd=w.get(f"{pre}.{i}.mlp.down_proj.weight"),
-        ),
-        eps=cfg.rms_norm_eps,
-    )
-
-
-def _load_suffix_layers(w: "_HFWeights", cfg: LlamaConfig, first_layer: int) -> list[SuffixLayer]:
+def _load_blocks(w: "_HFWeights", cfg: LlamaConfig) -> list[LlamaLayer]:
     pre = "model.layers"
     return [
-        SuffixLayer(
+        LlamaLayer(
             ln1=w.get(f"{pre}.{i}.input_layernorm.weight"),
             ln2=w.get(f"{pre}.{i}.post_attention_layernorm.weight"),
             attn=_load_attn(w, i, cfg),
@@ -541,32 +674,34 @@ def _load_suffix_layers(w: "_HFWeights", cfg: LlamaConfig, first_layer: int) -> 
             Wu=w.get(f"{pre}.{i}.mlp.up_proj.weight"),
             Wd=w.get(f"{pre}.{i}.mlp.down_proj.weight"),
         )
-        for i in range(first_layer, cfg.n_layer)
+        for i in range(cfg.n_layer)
     ]
 
 
 def build_decomposed_lm(
-    layers: list[SuffixLayer],
+    embed: Array,
+    layers: list[LlamaLayer],
     norm: Array,
     lm_head: Array,
     inv_freq: Array,
     cfg: LlamaConfig,
     sites: tuple[SiteSpec, ...],
 ) -> LlamaDecomposedModel:
-    """Assemble a `LlamaDecomposedModel` from frozen suffix arrays + decomposition config.
-    `sites` must be canonical-ordered with dims matching `cfg`."""
+    """Assemble a `LlamaDecomposedModel` from the frozen full-model arrays + decomposition
+    config. `sites` must be canonical-ordered with dims matching `cfg`."""
     site_cs = tuple(SiteC(s.name, s.C) for s in sites)
     assert sites == llama_site_specs(cfg, canonical_site_cs(site_cs)), (
         f"sites are not the canonical specs for this config: {sites}"
     )
     return LlamaDecomposedModel(
-        layers=layers,
+        embed=embed,
+        stacked=_stack_layers(layers),
+        n_layer=len(layers),
         norm=norm,
         lm_head=lm_head,
         inv_freq=inv_freq,
         sites=sites,
         leading_axes=("sequence",),
-        first_layer=first_decomposed_layer(tuple(s.name for s in sites)),
         eps=cfg.rms_norm_eps,
     )
 
@@ -574,58 +709,16 @@ def build_decomposed_lm(
 def load_decomposed_lm_from_hf(
     model_name: str, cfg: LlamaConfig, sites: tuple[SiteSpec, ...]
 ) -> LlamaDecomposedModel:
-    """Load the Llama-8B `DecomposedModel`: the frozen residual-start suffix as fields plus
-    the static decomposition config (`sites` / `first_layer`). Only `first_layer..n_layer-1`
-    is materialized — the prefix is consumed separately via `load_prefix_from_hf`."""
-    first_layer = first_decomposed_layer(tuple(s.name for s in sites))
+    """Load the Llama-8B `DecomposedModel`: the full frozen model (embedding, all blocks,
+    final norm, lm_head) as fields plus the static decomposition config (`sites`). Blocks
+    without a decomposed site run the plain frozen path."""
     w = _HFWeights(_hf_snapshot_dir(model_name))
     return build_decomposed_lm(
-        layers=_load_suffix_layers(w, cfg, first_layer),
+        embed=w.get("model.embed_tokens.weight"),
+        layers=_load_blocks(w, cfg),
         norm=w.get("model.norm.weight"),
         lm_head=w.get("lm_head.weight"),
         inv_freq=llama3_inv_freq(cfg),
         cfg=cfg,
         sites=sites,
     )
-
-
-class Prefix(eqx.Module):
-    """The frozen L0..first-1 prefix: embedding + blocks. Used only to harvest the
-    residual entering the suffix (SPEC §1.1) — never in any gradient graph."""
-
-    embed: Float[Array, "vocab d"]
-    blocks: list[FrozenBlock]
-    inv_freq: Float[Array, " hd2"]
-
-
-def load_prefix_from_hf(model_name: str, cfg: LlamaConfig, first_layer: int) -> Prefix:
-    w = _HFWeights(_hf_snapshot_dir(model_name))
-    return Prefix(
-        embed=w.get("model.embed_tokens.weight"),
-        blocks=[_load_block(w, i, cfg) for i in range(first_layer)],
-        inv_freq=llama3_inv_freq(cfg),
-    )
-
-
-def prefix_residual(prefix: Prefix, idx: Array) -> Array:
-    """Pure prefix forward: token ids `(b, t)` -> residual entering `first` (b, t, d).
-    The trainer jits this with `prefix` as a runtime arg and the batch dp-sharded."""
-    x = prefix.embed[idx]
-    for blk in prefix.blocks:
-        x = blk(x, prefix.inv_freq)
-    return x
-
-
-def make_real_target_residual(
-    model_name: str, cfg: LlamaConfig, first_layer: int, idx: Array, chunk: int
-) -> Array:
-    """One-shot eager harvest for the bench: loads the prefix, runs it in micro-batch
-    chunks (`chunk`) so peak activation is one chunk's forward, discards the weights.
-    The trainer instead keeps a `Prefix` resident and jits `prefix_residual`."""
-    prefix = load_prefix_from_hf(model_name, cfg, first_layer)
-    b = idx.shape[0]
-    outs = [
-        jax.block_until_ready(prefix_residual(prefix, idx[i : i + chunk]))
-        for i in range(0, b, chunk)
-    ]
-    return jnp.concatenate(outs, axis=0)

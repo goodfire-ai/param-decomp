@@ -17,8 +17,10 @@ for bf16 compute.
 The chunkwise-transformer (`ChunkwiseTransformerCIFn`) is the LM impl: each chunk reads
 one or more residual taps (RMS-normed per tap, then concatenated) and emits CI for the
 matrix sites it covers, via an independent pre-norm bidirectional-RoPE transformer. The
-per-chunk transformers are stacked along a leading `n_chunks` axis and run under a single
-`eqx.filter_vmap`. The positionless toys use the MLP impls below (`LayerwiseMLPCIFn` /
+per-chunk transformers are stacked along a leading `n_chunks` axis and run under a
+`jax.lax.scan` over that axis (so the chunk iteration lowers as a loop — one chunk's FSDP
+weight gather live at a time, not all `n_chunks` hoisted into the flat entry computation).
+The positionless toys use the MLP impls below (`LayerwiseMLPCIFn` /
 `GlobalMLPCIFn`); every impl satisfies the same `CIFn` protocol and is equally core — the
 architectures differ by domain (sequence vs positionless), not by status.
 """
@@ -36,7 +38,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from param_decomp.components import SiteSpec
 from param_decomp.sharding import assert_divisible
-from vendored_jax.llama import apply_rope, attn_implementation, rms_norm, rope_cos_sin
+from vendored_jax.llama import apply_rope, rms_norm, rope_cos_sin
 
 CI_FN_RMS_EPS = float(jnp.finfo(jnp.float32).eps)
 """Matches torch's `F.rms_norm` default eps (`finfo(fp32).eps` ~1.19e-7); RMS upcasts to
@@ -138,38 +140,34 @@ class CIBlock(eqx.Module):
     eps: float = eqx.field(static=True)
 
     def shardings(self, mesh: Mesh) -> "CIBlock":
-        """Megatron-style placement, with a leading un-sharded `n_chunks` axis (flat dp;
-        chunk-parallel out of scope). All arrays are stored `[n_chunks, ...]`.
+        """Uniform FSDP(`dp`)×TP(`tp`); the leading `n_chunks` axis (axis 0) is UNSHARDED — a
+        plain vmap axis, not a sharding dim (the mesh-simplification: every param shards the
+        same way regardless of the chunk structure). Each weight keeps its Megatron dim on
+        `tp` and FSDP's the other matmul dim on `dp`:
 
-        Attention col/row-parallel: qkv (`[nc, out, in]`) shard their OUTPUT (head) dim
-        (axis 1) so each device owns a head slab; the out-proj shards its INPUT dim (axis 2),
-        so the per-head attention output flows sharded and a single all-reduce closes it.
+        - qkv (`[nc, head_out, d_model_in]`): head on `tp` (col-parallel), d_model FSDP on `dp`.
+        - out-proj (`[nc, d_model_out, head_in]`): head on `tp` (row-parallel), d_model FSDP on `dp`.
+        - w1 up-proj (`[nc, d_model_in, mlp_hidden_out]`): mlp_hidden on `tp`, d_model FSDP on `dp`.
+        - w2 down-proj (`[nc, mlp_hidden_in, d_model_out]`): mlp_hidden on `tp`, d_model FSDP on `dp`.
 
-        MLP row-parallel: up-proj `w1 [nc, d_model, mlp_hidden]` shards its OUTPUT
-        (`mlp_hidden`, axis 2); down-proj `w2 [nc, mlp_hidden, d_model]` shards its INPUT
-        (`mlp_hidden`, axis 1). The hidden flows sharded; no intermediate gather. Biases
-        replicate."""
-        shard_axis1 = NamedSharding(mesh, P(None, "dp", None))
-        shard_axis2 = NamedSharding(mesh, P(None, None, "dp"))
+        Biases replicate (GSPMD broadcasts over the tp-sharded activation). The FSDP dim is
+        all-gathered per matmul, bounded by `/tp` (TP keeps its half)."""
+        col = NamedSharding(mesh, P(None, "tp", "dp"))  # axis1 (out) on tp, axis2 (in) FSDP on dp
+        row = NamedSharding(mesh, P(None, "dp", "tp"))  # axis1 (out) FSDP on dp, axis2 (in) on tp
         repl = NamedSharding(mesh, P())
         for w in (self.wq, self.wk, self.wv):
-            assert_divisible(w.shape[1], mesh, "CIBlock attn qkv out (head dim)")
-        assert_divisible(self.wo.shape[2], mesh, "CIBlock attn out-proj in (head dim)")
-        assert_divisible(self.w1.shape[2], mesh, "CIBlock mlp up-proj out (mlp_hidden)")
-        assert_divisible(self.w2.shape[1], mesh, "CIBlock mlp down-proj in (mlp_hidden)")
+            assert_divisible(w.shape[1], mesh, "tp", "CIBlock qkv out (head dim)")
+            assert_divisible(w.shape[2], mesh, "dp", "CIBlock qkv in (d_model)")
+        assert_divisible(self.wo.shape[1], mesh, "dp", "CIBlock out-proj out (d_model)")
+        assert_divisible(self.wo.shape[2], mesh, "tp", "CIBlock out-proj in (head dim)")
+        assert_divisible(self.w1.shape[1], mesh, "dp", "CIBlock w1 in (d_model)")
+        assert_divisible(self.w1.shape[2], mesh, "tp", "CIBlock w1 out (mlp_hidden)")
+        assert_divisible(self.w2.shape[1], mesh, "tp", "CIBlock w2 in (mlp_hidden)")
+        assert_divisible(self.w2.shape[2], mesh, "dp", "CIBlock w2 out (d_model)")
         return eqx.tree_at(
             lambda b: (b.wq, b.wk, b.wv, b.wo, b.w1, b.b1, b.w2, b.b2),
             self,
-            (
-                shard_axis1,
-                shard_axis1,
-                shard_axis1,
-                shard_axis2,
-                shard_axis2,
-                repl,
-                shard_axis1,
-                repl,
-            ),
+            (col, col, col, row, row, repl, col, repl),
         )
 
     def __call__(self, x: Float[Array, "b t d"], inv_freq: Array) -> Array:
@@ -184,9 +182,12 @@ class CIBlock(eqx.Module):
         cos, sin = rope_cos_sin(inv_freq, t, x.dtype)
         q, k = apply_rope(q, k, cos, sin)
         qt, kt, vt = (einops.rearrange(a, "b nh t hd -> b t nh hd") for a in (q, k, v))
-        y = jax.nn.dot_product_attention(
-            qt, kt, vt, is_causal=False, implementation=attn_implementation()
-        )  # bidirectional
+        # xla (not cuDNN flash): the CI fn's attention weights are Megatron-sharded (heads on
+        # `tp`) under the 2-D mesh, and cuDNN's custom partitioner rejects that q/k/v layout
+        # ("Query, key and value should have same sharding"). The CI fn is small (low d_model,
+        # short seq) so the xla path's (B,H,T,T) score is tens of MB — no OOM, unlike the
+        # target's attention which keeps cuDNN flash. Bidirectional.
+        y = jax.nn.dot_product_attention(qt, kt, vt, is_causal=False, implementation="xla")
         x = x + einops.einsum(
             einops.rearrange(y, "b t nh hd -> b t (nh hd)"), self.wo, "b t i, o i -> b t o"
         )
@@ -242,7 +243,7 @@ class ChunkTransformer(eqx.Module):
     `[*leading, c_chunk]` logits, via in_proj → RoPE blocks → head.
 
     In the bundle every array below carries a leading `n_chunks` axis and the module is
-    run under `eqx.filter_vmap`, so this body is written for a single chunk."""
+    run under `jax.lax.scan` over that axis, so this body is written for a single chunk."""
 
     in_proj_w: Float[Array, "total_d_in d_model"]
     in_proj_b: Float[Array, " d_model"]
@@ -251,17 +252,23 @@ class ChunkTransformer(eqx.Module):
     out_b: Float[Array, " c_chunk"]
 
     def shardings(self, mesh: Mesh) -> "ChunkTransformer":
-        """Per-leaf `dp` placement, leading un-sharded `n_chunks` axis. `in_proj_w
-        [nc, total_d_in, d_model]` shards `d_model` (axis 2); `out_w [nc, d_model, c_chunk]`
-        shards `c_chunk` (axis 2); blocks delegate to `CIBlock.shardings`; biases replicate."""
-        shard_last = NamedSharding(mesh, P(None, None, "dp"))
+        """Uniform FSDP(`dp`)×TP(`tp`); leading `n_chunks` axis (axis 0) UNSHARDED. `in_proj_w
+        [nc, total_d_in, d_model]`: d_model on `tp` (col-parallel out), total_d_in FSDP on `dp`.
+        `out_w [nc, d_model, c_chunk]`: c_chunk on `tp` (col-parallel out — the C-on-`tp` that
+        aligns with V/U and the mask), d_model FSDP on `dp`. Blocks delegate to
+        `CIBlock.shardings`; biases replicate (GSPMD broadcasts over the tp-sharded output)."""
+        row = NamedSharding(mesh, P(None, "dp", "tp"))  # axis1 (in) FSDP on dp, axis2 (out) on tp
         repl = NamedSharding(mesh, P())
-        assert_divisible(self.in_proj_w.shape[2], mesh, "ChunkTransformer in_proj_w d_model")
-        assert_divisible(self.out_w.shape[2], mesh, "ChunkTransformer out_w c_chunk")
+        assert_divisible(
+            self.in_proj_w.shape[1], mesh, "dp", "ChunkTransformer in_proj_w total_d_in"
+        )
+        assert_divisible(self.in_proj_w.shape[2], mesh, "tp", "ChunkTransformer in_proj_w d_model")
+        assert_divisible(self.out_w.shape[1], mesh, "dp", "ChunkTransformer out_w d_model")
+        assert_divisible(self.out_w.shape[2], mesh, "tp", "ChunkTransformer out_w c_chunk")
         return eqx.tree_at(
             lambda ct: (ct.in_proj_w, ct.in_proj_b, ct.blocks, ct.out_w, ct.out_b),
             self,
-            (shard_last, repl, [b.shardings(mesh) for b in self.blocks], shard_last, repl),
+            (row, repl, [b.shardings(mesh) for b in self.blocks], row, repl),
         )
 
     def __call__(self, x: Float[Array, "*leading total_d_in"], inv_freq: Array) -> Array:
@@ -272,10 +279,11 @@ class ChunkTransformer(eqx.Module):
 
 
 class ChunkwiseTransformerCIFn(eqx.Module):
-    """Per-chunk `ChunkTransformer`s stacked along a leading `n_chunks` axis, run under one
-    `eqx.filter_vmap`. Each chunk's input is its `chunk_input_taps` RMS-normed per tap and
-    concatenated. Requires homogeneous chunks (equal total input width and `c_chunk`) so
-    the stack is rectangular — asserted at init."""
+    """Per-chunk `ChunkTransformer`s stacked along a leading `n_chunks` axis, iterated by a
+    `jax.lax.scan` over that axis (lowers as a loop so one chunk's FSDP weight gather is live
+    at a time, not all `n_chunks` at once). Each chunk's input is its `chunk_input_taps`
+    RMS-normed per tap and concatenated. Requires homogeneous chunks (equal total input width
+    and `c_chunk`) so the stack is rectangular — asserted at init."""
 
     chunks: ChunkTransformer  # arrays stacked along leading n_chunks
     inv_freq: Array  # shared across chunks (RoPE buffer); NOT mapped
@@ -304,8 +312,22 @@ class ChunkwiseTransformerCIFn(eqx.Module):
         ]
         stacked_in = jnp.stack(per_chunk_in, axis=0)  # [n_chunks, *leading, total_d_in]
         inv_freq = jax.lax.stop_gradient(self.inv_freq)
-        run = eqx.filter_vmap(lambda ct, x: ct(x, inv_freq))
-        stacked_logits = run(self.chunks, stacked_in)  # [n_chunks, *leading, c_chunk]
+        # `lax.scan` (not `filter_vmap`) over the leading `n_chunks` axis so XLA lowers the
+        # chunk iteration as a loop: one chunk's FSDP weight all-gather (∝ ΣC/tp) is live at
+        # a time, then freed, instead of every chunk's gathered weights materialized at once
+        # (the vmap unrolls, hoisting all n_chunks gathers into the flat entry computation).
+        # Same math as the vmap — scan stacks per-iteration outputs exactly as vmap maps
+        # them; results match up to fp32 reassociation (XLA picks different matmul layouts).
+        chunk_arrays, chunk_static = eqx.partition(self.chunks, eqx.is_array)
+
+        def run_chunk(_: None, scanned: tuple[ChunkTransformer, Array]) -> tuple[None, Array]:
+            chunk_array, chunk_input = scanned
+            chunk = eqx.combine(chunk_array, chunk_static)
+            return None, chunk(chunk_input, inv_freq)
+
+        _, stacked_logits = jax.lax.scan(
+            run_chunk, None, (chunk_arrays, stacked_in)
+        )  # [n_chunks, *leading, c_chunk]
         return CI.from_logits(self._split(stacked_logits))
 
     def _split(self, stacked: Array) -> SiteDict:
@@ -370,7 +392,7 @@ def init_chunkwise_transformer_ci_fn(
 
     - partition: the chunks' output sites are disjoint and cover every model site.
     - homogeneity: equal tap count (→ equal total input width) and equal `Σ C` per chunk,
-      so the per-chunk params stack rectangularly for `filter_vmap`.
+      so the per-chunk params stack rectangularly along the scanned `n_chunks` axis.
     """
     site_c = {s.name: s.C for s in sites}
     covered = [name for ch in arch.chunks for name in ch.output_sites]
@@ -434,7 +456,7 @@ class SiteMLP(eqx.Module):
         shard_out = NamedSharding(mesh, P(None, "dp"))
         repl = NamedSharding(mesh, P())
         for layer_idx, w in enumerate(self.weights):
-            assert_divisible(w.shape[1], mesh, f"SiteMLP.weights[{layer_idx}].d_out")
+            assert_divisible(w.shape[1], mesh, "dp", f"SiteMLP.weights[{layer_idx}].d_out")
         return eqx.tree_at(
             lambda m: (m.weights, m.biases),
             self,

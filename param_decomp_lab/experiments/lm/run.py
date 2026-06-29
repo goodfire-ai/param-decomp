@@ -5,9 +5,9 @@ vendored target.
         # which stamps run_id into the workspace copy; re-running resumes in place
 
 This is the LM I/O layer over the generic core engine
-(`param_decomp.run.run_decomposition_training`): read the run YAML, build the target +
-prefix, harvest the residual from the frozen prefix over a parquet token batch
-(`sample_batch`), build the CEandKL / CI-L0 / PGD / attn-patterns / slow `eval_fn`, then
+(`param_decomp.run.run_decomposition_training`): read the run YAML, build the target, feed
+the per-step parquet token batch (`sample_batch`; the model embeds it), build the CEandKL /
+CI-L0 / PGD / attn-patterns / slow `eval_fn`, then
 call the engine. Process setup (`init_distributed`, the SIGTERM flag, the persistent XLA
 compilation cache, HF http hardening), config pinning, and SLURM-requeue shutdown all live
 here. The toy domains mirror this file under `experiments/{tms,resid_mlp}/run.py`.
@@ -70,7 +70,6 @@ from param_decomp.slow_eval import (
     resolve_permutation_metrics,
     stochastic_hidden_acts_n_mask_samples,
 )
-from param_decomp.targets.target_aliases import AnyPrefix
 from param_decomp.train import TrainState
 from param_decomp_lab.experiments.lm.config import (
     load_config,
@@ -123,38 +122,32 @@ def assert_finetune_structural_compat(built: BuiltRun, prov: ResumeProvenance) -
 def train(
     built: BuiltRun,
     lm: DecomposedModel,
-    prefix: AnyPrefix,
-    prefix_residual_fn: Callable[[Any, Any], jax.Array],
     mesh: Mesh,
 ) -> None:
-    """The LM composition over the generic engine: a parquet `sample_batch` (harvest the
-    residual from the frozen prefix) and the CEandKL / CI-L0 / PGD / attn-patterns
-    `eval_fn`."""
+    """The LM composition over the generic engine: a parquet `sample_batch` (the per-step
+    token batch the model embeds) and the CEandKL / CI-L0 / PGD / attn-patterns `eval_fn`."""
     data = built.data
     assert isinstance(data, DataConfig), "train() is the LM (parquet) data path"
     n_proc = jax.process_count()
-    ndev = mesh.devices.size
-    assert data.global_batch % ndev == 0, (data.global_batch, ndev)
+    # The batch shards over the dp AXIS only (tp positions get batch-replicas), so it must
+    # tile dp, NOT the full device count. At tp=1 dp-axis == ndev (the old invariant).
+    dp_axis = mesh.shape["dp"]
+    assert data.global_batch % dp_axis == 0, (data.global_batch, dp_axis)
     is_main = jax.process_index() == 0
 
     key = random.PRNGKey(built.pd.seed)
     _, _, run_key = random.split(key, 3)
 
-    def _harvest(prefix_weights: Any, inputs: Any) -> jax.Array:
-        residual = prefix_residual_fn(prefix_weights, inputs)
-        return jax.lax.with_sharding_constraint(residual, NamedSharding(mesh, P("dp")))
-
-    harvest = jax.jit(_harvest)
-
     schedule = BatchSchedule(scan_shards(data.dir), data.global_batch, built.pd.seed)
     server = ShardServer(schedule, data.seq_len, jax.process_index(), n_proc)
-    assert server.per_process % jax.local_device_count() == 0, (
-        server.per_process, jax.local_device_count(),
-    )  # fmt: skip
+    # Each process (node) owns local_device_count // tp dp-positions; its per-process batch
+    # must split across those (tp devices are batch-replicas). At tp=1 this is the old
+    # `% local_device_count` invariant.
+    local_dp = jax.local_device_count() // mesh.shape["tp"]
+    assert server.per_process % local_dp == 0, (server.per_process, local_dp)
 
     def sample_batch(step: int) -> jax.Array:
-        token_ids = _global_token_batch(server.local_batch(step), mesh, data.global_batch)
-        return harvest(prefix, token_ids)
+        return _global_token_batch(server.local_batch(step), mesh, data.global_batch)
 
     eval_fn = None
     eval_every = built.pd.steps + 1  # unreachable cadence when eval is disabled
@@ -168,7 +161,7 @@ def train(
             "pass's batches, so it can only fire on a fast-eval step"
         )
         eval_every = built.eval.every
-        eval_fn = _make_lm_eval_fn(built, lm, prefix, harvest, run_key, mesh, n_proc, is_main)
+        eval_fn = _make_lm_eval_fn(built, lm, run_key, mesh, n_proc, is_main)
 
     run_decomposition_training(
         pd=built.pd,
@@ -178,6 +171,7 @@ def train(
         ci_fn=built.ci_fn,
         data=data,
         remat_recon_forwards=built.runtime.remat_recon_forwards,
+        remat_ci_fn=built.runtime.remat_ci_fn,
         sample_batch=sample_batch,
         eval_fn=eval_fn,
         eval_every=eval_every,
@@ -188,8 +182,6 @@ def train(
 def _make_lm_eval_fn(
     built: BuiltRun,
     lm: DecomposedModel,
-    prefix: AnyPrefix,
-    harvest: Callable[[Any, Any], jax.Array],
     run_key: PRNGKeyArray,
     mesh: Mesh,
     n_proc: int,
@@ -206,9 +198,8 @@ def _make_lm_eval_fn(
     assert isinstance(data, DataConfig)
     eval_schedule = BatchSchedule(scan_shards(data.dir), eval.batch_size, pd.seed + 1)
     eval_server = ShardServer(eval_schedule, data.seq_len, jax.process_index(), n_proc)
-    assert eval_server.per_process % jax.local_device_count() == 0, (
-        eval_server.per_process, jax.local_device_count(),
-    )  # fmt: skip
+    local_dp = jax.local_device_count() // mesh.shape["tp"]
+    assert eval_server.per_process % local_dp == 0, (eval_server.per_process, local_dp)
     eval_step_fn = make_eval_step(
         lm,
         eval.rounding_threshold,
@@ -245,7 +236,7 @@ def _make_lm_eval_fn(
         # averages across batches AND eval batches are uniform (B, T). See eval.py's module
         # docstring for the per-key parity argument (cites SPEC S8/D2).
         metric_sums: dict[str, jax.Array] = {}
-        eval_residuals: list[jax.Array] = []
+        eval_batches: list[jax.Array] = []
         for j in range(eval.n_steps):
             if sigterm_received():
                 break
@@ -254,13 +245,10 @@ def _make_lm_eval_fn(
                 mesh,
                 eval.batch_size,
             )
-            eval_residual = harvest(prefix, eval_tokens)
-            eval_residuals.append(eval_residual)
+            eval_batches.append(eval_tokens)
             # fold values >= pd.steps never collide with the train step keys
             eval_key = random.fold_in(run_key, pd.steps + eval_pass_index * eval.n_steps + j)
-            eval_metrics = eval_step_fn(
-                lm, state.components, state.ci_fn, eval_tokens, eval_residual, eval_key
-            )
+            eval_metrics = eval_step_fn(lm, state.components, state.ci_fn, eval_tokens, eval_key)
             for k, v in eval_metrics.items():
                 metric_sums[k] = metric_sums.get(k, jnp.zeros(())) + v
         eval_record: dict[str, LogValue] = {
@@ -271,14 +259,14 @@ def _make_lm_eval_fn(
             # is summed over distributions, divided by their count.
             attn_key = random.fold_in(run_key, 2 * pd.steps + eval_pass_index)
             reductions = accumulate_attn_patterns(
-                attn_step, lm, state.components, state.ci_fn, eval_residuals, attn_key
+                attn_step, lm, state.components, state.ci_fn, eval_batches, attn_key
             )
             eval_record |= {
                 f"eval/loss/{k}": v
                 for k, v in attn_patterns_log_entries(class_name, reductions).items()
             }
         slow_due = slow_eval_due(now_step, eval.every, eval.slow_every, eval.slow_on_first_step)
-        if eval_residuals and slow_due and not sigterm_received():
+        if eval_batches and slow_due and not sigterm_received():
             # SLOW/PLOT TIER (SPEC S28/S29). The COLLECTIVE part runs in lockstep on every
             # rank — `accumulate_site_reductions` / `compute_hidden_acts_metrics` pull
             # C-sharded reductions to numpy, whose `np.asarray` triggers the all-gather all
@@ -286,11 +274,11 @@ def _make_lm_eval_fn(
             # hidden-acts scalars ride the live `_step` axis through `eval_record`; the
             # figures' pure-host render + wandb.log happen OFF the loop on rank 0.
             site_reductions = accumulate_site_reductions(
-                slow_eval_step, lm, state.ci_fn, eval_residuals, eval.slow_n_batches_accum
+                slow_eval_step, lm, state.ci_fn, eval_batches, eval.slow_n_batches_accum
             )
             hidden_acts_key = random.fold_in(run_key, 3 * pd.steps + eval_pass_index)
             hidden_acts = compute_hidden_acts_metrics(
-                lm, state, eval_residuals, hidden_acts_n_mask_samples, hidden_acts_key
+                lm, state, eval_batches, hidden_acts_n_mask_samples, hidden_acts_key
             )
             eval_record |= {f"eval/slow/loss/{k}": v for k, v in hidden_acts.items()}
             # The position-CI all-gather is ALSO collective (every rank joins it), gated on
@@ -300,7 +288,7 @@ def _make_lm_eval_fn(
             position_ci: dict[str, PositionCI] | None = None
             if position_ci_step is not None:
                 position_ci = accumulate_position_ci(
-                    position_ci_step, lm, state.ci_fn, eval_residuals
+                    position_ci_step, lm, state.ci_fn, eval_batches
                 )
                 identity_ci_errors = compute_identity_ci_errors(
                     perm_spec, position_ci, IDENTITY_CI_ERROR_TOLERANCE
@@ -368,7 +356,7 @@ def main(config: Path, run_id: str) -> None:
     # Harden the cold-cache HF weight load against the 8N-rank startup burst before any
     # per-rank Hub call (no-op when huggingface_hub is absent / cache is pre-warmed).
     configure_hf_http_retries()
-    mesh = dp_mesh()
+    mesh = dp_mesh(built.runtime.tp)
 
     if built.run.resume_provenance is not None:
         assert_finetune_structural_compat(built, built.run.resume_provenance)
@@ -382,20 +370,24 @@ def main(config: Path, run_id: str) -> None:
         setup_logger(built.run.run_dir / "logs.log")
         _pin_config_copy(built.run.run_dir, "config.yaml", config)
         print(f"persistent XLA compilation cache: {cache_dir}", flush=True)
-        site_summary = " ".join(f"{s.name}:C{s.C}" for s in built.target.sites)
+        site_kind_counts: dict[str, int] = {}
+        for s in built.target.sites:
+            kind = s.name.rsplit(".", 1)[-1]
+            site_kind_counts[kind] = site_kind_counts.get(kind, 0) + 1
+        site_summary = ", ".join(f"{k}×{n}" for k, n in sorted(site_kind_counts.items()))
         assert isinstance(built.data, DataConfig)
         print(
             f"run {built.run.run_name} | {mesh.devices.size} GPU / {jax.process_count()} proc | "
             f"B={built.data.global_batch} seq={built.data.seq_len} "
-            f"sites=[{site_summary}] steps={built.pd.steps}",
+            f"sites={len(built.target.sites)} [{site_summary}] steps={built.pd.steps}",
             flush=True,
         )
 
     # The `lm` (an eqx model) IS the frozen target — it carries the suffix weights as fields,
     # so the function-table era's separate `frozen` object is gone.
-    lm, prefix, prefix_residual_fn, _vocab_size = build_target(built, mesh)
+    lm, _vocab_size = build_target(built, mesh)
 
-    train(built, lm, prefix, prefix_residual_fn, mesh)
+    train(built, lm, mesh)
 
     if jax.process_count() > 1:
         import jax.experimental.multihost_utils as mhu

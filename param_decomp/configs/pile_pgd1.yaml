@@ -119,7 +119,9 @@ pd:
   faithfulness_warmup_steps: 400
   faithfulness_warmup_weight_decay: 0.0
   loss_metrics:
-  - beta: 0.5
+  - frequency:
+      coeff: 1.0e-04
+      reference_token_count: 65536
     coeff: 0.0002
     eps: 1.0e-12
     p_anneal_end_frac: 1.0
