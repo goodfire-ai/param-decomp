@@ -407,13 +407,20 @@ def _reconstruct_compute_weights(
         v_spec = P(None, None, None)
         u_spec = P(None, None, None)
     else:
-        v_spec = P(None, "fsdp", None)  # [n_layer, d_in ÷fsdp, C] — replicate gathered once/step
-        u_spec = P(None, None, "fsdp")  # [n_layer, C, d_out ÷fsdp]
+        v_spec = P(None, "fsdp", "tp")  # [n_layer, d_in ÷fsdp, C ÷tp] — d gathered/step, C stays ÷tp
+        u_spec = P(None, "tp", "fsdp")  # [n_layer, C ÷tp, d_out ÷fsdp]
     out: dict[str, dict[str, Array]] = {}
     for kind, entry in per_kind.items():
         pinned = dict(entry)
-        v = jax.lax.with_sharding_constraint(entry["V"].astype(jnp.bfloat16), v_spec)
-        u = jax.lax.with_sharding_constraint(entry["U"].astype(jnp.bfloat16), u_spec)
+        # optimization_barrier forces the bf16 cast to materialize BEFORE the ÷N→÷fsdp gather,
+        # so the collective moves bf16 — XLA otherwise sinks the convert past the all-gather
+        # and gathers the f32 master (2x the comm; the convert_element_type gathers in the HLO).
+        v = jax.lax.with_sharding_constraint(
+            jax.lax.optimization_barrier(entry["V"].astype(jnp.bfloat16)), v_spec
+        )
+        u = jax.lax.with_sharding_constraint(
+            jax.lax.optimization_barrier(entry["U"].astype(jnp.bfloat16)), u_spec
+        )
         pinned["V"], pinned["U"] = v, u
         out[kind] = pinned
     return out
@@ -631,7 +638,51 @@ class LlamaDecomposedModel(eqx.Module):
             if remat
             else jax.checkpoint_policies.dots_saveable
         )
-        x, ys = jax.lax.scan(jax.checkpoint(block, policy=policy), resid, (self.stacked, per_kind))
+        import os as _os
+
+        # PD_UNROLL_K: scan over groups of K layers with the K layers unrolled in the body, so
+        # XLA sees K independent ÷fsdp→full weight gathers per body and can prefetch gather(L+1)
+        # under matmul(L) — the cross-iteration overlap a 1-layer `while` body denies it. K=1 is
+        # the plain per-layer scan. Pure reassociation: same math, same per-layer remat policy.
+        unroll_k = int(_os.environ.get("PD_UNROLL_K", "1"))
+        assert self.n_layer % unroll_k == 0, (self.n_layer, unroll_k)
+        if unroll_k == 1:
+            x, ys = jax.lax.scan(
+                jax.checkpoint(block, policy=policy), resid, (self.stacked, per_kind)
+            )
+        else:
+            n_chunks = self.n_layer // unroll_k
+
+            def chunk_body(
+                x: Array, chunk: tuple[LlamaLayer, dict[str, dict[str, Array]]]
+            ) -> tuple[Array, dict[str, Array] | None]:
+                stacked_c, per_kind_c = chunk  # each leaf leading [unroll_k]
+                collected_per_layer: list[dict[str, Array]] = []
+                for k in range(unroll_k):
+                    layer_k = jax.tree_util.tree_map(lambda a, _k=k: a[_k], stacked_c)
+                    pk_k = jax.tree_util.tree_map(lambda a, _k=k: a[_k], per_kind_c)
+                    x, collected_k = block(x, (layer_k, pk_k))
+                    if collected_k is not None:
+                        collected_per_layer.append(collected_k)
+                if not want_collect:
+                    return x, None
+                kinds = collected_per_layer[0].keys()
+                ys_c = {kd: jnp.stack([cl[kd] for cl in collected_per_layer]) for kd in kinds}
+                return x, ys_c
+
+            reshape = lambda a: a.reshape(n_chunks, unroll_k, *a.shape[1:])  # noqa: E731
+            stacked_r = jax.tree_util.tree_map(reshape, self.stacked)
+            per_kind_r = jax.tree_util.tree_map(reshape, per_kind)
+            x, ys_chunked = jax.lax.scan(
+                jax.checkpoint(chunk_body, policy=policy), resid, (stacked_r, per_kind_r)
+            )
+            ys = (
+                jax.tree_util.tree_map(
+                    lambda a: a.reshape(self.n_layer, *a.shape[2:]), ys_chunked
+                )
+                if want_collect
+                else None
+            )
         x = rms_norm(x, self.norm, self.eps)
         logits = x @ self.lm_head.T
         if collect is not None:
