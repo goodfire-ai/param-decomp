@@ -6,7 +6,6 @@ from jaxtyping import Float
 from torch import Tensor
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.distributed import gather_all_tensors
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp_lab.eval_metrics.plotting import plot_ci_values_histograms
@@ -47,16 +46,18 @@ class CIHistograms(Metric[CIHistogramsConfig]):
     def compute(self) -> MetricResult:
         if self.batches_seen == 0:
             raise RuntimeError("No batches seen yet")
-        lower_leaky_cis: dict[str, Float[Tensor, "... C"]] = {}
-        for module_name, ci_list in self.lower_leaky_causal_importances.items():
-            lower_leaky_cis[module_name] = torch.cat(
-                gather_all_tensors(torch.cat(ci_list, dim=0)), dim=0
-            )
-        pre_sigmoid_cis: dict[str, Float[Tensor, "... C"]] = {}
-        for module_name, ci_list in self.pre_sigmoid_causal_importances.items():
-            pre_sigmoid_cis[module_name] = torch.cat(
-                gather_all_tensors(torch.cat(ci_list, dim=0)), dim=0
-            )
+        # No cross-rank gather: the CI value distribution is rank-invariant (each rank
+        # draws i.i.d. from the same eval stream), so a rank's local samples histogram
+        # identically to the global pool. An all_gather here replicates the full global
+        # eval batch's CI tensor on every rank (~world_size x), which OOMs at high dp.
+        lower_leaky_cis: dict[str, Float[Tensor, "... C"]] = {
+            module_name: torch.cat(ci_list, dim=0)
+            for module_name, ci_list in self.lower_leaky_causal_importances.items()
+        }
+        pre_sigmoid_cis: dict[str, Float[Tensor, "... C"]] = {
+            module_name: torch.cat(ci_list, dim=0)
+            for module_name, ci_list in self.pre_sigmoid_causal_importances.items()
+        }
         lower_leaky_fig = plot_ci_values_histograms(causal_importances=lower_leaky_cis)
         pre_sigmoid_fig = plot_ci_values_histograms(causal_importances=pre_sigmoid_cis)
         return {
