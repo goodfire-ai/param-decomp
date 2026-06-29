@@ -1,33 +1,8 @@
-# First full-model decomposition of Llama-3.1-8B: ALL 32 layers x 7 matrices
-# (q/k/v/o/gate/up/down) = 224 sites. De-risking launch — get it compiling, fitting
-# memory at the 128-GPU topology, and producing a sane training signal; then dial in
-# GPU count / chunking / LRs.
-#
-# Derived from the l18-23 6L reference run p-2112148d ("jax-l18-23-6L-ablbase-200k"):
-# same algorithm (chunkwise subset recon + persistent-PGD + faith + imp-min), same CI
-# fn arch, same LRs/coeffs/eval set. DELIBERATE EDITS vs that reference:
-#   1. sites: 18 (MLP, layers 18-23) -> 224 (all matrices, all 32 layers). Per-matrix C
-#      from the 2026-06-22 full-llama8b BOTEC, rounded UP to multiples of 128 (the V/U
-#      C-axis shards over the dp=128 mesh; init asserts C % dp == 0):
-#      q/k 2048, v/o 4096, gate/up 8192, down 10240. ΣC=1,245,184; V/U=18.3B params
-#      (~1.1x the reference's 16.3B — params shard cheaply, not the binding constraint).
-#   2. runtime.dp: 64 -> 128 (16 nodes). batch 128 -> per-rank 1 (vs 2 in the reference);
-#      the botec puts per-rank-1 at ~105 GiB, safe under the 180 GiB B200 cap.
-#   3. ChunkwiseSubsetReconLoss sites_per_chunk: 9 -> 56 (8 layers/chunk -> 4 chunks).
-#      Fewer, larger chunks for the first launch: minimises compile time and per-step
-#      compute (each chunk's suffix forward now spans the full network). coeff scaled
-#      0.5 x n_chunks = 2.0 to keep per-site recon pressure chunk-count-invariant.
-#      THIS IS THE KNOB TO RE-TUNE once we know step time (finer chunks = better signal).
-#   4. remat_recon_forwards: true (224 sites' full-network chunk forwards need it).
-#   5. remat_ci_fn: true (checkpoint the ~31B CI fn; without it the step is the GPU
-#      compile wall — ~80 min + near-OOM — since the whole CI forward materialises).
-#   6. data seq 512 (fineweb_llama_tok_512), matching the reference's seq.
-# out_dir / run_id are minted by pd-lm.
-run_name: jax-full32L-HSDP-b128-dp32
+run_name: jax-full32L-noPGD-b64-dp32-PROFILE
 cadence:
   keep_last_n_checkpoints: 2
-  save_every: 1000
-  train_log_every: 25
+  save_every: 5000
+  train_log_every: 1
 data:
   buffer_size: 1000
   column_name: input_ids
@@ -65,10 +40,10 @@ eval:
     step_size: 0.1
     type: PGDReconLoss
   n_steps: 1
-  slow_every: 100000
-  slow_on_first_step: false
+  slow_every: 10000
+  slow_on_first_step: true
 pd:
-  batch_size: 128
+  batch_size: 64
   ci_config:
     type: chunkwise_transformer
     blocks_per_chunk: 1
@@ -84,7 +59,7 @@ pd:
     lr_schedule:
       final_val_frac: 0.1
       fn_type: cosine
-      start_val: 2.83e-05
+      start_val: 2.0e-05
       warmup_pct: 0.0
     weight_decay: 0.0
   components_optimizer:
@@ -95,7 +70,7 @@ pd:
     lr_schedule:
       final_val_frac: 0.1
       fn_type: cosine
-      start_val: 2.83e-05
+      start_val: 2.0e-05
       warmup_pct: 0.0
     weight_decay: 0.0
   decomposition_targets:
@@ -568,27 +543,10 @@ pd:
       type: uniform_k_subset
     sites_per_chunk: 56
     type: ChunkwiseSubsetReconLoss
-  - coeff: 0.5
-    n_samples: 1
-    n_warmup_steps: 2
-    optimizer:
-      beta1: 0.01
-      beta2: 0.99
-      eps: 1.0e-08
-      lr_schedule:
-        final_val_frac: 1.0
-        fn_type: constant
-        start_val: 0.01
-        warmup_pct: 0.025
-      type: adam
-    scope:
-      type: per_batch_per_position
-    start_frac: 0.0
-    type: PersistentPGDReconLoss
   - coeff: 1000000.0
     type: FaithfulnessLoss
   seed: 0
-  steps: 50000
+  steps: 12
 runtime:
   dp: 32
   tp: 1
