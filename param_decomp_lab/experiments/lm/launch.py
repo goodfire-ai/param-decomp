@@ -68,7 +68,6 @@ export MALLOC_ARENA_MAX=2
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.92
 export XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB=1024
 export XLA_FLAGS="--xla_gpu_enable_command_buffer="
-export PD_PROFILE_TRACE=0
 # Env-gated profiling hooks (run.py), all DEFAULT-OFF: PD_MEM_PROFILE=1 (memory_analysis +
 # memory_stats peak + device_memory_profile, then exits), PD_TIME_STEPS=1 (per-step wall),
 # PD_PROFILE_TRACE=1 (perfetto window via PD_PROFILE_START/STEPS), PD_ASYNC_TEST=1. Add
