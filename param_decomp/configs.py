@@ -652,6 +652,23 @@ class RuntimeConfig(BaseConfig):
             "batch on big targets. Compute substrate knob, no algorithm effect."
         ),
     )
+    fp8_scope: Literal["off", "components"] = Field(
+        default="off",
+        description=(
+            "Run the decomposition GEMMs (`x@V`, `acts@U`) in fp8 (e4m3 fwd / e5m2 bwd). "
+            "`off` keeps bf16. Numerics knob: perturbs the trained decomposition's "
+            "precision, does not change the algorithm. Frozen-suffix / faithfulness / "
+            "clean-forward / CI-fn GEMMs are unaffected."
+        ),
+    )
+    fp8_mode: Literal["per_tensor", "per_row"] = Field(
+        default="per_row",
+        description=(
+            "fp8 scaling granularity (when `fp8_scope` != off): `per_row` scales each "
+            "token / output channel independently (better numerics); `per_tensor` uses one "
+            "scale per tensor (simpler, coarser)."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_dp(self) -> Self:

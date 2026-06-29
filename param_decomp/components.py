@@ -18,6 +18,8 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array
 
+from param_decomp import fp8
+
 
 @dataclass(frozen=True)
 class SiteC:
@@ -116,15 +118,19 @@ def site_out(
     # no-op off-mesh (CPU tests / single device); `run.py` sets the global mesh. waist is
     # `[*leading, d]`, leading = (batch, *position): pin batch over the full mesh (positions +
     # feature replicated for `x`; C replicated for `x@V`).
+    # The two decomposition GEMMs (`x@V`, `(.)@U`) run in fp8 when enabled (`fp8.configure`);
+    # the frozen `x@W` path stays bf16. fp8 wraps `dot_general`, so the sharding constraints
+    # below still pin the (bf16-output) activations to the HSDP batch layout.
+    comp_dot = fp8.matmul if fp8.components_enabled() else lambda p, q: p @ q
     on_mesh = not jax.sharding.get_abstract_mesh().empty
     batch_axes = ("replicate", "fsdp")
     if on_mesh:
         x = jax.lax.with_sharding_constraint(x, P(batch_axes, *(None,) * (x.ndim - 1)))
-    xV = x @ V
+    xV = comp_dot(x, V)
     if on_mesh:
         xV = jax.lax.with_sharding_constraint(xV, P(batch_axes, *(None,) * (xV.ndim - 1)))
     acts = xV * mask if mask is not None else xV
-    out = acts @ U
+    out = comp_dot(acts, U)
     if delta_mask is not None:
         # `(x @ Δ.T)` for `Δ = W − (V@U).T`, expanded to activation space as
         # `x@W.T − (x@V)@U` so the `[d_out, d_in]` weight delta is NEVER formed. Under
@@ -133,7 +139,7 @@ def site_out(
         # activation-space form is all activation×weight matmuls that shard cleanly.
         # (Still a bf16-rounding DIVERGENCE vs the fp32 oracle delta — accepted; the
         # faithfulness loss uses the fp32 `weight_deltas`, SPEC N2, not this path.)
-        out = out + delta_mask[..., None] * (x @ W.T - xV @ U)
+        out = out + delta_mask[..., None] * (x @ W.T - comp_dot(xV, U))
     if route is not None:
         out = jnp.where(route[..., None], out, x @ W.T)
     return out
