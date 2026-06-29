@@ -469,12 +469,15 @@ def test_fresh_pgd_adversary_step():
     seq = 16
     sites = llama_site_specs(cfg, site_cs)
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
-    ci_fn = _build_chunkwise_ci_fn(lm, jax.random.PRNGKey(2), n_blocks=1)
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
 
     def make_state() -> TrainState:
+        # Fresh buffers per call: `step` donates the state, so a shared vu/ci_fn would be
+        # deleted after the first run_step and crash the second. Deterministic keys keep
+        # the two states' inits bit-identical (the "same init" the comparison below needs).
+        vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+        ci_fn = _build_chunkwise_ci_fn(lm, jax.random.PRNGKey(2), n_blocks=1)
         return TrainState(
             components=vu, ci_fn=ci_fn,
             components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
