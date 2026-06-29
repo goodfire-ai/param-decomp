@@ -23,11 +23,11 @@
 #      compile wall — ~80 min + near-OOM — since the whole CI forward materialises).
 #   6. data seq 512 (fineweb_llama_tok_512), matching the reference's seq.
 # out_dir / run_id are minted by pd-lm.
-run_name: jax-full32L-HSDP-b128-dp32
+run_name: jax-full32L-HSDP-b128-savesmoke
 cadence:
   keep_last_n_checkpoints: 2
-  save_every: 1000
-  train_log_every: 25
+  save_every: 20
+  train_log_every: 5
 data:
   buffer_size: 1000
   column_name: input_ids
@@ -65,8 +65,8 @@ eval:
     step_size: 0.1
     type: PGDReconLoss
   n_steps: 1
-  slow_every: 100000
-  slow_on_first_step: false
+  slow_every: 10000
+  slow_on_first_step: true
 pd:
   batch_size: 128
   ci_config:
@@ -588,7 +588,7 @@ pd:
   - coeff: 1000000.0
     type: FaithfulnessLoss
   seed: 0
-  steps: 50000
+  steps: 50
 runtime:
   dp: 32
   tp: 1
