@@ -606,7 +606,13 @@ def run_decomposition_training(
     for step in range(start_step, pd.steps):
         if _profile_on and step == _profile_start:
             jax.block_until_ready(state)
-            jax.profiler.start_trace(_profile_dir, create_perfetto_trace=True)
+            _max_ev = _os.environ.get("PD_PROFILE_MAX_EVENTS", "")
+            if _max_ev:
+                _popts = jax.profiler.ProfileOptions()
+                _popts.advanced_configuration = {"gpu_max_activity_api_events": int(_max_ev)}
+                jax.profiler.start_trace(_profile_dir, create_perfetto_trace=True, profiler_options=_popts)
+            else:
+                jax.profiler.start_trace(_profile_dir, create_perfetto_trace=True)
             _profiling = True
             _prof_t0 = time.time()
             if is_main:
