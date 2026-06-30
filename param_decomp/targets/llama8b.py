@@ -28,7 +28,14 @@ from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, Int
 from safetensors import safe_open
 
-from param_decomp.components import DecompVU, SiteC, SiteSpec, site_out
+from param_decomp.components import (
+    DecompVU,
+    SiteC,
+    SiteSpec,
+    dequantize_fp8,
+    quantize_fp8,
+    site_out,
+)
 from param_decomp.losses import kl_per_position
 from param_decomp.sharding import assert_divisible
 from vendored_jax.llama import (
@@ -379,6 +386,64 @@ def _attach_per_kind_masks(
     return per_kind
 
 
+def _stack_ci_per_kind(ci_lower: dict[str, Array], n_layers: int) -> dict[str, Array]:
+    """Stack the per-site CI envelope into per-kind `[n_layer, *leading, C]` — built ONCE per
+    step and SHARED across every stochastic recon forward (the CI envelope is identical for
+    all). Mirrors `_stack_per_kind_vu`: the shared stack replaces N per-forward mask stacks."""
+    kinds: dict[str, Array] = {}
+    sample_by_kind: dict[str, Array] = {}
+    for name, v in ci_lower.items():
+        sample_by_kind.setdefault(parse_site_name(name)[1], v)
+    for kind, sample in sample_by_kind.items():
+        names = [site_name(layer, kind) for layer in range(n_layers)]
+        kinds[kind] = jnp.stack(
+            [ci_lower[n] if n in ci_lower else jnp.zeros_like(sample) for n in names]
+        )
+    return kinds
+
+
+def _attach_per_kind_stochastic(
+    prepared: dict[str, dict[str, Array]],
+    n_layers: int,
+    leading: tuple[int, ...],
+    ci_stacked: dict[str, Array],
+    draw_key: Array,
+    routes: dict[str, Array] | None,
+    live_set: frozenset[str],
+) -> dict[str, dict[str, Array]]:
+    """Stochastic recon: attach the SHARED per-kind `ci` stack + per-(layer,kind) RNG keys
+    instead of pre-built mask/delta stacks. `masked_site` draws `source = uniform(key)` and
+    builds `mask = ci + (1−ci)·source` INSIDE the checkpointed block, so the per-forward mask
+    is recomputed in the backward (faithful by checkpoint determinism — same key fwd+bwd) and
+    never held. Only the (tiny) keys + live-flags are per-forward; the `[n_layer,*,C]` ci stack
+    is shared, so N forwards' mask stacks collapse to one ci stack (the memory win)."""
+    src_base, delta_base = jax.random.split(draw_key)
+    a_route = next(iter(routes.values())) if (routes and len(routes)) else None
+    per_kind: dict[str, dict[str, Array]] = {}
+    for kind, vu_entry in prepared.items():
+        names = [site_name(layer, kind) for layer in range(n_layers)]
+        live_flags = jnp.array([n in live_set for n in names])
+        kind_idx = KIND_ORDER.index(kind)
+        src_keys = jnp.stack(
+            [jax.random.fold_in(jax.random.fold_in(src_base, kind_idx), layer) for layer in range(n_layers)]
+        )
+        delta_keys = jnp.stack(
+            [jax.random.fold_in(jax.random.fold_in(delta_base, kind_idx), layer) for layer in range(n_layers)]
+        )
+        entry: dict[str, Array] = {
+            **vu_entry, "live": live_flags, "ci": ci_stacked[kind],
+            "src_key": src_keys, "delta_key": delta_keys,
+        }  # fmt: skip
+        if routes is not None:
+            r_shape = a_route.shape if a_route is not None else leading
+            r_dt = a_route.dtype if a_route is not None else jnp.bool_
+            entry["route"] = jnp.stack(
+                [routes[n] if n in live_set else jnp.zeros(r_shape, r_dt) for n in names]
+            )
+        per_kind[kind] = entry
+    return per_kind
+
+
 def _reconstruct_compute_weights(
     per_kind: dict[str, dict[str, Array]],
 ) -> dict[str, dict[str, Array]]:
@@ -407,14 +472,31 @@ def _reconstruct_compute_weights(
         v_spec = P(None, None, None)
         u_spec = P(None, None, None)
     else:
-        v_spec = P(None, "fsdp", None)  # [n_layer, d_in ÷fsdp, C] — replicate gathered once/step
-        u_spec = P(None, None, "fsdp")  # [n_layer, C, d_out ÷fsdp]
+        v_spec = P(None, "fsdp", "tp")  # [n_layer, d_in ÷fsdp, C ÷tp] — d gathered/step, C stays ÷tp
+        u_spec = P(None, "tp", "fsdp")  # [n_layer, C ÷tp, d_out ÷fsdp]
+    fp8 = _os.environ.get("PD_GATHER_FP8", "") == "1"
     out: dict[str, dict[str, Array]] = {}
     for kind, entry in per_kind.items():
         pinned = dict(entry)
-        v = jax.lax.with_sharding_constraint(entry["V"].astype(jnp.bfloat16), v_spec)
-        u = jax.lax.with_sharding_constraint(entry["U"].astype(jnp.bfloat16), u_spec)
-        pinned["V"], pinned["U"] = v, u
+        # optimization_barrier forces the cast/quant to materialize BEFORE the ÷N→÷fsdp gather,
+        # so the collective moves the compute dtype — XLA otherwise sinks the convert past the
+        # all-gather and gathers the f32 master (2x the comm; the convert gathers in the HLO).
+        if fp8:
+            # Quantized All-Gather: the ÷fsdp compute weights are fp8; the per-layer ÷fsdp→full
+            # gather then moves fp8 (½ the bf16 bytes), dequantized to bf16 in `masked_site`.
+            # Per-tensor scalar scale rides alongside (replicated, survives the gather).
+            vq, vs = quantize_fp8(entry["V"])
+            uq, us = quantize_fp8(entry["U"])
+            pinned["V"] = jax.lax.with_sharding_constraint(jax.lax.optimization_barrier(vq), v_spec)
+            pinned["U"] = jax.lax.with_sharding_constraint(jax.lax.optimization_barrier(uq), u_spec)
+            pinned["V_scale"], pinned["U_scale"] = vs, us
+        else:
+            pinned["V"] = jax.lax.with_sharding_constraint(
+                jax.lax.optimization_barrier(entry["V"].astype(jnp.bfloat16)), v_spec
+            )
+            pinned["U"] = jax.lax.with_sharding_constraint(
+                jax.lax.optimization_barrier(entry["U"].astype(jnp.bfloat16)), u_spec
+            )
         out[kind] = pinned
     return out
 
@@ -545,6 +627,7 @@ class LlamaDecomposedModel(eqx.Module):
         has_delta: bool,
         remat: bool,
         collect: dict[str, Array] | None,
+        stochastic: tuple[dict[str, Array], Array] | None = None,
     ) -> Array:
         """The masked decomposed forward shared by `masked_output` and `masked_site_outputs`
         (SPEC §1.3, S2), as a `lax.scan` over the block stack with a per-site `lax.cond`: a
@@ -562,9 +645,15 @@ class LlamaDecomposedModel(eqx.Module):
         live_set = frozenset(live)
         resid = self.embed_tokens(inputs)
         leading = resid.shape[:-1]
-        per_kind = _attach_per_kind_masks(
-            prepared, self.n_layer, leading, masks, delta_masks, routes, live_set, has_delta
-        )
+        if stochastic is not None:
+            ci_stacked, draw_key = stochastic
+            per_kind = _attach_per_kind_stochastic(
+                prepared, self.n_layer, leading, ci_stacked, draw_key, routes, live_set
+            )
+        else:
+            per_kind = _attach_per_kind_masks(
+                prepared, self.n_layer, leading, masks, delta_masks, routes, live_set, has_delta
+            )
         decomposed_kinds = frozenset(per_kind)
         want_collect = collect is not None
 
@@ -576,7 +665,31 @@ class LlamaDecomposedModel(eqx.Module):
             e = pk[kind]
 
             def decomp(_: None) -> Array:
-                return site_out(x_in, e["V"], e["U"], W, e["mask"], e.get("delta"), e.get("route"))
+                v, u = e["V"], e["U"]
+                if "V_scale" in e:  # fp8 QAG: gather the fp8 ÷fsdp weight to full d (½ bytes on
+                    # the wire), THEN dequant to bf16 — the barrier keeps the convert after the
+                    # gather so the collective moves fp8, not bf16.
+                    v = dequantize_fp8(
+                        jax.lax.optimization_barrier(jax.lax.with_sharding_constraint(v, P(None, "tp"))),
+                        e["V_scale"],
+                    )
+                    u = dequantize_fp8(
+                        jax.lax.optimization_barrier(jax.lax.with_sharding_constraint(u, P("tp", None))),
+                        e["U_scale"],
+                    )
+                if "ci" in e:  # stochastic recompute: draw source from the per-layer key and
+                    # build the mask INLINE (recomputed in the backward, not held — the shared
+                    # `ci` stack + tiny key replace the per-forward mask stack).
+                    ci = e["ci"]
+                    source = jax.random.uniform(e["src_key"], ci.shape, dtype=ci.dtype)
+                    mask = ci + (1.0 - ci) * source
+                    delta = (
+                        jax.random.uniform(e["delta_key"], ci.shape[:-1], dtype=ci.dtype)
+                        if has_delta
+                        else None
+                    )
+                    return site_out(x_in, v, u, W, mask, delta, e.get("route"))
+                return site_out(x_in, v, u, W, e["mask"], e.get("delta"), e.get("route"))
 
             def frozen(_: None) -> Array:
                 return x_in @ W.T
@@ -631,7 +744,51 @@ class LlamaDecomposedModel(eqx.Module):
             if remat
             else jax.checkpoint_policies.dots_saveable
         )
-        x, ys = jax.lax.scan(jax.checkpoint(block, policy=policy), resid, (self.stacked, per_kind))
+        import os as _os
+
+        # PD_UNROLL_K: scan over groups of K layers with the K layers unrolled in the body, so
+        # XLA sees K independent ÷fsdp→full weight gathers per body and can prefetch gather(L+1)
+        # under matmul(L) — the cross-iteration overlap a 1-layer `while` body denies it. K=1 is
+        # the plain per-layer scan. Pure reassociation: same math, same per-layer remat policy.
+        unroll_k = int(_os.environ.get("PD_UNROLL_K", "1"))
+        assert self.n_layer % unroll_k == 0, (self.n_layer, unroll_k)
+        if unroll_k == 1:
+            x, ys = jax.lax.scan(
+                jax.checkpoint(block, policy=policy), resid, (self.stacked, per_kind)
+            )
+        else:
+            n_chunks = self.n_layer // unroll_k
+
+            def chunk_body(
+                x: Array, chunk: tuple[LlamaLayer, dict[str, dict[str, Array]]]
+            ) -> tuple[Array, dict[str, Array] | None]:
+                stacked_c, per_kind_c = chunk  # each leaf leading [unroll_k]
+                collected_per_layer: list[dict[str, Array]] = []
+                for k in range(unroll_k):
+                    layer_k = jax.tree_util.tree_map(lambda a, _k=k: a[_k], stacked_c)
+                    pk_k = jax.tree_util.tree_map(lambda a, _k=k: a[_k], per_kind_c)
+                    x, collected_k = block(x, (layer_k, pk_k))
+                    if collected_k is not None:
+                        collected_per_layer.append(collected_k)
+                if not want_collect:
+                    return x, None
+                kinds = collected_per_layer[0].keys()
+                ys_c = {kd: jnp.stack([cl[kd] for cl in collected_per_layer]) for kd in kinds}
+                return x, ys_c
+
+            reshape = lambda a: a.reshape(n_chunks, unroll_k, *a.shape[1:])  # noqa: E731
+            stacked_r = jax.tree_util.tree_map(reshape, self.stacked)
+            per_kind_r = jax.tree_util.tree_map(reshape, per_kind)
+            x, ys_chunked = jax.lax.scan(
+                jax.checkpoint(chunk_body, policy=policy), resid, (stacked_r, per_kind_r)
+            )
+            ys = (
+                jax.tree_util.tree_map(
+                    lambda a: a.reshape(self.n_layer, *a.shape[2:]), ys_chunked
+                )
+                if want_collect
+                else None
+            )
         x = rms_norm(x, self.norm, self.eps)
         logits = x @ self.lm_head.T
         if collect is not None:
@@ -665,6 +822,33 @@ class LlamaDecomposedModel(eqx.Module):
     ) -> Array:
         return self._run_masked_forward(
             prepared, inputs, masks, delta_masks, routes, live, has_delta, remat, None
+        )
+
+    def stack_ci(self, ci_lower: dict[str, Array]) -> dict[str, Array]:
+        """Per-kind `[n_layer, *leading, C]` stack of the CI envelope, built ONCE per step and
+        shared across all stochastic recon forwards (`masked_output_stochastic`). The
+        StochasticReconCapable capability (SPEC unchanged — pure recompute restructuring)."""
+        return _stack_ci_per_kind(ci_lower, self.n_layer)
+
+    def masked_output_stochastic(
+        self,
+        prepared: dict[str, dict[str, Array]],
+        inputs: Int[Array, "b t"],
+        ci_stacked: dict[str, Array],
+        draw_key: Array,
+        routes: dict[str, Array] | None,
+        live: tuple[str, ...],
+        has_delta: bool,
+        *,
+        remat: bool,
+    ) -> Array:
+        """Stochastic recon forward that RECOMPUTES masks in-block (memory win): the shared
+        `ci_stacked` + per-layer keys from `draw_key` replace the per-forward mask stack; each
+        live site draws `source = uniform(key)` and forms `mask = ci + (1−ci)·source` inside the
+        checkpointed block (faithful by checkpoint determinism). Same forward semantics as
+        `masked_output` with stochastic sources — only the masks' liverange changes."""
+        return self._run_masked_forward(
+            prepared, inputs, {}, {}, routes, live, has_delta, remat, None, (ci_stacked, draw_key)
         )
 
     def masked_site_outputs(
