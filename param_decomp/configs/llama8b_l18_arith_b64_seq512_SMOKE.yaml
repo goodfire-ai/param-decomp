@@ -1,17 +1,13 @@
-# Arithmetic-eval run: Dan's jax-l18-b64-200k-eps1e6-seq512 (wandb p-49300b8d)
-# hyperparameters re-expressed in the current schema, plus the ArithmeticCIGrid eval.
-# Changes vs that run: importance-minimality coeff 5e-6 -> 7e-6 and frequency-penalty
-# coeff 1e-6 -> 2e-6 (effective beta ~0.29). Llama-3.1-8B layer-18 MLP, C=49152,
-# b64 / seq512, lr 7e-5, eps 1e-6, 200k steps. dp 64: C=49152 at this ci-fn OOM's a single
-# ~108 GiB jit_step op on 4 nodes even with both remat flags on; Oli's same-C C49k_200k fits
-# at dp 64 carrying 32x more per-rank load (b512/seq2048), so dp 64 holds Dan's hyperparams
-# intact. Both remat flags on for headroom. Data: locally-tokenized fineweb
-# sample-10BT @ seq 512 (param_decomp paths point at lee's ~/pd-data on bitdeer).
-run_name: jax-l18-arith-b64-seq512
+# SMOKE of llama8b_l18_arith_b64_seq512.yaml: identical production per-rank shape
+# (b64 / seq512 / C=49152 / dp 64, remat on) but 60 steps with frequent save + eval, to
+# validate memory (the dp=32 fit), the in-loop ArithmeticCIGrid eval, and checkpointing
+# before the 200k run -- and to warm the shared XLA compile cache (same HLO + topology, so
+# the real run loads the executable from disk in seconds). Throwaway; delete after.
+run_name: jax-l18-arith-smoke
 cadence:
   keep_last_n_checkpoints: 2
-  save_every: 5000
-  train_log_every: 200
+  save_every: 30
+  train_log_every: 10
 data:
   buffer_size: 1000
   column_name: input_ids
@@ -27,7 +23,7 @@ data:
   train_split: train
 eval:
   batch_size: 64
-  every: 1000
+  every: 30
   metrics:
   - n_batches_accum: 1
     type: CIHistograms
@@ -51,7 +47,7 @@ eval:
   - type: ArithmeticCIGrid
     artifact_dir: /mnt/delicate-frog/home/lee/pd-data/datasets/arithmetic_add_1_100_llama31
   n_steps: 1
-  slow_every: 10000
+  slow_every: 30
   slow_on_first_step: true
 pd:
   batch_size: 64
@@ -129,7 +125,7 @@ pd:
   - coeff: 100000.0
     type: FaithfulnessLoss
   seed: 0
-  steps: 200000
+  steps: 60
 runtime:
   remat_recon_forwards: true
   remat_ci_fn: true
