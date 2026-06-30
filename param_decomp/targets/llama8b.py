@@ -701,6 +701,9 @@ class LlamaDecomposedModel(eqx.Module):
             def frozen(_: None) -> Array:
                 return x_in @ W.T
 
+            # The `cond` gates COMPUTE only — skip frozen sites' V@U FLOPs. The V/U GATHER was
+            # hoisted out of it (see `block`: always-gather), so the collective is unconditional —
+            # combinable + prefetchable — not trapped behind this control-flow barrier.
             out = jax.lax.cond(e["live"], decomp, frozen, None)
             return out, (out if want_collect else None)
 
@@ -708,6 +711,21 @@ class LlamaDecomposedModel(eqx.Module):
             x: Array, layer_in: tuple[LlamaLayer, dict[str, dict[str, Array]]]
         ) -> tuple[Array, dict[str, Array] | None]:
             sl, pk = layer_in
+            if not jax.sharding.get_abstract_mesh().empty:
+                # ALWAYS-GATHER: hoist the ÷fsdp→full V/U gather OUT of `masked_site`'s per-site
+                # `cond` to here — unconditionally, for every kind. Free of the control-flow
+                # barrier, the scheduler can COMBINE the per-layer gathers into one tuple
+                # all-gather and PREFETCH them under the previous layer's compute. Cost: a frozen
+                # site's V/U is gathered too (wasted bytes — ~free under the count-bound gather,
+                # and hideable); the `cond` still skips its V@U COMPUTE. No-op off-mesh.
+                pk = {
+                    kind: {
+                        **e,
+                        "V": jax.lax.with_sharding_constraint(e["V"], P(None, "tp")),
+                        "U": jax.lax.with_sharding_constraint(e["U"], P("tp", None)),
+                    }
+                    for kind, e in pk.items()
+                }
             attn = sl.attn
             h1 = rms_norm(x, sl.ln1, self.eps)
             q, qc = masked_site(h1, "q", attn.wq, pk)
