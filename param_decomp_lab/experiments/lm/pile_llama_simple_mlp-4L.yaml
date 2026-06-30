@@ -45,7 +45,7 @@ pd:
       final_val_frac: 0.1
       fn_type: cosine
   steps: 400000
-  batch_size: 64
+  batch_size: 1024
   faithfulness_warmup_steps: 400
   faithfulness_warmup_lr: 0.001
   faithfulness_warmup_weight_decay: 0.0
@@ -53,7 +53,7 @@ pd:
     - type: ImportanceMinimalityLoss
       coeff: 0.0002
       pnorm: 2.0
-      beta: 0.5
+      beta: 0.3
       p_anneal_start_frac: 0.0
       p_anneal_final_p: 0.4
       p_anneal_end_frac: 1.0
@@ -84,7 +84,7 @@ cadence:
   train_log_every: 200
 eval:
   n_steps: 1
-  batch_size: 128
+  batch_size: 1024
   every: 1000
   slow_every: 10000
   slow_on_first_step: true
@@ -134,6 +134,6 @@ data:
 runtime:
   autocast_bf16: true
   device: cuda
-  dp: null
+  dp: 128
 wandb:
   project: param-decomp
