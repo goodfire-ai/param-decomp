@@ -993,6 +993,7 @@ METRIC_SHORT_NAMES: dict[str, str] = {
     "CIMaskedReconSubsetLoss": "CIMaskReconSub",
     "FaithfulnessLoss": "Faith",
     "ImportanceMinimalityLoss": "ImpMin",
+    "SmoothL0ImportanceMinimalityLoss": "SmoothL0ImpMin",
     "PersistentPGDReconLoss": "PersistPGDRecon",
     "PGDReconLayerwiseLoss": "PGDReconLayer",
     "PGDReconLoss": "PGDRecon",
