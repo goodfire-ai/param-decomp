@@ -616,6 +616,11 @@ def run_decomposition_training(
             _max_ev = _os.environ.get("PD_PROFILE_MAX_EVENTS", "")
             if _max_ev:
                 _popts = jax.profiler.ProfileOptions()
+                # Host/python events are ~70% of the trace's event budget; the perfetto JSON
+                # exporter caps at 1M events, truncating the step mid-forward. Cut host tracing
+                # so the budget goes to GPU kernels (a full step's ~730k fit under the cap).
+                _popts.host_tracer_level = 1
+                _popts.python_tracer_level = 0
                 _popts.advanced_configuration = {"gpu_max_activity_api_events": int(_max_ev)}
                 jax.profiler.start_trace(
                     _profile_dir, create_perfetto_trace=True, profiler_options=_popts

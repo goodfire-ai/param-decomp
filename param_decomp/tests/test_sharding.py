@@ -88,18 +88,19 @@ def test_jitted_sharded_inits_match_eager_values():
             )
         ),
     )
-    # Placement is MODEL-OWNED and true ÷N ZeRO-1: V shards d_in over the FULL mesh, C
-    # replicated (`P(("replicate","fsdp"), None)`); U shards d_out over the full mesh, C
-    # replicated (`P(None, ("replicate","fsdp"))`). No q/k/v exception (C is never on a mesh
-    # axis). The master + Adam state thus shard ÷(replicate·fsdp) = ÷N.
+    # Placement is MODEL-OWNED and true ÷N ZeRO-1, split across the data + TP axes: V shards
+    # d_in over the data axes and C over `tp` (`P(("replicate","fsdp"), "tp")`); U shards C
+    # over `tp` and d_out over the data axes (`P("tp", ("replicate","fsdp"))`). C now carries
+    # the Megatron-C `tp` factor, so master + Adam still shard ÷(replicate·fsdp·tp) = ÷N. At
+    # tp=1 the tp axis is size 1 (C effectively unsharded).
     full = ("replicate", "fsdp")
     vu_placed = init_decomp_vu_placed(sites, jax.random.PRNGKey(1), mesh)
     vu_eager = init_decomp_vu(sites, jax.random.PRNGKey(1))
     for spec in sites:
         V, U = vu_placed.site(spec.name)
         assert isinstance(V.sharding, NamedSharding) and isinstance(U.sharding, NamedSharding)
-        assert V.sharding.spec == P(full, None), (spec.name, V.sharding.spec)
-        assert U.sharding.spec == P(None, full), (spec.name, U.sharding.spec)
+        assert V.sharding.spec == P(full, "tp"), (spec.name, V.sharding.spec)
+        assert U.sharding.spec == P("tp", full), (spec.name, U.sharding.spec)
     for got, want in zip(jax.tree.leaves(vu_placed), jax.tree.leaves(vu_eager), strict=True):
         assert got.shape == want.shape and got.dtype == want.dtype
         assert jnp.allclose(jnp.asarray(got), want, rtol=1e-6, atol=0)
