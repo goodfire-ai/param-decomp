@@ -6,17 +6,24 @@ from jaxtyping import Float
 from torch import Tensor
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.distributed import gather_all_tensors
+from param_decomp.distributed import gather_all_tensors, get_distributed_state
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp_lab.eval_metrics.plotting import plot_ci_values_histograms
 
 
 class CIHistogramsConfig(BaseConfig):
-    """`n_batches_accum=None` accumulates every batch in the eval pass."""
+    """`n_batches_accum=None` accumulates every batch in the eval pass.
+
+    `max_values_per_histogram` caps the total CI values (across all ranks) gathered to
+    build each histogram. The per-rank gather budget is `max_values_per_histogram //
+    world_size`, so the all-gather memory stays bounded as GPU count grows. A histogram
+    only needs enough samples to fill its bins, so this cap is cheap.
+    """
 
     type: Literal["CIHistograms"] = "CIHistograms"
     n_batches_accum: int | None
+    max_values_per_histogram: int = 1_000_000
 
 
 class CIHistograms(Metric[CIHistogramsConfig]):
@@ -47,19 +54,37 @@ class CIHistograms(Metric[CIHistogramsConfig]):
     def compute(self) -> MetricResult:
         if self.batches_seen == 0:
             raise RuntimeError("No batches seen yet")
-        lower_leaky_cis: dict[str, Float[Tensor, "... C"]] = {}
-        for module_name, ci_list in self.lower_leaky_causal_importances.items():
-            lower_leaky_cis[module_name] = torch.cat(
-                gather_all_tensors(torch.cat(ci_list, dim=0)), dim=0
-            )
-        pre_sigmoid_cis: dict[str, Float[Tensor, "... C"]] = {}
-        for module_name, ci_list in self.pre_sigmoid_causal_importances.items():
-            pre_sigmoid_cis[module_name] = torch.cat(
-                gather_all_tensors(torch.cat(ci_list, dim=0)), dim=0
-            )
+        state = get_distributed_state()
+        world_size = state.world_size if state is not None else 1
+        per_rank_budget = max(self.cfg.max_values_per_histogram // world_size, 1)
+        lower_leaky_cis = {
+            module_name: self._gather_subsampled(ci_list, per_rank_budget)
+            for module_name, ci_list in self.lower_leaky_causal_importances.items()
+        }
+        pre_sigmoid_cis = {
+            module_name: self._gather_subsampled(ci_list, per_rank_budget)
+            for module_name, ci_list in self.pre_sigmoid_causal_importances.items()
+        }
         lower_leaky_fig = plot_ci_values_histograms(causal_importances=lower_leaky_cis)
         pre_sigmoid_fig = plot_ci_values_histograms(causal_importances=pre_sigmoid_cis)
         return {
             "causal_importance_values": lower_leaky_fig,
             "causal_importance_values_pre_sigmoid": pre_sigmoid_fig,
         }
+
+    @staticmethod
+    def _gather_subsampled(
+        ci_list: list[Float[Tensor, "... C"]], per_rank_budget: int
+    ) -> Float[Tensor, " N"]:
+        """Flatten this rank's CI values, subsample to `per_rank_budget`, then gather.
+
+        Subsampling before the all-gather is what keeps gather memory bounded: each rank
+        contributes at most `per_rank_budget` values rather than its full eval pass. All
+        ranks run identical batch counts and shapes, so the subsampled lengths match and
+        `gather_all_tensors` (which requires equal shapes) is satisfied.
+        """
+        flat = torch.cat(ci_list, dim=0).flatten()
+        if flat.numel() > per_rank_budget:
+            idx = torch.randperm(flat.numel(), device=flat.device)[:per_rank_budget]
+            flat = flat[idx]
+        return torch.cat(gather_all_tensors(flat), dim=0)
