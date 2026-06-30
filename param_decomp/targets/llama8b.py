@@ -28,7 +28,12 @@ from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, Int
 from safetensors import safe_open
 
-from param_decomp.components import DecompVU, SiteC, SiteSpec, site_out
+from param_decomp.components import (
+    DecompVU,
+    SiteC,
+    SiteSpec,
+    site_out,
+)
 from param_decomp.losses import kl_per_position
 from param_decomp.sharding import assert_divisible
 from vendored_jax.llama import (
@@ -379,6 +384,70 @@ def _attach_per_kind_masks(
     return per_kind
 
 
+def _stack_ci_per_kind(ci_lower: dict[str, Array], n_layers: int) -> dict[str, Array]:
+    """Stack the per-site CI envelope into per-kind `[n_layer, *leading, C]` — built ONCE per
+    step and SHARED across every stochastic recon forward (the CI envelope is identical for
+    all). Mirrors `_stack_per_kind_vu`: the shared stack replaces N per-forward mask stacks."""
+    kinds: dict[str, Array] = {}
+    sample_by_kind: dict[str, Array] = {}
+    for name, v in ci_lower.items():
+        sample_by_kind.setdefault(parse_site_name(name)[1], v)
+    for kind, sample in sample_by_kind.items():
+        names = [site_name(layer, kind) for layer in range(n_layers)]
+        kinds[kind] = jnp.stack(
+            [ci_lower[n] if n in ci_lower else jnp.zeros_like(sample) for n in names]
+        )
+    return kinds
+
+
+def _attach_per_kind_stochastic(
+    prepared: dict[str, dict[str, Array]],
+    n_layers: int,
+    leading: tuple[int, ...],
+    ci_stacked: dict[str, Array],
+    draw_key: Array,
+    routes: dict[str, Array] | None,
+    live_set: frozenset[str],
+) -> dict[str, dict[str, Array]]:
+    """Stochastic recon: attach the SHARED per-kind `ci` stack + per-(layer,kind) RNG keys
+    instead of pre-built mask/delta stacks. `masked_site` draws `source = uniform(key)` and
+    builds `mask = ci + (1−ci)·source` INSIDE the checkpointed block, so the per-forward mask
+    is recomputed in the backward (faithful by checkpoint determinism — same key fwd+bwd) and
+    never held. Only the (tiny) keys + live-flags are per-forward; the `[n_layer,*,C]` ci stack
+    is shared, so N forwards' mask stacks collapse to one ci stack (the memory win)."""
+    src_base, delta_base = jax.random.split(draw_key)
+    a_route = next(iter(routes.values())) if (routes and len(routes)) else None
+    per_kind: dict[str, dict[str, Array]] = {}
+    for kind, vu_entry in prepared.items():
+        names = [site_name(layer, kind) for layer in range(n_layers)]
+        live_flags = jnp.array([n in live_set for n in names])
+        kind_idx = KIND_ORDER.index(kind)
+        src_keys = jnp.stack(
+            [
+                jax.random.fold_in(jax.random.fold_in(src_base, kind_idx), layer)
+                for layer in range(n_layers)
+            ]
+        )
+        delta_keys = jnp.stack(
+            [
+                jax.random.fold_in(jax.random.fold_in(delta_base, kind_idx), layer)
+                for layer in range(n_layers)
+            ]
+        )
+        entry: dict[str, Array] = {
+            **vu_entry, "live": live_flags, "ci": ci_stacked[kind],
+            "src_key": src_keys, "delta_key": delta_keys,
+        }  # fmt: skip
+        if routes is not None:
+            r_shape = a_route.shape if a_route is not None else leading
+            r_dt = a_route.dtype if a_route is not None else jnp.bool_
+            entry["route"] = jnp.stack(
+                [routes[n] if n in live_set else jnp.zeros(r_shape, r_dt) for n in names]
+            )
+        per_kind[kind] = entry
+    return per_kind
+
+
 def _reconstruct_compute_weights(
     per_kind: dict[str, dict[str, Array]],
 ) -> dict[str, dict[str, Array]]:
@@ -545,6 +614,7 @@ class LlamaDecomposedModel(eqx.Module):
         has_delta: bool,
         remat: bool,
         collect: dict[str, Array] | None,
+        stochastic: tuple[dict[str, Array], Array] | None = None,
     ) -> Array:
         """The masked decomposed forward shared by `masked_output` and `masked_site_outputs`
         (SPEC §1.3, S2), as a `lax.scan` over the block stack with a per-site `lax.cond`: a
@@ -562,9 +632,15 @@ class LlamaDecomposedModel(eqx.Module):
         live_set = frozenset(live)
         resid = self.embed_tokens(inputs)
         leading = resid.shape[:-1]
-        per_kind = _attach_per_kind_masks(
-            prepared, self.n_layer, leading, masks, delta_masks, routes, live_set, has_delta
-        )
+        if stochastic is not None:
+            ci_stacked, draw_key = stochastic
+            per_kind = _attach_per_kind_stochastic(
+                prepared, self.n_layer, leading, ci_stacked, draw_key, routes, live_set
+            )
+        else:
+            per_kind = _attach_per_kind_masks(
+                prepared, self.n_layer, leading, masks, delta_masks, routes, live_set, has_delta
+            )
         decomposed_kinds = frozenset(per_kind)
         want_collect = collect is not None
 
@@ -576,6 +652,18 @@ class LlamaDecomposedModel(eqx.Module):
             e = pk[kind]
 
             def decomp(_: None) -> Array:
+                if "ci" in e:  # stochastic recompute: draw source from the per-layer key and
+                    # build the mask INLINE (recomputed in the backward, not held — the shared
+                    # `ci` stack + tiny key replace the per-forward mask stack).
+                    ci = e["ci"]
+                    source = jax.random.uniform(e["src_key"], ci.shape, dtype=ci.dtype)
+                    mask = ci + (1.0 - ci) * source
+                    delta = (
+                        jax.random.uniform(e["delta_key"], ci.shape[:-1], dtype=ci.dtype)
+                        if has_delta
+                        else None
+                    )
+                    return site_out(x_in, e["V"], e["U"], W, mask, delta, e.get("route"))
                 return site_out(x_in, e["V"], e["U"], W, e["mask"], e.get("delta"), e.get("route"))
 
             def frozen(_: None) -> Array:
@@ -665,6 +753,33 @@ class LlamaDecomposedModel(eqx.Module):
     ) -> Array:
         return self._run_masked_forward(
             prepared, inputs, masks, delta_masks, routes, live, has_delta, remat, None
+        )
+
+    def stack_ci(self, ci_lower: dict[str, Array]) -> dict[str, Array]:
+        """Per-kind `[n_layer, *leading, C]` stack of the CI envelope, built ONCE per step and
+        shared across all stochastic recon forwards (`masked_output_stochastic`) — SPEC
+        unchanged, a pure recompute restructuring."""
+        return _stack_ci_per_kind(ci_lower, self.n_layer)
+
+    def masked_output_stochastic(
+        self,
+        prepared: dict[str, dict[str, Array]],
+        inputs: Int[Array, "b t"],
+        ci_stacked: dict[str, Array],
+        draw_key: Array,
+        routes: dict[str, Array] | None,
+        live: tuple[str, ...],
+        has_delta: bool,
+        *,
+        remat: bool,
+    ) -> Array:
+        """Stochastic recon forward that RECOMPUTES masks in-block (memory win): the shared
+        `ci_stacked` + per-layer keys from `draw_key` replace the per-forward mask stack; each
+        live site draws `source = uniform(key)` and forms `mask = ci + (1−ci)·source` inside the
+        checkpointed block (faithful by checkpoint determinism). Same forward semantics as
+        `masked_output` with stochastic sources — only the masks' liverange changes."""
+        return self._run_masked_forward(
+            prepared, inputs, {}, {}, routes, live, has_delta, remat, None, (ci_stacked, draw_key)
         )
 
     def masked_site_outputs(

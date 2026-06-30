@@ -21,7 +21,7 @@ from param_decomp.ci_fn import (
 )
 from param_decomp.components import SiteSpec
 from param_decomp.eval import make_eval_step, next_token_cross_entropy
-from param_decomp.lm import DecomposedModel
+from param_decomp.lm import DecomposedModel, run_stochastic_masked_output
 from param_decomp.targets.llama8b import llama_site_specs, mlp_family_site_cs
 from param_decomp.tests.test_llama8b import (
     _tiny_cfg,
@@ -89,6 +89,25 @@ class _PositionlessStub(eqx.Module):
     ) -> Any:
         del vu, resid, masks, delta_masks, routes, live, has_delta, remat
         raise AssertionError("positionless stub fn must not be called")
+
+    def stack_ci(self, ci_lower: dict[str, Any]) -> dict[str, Any]:
+        return ci_lower
+
+    def masked_output_stochastic(
+        self,
+        prepared: Any,
+        resid: Any,
+        ci_stacked: Any,
+        draw_key: Any,
+        routes: Any,
+        live: tuple[str, ...],
+        has_delta: bool,
+        *,
+        remat: bool,
+    ) -> Any:
+        return run_stochastic_masked_output(
+            self, prepared, resid, ci_stacked, draw_key, routes, live, has_delta, remat=remat
+        )
 
     def masked_site_outputs(
         self,

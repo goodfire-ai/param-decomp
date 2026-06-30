@@ -188,25 +188,6 @@ def make_train_step(
             )
         )
 
-    def stochastic_entry_masks(
-        ci_lower: dict[str, Array],
-        live_sites: tuple[str, ...],
-        leading_shape: tuple[int, ...],
-        draw_key: PRNGKeyArray,
-    ) -> tuple[dict[str, Array], dict[str, Array]]:
-        mask_source_key, delta_mask_key = random.split(draw_key)
-        masks = {}
-        delta_masks = {}
-        for site_idx, site in enumerate(live_sites):
-            ci_site = ci_lower[site]
-            source_key = random.fold_in(mask_source_key, site_idx)
-            stochastic_source = random.uniform(source_key, ci_site.shape, COMPUTE_DT)
-            masks[site] = ci_site + (1.0 - ci_site) * stochastic_source
-            delta_masks[site] = random.uniform(
-                random.fold_in(delta_mask_key, site_idx), leading_shape, COMPUTE_DT
-            )
-        return masks, delta_masks
-
     def constant_entry_masks(
         strategy: ConstantSources,
         ci_lower: dict[str, Array],
@@ -271,11 +252,22 @@ def make_train_step(
         leading = next(iter(taps.values())).shape[:-1]
 
         # ── adversary ascents: params + CI detached (SPEC §4.5) ──
-        components_detached = jax.lax.stop_gradient(cast_floating(state.components, COMPUTE_DT))
-        prepared_detached = model.prepare_compute_weights(components_detached)
-        ci_fn_detached = jax.lax.stop_gradient(cast_floating(state.ci_fn, COMPUTE_DT))
-        with jax.named_scope("pd_ci_fn_fwd_detached"):
-            ci_lower_detached = ci_batch_sharded(ci_fn_detached(taps, remat=False)).lower
+        prepared, recon_vjp = jax.vjp(
+            lambda c: model.prepare_compute_weights(cast_floating(c, COMPUTE_DT)),
+            state.components,
+        )
+        prepared_detached = jax.lax.stop_gradient(prepared)
+        # The CI envelope is a pure fn of the batch, so compute it ONCE per step — the value +
+        # its vjp, mirroring `prepared`/`recon_vjp`. The ascend uses the stop_gradient'd value;
+        # `loss_fn` takes the live value and its ci-fn grad is pulled back through `ci_vjp`. So the
+        # (≈10x-the-target) CI fn is forward-evaluated ONCE, not once detached for the ascend +
+        # once inside the main backward.
+        with jax.named_scope("pd_ci_fn_fwd"):
+            ci, ci_vjp = eqx.filter_vjp(
+                lambda cf: ci_batch_sharded(cast_floating(cf, COMPUTE_DT)(taps, remat=remat_ci_fn)),
+                state.ci_fn,
+            )
+        ci_lower_detached = jax.lax.stop_gradient(ci).lower
 
         # ── persistent adversaries: each runs its supplemental ascents vs the route-ALL
         # all-sites forward (SPEC S24 — torch warmup parity, NOT the term's loss plan),
@@ -357,16 +349,14 @@ def make_train_step(
         # are NOT detached here, but components/ci grads through them are what torch
         # gets too (sources are leaves). ──
         def loss_fn(
-            trainable: tuple[DecompVU, CIFn, dict[str, dict[str, Array]]],
+            trainable: tuple[Any, DecompVU, CI, dict[str, dict[str, Array]]],
         ) -> tuple[Array, tuple[Array, Array, Array, tuple[Array, ...]]]:
-            components, ci_fn, persistent_sources = trainable
-            components_bf16 = cast_floating(components, COMPUTE_DT)
-            # ONE ÷N→÷fsdp reconstruction for the whole recon grid (shared by every forward +
-            # its backward), instead of re-gathering per forward — the hoist.
-            prepared = model.prepare_compute_weights(components_bf16)
-            ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
-            with jax.named_scope("pd_ci_fn_fwd_main"):
-                ci = ci_batch_sharded(ci_fn_bf16(taps, remat=remat_ci_fn))
+            prepared, components, ci, persistent_sources = trainable
+            # Stochastic recon builds its masks INSIDE the target's `masked_output_stochastic`
+            # from this once-per-step shared CI form — a scan target recomputes them in its
+            # checkpointed block (mask never held, the memory win); others fall back to building
+            # masks then `masked_output`. Either way the engine holds no per-forward mask stacks.
+            ci_stacked = model.stack_ci(ci.lower)
             faith_loss = faithfulness_loss(model.weight_deltas(components))
             imp_lp, imp_freq = imp_min_terms(ci.upper, imp_min, imp_min_param)
 
@@ -384,36 +374,58 @@ def make_train_step(
                             routes_per_draw = entry.sample_routing(routing_key, leading)
                     for draw_idx, routes in enumerate(routes_per_draw):
                         draw_key = random.fold_in(entry_key, draw_idx)
-                        match entry.sources:
-                            case StochasticSources():
-                                masks, delta_masks = stochastic_entry_masks(
-                                    ci.lower, entry.live_sites, leading, draw_key
-                                )
-                            case ConstantSources() as strategy:
-                                masks, delta_masks = constant_entry_masks(
-                                    strategy, ci.lower, entry.live_sites
-                                )
-                            case FreshPGDSources():
-                                masks, delta_masks = source_masks(
-                                    ci.lower,
-                                    fresh_sources[(term_idx, entry_idx)],
-                                    entry.live_sites,
-                                )
-                            case PersistentSources(state_key=state_key):
-                                masks, delta_masks = source_masks(
-                                    ci.lower, persistent_sources[state_key], entry.live_sites
-                                )
-                        with jax.named_scope("pd_recon_masked_fwd"):
-                            masked = masked_forward(
+
+                        def pre_built_fwd(
+                            mds: tuple[dict[str, Array], dict[str, Array]],
+                            routes: Routes = routes,
+                            entry: ReconForward = entry,
+                        ) -> Any:
+                            return masked_forward(
                                 model,
                                 prepared,
                                 batch,
-                                masks,
-                                delta_masks,
+                                mds[0],
+                                mds[1],
                                 routes,
                                 entry.live_sites,
                                 entry.has_delta,
                             )
+
+                        with jax.named_scope("pd_recon_masked_fwd"):
+                            match entry.sources:
+                                case StochasticSources():  # masks built inside the target
+                                    masked = batch_sharded(
+                                        model.masked_output_stochastic(
+                                            prepared,
+                                            batch,
+                                            ci_stacked,
+                                            draw_key,
+                                            routes,
+                                            entry.live_sites,
+                                            entry.has_delta,
+                                            remat=remat_recon_forwards,
+                                        )
+                                    )
+                                case ConstantSources() as strategy:
+                                    masked = pre_built_fwd(
+                                        constant_entry_masks(strategy, ci.lower, entry.live_sites)
+                                    )
+                                case FreshPGDSources():
+                                    masked = pre_built_fwd(
+                                        source_masks(
+                                            ci.lower,
+                                            fresh_sources[(term_idx, entry_idx)],
+                                            entry.live_sites,
+                                        )
+                                    )
+                                case PersistentSources(state_key=state_key):
+                                    masked = pre_built_fwd(
+                                        source_masks(
+                                            ci.lower,
+                                            persistent_sources[state_key],
+                                            entry.live_sites,
+                                        )
+                                    )
                         total = total + recon_loss_fn(masked, clean_output)
                         n_forwards += 1
                 assert n_forwards > 0, f"term {term.name!r} produced no forwards"
@@ -433,10 +445,22 @@ def make_train_step(
         with jax.named_scope("pd_value_and_grad"):
             (total_loss, (faith_loss, imp_lp, imp_freq, term_losses)), grads = (
                 eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-                    (state.components, state.ci_fn, {k: a.sources for k, a in warmed_advs.items()})
+                    (
+                        prepared,
+                        state.components,
+                        ci,
+                        {k: a.sources for k, a in warmed_advs.items()},
+                    )
                 )
             )
-        components_grad, ci_fn_grad, persistent_grads_scaled = grads
+        prepared_grad, components_grad_faith, ci_grad, persistent_grads_scaled = grads
+        components_grad_recon = recon_vjp(prepared_grad)[0]
+        ci_fn_grad = ci_vjp(ci_grad)[0]
+        components_grad = jax.tree.map(
+            lambda recon_g, faith_g: recon_g + faith_g,
+            components_grad_recon,
+            components_grad_faith,
+        )
         if mesh is not None and os.environ.get("PD_REPLICATE_WEIGHTS", "") == "1":
             # ZeRO-1 with replicated compute weights: the grad arrives REPLICATED (full V/U);
             # reduce-scatter it back to the ÷N master layout BEFORE the sharded optimizer
