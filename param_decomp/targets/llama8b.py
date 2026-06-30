@@ -660,51 +660,72 @@ class LlamaDecomposedModel(eqx.Module):
         decomposed_kinds = frozenset(per_kind)
         want_collect = collect is not None
 
+        # STATIC liveness. `live_set` is known at trace, so the live/frozen choice per site needs
+        # NO runtime `lax.cond` — and removing it lets XLA pack + prefetch the V/U gathers (the
+        # cond was a scheduling/packing barrier). We assume LAYER-ALIGNED, CONTIGUOUS chunks
+        # (every production plan: `into_groups` with sites_per_chunk % n_decomposed_kinds == 0,
+        # and `one_chunk`); both are asserted below. The forward is then
+        # [frozen prefix] → [live block] → [frozen suffix], each a static sub-scan; only the live
+        # block carries V/U and gathers them.
+        def layer_is_live(layer: int) -> bool:
+            flags = {site_name(layer, kind) in live_set for kind in decomposed_kinds}
+            assert len(flags) == 1, (
+                f"layer {layer} is partially live ({flags}); the segmented masked forward assumes "
+                f"layer-aligned chunks (sites_per_chunk % {len(decomposed_kinds)} == 0)"
+            )
+            return flags.pop()
+
+        live_layers = [layer for layer in range(self.n_layer) if layer_is_live(layer)]
+        if live_layers:
+            first_live, last_live = live_layers[0], live_layers[-1] + 1
+            assert live_layers == list(range(first_live, last_live)), (
+                f"live layers must be contiguous, got {live_layers}"
+            )
+        else:
+            first_live = last_live = 0
+
+        def decomp_site(x_in: Array, W: Array, e: dict[str, Array]) -> Array:
+            v, u = e["V"], e["U"]
+            if "V_scale" in e:  # fp8 QAG: gather the fp8 ÷fsdp weight to full d (½ bytes on the
+                # wire), THEN dequant to bf16 — the barrier keeps the convert after the gather so
+                # the collective moves fp8, not bf16.
+                v = dequantize_fp8(
+                    jax.lax.optimization_barrier(
+                        jax.lax.with_sharding_constraint(v, P(None, "tp"))
+                    ),
+                    e["V_scale"],
+                )
+                u = dequantize_fp8(
+                    jax.lax.optimization_barrier(
+                        jax.lax.with_sharding_constraint(u, P("tp", None))
+                    ),
+                    e["U_scale"],
+                )
+            if "ci" in e:  # stochastic recompute: draw source from the per-layer key and build the
+                # mask INLINE (recomputed in the backward, not held — the shared `ci` stack + tiny
+                # key replace the per-forward mask stack).
+                ci = e["ci"]
+                source = jax.random.uniform(e["src_key"], ci.shape, dtype=ci.dtype)
+                mask = ci + (1.0 - ci) * source
+                delta = (
+                    jax.random.uniform(e["delta_key"], ci.shape[:-1], dtype=ci.dtype)
+                    if has_delta
+                    else None
+                )
+                return site_out(x_in, v, u, W, mask, delta, e.get("route"))
+            return site_out(x_in, v, u, W, e["mask"], e.get("delta"), e.get("route"))
+
         def masked_site(
             x_in: Array, kind: str, W: Array, pk: dict[str, dict[str, Array]]
         ) -> tuple[Array, Array | None]:
+            # LIVE block only: every decomposed kind decomps (static — no cond); a kind absent
+            # from the decomposition stays frozen.
             if kind not in decomposed_kinds:
                 return x_in @ W.T, None
-            e = pk[kind]
-
-            def decomp(_: None) -> Array:
-                v, u = e["V"], e["U"]
-                if "V_scale" in e:  # fp8 QAG: gather the fp8 ÷fsdp weight to full d (½ bytes on
-                    # the wire), THEN dequant to bf16 — the barrier keeps the convert after the
-                    # gather so the collective moves fp8, not bf16.
-                    v = dequantize_fp8(
-                        jax.lax.optimization_barrier(
-                            jax.lax.with_sharding_constraint(v, P(None, "tp"))
-                        ),
-                        e["V_scale"],
-                    )
-                    u = dequantize_fp8(
-                        jax.lax.optimization_barrier(
-                            jax.lax.with_sharding_constraint(u, P("tp", None))
-                        ),
-                        e["U_scale"],
-                    )
-                if "ci" in e:  # stochastic recompute: draw source from the per-layer key and
-                    # build the mask INLINE (recomputed in the backward, not held — the shared
-                    # `ci` stack + tiny key replace the per-forward mask stack).
-                    ci = e["ci"]
-                    source = jax.random.uniform(e["src_key"], ci.shape, dtype=ci.dtype)
-                    mask = ci + (1.0 - ci) * source
-                    delta = (
-                        jax.random.uniform(e["delta_key"], ci.shape[:-1], dtype=ci.dtype)
-                        if has_delta
-                        else None
-                    )
-                    return site_out(x_in, v, u, W, mask, delta, e.get("route"))
-                return site_out(x_in, v, u, W, e["mask"], e.get("delta"), e.get("route"))
-
-            def frozen(_: None) -> Array:
-                return x_in @ W.T
-
-            out = jax.lax.cond(e["live"], decomp, frozen, None)
+            out = decomp_site(x_in, W, pk[kind])
             return out, (out if want_collect else None)
 
-        def block(
+        def live_block(
             x: Array, layer_in: tuple[LlamaLayer, dict[str, dict[str, Array]]]
         ) -> tuple[Array, dict[str, Array] | None]:
             sl, pk = layer_in
@@ -733,40 +754,58 @@ class LlamaDecomposedModel(eqx.Module):
             )  # fmt: skip
             return x, collected
 
-        # Per-LAYER checkpoint of the scan BODY in BOTH modes — `remat` controls ONLY whether
-        # the layer ACTIVATIONS are recomputed; it NEVER controls the ÷fsdp→full V/U gather.
-        # `site_out`'s matmuls run on the per-layer V/U gathered (all-gathered on `fsdp`,
-        # NVLink) from the ÷fsdp `prepared` shard; that full `[d_in, C]` / `[C, d_out]` weight
-        # is a NON-dot collective, so under both policies below it is NEVER a saved residual —
-        # it is re-gathered (recomputed) in the backward, transient one layer at a time. Without
-        # any checkpoint, XLA instead keeps every layer's full gathered V/U live across the
-        # whole scan for the backward (`[n_layer, d_in, C]` stacks → OOM).
+        def frozen_block(x: Array, sl: LlamaLayer) -> tuple[Array, None]:
+            # Bit-identical to a frozen `masked_site` branch (`x @ Wᵀ` per site), shared with
+            # `clean_output`. Carries NO V/U → a frozen segment gathers nothing.
+            x = x + sl.attn(rms_norm(x, sl.ln1, self.eps), self.inv_freq)
+            x = x + _clean_mlp_out(sl, rms_norm(x, sl.ln2, self.eps))
+            return x, None
+
+        # Per-LAYER checkpoint of the scan BODY in BOTH modes — `remat` controls ONLY whether the
+        # layer ACTIVATIONS are recomputed; it NEVER controls the ÷fsdp→full V/U gather. That
+        # gather is a NON-dot collective, so it is never a saved residual under either policy — it
+        # re-gathers in the backward, transient one layer at a time (without checkpoint XLA keeps
+        # every layer's full gathered V/U live across the scan → OOM).
         #   remat=True  → nothing_saveable: recompute activations AND the gather (min memory).
-        #   remat=False → dots_saveable: SAVE the activation matmuls (every site output, the
-        #     attention output, mlp hidden — all `dot_general`/flash with NO batch dims here, so
-        #     they qualify) but still recompute the gather (a collective, not a dot) and the
-        #     cheap elementwise. Pure recompute either way; zero numerics change.
+        #   remat=False → dots_saveable: SAVE the activation matmuls (no batch dims here → they
+        #     qualify) but still recompute the gather + cheap elementwise. Pure recompute either
+        #     way; zero numerics change.
+        # `scan_unroll` (native `lax.scan(unroll=k)`) emits k iterations straight-line so XLA can
+        # prefetch gather(L+1) under matmul(L) — the overlap a 1-layer while-body denies.
         policy = (
             jax.checkpoint_policies.nothing_saveable
             if remat
             else jax.checkpoint_policies.dots_saveable
         )
-        # `scan_unroll`: native `lax.scan(unroll=k)` emits k iterations as straight-line code
-        # (per-layer checkpoint unchanged → memory-neutral), giving XLA a window to prefetch
-        # gather(L+1) under matmul(L) — the cross-iteration overlap a 1-layer while-body denies.
-        x, ys = jax.lax.scan(
-            jax.checkpoint(block, policy=policy),
-            resid,
-            (self.stacked, per_kind),
-            unroll=self.scan_unroll,
-        )
+
+        def run_scan(body: Any, carry: Array, xs: Any) -> tuple[Array, Any]:
+            return jax.lax.scan(
+                jax.checkpoint(body, policy=policy), carry, xs, unroll=self.scan_unroll
+            )
+
+        def slice_layers(lo: int, hi: int) -> LlamaLayer:
+            return jax.tree.map(lambda a: a[lo:hi], self.stacked)
+
+        x = resid
+        ys: dict[str, Array] | None = None
+        if first_live > 0:
+            x, _ = run_scan(frozen_block, x, slice_layers(0, first_live))
+        if last_live > first_live:
+            pk_live = {
+                kind: {k: v[first_live:last_live] for k, v in e.items()}
+                for kind, e in per_kind.items()
+            }
+            x, ys = run_scan(live_block, x, (slice_layers(first_live, last_live), pk_live))
+        if last_live < self.n_layer:
+            x, _ = run_scan(frozen_block, x, slice_layers(last_live, self.n_layer))
+
         x = rms_norm(x, self.norm, self.eps)
         logits = x @ self.lm_head.T
         if collect is not None:
-            assert ys is not None  # collect requested -> the scan emitted per-kind outputs
+            assert ys is not None  # collect requested -> the live block emitted per-kind outputs
             for site in live:
                 layer, kind = parse_site_name(site)
-                collect[site] = ys[kind][layer]
+                collect[site] = ys[kind][layer - first_live]
         return logits
 
     def prepare_compute_weights(self, vu: DecompVU) -> dict[str, dict[str, Array]]:
