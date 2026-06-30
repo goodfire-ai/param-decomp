@@ -65,8 +65,6 @@ eval:
     type: PGDReconLoss
   - type: ArithmeticCIGrid
     artifact_dir: /mnt/delicate-frog/home/lee/pd-data/datasets/arithmetic_add_1_100_llama31
-    thresholds: [0.1]
-    top_k: 24
   n_steps: 1
   slow_every: 10000
   slow_on_first_step: true

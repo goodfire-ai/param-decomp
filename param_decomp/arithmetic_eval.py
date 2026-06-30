@@ -1,17 +1,5 @@
-"""In-loop arithmetic-grid eval: per-component CI and activation heatmaps over an `a x b`
-operand grid.
-
-The probe is a FIXED set of `"<a><op><b>="` prompts (one per row, all one length, the `=`
-answer token at a constant position; built offline by `prestage_arithmetic.py`). Unlike the
-slow-eval reductions (which sum CI over the batch to a `(T, C)` matrix), this keeps the
-batch axis as the grid: it slices, at the answer position, each component's causal importance
-`ci_lower` AND its pre-mask activation `x@V`, then reshapes `[n_prompts, C]` into an
-`[n_a, n_b]` heatmap per component.
-
-A component is ACTIVE on a threshold when its max CI over the grid exceeds it; the active
-set is selected ONCE (descending by max CI) and drives both the `n_alive` scalar and the
-top-`top_k` heatmaps (CI grids + the matching activation grids). Multiple thresholds are
-evaluated together. LM-only (CI is `(n_prompts, T, C)`); figures render off-loop on rank 0.
+"""In-loop eval: per-component CI and activation (`x@V`) heatmaps over an `a x b` arithmetic
+operand grid (the offline probe from `prestage_arithmetic.py`). See `param_decomp/CLAUDE.md`.
 """
 
 import io
@@ -201,14 +189,12 @@ def plot_component_grids(
     title: str,
     cmap: str,
     value_range: tuple[float, float] | None,
-) -> bytes | None:
+) -> bytes:
     """One faceted figure: an `a x b` heatmap per component in `component_indices` (already
-    top-k-capped by the caller). `per_prompt` is `(n_prompts, C)`; cell `(i, j)` of panel `c`
-    is component `c`'s value for `a_values[i] <op> b_values[j] =`. `value_range` fixes the
-    color scale (e.g. (0, 1) for CI); None auto-scales SYMMETRICALLY about 0 (signed
-    activations). Returns None when no component is selected."""
-    if component_indices.size == 0:
-        return None
+    top-k-capped, non-empty). `per_prompt` is `(n_prompts, C)`; cell `(i, j)` of panel `c` is
+    component `c`'s value for `a_values[i] <op> b_values[j] =`. `value_range` fixes the color
+    scale (e.g. (0, 1) for CI); None auto-scales SYMMETRICALLY about 0 (signed activations)."""
+    assert component_indices.size > 0, "plot_component_grids needs at least one component"
     grids = grid.to_grid(per_prompt)  # (n_a, n_b, C)
     if value_range is None:
         vmax = float(np.abs(grids[:, :, component_indices]).max())
@@ -254,17 +240,14 @@ def render_arithmetic_figures(
     for t, per_site in active.items():
         for site, idx in per_site.items():
             shown = idx[:top_k]
-            ci_png = plot_component_grids(
+            if shown.size == 0:  # no component alive at this (threshold, site) — nothing to plot
+                continue
+            figures[f"figures/ci_grid/thr{t:g}/{site}"] = plot_component_grids(
                 ci_grids[site], grid, shown, f"{site} CI ({grid.symbol} grid, thr={t:g})",
                 cmap="viridis", value_range=(0.0, 1.0),
             )  # fmt: skip
-            if ci_png is None:
-                continue
-            figures[f"figures/ci_grid/thr{t:g}/{site}"] = ci_png
-            act_png = plot_component_grids(
+            figures[f"figures/activation_grid/thr{t:g}/{site}"] = plot_component_grids(
                 xv_grids[site], grid, shown, f"{site} activation x@V ({grid.symbol} grid, thr={t:g})",
                 cmap="coolwarm", value_range=None,
             )  # fmt: skip
-            assert act_png is not None  # same non-empty selection as the CI figure
-            figures[f"figures/activation_grid/thr{t:g}/{site}"] = act_png
     return figures

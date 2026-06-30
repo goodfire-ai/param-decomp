@@ -155,7 +155,8 @@ and returns JAX-native as the #10 torch->jax adapter.
   `DataConfig` / `EvalConfig` / … + the `TargetSites` protocol). The engine + numerics
   (`run.py` = `run_decomposition_training`, `lm.py` / `train.py` / `ci_fn.py` /
   `targets/llama8b.py` / `targets/llama_simple_mlp.py` / `adversary.py` / `recon.py` / `losses.py` /
-  `checkpoint.py` / `sharding.py` / `eval.py` / `slow_eval.py` + `log.py`) plus `configs/`
+  `checkpoint.py` / `sharding.py` / `eval.py` / `slow_eval.py` / `arithmetic_eval.py` +
+  `log.py`) plus `configs/`
   (the self-contained run yamls) and `tests/` (incl. the `tests/equivalence/` frozen
   torch↔JAX goldens). The torch oracle lives at git tag `torch-oracle`.
 - `pretrain/` (repo-root sibling) — the in-house target-LM pretrainer (`pretrain.train`):

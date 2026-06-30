@@ -9,6 +9,7 @@ emits valid CI + activation PNGs over the shared active set.
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from param_decomp.arithmetic_eval import (
     ArithmeticGrid,
@@ -118,17 +119,20 @@ def test_n_alive_scalars_reports_dropped_beyond_top_k():
     assert scalars["n_dropped/thr0.1/" + SITE] == 1.0  # 3 alive - top_k 2
 
 
-def test_plot_component_grids_png_and_empty():
+def test_plot_component_grids_png_and_rejects_empty():
     grid = _grid()
     ci = np.zeros((N_A * N_B, 4))
     ci[:, 1] = 0.8
-    png = plot_component_grids(ci, grid, np.array([1]), "t", "viridis", (0.0, 1.0))
-    assert png is not None and png[:4] == b"\x89PNG"
-    signed = np.linspace(-2, 2, N_A * N_B * 4).reshape(N_A * N_B, 4)  # auto-symmetric range
-    assert plot_component_grids(signed, grid, np.array([0, 1]), "t", "coolwarm", None) is not None
     assert (
-        plot_component_grids(ci, grid, np.array([], dtype=int), "t", "viridis", (0.0, 1.0)) is None
+        plot_component_grids(ci, grid, np.array([1]), "t", "viridis", (0.0, 1.0))[:4] == b"\x89PNG"
     )
+    signed = np.linspace(-2, 2, N_A * N_B * 4).reshape(N_A * N_B, 4)  # auto-symmetric range
+    assert (
+        plot_component_grids(signed, grid, np.array([0, 1]), "t", "coolwarm", None)[:4]
+        == b"\x89PNG"
+    )
+    with pytest.raises(AssertionError):  # empty selection is a caller bug, not a silent no-op
+        plot_component_grids(ci, grid, np.array([], dtype=int), "t", "viridis", (0.0, 1.0))
 
 
 def test_render_arithmetic_figures_pairs_ci_and_activation():

@@ -191,7 +191,7 @@ class _ArithmeticEval:
     n_prompts: int
     thresholds: tuple[float, ...]
     top_k: int
-    renderer: "ArithmeticGridRenderer"
+    renderer: ArithmeticGridRenderer
 
     def run(self, state: TrainState, scalar_key: PRNGKeyArray, now_step: int) -> "LogRecord":
         ci_grids, xv_grids = accumulate_arithmetic_grids(
@@ -211,13 +211,13 @@ class _ArithmeticEval:
 
 
 def _make_arithmetic_eval(
-    eval_cfg: "EvalConfig",
+    eval_cfg: EvalConfig,
     lm: DecomposedModel,
     eval_step_fn: Callable[..., dict[str, jax.Array]],
     mesh: Mesh,
     n_proc: int,
     is_main: bool,
-) -> "_ArithmeticEval | None":
+) -> _ArithmeticEval | None:
     arith = eval_cfg.arithmetic
     if arith is None:
         return None

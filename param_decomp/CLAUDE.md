@@ -87,6 +87,21 @@ special handling; for the positionless toys (TMS/ResidMLP) `toy_uv_eval.log_uv_f
 renders it off the small on-host V/U + the probe CI as permutation source (cheap, no
 gather), sharing `slow_eval.render_uv_figure` / `plot_uv_matrices` with the LM path.
 
+`arithmetic_eval.py` is a config-gated LM-only figure tier (`ArithmeticCIGrid`, on
+`eval.slow_every`) for inspecting how the decomposition reconstructs a `target model`'s
+modular-arithmetic mechanism (Feucht et al.'s L18 addition neurons). The probe is a FIXED
+`a x b` operand grid of `"<a><op><b>="` prompts built offline by
+`prestage_arithmetic.py` (one prompt per row, all one token length, the `=` answer at a
+constant position; carries `(a, b)` + `answer_id`) — NOT the streaming corpus, so it brings
+its own batch. The ONE fused `make_arithmetic_grid_step` slices, at the answer position with
+the BATCH axis KEPT as the grid, each component's lower-leaky CI (from the CI fn) and its
+pre-mask activation `x@V` (from the decomposed forward under all-ones masks — the
+`masked_component_activations` seam, llama8b-only, narrowed via the `ComponentActivationModel`
+Protocol). The active set per threshold (max CI over the grid > threshold) is selected ONCE
+(`select_active`) and drives both the `n_alive` scalars and the top-`top_k` CI + activation
+heatmaps; figures render off-loop on rank 0 (`run.py::ArithmeticGridRenderer`). Wired LM-side
+by `experiments/lm/run.py::_make_arithmetic_eval` (a `_ArithmeticEval` bundle).
+
 **The toys (TMS, ResidMLP) live in the lab, not the core.** The core trainer carries ZERO
 toy-specific code — the toy *targets* (`DecomposedModel`s, pretrain, identity-CI eval) are
 all lab-side. CI-fn *architectures* are NOT toy-specific code: core owns every CI-fn arch
