@@ -186,6 +186,33 @@ def test_llama_site_specs_dims():
         llama_site_specs(cfg, tuple(reversed(mlp_family_site_cs(2, 2, 4))))
 
 
+def test_masked_component_activations_pre_mask_and_matches_outputs():
+    cfg = _tiny_cfg()
+    C = 8
+    sites = _mlp_sites(cfg, 4, 5, C)
+    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    b, t = 2, 16
+    tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
+    names = lm.site_names
+    prepared = lm.prepare_compute_weights(vu)
+    zeros_delta = {s: jnp.zeros((b, t)) for s in names}
+    ones = {s: jnp.ones((b, t, C)) for s in names}
+
+    acts = lm.masked_component_activations(prepared, tokens, ones, zeros_delta, None, names, False)
+    # `acts[s]` is `x@V` BEFORE the per-component `*mask` (shape (b, t, C)). With all-ones
+    # masks and no delta the site OUTPUT is exactly `(x@V) @ U`, so projecting the collected
+    # activation through U reproduces `masked_site_outputs` — pinning that we collected the
+    # pre-mask coefficient, not the post-mask/post-U output.
+    outputs = lm.masked_site_outputs(prepared, tokens, ones, zeros_delta, None, names, False)
+    for s in names:
+        assert acts[s].shape == (b, t, C)
+        assert jnp.all(jnp.isfinite(acts[s]))
+        _, u = vu.vu[s]
+        expected = acts[s].astype(jnp.float32) @ u.astype(jnp.float32)
+        assert jnp.allclose(outputs[s].astype(jnp.float32), expected, atol=1e-2), s
+
+
 @pytest.mark.parametrize("first,last", [(4, 4), (3, 6)])
 def test_clean_path_and_masked_identity(first: int, last: int):
     cfg = _tiny_cfg()

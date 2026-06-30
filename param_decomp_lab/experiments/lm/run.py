@@ -18,6 +18,7 @@ process computes the same global schedule and contributes its local batch slice.
 
 import os
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -36,6 +37,15 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import PRNGKeyArray
 
+from param_decomp.arithmetic_eval import (
+    ArithmeticGrid,
+    ArithmeticGridStep,
+    ComponentActivationModel,
+    accumulate_arithmetic_grids,
+    make_arithmetic_grid_step,
+    n_alive_scalars,
+    select_active,
+)
 from param_decomp.attn_patterns_eval import (
     accumulate_attn_patterns,
     attn_pattern_for,
@@ -43,7 +53,7 @@ from param_decomp.attn_patterns_eval import (
     make_ci_attn_patterns_step,
     make_stochastic_attn_patterns_step,
 )
-from param_decomp.built_run import BuiltRun, DataConfig
+from param_decomp.built_run import BuiltRun, DataConfig, EvalConfig
 from param_decomp.configs import ResumeProvenance
 from param_decomp.data import BatchSchedule, ShardServer, scan_shards
 from param_decomp.eval import make_eval_step
@@ -51,6 +61,7 @@ from param_decomp.hf_http import configure_hf_http_retries
 from param_decomp.lm import DecomposedModel
 from param_decomp.log import setup_logger
 from param_decomp.run import (
+    ArithmeticGridRenderer,
     SlowEvalRenderer,
     install_sigterm_flag,
     run_decomposition_training,
@@ -118,6 +129,116 @@ def _enable_hlo_dump(run_dir: Path) -> None:
 def _global_token_batch(local: np.ndarray, mesh: Mesh, global_batch: int) -> jax.Array:
     sharding = NamedSharding(mesh, P(("replicate", "fsdp")))
     return jax.make_array_from_process_local_data(sharding, local, (global_batch, local.shape[1]))
+
+
+def _load_arithmetic_probe(artifact_dir: Path) -> tuple[np.ndarray, ArithmeticGrid, int, int]:
+    """Load the fixed `a x b` arithmetic probe (`prestage_arithmetic.py` output): the
+    `(n_prompts, T)` token grid, its `ArithmeticGrid` geometry, the answer position, and
+    `n_prompts`. Asserts the rows are in row-major `(a, b)` order so the eval's reshape is
+    valid."""
+    import json
+
+    import pyarrow.parquet as pq
+
+    meta_path = artifact_dir / "meta.json"
+    assert meta_path.exists() and (artifact_dir / "grid.parquet").exists(), (
+        f"arithmetic probe not found at {artifact_dir}; build it first with "
+        f"`python -m param_decomp_lab.experiments.lm.prestage_arithmetic --out_dir {artifact_dir}`"
+    )
+    meta = json.loads(meta_path.read_text())
+    cols = pq.read_table(artifact_dir / "grid.parquet").to_pydict()
+    tokens = np.asarray(cols["input_ids"], dtype=np.int32)
+    a_values = tuple(meta["a_values"])
+    b_values = tuple(meta["b_values"])
+    n_b = len(b_values)
+    expected_a = [a_values[r // n_b] for r in range(len(tokens))]
+    expected_b = [b_values[r % n_b] for r in range(len(tokens))]
+    assert cols["a"] == expected_a and cols["b"] == expected_b, (
+        "arithmetic probe rows are not in row-major (a, b) order; the grid reshape relies on it"
+    )
+    grid = ArithmeticGrid(a_values=a_values, b_values=b_values, symbol=meta["symbol"])
+    return tokens, grid, int(meta["answer_position"]), int(meta["n_prompts"])
+
+
+def _arithmetic_probe_global(tokens: np.ndarray, mesh: Mesh, n_proc: int) -> jax.Array:
+    """Shard the fixed probe over the mesh like a normal batch: pad the row count up to a
+    multiple of the device count (pad rows append AFTER the real grid and are trimmed off
+    after the gather) and hand each process its contiguous slice."""
+    n, t = tokens.shape
+    n_dev = mesh.devices.size
+    pad = (-n) % n_dev
+    if pad:
+        tokens = np.concatenate([tokens, np.zeros((pad, t), tokens.dtype)], axis=0)
+    n_pad = tokens.shape[0]
+    per_process = n_pad // n_proc
+    assert per_process % jax.local_device_count() == 0, (per_process, jax.local_device_count())
+    proc = jax.process_index()
+    local = tokens[proc * per_process : (proc + 1) * per_process]
+    return _global_token_batch(local, mesh, n_pad)
+
+
+@dataclass(frozen=True)
+class _ArithmeticEval:
+    """The arithmetic-grid eval, built once. `run` does the (collective) CI/activation gather,
+    the n_alive + recon/L0/PGD scalars on the probe, and the off-thread figure submit — one
+    self-contained block so `_make_lm_eval_fn` just calls it."""
+
+    step: ArithmeticGridStep
+    eval_step_fn: Callable[..., dict[str, jax.Array]]
+    model: ComponentActivationModel
+    tokens: jax.Array
+    grid: ArithmeticGrid
+    n_prompts: int
+    thresholds: tuple[float, ...]
+    top_k: int
+    renderer: "ArithmeticGridRenderer"
+
+    def run(self, state: TrainState, scalar_key: PRNGKeyArray, now_step: int) -> "LogRecord":
+        ci_grids, xv_grids = accumulate_arithmetic_grids(
+            self.step, self.model, state.components, state.ci_fn, [self.tokens], self.n_prompts
+        )
+        active = select_active(ci_grids, self.thresholds)
+        record: dict[str, LogValue] = {
+            f"eval/arithmetic/{k}": v for k, v in n_alive_scalars(active, self.top_k).items()
+        }
+        # recon / L0 / PGD ON the arithmetic prompts: the same fast eval step, on the probe batch.
+        scalars = self.eval_step_fn(
+            self.model, state.components, state.ci_fn, self.tokens, scalar_key
+        )
+        record |= {f"eval/arithmetic/{k}": float(v) for k, v in scalars.items()}
+        self.renderer.submit(ci_grids, xv_grids, active, self.grid, self.top_k, now_step)
+        return record
+
+
+def _make_arithmetic_eval(
+    eval_cfg: "EvalConfig",
+    lm: DecomposedModel,
+    eval_step_fn: Callable[..., dict[str, jax.Array]],
+    mesh: Mesh,
+    n_proc: int,
+    is_main: bool,
+) -> "_ArithmeticEval | None":
+    arith = eval_cfg.arithmetic
+    if arith is None:
+        return None
+    probe_tokens, grid, answer_position, n_prompts = _load_arithmetic_probe(arith.artifact_dir)
+    # The x@V activation heatmaps need the component-activation seam (LM-only); fail fast at
+    # setup if the target lacks it, rather than mid-eval.
+    assert isinstance(lm, ComponentActivationModel), (
+        f"arithmetic eval needs a model exposing masked_component_activations; "
+        f"{type(lm).__name__} does not"
+    )
+    return _ArithmeticEval(
+        step=make_arithmetic_grid_step(lm, answer_position),
+        eval_step_fn=eval_step_fn,
+        model=lm,
+        tokens=_arithmetic_probe_global(probe_tokens, mesh, n_proc),
+        grid=grid,
+        n_prompts=n_prompts,
+        thresholds=tuple(arith.thresholds),
+        top_k=arith.top_k,
+        renderer=ArithmeticGridRenderer(is_main),
+    )
 
 
 def assert_finetune_structural_compat(built: BuiltRun, prov: ResumeProvenance) -> None:
@@ -253,6 +374,8 @@ def _make_lm_eval_fn(
     want_position_ci = perm_spec.any_plots or perm_spec.any_identity_error
     position_ci_step = make_position_ci_step(lm) if want_position_ci else None
 
+    arithmetic_eval = _make_arithmetic_eval(eval, lm, eval_step_fn, mesh, n_proc, is_main)
+
     def eval_fn(state: TrainState, now_step: int) -> "LogRecord":
         eval_pass_index = now_step // eval.every
         # uniform-average of per-batch scalars; mean-safe vs torch's accumulate-then-
@@ -329,6 +452,12 @@ def _make_lm_eval_fn(
                     for name, (V, U) in state.components.vu.items()
                 }
             slow_renderer.submit(site_reductions, perm_spec, position_ci, components, now_step)
+        if arithmetic_eval is not None and slow_due:
+            # ARITHMETIC GRID TIER (its own fixed probe, not the eval batches). The CI/activation
+            # gather is COLLECTIVE — all ranks join it; n_alive + recon/L0 SCALARS ride the
+            # synchronous `eval_record`, the heatmaps render off-loop on rank 0.
+            arith_key = random.fold_in(run_key, 4 * pd.steps + eval_pass_index)
+            eval_record |= arithmetic_eval.run(state, arith_key, now_step)
         if is_main and built.run.wandb is not None:
             # torch CI_L0.compute() emitted a per-layer L0 bar chart alongside the scalars;
             # rebuild it host-side from the `eval/l0/<thr>_<site|group>` scalars already in

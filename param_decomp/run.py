@@ -44,6 +44,7 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import PRNGKeyArray
 
+from param_decomp.arithmetic_eval import ArithmeticGrid, render_arithmetic_figures
 from param_decomp.built_run import DataConfig, RunInstance
 from param_decomp.checkpoint import (
     init_from_parent,
@@ -319,6 +320,67 @@ def _render_and_log_slow_eval(
         f"slow_eval/{k}": wandb.Image(Image.open(io.BytesIO(v))) for k, v in figures.items()
     }
     _log_wandb_safe(wandb, payload, now_step, "slow-eval figures")
+
+
+class ArithmeticGridRenderer:
+    """Rank-0 background renderer for the arithmetic CI-grid figure eval, mirroring
+    `SlowEvalRenderer`. The collective CI gather runs in lockstep on ALL ranks inside the
+    eval pass; this thread takes ONLY the materialized numpy CI grids and does the matplotlib
+    render + `wandb.log` off the train loop (n_alive / dropped SCALARS ride the synchronous
+    `eval_record` instead). One render in flight; `atexit` join flushes the last on exit."""
+
+    def __init__(self, is_main: bool):
+        self._is_main = is_main
+        self._thread: threading.Thread | None = None
+        self._atexit_registered = False
+
+    def join(self) -> None:
+        if self._thread is not None:
+            self._thread.join()
+            self._thread = None
+
+    def submit(
+        self,
+        ci_grids: dict[str, np.ndarray],
+        xv_grids: dict[str, np.ndarray],
+        active: dict[float, dict[str, np.ndarray]],
+        grid: ArithmeticGrid,
+        top_k: int,
+        now_step: int,
+    ) -> None:
+        if not self._is_main:
+            return
+        if not self._atexit_registered:
+            atexit.register(self.join)
+            self._atexit_registered = True
+        self.join()  # cap to one in-flight render
+        self._thread = threading.Thread(
+            target=_render_and_log_arithmetic,
+            args=(ci_grids, xv_grids, active, grid, top_k, now_step),
+            daemon=True,
+        )
+        self._thread.start()
+
+
+def _render_and_log_arithmetic(
+    ci_grids: dict[str, np.ndarray],
+    xv_grids: dict[str, np.ndarray],
+    active: dict[float, dict[str, np.ndarray]],
+    grid: ArithmeticGrid,
+    top_k: int,
+    now_step: int,
+) -> None:
+    """Pure-host: render the per-`(threshold, site)` CI + `x@V` activation heatmaps (over the
+    precomputed `active` selection) and log them to wandb on the live `_step` axis at
+    `now_step`. No jax/device access — safe off the train loop."""
+    import wandb
+    from PIL import Image
+
+    figures = render_arithmetic_figures(ci_grids, xv_grids, active, grid, top_k)
+    payload: dict[str, Any] = {
+        f"eval/arithmetic/{k}": wandb.Image(Image.open(io.BytesIO(v))) for k, v in figures.items()
+    }
+    _log_wandb_safe(wandb, payload, now_step, "arithmetic CI-grid figures")
 
 
 def _init_or_restore_state(
