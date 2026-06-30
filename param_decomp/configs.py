@@ -608,7 +608,7 @@ class ProfileConfig(BaseConfig):
     `time_steps`→PD_TIME_STEPS (per-step wall breakdown), `trace`→PD_PROFILE_TRACE
     (perfetto trace over `trace_start`..`trace_start+trace_steps`), `async_test`→PD_ASYNC_TEST,
     `leaf_bench`→PD_LEAF_BENCH, `no_checkpoint`→PD_NO_CHECKPOINT (skip ALL saves — throwaway
-    profiling only), `replicate_weights`→PD_REPLICATE_WEIGHTS, `ci_broadcast`→PD_CI_BROADCAST.
+    profiling only), `ci_broadcast`→PD_CI_BROADCAST.
     """
 
     mem_profile: bool = False
@@ -622,7 +622,6 @@ class ProfileConfig(BaseConfig):
     async_test: bool = False
     leaf_bench: bool = False
     no_checkpoint: bool = False
-    replicate_weights: bool = False
     ci_broadcast: bool = False
 
     def as_env(self) -> dict[str, str]:
@@ -644,8 +643,6 @@ class ProfileConfig(BaseConfig):
             env["PD_LEAF_BENCH"] = "1"
         if self.no_checkpoint:
             env["PD_NO_CHECKPOINT"] = "1"
-        if self.replicate_weights:
-            env["PD_REPLICATE_WEIGHTS"] = "1"
         if self.ci_broadcast:
             env["PD_CI_BROADCAST"] = "1"
         return env
