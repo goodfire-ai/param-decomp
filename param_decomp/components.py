@@ -43,6 +43,30 @@ class SiteSpec:
 VULeaf = TypeVar("VULeaf", default=Array)
 
 
+_FP8_E4M3_MAX = 448.0  # largest finite magnitude of float8_e4m3fn
+
+
+def quantize_fp8(w: Array) -> tuple[Array, Array]:
+    """Per-LEADING-ROW symmetric fp8 (e4m3fn) quantization for the Quantized All-Gather (QAG):
+    the weight is gathered as fp8 (½ the bf16 bytes), then dequantized for the bf16 matmul.
+    The scale reduces over every axis EXCEPT axis 0 (the stacked `n_layer` / `n_chunk` scan
+    axis), keepdims — so it (a) carries that scan axis like the weight does (a per-tensor
+    scalar would have no leading axis to `scan`-slice → IndexError) and (b) gives per-row
+    quantization (tighter than one global scale). Returns `(qvalue: float8_e4m3fn,
+    scale: f32 [L,1,…])` with `w ≈ qvalue.astype(bf16) * scale`. Computed BEFORE the gather
+    (scale rides along, survives it). amax==0 rows floored so the divide is finite."""
+    axes = tuple(range(1, w.ndim))
+    scale = jnp.maximum(jnp.max(jnp.abs(w), axis=axes, keepdims=True), jnp.float32(1e-12)) / _FP8_E4M3_MAX
+    q = (w / scale).astype(jnp.float8_e4m3fn)
+    return q, scale.astype(jnp.float32)
+
+
+def dequantize_fp8(q: Array, scale: Array) -> Array:
+    """Inverse of `quantize_fp8` to bf16 (the compute dtype). Done AFTER the all-gather so the
+    gather moves fp8 bytes."""
+    return q.astype(jnp.bfloat16) * scale.astype(jnp.bfloat16)
+
+
 class DecompVU(eqx.Module, Generic[VULeaf]):
     """Per-decomposed-site V `(d_in, C_s)` / U `(C_s, d_out)`, keyed by site name. The leaves
     are fp32 master Arrays (`DecompVU[Array]`), or `NamedSharding`s in the placement tree
@@ -55,24 +79,28 @@ class DecompVU(eqx.Module, Generic[VULeaf]):
         return self.vu[name]
 
     def shardings(self: "DecompVU[Array]", mesh: "Mesh") -> "DecompVU[NamedSharding]":
-        """True ÷N ZeRO-1 PERSISTENCE layout for the STORED masters: V `(d_in, C)` shards d_in
-        over the FULL mesh `("replicate", "fsdp")`; U `(C, d_out)` shards d_out over the full
-        mesh. C is NEVER sharded (no TP / Megatron-C axis). The fp32 masters AND their Adam
-        m/v (which inherit this sharding via `opt.init`) thus shard ÷(replicate·fsdp) = ÷N —
-        the dominant memory term goes from ÷fsdp (≈76 GB/GPU fixed) to ÷N (≈5 GB, scaling).
+        """True ÷N ZeRO-1 PERSISTENCE layout for the STORED masters, split across the data and
+        TP axes: V `(d_in, C)` shards d_in over `("replicate","fsdp")` and C over `tp`; U
+        `(C, d_out)` shards C over `tp` and d_out over `("replicate","fsdp")`. So both still
+        shard ÷(replicate·fsdp·tp) = ÷N total (C now carries the `tp` factor — the Megatron-C
+        axis). The fp32 masters + their Adam m/v inherit this; the dominant memory term stays
+        ÷N. `tp = 1` ⇒ C unsharded, identical to the pure-HSDP layout.
 
-        COMPUTE re-pins to `fsdp` only: the bf16 compute weights are reconstructed to the
-        `fsdp`-sharded layout ONCE per step in ENTRY (the ZeRO-1 gather across `replicate`,
-        off the hot path — `llama8b._run_masked_forward` / `ci_fn` pin the stacked weights
-        `P(None, "fsdp", ...)` before the scan), so the per-layer scan body gathers only on
-        `fsdp` (intra-node NVLink). Asserts each sharded dim tiles the full device count."""
-        shard_V = NamedSharding(mesh, P(("replicate", "fsdp"), None))  # d_in ÷N, C replicated
-        shard_U = NamedSharding(mesh, P(None, ("replicate", "fsdp")))  # C replicated, d_out ÷N
-        n = mesh.devices.size
+        COMPUTE re-pins d to `fsdp` only (C stays on `tp`): the bf16 compute weights are
+        reconstructed to `P(None, "fsdp", "tp")` ONCE per step in ENTRY (the ÷N→÷fsdp gather
+        across `replicate`, off the hot path), so the per-layer scan body gathers only the
+        `fsdp`-sharded d on NVLink — and only HALF the weight, since C is ÷tp. Asserts d tiles
+        the data axes and C tiles `tp`."""
+        data = ("replicate", "fsdp")
+        shard_V = NamedSharding(mesh, P(data, "tp"))  # d_in ÷(rep·fsdp), C ÷tp → ÷N
+        shard_U = NamedSharding(mesh, P("tp", data))  # C ÷tp, d_out ÷(rep·fsdp) → ÷N
+        n_data = mesh.shape["replicate"] * mesh.shape["fsdp"]
+        n_tp = mesh.shape["tp"]
         placed: dict[str, tuple[NamedSharding, NamedSharding]] = {}
         for name, (V, U) in self.vu.items():
-            assert V.shape[0] % n == 0, f"DecompVU[{name}].V.d_in {V.shape[0]} not ÷ N={n}"
-            assert U.shape[1] % n == 0, f"DecompVU[{name}].U.d_out {U.shape[1]} not ÷ N={n}"
+            assert V.shape[0] % n_data == 0, f"DecompVU[{name}].V.d_in {V.shape[0]} not ÷ {n_data}"
+            assert V.shape[1] % n_tp == 0, f"DecompVU[{name}].V.C {V.shape[1]} not ÷ tp={n_tp}"
+            assert U.shape[1] % n_data == 0, f"DecompVU[{name}].U.d_out {U.shape[1]} not ÷ {n_data}"
             placed[name] = (shard_V, shard_U)
         return DecompVU(vu=placed)
 
@@ -122,9 +150,18 @@ def site_out(
         x = jax.lax.with_sharding_constraint(x, P(batch_axes, *(None,) * (x.ndim - 1)))
     xV = x @ V
     if on_mesh:
-        xV = jax.lax.with_sharding_constraint(xV, P(batch_axes, *(None,) * (xV.ndim - 1)))
+        # batch over the data axes; the component C axis (last) on `tp` (Megatron-C) — so the
+        # `x@V` weight is ÷tp and the `xV * mask` stays local (mask is C-on-tp too).
+        xV = jax.lax.with_sharding_constraint(
+            xV, P(batch_axes, *(None,) * (xV.ndim - 2), "tp")
+        )
     acts = xV * mask if mask is not None else xV
     out = acts @ U
+    if on_mesh:
+        # `acts @ U` contracts the tp-sharded C → reduce over `tp`; pin the output d-full /
+        # batch-sharded so the tp-reduce + fsdp-gather are symmetric and the weight-grad
+        # backward reshards the same way (avoids the involuntary-remat OOM, 2026-06-26).
+        out = jax.lax.with_sharding_constraint(out, P(batch_axes, *(None,) * (out.ndim - 1)))
     if delta_mask is not None:
         # `(x @ Δ.T)` for `Δ = W − (V@U).T`, expanded to activation space as
         # `x@W.T − (x@V)@U` so the `[d_out, d_in]` weight delta is NEVER formed. Under
