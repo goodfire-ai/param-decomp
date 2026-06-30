@@ -90,7 +90,7 @@ def main(
     qos: str | None = None,
     run_id: str | None = None,
     group: str | None = None,
-    tags: str | None = None,
+    tags: str | tuple[str, ...] | None = None,
     comment: str | None = None,
 ) -> None:
     """Launch a decomposition trainer (`param_decomp_lab.experiments.lm.run`) run. The mode
@@ -117,7 +117,14 @@ def main(
     """
     config_rel = _config_path_relative_to_repo(config_path)
     cfg, run_name = _validate_config(REPO_ROOT / config_rel)
-    tag_list = [s.strip() for s in tags.split(",")] if tags is not None else []
+    # Python Fire parses a comma-separated `--tags a,b,c` into a tuple, but keeps a value with a
+    # hyphen (e.g. `a,b,c-d`) as a string — normalize both (and the single-token case) to a list.
+    if tags is None:
+        tag_list = []
+    elif isinstance(tags, str):
+        tag_list = [s.strip() for s in tags.split(",") if s.strip()]
+    else:
+        tag_list = [str(t).strip() for t in tags]
 
     dp = cfg.runtime.dp
     if dp is None:
