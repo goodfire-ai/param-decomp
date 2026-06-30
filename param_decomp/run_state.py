@@ -161,7 +161,6 @@ def init_train_state(
                 state_key=state_key,
                 coeff=term_coeff_by_state_key[state_key],
                 adam=cfg.optimizer,
-                start_frac=cfg.start_frac,
                 n_warmup=cfg.n_warmup_steps,
             )
     return TrainState(

@@ -52,7 +52,7 @@ from param_decomp.checkpoint import (
     save_state,
 )
 from param_decomp.ci_fn import CIFnArch
-from param_decomp.configs import Cadence, PDConfig, flatten_typed_lists
+from param_decomp.configs import Cadence, PDConfig, ProfileConfig, flatten_typed_lists
 from param_decomp.lm import DecomposedModel
 from param_decomp.recon import build_loss_terms
 from param_decomp.run_state import build_optimizers, init_train_state
@@ -334,6 +334,8 @@ def _init_or_restore_state(
     mesh: Mesh,
     checkpoint_manager: ocp.CheckpointManager,
     is_main: bool,
+    no_checkpoint: bool,
+    compiler_options: dict[str, bool | int | str],
 ) -> tuple[TrainState, int] | None:
     """The shared init/restore/finetune/faith-warmup phase (SPEC S21/S22/S33).
 
@@ -375,7 +377,7 @@ def _init_or_restore_state(
         faith_warmup_opt_state = faith_warmup_optimizer.init(
             eqx.filter(state.components, eqx.is_array)
         )
-        faith_warmup_step = make_faith_warmup_step(faith_warmup_optimizer)
+        faith_warmup_step = make_faith_warmup_step(faith_warmup_optimizer, compiler_options)
         warmed_components = state.components
         t0 = time.time()
         faith_warmup_loss = None
@@ -403,7 +405,7 @@ def _init_or_restore_state(
                 f"final faith {float(faith_warmup_loss):.3e}",
                 flush=True,
             )
-    if os.environ.get("PD_NO_CHECKPOINT", "") != "1":  # profiling runs skip all saves
+    if not no_checkpoint:  # profiling runs skip all saves
         save_state(checkpoint_manager, 0, state)
     return state, 0
 
@@ -417,6 +419,9 @@ def run_decomposition_training(
     data: DataConfig | None,
     remat_recon_forwards: bool,
     remat_ci_fn: bool,
+    ascend_replicate: bool,
+    compiler_options: dict[str, bool | int | str],
+    profile: ProfileConfig,
     sample_batch: Callable[[int], Any],
     eval_fn: "Callable[[TrainState, int], LogRecord] | None",
     eval_every: int,
@@ -469,7 +474,7 @@ def run_decomposition_training(
     )
     init = _init_or_restore_state(
         pd, ci_fn, data, run, lm, opt_vu, opt_ci, init_key, src_key, mesh,
-        checkpoint_manager, is_main,
+        checkpoint_manager, is_main, profile.no_checkpoint, compiler_options,
     )  # fmt: skip
     if init is None:
         return  # SIGTERM mid-warmup: clean exit for requeue
@@ -483,6 +488,8 @@ def run_decomposition_training(
         total_steps=pd.steps,
         remat_recon_forwards=remat_recon_forwards,
         remat_ci_fn=remat_ci_fn,
+        ascend_replicate=ascend_replicate,
+        compiler_options=compiler_options,
         mesh=mesh,
     )
 
@@ -509,17 +516,15 @@ def run_decomposition_training(
     # steady-state steps + per-step block_until_ready wall-clock. PD_PROFILE_TRACE=1 enables;
     # PD_PROFILE_START / PD_PROFILE_STEPS pick the window (default start at first post-warmup
     # step, 3 steps). Trace lands in run_dir/profile (rank-0 dir is the one to pull).
-    import os as _os
-
-    _profile_on = _os.environ.get("PD_PROFILE_TRACE", "") == "1"
-    _profile_start = int(_os.environ.get("PD_PROFILE_START", str(start_step + 2)))
-    _profile_steps = int(_os.environ.get("PD_PROFILE_STEPS", "3"))
+    _profile_on = profile.trace
+    _profile_start = profile.trace_start if profile.trace_start is not None else start_step + 2
+    _profile_steps = profile.trace_steps if profile.trace_steps is not None else 3
     _profile_dir = str(run.run_dir / "profile")
     _profiling = False
     _prof_t0 = 0.0
-    _time_steps = _os.environ.get("PD_TIME_STEPS", "") == "1"
+    _time_steps = profile.time_steps
 
-    if _os.environ.get("PD_LEAF_BENCH", "") == "1":
+    if profile.leaf_bench:
         import collections as _collections
 
         _ident = jax.jit(lambda s: s)
@@ -550,7 +555,7 @@ def run_decomposition_training(
                 flush=True,
             )
 
-    if _os.environ.get("PD_ASYNC_TEST", "") == "1":
+    if profile.async_test:
         _atk = random.fold_in(run_key, start_step)
         _ab = sample_batch(start_step)
         _aa0 = time.perf_counter()
@@ -571,7 +576,7 @@ def run_decomposition_training(
                 flush=True,
             )
 
-    if _os.environ.get("PD_MEM_PROFILE", "") == "1":
+    if profile.mem_profile:
         _gib = 1024**3
         _mb = sample_batch(start_step)
         _mk = random.fold_in(run_key, start_step)
@@ -608,15 +613,21 @@ def run_decomposition_training(
         jax.profiler.save_device_memory_profile(_prof_path)
         if is_main:
             print(f"PD_MEM: resident device-memory profile -> {_prof_path}", flush=True)
-        _os._exit(0)  # profiling-only path; donation has consumed `state`, so don't enter the loop
+        os._exit(0)  # profiling-only path; donation has consumed `state`, so don't enter the loop
 
     for step in range(start_step, pd.steps):
         if _profile_on and step == _profile_start:
             jax.block_until_ready(state)
-            _max_ev = _os.environ.get("PD_PROFILE_MAX_EVENTS", "")
-            if _max_ev:
+            if profile.profile_max_events is not None:
                 _popts = jax.profiler.ProfileOptions()
-                _popts.advanced_configuration = {"gpu_max_activity_api_events": int(_max_ev)}
+                # Host/python events are ~70% of the trace's event budget; the perfetto JSON
+                # exporter caps at 1M events, truncating the step mid-forward. Cut host tracing
+                # so the budget goes to GPU kernels (a full step's ~730k fit under the cap).
+                _popts.host_tracer_level = 1
+                _popts.python_tracer_level = 0
+                _popts.advanced_configuration = {
+                    "gpu_max_activity_api_events": profile.profile_max_events
+                }
                 jax.profiler.start_trace(
                     _profile_dir, create_perfetto_trace=True, profiler_options=_popts
                 )
@@ -706,7 +717,7 @@ def run_decomposition_training(
             sink.log(now_step, eval_record)
             window_t0 = time.time()
 
-        _skip_save = os.environ.get("PD_NO_CHECKPOINT", "") == "1"  # profiling runs skip all saves
+        _skip_save = profile.no_checkpoint  # profiling runs skip all saves
         if not _skip_save and (now_step % save_every == 0 or now_step == pd.steps or sigterm):
             save_state(checkpoint_manager, now_step, state)
             if is_main:

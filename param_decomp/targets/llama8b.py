@@ -32,6 +32,8 @@ from param_decomp.components import (
     DecompVU,
     SiteC,
     SiteSpec,
+    dequantize_fp8,
+    quantize_fp8,
     site_out,
 )
 from param_decomp.losses import kl_per_position
@@ -450,6 +452,7 @@ def _attach_per_kind_stochastic(
 
 def _reconstruct_compute_weights(
     per_kind: dict[str, dict[str, Array]],
+    fp8: bool,
 ) -> dict[str, dict[str, Array]]:
     """The ZeRO-1 weight reconstruction (pure-HSDP backup layout). The stacked
     `[n_layer, d_in, C]` / `[n_layer, C, d_out]` compute weights arrive with their FSDP dim
@@ -468,14 +471,30 @@ def _reconstruct_compute_weights(
     unsharded. No-op off-mesh (CPU / single device); `run.py` sets the global mesh."""
     if jax.sharding.get_abstract_mesh().empty:
         return per_kind
-    v_spec = P(None, "fsdp", None)  # [n_layer, d_in ÷fsdp, C] — replicate gathered once/step
-    u_spec = P(None, None, "fsdp")  # [n_layer, C, d_out ÷fsdp]
+    v_spec = P(None, "fsdp", "tp")  # [n_layer, d_in ÷fsdp, C ÷tp] — d gathered/step, C stays ÷tp
+    u_spec = P(None, "tp", "fsdp")  # [n_layer, C ÷tp, d_out ÷fsdp]
     out: dict[str, dict[str, Array]] = {}
     for kind, entry in per_kind.items():
         pinned = dict(entry)
-        v = jax.lax.with_sharding_constraint(entry["V"].astype(jnp.bfloat16), v_spec)
-        u = jax.lax.with_sharding_constraint(entry["U"].astype(jnp.bfloat16), u_spec)
-        pinned["V"], pinned["U"] = v, u
+        # optimization_barrier forces the cast/quant to materialize BEFORE the ÷N→÷fsdp gather,
+        # so the collective moves the compute dtype — XLA otherwise sinks the convert past the
+        # all-gather and gathers the f32 master (2x the comm; the convert gathers in the HLO).
+        if fp8:
+            # Quantized All-Gather: the ÷fsdp compute weights are fp8; the per-layer ÷fsdp→full
+            # gather then moves fp8 (½ the bf16 bytes), dequantized to bf16 in `masked_site`.
+            # Per-tensor scalar scale rides alongside (replicated, survives the gather).
+            vq, vs = quantize_fp8(entry["V"])
+            uq, us = quantize_fp8(entry["U"])
+            pinned["V"] = jax.lax.with_sharding_constraint(jax.lax.optimization_barrier(vq), v_spec)
+            pinned["U"] = jax.lax.with_sharding_constraint(jax.lax.optimization_barrier(uq), u_spec)
+            pinned["V_scale"], pinned["U_scale"] = vs, us
+        else:
+            pinned["V"] = jax.lax.with_sharding_constraint(
+                jax.lax.optimization_barrier(entry["V"].astype(jnp.bfloat16)), v_spec
+            )
+            pinned["U"] = jax.lax.with_sharding_constraint(
+                jax.lax.optimization_barrier(entry["U"].astype(jnp.bfloat16)), u_spec
+            )
         out[kind] = pinned
     return out
 
@@ -507,6 +526,11 @@ class LlamaDecomposedModel(eqx.Module):
     sites: tuple[SiteSpec, ...] = eqx.field(static=True)
     leading_axes: tuple[str, ...] = eqx.field(static=True)
     eps: float = eqx.field(static=True)
+    scan_unroll: int = eqx.field(static=True, default=1)
+    """`lax.scan(unroll=)` factor over the block stack (`RuntimeConfig.scan_unroll`); 1 =
+    plain per-layer scan."""
+    gather_fp8: bool = eqx.field(static=True, default=False)
+    """Quantized all-gather of the ÷fsdp compute V/U (`RuntimeConfig.gather_fp8`)."""
 
     @property
     def site_names(self) -> tuple[str, ...]:
@@ -644,6 +668,22 @@ class LlamaDecomposedModel(eqx.Module):
             e = pk[kind]
 
             def decomp(_: None) -> Array:
+                v, u = e["V"], e["U"]
+                if "V_scale" in e:  # fp8 QAG: gather the fp8 ÷fsdp weight to full d (½ bytes on
+                    # the wire), THEN dequant to bf16 — the barrier keeps the convert after the
+                    # gather so the collective moves fp8, not bf16.
+                    v = dequantize_fp8(
+                        jax.lax.optimization_barrier(
+                            jax.lax.with_sharding_constraint(v, P(None, "tp"))
+                        ),
+                        e["V_scale"],
+                    )
+                    u = dequantize_fp8(
+                        jax.lax.optimization_barrier(
+                            jax.lax.with_sharding_constraint(u, P("tp", None))
+                        ),
+                        e["U_scale"],
+                    )
                 if "ci" in e:  # stochastic recompute: draw source from the per-layer key and
                     # build the mask INLINE (recomputed in the backward, not held — the shared
                     # `ci` stack + tiny key replace the per-forward mask stack).
@@ -655,8 +695,8 @@ class LlamaDecomposedModel(eqx.Module):
                         if has_delta
                         else None
                     )
-                    return site_out(x_in, e["V"], e["U"], W, mask, delta, e.get("route"))
-                return site_out(x_in, e["V"], e["U"], W, e["mask"], e.get("delta"), e.get("route"))
+                    return site_out(x_in, v, u, W, mask, delta, e.get("route"))
+                return site_out(x_in, v, u, W, e["mask"], e.get("delta"), e.get("route"))
 
             def frozen(_: None) -> Array:
                 return x_in @ W.T
@@ -711,7 +751,15 @@ class LlamaDecomposedModel(eqx.Module):
             if remat
             else jax.checkpoint_policies.dots_saveable
         )
-        x, ys = jax.lax.scan(jax.checkpoint(block, policy=policy), resid, (self.stacked, per_kind))
+        # `scan_unroll`: native `lax.scan(unroll=k)` emits k iterations as straight-line code
+        # (per-layer checkpoint unchanged → memory-neutral), giving XLA a window to prefetch
+        # gather(L+1) under matmul(L) — the cross-iteration overlap a 1-layer while-body denies.
+        x, ys = jax.lax.scan(
+            jax.checkpoint(block, policy=policy),
+            resid,
+            (self.stacked, per_kind),
+            unroll=self.scan_unroll,
+        )
         x = rms_norm(x, self.norm, self.eps)
         logits = x @ self.lm_head.T
         if collect is not None:
@@ -729,7 +777,7 @@ class LlamaDecomposedModel(eqx.Module):
         `masked_output` / `masked_site_outputs` calls — the cross-node gather then runs ONCE per
         step (ENTRY) instead of once per forward (the per-forward re-gather was ~10 co-resident
         copies of the ÷fsdp stack at peak)."""
-        return _reconstruct_compute_weights(_stack_per_kind_vu(vu, self.n_layer))
+        return _reconstruct_compute_weights(_stack_per_kind_vu(vu, self.n_layer), self.gather_fp8)
 
     def masked_output(
         self,
@@ -749,8 +797,8 @@ class LlamaDecomposedModel(eqx.Module):
 
     def stack_ci(self, ci_lower: dict[str, Array]) -> dict[str, Array]:
         """Per-kind `[n_layer, *leading, C]` stack of the CI envelope, built ONCE per step and
-        shared across all stochastic recon forwards (`masked_output_stochastic`) — SPEC
-        unchanged, a pure recompute restructuring."""
+        shared across all stochastic recon forwards (`masked_output_stochastic`). The
+        StochasticReconCapable capability (SPEC unchanged — pure recompute restructuring)."""
         return _stack_ci_per_kind(ci_lower, self.n_layer)
 
     def masked_output_stochastic(
@@ -872,9 +920,12 @@ def build_decomposed_lm(
     inv_freq: Array,
     cfg: LlamaConfig,
     sites: tuple[SiteSpec, ...],
+    scan_unroll: int = 1,
+    gather_fp8: bool = False,
 ) -> LlamaDecomposedModel:
     """Assemble a `LlamaDecomposedModel` from the frozen full-model arrays + decomposition
-    config. `sites` must be canonical-ordered with dims matching `cfg`."""
+    config. `sites` must be canonical-ordered with dims matching `cfg`. `scan_unroll` /
+    `gather_fp8` are the `RuntimeConfig` compute knobs (1 / off = the default forward)."""
     site_cs = tuple(SiteC(s.name, s.C) for s in sites)
     assert sites == llama_site_specs(cfg, canonical_site_cs(site_cs)), (
         f"sites are not the canonical specs for this config: {sites}"
@@ -889,15 +940,22 @@ def build_decomposed_lm(
         sites=sites,
         leading_axes=("sequence",),
         eps=cfg.rms_norm_eps,
+        scan_unroll=scan_unroll,
+        gather_fp8=gather_fp8,
     )
 
 
 def load_decomposed_lm_from_hf(
-    model_name: str, cfg: LlamaConfig, sites: tuple[SiteSpec, ...]
+    model_name: str,
+    cfg: LlamaConfig,
+    sites: tuple[SiteSpec, ...],
+    scan_unroll: int = 1,
+    gather_fp8: bool = False,
 ) -> LlamaDecomposedModel:
     """Load the Llama-8B `DecomposedModel`: the full frozen model (embedding, all blocks,
     final norm, lm_head) as fields plus the static decomposition config (`sites`). Blocks
-    without a decomposed site run the plain frozen path."""
+    without a decomposed site run the plain frozen path. `scan_unroll` / `gather_fp8` are the
+    `RuntimeConfig` compute knobs."""
     w = _HFWeights(_hf_snapshot_dir(model_name))
     return build_decomposed_lm(
         embed=w.get("model.embed_tokens.weight"),
@@ -907,4 +965,6 @@ def load_decomposed_lm_from_hf(
         inv_freq=llama3_inv_freq(cfg),
         cfg=cfg,
         sites=sites,
+        scan_unroll=scan_unroll,
+        gather_fp8=gather_fp8,
     )

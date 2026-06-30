@@ -35,6 +35,7 @@ from param_decomp.adversary import (
 )
 from param_decomp.ci_fn import CI, CIFn
 from param_decomp.components import DecompVU
+from param_decomp.jit_util import filter_jit
 from param_decomp.lm import DecomposedModel
 from param_decomp.losses import (
     annealed_imp_min_param,
@@ -108,6 +109,8 @@ def make_train_step(
     remat_recon_forwards: bool,
     remat_ci_fn: bool,
     mesh: Mesh | None,
+    ascend_replicate: bool = False,
+    compiler_options: dict[str, bool | int | str] | None = None,
 ):
     """Build the `eqx.filter_jit`'d `step(model, state, batch, key) -> (state, metrics)`.
 
@@ -151,6 +154,20 @@ def make_train_step(
             lower={site: ci_shard(v) for site, v in ci.lower.items()},
             upper={site: ci_shard(v) for site, v in ci.upper.items()},
         )
+
+    def replicate_for_ascend(prepared: Any) -> Any:
+        """Lever #5 (`RuntimeConfig.ascend_replicate`): gather the ÷fsdp compute weights to
+        FULL/replicated ONCE before the adversary ascents, so the `n_warmup` ascend forwards run
+        plain matmuls with NO per-layer ÷fsdp→full NVLink gather. The gather is
+        mask-INDEPENDENT and the V/U are detached (constant) across ascend steps, so the
+        re-gather is pure redundancy — `n_warmup × n_layer × (fwd+bwd)` collectives collapse to
+        one full gather. Trades the full V/U resident (≈ `fsdp`× the ÷fsdp stack) during the
+        ascend phase for the eliminated re-gathers. Pure data movement (bf16 values unchanged) →
+        numerics bit-identical. No-op off-flag / off-mesh."""
+        if not ascend_replicate or mesh is None or jax.sharding.get_abstract_mesh().empty:
+            return prepared
+        replicated = NamedSharding(mesh, P())
+        return jax.tree.map(lambda a: jax.lax.with_sharding_constraint(a, replicated), prepared)
 
     # ONE masked re-forward for recon AND the adversary ascents, sharing the same remat policy.
     # `remat_recon_forwards` gates gradient-checkpointing inside the target's `masked_output` at
@@ -229,7 +246,6 @@ def make_train_step(
             total = total + recon_loss_fn(masked, clean_output)
         return total / len(routes_per_draw)
 
-    @eqx.filter_jit(donate="all-except-first")
     @jaxtyped(typechecker=beartype)
     def step(
         model: DecomposedModel,
@@ -256,6 +272,7 @@ def make_train_step(
             state.components,
         )
         prepared_detached = jax.lax.stop_gradient(prepared)
+        prepared_ascend = replicate_for_ascend(prepared_detached)
         # The CI envelope is a pure fn of the batch, so compute it ONCE per step — the value +
         # its vjp, mirroring `prepared`/`recon_vjp`. The ascend uses the stop_gradient'd value;
         # `loss_fn` takes the live value and its ci-fn grad is pulled back through `ci_vjp`. So the
@@ -271,11 +288,11 @@ def make_train_step(
         # ── persistent adversaries: each runs its supplemental ascents vs the route-ALL
         # all-sites forward (SPEC S24 — torch warmup parity, NOT the term's loss plan),
         # params + CI detached. The warmed sources then enter the main backward as leaves;
-        # the LR schedule + `start_frac` gating (SPEC S32) live in `PersistentAdversary`. ──
+        # the LR schedule (S13′) lives in `PersistentAdversary`. ──
         def warmup_scoring_loss(sources: dict[str, Array]) -> Array:
             masks, delta_masks = source_masks(ci_lower_detached, sources, site_names)
             masked = masked_forward(
-                model, prepared_detached, batch, masks, delta_masks, None, site_names, True
+                model, prepared_ascend, batch, masks, delta_masks, None, site_names, True
             )
             return recon_loss_fn(masked, clean_output)
 
@@ -314,7 +331,7 @@ def make_train_step(
                         sources,
                         routes,
                         model,
-                        prepared_detached,
+                        prepared_ascend,
                         ci_lower_detached,
                         batch,
                         clean_output,
@@ -429,11 +446,6 @@ def make_train_step(
                         n_forwards += 1
                 assert n_forwards > 0, f"term {term.name!r} produced no forwards"
                 term_loss = total / n_forwards
-                first_sources = term.plan[0].sources
-                if isinstance(first_sources, PersistentSources):
-                    start_frac = state.adversaries[first_sources.state_key].start_frac
-                    if start_frac > 0.0:
-                        term_loss = (step_f32 >= start_frac * total_steps) * term_loss
                 term_losses.append(term_loss)
 
             total_loss = faith_coeff * faith_loss + imp_coeff * imp_lp + freq_coeff * imp_freq
@@ -509,7 +521,7 @@ def make_train_step(
             metrics |= {f"schedules/lr/src/{k}": v for k, v in source_lrs.items()}
         return new_state, metrics
 
-    return step
+    return filter_jit(step, donate="all-except-first", compiler_options=compiler_options)
 
 
 # ───────────────────────────── faithfulness warmup (SPEC S21) ─────────────────────────────
@@ -517,11 +529,11 @@ def make_train_step(
 
 def make_faith_warmup_step(
     opt: optax.GradientTransformation,
+    compiler_options: dict[str, bool | int | str] | None = None,
 ) -> Callable[[DecomposedModel, DecompVU, optax.OptState], tuple[DecompVU, optax.OptState, Array]]:
     """`model` is the jit ARG (frozen weights traced, not baked) — `weight_deltas` reads its
     per-site W slices, so closing over the model would bake them into the HLO."""
 
-    @eqx.filter_jit
     def warmup_step(
         model: DecomposedModel, components: DecompVU, opt_state: optax.OptState
     ) -> tuple[DecompVU, optax.OptState, Array]:
@@ -532,4 +544,4 @@ def make_faith_warmup_step(
         updates, opt_state = opt.update(grad, opt_state, eqx.filter(components, eqx.is_array))
         return eqx.apply_updates(components, updates), opt_state, loss
 
-    return warmup_step
+    return filter_jit(warmup_step, compiler_options=compiler_options)

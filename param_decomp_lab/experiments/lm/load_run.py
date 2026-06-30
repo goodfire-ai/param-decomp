@@ -86,7 +86,14 @@ def build_target(cfg: BuiltRun, mesh: jax.sharding.Mesh) -> tuple[DecomposedMode
             llama_cfg = llama31_8b_config()
             sites = llama_site_specs(llama_cfg, cfg.target.sites)
             lm = place_target(
-                load_decomposed_lm_from_hf(cfg.target.model_name, llama_cfg, sites), mesh
+                load_decomposed_lm_from_hf(
+                    cfg.target.model_name,
+                    llama_cfg,
+                    sites,
+                    scan_unroll=cfg.runtime.scan_unroll,
+                    gather_fp8=cfg.runtime.gather_fp8,
+                ),
+                mesh,
             )
             return lm, llama_cfg.vocab_size
         case _:

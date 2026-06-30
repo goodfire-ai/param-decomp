@@ -363,7 +363,6 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
                 state_key=ppgd_cfg.type,
                 coeff=ppgd_cfg.coeff,
                 adam=ppgd_cfg.optimizer,
-                start_frac=ppgd_cfg.start_frac,
                 n_warmup=ppgd_cfg.n_warmup_steps,
             )
         },
