@@ -201,7 +201,6 @@ class _ArithmeticEval:
         record: dict[str, LogValue] = {
             f"eval/arithmetic/{k}": v for k, v in n_alive_scalars(active, self.top_k).items()
         }
-        # recon / L0 / PGD ON the arithmetic prompts: the same fast eval step, on the probe batch.
         scalars = self.eval_step_fn(
             self.model, state.components, state.ci_fn, self.tokens, scalar_key
         )
@@ -222,8 +221,6 @@ def _make_arithmetic_eval(
     if arith is None:
         return None
     probe_tokens, grid, answer_position, n_prompts = _load_arithmetic_probe(arith.artifact_dir)
-    # The x@V activation heatmaps need the component-activation seam (LM-only); fail fast at
-    # setup if the target lacks it, rather than mid-eval.
     assert isinstance(lm, ComponentActivationModel), (
         f"arithmetic eval needs a model exposing masked_component_activations; "
         f"{type(lm).__name__} does not"

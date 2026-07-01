@@ -89,7 +89,6 @@ def make_arithmetic_grid_step(
         ci_fn: Any,
         tokens: Int[Array, "n_prompts T"],
     ) -> tuple[dict[str, Array], dict[str, Array]]:
-        # Training-precision (bf16) readout, like make_slow_eval_step; logits upcast to fp32.
         ci_fn = cast_floating(ci_fn, COMPUTE_DT)
         taps = {
             k: x.astype(COMPUTE_DT)
@@ -195,7 +194,7 @@ def plot_component_grids(
     component `c`'s value for `a_values[i] <op> b_values[j] =`. `value_range` fixes the color
     scale (e.g. (0, 1) for CI); None auto-scales SYMMETRICALLY about 0 (signed activations)."""
     assert component_indices.size > 0, "plot_component_grids needs at least one component"
-    grids = grid.to_grid(per_prompt)  # (n_a, n_b, C)
+    grids = grid.to_grid(per_prompt)
     if value_range is None:
         vmax = float(np.abs(grids[:, :, component_indices]).max())
         vmin, vmax = (-vmax, vmax) if vmax > 0 else (-1.0, 1.0)
@@ -205,18 +204,28 @@ def plot_component_grids(
     n_cols = min(n, 8)
     n_rows = (n + n_cols - 1) // n_cols
     fig, axs = plt.subplots(
-        n_rows, n_cols, figsize=(2.4 * n_cols, 2.6 * n_rows), squeeze=False,
+        n_rows,
+        n_cols,
+        figsize=(2.4 * n_cols, 2.6 * n_rows),
+        squeeze=False,
         constrained_layout=True,
-    )  # fmt: skip
+    )
     flat = axs.ravel()
     for ax in flat[n:]:
         ax.set_visible(False)
     images = []
     for ax, c in zip(flat, component_indices, strict=False):
-        images.append(ax.imshow(grids[:, :, c], aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax,
-                                origin="lower",
-                                extent=(grid.b_values[0], grid.b_values[-1],
-                                        grid.a_values[0], grid.a_values[-1])))  # fmt: skip
+        images.append(
+            ax.imshow(
+                grids[:, :, c],
+                aspect="auto",
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                origin="lower",
+                extent=(grid.b_values[0], grid.b_values[-1], grid.a_values[0], grid.a_values[-1]),
+            )
+        )
         ax.set_title(f"c{int(c)}", fontsize=8)
         ax.tick_params(labelsize=6)
     fig.colorbar(images[0], ax=axs.ravel().tolist(), shrink=0.6)
@@ -238,14 +247,22 @@ def render_arithmetic_figures(
     for t, per_site in active.items():
         for site, idx in per_site.items():
             shown = idx[:top_k]
-            if shown.size == 0:  # no component alive at this (threshold, site) — nothing to plot
+            if shown.size == 0:
                 continue
             figures[f"figures/ci_grid/thr{t:g}/{site}"] = plot_component_grids(
-                ci_grids[site], grid, shown, f"{site} CI ({grid.symbol} grid, thr={t:g})",
-                cmap="viridis", value_range=(0.0, 1.0),
-            )  # fmt: skip
+                ci_grids[site],
+                grid,
+                shown,
+                f"{site} CI ({grid.symbol} grid, thr={t:g})",
+                cmap="viridis",
+                value_range=(0.0, 1.0),
+            )
             figures[f"figures/activation_grid/thr{t:g}/{site}"] = plot_component_grids(
-                xv_grids[site], grid, shown, f"{site} activation x@V ({grid.symbol} grid, thr={t:g})",
-                cmap="coolwarm", value_range=None,
-            )  # fmt: skip
+                xv_grids[site],
+                grid,
+                shown,
+                f"{site} activation x@V ({grid.symbol} grid, thr={t:g})",
+                cmap="coolwarm",
+                value_range=None,
+            )
     return figures

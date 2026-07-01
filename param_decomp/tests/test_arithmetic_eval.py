@@ -85,7 +85,7 @@ def test_grid_step_ci_and_xv_match_hand_rolled():
 def test_to_grid_is_row_major_a_then_b():
     grid = _grid()
     per_prompt = np.array([[i * 10 + j] for i in range(N_A) for j in range(N_B)], dtype=float)
-    reshaped = grid.to_grid(per_prompt)  # (N_A, N_B, 1)
+    reshaped = grid.to_grid(per_prompt)
     for i in range(N_A):
         for j in range(N_B):
             assert reshaped[i, j, 0] == i * 10 + j

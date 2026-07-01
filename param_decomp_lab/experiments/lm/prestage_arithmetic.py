@@ -99,10 +99,11 @@ def prestage(
             "a": pa.array(rows_a, pa.int32()),
             "b": pa.array(rows_b, pa.int32()),
             "answer_id": pa.array(answer_ids, pa.int32()),
-            "input_ids": pa.array(np.asarray(input_ids, dtype=np.int32).tolist(),
-                                  pa.list_(pa.int32())),
+            "input_ids": pa.array(
+                np.asarray(input_ids, dtype=np.int32).tolist(), pa.list_(pa.int32())
+            ),
         }
-    )  # fmt: skip
+    )
     pq.write_table(table, out / "grid.parquet")
 
     meta = {

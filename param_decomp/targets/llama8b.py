@@ -725,9 +725,17 @@ class LlamaDecomposedModel(eqx.Module):
         LM-only, off the recon path."""
         collect_activations: dict[str, Array] = {}
         self._run_masked_forward(
-            prepared, inputs, masks, delta_masks, routes, live, has_delta, False, None,
+            prepared,
+            inputs,
+            masks,
+            delta_masks,
+            routes,
+            live,
+            has_delta,
+            False,
+            None,
             collect_activations,
-        )  # fmt: skip
+        )
         assert set(collect_activations) == set(live), (sorted(collect_activations), sorted(live))
         return collect_activations
 

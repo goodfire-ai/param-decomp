@@ -530,9 +530,19 @@ def run_decomposition_training(
         run.run_dir / "ckpts", cadence.keep_last_n_checkpoints
     )
     init = _init_or_restore_state(
-        pd, ci_fn, data, run, lm, opt_vu, opt_ci, init_key, src_key, mesh,
-        checkpoint_manager, is_main,
-    )  # fmt: skip
+        pd,
+        ci_fn,
+        data,
+        run,
+        lm,
+        opt_vu,
+        opt_ci,
+        init_key,
+        src_key,
+        mesh,
+        checkpoint_manager,
+        is_main,
+    )
     if init is None:
         return  # SIGTERM mid-warmup: clean exit for requeue
     state, start_step = init
