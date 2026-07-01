@@ -1,0 +1,121 @@
+run_name: jax-l18-mlp-smoothl0-c3e5-dp64-b128
+pd:
+  seed: 0
+  ci_config:
+    type: chunkwise_transformer
+    blocks_per_chunk: 1
+    d_model: 2048
+    n_blocks: 8
+    n_heads: 16
+    mlp_hidden: 8192
+  decomposition_targets:
+  - module_pattern: model.layers.18.mlp.gate_proj
+    C: 8192
+  - module_pattern: model.layers.18.mlp.up_proj
+    C: 8192
+  - module_pattern: model.layers.18.mlp.down_proj
+    C: 16384 # dp64 requires C divisible by 64 (FSDP shards C over the mesh); 9984=156*64
+  components_optimizer:
+    # betas: [0, 0.99]
+    lr_schedule:
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+    grad_clip_norm: 0.1
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+    grad_clip_norm: 0.1
+  steps: 400000
+  batch_size: 128
+  faithfulness_warmup_steps: 400
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - type: SmoothL0ImportanceMinimalityLoss
+    coeff: 2.0e-05
+    gamma: 1.0
+    gamma_anneal_start_frac: 0.0
+    gamma_anneal_final_gamma: 0.01
+    gamma_anneal_end_frac: 1.0
+    frequency:
+      coeff: 1e-05
+      reference_token_count: 32768
+  - type: StochasticReconSubsetLoss
+    coeff: 0.5
+    routing:
+      type: uniform_k_subset
+    n_mask_samples: 1
+  - type: PersistentPGDReconLoss
+    coeff: 0.5
+    optimizer:
+      type: adam
+      beta1: 0
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        start_val: 0.01
+        warmup_pct: 0.025
+        final_val_frac: 1.0
+        fn_type: constant
+    scope:
+      type: bsc
+    n_warmup_steps: 2
+    n_samples: 1
+  - type: FaithfulnessLoss
+    coeff: 1000000.0
+runtime:
+  dp: 64
+  remat_recon_forwards: true
+cadence:
+  train_log_every: 200
+  save_every: 5000
+  keep_last_n_checkpoints: 2
+eval:
+  batch_size: 64
+  n_steps: 1
+  every: 1000
+  slow_every: 10000
+  slow_on_first_step: true
+  metrics:
+  - type: CIHistograms
+    n_batches_accum: 1
+  - type: ComponentActivationDensity
+    ci_alive_threshold: 0.0
+  - type: CI_L0
+    groups: null
+    ci_alive_threshold: 0.0
+  - type: CEandKLLosses
+    rounding_threshold: 0.0
+  - type: CIMeanPerComponent
+  - type: StochasticHiddenActsReconLoss
+  - type: CIHiddenActsReconLoss
+  - type: PGDReconLoss
+    init: random
+    step_size: 0.1
+    n_steps: 20
+    mask_scope: c
+target:
+  spec:
+    kind: hf
+    model_class: transformers.LlamaForCausalLM
+    model_name: meta-llama/Llama-3.1-8B
+  weights_dtype: bfloat16
+data:
+  dataset_name: parquet
+  data_files: /mnt/data/artifacts/mechanisms/param-decomp/datasets/fineweb_llama_tok_2048/*.parquet
+  tokenizer_name: meta-llama/Llama-3.1-8B
+  column_name: input_ids
+  max_seq_len: 2048
+  is_tokenized: true
+  streaming: false
+  train_split: train
+  eval_split: train
+  shuffle_each_epoch: true
+  buffer_size: 1000
+wandb:
+  project: param-decomp-llama
