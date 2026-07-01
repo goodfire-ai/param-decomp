@@ -85,7 +85,7 @@ def make_ci_hidden_acts_step(
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
         ci_lower = ci_fn_bf16(taps, remat=False).lower
 
-        leading = residual.shape[:-1]
+        leading = ci_lower[site_names[0]].shape[:-1]
         zeros_delta = {s: jnp.zeros(leading, COMPUTE_DT) for s in site_names}
         clean = model.masked_site_outputs(
             prepared, residual,
@@ -126,7 +126,7 @@ def make_stochastic_hidden_acts_step(
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
         ci_lower = ci_fn_bf16(taps, remat=False).lower
 
-        leading = residual.shape[:-1]
+        leading = ci_lower[site_names[0]].shape[:-1]
         clean = model.masked_site_outputs(
             prepared, residual,
             {s: jnp.ones_like(ci_lower[s]) for s in site_names},
