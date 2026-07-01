@@ -341,6 +341,7 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
     attn_ci = attn_stoch = False
     attn_stoch_n_mask_samples = 1
     slow_n_batches_accum: int | None = None
+    density_heatmap_n_bins: int | None = None
     for metric in cfg.eval.metrics:
         match metric:
             case CEandKLLossesConfig():
@@ -359,6 +360,7 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
                 attn_stoch_n_mask_samples = metric.n_mask_samples
             case CIHistogramsConfig():
                 slow_n_batches_accum = metric.n_batches_accum
+                density_heatmap_n_bins = metric.density_heatmap_n_bins
             case ComponentActivationDensityConfig():
                 density = metric  # slow-tier; we read only its aliveness cutoff here
             case _ if metric.type in SLOW_TIER_EVAL_METRIC_TYPES:
@@ -375,6 +377,7 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
         slow_every=cfg.eval.slow_every,
         slow_on_first_step=cfg.eval.slow_on_first_step,
         slow_n_batches_accum=slow_n_batches_accum,
+        density_heatmap_n_bins=density_heatmap_n_bins,
         rounding_threshold=ce_kl.rounding_threshold,
         l0_ci_alive_threshold=ci_l0.ci_alive_threshold,
         density_ci_alive_threshold=(density.ci_alive_threshold if density is not None else 0.0),
