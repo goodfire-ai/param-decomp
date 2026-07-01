@@ -14,7 +14,6 @@ Per-term RNG: term i draws from `fold_in(step_key, 1 + i)` in config-list order
 (SPEC R1) — this reproduces the pre-unification production key derivation exactly.
 """
 
-import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -36,6 +35,8 @@ from param_decomp.adversary import (
 )
 from param_decomp.ci_fn import CI, CIFn
 from param_decomp.components import DecompVU
+from param_decomp.configs import SmoothL0ImportanceMinimalityLossConfig
+from param_decomp.jit_util import filter_jit
 from param_decomp.lm import DecomposedModel
 from param_decomp.losses import (
     annealed_imp_min_param,
@@ -109,6 +110,8 @@ def make_train_step(
     remat_recon_forwards: bool,
     remat_ci_fn: bool,
     mesh: Mesh | None,
+    ascend_replicate: bool = False,
+    compiler_options: dict[str, bool | int | str] | None = None,
 ):
     """Build the `eqx.filter_jit`'d `step(model, state, batch, key) -> (state, metrics)`.
 
@@ -129,6 +132,11 @@ def make_train_step(
     imp_min = imp_term.cfg
     imp_coeff = imp_term.coeff
     freq_coeff = imp_min.frequency.coeff if imp_min.frequency is not None else 0.0
+    # Log the imp-min loss + its annealed param under penalty-kind-specific keys: the param
+    # is `p` for L_p / `gamma` for smooth-L0, and the loss carries the penalty's class name.
+    is_smooth_l0 = isinstance(imp_min, SmoothL0ImportanceMinimalityLossConfig)
+    imp_loss_key = "imp_smooth_l0" if is_smooth_l0 else "imp"
+    imp_min_param_key = "gamma_imp" if is_smooth_l0 else "p_imp"
 
     def batch_sharded(x: Array) -> Array:
         return batch_shard_leading(x, mesh)
@@ -152,6 +160,20 @@ def make_train_step(
             lower={site: ci_shard(v) for site, v in ci.lower.items()},
             upper={site: ci_shard(v) for site, v in ci.upper.items()},
         )
+
+    def replicate_for_ascend(prepared: Any) -> Any:
+        """Lever #5 (`RuntimeConfig.ascend_replicate`): gather the ÷fsdp compute weights to
+        FULL/replicated ONCE before the adversary ascents, so the `n_warmup` ascend forwards run
+        plain matmuls with NO per-layer ÷fsdp→full NVLink gather. The gather is
+        mask-INDEPENDENT and the V/U are detached (constant) across ascend steps, so the
+        re-gather is pure redundancy — `n_warmup × n_layer × (fwd+bwd)` collectives collapse to
+        one full gather. Trades the full V/U resident (≈ `fsdp`× the ÷fsdp stack) during the
+        ascend phase for the eliminated re-gathers. Pure data movement (bf16 values unchanged) →
+        numerics bit-identical. No-op off-flag / off-mesh."""
+        if not ascend_replicate or mesh is None or jax.sharding.get_abstract_mesh().empty:
+            return prepared
+        replicated = NamedSharding(mesh, P())
+        return jax.tree.map(lambda a: jax.lax.with_sharding_constraint(a, replicated), prepared)
 
     # ONE masked re-forward for recon AND the adversary ascents, sharing the same remat policy.
     # `remat_recon_forwards` gates gradient-checkpointing inside the target's `masked_output` at
@@ -187,25 +209,6 @@ def make_train_step(
                 remat=remat_recon_forwards,
             )
         )
-
-    def stochastic_entry_masks(
-        ci_lower: dict[str, Array],
-        live_sites: tuple[str, ...],
-        leading_shape: tuple[int, ...],
-        draw_key: PRNGKeyArray,
-    ) -> tuple[dict[str, Array], dict[str, Array]]:
-        mask_source_key, delta_mask_key = random.split(draw_key)
-        masks = {}
-        delta_masks = {}
-        for site_idx, site in enumerate(live_sites):
-            ci_site = ci_lower[site]
-            source_key = random.fold_in(mask_source_key, site_idx)
-            stochastic_source = random.uniform(source_key, ci_site.shape, COMPUTE_DT)
-            masks[site] = ci_site + (1.0 - ci_site) * stochastic_source
-            delta_masks[site] = random.uniform(
-                random.fold_in(delta_mask_key, site_idx), leading_shape, COMPUTE_DT
-            )
-        return masks, delta_masks
 
     def constant_entry_masks(
         strategy: ConstantSources,
@@ -249,7 +252,6 @@ def make_train_step(
             total = total + recon_loss_fn(masked, clean_output)
         return total / len(routes_per_draw)
 
-    @eqx.filter_jit(donate="all-except-first")
     @jaxtyped(typechecker=beartype)
     def step(
         model: DecomposedModel,
@@ -271,20 +273,32 @@ def make_train_step(
         leading = next(iter(taps.values())).shape[:-1]
 
         # ── adversary ascents: params + CI detached (SPEC §4.5) ──
-        components_detached = jax.lax.stop_gradient(cast_floating(state.components, COMPUTE_DT))
-        prepared_detached = model.prepare_compute_weights(components_detached)
-        ci_fn_detached = jax.lax.stop_gradient(cast_floating(state.ci_fn, COMPUTE_DT))
-        with jax.named_scope("pd_ci_fn_fwd_detached"):
-            ci_lower_detached = ci_batch_sharded(ci_fn_detached(taps, remat=False)).lower
+        prepared, recon_vjp = jax.vjp(
+            lambda c: model.prepare_compute_weights(cast_floating(c, COMPUTE_DT)),
+            state.components,
+        )
+        prepared_detached = jax.lax.stop_gradient(prepared)
+        prepared_ascend = replicate_for_ascend(prepared_detached)
+        # The CI envelope is a pure fn of the batch, so compute it ONCE per step — the value +
+        # its vjp, mirroring `prepared`/`recon_vjp`. The ascend uses the stop_gradient'd value;
+        # `loss_fn` takes the live value and its ci-fn grad is pulled back through `ci_vjp`. So the
+        # (≈10x-the-target) CI fn is forward-evaluated ONCE, not once detached for the ascend +
+        # once inside the main backward.
+        with jax.named_scope("pd_ci_fn_fwd"):
+            ci, ci_vjp = eqx.filter_vjp(
+                lambda cf: ci_batch_sharded(cast_floating(cf, COMPUTE_DT)(taps, remat=remat_ci_fn)),
+                state.ci_fn,
+            )
+        ci_lower_detached = jax.lax.stop_gradient(ci).lower
 
         # ── persistent adversaries: each runs its supplemental ascents vs the route-ALL
         # all-sites forward (SPEC S24 — torch warmup parity, NOT the term's loss plan),
         # params + CI detached. The warmed sources then enter the main backward as leaves;
-        # the LR schedule + `start_frac` gating (SPEC S32) live in `PersistentAdversary`. ──
+        # the LR schedule (S13′) lives in `PersistentAdversary`. ──
         def warmup_scoring_loss(sources: dict[str, Array]) -> Array:
             masks, delta_masks = source_masks(ci_lower_detached, sources, site_names)
             masked = masked_forward(
-                model, prepared_detached, batch, masks, delta_masks, None, site_names, True
+                model, prepared_ascend, batch, masks, delta_masks, None, site_names, True
             )
             return recon_loss_fn(masked, clean_output)
 
@@ -323,7 +337,7 @@ def make_train_step(
                         sources,
                         routes,
                         model,
-                        prepared_detached,
+                        prepared_ascend,
                         ci_lower_detached,
                         batch,
                         clean_output,
@@ -357,16 +371,14 @@ def make_train_step(
         # are NOT detached here, but components/ci grads through them are what torch
         # gets too (sources are leaves). ──
         def loss_fn(
-            trainable: tuple[DecompVU, CIFn, dict[str, dict[str, Array]]],
+            trainable: tuple[Any, DecompVU, CI, dict[str, dict[str, Array]]],
         ) -> tuple[Array, tuple[Array, Array, Array, tuple[Array, ...]]]:
-            components, ci_fn, persistent_sources = trainable
-            components_bf16 = cast_floating(components, COMPUTE_DT)
-            # ONE ÷N→÷fsdp reconstruction for the whole recon grid (shared by every forward +
-            # its backward), instead of re-gathering per forward — the hoist.
-            prepared = model.prepare_compute_weights(components_bf16)
-            ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
-            with jax.named_scope("pd_ci_fn_fwd_main"):
-                ci = ci_batch_sharded(ci_fn_bf16(taps, remat=remat_ci_fn))
+            prepared, components, ci, persistent_sources = trainable
+            # Stochastic recon builds its masks INSIDE the target's `masked_output_stochastic`
+            # from this once-per-step shared CI form — a scan target recomputes them in its
+            # checkpointed block (mask never held, the memory win); others fall back to building
+            # masks then `masked_output`. Either way the engine holds no per-forward mask stacks.
+            ci_stacked = model.stack_ci(ci.lower)
             faith_loss = faithfulness_loss(model.weight_deltas(components))
             imp_lp, imp_freq = imp_min_terms(ci.upper, imp_min, imp_min_param)
 
@@ -384,45 +396,62 @@ def make_train_step(
                             routes_per_draw = entry.sample_routing(routing_key, leading)
                     for draw_idx, routes in enumerate(routes_per_draw):
                         draw_key = random.fold_in(entry_key, draw_idx)
-                        match entry.sources:
-                            case StochasticSources():
-                                masks, delta_masks = stochastic_entry_masks(
-                                    ci.lower, entry.live_sites, leading, draw_key
-                                )
-                            case ConstantSources() as strategy:
-                                masks, delta_masks = constant_entry_masks(
-                                    strategy, ci.lower, entry.live_sites
-                                )
-                            case FreshPGDSources():
-                                masks, delta_masks = source_masks(
-                                    ci.lower,
-                                    fresh_sources[(term_idx, entry_idx)],
-                                    entry.live_sites,
-                                )
-                            case PersistentSources(state_key=state_key):
-                                masks, delta_masks = source_masks(
-                                    ci.lower, persistent_sources[state_key], entry.live_sites
-                                )
-                        with jax.named_scope("pd_recon_masked_fwd"):
-                            masked = masked_forward(
+
+                        def pre_built_fwd(
+                            mds: tuple[dict[str, Array], dict[str, Array]],
+                            routes: Routes = routes,
+                            entry: ReconForward = entry,
+                        ) -> Any:
+                            return masked_forward(
                                 model,
                                 prepared,
                                 batch,
-                                masks,
-                                delta_masks,
+                                mds[0],
+                                mds[1],
                                 routes,
                                 entry.live_sites,
                                 entry.has_delta,
                             )
+
+                        with jax.named_scope("pd_recon_masked_fwd"):
+                            match entry.sources:
+                                case StochasticSources():  # masks built inside the target
+                                    masked = batch_sharded(
+                                        model.masked_output_stochastic(
+                                            prepared,
+                                            batch,
+                                            ci_stacked,
+                                            draw_key,
+                                            routes,
+                                            entry.live_sites,
+                                            entry.has_delta,
+                                            remat=remat_recon_forwards,
+                                        )
+                                    )
+                                case ConstantSources() as strategy:
+                                    masked = pre_built_fwd(
+                                        constant_entry_masks(strategy, ci.lower, entry.live_sites)
+                                    )
+                                case FreshPGDSources():
+                                    masked = pre_built_fwd(
+                                        source_masks(
+                                            ci.lower,
+                                            fresh_sources[(term_idx, entry_idx)],
+                                            entry.live_sites,
+                                        )
+                                    )
+                                case PersistentSources(state_key=state_key):
+                                    masked = pre_built_fwd(
+                                        source_masks(
+                                            ci.lower,
+                                            persistent_sources[state_key],
+                                            entry.live_sites,
+                                        )
+                                    )
                         total = total + recon_loss_fn(masked, clean_output)
                         n_forwards += 1
                 assert n_forwards > 0, f"term {term.name!r} produced no forwards"
                 term_loss = total / n_forwards
-                first_sources = term.plan[0].sources
-                if isinstance(first_sources, PersistentSources):
-                    start_frac = state.adversaries[first_sources.state_key].start_frac
-                    if start_frac > 0.0:
-                        term_loss = (step_f32 >= start_frac * total_steps) * term_loss
                 term_losses.append(term_loss)
 
             total_loss = faith_coeff * faith_loss + imp_coeff * imp_lp + freq_coeff * imp_freq
@@ -433,17 +462,22 @@ def make_train_step(
         with jax.named_scope("pd_value_and_grad"):
             (total_loss, (faith_loss, imp_lp, imp_freq, term_losses)), grads = (
                 eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-                    (state.components, state.ci_fn, {k: a.sources for k, a in warmed_advs.items()})
+                    (
+                        prepared,
+                        state.components,
+                        ci,
+                        {k: a.sources for k, a in warmed_advs.items()},
+                    )
                 )
             )
-        components_grad, ci_fn_grad, persistent_grads_scaled = grads
-        if mesh is not None and os.environ.get("PD_REPLICATE_WEIGHTS", "") == "1":
-            # ZeRO-1 with replicated compute weights: the grad arrives REPLICATED (full V/U);
-            # reduce-scatter it back to the ÷N master layout BEFORE the sharded optimizer
-            # update, else the optimizer gathers master+Adam to full-replicated → OOM.
-            components_grad = jax.lax.with_sharding_constraint(
-                components_grad, state.components.shardings(mesh)
-            )
+        prepared_grad, components_grad_faith, ci_grad, persistent_grads_scaled = grads
+        components_grad_recon = recon_vjp(prepared_grad)[0]
+        ci_fn_grad = ci_vjp(ci_grad)[0]
+        components_grad = jax.tree.map(
+            lambda recon_g, faith_g: recon_g + faith_g,
+            components_grad_recon,
+            components_grad_faith,
+        )
         grad_norm_metrics = _grad_norm_metrics(components_grad, ci_fn_grad)
 
         # ── each adversary's final ascent from the fused graph (SPEC S13'/S14'): the
@@ -478,9 +512,9 @@ def make_train_step(
         metrics = {
             "total": total_loss,
             "faith": faith_loss,
-            "imp": imp_lp,
+            imp_loss_key: imp_lp,
             "freq": imp_freq,
-            "p_imp": imp_min_param,
+            imp_min_param_key: imp_min_param,
             **{f"loss/{t.name}": v for t, v in zip(recon_terms, term_losses, strict=True)},
             **grad_norm_metrics,
         }
@@ -493,7 +527,7 @@ def make_train_step(
             metrics |= {f"schedules/lr/src/{k}": v for k, v in source_lrs.items()}
         return new_state, metrics
 
-    return step
+    return filter_jit(step, donate="all-except-first", compiler_options=compiler_options)
 
 
 # ───────────────────────────── faithfulness warmup (SPEC S21) ─────────────────────────────
@@ -501,11 +535,11 @@ def make_train_step(
 
 def make_faith_warmup_step(
     opt: optax.GradientTransformation,
+    compiler_options: dict[str, bool | int | str] | None = None,
 ) -> Callable[[DecomposedModel, DecompVU, optax.OptState], tuple[DecompVU, optax.OptState, Array]]:
     """`model` is the jit ARG (frozen weights traced, not baked) — `weight_deltas` reads its
     per-site W slices, so closing over the model would bake them into the HLO."""
 
-    @eqx.filter_jit
     def warmup_step(
         model: DecomposedModel, components: DecompVU, opt_state: optax.OptState
     ) -> tuple[DecompVU, optax.OptState, Array]:
@@ -516,4 +550,4 @@ def make_faith_warmup_step(
         updates, opt_state = opt.update(grad, opt_state, eqx.filter(components, eqx.is_array))
         return eqx.apply_updates(components, updates), opt_state, loss
 
-    return warmup_step
+    return filter_jit(warmup_step, compiler_options=compiler_options)

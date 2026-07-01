@@ -11,8 +11,7 @@ deliberately refused. The hidden-acts seam is now BUILT (SPEC S31 amended 2026-0
 a fifth model fn `masked_site_outputs` — NOT recon-grid training terms (the recon loss
 stays KL-on-final-logits). `sc` and `bsc` are supported (`bsc` is batch-sharded:
 an independent source per batch element and position, no cross-replica sync — SPEC
-S16/D1). Persistent `start_frac>0` is now implemented (SPEC S32, `term_active`
-`where`-gating); SPEC S24's two torch-parity quirks (PPGD warmup route-all, fresh-PGD
+S16/D1). SPEC S24's two torch-parity quirks (PPGD warmup route-all, fresh-PGD
 single routing draw) are pinned pending a team decision. CI-fn numerics are unified
 with the torch oracle (#624/#625/#730 resolved): GELU is exact-erf
 (`approximate=False`) and RMSNorm eps is `finfo(fp32).eps` (`CI_FN_RMS_EPS`).
@@ -256,7 +255,7 @@ onto the fresh reference and keeps ONLY the components + ci_fn; the optimizer st
 persistent sources, and `step` are FRESH (`step = 0`, no faith warmup) so the new LR /
 p-anneal schedule recomputes over the new `cfg.steps` from 0. A subsequent SLURM requeue
 (own `ckpts/` now non-empty) resumes from the run's own dir and ignores provenance.
-`run.py::assert_finetune_structural_compat` reads the parent's pinned `config.yaml` and
+`run.py::assert_finetune_structural_compat` reads the parent's pinned `launch_config.yaml` and
 asserts matching sites (names + C) + ci-fn arch before the restore. Provenance flows into
 `config.yaml` + `wandb.config`. Launch as usual via `pd-lm <config.yaml>`.
 

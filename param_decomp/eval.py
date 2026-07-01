@@ -28,11 +28,6 @@ arise here, because no emitted key wraps the cross-batch axis in a nonlinearity:
 - `ce_kl/ce_difference_<variant>` = `ce_v - ce_target`: torch averages this per-batch
   DIFFERENCE (computed inside `_calc_ce_and_kl_losses`), not a difference of grand means.
   Linear, so uniform-average parity holds.
-- `ce_kl/ce_unrecovered_<variant>` = `(ce_v - ce_target) / (ce_zero - ce_target)`: the
-  potential Jensen term. But torch forms this RATIO per-batch too, then averages the
-  per-batch ratios — it never divides grand-mean numerator by grand-mean denominator. So
-  averaging JAX's per-batch ratios matches torch exactly; no global-sum-before-divide is
-  needed.
 - `l0/<threshold>_<site|group>`: torch `CI_L0` collects per-batch L0 and averages them
   uniformly (`sum / count`); group L0 is a per-batch sum of member L0s. Linear.
 - `loss/PGDReconLoss`: torch `PGDReconLoss` accumulates `kl * n` over batches and divides
@@ -46,7 +41,6 @@ the parity argument above is what keeps it correct if `n_steps` is raised.
 from fnmatch import fnmatch
 from typing import Any
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import random
@@ -56,6 +50,7 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from param_decomp.built_run import EvalPGDConfig
 from param_decomp.components import DecompVU
+from param_decomp.jit_util import filter_jit
 from param_decomp.lm import DecomposedModel
 from param_decomp.losses import kl_per_position
 from param_decomp.sharding import batch_shard_leading
@@ -81,6 +76,7 @@ def make_eval_step(
     l0_group_patterns: dict[str, tuple[str, ...]] | None,
     pgd: EvalPGDConfig | None,
     mesh: Mesh | None,
+    compiler_options: dict[str, bool | int | str] | None = None,
 ):
     """Build the `eqx.filter_jit`'d `eval_step(model, components, ci_fn, token_ids,
     residual, key) -> {metric_key: scalar}` with torch-parity keys (un-prefixed: the caller
@@ -135,7 +131,6 @@ def make_eval_step(
             )
         )
 
-    @eqx.filter_jit
     def eval_step(
         model: DecomposedModel,
         components: DecompVU,
@@ -207,10 +202,6 @@ def make_eval_step(
         difference_variants = tuple(v for v in variant_masks if v != "zero_masked")
         for variant in difference_variants:
             out[f"ce_kl/ce_difference_{variant}"] = ce[variant] - target_ce
-        for variant in difference_variants:
-            out[f"ce_kl/ce_unrecovered_{variant}"] = (ce[variant] - target_ce) / (
-                ce["zero_masked"] - target_ce
-            )
         site_l0 = {
             site: (ci_lower[site] > ci_alive_threshold).astype(jnp.float32).sum(-1).mean()
             for site in site_names
@@ -263,4 +254,4 @@ def make_eval_step(
             out["loss/PGDReconLoss"] = kl_at_sources(final_sources)
         return out
 
-    return eval_step
+    return filter_jit(eval_step, compiler_options=compiler_options)

@@ -137,7 +137,6 @@ pd:
       type: adam
     scope:
       type: broadcast_across_batch
-    start_frac: 0.0
     type: PersistentPGDReconLoss
   - coeff: 100000.0
     type: FaithfulnessLoss

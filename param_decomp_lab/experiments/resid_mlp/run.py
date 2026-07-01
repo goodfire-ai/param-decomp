@@ -20,7 +20,7 @@ from jax import random
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from param_decomp.built_run import BuiltRun
+from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, BuiltRun
 from param_decomp.components import SiteC
 from param_decomp.log import setup_logger
 from param_decomp.recon import build_loss_terms
@@ -177,6 +177,9 @@ def run_resid_mlp_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: 
         data=built.data,
         remat_recon_forwards=built.runtime.remat_recon_forwards,
         remat_ci_fn=built.runtime.remat_ci_fn,
+        ascend_replicate=built.runtime.ascend_replicate,
+        compiler_options=built.runtime.compiler_options,
+        profile=built.runtime.launch_env.profile,
         sample_batch=sample_batch,
         eval_fn=eval_fn,
         eval_every=built.cadence.train_log_every,
@@ -197,7 +200,9 @@ def main(config: str, group: str | None = None, tags: str | None = None) -> None
     built = build_resid_mlp_built_run(ResidMLPExperimentConfig(**schema_raw), run_id)
     built.run.run_dir.mkdir(parents=True, exist_ok=True)
     setup_logger(built.run.run_dir / "logs.log")
-    (built.run.run_dir / "config.yaml").write_text(yaml.safe_dump(schema_raw, sort_keys=False))
+    (built.run.run_dir / LAUNCH_CONFIG_FILENAME).write_text(
+        yaml.safe_dump(schema_raw, sort_keys=False)
+    )
     mesh = hsdp_mesh()
     run_resid_mlp_decomposition(built, schema_raw, mesh)
 

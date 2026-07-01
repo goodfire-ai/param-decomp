@@ -13,6 +13,7 @@ import jax.numpy as jnp
 import pytest
 import yaml
 
+from param_decomp.built_run import LAUNCH_CONFIG_FILENAME
 from param_decomp.checkpoint import init_from_parent, make_checkpoint_manager, save_state
 from param_decomp.configs import ResumeProvenance
 from param_decomp.tests.test_checkpoint import _build
@@ -83,7 +84,7 @@ def test_init_from_parent_rejects_missing_step(tmp_path: Path):
 
 def _stamp(raw: dict[str, object], run_dir: Path) -> Path:
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "config.yaml").write_text(yaml.safe_dump(raw))
+    (run_dir / LAUNCH_CONFIG_FILENAME).write_text(yaml.safe_dump(raw))
     return run_dir
 
 

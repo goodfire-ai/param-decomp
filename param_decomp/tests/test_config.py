@@ -10,7 +10,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from param_decomp.built_run import DataConfig
+from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, DataConfig
 from param_decomp.components import SiteC
 from param_decomp.configs import (
     ImportanceMinimalityLossConfig,
@@ -373,13 +373,13 @@ def test_fp32_frozen_target_is_refused():
 
 def test_load_run_dir_config_rebuilds_runs(tmp_path: Path):
     """Tools read run dirs via `load_run_dir_config`; runs pin the single self-contained
-    config as `config.yaml` (run.py's `_pin_config_copy`), and the rebuilt config must
+    config as `launch_config.yaml` (run.py's `_pin_config_copy`), and the rebuilt config must
     equal the launch-time conversion. The run id is the run-dir name."""
     config = CONFIGS / "llama8b_l18_C49k_200k.yaml"
     expected, _ = load_config(config, RUN_ID)
     run_dir = tmp_path / RUN_ID
     run_dir.mkdir()
-    (run_dir / "config.yaml").write_text(config.read_text())
+    (run_dir / LAUNCH_CONFIG_FILENAME).write_text(config.read_text())
     assert load_run_dir_config(run_dir) == expected
 
 

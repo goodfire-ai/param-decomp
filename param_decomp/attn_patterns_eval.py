@@ -30,7 +30,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -38,6 +37,7 @@ from jax import random
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from param_decomp.components import DecompVU
+from param_decomp.jit_util import filter_jit
 from param_decomp.lm import DecomposedModel, all_false_routes
 from param_decomp.targets.llama8b import FrozenAttn, LlamaDecomposedModel
 from param_decomp.targets.llama_simple_mlp import SimpleMLPDecomposedModel
@@ -187,14 +187,17 @@ def _assert_attention_sequence_axes(lm: DecomposedModel) -> None:
     )
 
 
-def make_ci_attn_patterns_step(lm: DecomposedModel, pattern_fn: AttnPatternFn) -> AttnPatternsStep:
+def make_ci_attn_patterns_step(
+    lm: DecomposedModel,
+    pattern_fn: AttnPatternFn,
+    compiler_options: dict[str, bool | int | str] | None = None,
+) -> AttnPatternsStep:
     """Deterministic CI-mask attn-patterns step: `lower_leaky` CI, no delta, one masked
     forward + one clean (all-false) forward."""
     _assert_attention_sequence_axes(lm)
     site_names = lm.site_names
     layer_pairs = _attn_layer_sites(site_names)
 
-    @eqx.filter_jit
     def step(
         model: DecomposedModel,
         components: DecompVU,
@@ -220,11 +223,14 @@ def make_ci_attn_patterns_step(lm: DecomposedModel, pattern_fn: AttnPatternFn) -
         n_distributions = {q: int(np.prod(target_patterns[q].shape[:3])) for q, _ in layer_pairs}
         return sum_kl, n_distributions
 
-    return step
+    return filter_jit(step, compiler_options=compiler_options)
 
 
 def make_stochastic_attn_patterns_step(
-    lm: DecomposedModel, pattern_fn: AttnPatternFn, n_mask_samples: int
+    lm: DecomposedModel,
+    pattern_fn: AttnPatternFn,
+    n_mask_samples: int,
+    compiler_options: dict[str, bool | int | str] | None = None,
 ) -> AttnPatternsStep:
     """Stochastic-mask attn-patterns step: `n_mask_samples` draws of `mask = ci + (1−ci)·s`
     (with weight deltas), per-draw per-layer pattern KL summed. RNG via per-draw / per-site
@@ -234,7 +240,6 @@ def make_stochastic_attn_patterns_step(
     site_names = lm.site_names
     layer_pairs = _attn_layer_sites(site_names)
 
-    @eqx.filter_jit
     def step(
         model: DecomposedModel,
         components: DecompVU,
@@ -277,7 +282,7 @@ def make_stochastic_attn_patterns_step(
         }
         return sum_kl, n_distributions
 
-    return step
+    return filter_jit(step, compiler_options=compiler_options)
 
 
 def accumulate_attn_patterns(

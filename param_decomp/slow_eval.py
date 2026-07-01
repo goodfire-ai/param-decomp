@@ -50,7 +50,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 from jax import random
@@ -59,6 +58,7 @@ from jaxtyping import Array, Float
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 
+from param_decomp.built_run import LAUNCH_CONFIG_FILENAME
 from param_decomp.ci_fn import lower_leaky_hard_sigmoid, upper_leaky_hard_sigmoid
 from param_decomp.configs import (
     DenseCITargetSpec,
@@ -73,6 +73,7 @@ from param_decomp.hidden_acts_eval import (
     make_ci_hidden_acts_step,
     make_stochastic_hidden_acts_step,
 )
+from param_decomp.jit_util import filter_jit
 from param_decomp.lm import DecomposedModel
 from param_decomp.train import COMPUTE_DT, cast_floating
 
@@ -107,14 +108,17 @@ metrics read only the CI arrays, so V/U (`components`) is not an input. `model`
 (frozen-weight-bearing) is the jit ARG."""
 
 
-def make_slow_eval_step(lm: DecomposedModel, ci_alive_threshold: float) -> SlowEvalStep:
+def make_slow_eval_step(
+    lm: DecomposedModel,
+    ci_alive_threshold: float,
+    compiler_options: dict[str, bool | int | str] | None = None,
+) -> SlowEvalStep:
     """Build the jit'd per-batch reduction `slow_eval_step(model, ci_fn, residual) ->
     ({site: density_counts}, {site: ci_sums}, n_positions, {site: flat lower},
     {site: flat logits})`. `lower`/`logits` are returned whole (the host caps the
     histogram sample); counts/sums are pre-reduced over positions."""
     site_names = lm.site_names
 
-    @eqx.filter_jit
     def slow_eval_step(
         model: DecomposedModel, ci_fn: Any, residual: Float[Array, "*leading d"]
     ) -> tuple[dict[str, Array], dict[str, Array], Array, dict[str, Array], dict[str, Array]]:
@@ -142,7 +146,7 @@ def make_slow_eval_step(lm: DecomposedModel, ci_alive_threshold: float) -> SlowE
         flat_logits = {s: logits[s].reshape(-1) for s in site_names}
         return density_counts, ci_sums, n_positions, flat_lower, flat_logits
 
-    return slow_eval_step
+    return filter_jit(slow_eval_step, compiler_options=compiler_options)
 
 
 def accumulate_site_reductions(
@@ -201,13 +205,14 @@ the per-batch CI summed over the batch leading axis, position axis kept. Pairs w
 (frozen-weight-bearing) is the jit ARG."""
 
 
-def make_position_ci_step(lm: DecomposedModel) -> PositionCIStep:
+def make_position_ci_step(
+    lm: DecomposedModel, compiler_options: dict[str, bool | int | str] | None = None
+) -> PositionCIStep:
     """Per-batch CI reduction that KEEPS the position axis (the `(T, C)` matrix the
     permutation/heatmap metrics plot), summing only over the batch leading axis. LM-only:
     the residual is `(B, T, d)` and CI is `(B, T, C)`."""
     site_names = lm.site_names
 
-    @eqx.filter_jit
     def position_ci_step(
         model: DecomposedModel, ci_fn: Any, residual: Float[Array, "*leading d"]
     ) -> tuple[dict[str, Array], dict[str, Array], Array]:
@@ -227,7 +232,7 @@ def make_position_ci_step(lm: DecomposedModel) -> PositionCIStep:
         upper_sum = {s: upper[s].sum(0) for s in site_names}
         return lower_sum, upper_sum, n_batch
 
-    return position_ci_step
+    return filter_jit(position_ci_step, compiler_options=compiler_options)
 
 
 @dataclass(frozen=True)
@@ -665,16 +670,17 @@ def compute_hidden_acts_metrics(
     residual_batches: list[Float[Array, "*leading d"]],
     n_mask_samples: int,
     base_key: Array,
+    compiler_options: dict[str, bool | int | str] | None = None,
 ) -> dict[str, float]:
     """Both hidden-acts recon eval metrics over the eval batches, keyed by the torch
     `<ClassName>[/<site>]` log keys. `state.components`/`state.ci_fn` are the restored
     trajectory; `base_key` seeds the stochastic variant's per-batch draws."""
     ci_key, stoch_key = random.split(base_key)
-    ci_step = make_ci_hidden_acts_step(model)
+    ci_step = make_ci_hidden_acts_step(model, compiler_options)
     ci_reductions = accumulate_hidden_acts(
         ci_step, model, state.components, state.ci_fn, residual_batches, ci_key
     )
-    stoch_step = make_stochastic_hidden_acts_step(model, n_mask_samples)
+    stoch_step = make_stochastic_hidden_acts_step(model, n_mask_samples, compiler_options)
     stoch_reductions = accumulate_hidden_acts(
         stoch_step, model, state.components, state.ci_fn, residual_batches, stoch_key
     )
@@ -685,7 +691,7 @@ def compute_hidden_acts_metrics(
 
 
 def eval_metrics_from_run_dir(run_dir: Path) -> list[Any]:
-    """The typed `eval.metrics` configs from the run's `config.yaml`. The trainer's
+    """The typed `eval.metrics` configs from the run's pinned launch config. The trainer's
     `EvalConfig` keeps only scalar-tier fields, so the plot/permutation metric configs are
     re-validated here from the raw block. The in-loop slow tier (`run.py`) reads the metric
     list this way to resolve the config-gated permutation/UV/identity metrics."""
@@ -694,7 +700,7 @@ def eval_metrics_from_run_dir(run_dir: Path) -> list[Any]:
 
     from param_decomp.configs import AnyEvalMetricConfig
 
-    raw = yaml.safe_load((run_dir / "config.yaml").read_text())
+    raw = yaml.safe_load((run_dir / LAUNCH_CONFIG_FILENAME).read_text())
     adapter = TypeAdapter(AnyEvalMetricConfig)
     return [adapter.validate_python(m) for m in raw["eval"]["metrics"]]
 
