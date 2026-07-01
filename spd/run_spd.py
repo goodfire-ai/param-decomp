@@ -55,7 +55,7 @@ from spd.utils.general_utils import (
     get_scheduled_value,
     save_pre_run_info,
 )
-from spd.utils.logging_utils import get_grad_norms_dict, local_log
+from spd.utils.logging_utils import GradClipTracker, get_grad_norms_dict, local_log
 from spd.utils.module_utils import expand_module_patterns
 from spd.utils.run_utils import generate_run_id, save_file
 from spd.utils.wandb_utils import init_wandb, try_wandb
@@ -207,6 +207,8 @@ def optimize(
     optimized_params = component_params + ci_fn_params
     optimizer = optim.AdamW(optimized_params, lr=config.lr_schedule.start_val, weight_decay=0)
 
+    grad_clip_tracker = GradClipTracker()
+
     if config.faithfulness_warmup_steps > 0:
         run_faithfulness_warmup(component_model, component_params, config)
 
@@ -338,6 +340,11 @@ def optimize(
                 batch_log_data, {f"train/grad_norms/{k}": v for k, v in grad_norms.items()}
             )
 
+            clip_stats = grad_clip_tracker.flush()
+            dict_safe_update_(
+                batch_log_data, {f"train/grad_clip/{k}": v for k, v in clip_stats.items()}
+            )
+
             batch_log_data["train/schedules/lr"] = step_lr
 
             if is_main_process():
@@ -420,9 +427,17 @@ def optimize(
         if step != config.steps:
             sync_across_processes()
             if config.grad_clip_norm_components is not None:
-                clip_grad_norm_(component_params, config.grad_clip_norm_components)
+                comp_pre_clip_norm = clip_grad_norm_(
+                    component_params, config.grad_clip_norm_components
+                )
+                grad_clip_tracker.record(
+                    "components", comp_pre_clip_norm.item(), config.grad_clip_norm_components
+                )
             if config.grad_clip_norm_ci_fns is not None:
-                clip_grad_norm_(ci_fn_params, config.grad_clip_norm_ci_fns)
+                ci_fn_pre_clip_norm = clip_grad_norm_(ci_fn_params, config.grad_clip_norm_ci_fns)
+                grad_clip_tracker.record(
+                    "ci_fns", ci_fn_pre_clip_norm.item(), config.grad_clip_norm_ci_fns
+                )
             optimizer.step()
 
     if is_main_process():

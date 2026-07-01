@@ -1,4 +1,5 @@
 import json
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -71,3 +72,32 @@ def get_grad_norms_dict(
     out["summary/total"] = total_grad_norm_sq_sum.sqrt().item()
 
     return out
+
+
+class GradClipTracker:
+    """Per-step grad-clip activity, flushed as per-group fractions/means over each logging interval.
+
+    `clip_grad_norm_` returns the pre-clip total norm, so recording every step is free. This
+    surfaces how often (`clip_fraction`) and how hard (`mean_pre_clip_norm` vs the threshold)
+    clipping actually binds in practice, which the interval-snapshot grad norms don't reveal.
+    """
+
+    def __init__(self) -> None:
+        self._n: defaultdict[str, int] = defaultdict(int)
+        self._clipped: defaultdict[str, int] = defaultdict(int)
+        self._pre_clip_norm_sum: defaultdict[str, float] = defaultdict(float)
+
+    def record(self, group: str, pre_clip_norm: float, max_norm: float) -> None:
+        self._n[group] += 1
+        self._clipped[group] += int(pre_clip_norm > max_norm)
+        self._pre_clip_norm_sum[group] += pre_clip_norm
+
+    def flush(self) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for group, n in self._n.items():
+            out[f"{group}/clip_fraction"] = self._clipped[group] / n
+            out[f"{group}/mean_pre_clip_norm"] = self._pre_clip_norm_sum[group] / n
+        self._n.clear()
+        self._clipped.clear()
+        self._pre_clip_norm_sum.clear()
+        return out
