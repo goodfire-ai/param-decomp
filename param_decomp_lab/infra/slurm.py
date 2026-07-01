@@ -234,6 +234,10 @@ def _common_sbatch_lines(config: SlurmConfig, log_pattern: str) -> list[str]:
         f"#SBATCH --gpus-per-node={config.n_gpus}",
         f"#SBATCH --time={config.time}",
         f"#SBATCH --output={SLURM_LOGS_DIR}/slurm-{log_pattern}.out",
+        # Append across requeues instead of SLURM's default truncate — otherwise an
+        # auto-requeue (`--requeue`) reopens the same `slurm-<jobid>.out` and wipes the
+        # prior attempt's log, destroying the crash evidence that triggered the requeue.
+        "#SBATCH --open-mode=append",
     ]
     if config.signal is not None:
         lines.append(f"#SBATCH --signal={config.signal}")
