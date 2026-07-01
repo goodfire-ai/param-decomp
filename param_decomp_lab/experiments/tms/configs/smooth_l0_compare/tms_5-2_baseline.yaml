@@ -67,3 +67,13 @@ wandb:
   - toy-smooth-l0
   - baseline
   - tms_5-2
+eval:
+  batch_size: 4096
+  n_steps: 1
+  every: 200
+  slow_every: 200
+  metrics:
+  - type: PermutedCIPlots
+    identity_patterns:
+    - '*'
+    dense_patterns: null

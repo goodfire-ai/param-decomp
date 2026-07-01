@@ -141,13 +141,14 @@ def run_tms_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) 
         ci = ci_fn(model.read_activations(probe, ci_fn.input_names), remat=False)
         return ci.lower, ci.upper
 
-    uv_spec = toy_uv_eval.toy_uv_spec(lm, raw_cfg)
+    plot_spec = toy_uv_eval.toy_permutation_spec(lm, raw_cfg)
 
     def eval_fn(state: TrainState, now_step: int) -> dict[str, float]:
         ci_lower, ci_upper = single_feature_ci(lm, state.ci_fn)
-        toy_uv_eval.log_uv_figure(
-            uv_spec,
+        toy_uv_eval.log_permutation_figures(
+            plot_spec,
             state.components.vu,
+            ci_lower,
             ci_upper,
             now_step,
             wandb_active=built.run.wandb is not None,

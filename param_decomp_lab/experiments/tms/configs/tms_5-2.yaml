@@ -1,14 +1,4 @@
-# TMS 5->2 PD decomposition (superposition toy). Small target, no remat. Launch:
-# pd-lm, 1 node. Validates via the in-loop ground-truth target-CI metric
-# (eval/identity_ci_error/<site>) logged each train-log step — no separate eval pass.
 run_name: jax-tms-5-2
-# TMS 5->2 PD decomposition — the canonical superposition toy (5 features in 2 hidden
-# dims). The JAX counterpart of the torch `tms_5-2_config.yaml`, adapted to the JAX
-# trainer's schema: the target is pretrained from scratch in-process (no wandb run_path),
-# and FaithfulnessLoss is in the loss list (the JAX recon-term builder requires it; the
-# torch TMS configs relied on faith warmup alone). The decomposition is UNTIED
-# (linear1/linear2 are two sites with independent V/U), the target is
-# tied. CI fn: layerwise per-site MLP (type=layerwise_mlp, hidden_dims=[16]). Runs on 1 GPU.
 pd:
   seed: 0
   ci_config:
@@ -70,3 +60,13 @@ target:
 data:
   feature_probability: 0.05
   data_generation_type: at_least_zero_active
+eval:
+  batch_size: 4096
+  n_steps: 1
+  every: 200
+  slow_every: 200
+  metrics:
+  - type: PermutedCIPlots
+    identity_patterns:
+    - '*'
+    dense_patterns: null

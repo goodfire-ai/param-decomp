@@ -29,12 +29,14 @@ The TMS and ResidualMLP toys are LAB experiments that call the core engine as a 
   (`config.assert_canonical_algorithm_config` / `run_instance` / `ci_arch`),
   pretrains + builds the target, and calls `run_decomposition_training` with a synthetic
   `sample_batch` + an `identity_ci_error` `eval_fn`. CPU, synchronous, no SLURM. The toy
-  `eval_fn` ALSO renders the config-gated `UVPlots` figure when the run's `eval.metrics`
-  names it (`toy_uv_eval.log_uv_figure`): the toys feed `UVPlots` their probe CI as the
-  column-permutation source and their small on-host V/U, sharing `slow_eval.render_uv_figure`
-  / `plot_uv_matrices` with the LM in-loop tier (SPEC S28). The toy `BuiltRun.eval`
-  stays `None` (the toy validates via the target-CI metric, not the LM scalar pass); the
-  `eval.metrics` list is read straight off the raw schema dict (`toy_uv_eval.toy_uv_spec`).
+  `eval_fn` ALSO renders the config-gated permutation figures when the run's `eval.metrics`
+  names them (`toy_uv_eval.log_permutation_figures`): `PermutedCIPlots` heatmaps the toys'
+  single-feature probe CI permuted toward identity (the identity heatmap), and `UVPlots`
+  heatmaps their small on-host V/U — both sharing `slow_eval.render_permutation_figures` /
+  `plot_permuted_ci_heatmaps` / `plot_uv_matrices` with the LM in-loop tier (SPEC S28). The
+  toy `BuiltRun.eval` stays `None` (the toy validates via the target-CI metric, not the LM
+  scalar pass); the `eval.metrics` list is read straight off the raw schema dict
+  (`toy_uv_eval.toy_permutation_spec`).
 - `configs/*.yaml` — the canonical `experiments.{tms,resid_mlp}.config` schema (TMS: 5-2 /
   40-10 / the `-id` deeper variants; ResidMLP: 1l/2l/3l + the global-CI variant).
 

@@ -1,9 +1,3 @@
-# TMS 40->10 PD decomposition — the larger superposition toy (40 features in 10 hidden
-# dims). The JAX counterpart of the torch `tms_40-10_config.yaml`: target pretrained from
-# scratch in-process (no wandb run_path), FaithfulnessLoss in the loss list, UNTIED
-# decomposition (linear1/linear2 two sites with independent V/U), tied
-# target. CI fn: layerwise per-site MLP (type=layerwise_mlp, hidden_dims=[16]). Validates via the
-# in-loop ground-truth target-CI metric (eval/identity_ci_error/<site>). Runs on 1 GPU.
 run_name: jax-tms-40-10
 pd:
   seed: 0
@@ -67,3 +61,13 @@ target:
 data:
   feature_probability: 0.05
   data_generation_type: at_least_zero_active
+eval:
+  batch_size: 4096
+  n_steps: 1
+  every: 200
+  slow_every: 200
+  metrics:
+  - type: PermutedCIPlots
+    identity_patterns:
+    - '*'
+    dense_patterns: null

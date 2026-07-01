@@ -1,10 +1,4 @@
-# ResidualMLP 1-layer wrapper — JAX counterpart of torch resid_mlp1_config.yaml.
 run_name: jax-resid-mlp-1l
-# ResidualMLP 1-layer PD decomposition — the JAX counterpart of the torch
-# resid_mlp1_config.yaml (n_features=100, d_embed=1000, d_mlp=50, fixed random embedding).
-# The torch target read from a wandb pretrain run; here the target is pretrained from
-# scratch in-process (the read-off `act_fn(x) + x` objective), so the run is reproducible
-# from this config alone.
 pd:
   seed: 0
   ci_config:
@@ -70,3 +64,13 @@ target:
 data:
   feature_probability: 0.01
   data_generation_type: at_least_zero_active
+eval:
+  batch_size: 2048
+  n_steps: 1
+  every: 100
+  slow_every: 100
+  metrics:
+  - type: PermutedCIPlots
+    identity_patterns:
+    - '*'
+    dense_patterns: null

@@ -1,8 +1,3 @@
-# TMS 40->10 PD decomposition with one FROZEN identity hidden layer (torch `-id` variant).
-# Inserts a frozen `hidden_layers.0` (n_hidden -> n_hidden, identity init) between linear1
-# and linear2, adding a third dense decomposition site (C=200). The dense site's
-# ground-truth CI is the dense pattern (all n_hidden directions live). 20000 steps.
-# CI fn: layerwise per-site MLP (type=layerwise_mlp, hidden_dims=[16]). Runs on 1 GPU.
 run_name: jax-tms-40-10-id
 pd:
   seed: 0
@@ -69,3 +64,13 @@ target:
 data:
   feature_probability: 0.05
   data_generation_type: at_least_zero_active
+eval:
+  batch_size: 4096
+  n_steps: 1
+  every: 200
+  slow_every: 200
+  metrics:
+  - type: PermutedCIPlots
+    identity_patterns:
+    - '*'
+    dense_patterns: null

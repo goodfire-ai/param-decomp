@@ -1,12 +1,4 @@
-# ResidualMLP 1-layer with a GLOBAL (shared-across-sites) MLP CI fn.
 run_name: jax-resid-mlp-1l-global
-# Identical to resid_mlp_1l.yaml except the CI fn is the global MLP: ONE MLP over all sites
-# jointly, mapping concat(site inputs) -> concat(site logits), split back per-site in
-# canonical order. Fully wired end-to-end: GlobalMLPCIArch / GlobalMLPCIFn /
-# init_global_mlp_ci_fn live in param_decomp/ci_fn.py; config.toy_ci_arch builds the arch
-# from this ci_config, config.CIFnArch admits it, and run_state.init_train_state dispatches
-# it (replicated, via llama8b_sharding.init_global_mlp_ci_fn_replicated). Runs on CPU via
-# pd-resid-mlp.
 pd:
   seed: 0
   ci_config:
@@ -73,3 +65,13 @@ target:
 data:
   feature_probability: 0.01
   data_generation_type: at_least_zero_active
+eval:
+  batch_size: 2048
+  n_steps: 1
+  every: 100
+  slow_every: 100
+  metrics:
+  - type: PermutedCIPlots
+    identity_patterns:
+    - '*'
+    dense_patterns: null

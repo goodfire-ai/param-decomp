@@ -71,3 +71,13 @@ wandb:
   - toy-smooth-l0
   - baseline
   - resid_mlp_1l
+eval:
+  batch_size: 2048
+  n_steps: 1
+  every: 100
+  slow_every: 100
+  metrics:
+  - type: PermutedCIPlots
+    identity_patterns:
+    - '*'
+    dense_patterns: null

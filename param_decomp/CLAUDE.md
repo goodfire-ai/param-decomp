@@ -82,9 +82,11 @@ is a config-gated figure metric usable for ANY decomposition (the torch `Metric`
 returns a wandb figure): for the LM in-loop tier the LM composition's `eval_fn` does a
 NAIVE host gather of the C-sharded V/U (gated on `want_uv_plots`) and passes `components` to
 `render_permutation_figures` — it OOMs / breaks at production C BY DESIGN (per Oli), no
-special handling; for the positionless toys (TMS/ResidMLP) `toy_uv_eval.log_uv_figure`
-renders it off the small on-host V/U + the probe CI as permutation source (cheap, no
-gather), sharing `slow_eval.render_uv_figure` / `plot_uv_matrices` with the LM path.
+special handling; for the positionless toys (TMS/ResidMLP)
+`toy_uv_eval.log_permutation_figures` renders the CI identity heatmap (`PermutedCIPlots`) and
+UV heatmaps (`UVPlots`) off the small on-host probe CI + V/U (cheap, no gather), sharing
+`slow_eval.render_permutation_figures` / `plot_permuted_ci_heatmaps` / `plot_uv_matrices`
+with the LM path.
 
 **The toys (TMS, ResidMLP) live in the lab, not the core.** The core trainer carries ZERO
 toy-specific code — the toy *targets* (`DecomposedModel`s, pretrain, identity-CI eval) are

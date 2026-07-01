@@ -1,9 +1,10 @@
-"""CPU tests for the config-gated toy `UVPlots` figure (`toy_uv_eval`).
+"""CPU tests for the config-gated toy permutation figures (`toy_uv_eval`).
 
-The toys feed `UVPlots` their probe CI `(n_features, C)` as the permutation source and their
-small on-host V/U — so a toy config that names `UVPlots` produces a V/U-heatmap figure
-(logged to the live wandb run), and one that does not is a no-op. The plot code itself is the
-shared `slow_eval.render_uv_figure`, so this only pins the toy-side wiring + the config gate.
+The toys feed their single-feature probe CI `(n_features, C)` + small on-host V/U to the shared
+`slow_eval.render_permutation_figures`, so a toy config that names `PermutedCIPlots` produces
+the CI identity heatmap and one that names `UVPlots` also produces the V/U heatmap (both logged
+to the live wandb run); a config that names neither is a no-op. This pins the toy-side wiring +
+the config gate, not the plot code.
 """
 
 import sys
@@ -33,12 +34,20 @@ def _toy_setup():
     ci_fn = init_layerwise_mlp_ci_fn(MLPCIArch(hidden_dims=(16,)), sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     probe = single_feature_probe(cfg.n_features)
-    probe_upper = ci_fn(lm.read_activations(probe, ci_fn.input_names), remat=False).upper
-    return lm, vu, probe_upper
+    ci = ci_fn(lm.read_activations(probe, ci_fn.input_names), remat=False)
+    return lm, vu, ci.lower, ci.upper
 
 
 def _raw(metrics: list[dict[str, Any]]) -> dict[str, Any]:
     return {"eval": {"metrics": metrics}}
+
+
+def _permuted_ci(patterns: list[str] | None = None) -> dict[str, Any]:
+    return {"type": "PermutedCIPlots", "identity_patterns": patterns, "dense_patterns": None}
+
+
+def _uv_plots(patterns: list[str] | None = None) -> dict[str, Any]:
+    return {"type": "UVPlots", "identity_patterns": patterns, "dense_patterns": None}
 
 
 class _FakeWandb(types.ModuleType):
@@ -53,45 +62,54 @@ class _FakeWandb(types.ModuleType):
         self.logged.append((payload, step))
 
 
-def test_toy_uv_spec_gates_on_uvplots_in_config():
-    lm, _, _ = _toy_setup()
-    assert toy_uv_eval.toy_uv_spec(lm, {}).want_uv_plots is False
-    assert toy_uv_eval.toy_uv_spec(lm, _raw([])).want_uv_plots is False
-    no_uv = _raw([{"type": "PermutedCIPlots", "identity_patterns": None, "dense_patterns": None}])
-    assert toy_uv_eval.toy_uv_spec(lm, no_uv).want_uv_plots is False
-    with_uv = _raw([{"type": "UVPlots", "identity_patterns": None, "dense_patterns": None}])
-    assert toy_uv_eval.toy_uv_spec(lm, with_uv).want_uv_plots is True
+def test_toy_permutation_spec_gates_on_config():
+    lm, *_ = _toy_setup()
+    assert toy_uv_eval.toy_permutation_spec(lm, {}).any_plots is False
+    assert toy_uv_eval.toy_permutation_spec(lm, _raw([])).any_plots is False
+    ci_only = toy_uv_eval.toy_permutation_spec(lm, _raw([_permuted_ci()]))
+    assert ci_only.any_plots is True and ci_only.want_uv_plots is False
+    with_uv = toy_uv_eval.toy_permutation_spec(lm, _raw([_uv_plots()]))
+    assert with_uv.want_uv_plots is True
 
 
-def test_log_uv_figure_renders_png_when_configured(monkeypatch: pytest.MonkeyPatch):
-    lm, vu, probe_upper = _toy_setup()
-    spec = toy_uv_eval.toy_uv_spec(
-        lm, _raw([{"type": "UVPlots", "identity_patterns": None, "dense_patterns": None}])
-    )
+def test_permuted_ci_plots_renders_identity_heatmaps(monkeypatch: pytest.MonkeyPatch):
+    lm, vu, lower, upper = _toy_setup()
+    spec = toy_uv_eval.toy_permutation_spec(lm, _raw([_permuted_ci(["*"])]))
     fake = _FakeWandb()
     monkeypatch.setitem(sys.modules, "wandb", fake)
 
-    toy_uv_eval.log_uv_figure(spec, vu.vu, probe_upper, now_step=42, wandb_active=True)
+    toy_uv_eval.log_permutation_figures(spec, vu.vu, lower, upper, now_step=42, wandb_active=True)
 
     assert len(fake.logged) == 1
     payload, step = fake.logged[0]
     assert step == 42
-    assert set(payload) == {"slow_eval/figures/uv_matrices"}
+    assert set(payload) == {
+        "slow_eval/figures/causal_importances",
+        "slow_eval/figures/causal_importances_upper_leaky",
+    }
 
 
-def test_log_uv_figure_noop_when_unconfigured_or_wandb_off(monkeypatch: pytest.MonkeyPatch):
-    lm, vu, probe_upper = _toy_setup()
+def test_uvplots_adds_uv_matrices(monkeypatch: pytest.MonkeyPatch):
+    lm, vu, lower, upper = _toy_setup()
+    spec = toy_uv_eval.toy_permutation_spec(lm, _raw([_uv_plots(["*"])]))
     fake = _FakeWandb()
     monkeypatch.setitem(sys.modules, "wandb", fake)
 
-    # config does not name UVPlots -> no-op
-    no_uv = toy_uv_eval.toy_uv_spec(lm, _raw([]))
-    toy_uv_eval.log_uv_figure(no_uv, vu.vu, probe_upper, now_step=42, wandb_active=True)
+    toy_uv_eval.log_permutation_figures(spec, vu.vu, lower, upper, now_step=7, wandb_active=True)
+
+    payload, _ = fake.logged[0]
+    assert "slow_eval/figures/uv_matrices" in payload
+
+
+def test_noop_when_unconfigured_or_wandb_off(monkeypatch: pytest.MonkeyPatch):
+    lm, vu, lower, upper = _toy_setup()
+    fake = _FakeWandb()
+    monkeypatch.setitem(sys.modules, "wandb", fake)
+
+    no_plots = toy_uv_eval.toy_permutation_spec(lm, _raw([]))
+    toy_uv_eval.log_permutation_figures(no_plots, vu.vu, lower, upper, 42, wandb_active=True)
     assert fake.logged == []
 
-    # configured but wandb off -> no-op
-    with_uv = toy_uv_eval.toy_uv_spec(
-        lm, _raw([{"type": "UVPlots", "identity_patterns": None, "dense_patterns": None}])
-    )
-    toy_uv_eval.log_uv_figure(with_uv, vu.vu, probe_upper, now_step=42, wandb_active=False)
+    configured = toy_uv_eval.toy_permutation_spec(lm, _raw([_permuted_ci(["*"])]))
+    toy_uv_eval.log_permutation_figures(configured, vu.vu, lower, upper, 42, wandb_active=False)
     assert fake.logged == []
