@@ -3,12 +3,17 @@ histogram — the input to a genuine CI-density heatmap (x = component, y = per-
 
 Unlike render_mean_ci.py (which means CI over tokens, collapsing each component to one
 point), this keeps the full distribution: for each component we count how many of its
-per-token CI values fall in each log-spaced CI band. Streamed over the same eval batches
-the in-loop slow eval would use. Saves per-component (C, N_BINS) counts + per-component sum
-(for the density ordering) at each token threshold.
+per-token CI values fall in each CI band. Streamed over the same eval batches the in-loop
+slow eval would use. Saves per-component (C, N_BINS) counts + per-component sum (for the
+density ordering) at each token threshold.
 
-CI bin 0 is an underflow bin (CI < CI_FLOOR, including exact 0 = inactive); bins 1..NY are
-log-spaced in [CI_FLOOR, 1], with the top bin including CI = 1.
+Two binnings, both from the same forward pass:
+  - LOG:  bin 0 = underflow (CI < CI_FLOOR, incl exact 0); bins 1..NY_LOG log-spaced over
+          [CI_FLOOR, 1] (top bin includes CI = 1). → ci_hist_{label}.npz
+  - LIN:  NY_LIN uniform bins of 0.025 over [0, 1] (top bin includes CI = 1). The exact-0
+          inactive mass falls in bin 0 alongside genuine small CIs, so we also record a
+          per-component exact-0 count (`zero__<site>`) — subtract it to get the active
+          distribution. → ci_hist_lin_{label}.npz
 """
 
 from pathlib import Path
@@ -31,10 +36,13 @@ STEP = 200000
 OUT_DIR = Path("/mnt/home/oli/claude-slack/data/workspaces/3229052cd398/mean_ci_out")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-NY = 90
+NY_LOG = 90
 CI_FLOOR = 1e-9
-Y_EDGES = jnp.logspace(np.log10(CI_FLOOR), 0.0, NY + 1)
-N_BINS = NY + 1  # bin 0 = underflow (< CI_FLOOR, ie exact 0); bins 1..NY = log bands over [1e-9, 1]
+Y_EDGES_LOG = jnp.logspace(np.log10(CI_FLOOR), 0.0, NY_LOG + 1)
+N_BINS_LOG = NY_LOG + 1  # bin 0 = underflow (< CI_FLOOR, ie exact 0); bins 1..NY_LOG log bands over [1e-9, 1]
+
+NY_LIN = 40
+Y_EDGES_LIN = jnp.linspace(0.0, 1.0, NY_LIN + 1)  # 40 uniform bins of 0.025 over [0, 1]
 
 raw = yaml.safe_load((RUN_DIR / "experiment_config.yaml").read_text())
 launcher = yaml.safe_load((RUN_DIR / "config.yaml").read_text())
@@ -87,35 +95,60 @@ site_names = lm.site_names
 def hist_step(ci_fn, frozen, residual):
     site_inputs = {s: x.astype(COMPUTE_DT) for s, x in lm.site_inputs(frozen, residual).items()}
     lower = ci_fn(site_inputs).lower
-    counts = {}
+    counts_log = {}
+    counts_lin = {}
+    zeros = {}
     sums = {}
     for s in site_names:
         v = lower[s].astype(jnp.float32).reshape(-1, lower[s].shape[-1])
-        idx = jnp.clip(jnp.digitize(v, Y_EDGES), 0, NY)
-        counts[s] = jnp.stack([(idx == b).sum(axis=0) for b in range(N_BINS)], axis=1).astype(jnp.int32)
+        idx_log = jnp.clip(jnp.digitize(v, Y_EDGES_LOG), 0, NY_LOG)
+        counts_log[s] = jnp.stack([(idx_log == b).sum(axis=0) for b in range(N_BINS_LOG)], axis=1).astype(jnp.int32)
+        idx_lin = jnp.clip(jnp.digitize(v, Y_EDGES_LIN), 1, NY_LIN) - 1
+        counts_lin[s] = jnp.stack([(idx_lin == b).sum(axis=0) for b in range(NY_LIN)], axis=1).astype(jnp.int32)
+        zeros[s] = (v == 0).sum(axis=0).astype(jnp.int32)
         sums[s] = v.sum(0)
     n_positions = lower[site_names[0]].reshape(-1, lower[site_names[0]].shape[-1]).shape[0]
-    return counts, sums, jnp.asarray(n_positions, jnp.int32)
+    return counts_log, counts_lin, zeros, sums, jnp.asarray(n_positions, jnp.int32)
 
 
-def save_snapshot(counts: dict[str, np.ndarray], sums: dict[str, np.ndarray], n_tokens: int) -> None:
-    label = f"{n_tokens // 1000}k" if n_tokens < 1_000_000 else f"{n_tokens / 1_000_000:.1f}M"
+def snapshot_label(n_tokens: int) -> str:
+    return f"{n_tokens // 1000}k" if n_tokens < 1_000_000 else f"{n_tokens / 1_000_000:.1f}M"
+
+
+def save_snapshot(
+    counts_log: dict[str, np.ndarray],
+    counts_lin: dict[str, np.ndarray],
+    zeros: dict[str, np.ndarray],
+    sums: dict[str, np.ndarray],
+    n_tokens: int,
+) -> None:
+    label = snapshot_label(n_tokens)
     np.savez(
         OUT_DIR / f"ci_hist_{label}.npz",
-        y_edges=np.asarray(Y_EDGES),
+        y_edges=np.asarray(Y_EDGES_LOG),
         ci_floor=CI_FLOOR,
         n_tokens=n_tokens,
-        **{f"counts__{s.replace('.', '_')}": counts[s] for s in site_names},
+        **{f"counts__{s.replace('.', '_')}": counts_log[s] for s in site_names},
+        **{f"sum__{s.replace('.', '_')}": sums[s] for s in site_names},
+    )
+    np.savez(
+        OUT_DIR / f"ci_hist_lin_{label}.npz",
+        y_edges=np.asarray(Y_EDGES_LIN),
+        n_tokens=n_tokens,
+        **{f"counts__{s.replace('.', '_')}": counts_lin[s] for s in site_names},
+        **{f"zero__{s.replace('.', '_')}": zeros[s] for s in site_names},
         **{f"sum__{s.replace('.', '_')}": sums[s] for s in site_names},
     )
     print(f"[{label}] n_positions={n_tokens}", flush=True)
     for s in site_names:
-        c = counts[s]
+        c = counts_log[s]
         active_frac = 1.0 - c[:, 0].sum() / c.sum()
         print(f"    {s}: total_obs={c.sum()} active_frac={active_frac:.4f}", flush=True)
 
 
-count_acc = {s: np.zeros((0, N_BINS), np.int64) for s in site_names}
+count_log_acc = {s: np.zeros((0, N_BINS_LOG), np.int64) for s in site_names}
+count_lin_acc = {s: np.zeros((0, NY_LIN), np.int64) for s in site_names}
+zero_acc = {s: np.zeros(0, np.int64) for s in site_names}
 sum_acc = {s: np.zeros(0, np.float64) for s in site_names}
 total_positions = 0
 threshold_idx = 0
@@ -124,23 +157,27 @@ diagnosed = False
 for b in range(n_full_batches):
     residual = harvest(prefix, token_batch(base_index + b))
     for r0 in range(0, eval.batch_size, ROWS_PER_FWD):
-        counts, sums, n_pos = hist_step(ci_fn_bf16, frozen, residual[r0 : r0 + ROWS_PER_FWD])
+        counts_log, counts_lin, zeros, sums, n_pos = hist_step(ci_fn_bf16, frozen, residual[r0 : r0 + ROWS_PER_FWD])
         total_positions += int(n_pos)
         for s in site_names:
-            c = np.asarray(counts[s])
-            sm = np.asarray(sums[s])
-            count_acc[s] = c.astype(np.int64) if count_acc[s].size == 0 else count_acc[s] + c
-            sum_acc[s] = sm.astype(np.float64) if sum_acc[s].size == 0 else sum_acc[s] + sm
+            cl = np.asarray(counts_log[s]).astype(np.int64)
+            ci = np.asarray(counts_lin[s]).astype(np.int64)
+            z = np.asarray(zeros[s]).astype(np.int64)
+            sm = np.asarray(sums[s]).astype(np.float64)
+            count_log_acc[s] = cl if count_log_acc[s].size == 0 else count_log_acc[s] + cl
+            count_lin_acc[s] = ci if count_lin_acc[s].size == 0 else count_lin_acc[s] + ci
+            zero_acc[s] = z if zero_acc[s].size == 0 else zero_acc[s] + z
+            sum_acc[s] = sm if sum_acc[s].size == 0 else sum_acc[s] + sm
         if not diagnosed:
             diagnosed = True
             s0 = site_names[0]
-            col = count_acc[s0].sum(0)
-            print(f"DIAG {s0} after {total_positions} positions, bin distribution (bin0=underflow):", flush=True)
-            print("    edges:", np.round(np.asarray(Y_EDGES), 5), flush=True)
+            col = count_log_acc[s0].sum(0)
+            print(f"DIAG {s0} after {total_positions} positions, log bin distribution (bin0=underflow):", flush=True)
+            print("    edges:", np.round(np.asarray(Y_EDGES_LOG), 5), flush=True)
             print("    bin_totals:", col, flush=True)
             print(f"    active_frac={1.0 - col[0] / col.sum():.4f}", flush=True)
         while threshold_idx < len(TOKEN_THRESHOLDS) and total_positions >= TOKEN_THRESHOLDS[threshold_idx]:
-            save_snapshot(count_acc, sum_acc, TOKEN_THRESHOLDS[threshold_idx])
+            save_snapshot(count_log_acc, count_lin_acc, zero_acc, sum_acc, TOKEN_THRESHOLDS[threshold_idx])
             threshold_idx += 1
 
 print("wrote ci-hist npz to", OUT_DIR, flush=True)
