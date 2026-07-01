@@ -1,0 +1,282 @@
+:root {
+    --bg: #f1ede3;
+    --panel: #f9f6ef;
+    --panel-2: #fbf9f3;
+    --fg: #3b362c;
+    --dim: #857c6d;
+    --faint: #b0a796;
+    --line: rgba(59, 54, 44, 0.13);
+    --line-2: rgba(59, 54, 44, 0.22);
+    --accent: #b07a2c;
+    --ok: #5f7d4a;
+    --error: #b25b39;
+    --hl: 188, 120, 40;
+    --wash: rgba(var(--hl), 0.08);
+    --tip-bg: var(--panel);
+    --tip-fg: var(--fg);
+    --sans: "IBM Plex Sans", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+html[data-theme="dark"] {
+    --bg: #1a1712;
+    --panel: #211d16;
+    --panel-2: #262017;
+    --fg: #e9e2d2;
+    --dim: #9c9080;
+    --faint: #6b6253;
+    --line: rgba(233, 226, 210, 0.12);
+    --line-2: rgba(233, 226, 210, 0.22);
+    --accent: #d99a4e;
+    --ok: #93b07c;
+    --error: #cf7a5a;
+    --hl: 217, 154, 78;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    background: var(--bg);
+    color-scheme: light;
+}
+html[data-theme="dark"] {
+    color-scheme: dark;
+}
+
+body {
+    margin: 0;
+    color: var(--fg);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.7;
+    font-weight: 400;
+    font-feature-settings: "tnum" 1;
+    -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+    html,
+    body {
+        transition:
+            background-color 140ms ease,
+            color 140ms ease;
+    }
+}
+
+main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 32px 96px;
+}
+
+.narrow {
+    max-width: 760px;
+    margin: 0 auto;
+}
+
+a {
+    color: var(--fg);
+    text-decoration: underline;
+    text-decoration-color: var(--line-2);
+    text-underline-offset: 3px;
+}
+a:hover {
+    text-decoration-color: var(--accent);
+}
+
+h1,
+h2,
+h3 {
+    font-weight: 500;
+    line-height: 1.25;
+    letter-spacing: -0.01em;
+}
+
+:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+/* ——— type roles ——— */
+
+.display {
+    font-family: var(--sans);
+    font-size: clamp(24px, 5vw, 32px);
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    line-height: 1.25;
+}
+
+.eyebrow {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--dim);
+}
+
+.subline {
+    font-family: var(--sans);
+    font-size: 13.5px;
+    color: var(--dim);
+}
+
+.num {
+    font-family: var(--mono);
+    font-size: 0.92em;
+    font-weight: 400;
+    letter-spacing: 0;
+}
+
+.dim {
+    color: var(--dim);
+}
+
+.faint {
+    color: var(--faint);
+}
+
+/* ——— hairline-grid stat strips & panels ——— */
+
+.hairgrid {
+    display: grid;
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    overflow: hidden;
+}
+.hairgrid > * {
+    background: var(--panel);
+}
+
+.panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+}
+
+/* ——— data tables: hairline rules, no chrome ——— */
+
+table {
+    border-collapse: collapse;
+    width: 100%;
+}
+
+th {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--faint);
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line-2);
+}
+
+td {
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: baseline;
+    line-height: 1.5;
+}
+tbody tr:hover {
+    background: var(--panel-2);
+}
+
+th.r,
+td.r {
+    text-align: right;
+}
+
+/* ——— controls ——— */
+
+select,
+input[type="search"],
+input[type="text"] {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--fg);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 5px 10px;
+    text-transform: none;
+    letter-spacing: normal;
+}
+select:hover,
+input[type="search"]:hover,
+input[type="text"]:hover {
+    border-color: var(--line-2);
+}
+
+button.quiet {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--fg);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 4px 10px;
+    cursor: pointer;
+}
+button.quiet:hover:not(:disabled) {
+    border-color: var(--line-2);
+    background: var(--panel-2);
+}
+button.quiet:disabled {
+    color: var(--faint);
+    cursor: default;
+}
+
+/* ——— live indicator pulse (the one permitted animation) ——— */
+
+@media (prefers-reduced-motion: no-preference) {
+    .pulse {
+        animation: pulse 2.4s ease-in-out infinite;
+    }
+}
+@keyframes pulse {
+    50% {
+        opacity: 0.45;
+    }
+}
+
+/* ——— token spans with CSS-only tooltip ——— */
+
+.tok {
+    position: relative;
+    padding: 1px 1px 2px;
+    border-radius: 4px;
+    white-space: pre;
+    color: var(--fg);
+}
+.tok.hot {
+    font-weight: 500;
+}
+.tok:hover {
+    outline: 1px solid var(--line-2);
+}
+.tok:hover::after {
+    content: attr(data-tip);
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 7px);
+    transform: translateX(-50%);
+    background: var(--tip-bg);
+    color: var(--tip-fg);
+    border: 1px solid var(--line-2);
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.45;
+    padding: 4px 8px;
+    border-radius: 4px;
+    white-space: pre;
+    z-index: 10;
+    pointer-events: none;
+}

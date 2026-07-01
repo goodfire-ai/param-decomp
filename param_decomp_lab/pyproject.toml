@@ -27,6 +27,8 @@ dependencies = [
     "tqdm",
     "transformers",
     "einops",
+    "fastapi",
+    "uvicorn",
     # `datasets` less than 2.21.0 causes issues due to incompatibility with numpy>=2.0
     # see: https://github.com/huggingface/datasets/issues/6980 (fixed in 2.21.0)
     "datasets>=2.21.0",
