@@ -93,9 +93,15 @@ class GlobalMlpCiConfig(BaseConfig):
 
 class ChunkwiseTransformerCiConfig(BaseConfig):
     """Chunkwise-transformer CI fn (LMs). Each chunk is `blocks_per_chunk` consecutive
-    transformer blocks; its input is the residual stream entering the chunk and its output
-    is CI for every matrix site in those blocks. `d_model`/`n_blocks`/`n_heads`/`mlp_hidden`
-    size the per-chunk CI transformer (`d_model % n_heads == 0`; head_dim even for RoPE)."""
+    transformer blocks; its output is CI for every matrix site in those blocks.
+    `d_model`/`n_blocks`/`n_heads`/`mlp_hidden` size the per-chunk CI transformer
+    (`d_model % n_heads == 0`; head_dim even for RoPE).
+
+    `input_tap_mode` selects the chunk's input taps: `chunk_entry` (one tap, the residual
+    entering the chunk's first block) or `per_block` (the residual entering EACH block in the
+    chunk, RMS-normed and concatenated — `blocks_per_chunk` taps of width `d_resid`). For a
+    single-chunk (`blocks_per_chunk == n_blocks`) config, `per_block` gives the CI transformer
+    one residual read per block instead of only the model input."""
 
     type: Literal["chunkwise_transformer"] = "chunkwise_transformer"
     blocks_per_chunk: PositiveInt
@@ -103,6 +109,7 @@ class ChunkwiseTransformerCiConfig(BaseConfig):
     n_blocks: PositiveInt
     n_heads: PositiveInt
     mlp_hidden: PositiveInt
+    input_tap_mode: Literal["chunk_entry", "per_block"] = "chunk_entry"
 
     @model_validator(mode="after")
     def validate_heads(self) -> Self:
