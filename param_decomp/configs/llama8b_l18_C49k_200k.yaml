@@ -63,6 +63,10 @@ eval:
     n_steps: 20
     step_size: 0.1
     type: PGDReconLoss
+  # prestage the probe once per cluster to artifact_dir (else the first slow eval asserts):
+  # python -m param_decomp_lab.experiments.lm.prestage_arithmetic --out_dir <artifact_dir>
+  - type: ArithmeticCIGrid
+    artifact_dir: /mnt/data/artifacts/mechanisms/param-decomp/datasets/arithmetic_add_1_100_llama31
   n_steps: 1
   slow_every: 10000
   slow_on_first_step: true

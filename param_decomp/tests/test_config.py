@@ -398,9 +398,10 @@ def test_run_id_drives_identity_and_rejects_malformed():
 
 
 def test_arithmetic_ci_grid_metric_builds_to_arithmetic_eval_config():
-    # The arith run configs live outside the repo (bespoke experiment configs), so this is the
-    # only in-tree coverage of the ArithmeticCIGrid -> ArithmeticEvalConfig build path.
+    # In-tree coverage of the ArithmeticCIGrid -> ArithmeticEvalConfig build path (C49k enables
+    # it by default; drop that entry and inject a known one so the assert is config-independent).
     raw = yaml.safe_load((CONFIGS / "llama8b_l18_C49k_200k.yaml").read_text())
+    raw["eval"]["metrics"] = [m for m in raw["eval"]["metrics"] if m["type"] != "ArithmeticCIGrid"]
     raw["eval"]["metrics"].append({"type": "ArithmeticCIGrid", "artifact_dir": "/tmp/arith_probe"})
     built = build_experiment_config(LMExperimentConfig(**raw), RUN_ID)
     assert built.eval is not None
