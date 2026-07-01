@@ -23,18 +23,21 @@ from param_decomp.ci_fn import (
     build_ci_fn,
     lower_leaky_hard_sigmoid,
 )
+from param_decomp.components import init_decomp_vu
 from param_decomp.configs import (
     IdentityCIErrorConfig,
     IdentityCITargetSpec,
     PermutedCIPlotsConfig,
     UVPlotsConfig,
 )
+from param_decomp.hidden_acts_eval import accumulate_hidden_acts, make_ci_hidden_acts_step
 from param_decomp.lm import DecomposedModel
 from param_decomp.run import SlowEvalRenderer, slow_eval_due
 from param_decomp.slow_eval import (
     PermutationMetricSpec,
     accumulate_position_ci,
     accumulate_site_reductions,
+    compute_hidden_acts_metrics,
     compute_identity_ci_errors,
     dense_ci_error,
     identity_ci_error,
@@ -103,6 +106,52 @@ def test_reductions_match_hand_rolled_per_component():
         assert r.n_positions == b * t
         np.testing.assert_allclose(r.density_counts, (flat > 0.0).sum(0), rtol=1e-4, atol=1e-4)
         np.testing.assert_allclose(r.ci_sums, flat.sum(0), rtol=1e-4, atol=1e-4)
+
+
+def _tiny_hidden_acts_setup():
+    """A tiny MLP-site decomposition + its V/U + CI fn, for the hidden-acts eval path."""
+    cfg = _tiny_cfg()
+    sites = llama_site_specs(cfg, mlp_family_site_cs(4, 5, 8))
+    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    ci_fn = _build_ci_fn(lm, cfg.n_embd, jax.random.PRNGKey(2))
+    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    return cfg, lm, ci_fn, vu, sites
+
+
+def test_hidden_acts_eval_leading_is_full_bt_not_batch_only():
+    """Regression: the hidden-acts eval is fed `(b, t)` TOKENS, so the masked-forward
+    leading is the activation-space `(b, t)` — NOT `(b,)`. Dropping the seq axis made
+    `all_false_routes` build a `(b,)` route that broadcast as `(b, 1)` against the
+    `(b, t, d_out)` site output and crashed. The per-site element count pins the seq axis."""
+    cfg, lm, ci_fn, vu, sites = _tiny_hidden_acts_setup()
+    b, t = 2, 16
+    tokens = jax.random.randint(jax.random.PRNGKey(4), (b, t), 0, cfg.vocab_size)
+
+    step = make_ci_hidden_acts_step(lm)
+    reductions = accumulate_hidden_acts(step, lm, vu, ci_fn, [tokens], jax.random.PRNGKey(5))
+
+    assert set(reductions) == set(lm.site_names)
+    for spec in sites:
+        r = reductions[spec.name]
+        assert r.n_elements == b * t * spec.d_out  # seq axis retained (would be b*d_out if dropped)
+        assert np.isfinite(r.sum_mse)
+
+
+def test_compute_hidden_acts_metrics_end_to_end():
+    """Both hidden-acts metrics (deterministic + stochastic) run over a `(b, t)` token batch
+    and emit finite torch-keyed scalars."""
+    cfg, lm, ci_fn, vu, _ = _tiny_hidden_acts_setup()
+    tokens = jax.random.randint(jax.random.PRNGKey(4), (2, 16), 0, cfg.vocab_size)
+    state = types.SimpleNamespace(components=vu, ci_fn=ci_fn)
+
+    out = compute_hidden_acts_metrics(
+        lm, state, [tokens], n_mask_samples=2, base_key=jax.random.PRNGKey(6)
+    )
+
+    for class_name in ("CIHiddenActsReconLoss", "StochasticHiddenActsReconLoss"):
+        assert np.isfinite(out[class_name])
+        for site in lm.site_names:
+            assert np.isfinite(out[f"{class_name}/{site}"])
 
 
 def test_density_threshold_caps_counts_at_n_positions():
