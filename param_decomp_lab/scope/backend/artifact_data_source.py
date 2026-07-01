@@ -19,10 +19,8 @@ from param_decomp_lab.scope.backend.data_source import (
     ComponentLabel,
     ComponentListResponse,
     ComponentRow,
-    CurvePoint,
     RunEntry,
     ScopeNotFoundError,
-    SiteCurve,
     SiteEntry,
     SortKey,
     SubrunEntry,
@@ -30,9 +28,10 @@ from param_decomp_lab.scope.backend.data_source import (
 from param_decomp_lab.tokenizer_display import AppTokenizer
 
 _SORT_SQL: dict[str, str] = {
+    "mean_ci": "c.mean_ci DESC",
     "density": "c.firing_density DESC",
     "max_act": "c.max_act DESC",
-    "unlabeled_first": "(l.label IS NULL) DESC, c.firing_density DESC",
+    "unlabeled_first": "(l.label IS NULL) DESC, c.mean_ci DESC",
 }
 
 
@@ -146,35 +145,16 @@ class ArtifactDataSource:
             f"SELECT COUNT(*) FROM components c {join} {where}", params
         ).fetchone()
         rows = conn.execute(
-            f"""SELECT c.idx, c.firing_density, c.max_act, l.label
+            f"""SELECT c.idx, c.mean_ci, c.firing_density, c.max_act, l.label
                 FROM components c {join} {where}
                 ORDER BY {_SORT_SQL[sort]} LIMIT :limit OFFSET :offset""",
             params,
         ).fetchall()
         items = [
-            ComponentRow(idx=idx, density=density, max_act=max_act, label=label)
-            for idx, density, max_act, label in rows
+            ComponentRow(idx=idx, mean_ci=mean_ci, density=density, max_act=max_act, label=label)
+            for idx, mean_ci, density, max_act, label in rows
         ]
         return ComponentListResponse(total=total, page=page, items=items)
-
-    def site_curve(self, run_id: str, site: str) -> SiteCurve:
-        subruns = find_subruns(run_id, site)
-        if not subruns:
-            raise ScopeNotFoundError(f"no published subrun for {run_id}/{site}")
-        idx_by_rank, _, mean_ci_by_rank = _rank_order(str(subruns[-1]))
-        n = len(idx_by_rank)
-        sample = sorted(
-            {
-                0,
-                n - 1,
-                *(round(1.6**k) for k in range(1, 200) if 1.6**k < n - 1),
-                *range(0, n, max(1, n // 360)),
-            }
-        )
-        points = [
-            CurvePoint(rank=r, idx=idx_by_rank[r], mean_ci=mean_ci_by_rank[r]) for r in sample
-        ]
-        return SiteCurve(total=n, points=points)
 
     def component_detail(self, run_id: str, site: str, idx: int) -> ComponentDetail:
         conn, reader = self._query_conn(run_id, site)

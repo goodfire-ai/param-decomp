@@ -1,53 +1,39 @@
 :root {
-    --bg: #f1ede3;
-    --panel: #f9f6ef;
-    --panel-2: #fbf9f3;
-    --fg: #3b362c;
-    --dim: #857c6d;
-    --faint: #b0a796;
-    --line: rgba(59, 54, 44, 0.13);
-    --line-2: rgba(59, 54, 44, 0.22);
-    --accent: #b07a2c;
-    --ok: #5f7d4a;
-    --error: #b25b39;
-    --hl: 188, 120, 40;
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c2129;
+    --fg: #e6edf3;
+    --dim: #8b949e;
+    --faint: #6e7681;
+    --line: #21262d;
+    --line-2: #30363d;
+    --accent: #58a6ff;
+    --accent-wash: rgba(88, 166, 255, 0.12);
+    --ok: #3fb950;
+    --error: #f85149;
+    --hl: 20, 120, 255;
     --wash: rgba(var(--hl), 0.08);
-    --tip-bg: var(--panel);
-    --tip-fg: var(--fg);
-    --gate: #c26a1f;
-    --up: #4f7d3a;
-    --down: #7a52c8;
+    --peak-outline: rgba(230, 237, 243, 0.55);
+    --tip-bg: #1c2129;
+    --tip-fg: #e6edf3;
+    --gate: #f0883e;
+    --up: #3fb950;
+    --down: #a371f7;
     --sans: "IBM Plex Sans", system-ui, sans-serif;
     --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
-}
-
-html[data-theme="dark"] {
-    --bg: #1a1712;
-    --panel: #211d16;
-    --panel-2: #262017;
-    --fg: #e9e2d2;
-    --dim: #9c9080;
-    --faint: #6b6253;
-    --line: rgba(233, 226, 210, 0.12);
-    --line-2: rgba(233, 226, 210, 0.22);
-    --accent: #d99a4e;
-    --ok: #93b07c;
-    --error: #cf7a5a;
-    --hl: 217, 154, 78;
-    --gate: #e0964a;
-    --up: #7fb063;
-    --down: #b18ceb;
 }
 
 * {
     box-sizing: border-box;
 }
 
+html,
+body {
+    height: 100%;
+}
+
 html {
     background: var(--bg);
-    color-scheme: light;
-}
-html[data-theme="dark"] {
     color-scheme: dark;
 }
 
@@ -60,26 +46,6 @@ body {
     font-weight: 400;
     font-feature-settings: "tnum" 1;
     -webkit-font-smoothing: antialiased;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-    html,
-    body {
-        transition:
-            background-color 140ms ease,
-            color 140ms ease;
-    }
-}
-
-main {
-    max-width: 1100px;
-    margin: 0 auto;
-    padding: 0 32px 96px;
-}
-
-.narrow {
-    max-width: 760px;
-    margin: 0 auto;
 }
 
 a {
@@ -109,7 +75,7 @@ h3 {
 
 .display {
     font-family: var(--sans);
-    font-size: clamp(24px, 5vw, 32px);
+    font-size: clamp(22px, 4vw, 28px);
     font-weight: 500;
     letter-spacing: -0.01em;
     line-height: 1.25;
@@ -135,6 +101,10 @@ h3 {
     font-size: 0.92em;
     font-weight: 400;
     letter-spacing: 0;
+}
+
+.mono {
+    font-family: var(--mono);
 }
 
 .dim {
@@ -289,6 +259,9 @@ button.quiet:disabled {
 }
 .tok.hot {
     font-weight: 500;
+}
+.tok.peak {
+    outline: 1px solid var(--peak-outline);
 }
 .tok:hover {
     outline: 1px solid var(--line-2);

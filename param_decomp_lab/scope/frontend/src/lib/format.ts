@@ -7,6 +7,10 @@ export function fmtAct(a: number): string {
     return a.toFixed(2);
 }
 
+export function fmtCi(c: number): string {
+    return c.toFixed(3);
+}
+
 export function fmtCount(n: number): string {
     return n.toLocaleString("en-US");
 }

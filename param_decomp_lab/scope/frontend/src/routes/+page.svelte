@@ -1,20 +1,9 @@
 <script lang="ts">
-    import { onMount } from "svelte";
     import { fmtCount, matrixKind, parseSite } from "$lib/format";
     import type { Catalog, Site } from "$lib/types";
 
-    let { data } = $props();
-    let polled: Catalog | null = $state(null);
-    const catalog: Catalog = $derived(polled ?? data.catalog);
-
-    onMount(() => {
-        const id = setInterval(async () => {
-            const res = await fetch("/api/catalog");
-            if (!res.ok) throw new Error(`catalog poll failed: ${res.status}`);
-            polled = await res.json();
-        }, 5000);
-        return () => clearInterval(id);
-    });
+    let { data }: { data: { catalog: Catalog } } = $props();
+    const catalog = $derived(data.catalog);
 
     type Cell =
         | { state: "absent" }
@@ -60,72 +49,88 @@
 
 <svelte:head><title>Scope · Catalogue</title></svelte:head>
 
-<h1>Catalogue of decompositions</h1>
-<p class="preamble subline">
-    Each run decomposes a set of weight matrices (sites) into sparse components. Harvest subruns
-    arrive incrementally — cells below fill in as postprocessing lands. Present sites open in the
-    component browser.
-</p>
-
-{#each grids as grid (grid.run_id)}
-    <section>
-        <h2>{grid.run_id}</h2>
-        <p class="run-stats subline">
-            {fmtCount(grid.nComponents)} components · {fmtCount(grid.nLabeled)} labeled
+<div class="scroll">
+    <div class="doc">
+        <h1>Catalogue of decompositions</h1>
+        <p class="preamble subline">
+            Each run decomposes a set of weight matrices (sites) into sparse components. Present
+            sites open in the component browser; in-flight subruns fill in as postprocessing lands.
         </p>
-        <table class="grid">
-            <thead>
-                <tr>
-                    <th class="r col-layer">layer</th>
-                    {#each grid.kinds as kind (kind)}
-                        {@const mk = matrixKind(kind)}
-                        <th>{#if mk}<span class="mtag {mk}">{mk}</span>{:else}{kind}{/if}</th>
-                    {/each}
-                </tr>
-            </thead>
-            <tbody>
-                {#each grid.rows as row (row.layer)}
-                    <tr>
-                        <td class="num r layer-cell">{row.layer}</td>
-                        {#each row.cells as cell, i (i)}
-                            <td>
-                                {#if cell.state === "present"}
-                                    <a
-                                        class="present"
-                                        href="/r/{grid.run_id}/s/{cell.site.site}"
-                                        title="{fmtCount(cell.site.n_components)} components, {fmtCount(
-                                            cell.site.n_labeled,
-                                        )} labeled"
-                                    >
-                                        <span class="sq ok"></span>
-                                        <span class="num">{fmtCount(cell.site.n_components)}</span>
-                                    </a>
-                                {:else if cell.state === "in_flight"}
-                                    <span class="inflight">
-                                        <span class="sq live pulse"></span>
-                                        <span class="num">{Math.round(cell.progress * 100)}%</span>
-                                        <span class="track"
-                                            ><span
-                                                class="fill"
-                                                style="width: {cell.progress * 100}%"
-                                            ></span></span
-                                        >
-                                    </span>
-                                {:else}
-                                    <span class="faint">—</span>
-                                {/if}
-                            </td>
-                        {/each}
-                    </tr>
-                {/each}
-            </tbody>
-        </table>
-    </section>
-{/each}
 
-<p class="colophon eyebrow">catalogue refreshes every five seconds</p>
+        {#each grids as grid (grid.run_id)}
+            <section>
+                <h2>{grid.run_id}</h2>
+                <p class="run-stats subline">
+                    {fmtCount(grid.nComponents)} components · {fmtCount(grid.nLabeled)} labeled
+                </p>
+                <table class="grid">
+                    <thead>
+                        <tr>
+                            <th class="r col-layer">layer</th>
+                            {#each grid.kinds as kind (kind)}
+                                {@const mk = matrixKind(kind)}
+                                <th>
+                                    {#if mk}<span class="mtag {mk}">{mk}</span>{:else}{kind}{/if}
+                                </th>
+                            {/each}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {#each grid.rows as row (row.layer)}
+                            <tr>
+                                <td class="num r layer-cell">{row.layer}</td>
+                                {#each row.cells as cell, i (i)}
+                                    <td>
+                                        {#if cell.state === "present"}
+                                            <a
+                                                class="present"
+                                                href="/r/{grid.run_id}/s/{cell.site.site}"
+                                                title="{fmtCount(
+                                                    cell.site.n_components,
+                                                )} components, {fmtCount(cell.site.n_labeled)} labeled"
+                                            >
+                                                <span class="sq ok"></span>
+                                                <span class="num"
+                                                    >{fmtCount(cell.site.n_components)}</span
+                                                >
+                                            </a>
+                                        {:else if cell.state === "in_flight"}
+                                            <span class="inflight">
+                                                <span class="sq live pulse"></span>
+                                                <span class="num"
+                                                    >{Math.round(cell.progress * 100)}%</span
+                                                >
+                                                <span class="track"
+                                                    ><span
+                                                        class="fill"
+                                                        style="width: {cell.progress * 100}%"
+                                                    ></span></span
+                                                >
+                                            </span>
+                                        {:else}
+                                            <span class="faint">—</span>
+                                        {/if}
+                                    </td>
+                                {/each}
+                            </tr>
+                        {/each}
+                    </tbody>
+                </table>
+            </section>
+        {/each}
+    </div>
+</div>
 
 <style>
+    .scroll {
+        height: 100%;
+        overflow: auto;
+    }
+    .doc {
+        max-width: 900px;
+        margin: 0 auto;
+        padding: 40px 32px 96px;
+    }
     h1 {
         font-size: 22px;
         margin: 0 0 8px;
@@ -203,8 +208,5 @@
         display: block;
         height: 100%;
         background: rgba(var(--hl), 0.55);
-    }
-    .colophon {
-        margin-top: 16px;
     }
 </style>

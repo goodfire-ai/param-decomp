@@ -4,7 +4,7 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel
 
-SortKey = Literal["density", "max_act", "unlabeled_first"]
+SortKey = Literal["mean_ci", "density", "max_act", "unlabeled_first"]
 SubrunStatus = Literal["present", "in_flight"]
 
 
@@ -37,6 +37,7 @@ class CatalogResponse(BaseModel):
 
 class ComponentRow(BaseModel):
     idx: int
+    mean_ci: float
     density: float
     max_act: float
     label: str | None
@@ -60,19 +61,6 @@ class ActivationExample(BaseModel):
     acts: list[float]
     cis: list[float]
     max_act: float
-
-
-class CurvePoint(BaseModel):
-    rank: int
-    idx: int
-    mean_ci: float
-
-
-class SiteCurve(BaseModel):
-    """Downsampled site-wide mean-CI-vs-rank curve (~hundreds of points, never O(C))."""
-
-    total: int
-    points: list[CurvePoint]
 
 
 class ComponentDetail(BaseModel):
@@ -105,7 +93,5 @@ class ScopeDataSource(Protocol):
     ) -> ComponentListResponse: ...
 
     def component_detail(self, run_id: str, site: str, idx: int) -> ComponentDetail: ...
-
-    def site_curve(self, run_id: str, site: str) -> SiteCurve: ...
 
     def create_label(self, run_id: str, site: str, idx: int) -> ComponentLabel: ...

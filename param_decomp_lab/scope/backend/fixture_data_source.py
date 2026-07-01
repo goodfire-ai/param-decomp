@@ -14,10 +14,8 @@ from param_decomp_lab.scope.backend.data_source import (
     ComponentLabel,
     ComponentListResponse,
     ComponentRow,
-    CurvePoint,
     RunEntry,
     ScopeNotFoundError,
-    SiteCurve,
     SiteEntry,
     SortKey,
     SubrunEntry,
@@ -268,6 +266,7 @@ class _SiteColumns:
     """Compact per-site columns — the fixture analogue of the future mmap column store."""
 
     densities: np.ndarray
+    mean_cis: np.ndarray
     max_acts: np.ndarray
     labels: list[str | None]
 
@@ -286,13 +285,14 @@ def _build_columns(run_id: str, spec: _SiteSpec) -> _SiteColumns:
     rng = np.random.default_rng(_seed(run_id, spec.site, "columns"))
     zipf_ranks = rng.permutation(n).astype(np.float64)
     densities = 0.35 * (zipf_ranks + 1.0) ** -0.75 * rng.uniform(0.8, 1.2, size=n)
+    mean_cis = np.clip(densities / densities.max() * rng.uniform(0.7, 1.0, size=n) + 0.05, 0.0, 1.0)
     max_acts = rng.lognormal(mean=1.2, sigma=0.6, size=n)
     labeled = rng.random(n) < LABELED_FRACTION
     labels: list[str | None] = [
         _component_semantics(run_id, spec.site, idx)[2] if labeled[idx] else None
         for idx in range(n)
     ]
-    return _SiteColumns(densities=densities, max_acts=max_acts, labels=labels)
+    return _SiteColumns(densities=densities, mean_cis=mean_cis, max_acts=max_acts, labels=labels)
 
 
 class FixtureDataSource:
@@ -389,6 +389,8 @@ class FixtureDataSource:
             candidate_idxs = np.arange(n, dtype=np.int64)
 
         match sort:
+            case "mean_ci":
+                order = np.argsort(-columns.mean_cis[candidate_idxs], kind="stable")
             case "density":
                 order = np.argsort(-columns.densities[candidate_idxs], kind="stable")
             case "max_act":
@@ -404,6 +406,7 @@ class FixtureDataSource:
         items = [
             ComponentRow(
                 idx=int(i),
+                mean_ci=round(float(columns.mean_cis[i]), 6),
                 density=round(float(columns.densities[i]), 6),
                 max_act=round(float(columns.max_acts[i]), 4),
                 label=label_at(int(i)),
@@ -411,17 +414,6 @@ class FixtureDataSource:
             for i in page_idxs
         ]
         return ComponentListResponse(total=len(ranked), page=page, items=items)
-
-    def site_curve(self, run_id: str, site: str) -> SiteCurve:
-        _, columns = self._browsable_columns(run_id, site)
-        order = np.argsort(-columns.densities, kind="stable")
-        n = len(order)
-        sample = sorted({0, n - 1, *range(0, n, max(1, n // 360))})
-        points = [
-            CurvePoint(rank=r, idx=int(order[r]), mean_ci=float(columns.densities[order[r]]))
-            for r in sample
-        ]
-        return SiteCurve(total=n, points=points)
 
     def component_detail(self, run_id: str, site: str, idx: int) -> ComponentDetail:
         spec, columns = self._browsable_columns(run_id, site)
@@ -466,7 +458,7 @@ class FixtureDataSource:
         else:
             label = None
 
-        order = np.argsort(-columns.densities, kind="stable")
+        order = np.argsort(-columns.mean_cis, kind="stable")
         rank_of = int(np.nonzero(order == idx)[0][0])
         return ComponentDetail(
             idx=idx,
@@ -475,7 +467,7 @@ class FixtureDataSource:
             next_idx=int(order[rank_of + 1]) if rank_of + 1 < len(order) else None,
             density=round(float(columns.densities[idx]), 6),
             max_act=round(max_act, 4),
-            mean_ci=round(float(columns.densities[idx]) * 0.8, 6),
+            mean_ci=round(float(columns.mean_cis[idx]), 6),
             label=label,
             input_pmi=pmi_list("input"),
             output_pmi=pmi_list("output"),

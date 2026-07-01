@@ -25,10 +25,11 @@ export interface Catalog {
     runs: Run[];
 }
 
-export type SortKey = "density" | "max_act" | "unlabeled_first";
+export type SortKey = "mean_ci" | "density" | "max_act" | "unlabeled_first";
 
 export interface ComponentRow {
     idx: number;
+    mean_ci: number;
     density: number;
     max_act: number;
     label: string | null;
@@ -52,17 +53,6 @@ export interface ActivationExample {
     acts: number[];
     cis: number[];
     max_act: number;
-}
-
-export interface CurvePoint {
-    rank: number;
-    idx: number;
-    mean_ci: number;
-}
-
-export interface SiteCurve {
-    total: number;
-    points: CurvePoint[];
 }
 
 export interface ComponentDetail {

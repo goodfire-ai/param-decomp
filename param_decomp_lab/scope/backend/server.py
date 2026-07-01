@@ -17,7 +17,6 @@ from param_decomp_lab.scope.backend.data_source import (
     ComponentListResponse,
     ScopeDataSource,
     ScopeNotFoundError,
-    SiteCurve,
     SortKey,
 )
 from param_decomp_lab.scope.backend.fixture_data_source import FixtureDataSource
@@ -61,7 +60,7 @@ def get_catalog() -> CatalogResponse:
 def list_components(
     run_id: str,
     site: str,
-    sort: SortKey = "density",
+    sort: SortKey = "mean_ci",
     page: Annotated[int, Query(ge=0)] = 0,
     page_size: Annotated[int, Query(ge=1, le=200)] = 50,
     q: str = "",
@@ -76,12 +75,6 @@ def list_components(
 def get_component_detail(run_id: str, site: str, idx: int) -> Response:
     detail: ComponentDetail = data_source.component_detail(run_id, site, idx)
     return budgeted_json(detail)
-
-
-@app.get("/api/runs/{run_id}/sites/{site}/curve")
-def get_site_curve(run_id: str, site: str) -> Response:
-    curve: SiteCurve = data_source.site_curve(run_id, site)
-    return budgeted_json(curve)
 
 
 @app.post("/api/runs/{run_id}/sites/{site}/components/{idx}/label")
