@@ -371,6 +371,10 @@ def _make_lm_eval_fn(
     run_eval_metrics = eval_metrics_from_run_dir(built.run.run_dir)
     perm_spec = resolve_permutation_metrics(lm.site_names, run_eval_metrics)
     hidden_acts_n_mask_samples = stochastic_hidden_acts_n_mask_samples(run_eval_metrics)
+    want_hidden_acts = any(
+        m.type in ("CIHiddenActsReconLoss", "StochasticHiddenActsReconLoss")
+        for m in run_eval_metrics
+    )
     want_position_ci = perm_spec.any_plots or perm_spec.any_identity_error
     position_ci_step = make_position_ci_step(lm) if want_position_ci else None
 
@@ -423,11 +427,12 @@ def _make_lm_eval_fn(
             site_reductions = accumulate_site_reductions(
                 slow_eval_step, lm, state.ci_fn, eval_batches, eval.slow_n_batches_accum
             )
-            hidden_acts_key = random.fold_in(run_key, 3 * pd.steps + eval_pass_index)
-            hidden_acts = compute_hidden_acts_metrics(
-                lm, state, eval_batches, hidden_acts_n_mask_samples, hidden_acts_key
-            )
-            eval_record |= {f"eval/slow/loss/{k}": v for k, v in hidden_acts.items()}
+            if want_hidden_acts:
+                hidden_acts_key = random.fold_in(run_key, 3 * pd.steps + eval_pass_index)
+                hidden_acts = compute_hidden_acts_metrics(
+                    lm, state, eval_batches, hidden_acts_n_mask_samples, hidden_acts_key
+                )
+                eval_record |= {f"eval/slow/loss/{k}": v for k, v in hidden_acts.items()}
             # The position-CI all-gather is ALSO collective (every rank joins it), gated on
             # the config naming a CI-heatmap / permutation / identity-error metric. The
             # heatmap FIGURES render off-loop on rank 0; the IdentityCIError SCALARS log
