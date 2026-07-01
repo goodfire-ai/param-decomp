@@ -21,9 +21,8 @@ from param_decomp.components import SiteC
 from param_decomp.configs import Cadence, PDConfig, ResumeProvenance, RuntimeConfig, WandbConfig
 
 LAUNCH_CONFIG_FILENAME = "launch_config.yaml"
-"""The self-contained run config pinned into each run dir. NOT `config.yaml`: that basename
-collides with wandb's reserved run-config file, so `wandb.save`-ing it symlinks wandb's own
-writer onto the pinned copy and clobbers it with a `_wandb:` value dump."""
+"""The self-contained run config pinned into each run dir. Not `config.yaml` — that basename
+clashes with wandb's own run-config file, which `wandb.save` would clobber via symlink."""
 
 
 class TargetSites(Protocol):
