@@ -1,0 +1,73 @@
+run_name: jax-tms-5-2-id-baseline
+pd:
+  seed: 0
+  ci_config:
+    type: layerwise_mlp
+    hidden_dims:
+    - 16
+  decomposition_targets:
+  - module_pattern: linear1
+    C: 20
+  - module_pattern: hidden_layers.0
+    C: 20
+  - module_pattern: linear2
+    C: 20
+  loss_metrics:
+  - type: ImportanceMinimalityLoss
+    coeff: 3e-3
+    pnorm: 1.0
+    p_anneal_start_frac: 0.0
+    p_anneal_final_p: 1.0
+    p_anneal_end_frac: 1.0
+  - type: StochasticReconLoss
+    coeff: 1.0
+  - type: StochasticReconLayerwiseLoss
+    coeff: 1.0
+  - type: FaithfulnessLoss
+    coeff: 1.0
+  batch_size: 4096
+  steps: 10000
+  components_optimizer:
+    grad_clip_norm: 0.01
+    lr_schedule:
+      start_val: 1e-3
+      fn_type: cosine
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 1e-3
+      fn_type: cosine
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+  faithfulness_warmup_steps: 200
+  faithfulness_warmup_lr: 0.01
+  faithfulness_warmup_weight_decay: 0.0
+runtime:
+  remat_recon_forwards: false
+  dp: null
+cadence:
+  train_log_every: 200
+  save_every: 5000
+  keep_last_n_checkpoints: 2
+target:
+  n_features: 5
+  n_hidden: 2
+  n_hidden_layers: 1
+  hidden_layer_init: identity
+  init_bias_to_zero: true
+  pretrain:
+    steps: 5000
+    batch_size: 2048
+    lr: 1e-2
+    seed: 0
+data:
+  feature_probability: 0.05
+  data_generation_type: at_least_zero_active
+wandb:
+  project: param-decomp
+  group: toy-smooth-l0
+  tags:
+  - toy-smooth-l0
+  - baseline
+  - tms_5-2-id

@@ -132,7 +132,7 @@ def run_tms_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) 
         model: tms.TMSDecomposedModel, ci_fn: Any
     ) -> tuple[dict[str, jax.Array], dict[str, jax.Array]]:
         probe = tms.single_feature_probe(target_cfg.n_features)
-        ci = ci_fn(model.read_activations(probe, ci_fn.input_names))
+        ci = ci_fn(model.read_activations(probe, ci_fn.input_names), remat=False)
         return ci.lower, ci.upper
 
     uv_spec = toy_uv_eval.toy_uv_spec(lm, raw_cfg)
