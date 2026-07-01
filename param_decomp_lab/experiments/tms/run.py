@@ -91,7 +91,13 @@ def run_tms_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) 
     assert isinstance(target_cfg, tms.TMSTargetConfig)
     is_main = jax.process_index() == 0
 
-    tms_cfg = tms.TMSConfig(n_features=target_cfg.n_features, n_hidden=target_cfg.n_hidden)
+    tms_cfg = tms.TMSConfig(
+        n_features=target_cfg.n_features,
+        n_hidden=target_cfg.n_hidden,
+        n_hidden_layers=target_cfg.n_hidden_layers,
+        hidden_layer_init=target_cfg.hidden_layer_init,
+        init_bias_to_zero=target_cfg.init_bias_to_zero,
+    )
     if is_main:
         print(f"pretraining TMS target ({target_cfg.pretrain_steps} steps)...", flush=True)
     target = tms.pretrain_tms_target(
