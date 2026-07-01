@@ -15,7 +15,7 @@ MAX_EXAMPLES = 5
 CONTEXT_TOKENS_PER_SIDE = 1
 WINDOW = 2 * CONTEXT_TOKENS_PER_SIDE + 1  # 3
 
-ACT_TYPES = ["ci", "inner"]
+ACT_TYPES = ["causal_importance", "inner"]
 
 
 def _make_harvester(collect_component_cooccurrence: bool = True) -> Harvester:
@@ -163,7 +163,7 @@ class TestSaveLoadRoundtrip:
 
         h.firing_counts[0] = 10
         h.firing_counts[3] = 5
-        h.activation_sums["ci"][0] = 2.5
+        h.activation_sums["causal_importance"][0] = 2.5
         _cooc(h)[0, 3] = 7
         h.input_cooccurrence[0, 2] = 15
         h.input_marginals[2] = 100
@@ -213,8 +213,8 @@ class TestMerge:
 
         h1.firing_counts[0] = 10
         h2.firing_counts[0] = 20
-        h1.activation_sums["ci"][1] = 3.0
-        h2.activation_sums["ci"][1] = 7.0
+        h1.activation_sums["causal_importance"][1] = 3.0
+        h2.activation_sums["causal_importance"][1] = 7.0
         _cooc(h1)[0, 1] = 5
         _cooc(h2)[0, 1] = 3
         h1.input_cooccurrence[0, 2] = 10
@@ -231,7 +231,7 @@ class TestMerge:
         h1.merge(h2)
 
         assert h1.firing_counts[0] == 30
-        assert h1.activation_sums["ci"][1] == 10.0
+        assert h1.activation_sums["causal_importance"][1] == 10.0
         assert _cooc(h1)[0, 1] == 8
         assert h1.input_cooccurrence[0, 2] == 15
         assert h1.input_marginals[2] == 300
@@ -306,8 +306,8 @@ class TestBuildResults:
         h.total_tokens_processed = 100
         h.firing_counts[0] = 10
         h.firing_counts[1] = 5
-        h.activation_sums["ci"][0] = 2.0
-        h.activation_sums["ci"][1] = 1.0
+        h.activation_sums["causal_importance"][0] = 2.0
+        h.activation_sums["causal_importance"][1] = 1.0
 
         h.input_cooccurrence[0, 0] = 8
         h.input_cooccurrence[1, 1] = 3
@@ -352,7 +352,7 @@ class TestBuildResults:
         assert comp0.layer == "layer_0"
         assert comp0.component_idx == 0
         assert comp0.firing_density == pytest.approx(10.0 / 100)
-        assert comp0.mean_activations["ci"] == pytest.approx(2.0 / 100)
+        assert comp0.mean_activations["causal_importance"] == pytest.approx(2.0 / 100)
         assert len(comp0.activation_examples) == 3
         assert comp0.input_token_pmi is not None
         assert comp0.output_token_pmi is not None
@@ -372,7 +372,7 @@ class TestBuildResults:
         h = _make_harvester()
         h.total_tokens_processed = 100
         h.firing_counts[5] = 8
-        h.activation_sums["ci"][5] = 1.6
+        h.activation_sums["causal_importance"][5] = 1.6
         h.input_marginals[0] = 50
         h.input_cooccurrence[5, 0] = 4
         h.output_marginals[0] = 10.0
@@ -397,7 +397,7 @@ class TestBuildResults:
         h = _make_harvester()
         h.total_tokens_processed = 100
         h.firing_counts[0] = 5
-        h.activation_sums["ci"][0] = 1.0
+        h.activation_sums["causal_importance"][0] = 1.0
         h.input_marginals[0] = 50
         h.input_cooccurrence[0, 0] = 3
         h.output_marginals[0] = 10.0
@@ -451,10 +451,10 @@ class TestProcessBatch:
         h = _make_harvester()
         B, S = 1, 1
         batch, firings, activations, output_probs = self._make_batch_inputs(B, S)
-        activations["layer_0"]["ci"][0, 0, 2] = 0.75
+        activations["layer_0"]["causal_importance"][0, 0, 2] = 0.75
 
         h.process_batch(batch, firings, activations, output_probs)
-        assert float(h.activation_sums["ci"][2]) == pytest.approx(0.75)
+        assert float(h.activation_sums["causal_importance"][2]) == pytest.approx(0.75)
 
     def test_cooccurrence_counts(self):
         h = _make_harvester()
@@ -493,21 +493,21 @@ class TestExtractPaddingFiringWindows:
         batch = np.array([[10, 11, 12, 13, 14]])
         firings = np.zeros((1, 5, 2), dtype=np.bool_)
         firings[0, 2, 0] = True
-        activations = {"ci": np.zeros((1, 5, 2))}
-        activations["ci"][0, 2, 0] = 0.9
+        activations = {"causal_importance": np.zeros((1, 5, 2))}
+        activations["causal_importance"][0, 2, 0] = 0.9
 
         result = extract_padding_firing_windows(batch, firings, activations, 10, 1, rng)
         assert result is not None
         assert result.token_windows.shape == (1, 3)
         assert result.token_windows[0].tolist() == [11, 12, 13]
-        assert float(result.activation_windows["ci"][0, 1]) == pytest.approx(0.9)
+        assert float(result.activation_windows["causal_importance"][0, 1]) == pytest.approx(0.9)
 
     def test_left_boundary_padding(self):
         rng = np.random.default_rng(0)
         batch = np.array([[10, 11, 12]])
         firings = np.zeros((1, 3, 1), dtype=np.bool_)
         firings[0, 0, 0] = True
-        activations = {"ci": np.zeros((1, 3, 1))}
+        activations = {"causal_importance": np.zeros((1, 3, 1))}
 
         result = extract_padding_firing_windows(batch, firings, activations, 10, 2, rng)
         assert result is not None
@@ -524,7 +524,7 @@ class TestExtractPaddingFiringWindows:
         batch = np.array([[10, 11, 12]])
         firings = np.zeros((1, 3, 1), dtype=np.bool_)
         firings[0, 2, 0] = True
-        activations = {"ci": np.zeros((1, 3, 1))}
+        activations = {"causal_importance": np.zeros((1, 3, 1))}
 
         result = extract_padding_firing_windows(batch, firings, activations, 10, 2, rng)
         assert result is not None
@@ -539,7 +539,7 @@ class TestExtractPaddingFiringWindows:
         rng = np.random.default_rng(0)
         batch = np.array([[0, 1, 2]])
         firings = np.zeros((1, 3, 2), dtype=np.bool_)
-        activations = {"ci": np.zeros((1, 3, 2))}
+        activations = {"causal_importance": np.zeros((1, 3, 2))}
 
         result = extract_padding_firing_windows(batch, firings, activations, 10, 1, rng)
         assert result is None
@@ -550,10 +550,35 @@ class TestExtractPaddingFiringWindows:
         firings = np.zeros((1, 5, 3), dtype=np.bool_)
         firings[0, 1, 0] = True
         firings[0, 3, 2] = True
-        activations = {"ci": np.zeros((1, 5, 3))}
+        activations = {"causal_importance": np.zeros((1, 5, 3))}
 
         result = extract_padding_firing_windows(batch, firings, activations, 10, 1, rng)
         assert result is not None
         assert result.token_windows.shape == (2, 3)
         windows = sorted(result.token_windows.tolist())
         assert windows == [[0, 1, 2], [2, 3, 4]]
+
+    def test_consecutive_firings_collapse_to_peak(self):
+        rng = np.random.default_rng(0)
+        batch = np.array([[10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]])
+        firings = np.zeros((1, 11, 1), dtype=np.bool_)
+        firings[0, [3, 4, 5], 0] = True
+        activations = {"causal_importance": np.zeros((1, 11, 1))}
+        activations["causal_importance"][0, [3, 4, 5], 0] = [0.4, 0.9, 0.5]
+
+        result = extract_padding_firing_windows(batch, firings, activations, 10, 2, rng)
+        assert result is not None
+        assert result.component_idx.tolist() == [0]
+        assert result.token_windows[0].tolist() == [12, 13, 14, 15, 16]
+
+    def test_separated_firings_kept_apart(self):
+        rng = np.random.default_rng(0)
+        batch = np.arange(30).reshape(1, 30)
+        firings = np.zeros((1, 30, 1), dtype=np.bool_)
+        firings[0, [3, 25], 0] = True
+        activations = {"causal_importance": np.zeros((1, 30, 1))}
+        activations["causal_importance"][0, [3, 25], 0] = [0.7, 0.8]
+
+        result = extract_padding_firing_windows(batch, firings, activations, 10, 2, rng)
+        assert result is not None
+        assert result.token_windows.shape[0] == 2

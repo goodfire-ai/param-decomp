@@ -25,6 +25,38 @@ from param_decomp_lab.harvest.sampling import sample_at_most_n_per_group, top_k_
 from param_decomp_lab.harvest.schemas import ComponentData, ComponentTokenPMI
 
 
+def dedupe_to_window_peaks(
+    batch_idx: Int[np.ndarray, " n_firings"],
+    seq_idx: Int[np.ndarray, " n_firings"],
+    comp_idx: Int[np.ndarray, " n_firings"],
+    causal_importance: Float[np.ndarray, " n_firings"],
+    window_size: int,
+) -> Int[np.ndarray, " n_peaks"]:
+    """Collapse consecutive/overlapping firings of a component within one prompt to one peak.
+
+    A component that fires at a contiguous run of positions (or several positions closer
+    than the display window) would otherwise yield near-identical activation examples that
+    differ only by a one-token shift of the peak. This groups each (prompt, component)'s
+    firings into regions — a new region begins only when the gap to the previous firing is
+    at least `window_size` — and keeps the single highest-CI firing per region. Since peaks
+    of adjacent regions are >window_size apart, their display windows never overlap. Returns
+    indices into the input arrays.
+    """
+    order = np.lexsort((seq_idx, comp_idx, batch_idx))
+    b, c, s = batch_idx[order], comp_idx[order], seq_idx[order]
+    new_region = np.empty(len(order), dtype=np.bool_)
+    new_region[0] = True
+    new_region[1:] = (b[1:] != b[:-1]) | (c[1:] != c[:-1]) | (s[1:] - s[:-1] >= window_size)
+    region_id = np.cumsum(new_region)
+
+    peak_order = np.lexsort((-causal_importance[order], region_id))
+    region_sorted = region_id[peak_order]
+    is_region_peak = np.empty(len(peak_order), dtype=np.bool_)
+    is_region_peak[0] = True
+    is_region_peak[1:] = region_sorted[1:] != region_sorted[:-1]
+    return order[peak_order[is_region_peak]]
+
+
 def extract_padding_firing_windows(
     batch: Int[np.ndarray, "B S"],
     firings: Bool[np.ndarray, "B S C"],
@@ -37,13 +69,18 @@ def extract_padding_firing_windows(
     if len(batch_idx) == 0:
         return None
 
+    assert "causal_importance" in activations, "peak dedup requires causal_importance"
+    window_size = 2 * context_tokens_per_side + 1
+    ci_at_firing = activations["causal_importance"][batch_idx, seq_idx, comp_idx]
+    peaks = dedupe_to_window_peaks(batch_idx, seq_idx, comp_idx, ci_at_firing, window_size)
+    batch_idx, seq_idx, comp_idx = batch_idx[peaks], seq_idx[peaks], comp_idx[peaks]
+
     keep = sample_at_most_n_per_group(comp_idx, max_examples_per_batch_per_component, rng)
     batch_idx, seq_idx, comp_idx = batch_idx[keep], seq_idx[keep], comp_idx[keep]
 
     seq_len = batch.shape[1]
     offsets = np.arange(-context_tokens_per_side, context_tokens_per_side + 1)
-    window_size = offsets.shape[0]
-    assert window_size == 2 * context_tokens_per_side + 1
+    assert offsets.shape[0] == window_size
 
     window_positions: Int[np.ndarray, "n_firings window_size"]
     window_positions = seq_idx[:, None] + offsets[None, :]
