@@ -14,8 +14,7 @@
     <body data-sveltekit-preload-data="hover">
         <script>
             const saved = localStorage.getItem("scope-theme");
-            const dark = saved ? saved === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
-            document.documentElement.dataset.theme = dark ? "dark" : "light";
+            document.documentElement.dataset.theme = saved === "light" ? "light" : "dark";
         </script>
         <div style="display: contents">%sveltekit.body%</div>
     </body>

@@ -17,3 +17,13 @@ export function parseSite(site: string): { layer: number; kind: string } {
     if (!m) return { layer: -1, kind: site };
     return { layer: Number(m[1]), kind: m[2] };
 }
+
+export type MatrixKind = "gate" | "up" | "down";
+
+/** The MLP projection a site decomposes, for accent colouring. null for non-MLP sites. */
+export function matrixKind(site: string): MatrixKind | null {
+    if (site.includes("gate_proj")) return "gate";
+    if (site.includes("up_proj")) return "up";
+    if (site.includes("down_proj")) return "down";
+    return null;
+}

@@ -1,9 +1,11 @@
 <script lang="ts">
-    import { fmtAct, fmtCount, fmtDensity } from "$lib/format";
+    import { fmtAct, fmtCount, fmtDensity, matrixKind } from "$lib/format";
     import SiteCurve from "$lib/ui/SiteCurve.svelte";
     import type { ActivationExample, ComponentLabel } from "$lib/types";
 
     let { data } = $props();
+
+    const mk = $derived(matrixKind(data.site));
 
     // svelte-ignore state_referenced_locally — resynced from data on navigation below
     let label: ComponentLabel | null = $state(data.detail.label);
@@ -60,7 +62,7 @@
     <header class="identity">
         <div class="eyebrow-row">
             <span class="eyebrow">
-                component {data.detail.idx} ·
+                {#if mk}<span class="mtag {mk}">{mk}</span> {/if}component {data.detail.idx} ·
                 <a href="/r/{data.run}/s/{data.site}">{data.site}</a>
                 · rank {data.detail.rank + 1} of {fmtCount(data.curve.total)}
             </span>

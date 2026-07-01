@@ -1,10 +1,12 @@
 <script lang="ts">
     import { goto } from "$app/navigation";
-    import { fmtAct, fmtCount, fmtDensity } from "$lib/format";
+    import { fmtAct, fmtCount, fmtDensity, matrixKind } from "$lib/format";
     import SiteCurve from "$lib/ui/SiteCurve.svelte";
     import type { ComponentLabel } from "$lib/types";
 
     let { data } = $props();
+
+    const mk = $derived(matrixKind(data.site));
 
     // svelte-ignore state_referenced_locally — resynced from data on navigation below
     let qInput = $state(data.q);
@@ -44,7 +46,7 @@
 <svelte:head><title>Scope · {data.site}</title></svelte:head>
 
 <hgroup>
-    <h1>{data.site}</h1>
+    <h1>{#if mk}<span class="mtag {mk}">{mk}</span>{/if}{data.site}</h1>
     <p class="subline">
         run <a href="/">{data.run}</a> · {fmtCount(data.listing.total)} components{data.q
             ? ` matching “${data.q}”`
@@ -157,6 +159,9 @@
         font-weight: 500;
         letter-spacing: 0;
         margin: 0;
+        display: flex;
+        align-items: center;
+        gap: 10px;
     }
     hgroup p {
         margin: 2px 0 24px;

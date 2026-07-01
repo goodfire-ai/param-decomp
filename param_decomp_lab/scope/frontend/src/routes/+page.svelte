@@ -1,6 +1,6 @@
 <script lang="ts">
     import { onMount } from "svelte";
-    import { fmtCount, parseSite } from "$lib/format";
+    import { fmtCount, matrixKind, parseSite } from "$lib/format";
     import type { Catalog, Site } from "$lib/types";
 
     let { data } = $props();
@@ -77,7 +77,10 @@
             <thead>
                 <tr>
                     <th class="r col-layer">layer</th>
-                    {#each grid.kinds as kind (kind)}<th>{kind}</th>{/each}
+                    {#each grid.kinds as kind (kind)}
+                        {@const mk = matrixKind(kind)}
+                        <th>{#if mk}<span class="mtag {mk}">{mk}</span>{:else}{kind}{/if}</th>
+                    {/each}
                 </tr>
             </thead>
             <tbody>
