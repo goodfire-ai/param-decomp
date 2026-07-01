@@ -14,7 +14,7 @@ immutable workspace.
 
 The rank env (XLA flags, NCCL/host-memory knobs, `PD_*` profiling toggles) is rendered from
 the config's `runtime.launch_env` (single source of truth, defaults in `LaunchEnv`), plus a
-submit-time-computed `LD_LIBRARY_PATH`. So a run's `config.yaml` fully captures the
+submit-time-computed `LD_LIBRARY_PATH`. So a run's `launch_config.yaml` fully captures the
 environment it ran with, and A/B-ing a flag is a config edit, not a launcher edit.
 """
 
@@ -113,7 +113,7 @@ def main(
         comment: SLURM `--comment`; defaults to the wandb run URL (or run id).
 
     The rank env (XLA flags, NCCL/host-memory knobs, profiling toggles) is config-driven
-    via `runtime.launch_env` — set it in the YAML, not here (so `config.yaml` records it).
+    via `runtime.launch_env` — set it in the YAML, not here (so `launch_config.yaml` records it).
     """
     config_rel = _config_path_relative_to_repo(config_path)
     cfg, run_name = _validate_config(REPO_ROOT / config_rel)

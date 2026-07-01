@@ -596,7 +596,7 @@ AnyLossMetricConfig = Annotated[
 class ProfileConfig(BaseConfig):
     """Profiling/instrumentation toggles the trainer (`run.py`) reads DIRECTLY off the config.
 
-    A profiling run is a CONFIG, not an env hack: the trainer parses its `config.yaml` and
+    A profiling run is a CONFIG, not an env hack: the trainer parses its `launch_config.yaml` and
     reads these fields, so the pinned config records exactly which hooks ran. All hooks are
     DEFAULT-OFF; the empty `ProfileConfig()` enables nothing.
 
@@ -626,7 +626,7 @@ class ProfileConfig(BaseConfig):
 class LaunchEnv(BaseConfig):
     """The process-environment surface a SLURM-launched rank runs with — the XLA *client*
     knobs (mem fraction / allocator / host-memory limit), NCCL/glibc tuning, and a free-form
-    env escape hatch — lifted into the run config so a run's `config.yaml` fully captures its
+    env escape hatch — lifted into the run config so a run's `launch_config.yaml` fully captures its
     environment (tracking + repro), and A/B-ing a knob is a config edit, not a launcher edit.
 
     XLA *compiler* flags are NOT here — they go through `RuntimeConfig.compiler_options`
@@ -1008,14 +1008,14 @@ class ResumeProvenance(BaseConfig):
     """Fine-tune lineage: a fresh run initialized from a PARENT decomposition. Lives on
     `ExperimentConfig`.
 
-    A fine-tune run gets its own `run_id` / `config.yaml` / `ckpts/`; this records the
+    A fine-tune run gets its own `run_id` / `launch_config.yaml` / `ckpts/`; this records the
     parent it forked from. The JAX trainer (SPEC S33) loads the parent checkpoint's
     V/U + ci_fn onto a fresh reference state and trains a clean schedule from step 0
     (fresh optimizer / sources) under the new config — only when the run's own `ckpts/`
     is empty (a subsequent SLURM requeue resumes from the run's own dir, ignoring
     provenance). The structure (sites / C / ci-fn arch) must match the parent; only
     LR / coeffs / eps / seq / batch / steps may change. Provenance flows into
-    `config.yaml` and `wandb.config` so the lineage is visible in the wandb UI. A run with
+    `launch_config.yaml` and `wandb.config` so the lineage is visible in the wandb UI. A run with
     `resume_provenance is None` is a fresh-from-init run.
     """
 

@@ -43,7 +43,7 @@ from param_decomp.attn_patterns_eval import (
     make_ci_attn_patterns_step,
     make_stochastic_attn_patterns_step,
 )
-from param_decomp.built_run import BuiltRun, DataConfig
+from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, BuiltRun, DataConfig
 from param_decomp.configs import ResumeProvenance
 from param_decomp.data import BatchSchedule, ShardServer, scan_shards
 from param_decomp.eval import make_eval_step
@@ -125,7 +125,7 @@ def assert_finetune_structural_compat(built: BuiltRun, prov: ResumeProvenance) -
     same sites (names + C) and same ci-fn arch. A changed C / layers / target / ci-fn is a
     different-shaped decomposition and is NOT a fine-tune (the parent's V/U + ci_fn would
     not load onto the new reference). Only LR / coeffs / eps / seq / batch / steps may
-    change. Read from the parent's pinned `config.yaml` so the failure is a readable config
+    change. Read from the parent's pinned launch config so the failure is a readable config
     diff, not an opaque orbax tree mismatch."""
     parent = load_run_dir_config(prov.parent_run_dir)
     parent_sites = tuple((s.name, s.C) for s in parent.target.sites)
@@ -252,8 +252,8 @@ def _make_lm_eval_fn(
     slow_eval_step = make_slow_eval_step(lm, eval.density_ci_alive_threshold, co)
     slow_renderer = SlowEvalRenderer(is_main)
     # The CI-heatmap / permutation / UV / identity-error metrics read off the run's typed
-    # `eval.metrics` (re-validated from the pinned config.yaml: the trainer's `EvalConfig`
-    # drops the raw metric list). config.yaml is pinned before train().
+    # `eval.metrics` (re-validated from the pinned launch config: the trainer's `EvalConfig`
+    # drops the raw metric list). The launch config is pinned before train().
     run_eval_metrics = eval_metrics_from_run_dir(built.run.run_dir)
     perm_spec = resolve_permutation_metrics(lm.site_names, run_eval_metrics)
     hidden_acts_n_mask_samples = stochastic_hidden_acts_n_mask_samples(run_eval_metrics)
@@ -400,7 +400,7 @@ def main(config: Path, run_id: str) -> None:
         cache_dir.mkdir(parents=True, exist_ok=True)
         built.run.run_dir.mkdir(parents=True, exist_ok=True)
         setup_logger(built.run.run_dir / "logs.log")
-        _pin_config_copy(built.run.run_dir, "config.yaml", config)
+        _pin_config_copy(built.run.run_dir, LAUNCH_CONFIG_FILENAME, config)
         print(f"persistent XLA compilation cache: {cache_dir}", flush=True)
         site_kind_counts: dict[str, int] = {}
         for s in built.target.sites:

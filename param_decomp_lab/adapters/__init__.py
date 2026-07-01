@@ -10,7 +10,7 @@ from param_decomp_lab.harvest.config import ParamDecompHarvestConfig
 
 def adapter_from_config(method_config: ParamDecompHarvestConfig) -> PDAdapter:
     assert is_jax_run(method_config.wandb_path), (
-        f"{method_config.wandb_path}: not a loadable PD run (missing config.yaml or orbax ckpts/)."
+        f"{method_config.wandb_path}: not a loadable PD run (missing launch_config.yaml or orbax ckpts/)."
     )
     return PDAdapter(method_config.wandb_path)
 

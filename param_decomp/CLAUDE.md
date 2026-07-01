@@ -240,7 +240,7 @@ onto the fresh reference and keeps ONLY the components + ci_fn; the optimizer st
 persistent sources, and `step` are FRESH (`step = 0`, no faith warmup) so the new LR /
 p-anneal schedule recomputes over the new `cfg.steps` from 0. A subsequent SLURM requeue
 (own `ckpts/` now non-empty) resumes from the run's own dir and ignores provenance.
-`run.py::assert_finetune_structural_compat` reads the parent's pinned `config.yaml` and
+`run.py::assert_finetune_structural_compat` reads the parent's pinned `launch_config.yaml` and
 asserts matching sites (names + C) + ci-fn arch before the restore. Provenance flows into
 `config.yaml` + `wandb.config`. Launch as usual via `pd-lm <config.yaml>`.
 

@@ -58,6 +58,7 @@ from jaxtyping import Array, Float
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 
+from param_decomp.built_run import LAUNCH_CONFIG_FILENAME
 from param_decomp.ci_fn import lower_leaky_hard_sigmoid, upper_leaky_hard_sigmoid
 from param_decomp.configs import (
     DenseCITargetSpec,
@@ -690,7 +691,7 @@ def compute_hidden_acts_metrics(
 
 
 def eval_metrics_from_run_dir(run_dir: Path) -> list[Any]:
-    """The typed `eval.metrics` configs from the run's `config.yaml`. The trainer's
+    """The typed `eval.metrics` configs from the run's pinned launch config. The trainer's
     `EvalConfig` keeps only scalar-tier fields, so the plot/permutation metric configs are
     re-validated here from the raw block. The in-loop slow tier (`run.py`) reads the metric
     list this way to resolve the config-gated permutation/UV/identity metrics."""
@@ -699,7 +700,7 @@ def eval_metrics_from_run_dir(run_dir: Path) -> list[Any]:
 
     from param_decomp.configs import AnyEvalMetricConfig
 
-    raw = yaml.safe_load((run_dir / "config.yaml").read_text())
+    raw = yaml.safe_load((run_dir / LAUNCH_CONFIG_FILENAME).read_text())
     adapter = TypeAdapter(AnyEvalMetricConfig)
     return [adapter.validate_python(m) for m in raw["eval"]["metrics"]]
 
