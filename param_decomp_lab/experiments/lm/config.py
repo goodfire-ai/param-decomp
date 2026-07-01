@@ -28,6 +28,7 @@ from param_decomp.built_run import (
 from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch
 from param_decomp.components import SiteC
 from param_decomp.configs import (
+    AnyEvalMetricConfig,
     CEandKLLossesConfig,
     ChunkwiseTransformerCiConfig,
     CI_L0Config,
@@ -335,35 +336,62 @@ def _assert_separate_qk_attn_paths(
     )
 
 
-def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
-    if cfg.eval is None:
-        return None
-    ce_kl = ci_l0 = density = pgd = None
-    attn_ci = attn_stoch = False
-    attn_stoch_n_mask_samples = 1
-    slow_n_batches_accum: int | None = None
-    density_heatmap_n_bins: int | None = None
-    for metric in cfg.eval.metrics:
+@dataclass(frozen=True)
+class FastScalarEvalMetrics:
+    """The fast/scalar-tier eval metrics extracted from `eval.metrics`, at most one per kind
+    (`_classify_fast_scalar_metrics` eliminates the list-of-union once into this product).
+    `ce_kl` / `ci_l0` are required (the fast pass needs both); the rest are opt-in. The two
+    slow-tier renderers that ALSO carry a fast-tier scalar (`histograms`, `density`) live
+    here too — `_eval` reads only those scalars, the figures render off the raw cfg."""
+
+    ce_kl: CEandKLLossesConfig
+    ci_l0: CI_L0Config
+    histograms: CIHistogramsConfig | None
+    density: ComponentActivationDensityConfig | None
+    pgd: PGDReconLossConfig | None
+    attn_ci: CIMaskedAttnPatternsReconLossConfig | None
+    attn_stoch: StochasticAttnPatternsReconLossConfig | None
+
+
+def _classify_fast_scalar_metrics(
+    metrics: list[AnyEvalMetricConfig],
+) -> FastScalarEvalMetrics:
+    """The single list-of-union -> product elimination: fold `eval.metrics` into one typed
+    `FastScalarEvalMetrics`, rejecting duplicates, unsupported kinds, and a missing required
+    metric. Pure-slow-tier metrics (rendered by `run.py` off the raw cfg) are accepted and
+    dropped here."""
+    ce_kl: CEandKLLossesConfig | None = None
+    ci_l0: CI_L0Config | None = None
+    histograms: CIHistogramsConfig | None = None
+    density: ComponentActivationDensityConfig | None = None
+    pgd: PGDReconLossConfig | None = None
+    attn_ci: CIMaskedAttnPatternsReconLossConfig | None = None
+    attn_stoch: StochasticAttnPatternsReconLossConfig | None = None
+    for metric in metrics:
         match metric:
             case CEandKLLossesConfig():
+                assert ce_kl is None, "duplicate CEandKLLosses in eval.metrics"
                 ce_kl = metric
             case CI_L0Config():
+                assert ci_l0 is None, "duplicate CI_L0 in eval.metrics"
                 ci_l0 = metric
-            case PGDReconLossConfig():
-                assert metric.init == "random" and metric.mask_scope == "c", metric
-                pgd = EvalPGDConfig(n_steps=metric.n_steps, step_size=metric.step_size)
-            case CIMaskedAttnPatternsReconLossConfig():
-                _assert_separate_qk_attn_paths(metric)
-                attn_ci = True
-            case StochasticAttnPatternsReconLossConfig():
-                _assert_separate_qk_attn_paths(metric)
-                attn_stoch = True
-                attn_stoch_n_mask_samples = metric.n_mask_samples
             case CIHistogramsConfig():
-                slow_n_batches_accum = metric.n_batches_accum
-                density_heatmap_n_bins = metric.density_heatmap_n_bins
+                assert histograms is None, "duplicate CIHistograms in eval.metrics"
+                histograms = metric
             case ComponentActivationDensityConfig():
-                density = metric  # slow-tier; we read only its aliveness cutoff here
+                assert density is None, "duplicate ComponentActivationDensity in eval.metrics"
+                density = metric
+            case PGDReconLossConfig():
+                assert pgd is None, "duplicate PGDReconLoss in eval.metrics"
+                pgd = metric
+            case CIMaskedAttnPatternsReconLossConfig():
+                assert attn_ci is None, "duplicate CIMaskedAttnPatternsReconLoss in eval.metrics"
+                attn_ci = metric
+            case StochasticAttnPatternsReconLossConfig():
+                assert attn_stoch is None, (
+                    "duplicate StochasticAttnPatternsReconLoss in eval.metrics"
+                )
+                attn_stoch = metric
             case _ if metric.type in SLOW_TIER_EVAL_METRIC_TYPES:
                 pass  # rendered by the in-loop slow tier (run.py reads them off the raw cfg)
             case _:
@@ -371,32 +399,66 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
     assert ce_kl is not None and ci_l0 is not None, (
         "in-loop eval needs CEandKLLosses + CI_L0 in eval.metrics"
     )
+    return FastScalarEvalMetrics(
+        ce_kl=ce_kl,
+        ci_l0=ci_l0,
+        histograms=histograms,
+        density=density,
+        pgd=pgd,
+        attn_ci=attn_ci,
+        attn_stoch=attn_stoch,
+    )
+
+
+def _eval_pgd(pgd: PGDReconLossConfig | None) -> EvalPGDConfig | None:
+    if pgd is None:
+        return None
+    assert pgd.init == "random" and pgd.mask_scope == "c", pgd
+    return EvalPGDConfig(n_steps=pgd.n_steps, step_size=pgd.step_size)
+
+
+def _attn_patterns_eval(
+    attn_ci: CIMaskedAttnPatternsReconLossConfig | None,
+    attn_stoch: StochasticAttnPatternsReconLossConfig | None,
+) -> AttnPatternsEvalConfig | None:
+    for metric in (attn_ci, attn_stoch):
+        if metric is not None:
+            _assert_separate_qk_attn_paths(metric)
+    if attn_ci is None and attn_stoch is None:
+        return None
+    return AttnPatternsEvalConfig(
+        ci_masked=attn_ci is not None,
+        stochastic=attn_stoch is not None,
+        stochastic_n_mask_samples=attn_stoch.n_mask_samples if attn_stoch is not None else 1,
+    )
+
+
+def _l0_groups(ci_l0: CI_L0Config) -> dict[str, tuple[str, ...]] | None:
+    if ci_l0.groups is None:
+        return None
+    return {group: tuple(patterns) for group, patterns in ci_l0.groups.items()}
+
+
+def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
+    if cfg.eval is None:
+        return None
+    m = _classify_fast_scalar_metrics(cfg.eval.metrics)
     return EvalConfig(
         batch_size=cfg.eval.batch_size,
         every=cfg.eval.every,
         n_steps=cfg.eval.n_steps,
         slow_every=cfg.eval.slow_every,
         slow_on_first_step=cfg.eval.slow_on_first_step,
-        slow_n_batches_accum=slow_n_batches_accum,
-        density_heatmap_n_bins=density_heatmap_n_bins,
-        rounding_threshold=ce_kl.rounding_threshold,
-        l0_ci_alive_threshold=ci_l0.ci_alive_threshold,
-        density_ci_alive_threshold=(density.ci_alive_threshold if density is not None else 0.0),
-        l0_groups=(
-            {group: tuple(patterns) for group, patterns in ci_l0.groups.items()}
-            if ci_l0.groups is not None
-            else None
+        slow_n_batches_accum=m.histograms.n_batches_accum if m.histograms is not None else None,
+        density_heatmap_n_bins=(
+            m.histograms.density_heatmap_n_bins if m.histograms is not None else None
         ),
-        pgd=pgd,
-        attn_patterns=(
-            AttnPatternsEvalConfig(
-                ci_masked=attn_ci,
-                stochastic=attn_stoch,
-                stochastic_n_mask_samples=attn_stoch_n_mask_samples,
-            )
-            if attn_ci or attn_stoch
-            else None
-        ),
+        rounding_threshold=m.ce_kl.rounding_threshold,
+        l0_ci_alive_threshold=m.ci_l0.ci_alive_threshold,
+        density_ci_alive_threshold=m.density.ci_alive_threshold if m.density is not None else 0.0,
+        l0_groups=_l0_groups(m.ci_l0),
+        pgd=_eval_pgd(m.pgd),
+        attn_patterns=_attn_patterns_eval(m.attn_ci, m.attn_stoch),
     )
 
 
