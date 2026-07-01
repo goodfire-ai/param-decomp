@@ -46,7 +46,6 @@ the parity argument above is what keeps it correct if `n_steps` is raised.
 from fnmatch import fnmatch
 from typing import Any
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import random
@@ -56,6 +55,7 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from param_decomp.built_run import EvalPGDConfig
 from param_decomp.components import DecompVU
+from param_decomp.jit_util import filter_jit
 from param_decomp.lm import DecomposedModel
 from param_decomp.losses import kl_per_position
 from param_decomp.sharding import batch_shard_leading
@@ -81,6 +81,7 @@ def make_eval_step(
     l0_group_patterns: dict[str, tuple[str, ...]] | None,
     pgd: EvalPGDConfig | None,
     mesh: Mesh | None,
+    compiler_options: dict[str, bool | int | str] | None = None,
 ):
     """Build the `eqx.filter_jit`'d `eval_step(model, components, ci_fn, token_ids,
     residual, key) -> {metric_key: scalar}` with torch-parity keys (un-prefixed: the caller
@@ -135,7 +136,6 @@ def make_eval_step(
             )
         )
 
-    @eqx.filter_jit
     def eval_step(
         model: DecomposedModel,
         components: DecompVU,
@@ -263,4 +263,4 @@ def make_eval_step(
             out["loss/PGDReconLoss"] = kl_at_sources(final_sources)
         return out
 
-    return eval_step
+    return filter_jit(eval_step, compiler_options=compiler_options)

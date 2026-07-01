@@ -267,22 +267,26 @@ def test_attention_sites_clean_and_masked_identity():
     )
     assert jnp.allclose(clean, full, atol=1e-4), "mask=1 identity drifted (attention sites)"
 
-    # zero-mask + zero-delta on q alone must CHANGE the logits (the site is live on
-    # the attention path, ahead of RoPE/SDPA)
+    # zero-mask + zero-delta on layer 4's decomposed sites must CHANGE the logits (q is live on
+    # the attention path ahead of RoPE/SDPA). The segmented masked forward masks WHOLE layers, so
+    # we ablate layer 4's full decomposed set rather than q alone.
     q_site = "layers.4.self_attn.q_proj"
-    zero_mask = {q_site: jnp.zeros((b, t, 8))}
-    zero_delta = {q_site: jnp.zeros((b, t))}
+    site_c = {s.name: s.C for s in lm.sites}
+    layer4 = tuple(n for n in names if parse_site_name(n)[0] == 4)
+    assert q_site in layer4
+    zero_mask = {n: jnp.zeros((b, t, site_c[n])) for n in layer4}
+    zero_delta = {n: jnp.zeros((b, t)) for n in layer4}
     ablated = lm.masked_output(
         lm.prepare_compute_weights(vu),
         tokens,
         zero_mask,
         zero_delta,
         None,
-        (q_site,),
+        layer4,
         True,
         remat=False,
     )
-    assert not jnp.allclose(clean, ablated, atol=1e-4), "ablating q did nothing"
+    assert not jnp.allclose(clean, ablated, atol=1e-4), "ablating layer 4 did nothing"
 
     site_in = lm.read_activations(tokens, lm.site_names)
     assert set(site_in) == set(names)
@@ -363,7 +367,6 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
                 state_key=ppgd_cfg.type,
                 coeff=ppgd_cfg.coeff,
                 adam=ppgd_cfg.optimizer,
-                start_frac=ppgd_cfg.start_frac,
                 n_warmup=ppgd_cfg.n_warmup_steps,
             )
         },

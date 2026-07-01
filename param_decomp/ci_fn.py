@@ -139,35 +139,43 @@ class CIBlock(eqx.Module):
     eps: float = eqx.field(static=True)
 
     def shardings(self, mesh: Mesh) -> "CIBlock":
-        """True ÷N ZeRO-1 PERSISTENCE layout (master + Adam m/v shard over the FULL mesh
-        `("replicate","fsdp")`); the leading `n_chunks` axis (axis 0) is UNSHARDED. Every
-        weight shards its `d_model` dim ÷N and replicates the head / mlp_hidden dim (no TP /
-        Megatron axis):
+        """ZeRO-1 PERSISTENCE layout (master + Adam m/v); leading `n_chunks` axis (axis 0)
+        UNSHARDED. Attention is FSDP-on-d_model (tp-replicated — v1 skips attn Megatron); the
+        MLP is Megatron-on-mlp_hidden including the `tp` axis (so it shards ÷N, not ÷(rep·fsdp)):
 
-        - qkv (`[nc, head_out, d_model_in]`): d_model ÷N, head replicated.
-        - out-proj (`[nc, d_model_out, head_in]`): d_model ÷N, head replicated.
-        - w1 up-proj (`[nc, d_model_in, mlp_hidden_out]`): d_model ÷N, mlp_hidden replicated.
-        - w2 down-proj (`[nc, mlp_hidden_in, d_model_out]`): d_model ÷N, mlp_hidden replicated.
+        - qkv (`[nc, head_out, d_model_in]`): d_model (axis2) ÷(rep·fsdp), head + tp replicated.
+        - out-proj (`[nc, d_model_out, head_in]`): d_model (axis1) ÷(rep·fsdp), head + tp replicated.
+        - w1 up-proj (`[nc, d_model_in, mlp_hidden_out]`): **mlp_hidden (axis2) ÷N** (incl tp),
+          d_model replicated (column-parallel).
+        - w2 down-proj (`[nc, mlp_hidden_in, d_model_out]`): **mlp_hidden (axis1) ÷N** (incl tp),
+          d_model replicated (row-parallel → in-node reduce over fsdp·tp).
 
-        Biases replicate. COMPUTE re-pins to `fsdp`-only before the chunk scan (the ZeRO-1
-        reconstruction, once/step in ENTRY — `ChunkwiseTransformerCIFn.__call__`), so the
-        per-chunk gather is intra-node NVLink. Asserts each ÷N dim tiles the device count."""
-        full = ("replicate", "fsdp")
-        din = NamedSharding(mesh, P(None, None, full))  # axis2 (d_model in) ÷N
-        dout = NamedSharding(mesh, P(None, full, None))  # axis1 (d_model out) ÷N
+        Biases replicate. COMPUTE re-pins to `fsdp` (attn d_model) / `fsdp·tp` (MLP mlp_hidden)
+        before the chunk scan (`ChunkwiseTransformerCIFn.__call__`), all intra-node NVLink."""
+        data = ("replicate", "fsdp")
+        full = ("replicate", "fsdp", "tp")
+        attn_in = NamedSharding(mesh, P(None, None, data))  # qkv: d_model (axis2) ÷(rep·fsdp)
+        attn_out = NamedSharding(mesh, P(None, data, None))  # wo: d_model (axis1) ÷(rep·fsdp)
+        mlp_in = NamedSharding(mesh, P(None, None, full))  # w1: mlp_hidden (axis2) ÷N
+        mlp_out = NamedSharding(mesh, P(None, full, None))  # w2: mlp_hidden (axis1) ÷N
         repl = NamedSharding(mesh, P())
-        n = mesh.devices.size
+        n_data = mesh.shape["replicate"] * mesh.shape["fsdp"]
+        n_full = mesh.devices.size
         for w in (self.wq, self.wk, self.wv):
-            assert w.shape[2] % n == 0, f"CIBlock qkv in (d_model) {w.shape[2]} not ÷ N={n}"
-        assert self.wo.shape[1] % n == 0, (
-            f"CIBlock out-proj out (d_model) {self.wo.shape[1]} not ÷ N={n}"
+            assert w.shape[2] % n_data == 0, f"CIBlock qkv d_model {w.shape[2]} not ÷ {n_data}"
+        assert self.wo.shape[1] % n_data == 0, (
+            f"CIBlock wo d_model {self.wo.shape[1]} not ÷ {n_data}"
         )
-        assert self.w1.shape[1] % n == 0, f"CIBlock w1 in (d_model) {self.w1.shape[1]} not ÷ N={n}"
-        assert self.w2.shape[2] % n == 0, f"CIBlock w2 out (d_model) {self.w2.shape[2]} not ÷ N={n}"
+        assert self.w1.shape[2] % n_full == 0, (
+            f"CIBlock w1 mlp_hidden {self.w1.shape[2]} not ÷ N={n_full}"
+        )
+        assert self.w2.shape[1] % n_full == 0, (
+            f"CIBlock w2 mlp_hidden {self.w2.shape[1]} not ÷ N={n_full}"
+        )
         return eqx.tree_at(
             lambda b: (b.wq, b.wk, b.wv, b.wo, b.w1, b.b1, b.w2, b.b2),
             self,
-            (din, din, din, dout, din, repl, dout, repl),
+            (attn_in, attn_in, attn_in, attn_out, mlp_in, repl, mlp_out, repl),
         )
 
     def __call__(self, x: Float[Array, "b t d"], inv_freq: Array) -> Array:
@@ -182,12 +190,12 @@ class CIBlock(eqx.Module):
         cos, sin = rope_cos_sin(inv_freq, t, x.dtype)
         q, k = apply_rope(q, k, cos, sin)
         qt, kt, vt = (einops.rearrange(a, "b nh t hd -> b t nh hd") for a in (q, k, v))
-        # xla (not cuDNN flash): the CI fn's attention weights are Megatron-sharded (heads on
-        # `tp`) under the 2-D mesh, and cuDNN's custom partitioner rejects that q/k/v layout
-        # ("Query, key and value should have same sharding"). The CI fn is small (low d_model,
-        # short seq) so the xla path's (B,H,T,T) score is tens of MB — no OOM, unlike the
-        # target's attention which keeps cuDNN flash. Bidirectional.
-        y = jax.nn.dot_product_attention(qt, kt, vt, is_causal=False, implementation="xla")
+        # cuDNN flash on GPU (heads are local now — tp=1, no Megatron head-sharding — so cuDNN's
+        # partitioner accepts the q/k/v layout); XLA elsewhere (CPU tests have no cuDNN). Flash
+        # never materializes the (B,H,T,T) score — GBs per chunk at d=4096/nh=64, stacked over the
+        # chunk scan — so it stays off the peak. Bidirectional.
+        impl = "cudnn" if jax.default_backend() == "gpu" else "xla"
+        y = jax.nn.dot_product_attention(qt, kt, vt, is_causal=False, implementation=impl)
         x = x + einops.einsum(
             einops.rearrange(y, "b t nh hd -> b t (nh hd)"), self.wo, "b t i, o i -> b t o"
         )
@@ -260,31 +268,44 @@ class ChunkTransformer(eqx.Module):
 
     def shardings(self, mesh: Mesh) -> "ChunkTransformer":
         """True ÷N ZeRO-1 PERSISTENCE layout (master + Adam shard over the FULL mesh); leading
-        `n_chunks` axis (axis 0) UNSHARDED. `in_proj_w [nc, total_d_in, d_model]`: d_model ÷N,
-        total_d_in replicated. Each `out_ws[j] [nc, d_model, C_j]`: d_model ÷N, C_j REPLICATED
-        (no TP axis — the CI output C is never sharded, so the mask multiply needs no reshard).
-        Blocks delegate to `CIBlock.shardings`; biases replicate. COMPUTE re-pins fsdp-only
-        before the chunk scan (`ChunkwiseTransformerCIFn.__call__`)."""
-        full = ("replicate", "fsdp")
-        dmodel_out = NamedSharding(mesh, P(None, None, full))  # axis2 (d_model out) ÷N
-        dmodel_in = NamedSharding(mesh, P(None, full, None))  # axis1 (d_model in) ÷N
+        `n_chunks` axis (axis 0) UNSHARDED. `in_proj_w [nc, total_d_in, d_model]`: d_model over
+        the data axes, total_d_in replicated (column-parallel output — no weight gather). Each
+        `out_ws[j] [nc, d_model, C_j]`: d_model over the data axes, **C_j over `tp`** (Megatron-C)
+        → ÷N total, and the CI output C is `tp`-sharded so it dovetails with V/U's C-on-tp (the
+        `mask · xV` multiply stays local). Blocks delegate to `CIBlock.shardings`; biases
+        replicate. COMPUTE re-pins to `fsdp` (d) × `tp` (C) before the chunk scan
+        (`ChunkwiseTransformerCIFn.__call__`)."""
+        data = ("replicate", "fsdp")
+        in_proj_sh = NamedSharding(
+            mesh, P(None, "tp", data)
+        )  # in_proj: total_d_in ÷tp, d_model ÷(rep·fsdp) → ÷N (row-parallel)
+        out_ws_sh = NamedSharding(
+            mesh, P(None, data, "tp")
+        )  # out_ws: d_model ÷(rep·fsdp), C ÷tp → ÷N
         repl = NamedSharding(mesh, P())
-        n = mesh.devices.size
-        assert self.in_proj_w.shape[2] % n == 0, (
-            f"ChunkTransformer in_proj_w d_model {self.in_proj_w.shape[2]} not ÷ N={n}"
+        n_data = mesh.shape["replicate"] * mesh.shape["fsdp"]
+        n_tp = mesh.shape["tp"]
+        assert self.in_proj_w.shape[1] % n_tp == 0, (
+            f"ChunkTransformer in_proj_w total_d_in {self.in_proj_w.shape[1]} not ÷ tp={n_tp}"
+        )
+        assert self.in_proj_w.shape[2] % n_data == 0, (
+            f"ChunkTransformer in_proj_w d_model {self.in_proj_w.shape[2]} not ÷ {n_data}"
         )
         for slot, w in enumerate(self.out_ws):
-            assert w.shape[1] % n == 0, (
-                f"ChunkTransformer out_ws[{slot}] d_model {w.shape[1]} not ÷ N={n}"
+            assert w.shape[1] % n_data == 0, (
+                f"ChunkTransformer out_ws[{slot}] d_model {w.shape[1]} not ÷ {n_data}"
+            )
+            assert w.shape[2] % n_tp == 0, (
+                f"ChunkTransformer out_ws[{slot}] C {w.shape[2]} not ÷ tp={n_tp}"
             )
         return eqx.tree_at(
             lambda ct: (ct.in_proj_w, ct.in_proj_b, ct.blocks, ct.out_ws, ct.out_bs),
             self,
             (
-                dmodel_out,
+                in_proj_sh,
                 repl,
                 [b.shardings(mesh) for b in self.blocks],
-                tuple(dmodel_in for _ in self.out_ws),
+                tuple(out_ws_sh for _ in self.out_ws),
                 tuple(repl for _ in self.out_bs),
             ),
         )
@@ -313,18 +334,26 @@ def _reconstruct_ci_compute_weights(chunks: "ChunkTransformer") -> "ChunkTransfo
     tuple. No-op off-mesh."""
     if jax.sharding.get_abstract_mesh().empty:
         return chunks
-    d_axis2 = P(None, None, "fsdp")  # d_model is axis2 (matmul input dim)
-    d_axis1 = P(None, "fsdp", None)  # d_model is axis1 (matmul output dim)
+    d_axis2 = P(None, None, "fsdp")  # attn d_model axis2 (gathered), tp-replicated
+    d_axis1 = P(None, "fsdp", None)  # attn d_model axis1 (gathered), tp-replicated
+    out_ws_axis = P(None, "fsdp", "tp")  # out_ws [nc, d_model÷fsdp, C÷tp] — d gathered, C Megatron
+    mlp_in_c = P(None, None, ("fsdp", "tp"))  # w1 [nc, d_model, mlp_hidden÷(fsdp·tp)] — Megatron
+    mlp_out_c = P(None, ("fsdp", "tp"), None)  # w2 [nc, mlp_hidden÷(fsdp·tp), d_model] — Megatron
+    in_proj_c = P(None, "tp", "fsdp")  # in_proj [nc, total_d_in÷tp, d_model÷fsdp] — row-parallel
 
     def pin(x: Array, spec: "P") -> Array:
-        return jax.lax.with_sharding_constraint(x.astype(jnp.bfloat16), spec)
+        # optimization_barrier: cast bf16 BEFORE the gather (else XLA sinks the convert past
+        # the all-gather and moves the f32 master — 2x the comm).
+        return jax.lax.with_sharding_constraint(
+            jax.lax.optimization_barrier(x.astype(jnp.bfloat16)), spec
+        )
 
     pinned_blocks = [
         eqx.tree_at(
             lambda b: (b.wq, b.wk, b.wv, b.wo, b.w1, b.w2),
             blk,
             (pin(blk.wq, d_axis2), pin(blk.wk, d_axis2), pin(blk.wv, d_axis2),
-             pin(blk.wo, d_axis1), pin(blk.w1, d_axis2), pin(blk.w2, d_axis1)),
+             pin(blk.wo, d_axis1), pin(blk.w1, mlp_in_c), pin(blk.w2, mlp_out_c)),
         )
         for blk in chunks.blocks
     ]  # fmt: skip
@@ -332,9 +361,9 @@ def _reconstruct_ci_compute_weights(chunks: "ChunkTransformer") -> "ChunkTransfo
         lambda ct: (ct.in_proj_w, ct.blocks, ct.out_ws),
         chunks,
         (
-            pin(chunks.in_proj_w, d_axis2),  # [nc, total_d_in, d_model] — d_model axis2 on fsdp
+            pin(chunks.in_proj_w, in_proj_c),  # [nc, total_d_in÷tp, d_model÷fsdp] — row-parallel
             pinned_blocks,
-            tuple(pin(w, d_axis1) for w in chunks.out_ws),  # [nc, d_model, C_j] — d_model axis1
+            tuple(pin(w, out_ws_axis) for w in chunks.out_ws),  # [nc, d_model÷fsdp, C÷tp]
         ),
     )
 
@@ -404,24 +433,21 @@ class ChunkwiseTransformerCIFn(eqx.Module):
         # `[n_chunks, *leading, C_j]`. No glued ΣC axis, so no slice — site `(chunk i, slot j)`
         # is `stacked_per_slot[j][i]` directly (chunks are slot-homogeneous in C-per-site
         # ORDER, asserted at init, so slot j carries one C_j across every chunk).
-        import os as _os
+        # Per-CHUNK checkpoint of the scan BODY in BOTH modes — `remat` controls ONLY whether
+        # the chunk ACTIVATIONS are recomputed; it NEVER controls the ÷fsdp→full weight gather.
+        # `remat=True` → nothing_saveable: recompute activations AND re-gather (min memory, the
+        # `[n_chunks, *, seq, seq]` f32 score slab never stacks). `remat=False` → dots_saveable:
+        # SAVE the activation matmuls, still re-gather the weights (a collective, not a dot) — i.e.
+        # plain FSDP. WITHOUT any checkpoint the backward would instead stack every chunk's full
+        # gathered weights `[n_chunks, …]` as residuals → DDP-stack OOM, so we always checkpoint.
+        policy = (
+            jax.checkpoint_policies.nothing_saveable
+            if remat
+            else jax.checkpoint_policies.dots_saveable
+        )
 
-        if _os.environ.get("PD_CI_BROADCAST", "") == "1":
-            # EXPERIMENT: broadcast all chunks at once (vmap, no loop) so XLA sees one network
-            # and consolidates the per-chunk cross-node grad reduces into one. Trades the scan's
-            # memory bound for fewer collectives — per-chunk remat still drops intermediates.
-            def run_chunk_v(chunk_array: ChunkTransformer, chunk_input: Array) -> tuple[Array, ...]:
-                chunk = eqx.combine(chunk_array, chunk_static)
-                return chunk(chunk_input, inv_freq)
-
-            fn = jax.checkpoint(run_chunk_v) if remat else run_chunk_v
-            stacked_per_slot = jax.vmap(fn)(chunk_arrays, stacked_in)
-        else:
-            # Per-CHUNK remat: checkpoint the scan BODY so the backward recomputes one chunk at a
-            # time, keeping only the carry — NOT all `n_chunks` chunks' attention scores + MLP
-            # hidden states stacked `[n_chunks, ...]`.
-            body = jax.checkpoint(run_chunk) if remat else run_chunk
-            _, stacked_per_slot = jax.lax.scan(body, None, (chunk_arrays, stacked_in))
+        body = jax.checkpoint(run_chunk, policy=policy)
+        _, stacked_per_slot = jax.lax.scan(body, None, (chunk_arrays, stacked_in))
         logits: SiteDict = {}
         for chunk_idx, m in enumerate(self.chunk_meta):
             for slot, site in enumerate(m.output_sites):

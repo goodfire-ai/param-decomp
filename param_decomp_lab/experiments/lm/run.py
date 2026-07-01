@@ -194,6 +194,9 @@ def train(
         data=data,
         remat_recon_forwards=built.runtime.remat_recon_forwards,
         remat_ci_fn=built.runtime.remat_ci_fn,
+        ascend_replicate=built.runtime.ascend_replicate,
+        compiler_options=built.runtime.compiler_options,
+        profile=built.runtime.launch_env.profile,
         sample_batch=sample_batch,
         eval_fn=eval_fn,
         eval_every=eval_every,
@@ -224,6 +227,7 @@ def _make_lm_eval_fn(
         eval_server.per_process,
         jax.local_device_count(),
     )
+    co = built.runtime.compiler_options
     eval_step_fn = make_eval_step(
         lm,
         eval.rounding_threshold,
@@ -231,18 +235,21 @@ def _make_lm_eval_fn(
         eval.l0_groups,
         eval.pgd,
         mesh,
+        co,
     )
     attn_steps: dict[str, Any] = {}
     if eval.attn_patterns is not None:
         pattern_fn = attn_pattern_for(lm)
         if eval.attn_patterns.ci_masked:
-            attn_steps["CIMaskedAttnPatternsReconLoss"] = make_ci_attn_patterns_step(lm, pattern_fn)
+            attn_steps["CIMaskedAttnPatternsReconLoss"] = make_ci_attn_patterns_step(
+                lm, pattern_fn, co
+            )
         if eval.attn_patterns.stochastic:
             attn_steps["StochasticAttnPatternsReconLoss"] = make_stochastic_attn_patterns_step(
-                lm, pattern_fn, eval.attn_patterns.stochastic_n_mask_samples
+                lm, pattern_fn, eval.attn_patterns.stochastic_n_mask_samples, co
             )
 
-    slow_eval_step = make_slow_eval_step(lm, eval.density_ci_alive_threshold)
+    slow_eval_step = make_slow_eval_step(lm, eval.density_ci_alive_threshold, co)
     slow_renderer = SlowEvalRenderer(is_main)
     # The CI-heatmap / permutation / UV / identity-error metrics read off the run's typed
     # `eval.metrics` (re-validated from the pinned config.yaml: the trainer's `EvalConfig`
@@ -251,7 +258,7 @@ def _make_lm_eval_fn(
     perm_spec = resolve_permutation_metrics(lm.site_names, run_eval_metrics)
     hidden_acts_n_mask_samples = stochastic_hidden_acts_n_mask_samples(run_eval_metrics)
     want_position_ci = perm_spec.any_plots or perm_spec.any_identity_error
-    position_ci_step = make_position_ci_step(lm) if want_position_ci else None
+    position_ci_step = make_position_ci_step(lm, co) if want_position_ci else None
 
     def eval_fn(state: TrainState, now_step: int) -> "LogRecord":
         eval_pass_index = now_step // eval.every
@@ -302,7 +309,7 @@ def _make_lm_eval_fn(
             )
             hidden_acts_key = random.fold_in(run_key, 3 * pd.steps + eval_pass_index)
             hidden_acts = compute_hidden_acts_metrics(
-                lm, state, eval_batches, hidden_acts_n_mask_samples, hidden_acts_key
+                lm, state, eval_batches, hidden_acts_n_mask_samples, hidden_acts_key, co
             )
             eval_record |= {f"eval/slow/loss/{k}": v for k, v in hidden_acts.items()}
             # The position-CI all-gather is ALSO collective (every rank joins it), gated on
@@ -381,7 +388,7 @@ def main(config: Path, run_id: str) -> None:
     # Harden the cold-cache HF weight load against the 8N-rank startup burst before any
     # per-rank Hub call (no-op when huggingface_hub is absent / cache is pre-warmed).
     configure_hf_http_retries()
-    mesh = hsdp_mesh()
+    mesh = hsdp_mesh(built.runtime.tp)
 
     if built.run.resume_provenance is not None:
         assert_finetune_structural_compat(built, built.run.resume_provenance)

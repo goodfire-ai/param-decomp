@@ -26,13 +26,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 from jax import random
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from param_decomp.components import DecompVU
+from param_decomp.jit_util import filter_jit
 from param_decomp.lm import DecomposedModel, all_false_routes
 from param_decomp.train import COMPUTE_DT, cast_floating
 
@@ -66,11 +66,12 @@ HiddenActsStep = Callable[
 (frozen-weight-bearing) is the jit ARG."""
 
 
-def make_ci_hidden_acts_step(lm: DecomposedModel) -> HiddenActsStep:
+def make_ci_hidden_acts_step(
+    lm: DecomposedModel, compiler_options: dict[str, bool | int | str] | None = None
+) -> HiddenActsStep:
     """Deterministic CI-mask hidden-acts step: `lower_leaky` CI, no delta, one forward."""
     site_names = lm.site_names
 
-    @eqx.filter_jit
     def step(
         model: DecomposedModel,
         components: DecompVU,
@@ -98,17 +99,20 @@ def make_ci_hidden_acts_step(lm: DecomposedModel) -> HiddenActsStep:
         n_elements = {s: clean[s].size for s in site_names}
         return sum_mse, n_elements
 
-    return step
+    return filter_jit(step, compiler_options=compiler_options)
 
 
-def make_stochastic_hidden_acts_step(lm: DecomposedModel, n_mask_samples: int) -> HiddenActsStep:
+def make_stochastic_hidden_acts_step(
+    lm: DecomposedModel,
+    n_mask_samples: int,
+    compiler_options: dict[str, bool | int | str] | None = None,
+) -> HiddenActsStep:
     """Stochastic-mask hidden-acts step: `n_mask_samples` draws of `mask = ci + (1−ci)·s`
     (with weight deltas), per-draw per-site MSE summed. RNG via per-draw / per-site
-    `fold_in` (the eval-step discipline, mirrors `train.stochastic_entry_masks`)."""
+    `fold_in` (the eval-step discipline)."""
     assert n_mask_samples >= 1, n_mask_samples
     site_names = lm.site_names
 
-    @eqx.filter_jit
     def step(
         model: DecomposedModel,
         components: DecompVU,
@@ -152,7 +156,7 @@ def make_stochastic_hidden_acts_step(lm: DecomposedModel, n_mask_samples: int) -
         n_elements = {s: clean[s].size * n_mask_samples for s in site_names}
         return sum_mse, n_elements
 
-    return step
+    return filter_jit(step, compiler_options=compiler_options)
 
 
 def accumulate_hidden_acts(
