@@ -264,13 +264,19 @@ def _resolve_d_resid(target: AnyLMTargetConfig) -> int:
             return llama_simple_mlp.load_model_config(cache_dir).n_embd
 
 
-def _resolved_chunks(target: AnyLMTargetConfig, blocks_per_chunk: int) -> tuple[Chunk, ...]:
-    """Group the decomposition sites into chunks of `blocks_per_chunk` CONSECUTIVE blocks.
+def _resolved_chunks(
+    target: AnyLMTargetConfig, blocks_per_chunk: int, tap_mode: str
+) -> tuple[Chunk, ...]:
+    """Group the decomposition sites into chunks of `blocks_per_chunk` CONSECUTIVE blocks,
+    each emitting CI for every site in those blocks. Sites are grouped by block, the distinct
+    blocks sorted ascending, then partitioned into consecutive `blocks_per_chunk`-block groups
+    (no ragged tail).
 
-    Each chunk reads ONE residual tap — `resid.{first_block_of_chunk}`, the residual
-    entering the chunk — and emits CI for every site in those blocks. Sites are grouped by
-    block, the distinct blocks sorted ascending, then partitioned into consecutive
-    `blocks_per_chunk`-block groups (no ragged tail)."""
+    A chunk's input residual taps are set by `tap_mode`: `chunk_entry` → one tap
+    `resid.{first_block_of_chunk}` (the residual entering the chunk); `per_block` → one tap per
+    block, `resid.{b}` for every block `b` in the chunk (RMS-normed + concatenated by the CI
+    fn). Both modes are homogeneous across chunks (equal tap count), the CI-fn stack's
+    requirement."""
     sites_by_block: dict[int, list[str]] = {}
     for spec in target.sites:
         sites_by_block.setdefault(_block_of_site(target, spec.name), []).append(spec.name)
@@ -282,7 +288,12 @@ def _resolved_chunks(target: AnyLMTargetConfig, blocks_per_chunk: int) -> tuple[
     for start in range(0, len(blocks), blocks_per_chunk):
         chunk_blocks = blocks[start : start + blocks_per_chunk]
         output_sites = tuple(name for block in chunk_blocks for name in sites_by_block[block])
-        chunks.append(Chunk(input_taps=(f"resid.{chunk_blocks[0]}",), output_sites=output_sites))
+        input_taps = (
+            tuple(f"resid.{b}" for b in chunk_blocks)
+            if tap_mode == "per_block"
+            else (f"resid.{chunk_blocks[0]}",)
+        )
+        chunks.append(Chunk(input_taps=input_taps, output_sites=output_sites))
     return tuple(chunks)
 
 
@@ -290,10 +301,12 @@ def _resolve_chunkwise_ci_arch(
     target: AnyLMTargetConfig, ci: ChunkwiseTransformerCiConfig
 ) -> ChunkwiseTransformerCIArch:
     """Resolve the chunkwise-transformer arch against the LM target: the chunk generator
-    (`_resolved_chunks`) + the per-chunk input width (`_resolve_d_resid`)."""
+    (`_resolved_chunks`) + the per-chunk input width (`_resolve_d_resid` times the tap count,
+    which is `blocks_per_chunk` for `per_block` taps and 1 for `chunk_entry`)."""
+    taps_per_chunk = ci.blocks_per_chunk if ci.input_tap_mode == "per_block" else 1
     return ChunkwiseTransformerCIArch(
-        chunks=_resolved_chunks(target, ci.blocks_per_chunk),
-        input_dim=_resolve_d_resid(target),
+        chunks=_resolved_chunks(target, ci.blocks_per_chunk, ci.input_tap_mode),
+        input_dim=_resolve_d_resid(target) * taps_per_chunk,
         d_model=ci.d_model,
         n_blocks=ci.n_blocks,
         n_heads=ci.n_heads,
