@@ -260,7 +260,7 @@ def test_train_step_runs_through_generic_target():
         ),
         lm.site_names,
     )
-    step_fn = make_train_step(
+    step_fn, _ = make_train_step(
         lm=lm,
         losses=loss_terms,
         components_optimizer=opt_vu,

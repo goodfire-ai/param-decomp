@@ -16,6 +16,7 @@ Per-term RNG: term i draws from `fold_in(step_key, 1 + i)` in config-list order
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum, auto
 from typing import Any
 
 import equinox as eqx
@@ -75,24 +76,44 @@ class TrainState:
     step: Array
 
 
+class WindowReduction(Enum):
+    """How a train-step metric collapses the window of steps since the last log. A metric
+    absent from the step's reduction map is SUBSAMPLED (logged at the log-step value) — the
+    default. The producer (`make_train_step`) declares this so the logger never re-infers a
+    metric's intent from its key string."""
+
+    MEAN = auto()
+    SPREAD = auto()
+
+
+_GRAD_NORM_FAMILIES = ("components", "ci_fns")
+GRAD_NORM_SUMMARY_KEYS = tuple(
+    f"grad_norms/summary/{family}" for family in (*_GRAD_NORM_FAMILIES, "total")
+)
+"""The aggregate grad-norm keys `_grad_norm_metrics` emits (per-family + total) — the ones
+that carry a window SPREAD reduction; the per-leaf norms are subsampled."""
+
+
 def _grad_norm_metrics(components_grad: DecompVU, ci_fn_grad: Any) -> dict[str, Array]:
     """Pre-clip gradient L2 norms, matching the torch `component_grad_norms` families:
     per-leaf `grad_norms/components<path>` / `grad_norms/ci_fns<path>` (paths are this
     pytree's own — e.g. `.vu['layers.18.mlp.gate_proj'][0]` for the per-site Llama
-    layout, vs torch's per-site names) and the overlay-critical
-    `grad_norms/summary/{components,ci_fns,total}`."""
+    layout, vs torch's per-site names) and the overlay-critical `GRAD_NORM_SUMMARY_KEYS`."""
+    grads_by_family = {"components": components_grad, "ci_fns": ci_fn_grad}
     out: dict[str, Array] = {}
 
-    def family(grad_tree: Any, prefix: str) -> Array:
+    def family_sum_sq(family: str) -> Array:
         sum_sq = jnp.zeros((), jnp.float32)
-        for path, leaf in jax.tree_util.tree_flatten_with_path(grad_tree)[0]:
+        for path, leaf in jax.tree_util.tree_flatten_with_path(grads_by_family[family])[0]:
             leaf_sum_sq = jnp.sum(leaf.astype(jnp.float32) ** 2)
-            out[f"grad_norms/{prefix}{jax.tree_util.keystr(path)}"] = jnp.sqrt(leaf_sum_sq)
+            out[f"grad_norms/{family}{jax.tree_util.keystr(path)}"] = jnp.sqrt(leaf_sum_sq)
             sum_sq = sum_sq + leaf_sum_sq
-        out[f"grad_norms/summary/{prefix}"] = jnp.sqrt(sum_sq)
+        out[f"grad_norms/summary/{family}"] = jnp.sqrt(sum_sq)
         return sum_sq
 
-    total_sq = family(components_grad, "components") + family(ci_fn_grad, "ci_fns")
+    total_sq = jnp.zeros((), jnp.float32)
+    for family in _GRAD_NORM_FAMILIES:
+        total_sq = total_sq + family_sum_sq(family)
     out["grad_norms/summary/total"] = jnp.sqrt(total_sq)
     return out
 
@@ -527,7 +548,21 @@ def make_train_step(
             metrics |= {f"schedules/lr/src/{k}": v for k, v in source_lrs.items()}
         return new_state, metrics
 
-    return filter_jit(step, donate="all-except-first", compiler_options=compiler_options)
+    # The producer declares each metric's window reduction (the logger applies it, never
+    # re-inferring from key strings): losses -> MEAN over the window, grad-norm summaries ->
+    # SPREAD (min/max/median). Keys absent here (imp_min_param, per-leaf grad norms) subsample.
+    metric_reductions: dict[str, WindowReduction] = {
+        "total": WindowReduction.MEAN,
+        "faith": WindowReduction.MEAN,
+        imp_loss_key: WindowReduction.MEAN,
+        "freq": WindowReduction.MEAN,
+        **{f"loss/{term.name}": WindowReduction.MEAN for term in recon_terms},
+        **{key: WindowReduction.SPREAD for key in GRAD_NORM_SUMMARY_KEYS},
+    }
+    return (
+        filter_jit(step, donate="all-except-first", compiler_options=compiler_options),
+        metric_reductions,
+    )
 
 
 # ───────────────────────────── faithfulness warmup (SPEC S21) ─────────────────────────────

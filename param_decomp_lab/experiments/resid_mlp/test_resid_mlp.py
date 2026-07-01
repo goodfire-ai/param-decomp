@@ -255,7 +255,7 @@ def _make_state_and_step(
         adversaries={}, step=jnp.zeros((), jnp.int32),
     )  # fmt: skip
     loss_terms = build_loss_terms(_loss_metrics(), lm.site_names)
-    step = make_train_step(
+    step, _ = make_train_step(
         lm=lm, losses=loss_terms, components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
         total_steps=total_steps, remat_recon_forwards=False, remat_ci_fn=False, mesh=None,
     )  # fmt: skip
@@ -364,7 +364,7 @@ def _faith_warmed_state(
         adversaries={}, step=jnp.zeros((), jnp.int32),
     )  # fmt: skip
     loss_terms = build_loss_terms(_recovery_loss_metrics(), lm.site_names)
-    step = make_train_step(
+    step, _ = make_train_step(
         lm=lm, losses=loss_terms, components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
         total_steps=total_steps, remat_recon_forwards=False, remat_ci_fn=False, mesh=None,
     )  # fmt: skip

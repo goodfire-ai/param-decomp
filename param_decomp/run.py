@@ -63,7 +63,12 @@ from param_decomp.slow_eval import (
     render_permutation_figures,
     render_slow_eval_figures,
 )
-from param_decomp.train import TrainState, make_faith_warmup_step, make_train_step
+from param_decomp.train import (
+    TrainState,
+    WindowReduction,
+    make_faith_warmup_step,
+    make_train_step,
+)
 
 _sigterm_received = False
 
@@ -156,22 +161,33 @@ def _is_verbose_grad_norm(key: str) -> bool:
     return key.startswith("train/grad_norms/") and not key.startswith("train/grad_norms/summary/")
 
 
-def _grad_norm_summary_window_stats(window: list[dict[str, jax.Array]]) -> dict[str, float]:
-    """Window min/max/median for each `grad_norms/summary/*` scalar over every step since the
-    last log. The per-step values are accumulated as device handles (appending one is async),
-    so the whole window reduces in a single host transfer here — the loop stays unsynced
-    between logs rather than subsampling grad norms at the log step."""
-    assert window, "grad-norm summary window is empty at a log boundary"
+_REDUCTION_OPS: dict[WindowReduction, tuple[tuple[str, Callable[..., jax.Array]], ...]] = {
+    WindowReduction.MEAN: (("", jnp.mean),),  # empty suffix: replaces the point value in place
+    WindowReduction.SPREAD: (("/min", jnp.min), ("/max", jnp.max), ("/median", jnp.median)),
+}
+"""How each declared reduction is computed over the window: (output-key suffix, jnp op)."""
+
+
+def _reduce_metric_window(
+    window: list[dict[str, jax.Array]], reductions: dict[str, WindowReduction]
+) -> dict[str, float]:
+    """Apply each windowed metric's declared reduction over the steps since the last log. The
+    policy (`reductions`) is supplied by the metric producer (`make_train_step`), never inferred
+    from key strings here. Per-step values accumulate as device handles (appending one is async),
+    so the loop stays unsynced between logs and the whole window reduces here — one host transfer
+    per distinct reduction op."""
+    assert window, "metric window is empty at a log boundary"
     keys = list(window[0].keys())
     stacked = jnp.stack([jnp.stack([snap[k] for snap in window]) for k in keys])  # [keys, steps]
-    mins = np.asarray(jnp.min(stacked, axis=1))
-    maxs = np.asarray(jnp.max(stacked, axis=1))
-    medians = np.asarray(jnp.median(stacked, axis=1))
-    out: dict[str, float] = {}
+    keys_by_op: dict[tuple[str, Callable[..., jax.Array]], list[int]] = {}
     for i, key in enumerate(keys):
-        out[f"{key}/min"] = float(mins[i])
-        out[f"{key}/max"] = float(maxs[i])
-        out[f"{key}/median"] = float(medians[i])
+        for op in _REDUCTION_OPS[reductions[key]]:
+            keys_by_op.setdefault(op, []).append(i)
+    out: dict[str, float] = {}
+    for (suffix, reduce), idxs in keys_by_op.items():
+        vals = np.asarray(reduce(stacked[jnp.asarray(idxs)], axis=1))
+        for j, i in enumerate(idxs):
+            out[f"{keys[i]}{suffix}"] = float(vals[j])
     return out
 
 
@@ -501,7 +517,7 @@ def run_decomposition_training(
         return  # SIGTERM mid-warmup: clean exit for requeue
     state, start_step = init
 
-    step_fn = make_train_step(
+    step_fn, metric_reductions = make_train_step(
         lm=lm,
         losses=build_loss_terms(pd.loss_metrics, lm.site_names),
         components_optimizer=opt_vu,
@@ -532,7 +548,7 @@ def run_decomposition_training(
     sink = MetricsSink.for_run(run, wandb_config, is_main)
     window_t0 = loop_t0 = time.time()
     last_logged = start_step
-    grad_norm_summary_window: list[dict[str, jax.Array]] = []
+    metric_window: list[dict[str, jax.Array]] = []
 
     # SCRATCH PROFILER HOOK (revertable): env-gated jax.profiler.trace over a window of
     # steady-state steps + per-step block_until_ready wall-clock. PD_PROFILE_TRACE=1 enables;
@@ -690,9 +706,7 @@ def run_decomposition_training(
             batch = sample_batch(step)
             state, metrics = step_fn(lm, state, batch, random.fold_in(run_key, step))
 
-        grad_norm_summary_window.append(
-            {k: v for k, v in metrics.items() if k.startswith("grad_norms/summary/")}
-        )
+        metric_window.append({k: v for k, v in metrics.items() if k in metric_reductions})
 
         if _profiling:
             jax.block_until_ready((state, metrics["total"]))
@@ -721,11 +735,9 @@ def run_decomposition_training(
             dt = time.time() - window_t0
             per_step = dt / max(now_step - last_logged, 1)
             last_logged = now_step
-            record = {
-                k: float(v) for k, v in metrics.items() if not k.startswith("grad_norms/summary/")
-            }
-            record.update(_grad_norm_summary_window_stats(grad_norm_summary_window))
-            grad_norm_summary_window.clear()
+            record = {k: float(v) for k, v in metrics.items() if k not in metric_reductions}
+            record.update(_reduce_metric_window(metric_window, metric_reductions))
+            metric_window.clear()
             for loss_name in ("total", *(k for k in record if k.startswith("loss/"))):
                 assert math.isfinite(record[loss_name]), (
                     f"non-finite loss {loss_name!r} at step {now_step}: {record[loss_name]}"

@@ -169,7 +169,7 @@ def main() -> None:
         sources=sources, sources_adam_state=init_sources_adam_state(sources),
         step=jax.numpy.zeros((), jax.numpy.int32),
     )  # fmt: skip
-    step_fn = make_train_step(
+    step_fn, _ = make_train_step(
         lm=lm,
         faith_coeff=1e5,
         stoch_coeff=0.5,

@@ -130,7 +130,7 @@ def _build(seed: int):
         ),
         lm.site_names,
     )  # fmt: skip
-    step = make_train_step(
+    step, _ = make_train_step(
         lm=lm,
         losses=loss_terms,
         components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,

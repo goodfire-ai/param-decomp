@@ -407,7 +407,7 @@ def test_step_trains_and_has_vpd_signature():
         ),
         lm.site_names,
     )
-    step = make_train_step(
+    step, _ = make_train_step(
         lm=lm,
         losses=loss_terms,
         components_optimizer=opt_vu,

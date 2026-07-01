@@ -159,7 +159,7 @@ def _build_sharded(seed: int):
     )  # fmt: skip
     assert tuple(persistent_configs(loss_terms.recon)) == PERSISTENT_TERMS, loss_terms
 
-    step = make_train_step(
+    step, _ = make_train_step(
         lm=lm,
         losses=loss_terms,
         components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,

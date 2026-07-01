@@ -73,7 +73,7 @@ def _build_step_and_args():
         ),
         lm.site_names,
     )
-    step_fn = make_train_step(
+    step_fn, _ = make_train_step(
         lm=lm,
         losses=loss_terms,
         components_optimizer=opt_vu,
