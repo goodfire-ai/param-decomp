@@ -53,14 +53,17 @@ def column_mean(values_sorted: np.ndarray) -> np.ndarray:
     return np.array([values_sorted[edges[i] : edges[i + 1]].mean() for i in range(NX)])
 
 
-def render(label: str, mode: str, color_scale: str) -> None:
+def render(label: str, mode: str, y_scale: str, color_scale: str) -> None:
     data = np.load(OUT_DIR / f"ci_hist_{label}.npz")
     y_edges = data["y_edges"]
     n_tokens = int(data["n_tokens"])
     ci_floor = float(data["ci_floor"])
     plot_y_edges = np.concatenate([[ci_floor / 10], y_edges])
     x_edges = np.linspace(0, 49152, NX + 1)
-    visible_row = plot_y_edges[1:] > Y_LO  # rows whose upper edge is inside the [Y_LO, 1] view
+    # rows kept for the per-column-max colour norm: log-y clips the view at Y_LO; linear-y
+    # shows all real CI bins and drops only the exact-zero underflow band.
+    y_floor = Y_LO if y_scale == "log" else ci_floor
+    visible_row = plot_y_edges[1:] > y_floor
 
     fig, axs = plt.subplots(len(SITE_KEYS), 1, figsize=(9, 3.6 * len(SITE_KEYS)), squeeze=False, constrained_layout=True)
     mesh = None
@@ -89,8 +92,11 @@ def render(label: str, mode: str, color_scale: str) -> None:
             norm = Normalize(vmin=0.0, vmax=1.0)
         masked = np.ma.masked_where(plot_density <= 0, plot_density)
         mesh = ax.pcolormesh(x_edges, plot_y_edges, masked.T, cmap=cmap, norm=norm, shading="flat")
-        ax.set_yscale("log")
-        ax.set_ylim(Y_LO, 1.0)
+        if y_scale == "log":
+            ax.set_yscale("log")
+            ax.set_ylim(Y_LO, 1.0)
+        else:
+            ax.set_ylim(0.0, 1.0)
         tw = ax.twinx()
         tw.plot(xc, mean_ci_col, color=MEAN_COLOR, lw=1.0)
         tw.set_yscale("log")
@@ -106,9 +112,15 @@ def render(label: str, mode: str, color_scale: str) -> None:
         cbar_label = "density over all obs (col-norm)" if mode == "full" else "density over active obs (col-norm)"
     fig.colorbar(mesh, ax=axs[:, 0], label=cbar_label, shrink=0.6)
     title = "per-token CI density" + (" — active-conditional" if mode == "active" else "")
-    scale_note = "log color" if color_scale == "log" else "linear color (per-column max = 1)"
-    fig.suptitle(f"{title} — {n_tokens:,} tokens   (cyan = sorted mean CI, right axis {MEAN_LO:g}–1; {scale_note})", fontsize=12)
-    suffix = "" if color_scale == "log" else "_lin"
+    color_note = "log color" if color_scale == "log" else "linear color (per-column max = 1)"
+    y_note = "log y" if y_scale == "log" else "linear y"
+    fig.suptitle(f"{title} — {n_tokens:,} tokens   (cyan = sorted mean CI, right axis {MEAN_LO:g}–1; {y_note}, {color_note})", fontsize=12)
+    if y_scale == "linear":
+        suffix = "_lin_liny"
+    elif color_scale == "linear":
+        suffix = "_lin"
+    else:
+        suffix = ""
     out = OUT_DIR / f"ci_hist_heatmap_{mode}{suffix}_{label}.png"
     fig.savefig(out, dpi=110)
     plt.close(fig)
@@ -117,5 +129,6 @@ def render(label: str, mode: str, color_scale: str) -> None:
 
 for label in LABELS:
     for mode in ("full", "active"):
-        for color_scale in ("log", "linear"):
-            render(label, mode, color_scale)
+        render(label, mode, "log", "log")
+        render(label, mode, "log", "linear")
+        render(label, mode, "linear", "linear")
