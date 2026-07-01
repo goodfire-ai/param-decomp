@@ -17,6 +17,7 @@ from pydantic import Discriminator, Field, PositiveInt, model_validator
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.built_run import (
+    LAUNCH_CONFIG_FILENAME,
     AttnPatternsEvalConfig,
     BuiltRun,
     DataConfig,
@@ -451,8 +452,8 @@ def load_config(config_path: Path, run_id: str) -> tuple[BuiltRun, dict[str, Any
 
 
 def load_run_dir_config(run_dir: Path) -> BuiltRun:
-    """Rebuild a run's `BuiltRun` bundle from its single pinned `config.yaml`
+    """Rebuild a run's `BuiltRun` bundle from its single pinned launch config
     (for tools that read finished/live run dirs, e.g. harvest / fine-tune compat). The
     run id is the run-dir name."""
-    schema_raw = yaml.safe_load((run_dir / "config.yaml").read_text())
+    schema_raw = yaml.safe_load((run_dir / LAUNCH_CONFIG_FILENAME).read_text())
     return build_from_schema(schema_raw, run_dir.name)
