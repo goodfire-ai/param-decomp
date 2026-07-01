@@ -175,7 +175,6 @@ def test_eval_step_keys_identities_and_determinism():
     expected_keys = (
         {f"ce_kl/kl_{v}" for v in (*variants, "zero_masked")}
         | {f"ce_kl/ce_difference_{v}" for v in variants}
-        | {f"ce_kl/ce_unrecovered_{v}" for v in variants}
         | {f"l0/-1.0_{site}" for site in lm.site_names}
     )
     assert set(out) == expected_keys
