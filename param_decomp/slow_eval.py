@@ -701,7 +701,7 @@ def compute_identity_ci_errors(
     return per_site
 
 
-CI_DENSITY_HEATMAP_N_COLUMNS = 256
+CI_DENSITY_HEATMAP_N_COLUMNS = 600
 """Component-axis resolution of the density heatmap: the C components (sorted desc by mean
 CI) are summed into up to this many equal rank-blocks — dense left, sparse right (fewer
 blocks when C is smaller, so no block is ever empty)."""
