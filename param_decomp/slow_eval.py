@@ -55,6 +55,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import random
@@ -109,22 +110,27 @@ class SiteReduction:
     density_hist: np.ndarray | None
 
 
-SlowEvalStep = Callable[
-    [DecomposedModel, Any, Float[Array, "*leading d"]],
-    tuple[
-        dict[str, Array],
-        dict[str, Array],
-        Array,
-        dict[str, Array],
-        dict[str, Array],
-        dict[str, Array],
-    ],
-]
-"""`(model, ci_fn, residual) -> (density_counts, ci_sums, n_positions, flat_lower,
-flat_logits, density_hist)` — the per-batch reduction, pre-reduced over positions.
-`density_hist` maps site -> `(C, n_bins + 1)` counts (empty when the density heatmap is off).
-The slow plot metrics read only the CI arrays, so V/U (`components`) is not an input. `model`
-(frozen-weight-bearing) is the jit ARG."""
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class SlowEvalBatch:
+    """Per-batch slow-eval reduction, pre-reduced over positions (the `SlowEvalStep`
+    output). `density_counts` / `ci_sums` are `{site: (C,)}`; `flat_lower` / `flat_logits`
+    are the whole `{site: (tokens,)}` raw values (the host caps the histogram sample);
+    `n_positions` is the scalar position count; `density_hist` is `{site: (C, n_bins + 1)}`
+    (empty when the density heatmap is off). The slow plot metrics read only the CI arrays,
+    so V/U (`components`) is not an input."""
+
+    density_counts: dict[str, Array]
+    ci_sums: dict[str, Array]
+    n_positions: Array
+    flat_lower: dict[str, Array]
+    flat_logits: dict[str, Array]
+    density_hist: dict[str, Array]
+
+
+SlowEvalStep = Callable[[DecomposedModel, Any, Float[Array, "*leading d"]], SlowEvalBatch]
+"""`(model, ci_fn, residual) -> SlowEvalBatch`. `model` (frozen-weight-bearing) is the
+jit ARG."""
 
 
 CI_DENSITY_HEATMAP_FLOOR = 1e-9
@@ -153,23 +159,15 @@ def make_slow_eval_step(
     compiler_options: dict[str, bool | int | str] | None = None,
 ) -> SlowEvalStep:
     """Build the jit'd per-batch reduction `slow_eval_step(model, ci_fn, residual) ->
-    ({site: density_counts}, {site: ci_sums}, n_positions, {site: flat lower},
-    {site: flat logits}, {site: density_hist})`. `lower`/`logits` are returned whole (the
-    host caps the histogram sample); counts/sums are pre-reduced over positions.
-    `density_heatmap_n_bins` opts into the per-component CI density histogram (empty dict
-    when None); it shares this forward's `lower`, adding only an on-device bincount."""
+    SlowEvalBatch`. `flat_lower`/`flat_logits` are returned whole (the host caps the
+    histogram sample); counts/sums are pre-reduced over positions. `density_heatmap_n_bins`
+    opts into the per-component CI density histogram (empty `density_hist` when None); it
+    shares this forward's `lower`, adding only an on-device bincount."""
     site_names = lm.site_names
 
     def slow_eval_step(
         model: DecomposedModel, ci_fn: Any, residual: Float[Array, "*leading d"]
-    ) -> tuple[
-        dict[str, Array],
-        dict[str, Array],
-        Array,
-        dict[str, Array],
-        dict[str, Array],
-        dict[str, Array],
-    ]:
+    ) -> SlowEvalBatch:
         # Read the CI fn in training precision (bf16), like train.py / eval.py: the readout
         # reflects the deployed model, and cuDNN flash attention rejects fp32.
         ci_fn = cast_floating(ci_fn, COMPUTE_DT)
@@ -197,7 +195,14 @@ def make_slow_eval_step(
             if density_heatmap_n_bins is not None
             else {}
         )
-        return density_counts, ci_sums, n_positions, flat_lower, flat_logits, density_hist
+        return SlowEvalBatch(
+            density_counts=density_counts,
+            ci_sums=ci_sums,
+            n_positions=n_positions,
+            flat_lower=flat_lower,
+            flat_logits=flat_logits,
+            density_hist=density_hist,
+        )
 
     return filter_jit(slow_eval_step, compiler_options=compiler_options)
 
@@ -221,24 +226,28 @@ def accumulate_site_reductions(
     logits_chunks: dict[str, list[np.ndarray]] = {}
     total_positions = 0
     for batch_idx, residual in enumerate(residual_batches):
-        d, s, n_pos, flat_lower, flat_logits, density_hist = slow_eval_step(model, ci_fn, residual)
-        total_positions += int(n_pos)
+        batch = slow_eval_step(model, ci_fn, residual)
+        total_positions += int(batch.n_positions)
         keep_sample = n_batches_accum is None or batch_idx < n_batches_accum
-        for site in d:
-            counts, ci_sum = np.asarray(d[site]), np.asarray(s[site])
+        for site in batch.density_counts:
+            counts, ci_sum = np.asarray(batch.density_counts[site]), np.asarray(batch.ci_sums[site])
             density[site] = counts if batch_idx == 0 else density[site] + counts
             sums[site] = ci_sum if batch_idx == 0 else sums[site] + ci_sum
-            if density_hist:
-                h = np.asarray(density_hist[site])
+            if batch.density_hist:
+                h = np.asarray(batch.density_hist[site])
                 hist[site] = h if batch_idx == 0 else hist[site] + h
             if keep_sample:
                 # The sample keeps the dp-sharded batch axis; on >1 process a bare np.asarray
                 # spans non-addressable devices, so gather it (counts/sums are already reduced).
                 lower_chunks.setdefault(site, []).append(
-                    np.asarray(multihost_utils.process_allgather(flat_lower[site], tiled=True))
+                    np.asarray(
+                        multihost_utils.process_allgather(batch.flat_lower[site], tiled=True)
+                    )
                 )
                 logits_chunks.setdefault(site, []).append(
-                    np.asarray(multihost_utils.process_allgather(flat_logits[site], tiled=True))
+                    np.asarray(
+                        multihost_utils.process_allgather(batch.flat_logits[site], tiled=True)
+                    )
                 )
 
     return {
@@ -254,14 +263,22 @@ def accumulate_site_reductions(
     }
 
 
-PositionCIStep = Callable[
-    [DecomposedModel, Any, Float[Array, "*leading d"]],
-    tuple[dict[str, Array], dict[str, Array], Array],
-]
-"""`(model, ci_fn, residual) -> ({site: lower (T, C)}, {site: upper (T, C)}, n_batch)` —
-the per-batch CI summed over the batch leading axis, position axis kept. Pairs with
-`accumulate_position_ci` to form a batch-mean `(T, C)` CI matrix per site. `model`
-(frozen-weight-bearing) is the jit ARG."""
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class PositionCIBatch:
+    """Per-batch position-CI reduction (the `PositionCIStep` output): `lower_sum` / `upper_sum`
+    are `{site: (T, C)}` CI summed over the batch leading axis (position axis kept), `n_batch`
+    the scalar batch-element count. Pairs with `accumulate_position_ci` to form a batch-mean
+    `(T, C)` CI matrix per site."""
+
+    lower_sum: dict[str, Array]
+    upper_sum: dict[str, Array]
+    n_batch: Array
+
+
+PositionCIStep = Callable[[DecomposedModel, Any, Float[Array, "*leading d"]], PositionCIBatch]
+"""`(model, ci_fn, residual) -> PositionCIBatch`. `model` (frozen-weight-bearing) is the
+jit ARG."""
 
 
 def make_position_ci_step(
@@ -274,7 +291,7 @@ def make_position_ci_step(
 
     def position_ci_step(
         model: DecomposedModel, ci_fn: Any, residual: Float[Array, "*leading d"]
-    ) -> tuple[dict[str, Array], dict[str, Array], Array]:
+    ) -> PositionCIBatch:
         # Training precision (bf16) readout — see make_slow_eval_step; logits upcast to fp32.
         ci_fn = cast_floating(ci_fn, COMPUTE_DT)
         taps = {
@@ -289,7 +306,7 @@ def make_position_ci_step(
         n_batch = jnp.asarray(first.shape[0], jnp.int32)
         lower_sum = {s: lower[s].sum(0) for s in site_names}  # (T, C)
         upper_sum = {s: upper[s].sum(0) for s in site_names}
-        return lower_sum, upper_sum, n_batch
+        return PositionCIBatch(lower_sum=lower_sum, upper_sum=upper_sum, n_batch=n_batch)
 
     return filter_jit(position_ci_step, compiler_options=compiler_options)
 
@@ -316,10 +333,10 @@ def accumulate_position_ci(
     upper: dict[str, np.ndarray] = {}
     total_batch = 0
     for batch_idx, residual in enumerate(residual_batches):
-        lo, hi, n_batch = position_ci_step(model, ci_fn, residual)
-        total_batch += int(n_batch)
-        for site in lo:
-            lo_np, hi_np = np.asarray(lo[site]), np.asarray(hi[site])
+        batch = position_ci_step(model, ci_fn, residual)
+        total_batch += int(batch.n_batch)
+        for site in batch.lower_sum:
+            lo_np, hi_np = np.asarray(batch.lower_sum[site]), np.asarray(batch.upper_sum[site])
             lower[site] = lo_np if batch_idx == 0 else lower[site] + lo_np
             upper[site] = hi_np if batch_idx == 0 else upper[site] + hi_np
     assert total_batch > 0
