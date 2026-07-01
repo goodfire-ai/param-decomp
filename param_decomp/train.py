@@ -35,6 +35,7 @@ from param_decomp.adversary import (
 )
 from param_decomp.ci_fn import CI, CIFn
 from param_decomp.components import DecompVU
+from param_decomp.configs import SmoothL0ImportanceMinimalityLossConfig
 from param_decomp.jit_util import filter_jit
 from param_decomp.lm import DecomposedModel
 from param_decomp.losses import (
@@ -131,6 +132,11 @@ def make_train_step(
     imp_min = imp_term.cfg
     imp_coeff = imp_term.coeff
     freq_coeff = imp_min.frequency.coeff if imp_min.frequency is not None else 0.0
+    # Log the imp-min loss + its annealed param under penalty-kind-specific keys: the param
+    # is `p` for L_p / `gamma` for smooth-L0, and the loss carries the penalty's class name.
+    is_smooth_l0 = isinstance(imp_min, SmoothL0ImportanceMinimalityLossConfig)
+    imp_loss_key = "imp_smooth_l0" if is_smooth_l0 else "imp"
+    imp_min_param_key = "gamma_imp" if is_smooth_l0 else "p_imp"
 
     def batch_sharded(x: Array) -> Array:
         return batch_shard_leading(x, mesh)
@@ -506,9 +512,9 @@ def make_train_step(
         metrics = {
             "total": total_loss,
             "faith": faith_loss,
-            "imp": imp_lp,
+            imp_loss_key: imp_lp,
             "freq": imp_freq,
-            "p_imp": imp_min_param,
+            imp_min_param_key: imp_min_param,
             **{f"loss/{t.name}": v for t, v in zip(recon_terms, term_losses, strict=True)},
             **grad_norm_metrics,
         }

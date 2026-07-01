@@ -45,15 +45,16 @@ pd:
   faithfulness_warmup_lr: 0.001
   faithfulness_warmup_weight_decay: 0.0
   loss_metrics:
-    - type: SmoothL0ImportanceMinimalityLoss
+    - type: ImportanceMinimalityLoss
       coeff: 0.0002
-      gamma: 1.0
-      gamma_anneal_start_frac: 0.0
-      gamma_anneal_final_gamma: 0.01
-      gamma_anneal_end_frac: 1.0
+      pnorm: 2.0
       frequency:
         coeff: 1.0e-04
         reference_token_count: 32768
+      p_anneal_start_frac: 0.0
+      p_anneal_final_p: 0.4
+      p_anneal_end_frac: 1.0
+      eps: 1.0e-12
     - type: StochasticReconSubsetLoss
       coeff: 0.5
       routing:
