@@ -54,7 +54,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import random
 from jax.experimental import multihost_utils
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, Int
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 
@@ -666,7 +666,7 @@ def render_slow_eval_figures(
 def compute_hidden_acts_metrics(
     model: DecomposedModel,
     state: Any,
-    residual_batches: list[Float[Array, "*leading d"]],
+    token_batches: list[Int[Array, "*leading"]],
     n_mask_samples: int,
     base_key: Array,
     compiler_options: dict[str, bool | int | str] | None = None,
@@ -677,11 +677,11 @@ def compute_hidden_acts_metrics(
     ci_key, stoch_key = random.split(base_key)
     ci_step = make_ci_hidden_acts_step(model, compiler_options)
     ci_reductions = accumulate_hidden_acts(
-        ci_step, model, state.components, state.ci_fn, residual_batches, ci_key
+        ci_step, model, state.components, state.ci_fn, token_batches, ci_key
     )
     stoch_step = make_stochastic_hidden_acts_step(model, n_mask_samples, compiler_options)
     stoch_reductions = accumulate_hidden_acts(
-        stoch_step, model, state.components, state.ci_fn, residual_batches, stoch_key
+        stoch_step, model, state.components, state.ci_fn, token_batches, stoch_key
     )
     return {
         **hidden_acts_log_entries("CIHiddenActsReconLoss", ci_reductions),
