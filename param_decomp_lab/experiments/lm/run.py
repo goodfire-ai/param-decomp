@@ -359,7 +359,7 @@ def _make_lm_eval_fn(
         if is_main:
             headline = {
                 k: eval_record[f"eval/{k}"]
-                for k in ("ce_kl/kl_ci_masked", "ce_kl/ce_unrecovered_ci_masked")
+                for k in ("ce_kl/kl_ci_masked", "ce_kl/ce_difference_ci_masked")
             }
             print(f"[eval @ {now_step}] {headline}", flush=True)
         return eval_record

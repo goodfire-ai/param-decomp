@@ -28,11 +28,6 @@ arise here, because no emitted key wraps the cross-batch axis in a nonlinearity:
 - `ce_kl/ce_difference_<variant>` = `ce_v - ce_target`: torch averages this per-batch
   DIFFERENCE (computed inside `_calc_ce_and_kl_losses`), not a difference of grand means.
   Linear, so uniform-average parity holds.
-- `ce_kl/ce_unrecovered_<variant>` = `(ce_v - ce_target) / (ce_zero - ce_target)`: the
-  potential Jensen term. But torch forms this RATIO per-batch too, then averages the
-  per-batch ratios — it never divides grand-mean numerator by grand-mean denominator. So
-  averaging JAX's per-batch ratios matches torch exactly; no global-sum-before-divide is
-  needed.
 - `l0/<threshold>_<site|group>`: torch `CI_L0` collects per-batch L0 and averages them
   uniformly (`sum / count`); group L0 is a per-batch sum of member L0s. Linear.
 - `loss/PGDReconLoss`: torch `PGDReconLoss` accumulates `kl * n` over batches and divides
@@ -207,10 +202,6 @@ def make_eval_step(
         difference_variants = tuple(v for v in variant_masks if v != "zero_masked")
         for variant in difference_variants:
             out[f"ce_kl/ce_difference_{variant}"] = ce[variant] - target_ce
-        for variant in difference_variants:
-            out[f"ce_kl/ce_unrecovered_{variant}"] = (ce[variant] - target_ce) / (
-                ce["zero_masked"] - target_ce
-            )
         site_l0 = {
             site: (ci_lower[site] > ci_alive_threshold).astype(jnp.float32).sum(-1).mean()
             for site in site_names
