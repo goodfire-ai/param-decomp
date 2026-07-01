@@ -16,6 +16,7 @@ Multi-process: launched one process per GPU under SLURM (`init_distributed`); ev
 process computes the same global schedule and contributes its local batch slice.
 """
 
+import json
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ import fire
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pyarrow.parquet as pq
 from jax import random
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
@@ -136,10 +138,6 @@ def _load_arithmetic_probe(artifact_dir: Path) -> tuple[np.ndarray, ArithmeticGr
     `(n_prompts, T)` token grid, its `ArithmeticGrid` geometry, the answer position, and
     `n_prompts`. Asserts the rows are in row-major `(a, b)` order so the eval's reshape is
     valid."""
-    import json
-
-    import pyarrow.parquet as pq
-
     meta_path = artifact_dir / "meta.json"
     assert meta_path.exists() and (artifact_dir / "grid.parquet").exists(), (
         f"arithmetic probe not found at {artifact_dir}; build it first with "
@@ -180,8 +178,8 @@ def _arithmetic_probe_global(tokens: np.ndarray, mesh: Mesh, n_proc: int) -> jax
 @dataclass(frozen=True)
 class _ArithmeticEval:
     """The arithmetic-grid eval, built once. `run` does the (collective) CI/activation gather,
-    the n_alive + recon/L0/PGD scalars on the probe, and the off-thread figure submit — one
-    self-contained block so `_make_lm_eval_fn` just calls it."""
+    the n_alive scalars + the fast-eval scalars on the probe, and the off-thread figure submit —
+    one self-contained block so `_make_lm_eval_fn` just calls it."""
 
     step: ArithmeticGridStep
     eval_step_fn: Callable[..., dict[str, jax.Array]]
