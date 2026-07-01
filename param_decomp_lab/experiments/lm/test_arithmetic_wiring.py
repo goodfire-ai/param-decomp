@@ -13,7 +13,11 @@ import pyarrow.parquet as pq
 import pytest
 from jax.sharding import Mesh
 
-from param_decomp_lab.experiments.lm.run import _arithmetic_probe_global, _load_arithmetic_probe
+from param_decomp_lab.experiments.lm.run import (
+    _arithmetic_probe_global,
+    _ensure_arithmetic_probe,
+    _load_arithmetic_probe,
+)
 
 N_A, N_B, T = 3, 4, 5
 
@@ -70,3 +74,35 @@ def test_arithmetic_probe_global_preserves_grid(tmp_path: Path):
     # one device: no padding, rows preserved verbatim (the eval trims pad via n_prompts anyway)
     assert sharded.shape == (N_A * N_B, T)
     np.testing.assert_array_equal(np.asarray(sharded), tokens)
+
+
+def test_ensure_arithmetic_probe_generates_when_missing_and_is_idempotent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # rank 0 generates the probe once if artifact_dir is empty, then no-ops when it exists.
+    # (prestage is mocked; the real generator is covered by prestage_arithmetic itself.)
+    calls: list[str] = []
+
+    def fake_prestage(*, out_dir: str) -> None:
+        calls.append(out_dir)
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        (Path(out_dir) / "meta.json").write_text("{}")
+
+    import param_decomp_lab.experiments.lm.prestage_arithmetic as prestage_mod
+
+    monkeypatch.setattr(prestage_mod, "prestage", fake_prestage)
+    probe = tmp_path / "probe"
+    _ensure_arithmetic_probe(probe, is_main=True, n_proc=1)
+    assert calls == [str(probe)]  # generated
+    _ensure_arithmetic_probe(probe, is_main=True, n_proc=1)
+    assert calls == [str(probe)]  # exists -> no-op, no second generation
+
+
+def test_ensure_arithmetic_probe_noop_for_non_main(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    # non-rank-0 never generates (rank 0 writes; single-proc has no barrier to join here).
+    import param_decomp_lab.experiments.lm.prestage_arithmetic as prestage_mod
+
+    monkeypatch.setattr(
+        prestage_mod, "prestage", lambda **_: pytest.fail("non-main must not prestage")
+    )
+    _ensure_arithmetic_probe(tmp_path / "probe", is_main=False, n_proc=1)

@@ -63,8 +63,8 @@ eval:
     n_steps: 20
     step_size: 0.1
     type: PGDReconLoss
-  # prestage the probe once per cluster to artifact_dir (else the first slow eval asserts):
-  # python -m param_decomp_lab.experiments.lm.prestage_arithmetic --out_dir <artifact_dir>
+  # the probe auto-generates on rank 0 at first run if artifact_dir is empty (add, 1..100);
+  # for a custom grid, prestage manually: python -m ...lm.prestage_arithmetic --out_dir <dir>
   - type: ArithmeticCIGrid
     artifact_dir: /mnt/data/artifacts/mechanisms/param-decomp/datasets/arithmetic_add_1_100_llama31
   n_steps: 1

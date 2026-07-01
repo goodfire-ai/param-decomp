@@ -207,6 +207,24 @@ class _ArithmeticEval:
         return record
 
 
+def _ensure_arithmetic_probe(artifact_dir: Path, is_main: bool, n_proc: int) -> None:
+    """Auto-generate the default (add, 1..100, Llama-3.1 tokenizer) probe on rank 0 if
+    `artifact_dir` has none — so the ArithmeticCIGrid eval runs turnkey (arith is Llama-only,
+    so prestage's default tokenizer is the target's). A custom grid (other op / range) is a
+    manual prestage. Barrier so non-main ranks wait for the write before loading. No-op (and
+    no barrier) when the probe already exists."""
+    if (artifact_dir / "meta.json").exists():
+        return
+    if is_main:
+        from param_decomp_lab.experiments.lm.prestage_arithmetic import prestage
+
+        prestage(out_dir=str(artifact_dir))
+    if n_proc > 1:
+        from jax.experimental import multihost_utils
+
+        multihost_utils.sync_global_devices("arithmetic_probe_prestage")
+
+
 def _make_arithmetic_eval(
     eval_cfg: EvalConfig,
     lm: DecomposedModel,
@@ -218,6 +236,7 @@ def _make_arithmetic_eval(
     arith = eval_cfg.arithmetic
     if arith is None:
         return None
+    _ensure_arithmetic_probe(arith.artifact_dir, is_main, n_proc)
     probe_tokens, grid, answer_position, n_prompts = _load_arithmetic_probe(arith.artifact_dir)
     assert isinstance(lm, ComponentActivationModel), (
         f"arithmetic eval needs a model exposing masked_component_activations; "
@@ -373,10 +392,6 @@ def _make_lm_eval_fn(
     run_eval_metrics = eval_metrics_from_run_dir(built.run.run_dir)
     perm_spec = resolve_permutation_metrics(lm.site_names, run_eval_metrics)
     hidden_acts_n_mask_samples = stochastic_hidden_acts_n_mask_samples(run_eval_metrics)
-    want_hidden_acts = any(
-        m.type in ("CIHiddenActsReconLoss", "StochasticHiddenActsReconLoss")
-        for m in run_eval_metrics
-    )
     want_position_ci = perm_spec.any_plots or perm_spec.any_identity_error
     position_ci_step = make_position_ci_step(lm, co) if want_position_ci else None
 
@@ -429,12 +444,11 @@ def _make_lm_eval_fn(
             site_reductions = accumulate_site_reductions(
                 slow_eval_step, lm, state.ci_fn, eval_batches, eval.slow_n_batches_accum
             )
-            if want_hidden_acts:
-                hidden_acts_key = random.fold_in(run_key, 3 * pd.steps + eval_pass_index)
-                hidden_acts = compute_hidden_acts_metrics(
-                    lm, state, eval_batches, hidden_acts_n_mask_samples, hidden_acts_key, co
-                )
-                eval_record |= {f"eval/slow/loss/{k}": v for k, v in hidden_acts.items()}
+            hidden_acts_key = random.fold_in(run_key, 3 * pd.steps + eval_pass_index)
+            hidden_acts = compute_hidden_acts_metrics(
+                lm, state, eval_batches, hidden_acts_n_mask_samples, hidden_acts_key, co
+            )
+            eval_record |= {f"eval/slow/loss/{k}": v for k, v in hidden_acts.items()}
             # The position-CI all-gather is ALSO collective (every rank joins it), gated on
             # the config naming a CI-heatmap / permutation / identity-error metric. The
             # heatmap FIGURES render off-loop on rank 0; the IdentityCIError SCALARS log
