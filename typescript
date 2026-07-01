@@ -1,0 +1,56 @@
+Script started on 2026-06-19 14:58:38+00:00 [TERM="xterm-256color" TTY="/dev/pts/21" COLUMNS="150" LINES="26"]
+--------------------------------------------------
+Disk Usage Report
+--------------------------------------------------
+
+Overall Disk Usage (Live):
+Data Mount (/mnt/data):
+  Total Size: 150T
+  Used Space: 129T (86%)
+  Your Usage: 18.94 TB (12.62% of total)
+
+Home Mount (/mnt/home):
+  Total Size: 25T
+  Used Space: 13T (52%)
+  Your Usage: 101.02 GB (.39% of total)
+
+(User data updated daily at 2 AM)
+--------------------------------------------------
+
+--------------------------------------------------
+GPU Cluster Statistics
+--------------------------------------------------
+Cluster GPU Summary:
+  Available nodes: 64 (512 GPUs)
+
+Yesterday's Usage (24hr):
+  Total GPU hours: 12288
+  GPU hours used: 8412.57
+  Utilization: 68.46%
+
+Last updated: Fri Jun 19 14:00:03  2026
+--------------------------------------------------
+USER                   b200    dev
+──────────────────────────────────
+USED                    446      1
+FREE                     58      7
+TOTAL                   504      8
+
+NODES: 64 / 64 (SLA) ✓  |  DRAINING: slurm-b200-137-169 (k8s: cordon: NeedsTriage,NLCCPendingExitProduction)
+[?2004h]0;oli@slurm-dev-140-113: ~/param-decomp[01;32moli@slurm-dev-140-113[00m:[01;34m~/param-decomp[00m$ impo[Kpython
+[?2004lbash: python: command not found
+[?2004h]0;oli@slurm-dev-140-113: ~/param-decomp[01;32moli@slurm-dev-140-113[00m:[01;34m~/param-decomp[00m$ wh[K[K./venv/bin/python [K
+[?2004lbash: ./venv/bin/python: No such file or directory
+[?2004h]0;oli@slurm-dev-140-113: ~/param-decomp[01;32moli@slurm-dev-140-113[00m:[01;34m~/param-decomp[00m$ .e[K/venv/bin/python[C[C[1Pvenv/bin/python
+[?2004lPython 3.13.13 (main, Apr 14 2026, 14:28:56) [Clang 22.1.3 ] on linux
+Type "help", "copyright", "credits" or "license" for more information.
+[?2004h[?1h=[?25l[1;35m>>> [0m[4D[?12l[?25h[4C[?25l[4D[1;35m>>> [0mi[5D[?12l[?25h[5C[?25l[5D[1;35m>>> [0mim[6D[?12l[?25h[6C[?25l[6D[1;35m>>> [0mimp[7D[?12l[?25h[7C[?25l[7D[1;35m>>> [0mimpo[8D[?12l[?25h[8C[?25l[8D[1;35m>>> [0mimpor[9D[?12l[?25h[9C[?25l[9D[1;35m>>> [0mimport[10D[?12l[?25h[10C[?25l[10D[1;35m>>> [0mimport [11D[?12l[?25h[11C[?25l[11D[1;35m>>> [0mimport j[12D[?12l[?25h[12C[?25l[12D[1;35m>>> [0mimport ja[13D[?12l[?25h[13C[?25l[13D[1;35m>>> [0mimport jax[14D[?12l[?25h[14C[?25l[14D[1;35m>>> [0mimport jax [15D[?12l[?25h[15C[?25l[15D[K[1;35m>>> [0mimport jax[14D[?12l[?25h[14C[14D
+[?2004l[?1l>[?2004h[?1h=[?25l[1;35m>>> [0m[4D[?12l[?25h[4C[?2004l[?1l>
+KeyboardInterrupt
+[?2004h[?1h=[?25l[1;35m>>> [0m[4D[?12l[?25h[4C[?2004l[?1l>
+KeyboardInterrupt
+[?2004h[?1h=[?25l[1;35m>>> [0m[4D[?12l[?25h[4C[4D
+[?2004l[?1l>[?2004h]0;oli@slurm-dev-140-113: ~/param-decomp[01;32moli@slurm-dev-140-113[00m:[01;34m~/param-decomp[00m$ [?2004l
+exit
+
+Script done on 2026-06-19 14:59:00+00:00 [COMMAND_EXIT_CODE="0"]
