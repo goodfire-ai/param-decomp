@@ -204,8 +204,6 @@ def plot_component_grids(
     n = component_indices.size
     n_cols = min(n, 8)
     n_rows = (n + n_cols - 1) // n_cols
-    # constrained_layout spaces the rows so a panel's title doesn't collide with the
-    # x-tick labels of the row above (and it lays out the shared colorbar cleanly).
     fig, axs = plt.subplots(
         n_rows, n_cols, figsize=(2.4 * n_cols, 2.6 * n_rows), squeeze=False,
         constrained_layout=True,
