@@ -1,123 +1,68 @@
 <script lang="ts">
-    import { fmtCount, matrixKind, parseSite } from "$lib/format";
-    import type { Catalog, Site } from "$lib/types";
+    import { fmtCount } from "$lib/format";
+    import type { Catalog, Run } from "$lib/types";
 
     let { data }: { data: { catalog: Catalog } } = $props();
     const catalog = $derived(data.catalog);
 
-    type Cell =
-        | { state: "absent" }
-        | { state: "in_flight"; progress: number; site: Site }
-        | { state: "present"; site: Site };
-
-    function cellOf(site: Site | undefined): Cell {
-        if (!site || site.subruns.length === 0) return { state: "absent" };
-        if (site.subruns.some((s) => s.status === "present")) return { state: "present", site };
-        const progress = Math.max(...site.subruns.map((s) => s.progress));
-        return { state: "in_flight", progress, site };
-    }
-
-    type RunGrid = {
+    type Decomp = {
         run_id: string;
-        kinds: string[];
-        rows: { layer: number; cells: Cell[] }[];
         nComponents: number;
         nLabeled: number;
+        nSites: number;
+        firstSite: string | null;
     };
 
-    const grids: RunGrid[] = $derived(
-        catalog.runs.map((run) => {
-            const parsed = run.sites.map((s) => ({ site: s, ...parseSite(s.site) }));
-            const kinds = [...new Set(parsed.map((p) => p.kind))].sort();
-            const layers = [...new Set(parsed.map((p) => p.layer))].sort((a, b) => a - b);
-            const rows = layers.map((layer) => ({
-                layer,
-                cells: kinds.map((kind) =>
-                    cellOf(parsed.find((p) => p.layer === layer && p.kind === kind)?.site),
-                ),
-            }));
-            return {
-                run_id: run.run_id,
-                kinds,
-                rows,
-                nComponents: run.sites.reduce((a, s) => a + s.n_components, 0),
-                nLabeled: run.sites.reduce((a, s) => a + s.n_labeled, 0),
-            };
-        }),
-    );
+    function summarize(run: Run): Decomp {
+        const present = run.sites.filter(
+            (s) => s.n_components > 0 && s.subruns.some((r) => r.status === "present"),
+        );
+        return {
+            run_id: run.run_id,
+            nComponents: run.sites.reduce((a, s) => a + s.n_components, 0),
+            nLabeled: run.sites.reduce((a, s) => a + s.n_labeled, 0),
+            nSites: present.length,
+            firstSite: present.length > 0 ? present[0].site : null,
+        };
+    }
+
+    const decomps = $derived(catalog.runs.map(summarize));
 </script>
 
-<svelte:head><title>Scope · Catalogue</title></svelte:head>
+<svelte:head><title>Scope · Decompositions</title></svelte:head>
 
 <div class="scroll">
     <div class="doc">
-        <h1>Catalogue of decompositions</h1>
+        <h1>Decompositions</h1>
         <p class="preamble subline">
-            Each run decomposes a set of weight matrices (sites) into sparse components. Present
-            sites open in the component browser; in-flight subruns fill in as postprocessing lands.
+            Each decomposition splits a model's weight matrices into sparse components. Open one to
+            browse its components.
         </p>
 
-        {#each grids as grid (grid.run_id)}
-            <section>
-                <h2>{grid.run_id}</h2>
-                <p class="run-stats subline">
-                    {fmtCount(grid.nComponents)} components · {fmtCount(grid.nLabeled)} labeled
-                </p>
-                <table class="grid">
-                    <thead>
-                        <tr>
-                            <th class="r col-layer">layer</th>
-                            {#each grid.kinds as kind (kind)}
-                                {@const mk = matrixKind(kind)}
-                                <th>
-                                    {#if mk}<span class="mtag {mk}">{mk}</span>{:else}{kind}{/if}
-                                </th>
-                            {/each}
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {#each grid.rows as row (row.layer)}
-                            <tr>
-                                <td class="num r layer-cell">{row.layer}</td>
-                                {#each row.cells as cell, i (i)}
-                                    <td>
-                                        {#if cell.state === "present"}
-                                            <a
-                                                class="present"
-                                                href="/r/{grid.run_id}/s/{cell.site.site}"
-                                                title="{fmtCount(
-                                                    cell.site.n_components,
-                                                )} components, {fmtCount(cell.site.n_labeled)} labeled"
-                                            >
-                                                <span class="sq ok"></span>
-                                                <span class="num"
-                                                    >{fmtCount(cell.site.n_components)}</span
-                                                >
-                                            </a>
-                                        {:else if cell.state === "in_flight"}
-                                            <span class="inflight">
-                                                <span class="sq live pulse"></span>
-                                                <span class="num"
-                                                    >{Math.round(cell.progress * 100)}%</span
-                                                >
-                                                <span class="track"
-                                                    ><span
-                                                        class="fill"
-                                                        style="width: {cell.progress * 100}%"
-                                                    ></span></span
-                                                >
-                                            </span>
-                                        {:else}
-                                            <span class="faint">—</span>
-                                        {/if}
-                                    </td>
-                                {/each}
-                            </tr>
-                        {/each}
-                    </tbody>
-                </table>
-            </section>
-        {/each}
+        <ol class="list">
+            {#each decomps as d (d.run_id)}
+                <li>
+                    {#if d.firstSite !== null}
+                        <a class="row" href="/r/{d.run_id}/s/{d.firstSite}">
+                            <span class="run mono">{d.run_id}</span>
+                            <span class="stats subline">
+                                {fmtCount(d.nComponents)} components · {fmtCount(d.nLabeled)} labeled
+                                · {d.nSites} sites
+                            </span>
+                            <span class="go" aria-hidden="true">→</span>
+                        </a>
+                    {:else}
+                        <div class="row pending">
+                            <span class="run mono">{d.run_id}</span>
+                            <span class="stats subline">
+                                <span class="sq live pulse"></span> harvesting — no components published
+                                yet
+                            </span>
+                        </div>
+                    {/if}
+                </li>
+            {/each}
+        </ol>
     </div>
 </div>
 
@@ -127,86 +72,71 @@
         overflow: auto;
     }
     .doc {
-        max-width: 900px;
+        max-width: 760px;
         margin: 0 auto;
-        padding: 40px 32px 96px;
+        padding: 48px 32px 96px;
     }
     h1 {
         font-size: 22px;
         margin: 0 0 8px;
     }
     .preamble {
-        max-width: 640px;
-        margin: 0 0 48px;
+        max-width: 560px;
+        margin: 0 0 40px;
     }
-    section {
-        margin-bottom: 48px;
-    }
-    h2 {
-        font-family: var(--mono);
-        font-size: 13px;
-        font-weight: 500;
-        letter-spacing: 0;
+    .list {
+        list-style: none;
         margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
     }
-    .run-stats {
-        margin: 2px 0 16px;
+    .row {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 16px 20px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel);
+        text-decoration: none;
+        color: var(--fg);
     }
-    table.grid {
-        max-width: 900px;
+    a.row:hover {
+        border-color: var(--line-2);
+        background: var(--panel-2);
     }
-    .col-layer,
-    .layer-cell {
-        width: 64px;
+    .run {
+        font-size: 15px;
+        font-weight: 500;
     }
-    .layer-cell {
+    .stats {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-left: auto;
+    }
+    a.row .go {
+        color: var(--dim);
+        font-size: 16px;
+    }
+    a.row:hover .go {
+        color: var(--accent);
+    }
+    .pending {
+        opacity: 0.75;
+    }
+    .pending .stats {
         color: var(--dim);
     }
     .sq {
         width: 7px;
         height: 7px;
         flex-shrink: 0;
-    }
-    .sq.ok {
-        background: var(--ok);
+        display: inline-block;
     }
     .sq.live {
         background: var(--accent);
-    }
-    a.present {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 13px;
-        color: var(--fg);
-        text-decoration: none;
-        background: var(--panel);
-        border: 1px solid var(--line);
-        border-radius: 4px;
-        padding: 2px 10px;
-    }
-    a.present:hover {
-        border-color: var(--line-2);
-        background: var(--panel-2);
-    }
-    .inflight {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        color: var(--dim);
-        font-size: 13px;
-    }
-    .track {
-        display: inline-block;
-        width: 56px;
-        height: 4px;
-        background: var(--line);
-        border-radius: 2px;
-        overflow: hidden;
-    }
-    .fill {
-        display: block;
-        height: 100%;
-        background: rgba(var(--hl), 0.55);
     }
 </style>
