@@ -588,10 +588,9 @@ class LlamaDecomposedModel(eqx.Module):
                 return x_in @ W.T
 
             out = jax.lax.cond(e["live"], decomp, frozen, None)
-            # `x@V`: site_out's `xV` BEFORE the per-component `*mask` (so the site's own mask
-            # doesn't enter it). `x_in` still reflects upstream masking, so the masks passed to
-            # the forward do shape a downstream site's activation via its input.
-            act = (x_in @ e["V"]) if want_collect_acts else None
+            act = (
+                (x_in @ e["V"]) if want_collect_acts else None
+            )  # pre-mask coeff; see masked_component_activations
             return out, (out if want_collect else None), act
 
         def block(
