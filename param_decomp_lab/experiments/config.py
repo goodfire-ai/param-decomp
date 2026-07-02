@@ -4,8 +4,9 @@ run-identity helpers every experiment reuses.
 Each experiment subclasses `ExperimentConfig` to fix the concrete `target` / `data` types.
 The generic engine reads the pydantic `pd` / `cadence` / `runtime` DIRECTLY, so there is
 no flattened mirror to build — `assert_canonical_algorithm_config` only VALIDATES that the
-schema lives in the subspace the JAX trainer implements (cosine-to-0.1 LR, plain AdamW,
-components-only grad clip, …), and `run_instance` / `ci_arch` resolve the run identity and
+schema lives in the subspace the JAX trainer implements (cosine-to-0.1 LR, AdamW with no
+weight decay, components-only grad clip, …), and `run_instance` / `ci_arch` resolve the run
+identity and
 the CI-fn architecture; each experiment's `run.py` assembles the rest (target + data).
 """
 
@@ -25,6 +26,7 @@ from param_decomp.ci_fn import (
 )
 from param_decomp.configs import (
     AnyEvalMetricConfig,
+    BranchedPersistentPGDReconLossConfig,
     Cadence,
     ChunkwiseTransformerCiConfig,
     CiConfig,
@@ -136,15 +138,15 @@ def _assert_cosine_to_tenth(schedule: ScheduleConfig, who: str) -> None:
     assert schedule.final_val_frac == 0.1, f"{who}: final_val_frac must be 0.1, got {schedule}"
 
 
-def _assert_plain_adamw(optimizer: OptimizerConfig, who: str) -> None:
-    assert optimizer.betas == (0.9, 0.999), f"{who}: betas must be (0.9, 0.999)"
+def _assert_no_weight_decay(optimizer: OptimizerConfig, who: str) -> None:
+    """AdamW betas are configurable; weight decay stays pinned to 0 (SPEC N1)."""
     assert optimizer.weight_decay == 0.0, f"{who}: weight_decay must be 0"
 
 
 def assert_canonical_algorithm_config(cfg: "ExperimentConfig[Any, Any]") -> None:
     """Assert the schema lives in the subspace the JAX trainer implements (the engine then
     reads `pd` / `cadence` DIRECTLY). The numerics-load-bearing constraints:
-    cosine-to-0.1 LR with no warmup, plain AdamW (betas (0.9, 0.999), no weight decay),
+    cosine-to-0.1 LR with no warmup, AdamW with no weight decay (betas are configurable),
     a required components grad clip (CI-fn grad clip is optional), and a fully-specified
     checkpoint cadence. (Leaky-hard
     sigmoid, the always-built delta component, and no tied weights are now enforced by
@@ -154,18 +156,28 @@ def assert_canonical_algorithm_config(cfg: "ExperimentConfig[Any, Any]") -> None
     ci_opt = cfg.pd.ci_fn_optimizer
     _assert_cosine_to_tenth(vu_opt.lr_schedule, "components_optimizer")
     _assert_cosine_to_tenth(ci_opt.lr_schedule, "ci_fn_optimizer")
-    _assert_plain_adamw(vu_opt, "components_optimizer")
-    _assert_plain_adamw(ci_opt, "ci_fn_optimizer")
+    _assert_no_weight_decay(vu_opt, "components_optimizer")
+    _assert_no_weight_decay(ci_opt, "ci_fn_optimizer")
     assert vu_opt.grad_clip_norm is not None, "components grad clip is part of the method"
 
     # The persistent-PGD source LR is constant-after-warmup only — `source_lr` ignores
     # `fn_type` / `final_val_frac`, so a decaying source schedule would be silently flattened.
+    # The branched variant's persistent AND branch LRs are both constant-only for the same
+    # reason (`BranchedPersistentAdversary.{source,branch}_lr`).
     for metric in cfg.pd.loss_metrics:
         if isinstance(metric, PersistentPGDReconLossConfig):
             sched = metric.optimizer.lr_schedule
             assert sched.fn_type == "constant", (
                 f"persistent-PGD source LR is constant-only, got {sched.fn_type!r}"
             )
+        if isinstance(metric, BranchedPersistentPGDReconLossConfig):
+            for label, sched in (
+                ("persistent", metric.optimizer.lr_schedule),
+                ("branch", metric.branch_lr_schedule),
+            ):
+                assert sched.fn_type == "constant", (
+                    f"branched-persistent-PGD {label} LR is constant-only, got {sched.fn_type!r}"
+                )
 
     cadence = cfg.cadence
     assert cadence.save_every is not None and cadence.keep_last_n_checkpoints is not None, cadence
