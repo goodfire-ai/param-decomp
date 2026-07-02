@@ -42,7 +42,7 @@ def test_cosine_schedule_matches_torch_denominator():
     peak_lr = 1.5e-4
     total_steps = 400_000
     alpha = 0.1
-    sched = torch_cosine_schedule(peak_lr, total_steps, alpha)
+    sched = torch_cosine_schedule(peak_lr, total_steps, alpha, warmup_pct=0.0)
     for step in (0, total_steps // 2, total_steps - 1):
         jax_value = _scalar(sched(jnp.int32(step)))
         torch_value = torch_cosine_reference(peak_lr, total_steps, alpha, step)
@@ -58,7 +58,7 @@ def test_cosine_schedule_differs_from_optax():
     peak_lr = 1.5e-4
     total_steps = 10
     optax_sched = optax.cosine_decay_schedule(peak_lr, total_steps, alpha=0.1)
-    ours = torch_cosine_schedule(peak_lr, total_steps, alpha=0.1)
+    ours = torch_cosine_schedule(peak_lr, total_steps, alpha=0.1, warmup_pct=0.0)
     endpoint = total_steps - 1
     assert _scalar(ours(jnp.int32(endpoint))) == pytest.approx(0.1 * peak_lr, rel=1e-6)
     assert _scalar(optax_sched(jnp.int32(endpoint))) != pytest.approx(0.1 * peak_lr, rel=1e-6)

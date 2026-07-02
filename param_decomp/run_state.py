@@ -37,23 +37,31 @@ from param_decomp.train import TrainState
 
 
 def torch_cosine_schedule(
-    peak_lr: float, total_steps: int, alpha: float
+    peak_lr: float, total_steps: int, alpha: float, warmup_pct: float
 ) -> Callable[[ArrayLike], Array]:
-    """Cosine decay matching torch's `get_scheduled_value` denominator: `progress =
-    step / (total_steps - 1)` (no warmup), so `0.1×` is reached at `step = total_steps - 1`.
-    optax's `cosine_decay_schedule` divides by `total_steps`, reaching it one step later
-    (SPEC S20). `total_steps == 1` collapses to a constant `peak_lr`.
+    """Linear warmup then cosine decay, matching `schedule.get_scheduled_value`: ramp
+    `peak_lr · step / warmup_steps` for `step < warmup_steps = int(total · warmup_pct)`,
+    then `progress = (step − warmup_steps) / (decay_steps − 1)`, so `alpha×` is reached at
+    `step = total_steps − 1`. optax's `cosine_decay_schedule` divides by `total_steps`,
+    reaching it one step later (SPEC S20; S20 pins `warmup_pct = 0` as the canonical
+    production shape — nonzero warmup is the sweep-experiment extension).
+    `total_steps == 1` collapses to a constant `peak_lr`.
 
     Same annealing shape as `schedule.get_scheduled_value`'s cosine branch — that one is a
-    host-numpy `float` lookup for the per-step PGD / p-anneal coeffs (warmup-aware, denom
-    `decay_steps - 1`); this one is a `jnp` callable traced into the optimizer LR. The two
-    can't share a runtime fn (host float vs traced array); each is pinned to torch by its
-    own parity test (`test_schedule.py` / `test_optim_torch_parity.py`)."""
-    denom = max(total_steps - 1, 1)
+    host-numpy `float` lookup for the per-step PGD / p-anneal coeffs; this one is a `jnp`
+    callable traced into the optimizer LR. The two can't share a runtime fn (host float vs
+    traced array); each is pinned to torch by its own parity test (`test_schedule.py` /
+    `test_optim_torch_parity.py`)."""
+    warmup_steps = int(total_steps * warmup_pct)
+    denom = max(total_steps - warmup_steps - 1, 1)
 
     def schedule(count: ArrayLike) -> Array:
-        progress = jnp.asarray(count, jnp.float32) / denom
-        return peak_lr * (alpha + (1 - alpha) * 0.5 * (1 + jnp.cos(jnp.pi * progress)))
+        step = jnp.asarray(count, jnp.float32)
+        progress = (step - warmup_steps) / denom
+        decay = peak_lr * (alpha + (1 - alpha) * 0.5 * (1 + jnp.cos(jnp.pi * progress)))
+        if warmup_steps == 0:
+            return decay
+        return jnp.where(step < warmup_steps, peak_lr * step / warmup_steps, decay)
 
     return schedule
 
@@ -101,9 +109,17 @@ def build_optimizers(pd: PDConfig):
     the lab conversion (`experiments.config.assert_canonical_algorithm_config`); here we
     read the values straight off `PDConfig` so there is no second source of truth."""
     sched_vu = torch_cosine_schedule(
-        pd.components_optimizer.lr_schedule.start_val, pd.steps, alpha=0.1
+        pd.components_optimizer.lr_schedule.start_val,
+        pd.steps,
+        alpha=0.1,
+        warmup_pct=pd.components_optimizer.lr_schedule.warmup_pct,
     )
-    sched_ci = torch_cosine_schedule(pd.ci_fn_optimizer.lr_schedule.start_val, pd.steps, alpha=0.1)
+    sched_ci = torch_cosine_schedule(
+        pd.ci_fn_optimizer.lr_schedule.start_val,
+        pd.steps,
+        alpha=0.1,
+        warmup_pct=pd.ci_fn_optimizer.lr_schedule.warmup_pct,
+    )
     opt_vu = _adamw_with_clip(pd.components_optimizer, sched_vu)
     opt_ci = _adamw_with_clip(pd.ci_fn_optimizer, sched_ci)
     return opt_vu, opt_ci, (sched_vu, sched_ci)

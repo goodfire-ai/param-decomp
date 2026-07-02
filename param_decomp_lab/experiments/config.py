@@ -130,9 +130,9 @@ def ci_arch(
 
 
 def _assert_cosine_to_tenth(schedule: ScheduleConfig, who: str) -> None:
-    """The trainer hardcodes optax cosine decay to 0.1x with no warmup (SPEC S19/S20)."""
+    """The trainer hardcodes optax cosine decay to 0.1x; `warmup_pct` is honored (linear
+    ramp then cosine — SPEC S20 pins 0 as the canonical production shape)."""
     assert schedule.fn_type == "cosine", f"{who}: only cosine lr supported, got {schedule}"
-    assert schedule.warmup_pct == 0.0, f"{who}: lr warmup unsupported, got {schedule}"
     assert schedule.final_val_frac == 0.1, f"{who}: final_val_frac must be 0.1, got {schedule}"
 
 
