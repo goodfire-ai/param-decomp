@@ -44,7 +44,7 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import PRNGKeyArray
 
-from param_decomp.built_run import DataConfig, RunInstance
+from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, DataConfig, RunInstance
 from param_decomp.checkpoint import (
     init_from_parent,
     make_checkpoint_manager,
@@ -135,8 +135,10 @@ _METRIC_KEYS = {
     "total": "train/loss/total",
     "faith": "train/loss/FaithfulnessLoss",
     "imp": "train/loss/ImportanceMinimalityLoss",
+    "imp_smooth_l0": "train/loss/SmoothL0ImportanceMinimalityLoss",
     "freq": "train/loss/FrequencyMinimalityLoss",
     "p_imp": "train/schedules/p_imp",
+    "gamma_imp": "train/schedules/gamma_imp",
     "src_lr": "train/schedules/lr/src",
     "step_time_s": "train/perf/step_time_s",
     "elapsed_s": "train/perf/elapsed_s",
@@ -190,12 +192,11 @@ class MetricsSink:
             resume="allow",
             config=wandb_config,
         )
-        # Persist the run's pinned config.yaml as a downloadable wandb run file
-        # (parity with the torch trainer's init_pd_run -> wandb.save), not just the
-        # flattened wandb.config dict. Pinned to run_dir before train() / wandb.init.
-        config_yaml = run.run_dir / "config.yaml"
-        assert config_yaml.exists(), config_yaml
-        wandb.save(str(config_yaml), base_path=str(run.run_dir), policy="now")
+        # Save the pinned launch config as a downloadable wandb run file, alongside (not
+        # in place of) the flattened wandb.config dict; it exists from before wandb.init.
+        launch_config = run.run_dir / LAUNCH_CONFIG_FILENAME
+        assert launch_config.exists(), launch_config
+        wandb.save(str(launch_config), base_path=str(run.run_dir), policy="now")
         # The in-loop slow tier (`SlowEvalRenderer`) logs `slow_eval/*` on the live
         # `_step` axis at the eval step (SPEC S28/S29), so NO dedicated `slow_eval/step`
         # metric is defined here. Slow eval is in-loop only (no offline CLI).

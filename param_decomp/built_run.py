@@ -20,6 +20,10 @@ from param_decomp.ci_fn import CIFnArch
 from param_decomp.components import SiteC
 from param_decomp.configs import Cadence, PDConfig, ResumeProvenance, RuntimeConfig, WandbConfig
 
+LAUNCH_CONFIG_FILENAME = "launch_config.yaml"
+"""The self-contained run config pinned into each run dir. Not `config.yaml` — that basename
+clashes with wandb's own run-config file, which `wandb.save` would clobber via symlink."""
+
 
 class TargetSites(Protocol):
     """The only thing the generic engine needs from a target config: its decomposed
@@ -87,6 +91,9 @@ class EvalConfig:
     slow_n_batches_accum: int | None
     """The torch `CIHistograms.n_batches_accum` cap on the histogram raw-value sample
     (None caps nothing). Read from the `CIHistograms` eval metric when present."""
+    density_heatmap_n_bins: int | None
+    """`CIHistograms.density_heatmap_n_bins`: opt into the per-token CI density heatmap with
+    this many log-spaced `[1e-9, 1]` bands (None = off). Shares the slow-eval forward."""
     rounding_threshold: float
     l0_ci_alive_threshold: float
     """CI aliveness cutoff for the CI-L0 metric (fast pass), from `CI_L0Config`."""

@@ -10,7 +10,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from param_decomp.built_run import DataConfig
+from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, DataConfig
 from param_decomp.components import SiteC
 from param_decomp.configs import (
     ImportanceMinimalityLossConfig,
@@ -128,7 +128,7 @@ def test_eval_block_maps_slow_tier_and_defers_offline_only_metrics(
                 "n_steps": 20,
                 "step_size": 0.1,
             },
-            {"type": "CIHistograms", "n_batches_accum": 7},  # in-loop slow tier now
+            {"type": "CIHistograms", "n_batches_accum": 7, "density_heatmap_n_bins": 40},
             # distinct cutoff: pins that density reads its OWN ci_alive_threshold, not CI_L0's
             {"type": "ComponentActivationDensity", "ci_alive_threshold": 0.05},  # slow tier
             {"type": "IdentityCIError", "identity_ci": None, "dense_ci": None},  # in-loop slow
@@ -140,6 +140,7 @@ def test_eval_block_maps_slow_tier_and_defers_offline_only_metrics(
     assert (cfg.eval.batch_size, cfg.eval.every, cfg.eval.n_steps) == (128, 1000, 1)
     assert (cfg.eval.slow_every, cfg.eval.slow_on_first_step) == (10000, True)
     assert cfg.eval.slow_n_batches_accum == 7  # read off the CIHistograms metric
+    assert cfg.eval.density_heatmap_n_bins == 40  # opt-in per-token CI density heatmap
     assert cfg.eval.rounding_threshold == 0.0
     assert cfg.eval.l0_ci_alive_threshold == 0.0 and cfg.eval.density_ci_alive_threshold == 0.05
     assert cfg.eval.pgd is not None and (cfg.eval.pgd.n_steps, cfg.eval.pgd.step_size) == (20, 0.1)
@@ -373,13 +374,13 @@ def test_fp32_frozen_target_is_refused():
 
 def test_load_run_dir_config_rebuilds_runs(tmp_path: Path):
     """Tools read run dirs via `load_run_dir_config`; runs pin the single self-contained
-    config as `config.yaml` (run.py's `_pin_config_copy`), and the rebuilt config must
+    config as `launch_config.yaml` (run.py's `_pin_config_copy`), and the rebuilt config must
     equal the launch-time conversion. The run id is the run-dir name."""
     config = CONFIGS / "llama8b_l18_C49k_200k.yaml"
     expected, _ = load_config(config, RUN_ID)
     run_dir = tmp_path / RUN_ID
     run_dir.mkdir()
-    (run_dir / "config.yaml").write_text(config.read_text())
+    (run_dir / LAUNCH_CONFIG_FILENAME).write_text(config.read_text())
     assert load_run_dir_config(run_dir) == expected
 
 

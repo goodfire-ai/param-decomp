@@ -17,6 +17,7 @@ from pydantic import Discriminator, Field, PositiveInt, model_validator
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.built_run import (
+    LAUNCH_CONFIG_FILENAME,
     AttnPatternsEvalConfig,
     BuiltRun,
     DataConfig,
@@ -341,6 +342,7 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
     attn_ci = attn_stoch = False
     attn_stoch_n_mask_samples = 1
     slow_n_batches_accum: int | None = None
+    density_heatmap_n_bins: int | None = None
     for metric in cfg.eval.metrics:
         match metric:
             case CEandKLLossesConfig():
@@ -359,6 +361,7 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
                 attn_stoch_n_mask_samples = metric.n_mask_samples
             case CIHistogramsConfig():
                 slow_n_batches_accum = metric.n_batches_accum
+                density_heatmap_n_bins = metric.density_heatmap_n_bins
             case ComponentActivationDensityConfig():
                 density = metric  # slow-tier; we read only its aliveness cutoff here
             case _ if metric.type in SLOW_TIER_EVAL_METRIC_TYPES:
@@ -375,6 +378,7 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
         slow_every=cfg.eval.slow_every,
         slow_on_first_step=cfg.eval.slow_on_first_step,
         slow_n_batches_accum=slow_n_batches_accum,
+        density_heatmap_n_bins=density_heatmap_n_bins,
         rounding_threshold=ce_kl.rounding_threshold,
         l0_ci_alive_threshold=ci_l0.ci_alive_threshold,
         density_ci_alive_threshold=(density.ci_alive_threshold if density is not None else 0.0),
@@ -451,8 +455,8 @@ def load_config(config_path: Path, run_id: str) -> tuple[BuiltRun, dict[str, Any
 
 
 def load_run_dir_config(run_dir: Path) -> BuiltRun:
-    """Rebuild a run's `BuiltRun` bundle from its single pinned `config.yaml`
+    """Rebuild a run's `BuiltRun` bundle from its single pinned launch config
     (for tools that read finished/live run dirs, e.g. harvest / fine-tune compat). The
     run id is the run-dir name."""
-    schema_raw = yaml.safe_load((run_dir / "config.yaml").read_text())
+    schema_raw = yaml.safe_load((run_dir / LAUNCH_CONFIG_FILENAME).read_text())
     return build_from_schema(schema_raw, run_dir.name)
