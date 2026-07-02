@@ -236,10 +236,9 @@ class LlamaLayer(eqx.Module):
     Wd: Float[Array, "d di"]
 
     def shardings(self, mesh: "Mesh") -> "LlamaLayer":
-        """Stacked FSDP on `fsdp` (no TP): every MLP weight shards its `d`-dim (4096) on
-        `fsdp`, the intermediate (14336) stays replicated; gathered per layer in the scan, on
-        NVLink. (`/fsdp` is ample for a frozen 16 GB model: 16 GB → 2 GB at fsdp=8.) Norms
-        replicate (tiny); attn delegates to `FrozenAttn.shardings`."""
+        """Stacked FSDP on `fsdp` (no TP): every MLP weight shards its `d`-dim on `fsdp`,
+        the intermediate dim stays replicated; gathered back per layer inside the scan.
+        Norms replicate; attn delegates to `FrozenAttn.shardings`."""
         in_fsdp = NamedSharding(mesh, P(None, None, "fsdp"))  # Wg/Wu [nc, di(repl), d on fsdp]
         out_fsdp = NamedSharding(mesh, P(None, "fsdp", None))  # Wd [nc, d on fsdp, di(repl)]
         repl = NamedSharding(mesh, P())
@@ -516,9 +515,7 @@ class LlamaDecomposedModel(eqx.Module):
 
     embed: Float[Array, "vocab d"]
     stacked: LlamaLayer  # the per-layer weights stacked on a leading layer axis (the scan
-    # `xs`). Stored pre-stacked so `_stack_layers` is NOT recomputed inside each forward — XLA
-    # re-stacked the full ~16 GB target every recon/faith/PGD forward AND in the rematerialized
-    # backward (~10×, ~160 GB OOM at 32L). As a model field it is a saved input: 1 copy.
+    # `xs`), stored pre-stacked: a saved jit input, never re-stacked inside a forward.
     n_layer: int = eqx.field(static=True)
     norm: Float[Array, " d"]
     lm_head: Float[Array, "vocab d"]

@@ -159,8 +159,8 @@ class TargetConfig:
 
 @dataclass(frozen=True)
 class LlamaSimpleMLPTargetConfig:
-    """The `LlamaSimpleMLP` pile-pretrained target (`param_decomp.llama_simple_mlp`);
-    weights from the torch pretrain cache resolved from `pretrain_run_path`."""
+    """The `LlamaSimpleMLP` lab-pretrained target (`param_decomp.llama_simple_mlp`);
+    weights from the pretrain cache resolved from `pretrain_run_path`."""
 
     pretrain_run_path: str
     sites: tuple[SiteC, ...]

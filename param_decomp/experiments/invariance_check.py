@@ -147,10 +147,8 @@ def main() -> None:
     single = _run(args.steps, sharded=False)
     sharded = _run(args.steps, sharded=True)
 
-    # ABS floor: the per-leaf grad-norm diagnostics include tiny norms (~1e-4) whose
-    # cross-shard reduction suffers cancellation — relative error there can graze 1e-4
-    # while every loss term sits at ~1e-6 (observed: one ci-fn wv leaf, abs err ~1e-8).
-    # The floor is far below any semantically meaningful metric's scale.
+    # The ABS floor absorbs cross-shard cancellation noise in the tiny per-leaf grad-norm
+    # diagnostics.
     REL, ABS = 1e-4, 1e-7
     ok = True
     worst = 0.0

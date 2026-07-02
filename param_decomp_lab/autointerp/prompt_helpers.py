@@ -70,7 +70,7 @@ def ordinal(n: int) -> str:
 
 
 def human_layer_desc(canonical: str, n_blocks: int) -> str:
-    """'0.mlp.up' -> 'MLP up-projection in the 1st of 4 blocks'"""
+    """'0.mlp.up', n_blocks=4 -> 'MLP up-projection in the 1st of 4 blocks'"""
     m = re.match(r"(\d+)\.(.*)", canonical)
     if not m:
         return canonical
