@@ -48,8 +48,16 @@ class EvalConfig(BaseConfig):
     n_steps: PositiveInt
     every: PositiveInt
     slow_every: PositiveInt
-    slow_on_first_step: bool = True
     metrics: list[AnyEvalMetricConfig] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_removed_slow_on_first_step(cls, data: object) -> object:
+        # Shared-storage back-compat: `slow_on_first_step` was removed (the slow tier fires
+        # on `slow_every` multiples only, SPEC S28/S29). Drop it so stored run configs load.
+        if isinstance(data, dict):
+            data.pop("slow_on_first_step", None)
+        return data
 
     @model_validator(mode="after")
     def validate_slow_every_multiple_of_every(self) -> Self:

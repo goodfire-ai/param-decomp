@@ -291,14 +291,6 @@ class SlowEvalRenderer:
         self._thread.start()
 
 
-def slow_eval_due(now_step: int, every: int, slow_every: int, slow_on_first_step: bool) -> bool:
-    """The slow/plot tier cadence (SPEC S28). `now_step` is always a fast-eval step (the
-    engine only calls the eval pass on `every`), and `slow_every` is a multiple of `every`,
-    so a `slow_every` multiple coincides with an eval step. `slow_on_first_step` additionally
-    fires the tier once at the first eval step (`now_step == every`), matching torch."""
-    return now_step % slow_every == 0 or (slow_on_first_step and now_step == every)
-
-
 def _render_and_log_slow_eval(
     reductions: dict[str, SiteReduction],
     perm_spec: PermutationMetricSpec,

@@ -4,8 +4,8 @@ Pins the reduction semantics against hand-rolled numpy (component activation den
 mean-CI per component are exact under micro-batching), the `pre_sigmoid`-vs-`lower`
 distinction, the `n_batches_accum` cap on the histogram sample, and that the renderer
 emits valid PNGs under the exact torch `slow_eval/figures/*` keys. Also covers the in-loop
-slow tier (SPEC S28/S29): the `slow_every` / `slow_on_first_step` cadence and the rank-0
-background `SlowEvalRenderer` logging figures on the live `_step` axis.
+slow tier (SPEC S28/S29): the `slow_every` cadence and the rank-0 background
+`SlowEvalRenderer` logging figures on the live `_step` axis.
 """
 
 import sys
@@ -30,7 +30,7 @@ from param_decomp.configs import (
     UVPlotsConfig,
 )
 from param_decomp.lm import DecomposedModel
-from param_decomp.run import SlowEvalRenderer, slow_eval_due
+from param_decomp.run import SlowEvalRenderer
 from param_decomp.slow_eval import (
     PermutationMetricSpec,
     accumulate_position_ci,
@@ -373,18 +373,6 @@ def test_compute_identity_ci_errors_empty_when_unconfigured():
     assert compute_identity_ci_errors(spec, position_ci, tolerance=0.1) == {}
 
 
-def test_slow_eval_due_fires_on_cadence_and_first_step():
-    # multiples of slow_every fire; non-multiples don't
-    assert slow_eval_due(now_step=10000, every=1000, slow_every=10000, slow_on_first_step=False)
-    assert not slow_eval_due(now_step=2000, every=1000, slow_every=10000, slow_on_first_step=False)
-    assert slow_eval_due(now_step=20000, every=1000, slow_every=10000, slow_on_first_step=False)
-    # slow_on_first_step additionally fires at the first eval step (now_step == every)
-    assert slow_eval_due(now_step=1000, every=1000, slow_every=10000, slow_on_first_step=True)
-    assert not slow_eval_due(now_step=1000, every=1000, slow_every=10000, slow_on_first_step=False)
-    # the first eval step is the ONLY extra one slow_on_first_step adds
-    assert not slow_eval_due(now_step=2000, every=1000, slow_every=10000, slow_on_first_step=True)
-
-
 class _FakeWandb(types.ModuleType):
     """Minimal stand-in for the `wandb` module the background renderer imports."""
 
@@ -543,7 +531,7 @@ def test_in_loop_slow_tier_fires_on_cadence_without_stalling(monkeypatch: pytest
     # one-in-flight `join` is a no-op).
     dispatch_s = 0.0
     for now_step in range(every, 10 * every + 1, every):  # 1000, 2000, ..., 10000
-        if slow_eval_due(now_step, every, slow_every, slow_on_first_step=True):
+        if now_step % slow_every == 0:
             t0 = time.time()
             reductions = accumulate_site_reductions(step, lm, ci_fn, [residual], None)
             renderer.submit(reductions, spec, position_ci=None, components=None, now_step=now_step)
@@ -552,8 +540,7 @@ def test_in_loop_slow_tier_fires_on_cadence_without_stalling(monkeypatch: pytest
     renderer.join()  # flush
 
     logged_steps = sorted(s for _, s in fake.logged)
-    # slow_on_first_step adds 1000; multiples of 3000 add 3000, 6000, 9000
-    assert logged_steps == [1000, 3000, 6000, 9000]
+    assert logged_steps == [3000, 6000, 9000]
     for payload, _ in fake.logged:
         assert all(k.startswith("slow_eval/figures/") for k in payload)
     # the dispatch loop itself must not block on rendering — accumulate + submit are quick

@@ -1,16 +1,18 @@
-# Layer-18-only decomposition of Llama-3.1-8B: JUST layer 18's 7 matrices
-# (q/k/v/o/gate/up/down), every per-matrix C DOUBLED vs the full-model config.
-# Trimmed from llama8b_full32L_HSDP_b128_dp32.yaml (224 sites -> 7); single chunk.
-# out_dir / run_id are minted by pd-lm.
-run_name: jax-l18only-doubleC-b128-dp32
+# Multi-host slow-eval SMOKE — validates the in-loop slow/plot tier end-to-end on >1
+# process (SPEC S28/S28a): the #905 process_allgather fix for the dp-sharded histogram
+# sample, plus the density-heatmap, position-CI (PermutedCIPlots), and hidden-acts host
+# pulls. Derived from pile_ppgd_bsc.yaml (LlamaSimpleMLP 4L, dp=16 = 2 nodes) with a
+# short horizon and the slow tier on EVERY eval step (every = slow_every = 50), so it
+# fires at steps 50/100/150. Launch: pd-lm --qos scavenge.
+run_name: ai-smoke-multihost-slow-eval
 cadence:
   keep_last_n_checkpoints: 2
-  save_every: 1000
-  train_log_every: 25
+  save_every: 5000
+  train_log_every: 50
 data:
   buffer_size: 1000
   column_name: input_ids
-  data_files: /mnt/data/artifacts/mechanisms/param-decomp/datasets/fineweb_llama_tok_512/*.parquet
+  data_files: /mnt/data/artifacts/mechanisms/param-decomp/datasets/pile_neox_tok_512/*.parquet
   dataset_name: parquet
   eval_split: train
   is_tokenized: true
@@ -18,18 +20,29 @@ data:
   revision: null
   shuffle_each_epoch: true
   streaming: false
-  tokenizer_name: meta-llama/Llama-3.1-8B
+  tokenizer_name: EleutherAI/gpt-neox-20b
   train_split: train
 eval:
-  batch_size: 32
-  every: 1000
+  batch_size: 128
+  every: 50
   metrics:
   - n_batches_accum: 1
+    density_heatmap_n_bins: 40
     type: CIHistograms
   - ci_alive_threshold: 0.0
     type: ComponentActivationDensity
   - ci_alive_threshold: 0.0
-    groups: null
+    groups:
+      layer_0:
+      - h.0.*
+      layer_1:
+      - h.1.*
+      layer_2:
+      - h.2.*
+      layer_3:
+      - h.3.*
+      total:
+      - '*'
     type: CI_L0
   - rounding_threshold: 0.0
     type: CEandKLLosses
@@ -37,23 +50,28 @@ eval:
   - coeff: null
     type: StochasticHiddenActsReconLoss
   - type: CIHiddenActsReconLoss
+  - identity_patterns: null
+    dense_patterns:
+    - h.*
+    type: PermutedCIPlots
   - coeff: null
     init: random
     mask_scope: shared_across_batch
     n_steps: 20
+    name: PGDReconLoss_20step
     step_size: 0.1
     type: PGDReconLoss
   n_steps: 1
-  slow_every: 100000
+  slow_every: 50
 pd:
-  batch_size: 128
+  batch_size: 64
   ci_config:
     type: chunkwise_transformer
     blocks_per_chunk: 1
-    d_model: 4096
-    n_blocks: 4
-    n_heads: 64
-    mlp_hidden: 16384
+    d_model: 2048
+    n_blocks: 8
+    n_heads: 16
+    mlp_hidden: 8192
   ci_fn_optimizer:
     betas:
     - 0.9
@@ -62,7 +80,7 @@ pd:
     lr_schedule:
       final_val_frac: 0.1
       fn_type: cosine
-      start_val: 2.83e-05
+      start_val: 5.0e-05
       warmup_pct: 0.0
     weight_decay: 0.0
   components_optimizer:
@@ -73,50 +91,45 @@ pd:
     lr_schedule:
       final_val_frac: 0.1
       fn_type: cosine
-      start_val: 2.83e-05
+      start_val: 5.0e-05
       warmup_pct: 0.0
     weight_decay: 0.0
   decomposition_targets:
-  - C: 4096
-    module_pattern: model.layers.18.self_attn.q_proj
-  - C: 4096
-    module_pattern: model.layers.18.self_attn.k_proj
-  - C: 8192
-    module_pattern: model.layers.18.self_attn.v_proj
-  - C: 8192
-    module_pattern: model.layers.18.self_attn.o_proj
-  - C: 16384
-    module_pattern: model.layers.18.mlp.gate_proj
-  - C: 16384
-    module_pattern: model.layers.18.mlp.up_proj
-  - C: 20480
-    module_pattern: model.layers.18.mlp.down_proj
+  - C: 3072
+    module_pattern: h.*.mlp.c_fc
+  - C: 3584
+    module_pattern: h.*.mlp.down_proj
+  - C: 512
+    module_pattern: h.*.attn.q_proj
+  - C: 512
+    module_pattern: h.*.attn.k_proj
+  - C: 1024
+    module_pattern: h.*.attn.v_proj
+  - C: 1024
+    module_pattern: h.*.attn.o_proj
   faithfulness_warmup_lr: 0.001
-  faithfulness_warmup_steps: 0
+  faithfulness_warmup_steps: 10
   faithfulness_warmup_weight_decay: 0.0
-  identity_decomposition_targets: null
   loss_metrics:
   - frequency:
-      coeff: 1.0e-06
+      coeff: 1.0e-04
       reference_token_count: 65536
-    coeff: 5.0e-06
-    eps: 1.0e-06
+    coeff: 0.0002
+    eps: 1.0e-12
     p_anneal_end_frac: 1.0
     p_anneal_final_p: 0.4
     p_anneal_start_frac: 0.0
     pnorm: 2.0
     type: ImportanceMinimalityLoss
   - coeff: 0.5
-    n_samples: 1
     routing:
       type: uniform_k_subset
-    sites_per_chunk: 7
-    type: ChunkwiseSubsetReconLoss
+    type: StochasticReconSubsetLoss
   - coeff: 0.5
     n_samples: 1
     n_warmup_steps: 2
     optimizer:
-      beta1: 0.01
+      beta1: 0.5
       beta2: 0.99
       eps: 1.0e-08
       lr_schedule:
@@ -128,28 +141,19 @@ pd:
     scope:
       type: per_batch_per_position
     type: PersistentPGDReconLoss
-  - coeff: 1000000.0
+  - coeff: 10000000.0
     type: FaithfulnessLoss
   seed: 0
-  steps: 50000
+  steps: 150
 runtime:
-  dp: 32
-  tp: 1
-  remat_recon_forwards: true
-  remat_ci_fn: true
+  remat_recon_forwards: false
+  dp: 16
 target:
-  output_extract: logits
   weights_dtype: bfloat16
   spec:
-    kind: hf
-    model_class: transformers.LlamaForCausalLM
-    model_name: meta-llama/Llama-3.1-8B
+    kind: pretrained
+    model_class: param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
+    run_path: goodfire/spd/runs/t-9d2b8f02
 wandb:
   entity: null
-  project: param-decomp-llama
-  group: l18only
-  tags:
-  - l18
-  - single-layer
-  - doubleC
-  - dp32
+  project: param-decomp
