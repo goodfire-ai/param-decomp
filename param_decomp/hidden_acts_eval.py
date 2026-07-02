@@ -29,7 +29,7 @@ from typing import Any
 import jax.numpy as jnp
 import numpy as np
 from jax import random
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Int, PRNGKeyArray
 
 from param_decomp.components import DecompVU
 from param_decomp.jit_util import filter_jit
@@ -57,10 +57,10 @@ def _per_site_sum_mse(
 
 
 HiddenActsStep = Callable[
-    [DecomposedModel, Any, Any, Float[Array, "*leading d"], PRNGKeyArray],
+    [DecomposedModel, Any, Any, Int[Array, "*leading"], PRNGKeyArray],
     tuple[dict[str, Array], dict[str, int]],
 ]
-"""`(model, components, ci_fn, residual, key) -> ({site: sum_mse}, {site: n_elements})`
+"""`(model, components, ci_fn, tokens, key) -> ({site: sum_mse}, {site: n_elements})`
 — one batch's per-site summed MSE (fp32) and element counts (the host folds these into
 `SiteMSEReduction`s). `key` is unused by the deterministic CI step. `model`
 (frozen-weight-bearing) is the jit ARG."""
@@ -76,24 +76,24 @@ def make_ci_hidden_acts_step(
         model: DecomposedModel,
         components: DecompVU,
         ci_fn: Any,
-        residual: Float[Array, "*leading d"],
+        tokens: Int[Array, "*leading"],
         _key: PRNGKeyArray,
     ) -> tuple[dict[str, Array], dict[str, int]]:
-        taps = model.read_activations(residual, ci_fn.input_names)
+        taps = model.read_activations(tokens, ci_fn.input_names)
         components_bf16 = cast_floating(components, COMPUTE_DT)
         prepared = model.prepare_compute_weights(components_bf16)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
         ci_lower = ci_fn_bf16(taps, remat=False).lower
 
-        leading = residual.shape[:-1]
+        leading = tokens.shape  # activation-space leading (b, t) — tokens carry no feature dim
         zeros_delta = {s: jnp.zeros(leading, COMPUTE_DT) for s in site_names}
         clean = model.masked_site_outputs(
-            prepared, residual,
+            prepared, tokens,
             {s: jnp.ones_like(ci_lower[s]) for s in site_names}, zeros_delta,
             all_false_routes(site_names, leading), site_names, False,
         )  # fmt: skip
         masked = model.masked_site_outputs(
-            prepared, residual, ci_lower, zeros_delta, None, site_names, False
+            prepared, tokens, ci_lower, zeros_delta, None, site_names, False
         )
         sum_mse = _per_site_sum_mse(masked, clean, site_names)
         n_elements = {s: clean[s].size for s in site_names}
@@ -117,18 +117,18 @@ def make_stochastic_hidden_acts_step(
         model: DecomposedModel,
         components: DecompVU,
         ci_fn: Any,
-        residual: Float[Array, "*leading d"],
+        tokens: Int[Array, "*leading"],
         key: PRNGKeyArray,
     ) -> tuple[dict[str, Array], dict[str, int]]:
-        taps = model.read_activations(residual, ci_fn.input_names)
+        taps = model.read_activations(tokens, ci_fn.input_names)
         components_bf16 = cast_floating(components, COMPUTE_DT)
         prepared = model.prepare_compute_weights(components_bf16)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
         ci_lower = ci_fn_bf16(taps, remat=False).lower
 
-        leading = residual.shape[:-1]
+        leading = tokens.shape  # activation-space leading (b, t) — tokens carry no feature dim
         clean = model.masked_site_outputs(
-            prepared, residual,
+            prepared, tokens,
             {s: jnp.ones_like(ci_lower[s]) for s in site_names},
             {s: jnp.zeros(leading, COMPUTE_DT) for s in site_names},
             all_false_routes(site_names, leading), site_names, False,
@@ -148,7 +148,7 @@ def make_stochastic_hidden_acts_step(
                     random.fold_in(delta_key, site_idx), leading, COMPUTE_DT
                 )
             masked = model.masked_site_outputs(
-                prepared, residual, masks, delta_masks, None, site_names, True
+                prepared, tokens, masks, delta_masks, None, site_names, True
             )
             draw_sum = _per_site_sum_mse(masked, clean, site_names)
             sum_mse = {s: sum_mse[s] + draw_sum[s] for s in site_names}
@@ -164,18 +164,18 @@ def accumulate_hidden_acts(
     model: DecomposedModel,
     components: DecompVU,
     ci_fn: Any,
-    residual_batches: list[Float[Array, "*leading d"]],
+    token_batches: list[Int[Array, "*leading"]],
     base_key: PRNGKeyArray,
 ) -> dict[str, SiteMSEReduction]:
     """Drive `step` over the eval batches, host-accumulating `(Σ sum_mse, Σ n)` per site
     (token-weighted, exact under micro-batching — same pattern as the density/mean
     accumulators). Per-batch RNG is `fold_in(base_key, batch_idx)`."""
-    assert residual_batches, "hidden-acts eval needs at least one batch"
+    assert token_batches, "hidden-acts eval needs at least one batch"
     sums: dict[str, float] = {}
     counts: dict[str, int] = {}
-    for batch_idx, residual in enumerate(residual_batches):
+    for batch_idx, tokens in enumerate(token_batches):
         batch_sum, batch_n = step(
-            model, components, ci_fn, residual, random.fold_in(base_key, batch_idx)
+            model, components, ci_fn, tokens, random.fold_in(base_key, batch_idx)
         )
         for site in batch_sum:
             sums[site] = sums.get(site, 0.0) + float(np.asarray(batch_sum[site]))

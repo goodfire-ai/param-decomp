@@ -19,9 +19,9 @@ pd:
   - module_pattern: h.*.mlp.down_proj
     C: 3584
   - module_pattern: h.*.attn.q_proj
-    C: 512
+    C: 768
   - module_pattern: h.*.attn.k_proj
-    C: 512
+    C: 768
   - module_pattern: h.*.attn.v_proj
     C: 1024
   - module_pattern: h.*.attn.o_proj

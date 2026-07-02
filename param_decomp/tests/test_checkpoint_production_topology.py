@@ -32,6 +32,7 @@ import pytest
 from jax.sharding import NamedSharding
 
 from param_decomp.adversary import (
+    BranchedPersistentAdversary,
     PersistentAdversary,
     SourcesAdamState,
     init_sources_adam_state,
@@ -112,7 +113,7 @@ def _build_sharded(seed: int):
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
     site_cs = tuple(s.C for s in lm.sites)
     ppgd_cfgs = (_persistent_cfg(None), _persistent_cfg("ppgd_second"))
-    adversaries: dict[str, PersistentAdversary] = {}
+    adversaries: dict[str, PersistentAdversary | BranchedPersistentAdversary] = {}
     for i, (state_key, ppgd_cfg) in enumerate(zip(PERSISTENT_TERMS, ppgd_cfgs, strict=True)):
         assert ppgd_cfg.coeff is not None
         src = init_sources_sharded(
@@ -173,7 +174,9 @@ def _build_sharded(seed: int):
     return lm, state, step, tokens
 
 
-def _assert_moments_present(adversaries: dict[str, PersistentAdversary]) -> None:
+def _assert_moments_present(
+    adversaries: dict[str, PersistentAdversary | BranchedPersistentAdversary],
+) -> None:
     """SPEC S22/S23: every persistent term carries m, v (one leaf per source site, same
     shape as the source) and a non-zero step_count."""
     assert tuple(adversaries) == PERSISTENT_TERMS, adversaries.keys()
