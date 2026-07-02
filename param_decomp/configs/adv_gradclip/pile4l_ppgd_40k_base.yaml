@@ -1,0 +1,157 @@
+# PPGD source-grad-clip A/B — BASELINE arm (bridge task try-grad-clip-adv-recon).
+# Derived from pile_ppgd_bsc.yaml (the paper 4L pile PPGD config); documented edits:
+#   1. steps 400k -> 40k (short A/B; all fraction-based schedules auto-stretch)
+#   2. runtime.dp 16 -> 8 (1 node; same global batch 64 -> bl8)
+#   3. run_name
+# The adversary optimizer is UNCHANGED (grad_clip_norm unset = None): this arm exists to
+# (a) anchor the comparison and (b) read the grad_norms/summary/src/* scale off wandb to
+# size the clip arms' grad_clip_norm.
+run_name: jax-pile4l-ppgd-gradclip-base
+cadence:
+  keep_last_n_checkpoints: 2
+  save_every: 5000
+  train_log_every: 200
+data:
+  buffer_size: 1000
+  column_name: input_ids
+  data_files: /mnt/data/artifacts/mechanisms/param-decomp/datasets/pile_neox_tok_512/*.parquet
+  dataset_name: parquet
+  eval_split: train
+  is_tokenized: true
+  max_seq_len: 512
+  revision: null
+  shuffle_each_epoch: true
+  streaming: false
+  tokenizer_name: EleutherAI/gpt-neox-20b
+  train_split: train
+eval:
+  batch_size: 128
+  every: 1000
+  metrics:
+  - n_batches_accum: 1
+    type: CIHistograms
+  - ci_alive_threshold: 0.0
+    type: ComponentActivationDensity
+  - ci_alive_threshold: 0.0
+    groups:
+      layer_0:
+      - h.0.*
+      layer_1:
+      - h.1.*
+      layer_2:
+      - h.2.*
+      layer_3:
+      - h.3.*
+      total:
+      - '*'
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  - type: CIMeanPerComponent
+  - coeff: null
+    type: StochasticHiddenActsReconLoss
+  - type: CIHiddenActsReconLoss
+  - coeff: null
+    init: random
+    mask_scope: shared_across_batch
+    n_steps: 20
+    name: PGDReconLoss_20step
+    step_size: 0.1
+    type: PGDReconLoss
+  n_steps: 1
+  slow_every: 10000
+  slow_on_first_step: true
+pd:
+  batch_size: 64
+  ci_config:
+    type: chunkwise_transformer
+    blocks_per_chunk: 1
+    d_model: 2048
+    n_blocks: 8
+    n_heads: 16
+    mlp_hidden: 8192
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: null
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 0.01
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  decomposition_targets:
+  - C: 3072
+    module_pattern: h.*.mlp.c_fc
+  - C: 3584
+    module_pattern: h.*.mlp.down_proj
+  - C: 512
+    module_pattern: h.*.attn.q_proj
+  - C: 512
+    module_pattern: h.*.attn.k_proj
+  - C: 1024
+    module_pattern: h.*.attn.v_proj
+  - C: 1024
+    module_pattern: h.*.attn.o_proj
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 400
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - frequency:
+      coeff: 0.0001
+      reference_token_count: 65536
+    coeff: 0.0002
+    eps: 1.0e-12
+    p_anneal_end_frac: 1.0
+    p_anneal_final_p: 0.4
+    p_anneal_start_frac: 0.0
+    pnorm: 2.0
+    type: ImportanceMinimalityLoss
+  - coeff: 0.5
+    routing:
+      type: uniform_k_subset
+    type: StochasticReconSubsetLoss
+  - coeff: 0.5
+    n_warmup_steps: 2
+    optimizer:
+      beta1: 0.5
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        final_val_frac: 1.0
+        fn_type: constant
+        start_val: 0.01
+        warmup_pct: 0.025
+      type: adam
+    scope:
+      type: per_batch_per_position
+    type: PersistentPGDReconLoss
+  - coeff: 10000000.0
+    type: FaithfulnessLoss
+  seed: 0
+  steps: 40000
+runtime:
+  remat_recon_forwards: false
+  dp: 8
+target:
+  output_extract: 0
+  weights_dtype: bfloat16
+  spec:
+    kind: pretrained
+    model_class: param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
+    run_path: goodfire/spd/runs/t-9d2b8f02
+wandb:
+  entity: null
+  project: param-decomp
