@@ -29,6 +29,7 @@ from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Bool, Float, PRNGKeyArray, jaxtyped
 
 from param_decomp.adversary import (
+    BranchedPersistentAdversary,
     PersistentAdversary,
     init_fresh_pgd_sources,
     source_masks,
@@ -44,6 +45,7 @@ from param_decomp.losses import (
     imp_min_terms,
 )
 from param_decomp.recon import (
+    BranchedPersistentSources,
     ConstantSources,
     FreshPGDSources,
     LossSurface,
@@ -68,10 +70,10 @@ class TrainState:
     ci_fn: CIFn  # fp32 masters
     components_opt_state: optax.OptState
     ci_fn_opt_state: optax.OptState
-    adversaries: dict[str, PersistentAdversary]
+    adversaries: dict[str, PersistentAdversary | BranchedPersistentAdversary]
     """Persistent-PGD adversaries, `state_key -> adversary` (each owns its sources + Adam
-    state + static config). One state_key per persistent loss term (SPEC S23); empty when
-    no persistent term."""
+    state + static config). One state_key per persistent / branched-persistent loss term
+    (SPEC S23); empty when neither is configured."""
     step: Array
 
 
@@ -307,6 +309,22 @@ def make_train_step(
                 state_key: adv.warmup_ascend(warmup_scoring_loss, step_f32, total_steps)
                 for state_key, adv in state.adversaries.items()
             }
+        plain_advs = {k: a for k, a in warmed_advs.items() if isinstance(a, PersistentAdversary)}
+
+        # Branched-persistent adversaries resolve their whole step BEFORE the main backward
+        # (like fresh PGD): one dedicated scoring-loss ascent produces the advanced persistent
+        # adversary (carried forward) AND the detached `branch` sources. The branch feeds the
+        # main param forward as a CONSTANT — it never contributes a source gradient there, so
+        # the persistent state cannot be fine-tuned against by the outer optimizer.
+        branch_sources: dict[str, dict[str, Array]] = {}
+        branched_new: dict[str, BranchedPersistentAdversary] = {}
+        with jax.named_scope("pd_pgd_branched_step"):
+            for state_key, adv in warmed_advs.items():
+                if not isinstance(adv, BranchedPersistentAdversary):
+                    continue
+                advanced, branch = adv.branched_step(warmup_scoring_loss, step_f32, total_steps)
+                branched_new[state_key] = advanced
+                branch_sources[state_key] = branch
 
         # Fresh-PGD entries: ONE routing draw per entry per step, shared by all
         # ascents and the main loss forward (SPEC S24); sign-ascend `n_steps`, then
@@ -448,6 +466,17 @@ def make_train_step(
                                             entry.live_sites,
                                         )
                                     )
+                                case BranchedPersistentSources(state_key=state_key):
+                                    # `branch_sources` are detached constants (their persistent
+                                    # update ran off its own ascent) — closed over, not a leaf
+                                    # of the differentiated tuple.
+                                    masked = pre_built_fwd(
+                                        source_masks(
+                                            ci.lower,
+                                            branch_sources[state_key],
+                                            entry.live_sites,
+                                        )
+                                    )
                         total = total + recon_loss_fn(masked, clean_output)
                         n_forwards += 1
                 assert n_forwards > 0, f"term {term.name!r} produced no forwards"
@@ -466,7 +495,7 @@ def make_train_step(
                         prepared,
                         state.components,
                         ci,
-                        {k: a.sources for k, a in warmed_advs.items()},
+                        {k: a.sources for k, a in plain_advs.items()},
                     )
                 )
             )
@@ -480,15 +509,16 @@ def make_train_step(
         )
         grad_norm_metrics = _grad_norm_metrics(components_grad, ci_fn_grad)
 
-        # ── each adversary's final ascent from the fused graph (SPEC S13'/S14'): the
+        # ── each plain adversary's final ascent from the fused graph (SPEC S13'/S14'): the
         # backward saw coeff·L_term, so it ascends on L_term itself (unscaled by its coeff
-        # inside `final_ascend`, exact since one source bundle feeds one term, S23). ──
-        new_adversaries = {
-            state_key: warmed_advs[state_key].final_ascend(
+        # inside `final_ascend`, exact since one source bundle feeds one term, S23). The
+        # branched adversaries already advanced (off their own scoring-loss ascent). ──
+        new_adversaries: dict[str, PersistentAdversary | BranchedPersistentAdversary] = {
+            state_key: plain_advs[state_key].final_ascend(
                 persistent_grads_scaled[state_key], step_f32, total_steps
             )
-            for state_key in warmed_advs
-        }
+            for state_key in plain_advs
+        } | branched_new
 
         components_updates, new_components_opt_state = components_optimizer.update(
             components_grad,
@@ -525,6 +555,11 @@ def make_train_step(
             metrics["src_lr"] = next(iter(source_lrs.values()))
         else:
             metrics |= {f"schedules/lr/src/{k}": v for k, v in source_lrs.items()}
+        metrics |= {
+            f"schedules/lr/branch/{k}": adv.branch_lr(step_f32, total_steps)
+            for k, adv in state.adversaries.items()
+            if isinstance(adv, BranchedPersistentAdversary)
+        }
         return new_state, metrics
 
     return filter_jit(step, donate="all-except-first", compiler_options=compiler_options)
