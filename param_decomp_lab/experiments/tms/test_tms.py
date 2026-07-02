@@ -350,7 +350,7 @@ def test_end_to_end_pretrain_decompose_recovers_identity():
         totals.append(float(m["total"]))
     assert totals[-1] < totals[0], (totals[0], totals[-1])
 
-    ci_lower = single_feature_ci(lm, state.ci_fn, n_features=5)
+    ci_lower = single_feature_ci(lm, state.ci_fn, n_features=5).lower
     err1 = identity_ci_error(ci_lower["linear1"], tolerance=0.2)
     err2 = identity_ci_error(ci_lower["linear2"], tolerance=0.2)
     assert err1 == 0, (

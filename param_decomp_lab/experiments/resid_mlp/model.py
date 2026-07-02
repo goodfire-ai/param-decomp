@@ -743,8 +743,8 @@ def single_feature_ci(
     lm: ResidMLPDecomposedModel,
     ci_fn: "CIFnCallable",
     n_features: int,
-) -> dict[str, Array]:
-    """Feed the single-feature probe (embedded through `W_E`) and read the `lower_leaky`
-    CI per site, `{site: [n_features, C]}`."""
+) -> CI:
+    """Feed the single-feature probe (embedded through `W_E`) and return the CI per site,
+    `{site: [n_features, C]}` under each squashing."""
     resid = single_feature_probe(n_features) @ lm.target.W_E
-    return ci_fn(lm.read_activations(resid, ci_fn.input_names), remat=False).lower
+    return ci_fn(lm.read_activations(resid, ci_fn.input_names), remat=False)

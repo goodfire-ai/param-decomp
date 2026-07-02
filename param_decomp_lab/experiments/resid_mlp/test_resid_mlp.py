@@ -408,7 +408,7 @@ def test_end_to_end_pretrain_decompose_recovers_identity():
         totals.append(float(m["total"]))
     assert totals[-1] < totals[0], (totals[0], totals[-1])
 
-    ci_lower = single_feature_ci(lm, state.ci_fn, n_features=5)
+    ci_lower = single_feature_ci(lm, state.ci_fn, n_features=5).lower
     err = identity_ci_error(ci_lower["layers.0.mlp_in"], tolerance=0.2)
     assert err == 0, (
         f"mlp_in did not recover identity (err={err}):\n{jnp.round(ci_lower['layers.0.mlp_in'], 2)}"
