@@ -105,7 +105,6 @@ def main(n_layers: int, dp: int, out_path: str, seq: int = 256, batch: int | Non
             "faithfulness_warmup_lr": 0.001,
             "faithfulness_warmup_steps": 2,
             "faithfulness_warmup_weight_decay": 0.0,
-            "identity_decomposition_targets": None,
             "loss_metrics": [
                 {
                     "beta": 0.2,
