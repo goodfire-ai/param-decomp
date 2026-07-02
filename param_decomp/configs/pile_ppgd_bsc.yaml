@@ -130,12 +130,11 @@ pd:
       coeff: 1.0e-04
       reference_token_count: 65536
     coeff: 0.0002
-    eps: 1.0e-12
-    p_anneal_end_frac: 1.0
-    p_anneal_final_p: 0.4
-    p_anneal_start_frac: 0.0
-    pnorm: 2.0
-    type: ImportanceMinimalityLoss
+    gamma: 1.0
+    gamma_anneal_start_frac: 0.0
+    gamma_anneal_final_gamma: 0.01
+    gamma_anneal_end_frac: 1.0
+    type: SmoothL0ImportanceMinimalityLoss
   - coeff: 0.5
     routing:
       type: uniform_k_subset

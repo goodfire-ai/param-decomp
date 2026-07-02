@@ -18,13 +18,24 @@ from jax.sharding import Mesh
 from jax.typing import ArrayLike
 from jaxtyping import Array, PRNGKeyArray
 
-from param_decomp.adversary import PersistentAdversary, init_sources_adam_state
+from param_decomp.adversary import (
+    BranchedPersistentAdversary,
+    PersistentAdversary,
+    init_sources_adam_state,
+)
 from param_decomp.built_run import DataConfig
 from param_decomp.ci_fn import CIFnArch
-from param_decomp.configs import AdamPGDConfig, OptimizerConfig, PDConfig
+from param_decomp.configs import (
+    AdamPGDConfig,
+    BranchedPersistentPGDReconLossConfig,
+    OptimizerConfig,
+    PDConfig,
+    PersistentPGDReconLossConfig,
+)
 from param_decomp.lm import DecomposedModel
 from param_decomp.recon import (
     PersistentSources,
+    branched_persistent_configs,
     build_loss_terms,
     persistent_configs,
 )
@@ -96,7 +107,7 @@ def build_optimizers(pd: PDConfig):
     """Returns (opt_vu, opt_ci, schedules): the schedule fns are returned too so the
     log path reports the exact LR the optimizer applies (single source of truth).
 
-    The canonical-shape asserts (cosine-to-0.1, plain AdamW, required components clip, optional
+    The canonical-shape asserts (cosine-to-0.1, no weight decay, required components clip, optional
     CI-fn clip) live in
     the lab conversion (`experiments.config.assert_canonical_algorithm_config`); here we
     read the values straight off `PDConfig` so there is no second source of truth."""
@@ -130,6 +141,7 @@ def init_train_state(
     )
     losses = build_loss_terms(pd.loss_metrics, lm.site_names)
     persistent = persistent_configs(losses.recon)
+    branched = branched_persistent_configs(losses.recon)
     term_coeff_by_state_key = {
         entry.sources.state_key: term.coeff
         for term in losses.recon
@@ -137,14 +149,18 @@ def init_train_state(
         if isinstance(entry.sources, PersistentSources)
     }
     assert set(term_coeff_by_state_key) == set(persistent)
-    adversaries: dict[str, PersistentAdversary] = {}
-    if persistent:
+    # Both kinds key into the ONE adversaries dict; disjoint state_keys (one per term).
+    all_adv_configs: dict[
+        str, PersistentPGDReconLossConfig | BranchedPersistentPGDReconLossConfig
+    ] = {**persistent, **branched}
+    adversaries: dict[str, PersistentAdversary | BranchedPersistentAdversary] = {}
+    if all_adv_configs:
         # Persistent sources live on a position axis; TMS (no position axis) carries none.
         assert isinstance(data, DataConfig), (
             "persistent PGD sources need a sequence axis; TMS (leading_axes=()) has none"
         )
-        for term_idx, state_key in enumerate(persistent):
-            cfg = persistent[state_key]
+        for term_idx, state_key in enumerate(all_adv_configs):
+            cfg = all_adv_configs[state_key]
             assert isinstance(cfg.optimizer, AdamPGDConfig)
             sources = init_sources_sharded(
                 lm.site_names,
@@ -156,14 +172,26 @@ def init_train_state(
                 random.fold_in(src_key, term_idx),
                 mesh,
             )
-            adversaries[state_key] = PersistentAdversary(
-                sources=sources,
-                opt_state=init_sources_adam_state(sources),
-                state_key=state_key,
-                coeff=term_coeff_by_state_key[state_key],
-                adam=cfg.optimizer,
-                n_warmup=cfg.n_warmup_steps,
-            )
+            opt_state = init_sources_adam_state(sources)
+            match cfg:
+                case PersistentPGDReconLossConfig():
+                    adversaries[state_key] = PersistentAdversary(
+                        sources=sources,
+                        opt_state=opt_state,
+                        state_key=state_key,
+                        coeff=term_coeff_by_state_key[state_key],
+                        adam=cfg.optimizer,
+                        n_warmup=cfg.n_warmup_steps,
+                    )
+                case BranchedPersistentPGDReconLossConfig():
+                    adversaries[state_key] = BranchedPersistentAdversary(
+                        sources=sources,
+                        opt_state=opt_state,
+                        state_key=state_key,
+                        adam=cfg.optimizer,
+                        branch_lr_schedule=cfg.branch_lr_schedule,
+                        n_warmup=cfg.n_warmup_steps,
+                    )
     return TrainState(
         components=components,
         ci_fn=ci_fn,
