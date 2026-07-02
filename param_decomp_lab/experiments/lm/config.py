@@ -31,6 +31,7 @@ from param_decomp.configs import (
     CEandKLLossesConfig,
     ChunkwiseTransformerCiConfig,
     CI_L0Config,
+    CIFnHealthConfig,
     CIHistogramsConfig,
     CIMaskedAttnPatternsReconLossConfig,
     ComponentActivationDensityConfig,
@@ -340,6 +341,7 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
         return None
     ce_kl = ci_l0 = density = pgd = None
     attn_ci = attn_stoch = False
+    ci_fn_health = False
     attn_stoch_n_mask_samples = 1
     slow_n_batches_accum: int | None = None
     density_heatmap_n_bins: int | None = None
@@ -359,6 +361,12 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
                 _assert_separate_qk_attn_paths(metric)
                 attn_stoch = True
                 attn_stoch_n_mask_samples = metric.n_mask_samples
+            case CIFnHealthConfig():
+                assert isinstance(cfg.pd.ci_config, ChunkwiseTransformerCiConfig), (
+                    f"CIFnHealth instruments the chunkwise-transformer CI fn only, "
+                    f"got {cfg.pd.ci_config.type!r}"
+                )
+                ci_fn_health = True
             case CIHistogramsConfig():
                 slow_n_batches_accum = metric.n_batches_accum
                 density_heatmap_n_bins = metric.density_heatmap_n_bins
@@ -388,6 +396,7 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
             else None
         ),
         pgd=pgd,
+        ci_fn_health=ci_fn_health,
         attn_patterns=(
             AttnPatternsEvalConfig(
                 ci_masked=attn_ci,

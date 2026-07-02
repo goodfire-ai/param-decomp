@@ -64,6 +64,7 @@ eval:
     type: CI_L0
   - rounding_threshold: 0.0
     type: CEandKLLosses
+  - type: CIFnHealth
   - type: CIMeanPerComponent
   - coeff: null
     type: StochasticHiddenActsReconLoss

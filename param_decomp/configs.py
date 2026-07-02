@@ -452,6 +452,16 @@ class CIHistogramsConfig(BaseConfig):
     density_heatmap_n_bins: PositiveInt | None = None
 
 
+class CIFnHealthConfig(BaseConfig):
+    """CI-fn training-health scalars (`eval/ci_health/*`, fast eval cadence): weight
+    norms / spectral norms / stable ranks, instrumented-forward attention + activation
+    stats (q/k RMS, logit growth, entropy collapse), CI-logit saturation, and component
+    mode-collapse aggregates. Chunkwise-transformer CI fns only; JAX-only keys (no torch
+    analog). See `param_decomp/ci_health.py`."""
+
+    type: Literal["CIFnHealth"] = "CIFnHealth"
+
+
 class CI_L0Config(BaseConfig):
     """`groups` maps `{group_name: [fnmatch-style layer pattern, ...]}`.
 
@@ -548,6 +558,7 @@ class UVPlotsConfig(_PermutationPlotsBaseConfig):
 
 AnyEvalMetricConfig = Annotated[
     CEandKLLossesConfig
+    | CIFnHealthConfig
     | CIHiddenActsReconLossConfig
     | CIHistogramsConfig
     | CI_L0Config

@@ -67,7 +67,13 @@ config dispatch is `TargetConfig` (llama8b) vs `LlamaSimpleMLPTargetConfig`, bot
 (`param_decomp_lab/experiments/lm/config.py`, which reads the canonical schema DIRECTLY —
 `build_experiment_config`/`load_config` — routing `kind: pretrained` specs + `h.*`
 wildcards), target build in the LM composition root
-`param_decomp_lab/experiments/lm/run.py::main`. The slow plot metrics are computed
+`param_decomp_lab/experiments/lm/run.py::main`. CI-fn training health
+(`ci_health.py`, config-gated by the `CIFnHealth` eval metric) logs `eval/ci_health/*`
+scalars on the FAST eval cadence: weight Frobenius/spectral norms + stable ranks (batched
+power iteration, never full SVD), instrumented-forward attention/activation stats
+(`ChunkwiseTransformerCIFn.telemetry` — q/k RMS, attention logit growth + entropy on a
+strided query subsample), CI-logit saturation fractions, and component mode-collapse
+aggregates — JAX-only keys (no torch analog), chunkwise transformer only. The slow plot metrics are computed
 NATIVELY in JAX (`slow_eval.py`) — no torch export round-trip (the torch offline-eval
 bridge `jsp-export` / `pd-offline-eval` was retired). They run IN-LOOP ONLY on
 `eval.slow_every` next to the fast pass (SPEC S28/S29; there is NO offline/retrospective

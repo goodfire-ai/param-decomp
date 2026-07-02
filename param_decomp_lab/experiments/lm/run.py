@@ -44,6 +44,8 @@ from param_decomp.attn_patterns_eval import (
     make_stochastic_attn_patterns_step,
 )
 from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, BuiltRun, DataConfig
+from param_decomp.ci_fn import ChunkwiseTransformerCIFn
+from param_decomp.ci_health import make_ci_activation_health_step, make_ci_weight_health_fn
 from param_decomp.configs import ResumeProvenance
 from param_decomp.data import BatchSchedule, ShardServer, scan_shards
 from param_decomp.eval import make_eval_step
@@ -249,6 +251,10 @@ def _make_lm_eval_fn(
                 lm, pattern_fn, eval.attn_patterns.stochastic_n_mask_samples, co
             )
 
+    ci_health_steps = None
+    if eval.ci_fn_health:
+        ci_health_steps = (make_ci_weight_health_fn(co), make_ci_activation_health_step(mesh, co))
+
     slow_eval_step = make_slow_eval_step(
         lm, eval.density_ci_alive_threshold, eval.density_heatmap_n_bins, co
     )
@@ -287,6 +293,12 @@ def _make_lm_eval_fn(
         eval_record: dict[str, LogValue] = {
             f"eval/{k}": float(v) / eval.n_steps for k, v in metric_sums.items()
         }
+        if ci_health_steps is not None:
+            weight_health_fn, activation_health_step = ci_health_steps
+            ci_fn = state.ci_fn
+            assert isinstance(ci_fn, ChunkwiseTransformerCIFn), type(ci_fn)
+            health = weight_health_fn(ci_fn) | activation_health_step(lm, ci_fn, eval_batches[0])
+            eval_record |= {f"eval/{k}": float(v) for k, v in health.items()}
         for class_name, attn_step in attn_steps.items():
             # token-weighted (Σ sum_kl / Σ n), NOT the uniform per-batch average above — KL
             # is summed over distributions, divided by their count.

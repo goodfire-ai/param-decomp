@@ -106,6 +106,11 @@ class EvalConfig:
     group-named key. None = per-site keys only."""
     pgd: EvalPGDConfig | None
     attn_patterns: AttnPatternsEvalConfig | None
+    ci_fn_health: bool
+    """`CIFnHealth` eval metric: CI-fn training-health scalars (`eval/ci_health/*`) on the
+    fast cadence — weight norms/ranks, instrumented attention/activation stats, CI-logit
+    saturation, component-collapse aggregates (`param_decomp/ci_health.py`). Chunkwise
+    transformer only."""
 
 
 @dataclass(frozen=True)

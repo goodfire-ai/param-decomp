@@ -123,6 +123,17 @@ def _weightless_rms_norm(x: Array, eps: float) -> Array:
     return rms_norm(x, jnp.ones((x.shape[-1],), x.dtype), eps)
 
 
+ATTN_STATS_MAX_QUERIES = 64
+"""Query-position cap for the instrumented attention-score stats: the telemetry path
+materializes `[b, nh, tq, t]` scores explicitly (flash never does), so queries are strided
+down to at most this many. Entropy/logit stats over the subsample estimate the full-map
+stats; `attn_logit_max` is a lower bound of the true max."""
+
+
+def _rms(x: Array) -> Array:
+    return jnp.sqrt(jnp.mean(x.astype(jnp.float32) ** 2))
+
+
 class CIBlock(eqx.Module):
     """Pre-norm block: weightless-RMSNorm → bidirectional RoPE MHA → residual;
     weightless-RMSNorm → Linear+b → GELU → Linear+b → residual."""
@@ -202,6 +213,56 @@ class CIBlock(eqx.Module):
             einops.einsum(h, self.w1, "b t i, i o -> b t o") + self.b1, approximate=False
         )
         return x + einops.einsum(hidden, self.w2, "b t i, i o -> b t o") + self.b2
+
+    def instrumented(
+        self, x: Float[Array, "b t d"], inv_freq: Array
+    ) -> tuple[Array, dict[str, Array]]:
+        """`__call__` plus per-block health scalars (all fp32): post-RoPE q/k RMS, explicit
+        attention-score stats on a strided query subsample (max / RMS logit, mean softmax
+        entropy in nats), MLP-hidden and post-block residual RMS. Same forward math as
+        `__call__` (kept in sync BY HAND — the training path must not pay for, or DCE-trust
+        away, the score materialization); eval-only, never on the train step."""
+        t = x.shape[1]
+        h = _weightless_rms_norm(x, self.eps)
+
+        def heads(w: Array) -> Array:
+            proj = einops.einsum(h, w, "b t i, o i -> b t o")
+            return einops.rearrange(proj, "b t (nh hd) -> b nh t hd", nh=self.n_head)
+
+        q, k, v = heads(self.wq), heads(self.wk), heads(self.wv)
+        cos, sin = rope_cos_sin(inv_freq, t, x.dtype)
+        q, k = apply_rope(q, k, cos, sin)
+
+        stats = {"q_rms": _rms(q), "k_rms": _rms(k)}
+        head_dim = q.shape[-1]
+        stride = max(1, t // ATTN_STATS_MAX_QUERIES)
+        scores = (
+            einops.einsum(
+                q[:, :, ::stride, :].astype(jnp.float32),
+                k.astype(jnp.float32),
+                "b nh tq hd, b nh t hd -> b nh tq t",
+            )
+            / head_dim**0.5
+        )
+        stats["attn_logit_max"] = scores.max()
+        stats["attn_logit_rms"] = jnp.sqrt(jnp.mean(scores**2))
+        probs = jax.nn.softmax(scores, axis=-1)
+        stats["attn_entropy"] = -(probs * jnp.log(probs + 1e-30)).sum(-1).mean()
+
+        qt, kt, vt = (einops.rearrange(a, "b nh t hd -> b t nh hd") for a in (q, k, v))
+        impl = "cudnn" if jax.default_backend() == "gpu" else "xla"
+        y = jax.nn.dot_product_attention(qt, kt, vt, is_causal=False, implementation=impl)
+        x = x + einops.einsum(
+            einops.rearrange(y, "b t nh hd -> b t (nh hd)"), self.wo, "b t i, o i -> b t o"
+        )
+        h = _weightless_rms_norm(x, self.eps)
+        hidden = jax.nn.gelu(
+            einops.einsum(h, self.w1, "b t i, i o -> b t o") + self.b1, approximate=False
+        )
+        stats["mlp_hidden_rms"] = _rms(hidden)
+        x = x + einops.einsum(hidden, self.w2, "b t i, i o -> b t o") + self.b2
+        stats["resid_rms"] = _rms(x)
+        return x, stats
 
 
 # ----------------------------- chunkwise transformer -----------------------------
@@ -318,6 +379,21 @@ class ChunkTransformer(eqx.Module):
             einops.einsum(x, w, "... i, i o -> ... o") + b
             for w, b in zip(self.out_ws, self.out_bs, strict=True)
         )
+
+    def instrumented(
+        self, x: Float[Array, "*leading total_d_in"], inv_freq: Array
+    ) -> tuple[tuple[Float[Array, "*leading _C"], ...], dict[str, Array]]:
+        """`__call__` plus health scalars: post-in_proj RMS and each block's
+        `CIBlock.instrumented` stats, keyed `block{i}/<stat>`."""
+        x = einops.einsum(x, self.in_proj_w, "... i, i o -> ... o") + self.in_proj_b
+        stats = {"in_proj_rms": _rms(x)}
+        for block_idx, block in enumerate(self.blocks):
+            x, block_stats = block.instrumented(x, inv_freq)
+            stats |= {f"block{block_idx}/{k}": v for k, v in block_stats.items()}
+        return tuple(
+            einops.einsum(x, w, "... i, i o -> ... o") + b
+            for w, b in zip(self.out_ws, self.out_bs, strict=True)
+        ), stats
 
 
 def _reconstruct_ci_compute_weights(chunks: "ChunkTransformer") -> "ChunkTransformer":
@@ -451,6 +527,38 @@ class ChunkwiseTransformerCIFn(eqx.Module):
             for slot, site in enumerate(m.output_sites):
                 logits[site] = stacked_per_slot[slot][chunk_idx]
         return CI.from_logits(logits)
+
+    def telemetry(self, taps: dict[str, Array]) -> tuple[SiteDict, dict[str, Array]]:
+        """The instrumented eval-only forward: per-site logits (same values as
+        `__call__().logits` — same scan order, no checkpoint since there is no backward)
+        plus the per-chunk health scalars from `ChunkTransformer.instrumented`, each
+        stacked `[n_chunks]` for the caller to reduce."""
+        per_chunk_in = [
+            jnp.concatenate(
+                [_weightless_rms_norm(taps[k], self.eps) for k in m.input_taps], axis=-1
+            )
+            for m in self.chunk_meta
+        ]
+        stacked_in = jnp.stack(per_chunk_in, axis=0)
+        inv_freq = jax.lax.stop_gradient(self.inv_freq)
+        chunks = _reconstruct_ci_compute_weights(self.chunks)
+        chunk_arrays, chunk_static = eqx.partition(chunks, eqx.is_array)
+
+        def run_chunk(
+            _: None, scanned: tuple[ChunkTransformer, Array]
+        ) -> tuple[None, tuple[tuple[Array, ...], dict[str, Array]]]:
+            chunk_array, chunk_input = scanned
+            chunk = eqx.combine(chunk_array, chunk_static)
+            return None, chunk.instrumented(chunk_input, inv_freq)
+
+        _, (stacked_per_slot, chunk_stats) = jax.lax.scan(
+            run_chunk, None, (chunk_arrays, stacked_in)
+        )
+        logits: SiteDict = {}
+        for chunk_idx, m in enumerate(self.chunk_meta):
+            for slot, site in enumerate(m.output_sites):
+                logits[site] = stacked_per_slot[slot][chunk_idx]
+        return logits, chunk_stats
 
 
 def _init_chunk_transformer(

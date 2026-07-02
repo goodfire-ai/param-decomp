@@ -149,8 +149,12 @@ def _fmt_duration(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
-def _is_verbose_grad_norm(key: str) -> bool:
-    return key.startswith("train/grad_norms/") and not key.startswith("train/grad_norms/summary/")
+def _is_console_verbose(key: str) -> bool:
+    """Keys dropped from the console line (still logged to wandb + jsonl): the per-param
+    grad-norm breakdown and the per-block/per-matrix CI-fn health scalars."""
+    if key.startswith("train/grad_norms/") and not key.startswith("train/grad_norms/summary/"):
+        return True
+    return key.startswith("eval/ci_health/")
 
 
 def _grad_norm_summary_window_stats(window: list[dict[str, jax.Array]]) -> dict[str, float]:
@@ -232,9 +236,7 @@ class MetricsSink:
         scalars = {k: v for k, v in record.items() if isinstance(v, float)}
         self._jsonl.write(json.dumps({"step": step, **scalars}) + "\n")
         self._jsonl.flush()
-        # The console line drops the per-param grad norms — the full breakdown still rides to
-        # wandb + jsonl.
-        console = {k: v for k, v in scalars.items() if not _is_verbose_grad_norm(k)}
+        console = {k: v for k, v in scalars.items() if not _is_console_verbose(k)}
         head = f"[step {step}]"
         if "train/perf/eta_s" in console:  # train logs carry the paired timing; eval logs don't
             elapsed, eta = console.pop("train/perf/elapsed_s"), console.pop("train/perf/eta_s")
