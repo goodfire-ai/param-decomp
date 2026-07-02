@@ -5,11 +5,12 @@ mean-CI per component are exact under micro-batching), the `pre_sigmoid`-vs-`low
 distinction, the `n_batches_accum` cap on the histogram sample, and that the renderer
 emits valid PNGs under the exact torch `slow_eval/figures/*` keys. Also covers the in-loop
 slow tier (SPEC S28/S29): the `slow_every` / `slow_on_first_step` cadence and the rank-0
-background `SlowEvalRenderer` logging figures on the live `_step` axis.
+background `BackgroundRenderer` logging figures on the live `_step` axis.
 """
 
 import sys
 import types
+from functools import partial
 from typing import Any
 
 import jax
@@ -30,7 +31,7 @@ from param_decomp.configs import (
     UVPlotsConfig,
 )
 from param_decomp.lm import DecomposedModel
-from param_decomp.run import SlowEvalRenderer, slow_eval_due
+from param_decomp.run import BackgroundRenderer, render_and_log_slow_eval, slow_eval_due
 from param_decomp.slow_eval import (
     PermutationMetricSpec,
     accumulate_position_ci,
@@ -413,8 +414,8 @@ def test_renderer_logs_figures_on_live_step_axis(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setitem(sys.modules, "wandb.errors", fake.errors)
 
     spec = resolve_permutation_metrics(lm.site_names, [])
-    renderer = SlowEvalRenderer(is_main=True)
-    renderer.submit(reductions, spec, position_ci=None, components=None, now_step=4242)
+    renderer = BackgroundRenderer(is_main=True)
+    renderer.submit(partial(render_and_log_slow_eval, reductions, spec, None, None, 4242))
     renderer.join()  # flush the background render
 
     assert len(fake.logged) == 1
@@ -462,8 +463,10 @@ def test_in_loop_renderer_includes_permutation_heatmaps_and_uv_when_gathered(
     monkeypatch.setitem(sys.modules, "wandb.errors", fake.errors)
 
     components = {name: (np.zeros((4, C)), np.zeros((C, 5))) for name in lm.site_names}
-    renderer = SlowEvalRenderer(is_main=True)
-    renderer.submit(reductions, spec, position_ci, components, now_step=7000)
+    renderer = BackgroundRenderer(is_main=True)
+    renderer.submit(
+        partial(render_and_log_slow_eval, reductions, spec, position_ci, components, 7000)
+    )
     renderer.join()
 
     assert len(fake.logged) == 1
@@ -496,8 +499,8 @@ def test_in_loop_renderer_skips_uv_when_components_not_gathered(
     monkeypatch.setitem(sys.modules, "wandb", fake)
     monkeypatch.setitem(sys.modules, "wandb.errors", fake.errors)
 
-    renderer = SlowEvalRenderer(is_main=True)
-    renderer.submit(reductions, spec, position_ci, components=None, now_step=7000)
+    renderer = BackgroundRenderer(is_main=True)
+    renderer.submit(partial(render_and_log_slow_eval, reductions, spec, position_ci, None, 7000))
     renderer.join()
 
     payload, _ = fake.logged[0]
@@ -515,8 +518,8 @@ def test_renderer_noop_off_main_rank(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setitem(sys.modules, "wandb.errors", fake.errors)
 
     spec = resolve_permutation_metrics(lm.site_names, [])
-    renderer = SlowEvalRenderer(is_main=False)
-    renderer.submit(reductions, spec, position_ci=None, components=None, now_step=4242)
+    renderer = BackgroundRenderer(is_main=False)
+    renderer.submit(partial(render_and_log_slow_eval, reductions, spec, None, None, 4242))
     renderer.join()
     assert fake.logged == []  # non-main ranks do the collective pull but never render/log
 
@@ -536,7 +539,7 @@ def test_in_loop_slow_tier_fires_on_cadence_without_stalling(monkeypatch: pytest
 
     spec = resolve_permutation_metrics(lm.site_names, [])
     every, slow_every = 1000, 3000
-    renderer = SlowEvalRenderer(is_main=True)
+    renderer = BackgroundRenderer(is_main=True)
     # Time only the dispatch the loop pays (accumulate + submit), not the off-thread render.
     # Joining between submits, outside the timed window, recreates the real loop's gap of
     # `slow_every` train steps where the render finishes before the next submit (so submit's
@@ -546,7 +549,9 @@ def test_in_loop_slow_tier_fires_on_cadence_without_stalling(monkeypatch: pytest
         if slow_eval_due(now_step, every, slow_every, slow_on_first_step=True):
             t0 = time.time()
             reductions = accumulate_site_reductions(step, lm, ci_fn, [residual], None)
-            renderer.submit(reductions, spec, position_ci=None, components=None, now_step=now_step)
+            renderer.submit(
+                partial(render_and_log_slow_eval, reductions, spec, None, None, now_step)
+            )
             dispatch_s += time.time() - t0
             renderer.join()
     renderer.join()  # flush

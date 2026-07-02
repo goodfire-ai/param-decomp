@@ -38,6 +38,7 @@ Both production yamls run `eval.n_steps: 1`, so today the cross-batch average is
 the parity argument above is what keeps it correct if `n_steps` is raised.
 """
 
+import math
 from fnmatch import fnmatch
 from typing import Any
 
@@ -69,6 +70,38 @@ def next_token_cross_entropy(
     return -label_log_probs.mean()
 
 
+def _row_masked_mean(per_position: Float[Array, "B ..."], row_mask: Float[Array, " B"]) -> Array:
+    """Mean of `per_position` over the rows where `row_mask` is 1 (all positions of a masked
+    row weigh 0). `per_position` is fp32 `(B, *positions)`."""
+    positions_per_row = math.prod(per_position.shape[1:])
+    mask = row_mask.reshape(row_mask.shape[0], *((1,) * (per_position.ndim - 1)))
+    return jnp.sum(per_position * mask) / (jnp.sum(row_mask) * positions_per_row)
+
+
+def _row_masked_kl(
+    masked_output: Float[Array, "B T vocab"],
+    clean_output: Float[Array, "B T vocab"],
+    row_mask: Float[Array, " B"],
+) -> Array:
+    """`kl_per_position` restricted to the rows where `row_mask` is 1 (same fp32 math,
+    per-position KL weighted before the mean)."""
+    log_q = jax.nn.log_softmax(masked_output.astype(jnp.float32), axis=-1)
+    log_p = jax.nn.log_softmax(clean_output.astype(jnp.float32), axis=-1)
+    p = jnp.exp(log_p)
+    return _row_masked_mean(jnp.sum(p * (log_p - log_q), axis=-1), row_mask)
+
+
+def _row_masked_cross_entropy(
+    logits: Float[Array, "B T vocab"], token_ids: Int[Array, "B T"], row_mask: Float[Array, " B"]
+) -> Array:
+    """`next_token_cross_entropy` restricted to the rows where `row_mask` is 1."""
+    log_probs = jax.nn.log_softmax(logits.astype(jnp.float32), axis=-1)
+    label_log_probs = jnp.take_along_axis(log_probs[:, :-1], token_ids[:, 1:, None], axis=-1)[
+        ..., 0
+    ]
+    return _row_masked_mean(-label_log_probs, row_mask)
+
+
 def make_eval_step(
     lm: DecomposedModel,
     rounding_threshold: float,
@@ -76,12 +109,19 @@ def make_eval_step(
     l0_group_patterns: dict[str, tuple[str, ...]] | None,
     pgd: EvalPGDConfig | None,
     mesh: Mesh | None,
+    *,
+    n_valid_rows: int | None,
     compiler_options: dict[str, bool | int | str] | None = None,
 ):
     """Build the `eqx.filter_jit`'d `eval_step(model, components, ci_fn, token_ids,
     residual, key) -> {metric_key: scalar}` with torch-parity keys (un-prefixed: the caller
     adds `eval/`). `model` (the frozen-weight-bearing `DecomposedModel`) is the jit ARG —
     its array leaves traced, never baked.
+
+    `n_valid_rows` handles a batch whose tail rows are sharding pad (the arithmetic probe):
+    rows `>= n_valid_rows` get ZERO weight in every emitted scalar — CE, KL, L0, and the PGD
+    objective (so the adversary spends no budget on pad rows). `None` means every row is
+    real (the corpus tier) and keeps the reductions bit-identical to the torch-parity path.
 
     `pgd` (an `EvalPGDConfig`) enables the fresh sign-PGD recon probe (torch
     `PGDReconLoss` with `init: random, mask_scope: c`): per site one
@@ -142,6 +182,27 @@ def make_eval_step(
         clean_output = batch_sharded(model.clean_output(token_ids))
         taps = model.read_activations(token_ids, ci_fn.input_names)
 
+        if n_valid_rows is None:
+            row_mask = None
+        else:
+            assert n_valid_rows <= token_ids.shape[0], (n_valid_rows, token_ids.shape)
+            row_mask = (jnp.arange(token_ids.shape[0]) < n_valid_rows).astype(jnp.float32)
+
+        def kl_metric(variant_logits: Array) -> Array:
+            if row_mask is None:
+                return kl_per_position(variant_logits, clean_output)
+            return _row_masked_kl(variant_logits, clean_output, row_mask)
+
+        def ce_metric(logits: Array) -> Array:
+            if row_mask is None:
+                return next_token_cross_entropy(logits, token_ids)
+            return _row_masked_cross_entropy(logits, token_ids, row_mask)
+
+        def positionwise_mean(per_position: Array) -> Array:
+            if row_mask is None:
+                return per_position.mean()
+            return _row_masked_mean(per_position, row_mask)
+
         components_bf16 = cast_floating(components, COMPUTE_DT)
         prepared = model.prepare_compute_weights(components_bf16)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
@@ -192,9 +253,9 @@ def make_eval_step(
         ce: dict[str, Array] = {}
         for variant, (masks, delta_masks) in variant_masks.items():
             variant_logits = masked_forward(model, prepared, token_ids, masks, delta_masks)
-            kl[variant] = kl_per_position(variant_logits, clean_output)
-            ce[variant] = next_token_cross_entropy(variant_logits, token_ids)
-        target_ce = next_token_cross_entropy(clean_output, token_ids)
+            kl[variant] = kl_metric(variant_logits)
+            ce[variant] = ce_metric(variant_logits)
+        target_ce = ce_metric(clean_output)
 
         out: dict[str, Array] = {}
         for variant in variant_masks:
@@ -203,7 +264,9 @@ def make_eval_step(
         for variant in difference_variants:
             out[f"ce_kl/ce_difference_{variant}"] = ce[variant] - target_ce
         site_l0 = {
-            site: (ci_lower[site] > ci_alive_threshold).astype(jnp.float32).sum(-1).mean()
+            site: positionwise_mean(
+                (ci_lower[site] > ci_alive_threshold).astype(jnp.float32).sum(-1)
+            )
             for site in site_names
         }
         for site, value in site_l0.items():
@@ -227,7 +290,7 @@ def make_eval_step(
                     masks[site] = ci_site + (1.0 - ci_site) * source[..., :-1]
                     delta_masks[site] = source[..., -1]
                 masked = masked_forward(model, prepared, token_ids, masks, delta_masks)
-                return kl_per_position(masked, clean_output)
+                return kl_metric(masked)
 
             def ascend(
                 adversarial_sources: dict[str, Array], _: None

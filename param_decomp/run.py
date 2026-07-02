@@ -5,7 +5,7 @@
 remat_recon_forwards, sample_batch, eval_fn, eval_every, mesh)` owns
 the generic machinery: init / restore / fine-tune init / faith warmup
 (`_init_or_restore_state`), the recon-grid step factory, orbax checkpointing, schedules,
-metrics fan-out (`MetricsSink`), the in-loop slow/plot renderer (`SlowEvalRenderer`), and
+metrics fan-out (`MetricsSink`), the figure-tier background renderer (`BackgroundRenderer`), and
 SIGTERM-save for SLURM requeue. It reads the pydantic `PDConfig` / `Cadence` DIRECTLY; the
 target injects two seams: the data source (`sample_batch`) and the eval metric (`eval_fn`).
 
@@ -44,7 +44,11 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import PRNGKeyArray
 
-from param_decomp.arithmetic_eval import ArithmeticGrid, render_arithmetic_figures
+from param_decomp.arithmetic_eval import (
+    ArithmeticGrid,
+    ArithmeticSelection,
+    render_arithmetic_figures,
+)
 from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, DataConfig, RunInstance
 from param_decomp.checkpoint import (
     init_from_parent,
@@ -198,7 +202,7 @@ class MetricsSink:
         launch_config = run.run_dir / LAUNCH_CONFIG_FILENAME
         assert launch_config.exists(), launch_config
         wandb.save(str(launch_config), base_path=str(run.run_dir), policy="now")
-        # The in-loop slow tier (`SlowEvalRenderer`) logs `slow_eval/*` on the live
+        # The in-loop slow tier (`BackgroundRenderer`) logs `slow_eval/*` on the live
         # `_step` axis at the eval step (SPEC S28/S29), so NO dedicated `slow_eval/step`
         # metric is defined here. Slow eval is in-loop only (no offline CLI).
         return cls(jsonl=jsonl, wandb_module=wandb)
@@ -229,30 +233,25 @@ class MetricsSink:
             _log_wandb_safe(self._wandb, record, step, "log")
 
 
-class SlowEvalRenderer:
-    """Rank-0 background renderer for the in-loop slow/plot tier (SPEC S28/S29).
+class BackgroundRenderer:
+    """Rank-0 background thread for a figure tier's pure-host tail (matplotlib +
+    `wandb.log`): the slow/plot tier (SPEC S28/S29, `render_and_log_slow_eval`) and the
+    arithmetic CI-grid tier (`render_and_log_arithmetic`) each hold one.
 
-    The collective part of slow eval (the jitted forward + the device->host pull whose
-    `np.asarray` triggers the C-shard all-gather) runs in lockstep on ALL ranks inside the
-    eval pass. This renderer takes ONLY the materialized numpy reductions (the per-site
-    `SiteReduction` plot inputs; when the config names a CI-heatmap/permutation metric, the
-    batch-mean `(T, C)` position CI; and when the config names `UVPlots`, the host-gathered
-    V/U `components`) and does the pure-host part — matplotlib + `wandb.log` — on a
-    background thread, so the main train loop on every rank proceeds immediately (near-zero
-    cross-rank divergence). The thread touches ZERO jax/device state. `UVPlots` is a NAIVE
-    full host gather of the C-sharded V/U: cheap small-scale, OOMs / breaks at production C
-    BY DESIGN (per Oli) — no special handling, the gather (collective, on the eval pass) is
-    the cost. The `IdentityCIError` SCALARS are computed synchronously on the collective path
-    (cheap, and `_step`-monotonic), not on this thread.
+    The collective part of a figure eval (the jitted forwards + the device->host pulls)
+    runs in lockstep on ALL ranks inside the eval pass. `submit` takes a `render` closure
+    over ONLY the materialized numpy results and runs it on a background thread, so the
+    main train loop on every rank proceeds immediately (near-zero cross-rank divergence).
+    The closure must touch ZERO jax/device state.
 
     One render in flight at a time: a `submit` while a render is still running blocks
-    briefly on `join()` first, so renders can't pile up (slow eval is forward-only and
+    briefly on `join()` first, so renders can't pile up (figure tiers are forward-only and
     coarse, so this effectively never blocks). The figures log on the live `_step` axis at
-    `step=now_step` — the slow tier lands on a fast-eval step, so the sink has just opened
+    `step=now_step` — the figure tiers land on a fast-eval step, so the sink has just opened
     `now_step` and the background `wandb.log(..., step=now_step)` merges into the same open
     step. A render that lands AFTER the next train-log advances the head is dropped by
     wandb's monotonic-`_step` rule (a benign one-figure-set miss, warned not raised; the
-    next slow eval renders fine) — slow eval is forward-only seconds against a coarse
+    next render lands fine) — the tiers are seconds of host work against a coarse
     `slow_every`, so this is not expected to fire. An `atexit` join flushes the last render
     before process exit (the trainer never calls `wandb.finish`). The atexit handler is
     registered on the FIRST submit, not in `__init__` — the first submit happens after
@@ -270,25 +269,14 @@ class SlowEvalRenderer:
             self._thread.join()
             self._thread = None
 
-    def submit(
-        self,
-        reductions: dict[str, SiteReduction],
-        perm_spec: PermutationMetricSpec,
-        position_ci: dict[str, PositionCI] | None,
-        components: dict[str, tuple[np.ndarray, np.ndarray]] | None,
-        now_step: int,
-    ) -> None:
+    def submit(self, render: Callable[[], None]) -> None:
         if not self._is_main:
             return
         if not self._atexit_registered:
             atexit.register(self.join)
             self._atexit_registered = True
         self.join()  # cap to one in-flight render
-        self._thread = threading.Thread(
-            target=_render_and_log_slow_eval,
-            args=(reductions, perm_spec, position_ci, components, now_step),
-            daemon=True,
-        )
+        self._thread = threading.Thread(target=render, daemon=True)
         self._thread.start()
 
 
@@ -300,17 +288,20 @@ def slow_eval_due(now_step: int, every: int, slow_every: int, slow_on_first_step
     return now_step % slow_every == 0 or (slow_on_first_step and now_step == every)
 
 
-def _render_and_log_slow_eval(
+def render_and_log_slow_eval(
     reductions: dict[str, SiteReduction],
     perm_spec: PermutationMetricSpec,
     position_ci: dict[str, PositionCI] | None,
     components: dict[str, tuple[np.ndarray, np.ndarray]] | None,
     now_step: int,
 ) -> None:
-    """Pure-host: render the slow figures (the base plot set plus, when `position_ci` is
-    materialized, the config-driven CI-heatmap/permutation figures, and when `components` is
-    the host-gathered V/U, the `UVPlots` heatmaps) and log them to wandb on the live `_step`
-    axis at `now_step`. No jax/device access — safe off the train loop."""
+    """Pure-host `BackgroundRenderer` target: render the slow figures off the materialized
+    numpy reductions (the per-site `SiteReduction` plot inputs; when the config names a
+    CI-heatmap/permutation metric, the batch-mean `(T, C)` position CI; and when the config
+    names `UVPlots`, the host-gathered V/U `components` — a NAIVE full gather that OOMs /
+    breaks at production C BY DESIGN, per Oli) and log them on the live `_step` axis at
+    `now_step`. The `IdentityCIError` SCALARS ride the synchronous collective path instead
+    (cheap, and `_step`-monotonic). No jax/device access — safe off the train loop."""
     import wandb
     from PIL import Image
 
@@ -323,61 +314,17 @@ def _render_and_log_slow_eval(
     _log_wandb_safe(wandb, payload, now_step, "slow-eval figures")
 
 
-class ArithmeticGridRenderer:
-    """Rank-0 background renderer for the arithmetic CI-grid figure eval, mirroring
-    `SlowEvalRenderer`. The collective CI gather runs in lockstep on ALL ranks inside the
-    eval pass; this thread takes ONLY the materialized numpy CI grids and does the matplotlib
-    render + `wandb.log` off the train loop (n_alive / dropped SCALARS ride the synchronous
-    `eval_record` instead). One render in flight; `atexit` join flushes the last on exit."""
-
-    def __init__(self, is_main: bool):
-        self._is_main = is_main
-        self._thread: threading.Thread | None = None
-        self._atexit_registered = False
-
-    def join(self) -> None:
-        if self._thread is not None:
-            self._thread.join()
-            self._thread = None
-
-    def submit(
-        self,
-        ci_grids: dict[str, np.ndarray],
-        xv_grids: dict[str, np.ndarray],
-        active: dict[float, dict[str, np.ndarray]],
-        grid: ArithmeticGrid,
-        top_k: int,
-        now_step: int,
-    ) -> None:
-        if not self._is_main:
-            return
-        if not self._atexit_registered:
-            atexit.register(self.join)
-            self._atexit_registered = True
-        self.join()  # cap to one in-flight render
-        self._thread = threading.Thread(
-            target=_render_and_log_arithmetic,
-            args=(ci_grids, xv_grids, active, grid, top_k, now_step),
-            daemon=True,
-        )
-        self._thread.start()
-
-
-def _render_and_log_arithmetic(
-    ci_grids: dict[str, np.ndarray],
-    xv_grids: dict[str, np.ndarray],
-    active: dict[float, dict[str, np.ndarray]],
-    grid: ArithmeticGrid,
-    top_k: int,
-    now_step: int,
+def render_and_log_arithmetic(
+    selection: ArithmeticSelection, grid: ArithmeticGrid, top_k: int, now_step: int
 ) -> None:
-    """Pure-host: render the per-`(threshold, site)` CI + `x@V` activation heatmaps (over the
-    precomputed `active` selection) and log them to wandb on the live `_step` axis at
-    `now_step`. No jax/device access — safe off the train loop."""
+    """Pure-host `BackgroundRenderer` target: render the per-`(threshold, site)` CI + `x@V`
+    activation heatmaps off the materialized `ArithmeticSelection` and log them on the live
+    `_step` axis at `now_step` (the n_alive / dropped SCALARS ride the synchronous
+    `eval_record` instead). No jax/device access — safe off the train loop."""
     import wandb
     from PIL import Image
 
-    figures = render_arithmetic_figures(ci_grids, xv_grids, active, grid, top_k)
+    figures = render_arithmetic_figures(selection, grid, top_k)
     payload: dict[str, Any] = {
         f"eval/arithmetic/{k}": wandb.Image(Image.open(io.BytesIO(v))) for k, v in figures.items()
     }

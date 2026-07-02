@@ -19,6 +19,7 @@ process computes the same global schedule and contributes its local batch slice.
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -41,10 +42,9 @@ from param_decomp.arithmetic_eval import (
     ArithmeticGrid,
     ArithmeticGridStep,
     ComponentActivationModel,
-    accumulate_arithmetic_grids,
+    compute_arithmetic_selection,
     make_arithmetic_grid_step,
     n_alive_scalars,
-    select_active,
 )
 from param_decomp.attn_patterns_eval import (
     accumulate_attn_patterns,
@@ -67,9 +67,10 @@ from param_decomp.hf_http import configure_hf_http_retries
 from param_decomp.lm import DecomposedModel
 from param_decomp.log import setup_logger
 from param_decomp.run import (
-    ArithmeticGridRenderer,
-    SlowEvalRenderer,
+    BackgroundRenderer,
     install_sigterm_flag,
+    render_and_log_arithmetic,
+    render_and_log_slow_eval,
     run_decomposition_training,
     slow_eval_due,
 )
@@ -158,33 +159,44 @@ def _arithmetic_probe_global(tokens: np.ndarray, mesh: Mesh, n_proc: int) -> jax
 
 @dataclass(frozen=True)
 class _ArithmeticEval:
-    """The arithmetic-grid eval, built once. `run` does the (collective) CI/activation gather,
-    the n_alive scalars + the fast-eval scalars on the probe, and the off-thread figure submit —
-    one self-contained block so `_make_lm_eval_fn` just calls it."""
+    """The arithmetic-grid eval, built once. `run` does the (collective) selection + column
+    gather, the n_alive scalars + the pad-masked fast-eval scalars on the probe, and the
+    off-thread figure submit — one self-contained block so `_make_lm_eval_fn` just calls it."""
 
     step: ArithmeticGridStep
-    eval_step_fn: Callable[..., dict[str, jax.Array]]
+    probe_eval_step: Callable[..., dict[str, jax.Array]]
+    """A dedicated `make_eval_step` instance with `n_valid_rows=n_prompts`, so the sharding
+    pad rows carry zero weight in the probe's CE/KL/L0/PGD scalars."""
     model: ComponentActivationModel
     tokens: jax.Array
     grid: ArithmeticGrid
     n_prompts: int
     thresholds: tuple[float, ...]
     top_k: int
-    renderer: ArithmeticGridRenderer
+    renderer: BackgroundRenderer
 
     def run(self, state: TrainState, scalar_key: PRNGKeyArray, now_step: int) -> "LogRecord":
-        ci_grids, xv_grids = accumulate_arithmetic_grids(
-            self.step, self.model, state.components, state.ci_fn, [self.tokens], self.n_prompts
+        selection = compute_arithmetic_selection(
+            self.step,
+            self.model,
+            state.components,
+            state.ci_fn,
+            self.tokens,
+            self.n_prompts,
+            self.thresholds,
+            self.top_k,
         )
-        active = select_active(ci_grids, self.thresholds)
         record: dict[str, LogValue] = {
-            f"eval/arithmetic/{k}": v for k, v in n_alive_scalars(active, self.top_k).items()
+            f"eval/arithmetic/{k}": v
+            for k, v in n_alive_scalars(selection.active, self.top_k).items()
         }
-        scalars = self.eval_step_fn(
+        scalars = self.probe_eval_step(
             self.model, state.components, state.ci_fn, self.tokens, scalar_key
         )
         record |= {f"eval/arithmetic/{k}": float(v) for k, v in scalars.items()}
-        self.renderer.submit(ci_grids, xv_grids, active, self.grid, self.top_k, now_step)
+        self.renderer.submit(
+            partial(render_and_log_arithmetic, selection, self.grid, self.top_k, now_step)
+        )
         return record
 
 
@@ -192,10 +204,10 @@ def _make_arithmetic_eval(
     eval_cfg: EvalConfig,
     target: TargetSites,
     lm: DecomposedModel,
-    eval_step_fn: Callable[..., dict[str, jax.Array]],
     mesh: Mesh,
     n_proc: int,
     is_main: bool,
+    compiler_options: dict[str, bool | int | str] | None,
 ) -> _ArithmeticEval | None:
     """Build the probe in-memory from the metric spec + the target's tokenizer. The build is
     deterministic, so every rank constructs the identical grid — no rank-0 write, no barrier."""
@@ -214,16 +226,26 @@ def _make_arithmetic_eval(
 
     tokenizer = AutoTokenizer.from_pretrained(target.model_name, local_files_only=True)
     probe = build_arithmetic_probe(arith.operation, arith.a_range, arith.b_range, tokenizer)
+    n_prompts = probe.tokens.shape[0]
     return _ArithmeticEval(
-        step=make_arithmetic_grid_step(lm, probe.answer_position),
-        eval_step_fn=eval_step_fn,
+        step=make_arithmetic_grid_step(lm, probe.answer_position, n_prompts),
+        probe_eval_step=make_eval_step(
+            lm,
+            eval_cfg.rounding_threshold,
+            eval_cfg.l0_ci_alive_threshold,
+            eval_cfg.l0_groups,
+            eval_cfg.pgd,
+            mesh,
+            n_valid_rows=n_prompts,
+            compiler_options=compiler_options,
+        ),
         model=lm,
         tokens=_arithmetic_probe_global(probe.tokens, mesh, n_proc),
         grid=probe.grid,
-        n_prompts=probe.tokens.shape[0],
+        n_prompts=n_prompts,
         thresholds=arith.thresholds,
         top_k=arith.top_k,
-        renderer=ArithmeticGridRenderer(is_main),
+        renderer=BackgroundRenderer(is_main),
     )
 
 
@@ -342,7 +364,8 @@ def _make_lm_eval_fn(
         eval.l0_groups,
         eval.pgd,
         mesh,
-        co,
+        n_valid_rows=None,
+        compiler_options=co,
     )
     attn_steps: dict[str, Any] = {}
     if eval.attn_patterns is not None:
@@ -359,7 +382,7 @@ def _make_lm_eval_fn(
     slow_eval_step = make_slow_eval_step(
         lm, eval.density_ci_alive_threshold, eval.density_heatmap_n_bins, co
     )
-    slow_renderer = SlowEvalRenderer(is_main)
+    slow_renderer = BackgroundRenderer(is_main)
     # The CI-heatmap / permutation / UV / identity-error metrics read off the run's typed
     # `eval.metrics` (re-validated from the pinned launch config: the trainer's `EvalConfig`
     # drops the raw metric list). The launch config is pinned before train().
@@ -369,9 +392,7 @@ def _make_lm_eval_fn(
     want_position_ci = perm_spec.any_plots or perm_spec.any_identity_error
     position_ci_step = make_position_ci_step(lm, co) if want_position_ci else None
 
-    arithmetic_eval = _make_arithmetic_eval(
-        eval, built.target, lm, eval_step_fn, mesh, n_proc, is_main
-    )
+    arithmetic_eval = _make_arithmetic_eval(eval, built.target, lm, mesh, n_proc, is_main, co)
 
     def eval_fn(state: TrainState, now_step: int) -> "LogRecord":
         eval_pass_index = now_step // eval.every
@@ -448,7 +469,16 @@ def _make_lm_eval_fn(
                     name: (np.asarray(V), np.asarray(U))
                     for name, (V, U) in state.components.vu.items()
                 }
-            slow_renderer.submit(site_reductions, perm_spec, position_ci, components, now_step)
+            slow_renderer.submit(
+                partial(
+                    render_and_log_slow_eval,
+                    site_reductions,
+                    perm_spec,
+                    position_ci,
+                    components,
+                    now_step,
+                )
+            )
         if arithmetic_eval is not None and slow_due:
             # ARITHMETIC GRID TIER (its own fixed probe, not the eval batches). The CI/activation
             # gather is COLLECTIVE — all ranks join it; n_alive + recon/L0 SCALARS ride the
