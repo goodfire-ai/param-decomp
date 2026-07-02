@@ -420,6 +420,45 @@ class PersistentPGDReconLossConfig(LossMetricConfig):
     n_samples: PositiveInt = 1
 
 
+class BranchedPersistentPGDReconLossConfig(LossMetricConfig):
+    """Persistent-PGD recon variant with a decoupled `branch` ascent.
+
+    Each outer step the source optimizer takes TWO Adam ascents from the SAME pre-update
+    sources and the SAME gradient:
+
+    - one at `optimizer.lr_schedule` LR, advancing the PERSISTENT sources carried across
+      steps (the actual adversary state);
+    - one at `branch_lr_schedule` LR, producing a throwaway BRANCH used only for the
+      forward the component / CI-fn parameters differentiate through.
+
+    `lr_branch` is usually >> `lr_persistent`, so the outer optimizer trains against a
+    branch that has moved further from the persistent state than the persistent update
+    itself — the aim is to stop it fine-tuning against the exact persistent adversary.
+
+    Sources clamp to `[0, 1]` after each ascent (the only parameterization), exactly as
+    `PersistentPGDReconLoss`. Both ascents share the persistent Adam moments (`optimizer`
+    betas/eps); only the LR differs.
+    """
+
+    type: Literal["BranchedPersistentPGDReconLoss"] = "BranchedPersistentPGDReconLoss"
+    optimizer: AdamPGDConfig
+    """Persistent-source ascent optimizer: its `lr_schedule` is `lr_persistent`; its Adam
+    betas/eps are also used for the branch ascent."""
+    branch_lr_schedule: ScheduleConfig
+    """The branch ascent LR (`lr_branch`), constant-after-warmup only (as for the persistent
+    schedule)."""
+    scope: PersistentPGDSourceScope
+    source_dtype: Literal["float32", "bfloat16"] = "float32"
+    n_warmup_steps: NonNegativeInt = Field(
+        default=0,
+        description=(
+            "Extra inner persistent-source ascents (at `lr_persistent`) on each train batch"
+            " before the branch step."
+        ),
+    )
+    n_samples: PositiveInt = 1
+
+
 # ---------------------------------------------------------------------------
 # Eval-metric configs
 # ---------------------------------------------------------------------------
@@ -577,7 +616,8 @@ class OptimizerConfig(BaseConfig):
 
 
 AnyLossMetricConfig = Annotated[
-    ChunkwiseSubsetReconLossConfig
+    BranchedPersistentPGDReconLossConfig
+    | ChunkwiseSubsetReconLossConfig
     | CIMaskedReconLayerwiseLossConfig
     | CIMaskedReconLossConfig
     | CIMaskedReconSubsetLossConfig

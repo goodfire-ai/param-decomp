@@ -23,6 +23,7 @@ from param_decomp.configs import (
     AllRoutingConfig,
     AnyImportanceMinimalityLossConfig,
     AnyLossMetricConfig,
+    BranchedPersistentPGDReconLossConfig,
     ChunkwiseSubsetReconLossConfig,
     CIMaskedReconLayerwiseLossConfig,
     CIMaskedReconLossConfig,
@@ -99,7 +100,25 @@ class PersistentSources:
     cfg: PersistentPGDReconLossConfig
 
 
-MaskSourceStrategy = StochasticSources | ConstantSources | FreshPGDSources | PersistentSources
+@dataclass(frozen=True)
+class BranchedPersistentSources:
+    """Like `PersistentSources`, but the sources fed to the main forward are the detached
+    `branch` (ascended at `lr_branch`), not the live persistent sources — so this strategy
+    never contributes a source gradient to the main backward (the persistent update runs off
+    its own scoring-loss ascent, `BranchedPersistentAdversary.branched_step`). `state_key`
+    indexes `TrainState.adversaries` (one key per branched term)."""
+
+    state_key: str
+    cfg: BranchedPersistentPGDReconLossConfig
+
+
+MaskSourceStrategy = (
+    StochasticSources
+    | ConstantSources
+    | FreshPGDSources
+    | PersistentSources
+    | BranchedPersistentSources
+)
 
 
 @dataclass(frozen=True)
@@ -318,6 +337,21 @@ def persistent_configs(
     return out
 
 
+def branched_persistent_configs(
+    recon_terms: tuple[ReconLossTerm, ...],
+) -> dict[str, BranchedPersistentPGDReconLossConfig]:
+    """`state_key -> config` for every branched-persistent recon term (each key feeds
+    exactly one term). Sibling of `persistent_configs`; both key into the SAME
+    `TrainState.adversaries` dict, so their state_keys are disjoint."""
+    out: dict[str, BranchedPersistentPGDReconLossConfig] = {}
+    for term in recon_terms:
+        for entry in term.plan:
+            if isinstance(entry.sources, BranchedPersistentSources):
+                assert entry.sources.state_key not in out, entry.sources.state_key
+                out[entry.sources.state_key] = entry.sources.cfg
+    return out
+
+
 def build_loss_terms(
     loss_metrics: Sequence[AnyLossMetricConfig],
     site_names: tuple[str, ...],
@@ -429,6 +463,19 @@ def build_loss_terms(
                     one_chunk(site_names),
                     AllRoutingConfig(),
                     PersistentSources(state_key=key, cfg=cfg),
+                    cfg.n_samples,
+                )
+                recon_terms.append(recon(cfg, plan))
+            case BranchedPersistentPGDReconLossConfig():
+                for schedule in (cfg.optimizer.lr_schedule, cfg.branch_lr_schedule):
+                    assert schedule.fn_type == "constant" and schedule.final_val_frac == 1.0, (
+                        schedule
+                    )
+                key = unique_name(cfg)
+                plan = make_plan(
+                    one_chunk(site_names),
+                    AllRoutingConfig(),
+                    BranchedPersistentSources(state_key=key, cfg=cfg),
                     cfg.n_samples,
                 )
                 recon_terms.append(recon(cfg, plan))
