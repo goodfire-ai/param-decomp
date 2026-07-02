@@ -456,7 +456,8 @@ def _reconstruct_compute_weights(
 ) -> dict[str, dict[str, Array]]:
     """The ZeRO-1 weight reconstruction (pure-HSDP backup layout). The stacked
     `[n_layer, d_in, C]` / `[n_layer, C, d_out]` compute weights arrive with their FSDP dim
-    sharded ÷N over the FULL mesh (the master is `P(("replicate","fsdp"), ...)`). Reconstruct
+    sharded ÷N over the FULL mesh (the master is `P(("fsdp","replicate"), ...)`, fsdp-major —
+    see `DecompVU.shardings` for why the order is load-bearing). Reconstruct
     them to the `fsdp`-sharded (÷fsdp) COMPUTE layout here — BEFORE the layer scan — so:
 
       * the cross-`replicate` gather runs ONCE per step in ENTRY (off the hot path),
