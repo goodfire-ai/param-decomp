@@ -629,11 +629,16 @@ def run_decomposition_training(
                 _popts.advanced_configuration = {
                     "gpu_max_activity_api_events": profile.profile_max_events
                 }
+                # No perfetto conversion: `stop_trace`'s perfetto writer globs the newest
+                # timestamped trace folder expecting exactly ONE host's trace.json.gz — all
+                # ranks share the run's profile dir, so multi-host writes collide in one
+                # folder (same-second timestamps) and stop_trace raises, killing the run.
+                # Analysis reads the per-host xplane.pb (tools/xplane_attr.py) anyway.
                 jax.profiler.start_trace(
-                    _profile_dir, create_perfetto_trace=True, profiler_options=_popts
+                    _profile_dir, create_perfetto_trace=False, profiler_options=_popts
                 )
             else:
-                jax.profiler.start_trace(_profile_dir, create_perfetto_trace=True)
+                jax.profiler.start_trace(_profile_dir, create_perfetto_trace=False)
             _profiling = True
             _prof_t0 = time.time()
             if is_main:
