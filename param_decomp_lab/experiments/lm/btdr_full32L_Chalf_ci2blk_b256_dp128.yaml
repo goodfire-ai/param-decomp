@@ -559,8 +559,6 @@ pd:
     scope:
       type: per_batch_per_position
     type: PersistentPGDReconLoss
-  - coeff: 10000000.0
-    type: FaithfulnessLoss
   seed: 0
   steps: 50000
 runtime:
