@@ -160,7 +160,7 @@ def select_active(
 
 def n_alive_scalars(active: dict[float, dict[str, np.ndarray]], top_k: int) -> dict[str, float]:
     """Un-prefixed scalars from the active sets: `n_alive/thr<t>/<site>` (+ `/total`) counts ALL
-    alive components (Antoine's n_alive — high at init, falls as training sparsifies), and
+    alive components (high at init, falls as training sparsifies), and
     `n_dropped/thr<t>/<site>` reports any alive beyond the `top_k` plotted (no silent cap)."""
     out: dict[str, float] = {}
     for t, per_site in active.items():
