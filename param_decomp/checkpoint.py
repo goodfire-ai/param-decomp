@@ -53,11 +53,13 @@ def restore_step(mgr: ocp.CheckpointManager, reference: TrainState, step: int) -
     (a freshly-initialised, correctly-placed `TrainState`)."""
     abstract = jax.tree.map(ocp.utils.to_shape_dtype_struct, reference)
     restored = mgr.restore(step, args=ocp.args.StandardRestore(abstract))
-    # Force the restored tree onto the reference's exact shardings. StandardRestore honors the
-    # abstract target's shardings, but this makes the docstring's contract explicit and guards
-    # against a multi-host restore landing a leaf on a layout that differs from what the jitted
-    # step was compiled for (which triggers a costly entry-reshard on the first post-resume step).
-    restored = jax.device_put(restored, jax.tree.map(lambda s: s.sharding, abstract))
+    # Coerce the restored tree onto the reference's exact FORMAT (layout + sharding), not just its
+    # sharding. StandardRestore already honors the sharding SPEC (verified), so a device_put onto
+    # sharding alone is a no-op — but orbax-restored arrays carry a default memory LAYOUT that
+    # differs from what the jitted step was compiled for. The reference is a fresh-init state built
+    # by the same XLA layout assignment as the step, so its `.format` IS the step's expected input
+    # layout; matching it avoids a ÷1-scale entry relayout on the first resumed step (the resume OOM).
+    restored = jax.device_put(restored, jax.tree.map(lambda r: r.format, reference))
     return cast(TrainState, restored)
 
 
