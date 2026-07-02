@@ -112,10 +112,7 @@ def _ensure_global[T](tree: T, mesh: Mesh) -> T:
     `addressable_shards` raise (jax 0.10 multi-process), while jit outputs with the
     same sharding are well-formed.
 
-    Leaves that already carry a NamedSharding pass through UNTOUCHED: routing them
-    through the identity jit re-materializes the whole state in one executable,
-    which OOM'd at the multi-chunk config's ~110 GB global state (job 50458,
-    168 GiB alloc in jit__identity_fn)."""
+    Leaves that already carry a NamedSharding pass through UNTOUCHED."""
     repl = NamedSharding(mesh, P())
 
     def is_mesh_placed(a: object) -> bool:
@@ -641,9 +638,8 @@ def run_decomposition_training(
             jax.block_until_ready(state)
             if profile.profile_max_events is not None:
                 _popts = jax.profiler.ProfileOptions()
-                # Host/python events are ~70% of the trace's event budget; the perfetto JSON
-                # exporter caps at 1M events, truncating the step mid-forward. Cut host tracing
-                # so the budget goes to GPU kernels (a full step's ~730k fit under the cap).
+                # Cut host/python tracing so the perfetto JSON exporter's 1M-event budget
+                # goes to GPU kernels.
                 _popts.host_tracer_level = 1
                 _popts.python_tracer_level = 0
                 _popts.advanced_configuration = {

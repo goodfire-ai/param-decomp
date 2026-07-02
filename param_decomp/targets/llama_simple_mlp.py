@@ -306,8 +306,6 @@ class SimpleMLPDecomposedModel(eqx.Module):
         return tuple(s.name for s in self.sites)
 
     def shardings(self, mesh: Mesh) -> "SimpleMLPDecomposedModel":
-        """Replicate every frozen leaf on the `dp` mesh — this target is small (~67M
-        params), so replicating it is the whole frozen-weight sharding story."""
         repl = NamedSharding(mesh, P())
         return jax.tree.map(lambda _a: repl, self)
 

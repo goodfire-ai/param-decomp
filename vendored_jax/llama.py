@@ -113,9 +113,7 @@ def repeat_kv(x: Float[Array, "b kvh t hd"], n_rep: int) -> Float[Array, "b h t 
 
 
 def attn_implementation() -> Literal["cudnn", "xla"]:
-    """cuDNN flash attention on GPU; the XLA composite elsewhere (CPU tests). The
-    composite MATERIALIZES (B, H, T, T) score matrices — at seq 2048 that is ~2 GiB
-    per suffix forward per layer and was the dominant term in the trainer's OOM."""
+    """cuDNN flash attention on GPU; the XLA composite elsewhere (CPU tests)."""
     return "cudnn" if jax.default_backend() == "gpu" else "xla"
 
 

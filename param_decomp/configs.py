@@ -659,16 +659,14 @@ class LaunchEnv(BaseConfig):
         return data
 
     xla_python_client_mem_fraction: PositiveFloat = 0.92
-    """`XLA_PYTHON_CLIENT_MEM_FRACTION` — the BFC pool cap as a fraction of HBM. The XLA
-    default 0.75 caps production steps too low (OOM, job 50644)."""
+    """`XLA_PYTHON_CLIENT_MEM_FRACTION` — the BFC pool cap as a fraction of HBM."""
     xla_python_client_allocator: str | None = None
     """`XLA_PYTHON_CLIENT_ALLOCATOR` — e.g. `platform` for the on-demand cudaMalloc allocator
     (avoids BFC fragmentation OOMs near the HBM cap, at some per-alloc cost). `None` leaves
     the XLA default (BFC). Replaces the old `pd-lm --allocator` flag."""
     xla_pjrt_gpu_host_memory_limit_gb: PositiveInt = 1024
-    """`XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB` — cap on XLA's pinned host-staging pool (allocated
-    on demand). The 64 GB default is blown past right after faith warmup on the full-model
-    step (job 127622); the b200 nodes carry ~2 TB RAM."""
+    """`XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB` — cap on XLA's pinned host-staging pool
+    (allocated on demand)."""
     nccl_debug: str = "WARN"
     """`NCCL_DEBUG` — overrides the cluster default (INFO + SUBSYS=ALL), which logs every
     collective and bloats slurm logs to tens of GB per run."""
