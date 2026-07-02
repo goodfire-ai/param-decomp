@@ -415,7 +415,9 @@ class FixtureDataSource:
         ]
         return ComponentListResponse(total=len(ranked), page=page, items=items)
 
-    def component_detail(self, run_id: str, site: str, idx: int) -> ComponentDetail:
+    def component_detail(
+        self, run_id: str, site: str, idx: int, example_page: int, example_page_size: int
+    ) -> ComponentDetail:
         spec, columns = self._browsable_columns(run_id, site)
         if not 0 <= idx < spec.n_components:
             raise ScopeNotFoundError(
@@ -441,7 +443,10 @@ class FixtureDataSource:
         example_peaks = sorted(
             (max_act * rng.uniform(0.5, 1.0) for _ in range(n_examples)), reverse=True
         )
-        examples = [self._make_example(rng, triggers, peak) for peak in example_peaks]
+        page_peaks = example_peaks[
+            example_page * example_page_size : (example_page + 1) * example_page_size
+        ]
+        examples = [self._make_example(rng, triggers, peak) for peak in page_peaks]
 
         posted = self._posted_labels.get((run_id, site, idx))
         stored_text = columns.labels[idx]
@@ -471,6 +476,8 @@ class FixtureDataSource:
             label=label,
             input_pmi=pmi_list("input"),
             output_pmi=pmi_list("output"),
+            n_examples=n_examples,
+            example_page=example_page,
             examples=examples,
         )
 

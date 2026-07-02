@@ -5,6 +5,7 @@ from pathlib import Path
 import tqdm
 
 from param_decomp.log import logger
+from param_decomp_lab.adapters.pd import PDAdapter
 from param_decomp_lab.harvest.accumulator import Harvester
 from param_decomp_lab.harvest.config import HarvestConfig
 from param_decomp_lab.harvest.repo import HarvestRepo
@@ -35,7 +36,10 @@ def merge_harvest(output_dir: Path, config: HarvestConfig) -> None:
 
     logger.info(f"Merge complete. Total tokens: {harvester.total_tokens_processed:,}")
 
-    HarvestRepo.save_results(harvester, config, output_dir)
+    subrun_id = output_dir.name
+    run_id = output_dir.parent.parent.name
+    tokenizer_name = PDAdapter(run_id).tokenizer_name
+    HarvestRepo.save_results(harvester, config, run_id, subrun_id, tokenizer_name)
     db_path = output_dir / "harvest.db"
     assert db_path.exists() and db_path.stat().st_size > 0, f"Merge output is empty: {db_path}"
     logger.info(f"Saved merged results to {output_dir}")

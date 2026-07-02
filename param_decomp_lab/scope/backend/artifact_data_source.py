@@ -156,7 +156,9 @@ class ArtifactDataSource:
         ]
         return ComponentListResponse(total=total, page=page, items=items)
 
-    def component_detail(self, run_id: str, site: str, idx: int) -> ComponentDetail:
+    def component_detail(
+        self, run_id: str, site: str, idx: int, example_page: int, example_page_size: int
+    ) -> ComponentDetail:
         conn, reader = self._query_conn(run_id, site)
         row = conn.execute(
             """SELECT c.firing_density, c.max_act, c.mean_ci, c.input_pmi, c.output_pmi,
@@ -182,14 +184,25 @@ class ArtifactDataSource:
 
         tok = _tokenizer(reader.meta.tokenizer_name)
         examples = reader.examples(idx)
+        n_examples = int(examples.token_ids.shape[0])
+        peak_ci = [
+            float(examples.ci[i, : examples.lengths[i]].max()) if examples.lengths[i] else 0.0
+            for i in range(n_examples)
+        ]
+        order = sorted(range(n_examples), key=lambda i: peak_ci[i], reverse=True)
+        page_slice = order[
+            example_page * example_page_size : (example_page + 1) * example_page_size
+        ]
         rendered = [
             ActivationExample(
-                tokens=tok.get_spans([int(t) for t in examples.token_ids[i]]),
-                acts=[float(a) for a in examples.act[i]],
-                cis=[float(c) for c in examples.ci[i]],
-                max_act=float(examples.ci[i].max()),
+                tokens=tok.get_spans(
+                    [int(t) for t in examples.token_ids[i, : examples.lengths[i]]]
+                ),
+                acts=[float(a) for a in examples.act[i, : examples.lengths[i]]],
+                cis=[float(c) for c in examples.ci[i, : examples.lengths[i]]],
+                max_act=peak_ci[i],
             )
-            for i in range(examples.token_ids.shape[0])
+            for i in page_slice
         ]
 
         def pmi_pairs(raw: str) -> list[tuple[str, float]]:
@@ -218,6 +231,8 @@ class ArtifactDataSource:
             label=label,
             input_pmi=pmi_pairs(in_pmi_json),
             output_pmi=pmi_pairs(out_pmi_json),
+            n_examples=n_examples,
+            example_page=example_page,
             examples=rendered,
         )
 

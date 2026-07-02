@@ -12,12 +12,14 @@ never combined. A subrun dir is written under a `.tmp-*` name and atomically ren
 so `meta.json` existing under the final name == the subrun is complete and readable.
 
 examples.bin holds, in order, for C components with at most K examples of W tokens:
-    n_examples  u16 [C]
-    token_ids   u32 [C, K, W]
-    firings     u8  [C, K, W]
-    ci          f16 [C, K, W]
-    act         f16 [C, K, W]
-Unused example slots are zero. Per-component reads are O(K*W) seeks into the mmap.
+    n_examples   u16 [C]        example slots filled per component
+    example_len  u16 [C, K]     real token count per example (rest is zero pad)
+    token_ids    u32 [C, K, W]
+    firings      u8  [C, K, W]
+    ci           f16 [C, K, W]
+    act          f16 [C, K, W]
+Examples are left-packed to `example_len[c, j]` and zero-padded to W; unused example
+slots are zero. Per-component reads are O(K*W) seeks into the mmap.
 """
 
 import json
@@ -30,7 +32,7 @@ import numpy as np
 
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 _FIELD_DTYPES = {"token_ids": np.uint32, "firings": np.uint8, "ci": np.float16, "act": np.float16}
 
 
@@ -73,6 +75,7 @@ def _array_offsets(c: int, k: int, w: int) -> dict[str, tuple[int, np.dtype, tup
         cursor += int(np.prod(shape)) * dtype.itemsize
 
     add("n_examples", np.dtype(np.uint16), (c,))
+    add("example_len", np.dtype(np.uint16), (c, k))
     for name, dt in _FIELD_DTYPES.items():
         add(name, np.dtype(dt), (c, k, w))
     return offsets
@@ -80,12 +83,14 @@ def _array_offsets(c: int, k: int, w: int) -> dict[str, tuple[int, np.dtype, tup
 
 @dataclass(frozen=True)
 class ComponentExamples:
-    """One component's examples: arrays of shape [n_examples, W]."""
+    """One component's examples: arrays of shape [n_examples, W], each left-packed to
+    `lengths[j]` real tokens and zero-padded to W."""
 
     token_ids: np.ndarray
     firings: np.ndarray
     ci: np.ndarray
     act: np.ndarray
+    lengths: np.ndarray
 
 
 class SiteShardWriter:
@@ -143,7 +148,9 @@ class SiteShardWriter:
     ) -> None:
         n, w = examples.token_ids.shape
         assert n <= self.meta.k_examples and w == self.meta.window, (n, w)
+        assert examples.lengths.shape == (n,), examples.lengths.shape
         self._field("n_examples")[idx] = n
+        self._field("example_len")[idx, :n] = examples.lengths
         for name in _FIELD_DTYPES:
             getattr_arr: np.ndarray = getattr(examples, name)
             self._field(name)[idx, :n] = getattr_arr
@@ -192,6 +199,11 @@ class SiteShardReader:
         assert 0 <= idx < self.meta.n_components, idx
         off, dt, shape = self._offsets["n_examples"]
         n = int(np.frombuffer(self._bin, dtype=dt, count=shape[0], offset=off)[idx])
+        loff, ldt, lshape = self._offsets["example_len"]
+        _, lk = lshape
+        lengths = np.frombuffer(
+            self._bin, dtype=ldt, count=lk, offset=loff + idx * lk * ldt.itemsize
+        )[:n].copy()
         fields = {}
         for name in _FIELD_DTYPES:
             foff, fdt, fshape = self._offsets[name]
@@ -199,7 +211,7 @@ class SiteShardReader:
             row_bytes = k * w * fdt.itemsize
             arr = np.frombuffer(self._bin, dtype=fdt, count=k * w, offset=foff + idx * row_bytes)
             fields[name] = arr.reshape(k, w)[:n].copy()
-        return ComponentExamples(**fields)
+        return ComponentExamples(**fields, lengths=lengths)
 
 
 def find_subruns(run_id: str, site: str) -> list[Path]:

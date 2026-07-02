@@ -20,7 +20,7 @@ from param_decomp.log import logger
 from param_decomp_lab.autointerp.llm_api import LLMError, LLMJob, LLMResult, map_llm_calls
 from param_decomp_lab.autointerp.providers import LLMProvider
 from param_decomp_lab.harvest.config import IntruderEvalConfig
-from param_decomp_lab.harvest.db import HarvestDB
+from param_decomp_lab.harvest.repo import HarvestRepo
 from param_decomp_lab.harvest.schemas import ActivationExample
 from param_decomp_lab.tokenizer_display import AppTokenizer
 
@@ -140,14 +140,14 @@ class _TrialGroundTruth:
 
 def _build_trials(
     remaining_keys: list[str],
-    db: HarvestDB,
+    repo: HarvestRepo,
     density_index: DensityIndex,
     n_real: int,
     n_trials: int,
     density_tolerance: float,
     app_tok: AppTokenizer,
 ) -> Iterator[tuple[LLMJob, _TrialGroundTruth]]:
-    """Lazily build trial prompts, fetching examples from DB one component at a time."""
+    """Lazily build trial prompts, fetching examples one component at a time."""
     rng = random.Random()
     n_skipped = 0
     for i, ck in enumerate(remaining_keys):
@@ -155,8 +155,8 @@ def _build_trials(
             logger.info(
                 f"Building trials: {i}/{len(remaining_keys)} components ({n_skipped} skipped)"
             )
-        component = db.get_component(ck)
-        assert component is not None, f"Component {ck} not found in DB"
+        component = repo.get_component(ck)
+        assert component is not None, f"Component {ck} not found in repo"
 
         if density_index.sample_similar_key(ck, rng, density_tolerance) is None:
             n_skipped += 1
@@ -167,7 +167,7 @@ def _build_trials(
 
             donor_key = density_index.sample_similar_key(ck, rng, density_tolerance)
             assert donor_key is not None
-            donor = db.get_component(donor_key)
+            donor = repo.get_component(donor_key)
             assert donor is not None
             intruder = rng.choice(donor.activation_examples)
 
@@ -184,7 +184,7 @@ def _build_trials(
 
 
 async def run_intruder_scoring(
-    db: HarvestDB,
+    repo: HarvestRepo,
     provider: LLMProvider,
     tokenizer_name: str,
     eval_config: IntruderEvalConfig,
@@ -198,7 +198,7 @@ async def run_intruder_scoring(
     app_tok = AppTokenizer.from_pretrained(tokenizer_name)
 
     logger.info("Loading component index...")
-    entries = db.get_component_densities(min_examples=n_real + 1)
+    entries = repo.get_component_densities(min_examples=n_real + 1)
     eligible_keys = [k for k, _ in entries]
     logger.info(f"Found {len(eligible_keys)} eligible components")
 
@@ -207,7 +207,7 @@ async def run_intruder_scoring(
 
     density_index = DensityIndex(entries)
 
-    existing_scores = db.get_scores("intruder")
+    existing_scores = repo.get_scores("intruder")
     completed = set(existing_scores.keys())
     if completed:
         logger.info(f"Resuming: {len(completed)} already scored")
@@ -220,7 +220,7 @@ async def run_intruder_scoring(
 
     def jobs_iter() -> Iterator[LLMJob]:
         for job, gt in _build_trials(
-            remaining_keys, db, density_index, n_real, n_trials, density_tolerance, app_tok
+            remaining_keys, repo, density_index, n_real, n_trials, density_tolerance, app_tok
         ):
             ground_truth[job.key] = gt
             yield job
@@ -240,7 +240,7 @@ async def run_intruder_scoring(
         score = correct / len(trials) if trials else 0.0
         result = IntruderResult(component_key=ck, score=score, trials=trials, n_errors=0)
         results.append(result)
-        db.save_score(ck, "intruder", score, json.dumps(asdict(result)))
+        repo.save_score(ck, "intruder", score, json.dumps(asdict(result)))
 
     async for outcome in map_llm_calls(
         provider=provider,
@@ -264,7 +264,7 @@ async def run_intruder_scoring(
                         reasoning=parsed.get("reasoning", ""),
                     )
                 )
-                db.save_intruder_prompt(job.key, job.prompt)
+                repo.save_intruder_prompt(job.key, job.prompt)
                 _try_save(gt.component_key)
             case LLMError(job=job, error=e):
                 gt = ground_truth[job.key]

@@ -5,11 +5,37 @@
 
     let {
         data,
-    }: { data: { run: string; site: string; detail: ComponentDetail } } = $props();
+    }: {
+        data: {
+            run: string;
+            site: string;
+            detail: ComponentDetail;
+            examplePageSize: number;
+        };
+    } = $props();
 
     const mk = $derived(matrixKind(data.site));
     const label = $derived(data.detail.label);
-    const carry = $derived(page.url.search);
+
+    // Sidebar state (sort/page/q) survives component navigation; the example page `ep`
+    // is per-component, so the component stepper and site-relative links drop it.
+    const carry = $derived.by(() => {
+        const p = new URLSearchParams(page.url.search);
+        p.delete("ep");
+        const s = p.toString();
+        return s ? `?${s}` : "";
+    });
+
+    const examplePage = $derived(data.detail.example_page);
+    const nExamplePages = $derived(Math.ceil(data.detail.n_examples / data.examplePageSize));
+
+    function examplePageHref(ep: number): string {
+        const p = new URLSearchParams(page.url.search);
+        if (ep <= 0) p.delete("ep");
+        else p.set("ep", String(ep));
+        const s = p.toString();
+        return s ? `?${s}` : "";
+    }
 
     let colorBy: "ci" | "act" = $state("ci");
 
@@ -86,7 +112,7 @@
         </div>
         <div class="stat">
             <span class="eyebrow">examples</span>
-            <span class="value num">{fmtCount(data.detail.examples.length)}</span>
+            <span class="value num">{fmtCount(data.detail.n_examples)}</span>
         </div>
     </div>
 
@@ -118,11 +144,11 @@
                 <button class:active={colorBy === "act"} onclick={() => (colorBy = "act")}>activation</button>
             </span>
         </div>
-        <ol class="examples">
+        <ol class="examples" start={examplePage * data.examplePageSize + 1}>
             {#each data.detail.examples as ex, i (i)}
                 {@const peak = peakPos(ex)}
                 <li>
-                    <span class="ex-max num" class:top={i === 0}>{fmtAct(ex.max_act)}</span>
+                    <span class="ex-max num" class:top={i === 0 && examplePage === 0}>{fmtAct(ex.max_act)}</span>
                     <span class="ex-text">
                         {#each ex.tokens as token, pos (pos)}<span
                                 class="tok"
@@ -134,6 +160,21 @@
                 </li>
             {/each}
         </ol>
+        {#if nExamplePages > 1}
+            <nav class="pager eyebrow">
+                {#if examplePage > 0}
+                    <a class="page-step" href={examplePageHref(examplePage - 1)}>← newer</a>
+                {:else}
+                    <span class="page-step disabled">← newer</span>
+                {/if}
+                <span class="page-pos num">page {examplePage + 1} / {nExamplePages}</span>
+                {#if examplePage + 1 < nExamplePages}
+                    <a class="page-step" href={examplePageHref(examplePage + 1)}>weaker →</a>
+                {:else}
+                    <span class="page-step disabled">weaker →</span>
+                {/if}
+            </nav>
+        {/if}
     </section>
 </div>
 
@@ -287,5 +328,33 @@
         white-space: nowrap;
         overflow-x: auto;
         scrollbar-width: none;
+    }
+    .pager {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        margin-top: 16px;
+    }
+    .page-step {
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        padding: 3px 10px;
+        color: var(--dim);
+        text-decoration: none;
+        background: var(--panel);
+    }
+    .page-step:hover {
+        color: var(--fg);
+        border-color: var(--line-2);
+    }
+    .page-step.disabled {
+        color: var(--faint);
+        background: none;
+        pointer-events: none;
+    }
+    .page-pos {
+        color: var(--dim);
+        margin-left: auto;
+        margin-right: auto;
     }
 </style>

@@ -72,8 +72,16 @@ def list_components(
 
 
 @app.get("/api/runs/{run_id}/sites/{site}/components/{idx}")
-def get_component_detail(run_id: str, site: str, idx: int) -> Response:
-    detail: ComponentDetail = data_source.component_detail(run_id, site, idx)
+def get_component_detail(
+    run_id: str,
+    site: str,
+    idx: int,
+    example_page: Annotated[int, Query(ge=0)] = 0,
+    example_page_size: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> Response:
+    detail: ComponentDetail = data_source.component_detail(
+        run_id, site, idx, example_page, example_page_size
+    )
     return budgeted_json(detail)
 
 

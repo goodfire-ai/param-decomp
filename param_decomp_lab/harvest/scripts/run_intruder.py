@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 
 from param_decomp_lab.adapters import adapter_from_id
 from param_decomp_lab.harvest.config import IntruderEvalConfig
-from param_decomp_lab.harvest.db import HarvestDB
 from param_decomp_lab.harvest.intruder import run_intruder_scoring
 from param_decomp_lab.harvest.repo import HarvestRepo
 
@@ -26,12 +25,11 @@ def main(
 
     tokenizer_name = adapter_from_id(decomposition_id).tokenizer_name
 
-    harvest = HarvestRepo(decomposition_id, subrun_id=harvest_subrun_id, readonly=True)
-    db = HarvestDB(harvest._dir / "harvest.db")
+    repo = HarvestRepo(decomposition_id, subrun_id=harvest_subrun_id, readonly=False)
 
     asyncio.run(
         run_intruder_scoring(
-            db=db,
+            repo=repo,
             provider=provider,
             tokenizer_name=tokenizer_name,
             eval_config=eval_config,
@@ -39,7 +37,6 @@ def main(
             cost_limit_usd=eval_config.cost_limit_usd,
         )
     )
-    db.close()
 
 
 def get_command(decomposition_id: str, config: IntruderEvalConfig, harvest_subrun_id: str) -> str:

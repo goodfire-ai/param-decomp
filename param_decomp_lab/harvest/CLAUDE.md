@@ -90,16 +90,23 @@ python -m param_decomp_lab.harvest.scripts.run_merge --subrun_id $SUBRUN --confi
 
 Each harvest invocation creates a timestamped sub-run directory. `HarvestRepo` automatically loads from the latest sub-run.
 
+Per-component data (examples + PMI + scalars) is written natively to the **scope
+artifact shards** (`param_decomp_lab/scope/artifacts.py`), one shard per site under
+`runs/<run_id>/scope/<site>/<subrun>/`. The harvest sub-run dir holds only the slim
+`harvest.db` (config + eval scores + intruder prompts) and the tensor sidecars.
+
 ```
-PARAM_DECOMP_OUT_DIR/runs/<run_id>/harvest/
-├── h-20260211_120000/          # sub-run 1
-│   ├── harvest.db              # SQLite DB: components table + config table (WAL mode)
-│   ├── component_correlations.npz
-│   ├── token_stats.npz
-│   └── worker_states/          # cleaned up after merge
-│       └── worker_*.npz
-├── h-20260211_140000/          # sub-run 2
-│   └── ...
+PARAM_DECOMP_OUT_DIR/runs/<run_id>/
+├── harvest/
+│   ├── h-20260211_120000/          # sub-run 1
+│   │   ├── harvest.db              # SQLite: config + intruder scores + prompts (WAL mode)
+│   │   ├── component_correlations.npz
+│   │   ├── token_stats.npz
+│   │   └── worker_states/          # cleaned up after merge
+│   │       └── worker_*.npz
+│   └── h-20260211_140000/          # sub-run 2
+│       └── ...
+└── scope/<site>/h-20260211_120000/ # per-site component shards (examples.bin + site.db)
 ```
 
 The tensor artefacts (`*.npz`, worker states) are NumPy `np.savez` archives.
@@ -156,17 +163,31 @@ Key optimizations:
 `CorrelationStorage` and `TokenStatsStorage` classes for loading/saving harvested data
 as `np.savez` archives.
 
+### Scope writer (`scope_writer.py`)
+
+`write_scope_shards(harvester, run_id, subrun_id, tokenizer_name, pmi_top_k)` publishes
+one scope artifact shard per site from a finished (merged) `Harvester`, storing the FULL
+reservoir pool (no top-k trim) left-packed into the fixed-width mmap format. This is the
+native path that replaced the old harvest.db JSON-blob store + `scope.convert` transcode.
+
 ### Database (`db.py`)
 
-`HarvestDB` class wrapping SQLite for component-level data. Two tables:
-- `components`: keyed by `component_key`, stores layer/idx/mean_ci + JSON blobs for activation examples and PMI data
-- `config`: key-value store for harvest config (ci_threshold, etc.)
+`HarvestDB` is the slim SQLite side-store for a sub-run — three tables:
+- `config`: key-value store for harvest config (activation_threshold, etc.)
+- `scores`: per-component eval scores (e.g. intruder), keyed by (component_key, score_type)
+- `intruder_prompts`: the LLM prompt for each intruder trial
 
-Uses WAL mode for concurrent reads. Serialization via `orjson`.
+Per-component example/PMI/scalar data lives in the scope shards, NOT here. WAL mode;
+serialization via `orjson`.
 
 ### Repository (`repo.py`)
 
-`HarvestRepo` provides read-only access to all harvest data for a run. Automatically resolves the latest sub-run directory (by lexicographic sort of `h-YYYYMMDD_HHMMSS` names). Returns `None` if no sub-run exists.
+`HarvestRepo` is the harvest-consumer facade: it reconstructs `ComponentData` /
+`ComponentSummary` from the per-site scope shards on demand (filtering to fired
+components, `firing_count > 0`, to preserve the old only-fired semantics) and serves the
+slim `harvest.db` (config + scores + prompts) + the npz sidecars. `save_results` writes
+all of it. `open_most_recent` resolves the latest sub-run (lexicographic sort of
+`h-YYYYMMDD_HHMMSS`); returns `None` if no sub-run exists.
 
 ## Key Types (`schemas.py`)
 

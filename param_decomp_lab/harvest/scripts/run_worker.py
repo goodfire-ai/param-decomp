@@ -57,7 +57,7 @@ def harvest_batch_from_forward(
 def harvest_jax_run(
     run: LoadedJaxRun,
     config: HarvestConfig,
-    output_dir: Path,
+    subrun_id: str,
     rank_world_size: tuple[int, int] | None,
 ) -> None:
     method_config = config.method_config
@@ -94,10 +94,9 @@ def harvest_jax_run(
     )
 
     if rank_world_size is None:
-        HarvestRepo.save_results(harvester, config, output_dir)
-        logger.info(f"Saved results to {output_dir}")
+        HarvestRepo.save_results(harvester, config, run.run_id, subrun_id, run.tokenizer_name)
     else:
-        state_dir = output_dir / "worker_states"
+        state_dir = get_harvest_subrun_dir(run.run_id, subrun_id) / "worker_states"
         state_dir.mkdir(parents=True, exist_ok=True)
         state_path = state_dir / f"worker_{rank}.npz"
         harvester.save(state_path)
@@ -162,7 +161,6 @@ def main() -> None:
         batch_size=args.batch_size,
         collect_component_cooccurrence=not args.no_cooccurrence,
     )
-    output_dir = get_harvest_subrun_dir(run.run_id, subrun_id)
     rank_world_size = (args.rank, args.world_size) if args.rank is not None else None
     if rank_world_size is not None:
         logger.info(
@@ -170,7 +168,7 @@ def main() -> None:
         )
     else:
         logger.info(f"JAX harvest: run {run.run_id} step {run.step}, subrun {subrun_id}")
-    harvest_jax_run(run, config, output_dir, rank_world_size)
+    harvest_jax_run(run, config, subrun_id, rank_world_size)
 
 
 if __name__ == "__main__":

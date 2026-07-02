@@ -66,5 +66,7 @@ export interface ComponentDetail {
     label: ComponentLabel | null;
     input_pmi: [string, number][];
     output_pmi: [string, number][];
+    n_examples: number;
+    example_page: number;
     examples: ActivationExample[];
 }

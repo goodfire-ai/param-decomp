@@ -14,10 +14,15 @@ browser ── SvelteKit SSR (frontend/, adapter-node) ── FastAPI (backend/)
 
 - **Artifact store** (`artifacts.py`): per-(run, site, subrun) shards under
   `PARAM_DECOMP_OUT_DIR/runs/<run>/scope/`. `examples.bin` = fixed-shape mmap arrays
-  ([C, k, W] tokens/firings/ci/act); `site.db` = indexed per-component scalars,
-  top-k PMI; `labels.db` per run. Shards are immutable and
+  (`n_examples`/`example_len` + [C, k, W] tokens/firings/ci/act, each example
+  left-packed to its real length); `site.db` = indexed per-component scalars,
+  top-k PMI; `labels.db` per run. Shards store the FULL reservoir pool (no top-k
+  trim); component detail pages examples ranked by peak causal importance, so a
+  detail response is O(example_page_size), not O(k). Shards are immutable and
   published by atomic rename; **subruns are attempts — newest complete wins, never
-  combined** (re-harvest instead). `convert.py` migrates legacy harvest subruns.
+  combined** (re-harvest instead). Harvest writes these shards natively
+  (`param_decomp_lab/harvest/scope_writer.py`); `import_labels.py` is the one remaining
+  legacy bridge, carrying autointerp labels into `labels.db`.
 - **Backend** (`backend/`): the API contract lives in `data_source.py` (pydantic
   models + `ScopeDataSource` Protocol). Two sources: `FixtureDataSource` (synthetic,
   for frontend dev) and `ArtifactDataSource` (real). `--data-source` picks at launch.

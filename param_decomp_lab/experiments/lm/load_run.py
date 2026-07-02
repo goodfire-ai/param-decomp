@@ -32,7 +32,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Int
 
-from param_decomp.built_run import BuiltRun
+from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, BuiltRun
 from param_decomp.checkpoint import make_checkpoint_manager, restore_latest, restore_step
 from param_decomp.ci_fn import CIFn
 from param_decomp.components import DecompVU
@@ -49,6 +49,7 @@ from param_decomp.targets.llama8b_sharding import place_target
 from param_decomp.train import COMPUTE_DT, TrainState, cast_floating
 from param_decomp_lab.experiments.lm.config import (
     LlamaSimpleMLPTargetConfig,
+    LMExperimentConfig,
     TargetConfig,
     load_run_dir_config,
 )
@@ -120,6 +121,7 @@ class LoadedJaxRun:
     lm: DecomposedModel
     config: BuiltRun
     vocab_size: int
+    tokenizer_name: str
     _state: TrainState
     _forward: Callable[
         [DecomposedModel, DecompVU, CIFn, Int[Array, "B T"]],
@@ -152,6 +154,9 @@ class LoadedJaxRun:
 def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
     """Open the run at `run_dir`; restore checkpoint `step` (latest if None)."""
     cfg = load_run_dir_config(run_dir)
+    tokenizer_name = LMExperimentConfig.from_file(
+        run_dir / LAUNCH_CONFIG_FILENAME
+    ).data.tokenizer_name
     mesh = hsdp_mesh()
     lm, vocab_size = build_target(cfg, mesh)
 
@@ -209,6 +214,7 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
         lm=lm,
         config=cfg,
         vocab_size=vocab_size,
+        tokenizer_name=tokenizer_name,
         _state=state,
         _forward=forward,
     )

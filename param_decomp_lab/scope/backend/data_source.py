@@ -75,7 +75,11 @@ class ComponentDetail(BaseModel):
     label: ComponentLabel | None
     input_pmi: list[tuple[str, float]]
     output_pmi: list[tuple[str, float]]
+    n_examples: int
+    """Total activating examples stored for this component (the full reservoir pool)."""
+    example_page: int
     examples: list[ActivationExample]
+    """One page of examples, ranked by peak causal importance (highest first)."""
 
 
 class ScopeDataSource(Protocol):
@@ -92,6 +96,8 @@ class ScopeDataSource(Protocol):
         self, run_id: str, site: str, sort: SortKey, page: int, page_size: int, q: str
     ) -> ComponentListResponse: ...
 
-    def component_detail(self, run_id: str, site: str, idx: int) -> ComponentDetail: ...
+    def component_detail(
+        self, run_id: str, site: str, idx: int, example_page: int, example_page_size: int
+    ) -> ComponentDetail: ...
 
     def create_label(self, run_id: str, site: str, idx: int) -> ComponentLabel: ...
