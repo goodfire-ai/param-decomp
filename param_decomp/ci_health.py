@@ -26,8 +26,10 @@ refuses the metric for them.
 from typing import Any
 
 import einops
+import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh
+from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float
 
 from param_decomp.ci_fn import ChunkwiseTransformerCIFn, lower_leaky_hard_sigmoid
@@ -49,22 +51,34 @@ dead."""
 
 
 def _sigma_max(w: Float[Array, "nc m n"]) -> Float[Array, " nc"]:
-    """Batched top singular value via power iteration on `W^T W` (fp32)."""
-    w = w.astype(jnp.float32)
+    """Batched top singular value via power iteration on `W^T W` (fp32). A `fori_loop`,
+    not an unrolled python loop: unrolled at 32 iterations x ~50 sharded leaves the flat
+    graph carried tens of thousands of ops whose per-op collectives each wanted their own
+    registered comm buffers — ~50k VMM allocations, OOM'ing a B200 (job 167430). The loop
+    body compiles once and reuses its buffers; `w` is already replicated by the caller so
+    the body is collective-free."""
     tiny = jnp.finfo(jnp.float32).tiny
-    v = jnp.ones((w.shape[0], w.shape[2]), jnp.float32) / w.shape[2] ** 0.5
-    for _ in range(SIGMA_MAX_POWER_ITERS):
+    v0 = jnp.ones((w.shape[0], w.shape[2]), jnp.float32) / w.shape[2] ** 0.5
+
+    def body(_: Array, v: Array) -> Array:
         u = einops.einsum(w, v, "nc m n, nc n -> nc m")
         u = u / (jnp.linalg.norm(u, axis=-1, keepdims=True) + tiny)
         v = einops.einsum(w, u, "nc m n, nc m -> nc n")
-        v = v / (jnp.linalg.norm(v, axis=-1, keepdims=True) + tiny)
+        return v / (jnp.linalg.norm(v, axis=-1, keepdims=True) + tiny)
+
+    v = jax.lax.fori_loop(0, SIGMA_MAX_POWER_ITERS, body, v0)
     return jnp.linalg.norm(einops.einsum(w, v, "nc m n, nc n -> nc m"), axis=-1)
 
 
 def _weight_family_stats(w: Float[Array, "nc m n"]) -> tuple[Array, Array, Array]:
-    """`(whole-leaf frob, per-chunk sigma_max [nc], per-chunk stable rank [nc])`."""
+    """`(whole-leaf frob, per-chunk sigma_max [nc], per-chunk stable rank [nc])`. The
+    fp32 copy is pinned REPLICATED (one all-gather per leaf, a few hundred MB at most) so
+    the power iteration runs collective-free; the frobenius reduction happens on the
+    sharded master before the gather. No-op off-mesh."""
     w32 = w.astype(jnp.float32)
     per_chunk_frob_sq = jnp.sum(w32**2, axis=(1, 2))
+    if not jax.sharding.get_abstract_mesh().empty:
+        w32 = jax.lax.with_sharding_constraint(w32, P())
     sigma = _sigma_max(w32)
     stable_rank = per_chunk_frob_sq / jnp.maximum(sigma**2, jnp.finfo(jnp.float32).tiny)
     return jnp.sqrt(per_chunk_frob_sq.sum()), sigma, stable_rank
