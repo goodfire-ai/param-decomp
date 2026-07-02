@@ -36,20 +36,33 @@ _SORT_SQL: dict[str, str] = {
 
 
 @lru_cache(maxsize=64)
-def _reader(subrun_dir: str) -> SiteShardReader:
-    return SiteShardReader(Path(subrun_dir))
+def _reader(subrun_dir: str, run_id: str) -> SiteShardReader:
+    """Shard reader with the run's labels.db ATTACHed as `lbl` (an empty stub when the
+    run has no labels yet). Attaching at construction, inside the cache, means threadpool
+    requests never race the attach on a shared connection."""
+    reader = SiteShardReader(Path(subrun_dir))
+    labels = _labels_db_path(run_id)
+    if labels.exists():
+        reader.db.execute("ATTACH DATABASE ? AS lbl", (f"file:{labels}?mode=ro",))
+    else:
+        reader.db.execute("ATTACH DATABASE ':memory:' AS lbl")
+        reader.db.execute(
+            """CREATE TABLE lbl.labels (site TEXT, component_idx INT, label TEXT,
+               model TEXT, cost_usd REAL, created_at TEXT, provenance TEXT)"""
+        )
+    return reader
 
 
 @lru_cache(maxsize=64)
-def _rank_order(subrun_dir: str) -> tuple[list[int], dict[int, int], list[float]]:
-    """(idx_by_rank, rank_by_idx, mean_ci_by_rank), ordered by mean_ci DESC then idx."""
+def _rank_order(subrun_dir: str, run_id: str) -> tuple[list[int], dict[int, int]]:
+    """(idx_by_rank, rank_by_idx), ordered by mean_ci DESC then idx."""
     rows = (
-        _reader(subrun_dir)
-        .db.execute("SELECT idx, mean_ci FROM components ORDER BY mean_ci DESC, idx ASC")
+        _reader(subrun_dir, run_id)
+        .db.execute("SELECT idx FROM components ORDER BY mean_ci DESC, idx ASC")
         .fetchall()
     )
-    idx_by_rank = [idx for idx, _ in rows]
-    return idx_by_rank, {idx: r for r, idx in enumerate(idx_by_rank)}, [ci for _, ci in rows]
+    idx_by_rank = [idx for (idx,) in rows]
+    return idx_by_rank, {idx: r for r, idx in enumerate(idx_by_rank)}
 
 
 @lru_cache(maxsize=8)
@@ -66,23 +79,7 @@ class ScopeStore:
         subruns = find_subruns(run_id, site)
         if not subruns:
             raise ScopeNotFoundError(f"no published subrun for {run_id}/{site}")
-        return _reader(str(subruns[-1]))
-
-    def _query_conn(self, run_id: str, site: str) -> tuple[sqlite3.Connection, SiteShardReader]:
-        """site.db connection with the run's labels.db attached (if it exists)."""
-        reader = self._latest_subrun(run_id, site)
-        conn = reader.db
-        (attached,) = conn.execute(
-            "SELECT COUNT(*) FROM pragma_database_list WHERE name='lbl'"
-        ).fetchone()
-        if not attached:
-            labels = _labels_db_path(run_id)
-            if labels.exists():
-                conn.execute("ATTACH DATABASE ? AS lbl", (f"file:{labels}?mode=ro",))
-            else:
-                conn.execute("ATTACH DATABASE ':memory:' AS lbl")
-                conn.execute("CREATE TABLE lbl.labels (site TEXT, component_idx INT, label TEXT)")
-        return conn, reader
+        return _reader(str(subruns[-1]), run_id)
 
     def catalog(self) -> CatalogResponse:
         runs = []
@@ -110,7 +107,9 @@ class ScopeStore:
                     SubrunEntry(subrun_id=t, status="in_flight", n_batches=0, progress=0.0)
                     for t in in_flight
                 ]
-                n_components = _reader(str(published[-1])).meta.n_components if published else 0
+                n_components = (
+                    _reader(str(published[-1]), run_dir.name).meta.n_components if published else 0
+                )
                 sites.append(
                     SiteEntry(
                         site=site_dir.name,
@@ -135,7 +134,7 @@ class ScopeStore:
     def list_components(
         self, run_id: str, site: str, sort: SortKey, page: int, page_size: int, q: str
     ) -> ComponentListResponse:
-        conn, _ = self._query_conn(run_id, site)
+        conn = self._latest_subrun(run_id, site).db
         join = "LEFT JOIN lbl.labels l ON l.site = :site AND l.component_idx = c.idx"
         where = "WHERE l.label LIKE :pat" if q else ""
         params = {"site": site, "pat": f"%{q}%", "limit": page_size, "offset": page * page_size}
@@ -157,8 +156,8 @@ class ScopeStore:
     def component_detail(
         self, run_id: str, site: str, idx: int, example_page: int, example_page_size: int
     ) -> ComponentDetail:
-        conn, reader = self._query_conn(run_id, site)
-        row = conn.execute(
+        reader = self._latest_subrun(run_id, site)
+        row = reader.db.execute(
             """SELECT c.firing_density, c.max_act, c.mean_ci, c.input_pmi, c.output_pmi,
                       l.label, l.model, l.cost_usd, l.created_at
                FROM components c
@@ -216,7 +215,7 @@ class ScopeStore:
             if label_text is not None
             else None
         )
-        idx_by_rank, rank_by_idx, _ = _rank_order(str(find_subruns(run_id, site)[-1]))
+        idx_by_rank, rank_by_idx = _rank_order(str(find_subruns(run_id, site)[-1]), run_id)
         rank = rank_by_idx[idx]
         return ComponentDetail(
             idx=idx,

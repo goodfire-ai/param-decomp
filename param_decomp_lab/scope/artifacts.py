@@ -193,7 +193,11 @@ class SiteShardReader:
         m = self.meta
         self._offsets = _array_offsets(m.n_components, m.k_examples, m.window)
         self._bin = np.memmap(subrun_dir / "examples.bin", dtype=np.uint8, mode="r")
-        self.db = sqlite3.connect(f"file:{subrun_dir / 'site.db'}?mode=ro", uri=True)
+        # Readers are cached and served from FastAPI's threadpool; CPython's sqlite3 is
+        # built serialized (threadsafety=3), so sharing the read-only connection is safe.
+        self.db = sqlite3.connect(
+            f"file:{subrun_dir / 'site.db'}?mode=ro", uri=True, check_same_thread=False
+        )
 
     def examples(self, idx: int) -> ComponentExamples:
         assert 0 <= idx < self.meta.n_components, idx
