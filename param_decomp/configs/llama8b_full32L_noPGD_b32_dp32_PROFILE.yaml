@@ -525,7 +525,6 @@ pd:
   faithfulness_warmup_lr: 0.001
   faithfulness_warmup_steps: 0
   faithfulness_warmup_weight_decay: 0.0
-  identity_decomposition_targets: null
   loss_metrics:
   - frequency:
       coeff: 1.0e-06
