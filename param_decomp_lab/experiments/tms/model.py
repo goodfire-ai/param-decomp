@@ -609,11 +609,11 @@ def single_feature_ci(
     lm: TMSDecomposedModel,
     ci_fn: "CIFnCallable",
     n_features: int,
-) -> dict[str, Array]:
-    """Feed the single-feature probe and read the `lower_leaky` CI per site,
-    `{site: [n_features, C]}`."""
+) -> CI:
+    """Feed the single-feature probe and return the CI per site, `{site: [n_features, C]}`
+    under each squashing."""
     probe = single_feature_probe(n_features)
-    return ci_fn(lm.read_activations(probe, ci_fn.input_names), remat=False).lower
+    return ci_fn(lm.read_activations(probe, ci_fn.input_names), remat=False)
 
 
 # ----------------------------- visualizations -----------------------------

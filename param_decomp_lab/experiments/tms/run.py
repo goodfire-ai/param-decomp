@@ -23,6 +23,7 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 
 from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, BuiltRun
+from param_decomp.ci_fn import CI
 from param_decomp.components import SiteC
 from param_decomp.log import setup_logger
 from param_decomp.recon import build_loss_terms
@@ -128,27 +129,23 @@ def run_tms_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) 
     # `model` is the filter_jit ARG (frozen TMS weights traced, not baked) — closing over an
     # array-bearing eqx model would bake its weights into the HLO.
     @eqx.filter_jit
-    def single_feature_ci(
-        model: tms.TMSDecomposedModel, ci_fn: Any
-    ) -> tuple[dict[str, jax.Array], dict[str, jax.Array]]:
-        probe = tms.single_feature_probe(target_cfg.n_features)
-        ci = ci_fn(model.read_activations(probe, ci_fn.input_names))
-        return ci.lower, ci.upper
+    def single_feature_ci_jit(model: tms.TMSDecomposedModel, ci_fn: Any) -> CI:
+        return tms.single_feature_ci(model, ci_fn, target_cfg.n_features)
 
     uv_spec = toy_uv_eval.toy_uv_spec(lm, raw_cfg)
 
     def eval_fn(state: TrainState, now_step: int) -> dict[str, float]:
-        ci_lower, ci_upper = single_feature_ci(lm, state.ci_fn)
+        ci = single_feature_ci_jit(lm, state.ci_fn)
         toy_uv_eval.log_uv_figure(
             uv_spec,
             state.components.vu,
-            ci_upper,
+            ci.upper,
             now_step,
             wandb_active=built.run.wandb is not None,
         )
         return {
-            f"eval/identity_ci_error/{site}": float(tms.identity_ci_error(ci, tolerance=0.1))
-            for site, ci in ci_lower.items()
+            f"eval/identity_ci_error/{site}": float(tms.identity_ci_error(site_ci, tolerance=0.1))
+            for site, site_ci in ci.lower.items()
         }
 
     run_decomposition_training(
