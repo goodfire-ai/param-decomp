@@ -1,6 +1,6 @@
-"""Frozen scope API contract: response models + the ScopeDataSource protocol."""
+"""Frozen scope API contract: the response models the backend serves and the frontend mirrors."""
 
-from typing import Literal, Protocol
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -80,24 +80,3 @@ class ComponentDetail(BaseModel):
     example_page: int
     examples: list[ActivationExample]
     """One page of examples, ranked by peak causal importance (highest first)."""
-
-
-class ScopeDataSource(Protocol):
-    """Paged access to per-component postprocess data.
-
-    Implementations must never materialize O(n_components) detail objects per
-    request; listing sort/filter operates on compact per-site columns and
-    component detail is produced for one idx at a time.
-    """
-
-    def catalog(self) -> CatalogResponse: ...
-
-    def list_components(
-        self, run_id: str, site: str, sort: SortKey, page: int, page_size: int, q: str
-    ) -> ComponentListResponse: ...
-
-    def component_detail(
-        self, run_id: str, site: str, idx: int, example_page: int, example_page_size: int
-    ) -> ComponentDetail: ...
-
-    def create_label(self, run_id: str, site: str, idx: int) -> ComponentLabel: ...

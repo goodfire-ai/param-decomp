@@ -14,8 +14,11 @@ python param_decomp_lab/scope/run_scope.py
 # first run installs frontend deps; then open the printed http://localhost:<port>
 ```
 
-Routes: `/` catalog (availability grid, polls every 5s), `/r/<run>/s/<site>` paged
-component browser, `/r/<run>/s/<site>/c/<idx>` component detail.
+`run_scope.py` seeds a throwaway fixture store (synthetic shards, see `fixture.py`) into
+a temp `PARAM_DECOMP_OUT_DIR` and points the backend at it, so dev needs no real harvest.
+
+Routes: `/` catalog (availability grid), `/r/<run>/s/<site>` paged component browser,
+`/r/<run>/s/<site>/c/<idx>` component detail.
 
 ## Frozen API contract
 
@@ -29,18 +32,15 @@ The team is building the real artifact store against these routes — do not cha
 - `GET /api/runs/{run_id}/sites/{site}/components/{idx}` →
   `{"idx", "density", "max_act", "label": {"text", "model", "cost_usd", "created_at"}|null, "input_pmi": [[str, float], ...], "output_pmi": [...], "examples": [{"tokens": [str], "acts": [float], "cis": [float], "max_act"}, ...]}` —
   ≤30 examples, 41-token windows, tokens are display strings (server-side detokenization).
-- `POST /api/runs/{run_id}/sites/{site}/components/{idx}/label` → generates + stores a
-  label, returns the label object.
 
-Sites with no `present` subrun (and out-of-range component indices) 404.
+Sites with no `present` subrun (and out-of-range component indices) 404. The viewer is
+read-only: data enters pages only through SSR `load()`, there is no client fetch.
 
-## Where the real data plugs in
+## The read path
 
-`backend/data_source.py` defines the `ScopeDataSource` Protocol plus the response
-models. `backend/fixture_data_source.py` is the only implementation today: deterministic
-seeded synthetic data (2 runs; one 3×30k-component, one 20-site with mixed
-present/in-flight/absent availability that progresses in real time). The real
-mmap-backed implementation will be a second class satisfying the same Protocol, swapped
-in where `server.py` constructs `data_source`. Listing sort/filter must operate on
-compact per-site columns (the fixture's `_SiteColumns` is the shape of that store);
-component detail is materialized one idx at a time.
+`backend/contract.py` holds the response models (mirrored by `frontend/src/lib/types.ts`).
+`backend/store.py` is the one implementation: `ScopeStore` reads the artifact store
+(`../artifacts.py`) — newest complete subrun per site, sqlite indexes for listing
+sort/filter, one mmap seek + gpt2 detokenization for detail. `server.py` constructs it
+directly; there is no data-source abstraction. Dev data is real shards written by
+`fixture.py` into a temp store — same format, same read path.

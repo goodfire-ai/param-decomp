@@ -6,6 +6,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -13,7 +14,20 @@ from pathlib import Path
 
 SCOPE_DIR = Path(__file__).parent.resolve()
 FRONTEND_DIR = SCOPE_DIR / "frontend"
+FIXTURE_STORE = Path(tempfile.gettempdir()) / "scope-fixture-store"
 STARTUP_TIMEOUT_S = 60
+
+
+def seed_fixture_store() -> None:
+    """Point PARAM_DECOMP_OUT_DIR at a throwaway store and write synthetic shards into it
+    (once) so the backend's real read path has something to serve in dev."""
+    os.environ["PARAM_DECOMP_OUT_DIR"] = str(FIXTURE_STORE)
+    if (FIXTURE_STORE / "runs").exists():
+        return
+    from param_decomp_lab.scope.fixture import write_fixture_store
+
+    print(f"seeding fixture store at {FIXTURE_STORE} ...")
+    write_fixture_store()
 
 
 def find_free_port(start: int) -> int:
@@ -55,6 +69,8 @@ def main() -> None:
     if not (FRONTEND_DIR / "node_modules").exists():
         print("installing frontend dependencies (first run)...")
         subprocess.run(["npm", "install"], cwd=FRONTEND_DIR, check=True)
+
+    seed_fixture_store()
 
     backend_port = args.backend_port or find_free_port(8000)
     frontend_port = args.frontend_port or find_free_port(5173)

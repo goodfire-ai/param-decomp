@@ -22,7 +22,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 backend_loop() {
   while true; do
-    python -m param_decomp_lab.scope.backend.server --port $BACKEND_PORT --data-source artifacts
+    python -m param_decomp_lab.scope.backend.server --port $BACKEND_PORT
     echo "backend exited; restarting"
     sleep 1
   done

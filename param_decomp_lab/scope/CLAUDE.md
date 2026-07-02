@@ -23,9 +23,11 @@ browser ── SvelteKit SSR (frontend/, adapter-node) ── FastAPI (backend/)
   combined** (re-harvest instead). Harvest writes these shards natively
   (`param_decomp_lab/harvest/scope_writer.py`); `import_labels.py` is the one remaining
   legacy bridge, carrying autointerp labels into `labels.db`.
-- **Backend** (`backend/`): the API contract lives in `data_source.py` (pydantic
-  models + `ScopeDataSource` Protocol). Two sources: `FixtureDataSource` (synthetic,
-  for frontend dev) and `ArtifactDataSource` (real). `--data-source` picks at launch.
+- **Backend** (`backend/`): the API contract lives in `contract.py` (pydantic response
+  models only). `store.py`'s `ScopeStore` is the one read path over the artifact store;
+  `server.py` constructs it directly — no data-source abstraction. Dev data is real
+  synthetic shards written by `scope/fixture.py` into a throwaway `PARAM_DECOMP_OUT_DIR`
+  (`run_scope.py` seeds it), so dev and prod hit the same reader.
 - **Frontend** (`frontend/`): SvelteKit 2 / Svelte 5 / TS. Dark-only, read-only,
   two-pane master-detail. Routes: catalogue (`/`), then a persistent site shell
   (`r/[run]/s/[site]/+layout`) holding the component sidebar (search · site switch ·
@@ -71,8 +73,8 @@ browser ── SvelteKit SSR (frontend/, adapter-node) ── FastAPI (backend/)
 ## Commands
 
 ```bash
-python param_decomp_lab/scope/run_scope.py            # dev: backend(fixture) + vite
-python -m param_decomp_lab.scope.backend.server --port N --data-source artifacts
+python param_decomp_lab/scope/run_scope.py            # dev: seed fixture store + backend + vite
+python -m param_decomp_lab.scope.backend.server --port N   # reads $PARAM_DECOMP_OUT_DIR
 cd param_decomp_lab/scope/frontend && npm run check   # token lint + svelte-check
 npm run build                                         # adapter-node → build/
 param_decomp_lab/scope/deploy/release.sh frontend     # ship a build, ~1s, no tunnel churn

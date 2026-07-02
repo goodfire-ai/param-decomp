@@ -1,4 +1,4 @@
-"""ScopeDataSource over the real artifact store (see param_decomp_lab/scope/artifacts.py).
+"""Read path for the scope viewer over the artifact store (see param_decomp_lab/scope/artifacts.py).
 
 Reads every run under `PARAM_DECOMP_OUT_DIR/runs/*/scope/`. Newest complete subrun of a
 site wins. Listing queries run against the site.db indexes with labels ATTACHed; detail
@@ -12,7 +12,7 @@ from pathlib import Path
 
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.scope.artifacts import SiteShardReader, find_subruns, scope_dir
-from param_decomp_lab.scope.backend.data_source import (
+from param_decomp_lab.scope.backend.contract import (
     ActivationExample,
     CatalogResponse,
     ComponentDetail,
@@ -61,7 +61,7 @@ def _labels_db_path(run_id: str) -> Path:
     return scope_dir(run_id) / "labels.db"
 
 
-class ArtifactDataSource:
+class ScopeStore:
     def _latest_subrun(self, run_id: str, site: str) -> SiteShardReader:
         subruns = find_subruns(run_id, site)
         if not subruns:
@@ -83,8 +83,6 @@ class ArtifactDataSource:
                 conn.execute("ATTACH DATABASE ':memory:' AS lbl")
                 conn.execute("CREATE TABLE lbl.labels (site TEXT, component_idx INT, label TEXT)")
         return conn, reader
-
-    # -- ScopeDataSource -------------------------------------------------------
 
     def catalog(self) -> CatalogResponse:
         runs = []
@@ -234,10 +232,4 @@ class ArtifactDataSource:
             n_examples=n_examples,
             example_page=example_page,
             examples=rendered,
-        )
-
-    def create_label(self, run_id: str, site: str, idx: int) -> ComponentLabel:
-        raise NotImplementedError(
-            f"label-on-demand is not wired for the artifact source yet (requested "
-            f"{run_id}/{site}/{idx}); labels are imported from legacy autointerp runs"
         )

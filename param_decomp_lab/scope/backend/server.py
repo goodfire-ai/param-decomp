@@ -10,30 +10,21 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from param_decomp_lab.scope.backend.data_source import (
+from param_decomp_lab.scope.backend.contract import (
     CatalogResponse,
     ComponentDetail,
-    ComponentLabel,
     ComponentListResponse,
-    ScopeDataSource,
     ScopeNotFoundError,
     SortKey,
 )
-from param_decomp_lab.scope.backend.fixture_data_source import FixtureDataSource
+from param_decomp_lab.scope.backend.store import ScopeStore
 
 MAX_GZIPPED_RESPONSE_BYTES = 50_000
 
 app = FastAPI(title="scope")
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
-data_source: ScopeDataSource = FixtureDataSource()
-
-
-def use_artifact_source() -> None:
-    from param_decomp_lab.scope.backend.artifact_data_source import ArtifactDataSource
-
-    global data_source
-    data_source = ArtifactDataSource()
+store = ScopeStore()
 
 
 @app.exception_handler(ScopeNotFoundError)
@@ -53,7 +44,7 @@ def budgeted_json(model: BaseModel) -> Response:
 
 @app.get("/api/catalog")
 def get_catalog() -> CatalogResponse:
-    return data_source.catalog()
+    return store.catalog()
 
 
 @app.get("/api/runs/{run_id}/sites/{site}/components")
@@ -65,9 +56,7 @@ def list_components(
     page_size: Annotated[int, Query(ge=1, le=200)] = 50,
     q: str = "",
 ) -> Response:
-    listing: ComponentListResponse = data_source.list_components(
-        run_id, site, sort, page, page_size, q
-    )
+    listing: ComponentListResponse = store.list_components(run_id, site, sort, page, page_size, q)
     return budgeted_json(listing)
 
 
@@ -79,25 +68,17 @@ def get_component_detail(
     example_page: Annotated[int, Query(ge=0)] = 0,
     example_page_size: Annotated[int, Query(ge=1, le=50)] = 20,
 ) -> Response:
-    detail: ComponentDetail = data_source.component_detail(
+    detail: ComponentDetail = store.component_detail(
         run_id, site, idx, example_page, example_page_size
     )
     return budgeted_json(detail)
-
-
-@app.post("/api/runs/{run_id}/sites/{site}/components/{idx}/label")
-def create_label(run_id: str, site: str, idx: int) -> ComponentLabel:
-    return data_source.create_label(run_id, site, idx)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="scope backend")
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--data-source", choices=["fixture", "artifacts"], default="fixture")
     args = parser.parse_args()
-    if args.data_source == "artifacts":
-        use_artifact_source()
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 
