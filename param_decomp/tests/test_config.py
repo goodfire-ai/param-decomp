@@ -403,9 +403,9 @@ def test_arithmetic_ci_grid_metric_builds_to_arithmetic_eval_config():
     # it by default; drop that entry and inject a known one so the assert is config-independent).
     raw = yaml.safe_load((CONFIGS / "llama8b_l18_C49k_200k.yaml").read_text())
     raw["eval"]["metrics"] = [m for m in raw["eval"]["metrics"] if m["type"] != "ArithmeticCIGrid"]
-    raw["eval"]["metrics"].append({"type": "ArithmeticCIGrid", "artifact_dir": "/tmp/arith_probe"})
+    raw["eval"]["metrics"].append({"type": "ArithmeticCIGrid", "a_range": [1, 50]})
     built = build_experiment_config(LMExperimentConfig(**raw), RUN_ID)
     assert built.eval is not None
     assert built.eval.arithmetic == ArithmeticEvalConfig(
-        artifact_dir=Path("/tmp/arith_probe"), thresholds=(0.1,), top_k=24
+        operation="add", a_range=(1, 50), b_range=(1, 100), thresholds=(0.1,), top_k=24
     )

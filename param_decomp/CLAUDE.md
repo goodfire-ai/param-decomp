@@ -90,11 +90,12 @@ gather), sharing `slow_eval.render_uv_figure` / `plot_uv_matrices` with the LM p
 `eval.slow_every`) for inspecting how the decomposition reconstructs a `target model`'s
 modular-arithmetic mechanism (Feucht et al.'s L18 addition neurons). The probe is a FIXED
 `a x b` operand grid of `"<a><op><b>="` prompts (one prompt per row, all one token length,
-the `=` answer at a constant position; carries `(a, b)` + `answer_id`) — NOT the streaming
-corpus, so it brings its own batch. The probe lives at `artifact_dir`;
-`experiments/lm/run.py::_ensure_arithmetic_probe` auto-generates the default (add, 1..100)
-grid there on rank 0 at first run if it's missing (barrier so other ranks wait), so the eval
-is turnkey — a custom grid (other op / range) is a manual `prestage_arithmetic.py` run. The ONE fused `make_arithmetic_grid_step` slices, at the answer position with
+the `=` answer at a constant position) — NOT the streaming corpus, so it brings its own
+batch. The probe is a SPEC (`operation` + `a_range`/`b_range` on the metric config), not a
+filesystem artifact: `experiments/lm/run.py::_make_arithmetic_eval` builds it in-memory at
+startup from the target's tokenizer (`experiments/lm/arithmetic_probe.py`, deterministic —
+every rank builds the identical grid, no rank-0 write or barrier), so configs stay
+cluster-portable. The ONE fused `make_arithmetic_grid_step` slices, at the answer position with
 the BATCH axis KEPT as the grid, each component's lower-leaky CI (from the CI fn) and its
 pre-mask activation `x@V` (from the decomposed forward under all-ones masks — the
 `masked_component_activations` seam, llama8b-only, narrowed via the `ComponentActivationModel`

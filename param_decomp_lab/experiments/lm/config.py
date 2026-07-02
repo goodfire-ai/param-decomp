@@ -354,7 +354,9 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
                 ci_l0 = metric
             case ArithmeticCIGridConfig():
                 arithmetic = ArithmeticEvalConfig(
-                    artifact_dir=Path(metric.artifact_dir),
+                    operation=metric.operation,
+                    a_range=metric.a_range,
+                    b_range=metric.b_range,
                     thresholds=tuple(metric.thresholds),
                     top_k=metric.top_k,
                 )

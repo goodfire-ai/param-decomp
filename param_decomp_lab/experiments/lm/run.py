@@ -16,7 +16,6 @@ Multi-process: launched one process per GPU under SLURM (`init_distributed`); ev
 process computes the same global schedule and contributes its local batch slice.
 """
 
-import json
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -33,7 +32,6 @@ import fire
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pyarrow.parquet as pq
 from jax import random
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
@@ -55,7 +53,13 @@ from param_decomp.attn_patterns_eval import (
     make_ci_attn_patterns_step,
     make_stochastic_attn_patterns_step,
 )
-from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, BuiltRun, DataConfig, EvalConfig
+from param_decomp.built_run import (
+    LAUNCH_CONFIG_FILENAME,
+    BuiltRun,
+    DataConfig,
+    EvalConfig,
+    TargetSites,
+)
 from param_decomp.configs import ResumeProvenance
 from param_decomp.data import BatchSchedule, ShardServer, scan_shards
 from param_decomp.eval import make_eval_step
@@ -84,7 +88,9 @@ from param_decomp.slow_eval import (
     stochastic_hidden_acts_n_mask_samples,
 )
 from param_decomp.train import TrainState
+from param_decomp_lab.experiments.lm.arithmetic_probe import build_arithmetic_probe
 from param_decomp_lab.experiments.lm.config import (
+    TargetConfig,
     load_config,
     load_run_dir_config,
 )
@@ -131,31 +137,6 @@ def _enable_hlo_dump(run_dir: Path) -> None:
 def _global_token_batch(local: np.ndarray, mesh: Mesh, global_batch: int) -> jax.Array:
     sharding = NamedSharding(mesh, P(("replicate", "fsdp")))
     return jax.make_array_from_process_local_data(sharding, local, (global_batch, local.shape[1]))
-
-
-def _load_arithmetic_probe(artifact_dir: Path) -> tuple[np.ndarray, ArithmeticGrid, int, int]:
-    """Load the fixed `a x b` arithmetic probe (`prestage_arithmetic.py` output): the
-    `(n_prompts, T)` token grid, its `ArithmeticGrid` geometry, the answer position, and
-    `n_prompts`. Asserts the rows are in row-major `(a, b)` order so the eval's reshape is
-    valid."""
-    meta_path = artifact_dir / "meta.json"
-    assert meta_path.exists() and (artifact_dir / "grid.parquet").exists(), (
-        f"arithmetic probe not found at {artifact_dir}; build it first with "
-        f"`python -m param_decomp_lab.experiments.lm.prestage_arithmetic --out_dir {artifact_dir}`"
-    )
-    meta = json.loads(meta_path.read_text())
-    cols = pq.read_table(artifact_dir / "grid.parquet").to_pydict()
-    tokens = np.asarray(cols["input_ids"], dtype=np.int32)
-    a_values = tuple(meta["a_values"])
-    b_values = tuple(meta["b_values"])
-    n_b = len(b_values)
-    expected_a = [a_values[r // n_b] for r in range(len(tokens))]
-    expected_b = [b_values[r % n_b] for r in range(len(tokens))]
-    assert cols["a"] == expected_a and cols["b"] == expected_b, (
-        "arithmetic probe rows are not in row-major (a, b) order; the grid reshape relies on it"
-    )
-    grid = ArithmeticGrid(a_values=a_values, b_values=b_values, symbol=meta["symbol"])
-    return tokens, grid, int(meta["answer_position"]), int(meta["n_prompts"])
 
 
 def _arithmetic_probe_global(tokens: np.ndarray, mesh: Mesh, n_proc: int) -> jax.Array:
@@ -207,49 +188,40 @@ class _ArithmeticEval:
         return record
 
 
-def _ensure_arithmetic_probe(artifact_dir: Path, is_main: bool, n_proc: int) -> None:
-    """Auto-generate the default (add, 1..100, Llama-3.1 tokenizer) probe on rank 0 if
-    `artifact_dir` has none — so the ArithmeticCIGrid eval runs turnkey (arith is Llama-only,
-    so prestage's default tokenizer is the target's). A custom grid (other op / range) is a
-    manual prestage. Barrier so non-main ranks wait for the write before loading. No-op (and
-    no barrier) when the probe already exists."""
-    if (artifact_dir / "meta.json").exists():
-        return
-    if is_main:
-        from param_decomp_lab.experiments.lm.prestage_arithmetic import prestage
-
-        prestage(out_dir=str(artifact_dir))
-    if n_proc > 1:
-        from jax.experimental import multihost_utils
-
-        multihost_utils.sync_global_devices("arithmetic_probe_prestage")
-
-
 def _make_arithmetic_eval(
     eval_cfg: EvalConfig,
+    target: TargetSites,
     lm: DecomposedModel,
     eval_step_fn: Callable[..., dict[str, jax.Array]],
     mesh: Mesh,
     n_proc: int,
     is_main: bool,
 ) -> _ArithmeticEval | None:
+    """Build the probe in-memory from the metric spec + the target's tokenizer. The build is
+    deterministic, so every rank constructs the identical grid — no rank-0 write, no barrier."""
     arith = eval_cfg.arithmetic
     if arith is None:
         return None
-    _ensure_arithmetic_probe(arith.artifact_dir, is_main, n_proc)
-    probe_tokens, grid, answer_position, n_prompts = _load_arithmetic_probe(arith.artifact_dir)
     assert isinstance(lm, ComponentActivationModel), (
         f"arithmetic eval needs a model exposing masked_component_activations; "
         f"{type(lm).__name__} does not"
     )
+    assert isinstance(target, TargetConfig), (
+        f"arithmetic eval reads the probe tokenizer off the HF target; {type(target).__name__} "
+        f"carries no model_name"
+    )
+    from transformers import AutoTokenizer  # heavy import; only the arith probe needs it in-job
+
+    tokenizer = AutoTokenizer.from_pretrained(target.model_name, local_files_only=True)
+    probe = build_arithmetic_probe(arith.operation, arith.a_range, arith.b_range, tokenizer)
     return _ArithmeticEval(
-        step=make_arithmetic_grid_step(lm, answer_position),
+        step=make_arithmetic_grid_step(lm, probe.answer_position),
         eval_step_fn=eval_step_fn,
         model=lm,
-        tokens=_arithmetic_probe_global(probe_tokens, mesh, n_proc),
-        grid=grid,
-        n_prompts=n_prompts,
-        thresholds=tuple(arith.thresholds),
+        tokens=_arithmetic_probe_global(probe.tokens, mesh, n_proc),
+        grid=probe.grid,
+        n_prompts=probe.tokens.shape[0],
+        thresholds=arith.thresholds,
         top_k=arith.top_k,
         renderer=ArithmeticGridRenderer(is_main),
     )
@@ -397,7 +369,9 @@ def _make_lm_eval_fn(
     want_position_ci = perm_spec.any_plots or perm_spec.any_identity_error
     position_ci_step = make_position_ci_step(lm, co) if want_position_ci else None
 
-    arithmetic_eval = _make_arithmetic_eval(eval, lm, eval_step_fn, mesh, n_proc, is_main)
+    arithmetic_eval = _make_arithmetic_eval(
+        eval, built.target, lm, eval_step_fn, mesh, n_proc, is_main
+    )
 
     def eval_fn(state: TrainState, now_step: int) -> "LogRecord":
         eval_pass_index = now_step // eval.every

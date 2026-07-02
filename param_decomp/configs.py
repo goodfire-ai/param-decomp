@@ -544,15 +544,18 @@ class UVPlotsConfig(_PermutationPlotsBaseConfig):
 class ArithmeticCIGridConfig(BaseConfig):
     """Per-component causal-importance heatmaps over an `a x b` arithmetic operand grid.
 
-    `artifact_dir` holds a fixed eval probe (`grid.parquet` + `meta.json`) built by
-    `prestage_arithmetic.py`. For each threshold in `thresholds`, every component alive on
-    the probe (max CI over the grid `>` threshold) is counted in n_alive, and the `top_k`
-    most-active (by max CI) get `a x b` CI + activation heatmaps. A figure tier — renders on
-    `eval.slow_every`. Any alive beyond `top_k` are reported via n_dropped (not silently
-    cut)."""
+    The probe is a SPEC, not a filesystem artifact: the `[a_range] x [b_range]` grid of
+    `"<a><op><b>="` prompts is built in-memory at startup from the target's tokenizer
+    (`experiments/lm/arithmetic_probe.py`), so configs stay cluster-portable. For each
+    threshold in `thresholds`, every component alive on the probe (max CI over the grid
+    `>` threshold) is counted in n_alive, and the `top_k` most-active (by max CI) get
+    `a x b` CI + activation heatmaps. A figure tier — renders on `eval.slow_every`. Any
+    alive beyond `top_k` are reported via n_dropped (not silently cut)."""
 
     type: Literal["ArithmeticCIGrid"] = "ArithmeticCIGrid"
-    artifact_dir: str
+    operation: Literal["add", "sub", "mul"] = "add"
+    a_range: tuple[int, int] = (1, 100)
+    b_range: tuple[int, int] = (1, 100)
     thresholds: list[float] = Field(default_factory=lambda: [0.1])
     top_k: PositiveInt = 24
 

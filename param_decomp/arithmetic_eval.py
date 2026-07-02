@@ -1,5 +1,6 @@
 """In-loop eval: per-component CI and activation (`x@V`) heatmaps over an `a x b` arithmetic
-operand grid (the offline probe from `prestage_arithmetic.py`). See `param_decomp/CLAUDE.md`.
+operand grid (the in-memory probe the lab builds in `experiments/lm/arithmetic_probe.py`).
+See `param_decomp/CLAUDE.md`.
 """
 
 import io

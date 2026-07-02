@@ -73,10 +73,12 @@ class AttnPatternsEvalConfig:
 @dataclass(frozen=True)
 class ArithmeticEvalConfig:
     """The arithmetic CI-grid figure eval (`arithmetic_eval.py`): a fixed `a x b` operand-
-    grid probe loaded from `artifact_dir` (`grid.parquet` + `meta.json`), with per-component
-    CI heatmaps + n_alive at each threshold. Renders on the slow tier."""
+    grid probe built in-memory at startup from this spec + the target's tokenizer, with
+    per-component CI heatmaps + n_alive at each threshold. Renders on the slow tier."""
 
-    artifact_dir: Path
+    operation: Literal["add", "sub", "mul"]
+    a_range: tuple[int, int]
+    b_range: tuple[int, int]
     thresholds: tuple[float, ...]
     top_k: int
 

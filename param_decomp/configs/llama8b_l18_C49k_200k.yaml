@@ -63,10 +63,8 @@ eval:
     n_steps: 20
     step_size: 0.1
     type: PGDReconLoss
-  # the probe auto-generates on rank 0 at first run if artifact_dir is empty (add, 1..100);
-  # for a custom grid, prestage manually: python -m ...lm.prestage_arithmetic --out_dir <dir>
+  # probe built in-memory at startup from the target tokenizer (defaults: add, a,b in 1..100)
   - type: ArithmeticCIGrid
-    artifact_dir: /mnt/data/artifacts/mechanisms/param-decomp/datasets/arithmetic_add_1_100_llama31
   n_steps: 1
   slow_every: 10000
   slow_on_first_step: true
