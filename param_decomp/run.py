@@ -156,6 +156,25 @@ def _is_verbose_grad_norm(key: str) -> bool:
     return key.startswith("train/grad_norms/") and not key.startswith("train/grad_norms/summary/")
 
 
+def _grad_norm_summary_window_stats(window: list[dict[str, jax.Array]]) -> dict[str, float]:
+    """Window min/max/median for each `grad_norms/summary/*` scalar over every step since the
+    last log. The per-step values are accumulated as device handles (appending one is async),
+    so the whole window reduces in a single host transfer here — the loop stays unsynced
+    between logs rather than subsampling grad norms at the log step."""
+    assert window, "grad-norm summary window is empty at a log boundary"
+    keys = list(window[0].keys())
+    stacked = jnp.stack([jnp.stack([snap[k] for snap in window]) for k in keys])  # [keys, steps]
+    mins = np.asarray(jnp.min(stacked, axis=1))
+    maxs = np.asarray(jnp.max(stacked, axis=1))
+    medians = np.asarray(jnp.median(stacked, axis=1))
+    out: dict[str, float] = {}
+    for i, key in enumerate(keys):
+        out[f"{key}/min"] = float(mins[i])
+        out[f"{key}/max"] = float(maxs[i])
+        out[f"{key}/median"] = float(medians[i])
+    return out
+
+
 class MetricsSink:
     """Process-0 metrics fan-out: jsonl always, wandb when configured.
 
@@ -512,6 +531,7 @@ def run_decomposition_training(
     sink = MetricsSink.for_run(run, wandb_config, is_main)
     window_t0 = loop_t0 = time.time()
     last_logged = start_step
+    grad_norm_summary_window: list[dict[str, jax.Array]] = []
 
     # SCRATCH PROFILER HOOK (revertable): env-gated jax.profiler.trace over a window of
     # steady-state steps + per-step block_until_ready wall-clock. PD_PROFILE_TRACE=1 enables;
@@ -669,6 +689,10 @@ def run_decomposition_training(
             batch = sample_batch(step)
             state, metrics = step_fn(lm, state, batch, random.fold_in(run_key, step))
 
+        grad_norm_summary_window.append(
+            {k: v for k, v in metrics.items() if k.startswith("grad_norms/summary/")}
+        )
+
         if _profiling:
             jax.block_until_ready((state, metrics["total"]))
             if is_main:
@@ -696,7 +720,11 @@ def run_decomposition_training(
             dt = time.time() - window_t0
             per_step = dt / max(now_step - last_logged, 1)
             last_logged = now_step
-            record = {k: float(v) for k, v in metrics.items()}
+            record = {
+                k: float(v) for k, v in metrics.items() if not k.startswith("grad_norms/summary/")
+            }
+            record.update(_grad_norm_summary_window_stats(grad_norm_summary_window))
+            grad_norm_summary_window.clear()
             for loss_name in ("total", *(k for k in record if k.startswith("loss/"))):
                 assert math.isfinite(record[loss_name]), (
                     f"non-finite loss {loss_name!r} at step {now_step}: {record[loss_name]}"
