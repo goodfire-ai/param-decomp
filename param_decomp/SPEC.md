@@ -311,7 +311,7 @@ faithfulness, sources/PPGD, the squashings (S5/S6), the imp-min reduction, the g
 | `RECON_TERMS` | any static tuple of coefficiented terms, each a static plan of `(live_sites, SAMPLE_ROUTING, MASK_SOURCE)` entries: `subset_chunk_plan` · `per_site_plan` (the torch "layerwise" shape) · `all_sites_plan` · custom subset families (pairs, covers, …); built from the shared torch loss configs by `build_loss_terms` | ★ stochastic subset term + persistent-PGD term |
 | `MASK_SOURCE` | `stochastic` (fresh U[0,1]/Bernoulli per draw) · `constant(v)` (`v=0` CI-masked, `v=1` unmasked; no delta path) · `fresh_pgd(init, n_steps, step_size, scope)` · `persistent(state_key)` | ★ stochastic + persistent |
 | `SAMPLE_ROUTING` | `(key, [B,T]) → tuple of routing draws`, statically sized; draws may be jointly sampled (independent repeats, antithetic/complementary subsets, per-step covers) | ★ uniform_k_routing(·, 1) |
-| `SRC_STEP` | `adam(β₁,β₂,ε)` with bias correction; `sign` (`sources += lr·sign(grad)`) | ★ adam(.5, .99, 1e-8) |
+| `SRC_STEP` | `adam(β₁,β₂,ε)` with bias correction, optionally preceded by a global-norm clip on the source grad (`grad_clip_norm`, whole bundle, all sites jointly — experimental, default off = oracle parity); `sign` (`sources += lr·sign(grad)`) | ★ adam(.5, .99, 1e-8), no clip |
 | `PROJ` / `EFFECTIVE` | **clamp**: PROJ = clamp[0,1], EFFECTIVE = identity, init U[0,1] · **sigmoid**: PROJ = identity (unbounded raw), EFFECTIVE = sigmoid, init N(0,1) | ★ clamp |
 | `SCOPE` | persistent: `c (1,1)` · `sc (1,T)` · `nsc (n,T), n|B` · `bsc (B,T)` (jax: `sc` + `bsc` today) — fresh-PGD: `c` · `bc` · `bsc` | ★ sc |
 | stoch sampling | `continuous U[0,1]` · `binomial {0,1}` | ★ continuous |
