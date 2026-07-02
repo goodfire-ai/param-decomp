@@ -114,7 +114,6 @@ pd:
     sites_per_chunk: 7
     type: ChunkwiseSubsetReconLoss
   - coeff: 0.5
-    n_samples: 1
     n_warmup_steps: 2
     optimizer:
       beta1: 0.01

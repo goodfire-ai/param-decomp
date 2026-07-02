@@ -390,14 +390,20 @@ class PersistentPGDReconLossConfig(LossMetricConfig):
 
     @model_validator(mode="before")
     @classmethod
-    def _strip_removed_use_sigmoid_parameterization(cls, data: object) -> object:
-        # Shared-storage shim: stored run configs carry `use_sigmoid_parameterization`
-        # (always False — clamp was the only implemented path). The field is removed; strip
-        # it so those configs still load. A True value was never supported -> reject.
-        if isinstance(data, dict) and "use_sigmoid_parameterization" in data:
-            assert not data.pop("use_sigmoid_parameterization"), (
-                "use_sigmoid_parameterization was removed (clamp-only)"
-            )
+    def _strip_removed_fields(cls, data: object) -> object:
+        # Shared-storage shim: stored run configs carry removed fields whose only
+        # supported value was inlined. Strip them so those configs still load; any
+        # other value never had an implementation -> reject.
+        if isinstance(data, dict):
+            if "use_sigmoid_parameterization" in data:
+                assert not data.pop("use_sigmoid_parameterization"), (
+                    "use_sigmoid_parameterization was removed (clamp-only)"
+                )
+            if "n_samples" in data:
+                assert data.pop("n_samples") == 1, (
+                    "n_samples was removed (route-all + one persistent source bundle make"
+                    " every draw identical, so only 1 was ever meaningful)"
+                )
         return data
 
     type: Literal["PersistentPGDReconLoss"] = "PersistentPGDReconLoss"
@@ -417,7 +423,6 @@ class PersistentPGDReconLossConfig(LossMetricConfig):
             " computation."
         ),
     )
-    n_samples: PositiveInt = 1
 
 
 # ---------------------------------------------------------------------------

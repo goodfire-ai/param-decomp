@@ -163,22 +163,25 @@ def test_unsupported_settings_refuse():
     with pytest.raises(AssertionError, match="unsupported training loss"):
         build_experiment_config(LMExperimentConfig(**hidden_acts_training_loss), RUN_ID)
 
-    sigmoid_ppgd = dict(
-        raw,
-        pd=dict(
-            raw["pd"],
-            loss_metrics=[
-                dict(m, use_sigmoid_parameterization=True)
-                if m["type"] == "PersistentPGDReconLoss"
-                else m
-                for m in raw["pd"]["loss_metrics"]
-            ],
-        ),
-    )
-    # use_sigmoid_parameterization was removed (clamp-only); the strip-on-load shim
-    # accepts False (stored configs) but rejects True at config construction.
-    with pytest.raises(ValidationError):
-        LMExperimentConfig(**sigmoid_ppgd)
+    def with_ppgd_fields(**fields: object):
+        return dict(
+            raw,
+            pd=dict(
+                raw["pd"],
+                loss_metrics=[
+                    dict(m, **fields) if m["type"] == "PersistentPGDReconLoss" else m
+                    for m in raw["pd"]["loss_metrics"]
+                ],
+            ),
+        )
+
+    # Removed PPGD fields (use_sigmoid_parameterization: clamp-only; n_samples: route-all +
+    # one persistent source bundle make every draw identical): the strip-on-load shim
+    # accepts the only-ever-supported value (stored configs) and rejects anything else.
+    LMExperimentConfig(**with_ppgd_fields(use_sigmoid_parameterization=False, n_samples=1))
+    for bad_field in ({"use_sigmoid_parameterization": True}, {"n_samples": 2}):
+        with pytest.raises(ValidationError):
+            LMExperimentConfig(**with_ppgd_fields(**bad_field))
 
     non_site_target = dict(
         raw,
