@@ -128,7 +128,7 @@ def test_eval_block_maps_slow_tier_and_defers_offline_only_metrics(
                 "n_steps": 20,
                 "step_size": 0.1,
             },
-            {"type": "CIHistograms", "n_batches_accum": 7},  # in-loop slow tier now
+            {"type": "CIHistograms", "n_batches_accum": 7, "density_heatmap_n_bins": 40},
             # distinct cutoff: pins that density reads its OWN ci_alive_threshold, not CI_L0's
             {"type": "ComponentActivationDensity", "ci_alive_threshold": 0.05},  # slow tier
             {"type": "IdentityCIError", "identity_ci": None, "dense_ci": None},  # in-loop slow
@@ -140,6 +140,7 @@ def test_eval_block_maps_slow_tier_and_defers_offline_only_metrics(
     assert (cfg.eval.batch_size, cfg.eval.every, cfg.eval.n_steps) == (128, 1000, 1)
     assert (cfg.eval.slow_every, cfg.eval.slow_on_first_step) == (10000, True)
     assert cfg.eval.slow_n_batches_accum == 7  # read off the CIHistograms metric
+    assert cfg.eval.density_heatmap_n_bins == 40  # opt-in per-token CI density heatmap
     assert cfg.eval.rounding_threshold == 0.0
     assert cfg.eval.l0_ci_alive_threshold == 0.0 and cfg.eval.density_ci_alive_threshold == 0.05
     assert cfg.eval.pgd is not None and (cfg.eval.pgd.n_steps, cfg.eval.pgd.step_size) == (20, 0.1)

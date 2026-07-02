@@ -384,7 +384,9 @@ def _make_lm_eval_fn(
                 lm, pattern_fn, eval.attn_patterns.stochastic_n_mask_samples, co
             )
 
-    slow_eval_step = make_slow_eval_step(lm, eval.density_ci_alive_threshold, co)
+    slow_eval_step = make_slow_eval_step(
+        lm, eval.density_ci_alive_threshold, eval.density_heatmap_n_bins, co
+    )
     slow_renderer = SlowEvalRenderer(is_main)
     # The CI-heatmap / permutation / UV / identity-error metrics read off the run's typed
     # `eval.metrics` (re-validated from the pinned launch config: the trainer's `EvalConfig`

@@ -73,13 +73,13 @@ def _build_ci_fn(lm: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
     return build_ci_fn(arch, lm.sites, key)
 
 
-def _tiny_setup(threshold: float):
+def _tiny_setup(threshold: float, density_heatmap_n_bins: int | None = None):
     cfg = _tiny_cfg()
     C = 8
     sites = llama_site_specs(cfg, mlp_family_site_cs(4, 5, C))
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     ci_fn = _build_ci_fn(lm, cfg.n_embd, jax.random.PRNGKey(2))
-    step = make_slow_eval_step(lm, threshold)
+    step = make_slow_eval_step(lm, threshold, density_heatmap_n_bins)
     return cfg, lm, ci_fn, step, C
 
 
@@ -178,6 +178,52 @@ def test_finite_reductions():
         assert np.all(np.isfinite(r.ci_sums))
         assert np.all(np.isfinite(r.lower_sample))
         assert np.all(np.isfinite(r.logits_sample))
+
+
+def test_density_hist_disabled_by_default():
+    cfg, lm, ci_fn, step, _ = _tiny_setup(threshold=0.0)
+    residual = jax.random.randint(jax.random.PRNGKey(4), (2, 16), 0, cfg.vocab_size)
+    reductions = accumulate_site_reductions(step, lm, ci_fn, [residual], None)
+    for r in reductions.values():
+        assert r.density_hist is None
+
+
+def test_density_hist_shape_and_conservation():
+    n_bins = 40
+    cfg, lm, ci_fn, step, C = _tiny_setup(threshold=0.0, density_heatmap_n_bins=n_bins)
+    residual = jax.random.randint(jax.random.PRNGKey(4), (3, 16), 0, cfg.vocab_size)
+    reductions = accumulate_site_reductions(step, lm, ci_fn, [residual], None)
+    for r in reductions.values():
+        assert r.density_hist is not None
+        assert r.density_hist.shape == (C, n_bins + 1)
+        # every (token, component) pair lands in exactly one bin (underflow col + n_bins bands)
+        np.testing.assert_array_equal(r.density_hist.sum(1), np.full(C, r.n_positions))
+        # column 0 = underflow (CI < 1e-9), which contains at least every exact-0 inactive token
+        assert (r.density_hist[:, 0] >= r.n_positions - r.density_counts).all()
+
+
+def test_density_hist_accumulates_over_all_batches_uncapped():
+    n_bins = 40
+    cfg, lm, ci_fn, step, _ = _tiny_setup(threshold=0.0, density_heatmap_n_bins=n_bins)
+    batches = [
+        jax.random.randint(jax.random.fold_in(jax.random.PRNGKey(9), i), (2, 16), 0, cfg.vocab_size)
+        for i in range(3)
+    ]
+    # n_batches_accum caps only the raw sample; the density hist spans every batch regardless
+    capped = accumulate_site_reductions(step, lm, ci_fn, batches, n_batches_accum=1)
+    for r in capped.values():
+        assert r.lower_sample.size == 2 * 16 * 8  # one batch (capped)
+        assert r.density_hist is not None
+        assert r.density_hist.sum(1)[0] == 3 * 2 * 16  # all three batches
+
+
+def test_render_includes_density_heatmap_when_enabled():
+    cfg, lm, ci_fn, step, _ = _tiny_setup(threshold=0.0, density_heatmap_n_bins=40)
+    residual = jax.random.randint(jax.random.PRNGKey(4), (2, 16), 0, cfg.vocab_size)
+    reductions = accumulate_site_reductions(step, lm, ci_fn, [residual], None)
+    figures = render_slow_eval_figures(reductions)
+    assert "figures/ci_density_heatmap" in figures
+    assert figures["figures/ci_density_heatmap"][:4] == b"\x89PNG"
 
 
 # ----------------------------- permutation / identity-error metrics -----------------------------

@@ -437,10 +437,14 @@ class CIHiddenActsReconLossConfig(BaseConfig):
 
 
 class CIHistogramsConfig(BaseConfig):
-    """`n_batches_accum=None` accumulates every batch in the eval pass."""
+    """`n_batches_accum=None` accumulates every batch in the eval pass. `density_heatmap_n_bins`
+    opts into the per-token per-component CI density heatmap (an on-device bincount into that
+    many log-spaced `[1e-9, 1]` bands sharing the same forward, accumulated over EVERY batch);
+    `None` disables it."""
 
     type: Literal["CIHistograms"] = "CIHistograms"
     n_batches_accum: PositiveInt | None
+    density_heatmap_n_bins: PositiveInt | None = None
 
 
 class CI_L0Config(BaseConfig):
