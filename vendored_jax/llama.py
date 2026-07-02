@@ -119,12 +119,17 @@ def attn_implementation() -> Literal["cudnn", "xla"]:
     return "cudnn" if jax.default_backend() == "gpu" else "xla"
 
 
+# cuDNN flash attention rejects very short sequences (the arithmetic-eval probe is
+# ~5 tokens); below this length use the XLA composite, which computes identical causal
+# attention and is cheap at tiny T. Training/eval sequences run far above this.
+CUDNN_FLASH_MIN_SEQ = 64
+
+
 def causal_sdpa(q: Array, k: Array, v: Array) -> Array:
     # q,k,v: (B, H, T, hd); jax.nn.dot_product_attention takes (B, T, H, D).
     qt, kt, vt = (a.transpose(0, 2, 1, 3) for a in (q, k, v))
-    out = jax.nn.dot_product_attention(
-        qt, kt, vt, is_causal=True, implementation=attn_implementation()
-    )
+    impl = "xla" if qt.shape[1] < CUDNN_FLASH_MIN_SEQ else attn_implementation()
+    out = jax.nn.dot_product_attention(qt, kt, vt, is_causal=True, implementation=impl)
     return out.transpose(0, 2, 1, 3)
 
 
