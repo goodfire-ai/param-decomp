@@ -140,7 +140,25 @@ _METRIC_KEYS = {
     "step_time_s": "train/perf/step_time_s",
     "elapsed_s": "train/perf/elapsed_s",
     "eta_s": "train/perf/eta_s",
+    "data_s": "train/perf/data_s",
+    "dispatch_s": "train/perf/dispatch_s",
+    "block_s": "train/perf/block_s",
+    "save_s": "train/perf/save_s",
+    "step_time_ratio": "train/perf/step_time_ratio",
 }
+
+# Loop-level phase profile (always on, host-side perf_counter only — no extra device
+# syncs). Per log window, normalized per step: `data_s` (sample_batch host wall),
+# `dispatch_s` (step_fn enqueue host wall), `block_s` (device catch-up in the log-step
+# block_until_ready), so data_s + dispatch_s + block_s ≈ step_time_s and a slow window
+# is attributable to data vs host vs device at a glance. When the dispatch pipeline is
+# full, device backpressure surfaces in `dispatch_s` — this is loop-level accounting,
+# NOT kernel attribution (CPU-wall deltas inside async device work are unsound; use
+# `profile.trace` for kernels). `step_time_ratio` (window per-step time / best window so
+# far) is the perf canary: it drifts up on node/comm degradation and warns on rank 0 at
+# PERF_CANARY_RATIO. `eval_s` rides on eval records; `save_s` on the train record after
+# a checkpoint save.
+PERF_CANARY_RATIO = 1.5
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -149,8 +167,21 @@ def _fmt_duration(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
-def _is_verbose_grad_norm(key: str) -> bool:
-    return key.startswith("train/grad_norms/") and not key.startswith("train/grad_norms/summary/")
+_CONSOLE_DROPPED_PERF_KEYS = frozenset(
+    {
+        "train/perf/data_s",
+        "train/perf/dispatch_s",
+        "train/perf/block_s",
+        "train/perf/step_time_ratio",
+    }
+)
+
+
+def _is_console_dropped(key: str) -> bool:
+    verbose_grad_norm = key.startswith("train/grad_norms/") and not key.startswith(
+        "train/grad_norms/summary/"
+    )
+    return verbose_grad_norm or key in _CONSOLE_DROPPED_PERF_KEYS
 
 
 def _grad_norm_summary_window_stats(window: list[dict[str, jax.Array]]) -> dict[str, float]:
@@ -234,7 +265,7 @@ class MetricsSink:
         self._jsonl.flush()
         # The console line drops the per-param grad norms — the full breakdown still rides to
         # wandb + jsonl.
-        console = {k: v for k, v in scalars.items() if not _is_verbose_grad_norm(k)}
+        console = {k: v for k, v in scalars.items() if not _is_console_dropped(k)}
         head = f"[step {step}]"
         if "train/perf/eta_s" in console:  # train logs carry the paired timing; eval logs don't
             elapsed, eta = console.pop("train/perf/elapsed_s"), console.pop("train/perf/eta_s")
@@ -529,6 +560,9 @@ def run_decomposition_training(
     window_t0 = loop_t0 = time.time()
     last_logged = start_step
     grad_norm_summary_window: list[dict[str, jax.Array]] = []
+    window_data_s = window_dispatch_s = 0.0
+    best_per_step = math.inf
+    pending_save_s: float | None = None
 
     # SCRATCH PROFILER HOOK (revertable): env-gated jax.profiler.trace over a window of
     # steady-state steps + per-step block_until_ready wall-clock. PD_PROFILE_TRACE=1 enables;
@@ -676,14 +710,20 @@ def run_decomposition_training(
             _ts2 = time.perf_counter()
             jax.block_until_ready((state, metrics["total"]))
             _ts3 = time.perf_counter()
+            window_data_s += _ts1 - _ts0
+            window_dispatch_s += _ts2 - _ts1
             print(
                 f"PD_TIME step {step}: sample={_ts1 - _ts0:.3f}s dispatch(py)={_ts2 - _ts1:.3f}s "
                 f"compute(dev)={_ts3 - _ts2:.3f}s total={_ts3 - _ts0:.3f}s",
                 flush=True,
             )
         else:
+            _phase_t0 = time.perf_counter()
             batch = sample_batch(step)
+            _phase_t1 = time.perf_counter()
             state, metrics = step_fn(lm, state, batch, random.fold_in(run_key, step))
+            window_data_s += _phase_t1 - _phase_t0
+            window_dispatch_s += time.perf_counter() - _phase_t1
 
         grad_norm_summary_window.append(
             {k: v for k, v in metrics.items() if k.startswith("grad_norms/summary/")}
@@ -712,9 +752,12 @@ def run_decomposition_training(
             or (dense is not None and now_step <= dense.until_step and now_step % dense.every == 0)
         )
         if log_now:
+            block_t0 = time.perf_counter()
             jax.block_until_ready(metrics["total"])
+            block_s = time.perf_counter() - block_t0
             dt = time.time() - window_t0
-            per_step = dt / max(now_step - last_logged, 1)
+            window_steps = max(now_step - last_logged, 1)
+            per_step = dt / window_steps
             last_logged = now_step
             record = {
                 k: float(v) for k, v in metrics.items() if not k.startswith("grad_norms/summary/")
@@ -728,6 +771,27 @@ def run_decomposition_training(
             record["step_time_s"] = per_step
             record["elapsed_s"] = time.time() - loop_t0
             record["eta_s"] = (pd.steps - now_step) * per_step
+            record["data_s"] = window_data_s / window_steps
+            record["dispatch_s"] = window_dispatch_s / window_steps
+            record["block_s"] = block_s / window_steps
+            window_data_s = window_dispatch_s = 0.0
+            # Only full-cadence windows set the canary baseline (dense-log-phase windows
+            # are too short to be a fair per-step rate). A compile-inflated first window
+            # can only suppress warnings until the next window lowers the baseline.
+            if window_steps == cadence.train_log_every:
+                best_per_step = min(best_per_step, per_step)
+            if math.isfinite(best_per_step):
+                step_time_ratio = per_step / best_per_step
+                record["step_time_ratio"] = step_time_ratio
+                if step_time_ratio >= PERF_CANARY_RATIO and is_main:
+                    print(
+                        f"PERF CANARY: window per-step {per_step:.2f}s is {step_time_ratio:.2f}x "
+                        f"the run's best {best_per_step:.2f}s",
+                        flush=True,
+                    )
+            if pending_save_s is not None:
+                record["save_s"] = pending_save_s
+                pending_save_s = None
             # the LR this step applied (optax count is the pre-increment `step` == now_step - 1)
             record["train/schedules/lr/components"] = float(jnp.asarray(sched_vu(now_step - 1)))
             record["train/schedules/lr/ci_fn"] = float(jnp.asarray(sched_ci(now_step - 1)))
@@ -738,15 +802,18 @@ def run_decomposition_training(
             window_t0 = time.time()
 
         if eval_fn is not None and now_step % eval_every == 0 and not sigterm:
+            eval_t0 = time.perf_counter()
             eval_record = eval_fn(state, now_step)
-            sink.log(now_step, eval_record)
+            sink.log(now_step, {**eval_record, "train/perf/eval_s": time.perf_counter() - eval_t0})
             window_t0 = time.time()
 
         _skip_save = profile.no_checkpoint  # profiling runs skip all saves
         if not _skip_save and (now_step % save_every == 0 or now_step == pd.steps or sigterm):
+            save_t0 = time.perf_counter()
             save_state(checkpoint_manager, now_step, state)
+            pending_save_s = time.perf_counter() - save_t0
             if is_main:
-                print(f"checkpoint saved @ step {now_step}", flush=True)
+                print(f"checkpoint saved @ step {now_step} in {pending_save_s:.1f}s", flush=True)
             window_t0 = time.time()
         if sigterm:
             if is_main:
