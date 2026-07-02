@@ -571,6 +571,7 @@ runtime:
   launch_env:
     env:
       HF_HOME: /mnt/delicate-frog/artifacts/public/hf_cache
+      HF_HUB_CACHE: /mnt/delicate-frog/artifacts/public/hf_cache/hub
 target:
   output_extract: logits
   weights_dtype: bfloat16
