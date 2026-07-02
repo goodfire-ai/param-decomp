@@ -151,9 +151,12 @@ class CIBlock(eqx.Module):
           d_model replicated (row-parallel → in-node reduce over fsdp·tp).
 
         Biases replicate. COMPUTE re-pins to `fsdp` (attn d_model) / `fsdp·tp` (MLP mlp_hidden)
-        before the chunk scan (`ChunkwiseTransformerCIFn.__call__`), all intra-node NVLink."""
-        data = ("replicate", "fsdp")
-        full = ("replicate", "fsdp", "tp")
+        before the chunk scan (`ChunkwiseTransformerCIFn.__call__`), all intra-node NVLink.
+
+        Fsdp-major linearization (compute axes first, `replicate` last) so the ÷N→compute
+        reconstruct is a pure all-gather over `replicate` — see `DecompVU.shardings`."""
+        data = ("fsdp", "replicate")
+        full = ("fsdp", "tp", "replicate")
         attn_in = NamedSharding(mesh, P(None, None, data))  # qkv: d_model (axis2) ÷(rep·fsdp)
         attn_out = NamedSharding(mesh, P(None, data, None))  # wo: d_model (axis1) ÷(rep·fsdp)
         mlp_in = NamedSharding(mesh, P(None, None, full))  # w1: mlp_hidden (axis2) ÷N
@@ -274,8 +277,9 @@ class ChunkTransformer(eqx.Module):
         → ÷N total, and the CI output C is `tp`-sharded so it dovetails with V/U's C-on-tp (the
         `mask · xV` multiply stays local). Blocks delegate to `CIBlock.shardings`; biases
         replicate. COMPUTE re-pins to `fsdp` (d) × `tp` (C) before the chunk scan
-        (`ChunkwiseTransformerCIFn.__call__`)."""
-        data = ("replicate", "fsdp")
+        (`ChunkwiseTransformerCIFn.__call__`). Fsdp-major linearization (`replicate` last) so
+        the reconstruct is a pure all-gather over `replicate` — see `DecompVU.shardings`."""
+        data = ("fsdp", "replicate")
         in_proj_sh = NamedSharding(
             mesh, P(None, "tp", data)
         )  # in_proj: total_d_in ÷tp, d_model ÷(rep·fsdp) → ÷N (row-parallel)

@@ -8,7 +8,7 @@ Megatron-C. The memory consumers, and how each is placed:
     ~16 GB bulk shards `/fsdp` (8), gathered per layer in the scan on NVLink. embed /
     lm_head / norm / inv_freq replicate.
   * components (V/U) + their Adam states: sharded ÷N over the FULL mesh
-    (`("replicate","fsdp")`) — V's d_in, U's d_out; C is NEVER sharded. The fp32 masters +
+    (`("fsdp","replicate")`, fsdp-major — see `DecompVU.shardings`) — V's d_in, U's d_out; C is NEVER sharded. The fp32 masters +
     fp32 Adam m/v are the dominant non-activation footprint; true ZeRO-1 ÷N (master + m + v
     each ÷(replicate·fsdp)) takes them from ÷fsdp (≈76 GB/GPU fixed) to ÷N (≈5 GB, scaling).
     COMPUTE re-pins the bf16 weights to `fsdp`-only ONCE per step (the ZeRO-1 reconstruction,

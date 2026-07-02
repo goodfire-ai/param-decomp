@@ -127,7 +127,7 @@ NO tensor-parallel / Megatron-C axis (`fsdp` = the 8 intra-node NVLink GPUs, `re
 across nodes). The CI output C axis is NEVER sharded, so the per-site heads are a layout
 convenience here (they were load-bearing under the prior TP layout, which sliced a tp-sharded
 glued-ΣC head mid-site). **ZeRO-1 ÷N**: the trainable V/U + CI-fn fp32 masters AND their Adam
-m/v shard ÷N over the FULL mesh (`("replicate","fsdp")` on V's d_in / U's d_out / the CI fn's
+m/v shard ÷N over the FULL mesh (`("fsdp","replicate")`, fsdp-major so the ÷N→÷fsdp reconstruct is a pure all-gather over `replicate` — replicate-major forced a ~13 GiB/step grid-transpose collective-permute — on V's d_in / U's d_out / the CI fn's
 d_model) — the dominant optimizer-state memory scales 1/N, not the fixed 1/fsdp. The bf16
 COMPUTE weights are reconstructed to the `fsdp`-sharded (÷fsdp) layout ONCE per step in ENTRY
 (the cross-`replicate` gather, off the hot path — `llama8b._reconstruct_compute_weights` /
