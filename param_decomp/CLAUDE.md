@@ -42,8 +42,8 @@ axis (no per-axis CI semantics, only axis NAMES).
 TMS); `CIFn.expects_axes` mirrors it, and `init_train_state` asserts they're equal (early
 fail) so the CI fn stays per-domain (RoPE over `sequence`) without the core adapting. The
 three EDGES are generic so non-LM (bio-style) targets fit (#828): the model INPUT
-(`prefix_residual_fn(prefix, inputs)` in `run.py` takes `Any` — tokens for an LM, a dict
-for bio), the model OUTPUT (`clean_output`/`masked_output` return `Any` — logits, a tuple
+(the opaque batch `clean_output` / `read_activations` / `masked_output` consume, typed
+`Any` — token ids for an LM, a dict for bio), the model OUTPUT (`clean_output`/`masked_output` return `Any` — logits, a tuple
 of heads, coords; field NAMES stay `*_logits` pending a deferred rename), and the recon
 comparison (`recon_loss_fn(clean_output, masked_output) -> scalar`, default
 `kl_per_position` so the LM path is byte-identical). The waist shape contract (all per-site
@@ -59,7 +59,7 @@ see LOSS_PARITY_DESIGN.md),
 consuming `losses.py` (pure loss terms + schedules) and `adversary.py` (persistent
 vs fresh source machinery — semantically distinct adversaries sharing only
 `source_masks`); `ci_fn.py` the shared CI transformer; `targets/llama8b.py` + `targets/llama8b_sharding.py` the first target. There is ONE
-recon semantics: masks thread through the suffix forward, loss is KL on final logits
+recon semantics: masks thread through the full token-input forward, loss is KL on final logits
 (SPEC §2.3–2.5). Site-local recon is a conceptual no-no, not a "simplification".
 `targets/llama_simple_mlp.py` is the second target (the pile-pretrained `LlamaSimpleMLP`,
 t-9d2b8f02; sites `h.{i}.attn.{q,k,v,o}_proj` / `h.{i}.mlp.{c_fc,down_proj}`) —
@@ -146,13 +146,13 @@ ci_config (validated end-to-end on CPU via
 ## The HLO-baking rule (filter_jit discipline)
 
 The decomposed model is an `eqx.Module` whose frozen target weights are ARRAY FIELDS — a
-Llama-8B suffix is multi-GB. Therefore:
+Llama-8B target is multi-GB. Therefore:
 
 - **Every `jax.jit` that touches a model is an `eqx.filter_jit` with the model as a TRACED
   ARG** — never `@jax.jit` over a function that CLOSES OVER an array-bearing model. A closed-
   over model is a jit *constant*: its arrays bake into the HLO (multi-GB constant tensors,
   recompiled per concrete model). As a traced arg, the array leaves are dynamic inputs and
-  the static fields (`sites`, `first_layer`, `eps`, `leading_axes`) bake harmlessly.
+  the static fields (`sites`, `eps`, `leading_axes`) bake harmlessly.
 - **Step factories read only STATIC config off the closed-over `lm` at trace-setup**
   (`lm.site_names`, `lm.sites`, `lm.recon_loss_fn` — `recon_loss_fn` is a `@staticmethod`,
   pure, holds no arrays, so closing over it is safe). All ARRAY access goes through the
@@ -160,7 +160,7 @@ Llama-8B suffix is multi-GB. Therefore:
   `make_*_hidden_acts_step`, `make_slow_eval_step`, `make_position_ci_step`,
   `make_*_attn_patterns_step`, and `make_faith_warmup_step` all follow this; each carries a
   comment at the step factory. The toy `run.py`s and `load_run.py`'s harvest `forward`
-  thread the model (and the prefix) as filter_jit args too.
+  thread the model as a filter_jit arg too.
 - This is why the methods take only the *runtime-varying* args (`vu`, `resid`, masks, …) and
   the frozen weights ride on `self`: `self` reaches the trace as the traced model arg.
 

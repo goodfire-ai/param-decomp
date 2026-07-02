@@ -1,8 +1,9 @@
 """Forcing function for the generic model-I/O seam (issue #828).
 
 The trainer's `[B,T,d]` residual is the fixed waist; only three EDGES are generic — the
-model INPUT (`prefix_residual_fn` reads it), the model OUTPUT (`clean_output` /
-`masked_output` return `Any`), and the recon comparison (`DecomposedModel.recon_loss_fn`).
+model INPUT (the opaque batch `clean_output` / `read_activations` / `masked_output`
+consume), the model OUTPUT (`clean_output` / `masked_output` return `Any`), and the recon
+comparison (`DecomposedModel.recon_loss_fn`).
 The trainable components are NOT a generic edge: every target carries the universal
 `DecompVU` V/U pytree, so this synthetic target uses it too. This builds a tiny non-LM
 target that bends the three real edges at once:
@@ -18,8 +19,6 @@ finite and the trainable state moves — locking the genericity against silent r
 to LM-only. The LM neutrality of these edges is proved separately by the stacked-parity /
 equivalence goldens passing unchanged.
 """
-
-from dataclasses import dataclass
 
 import equinox as eqx
 import jax
@@ -50,9 +49,10 @@ SITE = "block.0.proj"
 
 class SyntheticDecomposedModel(eqx.Module):
     """A non-LM `DecomposedModel`: dict input, tuple `(coords, aux)` output, geometric-MSE
-    recon. Carries its frozen target weights (`W` + two readout heads) as array fields; the
-    trainable V/U (the universal `DecompVU`) stays an explicit method arg."""
+    recon. Carries its frozen target weights (`feat_proj` + `W` + two readout heads) as
+    array fields; the trainable V/U (the universal `DecompVU`) stays an explicit method arg."""
 
+    feat_proj: Float[Array, "D D"]
     W: Float[Array, "D D"]
     read_coords: Float[Array, "K D"]
     read_aux: Float[Array, "M D"]
@@ -81,12 +81,18 @@ class SyntheticDecomposedModel(eqx.Module):
     def _heads(self, hidden: Array) -> tuple[Array, Array]:
         return hidden @ self.read_coords.T, hidden @ self.read_aux.T
 
-    def clean_output(self, resid: Array) -> tuple[Array, Array]:
-        return self._heads(resid @ self.W.T)
+    def _residual(self, inputs: dict[str, Array]) -> Float[Array, "B T D"]:
+        """Input edge: the loader's native DICT batch -> the `[B,T,D]` residual (not token ids)."""
+        return (inputs["feat"] @ self.feat_proj.T) * inputs["gain"][..., None]
 
-    def read_activations(self, resid: Array, wanted: tuple[str, ...]) -> dict[str, Array]:
+    def clean_output(self, inputs: dict[str, Array]) -> tuple[Array, Array]:
+        return self._heads(self._residual(inputs) @ self.W.T)
+
+    def read_activations(
+        self, inputs: dict[str, Array], wanted: tuple[str, ...]
+    ) -> dict[str, Array]:
         assert wanted == (SITE,), wanted
-        return {SITE: resid}
+        return {SITE: self._residual(inputs)}
 
     def prepare_compute_weights(self, vu: DecompVU) -> DecompVU:
         return vu
@@ -94,7 +100,7 @@ class SyntheticDecomposedModel(eqx.Module):
     def masked_output(
         self,
         vu: DecompVU,
-        resid: Array,
+        inputs: dict[str, Array],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
         routes: dict[str, Array] | None,
@@ -105,6 +111,7 @@ class SyntheticDecomposedModel(eqx.Module):
     ) -> tuple[Array, Array]:
         del remat  # single-site stub forward; nothing to checkpoint
         assert live == (SITE,) and routes is None, (live, routes)
+        resid = self._residual(inputs)
         V, U = vu.site(SITE)
         W = self.W
         hidden = (resid @ V) * masks[SITE] @ U
@@ -119,7 +126,7 @@ class SyntheticDecomposedModel(eqx.Module):
     def masked_output_stochastic(
         self,
         vu: DecompVU,
-        resid: Array,
+        inputs: dict[str, Array],
         ci_stacked: dict[str, Array],
         draw_key: Array,
         routes: dict[str, Array] | None,
@@ -129,13 +136,13 @@ class SyntheticDecomposedModel(eqx.Module):
         remat: bool,
     ) -> tuple[Array, Array]:
         return run_stochastic_masked_output(
-            self, vu, resid, ci_stacked, draw_key, routes, live, has_delta, remat=remat
+            self, vu, inputs, ci_stacked, draw_key, routes, live, has_delta, remat=remat
         )
 
     def masked_site_outputs(
         self,
         vu: DecompVU,
-        resid: Array,
+        inputs: dict[str, Array],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
         routes: dict[str, Array] | None,
@@ -143,6 +150,7 @@ class SyntheticDecomposedModel(eqx.Module):
         has_delta: bool,
     ) -> dict[str, Array]:
         assert live == (SITE,) and routes is None, (live, routes)
+        resid = self._residual(inputs)
         V, U = vu.site(SITE)
         W = self.W
         hidden = (resid @ V) * masks[SITE] @ U
@@ -158,14 +166,9 @@ class SyntheticDecomposedModel(eqx.Module):
         }
 
 
-@jax.tree_util.register_dataclass
-@dataclass(frozen=True)
-class SyntheticPrefix:
-    feat_proj: Float[Array, "D D"]
-
-
 def _synthetic_lm(key: jax.Array) -> SyntheticDecomposedModel:
     return SyntheticDecomposedModel(
+        feat_proj=random.normal(random.fold_in(key, 7), (D, D)),
         W=random.normal(random.fold_in(key, 0), (D, D)),
         read_coords=random.normal(random.fold_in(key, 1), (K_COORDS, D)),
         read_aux=random.normal(random.fold_in(key, 2), (M_AUX, D)),
@@ -180,38 +183,31 @@ def _synthetic_vu(key: jax.Array) -> DecompVU:
     return DecompVU(vu={SITE: (V, U)})
 
 
-def prefix_residual(prefix: SyntheticPrefix, inputs: dict[str, Array]) -> Array:
-    """Input edge: a DICT batch -> the `[B,T,D]` residual (not token ids)."""
-    return (inputs["feat"] @ prefix.feat_proj.T) * inputs["gain"][..., None]
-
-
-def test_prefix_residual_consumes_dict_input():
-    """The input edge accepts the loader's native batch (here a dict), not just tokens."""
-    key = random.PRNGKey(0)
-    prefix = SyntheticPrefix(feat_proj=random.normal(key, (D, D)))
-    inputs = {
-        "feat": random.normal(random.fold_in(key, 1), (B, T, D)),
-        "gain": random.uniform(random.fold_in(key, 2), (B, T)),
+def _synthetic_inputs(key: jax.Array) -> dict[str, Array]:
+    return {
+        "feat": random.normal(random.fold_in(key, 5), (B, T, D)),
+        "gain": random.uniform(random.fold_in(key, 6), (B, T)),
     }
-    resid = jax.jit(prefix_residual)(prefix, inputs)
-    assert resid.shape == (B, T, D)
 
 
-def test_tuple_output_and_geometric_loss_flow():
-    """`clean_output`/`masked_output` emit a tuple; `recon_loss_fn` (MSE) contracts it."""
+def test_dict_input_tuple_output_and_geometric_loss_flow():
+    """The model consumes the loader's native DICT batch (not token ids);
+    `clean_output`/`masked_output` emit a tuple; `recon_loss_fn` (MSE) contracts it."""
     key = random.PRNGKey(1)
     lm = _synthetic_lm(key)
     components = _synthetic_vu(key)
-    resid = random.normal(random.fold_in(key, 5), (B, T, D))
+    inputs = _synthetic_inputs(key)
 
-    clean = lm.clean_output(resid)
+    assert lm.read_activations(inputs, (SITE,))[SITE].shape == (B, T, D)
+
+    clean = lm.clean_output(inputs)
     assert isinstance(clean, tuple) and len(clean) == 2
     assert clean[0].shape == (B, T, K_COORDS) and clean[1].shape == (B, T, M_AUX)
 
     masks = {SITE: jnp.ones((B, T, C))}
     delta_masks = {SITE: jnp.zeros((B, T))}
     masked = lm.masked_output(
-        components, resid, masks, delta_masks, None, (SITE,), False, remat=False
+        components, inputs, masks, delta_masks, None, (SITE,), False, remat=False
     )
     assert isinstance(masked, tuple) and len(masked) == 2
 
@@ -240,7 +236,7 @@ def test_train_step_runs_through_generic_target():
     key = random.PRNGKey(2)
     lm = _synthetic_lm(key)
     components = _synthetic_vu(key)
-    resid = random.normal(random.fold_in(key, 5), (B, T, D))
+    inputs = _synthetic_inputs(key)
 
     ci_arch = ChunkwiseTransformerCIArch(
         chunks=(Chunk(input_taps=(SITE,), output_sites=(SITE,)),),
@@ -274,7 +270,7 @@ def test_train_step_runs_through_generic_target():
     V_before = jax.device_get(state.components.site(SITE)[0])  # host copy survives step donation
     run_key = random.PRNGKey(3)
     for step_idx in range(2):
-        state, metrics = step_fn(lm, state, resid, random.fold_in(run_key, step_idx))
+        state, metrics = step_fn(lm, state, inputs, random.fold_in(run_key, step_idx))
         assert jnp.isfinite(metrics["total"]), (step_idx, metrics["total"])
         assert "loss/StochasticReconLoss" in metrics
 

@@ -417,7 +417,7 @@ def main(config: Path, run_id: str) -> None:
             flush=True,
         )
 
-    # The `lm` (an eqx model) IS the frozen target — it carries the suffix weights as fields,
+    # The `lm` (an eqx model) IS the frozen target — it carries the frozen weights as fields,
     # so the function-table era's separate `frozen` object is gone.
     lm, _vocab_size = build_target(built, mesh)
 

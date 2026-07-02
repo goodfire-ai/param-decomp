@@ -1,12 +1,12 @@
 """Generate a small full-model-faithful compile-probe config.
 
 Derived from llama8b_full32L_seq512_b128_dp128.yaml: SAME per-kind C structure
-(q/k 2048, v/o 4096, gate/up 8192, down 10240) so the masked suffix forward takes the
+(q/k 2048, v/o 4096, gate/up 8192, down 10240) so the masked forward takes the
 uniform-per-kind `lax.scan` path (the production compile path), SAME chunkwise-recon +
 persistent-PGD + faith + imp-min machinery, SAME CI-fn arch (4-block transformer). The
-only knobs scaled down are layer count (decompose the LAST `n_layers` so the frozen
-suffix that the scan walks is exactly `n_layers` long), batch, seq, and the warmup/step
-counts so we reach the real recon step fast for timing.
+only knobs scaled down are layer count (decompose the LAST `n_layers`, so the live
+decomposed span the scan walks is exactly `n_layers` long), batch, seq, and the
+warmup/step counts so we reach the real recon step fast for timing.
 
 Usage: python gen_probe_config.py <n_layers> <dp> <out.yaml>
 """
