@@ -61,7 +61,7 @@ and the tables (§2, §3, §6). Prose between them is orientation only. Notation
 | coeffs | faith `1e5` · imp `5e-6` · stoch `0.5` · ppgd `0.5` |
 | imp-min | `eps 1e-12`, `p: 2.0 → 0.4` linear over `[0, 1]`-frac of training; `frequency` coeff `1e-6` (= imp `5e-6` · old beta `0.2`), `reference_token_count = B·T = 1048576` |
 | stoch | plan = sequential 3-site chunks × `uniform_k_routing(chunk, n_draws=1)` |
-| PPGD | scope `broadcast_across_batch`, `n_warmup 2`, clamp-parameterization, Adam(β₁ .5, β₂ .99, ε 1e-8), lr const `0.01` w/ 2.5% LR-warmup |
+| PPGD | scope `sc`, `n_warmup 2`, clamp-parameterization, Adam(β₁ .5, β₂ .99, ε 1e-8), lr const `0.01` w/ 2.5% LR-warmup |
 | components opt | AdamW(.9, .999, ε 1e-8, wd 0), lr `1.5e-4` cosine → `0.1×`, **grad-clip 0.01** |
 | CI opt | AdamW(.9, .999, ε 1e-8, wd 0), lr `5e-5` cosine → `0.1×`, no clip |
 | faith warmup | 400 steps, AdamW lr `1e-3`, wd 0 |
@@ -285,7 +285,7 @@ faithfulness, sources/PPGD, the squashings (S5/S6), the imp-min reduction, the g
 | S13′ | Per persistent term: source updates per training step = `n_warmup + 1`, all through THAT term's persistent SRC_STEP optimizer state; its source LR schedule advances once per training step. **`warmup_pct==0` edge (accepted seam):** at `warmup_pct==0` torch short-circuits to full LR at step 0 (`warmup_steps=0`), while JAX clamps `warmup_steps = max(floor(...), 1)` → source LR `=0` at step 0 (`losses.py:61`, `train.py:265`). A one-step divergence, only when `warmup_pct==0`; production uses 2.5% warmup and is unaffected. Accepted, not matched. |
 | S14′ | Each persistent term's final ascent gradient comes from the SAME graph as the main backward (pre-update components, live `ci_lower`), unscaled by THAT term's coeff. It is applied after backward; it must not use post-update params. |
 | S15 | Every source update ends with `PROJ` (★ clamp to `[0,1]`). Init: ★ `sources ~ U[0,1]` i.i.d. |
-| S16 | Shared-scope sources are identical on every data-parallel replica at every step (identical init, identical updates from the global-batch gradient). `per_batch_per_position` sources shard with the batch instead. (Implementation mapping in §8/§9.) |
+| S16 | Shared-scope sources are identical on every data-parallel replica at every step (identical init, identical updates from the global-batch gradient). `bsc` sources shard with the batch instead. (Implementation mapping in §8/§9.) |
 | S17 | `faithfulness_loss` is the global mean of squared delta entries over all sites' parameters (Σ‖Δ‖² / Σ numel), recomputed from live V/U each step. |
 | S18 | Each training step consumes a fresh token batch (a pure function of `(seed, step)` for O(1) resume); the model embeds it internally. **AMENDED 2026-06-24** (Oli-approved): removed the prefix harvest (residual-start) — there is no separate prefix forward; `clean_output` / `read_activations` / `masked_output` take the token batch directly. |
 | S19 | Components gradients are global-norm-clipped at `0.01`, before the optimizer step. CI fn is unclipped (production). The clip coefficient uses torch's eps convention: `clip_coef = min(1, max_norm / (total_norm + 1e-6))` (`torch.nn.utils.clip_grad_norm_`). This `+1e-6` is canonical and matched JAX-side (#643); plain `optax.clip_by_global_norm` divides by `max(total_norm, max_norm)` with NO eps, which at `clip=0.01` (clip fires almost every step) gives a ~1e-4 relative component-grad difference each step — a real per-step deviation the JAX clip must avoid by reproducing the `+1e-6`. |

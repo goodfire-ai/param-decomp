@@ -62,7 +62,7 @@ eval:
   - type: CIHiddenActsReconLoss
   - coeff: null
     init: random
-    mask_scope: shared_across_batch
+    mask_scope: c
     n_steps: 20
     step_size: 0.1
     type: PGDReconLoss
@@ -583,7 +583,7 @@ pd:
         warmup_pct: 0.025
       type: adam
     scope:
-      type: per_batch_per_position
+      type: bsc
     type: PersistentPGDReconLoss
   - coeff: 1000000.0
     type: FaithfulnessLoss

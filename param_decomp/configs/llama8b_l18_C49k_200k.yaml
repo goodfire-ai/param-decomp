@@ -9,8 +9,8 @@ run_name: jax-l18-C49k-200k
 #      (the JAX trainer reads the staged 2048 artifact; seq length is a REAL
 #      hyperparameter change, chosen deliberately — 4x tokens/step vs upstream).
 #   2. ci attn max_len: 512 -> 2048 (RoPE table must cover the longer seq).
-#   3. PersistentPGDReconLoss scope: per_batch_per_position -> broadcast_across_batch
-#      (the JAX trainer implements broadcast only; deliberate divergence).
+#   3. PersistentPGDReconLoss scope: per_batch_per_position -> sc (batch-shared
+#      sources; deliberate divergence — the JAX trainer implemented sc only at launch).
 #   4. cadence.save_every: 25000 -> 5000 (overnight crash costs <=40 min, not 3 h).
 #   5. C: 30000 -> 49152 per Oli (2x the b512 run's C=24576; also unlocks a 32-GPU
 #      mesh — 30000's gcd with batch 128 capped the mesh at 16).
@@ -59,7 +59,7 @@ eval:
   - type: CIHiddenActsReconLoss
   - coeff: null
     init: random
-    mask_scope: shared_across_batch
+    mask_scope: c
     n_steps: 20
     step_size: 0.1
     type: PGDReconLoss
@@ -135,7 +135,7 @@ pd:
         warmup_pct: 0.025
       type: adam
     scope:
-      type: broadcast_across_batch
+      type: sc
     type: PersistentPGDReconLoss
   - coeff: 100000.0
     type: FaithfulnessLoss

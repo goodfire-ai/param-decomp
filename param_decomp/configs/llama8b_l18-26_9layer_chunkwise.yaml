@@ -33,7 +33,7 @@ run_name: jax-l18-26-9L-seq512-b128-40k
 #      batch-invariant vs the torch oracle).
 #   7. steps 200k -> 40k: short R&D horizon (won't converge; cosine + p-anneal recompute
 #      over 40k).
-# Everything else (PersistentPGDReconLoss one-chunk coeff 0.5 broadcast_across_batch,
+# Everything else (PersistentPGDReconLoss one-chunk coeff 0.5 scope sc,
 # FaithfulnessLoss 1e5, faith warmup, eval metric set, target.weights_dtype bfloat16) is
 # identical to the C49k base. remat is on (runtime.remat_recon_forwards: true).
 cadence:
@@ -72,7 +72,7 @@ eval:
   - type: CIHiddenActsReconLoss
   - coeff: null
     init: random
-    mask_scope: shared_across_batch
+    mask_scope: c
     n_steps: 20
     step_size: 0.1
     type: PGDReconLoss
@@ -198,7 +198,7 @@ pd:
         warmup_pct: 0.025
       type: adam
     scope:
-      type: broadcast_across_batch
+      type: sc
     type: PersistentPGDReconLoss
     use_sigmoid_parameterization: false
   - coeff: 100000.0
