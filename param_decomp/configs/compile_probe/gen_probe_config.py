@@ -126,7 +126,6 @@ def main(n_layers: int, dp: int, out_path: str, seq: int = 256, batch: int | Non
                 },
                 {
                     "coeff": 0.5,
-                    "n_samples": 1,
                     "n_warmup_steps": 2,
                     "optimizer": {
                         "beta1": 0.01,

@@ -73,7 +73,6 @@ pd:
       type: uniform_k_subset
   - type: PersistentPGDReconLoss
     coeff: 0.5
-    n_samples: 1
     n_warmup_steps: 2
     optimizer:
       type: adam

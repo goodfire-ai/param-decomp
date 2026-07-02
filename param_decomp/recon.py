@@ -429,7 +429,7 @@ def build_loss_terms(
                     one_chunk(site_names),
                     AllRoutingConfig(),
                     PersistentSources(state_key=key, cfg=cfg),
-                    cfg.n_samples,
+                    n_samples=1,
                 )
                 recon_terms.append(recon(cfg, plan))
             case _:
