@@ -94,14 +94,19 @@ def _chunkwise_arch(lm: DecomposedModel, cfg: LlamaConfig) -> ChunkwiseTransform
     )
 
 
-def _build(seed: int):
+def _build(seed: int, muon_components: bool = False):
     cfg = _tiny_cfg()
     C, seq = 8, 16
     sites = llama_site_specs(cfg, mlp_family_site_cs(3, 4, C))
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(seed))
     ci_fn = build_ci_fn(_chunkwise_arch(lm, cfg), lm.sites, jax.random.PRNGKey(seed + 1))
-    opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
+    inner_vu = (
+        optax.contrib.muon(1e-3, consistent_rms=0.2)
+        if muon_components
+        else optax.adamw(1e-3, weight_decay=0.0)
+    )
+    opt_vu = optax.chain(optax.clip_by_global_norm(0.01), inner_vu)
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
     src = init_persistent_sources(
         lm.site_names,
@@ -141,8 +146,8 @@ def _build(seed: int):
     return lm, state, step, resid
 
 
-def test_roundtrip_and_exact_resume(tmp_path: Path):
-    lm, state, step, resid = _build(seed=1)
+def _roundtrip_and_exact_resume(tmp_path: Path, muon_components: bool) -> None:
+    lm, state, step, resid = _build(seed=1, muon_components=muon_components)
     for i in range(2):
         state, _ = step(lm, state, resid, jax.random.PRNGKey(i))
 
@@ -150,7 +155,7 @@ def test_roundtrip_and_exact_resume(tmp_path: Path):
     save_state(mgr, 2, state)
 
     # Restore onto a DIFFERENTLY-seeded reference: every leaf must come from disk.
-    _, fresh, _, _ = _build(seed=7)
+    _, fresh, _, _ = _build(seed=7, muon_components=muon_components)
     restored = restore_latest(mgr, fresh)
     assert restored is not None
     loaded, ckpt_step = restored
@@ -165,6 +170,17 @@ def test_roundtrip_and_exact_resume(tmp_path: Path):
         assert float(m_cont[k]) == float(m_load[k]), k
     for a, b in zip(jax.tree.leaves(state_cont), jax.tree.leaves(loaded_cont), strict=True):
         assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
+
+
+def test_roundtrip_and_exact_resume(tmp_path: Path):
+    _roundtrip_and_exact_resume(tmp_path, muon_components=False)
+
+
+def test_muon_roundtrip_and_exact_resume(tmp_path: Path):
+    """SPEC S20 amendment: the muon components opt state (optax-partitioned muon/adam
+    masked trees) must ALSO restore onto a rebuilt reference and continue exactly —
+    this is what a scavenge preemption + requeue exercises."""
+    _roundtrip_and_exact_resume(tmp_path, muon_components=True)
 
 
 def test_persistent_adam_step_count_roundtrip_and_post_resume_bias_correction(tmp_path: Path):

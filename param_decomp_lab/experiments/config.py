@@ -24,13 +24,14 @@ from param_decomp.ci_fn import (
     MLPCIArch,
 )
 from param_decomp.configs import (
+    AdamWOptimizerConfig,
     AnyEvalMetricConfig,
     Cadence,
     ChunkwiseTransformerCiConfig,
     CiConfig,
     GlobalMlpCiConfig,
     LayerwiseMlpCiConfig,
-    OptimizerConfig,
+    MuonOptimizerConfig,
     PDConfig,
     PersistentPGDReconLossConfig,
     ResumeProvenance,
@@ -136,15 +137,21 @@ def _assert_cosine_to_tenth(schedule: ScheduleConfig, who: str) -> None:
     assert schedule.final_val_frac == 0.1, f"{who}: final_val_frac must be 0.1, got {schedule}"
 
 
-def _assert_plain_adamw(optimizer: OptimizerConfig, who: str) -> None:
-    assert optimizer.betas == (0.9, 0.999), f"{who}: betas must be (0.9, 0.999)"
+def _assert_canonical_optimizer(
+    optimizer: AdamWOptimizerConfig | MuonOptimizerConfig, who: str
+) -> None:
+    """AdamW is canonical; Muon is a deliberate, config-gated experimental deviation (still
+    constrained to the trainer's no-weight-decay subspace)."""
+    if isinstance(optimizer, AdamWOptimizerConfig):
+        assert optimizer.betas == (0.9, 0.999), f"{who}: betas must be (0.9, 0.999)"
     assert optimizer.weight_decay == 0.0, f"{who}: weight_decay must be 0"
 
 
 def assert_canonical_algorithm_config(cfg: "ExperimentConfig[Any, Any]") -> None:
     """Assert the schema lives in the subspace the JAX trainer implements (the engine then
     reads `pd` / `cadence` DIRECTLY). The numerics-load-bearing constraints:
-    cosine-to-0.1 LR with no warmup, plain AdamW (betas (0.9, 0.999), no weight decay),
+    cosine-to-0.1 LR with no warmup, plain AdamW (betas (0.9, 0.999), no weight decay) or
+    the config-gated experimental Muon,
     a required components grad clip (CI-fn grad clip is optional), and a fully-specified
     checkpoint cadence. (Leaky-hard
     sigmoid, the always-built delta component, and no tied weights are now enforced by
@@ -154,8 +161,8 @@ def assert_canonical_algorithm_config(cfg: "ExperimentConfig[Any, Any]") -> None
     ci_opt = cfg.pd.ci_fn_optimizer
     _assert_cosine_to_tenth(vu_opt.lr_schedule, "components_optimizer")
     _assert_cosine_to_tenth(ci_opt.lr_schedule, "ci_fn_optimizer")
-    _assert_plain_adamw(vu_opt, "components_optimizer")
-    _assert_plain_adamw(ci_opt, "ci_fn_optimizer")
+    _assert_canonical_optimizer(vu_opt, "components_optimizer")
+    _assert_canonical_optimizer(ci_opt, "ci_fn_optimizer")
     assert vu_opt.grad_clip_norm is not None, "components grad clip is part of the method"
 
     # The persistent-PGD source LR is constant-after-warmup only — `source_lr` ignores

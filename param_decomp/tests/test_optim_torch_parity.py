@@ -12,8 +12,15 @@ import optax
 import pytest
 from jax.typing import ArrayLike
 from jaxtyping import Array
+from pydantic import TypeAdapter
 
-from param_decomp.run_state import clip_by_global_norm_with_eps, torch_cosine_schedule
+from param_decomp.configs import AdamWOptimizerConfig, AnyOptimizerConfig, MuonOptimizerConfig
+from param_decomp.run_state import (
+    _optimizer_with_clip,
+    clip_by_global_norm_with_eps,
+    torch_cosine_schedule,
+)
+from param_decomp.schedule import ScheduleConfig
 
 
 def _scalar(value: ArrayLike) -> float:
@@ -92,3 +99,52 @@ def test_grad_clip_noop_below_threshold():
     out = _clip(clip, grads)
     assert float(out["a"][0]) == pytest.approx(3.0)
     assert float(out["a"][1]) == pytest.approx(4.0)
+
+
+def test_muon_orthogonalizes_2d_leaves_and_adam_falls_back_elsewhere():
+    """`type: muon` (SPEC S20 amendment): a 2D leaf's update is NS-orthogonalized (flat
+    singular values), a non-2D leaf falls back to Adam; default `type: adamw` keeps the
+    canonical optimizer so existing configs are untouched."""
+    muon_cfg = MuonOptimizerConfig(
+        type="muon",
+        lr_schedule=ScheduleConfig(
+            fn_type="cosine", start_val=1e-3, final_val_frac=0.1, warmup_pct=0.0
+        ),
+        grad_clip_norm=0.01,
+    )
+    lr = 1e-3
+    opt = _optimizer_with_clip(muon_cfg, lambda count: jnp.float32(lr))
+    key = jax.random.key(0)
+    params = {"V": jnp.zeros((16, 8)), "scale": jnp.zeros((8,))}
+    grads = {
+        "V": jax.random.normal(key, (16, 8)),
+        "scale": jax.random.normal(jax.random.fold_in(key, 1), (8,)),
+    }
+    updates, _ = opt.update(grads, opt.init(params), params)
+    _, treedef = jax.tree.flatten(grads)
+    updates = jax.tree.unflatten(treedef, jax.tree.leaves(updates))
+
+    grad_sv = jnp.linalg.svd(grads["V"], compute_uv=False)
+    update_sv = jnp.linalg.svd(updates["V"], compute_uv=False)
+    grad_flatness = float(grad_sv.max() / grad_sv.min())
+    update_flatness = float(update_sv.max() / update_sv.min())
+    assert update_flatness < 2.0 and update_flatness < grad_flatness / 2, (
+        "muon update on a 2D leaf must be near-orthogonal (5-step NS is approximate, so the"
+        f" spectrum is flat-ish, not exactly flat): grad {grad_flatness:.2f} ->"
+        f" update {update_flatness:.2f}"
+    )
+    scale_update_magnitude = float(jnp.abs(updates["scale"]).max())
+    assert bool(jnp.all(jnp.isfinite(updates["scale"])))
+    assert 0.3 * lr < scale_update_magnitude < 3 * lr, (
+        f"non-2D leaf takes an Adam-fallback step of O(lr), got {scale_update_magnitude}"
+    )
+
+
+def test_optimizer_config_type_discriminator():
+    schedule = {"fn_type": "cosine", "start_val": 5e-5, "final_val_frac": 0.1}
+    adapter = TypeAdapter(AnyOptimizerConfig)
+    default = adapter.validate_python({"lr_schedule": schedule})
+    assert isinstance(default, AdamWOptimizerConfig), "untyped configs stay canonical AdamW"
+    muon = adapter.validate_python({"type": "muon", "lr_schedule": schedule})
+    assert isinstance(muon, MuonOptimizerConfig)
+    assert muon.beta == 0.95 and muon.consistent_rms is None

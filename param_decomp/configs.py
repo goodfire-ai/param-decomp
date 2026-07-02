@@ -564,7 +564,8 @@ AnyEvalMetricConfig = Annotated[
 # ---------------------------------------------------------------------------
 
 
-class OptimizerConfig(BaseConfig):
+class AdamWOptimizerConfig(BaseConfig):
+    type: Literal["adamw"] = "adamw"
     lr_schedule: ScheduleConfig = Field(..., description="Learning rate schedule")
     weight_decay: NonNegativeFloat = Field(default=0.0, description="AdamW weight decay")
     betas: tuple[Probability, Probability] = Field(
@@ -574,6 +575,46 @@ class OptimizerConfig(BaseConfig):
         default=None,
         description="If set, clip the grad norm of this group's parameters to this value",
     )
+
+
+class MuonOptimizerConfig(BaseConfig):
+    """Muon (`optax.contrib.muon`): Newton-Schulz-orthogonalized momentum for the group's 2D
+    leaves; non-2D leaves fall back to Adam(0.9, 0.999) at the same LR. Experimental
+    (non-canonical) — the V/U components tree is all-2D so the fallback never fires there."""
+
+    type: Literal["muon"]
+    lr_schedule: ScheduleConfig = Field(..., description="Learning rate schedule")
+    beta: Probability = Field(
+        default=0.95, description="Momentum decay for the orthogonalized update"
+    )
+    consistent_rms: PositiveFloat | None = Field(
+        default=None,
+        description=(
+            "If set, scale updates by `sqrt(max(fan_in, fan_out)) * consistent_rms` so update"
+            " RMS is shape-independent (0.2 ~ AdamW's empirical RMS, making the AdamW LR"
+            " transferable). If None, optax's width scaling `sqrt(max(1, fan_out / fan_in))`."
+        ),
+    )
+    weight_decay: NonNegativeFloat = Field(default=0.0, description="Weight decay")
+    grad_clip_norm: PositiveFloat | None = Field(
+        default=None,
+        description="If set, clip the grad norm of this group's parameters to this value",
+    )
+
+
+def _default_optimizer_type_adamw(data: object) -> object:
+    """AdamW is the canonical optimizer, so a config without `type` (every config predating
+    the muon gate, and the common case going forward) discriminates to it."""
+    if isinstance(data, dict) and "type" not in data:
+        return {**data, "type": "adamw"}
+    return data
+
+
+AnyOptimizerConfig = Annotated[
+    AdamWOptimizerConfig | MuonOptimizerConfig,
+    Discriminator("type"),
+    BeforeValidator(_default_optimizer_type_adamw),
+]
 
 
 AnyLossMetricConfig = Annotated[
@@ -916,10 +957,10 @@ class PDConfig(BaseConfig):
     )
 
     # --- Training ---
-    components_optimizer: OptimizerConfig = Field(
+    components_optimizer: AnyOptimizerConfig = Field(
         ..., description="Optimizer config for the component (LinearComponent etc.) parameters"
     )
-    ci_fn_optimizer: OptimizerConfig = Field(
+    ci_fn_optimizer: AnyOptimizerConfig = Field(
         ..., description="Optimizer config for the CI function parameters"
     )
     steps: PositiveInt = Field(..., description="Total number of optimisation steps")
