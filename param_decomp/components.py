@@ -83,8 +83,8 @@ class DecompVU(eqx.Module, Generic[VULeaf]):
 
     def shardings(self: "DecompVU[Array]", mesh: "Mesh") -> "DecompVU[NamedSharding]":
         """True ÷N ZeRO-1 PERSISTENCE layout for the STORED masters, split across the data and
-        TP axes: V `(d_in, C)` shards d_in over `("replicate","fsdp")` and C over `tp`; U
-        `(C, d_out)` shards C over `tp` and d_out over `("replicate","fsdp")`. So both still
+        TP axes: V `(d_in, C)` shards d_in over `("fsdp","replicate")` and C over `tp`; U
+        `(C, d_out)` shards C over `tp` and d_out over `("fsdp","replicate")`. So both still
         shard ÷(replicate·fsdp·tp) = ÷N total (C now carries the `tp` factor — the Megatron-C
         axis). The fp32 masters + their Adam m/v inherit this; the dominant memory term stays
         ÷N. `tp = 1` ⇒ C unsharded, identical to the pure-HSDP layout.
@@ -93,8 +93,15 @@ class DecompVU(eqx.Module, Generic[VULeaf]):
         reconstructed to `P(None, "fsdp", "tp")` ONCE per step in ENTRY (the ÷N→÷fsdp gather
         across `replicate`, off the hot path), so the per-layer scan body gathers only the
         `fsdp`-sharded d on NVLink — and only HALF the weight, since C is ÷tp. Asserts d tiles
-        the data axes and C tiles `tp`."""
-        data = ("replicate", "fsdp")
+        the data axes and C tiles `tp`.
+
+        The data axes are FSDP-MAJOR (`("fsdp", "replicate")`): each fsdp group's target
+        ÷fsdp shard must be the contiguous concat of its own replicate-group's ÷N shards, so
+        the reconstruct (and its grad reverse) partitions as a pure all-gather /
+        reduce-scatter over `replicate`. Replicate-major linearization puts the ÷N shards in
+        the wrong fsdp groups, and GSPMD inserts a full (replicate, fsdp) grid-transpose
+        collective-permute in BOTH directions (~13 GiB/rank/step cross-node at dp32)."""
+        data = ("fsdp", "replicate")
         shard_V = NamedSharding(mesh, P(data, "tp"))  # d_in ÷(rep·fsdp), C ÷tp → ÷N
         shard_U = NamedSharding(mesh, P("tp", data))  # C ÷tp, d_out ÷(rep·fsdp) → ÷N
         n_data = mesh.shape["replicate"] * mesh.shape["fsdp"]
