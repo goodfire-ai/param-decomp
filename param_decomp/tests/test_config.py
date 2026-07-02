@@ -99,6 +99,7 @@ def test_b128_config_converts():
         converted.pd.loss_metrics, tuple(sc.name for sc in converted.target.sites)
     )
     faith, imp = losses.faith, losses.imp
+    assert faith is not None
     assert isinstance(imp.cfg, ImportanceMinimalityLossConfig)
     assert faith.coeff == 1e5 and imp.cfg.pnorm.start_val == 2.0
     (ppgd,) = persistent_configs(losses.recon).values()

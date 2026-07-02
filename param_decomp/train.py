@@ -128,7 +128,7 @@ def make_train_step(
     recon_terms = losses.recon
     faith_term = losses.faith
     imp_term = losses.imp
-    faith_coeff = faith_term.coeff
+    faith_coeff = faith_term.coeff if faith_term is not None else 0.0
     imp_min = imp_term.cfg
     imp_coeff = imp_term.coeff
     freq_coeff = imp_min.frequency.coeff if imp_min.frequency is not None else 0.0
@@ -378,7 +378,13 @@ def make_train_step(
             # checkpointed block (mask never held, the memory win); others fall back to building
             # masks then `masked_output`. Either way the engine holds no per-forward mask stacks.
             ci_stacked = model.stack_ci(ci.lower)
-            faith_loss = faithfulness_loss(model.weight_deltas(components))
+            # `faith_term is None` skips the fp32 dense `weight_deltas` materialization
+            # entirely (the full-model transient), not just its coefficient.
+            faith_loss = (
+                faithfulness_loss(model.weight_deltas(components))
+                if faith_term is not None
+                else jnp.zeros((), jnp.float32)
+            )
             imp_lp, imp_freq = imp_min_terms(ci.upper, imp_min, imp_min_param)
 
             term_losses: list[Array] = []
