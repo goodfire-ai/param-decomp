@@ -166,11 +166,12 @@ needs."""
 @dataclass(frozen=True)
 class LossSurface:
     """The VPD objective's fixed shape — `L = c·faith + c·imp + Σ c·recon` (SPEC S10').
-    faith and imp are singletons (exactly one each); recon is the genuinely plural sum.
-    Built by `build_loss_terms`; the step reads each role by name and runs its distinct
-    execution pattern — no isinstance dispatch over an arbitrary-order flat list."""
+    imp is a singleton; recon is the genuinely plural sum. faith is optional (None omits
+    it, skipping the fp32 dense `weight_deltas` materialization entirely) — useful when only
+    reconstruction/runtime matter. Built by `build_loss_terms`; the step reads each role by
+    name and runs its distinct execution pattern — no isinstance dispatch over a flat list."""
 
-    faith: FaithfulnessTerm
+    faith: FaithfulnessTerm | None
     imp: ImportanceMinimalityTerm
     recon: tuple[ReconLossTerm, ...]
 
@@ -323,8 +324,8 @@ def build_loss_terms(
     site_names: tuple[str, ...],
 ) -> LossSurface:
     """Validate the shared torch loss configs into the `LossSurface` record
-    (LOSS_PARITY_DESIGN §3): exactly one faithfulness + one importance-minimality term,
-    plus the recon terms (the genuinely plural Σ).
+    (LOSS_PARITY_DESIGN §3): at most one faithfulness (optional) + exactly one
+    importance-minimality term, plus the recon terms (the genuinely plural Σ).
 
     Asserts the subset this trainer implements; refuses everything else loudly.
     Recon-term ORDER follows the config list — per-term RNG keys derive from the recon
@@ -437,9 +438,7 @@ def build_loss_terms(
                 # (offline-eval only), not a JAX training loss (SPEC S31, LOSS_PARITY_DESIGN §4c).
                 raise AssertionError(f"unsupported training loss {cfg.type!r}")
 
-    assert faith is not None and imp is not None, (
-        f"need FaithfulnessLoss + ImportanceMinimalityLoss, got {[m.type for m in loss_metrics]}"
-    )
+    assert imp is not None, f"need ImportanceMinimalityLoss, got {[m.type for m in loss_metrics]}"
     assert recon_terms, "no recon loss terms configured"
     for term in recon_terms:
         for entry in term.plan:
