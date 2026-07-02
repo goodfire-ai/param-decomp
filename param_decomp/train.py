@@ -479,6 +479,13 @@ def make_train_step(
             components_grad_faith,
         )
         grad_norm_metrics = _grad_norm_metrics(components_grad, ci_fn_grad)
+        # Pre-clip source-grad norm per adversary, unscaled by the term's coeff — the same
+        # gradient `final_ascend`'s SRC_STEP sees (S14'). Logged to size `grad_clip_norm`.
+        grad_norm_metrics |= {
+            f"grad_norms/summary/src/{k}": optax.global_norm(persistent_grads_scaled[k])
+            / warmed_advs[k].coeff
+            for k in warmed_advs
+        }
 
         # ── each adversary's final ascent from the fused graph (SPEC S13'/S14'): the
         # backward saw coeff·L_term, so it ascends on L_term itself (unscaled by its coeff

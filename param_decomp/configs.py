@@ -337,6 +337,14 @@ class AdamPGDConfig(BaseConfig):
     beta1: Probability = Field(default=0.9, description="Adam beta1 for masks")
     beta2: Probability = Field(default=0.999, description="Adam beta2 for masks")
     eps: NonNegativeFloat = Field(default=1e-8, description="Adam epsilon for masks")
+    grad_clip_norm: PositiveFloat | None = Field(
+        default=None,
+        description=(
+            "Global-norm clip on the source gradient (whole per-adversary source bundle,"
+            " all sites jointly) before the Adam moments — the source-side analog of the"
+            " main optimizers' grad_clip_norm. None (default) is the oracle-parity path."
+        ),
+    )
     lr_schedule: ScheduleConfig
 
 

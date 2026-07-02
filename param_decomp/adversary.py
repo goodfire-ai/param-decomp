@@ -20,6 +20,7 @@ from dataclasses import dataclass
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import optax
 from jax import random
 from jax.typing import DTypeLike
 from jaxtyping import Array, Float, PRNGKeyArray
@@ -116,6 +117,12 @@ def sources_adam_ascend_project(
     # `sources_grad` arrives in the masked-forward compute dtype (bf16); cast to the moment
     # dtype so the persistent `m`/`v` keep their declared storage dtype across steps.
     grad = {s: sources_grad[s].astype(adam_state.m[s].dtype) for s in sources}
+    if adam.grad_clip_norm is not None:
+        # Same clip semantics as the main optimizers (`run_state.clip_by_global_norm_with_eps`):
+        # one global norm over the whole source bundle, scale = min(max_norm/(norm+eps), 1).
+        global_norm = optax.global_norm(grad)
+        scale = jnp.minimum(adam.grad_clip_norm / (global_norm + 1e-6), 1.0)
+        grad = {s: g * scale for s, g in grad.items()}
     m = {s: adam.beta1 * adam_state.m[s] + (1 - adam.beta1) * grad[s] for s in sources}
     v = {s: adam.beta2 * adam_state.v[s] + (1 - adam.beta2) * grad[s] * grad[s] for s in sources}
     bias_correction1 = 1 - adam.beta1**step_count
