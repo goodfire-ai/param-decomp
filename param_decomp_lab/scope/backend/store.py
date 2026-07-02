@@ -7,6 +7,7 @@ reads are one mmap seek + one row + detokenization via a cached AppTokenizer.
 
 import json
 import sqlite3
+import threading
 from functools import lru_cache
 from pathlib import Path
 
@@ -26,6 +27,11 @@ from param_decomp_lab.scope.backend.contract import (
     SubrunEntry,
 )
 from param_decomp_lab.tokenizer_display import AppTokenizer
+
+# Cached reader connections are shared across FastAPI's threadpool, and CPython's sqlite3
+# execute() is not atomic across threads on one connection: every query on a shared reader
+# connection runs under this lock (queries are ms-scale; the viewer is read-only).
+_DB_LOCK = threading.Lock()
 
 _SORT_SQL: dict[str, str] = {
     "mean_ci": "c.mean_ci DESC",
@@ -56,11 +62,12 @@ def _reader(subrun_dir: str, run_id: str) -> SiteShardReader:
 @lru_cache(maxsize=64)
 def _rank_order(subrun_dir: str, run_id: str) -> tuple[list[int], dict[int, int]]:
     """(idx_by_rank, rank_by_idx), ordered by mean_ci DESC then idx."""
-    rows = (
-        _reader(subrun_dir, run_id)
-        .db.execute("SELECT idx FROM components ORDER BY mean_ci DESC, idx ASC")
-        .fetchall()
-    )
+    with _DB_LOCK:
+        rows = (
+            _reader(subrun_dir, run_id)
+            .db.execute("SELECT idx FROM components ORDER BY mean_ci DESC, idx ASC")
+            .fetchall()
+        )
     idx_by_rank = [idx for (idx,) in rows]
     return idx_by_rank, {idx: r for r, idx in enumerate(idx_by_rank)}
 
@@ -138,15 +145,16 @@ class ScopeStore:
         join = "LEFT JOIN lbl.labels l ON l.site = :site AND l.component_idx = c.idx"
         where = "WHERE l.label LIKE :pat" if q else ""
         params = {"site": site, "pat": f"%{q}%", "limit": page_size, "offset": page * page_size}
-        (total,) = conn.execute(
-            f"SELECT COUNT(*) FROM components c {join} {where}", params
-        ).fetchone()
-        rows = conn.execute(
-            f"""SELECT c.idx, c.mean_ci, c.firing_density, c.max_act, l.label
-                FROM components c {join} {where}
-                ORDER BY {_SORT_SQL[sort]} LIMIT :limit OFFSET :offset""",
-            params,
-        ).fetchall()
+        with _DB_LOCK:
+            (total,) = conn.execute(
+                f"SELECT COUNT(*) FROM components c {join} {where}", params
+            ).fetchone()
+            rows = conn.execute(
+                f"""SELECT c.idx, c.mean_ci, c.firing_density, c.max_act, l.label
+                    FROM components c {join} {where}
+                    ORDER BY {_SORT_SQL[sort]} LIMIT :limit OFFSET :offset""",
+                params,
+            ).fetchall()
         items = [
             ComponentRow(idx=idx, mean_ci=mean_ci, density=density, max_act=max_act, label=label)
             for idx, mean_ci, density, max_act, label in rows
@@ -157,14 +165,15 @@ class ScopeStore:
         self, run_id: str, site: str, idx: int, example_page: int, example_page_size: int
     ) -> ComponentDetail:
         reader = self._latest_subrun(run_id, site)
-        row = reader.db.execute(
-            """SELECT c.firing_density, c.max_act, c.mean_ci, c.input_pmi, c.output_pmi,
-                      l.label, l.model, l.cost_usd, l.created_at
-               FROM components c
-               LEFT JOIN lbl.labels l ON l.site = :site AND l.component_idx = c.idx
-               WHERE c.idx = :idx""",
-            {"site": site, "idx": idx},
-        ).fetchone()
+        with _DB_LOCK:
+            row = reader.db.execute(
+                """SELECT c.firing_density, c.max_act, c.mean_ci, c.input_pmi, c.output_pmi,
+                          l.label, l.model, l.cost_usd, l.created_at
+                   FROM components c
+                   LEFT JOIN lbl.labels l ON l.site = :site AND l.component_idx = c.idx
+                   WHERE c.idx = :idx""",
+                {"site": site, "idx": idx},
+            ).fetchone()
         if row is None:
             raise ScopeNotFoundError(f"no component {idx} in {run_id}/{site}")
         (

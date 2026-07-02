@@ -195,6 +195,7 @@ def test_reads_work_across_threads() -> None:
         store.component_detail(RUN_ID, SITE, idx, 0, 10)
         return store.list_components(RUN_ID, SITE, "mean_ci", 0, 10, "").total
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        totals = list(pool.map(read, [0, 1, 2, 0, 1, 2]))
-    assert totals == [3] * 6
+    tasks = [0, 1, 2] * 20
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        totals = list(pool.map(read, tasks))
+    assert totals == [3] * len(tasks)

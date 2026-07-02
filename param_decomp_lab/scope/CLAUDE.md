@@ -21,8 +21,9 @@ browser ── SvelteKit SSR (frontend/, adapter-node) ── FastAPI (backend/)
   detail response is O(example_page_size), not O(k). Shards are immutable and
   published by atomic rename; **subruns are attempts — newest complete wins, never
   combined** (re-harvest instead). Harvest writes these shards natively
-  (`param_decomp_lab/harvest/scope_writer.py`); `import_labels.py` is the one remaining
-  legacy bridge, carrying autointerp labels into `labels.db`.
+  (`param_decomp_lab/harvest/scope_writer.py`). Two legacy bridges remain:
+  `import_labels.py` (autointerp labels -> `labels.db`) and `migrate_legacy_harvest.py`
+  (pre-unification harvest.db JSON blobs -> v2 shards, full pool, gaps become dead slots).
 - **Backend** (`backend/`): the API contract lives in `contract.py` (pydantic response
   models only). `store.py`'s `ScopeStore` is the one read path over the artifact store;
   `server.py` constructs it directly — no data-source abstraction. Dev data is real

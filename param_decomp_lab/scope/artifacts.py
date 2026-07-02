@@ -193,8 +193,10 @@ class SiteShardReader:
         m = self.meta
         self._offsets = _array_offsets(m.n_components, m.k_examples, m.window)
         self._bin = np.memmap(subrun_dir / "examples.bin", dtype=np.uint8, mode="r")
-        # Readers are cached and served from FastAPI's threadpool; CPython's sqlite3 is
-        # built serialized (threadsafety=3), so sharing the read-only connection is safe.
+        # Readers are cached and served from FastAPI's threadpool. check_same_thread=False
+        # permits cross-thread use, but CPython's sqlite3 execute() is not atomic across
+        # threads on one connection — concurrent callers must serialize access themselves
+        # (the scope backend does, via store._DB_LOCK).
         self.db = sqlite3.connect(
             f"file:{subrun_dir / 'site.db'}?mode=ro", uri=True, check_same_thread=False
         )
