@@ -1,26 +1,14 @@
-# Fresh-PGD pile run — JAX counterpart of Dan's torch p-af354eb1 (pgd1step-ss1.0)
-# via the shared-config route. See the referenced yaml's header for the documented
-# edits. Small target (4L d768): no remat needed. Launch: pd-lm, 1 node.
-run_name: jax-pile4l-pgd1-ss1
-# JAX leg of Dan's fresh-PGD pile experiment — byte-derived from the stored config of
-# torch run p-af354eb1 ("pgd1step-ss1.0", the relaunch of p-a005ed60; snapshot
-# runs/p-af354eb1/experiment_config.yaml). Target: LlamaSimpleMLP 4L pile model
-# (t-9d2b8f02), all h.* sites, per-site C, PGDRecon n_steps=1 step_size=1
-# unique_per_datapoint (-> bsc). DOCUMENTED EDITS vs upstream:
-#   1. data: streaming HF danbraunai/pile-uncopyrighted-tok-shuffled -> the staged
-#      parquet artifact (datasets/pile_neox_tok_512; same dataset, same seq 512 —
-#      the JAX trainer reads pre-tokenized parquet shards only).
-#   2. data.eval_split: val -> train (parquet loading exposes a single "train"
-#      split; the staged _val dir exists for ad-hoc use but the loaders don't
-#      address it).
-#   3. cadence.save_every: null -> 5000, keep_last null -> 2 (upstream saves
-#      nothing; the JAX leg checkpoints for requeue-resume + offline eval).
-# Everything else (pd losses/optimizers/CI fn, 400k steps, batch 64, eval set) is
-# upstream-identical.
+# Multi-host slow-eval SMOKE — validates the in-loop slow/plot tier end-to-end on >1
+# process (SPEC S28/S28a): the process_allgather host pulls (dp-sharded histogram
+# sample), the density heatmap, the position-CI (PermutedCIPlots) pull, and the
+# hidden-acts metrics. Derived from pile_ppgd_bsc.yaml (LlamaSimpleMLP 4L, dp=16 =
+# 2 nodes) with a short horizon and the slow tier on EVERY eval step
+# (every = slow_every = 50), so it fires at steps 50/100/150. Launch: pd-lm --qos scavenge.
+run_name: ai-smoke-multihost-slow-eval
 cadence:
   keep_last_n_checkpoints: 2
   save_every: 5000
-  train_log_every: 200
+  train_log_every: 50
 data:
   buffer_size: 1000
   column_name: input_ids
@@ -36,9 +24,10 @@ data:
   train_split: train
 eval:
   batch_size: 128
-  every: 1000
+  every: 50
   metrics:
   - n_batches_accum: 1
+    density_heatmap_n_bins: 40
     type: CIHistograms
   - ci_alive_threshold: 0.0
     type: ComponentActivationDensity
@@ -61,6 +50,10 @@ eval:
   - coeff: null
     type: StochasticHiddenActsReconLoss
   - type: CIHiddenActsReconLoss
+  - identity_patterns: null
+    dense_patterns:
+    - h.*
+    type: PermutedCIPlots
   - coeff: null
     init: random
     mask_scope: c
@@ -69,7 +62,7 @@ eval:
     step_size: 0.1
     type: PGDReconLoss
   n_steps: 1
-  slow_every: 10000
+  slow_every: 50
 pd:
   batch_size: 64
   ci_config:
@@ -115,7 +108,7 @@ pd:
   - C: 1024
     module_pattern: h.*.attn.o_proj
   faithfulness_warmup_lr: 0.001
-  faithfulness_warmup_steps: 400
+  faithfulness_warmup_steps: 10
   faithfulness_warmup_weight_decay: 0.0
   loss_metrics:
   - frequency:
@@ -133,15 +126,24 @@ pd:
       type: uniform_k_subset
     type: StochasticReconSubsetLoss
   - coeff: 0.5
-    init: random
-    mask_scope: bsc
-    n_steps: 1
-    step_size: 1.0
-    type: PGDReconLoss
+    n_warmup_steps: 2
+    optimizer:
+      beta1: 0.5
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        final_val_frac: 1.0
+        fn_type: constant
+        start_val: 0.01
+        warmup_pct: 0.025
+      type: adam
+    scope:
+      type: bsc
+    type: PersistentPGDReconLoss
   - coeff: 10000000.0
     type: FaithfulnessLoss
   seed: 0
-  steps: 400000
+  steps: 150
 runtime:
   remat_recon_forwards: false
   dp: 16

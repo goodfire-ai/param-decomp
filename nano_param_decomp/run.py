@@ -127,7 +127,6 @@ class Config:
     # Evaluation
     eval_freq: int = 1000
     slow_eval_freq: int = 10000
-    slow_eval_on_first_step: bool = True
     eval_batch_size: int = 128
     ci_alive_threshold: float = 0.0
     rounding_threshold: float = 0.0
@@ -796,7 +795,8 @@ def decompose(
         ppgd.external_step(ppgd_grads_dict, ppgd_lr)
 
         is_regular_eval = step % cfg.eval_freq == 0
-        is_slow_eval = step % cfg.slow_eval_freq == 0 or (step == 0 and cfg.slow_eval_on_first_step)
+        # No slow eval at step 0: the CI plots of an untrained decomposition carry no signal.
+        is_slow_eval = step % cfg.slow_eval_freq == 0 and step > 0
         if is_regular_eval or is_slow_eval:
             eval_batch = next(eval_loader).to(device)
             eval_metrics = run_eval(

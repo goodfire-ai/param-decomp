@@ -120,6 +120,7 @@ def test_eval_block_maps_slow_tier_and_defers_offline_only_metrics(
         "every": 1000,
         "n_steps": 1,
         "slow_every": 10000,
+        # removed field, present in stored run configs — pins the back-compat strip
         "slow_on_first_step": True,
         "metrics": [
             {"type": "CEandKLLosses", "rounding_threshold": 0.0},
@@ -142,7 +143,7 @@ def test_eval_block_maps_slow_tier_and_defers_offline_only_metrics(
     cfg = build_experiment_config(LMExperimentConfig(**raw), RUN_ID)
     assert cfg.eval is not None
     assert (cfg.eval.batch_size, cfg.eval.every, cfg.eval.n_steps) == (128, 1000, 1)
-    assert (cfg.eval.slow_every, cfg.eval.slow_on_first_step) == (10000, True)
+    assert cfg.eval.slow_every == 10000
     assert cfg.eval.slow_n_batches_accum == 7  # read off the CIHistograms metric
     assert cfg.eval.density_heatmap_n_bins == 40  # opt-in per-token CI density heatmap
     assert cfg.eval.rounding_threshold == 0.0

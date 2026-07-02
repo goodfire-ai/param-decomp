@@ -68,7 +68,6 @@ eval:
   batch_size: 128
   every: 1000
   slow_every: 10000
-  slow_on_first_step: true
   metrics:
   - type: CIHistograms
     n_batches_accum: 1

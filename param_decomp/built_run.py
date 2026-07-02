@@ -85,9 +85,6 @@ class EvalConfig:
     slow_every: int
     """The slow/plot tier cadence — a multiple of `every` (torch `EvalLoop.slow_every`),
     so the slow tier lands on a fast-eval step and reuses its eval batches."""
-    slow_on_first_step: bool
-    """Render the slow tier at the FIRST eval step too (torch parity), not only at
-    `slow_every` multiples."""
     slow_n_batches_accum: int | None
     """The torch `CIHistograms.n_batches_accum` cap on the histogram raw-value sample
     (None caps nothing). Read from the `CIHistograms` eval metric when present."""

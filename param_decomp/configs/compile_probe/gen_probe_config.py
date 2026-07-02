@@ -64,7 +64,6 @@ def main(n_layers: int, dp: int, out_path: str, seq: int = 256, batch: int | Non
             ],
             "n_steps": 1,
             "slow_every": 1000000,
-            "slow_on_first_step": False,
         },
         "pd": {
             "batch_size": batch,

@@ -54,7 +54,6 @@ from param_decomp.run import (
     SlowEvalRenderer,
     install_sigterm_flag,
     run_decomposition_training,
-    slow_eval_due,
 )
 from param_decomp.sharding import hsdp_mesh, init_distributed
 from param_decomp.slow_eval import (
@@ -298,7 +297,9 @@ def _make_lm_eval_fn(
                 f"eval/loss/{k}": v
                 for k, v in attn_patterns_log_entries(class_name, reductions).items()
             }
-        slow_due = slow_eval_due(now_step, eval.every, eval.slow_every, eval.slow_on_first_step)
+        # The slow/plot tier cadence (SPEC S28): `slow_every` is a multiple of `every`, so
+        # every slow-tier step is a fast-eval step and reuses its eval batches.
+        slow_due = now_step % eval.slow_every == 0
         if eval_batches and slow_due:
             # SLOW/PLOT TIER (SPEC S28/S29). The COLLECTIVE part runs in lockstep on every
             # rank — `accumulate_site_reductions` / `compute_hidden_acts_metrics` pull

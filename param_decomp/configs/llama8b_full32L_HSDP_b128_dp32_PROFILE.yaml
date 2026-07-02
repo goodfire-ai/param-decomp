@@ -41,7 +41,6 @@ eval:
     type: PGDReconLoss
   n_steps: 1
   slow_every: 10000
-  slow_on_first_step: true
 pd:
   batch_size: 128
   ci_config:

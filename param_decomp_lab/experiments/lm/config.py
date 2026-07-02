@@ -376,7 +376,6 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
         every=cfg.eval.every,
         n_steps=cfg.eval.n_steps,
         slow_every=cfg.eval.slow_every,
-        slow_on_first_step=cfg.eval.slow_on_first_step,
         slow_n_batches_accum=slow_n_batches_accum,
         density_heatmap_n_bins=density_heatmap_n_bins,
         rounding_threshold=ce_kl.rounding_threshold,
