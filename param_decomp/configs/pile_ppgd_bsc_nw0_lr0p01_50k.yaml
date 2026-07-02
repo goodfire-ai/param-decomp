@@ -1,6 +1,7 @@
 # PPGD warmup/source-lr sweep arm: n_warmup_steps=0, source lr 0.01, 50k steps,
 # dp=8. Derived from pile_ppgd_bsc.yaml (the JAX adaptation of torch p-20f9fc15);
-# only run_name / steps / dp / n_warmup_steps / source start_val differ.
+# run_name / steps / dp / n_warmup_steps / source start_val differ, and the imp-min
+# term is the smooth-L0 penalty (gamma 1.0 -> 0.01, frequency term unchanged).
 run_name: pile4l-ppgd-nw0-lr0p01-50k
 # JAX leg of the persistent-PGD pile experiment — byte-derived from the stored config of
 # torch run p-20f9fc15 (the pile_llama_simple_mlp-4L baseline; snapshot
@@ -128,12 +129,11 @@ pd:
       coeff: 1.0e-04
       reference_token_count: 65536
     coeff: 0.0002
-    eps: 1.0e-12
-    p_anneal_end_frac: 1.0
-    p_anneal_final_p: 0.4
-    p_anneal_start_frac: 0.0
-    pnorm: 2.0
-    type: ImportanceMinimalityLoss
+    gamma: 1.0
+    gamma_anneal_start_frac: 0.0
+    gamma_anneal_final_gamma: 0.01
+    gamma_anneal_end_frac: 1.0
+    type: SmoothL0ImportanceMinimalityLoss
   - coeff: 0.5
     routing:
       type: uniform_k_subset
