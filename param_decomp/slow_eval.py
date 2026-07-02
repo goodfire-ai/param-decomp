@@ -59,7 +59,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import random
 from jax.experimental import multihost_utils
-from jaxtyping import Array, Float
+from jaxtyping import Array
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 
@@ -110,7 +110,7 @@ class SiteReduction:
 
 
 SlowEvalStep = Callable[
-    [DecomposedModel, Any, Float[Array, "*leading d"]],
+    [DecomposedModel, Any, Array],
     tuple[
         dict[str, Array],
         dict[str, Array],
@@ -161,7 +161,7 @@ def make_slow_eval_step(
     site_names = lm.site_names
 
     def slow_eval_step(
-        model: DecomposedModel, ci_fn: Any, residual: Float[Array, "*leading d"]
+        model: DecomposedModel, ci_fn: Any, residual: Array
     ) -> tuple[
         dict[str, Array],
         dict[str, Array],
@@ -206,7 +206,7 @@ def accumulate_site_reductions(
     slow_eval_step: SlowEvalStep,
     model: DecomposedModel,
     ci_fn: Any,
-    residual_batches: list[Float[Array, "*leading d"]],
+    residual_batches: list[Array],
     n_batches_accum: int | None,
 ) -> dict[str, SiteReduction]:
     """Drive `slow_eval_step` over the eval batches and fold the per-batch reductions
@@ -255,7 +255,7 @@ def accumulate_site_reductions(
 
 
 PositionCIStep = Callable[
-    [DecomposedModel, Any, Float[Array, "*leading d"]],
+    [DecomposedModel, Any, Array],
     tuple[dict[str, Array], dict[str, Array], Array],
 ]
 """`(model, ci_fn, residual) -> ({site: lower (T, C)}, {site: upper (T, C)}, n_batch)` —
@@ -273,7 +273,7 @@ def make_position_ci_step(
     site_names = lm.site_names
 
     def position_ci_step(
-        model: DecomposedModel, ci_fn: Any, residual: Float[Array, "*leading d"]
+        model: DecomposedModel, ci_fn: Any, residual: Array
     ) -> tuple[dict[str, Array], dict[str, Array], Array]:
         # Training precision (bf16) readout — see make_slow_eval_step; logits upcast to fp32.
         ci_fn = cast_floating(ci_fn, COMPUTE_DT)
@@ -306,7 +306,7 @@ def accumulate_position_ci(
     position_ci_step: PositionCIStep,
     model: DecomposedModel,
     ci_fn: Any,
-    residual_batches: list[Float[Array, "*leading d"]],
+    residual_batches: list[Array],
 ) -> dict[str, PositionCI]:
     """Fold `position_ci_step` over the eval batches into a batch-mean `(T, C)` CI matrix
     per site (token-weighted mean over batch elements; uniform batch makes it the plain
@@ -799,7 +799,7 @@ def render_slow_eval_figures(
 def compute_hidden_acts_metrics(
     model: DecomposedModel,
     state: Any,
-    residual_batches: list[Float[Array, "*leading d"]],
+    residual_batches: list[Array],
     n_mask_samples: int,
     base_key: Array,
     compiler_options: dict[str, bool | int | str] | None = None,

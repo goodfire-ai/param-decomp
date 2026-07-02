@@ -29,7 +29,7 @@ from typing import Any
 import jax.numpy as jnp
 import numpy as np
 from jax import random
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, PRNGKeyArray
 
 from param_decomp.components import DecompVU
 from param_decomp.jit_util import filter_jit
@@ -57,10 +57,12 @@ def _per_site_sum_mse(
 
 
 HiddenActsStep = Callable[
-    [DecomposedModel, Any, Any, Float[Array, "*leading d"], PRNGKeyArray],
+    [DecomposedModel, Any, Any, Array, PRNGKeyArray],
     tuple[dict[str, Array], dict[str, int]],
 ]
-"""`(model, components, ci_fn, residual, key) -> ({site: sum_mse}, {site: n_elements})`
+"""`(model, components, ci_fn, model_input, key) -> ({site: sum_mse}, {site: n_elements})`
+— `model_input` is the target's input edge (`(*leading)` tokens for the LM, `(*leading, d)`
+features for the toys), so leading axes are NOT derivable from its shape.
 — one batch's per-site summed MSE (fp32) and element counts (the host folds these into
 `SiteMSEReduction`s). `key` is unused by the deterministic CI step. `model`
 (frozen-weight-bearing) is the jit ARG."""
@@ -76,7 +78,7 @@ def make_ci_hidden_acts_step(
         model: DecomposedModel,
         components: DecompVU,
         ci_fn: Any,
-        residual: Float[Array, "*leading d"],
+        residual: Array,
         _key: PRNGKeyArray,
     ) -> tuple[dict[str, Array], dict[str, int]]:
         taps = model.read_activations(residual, ci_fn.input_names)
@@ -85,7 +87,9 @@ def make_ci_hidden_acts_step(
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
         ci_lower = ci_fn_bf16(taps, remat=False).lower
 
-        leading = residual.shape[:-1]
+        # The waist leading axes come from CI (`(*leading, C)`), NOT the model input's
+        # shape: the LM input is `(*leading)` tokens with no trailing feature dim.
+        leading = ci_lower[site_names[0]].shape[:-1]
         zeros_delta = {s: jnp.zeros(leading, COMPUTE_DT) for s in site_names}
         clean = model.masked_site_outputs(
             prepared, residual,
@@ -117,7 +121,7 @@ def make_stochastic_hidden_acts_step(
         model: DecomposedModel,
         components: DecompVU,
         ci_fn: Any,
-        residual: Float[Array, "*leading d"],
+        residual: Array,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, Array], dict[str, int]]:
         taps = model.read_activations(residual, ci_fn.input_names)
@@ -126,7 +130,8 @@ def make_stochastic_hidden_acts_step(
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
         ci_lower = ci_fn_bf16(taps, remat=False).lower
 
-        leading = residual.shape[:-1]
+        # As in the CI step: waist leading from CI, not from the model-input shape.
+        leading = ci_lower[site_names[0]].shape[:-1]
         clean = model.masked_site_outputs(
             prepared, residual,
             {s: jnp.ones_like(ci_lower[s]) for s in site_names},
@@ -164,7 +169,7 @@ def accumulate_hidden_acts(
     model: DecomposedModel,
     components: DecompVU,
     ci_fn: Any,
-    residual_batches: list[Float[Array, "*leading d"]],
+    residual_batches: list[Array],
     base_key: PRNGKeyArray,
 ) -> dict[str, SiteMSEReduction]:
     """Drive `step` over the eval batches, host-accumulating `(Σ sum_mse, Σ n)` per site
