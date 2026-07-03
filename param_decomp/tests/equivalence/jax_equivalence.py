@@ -1,7 +1,7 @@
 """JAX equivalence check: the JAX single-pool PD loss terms vs the torch reference.
 
 Loads the SAME fixtures behind the frozen `torch_reference.json` golden, builds the
-Llama `DecomposedModel` with the identical (zeroed-attn) suffix weights, and computes each
+Llama `DecomposedModel` with the identical (zeroed-attn) layer weights, and computes each
 loss term through the generic trainer's OWN helpers (`train.py`), feeding the FIXED
 masks / sources / routing from the fixtures (no RNG). Compares to
 `torch_reference.json` at fp32 tolerance.
@@ -28,7 +28,7 @@ import numpy as np
 jax.config.update("jax_enable_x64", False)
 
 from param_decomp.adversary import source_masks  # noqa: E402
-from param_decomp.components import DecompVU, site_out  # noqa: E402
+from param_decomp.components import DecompVU  # noqa: E402
 from param_decomp.losses import (  # noqa: E402
     faithfulness_loss,
     importance_minimality_terms,
@@ -37,15 +37,13 @@ from param_decomp.losses import (  # noqa: E402
 from param_decomp.targets.llama8b import (  # noqa: E402
     MLP_KINDS,
     FrozenAttn,
-    LlamaDecomposedModel,
     LlamaLayer,
-    _clean_mlp_out,  # noqa: E402  (reference suffix forward in the chunk-plan gate check)
     build_decomposed_lm,
     llama_site_specs,
     mlp_family_site_cs,
     site_name,
 )
-from vendored_jax.llama import LlamaConfig, rms_norm  # noqa: E402
+from vendored_jax.llama import LlamaConfig  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 RTOL = 2e-4
@@ -127,7 +125,7 @@ def _build(f: dict[str, np.ndarray]):
         rope_original_max_position_embeddings=128,
     )
     lm = build_decomposed_lm(
-        embed=jnp.zeros((cfg.vocab_size, cfg.n_embd), jnp.float32),
+        embed=a("embed"),
         layers=decomp_layers + tail,
         norm=a("norm"),
         lm_head=a("lm_head"),
@@ -142,9 +140,9 @@ def compute_jax_terms(f: dict[str, np.ndarray]) -> dict[str, float]:
     """The four JAX loss-term values on the fixtures `f` (fp32). Shared by `main` and
     the pytest so there is one term-computation path."""
     lm, vu, n_layers = _build(f)
-    resid = jnp.asarray(f["resid"], dtype=FP)
+    tokens = jnp.asarray(f["tokens"])
 
-    clean = jax.lax.stop_gradient(lm.clean_output(resid))
+    clean = jax.lax.stop_gradient(lm.clean_output(tokens))
 
     # fixtures key CI per kind as (B, T, L, C); the trainer keys per site.
     def per_site(prefix: str) -> dict[str, jnp.ndarray]:
@@ -180,7 +178,7 @@ def compute_jax_terms(f: dict[str, np.ndarray]) -> dict[str, float]:
         routes = {site_name(i, k): jnp.asarray(f[f"route_chunk{i}_{k}"]) for k in MLP_KINDS}
         pred = lm.masked_output(
             lm.prepare_compute_weights(vu),
-            resid,
+            tokens,
             masks,
             delta_masks,
             routes,
@@ -196,7 +194,7 @@ def compute_jax_terms(f: dict[str, np.ndarray]) -> dict[str, float]:
     masks, delta_masks = source_masks(ci_lower, source, lm.site_names)
     pred = lm.masked_output(
         lm.prepare_compute_weights(vu),
-        resid,
+        tokens,
         masks,
         delta_masks,
         None,
@@ -207,79 +205,6 @@ def compute_jax_terms(f: dict[str, np.ndarray]) -> dict[str, float]:
     ppgd = float(kl_per_position(pred, clean))
 
     return {"faith": faith, "imp": imp, "stoch": stoch, "ppgd": ppgd}
-
-
-def _suffix_with_split_mlp(
-    tgt: LlamaDecomposedModel,
-    vu: DecompVU,
-    resid: jnp.ndarray,
-    live_layer: int,
-    live_kinds: tuple[str, ...],
-    masks: dict[str, jnp.ndarray],
-    delta_masks: dict[str, jnp.ndarray],
-    n_decomp_layers: int,
-) -> jnp.ndarray:
-    """Hand-rolled fp32 suffix forward where `live_layer`'s MLP runs `live_kinds`
-    through the decomposed `site_out` path and EVERY other MLP site (including this
-    layer's NON-live sibling sites) through the frozen `x @ W` path. This is the
-    explicit S2 realization the production `subset_chunk_plan` relies on when a chunk
-    boundary splits a layer's MLP — a reference for `masked_output(..., live=...)`."""
-    x = resid
-    for layer, block in enumerate(tgt.layers):
-        post_attn = x  # attn is zeroed -> contributes 0 (SPEC harness invariant)
-        mlp_in = rms_norm(post_attn, block.ln2, tgt.eps)
-        if layer != live_layer or layer >= n_decomp_layers:
-            mlp_out = _clean_mlp_out(block, mlp_in)
-        else:
-
-            def frozen_or_live(kind: str, W: jnp.ndarray, x_in: jnp.ndarray) -> jnp.ndarray:
-                site = site_name(live_layer, kind)
-                if kind not in live_kinds:
-                    return x_in @ W.T
-                V, U = vu.site(site)
-                return site_out(x_in, V, U, W, masks[site], delta_masks[site], None)
-
-            gate = frozen_or_live("gate", block.Wg, mlp_in)
-            up = frozen_or_live("up", block.Wu, mlp_in)
-            down_in = jax.nn.silu(gate) * up
-            mlp_out = frozen_or_live("down", block.Wd, down_in)
-        x = post_attn + mlp_out
-    x = rms_norm(x, tgt.norm, tgt.eps)
-    return x @ tgt.lm_head.T
-
-
-def chunk_plan_static_gate_kl(f: dict[str, np.ndarray]) -> tuple[float, float]:
-    """SPEC S2 under a layer-SPLITTING chunk plan (issue #640): drive `lm.masked_output`
-    with `live = (l_i.gate, l_i.up)` so `l_i.down` is a fully-frozen site WITHIN an
-    otherwise-decomposed layer's MLP — the static-live-gate path the production
-    `subset_chunk_plan` exercises but the per-chunk `stoch` term (whole live chunks) and
-    the all-sites `ppgd` term never do. Returns (gate-path KL, explicit-frozen-reference
-    KL); the test asserts they agree to fp32 tolerance."""
-    lm, vu, n_layers = _build(f)
-    resid = jnp.asarray(f["resid"], dtype=FP)
-    clean = jax.lax.stop_gradient(lm.clean_output(resid))
-
-    def per_site(prefix: str) -> dict[str, jnp.ndarray]:
-        by_kind = {k: jnp.asarray(f[f"{prefix}_{k}"], dtype=FP) for k in MLP_KINDS}
-        return {site_name(i, k): by_kind[k][:, :, i] for i in range(n_layers) for k in MLP_KINDS}
-
-    ci_lower = per_site("ci_lower")
-    stoch_u = per_site("stoch_u")
-    stoch_delta = per_site("stoch_delta")
-
-    live_layer = 0
-    live_kinds = ("gate", "up")  # `down` left non-live -> frozen `x @ W` inside the MLP
-    live = tuple(site_name(live_layer, k) for k in live_kinds)
-    masks = {s: ci_lower[s] + (1.0 - ci_lower[s]) * stoch_u[s] for s in live}
-    delta_masks = {s: stoch_delta[s] for s in live}
-
-    gate_pred = lm.masked_output(
-        lm.prepare_compute_weights(vu), resid, masks, delta_masks, None, live, True, remat=False
-    )
-    ref_pred = _suffix_with_split_mlp(
-        lm, vu, resid, live_layer, live_kinds, masks, delta_masks, n_layers
-    )
-    return float(kl_per_position(gate_pred, clean)), float(kl_per_position(ref_pred, clean))
 
 
 def main() -> None:

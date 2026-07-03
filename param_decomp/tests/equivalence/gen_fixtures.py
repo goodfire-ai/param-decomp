@@ -7,20 +7,27 @@ draw NO RNG of their own. That makes each loss term a deterministic function of 
 way two frameworks can disagree is a genuine math difference, which is exactly what we
 want the harness to surface.
 
+The model is embed-internal (it takes token ids and embeds them itself), so the fixtures
+carry `tokens` + `embed` instead of injecting a residual. `embed[tokens]` reproduces the
+`resid` array bit-exactly (tokens index one distinct embed row per position, that row set
+to the residual value — a pure integer gather, no arithmetic), so the JAX token-fed
+forward and the residual-fed `torch_reference.json` golden see the identical residual
+entering layer 0. `resid` is kept in the npz for the (residual-fed) torch oracle.
+
 Design choices that make the cross-check fp32-tight rather than approximate:
 
-  * **Attention is zeroed** (wq=wk=wv=wo=0) in every suffix layer, so the frozen attn
+  * **Attention is zeroed** (wq=wk=wv=wo=0) in every layer, so the frozen attn
     contributes nothing and `post_attn == resid`. RoPE / SDPA never run, so there is no
-    torch-vs-JAX attention-kernel drift to muddy the comparison. The suffix collapses to
-    `resid → (rms_norm → masked MLP) → ... → final rms_norm → lm_head`: plain matmuls +
-    rms_norm, which both frameworks compute identically in fp32. The decomposed MLP — the
-    thing under test — is the only nontrivial part.
+    torch-vs-JAX attention-kernel drift to muddy the comparison. The model collapses to
+    `embed[tokens] → (rms_norm → masked MLP) → ... → final rms_norm → lm_head`: plain
+    matmuls + rms_norm, which both frameworks compute identically in fp32. The decomposed
+    MLP — the thing under test — is the only nontrivial part.
   * **All masks are pre-drawn**: per-site component masks `u` (for stoch), per-site
     weight-delta masks, per-position uniform-k-subset routing (per chunk), and the PPGD
     sources (with the trailing weight-delta channel). Neither framework samples anything.
   * **fp32 everywhere** (`DTYPE`), so we compare at ~1e-5, not bf16's ~1%.
 
-Config: a tiny suffix that still exercises the per-chunk loop — `n_decomp_layers`
+Config: a tiny full model that still exercises the per-chunk loop — `n_decomp_layers`
 decomposed MLP layers (each a chunk of its 3 gate/up/down sites) + a frozen tail block,
 then final norm + lm_head.
 """
@@ -32,7 +39,7 @@ import numpy as np
 SEED = 1234
 DTYPE = np.float32
 
-# Tiny suffix dims.
+# Tiny model dims.
 VOCAB = 48
 N_EMBD = 16
 N_INTERMEDIATE = 32
@@ -63,7 +70,8 @@ def main() -> None:
     d, di = N_EMBD, N_INTERMEDIATE
     arrays: dict[str, np.ndarray] = {}
 
-    # Residual entering the first decomposed layer.
+    # Residual entering the first decomposed layer. The model is embed-internal, so this is
+    # reproduced by `embed[tokens]` (built at the end); kept in the npz for the torch oracle.
     arrays["resid"] = randn(B, T, d, scale=0.5)
 
     # Per decomposed layer: layernorms (ones), zeroed attn, MLP target weights, V/U.
@@ -124,6 +132,20 @@ def main() -> None:
         arrays[f"ppgd_source_{k}"] = rng.uniform(0.0, 1.0, (1, T, N_DECOMP_LAYERS, C + 1)).astype(
             DTYPE
         )
+
+    # Embed-internal token contract: `embed[tokens]` reproduces `resid` bit-exactly. One
+    # distinct token per position indexes a dedicated embed row set to that position's
+    # residual; the gather is exact (no arithmetic), so the token-fed JAX forward sees the
+    # same residual as the residual-fed torch golden. Drawn from `resid` (no RNG), so every
+    # other fixture array — and thus the frozen golden — is unchanged.
+    n_positions = B * T
+    assert n_positions <= VOCAB, (
+        f"need VOCAB >= B*T for one token per position, {VOCAB} < {n_positions}"
+    )
+    arrays["tokens"] = np.arange(n_positions, dtype=np.int32).reshape(B, T)
+    embed = np.zeros((VOCAB, d), DTYPE)
+    embed[:n_positions] = arrays["resid"].reshape(n_positions, d)
+    arrays["embed"] = embed
 
     scalars = dict(
         VOCAB=VOCAB, N_EMBD=N_EMBD, N_INTERMEDIATE=N_INTERMEDIATE, C=C,

@@ -62,14 +62,6 @@ FIXTURES = Path(__file__).resolve().parent / "stacked_fixtures.npz"
 RTOL = 1e-4
 ATOL = 1e-5
 
-_PENDING_REGEN = pytest.mark.xfail(
-    reason=(
-        "pending embed-internal golden regen: fixtures are residual-fed but the model "
-        "now takes token ids. Regenerate the torch reference + fixtures against the token "
-        "contract (torch-oracle worktree)."
-    ),
-    strict=False,
-)
 STABLE_FIXTURE_METRIC_KEYS = (
     "total", "faith", "imp", "stoch", "ppgd", "p_imp", "src_lr",
     "grad_norms/summary/components", "grad_norms/summary/ci_fns", "grad_norms/summary/total",
@@ -84,44 +76,69 @@ the live metrics dict is remapped."""
 
 
 def _load() -> tuple[dict[str, np.ndarray], DecomposedModel, DecompVU, jnp.ndarray]:
+    """Rebuild the fixtures' target as an embed-internal FULL model and return the token ids
+    whose embedding reproduces the fixtures' residual entering layer `first`.
+
+    The fixtures' goldens were pinned by a residual-fed suffix (absolute layers `first`..end,
+    the residual injected at `first`). The current model takes token ids, embeds them, and
+    scans ALL layers, and its site names carry absolute layer indices. So the model is the
+    full `cfg.n_layer` stack: layers `< first` are identity (zeroed attn + zeroed MLP →
+    `block(x) == x`), layers `>= first` are the stored frozen weights. `embed[tokens]` is set
+    to the fixtures' residual (one distinct token per position, its embed row that position's
+    residual — a pure gather, no arithmetic) and passes through the identity prefix unchanged,
+    so layer `first` sees the identical residual and every CI-independent golden holds."""
     assert FIXTURES.exists(), "regenerate via gen_stacked_fixtures.py on the base branch"
     f = dict(np.load(FIXTURES))
     cfg = _tiny_cfg()
     first = int(f["_scalar_FIRST_LAYER"])
     last = int(f["_scalar_LAST_LAYER"])
     C = int(f["_scalar_C"])
+    d, di = cfg.n_embd, cfg.n_intermediate
+    qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
 
     def a(key: str) -> jnp.ndarray:
         return jnp.asarray(f[key])
 
-    layers = [
-        LlamaLayer(
-            ln1=a(f"tgt::layers.{i}.ln1"),
-            ln2=a(f"tgt::layers.{i}.ln2"),
+    def z(r: int, c: int) -> jnp.ndarray:
+        return jnp.zeros((r, c), jnp.float32)
+
+    def identity_layer() -> LlamaLayer:
+        return LlamaLayer(
+            ln1=jnp.ones((d,)), ln2=jnp.ones((d,)),
+            attn=FrozenAttn(z(qd, d), z(kvd, d), z(kvd, d), z(d, qd),
+                            cfg.n_head, cfg.n_kv_head, cfg.head_dim, cfg.n_rep),
+            Wg=z(di, d), Wu=z(di, d), Wd=z(d, di),
+        )  # fmt: skip
+
+    def stored_layer(i: int) -> LlamaLayer:
+        return LlamaLayer(
+            ln1=a(f"tgt::layers.{i}.ln1"), ln2=a(f"tgt::layers.{i}.ln2"),
             attn=FrozenAttn(
-                a(f"tgt::layers.{i}.wq"),
-                a(f"tgt::layers.{i}.wk"),
-                a(f"tgt::layers.{i}.wv"),
-                a(f"tgt::layers.{i}.wo"),
-                cfg.n_head,
-                cfg.n_kv_head,
-                cfg.head_dim,
-                cfg.n_rep,
-            ),  # fmt: skip
-            Wg=a(f"tgt::layers.{i}.Wg"),
-            Wu=a(f"tgt::layers.{i}.Wu"),
-            Wd=a(f"tgt::layers.{i}.Wd"),
-        )
-        for i in range(first, cfg.n_layer)
-    ]
+                a(f"tgt::layers.{i}.wq"), a(f"tgt::layers.{i}.wk"),
+                a(f"tgt::layers.{i}.wv"), a(f"tgt::layers.{i}.wo"),
+                cfg.n_head, cfg.n_kv_head, cfg.head_dim, cfg.n_rep,
+            ),
+            Wg=a(f"tgt::layers.{i}.Wg"), Wu=a(f"tgt::layers.{i}.Wu"), Wd=a(f"tgt::layers.{i}.Wd"),
+        )  # fmt: skip
+
+    layers = [identity_layer() if i < first else stored_layer(i) for i in range(cfg.n_layer)]
     sites = llama_site_specs(cfg, mlp_family_site_cs(first, last, C))
+
+    resid = np.asarray(f["resid"])
+    B, T = resid.shape[:2]
+    n_positions = B * T
+    assert n_positions <= cfg.vocab_size, (n_positions, cfg.vocab_size)
+    tokens = jnp.asarray(np.arange(n_positions, dtype=np.int32).reshape(B, T))
+    embed = np.zeros((cfg.vocab_size, d), np.float32)
+    embed[:n_positions] = resid.reshape(n_positions, d)
+
     lm = build_decomposed_lm(
-        embed=jnp.zeros((cfg.vocab_size, cfg.n_embd), jnp.float32),
+        embed=jnp.asarray(embed),
         layers=layers, norm=a("tgt::norm"), lm_head=a("tgt::lm_head"),
         inv_freq=llama3_inv_freq(cfg), cfg=cfg, sites=sites,
     )  # fmt: skip
     vu = DecompVU(vu={s.name: (a(f"vu::V::{s.name}"), a(f"vu::U::{s.name}")) for s in sites})
-    return f, lm, vu, a("resid")
+    return f, lm, vu, tokens
 
 
 def _assert_close(got: jnp.ndarray, want: np.ndarray, what: str) -> None:
@@ -145,17 +162,15 @@ def _build_trajectory_ci_fn(lm: DecomposedModel, key: jnp.ndarray):
     return build_ci_fn(arch, lm.sites, key)
 
 
-@_PENDING_REGEN
 def test_clean_output_matches():
-    f, lm, _vu, resid = _load()
-    clean = lm.clean_output(resid)
+    f, lm, _vu, tokens = _load()
+    clean = lm.clean_output(tokens)
     _assert_close(clean, f["out::clean"], "clean logits")
 
 
-@_PENDING_REGEN
 def test_site_inputs_and_weight_deltas_match():
-    f, lm, vu, resid = _load()
-    site_inputs = lm.read_activations(resid, lm.site_names)
+    f, lm, vu, tokens = _load()
+    site_inputs = lm.read_activations(tokens, lm.site_names)
     for name in lm.site_names:
         _assert_close(site_inputs[name], f[f"out::site_input::{name}"], f"site_input {name}")
     deltas = lm.weight_deltas(vu)
@@ -163,27 +178,26 @@ def test_site_inputs_and_weight_deltas_match():
         _assert_close(deltas[name], f[f"out::wd::{name}"], f"weight_delta {name}")
 
 
-@_PENDING_REGEN
 def test_masked_output_match():
-    f, lm, vu, resid = _load()
+    f, lm, vu, tokens = _load()
+    prepared = lm.prepare_compute_weights(vu)
     masks = {s: jnp.asarray(f[f"mask::{s}"]) for s in lm.site_names}
     delta_masks = {s: jnp.asarray(f[f"delta_mask::{s}"]) for s in lm.site_names}
     masked_all = lm.masked_output(
-        vu, resid, masks, delta_masks, None, lm.site_names, True, remat=False
+        prepared, tokens, masks, delta_masks, None, lm.site_names, True, remat=False
     )
     _assert_close(masked_all, f["out::masked_all"], "masked_output (all live)")
 
     chunk0 = lm.site_names[:3]
     routes0 = {s: jnp.asarray(f[f"route0::{s}"]) for s in chunk0}
     masked_subset = lm.masked_output(
-        vu, resid,
+        prepared, tokens,
         {s: masks[s] for s in chunk0}, {s: delta_masks[s] for s in chunk0}, routes0, chunk0, True,
         remat=False,
     )  # fmt: skip
     _assert_close(masked_subset, f["out::masked_subset"], "masked_output (subset live)")
 
 
-@_PENDING_REGEN
 def test_chunk_plan_static_live_set_matches():
     """The production `subset_chunk_plan` (`ChunkwiseSubsetReconLoss`) is what reaches the
     static live-set realization of SPEC S2: each plan entry holds a STATIC `live_sites`
@@ -192,7 +206,7 @@ def test_chunk_plan_static_live_set_matches():
     plan directly and asserts its first chunk's frozen-site forward matches the torch
     golden (`out::masked_subset`), so the chunk-plan path is verified against the oracle.
     """
-    f, lm, vu, resid = _load()
+    f, lm, vu, tokens = _load()
 
     plan = subset_chunk_plan(
         lm.site_names, sites_per_chunk=3, n_samples=1, sources=StochasticSources()
@@ -205,8 +219,9 @@ def test_chunk_plan_static_live_set_matches():
     delta_masks = {s: jnp.asarray(f[f"delta_mask::{s}"]) for s in chunk0}
     routes = {s: jnp.asarray(f[f"route0::{s}"]) for s in chunk0}
     masked = lm.masked_output(
-        vu, resid, masks, delta_masks, routes, plan[0].live_sites, plan[0].has_delta, remat=False
-    )
+        lm.prepare_compute_weights(vu), tokens, masks, delta_masks, routes,
+        plan[0].live_sites, plan[0].has_delta, remat=False,
+    )  # fmt: skip
     _assert_close(masked, f["out::masked_subset"], "chunk-plan static-live-set forward")
 
 
@@ -222,7 +237,7 @@ def test_chunk_plan_static_live_set_matches():
     strict=True,
 )
 def test_train_trajectory_matches():
-    f, lm, vu, resid = _load()
+    f, lm, vu, tokens = _load()
     T = int(f["_scalar_T"])
     n_train_steps = int(f["_scalar_N_TRAIN_STEPS"])
     n_warmup = int(f["_scalar_N_WARMUP"])
@@ -293,7 +308,7 @@ def test_train_trajectory_matches():
     )
     run_key = random.PRNGKey(7)
     for step_idx in range(n_train_steps):
-        state, metrics = step_fn(lm, state, resid, random.fold_in(run_key, step_idx))
+        state, metrics = step_fn(lm, state, tokens, random.fold_in(run_key, step_idx))
         for fixture_key in STABLE_FIXTURE_METRIC_KEYS:
             metric_key = METRIC_KEY_BY_FIXTURE_KEY.get(fixture_key, fixture_key)
             got = float(metrics[metric_key])

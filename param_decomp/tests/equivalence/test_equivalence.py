@@ -17,12 +17,11 @@ Two kinds of check:
     broadcast (S1/S16): an `(1, T, C+1)` source broadcasts over `[B, T]` in the masked
     forward, and a B/T-transposed source must break it (the fixtures keep `B != T`).
 
-  * **Chunk-plan static-live gate (S2).** `test_chunk_plan_static_live_gate` drives
-    `masked_output` with a live set that splits a layer's MLP (`live = (l0.gate, l0.up)`,
-    `l0.down` frozen) — the realization the production `subset_chunk_plan` hits when a
-    chunk boundary cuts across a layer, which `stoch` (whole-layer chunks) and `ppgd`
-    (all sites live) never exercise — and asserts it equals an explicit reference that
-    hard-codes the frozen site to `x @ W`.
+The model is embed-internal: the harness feeds token ids and the model embeds them, so
+`embed[tokens]` reproduces the fixtures' residual entering layer 0 (see `gen_fixtures.py`).
+The layer-aligned static-live gate (SPEC S2) is pinned by the whole-layer `stoch` term and
+the stacked-parity `test_chunk_plan_static_live_set_matches`; partial-layer liveness was
+dropped by the static segmented masked forward (2f9af2397).
 
 `torch_reference.json` is a FROZEN committed golden. The torch generator that produced
 it (`torch_reference.py`) is deleted — `param_decomp` imports no torch. To regen
@@ -44,23 +43,11 @@ import param_decomp.adversary as adversary_mod
 import param_decomp.losses as losses_mod
 import param_decomp.train as train_mod
 from param_decomp.adversary import source_masks
-from param_decomp.tests.equivalence.jax_equivalence import (
-    chunk_plan_static_gate_kl,
-    compute_jax_terms,
-)
+from param_decomp.tests.equivalence.jax_equivalence import compute_jax_terms
 
 HERE = Path(__file__).resolve().parent
 RTOL = 2e-4
 ATOL = 1e-5
-
-_PENDING_REGEN = pytest.mark.xfail(
-    reason=(
-        "pending embed-internal golden regen: fixtures are residual-fed but the model "
-        "now takes token ids. Regenerate the torch reference + fixtures against the token "
-        "contract (torch-oracle worktree)."
-    ),
-    strict=False,
-)
 
 
 def _load_fixtures() -> dict[str, np.ndarray]:
@@ -68,7 +55,6 @@ def _load_fixtures() -> dict[str, np.ndarray]:
 
 
 @pytest.mark.parametrize("term", ["faith", "imp", "stoch", "ppgd"])
-@_PENDING_REGEN
 def test_jax_matches_torch_reference(term: str) -> None:
     ref_path = HERE / "torch_reference.json"
     assert ref_path.exists(), "run torch_reference.py (torch env) to produce the golden first"
@@ -77,23 +63,6 @@ def test_jax_matches_torch_reference(term: str) -> None:
     jv, tv = jaxv[term], ref[term]
     assert abs(jv - tv) <= ATOL + RTOL * abs(tv), (
         f"{term}: jax {jv:.8e} vs torch {tv:.8e} (rel {abs(jv - tv) / (abs(tv) + 1e-30):.2e})"
-    )
-
-
-@_PENDING_REGEN
-def test_chunk_plan_static_live_gate() -> None:
-    """SPEC S2 under a layer-SPLITTING chunk plan (issue #640). The production
-    `subset_chunk_plan` partitions sites into sequential groups that can cut across a
-    layer's MLP, leaving whole sites frozen (`x @ W`) inside an otherwise-decomposed
-    layer. The `stoch` term here uses whole-layer live chunks and `ppgd` decomposes
-    every site, so neither pins this static-live gate. Drive `masked_output` with
-    `live = (l0.gate, l0.up)` (so `l0.down` is the frozen sibling) and assert it equals
-    an explicit reference forward that hard-codes `l0.down` to `x @ W`."""
-    f = dict(np.load(HERE / "fixtures.npz"))
-    gate_kl, ref_kl = chunk_plan_static_gate_kl(f)
-    assert abs(gate_kl - ref_kl) <= ATOL + RTOL * abs(ref_kl), (
-        f"static-live gate {gate_kl:.8e} vs explicit-frozen reference {ref_kl:.8e} "
-        f"(rel {abs(gate_kl - ref_kl) / (abs(ref_kl) + 1e-30):.2e})"
     )
 
 
@@ -178,7 +147,6 @@ def test_fixtures_are_batch_asymmetric_so_a_bt_transpose_is_observable() -> None
         )
 
 
-@_PENDING_REGEN
 def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
     """SPEC S1/S16: an sc-scope source `(1, T, C+1)` broadcasts over `[B, T]` in the
     masked forward — shared across batch elements, free per position. This exercises the
@@ -190,7 +158,7 @@ def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
 
     f = _load_fixtures()
     lm, vu, n_layers = _build(f)
-    resid = jnp.asarray(f["resid"], dtype=FP)
+    tokens = jnp.asarray(f["tokens"])
     B, T = int(f["_scalar_B"]), int(f["_scalar_T"])
     vocab = int(f["_scalar_VOCAB"])
     assert B != T
@@ -212,7 +180,7 @@ def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
 
     pred = lm.masked_output(
         lm.prepare_compute_weights(vu),
-        resid,
+        tokens,
         masks,
         delta_masks,
         None,
@@ -231,7 +199,7 @@ def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
         bad_masks, bad_delta = source_masks(ci_lower, bt_transposed, lm.site_names)
         lm.masked_output(
             lm.prepare_compute_weights(vu),
-            resid,
+            tokens,
             bad_masks,
             bad_delta,
             None,

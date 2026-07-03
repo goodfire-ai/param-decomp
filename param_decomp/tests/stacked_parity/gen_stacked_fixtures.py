@@ -14,7 +14,7 @@ site inputs and a 2-step training trajectory to reassociation tolerance (SPEC D4
 rel ~1e-5).
 
 Everything the new representation cannot regenerate by re-running unchanged init code
-is saved as arrays: the frozen suffix weights, the per-site V/U (the V/U init's RNG
+is saved as arrays: the frozen layer weights, the per-site V/U (the V/U init's RNG
 derivation changed with the layout), the fixed masks/routes of the direct masked
 calls. The CI fn and sources ARE re-initialised by the test (that code is unchanged)
 and asserted leaf-identical against the copies saved here.
