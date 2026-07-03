@@ -9,6 +9,7 @@ It handles:
 - Job submission with script renaming and log file creation
 """
 
+import os
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -348,10 +349,18 @@ def _case_block(commands: list[str]) -> str:
 def _submit_script(script_path: Path) -> str:
     """Submit script via sbatch and return job ID.
 
+    Submitting from INSIDE a SLURM allocation (agent sessions, dev pods) leaks the
+    caller's `SLURM_*` env into the new job — sbatch propagates it, and a mismatched
+    inherited `SLURM_CPUS_PER_TASK` makes the job's srun die instantly with
+    "cpus-per-task set by two different environment variables". Scrub `SLURM_*` (and
+    `SBATCH_*`) from the submission env so the new job's env comes only from its own
+    allocation.
+
     Raises RuntimeError if sbatch fails.
     """
+    clean_env = {k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "SBATCH_"))}
     result = subprocess.run(
-        ["sbatch", str(script_path)], capture_output=True, text=True, check=False
+        ["sbatch", str(script_path)], capture_output=True, text=True, check=False, env=clean_env
     )
     if result.returncode != 0:
         raise RuntimeError(f"Failed to submit SLURM job: {result.stderr}")
