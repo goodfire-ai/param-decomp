@@ -77,11 +77,11 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
     src = init_persistent_sources(
         lm.site_names, tuple(s.C for s in lm.sites), (1, seq), jnp.float32, random.PRNGKey(3)
     )
-    resid = random.normal(random.PRNGKey(4), (gbatch, seq, cfg.n_embd)) * 0.5
+    tokens = random.randint(random.PRNGKey(4), (gbatch, seq), 0, cfg.vocab_size)
 
     mesh = hsdp_mesh() if sharded else None
     if mesh is not None:
-        resid = shard_batch(resid, mesh, batch_axis=0)
+        tokens = shard_batch(tokens, mesh, batch_axis=0)
 
     ppgd_cfg = PersistentPGDReconLossConfig(
         coeff=0.5,
@@ -132,7 +132,7 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
 
     out = []
     for i in range(steps):
-        state, m = step(lm, state, resid, random.PRNGKey(100 + i))
+        state, m = step(lm, state, tokens, random.PRNGKey(100 + i))
         out.append({k: float(v) for k, v in m.items()})
     return out
 
