@@ -27,6 +27,7 @@ from param_decomp.components import DecompVU, SiteC, SiteSpec, init_decomp_vu
 from param_decomp.configs import (
     AdamPGDConfig,
     ChunkwiseSubsetReconLossConfig,
+    CIMaskedReconLossConfig,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
@@ -453,6 +454,118 @@ def test_decomp_vu_shapes_fp32():
     assert V_d.shape == (di, 8) and U_d.shape == (8, d)
     assert isinstance(vu, DecompVU)
     assert all(a.dtype == jnp.float32 for pair in vu.vu.values() for a in pair)
+
+
+@pytest.mark.parametrize("remat", [True, False])
+def test_sequence_recon_entries_matches_fused_backward(remat: bool):
+    """`sequence_recon_entries` only reorders scheduling: same forwards, same RNG, same
+    losses; grads differ only by float reassociation in the shared-leaf accumulation.
+    One full step per arm from bit-identical states, over the production term shapes
+    (chunkwise-stochastic multi-entry + PPGD all-sites) plus a constant-sources term."""
+    cfg = _tiny_cfg()
+    seq = 16
+    site_cs = mlp_family_site_cs(2, 5, 8)
+    sites = llama_site_specs(cfg, site_cs)
+    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
+    opt_ci = optax.adamw(1e-3, weight_decay=0.0)
+    ppgd_cfg = PersistentPGDReconLossConfig(
+        coeff=0.5,
+        scope=SCScope(),
+        optimizer=AdamPGDConfig(
+            beta1=0.5,
+            beta2=0.99,
+            lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
+        ),
+        n_warmup_steps=2,
+    )
+    assert ppgd_cfg.coeff is not None
+    loss_terms = build_loss_terms(
+        (
+            FaithfulnessLossConfig(coeff=1e5),
+            ImportanceMinimalityLossConfig(
+                coeff=5e-6,
+                pnorm=ScheduleConfig(start_val=2.0, fn_type="linear", final_val_frac=0.2),
+            ),
+            ChunkwiseSubsetReconLossConfig(
+                routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=3, n_samples=2
+            ),
+            CIMaskedReconLossConfig(coeff=0.25),
+            ppgd_cfg,
+        ),
+        lm.site_names,
+    )
+
+    def make_state() -> TrainState:
+        # Fresh buffers per arm: `step` donates the state. Deterministic keys keep the two
+        # arms' inits bit-identical.
+        vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+        ci_fn = _build_chunkwise_ci_fn(lm, jax.random.PRNGKey(2), n_blocks=2)
+        src = init_persistent_sources(
+            lm.site_names,
+            tuple(s.C for s in lm.sites),
+            (1, seq),
+            jnp.float32,
+            jax.random.PRNGKey(3),
+        )
+        assert ppgd_cfg.coeff is not None
+        return TrainState(
+            components=vu, ci_fn=ci_fn,
+            components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
+            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+            adversaries={
+                ppgd_cfg.type: PersistentAdversary(
+                    sources=src,
+                    opt_state=init_sources_adam_state(src),
+                    state_key=ppgd_cfg.type,
+                    coeff=ppgd_cfg.coeff,
+                    adam=ppgd_cfg.optimizer,
+                    n_warmup=ppgd_cfg.n_warmup_steps,
+                )
+            },
+            step=jnp.zeros((), jnp.int32),
+        )  # fmt: skip
+
+    def run_arm(sequence_recon_entries: bool) -> tuple[TrainState, dict[str, jax.Array]]:
+        step = make_train_step(
+            lm=lm,
+            losses=loss_terms,
+            components_optimizer=opt_vu,
+            ci_fn_optimizer=opt_ci,
+            total_steps=100,
+            remat_recon_forwards=remat,
+            remat_ci_fn=False,
+            mesh=None,
+            sequence_recon_entries=sequence_recon_entries,
+        )
+        tokens = jax.random.randint(jax.random.PRNGKey(4), (2, seq), 0, cfg.vocab_size)
+        return step(lm, make_state(), tokens, jax.random.PRNGKey(100))
+
+    state_fused, metrics_fused = run_arm(False)
+    state_seq, metrics_seq = run_arm(True)
+
+    # Same forwards + RNG → the loss VALUES are identical (only the backward is restructured).
+    assert set(metrics_fused) == set(metrics_seq)
+    for k in ("total", "faith", "imp", "freq") + tuple(
+        k for k in metrics_fused if k.startswith("loss/")
+    ):
+        assert jnp.array_equal(metrics_fused[k], metrics_seq[k]), (
+            k, metrics_fused[k], metrics_seq[k],
+        )  # fmt: skip
+
+    # Grads (→ updated state) match up to reassociation of the per-forward accumulation.
+    def leaves(tree: object) -> list[jax.Array]:
+        return [leaf for leaf in jax.tree.leaves(tree) if eqx.is_array(leaf)]
+
+    for name, fused, seq_ in (
+        ("components", state_fused.components, state_seq.components),
+        ("ci_fn", state_fused.ci_fn, state_seq.ci_fn),
+        ("adversaries", state_fused.adversaries, state_seq.adversaries),
+    ):
+        for leaf_fused, leaf_seq in zip(leaves(fused), leaves(seq_), strict=True):
+            assert jnp.allclose(
+                leaf_fused.astype(jnp.float32), leaf_seq.astype(jnp.float32), atol=1e-6, rtol=1e-5
+            ), (name, jnp.abs(leaf_fused - leaf_seq).max())
 
 
 def test_fresh_pgd_adversary_step():

@@ -178,6 +178,7 @@ def run_resid_mlp_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: 
         remat_recon_forwards=built.runtime.remat_recon_forwards,
         remat_ci_fn=built.runtime.remat_ci_fn,
         ascend_replicate=built.runtime.ascend_replicate,
+        sequence_recon_entries=built.runtime.sequence_recon_entries,
         compiler_options=built.runtime.compiler_options,
         profile=built.runtime.launch_env.profile,
         sample_batch=sample_batch,

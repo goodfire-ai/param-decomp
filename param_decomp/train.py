@@ -49,6 +49,7 @@ from param_decomp.recon import (
     LossSurface,
     PersistentSources,
     ReconForward,
+    ReconLossTerm,
     Routes,
     StochasticSources,
 )
@@ -111,6 +112,7 @@ def make_train_step(
     remat_ci_fn: bool,
     mesh: Mesh | None,
     ascend_replicate: bool = False,
+    sequence_recon_entries: bool = False,
     compiler_options: dict[str, bool | int | str] | None = None,
 ):
     """Build the `eqx.filter_jit`'d `step(model, state, batch, key) -> (state, metrics)`.
@@ -369,106 +371,210 @@ def make_train_step(
         # the graph so their gradient comes from the SAME backward (SPEC S14'); they
         # are NOT detached here, but components/ci grads through them are what torch
         # gets too (sources are leaves). ──
+        warmed_sources = {k: a.sources for k, a in warmed_advs.items()}
+
+        def draw_recon_loss(
+            prepared: Any,
+            ci_lower: dict[str, Array],
+            persistent_sources: dict[str, dict[str, Array]],
+            ci_stacked: dict[str, Array] | None,
+            term_idx: int,
+            entry_idx: int,
+            entry: ReconForward,
+            draw_key: PRNGKeyArray,
+            routes: Routes,
+        ) -> Array:
+            """One recon forward's KL: dispatch on the entry's mask-source strategy, run the
+            masked forward, compare against the clean output (SPEC S10')."""
+            with jax.named_scope("pd_recon_masked_fwd"):
+                match entry.sources:
+                    case StochasticSources():
+                        # Stochastic recon builds its masks INSIDE the target's
+                        # `masked_output_stochastic` from the shared `ci_stacked` — a scan
+                        # target recomputes them in its checkpointed block (mask never held,
+                        # the memory win); others build masks then `masked_output`. Either way
+                        # the engine holds no per-forward mask stacks.
+                        assert ci_stacked is not None
+                        masked = batch_sharded(
+                            model.masked_output_stochastic(
+                                prepared,
+                                batch,
+                                ci_stacked,
+                                draw_key,
+                                routes,
+                                entry.live_sites,
+                                entry.has_delta,
+                                remat=remat_recon_forwards,
+                            )
+                        )
+                    case ConstantSources() as strategy:
+                        masks, delta_masks = constant_entry_masks(
+                            strategy, ci_lower, entry.live_sites
+                        )
+                        masked = masked_forward(
+                            model, prepared, batch, masks, delta_masks,
+                            routes, entry.live_sites, entry.has_delta,
+                        )  # fmt: skip
+                    case FreshPGDSources():
+                        masks, delta_masks = source_masks(
+                            ci_lower, fresh_sources[(term_idx, entry_idx)], entry.live_sites
+                        )
+                        masked = masked_forward(
+                            model, prepared, batch, masks, delta_masks,
+                            routes, entry.live_sites, entry.has_delta,
+                        )  # fmt: skip
+                    case PersistentSources(state_key=state_key):
+                        masks, delta_masks = source_masks(
+                            ci_lower, persistent_sources[state_key], entry.live_sites
+                        )
+                        masked = masked_forward(
+                            model, prepared, batch, masks, delta_masks,
+                            routes, entry.live_sites, entry.has_delta,
+                        )  # fmt: skip
+            return recon_loss_fn(masked, clean_output)
+
+        def term_draws(
+            term_idx: int, term: ReconLossTerm
+        ) -> list[tuple[int, ReconForward, PRNGKeyArray, Routes]]:
+            """The term's flat `(entry_idx, entry, draw_key, routes)` forwards. Key derivation
+            reproduces the pre-unification production trace exactly (SPEC R1); fresh-PGD
+            entries reuse the ascent phase's fixed routes (SPEC S24)."""
+            term_key = random.fold_in(key, 1 + term_idx)
+            draws: list[tuple[int, ReconForward, PRNGKeyArray, Routes]] = []
+            for entry_idx, entry in enumerate(term.plan):
+                entry_key, routing_key = random.split(random.fold_in(term_key, entry_idx))
+                match entry.sources:
+                    case FreshPGDSources():
+                        routes_per_draw = fixed_routes[(term_idx, entry_idx)]
+                    case _:
+                        routes_per_draw = entry.sample_routing(routing_key, leading)
+                draws.extend(
+                    (entry_idx, entry, random.fold_in(entry_key, draw_idx), routes)
+                    for draw_idx, routes in enumerate(routes_per_draw)
+                )
+            assert draws, f"term {term.name!r} produced no forwards"
+            return draws
+
+        per_term_draws = [term_draws(term_idx, term) for term_idx, term in enumerate(recon_terms)]
+
         def loss_fn(
             trainable: tuple[Any, DecompVU, CI, dict[str, dict[str, Array]]],
         ) -> tuple[Array, tuple[Array, Array, Array, tuple[Array, ...]]]:
             prepared, components, ci, persistent_sources = trainable
-            # Stochastic recon builds its masks INSIDE the target's `masked_output_stochastic`
-            # from this once-per-step shared CI form — a scan target recomputes them in its
-            # checkpointed block (mask never held, the memory win); others fall back to building
-            # masks then `masked_output`. Either way the engine holds no per-forward mask stacks.
             ci_stacked = model.stack_ci(ci.lower)
             faith_loss = faithfulness_loss(model.weight_deltas(components))
             imp_lp, imp_freq = imp_min_terms(ci.upper, imp_min, imp_min_param)
 
             term_losses: list[Array] = []
-            for term_idx, term in enumerate(recon_terms):
-                term_key = random.fold_in(key, 1 + term_idx)
+            for term_idx, draws in enumerate(per_term_draws):
                 total = jnp.zeros((), jnp.float32)
-                n_forwards = 0
-                for entry_idx, entry in enumerate(term.plan):
-                    entry_key, routing_key = random.split(random.fold_in(term_key, entry_idx))
-                    match entry.sources:
-                        case FreshPGDSources():
-                            routes_per_draw = fixed_routes[(term_idx, entry_idx)]
-                        case _:
-                            routes_per_draw = entry.sample_routing(routing_key, leading)
-                    for draw_idx, routes in enumerate(routes_per_draw):
-                        draw_key = random.fold_in(entry_key, draw_idx)
-
-                        def pre_built_fwd(
-                            mds: tuple[dict[str, Array], dict[str, Array]],
-                            routes: Routes = routes,
-                            entry: ReconForward = entry,
-                        ) -> Any:
-                            return masked_forward(
-                                model,
-                                prepared,
-                                batch,
-                                mds[0],
-                                mds[1],
-                                routes,
-                                entry.live_sites,
-                                entry.has_delta,
-                            )
-
-                        with jax.named_scope("pd_recon_masked_fwd"):
-                            match entry.sources:
-                                case StochasticSources():  # masks built inside the target
-                                    masked = batch_sharded(
-                                        model.masked_output_stochastic(
-                                            prepared,
-                                            batch,
-                                            ci_stacked,
-                                            draw_key,
-                                            routes,
-                                            entry.live_sites,
-                                            entry.has_delta,
-                                            remat=remat_recon_forwards,
-                                        )
-                                    )
-                                case ConstantSources() as strategy:
-                                    masked = pre_built_fwd(
-                                        constant_entry_masks(strategy, ci.lower, entry.live_sites)
-                                    )
-                                case FreshPGDSources():
-                                    masked = pre_built_fwd(
-                                        source_masks(
-                                            ci.lower,
-                                            fresh_sources[(term_idx, entry_idx)],
-                                            entry.live_sites,
-                                        )
-                                    )
-                                case PersistentSources(state_key=state_key):
-                                    masked = pre_built_fwd(
-                                        source_masks(
-                                            ci.lower,
-                                            persistent_sources[state_key],
-                                            entry.live_sites,
-                                        )
-                                    )
-                        total = total + recon_loss_fn(masked, clean_output)
-                        n_forwards += 1
-                assert n_forwards > 0, f"term {term.name!r} produced no forwards"
-                term_loss = total / n_forwards
-                term_losses.append(term_loss)
+                for entry_idx, entry, draw_key, routes in draws:
+                    total = total + draw_recon_loss(
+                        prepared, ci.lower, persistent_sources, ci_stacked,
+                        term_idx, entry_idx, entry, draw_key, routes,
+                    )  # fmt: skip
+                term_losses.append(total / len(draws))
 
             total_loss = faith_coeff * faith_loss + imp_coeff * imp_lp + freq_coeff * imp_freq
             for term, term_loss in zip(recon_terms, term_losses, strict=True):
                 total_loss = total_loss + term.coeff * term_loss
             return total_loss, (faith_loss, imp_lp, imp_freq, tuple(term_losses))
 
-        with jax.named_scope("pd_value_and_grad"):
-            (total_loss, (faith_loss, imp_lp, imp_freq, term_losses)), grads = (
-                eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-                    (
-                        prepared,
-                        state.components,
-                        ci,
-                        {k: a.sources for k, a in warmed_advs.items()},
-                    )
+        def sequenced_value_and_grad() -> tuple[
+            tuple[Array, tuple[Array, Array, Array, tuple[Array, ...]]],
+            tuple[Any, DecompVU, CI, dict[str, dict[str, Array]]],
+        ]:
+            """`loss_fn`'s backward, decomposed per recon forward and CHAINED: each forward's
+            `value_and_grad` is tied to its predecessor's grads through
+            `jax.lax.optimization_barrier`, so fwd_{i+1} cannot be scheduled before bwd_i and
+            XLA frees each forward's saved stack before the next begins. The fused backward
+            keeps every recon forward's saved residuals co-resident instead (~5x peak at the
+            production 4-chunk + PPGD plan). Σ per-forward grads = the fused grads up to float
+            reassociation in the shared-leaf accumulation; losses, forwards, and RNG are
+            identical. Recon touches only `(prepared, ci.lower, sources)`, so only those thread
+            through the chain — faith + imp-min get their own small backward."""
+
+            def faith_imp_loss(
+                components_and_upper: tuple[DecompVU, dict[str, Array]],
+            ) -> tuple[Array, tuple[Array, Array, Array]]:
+                components, ci_upper = components_and_upper
+                faith_loss = faithfulness_loss(model.weight_deltas(components))
+                imp_lp, imp_freq = imp_min_terms(ci_upper, imp_min, imp_min_param)
+                loss = faith_coeff * faith_loss + imp_coeff * imp_lp + freq_coeff * imp_freq
+                return loss, (faith_loss, imp_lp, imp_freq)
+
+            (_, (faith_loss, imp_lp, imp_freq)), (components_grad_faith, upper_grad) = (
+                eqx.filter_value_and_grad(faith_imp_loss, has_aux=True)(
+                    (state.components, ci.upper)
                 )
             )
+
+            # The initial barrier also ties the warmed persistent sources to the recon
+            # inputs, so the PPGD warmup ascents complete before the first recon forward
+            # (ascent-phase overlap is part of the measured co-residency).
+            recon_primals = jax.lax.optimization_barrier((prepared, ci.lower, warmed_sources))
+            acc: tuple[Any, dict[str, Array], dict[str, dict[str, Array]]] | None = None
+            term_losses: list[Array] = []
+            for term_idx, draws in enumerate(per_term_draws):
+                coeff_per_draw = recon_terms[term_idx].coeff / len(draws)
+                term_total = jnp.zeros((), jnp.float32)
+                for entry_idx, entry, draw_key, routes in draws:
+
+                    def scaled_draw_loss(
+                        primals: tuple[Any, dict[str, Array], dict[str, dict[str, Array]]],
+                        term_idx: int = term_idx,
+                        entry_idx: int = entry_idx,
+                        entry: ReconForward = entry,
+                        draw_key: PRNGKeyArray = draw_key,
+                        routes: Routes = routes,
+                        coeff_per_draw: float = coeff_per_draw,
+                    ) -> tuple[Array, Array]:
+                        prepared_, ci_lower_, persistent_sources_ = primals
+                        ci_stacked = (
+                            model.stack_ci(ci_lower_)
+                            if isinstance(entry.sources, StochasticSources)
+                            else None
+                        )
+                        draw_loss = draw_recon_loss(
+                            prepared_, ci_lower_, persistent_sources_, ci_stacked,
+                            term_idx, entry_idx, entry, draw_key, routes,
+                        )  # fmt: skip
+                        return coeff_per_draw * draw_loss, draw_loss
+
+                    (_, draw_loss), draw_grads = eqx.filter_value_and_grad(
+                        scaled_draw_loss, has_aux=True
+                    )(recon_primals)
+                    term_total = term_total + draw_loss
+                    acc = draw_grads if acc is None else jax.tree.map(jnp.add, acc, draw_grads)
+                    acc, recon_primals = jax.lax.optimization_barrier((acc, recon_primals))
+                term_losses.append(term_total / len(draws))
+            assert acc is not None
+            prepared_grad, lower_grad, persistent_grads_scaled = acc
+
+            total_loss = faith_coeff * faith_loss + imp_coeff * imp_lp + freq_coeff * imp_freq
+            for term, term_loss in zip(recon_terms, term_losses, strict=True):
+                total_loss = total_loss + term.coeff * term_loss
+            # `ci_vjp` wants the full CI cotangent; the logits view is unused in the step, so
+            # its cotangent is zero (as in the fused backward, where it falls out of AD).
+            ci_grad = CI(
+                logits=jax.tree.map(jnp.zeros_like, ci.logits),
+                lower=lower_grad,
+                upper=upper_grad,
+            )
+            grads = (prepared_grad, components_grad_faith, ci_grad, persistent_grads_scaled)
+            return (total_loss, (faith_loss, imp_lp, imp_freq, tuple(term_losses))), grads
+
+        with jax.named_scope("pd_value_and_grad"):
+            if sequence_recon_entries:
+                (total_loss, (faith_loss, imp_lp, imp_freq, term_losses)), grads = (
+                    sequenced_value_and_grad()
+                )
+            else:
+                (total_loss, (faith_loss, imp_lp, imp_freq, term_losses)), grads = (
+                    eqx.filter_value_and_grad(loss_fn, has_aux=True)(
+                        (prepared, state.components, ci, warmed_sources)
+                    )
+                )
         prepared_grad, components_grad_faith, ci_grad, persistent_grads_scaled = grads
         components_grad_recon = recon_vjp(prepared_grad)[0]
         ci_fn_grad = ci_vjp(ci_grad)[0]

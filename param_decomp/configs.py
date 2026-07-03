@@ -785,6 +785,17 @@ class RuntimeConfig(BaseConfig):
             "the full V/U resident during the ascend phase for the eliminated re-gathers."
         ),
     )
+    sequence_recon_entries: bool = Field(
+        default=False,
+        description=(
+            "Decompose the main backward into per-recon-forward backwards chained by "
+            "`optimization_barrier`: forward i+1 data-depends on ALL of backward i, so XLA "
+            "frees each recon forward's saved stack before the next begins instead of "
+            "keeping every forward's co-resident (~5x peak at the production 4-chunk + PPGD "
+            "plan). Trades cross-entry fwd/bwd overlap for peak activation memory. Same "
+            "losses, forwards, and RNG; grad accumulation reassociates. Compute substrate."
+        ),
+    )
     compiler_options: dict[str, bool | int | str] = Field(
         default_factory=lambda: {
             "xla_gpu_enable_latency_hiding_scheduler": True,
