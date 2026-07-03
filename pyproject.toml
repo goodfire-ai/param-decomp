@@ -10,7 +10,7 @@ dependencies = [
     # The torch-free pydantic config schema now ships inside this distribution
     # (`param_decomp.configs` / `base_config` / `schedule`), so it carries the schema's
     # leaf deps directly (was the dissolved `param-decomp-config` package).
-    "pydantic<2.12", # https://github.com/goodfire-ai/param-decomp/pull/232 , issues/221
+    "pydantic>=2",
     "annotated-types",
     "jax==0.10.1",
     "equinox==0.13.8",
@@ -23,7 +23,9 @@ dependencies = [
     "pyarrow==19.0.1",
     "pyyaml==6.0.2",
     "orbax-checkpoint==0.12.0",
-    "wandb==0.21.0",
+    # >=0.22.3: first wandb release compatible with pydantic>=2.12 without
+    # UnsupportedFieldAttributeWarning spam (wandb/wandb#10651, issues/221)
+    "wandb==0.22.3",
     "matplotlib==3.10.8",
     "pillow==12.0.0",
 ]
