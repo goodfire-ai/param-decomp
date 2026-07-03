@@ -50,6 +50,11 @@ from param_decomp.eval import make_eval_step
 from param_decomp.hf_http import configure_hf_http_retries
 from param_decomp.lm import DecomposedModel
 from param_decomp.log import setup_logger
+from param_decomp.per_site_faith_eval import (
+    PER_SITE_FAITH_TOP_K,
+    make_per_site_faith_step,
+    per_site_faith_scalars,
+)
 from param_decomp.run import (
     SlowEvalRenderer,
     install_sigterm_flag,
@@ -262,7 +267,14 @@ def _make_lm_eval_fn(
     want_position_ci = perm_spec.any_plots or perm_spec.any_identity_error
     position_ci_step = make_position_ci_step(lm, co) if want_position_ci else None
 
+    site_names = lm.site_names
+    per_site_faith_step = make_per_site_faith_step(lm, co)
+    # ‖W_s‖²_F is constant over training — computed once (lazily, from the first eval's own
+    # components pytree so shape/sharding are exact) via the same step on a zeroed vu.
+    frozen_weight_sq: dict[str, float] | None = None
+
     def eval_fn(state: TrainState, now_step: int) -> "LogRecord":
+        nonlocal frozen_weight_sq
         eval_pass_index = now_step // eval.every
         # uniform-average of per-batch scalars; mean-safe vs torch's accumulate-then-
         # compute() ONLY because every emitted key is a per-batch reduction that torch also
@@ -287,6 +299,19 @@ def _make_lm_eval_fn(
         eval_record: dict[str, LogValue] = {
             f"eval/{k}": float(v) / eval.n_steps for k, v in metric_sums.items()
         }
+
+        # Per-site faithfulness observability: the per-site ‖Δ_s‖²_F the global
+        # FaithfulnessLoss reduces away. Collective (an all-reduce per site), so it runs in
+        # lockstep on every rank; the wandb bar chart is rank-0-only below.
+        delta_sq = {s: float(v) for s, v in per_site_faith_step(lm, state.components).items()}
+        if frozen_weight_sq is None:
+            zero_vu = jax.tree.map(jnp.zeros_like, state.components)
+            frozen_weight_sq = {s: float(v) for s, v in per_site_faith_step(lm, zero_vu).items()}
+            assert all(w > 0.0 for w in frozen_weight_sq.values()), "zero-norm frozen site"
+        abs_frob = {s: delta_sq[s] ** 0.5 for s in site_names}
+        rel_frob = {s: abs_frob[s] / frozen_weight_sq[s] ** 0.5 for s in site_names}
+        eval_record |= per_site_faith_scalars(rel_frob, abs_frob, PER_SITE_FAITH_TOP_K)
+
         for class_name, attn_step in attn_steps.items():
             # token-weighted (Σ sum_kl / Σ n), NOT the uniform per-batch average above — KL
             # is summed over distributions, divided by their count.
@@ -358,11 +383,27 @@ def _make_lm_eval_fn(
                 "l0",
                 title=f"L0_{eval.l0_ci_alive_threshold}",
             )
+            # All-site per-site relative Frobenius, site-labeled — the rich per-site view the
+            # rank-indexed rel_frob_top* scalars can't carry (their keys are stable but drop
+            # site identity). Descending so the worst sites lead.
+            eval_record["eval/faith/rel_frob_bar_chart"] = wandb.plot.bar(
+                wandb.Table(
+                    columns=["site", "rel_frob"],
+                    data=[
+                        [s, v]
+                        for s, v in sorted(rel_frob.items(), key=lambda kv: kv[1], reverse=True)
+                    ],
+                ),
+                "site",
+                "rel_frob",
+                title="per-site ‖Δ‖_F / ‖W‖_F",
+            )
         if is_main:
             headline = {
                 k: eval_record[f"eval/{k}"]
                 for k in ("ce_kl/kl_ci_masked", "ce_kl/ce_difference_ci_masked")
             }
+            headline["faith/rel_frob_top1"] = eval_record["eval/faith/rel_frob_top1"]
             print(f"[eval @ {now_step}] {headline}", flush=True)
         return eval_record
 
