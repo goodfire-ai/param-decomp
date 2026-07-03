@@ -570,6 +570,8 @@ run_name: jax-full32L-HSDP-b192-dp32-bf16src-TPUT
 runtime:
   dp: 32
   launch_env:
+    env:
+      HF_HUB_CACHE: /mnt/data/artifacts/hf_cache/hub
     profile:
       no_checkpoint: true
   remat_ci_fn: true
