@@ -49,6 +49,10 @@ class DataConfig:
     """Consecutive train steps that share one token batch (free-AT-style replay: the
     persistent adversary's once-per-step ascent becomes batch-matched on the repeated
     steps). 1 = a fresh batch every step."""
+    train_unique_batches: int | None
+    """Cycle the first N batch indices in sequential epochs (index `step % N`, same
+    order every epoch — no inter-epoch reshuffle). None = never repeat. Composes with
+    `train_batch_replay` (replay divides the step first, then the epoch modulo)."""
 
 
 @dataclass(frozen=True)

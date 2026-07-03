@@ -169,9 +169,10 @@ def train(
     )
 
     def sample_batch(step: int) -> jax.Array:
-        return _global_token_batch(
-            server.local_batch(step // data.train_batch_replay), mesh, data.global_batch
-        )
+        idx = step // data.train_batch_replay
+        if data.train_unique_batches is not None:
+            idx %= data.train_unique_batches
+        return _global_token_batch(server.local_batch(idx), mesh, data.global_batch)
 
     eval_fn = None
     eval_every = built.pd.steps + 1  # unreachable cadence when eval is disabled

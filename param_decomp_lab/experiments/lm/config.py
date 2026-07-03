@@ -141,6 +141,10 @@ class LMDataConfig(BaseConfig):
         default=1,
         description="Consecutive train steps sharing one batch (free-AT replay); 1 = fresh batch every step",
     )
+    train_unique_batches: PositiveInt | None = Field(
+        default=None,
+        description="Cycle the first N batches in sequential epochs (step % N); None = never repeat",
+    )
 
 
 class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
@@ -327,6 +331,7 @@ def _data(cfg: LMExperimentConfig) -> DataConfig:
         seq_len=data.max_seq_len,
         global_batch=cfg.pd.batch_size,
         train_batch_replay=data.train_batch_replay,
+        train_unique_batches=data.train_unique_batches,
     )
 
 
