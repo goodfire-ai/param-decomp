@@ -121,6 +121,49 @@ def init_decomp_vu(sites: tuple[SiteSpec, ...], key: Array) -> DecompVU:
     return DecompVU(vu=vu)
 
 
+VUShape = tuple[int, int, int]  # (d_in, d_out, C)
+
+
+def vu_shape_groups(sites: tuple[SiteSpec, ...]) -> dict[VUShape, tuple[SiteSpec, ...]]:
+    """Sites grouped by V/U shape, site order preserved within a group."""
+    groups: dict[VUShape, list[SiteSpec]] = {}
+    for spec in sites:
+        groups.setdefault((spec.d_in, spec.d_out, spec.C), []).append(spec)
+    return {shape: tuple(specs) for shape, specs in groups.items()}
+
+
+def init_decomp_vu_stacked(
+    sites: tuple[SiteSpec, ...], key: Array
+) -> dict[VUShape, tuple[Array, Array]]:
+    """`init_decomp_vu` computed as same-shape stacks: `{(d_in, d_out, C):
+    (V [n, d_in, C], U [n, C, d_out])}`, vmapped over the SAME per-site keys — so
+    `unstack_decomp_vu` recovers `init_decomp_vu`'s output BIT-IDENTICALLY (pinned by
+    `test_sharding`). Under jit the graph has 2×n_shapes sharded outputs instead of
+    2×n_sites, which cuts the production init compile ~10× (448 outputs → 14 at 32L)."""
+    keys = jax.random.split(key, 2 * len(sites))
+    site_index = {spec.name: idx for idx, spec in enumerate(sites)}
+    stacked: dict[VUShape, tuple[Array, Array]] = {}
+    for (d_in, d_out, c), specs in vu_shape_groups(sites).items():
+        idxs = jnp.array([site_index[spec.name] for spec in specs])
+        Vs = jax.vmap(lambda k, s=(d_in, c): jax.random.normal(k, s))(keys[2 * idxs])
+        Us = jax.vmap(lambda k, s=(c, d_out): jax.random.normal(k, s))(keys[2 * idxs + 1])
+        stacked[(d_in, d_out, c)] = (Vs * d_in**-0.5, Us * c**-0.5)
+    return stacked
+
+
+def unstack_decomp_vu(
+    sites: tuple[SiteSpec, ...], stacked: dict[VUShape, tuple[Array, Array]]
+) -> DecompVU:
+    """Slice `init_decomp_vu_stacked`'s per-shape stacks back into the per-site DecompVU."""
+    vu: dict[str, tuple[Array, Array]] = {}
+    for shape, specs in vu_shape_groups(sites).items():
+        Vs, Us = stacked[shape]
+        assert Vs.shape[0] == len(specs), (Vs.shape, len(specs))
+        for j, spec in enumerate(specs):
+            vu[spec.name] = (Vs[j], Us[j])
+    return DecompVU(vu={spec.name: vu[spec.name] for spec in sites})
+
+
 def site_out(
     x: Array,
     V: Array,
