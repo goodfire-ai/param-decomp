@@ -175,11 +175,8 @@ def main() -> None:
         stoch_coeff=0.5,
         imp_min=ImportanceMinimalityLossConfig(
             coeff=5e-6,
-            pnorm=2.0,
+            pnorm=ScheduleConfig(start_val=2.0, fn_type="linear", final_val_frac=0.2),
             frequency=FrequencyMinimalityConfig(coeff=1e-6, reference_token_count=32),
-            p_anneal_start_frac=0.0,
-            p_anneal_final_p=0.4,
-            p_anneal_end_frac=1.0,
         ),
         adversary=PersistentPGDReconLossConfig(
             coeff=0.5,

@@ -130,7 +130,8 @@ def ci_arch(
 
 
 def _assert_cosine_to_tenth(schedule: ScheduleConfig, who: str) -> None:
-    """The trainer hardcodes optax cosine decay to 0.1x with no warmup (SPEC S19/S20)."""
+    """The trainer honors the full `ScheduleConfig`; the METHOD's LR is cosine-to-0.1x
+    with no warmup (SPEC S20), so the conversion gate pins that shape."""
     assert schedule.fn_type == "cosine", f"{who}: only cosine lr supported, got {schedule}"
     assert schedule.warmup_pct == 0.0, f"{who}: lr warmup unsupported, got {schedule}"
     assert schedule.final_val_frac == 0.1, f"{who}: final_val_frac must be 0.1, got {schedule}"
@@ -158,8 +159,8 @@ def assert_canonical_algorithm_config(cfg: "ExperimentConfig[Any, Any]") -> None
     _assert_plain_adamw(ci_opt, "ci_fn_optimizer")
     assert vu_opt.grad_clip_norm is not None, "components grad clip is part of the method"
 
-    # The persistent-PGD source LR is constant-after-warmup only — `source_lr` ignores
-    # `fn_type` / `final_val_frac`, so a decaying source schedule would be silently flattened.
+    # The persistent-PGD source LR is constant-after-warmup only (`build_loss_terms`
+    # refuses anything else); pin it here too so the refusal happens at conversion.
     for metric in cfg.pd.loss_metrics:
         if isinstance(metric, PersistentPGDReconLossConfig):
             sched = metric.optimizer.lr_schedule

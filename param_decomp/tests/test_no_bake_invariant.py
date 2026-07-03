@@ -18,6 +18,7 @@ from param_decomp.configs import (
     StochasticReconLossConfig,
 )
 from param_decomp.recon import build_loss_terms
+from param_decomp.schedule import ScheduleConfig
 from param_decomp.tests.test_generic_model_io import SyntheticDecomposedModel
 from param_decomp.train import TrainState, make_train_step
 
@@ -72,7 +73,10 @@ def _build_step_and_args():
     loss_terms = build_loss_terms(
         (
             FaithfulnessLossConfig(coeff=1.0),
-            ImportanceMinimalityLossConfig(coeff=1e-4, pnorm=2.0, p_anneal_final_p=1.0),
+            ImportanceMinimalityLossConfig(
+                coeff=1e-4,
+                pnorm=ScheduleConfig(start_val=2.0, fn_type="linear", final_val_frac=0.5),
+            ),
             StochasticReconLossConfig(coeff=1.0),
         ),
         lm.site_names,

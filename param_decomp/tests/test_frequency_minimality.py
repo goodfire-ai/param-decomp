@@ -16,6 +16,7 @@ from param_decomp.configs import (
     ImportanceMinimalityLossConfig,
 )
 from param_decomp.losses import annealed_imp_min_param, imp_min_terms, importance_minimality_terms
+from param_decomp.schedule import ScheduleConfig
 
 
 def test_closed_form():
@@ -75,7 +76,9 @@ def test_lp_independent_of_reference_token_count():
 
 
 def test_dispatch_no_frequency_gives_zero_freq():
-    cfg = ImportanceMinimalityLossConfig(coeff=1.0, pnorm=2.0, p_anneal_final_p=2.0)
+    cfg = ImportanceMinimalityLossConfig(
+        coeff=1.0, pnorm=ScheduleConfig(start_val=2.0, fn_type="constant")
+    )
     assert cfg.frequency is None
     ci = {"a": jnp.array([[0.1, 0.9], [0.4, 0.6]])}
     param = annealed_imp_min_param(jnp.asarray(0.0), 100, cfg)
@@ -87,8 +90,7 @@ def test_dispatch_no_frequency_gives_zero_freq():
 def test_dispatch_with_frequency_matches_direct():
     cfg = ImportanceMinimalityLossConfig(
         coeff=1.0,
-        pnorm=2.0,
-        p_anneal_final_p=2.0,
+        pnorm=ScheduleConfig(start_val=2.0, fn_type="constant"),
         frequency=FrequencyMinimalityConfig(coeff=0.5, reference_token_count=128),
     )
     ci = {"a": jnp.array([[0.1, 0.9], [0.4, 0.6]])}

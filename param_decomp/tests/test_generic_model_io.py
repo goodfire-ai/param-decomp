@@ -40,6 +40,7 @@ from param_decomp.configs import (
 )
 from param_decomp.lm import DecomposedModel, run_stochastic_masked_output
 from param_decomp.recon import build_loss_terms
+from param_decomp.schedule import ScheduleConfig
 from param_decomp.train import TrainState, make_train_step
 
 B, T, D, C = 2, 3, 8, 5
@@ -251,7 +252,10 @@ def test_train_step_runs_through_generic_target():
     loss_terms = build_loss_terms(
         (
             FaithfulnessLossConfig(coeff=1.0),
-            ImportanceMinimalityLossConfig(coeff=1e-4, pnorm=2.0, p_anneal_final_p=1.0),
+            ImportanceMinimalityLossConfig(
+                coeff=1e-4,
+                pnorm=ScheduleConfig(start_val=2.0, fn_type="linear", final_val_frac=0.5),
+            ),
             StochasticReconLossConfig(coeff=1.0),
         ),
         lm.site_names,

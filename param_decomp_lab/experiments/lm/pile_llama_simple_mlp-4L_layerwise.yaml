@@ -47,13 +47,13 @@ pd:
   loss_metrics:
   - type: ImportanceMinimalityLoss
     coeff: 0.0001
-    pnorm: 2.0
+    pnorm:
+      start_val: 2.0
+      fn_type: linear
+      final_val_frac: 0.2
     frequency:
       coeff: 5.0e-05
       reference_token_count: 32768
-    p_anneal_start_frac: 0.0
-    p_anneal_final_p: 0.4
-    p_anneal_end_frac: 1.0
     eps: 1.0e-12
   - type: StochasticReconSubsetLoss
     coeff: 0.5

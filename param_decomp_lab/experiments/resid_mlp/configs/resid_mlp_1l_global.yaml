@@ -22,10 +22,9 @@ pd:
   loss_metrics:
   - type: ImportanceMinimalityLoss
     coeff: 1e-5
-    pnorm: 2.0
-    p_anneal_start_frac: 0.0
-    p_anneal_final_p: 2.0
-    p_anneal_end_frac: 1.0
+    pnorm:
+      start_val: 2.0
+      fn_type: constant
   - type: StochasticReconLayerwiseLoss
     coeff: 1.0
   - type: StochasticReconLoss

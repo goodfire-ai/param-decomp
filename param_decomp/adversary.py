@@ -26,7 +26,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from param_decomp.components import SiteSpec
 from param_decomp.configs import AdamPGDConfig, MaskScopeLiteral, PGDInitStrategy
-from param_decomp.losses import warmup_then_constant_lr
+from param_decomp.losses import scheduled_value_traced
 
 
 @jax.tree_util.register_dataclass
@@ -168,12 +168,7 @@ class PersistentAdversary(eqx.Module):
     n_warmup: int = eqx.field(static=True)
 
     def source_lr(self, step_f32: Array, total_steps: int) -> Array:
-        return warmup_then_constant_lr(
-            step_f32,
-            total_steps,
-            self.adam.lr_schedule.start_val,
-            self.adam.lr_schedule.warmup_pct,
-        )
+        return scheduled_value_traced(step_f32, total_steps, self.adam.lr_schedule)
 
     def warmup_ascend(
         self, scoring_loss: Callable[[dict[str, Array]], Array], step_f32: Array, total_steps: int

@@ -358,11 +358,11 @@ def build_loss_terms(
                 faith = FaithfulnessTerm(unique_name(cfg), cfg.coeff)
             case ImportanceMinimalityLossConfig():
                 assert imp is None
-                assert cfg.p_anneal_final_p is not None
+                assert cfg.pnorm.warmup_pct == 0.0, "a p ramping from 0 is never intended"
                 imp = ImportanceMinimalityTerm(unique_name(cfg), cfg.coeff, cfg)
             case SmoothL0ImportanceMinimalityLossConfig():
                 assert imp is None
-                assert cfg.gamma_anneal_final_gamma is not None
+                assert cfg.gamma.warmup_pct == 0.0, "a gamma ramping from 0 is never intended"
                 imp = ImportanceMinimalityTerm(unique_name(cfg), cfg.coeff, cfg)
             case UnmaskedReconLossConfig() | CIMaskedReconLossConfig():
                 value = 1.0 if isinstance(cfg, UnmaskedReconLossConfig) else 0.0
