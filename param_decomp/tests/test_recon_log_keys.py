@@ -33,7 +33,7 @@ from param_decomp.configs import (
     StochasticReconSubsetLossConfig,
     UnmaskedReconLossConfig,
 )
-from param_decomp.recon import ReconLossTerm, build_loss_terms
+from param_decomp.recon import FreshPGDSources, ReconLossTerm, build_loss_terms
 from param_decomp.schedule import ScheduleConfig
 
 SITE_NAMES = ("h.0.mlp.c_fc", "h.0.mlp.down_proj")
@@ -92,6 +92,30 @@ def test_recon_term_name_honors_name_override():
     cfg = StochasticReconLossConfig(coeff=1.0, name="StochasticReconLoss_probe")
     (term,) = _recon_terms((cfg,))
     assert term.name == "StochasticReconLoss_probe"
+
+
+def test_pgd_layerwise_plan_is_independent_per_site():
+    """#918 item 6 / SPEC S24: `PGDReconLayerwiseLoss` factors into ONE fresh-PGD entry
+    per site, each living on exactly its own single site in canonical site order.
+    Combined with the step's per-entry key derivation (`fold_in(term_key, entry_idx)` in
+    `train.py`, which splits into `init_key`/`routing_key`), this is what draws an
+    INDEPENDENT fresh adversarial source per site — the JAX counterpart of torch
+    `PGDReconLayerwiseLoss.update`'s loop, where each layer calls
+    `pgd_masked_recon_loss_update` (fresh `_init_adv_sources`) under a `LayerRouter`
+    routing only that layer."""
+    cfg = PGDReconLayerwiseLossConfig(
+        coeff=1.0, init="random", step_size=0.1, n_steps=1, mask_scope="bsc"
+    )
+    (term,) = _recon_terms((cfg,))
+    assert tuple(entry.live_sites for entry in term.plan) == tuple((s,) for s in SITE_NAMES)
+    for entry in term.plan:
+        assert isinstance(entry.sources, FreshPGDSources)
+        assert (entry.sources.init, entry.sources.n_steps, entry.sources.step_size) == (
+            "random",
+            1,
+            0.1,
+        )
+        assert entry.sources.scope == "bsc"
 
 
 def test_fixed_scalar_loss_keys_use_torch_class_names():
