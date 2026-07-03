@@ -285,6 +285,10 @@ shared FS, which `$PARAM_DECOMP_OUT_DIR` already is.
   `xla_gpu_autotune_level` 0/2/4 measured flat (~71s jit_step at the 8L probe), and jax
   ≥0.10 already persists the per-fusion autotune cache alongside the compilation cache
   (`jax_persistent_cache_enable_xla_caches` default) — don't re-chase these levers.
+- **`jax_persistent_cache_enable_xla_caches='all'` (XLA kernel cache + parallel LLVM
+  codegen) CRASHES on this stack** (jax 0.10.1 / B200): jit_step dies at runtime with
+  `CUDA_ERROR_NOT_FOUND: named symbol not found` (probe arm F, 2026-07-03). Leave it at
+  the default.
 - **`init_decomp_vu_placed` compiles stacked** (vmap per V/U shape, then a slice jit) —
   bit-identical to the per-site init but ~10× cheaper to compile at 224 sites. Keep new
   seeded inits few-outputs-under-jit; a sharded jit returning 2×n_sites outputs was a
