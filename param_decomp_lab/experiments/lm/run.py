@@ -96,6 +96,27 @@ def _enable_persistent_compilation_cache(out_dir: Path) -> Path:
     return cache_dir
 
 
+def _enable_persistent_autotune_cache(
+    out_dir: Path, compiler_options: dict[str, bool | int | str]
+) -> Path:
+    """Persist XLA's per-fusion GEMM-autotuning results to a shared-FS dir reused across
+    runs (sibling of the compilation cache). The executable cache above only hits on an
+    IDENTICAL module; any structural config change is a full recompile, but the matmul
+    shapes are usually unchanged — this cache lets that recompile skip re-benchmarking every
+    GEMM. Injected via `setdefault` so an explicit `runtime.compiler_options` in the config
+    wins; the same flags on every rank keep the compile-cache key rank-uniform (a per-rank
+    flag would fork the key and break the requeue fast path for rank != 0). All ranks write
+    (XLA's per-fusion files land via temp+rename, so concurrent writers are safe); the dir
+    path is deployment-constant, so it costs no compile-cache misses."""
+    autotune_dir = out_dir.parent / "xla_autotune_cache"
+    autotune_dir.mkdir(parents=True, exist_ok=True)
+    compiler_options.setdefault("xla_gpu_per_fusion_autotune_cache_dir", str(autotune_dir))
+    compiler_options.setdefault(
+        "xla_gpu_experimental_autotune_cache_mode", "AUTOTUNE_CACHE_MODE_UPDATE"
+    )
+    return autotune_dir
+
+
 def _enable_hlo_dump(run_dir: Path) -> None:
     """Dump the step modules' optimized HLO + buffer assignment to `<run_dir>/hlo` (rank 0).
 
@@ -385,7 +406,8 @@ def main(config: Path, run_id: str) -> None:
     built, _raw_cfg = load_config(config, run_id)
 
     install_sigterm_flag()
-    _enable_hlo_dump(built.run.run_dir)
+    if built.runtime.launch_env.profile.hlo_dump:
+        _enable_hlo_dump(built.run.run_dir)
     init_distributed(built.runtime.dp)
     # Harden the cold-cache HF weight load against the 8N-rank startup burst before any
     # per-rank Hub call (no-op when huggingface_hub is absent / cache is pre-warmed).
@@ -396,6 +418,9 @@ def main(config: Path, run_id: str) -> None:
         assert_finetune_structural_compat(built, built.run.resume_provenance)
 
     cache_dir = _enable_persistent_compilation_cache(built.run.out_dir)
+    autotune_dir = _enable_persistent_autotune_cache(
+        built.run.out_dir, built.runtime.compiler_options
+    )
 
     is_main = jax.process_index() == 0
     if is_main:
@@ -404,6 +429,7 @@ def main(config: Path, run_id: str) -> None:
         setup_logger(built.run.run_dir / "logs.log")
         _pin_config_copy(built.run.run_dir, LAUNCH_CONFIG_FILENAME, config)
         print(f"persistent XLA compilation cache: {cache_dir}", flush=True)
+        print(f"persistent XLA autotune cache: {autotune_dir}", flush=True)
         site_kind_counts: dict[str, int] = {}
         for s in built.target.sites:
             kind = s.name.rsplit(".", 1)[-1]

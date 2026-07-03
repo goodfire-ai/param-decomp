@@ -630,6 +630,10 @@ class ProfileConfig(BaseConfig):
     async_test: bool = False
     leaf_bench: bool = False
     no_checkpoint: bool = False
+    hlo_dump: bool = False
+    """Dump the step modules' optimized HLO + buffer assignment to `<run_dir>/hlo` on rank 0
+    (the buffer-assignment dump is how an exec-time OOM's blowing buffer gets named). Costs
+    compile time + ~100s of MB per run, so opt-in."""
 
 
 class LaunchEnv(BaseConfig):
