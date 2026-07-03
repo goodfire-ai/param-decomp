@@ -1,0 +1,42 @@
+=== default devices ===
+xxxxx.....x...xxxxx.................s................................... [ 15%]
+........................................................................ [ 30%]
+...................................................................ssss. [ 45%]
+........................................................................ [ 60%]
+........................................................................ [ 75%]
+........................................................................ [ 90%]
+..............................................                           [100%]
+=============================== warnings summary ===============================
+param_decomp/tests/test_optim_torch_parity.py::test_grad_clip_matches_torch_eps
+param_decomp/tests/test_optim_torch_parity.py::test_grad_clip_differs_from_optax_when_clipping
+param_decomp/tests/test_optim_torch_parity.py::test_grad_clip_noop_below_threshold
+param_decomp/tests/test_optim_torch_parity.py::test_muon_orthogonalizes_2d_leaves_and_adam_falls_back_elsewhere
+  /mnt/home/oli/bridge/crew/data/workspaces/try-muon/param-decomp/.venv/lib/python3.13/site-packages/optax/_src/linear_algebra.py:44: DeprecationWarning: optax.global_norm is deprecated in favor of optax.tree.norm
+    warnings.warn(
+
+param_decomp_lab/tests/clustering/test_ensemble_pipeline.py::test_ensemble_merge_then_consensus
+  /mnt/home/oli/.local/share/uv/python/cpython-3.13.13-linux-x86_64-gnu/lib/python3.13/multiprocessing/popen_fork.py:67: RuntimeWarning: os.fork() was called. os.fork() is incompatible with multithreaded code, and JAX is multithreaded, so this will likely lead to a deadlock.
+    self.pid = os.fork()
+
+param_decomp_lab/tests/clustering/test_ensemble_pipeline.py: 16 warnings
+  /mnt/home/oli/.local/share/uv/python/cpython-3.13.13-linux-x86_64-gnu/lib/python3.13/multiprocessing/popen_fork.py:67: DeprecationWarning: This process (pid=613015) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    self.pid = os.fork()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+462 passed, 5 skipped, 2 deselected, 11 xfailed, 21 warnings in 237.60s (0:03:57)
+=== 4 sim devices (core) ===
+xxxxx.....x...xxxxx.................s................................... [ 28%]
+........................................................................ [ 57%]
+...................................................................ssss. [ 86%]
+..................................                                       [100%]
+=============================== warnings summary ===============================
+param_decomp/tests/test_optim_torch_parity.py::test_grad_clip_matches_torch_eps
+param_decomp/tests/test_optim_torch_parity.py::test_grad_clip_differs_from_optax_when_clipping
+param_decomp/tests/test_optim_torch_parity.py::test_grad_clip_noop_below_threshold
+param_decomp/tests/test_optim_torch_parity.py::test_muon_orthogonalizes_2d_leaves_and_adam_falls_back_elsewhere
+  /mnt/home/oli/bridge/crew/data/workspaces/try-muon/param-decomp/.venv/lib/python3.13/site-packages/optax/_src/linear_algebra.py:44: DeprecationWarning: optax.global_norm is deprecated in favor of optax.tree.norm
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+234 passed, 5 skipped, 11 xfailed, 4 warnings in 206.89s (0:03:26)
+RC1=0 RC2=0
