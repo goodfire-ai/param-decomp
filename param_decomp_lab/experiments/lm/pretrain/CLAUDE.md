@@ -51,7 +51,7 @@ target:
 ```
 
 (`run_path` resolves to `pretrain_cache/<project>-<run_id>`.) The pretrain model's forward
-is bit-identical to the loader's `clean_suffix_logits` round-trip — pinned by
+is bit-identical to the loaded target's `clean_output` round-trip — pinned by
 `param_decomp/tests/test_pretrain.py`.
 
 ## Data
