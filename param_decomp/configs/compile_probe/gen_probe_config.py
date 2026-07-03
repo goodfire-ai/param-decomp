@@ -111,10 +111,7 @@ def main(n_layers: int, dp: int, out_path: str, seq: int = 256, batch: int | Non
                     "beta": 0.2,
                     "coeff": 5.0e-06,
                     "eps": 1.0e-06,
-                    "p_anneal_end_frac": 1.0,
-                    "p_anneal_final_p": 0.4,
-                    "p_anneal_start_frac": 0.0,
-                    "pnorm": 2.0,
+                    "pnorm": {"start_val": 2.0, "fn_type": "linear", "final_val_frac": 0.2},
                     "type": "ImportanceMinimalityLoss",
                 },
                 {

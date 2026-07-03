@@ -13,6 +13,42 @@ from param_decomp.configs import (
     ImportanceMinimalityLossConfig,
     SmoothL0ImportanceMinimalityLossConfig,
 )
+from param_decomp.schedule import ScheduleConfig
+
+
+def scheduled_value_traced(step_f32: Array, total_steps: int, config: ScheduleConfig) -> Array:
+    """jnp twin of `schedule.get_scheduled_value` for a traced `step_f32` (inside the
+    jitted step, or as an optax schedule over the update count). Same values pointwise
+    (`test_schedule.py` pins the pair); only the warmup gate becomes a `jnp.where`. Lives
+    here rather than next to its host twin so the config schema stays jax-free.
+
+    The `decay_steps - 1` denominator is canonical-torch: the decay reaches
+    `final_val_frac ×` at `step = total_steps - 1` (SPEC S20). Plain
+    `optax.cosine_decay_schedule` divides by `decay_steps` and gets there one update
+    later — a genuine ~O(1/steps) per-step divergence this fn must avoid."""
+    assert total_steps > 0, f"total_steps must be positive, got {total_steps}"
+
+    warmup_steps = int(total_steps * config.warmup_pct)
+    decay_steps = total_steps - warmup_steps
+
+    if decay_steps <= 1:
+        decayed = jnp.asarray(config.start_val, jnp.float32)
+    else:
+        progress = (step_f32 - warmup_steps) / (decay_steps - 1)
+        match config.fn_type:
+            case "constant":
+                multiplier = jnp.asarray(1.0, jnp.float32)
+            case "linear":
+                multiplier = config.final_val_frac + (1 - config.final_val_frac) * (1 - progress)
+            case "cosine":
+                multiplier = config.final_val_frac + (1 - config.final_val_frac) * 0.5 * (
+                    1 + jnp.cos(jnp.pi * progress)
+                )
+        decayed = config.start_val * multiplier
+
+    if warmup_steps == 0:
+        return decayed
+    return jnp.where(step_f32 < warmup_steps, config.start_val * (step_f32 / warmup_steps), decayed)
 
 
 @jaxtyped(typechecker=beartype)
@@ -100,60 +136,18 @@ def smooth_l0_importance_minimality_terms(
     return _imp_min_terms(ci_upper, lambda ci: ci**2 / (ci**2 + gamma_sq), reference_token_count)
 
 
-def _linear_anneal(
-    step_f32: Array,
-    total_steps: int,
-    initial: float,
-    final: float,
-    start_frac: float,
-    end_frac: float,
-) -> Array:
-    span = max(end_frac - start_frac, 1e-9)
-    progress = jnp.clip((step_f32 / total_steps - start_frac) / span, 0.0, 1.0)
-    return jnp.asarray(initial + (final - initial) * progress)
-
-
-def annealed_pnorm(step_f32: Array, total_steps: int, cfg: ImportanceMinimalityLossConfig) -> Array:
-    """`p` anneals linearly `pnorm → p_anneal_final_p` over
-    `[p_anneal_start_frac, p_anneal_end_frac]` of training (SPEC S9)."""
-    assert cfg.p_anneal_final_p is not None
-    return _linear_anneal(
-        step_f32,
-        total_steps,
-        cfg.pnorm,
-        cfg.p_anneal_final_p,
-        cfg.p_anneal_start_frac,
-        cfg.p_anneal_end_frac,
-    )
-
-
-def annealed_gamma(
-    step_f32: Array, total_steps: int, cfg: SmoothL0ImportanceMinimalityLossConfig
-) -> Array:
-    """`gamma` anneals linearly `gamma → gamma_anneal_final_gamma` over
-    `[gamma_anneal_start_frac, gamma_anneal_end_frac]` of training (SPEC S9', the smooth-L0
-    analogue of S9)."""
-    assert cfg.gamma_anneal_final_gamma is not None
-    return _linear_anneal(
-        step_f32,
-        total_steps,
-        cfg.gamma,
-        cfg.gamma_anneal_final_gamma,
-        cfg.gamma_anneal_start_frac,
-        cfg.gamma_anneal_end_frac,
-    )
-
-
 def annealed_imp_min_param(
     step_f32: Array, total_steps: int, cfg: AnyImportanceMinimalityLossConfig
 ) -> Array:
-    """The annealed per-value-penalty parameter at this step (`p` for `L_p`, `gamma` for
-    smooth-L0). Pure in the step, so the train step hoists it out of the loss `grad`."""
+    """The scheduled per-value-penalty parameter at this step (`p` for `L_p`, `gamma` for
+    smooth-L0; SPEC S9/S9′). Pure in the step, so the train step hoists it out of the
+    loss `grad`."""
     match cfg:
         case ImportanceMinimalityLossConfig():
-            return annealed_pnorm(step_f32, total_steps, cfg)
+            schedule = cfg.pnorm
         case SmoothL0ImportanceMinimalityLossConfig():
-            return annealed_gamma(step_f32, total_steps, cfg)
+            schedule = cfg.gamma
+    return scheduled_value_traced(step_f32, total_steps, schedule)
 
 
 def imp_min_terms(
@@ -169,10 +163,3 @@ def imp_min_terms(
             return importance_minimality_terms(ci_upper, annealed_param, cfg.eps, ref)
         case SmoothL0ImportanceMinimalityLossConfig():
             return smooth_l0_importance_minimality_terms(ci_upper, annealed_param, ref)
-
-
-def warmup_then_constant_lr(
-    step_f32: Array, total_steps: int, lr: float, warmup_frac: float
-) -> Array:
-    warmup_steps = jnp.maximum(jnp.floor(total_steps * warmup_frac), 1.0)
-    return jnp.where(step_f32 < warmup_steps, lr * step_f32 / warmup_steps, lr)

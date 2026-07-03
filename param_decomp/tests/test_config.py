@@ -73,7 +73,11 @@ def test_legacy_top_level_n_mask_samples_pushes_onto_stochastic_terms():
         "n_mask_samples": 4,
         "loss_metrics": [
             {"type": "FaithfulnessLoss", "coeff": 1.0},
-            {"type": "ImportanceMinimalityLoss", "coeff": 1.0, "pnorm": 2.0},
+            {
+                "type": "ImportanceMinimalityLoss",
+                "coeff": 1.0,
+                "pnorm": {"start_val": 2.0, "fn_type": "constant"},
+            },
             {"type": "StochasticReconLoss", "coeff": 1.0},
             {"type": "StochasticReconSubsetLoss", "coeff": 1.0, "n_mask_samples": 7},
         ],
@@ -96,7 +100,7 @@ def test_b128_config_converts():
     )
     faith, imp = losses.faith, losses.imp
     assert isinstance(imp.cfg, ImportanceMinimalityLossConfig)
-    assert faith.coeff == 1e5 and imp.cfg.pnorm == 2.0
+    assert faith.coeff == 1e5 and imp.cfg.pnorm.start_val == 2.0
     (ppgd,) = persistent_configs(losses.recon).values()
     assert isinstance(ppgd, PersistentPGDReconLossConfig)
     assert ppgd.n_warmup_steps == 2
@@ -278,9 +282,8 @@ def test_unsupported_model_family_refuses_and_supported_families_dispatch():
 
 
 def test_decaying_persistent_source_schedule_refuses():
-    """The JAX source schedule is `warmup_then_constant_lr` (no post-warmup decay);
-    a source `lr_schedule` that decays would silently flatten, so the conversion gate
-    must refuse it (issue #646; matrix S13/S20)."""
+    """The persistent-PGD source LR is constant-after-warmup only, so the conversion
+    gate must refuse a decaying source `lr_schedule` (issue #646; matrix S13/S20)."""
     raw = _reference_lm_raw()
     decaying_source = dict(
         raw,

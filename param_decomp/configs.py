@@ -163,19 +163,16 @@ class FrequencyMinimalityConfig(BaseConfig):
 class ImportanceMinimalityLossConfig(LossMetricConfig):
     """Config for the `L_p`-style importance-minimality penalty on upper-leaky CI values.
 
-    `pnorm` is the initial `p`, linearly annealed toward `p_anneal_final_p` between
-    `p_anneal_start_frac` and `p_anneal_end_frac` of training (no-op when
-    `p_anneal_final_p is None` or `p_anneal_start_frac == 1.0`). `frequency` (when present)
-    adds the batch-invariant frequency-minimality penalty over the same `(c + eps)^p`
-    per-component sums.
+    `pnorm` is the exponent's full schedule (SPEC S9; canonical is linear `2.0 → 0.4`:
+    `start_val=2.0, fn_type=linear, final_val_frac=0.2`; constant-`p` is
+    `fn_type=constant`). Warmup is refused where the term is built — a `p` ramping from 0
+    is never intended. `frequency` (when present) adds the batch-invariant
+    frequency-minimality penalty over the same `(c + eps)^p` per-component sums.
     """
 
     type: Literal["ImportanceMinimalityLoss"] = "ImportanceMinimalityLoss"
-    pnorm: NonNegativeFloat
+    pnorm: ScheduleConfig
     frequency: FrequencyMinimalityConfig | None = None
-    p_anneal_start_frac: Probability = 1.0
-    p_anneal_final_p: NonNegativeFloat | None = None
-    p_anneal_end_frac: Probability = 1.0
     eps: NonNegativeFloat = 1e-12
 
 
@@ -190,17 +187,14 @@ class SmoothL0ImportanceMinimalityLossConfig(LossMetricConfig):
     floor, no aggressive grad clip) — the gradient is localized on the threshold band
     `c ~ gamma/sqrt(3)` and redescends for clearly-on components.
 
-    `gamma` is annealed linearly toward `gamma_anneal_final_gamma` between
-    `gamma_anneal_start_frac` and `gamma_anneal_end_frac` of training; annealing it down
-    sharpens the count. A constant schedule is `gamma_anneal_final_gamma == gamma`.
+    `gamma` is the width's full schedule (SPEC S9′); annealing it down (e.g.
+    `fn_type=linear, final_val_frac < 1`) sharpens the count. Warmup is refused where
+    the term is built.
     """
 
     type: Literal["SmoothL0ImportanceMinimalityLoss"] = "SmoothL0ImportanceMinimalityLoss"
-    gamma: PositiveFloat
+    gamma: ScheduleConfig
     frequency: FrequencyMinimalityConfig | None = None
-    gamma_anneal_start_frac: Probability = 1.0
-    gamma_anneal_final_gamma: PositiveFloat | None = None
-    gamma_anneal_end_frac: Probability = 1.0
 
 
 # The two imp-min penalties share the `coeff` + optional `frequency` surface and the

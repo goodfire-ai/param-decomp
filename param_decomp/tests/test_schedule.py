@@ -1,9 +1,11 @@
-"""Tests for ScheduleConfig and get_scheduled_value."""
+"""Tests for ScheduleConfig and its two evaluators (host + traced)."""
 
 from typing import Literal
 
+import jax.numpy as jnp
 import pytest
 
+from param_decomp.losses import scheduled_value_traced
 from param_decomp.schedule import ScheduleConfig, get_scheduled_value
 
 
@@ -198,3 +200,22 @@ class TestEdgeCases:
         config = ScheduleConfig(start_val=start_val, fn_type="linear", final_val_frac=0.5)
         assert get_scheduled_value(0, 100, config) == pytest.approx(start_val)
         assert get_scheduled_value(99, 100, config) == pytest.approx(start_val * 0.5)
+
+
+class TestTracedParity:
+    """`scheduled_value_traced` matches the host `get_scheduled_value` pointwise."""
+
+    @pytest.mark.parametrize("fn_type", ["constant", "linear", "cosine"])
+    @pytest.mark.parametrize("warmup_pct", [0.0, 0.025, 0.1, 1.0])
+    @pytest.mark.parametrize("total_steps", [1, 2, 10, 100])
+    def test_matches_host_pointwise(
+        self, fn_type: Literal["constant", "linear", "cosine"], warmup_pct: float, total_steps: int
+    ):
+        final_val_frac = 1.0 if fn_type == "constant" else 0.4
+        config = ScheduleConfig(
+            start_val=0.7, fn_type=fn_type, warmup_pct=warmup_pct, final_val_frac=final_val_frac
+        )
+        for step in range(total_steps + 1):
+            host = get_scheduled_value(step, total_steps, config)
+            traced = float(scheduled_value_traced(jnp.asarray(float(step)), total_steps, config))
+            assert traced == pytest.approx(host, rel=1e-6, abs=1e-12), (step, config)
