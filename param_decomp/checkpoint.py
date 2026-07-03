@@ -50,17 +50,23 @@ def save_state(mgr: ocp.CheckpointManager, step: int, state: TrainState) -> None
 
 def restore_step(mgr: ocp.CheckpointManager, reference: TrainState, step: int) -> TrainState:
     """Restore checkpoint `step` onto `reference`'s shapes/dtypes/shardings
-    (a freshly-initialised, correctly-placed `TrainState`)."""
+    (a freshly-initialised, correctly-placed `TrainState`).
+
+    The restored tree is re-materialised as JIT OUTPUTS on the reference's exact format
+    (layout + sharding) before it is returned. Orbax-restored arrays — composed per shard
+    by `device_put` + `make_array_from_single_device_arrays` — are not reliably donatable
+    to the jitted train step (jax#18617): the step's baked-in input→output aliasing then
+    silently falls back to copying, and the first resumed step peaks one full `TrainState`
+    above any fresh step (the resume OOM; lore
+    2026-07-03--resume-oom-is-buffer-donation-asymmetry). An identity jit's outputs are
+    indistinguishable from fresh-init state, at a transient 2×-state cost that restore
+    already paid while `reference` and the restored tree coexisted. Deliberately NOT
+    donating into the identity jit: a plain copy cannot hard-fail at dispatch the way a
+    blocked donation can, and the buffer reuse it would buy is off the step's peak."""
     abstract = jax.tree.map(ocp.utils.to_shape_dtype_struct, reference)
     restored = mgr.restore(step, args=ocp.args.StandardRestore(abstract))
-    # Coerce the restored tree onto the reference's exact FORMAT (layout + sharding), not just its
-    # sharding. StandardRestore already honors the sharding SPEC (verified), so a device_put onto
-    # sharding alone is a no-op — but orbax-restored arrays carry a default memory LAYOUT that
-    # differs from what the jitted step was compiled for. The reference is a fresh-init state built
-    # by the same XLA layout assignment as the step, so its `.format` IS the step's expected input
-    # layout; matching it avoids a ÷1-scale entry relayout on the first resumed step (the resume OOM).
-    restored = jax.device_put(restored, jax.tree.map(lambda r: r.format, reference))
-    return cast(TrainState, restored)
+    rematerialize = jax.jit(lambda t: t, out_shardings=jax.tree.map(lambda r: r.format, reference))
+    return cast(TrainState, rematerialize(restored))
 
 
 def restore_latest(

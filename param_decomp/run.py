@@ -104,6 +104,42 @@ def _log_wandb_safe(wandb_module: "ModuleType", payload: "LogRecord", step: int,
         print(f"wandb communication error, skipping {what}: {e}", flush=True)
 
 
+def _state_buffer_bytes_by_ptr(state: object) -> dict[int, int]:
+    """Device-buffer pointer -> shard nbytes over every addressable shard of `state`.
+
+    Transient probe for the first-resumed-step donation guard: holds no array
+    references (the per-shard views die with the comprehension), so it cannot itself
+    block donation."""
+    return {
+        shard.data.unsafe_buffer_pointer(): shard.data.nbytes
+        for leaf in jax.tree.leaves(state)
+        for shard in leaf.addressable_shards
+    }
+
+
+def _warn_if_first_resumed_step_did_not_donate(
+    in_buffers: dict[int, int], out_state: object
+) -> None:
+    """The jitted step donates the state (input→output aliasing baked into the
+    executable), but dispatch-time donation can fail SILENTLY (no warning, the runtime
+    copies) — peaking one full `TrainState` above steady state, which is exactly the
+    resume OOM. Aliasing is checked by buffer-pointer reuse, bytes-weighted; XLA may
+    cross-match same-aval leaves (Adam m/v), so compare pointer SETS, not positions."""
+    total = sum(in_buffers.values())
+    reused = sum(
+        nbytes for ptr, nbytes in _state_buffer_bytes_by_ptr(out_state).items()
+        if ptr in in_buffers and in_buffers[ptr] == nbytes
+    )  # fmt: skip
+    if reused < 0.95 * total:
+        print(
+            f"[rank {jax.process_index()}] DONATION FAILED on the first resumed step: "
+            f"only {reused / 2**30:.2f}/{total / 2**30:.2f} GiB of state buffers were "
+            "reused; this step peaked ~one TrainState above steady state "
+            "(lore 2026-07-03--resume-oom-is-buffer-donation-asymmetry)",
+            flush=True,
+        )
+
+
 def _ensure_global[T](tree: T, mesh: Mesh) -> T:
     """Re-materialize the NON-mesh array leaves (eagerly created scalars: step
     counters, Adam counts) as well-formed GLOBAL replicated arrays via an identity
@@ -633,6 +669,8 @@ def run_decomposition_training(
             print(f"PD_MEM: resident device-memory profile -> {_prof_path}", flush=True)
         os._exit(0)  # profiling-only path; donation has consumed `state`, so don't enter the loop
 
+    resumed_state_buffers = _state_buffer_bytes_by_ptr(state) if start_step > 0 else None
+
     for step in range(start_step, pd.steps):
         if _profile_on and step == _profile_start:
             jax.block_until_ready(state)
@@ -684,6 +722,10 @@ def run_decomposition_training(
         else:
             batch = sample_batch(step)
             state, metrics = step_fn(lm, state, batch, random.fold_in(run_key, step))
+
+        if resumed_state_buffers is not None:
+            _warn_if_first_resumed_step_did_not_donate(resumed_state_buffers, state)
+            resumed_state_buffers = None
 
         grad_norm_summary_window.append(
             {k: v for k, v in metrics.items() if k.startswith("grad_norms/summary/")}

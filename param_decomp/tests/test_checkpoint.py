@@ -39,6 +39,7 @@ from param_decomp.configs import (
 )
 from param_decomp.lm import DecomposedModel
 from param_decomp.recon import build_loss_terms
+from param_decomp.run import _ensure_global
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.sharding import hsdp_mesh
 from param_decomp.targets.llama8b import (
@@ -265,7 +266,11 @@ def _build_sharded(seed: int, mesh: Mesh):
         adversaries={ppgd_cfg.type: _adversary(src, ppgd_cfg)},
         step=jnp.asarray(7, jnp.int32),
     )  # fmt: skip
-    return state
+    # Production references pass through `run._ensure_global` before restore: the eager
+    # scalar stragglers (step, Adam counts) become global replicated arrays. `restore_step`
+    # relies on that contract — it re-materialises the restored tree through ONE jit,
+    # which needs every reference leaf on a single device set.
+    return _ensure_global(state, mesh)
 
 
 def test_sharded_roundtrip_bit_equal(tmp_path: Path):
@@ -300,3 +305,36 @@ def test_sharded_roundtrip_bit_equal(tmp_path: Path):
     for saved, got, ref in zip(state_leaves, loaded_leaves, ref_leaves, strict=True):
         assert jnp.array_equal(jnp.asarray(saved), jnp.asarray(got))
         assert got.sharding == ref.sharding
+
+
+def _shard_buffer_ptrs(tree: TrainState) -> set[int]:
+    return {
+        shard.data.unsafe_buffer_pointer()
+        for leaf in jax.tree.leaves(tree)
+        for shard in leaf.addressable_shards
+    }
+
+
+def test_restored_state_is_donatable(tmp_path: Path):
+    """The restore-side half of the resume-OOM fix (lore
+    2026-07-03--resume-oom-is-buffer-donation-asymmetry): `restore_step` must return a
+    state whose buffers the donating train step actually REUSES. Raw orbax-restored
+    arrays are not reliably donatable (jax#18617) and dispatch-time donation failure is
+    silent — this pins that the re-materialised state aliases through a donating jit
+    exactly like fresh-init state does (checked by buffer-pointer reuse, which works on
+    the CPU backend too: its silent-copy fallback still yields fresh pointers)."""
+    mesh = hsdp_mesh()
+    state = _build_sharded(seed=1, mesh=mesh)
+    mgr = make_checkpoint_manager(tmp_path / "ckpts", keep_last=2)
+    save_state(mgr, 3, state)
+
+    reference = _build_sharded(seed=7, mesh=mesh)
+    loaded = restore_step(mgr, reference, 3)
+    del reference, state
+
+    in_ptrs = _shard_buffer_ptrs(loaded)
+    out = jax.jit(lambda t: t, donate_argnums=0)(loaded)
+    out_ptrs = _shard_buffer_ptrs(out)
+    assert out_ptrs == in_ptrs, (
+        f"donation silently copied {len(out_ptrs - in_ptrs)}/{len(in_ptrs)} buffers"
+    )
