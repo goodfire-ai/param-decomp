@@ -134,7 +134,6 @@ def init_train_state(
         )
         for term_idx, state_key in enumerate(persistent):
             cfg = persistent[state_key]
-            assert isinstance(cfg.optimizer, AdamPGDConfig)
             sources = init_sources_sharded(
                 lm.site_names,
                 tuple(s.C for s in lm.sites),
@@ -147,10 +146,12 @@ def init_train_state(
             )
             adversaries[state_key] = PersistentAdversary(
                 sources=sources,
-                opt_state=init_sources_adam_state(sources),
+                opt_state=init_sources_adam_state(sources)
+                if isinstance(cfg.optimizer, AdamPGDConfig)
+                else None,
                 state_key=state_key,
                 coeff=term_coeff_by_state_key[state_key],
-                adam=cfg.optimizer,
+                optimizer=cfg.optimizer,
                 n_warmup=cfg.n_warmup_steps,
             )
     return TrainState(

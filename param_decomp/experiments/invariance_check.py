@@ -103,7 +103,7 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
                 opt_state=init_sources_adam_state(src),
                 state_key=ppgd_cfg.type,
                 coeff=ppgd_cfg.coeff,
-                adam=ppgd_cfg.optimizer,
+                optimizer=ppgd_cfg.optimizer,
                 n_warmup=ppgd_cfg.n_warmup_steps,
             )
         },

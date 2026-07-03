@@ -366,7 +366,7 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
                 opt_state=init_sources_adam_state(src),
                 state_key=ppgd_cfg.type,
                 coeff=ppgd_cfg.coeff,
-                adam=ppgd_cfg.optimizer,
+                optimizer=ppgd_cfg.optimizer,
                 n_warmup=ppgd_cfg.n_warmup_steps,
             )
         },
@@ -408,6 +408,7 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
     assert int(state.step) == n_steps
     # SPEC S13: n_warmup + 1 source-Adam updates per training step, moments persist.
     ppgd_adv = state.adversaries["PersistentPGDReconLoss"]
+    assert ppgd_adv.opt_state is not None
     assert float(ppgd_adv.opt_state.step_count) == n_steps * (n_warmup + 1)
     # SPEC S15: sources stay projected to [0,1].
     for v in ppgd_adv.sources.values():

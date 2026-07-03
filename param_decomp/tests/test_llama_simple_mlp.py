@@ -32,6 +32,7 @@ from param_decomp.configs import (
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
     SCScope,
+    SignPGDConfig,
     UniformKSubsetRoutingConfig,
 )
 from param_decomp.lm import DecomposedModel
@@ -384,7 +385,7 @@ def test_step_trains_and_has_vpd_signature():
                 opt_state=init_sources_adam_state(src),
                 state_key=ppgd_cfg.type,
                 coeff=ppgd_cfg.coeff,
-                adam=ppgd_cfg.optimizer,
+                optimizer=ppgd_cfg.optimizer,
                 n_warmup=ppgd_cfg.n_warmup_steps,
             )
         },
@@ -426,6 +427,7 @@ def test_step_trains_and_has_vpd_signature():
     assert int(state.step) == n_steps
     # SPEC S13: n_warmup + 1 source-Adam updates per training step, moments persist.
     ppgd_adv = state.adversaries["PersistentPGDReconLoss"]
+    assert ppgd_adv.opt_state is not None
     assert float(ppgd_adv.opt_state.step_count) == n_steps * (n_warmup + 1)
     # SPEC S15: sources stay projected to [0,1].
     for v in ppgd_adv.sources.values():
@@ -438,6 +440,85 @@ def test_step_trains_and_has_vpd_signature():
         assert V.dtype == jnp.float32 and U.dtype == jnp.float32
     assert isinstance(state.ci_fn, ChunkwiseTransformerCIFn)
     assert state.ci_fn.chunks.in_proj_w.dtype == jnp.float32
+
+
+def test_step_trains_with_sign_src_step():
+    """SRC_STEP `sign` (SPEC §6) through the full jitted step: stateless (`opt_state`
+    stays None — no moment buffers exist), sources move and stay projected (S15)."""
+    cfg = _tiny_cfg()
+    seq = 16
+    n_warmup = 2
+    sites = site_specs(cfg, _MIXED_SITE_CS)
+    lm = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
+    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    ci_fn = _build_chunkwise_ci_fn(lm, jax.random.PRNGKey(2))
+    opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
+    opt_ci = optax.adamw(1e-3, weight_decay=0.0)
+
+    src = init_persistent_sources(
+        lm.site_names, tuple(s.C for s in lm.sites), (1, seq), jnp.float32, jax.random.PRNGKey(3)
+    )
+    # The jitted step donates TrainState buffers; keep host copies to compare against.
+    src_before = jax.device_get(src)
+    ppgd_cfg = PersistentPGDReconLossConfig(
+        coeff=0.5,
+        scope=SCScope(),
+        optimizer=SignPGDConfig(lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025)),
+        n_warmup_steps=n_warmup,
+    )
+    assert ppgd_cfg.coeff is not None
+    state = TrainState(
+        components=vu, ci_fn=ci_fn,
+        components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
+        ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+        adversaries={
+            ppgd_cfg.type: PersistentAdversary(
+                sources=src,
+                opt_state=None,
+                state_key=ppgd_cfg.type,
+                coeff=ppgd_cfg.coeff,
+                optimizer=ppgd_cfg.optimizer,
+                n_warmup=ppgd_cfg.n_warmup_steps,
+            )
+        },
+        step=jnp.zeros((), jnp.int32),
+    )  # fmt: skip
+    loss_terms = build_loss_terms(
+        (
+            FaithfulnessLossConfig(coeff=1e5),
+            ImportanceMinimalityLossConfig(
+                coeff=5e-6,
+                pnorm=ScheduleConfig(start_val=2.0, fn_type="linear", final_val_frac=0.2),
+            ),
+            ppgd_cfg,
+        ),
+        lm.site_names,
+    )
+    step = make_train_step(
+        lm=lm,
+        losses=loss_terms,
+        components_optimizer=opt_vu,
+        ci_fn_optimizer=opt_ci,
+        total_steps=100,
+        remat_recon_forwards=True,
+        remat_ci_fn=False,
+        mesh=None,
+    )
+
+    tokens = jax.random.randint(jax.random.PRNGKey(4), (2, seq), 0, cfg.vocab_size)
+    n_steps = 4
+    losses = []
+    for i in range(n_steps):
+        state, m = step(lm, state, tokens, jax.random.PRNGKey(100 + i))
+        losses.append({k: float(v) for k, v in m.items()})
+
+    assert all(jnp.isfinite(jnp.array(list(m.values()))).all() for m in losses)
+    assert int(state.step) == n_steps
+    ppgd_adv = state.adversaries["PersistentPGDReconLoss"]
+    assert ppgd_adv.opt_state is None
+    for site, v in ppgd_adv.sources.items():
+        assert float(v.min()) >= 0.0 and float(v.max()) <= 1.0
+        assert not jnp.array_equal(v, src_before[site]), f"sources never moved for {site}"
 
 
 def test_faith_warmup_decreases_faith():

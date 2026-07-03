@@ -4,10 +4,11 @@ Two semantically distinct adversaries share the source/mask machinery but nothin
 else (SPEC §3):
 
 - **Persistent PGD (PPGD)** — `PersistentPGDReconLossConfig`. Per-site sources + their
-  Adam moments live in `TrainState` across steps; `sc` scope is `(1, T, C+1)` (shared
-  across batch), `bsc` is `(B, T, C+1)` (independent per batch element, batch-sharded).
-  Each step runs `n_warmup_steps` supplemental Adam ascents plus one final ascent from
-  the main backward (SPEC S13/S14), projecting to [0,1] after every update (S15).
+  `SRC_STEP` optimizer state (Adam `m`/`v`; nothing for the stateless `sign` variant)
+  live in `TrainState` across steps; `sc` scope is `(1, T, C+1)` (shared across batch),
+  `bsc` is `(B, T, C+1)` (independent per batch element, batch-sharded). Each step runs
+  `n_warmup_steps` supplemental ascents plus one final ascent from the main backward
+  (SPEC S13/S14), projecting to [0,1] after every update (S15).
 - **Fresh PGD** — `PGDReconLossConfig` (torch `PGDReconLoss` as a TRAINING loss).
   Sources are re-initialized every step, ascended `n_steps` times by
   `step_size * sign(grad)` with clamp to [0,1], and carry NO state across steps —
@@ -25,7 +26,12 @@ from jax.typing import DTypeLike
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from param_decomp.components import SiteSpec
-from param_decomp.configs import AdamPGDConfig, MaskScopeLiteral, PGDInitStrategy
+from param_decomp.configs import (
+    AdamPGDConfig,
+    MaskScopeLiteral,
+    PGDInitStrategy,
+    SignPGDConfig,
+)
 from param_decomp.losses import scheduled_value_traced
 
 
@@ -101,6 +107,34 @@ def init_sources_adam_state(sources: dict[str, Array]) -> SourcesAdamState:
     )
 
 
+def sources_ascend_project(
+    sources: dict[str, Array],
+    sources_grad: dict[str, Array],
+    opt_state: SourcesAdamState | None,
+    lr: Array,
+    optimizer: AdamPGDConfig | SignPGDConfig,
+) -> tuple[dict[str, Array], SourcesAdamState | None]:
+    """One `SRC_STEP` ASCENT on the persistent sources, then project to [0,1]
+    (SPEC S13/S15). The variation point `SRC_STEP` (SPEC §6): `adam` carries persistent
+    `m`/`v` moments (`opt_state`); `sign` is stateless (`opt_state is None`) — same
+    projection contract."""
+    match optimizer:
+        case AdamPGDConfig():
+            assert opt_state is not None
+            return sources_adam_ascend_project(sources, sources_grad, opt_state, lr, optimizer)
+        case SignPGDConfig():
+            assert opt_state is None
+            new_sources = {
+                s: jnp.clip(
+                    sources[s] + (lr * jnp.sign(sources_grad[s])).astype(sources[s].dtype),
+                    0.0,
+                    1.0,
+                )
+                for s in sources
+            }
+            return new_sources, None
+
+
 def sources_adam_ascend_project(
     sources: dict[str, Array],
     sources_grad: dict[str, Array],
@@ -108,10 +142,6 @@ def sources_adam_ascend_project(
     lr: Array,
     adam: AdamPGDConfig,
 ) -> tuple[dict[str, Array], SourcesAdamState]:
-    """One Adam ASCENT on the persistent sources, then project to [0,1] (SPEC S13/S15).
-
-    The variation point `SRC_STEP` (SPEC §6): a `sign` variant would replace the Adam
-    update with `lr * sign(grad)` (stateless) — same projection contract."""
     step_count = adam_state.step_count + 1.0
     # `sources_grad` arrives in the masked-forward compute dtype (bf16); cast to the moment
     # dtype so the persistent `m`/`v` keep their declared storage dtype across steps.
@@ -151,9 +181,11 @@ def source_masks(
 
 
 class PersistentAdversary(eqx.Module):
-    """One persistent-PGD adversary (SPEC §3): the per-site sources + their Adam moments
-    that persist across steps, plus the lifecycle the trainer drives around the shared
-    backward. `sources` / `opt_state` are dynamic state; the rest is static config.
+    """One persistent-PGD adversary (SPEC §3): the per-site sources + their `SRC_STEP`
+    optimizer state that persist across steps, plus the lifecycle the trainer drives
+    around the shared backward. `sources` / `opt_state` are dynamic state (`opt_state`
+    is None iff the optimizer is the stateless `sign` variant); the rest is static
+    config.
 
     Per step: `warmup_ascend` (n_warmup supplemental ascents vs a scoring forward, params
     + CI detached) → the warmed sources enter the main `value_and_grad` as leaves →
@@ -161,14 +193,14 @@ class PersistentAdversary(eqx.Module):
     term's `coeff` — exact since one source bundle feeds exactly one term, SPEC S23)."""
 
     sources: dict[str, Array]  # site -> source in [0,1], `(*scope_leading, C+1)`
-    opt_state: SourcesAdamState
+    opt_state: SourcesAdamState | None
     state_key: str = eqx.field(static=True)
     coeff: float = eqx.field(static=True)
-    adam: AdamPGDConfig = eqx.field(static=True)
+    optimizer: AdamPGDConfig | SignPGDConfig = eqx.field(static=True)
     n_warmup: int = eqx.field(static=True)
 
     def source_lr(self, step_f32: Array, total_steps: int) -> Array:
-        return scheduled_value_traced(step_f32, total_steps, self.adam.lr_schedule)
+        return scheduled_value_traced(step_f32, total_steps, self.optimizer.lr_schedule)
 
     def warmup_ascend(
         self, scoring_loss: Callable[[dict[str, Array]], Array], step_f32: Array, total_steps: int
@@ -180,11 +212,11 @@ class PersistentAdversary(eqx.Module):
         lr = self.source_lr(step_f32, total_steps)
 
         def body(
-            carry: tuple[dict[str, Array], SourcesAdamState], _: None
-        ) -> tuple[tuple[dict[str, Array], SourcesAdamState], None]:
+            carry: tuple[dict[str, Array], SourcesAdamState | None], _: None
+        ) -> tuple[tuple[dict[str, Array], SourcesAdamState | None], None]:
             sources, opt = carry
             grad = jax.grad(scoring_loss)(sources)
-            return sources_adam_ascend_project(sources, grad, opt, lr, self.adam), None
+            return sources_ascend_project(sources, grad, opt, lr, self.optimizer), None
 
         (warmed, warmed_opt), _ = jax.lax.scan(
             body, (self.sources, self.opt_state), None, length=self.n_warmup
@@ -201,7 +233,7 @@ class PersistentAdversary(eqx.Module):
         `L_term` itself (exact: each source bundle feeds exactly one term, SPEC S23)."""
         lr = self.source_lr(step_f32, total_steps)
         grad = {s: g / self.coeff for s, g in source_grad_scaled.items()}
-        ascended, ascended_opt = sources_adam_ascend_project(
-            self.sources, grad, self.opt_state, lr, self.adam
+        ascended, ascended_opt = sources_ascend_project(
+            self.sources, grad, self.opt_state, lr, self.optimizer
         )
         return eqx.tree_at(lambda a: (a.sources, a.opt_state), self, (ascended, ascended_opt))

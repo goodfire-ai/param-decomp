@@ -257,7 +257,7 @@ def test_train_trajectory_matches():
                 opt_state=init_sources_adam_state(sources),
                 state_key=ppgd_cfg.type,
                 coeff=ppgd_cfg.coeff,
-                adam=ppgd_cfg.optimizer,
+                optimizer=ppgd_cfg.optimizer,
                 n_warmup=ppgd_cfg.n_warmup_steps,
             )
         },

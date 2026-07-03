@@ -130,7 +130,7 @@ def _build_sharded(seed: int):
             opt_state=init_sources_adam_state(src),
             state_key=state_key,
             coeff=ppgd_cfg.coeff,
-            adam=ppgd_cfg.optimizer,
+            optimizer=ppgd_cfg.optimizer,
             n_warmup=ppgd_cfg.n_warmup_steps,
         )
     state = TrainState(

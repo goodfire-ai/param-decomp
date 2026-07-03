@@ -325,13 +325,26 @@ class PGDReconSubsetLossConfig(PGDConfig):
 
 
 class AdamPGDConfig(BaseConfig):
-    """Adam-style PGD optimizer config — the only implemented persistent-PGD optimizer."""
+    """Adam-style persistent-PGD source optimizer (SPEC §6 SRC_STEP `adam`, the ★
+    production choice); keeps fp32 `m`/`v` moments per source (SPEC N1)."""
 
     type: Literal["adam"] = "adam"
     beta1: Probability = Field(default=0.9, description="Adam beta1 for masks")
     beta2: Probability = Field(default=0.999, description="Adam beta2 for masks")
     eps: NonNegativeFloat = Field(default=1e-8, description="Adam epsilon for masks")
     lr_schedule: ScheduleConfig
+
+
+class SignPGDConfig(BaseConfig):
+    """Stateless sign-ascent persistent-PGD source optimizer (SPEC §6 SRC_STEP `sign`):
+    `sources += lr·sign(grad)`, no moments — kills the Adam `m`/`v` resident footprint
+    (source-bundle-sized ×2)."""
+
+    type: Literal["sign"] = "sign"
+    lr_schedule: ScheduleConfig
+
+
+PersistentPGDOptimizerConfig = Annotated[AdamPGDConfig | SignPGDConfig, Field(discriminator="type")]
 
 
 class SCScope(BaseConfig):
@@ -401,7 +414,7 @@ class PersistentPGDReconLossConfig(LossMetricConfig):
         return data
 
     type: Literal["PersistentPGDReconLoss"] = "PersistentPGDReconLoss"
-    optimizer: AdamPGDConfig
+    optimizer: PersistentPGDOptimizerConfig
     scope: PersistentPGDSourceScope
     source_dtype: Literal["float32", "bfloat16"] = "float32"
     """Storage dtype for the persistent PPGD source tensors AND their Adam moments

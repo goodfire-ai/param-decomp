@@ -74,7 +74,7 @@ def _adversary(src: dict[str, jax.Array], cfg: PersistentPGDReconLossConfig) -> 
         opt_state=init_sources_adam_state(src),
         state_key=cfg.type,
         coeff=cfg.coeff,
-        adam=cfg.optimizer,
+        optimizer=cfg.optimizer,
         n_warmup=cfg.n_warmup_steps,
     )
 
@@ -179,6 +179,7 @@ def test_persistent_adam_step_count_roundtrip_and_post_resume_bias_correction(tm
         state, _ = step(lm, state, resid, jax.random.PRNGKey(i))
 
     pre_save = state.adversaries[state_key].opt_state
+    assert pre_save is not None
     n_ascents = int(pre_save.step_count)
     # Each train step runs n_warmup_steps (1) supplemental ascents + 1 final ascent.
     assert n_ascents == 3 * (1 + 1)
@@ -191,6 +192,7 @@ def test_persistent_adam_step_count_roundtrip_and_post_resume_bias_correction(tm
     assert restored is not None
     loaded, _ = restored
     loaded_adam = loaded.adversaries[state_key].opt_state
+    assert loaded_adam is not None
 
     # (a) the step_count leaf survived the round-trip: present, fp32 scalar, value N.
     assert state_key in loaded.adversaries
