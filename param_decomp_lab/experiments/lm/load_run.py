@@ -175,7 +175,7 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
     u_norms = _u_norms(state.components, site_names)
 
     # `model` is the filter_jit ARG (frozen weights traced, not baked). It embeds the token
-    # ids internally — the harvest forward feeds tokens straight in, no prefix.
+    # ids internally — the harvest forward feeds tokens straight in.
     @eqx.filter_jit
     def forward(
         model: DecomposedModel,

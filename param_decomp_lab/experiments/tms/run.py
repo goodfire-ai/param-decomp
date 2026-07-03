@@ -83,7 +83,7 @@ def build_tms_built_run(cfg: TMSExperimentConfig, run_id: str) -> BuiltRun:
 def run_tms_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) -> None:
     """Build + pretrain the TMS target, then decompose it through the generic engine.
 
-    The residual entering the decomposed model IS the raw input `x` (no prefix). The
+    The batch entering the decomposed model IS the raw input `x`. The
     `eval_fn` reads the `lower_leaky` CI of the single-feature probe and logs the
     ground-truth `IdentityCIError` per site every train-log step (TMS has no separate eval
     cadence — `eval_every = cadence.train_log_every`)."""

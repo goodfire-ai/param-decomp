@@ -30,6 +30,7 @@ FROZEN_W_SIZE = D * D  # 1024 — comfortably above any legitimately-constant sc
 def _build_step_and_args():
     key = random.PRNGKey(0)
     lm = SyntheticDecomposedModel(
+        feat_proj=random.normal(random.fold_in(key, 7), (D, D)),
         W=random.normal(random.fold_in(key, 0), (D, D)),
         read_coords=random.normal(random.fold_in(key, 1), (K_COORDS, D)),
         read_aux=random.normal(random.fold_in(key, 2), (M_AUX, D)),
@@ -45,7 +46,10 @@ def _build_step_and_args():
             )
         }
     )
-    resid = random.normal(random.fold_in(key, 5), (B, T, D))
+    inputs = {
+        "feat": random.normal(random.fold_in(key, 5), (B, T, D)),
+        "gain": random.uniform(random.fold_in(key, 6), (B, T)),
+    }
     ci_arch = ChunkwiseTransformerCIArch(
         chunks=(Chunk(input_taps=(SITE,), output_sites=(SITE,)),),
         input_dim=D,
@@ -83,17 +87,17 @@ def _build_step_and_args():
         remat_ci_fn=False,
         mesh=None,
     )
-    return step_fn, lm, state, resid
+    return step_fn, lm, state, inputs
 
 
 def test_frozen_weights_are_jaxpr_args_not_baked_consts():
     """The real jitted step traces the model's array leaves as invars (not consts)."""
-    step_fn, lm, state, resid = _build_step_and_args()
+    step_fn, lm, state, inputs = _build_step_and_args()
     # `make_train_step` returns the `eqx.filter_jit`-wrapped step; unwrap to the undecorated
     # inner function. `filter_make_jaxpr` partitions it exactly as `filter_jit` does (arrays
     # traced, the rest static), so this is the same arg→trace boundary production runs through.
     inner_step = inspect.unwrap(step_fn)
-    closed_jaxpr = eqx.filter_make_jaxpr(inner_step)(lm, state, resid, random.PRNGKey(3))[0]
+    closed_jaxpr = eqx.filter_make_jaxpr(inner_step)(lm, state, inputs, random.PRNGKey(3))[0]
 
     invar_sizes = {v.aval.size for v in closed_jaxpr.jaxpr.invars}
     assert FROZEN_W_SIZE in invar_sizes, (

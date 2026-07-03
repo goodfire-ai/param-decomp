@@ -18,8 +18,8 @@ train. The DECOMPOSITION targets the MLP matrices: sites `layers.{i}.mlp_in`
 `(d_embed → d_mlp)` and `layers.{i}.mlp_out` `(d_mlp → d_embed)`, each an UNTIED
 `(V, U)` (every site gets its own independent components).
 
-`W_E` is the PREFIX: the residual entering the decomposed part is `x @ W_E` and
-`resid_mlp_input_residual` maps `(W_E, x) -> x @ W_E`. The recon comparison is MSE on the
+`W_E` is frozen and NOT decomposed: the batch entering the decomposed model is `x @ W_E`
+(`resid_mlp_input_residual`, applied by the composition root). The recon comparison is MSE on the
 model OUTPUT `[B, n_features]` (NOT KL): `recon_loss_fn = resid_mlp_mse`.
 
 Site weights are right-mult oriented like the LM targets (`site_out = x @ Wᵀ`): for
@@ -472,11 +472,10 @@ def replicate_target[T: (ResidMLPTarget, ResidMLPDecomposedModel)](target: T, me
     return jax.tree.map(lambda a: jax.device_put(a, repl) if eqx.is_array(a) else a, target)
 
 
-def resid_mlp_input_residual(prefix: ResidMLPTarget, inputs: Float[Array, "B n_features"]) -> Array:
-    """The residual entering the decomposed model is `x @ W_E`. The prefix IS the frozen
-    target (it carries `W_E`); kept as a `prefix_residual_fn` so the generic harvest path
-    is uniform across targets."""
-    return inputs @ prefix.W_E
+def resid_mlp_input_residual(target: ResidMLPTarget, inputs: Float[Array, "B n_features"]) -> Array:
+    """The batch entering the decomposed model is the embedded residual `x @ W_E` (`W_E`
+    is frozen and not decomposed; the composition root embeds before feeding the engine)."""
+    return inputs @ target.W_E
 
 
 # ----------------------------- from-scratch pretraining -----------------------------
