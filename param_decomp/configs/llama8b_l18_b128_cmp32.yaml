@@ -85,7 +85,7 @@ pd:
         final_val_frac: 1.0
         fn_type: constant
     scope:
-      type: broadcast_across_batch
+      type: sc
 cadence:
   train_log_every: 20
   save_every: 1000
