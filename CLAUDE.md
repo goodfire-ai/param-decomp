@@ -16,6 +16,18 @@ the main repo — all commands (including git) run in the worktree.
 
 `.env` file with WandB credentials required (see `.env.example`).
 
+**The repo is torch-free.** All torch was deleted (trainer is JAX; torch consumers were
+de-torched; the torch oracle lives at git tag `torch-oracle`). The one torch island left
+is `nano_param_decomp/` — a standalone single-file VPD reference impl for paper readers,
+excluded from `make type` and not imported by any package.
+
+**One venv.** There is a single `.venv` at the repo root, built by `make install-dev`
+(one `uv sync --all-packages` over the workspace + pre-commit). jax is a normal
+dependency of the root `param-decomp` distribution (CPU jax base); the cluster CUDA
+wheels come from a `[cuda]` extra (`uv sync --extra cuda`), which the per-run launch
+workspace installs. Use `make install-dev`, never a bare `uv sync` (it would skip the
+lab dev deps).
+
 ## Project overview
 
 PD is a research framework for sparse parameter decomposition: target-model parameters are
@@ -27,96 +39,163 @@ Three experimental domains: TMS (Toy Model of Superposition), ResidualMLP, and L
 Models. The LM experiment decomposes any HuggingFace-loadable model whose target modules
 are `nn.Linear`, `nn.Embedding`, or `transformers.modeling_utils.Conv1D`.
 
-Two research papers describe the method:
+Three research papers describe the method, in lineage order (newest first). When this
+repo says "the method", it means **VPD** — or just "PD" generically. It is *not* "SPD":
+SPD is the predecessor VPD builds on.
 
-- **SPD** — [`papers/Stochastic_Parameter_Decomposition/spd_paper.md`](papers/Stochastic_Parameter_Decomposition/spd_paper.md). The current framing. Repo has evolved since publication but the concepts are still right.
-- **APD** — [`papers/Attribution_based_Parameter_Decomposition/apd_paper.md`](papers/Attribution_based_Parameter_Decomposition/apd_paper.md). Precursor; introduced linear parameter decomposition.
+- **VPD** — adVersarial Parameter Decomposition — [`papers/Adversarial_Parameter_Decomposition/post.md`](papers/Adversarial_Parameter_Decomposition/post.md) ("Interpreting Language Model Parameters"). The current method and framing: scales parameter decomposition to full language models and replaces SPD's *stochastic* ablation sampling with *adversarially-chosen* (persistent-PGD) ablations. This is what the repo implements today.
+- **SPD** — Stochastic Parameter Decomposition — [`papers/Stochastic_Parameter_Decomposition/spd_paper.md`](papers/Stochastic_Parameter_Decomposition/spd_paper.md). Predecessor; introduced the causal-importance / stochastic-masking framing VPD builds on. Concepts still right, but VPD supersedes it.
+- **APD** — Attribution-based Parameter Decomposition — [`papers/Attribution_based_Parameter_Decomposition/apd_paper.md`](papers/Attribution_based_Parameter_Decomposition/apd_paper.md). Original precursor; introduced linear parameter decomposition.
 
 ## Package layout
 
-Two flat-layout distributions, deliberately split:
+Two flat-layout distributions, deliberately split — **core is a pure trainer library;
+lab is composition / IO / CLI / experiment assembly**:
 
-- **`param-decomp`** (`param_decomp/`) — core library. The reusable, publishable surface:
-  the optimization loop, configs, `ComponentModel`, loss metrics, the `RunSink` protocol.
-  Treat as a stable API; changes here are deliberate.
-- **`param-decomp-lab`** (`param_decomp_lab/`) — team tooling. Experiment scripts, the
-  post-processing pipelines, the app, infra, eval metrics, lab-side helpers. Churns
-  freely; depends on core.
+- **`param-decomp`** (root: `param_decomp/` + sibling `pretrain/` + sibling
+  `vendored_jax/`) — the core: the generic JAX single-pool VPD trainer ENGINE
+  (`param_decomp/`: run.py = `run_decomposition_training`, lm.py, train.py, ci_fn.py,
+  targets/llama8b.py, …), the torch-free pydantic config SCHEMA it now carries directly
+  (`base_config.py` = `BaseConfig`, `schedule.py`, `configs.py` = `PDConfig` /
+  `RuntimeConfig` / `Cadence` / loss + eval-metric configs / routing / ci-fn / wandb
+  shaping), the built-run bundle (`built_run.py`: `BuiltRun` / `DataConfig` /
+  `EvalConfig` / `RunInstance` / `TargetSites`), the
+  `param_decomp.log` logger, the in-house target-LM pretrainer (`pretrain/`), and the
+  bit-parity vendored JAX archs (`vendored_jax/`). Carries jax + pydantic as deps. NO
+  CLI entrypoints, NO `main()`, NO YAML/experiment reading — the engine takes built
+  objects. The repo root IS the uv workspace root.
+- **`param-decomp-lab`** (`param_decomp_lab/`) — team tooling AND the composition roots.
+  The per-domain in-job entry (`experiments/lm/run.py` / `experiments/{tms,resid_mlp}/run.py`:
+  read the run YAML → build the target / data loader / `ExperimentConfig` → call the core
+  engine), the YAML→`ExperimentConfig` conversion (`experiments/config.py` shared +
+  `experiments/lm/config.py` LM), the experiment YAML schemas, run-loading
+  (`experiments/lm/load_run.py`), launchers, post-processing pipelines, infra. Churns
+  freely; depends on core. The reverse edge (`param_decomp → param_decomp_lab`) is
+  FORBIDDEN — pinned by `param_decomp/tests/test_runtime_standalone.py`.
 
-`make install-dev` syncs both editably via the uv workspace in the root `pyproject.toml`.
-The `pd-*` console scripts all live in `param_decomp_lab/pyproject.toml`.
+`make install-dev` syncs both editably via the uv workspace in the root `pyproject.toml`
+into the one `.venv`. The root `pyproject.toml` declares NO core console scripts — the
+trainers run as modules (`python -m param_decomp_lab.experiments.lm.run` /
+`python -m pretrain.train`), not as `pd-*` scripts; the launcher and post-pipeline `pd-*`
+scripts live in `param_decomp_lab/pyproject.toml`. (Slow/plot eval is in-loop only — there
+is no `pd-slow-eval` CLI.)
 
-## Public API
+## Training (JAX) <a id="training-jax"></a>
 
-Import names from where they're defined. No package-level re-exports — `__init__.py`
-files are bare. The canonical entrypoint and the protocols / configs it consumes:
+**Training is JAX now.** The torch `Trainer` was retired from HEAD (the JAX single-pool
+trainer is faster and is what we run; the torch trainer is preserved as the *semantic
+oracle* at git tag `torch-oracle`).
+
+The trainer lives in `param_decomp/` (the core of the root `param-decomp` distribution,
+the one venv). The semantics source of truth is its `SPEC.md` (normative pseudocode +
+numbered invariants, grounded in the torch oracle — JAX **conforms** to it). For the real
+entry points, read `param_decomp/CLAUDE.md` and `SPEC.md`. In one breath:
+
+- **`DecomposedModel`** (`param_decomp/lm.py`) — THE model interface: ordered `sites` +
+  pure fns (`clean_output` / `read_activations` / `masked_output` / `weight_deltas`) on an
+  `eqx.Module` carrying the frozen target weights as fields (the trainable `vu` is an
+  explicit method arg). Generic over vendored LM targets. There is one recon
+  semantics: chunkwise masking through the full token-input forward, KL on final logits.
+- **`run_decomposition_training(...)`** (`param_decomp/run.py`) — the generic ENGINE: the
+  one train loop every target runs through (init/restore/finetune/faith-warmup, the
+  recon-grid step factory, orbax checkpointing, schedules, metrics, in-loop slow eval,
+  SIGTERM-save). A pure library — no `main()`, reads no YAML; takes built objects.
+- **`python -m param_decomp_lab.experiments.lm.run <config.yaml>`**
+  (`param_decomp_lab/experiments/lm/run.py`) — the LM composition root + only I/O layer:
+  reads the canonical schema, builds the target / data loader / `ExperimentConfig`,
+  then calls the engine. Orbax sharded checkpoints; SIGTERM → save → SLURM requeue → resume.
+- **Launch from the lab side** via `pd-lm <config.yaml>` (login-node submission wrapper;
+  CONFIG-DRIVEN via `runtime.dp`, no `--nodes` / `--local` flags). `dp = N` (multiple of 8)
+  → snapshots the tree to an immutable shared-FS workspace, installs the `[cuda]` extra
+  there, sbatches `python -m param_decomp_lab.experiments.lm.run` across `N // 8` nodes;
+  `dp = null` → runs the trainer inline single-process. `lab → param_decomp` is a fine
+  dependency; only
+  `param_decomp → lab` is forbidden.
+
+## Public API (consumer substrate)
+
+Alongside the trainer, `param_decomp/` exposes a thin substrate the **consumers**
+(harvest / autointerp / clustering / intruder) lean on. Import names from where they're
+defined — no package-level re-exports, `__init__.py` files are bare:
 
 ```python
-from param_decomp.optimize import EvalLoop, Trainer
-from param_decomp.configs import Cadence, PDConfig, RuntimeConfig
-from param_decomp.run_sink import RunSink
-from param_decomp.metrics.base import LossMetricConfig, Metric
-from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
+from param_decomp.configs import Cadence, LossMetricConfig, PDConfig, RuntimeConfig
+from param_decomp.log import logger
+from param_decomp_lab.experiments.lm.load_run import open_jax_run, run_metadata
 ```
 
-- `Trainer(target_model, run_batch, reconstruction_loss, pd_config, runtime_config)` +
-  `.run(train_loader, sink, cadence, eval_loop=None)` — the entrypoint. Construction
-  sets up the `ComponentModel`, the two optimizers, and the loss-metric instances;
-  `.run` advances the loop from `self.step` to `pd_config.steps`. Side effects flow
-  through `sink`. `Trainer.snapshot` / `Trainer.from_snapshot` round-trip a
-  `TrainingState` for resumption.
-- `PDConfig` — algorithm: seed, CI fn, loss metrics, optimizers, decomposition targets,
-  tied weights, faithfulness warmup. Flipping a field here changes what algorithm runs.
-- `RuntimeConfig` — compute substrate: `autocast_bf16`, `device`, `dp`. Perturbs numerics
-  without changing the algorithm.
-- `Cadence` — train-log / save period predicates. Train-log fires every
-  `train_log_every` steps; `save_every` is optional and `should_save` is false at
-  step 0. `Trainer.run` always checkpoints at the final step regardless of `save_every`.
-- `EvalLoop` — frozen dataclass in `param_decomp/optimize.py` bundling the eval-loop
-  triple (`loader`, `metrics`, `n_steps`) with its timing (`every`, `slow_every`,
-  `slow_on_first_step`). Atomic optional: pass `None` to disable eval. `slow_every` must
-  be a multiple of `every`.
-- `RunSink` — Protocol with three methods (`log`, `console`, `checkpoint`). Concrete
-  impl in `param_decomp_lab.run_sink.RunSink` (local files + wandb + rank-aware no-op),
-  built via `.local(...)`, `.with_wandb(...)`, or `.silent()`.
-- `Metric` — base class with `__init__(cfg)` + `bind(model, device)`. Each config carries
-  a `type: Literal["<ClassName>"]` discriminator. See `param_decomp/metrics/CLAUDE.md`
-  for the loss-metric wiring (canonical, curated) and
-  `param_decomp_lab/eval_metrics/CLAUDE.md` for the eval-metric wiring
-  (user-extensible).
+- `PDConfig` — algorithm config: seed, CI fn, loss metrics, optimizers, decomposition
+  targets. The torch-free pydantic schema now lives in core
+  (`param_decomp.configs`, alongside `base_config` / `schedule`); the engine reads the
+  derived runtime `ExperimentConfig` (`param_decomp.built_run`). (The eval-metric *config*
+  classes likewise live in `param_decomp.configs`; only their torch `Metric` *impls* were
+  dropped.)
+- `RuntimeConfig` — compute substrate: `dp`, `remat_recon_forwards` / `remat_ci_fn`, and
+  `launch_env` (the XLA-flag / env-var / `PD_*`-profiling surface the SLURM launcher exports
+  into each rank — single source of truth, so `config.yaml` captures the run's environment).
+  Perturbs numerics without changing the algorithm.
+- `param_decomp.log` — the logger every consumer uses (folded into the core trainer
+  package).
+- `param_decomp_lab.experiments.lm.load_run.{open_jax_run, run_metadata}` — the JAX
+  consumer entry (lab-side, since it builds the LM target): a run opened for a forward pass
+  (`open_jax_run`, restores orbax) or just its target topology (`run_metadata`:
+  `n_blocks`/`vocab`/per-site `(name, C)` from config + cache, no restore). `JaxPDAdapter`
+  keys autointerp/clustering metadata off `run_metadata`.
+
+The torch run-loading surface (`ComponentModel`, the loss `Metric` impls, `RunSink`,
+`RunBatch` / `ReconstructionLoss`, `component_model_io`, the vendored archs) was dropped
+and returns JAX-native as the #10 torch->jax adapter.
 
 ## Where things live
 
-- `param_decomp/` — core library (see [Public API](#public-api)). Module docstrings
-  describe each file.
-- `param_decomp/metrics/` — loss `Metric` classes and dispatch.
-- `param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py` — composition roots; each
-  parses a YAML, builds objects, runs a `Trainer`.
-- `param_decomp_lab/{harvest,autointerp,clustering,dataset_attributions,graph_interp,investigate,app}/`
-  — post-pipeline + app, each with its own CLAUDE.md.
+- `param_decomp/` — the JAX trainer core. The pydantic config SCHEMA (`base_config.py` =
+  `BaseConfig` / `Probability`; `schedule.py`; `configs.py` = routing +
+  decomposition-target + ci-fn + loss + eval-metric configs + `PDConfig` / `RuntimeConfig`
+  / `Cadence` / `WandbConfig` / `ResumeProvenance` + the wandb-shaping helpers). The
+  built-run bundle the engine consumes (`built_run.py`: `BuiltRun` /
+  `DataConfig` / `EvalConfig` / … + the `TargetSites` protocol). The engine + numerics
+  (`run.py` = `run_decomposition_training`, `lm.py` / `train.py` / `ci_fn.py` /
+  `targets/llama8b.py` / `targets/llama_simple_mlp.py` / `adversary.py` / `recon.py` / `losses.py` /
+  `checkpoint.py` / `sharding.py` / `eval.py` / `slow_eval.py` + `log.py`) plus `configs/`
+  (the self-contained run yamls) and `tests/` (incl. the `tests/equivalence/` frozen
+  torch↔JAX goldens). The torch oracle lives at git tag `torch-oracle`.
+- `pretrain/` (repo-root sibling) — the in-house target-LM pretrainer (`pretrain.train`):
+  trainable equinox archs whose `state_dict()` keys the decomposition loader reads.
+- `vendored_jax/` (repo-root sibling) — bit-parity JAX Llama / GPT-2 archs the trainer
+  decomposes.
+- `param_decomp_lab/adapters/` — `JaxPDAdapter`: torch-free autointerp/clustering metadata
+  for a JAX run, keyed off `experiments.lm.load_run.run_metadata` (config + cache, no
+  orbax restore). The torch `build_target` bridge was deleted with the rest of torch.
+- `param_decomp_lab/experiments/` — `config.py` (the shared `ExperimentConfig[T, D]` YAML
+  schema + the shared YAML→`ExperimentConfig` conversion). `experiments/lm/`: `run.py`
+  (the LM composition root — `python -m param_decomp_lab.experiments.lm.run`), `config.py`
+  (LM schema + LM build), `load_run.py` (open a finished JAX run), `data.py` /
+  `prestage_tokenized.py` (offline tokenize → parquet shards), `jax_launch.py` (`pd-lm`).
+  The TMS and ResidualMLP domains live under `experiments/{tms,resid_mlp}/`
+  (`run.py` + `config.py` + `model.py`; `pd-tms` / `pd-resid-mlp`), calling the core
+  engine as a library.
+- `param_decomp_lab/{harvest,autointerp,clustering,investigate}/`
+  — post-pipeline stages, each with its own CLAUDE.md.
 - `param_decomp_lab/postprocess/` — orchestrates the post-pipeline stages.
-- `param_decomp_lab/eval_metrics/` — batteries-included eval-metric set.
-- `param_decomp_lab/infra/` — settings, paths, slurm, ddp_launch (single-/multi-node
-  torchrun wrapper), wandb, sqlite, git, run_files, markdown, pydantic helpers.
-- `param_decomp_lab/{seed.py, distributed.py, batch_and_loss_fns.py, component_model_io.py, run_sink.py}`
-  — lab-side helpers that aren't big enough to warrant their own subdir.
+- `param_decomp_lab/infra/` — settings, paths, slurm, wandb, sqlite, git, run_files,
+  markdown, pydantic helpers.
 
 ## Module pointers
 
 | Module | CLAUDE.md | What it covers |
 |---|---|---|
-| `param_decomp/metrics/` | `param_decomp/metrics/CLAUDE.md` | Loss-metric dispatch, config placement rule, sources vs masks, PPGD |
-| `param_decomp_lab/experiments/` | `param_decomp_lab/experiments/CLAUDE.md` | Adding an experiment, YAML schema, LM `target.spec`, `Saved<Name>Run` |
-| `param_decomp_lab/eval_metrics/` | `param_decomp_lab/eval_metrics/CLAUDE.md` | Eval-metric dispatch — user-extensible (vs canonical loss metrics) |
-| `param_decomp_lab/postprocess/` | `param_decomp_lab/postprocess/CLAUDE.md` | Pipeline orchestration: harvest → autointerp / attributions / intruder → graph_interp |
+| `param_decomp_lab/experiments/` | `param_decomp_lab/experiments/CLAUDE.md` | LM `target.spec` schema, the offline prestage tool, JAX launch |
+| `param_decomp_lab/postprocess/` | `param_decomp_lab/postprocess/CLAUDE.md` | Pipeline orchestration: harvest → autointerp / intruder |
 | `param_decomp_lab/harvest/` | `param_decomp_lab/harvest/CLAUDE.md` | Component-statistics collection pipeline |
 | `param_decomp_lab/autointerp/` | `param_decomp_lab/autointerp/CLAUDE.md` | LLM-based component interpretation |
 | `param_decomp_lab/clustering/` | `param_decomp_lab/clustering/CLAUDE.md` | Hierarchical clustering of components |
-| `param_decomp_lab/dataset_attributions/` | `param_decomp_lab/dataset_attributions/CLAUDE.md` | Aggregated component-to-component attributions |
-| `param_decomp_lab/graph_interp/` | `param_decomp_lab/graph_interp/CLAUDE.md` | Context-aware labelling using the attribution graph |
 | `param_decomp_lab/investigate/` | `param_decomp_lab/investigate/CLAUDE.md` | Agent investigation of a research question |
-| `param_decomp_lab/app/` | `param_decomp_lab/app/CLAUDE.md` | Web visualization (FastAPI + Svelte) |
-| `param_decomp_lab/experiments/lm/pretrain/` | `param_decomp_lab/experiments/lm/pretrain/CLAUDE.md` | LM target-model pretraining |
+
+> **The torch web-app (`param_decomp_lab/app/`) was temporarily removed during the JAX
+> migration** to shed torch surface for the JAX-primary merge. It is slated for re-add,
+> likely as a JAX-native viewer. The reusable tokenizer-display helpers it once owned
+> (`AppTokenizer`, `escape_for_display`, `delimit_tokens`) now live in
+> `param_decomp_lab/tokenizer_display.py`. See the removal PR for the full re-add log.
 
 ## Saved-run layout
 
@@ -124,64 +203,63 @@ Every artifact for a decomposition lives under one dir per run:
 
 ```
 PARAM_DECOMP_OUT_DIR/runs/<run_id>/
-  experiment_config.yaml     # the full ExperimentConfig
-  model_<step>.pth           # checkpoints (RunSink.checkpoint)
-  metrics.jsonl              # local logs (RunSink.log)
+  launch_config.yaml         # the single self-contained run config (the trainer reads it; resume byte-compares). NOT config.yaml: that basename collides with wandb's reserved run-config file, which wandb.save would symlink onto and clobber
+  ckpts/<step>/...           # orbax sharded checkpoints (JAX trainer)
+  metrics.jsonl              # local logs
   harvest/h-*/...            # pd-harvest output
   autointerp/a-*/...         # pd-autointerp output
-  dataset_attributions/da-*/...  # pd-attributions output
-  graph_interp/*/...         # pd-graph-interp output
 ```
 
 Both training output and the W&B download cache write here. Per-stage subdirs are
 populated by their respective pipelines.
 
-`PARAM_DECOMP_OUT_DIR` is `/mnt/polished-lake/artifacts/mechanisms/param-decomp/` on
-cluster, `~/param_decomp_out/` off cluster. Defined in
-`param_decomp_lab/infra/settings.py`.
+`PARAM_DECOMP_OUT_DIR` defaults to `$DATA_MOUNT/artifacts/mechanisms/param-decomp` on
+cluster (e.g. `/mnt/data/artifacts/mechanisms/param-decomp` when `DATA_MOUNT=/mnt/data`)
+and the relative `out/` off cluster (no `DATA_MOUNT`). Set the `PARAM_DECOMP_OUT_DIR` env
+var to override either. Defined in `param_decomp_lab/infra/settings.py`. (A stale shell
+may export a wrong value — e.g. an old `/mnt/polished-lake/...` — which overrides the
+correct default; check `echo $PARAM_DECOMP_OUT_DIR` if outputs land somewhere unexpected.)
 
 ## Development commands
 
 | Command | Purpose |
 |---|---|
-| `make install-dev` | Install all workspace packages + dev deps + pre-commit |
+| `make install-dev` | All workspace packages + dev deps + pre-commit, into the one `.venv` (see [Environment](#environment)) |
 | `make install` | Core only |
 | `make install-lab` | Core + lab, no dev deps |
 | `make check` | basedpyright + ruff lint + format |
-| `make type` | basedpyright |
+| `make type` | basedpyright over the whole workspace (core + config + lab) |
 | `make format` | ruff lint + format |
 | `make test` | Tests excluding slow |
 | `make test-all` | All tests |
-| `make app` | Launch the PD app (backend + frontend) |
 
 Run a single test: `python -m pytest path/to/test_file.py::test_name`.
 
 ## CLI entry points
 
-All declared in `param_decomp_lab/pyproject.toml`.
+The root `pyproject.toml` declares no core console scripts; the launchers and
+post-pipeline scripts live in `param_decomp_lab/pyproject.toml`. The composition roots are
+NOT console scripts — run them as modules (the lab launchers sbatch the same module-run
+command). LM training is `python -m param_decomp_lab.experiments.lm.run` (JAX), launched
+via `pd-lm`. Slow/plot eval is in-loop only (no CLI).
 
 | Command | Entry point | Purpose |
 |---|---|---|
-| `pd-tms` | `experiments/tms/run.py` | Run TMS experiment from a YAML |
-| `pd-resid-mlp` | `experiments/resid_mlp/run.py` | Run ResidMLP from a YAML |
-| `pd-lm` | `experiments/lm/run.py` | Run LM from a YAML |
-| `pd-lm-layerwise` | `experiments/lm/layerwise.py` | Split an LM YAML into per-matrix configs, submit as a SLURM array |
-| `pd-pretrain` | `experiments/lm/pretrain/cli.py` | Pretrain target models |
+| `python -m param_decomp_lab.experiments.lm.run` | `param_decomp_lab/experiments/lm/run.py` | The LM decomposition composition root (reads YAML, builds the target, calls the core engine; run inside a launch workspace) |
+| `python -m pretrain.train` | `pretrain/train.py` | The core in-house target-LM pretrainer |
+| `pd-lm` | `experiments/lm/launch.py` | Launch a decomposition trainer run; config-driven via `runtime.dp` (`dp=N` → snapshot + workspace + sbatch across `N//8` nodes; `dp=null` → inline) |
+| `pd-pretrain` | `experiments/lm/pretrain/launch.py` | Launch a pretrainer run; config-driven via `dp` (`dp=N` → sbatch; `dp=null` → inline) |
+| `pd-tms` / `pd-resid-mlp` | `experiments/{tms,resid_mlp}/run.py` | The CPU toy decomposition CLIs |
 | `pd-harvest` | `harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
 | `pd-autointerp` | `autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
-| `pd-attributions` | `dataset_attributions/scripts/run_slurm_cli.py` | Submit dataset-attribution SLURM job |
-| `pd-graph-interp` | `graph_interp/scripts/run_slurm_cli.py` | Submit graph-interp SLURM job |
+| `pd-clustering` / `pd-cluster-merge` / `pd-cluster-distances` | `clustering/scripts/` | Clustering ensemble / merge / consensus distances |
 | `pd-postprocess` | `postprocess/cli.py` | Unified postprocessing pipeline |
-| `pd-clustering` | `clustering/scripts/run_pipeline.py` | Clustering ensemble pipeline |
-| `pd-cluster-harvest` | `clustering/scripts/run_harvest.py` | Harvest activations → membership snapshot |
-| `pd-cluster-merge` | `clustering/scripts/run_merge.py` | Merge from snapshot (CPU only) |
 | `pd-intruder` | `harvest/scripts/run_intruder_slurm_cli.py` | Submit intruder eval job |
 | `pd-investigate` | `investigate/scripts/run_slurm_cli.py` | Submit agent-investigation job |
 
 All `pd-*` run commands accept `--group <id>` (wandb group field, used for UI
 collapsing) and `--tags a,b,c` (wandb tags). Both no-op when `wandb:` is omitted from
-the YAML. `pd-lm-layerwise` auto-generates a `lw-...` group id and propagates it (and
-any `--tags`) to every child run.
+the YAML.
 
 ## Cluster usage
 
@@ -297,8 +375,7 @@ Docstrings carry information the signature doesn't.
 
 **Load-bearing public entrypoints in `param_decomp/` are an exception** — there, a full
 Google-style `Args:` block is worth the bookkeeping, because IDE hover surfaces it and
-the callers are external. Concretely: `Trainer.__init__` / `run` /
-`snapshot` / `from_snapshot`, `ComponentModel.__init__` / `forward` /
+the callers are external. Concretely: `ComponentModel.__init__` / `forward` /
 `calc_causal_importances`, `RunSink` protocol methods, `Metric.bind` / `update` /
 `reset` / `compute`, `make_components`, `make_ci_fn_wrapper`. For everything else,
 *including internal helpers in `param_decomp/`*, prefer better parameter names and

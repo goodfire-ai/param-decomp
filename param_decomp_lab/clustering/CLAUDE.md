@@ -1,142 +1,173 @@
 # Clustering Module
 
-Hierarchical clustering of PD components based on coactivation patterns. Runs ensemble clustering experiments to discover stable groups of components that behave similarly.
+Hierarchical clustering of PD components based on coactivation patterns. Discovers stable
+groups of components that behave similarly.
 
-## Usage
+**Zero torch.** The whole subsystem is numpy/scipy/numba. The JAX worker reads a JAX
+single-pool run, samples CI, and streams numpy arrays into the accumulator; the merge is
+pure numpy. (The forward itself runs in jax inside the worker.)
 
-### Harvest-then-merge workflow (recommended for sweeps)
+## Workflow: harvest (JAX) → merge (CPU)
 
-Separate GPU-heavy activation collection from CPU-only merging. Harvest once, merge many times with different configs.
+GPU-light activation collection is separated from CPU-only merging. Harvest once, merge
+many times with different configs.
 
 ```bash
-# 1. Harvest activations into a compressed membership snapshot (GPU, ~2h for 2M tokens)
-pd-cluster-harvest harvest_config.json
+# 1. Harvest a JAX single-pool run (orbax checkpoint) into a membership snapshot.
+python -m param_decomp_lab.clustering.scripts.run_worker \
+    --run_dir runs/p-761bc061 --n_tokens 50000 --batch_size 16 --n_tokens_per_seq 16
 # → PARAM_DECOMP_OUT_DIR/clustering/harvests/ch-<id>/
 
-# 2. Merge with different configs (CPU-only, ~30min each)
-pd-cluster-merge /path/to/ch-<id>/ merge_alpha_1.json
-pd-cluster-merge /path/to/ch-<id>/ merge_alpha_5.json
-pd-cluster-merge /path/to/ch-<id>/ merge_alpha_10.json
-# → PARAM_DECOMP_OUT_DIR/clustering/runs/c-<id>/ (one per merge)
+# 2. Merge from the snapshot (CPU-only).
+pd-cluster-merge /path/to/ch-<id>/ merge_config.json --run-id c-<id> --seed 0 [--plot]
+# → PARAM_DECOMP_OUT_DIR/clustering/runs/c-<id>/
 ```
 
-- `HarvestConfig` (`harvest_config.py`): model_path, n_tokens, activation_threshold, batch_size, etc.
-- `MergeConfig` (`merge_config.py`): alpha, iters, merge_pair_sampling_method, etc.
+`pd-cluster-merge` seeds the stdlib `random` the stochastic merge-pair samplers draw from,
+so distinct `--seed`s give independent merge trajectories over the same snapshot. `--plot`
+emits per-run diagnostics (`plots/cluster_sizes.png`, periodic `plots/iter_*.png`).
 
-### Ensemble pipeline (for stability analysis)
+## Workflow: ensemble → consensus (the headline `pd-clustering`)
 
-**`pd-clustering` / `run_pipeline.py`**: Runs multiple clustering runs (ensemble) with different seeds, then runs `calc_distances` to compute pairwise distances between results. Use this for ensemble experiments.
+A single clustering run is noisy; cluster *stability* is read off an ensemble of seeded
+runs. `pd-clustering` fans one decomposition out into `n_runs` seeded `harvest → merge`
+members, then a consensus job normalizes their labels and computes per-iteration pairwise
+distances + a stability plot. Three dependency tiers:
 
-**`run_clustering.py`**: Runs a single monolithic clustering run (harvest + merge together). Usually called by the pipeline.
+```
+harvest array (N × 1 GPU, seeded dataset)            run_worker
+   └─ merge array (N × CPU, seeded sampler)           run_merge        [afterok harvest]
+         └─ consensus job per distance method         calc_distances   [afterok merge]
+```
 
 ```bash
-# Run clustering pipeline via SLURM (ensemble of runs + distance calculation)
-pd-clustering --config param_decomp_lab/clustering/configs/pipeline_config.yaml
-
-# Run locally instead of SLURM
-pd-clustering --config param_decomp_lab/clustering/configs/pipeline_config.yaml --local
-
-# Single clustering run (usually called by pipeline)
-python -m param_decomp_lab.clustering.scripts.run_clustering --config <clustering_run_config.json>
+# SLURM (seeded array + dependent merge array + dependent consensus):
+pd-clustering --config param_decomp_lab/clustering/configs/ensemble_example.yaml
+# In-process (sequential), for a small example / debugging:
+pd-clustering --config <ensemble.yaml> --local
+# Re-run consensus alone over existing member runs:
+pd-cluster-distances --ensemble-id e-<id> --clustering-run-ids c-a,c-b,c-c \
+    --distances-method perm_invariant_hamming
 ```
+
+`ClusteringEnsembleConfig` (`scripts/run_pipeline.py`) is flat: `harvest` (`HarvestConfig`)
++ `merge` (`MergeConfig`) + `n_runs` + `base_seed` (member i uses `base_seed + i` for both
+the harvest dataset and the merge sampler) + `distances_methods` + slurm fields. Output:
+
+```
+PARAM_DECOMP_OUT_DIR/clustering/ensembles/<ensemble_id>/
+├── ensemble_config.yaml / harvest_config.json / merge_config.json
+├── ensemble_meta.json                # normalization metadata (calc_distances)
+├── ensemble_merge_array.npz          # normalized merge array
+├── distances_<method>.npz            # per-iteration distance tensor
+└── plots/distances_<method>.png      # stability plot
+```
+
+The consensus engine is the surviving `MergeHistoryEnsemble.normalized()` (unions member
+labels, putting each member's missing/dead components into singleton groups) +
+`math.compute_distances` (`perm_invariant_hamming` / `matching_dist` / `matching_dist_vec`,
+multiprocessing over iterations). `calc_distances.py` is only the driver + plot; it does
+not reimplement the math. Distance matrices are strict-lower-triangular (diag/upper `NaN`),
+matching the per-iteration `perm_invariant_hamming_matrix` convention.
+
+The run is opened with `param_decomp_lab.experiments.lm.load_run.open_jax_run` (the reusable JAX
+"open a run for consumption" pattern, shared with `harvest`); the lower-leaky CI from its
+frozen forward is sampled per token position (`flatten_lm_activations`) and streamed — as
+a numpy-array dict — into the `MembershipBuilder`, producing a `ProcessedMemberships`
+snapshot. `pd-cluster-merge` reads it unchanged.
+
+- `HarvestConfig` (`harvest_config.py`): model_path, n_tokens, activation_threshold, etc.
+- `MergeConfig` (`merge_config.py`): alpha, iters, merge_pair_sampling_method, etc.
 
 ## Data Storage
 
-Data is stored in `PARAM_DECOMP_OUT_DIR/clustering/` (see `param_decomp_lab/infra/settings.py`):
+Stored under `PARAM_DECOMP_OUT_DIR/clustering/` (see `param_decomp_lab/infra/settings.py`):
 
 ```
 PARAM_DECOMP_OUT_DIR/clustering/
-├── harvests/<harvest_id>/               # Membership snapshots (from pd-cluster-harvest)
+├── harvests/<harvest_id>/               # Membership snapshots (run_worker)
 │   ├── harvest_config.json
 │   ├── memberships.npz                  # Sparse CSC matrix (scipy)
 │   └── metadata.json                    # labels, n_samples, n_components
-├── runs/<run_id>/                       # Merge outputs (from pd-cluster-merge or run_clustering)
-│   ├── clustering_run_config.json       # or merge_config.json
+├── runs/<run_id>/                       # Merge outputs (pd-cluster-merge)
+│   ├── merge_config.json
 │   └── history.zip                      # MergeHistory (group assignments per iteration)
-├── ensembles/<pipeline_run_id>/         # Pipeline/ensemble outputs
-│   ├── pipeline_config.yaml
-│   ├── clustering_run_config.json       # Copy of the config used
-│   ├── ensemble_meta.json               # Component labels, iteration stats
-│   ├── ensemble_merge_array.npz         # Normalized merge array
-│   ├── distances_<method>.npz           # Distance matrices
-│   └── distances_<method>.png           # Distance distribution plot
-├── run_ids.txt                          # Run IDs for each ensemble (one per line, written by jobs)
 ```
 
 ## Architecture
 
-### Pipeline (`scripts/run_pipeline.py`)
+### Membership accumulation (`memberships.py`)
 
-Entry point via `pd-clustering`. Submits clustering runs as SLURM job array, then calculates distances between results. Key steps:
-1. Creates `ExecutionStamp` for pipeline
-2. Generates commands for each clustering run (with different dataset seeds)
-3. Submits clustering array job to SLURM
-4. Submits distance calculation jobs (depend on clustering completion)
+`MembershipBuilder` streams thresholded boolean memberships from numpy activation batches
+without materializing the full dense `[n_samples, n_components]` matrix. Per-module max/sum
+stats drive dead-component filtering; alive components are packed into a sparse CSC matrix,
+then each column is stored as a `CompressedMembership` (sparse indices or bitset, whichever
+is cheaper). `flatten_lm_activations` samples token positions from `(B, T, C)` CI.
 
-### Single Run (`scripts/run_clustering.py`)
+`activations.py` is the dense reference path (`process_activations`,
+`filter_dead_components`) the streaming builder is checked against in tests — not used in
+production harvest.
 
-Performs one clustering run (LM PD runs only):
-1. Load decomposed model from WandB via `SavedLMRun.from_path`
-2. Compute component activations. Uses `n_tokens` and `n_tokens_per_seq` parameters:
-   iterate through batches of size `batch_size`, pick `n_tokens_per_seq` random token
-   positions per sequence (or all positions if `use_all_tokens_per_seq`), and collect
-   CI values until `n_tokens` samples are gathered. Result: `(n_tokens, C)` per layer.
-3. Run merge iteration (greedy MDL-based clustering)
-4. Save `MergeHistory` with group assignments per iteration
+### Merge Algorithm (`merge.py`, `compute_costs.py`)
 
-### Merge Algorithm (`merge.py`)
+Greedy hierarchical clustering using MDL (Minimum Description Length) cost. Builds the
+coactivation matrix (`X.T @ X` over the sparse sample-by-component CSR), then iteratively
+merges the pair with lowest cost (`compute_merge_costs`), recomputing affected
+coactivations from compressed memberships (`recompute_coacts_merge_pair_memberships`,
+numba-accelerated row scan). Supports stochastic merge-pair selection
+(`math/merge_pair_samplers.py`: range / mcmc / exp_rank, all numpy + stdlib `random`).
+Tracks full merge history.
 
-Greedy hierarchical clustering using MDL (Minimum Description Length) cost:
-- Computes coactivation matrix from component activations
-- Iteratively merges pairs with lowest cost (via `compute_merge_costs`)
-- Supports stochastic merge pair selection (`merge_pair_sampling_method`)
-- Tracks full merge history for analysis
+### Distance analysis (`math/`)
 
-### Distance Calculation (`scripts/calc_distances.py`)
-
-Computes pairwise distances between clustering runs in an ensemble:
-- Normalizes component labels across runs (handles dead components)
-- Supports multiple distance methods: `perm_invariant_hamming`, `matching_dist`
-- Runs in parallel using multiprocessing
+`MergeHistoryEnsemble.normalized()` aligns component labels across an ensemble of histories
+(handling differing dead components); `math/merge_distances.compute_distances` computes
+pairwise distances via `perm_invariant_hamming` (numpy + scipy.optimize) or `matching_dist`
+(numpy). Multiprocessing over iterations.
 
 ## Key Types
 
-### Configs
-
 ```python
-ClusteringPipelineConfig  # Pipeline settings (n_runs, distances_methods, SLURM config)
-ClusteringRunConfig       # Single run settings (model_path, batch_size, n_tokens, merge_config)
-MergeConfig               # Merge algorithm params (alpha, iters, activation_threshold, filter_dead_stat)
-```
-
-### Data Structures
-
-```python
-MergeHistory              # Full merge history: group assignments at each iteration
+MergeConfig               # Merge algorithm params (alpha, iters, sampling method, ...)
+MergeHistory              # Group assignments at each iteration (BatchedGroupMerge, int32)
 MergeHistoryEnsemble      # Collection of histories for distance analysis
 GroupMerge                # Current group assignments (component -> group mapping)
 ```
 
-### Type Aliases (`types.py`)
+### Type Aliases (`types.py`) — all numpy
 
 ```python
-ActivationsTensor         # Float[Tensor, "samples n_components"]
-ClusterCoactivationShaped # Float[Tensor, "k_groups k_groups"]
+ActivationsArray          # Float[np.ndarray, "samples n_components"]
+ClusterCoactivationShaped # Float[np.ndarray, "k_groups k_groups"]
+GroupIdxsArray            # Int[np.ndarray, " n_components"]
 MergesArray               # Int[np.ndarray, "n_ens n_iters n_components"]
 DistancesArray            # Float[np.ndarray, "n_iters n_ens n_ens"]
 ```
 
+`MergeHistory` stores group/pair indices as **int32** — int16 overflows above 32767
+components (numpy raises; torch silently truncated).
+
+## Plotting Submodule (`plotting/`)
+
+Torch-free (numpy + matplotlib) diagnostics:
+
+- `plot_coact_and_costs` — per-iteration coactivation/cost heatmaps, wired to the merge's
+  `LogCallback` by `run_merge --plot`.
+- `plot_merge_history_cluster_sizes` — per-run cluster-size-vs-iteration scatter.
+- `plot_dists_distribution` — the ensemble stability plot (`calc_distances`).
+
 ## Math Submodule (`math/`)
 
-- `merge_matrix.py` - `GroupMerge` class for tracking group assignments
-- `merge_distances.py` - Distance computation between clustering results
-- `perm_invariant_hamming.py` - Permutation-invariant Hamming distance
-- `matching_dist.py` - Optimal matching distance via Hungarian algorithm
-- `merge_pair_samplers.py` - Strategies for selecting which pair to merge
+- `merge_matrix.py` - `GroupMerge` / `BatchedGroupMerge` (component→group assignments)
+- `merge_distances.py` - distance computation between clustering results
+- `perm_invariant_hamming.py` - permutation-invariant Hamming distance
+- `matching_dist.py` - optimal matching distance
+- `merge_pair_samplers.py` - merge-pair selection strategies
 
 ## Utility Scripts
 
-**`get_cluster_mapping.py`**: Extracts cluster assignments at a specific iteration from a clustering run, outputs JSON mapping component labels to cluster indices (singletons mapped to `null`).
+**`get_cluster_mapping.py`**: cluster assignments at a given iteration, as JSON mapping
+component labels to cluster indices (singletons → `null`).
 
 ```bash
 python -m param_decomp_lab.clustering.scripts.get_cluster_mapping /path/to/clustering_run --iteration 299
@@ -144,24 +175,5 @@ python -m param_decomp_lab.clustering.scripts.get_cluster_mapping /path/to/clust
 
 ## Run ID Prefixes
 
-Top-level run types use `RUN_TYPE_ABBREVIATIONS` in `param_decomp_lab/infra/run_files.py`: `p` (param_decomp), `t` (train), `c` (clustering/runs), `e` (clustering/ensembles), `ch` (clustering/harvests).
-
-Subrun prefixes are **not** centralized yet — each module hardcodes its own in its `repo.py`: `h-` (harvest), `a-` (autointerp), `da-` (dataset_attributions), `ti-` (graph_interp). These should eventually be unified into `RUN_TYPE_ABBREVIATIONS`.
-
-## App Integration
-
-To make a cluster mapping available in the app's dropdown for a run, add its path to `CANONICAL_RUNS` in `param_decomp_lab/app/frontend/src/lib/registry.ts` under the corresponding run's `clusterMappings` array.
-
-## Config Files
-
-Configs live in `param_decomp_lab/clustering/configs/`:
-- Pipeline configs: `*.yaml` files with `ClusteringPipelineConfig`
-- Run configs: `crc/*.json` files with `ClusteringRunConfig`
-
-Example pipeline config:
-```yaml
-clustering_run_config_path: "param_decomp_lab/clustering/configs/crc/ss_llama_simple_mlp-1L.json"
-n_runs: 10
-distances_methods: ["perm_invariant_hamming"]
-wandb_project: "param-decomp"
-```
+`RUN_TYPE_ABBREVIATIONS` in `param_decomp_lab/infra/run_files.py`: `c` (clustering/runs),
+`ch` (clustering/harvests), `e` (clustering/ensembles).

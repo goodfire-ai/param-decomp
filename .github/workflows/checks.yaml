@@ -64,32 +64,10 @@ jobs:
         run: uv run ruff format .
 
       - name: Run tests
-        run: |
-          NUM_PROCESSES=$(nproc | awk '{print ($1<4?$1:4)}')
-          echo "Using $NUM_PROCESSES pytest workers"
-          uv run pytest param_decomp/tests/ param_decomp_lab/tests/ --runslow --durations 10 --numprocesses $NUM_PROCESSES --dist worksteal
+        # `make test-all` runs the 1-device suite then the multidevice subset (sim CPU devices).
+        run: make test-all
         env:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
           OMPI_ALLOW_RUN_AS_ROOT: 1
           OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
           HF_HOME: ${{ github.workspace }}/.hf-cache
-  build-frontend:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: param_decomp_lab/app/frontend
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Run svelte-check
-        run: npm run check
-
-      - name: Run linter
-        run: npm run lint
-
-      - name: Build frontend
-        run: npm run build

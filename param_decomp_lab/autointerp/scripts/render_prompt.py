@@ -4,7 +4,6 @@ Usage:
     python -m param_decomp_lab.autointerp.scripts.render_prompt
 """
 
-from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.autointerp.config import RichExamplesConfig
 from param_decomp_lab.autointerp.schemas import ModelMetadata
 from param_decomp_lab.autointerp.strategies.rich_examples import format_prompt
@@ -14,6 +13,7 @@ from param_decomp_lab.harvest.schemas import (
     ComponentData,
     ComponentTokenPMI,
 )
+from param_decomp_lab.tokenizer_display import AppTokenizer
 
 TOKENIZER_NAME = "openai-community/gpt2"
 
@@ -174,16 +174,13 @@ DUMMY_COMPONENT = ComponentData(
 
 DUMMY_MODEL_METADATA = ModelMetadata(
     n_blocks=4,
-    model_class="pile_llama_simple_mlp",
     dataset_name="danbraunai/pile-uncopyrighted-tok-shuffled",
     layer_descriptions={"h.2.attn.v_proj": "2.attn.v"},
     seq_len=512,
-    decomposition_method="pd",
 )
 
 DUMMY_CONFIG = RichExamplesConfig(
     max_examples=30,
-    include_dataset_description=True,
     label_max_words=8,
 )
 

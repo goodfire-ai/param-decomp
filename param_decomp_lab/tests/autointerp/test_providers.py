@@ -5,15 +5,14 @@ import httpx
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from param_decomp_lab.autointerp.providers import (
+from param_decomp_lab.autointerp.config import (
     AnthropicHaiku45LLMConfig,
     AnthropicOpus46LLMConfig,
-    AnthropicProvider,
     AnthropicSonnet46LLMConfig,
     GoogleAILLMConfig,
-    GoogleAIProvider,
     LLMConfig,
 )
+from param_decomp_lab.autointerp.providers import AnthropicProvider, GoogleAIProvider
 
 
 def test_google_ai_llm_config_roundtrip() -> None:

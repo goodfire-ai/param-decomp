@@ -1,79 +1,82 @@
 from functools import cached_property
-from typing import override
+from pathlib import Path
 
-from torch import Tensor
-from torch.utils.data import DataLoader
-
-from param_decomp.component_model import ComponentModel
-from param_decomp_lab.adapters.base import DecompositionAdapter
+from param_decomp.built_run import LAUNCH_CONFIG_FILENAME
 from param_decomp_lab.autointerp.schemas import ModelMetadata
-from param_decomp_lab.experiments.lm.run import SavedLMRun, build_lm_loader
-from param_decomp_lab.infra.wandb import parse_wandb_run_path
-from param_decomp_lab.topology import TransformerTopology
+from param_decomp_lab.experiments.lm.config import LMExperimentConfig
+from param_decomp_lab.experiments.lm.load_run import RunMetadata, run_metadata
+from param_decomp_lab.harvest.schemas import get_harvest_dir
+from param_decomp_lab.topology.path_schemas import path_schema_for_model_type
 
 
-class PDAdapter(DecompositionAdapter):
-    def __init__(self, wandb_path: str):
-        self._wandb_path = wandb_path
-        _, _, self._run_id = parse_wandb_run_path(wandb_path)
+def is_jax_run(decomposition_id: str) -> bool:
+    """A JAX single-pool run dir pins its single self-contained run config as
+    `launch_config.yaml` and checkpoints with orbax under `ckpts/`; a torch run instead has
+    `model_*.pth` and no orbax `ckpts/`. The orbax `ckpts/` dir is the explicit marker."""
+    run_dir = get_harvest_dir(decomposition_id).parent
+    return (run_dir / LAUNCH_CONFIG_FILENAME).exists() and (run_dir / "ckpts").is_dir()
+
+
+class PDAdapter:
+    """Autointerp/clustering adapter for a JAX single-pool run, read torch-free from its
+    pinned launch config. Autointerp consumes harvest output plus run metadata only — no trained
+    components — so the target topology (`n_blocks`, vocab, per-site `(name, C)`) comes
+    from `param_decomp_lab.experiments.lm.load_run.run_metadata` (config + pretrain-cache `model_config`,
+    no orbax restore); canonical layer descriptions render via the torch-free path schema."""
+
+    def __init__(self, decomposition_id: str):
+        self._run_id = decomposition_id
 
     @cached_property
-    def pd_run(self) -> SavedLMRun:
-        return SavedLMRun.from_path(self._wandb_path)
+    def _run_dir(self) -> Path:
+        return get_harvest_dir(self._run_id).parent
 
     @cached_property
-    def component_model(self) -> ComponentModel:
-        return self.pd_run.load_model()
+    def cfg(self) -> LMExperimentConfig:
+        config_path = self._run_dir / LAUNCH_CONFIG_FILENAME
+        assert config_path.exists(), f"config not found: {config_path}"
+        return LMExperimentConfig.from_file(config_path)
 
     @cached_property
-    def _topology(self) -> TransformerTopology:
-        return TransformerTopology(self.component_model.target_model)
+    def _metadata(self) -> RunMetadata:
+        return run_metadata(self._run_dir)
 
     @property
-    @override
     def decomposition_id(self) -> str:
         return self._run_id
 
     @property
-    @override
     def vocab_size(self) -> int:
-        return self._topology.embedding_module.num_embeddings
+        return self._metadata.vocab_size
 
     @property
-    @override
     def layer_activation_sizes(self) -> list[tuple[str, int]]:
-        cm = self.component_model
-        return list(cm.module_to_c.items())
-
-    @override
-    def dataloader(self, batch_size: int) -> DataLoader[Tensor]:
-        # PDAdapter is LM-only; build_lm_loader ignores `device` because batches are
-        # moved per-step.
-        return build_lm_loader(
-            self.pd_run.cfg.target,
-            self.pd_run.cfg.data,
-            split="train",
-            device="cpu",
-            batch_size=batch_size,
-        )
+        return self._metadata.layer_activation_sizes
 
     @property
-    @override
     def tokenizer_name(self) -> str:
-        return self.pd_run.cfg.data.tokenizer_name
+        return self.cfg.data.tokenizer_name
 
     @property
-    @override
     def model_metadata(self) -> ModelMetadata:
-        cfg = self.pd_run.cfg
+        schema = path_schema_for_model_type(self._metadata.model_type)
         return ModelMetadata(
-            n_blocks=self._topology.n_blocks,
-            model_class=cfg.target.spec.model_class,
-            dataset_name=cfg.data.dataset_name,
+            n_blocks=self._metadata.n_blocks,
+            dataset_name=self._semantic_dataset_name(),
             layer_descriptions={
-                path: self._topology.target_to_canon(path)
-                for path in self.component_model.target_module_paths
+                path: schema.parse_target_path(path).canonical_str()
+                for path, _ in self._metadata.layer_activation_sizes
             },
-            seq_len=cfg.data.max_seq_len,
-            decomposition_method="pd",
+            seq_len=self.cfg.data.max_seq_len,
         )
+
+    def _semantic_dataset_name(self) -> str:
+        """The corpus identity for `DATASET_DESCRIPTIONS`. The JAX trainer reads
+        pre-tokenized parquet, so its `dataset_name` is the loader name `"parquet"`, not
+        the corpus — recover the corpus from the shard directory (e.g.
+        `.../pile_neox_tok_512/*.parquet` -> `pile_neox_tok_512`)."""
+        data = self.cfg.data
+        if data.dataset_name != "parquet":
+            return data.dataset_name
+        assert data.data_files is not None, "parquet data config without data_files"
+        return Path(data.data_files).parent.name

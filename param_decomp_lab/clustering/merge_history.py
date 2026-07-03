@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any, override
 
 import numpy as np
-import torch
 from jaxtyping import Float, Int
 
 from param_decomp_lab.clustering.math.merge_distances import compute_distances
@@ -29,6 +28,13 @@ class IterationInfo:
     idx: int
     selected_pair: list[int]
     merges: GroupMerge
+
+
+@dataclass(frozen=True)
+class MergeHistoryMeta:
+    """Provenance of a `MergeHistory` loaded from disk (everything else is a typed field)."""
+
+    origin_path: Path
 
 
 def _zip_save_arr(zf: zipfile.ZipFile, name: str, arr: np.ndarray) -> None:
@@ -56,7 +62,7 @@ class MergeHistory(SaveableObject):
     merge_config: MergeConfig
     n_iters_current: int
 
-    meta: dict[str, Any] | None = None
+    meta: MergeHistoryMeta | None = None
 
     @property
     def c_components(self) -> int:
@@ -73,7 +79,7 @@ class MergeHistory(SaveableObject):
         return MergeHistory(
             labels=labels,
             n_iters_current=0,
-            selected_pairs=np.full((n_iters_target, 2), -1, dtype=np.int16),
+            selected_pairs=np.full((n_iters_target, 2), -1, dtype=np.int32),
             merges=BatchedGroupMerge.init_empty(
                 batch_size=n_iters_target, n_components=n_components
             ),
@@ -86,7 +92,6 @@ class MergeHistory(SaveableObject):
             n_iters_current=self.n_iters_current,
             total_iters=len(self.merges.k_groups),
             len_labels=len(self.labels),
-            # wandb_url=self.wandb_url,
             merge_config=self.merge_config.model_dump(mode="json"),
             merges_summary=self.merges.summary(),
         )
@@ -107,7 +112,7 @@ class MergeHistory(SaveableObject):
         current_merge: GroupMerge,
     ) -> None:
         """Add data for one iteration."""
-        self.selected_pairs[idx] = np.array(selected_pair, dtype=np.int16)
+        self.selected_pairs[idx] = np.array(selected_pair, dtype=np.int32)
         self.merges[idx] = current_merge
 
         assert self.n_iters_current == idx
@@ -152,7 +157,7 @@ class MergeHistory(SaveableObject):
             f"Invalid iteration: {iteration = }, {self.n_iters_current = }"
         )
         merge: GroupMerge = self.merges[iteration]
-        return torch.unique(merge.group_idxs).tolist()
+        return np.unique(merge.group_idxs).tolist()
 
     def get_cluster_component_labels(self, iteration: int, cluster_id: int) -> ComponentLabels:
         """Get component labels for a specific cluster at a given iteration.
@@ -203,14 +208,14 @@ class MergeHistory(SaveableObject):
         """Final number of groups after merging."""
         if self.n_iters_current == 0:
             return self.c_components
-        return int(self.merges.k_groups[self.n_iters_current - 1].item())
+        return int(self.merges.k_groups[self.n_iters_current - 1])
 
     @property
     def initial_k_groups(self) -> int:
         """Initial number of groups before merging."""
         if self.n_iters_current == 0:
             return self.c_components
-        return int(self.merges.k_groups[0].item())
+        return int(self.merges.k_groups[0])
 
     @override
     def save(self, path: Path) -> None:
@@ -220,8 +225,8 @@ class MergeHistory(SaveableObject):
             _zip_save_arr_dict(
                 zf=zf,
                 data={
-                    "merge.group_idxs": self.merges.group_idxs.cpu().numpy(),
-                    "merge.k_groups": self.merges.k_groups.cpu().numpy(),
+                    "merge.group_idxs": self.merges.group_idxs,
+                    "merge.k_groups": self.merges.k_groups,
                     "selected_pairs": self.selected_pairs,
                 },
             )
@@ -249,15 +254,13 @@ class MergeHistory(SaveableObject):
             k_groups: np.ndarray = np.load(io.BytesIO(zf.read("merge.k_groups.npy")))
             selected_pairs: np.ndarray = np.load(io.BytesIO(zf.read("selected_pairs.npy")))
             merges: BatchedGroupMerge = BatchedGroupMerge(
-                group_idxs=torch.from_numpy(group_idxs),
-                k_groups=torch.from_numpy(k_groups),
+                group_idxs=group_idxs,
+                k_groups=k_groups,
             )
             labels_raw: list[str] = zf.read("labels.txt").decode("utf-8").splitlines()
             labels: ComponentLabels = ComponentLabels(labels_raw)
             metadata: dict[str, Any] = json.loads(zf.read("metadata.json").decode("utf-8"))
             merge_config: MergeConfig = MergeConfig.model_validate(metadata["merge_config"])
-
-        metadata["origin_path"] = path
 
         return cls(
             merges=merges,
@@ -265,7 +268,7 @@ class MergeHistory(SaveableObject):
             labels=labels,
             merge_config=merge_config,
             n_iters_current=metadata["n_iters_current"],
-            meta=metadata,
+            meta=MergeHistoryMeta(origin_path=path),
         )
 
 
@@ -338,9 +341,7 @@ class MergeHistoryEnsemble:
         output: MergesArray = np.full(
             (n_ens, n_iters, c_components),
             fill_value=-1,
-            dtype=np.int16,
-            # if you have more than 32k components, change this to np.int32
-            # if you have more than 2.1b components, rethink your life choices
+            dtype=np.int32,
         )
         for i_ens, history in enumerate(self.data):
             for i_iter, merge in enumerate(history.merges):
@@ -372,7 +373,7 @@ class MergeHistoryEnsemble:
             merges_array: MergesArray = np.full(
                 (self.n_ensemble, self.n_iters_min, c_components),
                 fill_value=-1,
-                dtype=np.int16,
+                dtype=np.int32,
             )
         except Exception as e:
             err_msg = (
@@ -402,11 +403,6 @@ class MergeHistoryEnsemble:
                     : self.n_iters_min, i_comp_old
                 ]
 
-            # assert np.max(merges_array[i_ens]) == hist_n_components - 1, (
-            #     f"Max component index in history {i_ens} should be {hist_n_components - 1}, "
-            #     f"but got {np.max(merges_array[i_ens])}"
-            # )
-
             # put each missing label into its own group
             hist_missing_labels: set[str] = unique_labels_set - set(hist_c_labels)
             assert len(hist_missing_labels) == c_components - hist_n_components
@@ -417,25 +413,15 @@ class MergeHistoryEnsemble:
                 merges_array[i_ens, :, i_comp_new_relabel] = np.full(
                     self.n_iters_min,
                     fill_value=idx_missing + hist_n_components,
-                    dtype=np.int16,
+                    dtype=np.int32,
                 )
 
-        # TODO: double check this
-        # Convert any Path objects to strings for JSON serialization
-        history_metadatas: list[dict[str, Any] | None] = []
-        for history in self.data:
-            if history.meta is not None:
-                meta_copy = history.meta.copy()
-                # Convert Path objects to strings
-                for key, value in meta_copy.items():
-                    if isinstance(value, Path):
-                        meta_copy[key] = str(value)
-                history_metadatas.append(meta_copy)
-            else:
-                history_metadatas.append(None)
+        origin_paths: list[str | None] = [
+            str(history.meta.origin_path) if history.meta is not None else None
+            for history in self.data
+        ]
 
         return (
-            # TODO: dataclass this
             merges_array,
             dict(
                 component_labels=unique_labels,
@@ -445,7 +431,7 @@ class MergeHistoryEnsemble:
                 n_iters_range=self.n_iters_range,
                 c_components=c_components,
                 config=self.config.model_dump(mode="json"),
-                history_metadatas=history_metadatas,
+                origin_paths=origin_paths,
             ),
         )
 

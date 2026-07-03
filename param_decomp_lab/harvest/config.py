@@ -4,12 +4,12 @@ HarvestConfig: tuning params for the harvest pipeline.
 HarvestSlurmConfig: HarvestConfig + SLURM submission params.
 """
 
-from typing import Annotated, Any, Literal, override
+from typing import Any, Literal, override
 
-from pydantic import Field, PositiveInt
+from pydantic import PositiveInt
 
 from param_decomp.base_config import BaseConfig
-from param_decomp_lab.autointerp.providers import LLMConfig, OpenRouterLLMConfig
+from param_decomp_lab.autointerp.config import LLMConfig, OpenRouterLLMConfig
 from param_decomp_lab.infra.settings import DEFAULT_PARTITION_NAME
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
 
@@ -29,38 +29,6 @@ class ParamDecompHarvestConfig(BaseConfig):
     @override
     def model_post_init(self, __context: Any) -> None:
         parse_wandb_run_path(self.wandb_path)
-
-
-class CLTHarvestConfig(BaseConfig):
-    type: Literal["CLTHarvestConfig"] = "CLTHarvestConfig"
-    base_model_path: str
-    artifact_path: str
-    """Wandb artifact path for the CLT checkpoint (single artifact covering all layers)."""
-
-    @property
-    def id(self) -> str:
-        import hashlib
-
-        return "clt-" + hashlib.sha256(self.artifact_path.encode()).hexdigest()[:8]
-
-
-class TranscoderHarvestConfig(BaseConfig):
-    type: Literal["TranscoderHarvestConfig"] = "TranscoderHarvestConfig"
-    base_model_path: str
-    artifact_paths: dict[str, str]
-    """Maps module paths (e.g. "h.0.mlp") to wandb artifact paths."""
-
-    @property
-    def id(self) -> str:
-        import hashlib
-
-        key = str(sorted(self.artifact_paths.items()))
-        return "tc-" + hashlib.sha256(key.encode()).hexdigest()[:8]
-
-
-DecompositionMethodHarvestConfig = (
-    ParamDecompHarvestConfig | CLTHarvestConfig | TranscoderHarvestConfig
-)
 
 
 # -- Pipeline configs ----------------------------------------------------------
@@ -86,13 +54,17 @@ class IntruderSlurmConfig(BaseConfig):
 
 
 class HarvestConfig(BaseConfig):
-    method_config: Annotated[DecompositionMethodHarvestConfig, Field(discriminator="type")]
+    method_config: ParamDecompHarvestConfig
     n_batches: int | Literal["whole_dataset"] = 20_000
     batch_size: int = 32
     activation_examples_per_component: int = 400
     activation_context_tokens_per_side: int = 20
     pmi_token_top_k: int = 40
     max_examples_per_batch_per_component: int = 5
+    collect_component_cooccurrence: bool = True
+    """Accumulate the dense component×component co-occurrence matrix (powers the app's
+    component-correlation view). It is O(C²) in memory — at ~10⁵ components it needs tens
+    of GB resident on the harvest GPU. Set false to skip it for large-C decompositions."""
 
 
 class HarvestSlurmConfig(BaseConfig):

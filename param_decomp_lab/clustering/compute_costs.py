@@ -1,9 +1,8 @@
 import math
 
-import torch
-from jaxtyping import Bool, Float
+import numpy as np
+from jaxtyping import Float
 from scipy import sparse
-from torch import Tensor
 
 from param_decomp_lab.clustering.math.merge_matrix import GroupMerge
 from param_decomp_lab.clustering.sample_membership import (
@@ -14,7 +13,7 @@ from param_decomp_lab.clustering.types import ClusterCoactivationShaped, MergePa
 
 
 def compute_mdl_cost(
-    acts: Float[Tensor, " k_groups"],
+    acts: Float[np.ndarray, " k_groups"],
     merges: GroupMerge,
     alpha: float = 1.0,
 ) -> float:
@@ -33,11 +32,7 @@ def compute_mdl_cost(
     k_groups: int = acts.shape[0]
     assert k_groups == merges.k_groups, "Merges must match activation vector shape"
 
-    return (
-        (acts * (math.log2(k_groups) + alpha * merges.components_per_group.to(device=acts.device)))
-        .sum()
-        .item()
-    )
+    return float((acts * (math.log2(k_groups) + alpha * merges.components_per_group)).sum())
 
 
 def compute_merge_costs(
@@ -46,19 +41,6 @@ def compute_merge_costs(
     alpha: float = 1.0,
 ) -> ClusterCoactivationShaped:
     r"""Compute MDL costs for merge matrices
-
-    $$
-        F(P_i, P_j)
-        = \alpha |s_i| r(P_i) + \alpha |s_j| r(P_j)
-            - s_i s_j ( \alpha r(P_i) + \alpha r(P_j) + c )
-        = \alpha (
-            |s_i| r(P_i)
-            + |s_j| r(P_j)
-            - s_i s_j ( r(P_i) + r(P_j) + c/\alpha )
-        )
-    $$
-
-    new version from nathu 2025-08-11 16:48
 
     $$
         (s_\Sigma - s_i - s_j) log((c-1)/c)
@@ -71,57 +53,35 @@ def compute_merge_costs(
      - $s_{i,j}$ activation of the merged component $i,j$
      - $r(P_i)$ rank of component $i$, $r(P_j)$ rank of component $j$
      - $r(P_{i,j})$ rank of the merged component $i,j$
-
     """
     k_groups: int = coact.shape[0]
     assert coact.shape[1] == k_groups, "Coactivation matrix must be square"
     assert merges.k_groups == k_groups, "Merges must match coactivation matrix shape"
 
-    device: torch.device = coact.device
-    ranks: Float[Tensor, " k_groups"] = merges.components_per_group.to(device=device).float()
-    s_diag: Float[Tensor, " k_groups"] = torch.diag(coact).to(device=device)
-    # term_si_rpj: Float[Tensor, "k_groups k_groups"] = s_diag.view(-1, 1) * ranks.view(1, -1)
-    # term_si_rpj: Float[Tensor, "k_groups k_groups"] = s_diag.view(-1, 1) * (ranks.view(1, -1) + 1/alpha)
-    term_si_rpi: Float[Tensor, " k_groups"] = s_diag * ranks
-    # dbg_auto(term_si_rpi)
-    rank_sum: ClusterCoactivationShaped = ranks.view(-1, 1) + ranks.view(1, -1)
-    # TODO: use dynamic rank computation
-    # return alpha * (
-    #     term_si_rpj  # |s_i| r(P_j)
-    #     + term_si_rpj.T  # |s_j| r(P_i)
-    #     - coact * ( # s_i s_j
-    #         rank_sum  # r(P_i) + r(P_j)
-    #         + (rank_cost(merges.k_groups) / alpha) # c / alpha
-    #     )
-    # )
+    ranks: Float[np.ndarray, " k_groups"] = merges.components_per_group.astype(np.float32)
+    s_diag: Float[np.ndarray, " k_groups"] = np.diag(coact)
+    term_si_rpi: Float[np.ndarray, " k_groups"] = s_diag * ranks
+    rank_sum: ClusterCoactivationShaped = ranks.reshape(-1, 1) + ranks.reshape(1, -1)
 
-    coact_OR: ClusterCoactivationShaped = s_diag.view(-1, 1) + s_diag.view(1, -1) - coact
-
-    # reduce penalty for sending dictionary by 1
-    # (s_\Sigma - s_i - s_j) log((c-1)/c)
-    # delta of cost for sending index, in expectation
-    # + s_{i,j} log(c-1) - s_i log(c) - s_j log(c)
-    # delta of cost for sending ranks, in expectation
-    # + alpha ( s_{i,j} r(P_{i,j}) - s_i r(P_i) - s_j r(P_j)
+    coact_OR: ClusterCoactivationShaped = s_diag.reshape(-1, 1) + s_diag.reshape(1, -1) - coact
 
     s_other: ClusterCoactivationShaped = (
-        s_diag.sum() - s_diag.view(-1, 1) - s_diag.view(1, -1)
+        s_diag.sum() - s_diag.reshape(-1, 1) - s_diag.reshape(1, -1)
     ) * math.log2((k_groups - 1) / k_groups)
 
     bits_local: ClusterCoactivationShaped = (
         coact_OR * math.log2(k_groups - 1)
-        - s_diag.view(-1, 1) * math.log2(k_groups)
-        - s_diag.view(1, -1) * math.log2(k_groups)
+        - s_diag.reshape(-1, 1) * math.log2(k_groups)
+        - s_diag.reshape(1, -1) * math.log2(k_groups)
     )
 
     penalty: ClusterCoactivationShaped = (
         coact_OR * rank_sum  # s_{i,j} r(P_{i,j})
-        - term_si_rpi.view(-1, 1)  # s_i r(P_i)
-        - term_si_rpi.view(1, -1)  # s_j r(P_j)
+        - term_si_rpi.reshape(-1, 1)  # s_i r(P_i)
+        - term_si_rpi.reshape(1, -1)  # s_j r(P_j)
     )
 
-    output: ClusterCoactivationShaped = s_other + bits_local + alpha * penalty
-    return output
+    return s_other + bits_local + alpha * penalty
 
 
 def recompute_coacts_merge_pair_memberships(
@@ -132,7 +92,7 @@ def recompute_coacts_merge_pair_memberships(
     component_activity_csr: sparse.csr_matrix,
 ) -> tuple[
     GroupMerge,
-    Float[Tensor, "k_groups-1 k_groups-1"],
+    Float[np.ndarray, "k_groups-1 k_groups-1"],
     list[CompressedMembership],
 ]:
     """Recompute coactivations after a merge using compressed memberships."""
@@ -144,29 +104,19 @@ def recompute_coacts_merge_pair_memberships(
     remove_idx: int = max(merge_pair)
     merged_membership = memberships[merge_pair[0]].union(memberships[merge_pair[1]])
 
-    merge_new: GroupMerge = merges.merge_groups(
-        merge_pair[0],
-        merge_pair[1],
-    )
+    merge_new: GroupMerge = merges.merge_groups(merge_pair[0], merge_pair[1])
 
-    mask: Bool[Tensor, " k_groups"] = torch.ones(
-        coact.shape[0], dtype=torch.bool, device=coact.device
-    )
-    mask[remove_idx] = False
-    coact_new: Float[Tensor, "k_groups-1 k_groups-1"] = coact[mask, :][:, mask].clone()
+    keep_mask = np.ones(coact.shape[0], dtype=np.bool_)
+    keep_mask[remove_idx] = False
+    coact_new: Float[np.ndarray, "k_groups-1 k_groups-1"] = coact[keep_mask][:, keep_mask].copy()
 
     merged_rows = merged_membership.to_sample_indices()
-    coact_with_merge_np = count_group_overlaps_from_component_rows(
+    coact_with_merge = count_group_overlaps_from_component_rows(
         merged_rows=merged_rows,
         component_activity_csr=component_activity_csr,
-        group_idxs=merge_new.group_idxs.cpu().numpy(),
+        group_idxs=merge_new.group_idxs,
         n_groups=merge_new.k_groups,
-    )
-    coact_with_merge = torch.tensor(
-        coact_with_merge_np,
-        dtype=coact.dtype,
-        device=coact.device,
-    )
+    ).astype(coact.dtype, copy=False)
 
     coact_new[new_group_idx, :] = coact_with_merge
     coact_new[:, new_group_idx] = coact_with_merge

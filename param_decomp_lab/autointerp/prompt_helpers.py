@@ -6,36 +6,47 @@ Pure functions for formatting component data into LLM prompt sections.
 import re
 from typing import Literal
 
-from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
-from param_decomp_lab.app.backend.utils import delimit_tokens
 from param_decomp_lab.autointerp.config import (
     ExampleRenderingConfig,
     LegacyDelimitedExamplesConfig,
     SingleLineExamplesConfig,
     XmlExamplesConfig,
 )
-from param_decomp_lab.autointerp.schemas import (
-    DECOMPOSITION_DESCRIPTIONS,
-    DecompositionMethod,
-)
+from param_decomp_lab.autointerp.schemas import PD_DESCRIPTION
 from param_decomp_lab.harvest.analysis import TokenPRLift
 from param_decomp_lab.harvest.schemas import ComponentData
 from param_decomp_lab.infra.markdown import Md
+from param_decomp_lab.tokenizer_display import AppTokenizer, delimit_tokens
 
+_PILE = (
+    "The Pile (uncopyrighted subset): diverse text from books, academic papers, code, "
+    "web pages, and other sources."
+)
+
+# Maps a (possibly implementation-detail-laden) dataset id to a clean, model-recognisable
+# description. Looked up via `dataset_description`, which fails fast on an unregistered
+# dataset rather than leaking the raw id into the prompt.
 DATASET_DESCRIPTIONS: dict[str, str] = {
     "SimpleStories/SimpleStories": (
         "SimpleStories: 2M+ short stories (200-350 words), grade 1-8 reading level. "
         "Simple vocabulary, common narrative elements."
     ),
-    "danbraunai/pile-uncopyrighted-tok-shuffled": (
-        "The Pile (uncopyrighted subset): diverse text from books, "
-        "academic papers, code, web pages, and other sources."
-    ),
-    "danbraunai/pile-uncopyrighted-tok": (
-        "The Pile (uncopyrighted subset): diverse text from books, "
-        "academic papers, code, web pages, and other sources."
+    "danbraunai/pile-uncopyrighted-tok-shuffled": _PILE,
+    "danbraunai/pile-uncopyrighted-tok": _PILE,
+    "pile_neox_tok_512": _PILE,
+    "apollo-research/Skylion007-openwebtext-tokenizer-gpt2": (
+        "OpenWebText: web pages linked from Reddit (GPT-2's pretraining distribution)."
     ),
 }
+
+
+def dataset_description(dataset_name: str) -> str:
+    assert dataset_name in DATASET_DESCRIPTIONS, (
+        f"No dataset description for {dataset_name!r}; add a semantic name to "
+        f"DATASET_DESCRIPTIONS in {__name__}."
+    )
+    return DATASET_DESCRIPTIONS[dataset_name]
+
 
 WEIGHT_NAMES: dict[str, str] = {
     "attn.q": "attention query projection",
@@ -59,7 +70,7 @@ def ordinal(n: int) -> str:
 
 
 def human_layer_desc(canonical: str, n_blocks: int) -> str:
-    """'0.mlp.up' -> 'MLP up-projection in the 1st of 4 blocks'"""
+    """'0.mlp.up', n_blocks=4 -> 'MLP up-projection in the 1st of 4 blocks'"""
     m = re.match(r"(\d+)\.(.*)", canonical)
     if not m:
         return canonical
@@ -121,13 +132,12 @@ def token_stats_section(
 def build_data_presentation(
     seq_len: int,
     context_tokens_per_side: int,
-    decomposition_method: DecompositionMethod,
 ) -> Md:
     window_size = 2 * context_tokens_per_side + 1
     md = Md()
 
     md.h(3, "Decomposition method")
-    md.p(DECOMPOSITION_DESCRIPTIONS[decomposition_method])
+    md.p(PD_DESCRIPTION)
 
     md.h(3, "Data")
     md.p(

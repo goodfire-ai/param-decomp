@@ -4,12 +4,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from param_decomp.log import logger
-from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
-from param_decomp_lab.autointerp.config import (
-    CanonConfig,
-    RichExamplesConfig,
-    StrategyConfig,
-)
+from param_decomp_lab.autointerp.config import CanonConfig, RichExamplesConfig, StrategyConfig
 from param_decomp_lab.autointerp.db import InterpDB
 from param_decomp_lab.autointerp.llm_api import (
     LLMError,
@@ -30,6 +25,7 @@ from param_decomp_lab.harvest.analysis import (
 )
 from param_decomp_lab.harvest.repo import HarvestRepo
 from param_decomp_lab.harvest.schemas import ComponentData, ComponentSummary
+from param_decomp_lab.tokenizer_display import AppTokenizer
 
 
 def resolve_target_component_keys(

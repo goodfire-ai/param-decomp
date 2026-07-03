@@ -1,0 +1,30 @@
+run_name: gpt2_simple-2L
+seed: 45
+dtype: float32
+global_batch: 8
+num_iterations: 100000
+warmup_iters: 600
+learning_rate: 3e-4
+learning_rate_decay_frac: 0.1
+weight_decay: 0.1
+grad_clip: 1.0
+log_every: 100
+val_every: 1000
+val_steps: 20
+save_every: 1000
+
+model:
+  model_type: GPT2Simple
+  block_size: 512
+  vocab_size: 50277
+  n_layer: 2
+  n_head: 4
+  n_embd: 128
+  flash_attention: false
+
+data:
+  dir: /mnt/data/artifacts/mechanisms/param-decomp/datasets/pile_neox_tok_512
+  tokenizer_name: EleutherAI/gpt-neox-20b
+
+wandb:
+  project: param-decomp

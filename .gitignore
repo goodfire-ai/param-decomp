@@ -1,9 +1,14 @@
 docs/coverage/**
 notebooks/**
 scratch/
+.scratch_*
 
 # Script outputs (generated files, often large)
 scripts/outputs/
+scripts/standalone_repros/*.json
+scripts/standalone_repros/*.txt
+scripts/profile_ci_fn_*.json
+scripts/profile_ci_fn_*.txt
 
 **/out/
 neuronpedia_outputs/
@@ -180,3 +185,8 @@ cython_debug/
 *.schema.json
 
 .claude/worktrees
+
+.venv-cuda/
+**/.venv-cuda/
+
+nano_param_decomp_jax/jax_single_pool/experiments/logs/

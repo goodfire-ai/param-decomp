@@ -1,184 +1,193 @@
-"""TMS PD experiment: YAML -> `Trainer` glue, plus the `SavedTMSRun` reload class.
+"""`pd-tms`: run a TMS (Toy Model of Superposition) parameter decomposition on CPU.
 
-Run via `pd-tms path/to/config.yaml`.
+The toy domains live lab-side and call the generic core engine
+(`param_decomp.run.run_decomposition_training`) as a library — the core itself carries
+zero toy-specific code. A TMS run pretrains its tiny target from scratch in-process (the
+Anthropic `mean((|x|-out)^2)` objective), then decomposes it through the same engine the
+LM uses, validating via the ground-truth identity-CI metric logged every train-log step.
+
+These toys train in seconds; `pd-tms` runs synchronously on CPU in the main venv (no
+SLURM / `param_decomp.run` / CUDA). It mints its own `p-<8hex>` run id (toys do not go through
+`pd-lm`).
 """
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
+import equinox as eqx
 import fire
-from pydantic import Field
-from torch.utils.data import DataLoader
+import jax
+import yaml
+from jax import random
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
 
-from param_decomp.base_config import BaseConfig, Probability
-from param_decomp.batch_and_loss_fns import RunBatch
-from param_decomp.component_model import ComponentModel
-from param_decomp.distributed import DistributedState
-from param_decomp.log import logger
-from param_decomp.optimize import EvalLoop, Trainer
-from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
-from param_decomp_lab.component_model_io import load_component_model
-from param_decomp_lab.distributed import get_device
-from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES
-from param_decomp_lab.experiments.tms.data import SparseFeatureDataset
-from param_decomp_lab.experiments.tms.models import TMSModel, TMSTargetRunInfo
-from param_decomp_lab.experiments.utils import (
-    EXPERIMENT_CONFIG_FILENAME,
-    ExperimentConfig,
-    init_pd_run,
+from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, BuiltRun
+from param_decomp.components import SiteC
+from param_decomp.log import setup_logger
+from param_decomp.recon import build_loss_terms
+from param_decomp.run import run_decomposition_training
+from param_decomp.sharding import hsdp_mesh
+from param_decomp.train import TrainState
+from param_decomp_lab.experiments import toy_uv_eval
+from param_decomp_lab.experiments.config import (
+    assert_canonical_algorithm_config,
+    ci_arch,
+    run_instance,
 )
-from param_decomp_lab.infra.paths import ModelPath
-from param_decomp_lab.infra.run_files import resolve_run_files
-from param_decomp_lab.seed import set_seed
+from param_decomp_lab.experiments.tms import model as tms
+from param_decomp_lab.experiments.tms.config import TMSExperimentConfig
+from param_decomp_lab.infra.run_files import generate_run_id
 
 
-class TMSTargetConfig(BaseConfig):
-    run_path: str = Field(..., description="Local or wandb path to a TMS pretrain run.")
-
-
-class TMSDataConfig(BaseConfig):
-    """Synthetic-feature dataset settings for TMS PD."""
-
-    feature_probability: Probability
-    data_generation_type: Literal["exactly_one_active", "at_least_zero_active"] = (
-        "at_least_zero_active"
+def build_tms_built_run(cfg: TMSExperimentConfig, run_id: str) -> BuiltRun:
+    """Convert the canonical TMS schema to the engine's `BuiltRun` bundle via the shared
+    helpers. TMS validates via the in-loop target-CI metric (not the LM CEandKLLosses scalar
+    pass), so `eval` is `None`. The schema's `eval.metrics` list is still read at run time
+    for the config-gated `UVPlots` figure (`toy_uv_eval`)."""
+    site_cs = tms.canonical_site_cs(
+        tuple(SiteC(t.module_pattern, t.C) for t in cfg.pd.decomposition_targets)
+    )
+    assert_canonical_algorithm_config(cfg)
+    build_loss_terms(
+        cfg.pd.loss_metrics,
+        tuple(sc.name for sc in site_cs),
+    )
+    target = tms.TMSTargetConfig(
+        n_features=cfg.target.n_features,
+        n_hidden=cfg.target.n_hidden,
+        n_hidden_layers=cfg.target.n_hidden_layers,
+        hidden_layer_init=cfg.target.hidden_layer_init,
+        init_bias_to_zero=cfg.target.init_bias_to_zero,
+        sites=site_cs,
+        pretrain_steps=cfg.target.pretrain.steps,
+        pretrain_batch_size=cfg.target.pretrain.batch_size,
+        pretrain_lr=cfg.target.pretrain.lr,
+        pretrain_seed=cfg.target.pretrain.seed,
+        feature_probability=cfg.data.feature_probability,
+        data_generation_type=cfg.data.data_generation_type,
+        global_batch=cfg.pd.batch_size,
+    )
+    return BuiltRun(
+        pd=cfg.pd,
+        runtime=cfg.runtime,
+        cadence=cfg.cadence,
+        run=run_instance(cfg, run_id),
+        target=target,
+        data=None,
+        ci_fn=ci_arch(cfg.pd.ci_config, resolve_chunkwise=None),
+        eval=None,
     )
 
 
-class TMSExperimentConfig(ExperimentConfig[TMSTargetConfig, TMSDataConfig]):
-    pass
+def run_tms_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) -> None:
+    """Build + pretrain the TMS target, then decompose it through the generic engine.
 
+    The batch entering the decomposed model IS the raw input `x`. The
+    `eval_fn` reads the `lower_leaky` CI of the single-feature probe and logs the
+    ground-truth `IdentityCIError` per site every train-log step (TMS has no separate eval
+    cadence — `eval_every = cadence.train_log_every`)."""
+    target_cfg = built.target
+    assert isinstance(target_cfg, tms.TMSTargetConfig)
+    is_main = jax.process_index() == 0
 
-def build_target(target_cfg: TMSTargetConfig) -> TMSModel:
-    """Load the pretrained TMS target model in eval mode."""
-    run_info = TMSTargetRunInfo.from_path(target_cfg.run_path)
-    target_model = TMSModel.from_run_info(run_info)
-    target_model.eval()
-    return target_model
-
-
-def build_tms_loader(
-    target_cfg: TMSTargetConfig,
-    data_cfg: TMSDataConfig,
-    *,
-    split: Literal["train", "eval"],
-    device: str,
-    batch_size: int,
-    dist_state: DistributedState | None = None,
-    seed: int | None = None,
-) -> DataLoader[Any]:
-    """Synthetic `SparseFeatureDataset` loader for TMS.
-
-    The dataset is infinite, so `split` / `dist_state` / `seed` are ignored — train and
-    eval loaders are identical.
-    """
-    del split, dist_state, seed
-    train_config = TMSTargetRunInfo.from_path(target_cfg.run_path).config
-    dataset = SparseFeatureDataset(
-        n_features=train_config.tms_model_config.n_features,
-        feature_probability=data_cfg.feature_probability,
-        device=device,
-        batch_size=batch_size,
-        data_generation_type=data_cfg.data_generation_type,
-        value_range=(0.0, 1.0),
-        synced_inputs=train_config.synced_inputs,
+    tms_cfg = tms.TMSConfig(n_features=target_cfg.n_features, n_hidden=target_cfg.n_hidden)
+    if is_main:
+        print(f"pretraining TMS target ({target_cfg.pretrain_steps} steps)...", flush=True)
+    target = tms.pretrain_tms_target(
+        tms_cfg,
+        target_cfg.feature_probability,
+        target_cfg.data_generation_type,
+        target_cfg.pretrain_steps,
+        target_cfg.pretrain_batch_size,
+        target_cfg.pretrain_lr,
+        target_cfg.pretrain_seed,
     )
-    return DataLoader(dataset, batch_size=None)
+    # The model IS the frozen target: one `eqx.Module` carries the TMS weights as a field and
+    # the decomposition contract as methods.
+    lm = tms.replicate_target(
+        tms.tms_decomposed_model(tms_cfg, target, tms.site_specs(tms_cfg, target_cfg.sites)), mesh
+    )
 
+    data_key = random.fold_in(random.PRNGKey(built.pd.seed), 17)
 
-def make_run_batch(target_cfg: TMSTargetConfig) -> RunBatch:
-    """`RunBatch` for TMS: unwraps the `(inputs, labels)` tuple."""
-    del target_cfg
-    return run_batch_first_element
-
-
-def _tied_weights_for(target_model: TMSModel) -> list[tuple[str, str]] | None:
-    return [("linear1", "linear2")] if target_model.config.tied_weights else None
-
-
-@dataclass(frozen=True)
-class SavedTMSRun:
-    """Handle to a completed TMS PD run on disk or in W&B."""
-
-    cfg: TMSExperimentConfig
-    checkpoint_path: Path
-
-    @classmethod
-    def from_path(cls, path: ModelPath) -> "SavedTMSRun":
-        """Resolve a run directory or W&B path into a fully-validated `SavedTMSRun`."""
-        files = resolve_run_files(
-            path, config_filename=EXPERIMENT_CONFIG_FILENAME, checkpoint_prefix="model"
+    @jax.jit
+    def sample_residual(step_key: jax.Array) -> jax.Array:
+        x = tms.sample_sparse_features(
+            step_key,
+            target_cfg.global_batch,
+            target_cfg.n_features,
+            target_cfg.feature_probability,
+            target_cfg.data_generation_type,
         )
-        return cls(
-            cfg=TMSExperimentConfig.from_file(files.config_path),
-            checkpoint_path=files.checkpoint_path,
+        return jax.lax.with_sharding_constraint(x, NamedSharding(mesh, P(("replicate", "fsdp"))))
+
+    def sample_batch(step: int) -> jax.Array:
+        return sample_residual(random.fold_in(data_key, step))
+
+    # `model` is the filter_jit ARG (frozen TMS weights traced, not baked) — closing over an
+    # array-bearing eqx model would bake its weights into the HLO.
+    @eqx.filter_jit
+    def single_feature_ci(
+        model: tms.TMSDecomposedModel, ci_fn: Any
+    ) -> tuple[dict[str, jax.Array], dict[str, jax.Array]]:
+        probe = tms.single_feature_probe(target_cfg.n_features)
+        ci = ci_fn(model.read_activations(probe, ci_fn.input_names))
+        return ci.lower, ci.upper
+
+    uv_spec = toy_uv_eval.toy_uv_spec(lm, raw_cfg)
+
+    def eval_fn(state: TrainState, now_step: int) -> dict[str, float]:
+        ci_lower, ci_upper = single_feature_ci(lm, state.ci_fn)
+        toy_uv_eval.log_uv_figure(
+            uv_spec,
+            state.components.vu,
+            ci_upper,
+            now_step,
+            wandb_active=built.run.wandb is not None,
         )
-
-    def load_model(self) -> ComponentModel:
-        return load_component_model(
-            pd_config=self.cfg.pd,
-            checkpoint_path=self.checkpoint_path,
-            target_model=build_target(self.cfg.target),
-            run_batch=make_run_batch(self.cfg.target),
-        )
-
-
-def main(
-    config_path: str | Path,
-    *,
-    group: str | None = None,
-    tags: str | None = None,
-) -> None:
-    """Run a TMS PD experiment end-to-end from a YAML config. `group` / `tags` are wandb-only."""
-    cfg = TMSExperimentConfig.from_file(config_path)
-
-    set_seed(cfg.pd.seed)
-    device = get_device()
-    logger.info(f"Using device: {device}")
-
-    target_model = build_target(cfg.target).to(device)
-    cfg = cfg.model_copy(
-        update={
-            "pd": cfg.pd.model_copy(update={"tied_weights": _tied_weights_for(target_model)}),
-            "runtime": cfg.runtime.model_copy(update={"device": device}),
+        return {
+            f"eval/identity_ci_error/{site}": float(tms.identity_ci_error(ci, tolerance=0.1))
+            for site, ci in ci_lower.items()
         }
+
+    run_decomposition_training(
+        pd=built.pd,
+        cadence=built.cadence,
+        run=built.run,
+        lm=lm,
+        ci_fn=built.ci_fn,
+        data=built.data,
+        remat_recon_forwards=built.runtime.remat_recon_forwards,
+        remat_ci_fn=built.runtime.remat_ci_fn,
+        ascend_replicate=built.runtime.ascend_replicate,
+        compiler_options=built.runtime.compiler_options,
+        profile=built.runtime.launch_env.profile,
+        sample_batch=sample_batch,
+        eval_fn=eval_fn,
+        eval_every=built.cadence.train_log_every,
+        mesh=mesh,
     )
 
-    train_loader = build_tms_loader(
-        cfg.target, cfg.data, split="train", device=device, batch_size=cfg.pd.batch_size
+
+def main(config: str, group: str | None = None, tags: str | None = None) -> None:
+    schema_raw = yaml.safe_load(Path(config).read_text())
+    run_id = generate_run_id("param_decomp")
+    if group is not None or tags is not None:
+        wandb_cfg = dict(schema_raw.get("wandb") or {})
+        if group is not None:
+            wandb_cfg["group"] = group
+        if tags is not None:
+            wandb_cfg["tags"] = tags.split(",")
+        schema_raw["wandb"] = wandb_cfg
+    built = build_tms_built_run(TMSExperimentConfig(**schema_raw), run_id)
+    built.run.run_dir.mkdir(parents=True, exist_ok=True)
+    setup_logger(built.run.run_dir / "logs.log")
+    (built.run.run_dir / LAUNCH_CONFIG_FILENAME).write_text(
+        yaml.safe_dump(schema_raw, sort_keys=False)
     )
-    eval_loop = _build_eval_loop(cfg, device)
-
-    sink = init_pd_run(cfg, group=group, tags=tags)
-
-    try:
-        trainer = Trainer(
-            target_model=target_model,
-            run_batch=make_run_batch(cfg.target),
-            reconstruction_loss=recon_loss_mse,
-            pd_config=cfg.pd,
-            runtime_config=cfg.runtime,
-        )
-        trainer.run(train_loader, sink, cfg.cadence, eval_loop)
-    finally:
-        sink.finish()
-
-
-def _build_eval_loop(cfg: TMSExperimentConfig, device: str) -> EvalLoop | None:
-    """Build the `EvalLoop` from `cfg.eval`, or `None` when eval is disabled."""
-    if cfg.eval is None:
-        return None
-    return EvalLoop(
-        loader=build_tms_loader(
-            cfg.target, cfg.data, split="eval", device=device, batch_size=cfg.eval.batch_size
-        ),
-        metrics=[EVAL_METRIC_CLASSES[m.type](m) for m in cfg.eval.metrics],
-        n_steps=cfg.eval.n_steps,
-        every=cfg.eval.every,
-        slow_every=cfg.eval.slow_every,
-        slow_on_first_step=cfg.eval.slow_on_first_step,
-    )
+    mesh = hsdp_mesh()
+    run_tms_decomposition(built, schema_raw, mesh)
 
 
 def cli() -> None:

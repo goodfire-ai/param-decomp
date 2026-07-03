@@ -1,6 +1,5 @@
 pd:
   seed: 0
-  n_mask_samples: 1
   ci_config:
     mode: global
     fn_type: global_shared_transformer
@@ -14,8 +13,6 @@ pd:
         n_heads: 16
         max_len: 512
         rope_base: 10000.0
-  sampling: continuous
-  sigmoid_type: leaky_hard
   decomposition_targets:
   - module_pattern: h.*.mlp.c_fc
     C: 3072
@@ -29,8 +26,6 @@ pd:
     C: 1024
   - module_pattern: h.*.attn.o_proj
     C: 1024
-  identity_decomposition_targets: null
-  use_delta_component: true
   components_optimizer:
     lr_schedule:
       start_val: 5.0e-05
@@ -53,7 +48,9 @@ pd:
     - type: ImportanceMinimalityLoss
       coeff: 0.0001
       pnorm: 2.0
-      beta: 0.5
+      frequency:
+        coeff: 5.0e-05
+        reference_token_count: 32768
       p_anneal_start_frac: 0.0
       p_anneal_final_p: 0.4
       p_anneal_end_frac: 1.0
@@ -75,8 +72,7 @@ pd:
           final_val_frac: 1.0
           fn_type: constant
       scope:
-        type: per_batch_per_position
-      use_sigmoid_parameterization: false
+        type: bsc
       n_warmup_steps: 2
     - type: FaithfulnessLoss
       coeff: 10000000.0
@@ -129,7 +125,7 @@ eval:
       init: random
       step_size: 0.1
       n_steps: 20
-      mask_scope: shared_across_batch
+      mask_scope: c
 target:
   spec:
     kind: pretrained
@@ -148,8 +144,6 @@ data:
   is_tokenized: true
   streaming: true
 runtime:
-  autocast_bf16: true
-  device: cuda
   dp: null
 wandb:
   project: param-decomp

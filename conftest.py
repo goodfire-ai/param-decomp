@@ -15,11 +15,23 @@ from pytest import Config, Item, Parser
 
 def pytest_addoption(parser: Parser) -> None:
     parser.addoption("--runslow", action="store_true", default=False, help="run slow tests")
+    parser.addoption(
+        "--runmultidevice",
+        action="store_true",
+        default=False,
+        help="run tests needing >1 jax device (requires XLA_FLAGS=--xla_force_host_platform_device_count>=2; "
+        "use `make test-multidevice`)",
+    )
 
 
 def pytest_configure(config: Config) -> None:
     config.addinivalue_line("markers", "slow: mark test as slow to run")
     config.addinivalue_line("markers", "requires_wandb: mark test as requiring WANDB credentials")
+    config.addinivalue_line(
+        "markers",
+        "multidevice: needs >1 jax device; hangs at the default 1 device, so skipped unless "
+        "--runmultidevice (use `make test-multidevice`, which sets XLA_FLAGS for simulated CPU devices)",
+    )
 
 
 def _wandb_host() -> str:
@@ -52,13 +64,17 @@ def _have_wandb_credentials() -> bool:
 
 def pytest_collection_modifyitems(config: Config, items: Iterable[Item]) -> None:
     runslow = config.getoption("--runslow")
+    runmultidevice = config.getoption("--runmultidevice")
     have_wandb = _have_wandb_credentials()
     skip_slow = pytest.mark.skip(reason="need --runslow option to run")
+    skip_multidevice = pytest.mark.skip(reason="needs >1 device; run via `make test-multidevice`")
     skip_wandb = pytest.mark.skip(
         reason="No WANDB credentials (set WANDB_API_KEY or login via CLI)"
     )
     for item in items:
         if "slow" in item.keywords and not runslow:
             item.add_marker(skip_slow)
+        if "multidevice" in item.keywords and not runmultidevice:
+            item.add_marker(skip_multidevice)
         if "requires_wandb" in item.keywords and not have_wandb:
             item.add_marker(skip_wandb)

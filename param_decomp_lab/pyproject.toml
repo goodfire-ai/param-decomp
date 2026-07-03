@@ -10,14 +10,11 @@ dependencies = [
     "param-decomp==0.0.1",
     "fire",
     "wandb>=0.20.1", # Avoid wandb.sdk.wandb_manager.ManagerConnectionRefusedError
-    "torchvision>=0.23,<0.24",
     "wandb-workspaces==0.1.12", # See https://github.com/wandb/wandb-workspaces/issues/65
     "sympy",
     "streamlit",
     "streamlit-antd-components",
     "scipy>=1.14.1",
-    "fastapi",
-    "uvicorn",
     "orjson",
     "aiolimiter>=1.2",
     "openrouter>=0.1.1",
@@ -26,26 +23,37 @@ dependencies = [
     "kaleido==0.2.1",
     "numba>=0.64.0",
     "requests",
+    "python-dotenv",
+    "tqdm",
+    "transformers",
+    "einops",
+    # `datasets` less than 2.21.0 causes issues due to incompatibility with numpy>=2.0
+    # see: https://github.com/huggingface/datasets/issues/6980 (fixed in 2.21.0)
+    "datasets>=2.21.0",
 ]
 
 [project.scripts]
-# Per-experiment runners — directly invoke the experiment's `main`.
+# LM decomposition launcher: snapshot + shared-FS workspace + sbatch
+# `python -m param_decomp.run` (or `--local` to run it inline). The core trainer
+# (`param_decomp.run`) itself lives in the root `param-decomp` distribution.
+pd-lm = "param_decomp_lab.experiments.lm.launch:cli"
+# Toy-domain decomposition runners (CPU, in-process pretrain -> decompose via the generic
+# core engine `run_decomposition_training`). Run synchronously, no SLURM.
 pd-tms = "param_decomp_lab.experiments.tms.run:cli"
 pd-resid-mlp = "param_decomp_lab.experiments.resid_mlp.run:cli"
-pd-lm = "param_decomp_lab.experiments.lm.run:cli"
-pd-lm-layerwise = "param_decomp_lab.experiments.lm.layerwise:cli"
-pd-pretrain = "param_decomp_lab.experiments.lm.pretrain.cli:cli"
+# Target-model pretraining launcher: snapshot + workspace + sbatch
+# `python -m pretrain.train` (or `--local`). The core pretrain trainer lives at the root
+# sibling `pretrain/`.
+pd-pretrain = "param_decomp_lab.experiments.lm.pretrain.launch:cli"
 # Post-processing pipeline CLIs (SLURM-driven; lab subtrees).
 pd-clustering = "param_decomp_lab.clustering.scripts.run_pipeline:cli"
-pd-cluster-harvest = "param_decomp_lab.clustering.scripts.run_harvest:cli"
 pd-cluster-merge = "param_decomp_lab.clustering.scripts.run_merge:cli"
+pd-cluster-distances = "param_decomp_lab.clustering.scripts.calc_distances:cli"
 pd-harvest = "param_decomp_lab.harvest.scripts.run_slurm_cli:cli"
 pd-intruder = "param_decomp_lab.harvest.scripts.run_intruder_slurm_cli:cli"
 pd-autointerp = "param_decomp_lab.autointerp.scripts.run_slurm_cli:cli"
-pd-attributions = "param_decomp_lab.dataset_attributions.scripts.run_slurm_cli:cli"
 pd-investigate = "param_decomp_lab.investigate.scripts.run_slurm_cli:cli"
 pd-postprocess = "param_decomp_lab.postprocess.cli:cli"
-pd-graph-interp = "param_decomp_lab.graph_interp.scripts.run_slurm_cli:cli"
 
 [build-system]
 requires = ["setuptools", "wheel"]
@@ -55,10 +63,6 @@ build-backend = "setuptools.build_meta"
 packages = [
     "param_decomp_lab",
     "param_decomp_lab.adapters",
-    "param_decomp_lab.adapters._vendor",
-    "param_decomp_lab.app",
-    "param_decomp_lab.app.backend",
-    "param_decomp_lab.app.backend.routers",
     "param_decomp_lab.autointerp",
     "param_decomp_lab.autointerp.scoring",
     "param_decomp_lab.autointerp.scoring.scripts",
@@ -68,28 +72,18 @@ packages = [
     "param_decomp_lab.clustering.math",
     "param_decomp_lab.clustering.plotting",
     "param_decomp_lab.clustering.scripts",
-    "param_decomp_lab.dataset_attributions",
-    "param_decomp_lab.dataset_attributions.scripts",
-    "param_decomp_lab.editing",
-    "param_decomp_lab.eval_metrics",
     "param_decomp_lab.experiments",
     "param_decomp_lab.experiments.lm",
     "param_decomp_lab.experiments.lm.pretrain",
-    "param_decomp_lab.experiments.lm.pretrain.models",
     "param_decomp_lab.experiments.resid_mlp",
     "param_decomp_lab.experiments.tms",
-    "param_decomp_lab.graph_interp",
-    "param_decomp_lab.graph_interp.scripts",
     "param_decomp_lab.harvest",
-    "param_decomp_lab.harvest.harvest_fn",
     "param_decomp_lab.harvest.scripts",
     "param_decomp_lab.infra",
     "param_decomp_lab.investigate",
     "param_decomp_lab.investigate.scripts",
     "param_decomp_lab.postprocess",
-    "param_decomp_lab.scripts",
     "param_decomp_lab.topology",
-    "param_decomp_lab.toy_models",
 ]
 
 [tool.setuptools.package-dir]
@@ -97,19 +91,14 @@ param_decomp_lab = "."
 
 [tool.setuptools.package-data]
 param_decomp_lab = [
-    "app/frontend/**/*",
-    "clustering/configs/**/*.json",
-    "clustering/configs/**/*.yaml",
     "experiments/**/*.yaml",
     "postprocess/*.yaml",
-    "experiments/lm/pretrain/configs/*.yaml",
+    "clustering/configs/**/*.yaml",
+    "clustering/configs/**/*.json",
 ]
 
 [tool.setuptools.exclude-package-data]
 param_decomp_lab = [
-    "app/frontend/**/node_modules/**",
-    "app/frontend/**/dist/**",
-    "app/logs/**",
     "**/__pycache__/**",
     "**/*.pyc",
 ]

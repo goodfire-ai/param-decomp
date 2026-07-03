@@ -1,6 +1,5 @@
 """Strategy dispatch: routes AutointerpConfig variants to their implementations."""
 
-from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.autointerp.config import (
     CanonConfig,
     CompactSkepticalConfig,
@@ -23,6 +22,7 @@ from param_decomp_lab.autointerp.strategies.rich_examples import (
 )
 from param_decomp_lab.harvest.analysis import TokenPRLift
 from param_decomp_lab.harvest.schemas import ComponentData
+from param_decomp_lab.tokenizer_display import AppTokenizer
 
 INTERPRETATION_SCHEMA = {
     "type": "object",

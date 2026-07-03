@@ -1,0 +1,34 @@
+# Ensemble clustering config (pd-clustering).
+#
+# Fans a single decomposition out into `n_runs` seeded harvest -> merge members, then
+# computes their cross-run consensus (distances + stability plot). Submit with:
+#
+#   pd-clustering --config param_decomp_lab/clustering/configs/ensemble_example.yaml --local
+#
+# (drop --local and set `partition` to submit a seeded SLURM array instead).
+
+harvest:
+  # Full path to a JAX single-pool run dir (the one `open_jax_run` restores), or a W&B ref.
+  model_path: /mnt/data/artifacts/mechanisms/param-decomp/runs/p-bd3cd4d4
+  batch_size: 16
+  n_tokens: 50000
+  n_tokens_per_seq: 8
+  activation_threshold: 0.1
+  filter_dead_threshold: 0.1
+
+merge:
+  alpha: 1.0
+  iters: 200
+  merge_pair_sampling_method: range
+  merge_pair_sampling_kwargs:
+    threshold: 0.05            # stochastic: distinct seeds -> distinct merge trajectories
+
+n_runs: 4
+base_seed: 0
+distances_methods: ["perm_invariant_hamming"]
+plot_members: true
+
+# SLURM (omit / leave null when running with --local)
+partition: null
+merge_mem: 64G
+create_git_snapshot: false

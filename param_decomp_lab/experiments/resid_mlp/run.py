@@ -1,182 +1,210 @@
-"""ResidMLP PD experiment: YAML -> `Trainer` glue, plus the `SavedResidMLPRun` reload class.
+"""`pd-resid-mlp`: run a ResidualMLP parameter decomposition on CPU.
 
-Run via `pd-resid-mlp path/to/config.yaml`.
+The SPD/APD residual-stream toy lives lab-side and calls the generic core engine
+(`param_decomp.run.run_decomposition_training`) as a library. The target pretrains from
+scratch in-process (the `act_fn(coeffs·x) + x` read-off objective), then decomposes through
+the same engine the LM uses, validating via the ground-truth identity-CI metric.
+
+These toys train in seconds; `pd-resid-mlp` runs synchronously on CPU in the main venv
+(no SLURM / `param_decomp.run` / CUDA). It mints its own `p-<8hex>` run id.
 """
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
+import equinox as eqx
 import fire
-from pydantic import Field
-from torch.utils.data import DataLoader
+import jax
+import yaml
+from jax import random
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
 
-from param_decomp.base_config import BaseConfig, Probability
-from param_decomp.batch_and_loss_fns import RunBatch
-from param_decomp.component_model import ComponentModel
-from param_decomp.distributed import DistributedState
-from param_decomp.log import logger
-from param_decomp.optimize import EvalLoop, Trainer
-from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
-from param_decomp_lab.component_model_io import load_component_model
-from param_decomp_lab.distributed import get_device
-from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES
-from param_decomp_lab.experiments.resid_mlp.data import ResidMLPDataset
-from param_decomp_lab.experiments.resid_mlp.models import ResidMLP, ResidMLPTargetRunInfo
-from param_decomp_lab.experiments.utils import (
-    EXPERIMENT_CONFIG_FILENAME,
-    ExperimentConfig,
-    init_pd_run,
+from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, BuiltRun
+from param_decomp.components import SiteC
+from param_decomp.log import setup_logger
+from param_decomp.recon import build_loss_terms
+from param_decomp.run import run_decomposition_training
+from param_decomp.sharding import hsdp_mesh
+from param_decomp.train import TrainState
+from param_decomp_lab.experiments import toy_uv_eval
+from param_decomp_lab.experiments.config import (
+    assert_canonical_algorithm_config,
+    ci_arch,
+    run_instance,
 )
-from param_decomp_lab.infra.paths import ModelPath
-from param_decomp_lab.infra.run_files import resolve_run_files
-from param_decomp_lab.seed import set_seed
+from param_decomp_lab.experiments.resid_mlp import model as resid_mlp
+from param_decomp_lab.experiments.resid_mlp.config import ResidMLPExperimentConfig
+from param_decomp_lab.infra.run_files import generate_run_id
 
 
-class ResidMLPTargetConfig(BaseConfig):
-    run_path: str = Field(..., description="Local or wandb path to a ResidMLP pretrain run.")
-
-
-class ResidMLPDataConfig(BaseConfig):
-    """Synthetic-feature dataset settings for ResidMLP PD."""
-
-    feature_probability: Probability
-    data_generation_type: Literal[
-        "exactly_one_active", "exactly_two_active", "at_least_zero_active"
-    ] = "at_least_zero_active"
-
-
-class ResidMLPExperimentConfig(ExperimentConfig[ResidMLPTargetConfig, ResidMLPDataConfig]):
-    pass
-
-
-def build_target(target_cfg: ResidMLPTargetConfig) -> ResidMLP:
-    """Load the pretrained ResidMLP target model in eval mode."""
-    run_info = ResidMLPTargetRunInfo.from_path(target_cfg.run_path)
-    target_model = ResidMLP.from_run_info(run_info)
-    target_model.eval()
-    return target_model
-
-
-def build_resid_mlp_loader(
-    target_cfg: ResidMLPTargetConfig,
-    data_cfg: ResidMLPDataConfig,
-    *,
-    split: Literal["train", "eval"],
-    device: str,
-    batch_size: int,
-    dist_state: DistributedState | None = None,
-    seed: int | None = None,
-) -> DataLoader[Any]:
-    """Synthetic `ResidMLPDataset` loader.
-
-    The dataset is infinite, so `split` / `dist_state` / `seed` are ignored — train and
-    eval loaders are identical.
-    """
-    del split, dist_state, seed
-    train_config = ResidMLPTargetRunInfo.from_path(target_cfg.run_path).config
-    dataset = ResidMLPDataset(
-        n_features=train_config.resid_mlp_model_config.n_features,
-        feature_probability=data_cfg.feature_probability,
-        device=device,
-        batch_size=batch_size,
-        calc_labels=False,
-        label_type=None,
-        act_fn_name=None,
-        label_fn_seed=None,
-        label_coeffs=None,
-        data_generation_type=data_cfg.data_generation_type,
-        synced_inputs=train_config.synced_inputs,
+def build_resid_mlp_built_run(cfg: ResidMLPExperimentConfig, run_id: str) -> BuiltRun:
+    """Convert the canonical ResidMLP schema to the engine's `BuiltRun` bundle via the shared
+    helpers. ResidMLP validates via the in-loop target-CI metric (not the LM CEandKLLosses
+    scalar pass), so `eval` is `None`. The schema's `eval.metrics` list is still read at run
+    time for the config-gated `UVPlots` figure (`toy_uv_eval`)."""
+    site_cs = resid_mlp.canonical_site_cs(
+        tuple(SiteC(t.module_pattern, t.C) for t in cfg.pd.decomposition_targets)
     )
-    return DataLoader(dataset, batch_size=None)
-
-
-def make_run_batch(target_cfg: ResidMLPTargetConfig) -> RunBatch:
-    """`RunBatch` for ResidMLP: unwraps the `(inputs, labels)` tuple."""
-    del target_cfg
-    return run_batch_first_element
-
-
-@dataclass(frozen=True)
-class SavedResidMLPRun:
-    """Handle to a completed ResidMLP PD run on disk or in W&B."""
-
-    cfg: ResidMLPExperimentConfig
-    checkpoint_path: Path
-
-    @classmethod
-    def from_path(cls, path: ModelPath) -> "SavedResidMLPRun":
-        """Resolve a run directory or W&B path into a fully-validated `SavedResidMLPRun`."""
-        files = resolve_run_files(
-            path, config_filename=EXPERIMENT_CONFIG_FILENAME, checkpoint_prefix="model"
-        )
-        return cls(
-            cfg=ResidMLPExperimentConfig.from_file(files.config_path),
-            checkpoint_path=files.checkpoint_path,
-        )
-
-    def load_model(self) -> ComponentModel:
-        return load_component_model(
-            pd_config=self.cfg.pd,
-            checkpoint_path=self.checkpoint_path,
-            target_model=build_target(self.cfg.target),
-            run_batch=make_run_batch(self.cfg.target),
-        )
-
-
-def main(
-    config_path: str | Path,
-    *,
-    group: str | None = None,
-    tags: str | None = None,
-) -> None:
-    """Run a ResidMLP PD experiment end-to-end from a YAML config.
-
-    `group` / `tags` are wandb-only.
-    """
-    cfg = ResidMLPExperimentConfig.from_file(config_path)
-
-    set_seed(cfg.pd.seed)
-    device = get_device()
-    logger.info(f"Using device: {device}")
-    cfg = cfg.model_copy(update={"runtime": cfg.runtime.model_copy(update={"device": device})})
-
-    target_model = build_target(cfg.target).to(device)
-
-    train_loader = build_resid_mlp_loader(
-        cfg.target, cfg.data, split="train", device=device, batch_size=cfg.pd.batch_size
+    assert_canonical_algorithm_config(cfg)
+    build_loss_terms(
+        cfg.pd.loss_metrics,
+        tuple(sc.name for sc in site_cs),
     )
-    eval_loop = _build_eval_loop(cfg, device)
+    target = resid_mlp.ResidMLPTargetConfig(
+        n_features=cfg.target.n_features,
+        d_embed=cfg.target.d_embed,
+        d_mlp=cfg.target.d_mlp,
+        n_layers=cfg.target.n_layers,
+        act_fn_name=cfg.target.act_fn_name,
+        in_bias=cfg.target.in_bias,
+        out_bias=cfg.target.out_bias,
+        fixed_identity_embedding=cfg.target.fixed_identity_embedding,
+        sites=site_cs,
+        pretrain_steps=cfg.target.pretrain.steps,
+        pretrain_batch_size=cfg.target.pretrain.batch_size,
+        pretrain_lr=cfg.target.pretrain.lr,
+        pretrain_seed=cfg.target.pretrain.seed,
+        feature_probability=cfg.data.feature_probability,
+        data_generation_type=cfg.data.data_generation_type,
+        global_batch=cfg.pd.batch_size,
+    )
+    return BuiltRun(
+        pd=cfg.pd,
+        runtime=cfg.runtime,
+        cadence=cfg.cadence,
+        run=run_instance(cfg, run_id),
+        target=target,
+        data=None,
+        ci_fn=ci_arch(cfg.pd.ci_config, resolve_chunkwise=None),
+        eval=None,
+    )
 
-    sink = init_pd_run(cfg, group=group, tags=tags)
 
-    try:
-        trainer = Trainer(
-            target_model=target_model,
-            run_batch=make_run_batch(cfg.target),
-            reconstruction_loss=recon_loss_mse,
-            pd_config=cfg.pd,
-            runtime_config=cfg.runtime,
-        )
-        trainer.run(train_loader, sink, cfg.cadence, eval_loop)
-    finally:
-        sink.finish()
+def run_resid_mlp_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) -> None:
+    """Build + pretrain the ResidMLP target, then decompose it through the generic engine.
 
+    The batch entering the decomposed model is `x @ W_E` (`W_E` is carried inside the
+    frozen target, not decomposed). The `eval_fn` reads the `lower_leaky` CI of the
+    single-feature probe (embedded through `W_E`) and logs the ground-truth `IdentityCIError`
+    per site every train-log step (`eval_every = cadence.train_log_every`)."""
+    target_cfg = built.target
+    assert isinstance(target_cfg, resid_mlp.ResidMLPTargetConfig)
+    is_main = jax.process_index() == 0
 
-def _build_eval_loop(cfg: ResidMLPExperimentConfig, device: str) -> EvalLoop | None:
-    """Build the `EvalLoop` from `cfg.eval`, or `None` when eval is disabled."""
-    if cfg.eval is None:
-        return None
-    return EvalLoop(
-        loader=build_resid_mlp_loader(
-            cfg.target, cfg.data, split="eval", device=device, batch_size=cfg.eval.batch_size
+    resid_cfg = resid_mlp.ResidMLPConfig(
+        n_features=target_cfg.n_features,
+        d_embed=target_cfg.d_embed,
+        d_mlp=target_cfg.d_mlp,
+        n_layers=target_cfg.n_layers,
+        act_fn_name=target_cfg.act_fn_name,
+        in_bias=target_cfg.in_bias,
+        out_bias=target_cfg.out_bias,
+        fixed_identity_embedding=target_cfg.fixed_identity_embedding,
+    )
+    if is_main:
+        print(f"pretraining ResidMLP target ({target_cfg.pretrain_steps} steps)...", flush=True)
+    target = resid_mlp.pretrain_resid_mlp_target(
+        resid_cfg,
+        target_cfg.feature_probability,
+        target_cfg.data_generation_type,
+        target_cfg.pretrain_steps,
+        target_cfg.pretrain_batch_size,
+        target_cfg.pretrain_lr,
+        target_cfg.pretrain_seed,
+    )
+    # The model IS the frozen target: one `eqx.Module` carries the ResidMLP weights as a field
+    # and the decomposition contract as methods.
+    lm = resid_mlp.replicate_target(
+        resid_mlp.resid_mlp_decomposed_model(
+            resid_cfg, target, resid_mlp.site_specs(resid_cfg, target_cfg.sites)
         ),
-        metrics=[EVAL_METRIC_CLASSES[m.type](m) for m in cfg.eval.metrics],
-        n_steps=cfg.eval.n_steps,
-        every=cfg.eval.every,
-        slow_every=cfg.eval.slow_every,
-        slow_on_first_step=cfg.eval.slow_on_first_step,
+        mesh,
     )
+
+    data_key = random.fold_in(random.PRNGKey(built.pd.seed), 17)
+
+    # `tgt` is the filter_jit ARG (frozen `W_E` traced, not baked) — closing over an
+    # array-bearing eqx target would bake its weights into the HLO.
+    @eqx.filter_jit
+    def sample_residual(tgt: resid_mlp.ResidMLPTarget, step_key: jax.Array) -> jax.Array:
+        x = resid_mlp.sample_sparse_features(
+            step_key,
+            target_cfg.global_batch,
+            target_cfg.n_features,
+            target_cfg.feature_probability,
+            target_cfg.data_generation_type,
+        )
+        residual = resid_mlp.resid_mlp_input_residual(tgt, x)
+        return jax.lax.with_sharding_constraint(
+            residual, NamedSharding(mesh, P(("replicate", "fsdp")))
+        )
+
+    def sample_batch(step: int) -> jax.Array:
+        return sample_residual(lm.target, random.fold_in(data_key, step))
+
+    # `model` is the filter_jit ARG (frozen weights traced, not baked).
+    @eqx.filter_jit
+    def single_feature_ci(
+        model: resid_mlp.ResidMLPDecomposedModel, ci_fn: Any
+    ) -> tuple[dict[str, jax.Array], dict[str, jax.Array]]:
+        resid = resid_mlp.single_feature_probe(target_cfg.n_features) @ model.target.W_E
+        ci = ci_fn(model.read_activations(resid, ci_fn.input_names))
+        return ci.lower, ci.upper
+
+    uv_spec = toy_uv_eval.toy_uv_spec(lm, raw_cfg)
+
+    def eval_fn(state: TrainState, now_step: int) -> dict[str, float]:
+        ci_lower, ci_upper = single_feature_ci(lm, state.ci_fn)
+        toy_uv_eval.log_uv_figure(
+            uv_spec,
+            state.components.vu,
+            ci_upper,
+            now_step,
+            wandb_active=built.run.wandb is not None,
+        )
+        return {
+            f"eval/identity_ci_error/{site}": float(resid_mlp.identity_ci_error(ci, tolerance=0.1))
+            for site, ci in ci_lower.items()
+        }
+
+    run_decomposition_training(
+        pd=built.pd,
+        cadence=built.cadence,
+        run=built.run,
+        lm=lm,
+        ci_fn=built.ci_fn,
+        data=built.data,
+        remat_recon_forwards=built.runtime.remat_recon_forwards,
+        remat_ci_fn=built.runtime.remat_ci_fn,
+        ascend_replicate=built.runtime.ascend_replicate,
+        compiler_options=built.runtime.compiler_options,
+        profile=built.runtime.launch_env.profile,
+        sample_batch=sample_batch,
+        eval_fn=eval_fn,
+        eval_every=built.cadence.train_log_every,
+        mesh=mesh,
+    )
+
+
+def main(config: str, group: str | None = None, tags: str | None = None) -> None:
+    schema_raw = yaml.safe_load(Path(config).read_text())
+    run_id = generate_run_id("param_decomp")
+    if group is not None or tags is not None:
+        wandb_cfg = dict(schema_raw.get("wandb") or {})
+        if group is not None:
+            wandb_cfg["group"] = group
+        if tags is not None:
+            wandb_cfg["tags"] = tags.split(",")
+        schema_raw["wandb"] = wandb_cfg
+    built = build_resid_mlp_built_run(ResidMLPExperimentConfig(**schema_raw), run_id)
+    built.run.run_dir.mkdir(parents=True, exist_ok=True)
+    setup_logger(built.run.run_dir / "logs.log")
+    (built.run.run_dir / LAUNCH_CONFIG_FILENAME).write_text(
+        yaml.safe_dump(schema_raw, sort_keys=False)
+    )
+    mesh = hsdp_mesh()
+    run_resid_mlp_decomposition(built, schema_raw, mesh)
 
 
 def cli() -> None:

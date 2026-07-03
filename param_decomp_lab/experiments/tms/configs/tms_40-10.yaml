@@ -1,0 +1,69 @@
+# TMS 40->10 PD decomposition — the larger superposition toy (40 features in 10 hidden
+# dims). The JAX counterpart of the torch `tms_40-10_config.yaml`: target pretrained from
+# scratch in-process (no wandb run_path), FaithfulnessLoss in the loss list, UNTIED
+# decomposition (linear1/linear2 two sites with independent V/U), tied
+# target. CI fn: layerwise per-site MLP (type=layerwise_mlp, hidden_dims=[16]). Validates via the
+# in-loop ground-truth target-CI metric (eval/identity_ci_error/<site>). Runs on 1 GPU.
+run_name: jax-tms-40-10
+pd:
+  seed: 0
+  ci_config:
+    type: layerwise_mlp
+    hidden_dims:
+    - 16
+  decomposition_targets:
+  - module_pattern: linear1
+    C: 200
+  - module_pattern: linear2
+    C: 200
+  loss_metrics:
+  - type: ImportanceMinimalityLoss
+    coeff: 1e-4
+    pnorm: 2.0
+    p_anneal_start_frac: 0.0
+    p_anneal_final_p: 1.0
+    p_anneal_end_frac: 1.0
+  - type: StochasticReconLoss
+    coeff: 1.0
+  - type: StochasticReconLayerwiseLoss
+    coeff: 1.0
+  - type: FaithfulnessLoss
+    coeff: 1.0
+  batch_size: 4096
+  steps: 10000
+  components_optimizer:
+    grad_clip_norm: 0.01
+    lr_schedule:
+      start_val: 1e-3
+      fn_type: cosine
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 1e-3
+      fn_type: cosine
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+  faithfulness_warmup_steps: 200
+  faithfulness_warmup_lr: 0.01
+  faithfulness_warmup_weight_decay: 0.0
+runtime:
+  remat_recon_forwards: false
+  dp: null
+cadence:
+  train_log_every: 200
+  save_every: 5000
+  keep_last_n_checkpoints: 2
+target:
+  n_features: 40
+  n_hidden: 10
+  n_hidden_layers: 0
+  init_bias_to_zero: true
+  pretrain:
+    steps: 10000
+    batch_size: 8192
+    lr: 5e-3
+    seed: 0
+data:
+  feature_probability: 0.05
+  data_generation_type: at_least_zero_active

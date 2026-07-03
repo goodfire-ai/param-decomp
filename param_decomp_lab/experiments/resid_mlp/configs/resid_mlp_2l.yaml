@@ -1,0 +1,75 @@
+# ResidualMLP 2-layer wrapper — JAX counterpart of torch resid_mlp2_config.yaml.
+run_name: jax-resid-mlp-2l
+# ResidualMLP 2-layer PD decomposition. Same fixed-random-embedding regime as the 1-layer
+# config (n_features=100, d_embed=1000), MLP width split across two blocks; the target is
+# pretrained from scratch in-process (the read-off `act_fn(x) + x` objective), so the run
+# is reproducible from this config alone. Both layers contribute mlp_in + mlp_out sites.
+pd:
+  seed: 0
+  ci_config:
+    type: layerwise_mlp
+    hidden_dims:
+    - 16
+  decomposition_targets:
+  - module_pattern: layers.0.mlp_in
+    C: 100
+  - module_pattern: layers.0.mlp_out
+    C: 100
+  - module_pattern: layers.1.mlp_in
+    C: 100
+  - module_pattern: layers.1.mlp_out
+    C: 100
+  loss_metrics:
+  - type: ImportanceMinimalityLoss
+    coeff: 1e-4
+    pnorm: 2.0
+    p_anneal_start_frac: 0.0
+    p_anneal_final_p: 2.0
+    p_anneal_end_frac: 1.0
+  - type: StochasticReconLayerwiseLoss
+    coeff: 1.0
+  - type: StochasticReconLoss
+    coeff: 1.0
+  - type: FaithfulnessLoss
+    coeff: 1.0
+  batch_size: 2048
+  steps: 25000
+  components_optimizer:
+    grad_clip_norm: 0.01
+    lr_schedule:
+      start_val: 2e-3
+      fn_type: cosine
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 2e-3
+      fn_type: cosine
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+  faithfulness_warmup_steps: 200
+  faithfulness_warmup_lr: 0.01
+  faithfulness_warmup_weight_decay: 0.0
+runtime:
+  remat_recon_forwards: false
+  dp: null
+cadence:
+  train_log_every: 100
+  save_every: 5000
+  keep_last_n_checkpoints: 2
+target:
+  n_features: 100
+  d_embed: 1000
+  d_mlp: 50
+  n_layers: 2
+  act_fn_name: relu
+  in_bias: false
+  out_bias: false
+  pretrain:
+    steps: 3000
+    batch_size: 2048
+    lr: 3e-3
+    seed: 0
+data:
+  feature_probability: 0.01
+  data_generation_type: at_least_zero_active

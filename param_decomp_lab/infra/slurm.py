@@ -34,14 +34,23 @@ class SlurmConfig:
 
     job_name: str
     partition: str | None
+    qos: str | None = None
     n_gpus: int = 1
     n_nodes: int = 1
+    ntasks_per_node: int = 1
     time: str = "72:00:00"
+    signal: str | None = None
+    """`--signal=` spec, e.g. `TERM@300`. No `B:` prefix — that delivers to the batch
+    shell only, not the srun-launched ranks whose handlers need it."""
     mem: str | None = None  # Memory limit (e.g., "64G", "128G")
     cpus_per_task: int | None = None
     snapshot_ref: str | None = None
     dependency_job_id: str | None = None
     comment: str | None = None
+    requeue: bool = False
+    """Emit `#SBATCH --requeue` so SLURM re-runs this script on node failure /
+    opportunistic preemption (same job id). The worker self-resumes from its latest
+    consolidated checkpoint, so the requeue continues training rather than restarting."""
 
 
 @dataclass
@@ -60,13 +69,24 @@ class SubmitResult:
     log_pattern: str
 
 
-def generate_script(config: SlurmConfig, command: str, env: dict[str, str] | None = None) -> str:
-    """Generate a single SLURM job script. `env` is exported at the start of the script."""
+def generate_script(
+    config: SlurmConfig,
+    command: str,
+    env: dict[str, str] | None = None,
+    setup: str | None = None,
+) -> str:
+    """Generate a single SLURM job script. `env` is exported at the start of the script.
+
+    `setup` overrides the default workspace/venv section — for launches whose
+    workspace is materialized at submit time (e.g. the JAX launcher) rather than
+    cloned inside the job.
+    """
     header = _sbatch_header_singleton(config)
-    if config.n_nodes == 1:
-        setup = _setup_section_singleton(config)
-    else:
-        setup = "# Multi-node job: each node sets up its own workspace in the srun command"
+    if setup is None:
+        if config.n_nodes == 1:
+            setup = _setup_section_singleton(config)
+        else:
+            setup = "# Multi-node job: each node sets up its own workspace in the srun command"
     env_exports = _env_exports(env)
 
     return f"""\
@@ -210,19 +230,29 @@ def _common_sbatch_lines(config: SlurmConfig, log_pattern: str) -> list[str]:
     lines = [
         f"#SBATCH --job-name={config.job_name}",
         f"#SBATCH --nodes={config.n_nodes}",
-        "#SBATCH --ntasks-per-node=1",
+        f"#SBATCH --ntasks-per-node={config.ntasks_per_node}",
         f"#SBATCH --gpus-per-node={config.n_gpus}",
         f"#SBATCH --time={config.time}",
         f"#SBATCH --output={SLURM_LOGS_DIR}/slurm-{log_pattern}.out",
+        # Append across requeues instead of SLURM's default truncate — otherwise an
+        # auto-requeue (`--requeue`) reopens the same `slurm-<jobid>.out` and wipes the
+        # prior attempt's log, destroying the crash evidence that triggered the requeue.
+        "#SBATCH --open-mode=append",
     ]
+    if config.signal is not None:
+        lines.append(f"#SBATCH --signal={config.signal}")
     if config.partition is not None:
         lines.append(f"#SBATCH --partition={config.partition}")
+    if config.qos is not None:
+        lines.append(f"#SBATCH --qos={config.qos}")
     if config.cpus_per_task is not None:
         lines.append(f"#SBATCH --cpus-per-task={config.cpus_per_task}")
     if config.mem is not None:
         lines.append(f"#SBATCH --mem={config.mem}")
     if config.dependency_job_id:
         lines.append(f"#SBATCH --dependency=afterok:{config.dependency_job_id}")
+    if config.requeue:
+        lines.append("#SBATCH --requeue")
     if config.comment:
         lines.append(f'#SBATCH --comment="{config.comment}"')
     return lines
@@ -246,15 +276,23 @@ def generate_git_snapshot_setup(work_dir: str, snapshot_ref: str) -> str:
     `git clone` only fetches `refs/heads/*` + tags, so custom namespaces like
     `refs/runs/snapshot/*` need an explicit fetch. Also copies `.env` and activates the
     venv. `work_dir` is a bash expression and can include `$SLURM_*` vars.
+
+    Uses ``$HOME/param-decomp`` as the git source (resolved at shell-time on the
+    target node) rather than the Python-side ``REPO_ROOT``. This keeps the setup
+    portable: when this script is generated from inside another SLURM job
+    (e.g. async slow-eval submitted by training's ``sink.on_save``), ``REPO_ROOT``
+    would resolve to the submitting job's node-local ``/tmp/.../workspace-*`` —
+    which doesn't exist on the new job's nodes. ``$HOME/param-decomp`` always
+    points at the user's canonical shared-FS checkout.
     """
     return f"""\
 WORK_DIR="{work_dir}"
 mkdir -p "$WORK_DIR"
 trap 'rm -rf "$WORK_DIR"' EXIT
-git clone "{REPO_ROOT}" "$WORK_DIR"
+git clone "$HOME/param-decomp" "$WORK_DIR"
 cd "$WORK_DIR"
-[ -f "{REPO_ROOT}/.env" ] && cp "{REPO_ROOT}/.env" .env
-git fetch "{REPO_ROOT}" "{snapshot_ref}:{snapshot_ref}"
+[ -f "$HOME/param-decomp/.env" ] && cp "$HOME/param-decomp/.env" .env
+git fetch "$HOME/param-decomp" "{snapshot_ref}:{snapshot_ref}"
 git checkout "{snapshot_ref}"
 deactivate 2>/dev/null || true
 unset VIRTUAL_ENV

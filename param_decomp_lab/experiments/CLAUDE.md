@@ -1,45 +1,67 @@
 # `param_decomp_lab/experiments/`
 
-Composition roots for the in-repo experiments. Each experiment is a plain Python script
-that parses a YAML, builds the target / loaders / metrics, and runs a `Trainer`.
+Experiment glue + the per-domain COMPOSITION ROOTS, torch-free. Training is JAX through the
+generic core engine (`param_decomp.run.run_decomposition_training`, a pure library that reads
+the pydantic `PDConfig` / `Cadence` directly). Each domain's `run.py` is its composition
+root: read the run YAML → build the target / data loader / `config.BuiltRun` → call the
+engine. LM runs go to SLURM via `pd-lm` (which sbatches
+`python -m param_decomp_lab.experiments.lm.run`); the toy domains (TMS, ResidMLP) run on CPU
+in-process via `pd-tms` / `pd-resid-mlp`. The shared experiment YAML schema + the shared
+validation / run-identity helpers (`assert_canonical_algorithm_config` / `run_instance` /
+`ci_arch`) live in `experiments/config.py`; each domain's `config.py` carries its own
+target/data schema + (for the LM) its `BuiltRun` build.
+autointerp/clustering read a run's target topology from
+`experiments.lm.load_run.run_metadata` (config + pretrain cache, no checkpoint restore) —
+see `param_decomp_lab/adapters/pd.py`.
 
-There is no central registry — each `run.py` declares its own `<Name>ExperimentConfig`
-+ build functions + `Saved<Name>Run` reload class, and post-processing callers import
-the concrete reload class directly.
+## Toy domains (TMS, ResidMLP)
+
+The TMS and ResidualMLP toys are LAB experiments that call the core engine as a library
+(the core itself has zero toy-specific code). Each `experiments/{tms,resid_mlp}/` carries:
+
+- `model.py` — the JAX `DecomposedModel` (sites, pure fns, MSE `recon_loss_fn`), the frozen
+  target (`eqx.Module`), from-scratch in-process pretrain (`pretrain_*_target`), the
+  ground-truth identity-CI eval (`identity_ci_error` + the single-feature probe), and the
+  lab `*TargetConfig` dataclass carried on `config.BuiltRun.target` (satisfies the core
+  `config.TargetSites` protocol).
+- `run.py` — the `pd-tms` / `pd-resid-mlp` CLI: builds the `config.BuiltRun` from the
+  canonical schema via the public shared helpers
+  (`config.assert_canonical_algorithm_config` / `run_instance` / `ci_arch`),
+  pretrains + builds the target, and calls `run_decomposition_training` with a synthetic
+  `sample_batch` + an `identity_ci_error` `eval_fn`. CPU, synchronous, no SLURM. The toy
+  `eval_fn` ALSO renders the config-gated `UVPlots` figure when the run's `eval.metrics`
+  names it (`toy_uv_eval.log_uv_figure`): the toys feed `UVPlots` their probe CI as the
+  column-permutation source and their small on-host V/U, sharing `slow_eval.render_uv_figure`
+  / `plot_uv_matrices` with the LM in-loop tier (SPEC S28). The toy `BuiltRun.eval`
+  stays `None` (the toy validates via the target-CI metric, not the LM scalar pass); the
+  `eval.metrics` list is read straight off the raw schema dict (`toy_uv_eval.toy_uv_spec`).
+- `configs/*.yaml` — the canonical `experiments.{tms,resid_mlp}.config` schema (TMS: 5-2 /
+  40-10 / the `-id` deeper variants; ResidMLP: 1l/2l/3l + the global-CI variant).
+
+TMS deeper variant (`n_hidden_layers>0`, the `-id` configs) + the ResidMLP `global` CI arch
+(`fn_type=global_shared_mlp`) are restored and wired end-to-end (the global arch dispatches
+through the core `init_train_state` via `experiments.config.ci_arch`). Toy harvest /
+autointerp / clustering is NOT yet wired (`load_run` is LM-only) — the remaining Phase-3 bucket.
 
 ## Layout
 
+The `ExperimentConfig[T,D]` schema generic + `EvalConfig` + the shared validation /
+run-identity helpers live in `experiments/config.py` (`WandbConfig` / `ResumeProvenance` are
+core, in `param_decomp.configs`; the engine's `BuiltRun` bundle is core, in
+`param_decomp.built_run`); the LM schema + LM build (`LMExperimentConfig`, `LMTargetConfig`,
+`LMDataConfig`, the `target.spec` union, `build_from_schema` / `load_config`) in
+`experiments/lm/config.py`; the toy schemas in `experiments/{tms,resid_mlp}/config.py`.
+
 ```
 experiments/
-├── utils.py                 # ExperimentConfig[T,D] generic + EvalConfig + WandbConfig
-│                            # + init_pd_run + EXPERIMENT_CONFIG_FILENAME
-├── tms/run.py
-├── resid_mlp/run.py
-└── lm/
-    ├── run.py
-    ├── layerwise.py         # split LM YAML into per-matrix configs + SLURM-array submit
-    ├── data.py
-    └── pretrain/            # see lm/pretrain/CLAUDE.md
+├── utils.py                 # EXPERIMENT_CONFIG_FILENAME
+├── lm/
+│   ├── launch.py        # pd-lm: snapshot + shared-FS workspace + sbatch
+│   ├── data.py              # tokenize_and_concatenate (offline helper for prestage)
+│   └── prestage_tokenized.py  # HF text -> int32 parquet shards for the JAX trainer
+├── tms/                     # pd-tms (CPU): model.py + run.py + configs/ + test_tms.py
+└── resid_mlp/               # pd-resid-mlp (CPU): model.py + run.py + configs/ + test
 ```
-
-## YAML schema
-
-One validated pydantic tree (extra keys raise):
-
-```yaml
-pd:      { ... PDConfig ... }
-runtime: { ... RuntimeConfig ... }
-cadence: { train_log_every, save_every }
-target:  { ... per-experiment target config ... }
-data:    { ... per-experiment data config ... }
-eval:    { batch_size, n_steps, every, slow_every, slow_on_first_step,
-           metrics: [ {type: "...", ...}, ... ] }   # optional: omit to skip eval
-wandb:   { project: ..., entity: ... }              # optional: omit to skip wandb
-```
-
-`eval.metrics` entries are dispatched via `EVAL_METRIC_CLASSES` (see
-[`../eval_metrics/CLAUDE.md`](../eval_metrics/CLAUDE.md)). `slow_every` must be a
-multiple of `every`.
 
 ## LM `target.spec`
 
@@ -51,7 +73,6 @@ target:
     kind: hf                            # HuggingFace model
     model_class: transformers.GPT2LMHeadModel
     model_name: openai-community/gpt2
-  output_extract: logits
 
 # or
 target:
@@ -59,112 +80,52 @@ target:
     kind: pretrained                    # in-repo lab-pretrained model
     model_class: param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
     run_path: goodfire/spd/runs/<run_id>
-  output_extract: 0
+
+# or
+target:
+  spec:
+    kind: hf_weights_in_vendored        # HF weights loaded into a vendored, componentizable arch
+    model_class: param_decomp_lab.experiments.lm.vendored.llama_3_1.model.VendoredLlama
+    model_name: meta-llama/Llama-3.1-8B
 ```
 
-`output_extract` (default `"logits"`) is the key/index `make_run_batch` uses to pull
-the prediction tensor out of the model's forward output.
+The JAX prediction tensor is always the final logits (there is no `output_extract` —
+it was a torch-era field, stripped on load for back-compat). The `model_class` strings
+are NOT imported by the JAX trainer — `param_decomp.built_run` only asserts the class-name
+suffix and routes to its own vendored JAX arch (`pretrained` LlamaSimpleMLP -> the
+pretrain-cache loader, `hf_weights_in_vendored` Llama -> `vendored_jax`). The dotted
+`model_class` is a stable identifier only, never imported.
 
-## Anatomy of `run.py`
+The path schemas (`topology/path_schemas.py`) cover the GPT-2 and `LlamaSimple*` archs —
+so `PDAdapter`'s layer-description path is exercised by `kind: pretrained` runs (the
+pile `LlamaSimpleMLP` decompositions), the production target.
 
-Every experiment script exposes the same five top-level shapes:
+## `runtime.launch_env` (rank env / XLA flags)
 
-```python
-class <Name>ExperimentConfig(ExperimentConfig[<Name>TargetConfig, <Name>DataConfig]):
-    pass
+The SLURM rank env (XLA flags, NCCL/host-memory knobs, `PD_*` profiling toggles) is
+config-driven via `runtime.launch_env` (`param_decomp.configs.LaunchEnv`), so `config.yaml`
+fully captures the environment a run executed with — A/B a flag in the YAML, not in
+`launch.py`. `launch.py::_render_rank_env` renders `LaunchEnv.as_env()` into the exported
+bash block; `LD_LIBRARY_PATH` is computed at submit time (machine-specific) and stays in the
+launcher. A profiling run is a config (`runtime.launch_env.profile`), not an env hack. The
+defaults mirror the values the launcher used to hardcode. Applies to the SLURM path only;
+the inline `dp is None` path inherits the caller's environment.
 
-def build_target(target_cfg) -> nn.Module: ...
-
-def build_<name>_loader(
-    target_cfg, data_cfg, *,
-    split: Literal["train", "eval"], device: str, batch_size: int,
-    dist_state=None, seed=None,
-) -> DataLoader: ...
-
-def make_run_batch(target_cfg) -> RunBatch: ...
-
-@dataclass(frozen=True)
-class Saved<Name>Run:
-    cfg: <Name>ExperimentConfig
-    checkpoint_path: Path
-
-    @classmethod
-    def from_path(cls, path: ModelPath) -> "Saved<Name>Run": ...
-    def load_model(self) -> ComponentModel: ...
+```yaml
+runtime:
+  dp: 32
+  launch_env:
+    xla_flags: { gpu_enable_command_buffer: "", gpu_autotune_level: "0" }
+    xla_python_client_allocator: platform   # was the old `pd-lm --allocator` flag
+    profile: { mem_profile: true, no_checkpoint: true }
+    env: { SOME_ONE_OFF_VAR: "1" }           # escape hatch, merged last (overrides)
 ```
 
-The loader is per-experiment-named (`build_lm_loader`, `build_tms_loader`,
-`build_resid_mlp_loader`) so cross-imports don't shadow each other. The reload class
-deliberately does *not* re-export the loader as a method — post-processing code calls
-the free function directly with `pd_run.cfg.target` / `pd_run.cfg.data`.
-
-`main()` calls the module-level build functions directly; `Saved<Name>Run` delegates
-to those same functions, so there's no duplication between "fresh run from YAML" and
-"reload from disk" paths.
-
-`main()` writes the resolved `<Name>ExperimentConfig` to `out_dir / EXPERIMENT_CONFIG_FILENAME`
-via `cfg.to_file(...)`. There is no kind discriminator on disk — each post-processing
-caller imports the concrete `Saved<Name>Run` it expects:
-
-```python
-from param_decomp_lab.experiments.lm.run import SavedLMRun
-pd_run = SavedLMRun.from_path("entity/project/runs/<run_id>")
-```
-
-Pydantic validation against the wrong `ExperimentConfig` subclass fails fast at YAML
-load time.
-
-## Adding a new experiment
-
-Drop a `run.py` next to a YAML config. Implement the five shapes above. Then either:
-
-1. Invoke `python -m param_decomp_lab.experiments.<name>.run config.yaml`, or
-2. Add a console script in `param_decomp_lab/pyproject.toml`:
-   ```toml
-   pd-<name> = "param_decomp_lab.experiments.<name>.run:cli"
-   ```
-
-No central registry to update — post-processing callers `import` the new
-`Saved<Name>Run` directly from its module.
-
-## Sink + wandb wiring
-
-`utils.py::init_pd_run(cfg, group, tags)` does the standard sink construction:
-
-- If `cfg.wandb is None` → `RunSink.local(out_dir)`.
-- Otherwise → `RunSink.with_wandb(...)` with the full `ExperimentConfig` dumped into
-  `wandb.config`. Nested lists of typed configs (loss / eval metrics) are flattened
-  into queryable flat keys via `flatten_typed_lists` in `infra/wandb.py`.
-
-Non-main DDP ranks get `RunSink.silent()`.
-
-### `--group` and `--tags`
+## `--group` and `--tags`
 
 Every `pd-*` run command accepts `--group <id>` and `--tags a,b,c` (no-ops when
 `wandb:` is omitted):
 
 - **`--group`** sets wandb's first-class `group` field — used by the UI's native
   collapsing and matched by workspace filters via `ws.Metric("Group")`.
-  `pd-lm-layerwise` auto-generates a `lw-...` group id and stamps every child run with
-  it. Manual users can pass `--group` to mark ad-hoc multi-launches.
 - **`--tags`** adds wandb tags — orthogonal to `group`, many per run, user-defined.
-
-## Saved-run layout
-
-```
-PARAM_DECOMP_OUT_DIR/runs/<run_id>/
-  experiment_config.yaml     # the full ExperimentConfig
-  model_<step>.pth           # checkpoints (RunSink.checkpoint)
-  metrics.jsonl              # local logs (RunSink.log)
-```
-
-Post-decomposition pipelines (harvest, autointerp, attributions, graph_interp) nest
-their own sub-directories under this same `runs/<run_id>/` dir — see each module's
-CLAUDE.md.
-
-## Canonical references
-
-- `param_decomp_lab/experiments/tms/run.py` — smallest, simplest reference.
-- `param_decomp_lab/experiments/resid_mlp/run.py` — toy model with feature_importances.
-- `param_decomp_lab/experiments/lm/run.py` — discriminated `target.spec`, DDP via
-  `with_distributed_cleanup`.

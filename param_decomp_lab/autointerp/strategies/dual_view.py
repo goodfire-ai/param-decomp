@@ -7,14 +7,13 @@ Key differences from compact_skeptical:
 - Task framing asks for functional description, not detection label
 """
 
-from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.autointerp.config import DualViewConfig
 from param_decomp_lab.autointerp.prompt_helpers import (
-    DATASET_DESCRIPTIONS,
     build_annotated_examples,
     build_data_presentation,
     build_input_section,
     build_output_section,
+    dataset_description,
     density_note,
     describe_example_rendering,
     human_layer_desc,
@@ -24,6 +23,7 @@ from param_decomp_lab.autointerp.schemas import ModelMetadata
 from param_decomp_lab.harvest.analysis import TokenPRLift
 from param_decomp_lab.harvest.schemas import ComponentData
 from param_decomp_lab.infra.markdown import Md
+from param_decomp_lab.tokenizer_display import AppTokenizer
 
 
 def format_prompt(
@@ -76,13 +76,6 @@ def format_prompt(
 
     context_notes = " ".join(filter(None, [position_note, dens_note]))
 
-    dataset_line = ""
-    if config.include_dataset_description:
-        dataset_desc = DATASET_DESCRIPTIONS.get(
-            model_metadata.dataset_name, model_metadata.dataset_name
-        )
-        dataset_line = f", dataset: {dataset_desc}"
-
     forbidden_sentence = (
         "FORBIDDEN vague words: " + ", ".join(config.forbidden_words) + ". "
         if config.forbidden_words
@@ -107,7 +100,8 @@ def format_prompt(
     md.h(2, "Context")
     md.bullets(
         [
-            f"Model: {model_metadata.model_class} ({model_metadata.n_blocks} blocks){dataset_line}",
+            f"Model: {model_metadata.n_blocks}-block transformer, "
+            f"dataset: {dataset_description(model_metadata.dataset_name)}",
             f"Component location: {layer_desc}",
             f"Component firing rate: {component.firing_density * 100:.2f}% ({rate_str})",
         ]
@@ -116,11 +110,7 @@ def format_prompt(
         md.p(context_notes)
 
     md.h(2, "Data presentation")
-    md.extend(
-        build_data_presentation(
-            model_metadata.seq_len, context_tokens_per_side, model_metadata.decomposition_method
-        )
-    )
+    md.extend(build_data_presentation(model_metadata.seq_len, context_tokens_per_side))
 
     md.h(2, "Output tokens (what the model produces when this component fires)")
     md.extend(output_section)

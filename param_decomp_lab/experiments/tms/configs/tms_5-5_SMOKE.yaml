@@ -1,0 +1,66 @@
+# TMS 5->5 SMOKE wrapper — pd-train full-loop validation (pretrain + decompose + ckpt).
+run_name: jax-tms-5-5-smoke
+# TMS 5->5 (non-superposed) PD decomposition SMOKE — the clean recovers-identity regime,
+# tiny step count for a pd-train smoke (full-loop composition-root validation: pretrain →
+# faith warmup → step loop → checkpoint → in-loop target-CI metric). 1 GPU / CPU.
+pd:
+  seed: 0
+  ci_config:
+    type: layerwise_mlp
+    hidden_dims:
+    - 16
+  decomposition_targets:
+  - module_pattern: linear1
+    C: 5
+  - module_pattern: linear2
+    C: 5
+  loss_metrics:
+  - type: ImportanceMinimalityLoss
+    coeff: 3e-3
+    pnorm: 1.0
+    p_anneal_start_frac: 0.0
+    p_anneal_final_p: 1.0
+    p_anneal_end_frac: 1.0
+  - type: StochasticReconLoss
+    coeff: 1.0
+  - type: StochasticReconLayerwiseLoss
+    coeff: 1.0
+  - type: FaithfulnessLoss
+    coeff: 1.0
+  batch_size: 256
+  steps: 20
+  components_optimizer:
+    grad_clip_norm: 0.01
+    lr_schedule:
+      start_val: 1e-3
+      fn_type: cosine
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 1e-3
+      fn_type: cosine
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+  faithfulness_warmup_steps: 50
+  faithfulness_warmup_lr: 0.01
+  faithfulness_warmup_weight_decay: 0.0
+runtime:
+  remat_recon_forwards: false
+  dp: null
+cadence:
+  train_log_every: 5
+  save_every: 10
+  keep_last_n_checkpoints: 2
+target:
+  n_features: 5
+  n_hidden: 5
+  n_hidden_layers: 0
+  pretrain:
+    steps: 500
+    batch_size: 256
+    lr: 1e-2
+    seed: 0
+data:
+  feature_probability: 0.05
+  data_generation_type: at_least_zero_active

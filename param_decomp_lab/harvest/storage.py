@@ -1,6 +1,6 @@
 """Raw storage classes for harvest data.
 
-These are simple data containers with save/load methods.
+These are simple data containers with save/load methods backed by `.npz` files.
 For query functionality, see harvest/analysis.py.
 """
 
@@ -8,9 +8,8 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-import torch
+import numpy as np
 from jaxtyping import Float, Int
-from torch import Tensor
 
 from param_decomp.log import logger
 
@@ -20,9 +19,9 @@ class CorrelationStorage:
     """Raw correlation data between components."""
 
     component_keys: list[str]
-    count_i: Int[Tensor, " n_components"]
+    count_i: Int[np.ndarray, " n_components"]
     """Firing count per component"""
-    count_ij: Int[Tensor, "n_components n_components"]
+    count_ij: Int[np.ndarray, "n_components n_components"]
     """Co-occurrence matrix: count_ij[i, j] = count of tokens where both fired"""
     count_total: int
     """Total tokens seen"""
@@ -44,36 +43,34 @@ class CorrelationStorage:
         if key_a not in self.key_to_idx or key_b not in self.key_to_idx:
             return None
         i, j = self.key_to_idx[key_a], self.key_to_idx[key_b]
-        count_ij = self.count_ij[i][j].item()
+        count_ij = int(self.count_ij[i][j])
         if count_ij == 0:
             return None
-        count_i = self.count_i[i].item()
-        count_j = self.count_i[j].item()
+        count_i = int(self.count_i[i])
+        count_j = int(self.count_i[j])
         if count_i == 0 or count_j == 0:
             return None
         return math.log(count_ij * self.count_total / (count_i * count_j))
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(
-            {
-                "component_keys": self.component_keys,
-                "count_i": self.count_i.cpu(),
-                "count_ij": self.count_ij.cpu(),
-                "count_total": self.count_total,
-            },
+        np.savez(
             path,
+            component_keys=np.array(self.component_keys, dtype=object),
+            count_i=self.count_i,
+            count_ij=self.count_ij,
+            count_total=np.int64(self.count_total),
         )
         logger.info(f"Saved component correlations to {path}")
 
     @classmethod
     def load(cls, path: Path) -> "CorrelationStorage":
-        data = torch.load(path, weights_only=True, mmap=True)
+        data = np.load(path, allow_pickle=True)
         return cls(
-            component_keys=data["component_keys"],
+            component_keys=list(data["component_keys"]),
             count_i=data["count_i"],
             count_ij=data["count_ij"],
-            count_total=data["count_total"],
+            count_total=int(data["count_total"]),
         )
 
 
@@ -90,12 +87,12 @@ class TokenStatsStorage:
     vocab_size: int
     n_tokens: int
 
-    input_counts: Float[Tensor, "n_components vocab"]
-    input_totals: Float[Tensor, " vocab"]
-    output_counts: Float[Tensor, "n_components vocab"]
+    input_counts: Float[np.ndarray, "n_components vocab"]
+    input_totals: Float[np.ndarray, " vocab"]
+    output_counts: Float[np.ndarray, "n_components vocab"]
     """Probability mass, not hard counts - but used the same way in analysis."""
-    output_totals: Float[Tensor, " vocab"]
-    firing_counts: Float[Tensor, " n_components"]
+    output_totals: Float[np.ndarray, " vocab"]
+    firing_counts: Float[np.ndarray, " n_components"]
 
     _key_to_idx: dict[str, int] | None = None
 
@@ -108,29 +105,27 @@ class TokenStatsStorage:
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(
-            {
-                "component_keys": self.component_keys,
-                "vocab_size": self.vocab_size,
-                "n_tokens": self.n_tokens,
-                "input_counts": self.input_counts.cpu(),
-                "input_totals": self.input_totals.cpu(),
-                "output_counts": self.output_counts.cpu(),
-                "output_totals": self.output_totals.cpu(),
-                "firing_counts": self.firing_counts.cpu(),
-            },
+        np.savez(
             path,
+            component_keys=np.array(self.component_keys, dtype=object),
+            vocab_size=np.int64(self.vocab_size),
+            n_tokens=np.int64(self.n_tokens),
+            input_counts=self.input_counts,
+            input_totals=self.input_totals,
+            output_counts=self.output_counts,
+            output_totals=self.output_totals,
+            firing_counts=self.firing_counts,
         )
         size_mb = path.stat().st_size / (1024 * 1024)
         logger.info(f"Saved token stats to {path} ({size_mb:.1f} MB)")
 
     @classmethod
     def load(cls, path: Path) -> "TokenStatsStorage":
-        data = torch.load(path, weights_only=True, mmap=True)
+        data = np.load(path, allow_pickle=True)
         return cls(
-            component_keys=data["component_keys"],
-            vocab_size=data["vocab_size"],
-            n_tokens=data["n_tokens"],
+            component_keys=list(data["component_keys"]),
+            vocab_size=int(data["vocab_size"]),
+            n_tokens=int(data["n_tokens"]),
             input_counts=data["input_counts"],
             input_totals=data["input_totals"],
             output_counts=data["output_counts"],

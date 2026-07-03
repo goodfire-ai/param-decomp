@@ -1,473 +1,433 @@
-"""LM PD experiment: YAML -> `Trainer` glue + `SavedLMRun` reload + resumption.
+"""The LM decomposition composition root: wrapper YAML -> full SPEC-compliant run on a
+vendored target.
 
-Both the fresh-run path (`main`) and the reload path (`SavedLMRun`) share the
-module-level `build_target` / `build_lm_loader` / `make_run_batch`. The resume
-path (`main --resume <yaml>`) reads a parent run's `experiment_config.yaml` plus
-`training_<step>.pth`, rebuilds a `Trainer` via `Trainer.from_snapshot`, and
-continues training.
+    python -m param_decomp_lab.experiments.lm.run <wrapper.yaml>   # normally via pd-lm,
+        # which stamps run_id into the workspace copy; re-running resumes in place
 
-Run via `pd-lm path/to/config.yaml` (fresh) or `pd-lm --resume path/to/resume.yaml`
-(resume). Pass `--dp N` to submit a DDP SLURM job (single-node for N <= 8, multi-node
-for N > 8 — N must then be a multiple of 8). For local DDP, invoke directly via
-`torchrun --standalone --nproc_per_node=N -m param_decomp_lab.experiments.lm.run config.yaml`.
+This is the LM I/O layer over the generic core engine
+(`param_decomp.run.run_decomposition_training`): read the run YAML, build the target, feed
+the per-step parquet token batch (`sample_batch`; the model embeds it), build the CEandKL /
+CI-L0 / PGD / attn-patterns / slow `eval_fn`, then
+call the engine. Process setup (`init_distributed`, the SIGTERM flag, the persistent XLA
+compilation cache, HF http hardening), config pinning, and SLURM-requeue shutdown all live
+here. The toy domains mirror this file under `experiments/{tms,resid_mlp}/run.py`.
+
+Multi-process: launched one process per GPU under SLURM (`init_distributed`); every
+process computes the same global schedule and contributes its local batch slice.
 """
 
-import importlib
 import os
-import shlex
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import wandb
+
+    LogValue = float | wandb.plot.CustomChart
+    LogRecord = Mapping[str, LogValue]
 
 import fire
-import torch.nn as nn
-from pydantic import Discriminator
-from torch.utils.data import DataLoader
+import jax
+import jax.numpy as jnp
+import numpy as np
+from jax import random
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
+from jaxtyping import PRNGKeyArray
 
-from param_decomp.base_config import BaseConfig
-from param_decomp.batch_and_loss_fns import RunBatch
-from param_decomp.component_model import ComponentModel
-from param_decomp.distributed import DistributedState, is_main_process
-from param_decomp.log import logger
-from param_decomp.optimize import EvalLoop, Trainer
-from param_decomp_lab.batch_and_loss_fns import make_run_batch as _make_run_batch
-from param_decomp_lab.batch_and_loss_fns import recon_loss_kl
-from param_decomp_lab.component_model_io import load_component_model
-from param_decomp_lab.distributed import (
-    ensure_cached_and_call,
-    get_device,
-    init_distributed,
-    with_distributed_cleanup,
+from param_decomp.attn_patterns_eval import (
+    accumulate_attn_patterns,
+    attn_pattern_for,
+    attn_patterns_log_entries,
+    make_ci_attn_patterns_step,
+    make_stochastic_attn_patterns_step,
 )
-from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES
-from param_decomp_lab.experiments.lm.data import (
-    LMDataConfig,
-    collate_fn_for,
-    create_lm_data_loader,
-    rank_batch_size,
+from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, BuiltRun, DataConfig
+from param_decomp.configs import ResumeProvenance
+from param_decomp.data import BatchSchedule, ShardServer, scan_shards
+from param_decomp.eval import make_eval_step
+from param_decomp.hf_http import configure_hf_http_retries
+from param_decomp.lm import DecomposedModel
+from param_decomp.log import setup_logger
+from param_decomp.run import (
+    SlowEvalRenderer,
+    install_sigterm_flag,
+    run_decomposition_training,
+    slow_eval_due,
 )
-from param_decomp_lab.experiments.utils import (
-    EXPERIMENT_CONFIG_FILENAME,
-    ExperimentConfig,
-    init_pd_run,
+from param_decomp.sharding import hsdp_mesh, init_distributed
+from param_decomp.slow_eval import (
+    IDENTITY_CI_ERROR_TOLERANCE,
+    PositionCI,
+    accumulate_position_ci,
+    accumulate_site_reductions,
+    compute_hidden_acts_metrics,
+    compute_identity_ci_errors,
+    eval_metrics_from_run_dir,
+    make_position_ci_step,
+    make_slow_eval_step,
+    resolve_permutation_metrics,
+    stochastic_hidden_acts_n_mask_samples,
 )
-from param_decomp_lab.infra.ddp_launch import build_ddp_launch
-from param_decomp_lab.infra.git import create_git_snapshot
-from param_decomp_lab.infra.paths import ModelPath
-from param_decomp_lab.infra.run_files import generate_run_id, resolve_run_files
-from param_decomp_lab.infra.settings import DEFAULT_PARTITION_NAME, REPO_ROOT
-from param_decomp_lab.infra.slurm import SlurmConfig, generate_script, submit_slurm_job
-from param_decomp_lab.infra.wandb import get_wandb_entity
-from param_decomp_lab.resumption import (
-    ResumeConfig,
-    ResumeProvenance,
-    read_training_snapshot,
-    resolve_step,
-    write_provenance,
+from param_decomp.train import TrainState
+from param_decomp_lab.experiments.lm.config import (
+    load_config,
+    load_run_dir_config,
 )
-from param_decomp_lab.seed import set_seed
+from param_decomp_lab.experiments.lm.load_run import build_target
 
 
-def _resolve_class(fqn: str) -> type:
-    """Load a class from a fully-qualified name, e.g. 'transformers.LlamaForCausalLM'."""
-    module_path, _, class_name = fqn.rpartition(".")
-    module = importlib.import_module(module_path)
-    return getattr(module, class_name)
+def _enable_persistent_compilation_cache(out_dir: Path) -> Path:
+    """Cache compiled XLA executables to a shared-FS dir reused across runs/requeues.
+
+    The ~24-min compile of the chunkwise step is keyed by HLO + backend + topology +
+    jax/xla version, so a matching re-compile (requeue, or a fresh run at the same
+    config+topology) loads from disk in seconds. The dir is a SIBLING of `runs/` (not
+    per-run, not inside the immutable per-run workspace) so every run shares it; all 8N
+    ranks point at the same shared-FS path. Only process 0 writes (jax gates the write on
+    `process_id == 0` to avoid shared-FS write contention); every rank reads. Must run
+    after `init_distributed` (the rank gate reads the distributed state) and before the
+    first compile."""
+    cache_dir = out_dir.parent / "xla_compilation_cache"
+    jax.config.update("jax_compilation_cache_dir", str(cache_dir))
+    jax.config.update("jax_persistent_cache_min_compile_time_secs", 60.0)
+    jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
+    return cache_dir
 
 
-class HFTarget(BaseConfig):
-    """Load a HuggingFace model via `<model_class>.from_pretrained(<model_name>)`."""
+def _enable_hlo_dump(run_dir: Path) -> None:
+    """Dump the step modules' optimized HLO + buffer assignment to `<run_dir>/hlo` (rank 0).
 
-    kind: Literal["hf"] = "hf"
-    model_class: str
-    model_name: str
-
-
-class PretrainedTarget(BaseConfig):
-    """Load an in-repo lab-pretrained model.
-
-    `run_path` accepts any form `PretrainRunInfo.from_path` does — compact W&B
-    (`entity/project/runId`), full W&B (`entity/project/runs/runId`), or a local
-    checkpoint path.
-    """
-
-    kind: Literal["pretrained"] = "pretrained"
-    model_class: str
-    run_path: ModelPath
-
-
-LMTargetSpec = Annotated[
-    HFTarget | PretrainedTarget,
-    Discriminator("kind"),
-]
-
-
-class LMTargetConfig(BaseConfig):
-    """Config for the LM target model and how to extract the prediction tensor.
-
-    `output_extract` (passed to `make_run_batch`) pulls the prediction tensor out of the
-    model's forward output (default `"logits"`).
-    """
-
-    spec: LMTargetSpec
-    output_extract: int | str | None = "logits"
-
-
-class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
-    pass
-
-
-def build_target(target_cfg: LMTargetConfig) -> nn.Module:
-    """Load the LM target model in eval mode, dispatching on `target_cfg.spec.kind`."""
-    spec = target_cfg.spec
-    cls = _resolve_class(spec.model_class)
-    match spec:
-        case HFTarget():
-            target_model = ensure_cached_and_call(cls.from_pretrained, spec.model_name)
-        case PretrainedTarget():
-            from param_decomp_lab.experiments.lm.pretrain.run_info import PretrainRunInfo
-
-            run_info = ensure_cached_and_call(PretrainRunInfo.from_path, spec.run_path)
-            # Older PretrainRunInfo objects predate model_type; default it from the model class.
-            if "model_type" not in run_info.model_config_dict:
-                run_info.model_config_dict["model_type"] = spec.model_class.rsplit(".", 1)[-1]
-            target_model = cls.from_run_info(run_info)
-    target_model.eval()
-    return target_model
-
-
-def build_lm_loader(
-    target_cfg: LMTargetConfig,
-    data_cfg: LMDataConfig,
-    *,
-    split: Literal["train", "eval"],
-    device: str,
-    batch_size: int,
-    dist_state: DistributedState | None = None,
-    seed: int | None = None,
-) -> DataLoader[Any]:
-    """LM `DataLoader` for the requested split.
-
-    The eval seed is offset by 1 so eval shuffles differently from train when both come
-    from the same `pd_config.seed`.
-    """
-    del target_cfg, device
-    effective_seed = (seed or 0) + (1 if split == "eval" else 0)
-    split_name = data_cfg.eval_split if split == "eval" else data_cfg.train_split
-    loader, _ = create_lm_data_loader(
-        data_cfg,
-        split=split_name,
-        batch_size=rank_batch_size(batch_size, dist_state, label=f"{split}_batch_size"),
-        seed=effective_seed,
-        dist_state=dist_state,
-        collate_fn=collate_fn_for(data_cfg),
-    )
-    return loader
-
-
-def make_run_batch(target_cfg: LMTargetConfig) -> RunBatch:
-    return _make_run_batch(target_cfg.output_extract)
-
-
-@dataclass(frozen=True)
-class SavedLMRun:
-    """Handle to a completed LM PD run on disk or in W&B."""
-
-    cfg: LMExperimentConfig
-    checkpoint_path: Path
-
-    @classmethod
-    def from_path(cls, path: ModelPath) -> "SavedLMRun":
-        """Resolve a run directory or W&B path into a fully-validated `SavedLMRun`."""
-        files = resolve_run_files(
-            path, config_filename=EXPERIMENT_CONFIG_FILENAME, checkpoint_prefix="model"
-        )
-        return cls(
-            cfg=LMExperimentConfig.from_file(files.config_path),
-            checkpoint_path=files.checkpoint_path,
-        )
-
-    def load_model(self) -> ComponentModel:
-        return load_component_model(
-            pd_config=self.cfg.pd,
-            checkpoint_path=self.checkpoint_path,
-            target_model=build_target(self.cfg.target),
-            run_batch=make_run_batch(self.cfg.target),
-        )
-
-
-@with_distributed_cleanup
-def main(
-    config_path: str | Path | None = None,
-    *,
-    resume: str | Path | None = None,
-    group: str | None = None,
-    tags: str | None = None,
-    dp: int | None = None,
-    partition: str | None = DEFAULT_PARTITION_NAME,
-    time: str = "72:00:00",
-    job_name: str = "pd-lm",
-    no_snapshot: bool = False,
-    run_id: str | None = None,
-) -> None:
-    """Run an LM PD experiment end-to-end.
-
-    Args:
-        config_path: YAML for a fresh run. Required when not resuming.
-        resume: Path to a `ResumeConfig` YAML pointing at a prior run. When set,
-            the parent's `experiment_config.yaml` is the source of cfg truth; a new
-            `run_id` + sibling `resume_provenance.yaml` are written.
-        group / tags: wandb-only (no-ops without `wandb:`).
-        dp / partition / time / job_name / no_snapshot / run_id: SLURM submission
-            knobs. Passing `--dp N` outside torchrun submits a SLURM job: single-node
-            for N <= 8, multi-node for N > 8 (N must be a multiple of 8). For local
-            DDP, invoke directly via
-            `torchrun --standalone --nproc_per_node=N -m param_decomp_lab.experiments.lm.run`.
-    """
-    if dp is not None and os.environ.get("WORLD_SIZE") is None:
-        assert config_path is not None, "--dp SLURM submission requires a config_path"
-        _submit_slurm(
-            config_path,
-            dp=dp,
-            group=group,
-            tags=tags,
-            partition=partition,
-            time=time,
-            job_name=job_name,
-            no_snapshot=no_snapshot,
-            run_id=run_id,
-        )
+    Must run BEFORE `init_distributed` — XLA reads `XLA_FLAGS` when the backend initializes,
+    so a later mutation is ignored. Rank-gated via `SLURM_PROCID` (read pre-jax-init, only to
+    pick the writer — NOT to decide distributedness, which stays `runtime.dp`-driven) so a
+    single rank writes; `xla_dump_hlo_module_re` filters to the big `*step*` modules to keep
+    the dump to ~100s of MB. The buffer-assignment dump survives an exec-time OOM (compile
+    completes first), so this is how we name the buffer that blows the allocator."""
+    if os.environ.get("SLURM_PROCID", "0") != "0":
         return
+    hlo_dir = run_dir / "hlo"
+    hlo_dir.mkdir(parents=True, exist_ok=True)
+    existing = os.environ.get("XLA_FLAGS", "")
+    os.environ["XLA_FLAGS"] = (
+        f"{existing} --xla_dump_to={hlo_dir} --xla_dump_hlo_module_re=.*step.*"
+    ).strip()
 
-    if resume is not None:
-        assert config_path is None, "pass either config_path or --resume, not both"
-        _resume_main(Path(resume), group=group, tags=tags, run_id=run_id)
-    else:
-        assert config_path is not None, "must provide either config_path or --resume"
-        _fresh_main(Path(config_path), group=group, tags=tags, run_id=run_id)
+
+def _global_token_batch(local: np.ndarray, mesh: Mesh, global_batch: int) -> jax.Array:
+    sharding = NamedSharding(mesh, P(("replicate", "fsdp")))
+    return jax.make_array_from_process_local_data(sharding, local, (global_batch, local.shape[1]))
 
 
-def _fresh_main(
-    config_path: Path,
-    *,
-    group: str | None,
-    tags: str | None,
-    run_id: str | None,
+def assert_finetune_structural_compat(built: BuiltRun, prov: ResumeProvenance) -> None:
+    """Fine-tune requires the parent's decomposition STRUCTURE to match the new config's:
+    same sites (names + C) and same ci-fn arch. A changed C / layers / target / ci-fn is a
+    different-shaped decomposition and is NOT a fine-tune (the parent's V/U + ci_fn would
+    not load onto the new reference). Only LR / coeffs / eps / seq / batch / steps may
+    change. Read from the parent's pinned launch config so the failure is a readable config
+    diff, not an opaque orbax tree mismatch."""
+    parent = load_run_dir_config(prov.parent_run_dir)
+    parent_sites = tuple((s.name, s.C) for s in parent.target.sites)
+    new_sites = tuple((s.name, s.C) for s in built.target.sites)
+    assert parent_sites == new_sites, (
+        f"fine-tune sites mismatch: parent {parent_sites} != new {new_sites}"
+    )
+    assert parent.ci_fn == built.ci_fn, (
+        f"fine-tune ci-fn arch mismatch: parent {parent.ci_fn} != new {built.ci_fn}"
+    )
+
+
+def train(
+    built: BuiltRun,
+    lm: DecomposedModel,
+    mesh: Mesh,
 ) -> None:
-    """Fresh-run path: parse YAML, build everything, train from step 0."""
-    cfg = LMExperimentConfig.from_file(config_path)
+    """The LM composition over the generic engine: a parquet `sample_batch` (the per-step
+    token batch the model embeds) and the CEandKL / CI-L0 / PGD / attn-patterns `eval_fn`."""
+    data = built.data
+    assert isinstance(data, DataConfig), "train() is the LM (parquet) data path"
+    n_proc = jax.process_count()
+    # Pure HSDP: the batch shards over the FULL mesh (both axes), so it must tile the full
+    # device count, and the per-rank batch is B/N. Constraint: B >= N (per-rank >= 1).
+    n_dev = mesh.devices.size
+    assert data.global_batch % n_dev == 0, (data.global_batch, n_dev)
+    assert data.global_batch >= n_dev, (
+        f"global batch {data.global_batch} < device count {n_dev}: per-rank batch must be >= 1"
+    )
+    is_main = jax.process_index() == 0
 
-    dist_state = init_distributed()
-    if is_main_process():
-        logger.info(f"Distributed state: {dist_state}")
-    set_seed(cfg.pd.seed)
-    device = get_device()
-    cfg = cfg.model_copy(
-        update={
-            "runtime": cfg.runtime.model_copy(
-                update={
-                    "device": device,
-                    "dp": dist_state.world_size if dist_state is not None else None,
-                }
+    key = random.PRNGKey(built.pd.seed)
+    _, _, run_key = random.split(key, 3)
+
+    schedule = BatchSchedule(scan_shards(data.dir), data.global_batch, built.pd.seed)
+    server = ShardServer(schedule, data.seq_len, jax.process_index(), n_proc)
+    # Each process (node) owns all its local devices; its per-process batch splits across them.
+    assert server.per_process % jax.local_device_count() == 0, (
+        server.per_process,
+        jax.local_device_count(),
+    )
+
+    def sample_batch(step: int) -> jax.Array:
+        return _global_token_batch(server.local_batch(step), mesh, data.global_batch)
+
+    eval_fn = None
+    eval_every = built.pd.steps + 1  # unreachable cadence when eval is disabled
+    if built.eval is not None:
+        assert built.eval.every % built.cadence.train_log_every == 0, (
+            "eval must land on a train-log step: the tok/s window resets after eval, so a "
+            "mid-window eval would corrupt the next step-time estimate"
+        )
+        assert built.eval.slow_every % built.eval.every == 0, (
+            "slow_every must be a multiple of every: the slow tier reuses the fast eval "
+            "pass's batches, so it can only fire on a fast-eval step"
+        )
+        eval_every = built.eval.every
+        eval_fn = _make_lm_eval_fn(built, lm, run_key, mesh, n_proc, is_main)
+
+    run_decomposition_training(
+        pd=built.pd,
+        cadence=built.cadence,
+        run=built.run,
+        lm=lm,
+        ci_fn=built.ci_fn,
+        data=data,
+        remat_recon_forwards=built.runtime.remat_recon_forwards,
+        remat_ci_fn=built.runtime.remat_ci_fn,
+        ascend_replicate=built.runtime.ascend_replicate,
+        compiler_options=built.runtime.compiler_options,
+        profile=built.runtime.launch_env.profile,
+        sample_batch=sample_batch,
+        eval_fn=eval_fn,
+        eval_every=eval_every,
+        mesh=mesh,
+    )
+
+
+def _make_lm_eval_fn(
+    built: BuiltRun,
+    lm: DecomposedModel,
+    run_key: PRNGKeyArray,
+    mesh: Mesh,
+    n_proc: int,
+    is_main: bool,
+) -> "Callable[[TrainState, int], LogRecord]":
+    """The LM in-loop eval pass closure (CEandKL / CI-L0 / PGD / attn-patterns), keyed
+    deterministically off `(run_key, now_step)` so it is bit-identical to the pre-engine
+    inline loop. Mirrors the torch `eval_split: train` stream: an independent reader over
+    the SAME corpus (own seed), advanced one block of `n_steps` batches per eval pass."""
+    eval = built.eval
+    assert eval is not None
+    pd = built.pd
+    data = built.data
+    assert isinstance(data, DataConfig)
+    eval_schedule = BatchSchedule(scan_shards(data.dir), eval.batch_size, pd.seed + 1)
+    eval_server = ShardServer(eval_schedule, data.seq_len, jax.process_index(), n_proc)
+    assert eval_server.per_process % jax.local_device_count() == 0, (
+        eval_server.per_process,
+        jax.local_device_count(),
+    )
+    co = built.runtime.compiler_options
+    eval_step_fn = make_eval_step(
+        lm,
+        eval.rounding_threshold,
+        eval.l0_ci_alive_threshold,
+        eval.l0_groups,
+        eval.pgd,
+        mesh,
+        co,
+    )
+    attn_steps: dict[str, Any] = {}
+    if eval.attn_patterns is not None:
+        pattern_fn = attn_pattern_for(lm)
+        if eval.attn_patterns.ci_masked:
+            attn_steps["CIMaskedAttnPatternsReconLoss"] = make_ci_attn_patterns_step(
+                lm, pattern_fn, co
             )
+        if eval.attn_patterns.stochastic:
+            attn_steps["StochasticAttnPatternsReconLoss"] = make_stochastic_attn_patterns_step(
+                lm, pattern_fn, eval.attn_patterns.stochastic_n_mask_samples, co
+            )
+
+    slow_eval_step = make_slow_eval_step(
+        lm, eval.density_ci_alive_threshold, eval.density_heatmap_n_bins, co
+    )
+    slow_renderer = SlowEvalRenderer(is_main)
+    # The CI-heatmap / permutation / UV / identity-error metrics read off the run's typed
+    # `eval.metrics` (re-validated from the pinned launch config: the trainer's `EvalConfig`
+    # drops the raw metric list). The launch config is pinned before train().
+    run_eval_metrics = eval_metrics_from_run_dir(built.run.run_dir)
+    perm_spec = resolve_permutation_metrics(lm.site_names, run_eval_metrics)
+    hidden_acts_n_mask_samples = stochastic_hidden_acts_n_mask_samples(run_eval_metrics)
+    want_position_ci = perm_spec.any_plots or perm_spec.any_identity_error
+    position_ci_step = make_position_ci_step(lm, co) if want_position_ci else None
+
+    def eval_fn(state: TrainState, now_step: int) -> "LogRecord":
+        eval_pass_index = now_step // eval.every
+        # uniform-average of per-batch scalars; mean-safe vs torch's accumulate-then-
+        # compute() ONLY because every emitted key is a per-batch reduction that torch also
+        # averages across batches AND eval batches are uniform (B, T). See eval.py's module
+        # docstring for the per-key parity argument (cites SPEC S8/D2).
+        metric_sums: dict[str, jax.Array] = {}
+        eval_batches: list[jax.Array] = []
+        # No per-rank SIGTERM abandon inside this loop — it would desync the collective
+        # device->host gathers below; the engine gates pass entry on cross-rank consensus.
+        for j in range(eval.n_steps):
+            eval_tokens = _global_token_batch(
+                eval_server.local_batch(eval_pass_index * eval.n_steps + j),
+                mesh,
+                eval.batch_size,
+            )
+            eval_batches.append(eval_tokens)
+            # fold values >= pd.steps never collide with the train step keys
+            eval_key = random.fold_in(run_key, pd.steps + eval_pass_index * eval.n_steps + j)
+            eval_metrics = eval_step_fn(lm, state.components, state.ci_fn, eval_tokens, eval_key)
+            for k, v in eval_metrics.items():
+                metric_sums[k] = metric_sums.get(k, jnp.zeros(())) + v
+        eval_record: dict[str, LogValue] = {
+            f"eval/{k}": float(v) / eval.n_steps for k, v in metric_sums.items()
         }
-    )
-
-    target_model = build_target(cfg.target)
-
-    train_loader = build_lm_loader(
-        cfg.target,
-        cfg.data,
-        split="train",
-        device=device,
-        batch_size=cfg.pd.batch_size,
-        dist_state=dist_state,
-        seed=cfg.pd.seed,
-    )
-    eval_loop = _build_eval_loop(cfg, device, dist_state)
-
-    sink = init_pd_run(cfg, group=group, tags=tags, run_id=run_id)
-
-    try:
-        trainer = Trainer(
-            target_model=target_model,
-            run_batch=make_run_batch(cfg.target),
-            reconstruction_loss=recon_loss_kl,
-            pd_config=cfg.pd,
-            runtime_config=cfg.runtime,
-        )
-        trainer.run(train_loader, sink, cfg.cadence, eval_loop)
-    finally:
-        sink.finish()
-
-
-def _resume_main(
-    resume_cfg_path: Path,
-    *,
-    group: str | None,
-    tags: str | None,
-    run_id: str | None,
-) -> None:
-    """Resume-run path: read parent `experiment_config.yaml` + `training_<step>.pth`,
-    rebuild trainer via `Trainer.from_snapshot`, continue training."""
-    resume_cfg = ResumeConfig.from_file(resume_cfg_path)
-    parent_cfg = LMExperimentConfig.from_file(resume_cfg.from_run / EXPERIMENT_CONFIG_FILENAME)
-
-    dist_state = init_distributed()
-    if is_main_process():
-        logger.info(f"Distributed state: {dist_state}")
-        logger.info(f"Resuming from {resume_cfg.from_run} @ step {resume_cfg.step}")
-    set_seed(parent_cfg.pd.seed)
-    device = get_device()
-
-    effective_cfg = parent_cfg.model_copy(
-        update={
-            "runtime": parent_cfg.runtime.model_copy(
-                update={
-                    "device": device,
-                    "dp": dist_state.world_size if dist_state is not None else None,
+        for class_name, attn_step in attn_steps.items():
+            # token-weighted (Σ sum_kl / Σ n), NOT the uniform per-batch average above — KL
+            # is summed over distributions, divided by their count.
+            attn_key = random.fold_in(run_key, 2 * pd.steps + eval_pass_index)
+            reductions = accumulate_attn_patterns(
+                attn_step, lm, state.components, state.ci_fn, eval_batches, attn_key
+            )
+            eval_record |= {
+                f"eval/loss/{k}": v
+                for k, v in attn_patterns_log_entries(class_name, reductions).items()
+            }
+        slow_due = slow_eval_due(now_step, eval.every, eval.slow_every, eval.slow_on_first_step)
+        if eval_batches and slow_due:
+            # SLOW/PLOT TIER (SPEC S28/S29). The COLLECTIVE part runs in lockstep on every
+            # rank — `accumulate_site_reductions` / `compute_hidden_acts_metrics` pull
+            # C-sharded reductions to numpy, whose `np.asarray` triggers the all-gather all
+            # ranks must join. It reuses the eval batches already loaded above. The
+            # hidden-acts scalars ride the live `_step` axis through `eval_record`; the
+            # figures' pure-host render + wandb.log happen OFF the loop on rank 0.
+            site_reductions = accumulate_site_reductions(
+                slow_eval_step, lm, state.ci_fn, eval_batches, eval.slow_n_batches_accum
+            )
+            hidden_acts_key = random.fold_in(run_key, 3 * pd.steps + eval_pass_index)
+            hidden_acts = compute_hidden_acts_metrics(
+                lm, state, eval_batches, hidden_acts_n_mask_samples, hidden_acts_key, co
+            )
+            eval_record |= {f"eval/slow/loss/{k}": v for k, v in hidden_acts.items()}
+            # The position-CI all-gather is ALSO collective (every rank joins it), gated on
+            # the config naming a CI-heatmap / permutation / identity-error metric. The
+            # heatmap FIGURES render off-loop on rank 0; the IdentityCIError SCALARS log
+            # synchronously on the live `_step` (cheap + must stay `_step`-monotonic).
+            position_ci: dict[str, PositionCI] | None = None
+            if position_ci_step is not None:
+                position_ci = accumulate_position_ci(
+                    position_ci_step, lm, state.ci_fn, eval_batches
+                )
+                identity_ci_errors = compute_identity_ci_errors(
+                    perm_spec, position_ci, IDENTITY_CI_ERROR_TOLERANCE
+                )
+                eval_record |= {f"eval/slow/{k}": v for k, v in identity_ci_errors.items()}
+            # `UVPlots` needs the C-sharded V/U gathered to host (collective `np.asarray`).
+            # This NAIVE gather is small-scale-only — it OOMs / breaks at production C BY
+            # DESIGN (per Oli); gated on the config naming UVPlots so it costs nothing
+            # otherwise. The component column order reuses the position-CI permutation.
+            components: dict[str, tuple[np.ndarray, np.ndarray]] | None = None
+            if perm_spec.want_uv_plots:
+                components = {
+                    name: (np.asarray(V), np.asarray(U))
+                    for name, (V, U) in state.components.vu.items()
                 }
-            ),
-        }
-    )
+            slow_renderer.submit(site_reductions, perm_spec, position_ci, components, now_step)
+        if is_main and built.run.wandb is not None:
+            # torch CI_L0.compute() emitted a per-layer L0 bar chart alongside the scalars;
+            # rebuild it host-side from the `eval/l0/<thr>_<site|group>` scalars already in
+            # the record (the jitted eval can't construct wandb objects).
+            import wandb
 
-    resolved_step = resolve_step(resume_cfg.from_run, resume_cfg.step)
-    snapshot = read_training_snapshot(resume_cfg.from_run, resolved_step)
-    # Override the saved device with the current resume environment. Mutating
-    # the dict (model_dump output) in place is fine even on a frozen dataclass;
-    # we're changing a value the dataclass references, not rebinding the field.
-    snapshot.runtime_config["device"] = device
+            l0_prefix = f"eval/l0/{eval.l0_ci_alive_threshold}_"
+            eval_record["eval/l0/bar_chart"] = wandb.plot.bar(
+                wandb.Table(
+                    columns=["layer", "l0"],
+                    data=[
+                        [k.removeprefix(l0_prefix), v]
+                        for k, v in eval_record.items()
+                        if k.startswith(l0_prefix)
+                    ],
+                ),
+                "layer",
+                "l0",
+                title=f"L0_{eval.l0_ci_alive_threshold}",
+            )
+        if is_main:
+            headline = {
+                k: eval_record[f"eval/{k}"]
+                for k in ("ce_kl/kl_ci_masked", "ce_kl/ce_difference_ci_masked")
+            }
+            print(f"[eval @ {now_step}] {headline}", flush=True)
+        return eval_record
 
-    target_model = build_target(effective_cfg.target)
-    train_loader = build_lm_loader(
-        effective_cfg.target,
-        effective_cfg.data,
-        split="train",
-        device=device,
-        batch_size=effective_cfg.pd.batch_size,
-        dist_state=dist_state,
-        seed=effective_cfg.pd.seed,
-    )
-    eval_loop = _build_eval_loop(effective_cfg, device, dist_state)
-    sink = init_pd_run(effective_cfg, group=group, tags=tags, run_id=run_id)
-    if sink.out_dir is not None:
-        write_provenance(
-            sink.out_dir,
-            ResumeProvenance(parent_run_dir=resume_cfg.from_run, parent_step=resolved_step),
+    return eval_fn
+
+
+def _pin_config_copy(run_dir: Path, name: str, source: Path) -> None:
+    """First run copies `source` into the run dir; resumes byte-compare against it."""
+    copy = run_dir / name
+    if copy.exists():
+        assert copy.read_text() == source.read_text(), (
+            f"{copy} differs from {source} — refusing to resume with a changed config"
         )
-
-    try:
-        trainer = Trainer.from_snapshot(
-            snapshot,
-            target_model=target_model,
-            run_batch=make_run_batch(effective_cfg.target),
-            reconstruction_loss=recon_loss_kl,
-        )
-        trainer.run(train_loader, sink, effective_cfg.cadence, eval_loop)
-    finally:
-        sink.finish()
-
-
-def _build_eval_loop(
-    cfg: LMExperimentConfig,
-    device: str,
-    dist_state: DistributedState | None,
-) -> EvalLoop | None:
-    """Build the `EvalLoop` from `cfg.eval`, or `None` when eval is disabled."""
-    if cfg.eval is None:
-        return None
-    eval_loader = build_lm_loader(
-        cfg.target,
-        cfg.data,
-        split="eval",
-        device=device,
-        batch_size=cfg.eval.batch_size,
-        dist_state=dist_state,
-        seed=cfg.pd.seed,
-    )
-    return EvalLoop(
-        loader=eval_loader,
-        metrics=[EVAL_METRIC_CLASSES[m.type](m) for m in cfg.eval.metrics],
-        n_steps=cfg.eval.n_steps,
-        every=cfg.eval.every,
-        slow_every=cfg.eval.slow_every,
-        slow_on_first_step=cfg.eval.slow_on_first_step,
-    )
-
-
-def _submit_slurm(
-    config_path: str | Path,
-    *,
-    dp: int,
-    group: str | None,
-    tags: str | None,
-    partition: str | None,
-    time: str,
-    job_name: str,
-    no_snapshot: bool,
-    run_id: str | None,
-) -> None:
-    run_id = run_id or generate_run_id("param_decomp")
-    snapshot_ref: str | None = None
-    commit_hash = "no-snapshot"
-    if not no_snapshot:
-        snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=run_id)
-        logger.info(f"Created git snapshot: {snapshot_ref} ({commit_hash[:8]})")
-
-    # If the config is an absolute path inside REPO_ROOT, rewrite to repo-relative so
-    # the SLURM job picks up the snapshot's copy rather than the live worktree.
-    path = Path(config_path)
-    if path.is_absolute() and path.is_relative_to(REPO_ROOT):
-        config_arg = path.relative_to(REPO_ROOT).as_posix()
     else:
-        config_arg = str(config_path)
-
-    base_parts = ["-m", "param_decomp_lab.experiments.lm.run", config_arg, "--run_id", run_id]
-    if group is not None:
-        base_parts += ["--group", group]
-    if tags is not None:
-        base_parts += ["--tags", tags]
-    base_command = shlex.join(base_parts)
-
-    launch = build_ddp_launch(
-        base_command,
-        dp=dp,
-        job_name=job_name,
-        snapshot_ref=snapshot_ref,
-        port_seed=run_id,
-    )
-    wandb_url = _wandb_url_for_config(config_path, run_id)
-    slurm_config = SlurmConfig(
-        job_name=job_name,
-        partition=partition,
-        n_gpus=launch.gpus_per_node,
-        n_nodes=launch.n_nodes,
-        time=time,
-        snapshot_ref=snapshot_ref,
-        comment=wandb_url or run_id,
-    )
-    script = generate_script(slurm_config, launch.command, env=launch.env)
-    result = submit_slurm_job(script, "lm")
-
-    logger.section("LM PD job submitted!")
-    summary: dict[str, str | None] = {
-        "Run ID": run_id,
-        "Job ID": result.job_id,
-        "Log file": result.log_pattern,
-        "Script": str(result.script_path),
-        "Snapshot": f"{snapshot_ref} ({commit_hash[:8]})" if snapshot_ref else "(none)",
-    }
-    if wandb_url is not None:
-        summary["WandB run URL"] = wandb_url
-    logger.values(summary)
+        copy.write_text(source.read_text())
 
 
-def _wandb_url_for_config(config_path: str | Path, run_id: str) -> str | None:
-    cfg = LMExperimentConfig.from_file(config_path)
-    if cfg.wandb is None:
-        return None
-    entity = cfg.wandb.entity or get_wandb_entity()
-    return f"https://wandb.ai/{entity}/{cfg.wandb.project}/runs/{run_id}"
+def main(config: Path, run_id: str) -> None:
+    config = Path(config)
+    built, _raw_cfg = load_config(config, run_id)
+
+    install_sigterm_flag()
+    _enable_hlo_dump(built.run.run_dir)
+    init_distributed(built.runtime.dp)
+    # Harden the cold-cache HF weight load against the 8N-rank startup burst before any
+    # per-rank Hub call (no-op when huggingface_hub is absent / cache is pre-warmed).
+    configure_hf_http_retries()
+    mesh = hsdp_mesh(built.runtime.tp)
+
+    if built.run.resume_provenance is not None:
+        assert_finetune_structural_compat(built, built.run.resume_provenance)
+
+    cache_dir = _enable_persistent_compilation_cache(built.run.out_dir)
+
+    is_main = jax.process_index() == 0
+    if is_main:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        built.run.run_dir.mkdir(parents=True, exist_ok=True)
+        setup_logger(built.run.run_dir / "logs.log")
+        _pin_config_copy(built.run.run_dir, LAUNCH_CONFIG_FILENAME, config)
+        print(f"persistent XLA compilation cache: {cache_dir}", flush=True)
+        site_kind_counts: dict[str, int] = {}
+        for s in built.target.sites:
+            kind = s.name.rsplit(".", 1)[-1]
+            site_kind_counts[kind] = site_kind_counts.get(kind, 0) + 1
+        site_summary = ", ".join(f"{k}×{n}" for k, n in sorted(site_kind_counts.items()))
+        assert isinstance(built.data, DataConfig)
+        print(
+            f"run {built.run.run_name} | {mesh.devices.size} GPU / {jax.process_count()} proc | "
+            f"B={built.data.global_batch} seq={built.data.seq_len} "
+            f"sites={len(built.target.sites)} [{site_summary}] steps={built.pd.steps}",
+            flush=True,
+        )
+
+    # The `lm` (an eqx model) IS the frozen target — it carries the frozen weights as fields,
+    # so the function-table era's separate `frozen` object is gone.
+    lm, _vocab_size = build_target(built, mesh)
+
+    train(built, lm, mesh)
+
+    if jax.process_count() > 1:
+        import jax.experimental.multihost_utils as mhu
+
+        mhu.sync_global_devices("train_done")
+        jax.distributed.shutdown()
 
 
 def cli() -> None:

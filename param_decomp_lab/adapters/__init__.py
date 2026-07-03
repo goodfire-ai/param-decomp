@@ -1,41 +1,22 @@
-"""Harvest method adapters: method-specific logic for the generic harvest pipeline.
+"""PD run-loading adapter: recover model metadata from a saved JAX single-pool run.
 
-Each decomposition method (PD, CLT, MOLT, Transcoder) provides an adapter that knows how to:
-- Load the model and build a dataloader
-- Compute firings and activations from a batch (harvest_fn)
-- Report layer structure and vocab size
-
+The adapter loads the target model and reports its layer structure and vocab size.
 Construct via adapter_from_config(method_config).
 """
 
-from param_decomp_lab.adapters.base import DecompositionAdapter
-from param_decomp_lab.harvest.config import DecompositionMethodHarvestConfig
+from param_decomp_lab.adapters.pd import PDAdapter, is_jax_run
+from param_decomp_lab.harvest.config import ParamDecompHarvestConfig
 
 
-def adapter_from_config(method_config: DecompositionMethodHarvestConfig) -> DecompositionAdapter:
-    from param_decomp_lab.harvest.config import (
-        CLTHarvestConfig,
-        ParamDecompHarvestConfig,
-        TranscoderHarvestConfig,
+def adapter_from_config(method_config: ParamDecompHarvestConfig) -> PDAdapter:
+    assert is_jax_run(method_config.wandb_path), (
+        f"{method_config.wandb_path}: not a loadable PD run (missing launch_config.yaml or orbax ckpts/)."
     )
-
-    match method_config:
-        case ParamDecompHarvestConfig():
-            from param_decomp_lab.adapters.pd import PDAdapter
-
-            return PDAdapter(method_config.wandb_path)
-        case TranscoderHarvestConfig():
-            from param_decomp_lab.adapters.transcoder import TranscoderAdapter
-
-            return TranscoderAdapter(method_config)
-        case CLTHarvestConfig():
-            from param_decomp_lab.adapters.clt import CLTAdapter
-
-            return CLTAdapter(method_config)
+    return PDAdapter(method_config.wandb_path)
 
 
-def adapter_from_id(decomposition_id: str) -> DecompositionAdapter:
-    """Construct an adapter from a decomposition ID (e.g. "s-abc123", "tc-1a2b3c4d").
+def adapter_from_id(decomposition_id: str) -> PDAdapter:
+    """Construct an adapter from a decomposition ID (e.g. "s-abc123", "p-1a2b3c4d").
 
     Recovers the full method config from the harvest DB (which is always populated
     before downstream steps like autointerp run).
@@ -50,5 +31,5 @@ def adapter_from_id(decomposition_id: str) -> DecompositionAdapter:
         f"Run pd-harvest first to populate the method config."
     )
     method_config_raw = repo.get_config()["method_config"]
-    method_config = TypeAdapter(DecompositionMethodHarvestConfig).validate_python(method_config_raw)
+    method_config = TypeAdapter(ParamDecompHarvestConfig).validate_python(method_config_raw)
     return adapter_from_config(method_config)

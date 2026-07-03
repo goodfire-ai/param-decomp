@@ -1,0 +1,37 @@
+run_name: pile_llama_simple_mlp-2L-128
+seed: 45
+dp: 8
+dtype: bfloat16
+global_batch: 1024
+num_iterations: 100000
+warmup_iters: 600
+learning_rate: 3e-4
+learning_rate_decay_frac: 0.1
+weight_decay: 0.1
+grad_clip: 1.0
+log_every: 100
+val_every: 1000
+val_steps: 20
+save_every: 1000
+
+model:
+  model_type: LlamaSimpleMLP
+  block_size: 512
+  vocab_size: 50277
+  n_layer: 2
+  n_head: 4
+  n_embd: 128
+  n_intermediate: 512
+  rotary_dim: 32
+  rotary_base: 10000
+  n_ctx: 512
+  n_key_value_heads: 2
+  rms_norm_eps: 1.0e-06
+  flash_attention: false
+
+data:
+  dir: /mnt/data/artifacts/mechanisms/param-decomp/datasets/pile_neox_tok_512
+  tokenizer_name: EleutherAI/gpt-neox-20b
+
+wandb:
+  project: param-decomp

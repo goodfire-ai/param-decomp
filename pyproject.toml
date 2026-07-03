@@ -1,27 +1,42 @@
 [project]
 name = "param-decomp"
 version = "0.0.1"
-description = "Parameter Decomposition"
+description = "The JAX VPD trainer (core) + target pretraining + vendored JAX archs"
 requires-python = "==3.13.*"
 urls = { "Homepage" = "https://github.com/goodfire-ai/param-decomp" }
 license = { text = "MIT" }
 readme = "README.md"
 dependencies = [
-    "torch>=2.6",
-    "pydantic<2.12", # https://github.com/goodfire-ai/param-decomp/pull/232 , https://github.com/goodfire-ai/param-decomp/issues/221
-    "tqdm",
-    "transformers",
-    "jaxtyping",
-    "einops",
-    "matplotlib",
-    "numpy",
-    "python-dotenv",
-    # `datasets` less than 2.21.0 causes issues due to incompatibility with numpy>=2.0
-    # see:  https://github.com/huggingface/datasets/issues/6980  https://github.com/huggingface/datasets/pull/6991  (fixed in https://github.com/huggingface/datasets/releases/tag/2.21.0 )
-    "datasets>=2.21.0",
-    "pillow",
-    "pyyaml",
+    # The torch-free pydantic config schema now ships inside this distribution
+    # (`param_decomp.configs` / `base_config` / `schedule`), so it carries the schema's
+    # leaf deps directly (was the dissolved `param-decomp-config` package).
+    "pydantic<2.12", # https://github.com/goodfire-ai/param-decomp/pull/232 , issues/221
+    "annotated-types",
+    "jax==0.10.1",
+    "equinox==0.13.8",
+    "optax==0.2.8",
+    "jaxtyping==0.3.10",
+    "beartype==0.22.2",
+    "einops==0.8.2",
+    "numpy==2.4.6",
+    "safetensors==0.7.0",
+    "pyarrow==19.0.1",
+    "pyyaml==6.0.2",
+    "orbax-checkpoint==0.12.0",
+    "wandb==0.21.0",
+    "matplotlib==3.10.8",
+    "pillow==12.0.0",
 ]
+
+[project.optional-dependencies]
+# CUDA jaxlib wheels for the cluster; the per-run snapshot venv the launcher builds
+# installs this extra. The dev venv (CPU box) takes the base CPU jax above.
+cuda = ["jax[cuda12]==0.10.1"]
+
+[project.scripts]
+# No core console scripts: the trainers run as modules (`python -m param_decomp.run` /
+# `python -m pretrain.train`), which is what the lab launchers `pd-lm` / `pd-pretrain`
+# sbatch (and what you'd run for direct debug). Slow/plot eval is in-loop only (SPEC S28).
 
 [dependency-groups]
 dev = [
@@ -34,6 +49,11 @@ dev = [
     "pre-commit",
     "scikit-learn",
     "ipykernel",
+    # huggingface-hub is a typecheck-/dev-time dep only: `hf_http.configure_hf_http_retries`
+    # imports it behind a runtime `find_spec` guard (no-op when absent), so it is never a
+    # runtime dependency — but the type-checker needs its (`py.typed`) stubs to resolve those
+    # guarded imports.
+    "huggingface-hub==0.36.0",
 ]
 
 [build-system]
@@ -45,7 +65,14 @@ include-package-data = false
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["param_decomp", "param_decomp.*"]
+include = [
+    "param_decomp",
+    "param_decomp.*",
+    "pretrain",
+    "pretrain.*",
+    "vendored_jax",
+    "vendored_jax.*",
+]
 namespaces = false
 
 [tool.uv.workspace]
@@ -57,7 +84,7 @@ param-decomp = { workspace = true }
 [tool.ruff]
 line-length = 100
 fix = true
-extend-exclude = ["param_decomp_lab/app/frontend"]
+extend-exclude = ["**/_scratch"]
 
 [tool.ruff.lint]
 ignore = [
@@ -88,8 +115,24 @@ docstring-code-format = true
 known-third-party = ["wandb"]
 
 [tool.pyright]
-include = ["param_decomp", "param_decomp_lab", "nano_param_decomp"]
-exclude = ["**/wandb/**", "param_decomp_lab/_linear_sum_assignment.py", "param_decomp_lab/app/frontend"]
+# nano_param_decomp/ is the standalone torch single-file VPD reference impl for paper
+# readers (see README); it is the one torch island left in the repo and is type-checked
+# in a torch env, not this JAX-only one.
+# `vendored_jax` is a verbatim numeric mirror of the torch vendored Llama — kept out of
+# type-checking (its correctness contract is the parity tests, not types).
+include = ["param_decomp", "pretrain", "param_decomp_lab"]
+exclude = [
+    "**/wandb/**",
+    "**/_scratch/**",
+    "**/node_modules/**",
+    "**/__pycache__",
+    "nano_param_decomp",
+    "vendored_jax",
+    "param_decomp/tests/equivalence/torch_reference.py",  # torch-env script
+    "param_decomp/tools/convert_llama_simple_mlp_checkpoint.py",  # torch-env script
+    "param_decomp/tests/simple_mlp_equivalence/gen_torch_fixtures.py",  # torch-env script
+    "param_decomp/tests/stacked_parity/gen_stacked_fixtures.py",  # base-branch-only script (pre-restructure API)
+]
 stubPath = "typings" # Having type stubs for transformers shaves 10 seconds off basedpyright calls
 
 strictListInference = true

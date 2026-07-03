@@ -1,18 +1,11 @@
 """SQLite connection helpers for NFS-mounted databases.
 
-Two environments exist in this codebase:
-
-1. **NFS databases** (harvest, autointerp, graph_interp, dataset_attributions):
-   - Live at PARAM_DECOMP_OUT_DIR on shared NFS mount
-   - WAL mode MUST NOT be used — it requires POSIX advisory locking which
-     NFS doesn't support reliably, causing "database is locked" errors
-   - Readonly uses ?immutable=1 (no lock files created at all)
-   - Write mode uses default DELETE journal
-
-2. **App database** (prompt_attr.db):
-   - Lives at PARAM_DECOMP_OUT_DIR/app/ on NFS (shared across team)
-   - Uses DELETE journal mode with fcntl.flock write locking
-   - Managed by PromptAttrDB in param_decomp_lab/app/backend/database.py
+NFS databases (harvest, autointerp):
+- Live at PARAM_DECOMP_OUT_DIR on shared NFS mount
+- WAL mode MUST NOT be used — it requires POSIX advisory locking which
+  NFS doesn't support reliably, causing "database is locked" errors
+- Readonly uses ?immutable=1 (no lock files created at all)
+- Write mode uses default DELETE journal
 """
 
 import sqlite3

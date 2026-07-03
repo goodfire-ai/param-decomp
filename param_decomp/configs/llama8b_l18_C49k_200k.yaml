@@ -1,0 +1,156 @@
+# Overnight C49k/200k run (2026-06-10) — JAX counterpart of torch p-19645bf7 via the
+# shared-config route. See the referenced yaml's header for the documented edits.
+# remat off: AOT-probed to fit at the launch topology (64 GPU, per-rank batch 8).
+run_name: jax-l18-C49k-200k
+# JAX leg of the C30k/200k run — derived from torch run p-19645bf7
+# (wandb goodfire/param-decomp-llama/p-19645bf7, "p-19645bf7_C30k_200ksteps";
+# snapshot runs/p-19645bf7/experiment_config.yaml). DOCUMENTED EDITS vs upstream:
+#   1. data: streaming raw-text fineweb @ seq 512 -> pre-tokenized parquet @ seq 2048
+#      (the JAX trainer reads the staged 2048 artifact; seq length is a REAL
+#      hyperparameter change, chosen deliberately — 4x tokens/step vs upstream).
+#   2. ci attn max_len: 512 -> 2048 (RoPE table must cover the longer seq).
+#   3. PersistentPGDReconLoss scope: per_batch_per_position -> broadcast_across_batch
+#      (the JAX trainer implements broadcast only; deliberate divergence).
+#   4. cadence.save_every: 25000 -> 5000 (overnight crash costs <=40 min, not 3 h).
+#   5. C: 30000 -> 49152 per Oli (2x the b512 run's C=24576; also unlocks a 32-GPU
+#      mesh — 30000's gcd with batch 128 capped the mesh at 16).
+#   6. pd.batch_size: 128 -> 512 per Oli. NOTE: lrs stay at upstream's 5e-5 (tuned
+#      at B=128).
+#   7. lrs (components + ci_fn): 5e-5 -> 7e-5 per Oli — a deliberate 1.4x partial
+#      bump for the 4x batch (full sqrt scaling would be 2x; chosen NOT to).
+# Everything else in pd: (C=30000, lrs 5e-5/5e-5, 200k steps, batch 128, eval set)
+# is upstream-identical.
+#   8. target.weights_dtype: upstream's default fp32 -> bfloat16. The JAX targets are
+#      bf16-only and now REFUSE an fp32 frozen-target request (issue #727), so the
+#      declared dtype must match the target's capability.
+cadence:
+  keep_last_n_checkpoints: 2
+  save_every: 5000
+  train_log_every: 200
+data:
+  buffer_size: 1000
+  column_name: input_ids
+  data_files: /mnt/data/artifacts/mechanisms/param-decomp/datasets/fineweb_llama_tok_2048/*.parquet
+  dataset_name: parquet
+  eval_split: train
+  is_tokenized: true
+  max_seq_len: 2048
+  revision: null
+  shuffle_each_epoch: true
+  streaming: false
+  tokenizer_name: meta-llama/Llama-3.1-8B
+  train_split: train
+eval:
+  batch_size: 512
+  every: 1000
+  metrics:
+  - n_batches_accum: 1
+    type: CIHistograms
+  - ci_alive_threshold: 0.0
+    type: ComponentActivationDensity
+  - ci_alive_threshold: 0.0
+    groups: null
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  - type: CIMeanPerComponent
+  - coeff: null
+    type: StochasticHiddenActsReconLoss
+  - type: CIHiddenActsReconLoss
+  - coeff: null
+    init: random
+    mask_scope: shared_across_batch
+    n_steps: 20
+    step_size: 0.1
+    type: PGDReconLoss
+  n_steps: 1
+  slow_every: 10000
+  slow_on_first_step: true
+pd:
+  batch_size: 512
+  ci_config:
+    type: chunkwise_transformer
+    blocks_per_chunk: 1
+    d_model: 4096
+    n_blocks: 4
+    n_heads: 64
+    mlp_hidden: 16384
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: null
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 7.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 0.01
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 7.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  decomposition_targets:
+  - C: 49152
+    module_pattern: model.layers.18.mlp.gate_proj
+  - C: 49152
+    module_pattern: model.layers.18.mlp.up_proj
+  - C: 49152
+    module_pattern: model.layers.18.mlp.down_proj
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 400
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - frequency:
+      coeff: 1.0e-06
+      reference_token_count: 1048576
+    coeff: 5.0e-06
+    eps: 1.0e-12
+    p_anneal_end_frac: 1.0
+    p_anneal_final_p: 0.4
+    p_anneal_start_frac: 0.0
+    pnorm: 2.0
+    type: ImportanceMinimalityLoss
+  - coeff: 0.5
+    routing:
+      type: uniform_k_subset
+    type: StochasticReconSubsetLoss
+  - coeff: 0.5
+    n_warmup_steps: 2
+    optimizer:
+      beta1: 0.5
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        final_val_frac: 1.0
+        fn_type: constant
+        start_val: 0.01
+        warmup_pct: 0.025
+      type: adam
+    scope:
+      type: broadcast_across_batch
+    type: PersistentPGDReconLoss
+  - coeff: 100000.0
+    type: FaithfulnessLoss
+  seed: 0
+  steps: 200000
+runtime:
+  remat_recon_forwards: false
+  dp: 32
+target:
+  output_extract: logits
+  weights_dtype: bfloat16
+  spec:
+    kind: hf
+    model_class: transformers.LlamaForCausalLM
+    model_name: meta-llama/Llama-3.1-8B
+wandb:
+  entity: null
+  project: param-decomp-llama
