@@ -23,6 +23,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.ad_checkpoint import checkpoint_name
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, Int
@@ -272,6 +273,10 @@ def _frozen_site_weight(layer: LlamaLayer, kind: str) -> Array:
 
 
 # ----------------------------- forwards -----------------------------
+
+
+_GATHERED_WEIGHTS_NAME = "gathered_compute_weights"
+"""`checkpoint_name` tag on the live block's post-gather V/U/W (`save_gathered_weights`)."""
 
 
 def _clean_mlp_out(layer: LlamaLayer, mlp_in: Array) -> Array:
@@ -528,6 +533,9 @@ class LlamaDecomposedModel(eqx.Module):
     plain per-layer scan."""
     gather_fp8: bool = eqx.field(static=True, default=False)
     """Quantized all-gather of the ÷fsdp compute V/U (`RuntimeConfig.gather_fp8`)."""
+    save_gathered_weights: bool = eqx.field(static=True, default=False)
+    """Save the live segment's gathered per-layer V/U/W across fwd→bwd
+    (`RuntimeConfig.save_gathered_weights`)."""
 
     @property
     def site_names(self) -> tuple[str, ...]:
@@ -681,8 +689,22 @@ class LlamaDecomposedModel(eqx.Module):
         else:
             first_live = last_live = 0
 
+        def saved_gathered(w: Array, gathered: P) -> Array:
+            """Pin `w` to its post-gather (full) layout and NAME it, so the checkpoint policy
+            SAVES the gathered value across fwd→bwd — the rematerialized backward then reuses
+            it instead of re-running the ÷fsdp→full gather (the dominant exposed-collective
+            phase). Identity unless `save_gathered_weights`; the constraint is a no-op
+            off-mesh (CPU tests still exercise the name + policy path)."""
+            if not self.save_gathered_weights:
+                return w
+            if not jax.sharding.get_abstract_mesh().empty:
+                w = jax.lax.with_sharding_constraint(w, gathered)
+            return checkpoint_name(w, _GATHERED_WEIGHTS_NAME)
+
         def decomp_site(x_in: Array, W: Array, e: dict[str, Array]) -> Array:
             v, u = e["V"], e["U"]
+            v = saved_gathered(v, P(None, "tp"))  # [d_in FULL (was ÷fsdp), C ÷tp]
+            u = saved_gathered(u, P("tp", None))  # [C ÷tp, d_out FULL (was ÷fsdp)]
             if "V_scale" in e:  # fp8 QAG: gather the fp8 ÷fsdp weight to full d (½ bytes on the
                 # wire), THEN dequant to bf16 — the barrier keeps the convert after the gather so
                 # the collective moves fp8, not bf16.
@@ -717,9 +739,10 @@ class LlamaDecomposedModel(eqx.Module):
         ) -> tuple[Array, Array | None]:
             # LIVE block only: every decomposed kind decomps (static — no cond); a kind absent
             # from the decomposition stays frozen.
+            W_full = saved_gathered(W, P(None, None))
             if kind not in decomposed_kinds:
-                return x_in @ W.T, None
-            out = decomp_site(x_in, W, pk[kind])
+                return x_in @ W_full.T, None
+            out = decomp_site(x_in, W_full, pk[kind])
             return out, (out if want_collect else None)
 
         def live_block(
@@ -767,6 +790,11 @@ class LlamaDecomposedModel(eqx.Module):
         #   remat=False → dots_saveable: SAVE the activation matmuls (no batch dims here → they
         #     qualify) but still recompute the gather + cheap elementwise. Pure recompute either
         #     way; zero numerics change.
+        # `save_gathered_weights` augments either mode with `save_only_these_names`: the live
+        # block's named gathered V/U/W (see `saved_gathered`) become saved residuals — the scan
+        # stacks them `[live_layers, …]` resident across fwd→bwd, and the backward's remat
+        # re-execution reuses them instead of re-gathering. Frozen segments name nothing, so
+        # the policy is uniform across segments.
         # `scan_unroll` (native `lax.scan(unroll=k)`) emits k iterations straight-line so XLA can
         # prefetch gather(L+1) under matmul(L) — the overlap a 1-layer while-body denies.
         policy = (
@@ -774,6 +802,13 @@ class LlamaDecomposedModel(eqx.Module):
             if remat
             else jax.checkpoint_policies.dots_saveable
         )
+        if self.save_gathered_weights:
+            saved_names = jax.checkpoint_policies.save_only_these_names(_GATHERED_WEIGHTS_NAME)
+            policy = (
+                saved_names
+                if remat
+                else jax.checkpoint_policies.save_from_both_policies(policy, saved_names)
+            )
 
         def run_scan(body: Any, carry: Array, xs: Any) -> tuple[Array, Any]:
             return jax.lax.scan(
@@ -958,10 +993,12 @@ def build_decomposed_lm(
     sites: tuple[SiteSpec, ...],
     scan_unroll: int = 1,
     gather_fp8: bool = False,
+    save_gathered_weights: bool = False,
 ) -> LlamaDecomposedModel:
     """Assemble a `LlamaDecomposedModel` from the frozen full-model arrays + decomposition
     config. `sites` must be canonical-ordered with dims matching `cfg`. `scan_unroll` /
-    `gather_fp8` are the `RuntimeConfig` compute knobs (1 / off = the default forward)."""
+    `gather_fp8` / `save_gathered_weights` are the `RuntimeConfig` compute knobs
+    (1 / off / off = the default forward)."""
     site_cs = tuple(SiteC(s.name, s.C) for s in sites)
     assert sites == llama_site_specs(cfg, canonical_site_cs(site_cs)), (
         f"sites are not the canonical specs for this config: {sites}"
@@ -978,6 +1015,7 @@ def build_decomposed_lm(
         eps=cfg.rms_norm_eps,
         scan_unroll=scan_unroll,
         gather_fp8=gather_fp8,
+        save_gathered_weights=save_gathered_weights,
     )
 
 
@@ -987,11 +1025,12 @@ def load_decomposed_lm_from_hf(
     sites: tuple[SiteSpec, ...],
     scan_unroll: int = 1,
     gather_fp8: bool = False,
+    save_gathered_weights: bool = False,
 ) -> LlamaDecomposedModel:
     """Load the Llama-8B `DecomposedModel`: the full frozen model (embedding, all blocks,
     final norm, lm_head) as fields plus the static decomposition config (`sites`). Blocks
-    without a decomposed site run the plain frozen path. `scan_unroll` / `gather_fp8` are the
-    `RuntimeConfig` compute knobs."""
+    without a decomposed site run the plain frozen path. `scan_unroll` / `gather_fp8` /
+    `save_gathered_weights` are the `RuntimeConfig` compute knobs."""
     w = _HFWeights(_hf_snapshot_dir(model_name))
     return build_decomposed_lm(
         embed=w.get("model.embed_tokens.weight"),
@@ -1003,4 +1042,5 @@ def load_decomposed_lm_from_hf(
         sites=sites,
         scan_unroll=scan_unroll,
         gather_fp8=gather_fp8,
+        save_gathered_weights=save_gathered_weights,
     )

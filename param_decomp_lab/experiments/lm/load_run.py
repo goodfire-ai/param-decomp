@@ -74,6 +74,9 @@ def build_target(cfg: BuiltRun, mesh: jax.sharding.Mesh) -> tuple[DecomposedMode
     validate via their in-loop target-CI metric in the lab provider, not this path."""
     match cfg.target:
         case LlamaSimpleMLPTargetConfig():
+            assert not cfg.runtime.save_gathered_weights, (
+                "save_gathered_weights is wired for the llama8b target only"
+            )
             cache_dir = llama_simple_mlp.pretrain_cache_dir(cfg.target.pretrain_run_path)
             simple_cfg = llama_simple_mlp.load_model_config(cache_dir)
             sites = llama_simple_mlp.site_specs(simple_cfg, cfg.target.sites)
@@ -92,6 +95,7 @@ def build_target(cfg: BuiltRun, mesh: jax.sharding.Mesh) -> tuple[DecomposedMode
                     sites,
                     scan_unroll=cfg.runtime.scan_unroll,
                     gather_fp8=cfg.runtime.gather_fp8,
+                    save_gathered_weights=cfg.runtime.save_gathered_weights,
                 ),
                 mesh,
             )
