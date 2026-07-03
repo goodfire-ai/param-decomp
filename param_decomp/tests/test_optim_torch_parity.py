@@ -6,6 +6,8 @@
   optax's eps-free `clip_by_global_norm`.
 """
 
+from typing import Literal
+
 import jax
 import jax.numpy as jnp
 import optax
@@ -13,7 +15,8 @@ import pytest
 from jax.typing import ArrayLike
 from jaxtyping import Array
 
-from param_decomp.run_state import clip_by_global_norm_with_eps, optax_schedule
+from param_decomp.configs import OptimizerConfig
+from param_decomp.run_state import _adamw_with_clip, clip_by_global_norm_with_eps, optax_schedule
 from param_decomp.schedule import ScheduleConfig
 
 
@@ -96,3 +99,56 @@ def test_grad_clip_noop_below_threshold():
     out = _clip(clip, grads)
     assert float(out["a"][0]) == pytest.approx(3.0)
     assert float(out["a"][1]) == pytest.approx(4.0)
+
+
+def _adamw(moments_dtype: Literal["float32", "bfloat16"]) -> optax.GradientTransformation:
+    opt = OptimizerConfig(
+        lr_schedule=ScheduleConfig(start_val=1e-3, fn_type="constant"),
+        moments_dtype=moments_dtype,
+    )
+    return _adamw_with_clip(opt, optax_schedule(opt.lr_schedule, total_steps=100))
+
+
+def _run_steps(
+    optimizer: optax.GradientTransformation, n_steps: int, key: Array
+) -> tuple[dict[str, Array], optax.OptState]:
+    params = {"w": jnp.ones((4, 8), jnp.float32)}
+    state = optimizer.init(params)
+    for step in range(n_steps):
+        grads = {"w": jax.random.normal(jax.random.fold_in(key, step), (4, 8)) * 1e-3}
+        updates, state = optimizer.update(grads, state, params)
+        new_params, treedef = jax.tree.flatten(optax.apply_updates(params, updates))
+        params = jax.tree.unflatten(treedef, new_params)
+    return params, state
+
+
+def test_bf16_moments_dtype_persists_across_updates():
+    _, state = _run_steps(_adamw("bfloat16"), n_steps=3, key=jax.random.key(0))
+    assert isinstance(state, tuple)
+    adam_state = state[0]
+    assert isinstance(adam_state, optax.ScaleByAdamState)
+    assert all(m.dtype == jnp.bfloat16 for m in jax.tree.leaves(adam_state.mu))
+    assert all(v.dtype == jnp.bfloat16 for v in jax.tree.leaves(adam_state.nu))
+    assert all(bool(jnp.any(v != 0)) for v in jax.tree.leaves(adam_state.nu))
+
+
+def test_bf16_moments_track_fp32_trajectory():
+    key = jax.random.key(1)
+    params_f32, _ = _run_steps(_adamw("float32"), n_steps=20, key=key)
+    params_bf16, _ = _run_steps(_adamw("bfloat16"), n_steps=20, key=key)
+    divergence = jnp.max(jnp.abs(params_f32["w"] - params_bf16["w"]))
+    total_movement = jnp.max(jnp.abs(params_f32["w"] - 1.0))
+    assert float(divergence) < 0.02 * float(total_movement)
+    assert bool(jnp.any(params_f32["w"] != params_bf16["w"]))
+
+
+def test_fp32_moments_default_matches_plain_optax_adamw():
+    opt = OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3, fn_type="constant"))
+    assert opt.moments_dtype == "float32"
+    schedule = optax_schedule(opt.lr_schedule, total_steps=100)
+    ours = _adamw_with_clip(opt, schedule)
+    plain = optax.adamw(schedule, b1=0.9, b2=0.999, eps=1e-8, weight_decay=0.0)
+    key = jax.random.key(2)
+    params_ours, _ = _run_steps(ours, n_steps=5, key=key)
+    params_plain, _ = _run_steps(plain, n_steps=5, key=key)
+    assert bool(jnp.all(params_ours["w"] == params_plain["w"]))

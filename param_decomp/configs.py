@@ -573,6 +573,13 @@ class OptimizerConfig(BaseConfig):
         default=None,
         description="If set, clip the grad norm of this group's parameters to this value",
     )
+    moments_dtype: Literal["float32", "bfloat16"] = "float32"
+    """Storage dtype for the Adam moments (`m`/`v`); the fp32 masters are untouched (SPEC
+    N1) and the moment-update arithmetic still promotes to fp32 — `bfloat16` is storage
+    rounding only. `float32` (default) is the oracle-parity path; `bfloat16` halves the
+    resident moment footprint (m+v = 2/3 of the 3x-master optimizer block; ~-6 GiB/GPU on
+    full32L b128). bf16 keeps fp32's exponent range, so `v = grad^2` cannot underflow any
+    earlier than fp32 (validated on the PPGD source Adam, `source_dtype`)."""
 
 
 AnyLossMetricConfig = Annotated[

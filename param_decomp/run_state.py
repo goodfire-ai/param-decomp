@@ -71,13 +71,42 @@ def clip_by_global_norm_with_eps(max_norm: float, eps: float) -> optax.GradientT
     return optax.GradientTransformation(init, update)
 
 
+def _with_nu_dtype(
+    adamw: optax.GradientTransformation, dtype: jnp.dtype
+) -> optax.GradientTransformation:
+    """Pin the SECOND Adam moment's storage dtype (optax exposes only `mu_dtype`). optax's
+    `scale_by_adam` update ends with `nu = cast_like(nu, state.nu)`, so nu keeps whatever
+    dtype it was INITIALIZED with — overriding the init is sufficient, and the moment
+    arithmetic still promotes to fp32 in-update (storage rounding only)."""
+
+    def init(params: optax.Params) -> tuple[optax.OptState, ...]:
+        states = adamw.init(params)
+        assert isinstance(states, tuple)
+        adam_state, *rest = states
+        assert isinstance(adam_state, optax.ScaleByAdamState)
+        nu = jax.tree.map(lambda v: v.astype(dtype), adam_state.nu)
+        return (adam_state._replace(nu=nu), *rest)
+
+    return optax.GradientTransformation(init, adamw.update)
+
+
 def _adamw_with_clip(opt: OptimizerConfig, schedule: Callable[[ArrayLike], Array]):
     """AdamW (fp32 master, optax wd default overridden to the config's — torch's is 0)
     over `schedule`, optionally preceded by torch-parity global-norm clip (SPEC S19/N1).
-    Adam eps is the torch/optax default 1e-8 (not exposed on `OptimizerConfig`)."""
+    Adam eps is the torch/optax default 1e-8 (not exposed on `OptimizerConfig`). The Adam
+    m/v STORAGE dtype is `opt.moments_dtype` (fp32 masters regardless; see the config
+    field's docstring)."""
+    moments_dtype = jnp.dtype(opt.moments_dtype)
     adamw = optax.adamw(
-        schedule, b1=opt.betas[0], b2=opt.betas[1], eps=1e-8, weight_decay=opt.weight_decay
+        schedule,
+        b1=opt.betas[0],
+        b2=opt.betas[1],
+        eps=1e-8,
+        weight_decay=opt.weight_decay,
+        mu_dtype=moments_dtype,
     )
+    if moments_dtype != jnp.float32:
+        adamw = _with_nu_dtype(adamw, moments_dtype)
     if opt.grad_clip_norm is None:
         return adamw
     return optax.chain(clip_by_global_norm_with_eps(opt.grad_clip_norm, eps=1e-6), adamw)
