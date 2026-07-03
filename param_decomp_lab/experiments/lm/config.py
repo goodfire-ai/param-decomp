@@ -137,6 +137,10 @@ class LMDataConfig(BaseConfig):
     streaming: bool = Field(default=False)
     buffer_size: PositiveInt = Field(default=1000)
     shuffle_each_epoch: bool = Field(default=True)
+    train_batch_replay: PositiveInt = Field(
+        default=1,
+        description="Consecutive train steps sharing one batch (free-AT replay); 1 = fresh batch every step",
+    )
 
 
 class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
@@ -319,7 +323,10 @@ def _data(cfg: LMExperimentConfig) -> DataConfig:
     shard_glob = Path(data.data_files)
     assert shard_glob.name == "*.parquet", f"expected a *.parquet glob, got {data.data_files}"
     return DataConfig(
-        dir=shard_glob.parent, seq_len=data.max_seq_len, global_batch=cfg.pd.batch_size
+        dir=shard_glob.parent,
+        seq_len=data.max_seq_len,
+        global_batch=cfg.pd.batch_size,
+        train_batch_replay=data.train_batch_replay,
     )
 
 

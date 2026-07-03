@@ -45,6 +45,10 @@ class DataConfig:
     dir: Path
     seq_len: int
     global_batch: int
+    train_batch_replay: int
+    """Consecutive train steps that share one token batch (free-AT-style replay: the
+    persistent adversary's once-per-step ascent becomes batch-matched on the repeated
+    steps). 1 = a fresh batch every step."""
 
 
 @dataclass(frozen=True)
