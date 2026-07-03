@@ -101,8 +101,25 @@ def test_jitted_sharded_inits_match_eager_values():
         assert isinstance(V.sharding, NamedSharding) and isinstance(U.sharding, NamedSharding)
         assert V.sharding.spec == P(full, "tp"), (spec.name, V.sharding.spec)
         assert U.sharding.spec == P("tp", full), (spec.name, U.sharding.spec)
-    for got, want in zip(jax.tree.leaves(vu_placed), jax.tree.leaves(vu_eager), strict=True):
+    # The placed init runs vmap-stacked per shape group (compile-time optimization) and
+    # must be BIT-identical to the jitted per-site `init_decomp_vu` it replaced (vmap over
+    # the same per-site keys) — the trajectory anchor. The unjitted eager reference differs
+    # from EITHER jitted path by ~1 ULP (XLA fusion), so it only gets allclose.
+    import equinox as eqx
+    from functools import partial
+
+    per_site_shardings = eqx.filter_eval_shape(
+        partial(init_decomp_vu, sites), jax.random.PRNGKey(1)
+    ).shardings(mesh)
+    vu_jitted_per_site = jax.jit(
+        partial(init_decomp_vu, sites), out_shardings=per_site_shardings
+    )(jax.random.PRNGKey(1))
+    for got, want in zip(
+        jax.tree.leaves(vu_placed), jax.tree.leaves(vu_jitted_per_site), strict=True
+    ):
         assert got.shape == want.shape and got.dtype == want.dtype
+        assert jnp.array_equal(jnp.asarray(got), jnp.asarray(want))
+    for got, want in zip(jax.tree.leaves(vu_placed), jax.tree.leaves(vu_eager), strict=True):
         assert jnp.allclose(jnp.asarray(got), want, rtol=1e-6, atol=0)
 
     # A declared ÷N shard dim that does NOT tile the device count is a loud crash inside
