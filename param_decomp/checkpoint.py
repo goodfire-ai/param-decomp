@@ -53,13 +53,19 @@ def restore_step(mgr: ocp.CheckpointManager, reference: TrainState, step: int) -
     (a freshly-initialised, correctly-placed `TrainState`)."""
     abstract = jax.tree.map(ocp.utils.to_shape_dtype_struct, reference)
     restored = mgr.restore(step, args=ocp.args.StandardRestore(abstract))
-    # Coerce the restored tree onto the reference's exact FORMAT (layout + sharding), not just its
-    # sharding. StandardRestore already honors the sharding SPEC (verified), so a device_put onto
-    # sharding alone is a no-op — but orbax-restored arrays carry a default memory LAYOUT that
-    # differs from what the jitted step was compiled for. The reference is a fresh-init state built
-    # by the same XLA layout assignment as the step, so its `.format` IS the step's expected input
-    # layout; matching it avoids a ÷1-scale entry relayout on the first resumed step (the resume OOM).
-    restored = jax.device_put(restored, jax.tree.map(lambda r: r.format, reference))
+    # Orbax-restored arrays load in a non-donatable state (jax-ml/jax#18617). The jitted train
+    # step donates its state args — on a fresh start the output aliases the input buffer, so the
+    # step peaks at argument + temp; with non-donatable inputs XLA must allocate a SEPARATE output
+    # buffer (+output_size), tipping the per-device peak over the memory limit on the first resumed
+    # step. Re-commit every leaf onto its own sharding with may_alias=False (force a fresh, hence
+    # donatable, buffer even though the sharding already matches) and donate=True (delete the
+    # non-donatable original in place, so this costs no extra resident memory).
+    restored = jax.device_put(
+        restored,
+        jax.tree.map(lambda a: a.sharding, restored),
+        donate=True,
+        may_alias=False,
+    )
     return cast(TrainState, restored)
 
 
