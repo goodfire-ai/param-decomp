@@ -88,33 +88,20 @@ def _enable_persistent_compilation_cache(out_dir: Path) -> Path:
     ranks point at the same shared-FS path. Only process 0 writes (jax gates the write on
     `process_id == 0` to avoid shared-FS write contention); every rank reads. Must run
     after `init_distributed` (the rank gate reads the distributed state) and before the
-    first compile."""
+    first compile.
+
+    Enabling this also auto-enables XLA's per-fusion autotune cache (jax default
+    `jax_persistent_cache_enable_xla_caches`), written under
+    `<cache_dir>/xla_gpu_per_fusion_autotune_cache_dir/` with UPDATE on rank 0 / READ
+    elsewhere — so a structural config change reuses GEMM autotuning even on a full
+    executable-cache miss. Measured 2026-07-03 (compile-probe arms A–D): with triton_gemm
+    off, autotuning is a negligible slice of the step compile anyway
+    (`xla_gpu_autotune_level` 0/2/4 all ~71s at the 8L probe)."""
     cache_dir = out_dir.parent / "xla_compilation_cache"
     jax.config.update("jax_compilation_cache_dir", str(cache_dir))
     jax.config.update("jax_persistent_cache_min_compile_time_secs", 60.0)
     jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
     return cache_dir
-
-
-def _enable_persistent_autotune_cache(
-    out_dir: Path, compiler_options: dict[str, bool | int | str]
-) -> Path:
-    """Persist XLA's per-fusion GEMM-autotuning results to a shared-FS dir reused across
-    runs (sibling of the compilation cache). The executable cache above only hits on an
-    IDENTICAL module; any structural config change is a full recompile, but the matmul
-    shapes are usually unchanged — this cache lets that recompile skip re-benchmarking every
-    GEMM. Injected via `setdefault` so an explicit `runtime.compiler_options` in the config
-    wins; the same flags on every rank keep the compile-cache key rank-uniform (a per-rank
-    flag would fork the key and break the requeue fast path for rank != 0). All ranks write
-    (XLA's per-fusion files land via temp+rename, so concurrent writers are safe); the dir
-    path is deployment-constant, so it costs no compile-cache misses."""
-    autotune_dir = out_dir.parent / "xla_autotune_cache"
-    autotune_dir.mkdir(parents=True, exist_ok=True)
-    compiler_options.setdefault("xla_gpu_per_fusion_autotune_cache_dir", str(autotune_dir))
-    compiler_options.setdefault(
-        "xla_gpu_experimental_autotune_cache_mode", "AUTOTUNE_CACHE_MODE_UPDATE"
-    )
-    return autotune_dir
 
 
 def _enable_hlo_dump(run_dir: Path) -> None:
@@ -418,9 +405,6 @@ def main(config: Path, run_id: str) -> None:
         assert_finetune_structural_compat(built, built.run.resume_provenance)
 
     cache_dir = _enable_persistent_compilation_cache(built.run.out_dir)
-    autotune_dir = _enable_persistent_autotune_cache(
-        built.run.out_dir, built.runtime.compiler_options
-    )
 
     is_main = jax.process_index() == 0
     if is_main:
@@ -429,7 +413,6 @@ def main(config: Path, run_id: str) -> None:
         setup_logger(built.run.run_dir / "logs.log")
         _pin_config_copy(built.run.run_dir, LAUNCH_CONFIG_FILENAME, config)
         print(f"persistent XLA compilation cache: {cache_dir}", flush=True)
-        print(f"persistent XLA autotune cache: {autotune_dir}", flush=True)
         site_kind_counts: dict[str, int] = {}
         for s in built.target.sites:
             kind = s.name.rsplit(".", 1)[-1]
