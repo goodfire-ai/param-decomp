@@ -1,179 +1,92 @@
 """Generate a small full-model-faithful compile-probe config.
 
-Derived from llama8b_full32L_seq512_b128_dp128.yaml: SAME per-kind C structure
-(q/k 2048, v/o 4096, gate/up 8192, down 10240) so the masked forward takes the
-uniform-per-kind `lax.scan` path (the production compile path), SAME chunkwise-recon +
-persistent-PGD + faith + imp-min machinery, SAME CI-fn arch (4-block transformer). The
-only knobs scaled down are layer count (decompose the LAST `n_layers`, so the live
-decomposed span the scan walks is exactly `n_layers` long), batch, seq, and the
-warmup/step counts so we reach the real recon step fast for timing.
+DERIVED from the production 32L config (llama8b_full32L_seq512_b128_dp64.yaml) rather
+than hand-mirroring the schema — so it stays valid as the schema moves. Keeps the
+production algorithm (chunkwise-recon + persistent-PGD + faith + imp-min), CI-fn arch,
+per-kind C structure, and tp; scales down to the LAST `n_layers` (the live decomposed
+span the scan walks), one recon chunk, 10 steps, 2 faith-warmup steps, eval never fires.
 
-Usage: python gen_probe_config.py <n_layers> <dp> <out.yaml>
+Per-arm isolation: `PARAM_DECOMP_OUT_DIR` in the rank env points the run dir AND both
+persistent caches (xla_compilation_cache / xla_autotune_cache, siblings of runs/) at
+`compile_probe_scratch/<arm>`, so arms never share a cache. `JAX_LOG_COMPILES=1` prints
+per-jit compile durations into the slurm log.
+
+Usage:
+    python gen_probe_config.py <n_layers> <dp> <arm_name> <out.yaml> [k=v ...]
+
+Trailing `k=v` pairs are extra `runtime.compiler_options` (e.g.
+`xla_gpu_autotune_level=0`); specifying any restates the full default set (a yaml
+`compiler_options` block REPLACES the default dict).
 """
 
 import sys
+from pathlib import Path
 
 import yaml
 
-PER_KIND_C = {
-    "self_attn.q_proj": 2048,
-    "self_attn.k_proj": 2048,
-    "self_attn.v_proj": 4096,
-    "self_attn.o_proj": 4096,
-    "mlp.gate_proj": 8192,
-    "mlp.up_proj": 8192,
-    "mlp.down_proj": 10240,
-}
+BASE_CONFIG = Path(__file__).parent.parent / "llama8b_full32L_seq512_b128_dp64.yaml"
+SCRATCH = "/mnt/data/artifacts/mechanisms/param-decomp/compile_probe_scratch"
 N_TOTAL_LAYERS = 32
 
+# mirror of RuntimeConfig.compiler_options defaults, restated because a yaml
+# compiler_options block replaces the whole default dict
+DEFAULT_COMPILER_OPTIONS = {
+    "xla_gpu_enable_latency_hiding_scheduler": True,
+    "xla_gpu_enable_triton_gemm": False,
+    "xla_gpu_enable_command_buffer": "",
+    "xla_gpu_enable_highest_priority_async_stream": True,
+    "xla_gpu_all_reduce_combine_threshold_bytes": 1073741824,
+    "xla_gpu_all_gather_combine_threshold_bytes": 1073741824,
+    "xla_gpu_reduce_scatter_combine_threshold_bytes": 134217728,
+    "xla_gpu_enable_pipelined_all_gather": True,
+    "xla_gpu_enable_pipelined_reduce_scatter": True,
+    "xla_gpu_enable_pipelined_all_reduce": True,
+    "xla_gpu_enable_while_loop_double_buffering": True,
+    "xla_gpu_enable_all_gather_combine_by_dim": False,
+    "xla_gpu_enable_reduce_scatter_combine_by_dim": False,
+}
 
-def main(n_layers: int, dp: int, out_path: str, seq: int = 256, batch: int | None = None) -> None:
-    if batch is None:
-        batch = dp  # per-rank 1
-    first = N_TOTAL_LAYERS - n_layers
-    targets = []
-    for layer in range(first, N_TOTAL_LAYERS):
-        for mod, c in PER_KIND_C.items():
-            targets.append({"C": c, "module_pattern": f"model.layers.{layer}.{mod}"})
-    sites_per_chunk = len(targets)  # one chunk: minimise compile, still the chunkwise path
 
-    cfg = {
-        "run_name": f"compileprobe-{n_layers}L-dp{dp}-seq{seq}",
-        "cadence": {"keep_last_n_checkpoints": 1, "save_every": 100000, "train_log_every": 1},
-        "data": {
-            "buffer_size": 1000,
-            "column_name": "input_ids",
-            "data_files": "/mnt/data/artifacts/mechanisms/param-decomp/datasets/fineweb_llama_tok_512/*.parquet",
-            "dataset_name": "parquet",
-            "eval_split": "train",
-            "is_tokenized": True,
-            "max_seq_len": seq,
-            "revision": None,
-            "shuffle_each_epoch": True,
-            "streaming": False,
-            "tokenizer_name": "meta-llama/Llama-3.1-8B",
-            "train_split": "train",
-        },
-        # eval disabled-ish: large `every` so no eval compile interferes with timing
-        "eval": {
-            "batch_size": batch,
-            "every": 100000,
-            "metrics": [
-                {"ci_alive_threshold": 0.0, "groups": None, "type": "CI_L0"},
-                {"rounding_threshold": 0.0, "type": "CEandKLLosses"},
-            ],
-            "n_steps": 1,
-            "slow_every": 1000000,
-            "slow_on_first_step": False,
-        },
-        "pd": {
-            "batch_size": batch,
-            "ci_config": {
-                "fn_type": "global_shared_transformer",
-                "hidden_dims": None,
-                "mode": "global",
-                "simple_transformer_ci_cfg": {
-                    "attn_config": {"max_len": seq, "n_heads": 64, "rope_base": 10000.0},
-                    "d_model": 4096,
-                    "mlp_hidden_dim": [16384],
-                    "n_blocks": 4,
-                },
-            },
-            "ci_fn_optimizer": {
-                "betas": [0.9, 0.999],
-                "grad_clip_norm": None,
-                "lr_schedule": {
-                    "final_val_frac": 0.1,
-                    "fn_type": "cosine",
-                    "start_val": 2.0e-05,
-                    "warmup_pct": 0.0,
-                },
-                "weight_decay": 0.0,
-            },
-            "components_optimizer": {
-                "betas": [0.9, 0.999],
-                "grad_clip_norm": 0.01,
-                "lr_schedule": {
-                    "final_val_frac": 0.1,
-                    "fn_type": "cosine",
-                    "start_val": 2.0e-05,
-                    "warmup_pct": 0.0,
-                },
-                "weight_decay": 0.0,
-            },
-            "decomposition_targets": targets,
-            "faithfulness_warmup_lr": 0.001,
-            "faithfulness_warmup_steps": 2,
-            "faithfulness_warmup_weight_decay": 0.0,
-            "identity_decomposition_targets": None,
-            "loss_metrics": [
-                {
-                    "beta": 0.2,
-                    "coeff": 5.0e-06,
-                    "eps": 1.0e-06,
-                    "p_anneal_end_frac": 1.0,
-                    "p_anneal_final_p": 0.4,
-                    "p_anneal_start_frac": 0.0,
-                    "pnorm": 2.0,
-                    "type": "ImportanceMinimalityLoss",
-                },
-                {
-                    "coeff": 2.0,
-                    "n_samples": 1,
-                    "routing": {"type": "uniform_k_subset"},
-                    "sites_per_chunk": sites_per_chunk,
-                    "type": "ChunkwiseSubsetReconLoss",
-                },
-                {
-                    "coeff": 0.5,
-                    "n_warmup_steps": 2,
-                    "optimizer": {
-                        "beta1": 0.01,
-                        "beta2": 0.99,
-                        "eps": 1.0e-08,
-                        "lr_schedule": {
-                            "final_val_frac": 1.0,
-                            "fn_type": "constant",
-                            "start_val": 0.01,
-                            "warmup_pct": 0.025,
-                        },
-                        "type": "adam",
-                    },
-                    "scope": {"type": "per_batch_per_position"},
-                    "type": "PersistentPGDReconLoss",
-                },
-                {"coeff": 1000000.0, "type": "FaithfulnessLoss"},
-            ],
-            "n_mask_samples": 1,
-            "sampling": "continuous",
-            "seed": 0,
-            "steps": 10,
-        },
-        "runtime": {
-            "autocast_bf16": True,
-            "device": "cuda:0",
-            "dp": dp,
-            "remat_recon_forwards": True,
-        },
-        "target": {
-            "weights_dtype": "bfloat16",
-            "spec": {
-                "kind": "hf",
-                "model_class": "transformers.LlamaForCausalLM",
-                "model_name": "meta-llama/Llama-3.1-8B",
-            },
-        },
+def main(n_layers: int, dp: int, arm: str, out_path: str, extra_opts: dict[str, object]) -> None:
+    cfg = yaml.safe_load(BASE_CONFIG.read_text())
+    cfg["run_name"] = f"compileprobe-{arm}"
+    cfg.pop("wandb", None)
+
+    keep_layers = {str(i) for i in range(N_TOTAL_LAYERS - n_layers, N_TOTAL_LAYERS)}
+    targets = [
+        t
+        for t in cfg["pd"]["decomposition_targets"]
+        if t["module_pattern"].split(".")[2] in keep_layers
+    ]
+    assert len(targets) == 7 * n_layers, len(targets)
+    cfg["pd"]["decomposition_targets"] = targets
+    cfg["pd"]["steps"] = 10
+    cfg["pd"]["batch_size"] = dp
+    cfg["pd"]["faithfulness_warmup_steps"] = 2
+    for lm in cfg["pd"]["loss_metrics"]:
+        if lm["type"] == "ChunkwiseSubsetReconLoss":
+            lm["sites_per_chunk"] = 7 * n_layers
+
+    cfg["cadence"] = {"keep_last_n_checkpoints": 1, "save_every": 100000, "train_log_every": 1}
+    cfg["eval"]["batch_size"] = dp
+    cfg["eval"]["every"] = 100000
+    cfg["eval"]["slow_every"] = 1000000
+    cfg["eval"]["slow_on_first_step"] = False
+
+    cfg["runtime"]["dp"] = dp
+    if extra_opts:
+        cfg["runtime"]["compiler_options"] = DEFAULT_COMPILER_OPTIONS | extra_opts
+    cfg["runtime"]["launch_env"] = {
+        "env": {"JAX_LOG_COMPILES": "1", "PARAM_DECOMP_OUT_DIR": f"{SCRATCH}/{arm}"}
     }
-    with open(out_path, "w") as f:
-        yaml.safe_dump(cfg, f, sort_keys=False)
-    print(
-        f"wrote {out_path}: {n_layers}L (layers {first}..31), {len(targets)} sites, dp={dp}, batch={batch}, seq={seq}"
-    )
+
+    Path(out_path).write_text(yaml.safe_dump(cfg, sort_keys=False))
+    print(f"wrote {out_path}: arm={arm} {len(targets)} sites dp={dp} extra={extra_opts}")
 
 
 if __name__ == "__main__":
-    n_layers = int(sys.argv[1])
-    dp = int(sys.argv[2])
-    out_path = sys.argv[3]
-    seq = int(sys.argv[4]) if len(sys.argv) > 4 else 256
-    main(n_layers, dp, out_path, seq=seq)
+    extra = {}
+    for kv in sys.argv[5:]:
+        k, v = kv.split("=", 1)
+        extra[k] = int(v) if v.isdigit() else v
+    main(int(sys.argv[1]), int(sys.argv[2]), sys.argv[3], sys.argv[4], extra)
