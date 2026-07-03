@@ -272,6 +272,31 @@ write cache entries from the first process … contention for writes on some fil
 so all ranks read but only rank 0 writes — no shared-FS race. Requires the cache dir on a
 shared FS, which `$PARAM_DECOMP_OUT_DIR` already is.
 
+### Compile time (measured 2026-07-03, compile-probe arms A–F)
+
+- **The executable cache only hits on an IDENTICAL module** — any structural config change
+  (C, sites, batch, seq, chunking, a compiler flag) is a full recompile. Swept SCALARS also
+  miss: coeffs/LRs/step-sizes are baked into HLO as constants, so a run differing only in a
+  coefficient recompiles everything. **Keep smoke configs byte-identical to the production
+  arm in everything but cadence** — then the production launch reuses the smoke's cached
+  executables. (`steps` feeds schedules, which ARE baked — a changed `steps` is a cache
+  miss; smoke the exact production config when you want to prewarm.)
+- **Autotuning is NOT where compile time goes** (with `triton_gemm` off):
+  `xla_gpu_autotune_level` 0/2/4 measured flat (~71s jit_step at the 8L probe), and jax
+  ≥0.10 already persists the per-fusion autotune cache alongside the compilation cache
+  (`jax_persistent_cache_enable_xla_caches` default) — don't re-chase these levers.
+- **`init_decomp_vu_placed` compiles stacked** (vmap per V/U shape, then a slice jit) —
+  bit-identical to the per-site init but ~10× cheaper to compile at 224 sites. Keep new
+  seeded inits few-outputs-under-jit; a sharded jit returning 2×n_sites outputs was a
+  multi-minute SPMD pass.
+- The remaining big jit_step-compile lever is structural: the recon plan unrolls its chunks
+  python-side, so the production step module contains n_chunks full-model masked
+  forwards+backwards. Scanning over uniform chunks would shrink the module ~n_chunks×.
+- The compile-probe harness lives in `param_decomp/configs/compile_probe/` (arm-isolated
+  caches via `PARAM_DECOMP_OUT_DIR` in `launch_env.env`); compile-structure A/Bs also
+  reproduce cheaply on CPU via `XLA_FLAGS=--xla_force_host_platform_device_count=8` + AOT
+  `.lower().compile()`.
+
 ## Gotchas
 
 - **`init_distributed(dp)` is config-driven, NEVER SLURM-sniffing** (`sharding.py`):
