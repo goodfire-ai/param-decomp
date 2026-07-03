@@ -704,7 +704,6 @@ class LlamaDecomposedModel(eqx.Module):
         def decomp_site(x_in: Array, W: Array, e: dict[str, Array]) -> Array:
             v, u = e["V"], e["U"]
             v = saved_gathered(v, P(None, "tp"))  # [d_in FULL (was ÷fsdp), C ÷tp]
-            u = saved_gathered(u, P("tp", None))  # [C ÷tp, d_out FULL (was ÷fsdp)]
             if "V_scale" in e:  # fp8 QAG: gather the fp8 ÷fsdp weight to full d (½ bytes on the
                 # wire), THEN dequant to bf16 — the barrier keeps the convert after the gather so
                 # the collective moves fp8, not bf16.
@@ -739,10 +738,9 @@ class LlamaDecomposedModel(eqx.Module):
         ) -> tuple[Array, Array | None]:
             # LIVE block only: every decomposed kind decomps (static — no cond); a kind absent
             # from the decomposition stays frozen.
-            W_full = saved_gathered(W, P(None, None))
             if kind not in decomposed_kinds:
-                return x_in @ W_full.T, None
-            out = decomp_site(x_in, W_full, pk[kind])
+                return x_in @ W.T, None
+            out = decomp_site(x_in, W, pk[kind])
             return out, (out if want_collect else None)
 
         def live_block(
