@@ -72,7 +72,10 @@ def _tiny_cfg() -> LlamaConfig:
 
 
 def _tiny_decomposed_lm(
-    cfg: LlamaConfig, sites: tuple[SiteSpec, ...], key: jax.Array
+    cfg: LlamaConfig,
+    sites: tuple[SiteSpec, ...],
+    key: jax.Array,
+    save_gathered_weights: bool = False,
 ) -> LlamaDecomposedModel:
     """A tiny random `LlamaDecomposedModel` (random embedding + full frozen layer stack
     plus the decomposition `sites`) — the CPU-test analog of `load_decomposed_lm_from_hf`."""
@@ -102,6 +105,7 @@ def _tiny_decomposed_lm(
         inv_freq=llama3_inv_freq(cfg),
         cfg=cfg,
         sites=sites,
+        save_gathered_weights=save_gathered_weights,
     )
 
 
@@ -185,6 +189,38 @@ def test_llama_site_specs_dims():
     assert dims(by_name["layers.2.mlp.down_proj"]) == (cfg.n_intermediate, cfg.n_embd, 4)
     with pytest.raises(AssertionError, match="canonical"):
         llama_site_specs(cfg, tuple(reversed(mlp_family_site_cs(2, 2, 4))))
+
+
+@pytest.mark.parametrize("remat", [True, False])
+def test_save_gathered_weights_is_numerics_identical(remat: bool):
+    """`save_gathered_weights` is a pure store-vs-recompute trade: outputs AND grads (wrt
+    V/U and masks, through the checkpointed live-block scan) must match the default path."""
+    cfg = _tiny_cfg()
+    C = 8
+    sites = _mlp_sites(cfg, 3, 5, C)
+    key = jax.random.PRNGKey(0)
+    lm_off = _tiny_decomposed_lm(cfg, sites, key)
+    lm_on = _tiny_decomposed_lm(cfg, sites, key, save_gathered_weights=True)
+    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    b, t = 2, 16
+    tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
+    names = lm_off.site_names
+    masks = {
+        s: jax.random.uniform(jax.random.fold_in(jax.random.PRNGKey(3), i), (b, t, C))
+        for i, s in enumerate(names)
+    }
+
+    def loss(lm: LlamaDecomposedModel, vu_: DecompVU, masks_: dict[str, jax.Array]) -> jax.Array:
+        out = lm.masked_output(
+            lm.prepare_compute_weights(vu_), tokens, masks_, {}, None, names, False, remat=remat
+        )
+        return jnp.sum(out.astype(jnp.float32) ** 2)
+
+    (l_off, g_off) = jax.value_and_grad(lambda v, m: loss(lm_off, v, m), argnums=(0, 1))(vu, masks)
+    (l_on, g_on) = jax.value_and_grad(lambda v, m: loss(lm_on, v, m), argnums=(0, 1))(vu, masks)
+    assert jnp.array_equal(l_off, l_on), (l_off, l_on)
+    for leaf_off, leaf_on in zip(jax.tree.leaves(g_off), jax.tree.leaves(g_on), strict=True):
+        assert jnp.array_equal(leaf_off, leaf_on)
 
 
 @pytest.mark.parametrize("first,last", [(4, 4), (3, 6)])

@@ -796,6 +796,18 @@ class RuntimeConfig(BaseConfig):
             "losses, forwards, and RNG; grad accumulation reassociates. Compute substrate."
         ),
     )
+    save_gathered_weights: bool = Field(
+        default=False,
+        description=(
+            "Save the LIVE segment's gathered per-layer V/U/W as checkpoint residuals across "
+            "fwd→bwd (`checkpoint_name` + a `save_only_these_names`-augmented remat policy), "
+            "so the rematerialized backward reuses them instead of re-gathering — the "
+            "dominant exposed-collective phase at full32L. Numerics-identical (pure "
+            "recompute-vs-store). Costs the live segment's gathered stacks resident fwd→bwd "
+            "(~11 GB per 8-layer chunk at full32L C) — AOT-probe memory before a big run. "
+            "llama8b target only. Compute substrate."
+        ),
+    )
     compiler_options: dict[str, bool | int | str] = Field(
         default_factory=lambda: {
             "xla_gpu_enable_latency_hiding_scheduler": True,
@@ -839,6 +851,9 @@ class RuntimeConfig(BaseConfig):
     def validate_gather_reshape(self) -> Self:
         assert not (self.ascend_replicate and self.gather_fp8), (
             "ascend_replicate and gather_fp8 both re-pin the compute-weight gather — pick one"
+        )
+        assert not (self.save_gathered_weights and self.gather_fp8), (
+            "save_gathered_weights and gather_fp8 both re-pin the compute-weight gather — pick one"
         )
         return self
 
