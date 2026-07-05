@@ -56,7 +56,10 @@ class IntruderSlurmConfig(BaseConfig):
 class HarvestConfig(BaseConfig):
     method_config: ParamDecompHarvestConfig
     n_batches: int | Literal["whole_dataset"] = 20_000
-    batch_size: int = 32
+    local_batch_size: int = 16
+    """Sequences per forward on EACH worker; a sharded run's global batch is
+    `local_batch_size * world_size`, so total sequences harvested =
+    `n_batches * local_batch_size * world_size`."""
     activation_examples_per_component: int = 400
     activation_context_tokens_per_side: int = 20
     pmi_token_top_k: int = 40

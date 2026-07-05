@@ -22,11 +22,11 @@ restore).
 ```bash
 # single process
 python -m param_decomp_lab.harvest.scripts.run_worker \
-    --run_dir runs/p-761bc061 --n_batches 50 --batch_size 16
+    --run_dir runs/p-761bc061 --n_batches 50 --local_batch_size 16
 
 # one rank of a sharded run (saves worker_states/worker_<rank>.npz; merge combines them)
 python -m param_decomp_lab.harvest.scripts.run_worker \
-    --run_dir runs/p-761bc061 --n_batches 50 --batch_size 16 \
+    --run_dir runs/p-761bc061 --n_batches 50 --local_batch_size 16 \
     --rank 0 --world_size 4 --subrun_id h-20260617_120000
 ```
 
@@ -73,13 +73,13 @@ The launcher:
 ```bash
 # Single process (auto-generates subrun ID)
 python -m param_decomp_lab.harvest.scripts.run_worker \
-    --run_dir runs/<run_id> --n_batches 1000 --batch_size 16
+    --run_dir runs/<run_id> --n_batches 1000 --local_batch_size 16
 
 # Multi-rank: all workers + merge must share the same --subrun_id
 SUBRUN="h-$(date +%Y%m%d_%H%M%S)"
 for r in 0 1 2 3; do
   python -m param_decomp_lab.harvest.scripts.run_worker \
-      --run_dir runs/<run_id> --n_batches 1000 --batch_size 16 \
+      --run_dir runs/<run_id> --n_batches 1000 --local_batch_size 16 \
       --rank $r --world_size 4 --subrun_id $SUBRUN &
 done
 wait
@@ -117,7 +117,7 @@ Entry point via `pd-harvest`. Submits array job + dependent merge job.
 The only worker. Opens a JAX run, runs its frozen forward, accumulates into the NumPy
 `Harvester`. Args:
 - `--run_dir`: the JAX run dir (`runs/<run_id>`) (required)
-- `--n_batches`, `--batch_size`, `--activation_threshold`
+- `--n_batches`, `--local_batch_size` (sequences per forward on each worker; global batch = local × world_size), `--activation_threshold`
 - `--rank R --world_size N`: serve `process_index=R`'s slice of every global batch; save
   to `worker_states/worker_<R>.npz`. Omit both for a single-process run that writes the
   final results directly.

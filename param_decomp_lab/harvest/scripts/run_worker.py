@@ -2,7 +2,7 @@
 bridge.
 
     python -m param_decomp_lab.harvest.scripts.run_worker \
-        --run_dir runs/p-761bc061 --n_batches 50 --batch_size 16
+        --run_dir runs/p-761bc061 --n_batches 50 --local_batch_size 16
 
 The run is opened with `param_decomp_lab.experiments.lm.load_run.open_jax_run` (the reusable JAX
 "open a run for consumption" pattern); the frozen forward-only pass it exposes is
@@ -21,9 +21,11 @@ combines them. A single-process run (no `--rank`) writes the final results direc
 """
 
 import argparse
+import os
 from datetime import datetime
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -68,7 +70,7 @@ def harvest_jax_run(
     data, seed = run.config.data, run.config.pd.seed
     assert isinstance(data, DataConfig), f"JAX harvest is LM-only, got {type(data).__name__}"
     rank, world_size = rank_world_size if rank_world_size is not None else (0, 1)
-    schedule = BatchSchedule(scan_shards(data.dir), config.batch_size, seed)
+    schedule = BatchSchedule(scan_shards(data.dir), config.local_batch_size * world_size, seed)
     server = ShardServer(schedule, data.seq_len, process_index=rank, process_count=world_size)
 
     harvester = Harvester(
@@ -111,7 +113,7 @@ def get_command(
         f"python -m param_decomp_lab.harvest.scripts.run_worker "
         f"--run_dir {run_dir} "
         f"--n_batches {config.n_batches} "
-        f"--batch_size {config.batch_size} "
+        f"--local_batch_size {config.local_batch_size} "
         f"--activation_threshold {_activation_threshold(config)} "
         f"--rank {rank} "
         f"--world_size {world_size} "
@@ -134,7 +136,10 @@ def main() -> None:
     ap.add_argument("--step", type=int, default=None, help="checkpoint step (default: latest)")
     ap.add_argument("--n_batches", type=int, required=True)
     ap.add_argument(
-        "--batch_size", type=int, default=HarvestConfig.model_fields["batch_size"].default
+        "--local_batch_size",
+        type=int,
+        default=HarvestConfig.model_fields["local_batch_size"].default,
+        help="sequences per forward on THIS worker (global batch = this x world_size)",
     )
     ap.add_argument(
         "--activation_threshold",
@@ -152,6 +157,16 @@ def main() -> None:
     args = ap.parse_args()
     assert (args.rank is None) == (args.world_size is None)
 
+    # Must be set before the jax backend initialises (first devices()/array op below):
+    # restoring a full 8B-run TrainState (~60GB checkpoint + restore staging + the frozen
+    # target) exceeds the default 0.75 preallocation pool on a single device.
+    os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.95")
+    if args.rank is not None:
+        assert jax.default_backend() == "gpu", (
+            f"sharded harvest worker on backend {jax.default_backend()!r} — a whole-array "
+            f"CPU harvest is ~100x slower than intended (CUDA jaxlib missing from the venv?)"
+        )
+
     run = open_jax_run(args.run_dir, args.step)
     subrun_id = args.subrun_id or "h-" + datetime.now().strftime("%Y%m%d_%H%M%S")
     config = HarvestConfig(
@@ -159,7 +174,7 @@ def main() -> None:
             wandb_path=run.run_id, activation_threshold=args.activation_threshold
         ),
         n_batches=args.n_batches,
-        batch_size=args.batch_size,
+        local_batch_size=args.local_batch_size,
         collect_component_cooccurrence=not args.no_cooccurrence,
     )
     output_dir = get_harvest_subrun_dir(run.run_id, subrun_id)

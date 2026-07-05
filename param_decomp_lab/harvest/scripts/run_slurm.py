@@ -114,7 +114,7 @@ def submit_harvest(
             "Sub-run ID": subrun_id,
             "N batches": config.config.n_batches,
             "N GPUs": n_gpus,
-            "Batch size": config.config.batch_size,
+            "Local batch size": config.config.local_batch_size,
             "Snapshot": f"{snapshot_ref} ({commit_hash[:8]})",
             "Array Job ID": array_result.job_id,
             "Merge Job ID": merge_result.job_id,
