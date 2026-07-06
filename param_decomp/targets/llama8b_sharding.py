@@ -49,7 +49,11 @@ from jax.sharding import PartitionSpec as P
 from jax.typing import DTypeLike
 from jaxtyping import Array, PRNGKeyArray
 
-from param_decomp.adversary import init_persistent_sources
+from param_decomp.adversary import (
+    init_persistent_sources_stacked,
+    sources_c_groups,
+    unstack_persistent_sources,
+)
 from param_decomp.ci_fn import CIFn, CIFnArch, build_ci_fn
 from param_decomp.components import (
     DecompVU,
@@ -144,14 +148,32 @@ def init_sources_sharded(
     batch-sharded elementwise combine."""
     match scope:
         case SCScope():
-            leading_shape, placement = (1, seq_len), NamedSharding(mesh, P())
+            leading_shape, spec = (1, seq_len), P()
         case BSCScope():
             leading_shape = (global_batch, seq_len)
-            placement = NamedSharding(mesh, P(("replicate", "fsdp"), None, None))
-    init = partial(
-        init_persistent_sources, site_names, site_component_counts, leading_shape, source_dtype
-    )
-    return jax.jit(init, out_shardings=placement)(key)
+            spec = P(("replicate", "fsdp"), None, None)
+    # Two cheap compiles instead of one n_sites-sharded-output graph (same shape as
+    # `init_decomp_vu_placed`): the RNG runs vmap-STACKED per C group (leading stack axis
+    # unsharded), then a trivial slice jit (stacked input donated) fans out per site.
+    stacked_shardings = {
+        c: NamedSharding(mesh, P(None, *spec))
+        for c in sources_c_groups(site_names, site_component_counts)
+    }
+    stacked = jax.jit(
+        partial(
+            init_persistent_sources_stacked,
+            site_names,
+            site_component_counts,
+            leading_shape,
+            source_dtype,
+        ),
+        out_shardings=stacked_shardings,
+    )(key)
+    return jax.jit(
+        partial(unstack_persistent_sources, site_names, site_component_counts),
+        out_shardings=NamedSharding(mesh, spec),
+        donate_argnums=0,
+    )(stacked)
 
 
 def shard_batch(resid_global: jax.Array, mesh: Mesh) -> jax.Array:

@@ -162,11 +162,14 @@ def test_jitted_sharded_inits_match_eager_values():
     src_eager = init_persistent_sources(
         site_names, site_Cs, (1, 16), jnp.float32, jax.random.PRNGKey(3)
     )
+    # The sharded init runs vmap-stacked per C group (compile-time optimization) and must
+    # be BIT-identical to the per-site init (same per-site keys): uniform draws are pure
+    # threefry bit-ops, so even eager-vs-jit is exact.
     for name in site_names:
         src_sharding = src_sharded[name].sharding
         assert isinstance(src_sharding, NamedSharding)
         assert src_sharding.spec == P()
-        assert jnp.allclose(jnp.asarray(src_sharded[name]), src_eager[name], rtol=1e-6, atol=0)
+        assert jnp.array_equal(jnp.asarray(src_sharded[name]), src_eager[name]), name
 
     # bsc: one source per batch element, batch-sharded over the full mesh (axis 0), no
     # cross-rank sync.
