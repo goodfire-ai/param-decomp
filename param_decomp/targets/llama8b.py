@@ -894,9 +894,18 @@ class LlamaDecomposedModel(eqx.Module):
 
 
 def _hf_snapshot_dir(model_name: str) -> Path:
+    """Newest local snapshot of `model_name`. `HF_HUB_CACHE` overrides; otherwise on
+    cluster (`DATA_MOUNT` set) the shared world-readable cache is the source — a home
+    `~/.cache` hub is silently mutable, and a wiped entry strands running jobs that
+    reload weights on requeue."""
     import os
 
-    cache = Path(os.environ.get("HF_HUB_CACHE", str(Path.home() / ".cache/huggingface/hub")))
+    default_cache = (
+        f"{os.environ['DATA_MOUNT']}/artifacts/hf_cache/hub"
+        if "DATA_MOUNT" in os.environ
+        else str(Path.home() / ".cache/huggingface/hub")
+    )
+    cache = Path(os.environ.get("HF_HUB_CACHE", default_cache))
     repo = "models--" + model_name.replace("/", "--")
     snaps = sorted((cache / repo / "snapshots").iterdir())
     assert snaps, f"no snapshot for {model_name} under {cache}"
