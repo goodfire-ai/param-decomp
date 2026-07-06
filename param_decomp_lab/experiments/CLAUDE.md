@@ -12,7 +12,11 @@ validation / run-identity helpers (`assert_canonical_algorithm_config` / `run_in
 target/data schema + (for the LM) its `BuiltRun` build.
 autointerp/clustering read a run's target topology from
 `experiments.lm.load_run.run_metadata` (config + pretrain cache, no checkpoint restore) —
-see `param_decomp_lab/adapters/pd.py`.
+see `param_decomp_lab/adapters/pd.py`. That path parses only the consumer-read subset of
+the pinned config (`ConsumerRunConfig`, `extra="ignore"`), so trainer-schema drift in
+either direction doesn't lock consumers out of stored runs; `open_jax_run` still
+validates the full `LMExperimentConfig` because restoring orbax needs the exact
+`TrainState` pytree.
 
 ## Toy domains (TMS, ResidMLP)
 

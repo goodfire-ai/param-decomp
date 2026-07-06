@@ -50,6 +50,7 @@ from param_decomp.train import COMPUTE_DT, TrainState, cast_floating
 from param_decomp_lab.experiments.lm.config import (
     LlamaSimpleMLPTargetConfig,
     TargetConfig,
+    load_consumer_config,
     load_run_dir_config,
 )
 
@@ -228,18 +229,19 @@ class RunMetadata:
 
 
 def run_metadata(run_dir: Path) -> RunMetadata:
-    """Target topology for `run_dir`, derived from the pinned config (+ the SimpleMLP
-    pretrain cache's `model_config.yaml` for `n_layer`/`vocab_size`). No orbax restore."""
-    cfg = load_run_dir_config(run_dir)
-    match cfg.target:
+    """Target topology for `run_dir`, derived from the consumer-read subset of the pinned
+    config (drift-tolerant, see `load_consumer_config`; + the SimpleMLP pretrain cache's
+    `model_config.yaml` for `n_layer`/`vocab_size`). No orbax restore."""
+    target = load_consumer_config(run_dir).resolved_target()
+    match target:
         case LlamaSimpleMLPTargetConfig():
-            cache_dir = llama_simple_mlp.pretrain_cache_dir(cfg.target.pretrain_run_path)
+            cache_dir = llama_simple_mlp.pretrain_cache_dir(target.pretrain_run_path)
             simple_cfg = llama_simple_mlp.load_model_config(cache_dir)
             return RunMetadata(
                 model_type="LlamaSimpleMLP",
                 n_blocks=simple_cfg.n_layer,
                 vocab_size=simple_cfg.vocab_size,
-                layer_activation_sizes=[(s.name, s.C) for s in cfg.target.sites],
+                layer_activation_sizes=[(s.name, s.C) for s in target.sites],
             )
         case TargetConfig():
             llama_cfg = llama31_8b_config()
@@ -247,10 +249,5 @@ def run_metadata(run_dir: Path) -> RunMetadata:
                 model_type="Llama",
                 n_blocks=llama_cfg.n_layer,
                 vocab_size=llama_cfg.vocab_size,
-                layer_activation_sizes=[(s.name, s.C) for s in cfg.target.sites],
-            )
-        case _:
-            raise AssertionError(
-                "run_metadata is the LM-consumer path only (toys are not harvested); "
-                f"got target {type(cfg.target).__name__}"
+                layer_activation_sizes=[(s.name, s.C) for s in target.sites],
             )

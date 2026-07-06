@@ -5,15 +5,17 @@ This module reads the canonical `LMExperimentConfig` schema directly and builds 
 `BuiltRun` bundle (`param_decomp.built_run`) — the pydantic `pd` / `cadence` / `runtime`
 verbatim plus the resolved target / data / CI-fn arch / eval — asserting loudly on anything
 the JAX trainer doesn't implement. The composition entry (`run.py`) calls `load_config` /
-`build_from_schema`; consumers that read a finished run dir call `load_run_dir_config`.
+`build_from_schema`; `open_jax_run` (which must rebuild the full `TrainState`) calls
+`load_run_dir_config`; the metadata consumers (`run_metadata` / `PDAdapter`) call
+`load_consumer_config`, a drift-tolerant parse of only the fields they read.
 """
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 import yaml
-from pydantic import Discriminator, Field, PositiveInt, model_validator
+from pydantic import ConfigDict, Discriminator, Field, PositiveInt, model_validator
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.built_run import (
@@ -200,29 +202,29 @@ SLOW_TIER_EVAL_METRIC_TYPES = frozenset(
 )
 
 
-def _site_cs(cfg: LMExperimentConfig) -> tuple[SiteC, ...]:
+def _canonical_llama_site_cs(raw_site_cs: tuple[SiteC, ...]) -> tuple[SiteC, ...]:
     """Decomposition targets -> canonical per-site (name, C) pairs. Any per-layer
     matrix site (q/k/v/o/gate/up/down) with its own C is supported; non-site module
     patterns refuse. Raw-HF specs name modules `model.layers.*`; the vendored class drops
     the prefix — same matrices either way."""
     site_cs = []
-    for target in cfg.pd.decomposition_targets:
-        name = target.module_pattern.removeprefix("model.")
-        assert SITE_NAME_PATTERN.match(name), (
-            f"unsupported decomposition target {target.module_pattern!r}"
-        )
-        site_cs.append(SiteC(name, target.C))
+    for raw in raw_site_cs:
+        name = raw.name.removeprefix("model.")
+        assert SITE_NAME_PATTERN.match(name), f"unsupported decomposition target {raw.name!r}"
+        site_cs.append(SiteC(name, raw.C))
     return canonical_site_cs(tuple(site_cs))
 
 
-def _resolve_target(cfg: LMExperimentConfig) -> AnyLMTargetConfig:
-    """Target spec + decomposition patterns -> the JAX target config.
+def resolve_target(
+    spec: LMTargetSpec, raw_site_cs: tuple[SiteC, ...], max_seq_len: int
+) -> AnyLMTargetConfig:
+    """Target spec + decomposition patterns (module_pattern/C as configured) -> the JAX
+    target config.
 
     Vendored and raw-HF Llama specs load the SAME meta-llama weights (the export
     bridge round-trip verified vendored == HF numerics); both map to the HF loader.
     `kind: pretrained` LlamaSimpleMLP specs map to the pretrain-cache loader, with
     `h.*` wildcard patterns expanded over the checkpoint's n_layer."""
-    spec = cfg.target.spec
     match spec:
         case HFWeightsInVendored() | HFTarget():
             match spec:
@@ -231,17 +233,24 @@ def _resolve_target(cfg: LMExperimentConfig) -> AnyLMTargetConfig:
                 case HFTarget():
                     assert spec.model_class == "transformers.LlamaForCausalLM", spec.model_class
             assert "Llama-3.1-8B" in spec.model_name, spec.model_name
-            return TargetConfig(model_name=spec.model_name, sites=_site_cs(cfg))
+            return TargetConfig(
+                model_name=spec.model_name, sites=_canonical_llama_site_cs(raw_site_cs)
+            )
         case PretrainedTarget():
             assert spec.model_class.rsplit(".", 1)[-1] == "LlamaSimpleMLP", spec.model_class
             cache_dir = llama_simple_mlp.pretrain_cache_dir(spec.run_path)
             arch = llama_simple_mlp.load_model_config(cache_dir)
-            assert cfg.data.max_seq_len <= arch.n_ctx, (cfg.data.max_seq_len, arch.n_ctx)
-            sites = llama_simple_mlp.expand_wildcard_site_cs(
-                tuple(SiteC(t.module_pattern, t.C) for t in cfg.pd.decomposition_targets),
-                arch.n_layer,
-            )
+            assert max_seq_len <= arch.n_ctx, (max_seq_len, arch.n_ctx)
+            sites = llama_simple_mlp.expand_wildcard_site_cs(raw_site_cs, arch.n_layer)
             return LlamaSimpleMLPTargetConfig(pretrain_run_path=spec.run_path, sites=sites)
+
+
+def _resolve_target(cfg: LMExperimentConfig) -> AnyLMTargetConfig:
+    return resolve_target(
+        cfg.target.spec,
+        tuple(SiteC(t.module_pattern, t.C) for t in cfg.pd.decomposition_targets),
+        cfg.data.max_seq_len,
+    )
 
 
 def _block_of_site(target: AnyLMTargetConfig, site_name: str) -> int:
@@ -460,3 +469,57 @@ def load_run_dir_config(run_dir: Path) -> BuiltRun:
     run id is the run-dir name."""
     schema_raw = yaml.safe_load((run_dir / LAUNCH_CONFIG_FILENAME).read_text())
     return build_from_schema(schema_raw, run_dir.name)
+
+
+class _ConsumerSchema(BaseConfig):
+    """Base for the consumer-read subset of a pinned launch config: strict on the fields
+    consumers read, `extra="ignore"` on everything else, so trainer-schema drift — a field
+    removed at tip, or a run launched from a branch ahead of tip — cannot lock consumers
+    out of stored runs. The full `LMExperimentConfig` (`extra="forbid"`) remains the
+    train/resume contract."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="ignore")
+
+
+class ConsumerDecompositionTarget(_ConsumerSchema):
+    module_pattern: str
+    C: PositiveInt
+
+
+class ConsumerTargetConfig(_ConsumerSchema):
+    spec: LMTargetSpec
+
+
+class ConsumerPDConfig(_ConsumerSchema):
+    decomposition_targets: tuple[ConsumerDecompositionTarget, ...]
+
+
+class ConsumerDataConfig(_ConsumerSchema):
+    dataset_name: str
+    data_files: str | None = None
+    tokenizer_name: str
+    max_seq_len: PositiveInt
+
+
+class ConsumerRunConfig(_ConsumerSchema):
+    """What the metadata consumers (`run_metadata` / `PDAdapter`, feeding
+    autointerp/clustering) read from a run's pinned launch config. `open_jax_run` still
+    validates the full schema — it must rebuild the exact `TrainState` pytree (optimizers +
+    per-loss-term persistent state) to restore the orbax checkpoint."""
+
+    target: ConsumerTargetConfig
+    pd: ConsumerPDConfig
+    data: ConsumerDataConfig
+
+    def resolved_target(self) -> AnyLMTargetConfig:
+        return resolve_target(
+            self.target.spec,
+            tuple(SiteC(t.module_pattern, t.C) for t in self.pd.decomposition_targets),
+            self.data.max_seq_len,
+        )
+
+
+def load_consumer_config(run_dir: Path) -> ConsumerRunConfig:
+    """Parse the consumer-read subset of `run_dir`'s pinned launch config. Tolerates
+    trainer-schema drift outside the read fields (see `_ConsumerSchema`)."""
+    return ConsumerRunConfig.from_file(run_dir / LAUNCH_CONFIG_FILENAME)

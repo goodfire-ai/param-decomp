@@ -3,7 +3,7 @@ from pathlib import Path
 
 from param_decomp.built_run import LAUNCH_CONFIG_FILENAME
 from param_decomp_lab.autointerp.schemas import ModelMetadata
-from param_decomp_lab.experiments.lm.config import LMExperimentConfig
+from param_decomp_lab.experiments.lm.config import ConsumerRunConfig, load_consumer_config
 from param_decomp_lab.experiments.lm.load_run import RunMetadata, run_metadata
 from param_decomp_lab.harvest.schemas import get_harvest_dir
 from param_decomp_lab.topology.path_schemas import path_schema_for_model_type
@@ -32,10 +32,10 @@ class PDAdapter:
         return get_harvest_dir(self._run_id).parent
 
     @cached_property
-    def cfg(self) -> LMExperimentConfig:
+    def cfg(self) -> ConsumerRunConfig:
         config_path = self._run_dir / LAUNCH_CONFIG_FILENAME
         assert config_path.exists(), f"config not found: {config_path}"
-        return LMExperimentConfig.from_file(config_path)
+        return load_consumer_config(self._run_dir)
 
     @cached_property
     def _metadata(self) -> RunMetadata:
