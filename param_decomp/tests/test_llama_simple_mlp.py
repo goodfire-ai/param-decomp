@@ -49,7 +49,12 @@ from param_decomp.targets.llama_simple_mlp import (
     site_name,
     site_specs,
 )
-from param_decomp.train import TrainState, make_faith_warmup_step, make_train_step
+from param_decomp.train import (
+    TrainState,
+    make_faith_warmup_step,
+    make_stale_ci_train_steps,
+    make_train_step,
+)
 
 
 def _tiny_cfg() -> LlamaSimpleMLPConfig:
@@ -438,6 +443,127 @@ def test_step_trains_and_has_vpd_signature():
         assert V.dtype == jnp.float32 and U.dtype == jnp.float32
     assert isinstance(state.ci_fn, ChunkwiseTransformerCIFn)
     assert state.ci_fn.chunks.in_proj_w.dtype == jnp.float32
+
+
+def test_stale_ci_repeat_step_semantics():
+    """SPEC S34: a repeat step given the fresh step's envelope trains the components and
+    ascends the adversary like the fresh step (CI live vs constant doesn't change their
+    gradients), while leaving the ci_fn and its optimizer state untouched."""
+    cfg = _tiny_cfg()
+    seq = 16
+    sites = site_specs(cfg, _MIXED_SITE_CS)
+    lm = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
+    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    ci_fn = _build_chunkwise_ci_fn(lm, jax.random.PRNGKey(2))
+    opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
+    # Unit-lr ci_fn optimizer: the stale-CI fresh step applies the schedule at the global step.
+    opt_ci = optax.adamw(1.0, weight_decay=0.0)
+
+    src = init_persistent_sources(
+        lm.site_names, tuple(s.C for s in lm.sites), (1, seq), jnp.float32, jax.random.PRNGKey(3)
+    )
+    ppgd_cfg = PersistentPGDReconLossConfig(
+        coeff=0.5,
+        scope=SCScope(),
+        optimizer=AdamPGDConfig(
+            beta1=0.5,
+            beta2=0.99,
+            lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
+        ),
+        n_warmup_steps=0,
+    )
+    ppgd_coeff = ppgd_cfg.coeff
+    assert ppgd_coeff is not None
+
+    def copied[T](tree: T) -> T:
+        """Fresh buffers per step call — the jitted steps donate their state/batch args."""
+        return jax.tree.map(lambda x: jnp.copy(x) if eqx.is_array(x) else x, tree)
+
+    def make_state() -> TrainState:
+        vu_c, ci_fn_c, src_c = copied(vu), copied(ci_fn), copied(src)
+        return TrainState(
+            components=vu_c, ci_fn=ci_fn_c,
+            components_opt_state=opt_vu.init(eqx.filter(vu_c, eqx.is_array)),
+            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn_c, eqx.is_array)),
+            adversaries={
+                ppgd_cfg.type: PersistentAdversary(
+                    sources=src_c,
+                    opt_state=init_sources_adam_state(src_c),
+                    state_key=ppgd_cfg.type,
+                    coeff=ppgd_coeff,
+                    adam=ppgd_cfg.optimizer,
+                    n_warmup=ppgd_cfg.n_warmup_steps,
+                )
+            },
+            step=jnp.zeros((), jnp.int32),
+        )  # fmt: skip
+
+    loss_terms = build_loss_terms(
+        (
+            FaithfulnessLossConfig(coeff=1e5),
+            ImportanceMinimalityLossConfig(
+                coeff=5e-6,
+                pnorm=ScheduleConfig(start_val=2.0, fn_type="linear", final_val_frac=0.2),
+            ),
+            ChunkwiseSubsetReconLossConfig(
+                routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=2, n_samples=1
+            ),
+            ppgd_cfg,
+        ),
+        lm.site_names,
+    )
+    steps = make_stale_ci_train_steps(
+        lm=lm,
+        losses=loss_terms,
+        components_optimizer=opt_vu,
+        ci_fn_optimizer=opt_ci,
+        ci_fn_lr_schedule=ScheduleConfig(start_val=1e-3),
+        total_steps=100,
+        remat_recon_forwards=True,
+        remat_ci_fn=False,
+        mesh=None,
+    )
+
+    tokens = jax.random.randint(jax.random.PRNGKey(4), (2, seq), 0, cfg.vocab_size)
+    key = jax.random.PRNGKey(100)
+
+    envelope = steps.compute_ci(lm, ci_fn, tokens)
+    state_fresh, m_fresh, env_fresh = steps.fresh(lm, make_state(), jnp.copy(tokens), jnp.copy(key))
+    state_rep, m_rep = steps.repeat((lm, envelope), make_state(), jnp.copy(tokens), jnp.copy(key))
+
+    # compute_ci reproduces the fresh step's own envelope (same ci_fn, same batch).
+    for site in envelope.lower:
+        assert jnp.allclose(envelope.lower[site], env_fresh.lower[site], atol=1e-6)
+        assert jnp.allclose(envelope.upper[site], env_fresh.upper[site], atol=1e-6)
+
+    # The repeat step leaves the ci_fn and its optimizer state bit-untouched...
+    for got, want in zip(
+        jax.tree.leaves(eqx.filter(state_rep.ci_fn, eqx.is_array)),
+        jax.tree.leaves(eqx.filter(ci_fn, eqx.is_array)),
+        strict=True,
+    ):
+        assert (got == want).all()
+    # ...while the fresh step trained it.
+    fresh_ci_leaves = jax.tree.leaves(eqx.filter(state_fresh.ci_fn, eqx.is_array))
+    init_ci_leaves = jax.tree.leaves(eqx.filter(ci_fn, eqx.is_array))
+    assert any((a != b).any() for a, b in zip(fresh_ci_leaves, init_ci_leaves, strict=True))
+
+    # Components + adversary see the same gradients either way (CI enters their backward
+    # as the same values, live or constant) — updates match to numeric tolerance.
+    for (fv, fu), (rv, ru) in zip(
+        state_fresh.components.vu.values(), state_rep.components.vu.values(), strict=True
+    ):
+        assert jnp.allclose(fv, rv, rtol=1e-4, atol=1e-6)
+        assert jnp.allclose(fu, ru, rtol=1e-4, atol=1e-6)
+    adv_f = state_fresh.adversaries[ppgd_cfg.type]
+    adv_r = state_rep.adversaries[ppgd_cfg.type]
+    for site in adv_f.sources:
+        assert jnp.allclose(adv_f.sources[site], adv_r.sources[site], rtol=1e-4, atol=1e-6)
+
+    # Metric families: the repeat step carries no ci_fn grad norms; totals stay finite.
+    assert "grad_norms/summary/ci_fns" in m_fresh and "grad_norms/summary/ci_fns" not in m_rep
+    assert jnp.isfinite(m_rep["total"]) and jnp.isfinite(m_fresh["total"])
+    assert int(state_rep.step) == 1
 
 
 def test_faith_warmup_decreases_faith():

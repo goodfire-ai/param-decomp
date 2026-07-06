@@ -55,7 +55,7 @@ from param_decomp.ci_fn import CIFnArch
 from param_decomp.configs import Cadence, PDConfig, ProfileConfig, flatten_typed_lists
 from param_decomp.lm import DecomposedModel
 from param_decomp.recon import build_loss_terms
-from param_decomp.run_state import build_optimizers, init_train_state
+from param_decomp.run_state import build_optimizers, init_train_state, unit_lr_ci_fn_optimizer
 from param_decomp.slow_eval import (
     PermutationMetricSpec,
     PositionCI,
@@ -63,7 +63,14 @@ from param_decomp.slow_eval import (
     render_permutation_figures,
     render_slow_eval_figures,
 )
-from param_decomp.train import TrainState, make_faith_warmup_step, make_train_step
+from param_decomp.train import (
+    CIEnvelope,
+    StaleCITrainSteps,
+    TrainState,
+    make_faith_warmup_step,
+    make_stale_ci_train_steps,
+    make_train_step,
+)
 
 _sigterm_received = False
 
@@ -159,16 +166,20 @@ def _grad_norm_summary_window_stats(window: list[dict[str, jax.Array]]) -> dict[
     so the whole window reduces in a single host transfer here — the loop stays unsynced
     between logs rather than subsampling grad norms at the log step."""
     assert window, "grad-norm summary window is empty at a log boundary"
-    keys = list(window[0].keys())
-    stacked = jnp.stack([jnp.stack([snap[k] for snap in window]) for k in keys])  # [keys, steps]
-    mins = np.asarray(jnp.min(stacked, axis=1))
-    maxs = np.asarray(jnp.max(stacked, axis=1))
-    medians = np.asarray(jnp.median(stacked, axis=1))
+    # Union of keys: under stale-CI replay the repeat steps carry no `ci_fns` family, so a
+    # key's stats reduce over the (fresh) steps that emitted it.
+    keys = sorted({k for snap in window for k in snap})
+    stats = {
+        key: (jnp.min(vals), jnp.max(vals), jnp.median(vals))
+        for key in keys
+        for vals in (jnp.stack([snap[key] for snap in window if key in snap]),)
+    }
+    host: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = jax.device_get(stats)
     out: dict[str, float] = {}
-    for i, key in enumerate(keys):
-        out[f"{key}/min"] = float(mins[i])
-        out[f"{key}/max"] = float(maxs[i])
-        out[f"{key}/median"] = float(medians[i])
+    for key, (mn, mx, med) in host.items():
+        out[f"{key}/min"] = float(mn)
+        out[f"{key}/max"] = float(mx)
+        out[f"{key}/median"] = float(med)
     return out
 
 
@@ -482,6 +493,13 @@ def run_decomposition_training(
 
     run.run_dir.mkdir(parents=True, exist_ok=True)
     opt_vu, opt_ci, (sched_vu, sched_ci) = build_optimizers(pd)
+    # Stale-CI replay (SPEC S34): repeat steps of a `train_batch_replay` window reuse the
+    # window-first CI envelope as a constant; the ci_fn updates only on window-first steps,
+    # under a unit-LR optimizer whose schedule the step applies at the global step.
+    stale_ci = data is not None and data.replay_stale_ci
+    if stale_ci:
+        assert data is not None and data.train_batch_replay > 1, data
+        opt_ci = unit_lr_ci_fn_optimizer(pd)
 
     key = random.PRNGKey(pd.seed)
     init_key, src_key, run_key = random.split(key, 3)
@@ -497,18 +515,72 @@ def run_decomposition_training(
         return  # SIGTERM mid-warmup: clean exit for requeue
     state, start_step = init
 
-    step_fn = make_train_step(
-        lm=lm,
-        losses=build_loss_terms(pd.loss_metrics, lm.site_names),
-        components_optimizer=opt_vu,
-        ci_fn_optimizer=opt_ci,
-        total_steps=pd.steps,
-        remat_recon_forwards=remat_recon_forwards,
-        remat_ci_fn=remat_ci_fn,
-        ascend_replicate=ascend_replicate,
-        compiler_options=compiler_options,
-        mesh=mesh,
-    )
+    stale_steps: StaleCITrainSteps | None = None
+    step_fn = None
+    if stale_ci:
+        assert data is not None
+        stale_steps = make_stale_ci_train_steps(
+            lm=lm,
+            losses=build_loss_terms(pd.loss_metrics, lm.site_names),
+            components_optimizer=opt_vu,
+            ci_fn_optimizer=opt_ci,
+            ci_fn_lr_schedule=pd.ci_fn_optimizer.lr_schedule,
+            total_steps=pd.steps,
+            remat_recon_forwards=remat_recon_forwards,
+            remat_ci_fn=remat_ci_fn,
+            ascend_replicate=ascend_replicate,
+            compiler_options=compiler_options,
+            mesh=mesh,
+        )
+    else:
+        step_fn = make_train_step(
+            lm=lm,
+            losses=build_loss_terms(pd.loss_metrics, lm.site_names),
+            components_optimizer=opt_vu,
+            ci_fn_optimizer=opt_ci,
+            total_steps=pd.steps,
+            remat_recon_forwards=remat_recon_forwards,
+            remat_ci_fn=remat_ci_fn,
+            ascend_replicate=ascend_replicate,
+            compiler_options=compiler_options,
+            mesh=mesh,
+        )
+
+    replay_window = data.train_batch_replay if data is not None else 1
+    ci_envelope: CIEnvelope | None = None
+
+    def do_step(
+        step: int, state: TrainState, batch: Any, step_key: PRNGKeyArray
+    ) -> tuple[TrainState, dict[str, jax.Array]]:
+        """One train step, dispatching fresh vs repeat under stale-CI replay. The envelope
+        rides in a loop-local (never checkpointed): a requeue-resume landing mid-window
+        rebuilds it from the current ci_fn (see `StaleCITrainSteps.compute_ci`)."""
+        nonlocal ci_envelope
+        if stale_steps is None:
+            assert step_fn is not None
+            return step_fn(lm, state, batch, step_key)
+        if step % replay_window == 0:
+            new_state, metrics, ci_envelope = stale_steps.fresh(lm, state, batch, step_key)
+            return new_state, metrics
+        if ci_envelope is None:
+            ci_envelope = stale_steps.compute_ci(lm, state.ci_fn, batch)
+        return stale_steps.repeat((lm, ci_envelope), state, batch, step_key)
+
+    # The profile probes below want a bare `(model, state, batch, key) -> (state, metrics)`
+    # with `.lower()` available; under stale-CI they probe the fresh (superset) step.
+    if stale_steps is None:
+        assert step_fn is not None
+        _probe_jit: Any = step_fn
+        _probe_step: Callable[..., Any] = step_fn
+    else:
+        _fresh = stale_steps.fresh
+        _probe_jit = _fresh
+
+        def _probe_fresh_step(m: Any, s: Any, b: Any, k: Any) -> Any:
+            new_state, metrics, _ = _fresh(m, s, b, k)
+            return new_state, metrics
+
+        _probe_step = _probe_fresh_step
 
     # record what this run actually executes on so wandb never lies about topology.
     # flatten the metric lists into the same flat keys torch logs (E14) so cross-impl
@@ -577,11 +649,11 @@ def run_decomposition_training(
         _atk = random.fold_in(run_key, start_step)
         _ab = sample_batch(start_step)
         _aa0 = time.perf_counter()
-        _as1, _am1 = step_fn(lm, state, _ab, _atk)
+        _as1, _am1 = _probe_step(lm, state, _ab, _atk)
         _aa1 = time.perf_counter()
-        _as2, _am2 = step_fn(lm, _as1, _ab, _atk)
+        _as2, _am2 = _probe_step(lm, _as1, _ab, _atk)
         _aa2 = time.perf_counter()
-        _as3, _am3 = step_fn(lm, _as2, _ab, _atk)
+        _as3, _am3 = _probe_step(lm, _as2, _ab, _atk)
         _aa3 = time.perf_counter()
         jax.block_until_ready((_as3, _am3["total"]))
         _aa4 = time.perf_counter()
@@ -599,7 +671,7 @@ def run_decomposition_training(
         _mb = sample_batch(start_step)
         _mk = random.fold_in(run_key, start_step)
         _step_jit: Any = (
-            step_fn  # eqx.filter_jit object exposes .lower(); the Callable alias hides it
+            _probe_jit  # eqx.filter_jit object exposes .lower(); the Callable alias hides it
         )
         _compiled = _step_jit.lower(lm, state, _mb, _mk).compile()
         _ma = getattr(_compiled, "compiled", _compiled).memory_analysis()
@@ -614,8 +686,8 @@ def run_decomposition_training(
             )
         _dev = jax.local_devices()[0]
         _dev.memory_stats()  # reset peak baseline read
-        _ms_state, _ms_metrics = step_fn(lm, state, _mb, _mk)
-        _ms_state, _ms_metrics = step_fn(lm, _ms_state, _mb, _mk)
+        _ms_state, _ms_metrics = _probe_step(lm, state, _mb, _mk)
+        _ms_state, _ms_metrics = _probe_step(lm, _ms_state, _mb, _mk)
         jax.block_until_ready((_ms_state, _ms_metrics["total"]))
         _ms = _dev.memory_stats()
         if is_main and _ms is not None:
@@ -672,7 +744,7 @@ def run_decomposition_training(
             _ts0 = time.perf_counter()
             batch = sample_batch(step)
             _ts1 = time.perf_counter()
-            state, metrics = step_fn(lm, state, batch, random.fold_in(run_key, step))
+            state, metrics = do_step(step, state, batch, random.fold_in(run_key, step))
             _ts2 = time.perf_counter()
             jax.block_until_ready((state, metrics["total"]))
             _ts3 = time.perf_counter()
@@ -683,7 +755,7 @@ def run_decomposition_training(
             )
         else:
             batch = sample_batch(step)
-            state, metrics = step_fn(lm, state, batch, random.fold_in(run_key, step))
+            state, metrics = do_step(step, state, batch, random.fold_in(run_key, step))
 
         grad_norm_summary_window.append(
             {k: v for k, v in metrics.items() if k.startswith("grad_norms/summary/")}

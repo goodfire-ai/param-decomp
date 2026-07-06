@@ -49,6 +49,11 @@ class DataConfig:
     """Consecutive train steps that share one token batch (free-AT-style replay: the
     persistent adversary's once-per-step ascent becomes batch-matched on the repeated
     steps). 1 = a fresh batch every step."""
+    replay_stale_ci: bool
+    """Stale-CI replay (SPEC S34): repeat steps of a replay window reuse the window-first
+    step's CI envelope as a constant — no taps / CI-fn forward / CI-fn backward on
+    repeats; the ci_fn updates only on window-first steps. Requires
+    `train_batch_replay > 1`."""
 
 
 @dataclass(frozen=True)

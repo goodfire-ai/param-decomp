@@ -42,6 +42,7 @@ from param_decomp.losses import (
     annealed_imp_min_param,
     faithfulness_loss,
     imp_min_terms,
+    scheduled_value_traced,
 )
 from param_decomp.recon import (
     ConstantSources,
@@ -52,6 +53,7 @@ from param_decomp.recon import (
     Routes,
     StochasticSources,
 )
+from param_decomp.schedule import ScheduleConfig
 from param_decomp.sharding import batch_shard_leading
 
 COMPUTE_DT = jnp.bfloat16
@@ -75,12 +77,53 @@ class TrainState:
     step: Array
 
 
-def _grad_norm_metrics(components_grad: DecompVU, ci_fn_grad: Any) -> dict[str, Array]:
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class CIEnvelope:
+    """A step's detached CI squashings (stop-gradient'd, compute-dtype, sharding-pinned).
+    Under stale-CI replay (SPEC S34) the window-first step returns its envelope and the
+    window's repeat steps consume it as a CONSTANT."""
+
+    lower: dict[str, Array]
+    upper: dict[str, Array]
+
+
+@dataclass(frozen=True)
+class StaleCITrainSteps:
+    """The jitted step pair for stale-CI replay (SPEC S34), plus the mid-window resume
+    rebuild.
+
+    `fresh` is the full step (taps → CI-fn forward/vjp → ci_fn update), additionally
+    returning its `CIEnvelope` for the window's repeats. `repeat` consumes that envelope
+    as a constant — no taps, no CI-fn forward/backward; the ci_fn and its optimizer state
+    pass through untouched. Its first arg bundles `(model, envelope)` so donation
+    (`all-except-first`) spares both across the window's repeats.
+
+    `compute_ci(model, ci_fn, batch) -> CIEnvelope` rebuilds the envelope when a
+    requeue-resume lands mid-window. The ci_fn updates only on window-first steps, so the
+    rebuilt envelope reflects the last fresh step's POST-update ci_fn — one ci_fn Adam
+    step fresher than the envelope the interrupted window was using (plus vjp-primal vs
+    plain-forward compilation differences). A tiny, preemption-only trajectory wobble."""
+
+    fresh: Callable[
+        [DecomposedModel, TrainState, Any, PRNGKeyArray],
+        tuple[TrainState, dict[str, Array], CIEnvelope],
+    ]
+    repeat: Callable[
+        [tuple[DecomposedModel, CIEnvelope], TrainState, Any, PRNGKeyArray],
+        tuple[TrainState, dict[str, Array]],
+    ]
+    compute_ci: Callable[[DecomposedModel, Any, Any], CIEnvelope]
+
+
+def _grad_norm_metrics(components_grad: DecompVU, ci_fn_grad: Any | None) -> dict[str, Array]:
     """Pre-clip gradient L2 norms, matching the torch `component_grad_norms` families:
     per-leaf `grad_norms/components<path>` / `grad_norms/ci_fns<path>` (paths are this
     pytree's own — e.g. `.vu['layers.18.mlp.gate_proj'][0]` for the per-site Llama
     layout, vs torch's per-site names) and the overlay-critical
-    `grad_norms/summary/{components,ci_fns,total}`."""
+    `grad_norms/summary/{components,ci_fns,total}`. `ci_fn_grad` is None on a stale-CI
+    repeat step (no CI-fn backward): the `ci_fns` family is absent and `total` covers
+    the components only."""
     out: dict[str, Array] = {}
 
     def family(grad_tree: Any, prefix: str) -> Array:
@@ -92,7 +135,9 @@ def _grad_norm_metrics(components_grad: DecompVU, ci_fn_grad: Any) -> dict[str, 
         out[f"grad_norms/summary/{prefix}"] = jnp.sqrt(sum_sq)
         return sum_sq
 
-    total_sq = family(components_grad, "components") + family(ci_fn_grad, "ci_fns")
+    total_sq = family(components_grad, "components")
+    if ci_fn_grad is not None:
+        total_sq = total_sq + family(ci_fn_grad, "ci_fns")
     out["grad_norms/summary/total"] = jnp.sqrt(total_sq)
     return out
 
@@ -100,7 +145,7 @@ def _grad_norm_metrics(components_grad: DecompVU, ci_fn_grad: Any) -> dict[str, 
 # ───────────────────────────── the step factory ─────────────────────────────
 
 
-def make_train_step(
+def _build_step_impl(
     lm: DecomposedModel,
     *,
     losses: LossSurface,
@@ -110,18 +155,21 @@ def make_train_step(
     remat_recon_forwards: bool,
     remat_ci_fn: bool,
     mesh: Mesh | None,
-    ascend_replicate: bool = False,
-    compiler_options: dict[str, bool | int | str] | None = None,
+    ascend_replicate: bool,
+    stale_ci_fn_lr: ScheduleConfig | None,
 ):
-    """Build the `eqx.filter_jit`'d `step(model, state, batch, key) -> (state, metrics)`.
+    """The un-jitted step machinery shared by `make_train_step` and
+    `make_stale_ci_train_steps`: returns `(step_impl, compute_ci_impl)` where
+    `step_impl(model, state, batch, key, cached)` runs the full step when `cached is None`
+    (computing taps + the CI envelope, training the ci_fn) and the stale-CI repeat step
+    when `cached` is a `CIEnvelope` (SPEC S34: CI a constant, ci_fn untouched). The
+    `cached` switch is a Python-level trace decision — each variant jits to its own
+    program, and the `cached is None` program is the pre-S34 step unchanged.
 
-    `model` is the jit ARG (frozen 8B weights traced as array leaves, never baked); the
-    factory closes over only static config (`site_names`, `recon_loss_fn`, term wiring) read
-    off `lm` here. `losses` (from `build_loss_terms`) is the `LossSurface` record — the
-    faithfulness + importance-minimality singletons and the recon Σ, read by name. `mesh`
-    (when given) pins every batch-leading activation over the full mesh
-    (`P(('replicate', 'fsdp'), ...)`) so the masked re-forwards stay on per-rank sub-batches
-    (activation memory 1/N)."""
+    `stale_ci_fn_lr` (stale-CI mode only) is the ci_fn LR schedule applied IN-STEP at the
+    global step: the ci_fn optimizer must then carry unit LR (`unit_lr_ci_fn_optimizer`),
+    since its optax update count advances only on window-first steps and a count-driven
+    schedule would stretch by the replay factor."""
     site_names = lm.site_names
     sites = lm.sites
     recon_loss_fn = lm.recon_loss_fn  # static method: pure, holds no arrays — safe to close
@@ -252,24 +300,29 @@ def make_train_step(
         return total / len(routes_per_draw)
 
     @jaxtyped(typechecker=beartype)
-    def step(
+    def step_impl(
         model: DecomposedModel,
         state: TrainState,
         batch: Any,
         key: PRNGKeyArray,
-    ) -> tuple[TrainState, dict[str, Array]]:
+        cached: CIEnvelope | None,
+    ) -> tuple[TrainState, dict[str, Array], CIEnvelope]:
         step_f32 = state.step.astype(jnp.float32)
         imp_min_param = annealed_imp_min_param(step_f32, total_steps, imp_min)
 
         batch = batch_sharded(batch)
         with jax.named_scope("pd_clean_fwd"):
             clean_output = jax.lax.stop_gradient(batch_sharded(model.clean_output(batch)))
-        with jax.named_scope("pd_read_taps"):
-            taps = model.read_activations(batch, state.ci_fn.input_names)
-        # `leading` (batch, *positions) — the shape masks/sources/routes live in. Sourced
-        # from a tap (always `[*leading, d_tap]`), not the opaque batch, so the engine never
-        # assumes the batch's rank/feature dim.
-        leading = next(iter(taps.values())).shape[:-1]
+        if cached is None:
+            with jax.named_scope("pd_read_taps"):
+                taps = model.read_activations(batch, state.ci_fn.input_names)
+            # `leading` (batch, *positions) — the shape masks/sources/routes live in. Sourced
+            # from a tap (always `[*leading, d_tap]`), not the opaque batch, so the engine never
+            # assumes the batch's rank/feature dim.
+            leading = next(iter(taps.values())).shape[:-1]
+        else:
+            taps = None
+            leading = next(iter(cached.lower.values())).shape[:-1]
 
         # ── adversary ascents: params + CI detached (SPEC §4.5) ──
         prepared, recon_vjp = jax.vjp(
@@ -282,13 +335,23 @@ def make_train_step(
         # its vjp, mirroring `prepared`/`recon_vjp`. The ascend uses the stop_gradient'd value;
         # `loss_fn` takes the live value and its ci-fn grad is pulled back through `ci_vjp`. So the
         # (≈10x-the-target) CI fn is forward-evaluated ONCE, not once detached for the ascend +
-        # once inside the main backward.
-        with jax.named_scope("pd_ci_fn_fwd"):
-            ci, ci_vjp = eqx.filter_vjp(
-                lambda cf: ci_batch_sharded(cast_floating(cf, COMPUTE_DT)(taps, remat=remat_ci_fn)),
-                state.ci_fn,
-            )
-        ci_lower_detached = jax.lax.stop_gradient(ci).lower
+        # once inside the main backward. On a stale-CI repeat step it is not evaluated at all:
+        # the window-first envelope is the constant CI everywhere.
+        if cached is None:
+            assert taps is not None
+            with jax.named_scope("pd_ci_fn_fwd"):
+                ci, ci_vjp = eqx.filter_vjp(
+                    lambda cf: ci_batch_sharded(
+                        cast_floating(cf, COMPUTE_DT)(taps, remat=remat_ci_fn)
+                    ),
+                    state.ci_fn,
+                )
+            ci_detached = jax.lax.stop_gradient(ci)
+            envelope = CIEnvelope(lower=ci_detached.lower, upper=ci_detached.upper)
+        else:
+            ci, ci_vjp = None, None
+            envelope = cached
+        ci_lower_detached = envelope.lower
 
         # ── persistent adversaries: each runs its supplemental ascents vs the route-ALL
         # all-sites forward (SPEC S24 — torch warmup parity, NOT the term's loss plan),
@@ -365,21 +428,25 @@ def make_train_step(
                     )
                 fresh_sources[(term_idx, entry_idx)] = jax.lax.stop_gradient(ascended)
 
-        # ── main losses: live components/ci; the PERSISTENT sources participate in
+        # ── main losses: live components (+ live ci when fresh — on a stale-CI repeat the
+        # envelope enters as a CONSTANT); the PERSISTENT sources participate in
         # the graph so their gradient comes from the SAME backward (SPEC S14'); they
         # are NOT detached here, but components/ci grads through them are what torch
         # gets too (sources are leaves). ──
-        def loss_fn(
-            trainable: tuple[Any, DecompVU, CI, dict[str, dict[str, Array]]],
+        def losses_body(
+            prepared: Any,
+            components: DecompVU,
+            ci_lower: dict[str, Array],
+            ci_upper: dict[str, Array],
+            persistent_sources: dict[str, dict[str, Array]],
         ) -> tuple[Array, tuple[Array, Array, Array, tuple[Array, ...]]]:
-            prepared, components, ci, persistent_sources = trainable
             # Stochastic recon builds its masks INSIDE the target's `masked_output_stochastic`
             # from this once-per-step shared CI form — a scan target recomputes them in its
             # checkpointed block (mask never held, the memory win); others fall back to building
             # masks then `masked_output`. Either way the engine holds no per-forward mask stacks.
-            ci_stacked = model.stack_ci(ci.lower)
+            ci_stacked = model.stack_ci(ci_lower)
             faith_loss = faithfulness_loss(model.weight_deltas(components))
-            imp_lp, imp_freq = imp_min_terms(ci.upper, imp_min, imp_min_param)
+            imp_lp, imp_freq = imp_min_terms(ci_upper, imp_min, imp_min_param)
 
             term_losses: list[Array] = []
             for term_idx, term in enumerate(recon_terms):
@@ -429,12 +496,12 @@ def make_train_step(
                                     )
                                 case ConstantSources() as strategy:
                                     masked = pre_built_fwd(
-                                        constant_entry_masks(strategy, ci.lower, entry.live_sites)
+                                        constant_entry_masks(strategy, ci_lower, entry.live_sites)
                                     )
                                 case FreshPGDSources():
                                     masked = pre_built_fwd(
                                         source_masks(
-                                            ci.lower,
+                                            ci_lower,
                                             fresh_sources[(term_idx, entry_idx)],
                                             entry.live_sites,
                                         )
@@ -442,7 +509,7 @@ def make_train_step(
                                 case PersistentSources(state_key=state_key):
                                     masked = pre_built_fwd(
                                         source_masks(
-                                            ci.lower,
+                                            ci_lower,
                                             persistent_sources[state_key],
                                             entry.live_sites,
                                         )
@@ -458,20 +525,43 @@ def make_train_step(
                 total_loss = total_loss + term.coeff * term_loss
             return total_loss, (faith_loss, imp_lp, imp_freq, tuple(term_losses))
 
-        with jax.named_scope("pd_value_and_grad"):
-            (total_loss, (faith_loss, imp_lp, imp_freq, term_losses)), grads = (
-                eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-                    (
-                        prepared,
-                        state.components,
-                        ci,
-                        {k: a.sources for k, a in warmed_advs.items()},
+        warmed_sources = {k: a.sources for k, a in warmed_advs.items()}
+        if cached is None:
+            assert ci is not None and ci_vjp is not None
+
+            def loss_fn(
+                trainable: tuple[Any, DecompVU, CI, dict[str, dict[str, Array]]],
+            ) -> tuple[Array, tuple[Array, Array, Array, tuple[Array, ...]]]:
+                prepared_t, components_t, ci_t, persistent_t = trainable
+                return losses_body(prepared_t, components_t, ci_t.lower, ci_t.upper, persistent_t)
+
+            with jax.named_scope("pd_value_and_grad"):
+                (total_loss, (faith_loss, imp_lp, imp_freq, term_losses)), grads = (
+                    eqx.filter_value_and_grad(loss_fn, has_aux=True)(
+                        (prepared, state.components, ci, warmed_sources)
                     )
                 )
-            )
-        prepared_grad, components_grad_faith, ci_grad, persistent_grads_scaled = grads
+            prepared_grad, components_grad_faith, ci_grad, persistent_grads_scaled = grads
+            ci_fn_grad = ci_vjp(ci_grad)[0]
+        else:
+
+            def loss_fn_repeat(
+                trainable: tuple[Any, DecompVU, dict[str, dict[str, Array]]],
+            ) -> tuple[Array, tuple[Array, Array, Array, tuple[Array, ...]]]:
+                prepared_t, components_t, persistent_t = trainable
+                return losses_body(
+                    prepared_t, components_t, envelope.lower, envelope.upper, persistent_t
+                )
+
+            with jax.named_scope("pd_value_and_grad"):
+                (total_loss, (faith_loss, imp_lp, imp_freq, term_losses)), grads = (
+                    eqx.filter_value_and_grad(loss_fn_repeat, has_aux=True)(
+                        (prepared, state.components, warmed_sources)
+                    )
+                )
+            prepared_grad, components_grad_faith, persistent_grads_scaled = grads
+            ci_fn_grad = None
         components_grad_recon = recon_vjp(prepared_grad)[0]
-        ci_fn_grad = ci_vjp(ci_grad)[0]
         components_grad = jax.tree.map(
             lambda recon_g, faith_g: recon_g + faith_g,
             components_grad_recon,
@@ -494,11 +584,24 @@ def make_train_step(
             state.components_opt_state,
             eqx.filter(state.components, eqx.is_array),
         )
-        ci_fn_updates, new_ci_fn_opt_state = ci_fn_optimizer.update(
-            ci_fn_grad, state.ci_fn_opt_state, eqx.filter(state.ci_fn, eqx.is_array)
-        )
+        if ci_fn_grad is not None:
+            ci_fn_updates, new_ci_fn_opt_state = ci_fn_optimizer.update(
+                ci_fn_grad, state.ci_fn_opt_state, eqx.filter(state.ci_fn, eqx.is_array)
+            )
+            if stale_ci_fn_lr is not None:
+                # Unit-lr optimizer (see factory docstring): apply the run's ci_fn LR
+                # schedule here, at the GLOBAL step — matching what optax's count-driven
+                # schedule applies when every step updates the ci_fn.
+                ci_fn_lr = scheduled_value_traced(step_f32, total_steps, stale_ci_fn_lr)
+                ci_fn_updates = jax.tree.map(lambda u: ci_fn_lr * u, ci_fn_updates)
+        else:
+            ci_fn_updates, new_ci_fn_opt_state = None, state.ci_fn_opt_state
         new_components = eqx.apply_updates(state.components, components_updates)
-        new_ci_fn = eqx.apply_updates(state.ci_fn, ci_fn_updates)
+        new_ci_fn = (
+            eqx.apply_updates(state.ci_fn, ci_fn_updates)
+            if ci_fn_updates is not None
+            else state.ci_fn
+        )
 
         new_state = TrainState(
             components=new_components,
@@ -524,9 +627,116 @@ def make_train_step(
             metrics["src_lr"] = next(iter(source_lrs.values()))
         else:
             metrics |= {f"schedules/lr/src/{k}": v for k, v in source_lrs.items()}
+        return new_state, metrics, envelope
+
+    def compute_ci_impl(model: DecomposedModel, ci_fn: CIFn, batch: Any) -> CIEnvelope:
+        batch = batch_sharded(batch)
+        taps = model.read_activations(batch, ci_fn.input_names)
+        ci = jax.lax.stop_gradient(
+            ci_batch_sharded(cast_floating(ci_fn, COMPUTE_DT)(taps, remat=remat_ci_fn))
+        )
+        return CIEnvelope(lower=ci.lower, upper=ci.upper)
+
+    return step_impl, compute_ci_impl
+
+
+def make_train_step(
+    lm: DecomposedModel,
+    *,
+    losses: LossSurface,
+    components_optimizer: optax.GradientTransformation,
+    ci_fn_optimizer: optax.GradientTransformation,
+    total_steps: int,
+    remat_recon_forwards: bool,
+    remat_ci_fn: bool,
+    mesh: Mesh | None,
+    ascend_replicate: bool = False,
+    compiler_options: dict[str, bool | int | str] | None = None,
+):
+    """Build the `eqx.filter_jit`'d `step(model, state, batch, key) -> (state, metrics)`.
+
+    `model` is the jit ARG (frozen 8B weights traced as array leaves, never baked); the
+    factory closes over only static config (`site_names`, `recon_loss_fn`, term wiring) read
+    off `lm` here. `losses` (from `build_loss_terms`) is the `LossSurface` record — the
+    faithfulness + importance-minimality singletons and the recon Σ, read by name. `mesh`
+    (when given) pins every batch-leading activation over the full mesh
+    (`P(('replicate', 'fsdp'), ...)`) so the masked re-forwards stay on per-rank sub-batches
+    (activation memory 1/N)."""
+    step_impl, _ = _build_step_impl(
+        lm,
+        losses=losses,
+        components_optimizer=components_optimizer,
+        ci_fn_optimizer=ci_fn_optimizer,
+        total_steps=total_steps,
+        remat_recon_forwards=remat_recon_forwards,
+        remat_ci_fn=remat_ci_fn,
+        mesh=mesh,
+        ascend_replicate=ascend_replicate,
+        stale_ci_fn_lr=None,
+    )
+
+    def step(
+        model: DecomposedModel, state: TrainState, batch: Any, key: PRNGKeyArray
+    ) -> tuple[TrainState, dict[str, Array]]:
+        new_state, metrics, _ = step_impl(model, state, batch, key, None)
         return new_state, metrics
 
     return filter_jit(step, donate="all-except-first", compiler_options=compiler_options)
+
+
+def make_stale_ci_train_steps(
+    lm: DecomposedModel,
+    *,
+    losses: LossSurface,
+    components_optimizer: optax.GradientTransformation,
+    ci_fn_optimizer: optax.GradientTransformation,
+    ci_fn_lr_schedule: ScheduleConfig,
+    total_steps: int,
+    remat_recon_forwards: bool,
+    remat_ci_fn: bool,
+    mesh: Mesh | None,
+    ascend_replicate: bool = False,
+    compiler_options: dict[str, bool | int | str] | None = None,
+) -> StaleCITrainSteps:
+    """Build the stale-CI replay step pair (SPEC S34; `DataConfig.replay_stale_ci`).
+
+    `ci_fn_optimizer` MUST carry unit LR (`run_state.unit_lr_ci_fn_optimizer`): the fresh
+    step applies `ci_fn_lr_schedule` itself at the GLOBAL step, so the ci_fn follows the
+    run's LR schedule even though its optax update count only advances on window-first
+    steps (a count-driven schedule would stretch by the replay factor)."""
+    step_impl, compute_ci_impl = _build_step_impl(
+        lm,
+        losses=losses,
+        components_optimizer=components_optimizer,
+        ci_fn_optimizer=ci_fn_optimizer,
+        total_steps=total_steps,
+        remat_recon_forwards=remat_recon_forwards,
+        remat_ci_fn=remat_ci_fn,
+        mesh=mesh,
+        ascend_replicate=ascend_replicate,
+        stale_ci_fn_lr=ci_fn_lr_schedule,
+    )
+
+    def fresh(
+        model: DecomposedModel, state: TrainState, batch: Any, key: PRNGKeyArray
+    ) -> tuple[TrainState, dict[str, Array], CIEnvelope]:
+        return step_impl(model, state, batch, key, None)
+
+    def repeat(
+        model_and_envelope: tuple[DecomposedModel, CIEnvelope],
+        state: TrainState,
+        batch: Any,
+        key: PRNGKeyArray,
+    ) -> tuple[TrainState, dict[str, Array]]:
+        model, cached_envelope = model_and_envelope
+        new_state, metrics, _ = step_impl(model, state, batch, key, cached_envelope)
+        return new_state, metrics
+
+    return StaleCITrainSteps(
+        fresh=filter_jit(fresh, donate="all-except-first", compiler_options=compiler_options),
+        repeat=filter_jit(repeat, donate="all-except-first", compiler_options=compiler_options),
+        compute_ci=filter_jit(compute_ci_impl, compiler_options=compiler_options),
+    )
 
 
 # ───────────────────────────── faithfulness warmup (SPEC S21) ─────────────────────────────

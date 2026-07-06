@@ -24,6 +24,13 @@ never silently diverge. Cite IDs (`S14`, `N1`, …) in commit messages and revie
 
 ## Architecture in one breath
 
+**Stale-CI replay** (SPEC S34, experimental, `data.replay_stale_ci`): under free-AT batch
+replay (`train_batch_replay > 1`), repeat steps reuse the window-first CI envelope as a
+constant — no taps / CI-fn forward / CI-fn backward on repeats, ci_fn updates only on
+window-first steps (unit-LR optimizer + in-step global-step LR schedule). Built by
+`train.make_stale_ci_train_steps` (fresh/repeat/compute_ci), dispatched in
+`run.py::do_step`. Off by default; flag-off emits the unchanged step.
+
 `lm.py` defines `DecomposedModel` — a `@runtime_checkable Protocol`: ordered `sites` +
 `leading_axes` + the methods `clean_output`, `read_activations`, `masked_output`,
 `masked_site_outputs`, `weight_deltas`, and a `recon_loss_fn` (LM: `kl_per_position`). The

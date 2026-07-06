@@ -141,6 +141,13 @@ class LMDataConfig(BaseConfig):
         default=1,
         description="Consecutive train steps sharing one batch (free-AT replay); 1 = fresh batch every step",
     )
+    replay_stale_ci: bool = Field(
+        default=False,
+        description=(
+            "Reuse the window-first CI envelope on replay repeat steps (skip taps + CI-fn "
+            "fwd/bwd; ci_fn updates only on fresh batches). Requires train_batch_replay > 1"
+        ),
+    )
 
 
 class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
@@ -320,6 +327,9 @@ def _data(cfg: LMExperimentConfig) -> DataConfig:
     )
     assert data.dataset_name == "parquet" and data.column_name == "input_ids", data
     assert data.data_files is not None
+    assert not data.replay_stale_ci or data.train_batch_replay > 1, (
+        "replay_stale_ci needs a replay window (train_batch_replay > 1) to have repeat steps"
+    )
     shard_glob = Path(data.data_files)
     assert shard_glob.name == "*.parquet", f"expected a *.parquet glob, got {data.data_files}"
     return DataConfig(
@@ -327,6 +337,7 @@ def _data(cfg: LMExperimentConfig) -> DataConfig:
         seq_len=data.max_seq_len,
         global_batch=cfg.pd.batch_size,
         train_batch_replay=data.train_batch_replay,
+        replay_stale_ci=data.replay_stale_ci,
     )
 
 

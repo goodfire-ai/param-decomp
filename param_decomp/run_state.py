@@ -98,6 +98,17 @@ def build_optimizers(pd: PDConfig):
     return opt_vu, opt_ci, (sched_vu, sched_ci)
 
 
+def unit_lr_ci_fn_optimizer(pd: PDConfig) -> optax.GradientTransformation:
+    """The ci_fn AdamW with LR pinned to 1.0, for stale-CI replay (SPEC S34): the ci_fn
+    updates only on window-first steps, so its optax update count lags the global step by
+    the replay factor and a count-driven schedule would stretch the cosine. The step
+    applies the global-step schedule itself (`make_stale_ci_train_steps`). A callable
+    constant schedule keeps the optimizer-state structure identical to
+    `build_optimizers`'s (a `scale_by_schedule` count leaf), so checkpoint reference
+    trees are unaffected."""
+    return _adamw_with_clip(pd.ci_fn_optimizer, lambda count: jnp.asarray(1.0, jnp.float32))
+
+
 def init_train_state(
     pd: PDConfig,
     lm: DecomposedModel,

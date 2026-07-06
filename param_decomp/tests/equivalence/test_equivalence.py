@@ -100,7 +100,7 @@ def test_chunk_plan_static_live_gate() -> None:
 def test_structure_stoch_is_per_chunk() -> None:
     """SPEC S10: one forward per (chunk, sample), normalized by `n_chunks · n_samples`
     — matching the torch chunkwise pool, not one fused forward over all sites."""
-    src = inspect.getsource(train_mod.make_train_step)
+    src = inspect.getsource(train_mod._build_step_impl)
     assert "for entry_idx, entry in enumerate(term.plan)" in src, (
         "each recon term must loop its plan's entries"
     )
