@@ -10,15 +10,19 @@ shard ÷N, and ÷8 at full 32L/full-C exceeds a rank's HBM before compile starts
     c1/c2/c8 recon chunk count 1/2/8 (sites_per_chunk 224/112/28)
     nw0      PPGD n_warmup_steps=0 (drops the warmup-ascent scan, keeps the ppgd forward)
     noppgd   PersistentPGDReconLoss removed entirely
-    nofaith  FaithfulnessLoss removed (also dodges the 38GB faith transient -> steps run)
     passes   base4 + TF_CPP hlo_pass_pipeline timing (per-XLA-pass durations in the log)
+    chalf / ci2blk / dp64 / dp128   shape + topology attribution (see inline comments)
 
-Every arm exports JAX_LOG_COMPILES=1 (per-jit compile durations in the slurm log).
-Launch each arm with an ISOLATED submit-time out dir so arms never share an XLA cache:
+The generated yamls are throwaway probe artifacts — generate into a scratch dir, don't
+commit them. Every arm exports JAX_LOG_COMPILES=1 (per-jit compile durations in the
+slurm log). Launch each arm with an ISOLATED submit-time out dir so arms never share an
+XLA cache:
 
     PARAM_DECOMP_OUT_DIR=$SCRATCH/<arm> pd-lm <arm>.yaml
 
 with SCRATCH=/mnt/delicate-frog/artifacts/mechanisms/param-decomp/compile_probe_scratch.
+The 2026-07-06 grid's logs + launch configs are archived at
+`compile_probe_grid_2026-07-06_logs.tgz` next to btdr's runs/ dir.
 """
 
 import sys
@@ -67,13 +71,11 @@ def ci_blocks(cfg: dict[str, Any], n: int) -> None:
 
 ARMS: dict[str, Any] = {
     "base4": lambda cfg: None,
-    "fastinit": lambda cfg: None,  # base4 rerun to A/B the stacked ci-fn/sources init fixes
     "c1": lambda cfg: set_chunks(cfg, 224),
     "c2": lambda cfg: set_chunks(cfg, 112),
     "c8": lambda cfg: set_chunks(cfg, 28),
     "nw0": lambda cfg: loss_metric(cfg, "PersistentPGDReconLoss").update(n_warmup_steps=0),
     "noppgd": lambda cfg: drop_loss_metric(cfg, "PersistentPGDReconLoss"),
-    "nofaith": lambda cfg: drop_loss_metric(cfg, "FaithfulnessLoss"),
     "passes": lambda cfg: cfg["runtime"]["launch_env"]["env"].update(PASS_TIMING_ENV),
     # round-4 attribution arms (shape/CI scale — the btdr Chalf-ci2blk runs compiled ~3 min
     # while the full-shape cw-east runs took ~24: these isolate which knob buys that)
