@@ -2,7 +2,7 @@ run_name: cgrid-c2
 cadence:
   keep_last_n_checkpoints: 2
   save_every: 5000
-  train_log_every: 1
+  train_log_every: 25
 data:
   buffer_size: 1000
   column_name: input_ids
@@ -18,7 +18,7 @@ data:
   train_split: train
 eval:
   batch_size: 32
-  every: 1000
+  every: 100000
   metrics:
   - n_batches_accum: 1
     type: CIHistograms
@@ -40,10 +40,10 @@ eval:
     step_size: 0.1
     type: PGDReconLoss
   n_steps: 1
-  slow_every: 10000
+  slow_every: 1000000
   slow_on_first_step: true
 pd:
-  batch_size: 8
+  batch_size: 32
   ci_config:
     type: chunkwise_transformer
     blocks_per_chunk: 1
@@ -563,13 +563,15 @@ pd:
   seed: 0
   steps: 12
 runtime:
-  dp: 8
+  dp: 32
   tp: 1
   remat_recon_forwards: true
   remat_ci_fn: true
   launch_env:
     env:
       JAX_LOG_COMPILES: '1'
+    profile:
+      no_checkpoint: true
 target:
   output_extract: logits
   weights_dtype: bfloat16

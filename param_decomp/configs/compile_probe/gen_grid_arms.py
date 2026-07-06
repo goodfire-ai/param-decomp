@@ -1,8 +1,10 @@
-"""Generate the compile-time scaling-grid arm configs (btdr, 1 node).
+"""Generate the compile-time scaling-grid arm configs (btdr, dp32 = 4 nodes/arm).
 
-Derived from llama8b_full32L_1node_b8_dp8_PROFILE.yaml (full 32L / 224 sites / dp8 /
-b8 / seq512 / 12 steps / eval never fires), one mutation per arm, so the grid
-attributes jit_step compile time to specific graph sections:
+Derived from llama8b_full32L_HSDP_b32_dp32.yaml (full 32L / 224 sites / per-rank
+batch 1 / seq512), cut to 12 steps with eval never firing and checkpoints off, one
+mutation per arm, so the grid attributes jit_step compile time to specific graph
+sections. (dp8/1-node was tried first and OOMs in SETUP: the fp32 masters + Adam
+shard ÷N, and ÷8 at full 32L/full-C exceeds a rank's HBM before compile starts.)
 
     base4    the production shape: 4 recon chunks + PPGD(nw2) + faith
     c1/c2/c8 recon chunk count 1/2/8 (sites_per_chunk 224/112/28)
@@ -25,7 +27,7 @@ from typing import Any
 
 import yaml
 
-BASE_CONFIG = Path(__file__).parent.parent / "llama8b_full32L_1node_b8_dp8_PROFILE.yaml"
+BASE_CONFIG = Path(__file__).parent.parent / "llama8b_full32L_HSDP_b32_dp32.yaml"
 BTDR_DATA = (
     "/mnt/delicate-frog/artifacts/mechanisms/param-decomp/datasets/fineweb_llama_tok_512/*.parquet"
 )
@@ -68,7 +70,13 @@ def main(out_dir: str) -> None:
         cfg["run_name"] = f"cgrid-{arm}"
         cfg.pop("wandb", None)
         cfg["data"]["data_files"] = BTDR_DATA
-        cfg["runtime"]["launch_env"] = {"env": {"JAX_LOG_COMPILES": "1"}}
+        cfg["pd"]["steps"] = 12
+        cfg["eval"]["every"] = 100000
+        cfg["eval"]["slow_every"] = 1000000
+        cfg["runtime"]["launch_env"] = {
+            "env": {"JAX_LOG_COMPILES": "1"},
+            "profile": {"no_checkpoint": True},
+        }
         mutate(cfg)
         path = out / f"cgrid_{arm}.yaml"
         path.write_text(yaml.safe_dump(cfg, sort_keys=False))
