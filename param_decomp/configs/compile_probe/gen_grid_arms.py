@@ -50,6 +50,15 @@ def set_chunks(cfg: dict[str, Any], sites_per_chunk: int) -> None:
     loss_metric(cfg, "ChunkwiseSubsetReconLoss")["sites_per_chunk"] = sites_per_chunk
 
 
+def halve_c(cfg: dict[str, Any]) -> None:
+    for t in cfg["pd"]["decomposition_targets"]:
+        t["C"] //= 2
+
+
+def ci_blocks(cfg: dict[str, Any], n: int) -> None:
+    cfg["pd"]["ci_config"]["n_blocks"] = n
+
+
 ARMS: dict[str, Any] = {
     "base4": lambda cfg: None,
     "c1": lambda cfg: set_chunks(cfg, 224),
@@ -59,6 +68,10 @@ ARMS: dict[str, Any] = {
     "noppgd": lambda cfg: drop_loss_metric(cfg, "PersistentPGDReconLoss"),
     "nofaith": lambda cfg: drop_loss_metric(cfg, "FaithfulnessLoss"),
     "passes": lambda cfg: cfg["runtime"]["launch_env"]["env"].update(PASS_TIMING_ENV),
+    # round-4 attribution arms (shape/CI scale — the btdr Chalf-ci2blk runs compiled ~3 min
+    # while the full-shape cw-east runs took ~24: these isolate which knob buys that)
+    "chalf": halve_c,
+    "ci2blk": lambda cfg: ci_blocks(cfg, 2),
 }
 
 
