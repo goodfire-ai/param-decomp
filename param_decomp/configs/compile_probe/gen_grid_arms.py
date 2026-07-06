@@ -50,6 +50,12 @@ def set_chunks(cfg: dict[str, Any], sites_per_chunk: int) -> None:
     loss_metric(cfg, "ChunkwiseSubsetReconLoss")["sites_per_chunk"] = sites_per_chunk
 
 
+def set_dp(cfg: dict[str, Any], dp: int) -> None:
+    cfg["runtime"]["dp"] = dp
+    cfg["pd"]["batch_size"] = dp
+    cfg["eval"]["batch_size"] = dp
+
+
 def halve_c(cfg: dict[str, Any]) -> None:
     for t in cfg["pd"]["decomposition_targets"]:
         t["C"] //= 2
@@ -72,6 +78,10 @@ ARMS: dict[str, Any] = {
     # while the full-shape cw-east runs took ~24: these isolate which knob buys that)
     "chalf": halve_c,
     "ci2blk": lambda cfg: ci_blocks(cfg, 2),
+    # topology arms: round 3 showed jit_step compile flat (~5 min) across EVERY
+    # graph-structure knob at dp32 — these measure the mesh-size curve on fixed hardware
+    "dp64": lambda cfg: set_dp(cfg, 64),
+    "dp128": lambda cfg: set_dp(cfg, 128),
 }
 
 
