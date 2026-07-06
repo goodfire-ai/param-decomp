@@ -1,0 +1,7 @@
+# batch-64 / eps-1e-6 variant of the C49k/200k run (2026-06-17, feature/jax) via the
+# shared-config route. remat off: per-rank batch 2 at --nodes 4 is well within the
+# validated per-rank-8 footprint.
+torch_config: torch/llama8b_l18_b64_200k_eps1e6_1pool.yaml
+run_name: jax-l18-b64-200k-eps1e6
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/jax_runs
+remat_recon_forwards: false
