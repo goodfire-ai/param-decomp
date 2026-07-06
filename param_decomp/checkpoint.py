@@ -22,8 +22,11 @@ from typing import cast
 
 import jax
 import orbax.checkpoint as ocp
+from etils import epath
 from orbax.checkpoint.type_handlers import ArrayHandler, register_type_handler
 
+from param_decomp.ci_fn import CIFn
+from param_decomp.components import DecompVU
 from param_decomp.train import TrainState
 
 # Replica-parallel writes (multiple hosts cooperatively writing a REPLICATED array)
@@ -61,6 +64,38 @@ def restore_step(mgr: ocp.CheckpointManager, reference: TrainState, step: int) -
     # layout; matching it avoids a ÷1-scale entry relayout on the first resumed step (the resume OOM).
     restored = jax.device_put(restored, jax.tree.map(lambda r: r.format, reference))
     return cast(TrainState, restored)
+
+
+def restore_forward_state(
+    ckpt_dir: Path, step: int, components: DecompVU, ci_fn: CIFn
+) -> tuple[DecompVU, CIFn]:
+    """Partial-restore ONLY the forward state (V/U + CI fn) of a saved `TrainState`,
+    onto the shapes/dtypes/shardings of freshly-initialised, correctly-placed templates.
+
+    For consumers (harvest / eval / app) that never touch optimizer moments, the
+    persistent adversary, or the step counter — which on production LM runs dwarf the
+    forward state (e.g. tens of GB of `bsc` sources + Adam moments) and OOM a
+    single-device full restore.
+
+    Orbax gotcha: under `partial_restore` every leaf needs explicit `ArrayRestoreArgs`
+    with a sharding, or deserialization fails with sharding=None."""
+    item = {"components": components, "ci_fn": ci_fn}
+    abstract = jax.tree.map(
+        lambda a: jax.ShapeDtypeStruct(a.shape, a.dtype, sharding=a.sharding), item
+    )
+    restore_args = jax.tree.map(
+        lambda sds: ocp.ArrayRestoreArgs(
+            restore_type=jax.Array, sharding=sds.sharding, shape=sds.shape
+        ),
+        abstract,
+        is_leaf=lambda x: isinstance(x, jax.ShapeDtypeStruct),
+    )
+    handler = ocp.PyTreeCheckpointHandler()
+    restored = handler.restore(
+        epath.Path((ckpt_dir / str(step) / "default").resolve()),
+        args=ocp.args.PyTreeRestore(item=abstract, restore_args=restore_args, partial_restore=True),
+    )
+    return restored["components"], restored["ci_fn"]
 
 
 def restore_latest(

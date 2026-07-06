@@ -3,8 +3,10 @@ consumers that follow it: clustering, autointerp, slow-eval, app).
 
 This is the reusable "load a JAX run" pattern. It reads a run dir
 (`runs/<p-id>/{launch_config.yaml, ckpts/}`), rebuilds the frozen
-target + `DecomposedModel` from the pinned config, restores the orbax checkpoint onto a
-reference `TrainState`, and exposes the pure forward a consumer needs:
+target + `DecomposedModel` from the pinned config, partial-restores ONLY the forward
+state (V/U + CI fn) from the orbax checkpoint — the optimizer moments / persistent
+adversary / step counter it skips dwarf the forward state on production runs and would
+OOM a single device — and exposes the pure forward a consumer needs:
 
     run = open_jax_run(run_dir)                 # latest checkpoint
     fwd = run.forward(token_ids)                # one frozen, forward-only pass
@@ -33,11 +35,10 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float, Int
 
 from param_decomp.built_run import BuiltRun
-from param_decomp.checkpoint import make_checkpoint_manager, restore_latest, restore_step
+from param_decomp.checkpoint import make_checkpoint_manager, restore_forward_state
 from param_decomp.ci_fn import CIFn
 from param_decomp.components import DecompVU
 from param_decomp.lm import DecomposedModel
-from param_decomp.run_state import build_optimizers, init_train_state
 from param_decomp.sharding import hsdp_mesh, place_via_shardings
 from param_decomp.targets import llama_simple_mlp
 from param_decomp.targets.llama8b import (
@@ -45,8 +46,12 @@ from param_decomp.targets.llama8b import (
     llama_site_specs,
     load_decomposed_lm_from_hf,
 )
-from param_decomp.targets.llama8b_sharding import place_target
-from param_decomp.train import COMPUTE_DT, TrainState, cast_floating
+from param_decomp.targets.llama8b_sharding import (
+    init_ci_fn_placed,
+    init_decomp_vu_placed,
+    place_target,
+)
+from param_decomp.train import COMPUTE_DT, cast_floating
 from param_decomp_lab.experiments.lm.config import (
     LlamaSimpleMLPTargetConfig,
     TargetConfig,
@@ -120,7 +125,8 @@ class LoadedJaxRun:
     lm: DecomposedModel
     config: BuiltRun
     vocab_size: int
-    _state: TrainState
+    _components: DecompVU
+    _ci_fn: CIFn
     _forward: Callable[
         [DecomposedModel, DecompVU, CIFn, Int[Array, "B T"]],
         tuple[dict[str, Array], dict[str, Array], Array],
@@ -137,10 +143,8 @@ class LoadedJaxRun:
         return [(s.name, s.C) for s in self.lm.sites]
 
     def forward(self, token_ids: Int[Array, "B T"]) -> HarvestForward:
-        ci_fn = self._state.ci_fn
-        assert isinstance(ci_fn, CIFn), "harvest is the transformer-CI-fn (LM) path only"
         lower_leaky_ci, component_acts, output_probs = self._forward(
-            self.lm, self._state.components, ci_fn, token_ids
+            self.lm, self._components, self._ci_fn, token_ids
         )
         return HarvestForward(
             lower_leaky_ci=lower_leaky_ci,
@@ -155,24 +159,25 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
     mesh = hsdp_mesh()
     lm, vocab_size = build_target(cfg, mesh)
 
-    opt_vu, opt_ci, _ = build_optimizers(cfg.pd)
-    init_key, src_key = jax.random.split(jax.random.PRNGKey(cfg.pd.seed))
-    reference = init_train_state(
-        cfg.pd, lm, cfg.ci_fn, cfg.data, opt_vu, opt_ci, init_key, src_key, mesh
-    )
+    # A consumer's forward touches ONLY components + ci_fn, so restore exactly those onto
+    # fresh placed templates (shapes/dtypes/shardings; the init key values are overwritten).
+    # A full-TrainState reference would also materialize the optimizer moments and the
+    # persistent adversary — on production runs that's most of a multi-10GB checkpoint,
+    # twice (reference + restored), and OOMs a single device.
+    init_key = jax.random.PRNGKey(cfg.pd.seed)
+    components_tmpl = init_decomp_vu_placed(lm.sites, init_key, mesh)
+    ci_fn_tmpl = init_ci_fn_placed(cfg.ci_fn, lm.sites, jax.random.fold_in(init_key, 1), mesh)
 
     assert cfg.cadence.keep_last_n_checkpoints is not None, cfg.cadence
     manager = make_checkpoint_manager(run_dir / "ckpts", cfg.cadence.keep_last_n_checkpoints)
-    if step is None:
-        restored = restore_latest(manager, reference)
-        assert restored is not None, f"no checkpoints under {run_dir / 'ckpts'}"
-        state, resolved_step = restored
-    else:
-        state, resolved_step = restore_step(manager, reference, step), step
-    assert isinstance(state.components, DecompVU)
+    resolved_step = manager.latest_step() if step is None else step
+    assert resolved_step is not None, f"no checkpoints under {run_dir / 'ckpts'}"
+    components, ci_fn = restore_forward_state(
+        run_dir / "ckpts", resolved_step, components_tmpl, ci_fn_tmpl
+    )
 
     site_names = lm.site_names
-    u_norms = _u_norms(state.components, site_names)
+    u_norms = _u_norms(components, site_names)
 
     # `model` is the filter_jit ARG (frozen weights traced, not baked). It embeds the token
     # ids internally — the harvest forward feeds tokens straight in.
@@ -209,7 +214,8 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
         lm=lm,
         config=cfg,
         vocab_size=vocab_size,
-        _state=state,
+        _components=components,
+        _ci_fn=ci_fn,
         _forward=forward,
     )
 
