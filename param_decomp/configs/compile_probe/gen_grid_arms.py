@@ -67,6 +67,7 @@ def ci_blocks(cfg: dict[str, Any], n: int) -> None:
 
 ARMS: dict[str, Any] = {
     "base4": lambda cfg: None,
+    "fastinit": lambda cfg: None,  # base4 rerun to A/B the stacked ci-fn/sources init fixes
     "c1": lambda cfg: set_chunks(cfg, 224),
     "c2": lambda cfg: set_chunks(cfg, 112),
     "c8": lambda cfg: set_chunks(cfg, 28),
