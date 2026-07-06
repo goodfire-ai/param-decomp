@@ -8,6 +8,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
+import orbax.checkpoint as ocp
 from jax.sharding import Mesh
 
 from param_decomp.adversary import (
@@ -17,7 +18,9 @@ from param_decomp.adversary import (
     sources_adam_ascend_project,
 )
 from param_decomp.checkpoint import (
+    init_from_parent,
     make_checkpoint_manager,
+    restore_decomposition_to_host,
     restore_latest,
     restore_step,
     save_state,
@@ -51,7 +54,7 @@ from param_decomp.targets.llama8b_sharding import (
     init_sources_sharded,
 )
 from param_decomp.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
-from param_decomp.train import TrainState, make_train_step
+from param_decomp.train import Decomposition, TrainState, make_train_step
 from vendored_jax.llama import LlamaConfig
 
 
@@ -228,6 +231,85 @@ def test_no_checkpoint_returns_none(tmp_path: Path):
     _, fresh, _, _ = _build(seed=7)
     mgr = make_checkpoint_manager(tmp_path / "empty", keep_last=2)
     assert restore_latest(mgr, fresh) is None
+
+
+def test_saved_layout_is_two_items(tmp_path: Path):
+    """The on-disk item names are the cross-version contract every consumer and the
+    dual-read dispatch key on — pin them."""
+    _, state, _, _ = _build(seed=1)
+    mgr = make_checkpoint_manager(tmp_path / "ckpts", keep_last=2)
+    save_state(mgr, 0, state)
+    step_dir = tmp_path / "ckpts" / "0"
+    assert (step_dir / "decomposition").is_dir()
+    assert (step_dir / "training").is_dir()
+    assert not (step_dir / "default").exists()
+
+
+def test_consumer_restores_decomposition_to_host(tmp_path: Path):
+    """The consumer path (`open_jax_run`): an eval_shape'd `Decomposition` abstract —
+    no optimizer/adversary knowledge — restores host-side, bit-equal to the saved
+    components + ci_fn."""
+    lm, state, step, resid = _build(seed=1)
+    for i in range(2):
+        state, _ = step(lm, state, resid, jax.random.PRNGKey(i))
+    mgr = make_checkpoint_manager(tmp_path / "ckpts", keep_last=2)
+    save_state(mgr, 2, state)
+
+    # A FRESH manager, as every real consumer opens: orbax pins an item's handler per
+    # manager instance, so the saving manager can't PyTreeRestore what it StandardSave'd.
+    consumer_mgr = make_checkpoint_manager(tmp_path / "ckpts", keep_last=2)
+    abstract = jax.eval_shape(lambda: Decomposition(components=state.components, ci_fn=state.ci_fn))
+    restored = restore_decomposition_to_host(consumer_mgr, 2, abstract)
+    for a, b in zip(
+        jax.tree.leaves((state.components, state.ci_fn)),
+        jax.tree.leaves((restored.components, restored.ci_fn)),
+        strict=True,
+    ):
+        assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
+
+
+def _save_legacy_single_item(mgr: ocp.CheckpointManager, step: int, state: TrainState) -> None:
+    """Write the pre-split layout (one `default` item carrying the whole `TrainState`) —
+    what every run launched before the split keeps writing from its immutable workspace."""
+    mgr.save(step, args=ocp.args.StandardSave(state))
+    mgr.wait_until_finished()
+
+
+def test_legacy_single_item_dual_read(tmp_path: Path):
+    """Pre-split checkpoints must stay readable by every restore path: full trainer
+    restore (`restore_latest`), consumer partial restore
+    (`restore_decomposition_to_host`), and fine-tune init (`init_from_parent`)."""
+    lm, state, step, resid = _build(seed=1)
+    for i in range(2):
+        state, _ = step(lm, state, resid, jax.random.PRNGKey(i))
+    mgr = make_checkpoint_manager(tmp_path / "ckpts", keep_last=2)
+    _save_legacy_single_item(mgr, 2, state)
+    assert (tmp_path / "ckpts" / "2" / "default").is_dir()
+
+    _, fresh, _, _ = _build(seed=7)
+    restored = restore_latest(mgr, fresh)
+    assert restored is not None
+    loaded, ckpt_step = restored
+    assert ckpt_step == 2
+    for a, b in zip(jax.tree.leaves(state), jax.tree.leaves(loaded), strict=True):
+        assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
+
+    consumer_mgr = make_checkpoint_manager(tmp_path / "ckpts", keep_last=2)
+    abstract = jax.eval_shape(lambda: Decomposition(components=state.components, ci_fn=state.ci_fn))
+    decomp = restore_decomposition_to_host(consumer_mgr, 2, abstract)
+    for a, b in zip(
+        jax.tree.leaves((state.components, state.ci_fn)),
+        jax.tree.leaves((decomp.components, decomp.ci_fn)),
+        strict=True,
+    ):
+        assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
+
+    finetuned = init_from_parent(tmp_path / "ckpts", parent_step=2, reference=fresh)
+    for a, b in zip(
+        jax.tree.leaves(finetuned.components), jax.tree.leaves(state.components), strict=True
+    ):
+        assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
+    assert int(finetuned.step) == 0
 
 
 def _build_sharded(seed: int, mesh: Mesh):

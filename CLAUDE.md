@@ -204,7 +204,7 @@ Every artifact for a decomposition lives under one dir per run:
 ```
 PARAM_DECOMP_OUT_DIR/runs/<run_id>/
   launch_config.yaml         # the single self-contained run config (the trainer reads it; resume byte-compares). NOT config.yaml: that basename collides with wandb's reserved run-config file, which wandb.save would symlink onto and clobber
-  ckpts/<step>/...           # orbax sharded checkpoints (JAX trainer)
+  ckpts/<step>/{decomposition,training}/  # orbax sharded checkpoints (JAX trainer): the trained product vs the trainer-only tail; pre-split runs have a single default/ item instead
   metrics.jsonl              # local logs
   harvest/h-*/...            # pd-harvest output
   autointerp/a-*/...         # pd-autointerp output

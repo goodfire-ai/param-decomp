@@ -35,7 +35,7 @@ from param_decomp.targets.llama8b_sharding import (
     init_decomp_vu_placed,
     init_sources_sharded,
 )
-from param_decomp.train import TrainState
+from param_decomp.train import Decomposition, TrainState
 
 
 def optax_schedule(config: ScheduleConfig, total_steps: int) -> Callable[[ArrayLike], Array]:
@@ -98,6 +98,23 @@ def build_optimizers(pd: PDConfig):
     return opt_vu, opt_ci, (sched_vu, sched_ci)
 
 
+def init_decomposition(
+    lm: DecomposedModel, ci_fn_arch: CIFnArch, init_key: PRNGKeyArray, mesh: Mesh
+) -> Decomposition:
+    """The trained-product half of `init_train_state`, factored out so a consumer can
+    `jax.eval_shape` it to recover the saved `decomposition` item's tree structure
+    without building (or knowing about) the optimizers/adversaries."""
+    ci_key = random.fold_in(init_key, 1)
+    # Placement is MODEL-OWNED: V/U + CI declare their own per-leaf shardings (asserting
+    # divisibility), uniformly across mesh sizes — no scale inference, no replicate fallback.
+    components = init_decomp_vu_placed(lm.sites, init_key, mesh)
+    ci_fn = init_ci_fn_placed(ci_fn_arch, lm.sites, ci_key, mesh)
+    assert ci_fn.expects_axes == lm.leading_axes, (
+        f"CI fn expects leading axes {ci_fn.expects_axes} but model has {lm.leading_axes}"
+    )
+    return Decomposition(components=components, ci_fn=ci_fn)
+
+
 def init_train_state(
     pd: PDConfig,
     lm: DecomposedModel,
@@ -109,14 +126,8 @@ def init_train_state(
     src_key: PRNGKeyArray,
     mesh: Mesh,
 ) -> TrainState:
-    ci_key = random.fold_in(init_key, 1)
-    # Placement is MODEL-OWNED: V/U + CI declare their own per-leaf shardings (asserting
-    # divisibility), uniformly across mesh sizes — no scale inference, no replicate fallback.
-    components = init_decomp_vu_placed(lm.sites, init_key, mesh)
-    ci_fn = init_ci_fn_placed(ci_fn_arch, lm.sites, ci_key, mesh)
-    assert ci_fn.expects_axes == lm.leading_axes, (
-        f"CI fn expects leading axes {ci_fn.expects_axes} but model has {lm.leading_axes}"
-    )
+    decomposition = init_decomposition(lm, ci_fn_arch, init_key, mesh)
+    components, ci_fn = decomposition.components, decomposition.ci_fn
     losses = build_loss_terms(pd.loss_metrics, lm.site_names)
     persistent = persistent_configs(losses.recon)
     term_coeff_by_state_key = {

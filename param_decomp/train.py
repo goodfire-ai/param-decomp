@@ -63,6 +63,17 @@ def cast_floating(tree: Any, dtype: Any) -> Any:
 
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
+class Decomposition:
+    """The trained PRODUCT: V/U components + the CI fn (fp32 masters). Checkpointed as
+    its own orbax item so consumers (harvest/autointerp/clustering/app) restore it with
+    zero knowledge of the training process (optimizer states, adversaries, step)."""
+
+    components: DecompVU
+    ci_fn: CIFn
+
+
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
 class TrainState:
     components: DecompVU  # the universal trainable V/U pytree, fp32 masters
     ci_fn: CIFn  # fp32 masters
