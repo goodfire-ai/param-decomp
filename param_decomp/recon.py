@@ -440,7 +440,8 @@ def build_loss_terms(
     assert faith is not None and imp is not None, (
         f"need FaithfulnessLoss + ImportanceMinimalityLoss, got {[m.type for m in loss_metrics]}"
     )
-    assert recon_terms, "no recon loss terms configured"
+    # FAITH-ONLY EXPERIMENT (experiment/faith-only): an empty recon set is allowed — the
+    # step's recon grid, fresh-PGD, and adversary loops all no-op over an empty tuple.
     for term in recon_terms:
         for entry in term.plan:
             assert entry.live_sites and set(entry.live_sites) <= set(site_names), entry
