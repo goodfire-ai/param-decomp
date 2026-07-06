@@ -349,16 +349,20 @@ def _case_block(commands: list[str]) -> str:
 def _submit_script(script_path: Path) -> str:
     """Submit script via sbatch and return job ID.
 
-    Submitting from INSIDE a SLURM allocation (agent sessions, dev pods) leaks the
-    caller's `SLURM_*` env into the new job — sbatch propagates it, and a mismatched
-    inherited `SLURM_CPUS_PER_TASK` makes the job's srun die instantly with
-    "cpus-per-task set by two different environment variables". Scrub `SLURM_*` (and
-    `SBATCH_*`) from the submission env so the new job's env comes only from its own
-    allocation.
+    Submitting from INSIDE a SLURM allocation (agent sessions, dev pods, tmux servers
+    created in an srun step) leaks the caller's step-scoped env into the new job —
+    sbatch propagates it, and the new job's srun reads it as directives. A mismatched
+    inherited `SLURM_CPUS_PER_TASK` kills the srun instantly ("cpus-per-task set by two
+    different environment variables"); an inherited `SLURM_CPU_BIND` silently pins every
+    rank to the ORIGINATING pod's few cores (the June 2026 fleet-wide ~3x slowdown).
+    Scrub `SLURM_*`/`SBATCH_*`/`PMIX_*` from the submission env so the new job's SLURM
+    state comes only from its own allocation.
 
     Raises RuntimeError if sbatch fails.
     """
-    clean_env = {k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "SBATCH_"))}
+    clean_env = {
+        k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "SBATCH_", "PMIX_"))
+    }
     result = subprocess.run(
         ["sbatch", str(script_path)], capture_output=True, text=True, check=False, env=clean_env
     )
