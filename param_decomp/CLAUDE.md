@@ -274,9 +274,11 @@ shared FS, which `$PARAM_DECOMP_OUT_DIR` already is.
 
 ### Cold-start compile budget (measured 2026-07-06, btdr, isolated-cache probe grid)
 
-Probe harness: `configs/compile_probe/gen_grid_arms.py` (one production-shape arm per
-mutation, per-arm `PARAM_DECOMP_OUT_DIR` so arms never share a cache). Findings at the
-full 32L/224-site production shape:
+Method: one production-shape probe run per mutation (12 steps, eval/checkpoints off,
+`JAX_LOG_COMPILES=1`), each launched with its own `PARAM_DECOMP_OUT_DIR` so runs never
+share an XLA cache — cache isolation is a submit-time env var, nothing repo-side. Logs +
+launch configs archived on btdr (`compile_probe_grid_2026-07-06_logs.tgz`, sibling of
+`runs/`). Findings at the full 32L/224-site production shape:
 
 - The cold start is a SUM of serial compiles, and the inits used to dominate it:
   `jit_init_decomp_vu` 211s + `jit_build_ci_fn` 167s + `jit_init_persistent_sources` 55s
