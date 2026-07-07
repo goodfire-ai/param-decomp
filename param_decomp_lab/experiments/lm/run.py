@@ -2,7 +2,8 @@
 vendored target.
 
     python -m param_decomp_lab.experiments.lm.run <wrapper.yaml>   # normally via pd-lm,
-        # which stamps run_id into the workspace copy; re-running resumes in place
+        # which pins the config as runs/<id>/launch_config.yaml and passes --run-id;
+        # re-running resumes in place
 
 This is the LM I/O layer over the generic core engine
 (`param_decomp.run.run_decomposition_training`): read the run YAML, build the target, feed
