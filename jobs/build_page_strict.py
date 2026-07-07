@@ -11,16 +11,22 @@ import numpy as np
 
 HERE = Path(__file__).parent
 PAGES = HERE / "arith_pages"
-DB = Path(
-    "/mnt/data/artifacts/mechanisms/param-decomp/runs/p-594db290/"
-    "autointerp/a-20260707_075038_912021/interp.db"
-)
+AUTOINTERP = Path("/mnt/data/artifacts/mechanisms/param-decomp/runs/p-594db290/autointerp")
+DBS = [
+    AUTOINTERP / "a-20260707_075038_912021/interp.db",
+    AUTOINTERP / "a-20260707_120935_008837/interp.db",
+]
 ORDER = ["layers.18.mlp.gate_proj", "layers.18.mlp.up_proj", "layers.18.mlp.down_proj"]
 
 
 def load_labels() -> dict[str, str]:
-    con = sqlite3.connect(DB)
-    return {k: v for k, v in con.execute("SELECT component_key, label FROM interpretations")}
+    labels: dict[str, str] = {}
+    for db in DBS:
+        con = sqlite3.connect(db)
+        rows = dict(con.execute("SELECT component_key, label FROM interpretations"))
+        assert not (labels.keys() & rows.keys()), "autointerp runs should cover disjoint keys"
+        labels |= rows
+    return labels
 
 
 def page(title: str, intro: str, sections: list[tuple[str, list[dict]]], other_link: str) -> str:
