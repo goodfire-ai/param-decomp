@@ -238,14 +238,18 @@ def evaluate(
     step: int = 400_000,
     n_batches: int = 32,
     n_restarts: int = 4,
-    pgd_steps: str = "20,50",
+    pgd_steps: str | tuple[int, ...] = "20,50",
     batch_size: int = 128,
     density_n_bins: int = 32,
     seed: int = 0,
 ) -> None:
     """Evaluate comma-separated run directories on identical batches and PGD starts."""
     paths = tuple(Path(value) for value in run_dirs.split(","))
-    milestones = tuple(int(value) for value in pgd_steps.split(","))
+    milestones = (
+        tuple(int(value) for value in pgd_steps.split(","))
+        if isinstance(pgd_steps, str)
+        else pgd_steps
+    )
     assert paths and n_batches > 0
     out = Path(out_path)
     jax.config.update("jax_compilation_cache_dir", str(out.parent / "xla_cache"))
