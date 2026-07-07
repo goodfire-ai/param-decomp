@@ -938,7 +938,7 @@ class LlamaDecomposedModel(eqx.Module):
 # ----------------------------- HF weight loading -----------------------------
 
 
-def _hf_snapshot_dir(model_name: str) -> Path:
+def hf_snapshot_dir(model_name: str) -> Path:
     """Newest local snapshot of `model_name`. `HF_HUB_CACHE` overrides; otherwise on
     cluster (`DATA_MOUNT` set) the shared world-readable cache is the source — a home
     `~/.cache` hub is silently mutable, and a wiped entry strands running jobs that
@@ -1046,7 +1046,7 @@ def load_decomposed_lm_from_hf(
     final norm, lm_head) as fields plus the static decomposition config (`sites`). Blocks
     without a decomposed site run the plain frozen path. `scan_unroll` / `gather_fp8` are the
     `RuntimeConfig` compute knobs."""
-    w = _HFWeights(_hf_snapshot_dir(model_name))
+    w = _HFWeights(hf_snapshot_dir(model_name))
     return build_decomposed_lm(
         embed=w.get("model.embed_tokens.weight"),
         layers=_load_blocks(w, cfg),
