@@ -23,11 +23,13 @@ from param_decomp.built_run import DataConfig
 from param_decomp.ci_fn import CIFnArch
 from param_decomp.configs import AdamPGDConfig, OptimizerConfig, PDConfig
 from param_decomp.lm import DecomposedModel
+from param_decomp.losses import scheduled_value_traced
 from param_decomp.recon import (
     PersistentSources,
     build_loss_terms,
     persistent_configs,
 )
+from param_decomp.schedule import ScheduleConfig
 from param_decomp.targets.llama8b_sharding import (
     init_ci_fn_placed,
     init_decomp_vu_placed,
@@ -36,24 +38,13 @@ from param_decomp.targets.llama8b_sharding import (
 from param_decomp.train import TrainState
 
 
-def torch_cosine_schedule(
-    peak_lr: float, total_steps: int, alpha: float
-) -> Callable[[ArrayLike], Array]:
-    """Cosine decay matching torch's `get_scheduled_value` denominator: `progress =
-    step / (total_steps - 1)` (no warmup), so `0.1×` is reached at `step = total_steps - 1`.
-    optax's `cosine_decay_schedule` divides by `total_steps`, reaching it one step later
-    (SPEC S20). `total_steps == 1` collapses to a constant `peak_lr`.
-
-    Same annealing shape as `schedule.get_scheduled_value`'s cosine branch — that one is a
-    host-numpy `float` lookup for the per-step PGD / p-anneal coeffs (warmup-aware, denom
-    `decay_steps - 1`); this one is a `jnp` callable traced into the optimizer LR. The two
-    can't share a runtime fn (host float vs traced array); each is pinned to torch by its
-    own parity test (`test_schedule.py` / `test_optim_torch_parity.py`)."""
-    denom = max(total_steps - 1, 1)
+def optax_schedule(config: ScheduleConfig, total_steps: int) -> Callable[[ArrayLike], Array]:
+    """`scheduled_value_traced` curried into an optax schedule over the update count.
+    Torch cosine parity (the `decay_steps - 1` denominator, SPEC S20) is pinned by
+    `test_optim_torch_parity.py`."""
 
     def schedule(count: ArrayLike) -> Array:
-        progress = jnp.asarray(count, jnp.float32) / denom
-        return peak_lr * (alpha + (1 - alpha) * 0.5 * (1 + jnp.cos(jnp.pi * progress)))
+        return scheduled_value_traced(jnp.asarray(count, jnp.float32), total_steps, config)
 
     return schedule
 
@@ -100,10 +91,8 @@ def build_optimizers(pd: PDConfig):
     CI-fn clip) live in
     the lab conversion (`experiments.config.assert_canonical_algorithm_config`); here we
     read the values straight off `PDConfig` so there is no second source of truth."""
-    sched_vu = torch_cosine_schedule(
-        pd.components_optimizer.lr_schedule.start_val, pd.steps, alpha=0.1
-    )
-    sched_ci = torch_cosine_schedule(pd.ci_fn_optimizer.lr_schedule.start_val, pd.steps, alpha=0.1)
+    sched_vu = optax_schedule(pd.components_optimizer.lr_schedule, pd.steps)
+    sched_ci = optax_schedule(pd.ci_fn_optimizer.lr_schedule, pd.steps)
     opt_vu = _adamw_with_clip(pd.components_optimizer, sched_vu)
     opt_ci = _adamw_with_clip(pd.ci_fn_optimizer, sched_ci)
     return opt_vu, opt_ci, (sched_vu, sched_ci)

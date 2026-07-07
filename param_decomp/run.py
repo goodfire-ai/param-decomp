@@ -117,10 +117,7 @@ def _ensure_global[T](tree: T, mesh: Mesh) -> T:
     `addressable_shards` raise (jax 0.10 multi-process), while jit outputs with the
     same sharding are well-formed.
 
-    Leaves that already carry a NamedSharding pass through UNTOUCHED: routing them
-    through the identity jit re-materializes the whole state in one executable,
-    which OOM'd at the multi-chunk config's ~110 GB global state (job 50458,
-    168 GiB alloc in jit__identity_fn)."""
+    Leaves that already carry a NamedSharding pass through UNTOUCHED."""
     repl = NamedSharding(mesh, P())
 
     def is_mesh_placed(a: object) -> bool:
@@ -159,6 +156,25 @@ def _fmt_duration(seconds: float) -> str:
 
 def _is_verbose_grad_norm(key: str) -> bool:
     return key.startswith("train/grad_norms/") and not key.startswith("train/grad_norms/summary/")
+
+
+def _grad_norm_summary_window_stats(window: list[dict[str, jax.Array]]) -> dict[str, float]:
+    """Window min/max/median for each `grad_norms/summary/*` scalar over every step since the
+    last log. The per-step values are accumulated as device handles (appending one is async),
+    so the whole window reduces in a single host transfer here — the loop stays unsynced
+    between logs rather than subsampling grad norms at the log step."""
+    assert window, "grad-norm summary window is empty at a log boundary"
+    keys = list(window[0].keys())
+    stacked = jnp.stack([jnp.stack([snap[k] for snap in window]) for k in keys])  # [keys, steps]
+    mins = np.asarray(jnp.min(stacked, axis=1))
+    maxs = np.asarray(jnp.max(stacked, axis=1))
+    medians = np.asarray(jnp.median(stacked, axis=1))
+    out: dict[str, float] = {}
+    for i, key in enumerate(keys):
+        out[f"{key}/min"] = float(mins[i])
+        out[f"{key}/max"] = float(maxs[i])
+        out[f"{key}/median"] = float(medians[i])
+    return out
 
 
 class MetricsSink:
@@ -521,11 +537,9 @@ def run_decomposition_training(
     sink = MetricsSink.for_run(run, wandb_config, is_main)
     window_t0 = loop_t0 = time.time()
     last_logged = start_step
+    grad_norm_summary_window: list[dict[str, jax.Array]] = []
 
-    # SCRATCH PROFILER HOOK (revertable): env-gated jax.profiler.trace over a window of
-    # steady-state steps + per-step block_until_ready wall-clock. PD_PROFILE_TRACE=1 enables;
-    # PD_PROFILE_START / PD_PROFILE_STEPS pick the window (default start at first post-warmup
-    # step, 3 steps). Trace lands in run_dir/profile (rank-0 dir is the one to pull).
+    # Profiler hook: trace over steady-state steps. Trace lands in run_dir/profile (rank-0 only).
     _profile_on = profile.trace
     _profile_start = profile.trace_start if profile.trace_start is not None else start_step + 2
     _profile_steps = profile.trace_steps if profile.trace_steps is not None else 3
@@ -626,13 +640,15 @@ def run_decomposition_training(
         os._exit(0)  # profiling-only path; donation has consumed `state`, so don't enter the loop
 
     for step in range(start_step, pd.steps):
-        if _profile_on and step == _profile_start:
+        # Rank 0 only: every host writing into the shared run_dir/profile breaks the
+        # perfetto exporter ("Invalid trace folder" — it expects ONE xplane per dir), and
+        # SPMD ranks are symmetric so rank-0's timeline is the whole story.
+        if _profile_on and is_main and step == _profile_start:
             jax.block_until_ready(state)
             if profile.profile_max_events is not None:
                 _popts = jax.profiler.ProfileOptions()
-                # Host/python events are ~70% of the trace's event budget; the perfetto JSON
-                # exporter caps at 1M events, truncating the step mid-forward. Cut host tracing
-                # so the budget goes to GPU kernels (a full step's ~730k fit under the cap).
+                # Cut host/python tracing so the perfetto JSON exporter's 1M-event budget
+                # goes to GPU kernels.
                 _popts.host_tracer_level = 1
                 _popts.python_tracer_level = 0
                 _popts.advanced_configuration = {
@@ -678,6 +694,10 @@ def run_decomposition_training(
             batch = sample_batch(step)
             state, metrics = step_fn(lm, state, batch, random.fold_in(run_key, step))
 
+        grad_norm_summary_window.append(
+            {k: v for k, v in metrics.items() if k.startswith("grad_norms/summary/")}
+        )
+
         if _profiling:
             jax.block_until_ready((state, metrics["total"]))
             if is_main:
@@ -705,7 +725,11 @@ def run_decomposition_training(
             dt = time.time() - window_t0
             per_step = dt / max(now_step - last_logged, 1)
             last_logged = now_step
-            record = {k: float(v) for k, v in metrics.items()}
+            record = {
+                k: float(v) for k, v in metrics.items() if not k.startswith("grad_norms/summary/")
+            }
+            record.update(_grad_norm_summary_window_stats(grad_norm_summary_window))
+            grad_norm_summary_window.clear()
             for loss_name in ("total", *(k for k in record if k.startswith("loss/"))):
                 assert math.isfinite(record[loss_name]), (
                     f"non-finite loss {loss_name!r} at step {now_step}: {record[loss_name]}"

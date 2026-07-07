@@ -25,6 +25,7 @@ from param_decomp.configs import (
 )
 from param_decomp.lm import DecomposedModel
 from param_decomp.recon import build_loss_terms
+from param_decomp.schedule import ScheduleConfig
 from param_decomp.train import TrainState, make_faith_warmup_step, make_train_step
 from param_decomp_lab.experiments.tms.model import (
     HiddenLayerInit,
@@ -180,10 +181,7 @@ def _loss_metrics():
         FaithfulnessLossConfig(coeff=1e3),
         ImportanceMinimalityLossConfig(
             coeff=3e-3,
-            pnorm=1.0,
-            p_anneal_start_frac=0.0,
-            p_anneal_final_p=1.0,
-            p_anneal_end_frac=1.0,
+            pnorm=ScheduleConfig(start_val=1.0, fn_type="constant"),
         ),  # fmt: skip
         StochasticReconLossConfig(coeff=1.0),
         StochasticReconLayerwiseLossConfig(coeff=1.0),
@@ -274,10 +272,7 @@ def _recovery_loss_metrics():
         FaithfulnessLossConfig(coeff=1.0),
         ImportanceMinimalityLossConfig(
             coeff=3e-3,
-            pnorm=1.0,
-            p_anneal_start_frac=0.0,
-            p_anneal_final_p=1.0,
-            p_anneal_end_frac=1.0,
+            pnorm=ScheduleConfig(start_val=1.0, fn_type="constant"),
         ),  # fmt: skip
         StochasticReconLossConfig(coeff=1.0),
         StochasticReconLayerwiseLossConfig(coeff=1.0),

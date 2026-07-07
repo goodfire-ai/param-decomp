@@ -190,10 +190,8 @@ class CIBlock(eqx.Module):
         cos, sin = rope_cos_sin(inv_freq, t, x.dtype)
         q, k = apply_rope(q, k, cos, sin)
         qt, kt, vt = (einops.rearrange(a, "b nh t hd -> b t nh hd") for a in (q, k, v))
-        # cuDNN flash on GPU (heads are local now — tp=1, no Megatron head-sharding — so cuDNN's
-        # partitioner accepts the q/k/v layout); XLA elsewhere (CPU tests have no cuDNN). Flash
-        # never materializes the (B,H,T,T) score — GBs per chunk at d=4096/nh=64, stacked over the
-        # chunk scan — so it stays off the peak. Bidirectional.
+        # cuDNN flash on GPU (its partitioner requires device-local heads — true here, no
+        # head-sharding); XLA elsewhere (CPU tests have no cuDNN). Bidirectional.
         impl = "cudnn" if jax.default_backend() == "gpu" else "xla"
         y = jax.nn.dot_product_attention(qt, kt, vt, is_causal=False, implementation=impl)
         x = x + einops.einsum(

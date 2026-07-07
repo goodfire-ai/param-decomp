@@ -181,8 +181,7 @@ def make_train_step(
     # backward instead of storing every layer's activations). This is load-bearing for the
     # ASCENTS too: though they backprop only to the SOURCES (params + CI detached), the source
     # gradient still flows through the per-layer activations (the masks MULTIPLY them), so an
-    # un-rematted ascent forward stacks `[n_layer, *leading, d_ff]` MLP intermediates — measured
-    # as the dominant step-memory term at depth (~6.6x peak vs rematted; the full-32L OOM).
+    # un-rematted ascent forward stacks `[n_layer, *leading, d_ff]` MLP intermediates.
     # Remat off stores all activations: faster when memory allows.
     @jaxtyped(typechecker=beartype)
     def masked_forward(
