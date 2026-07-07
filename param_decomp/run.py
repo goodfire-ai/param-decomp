@@ -530,10 +530,7 @@ def run_decomposition_training(
     last_logged = start_step
     grad_norm_summary_window: list[dict[str, jax.Array]] = []
 
-    # SCRATCH PROFILER HOOK (revertable): env-gated jax.profiler.trace over a window of
-    # steady-state steps + per-step block_until_ready wall-clock. PD_PROFILE_TRACE=1 enables;
-    # PD_PROFILE_START / PD_PROFILE_STEPS pick the window (default start at first post-warmup
-    # step, 3 steps). Trace lands in run_dir/profile (rank-0 dir is the one to pull).
+    # Profiler hook: trace over steady-state steps. Trace lands in run_dir/profile (rank-0 only).
     _profile_on = profile.trace
     _profile_start = profile.trace_start if profile.trace_start is not None else start_step + 2
     _profile_steps = profile.trace_steps if profile.trace_steps is not None else 3
@@ -634,7 +631,10 @@ def run_decomposition_training(
         os._exit(0)  # profiling-only path; donation has consumed `state`, so don't enter the loop
 
     for step in range(start_step, pd.steps):
-        if _profile_on and step == _profile_start:
+        # Rank 0 only: every host writing into the shared run_dir/profile breaks the
+        # perfetto exporter ("Invalid trace folder" — it expects ONE xplane per dir), and
+        # SPMD ranks are symmetric so rank-0's timeline is the whole story.
+        if _profile_on and is_main and step == _profile_start:
             jax.block_until_ready(state)
             if profile.profile_max_events is not None:
                 _popts = jax.profiler.ProfileOptions()
