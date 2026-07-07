@@ -41,6 +41,7 @@ from jaxtyping import Array, Float, Int
 from safetensors import safe_open
 
 from param_decomp.components import DecompVU, SiteC, SiteSpec, site_out
+from param_decomp.lm import run_stochastic_masked_output
 from param_decomp.losses import kl_per_position
 from param_decomp.targets.llama8b import FrozenAttn
 from vendored_jax.llama import rms_norm
@@ -452,6 +453,25 @@ class SimpleMLPDecomposedModel(eqx.Module):
 
         forward = jax.checkpoint(forward) if remat else forward
         return forward(prepared, inputs, masks, delta_masks, routes)
+
+    def stack_ci(self, ci_lower: dict[str, Array]) -> dict[str, Array]:
+        return ci_lower  # unrolled-loop target: no scan to share a stack across; identity
+
+    def masked_output_stochastic(
+        self,
+        prepared: DecompVU,
+        inputs: Int[Array, "b t"],
+        ci_stacked: dict[str, Array],
+        draw_key: Array,
+        routes: dict[str, Array] | None,
+        live: tuple[str, ...],
+        has_delta: bool,
+        *,
+        remat: bool,
+    ) -> Array:
+        return run_stochastic_masked_output(
+            self, prepared, inputs, ci_stacked, draw_key, routes, live, has_delta, remat=remat
+        )
 
     def masked_site_outputs(
         self,

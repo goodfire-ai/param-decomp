@@ -26,6 +26,7 @@ frozen 8B target captured as a constant bakes multi-GB weights into the HLO.
 from typing import Any, Protocol, runtime_checkable
 
 import jax.numpy as jnp
+from jax import random as jax_random
 from jax.sharding import Mesh
 from jaxtyping import Array, Bool, Float
 
@@ -138,6 +139,36 @@ class DecomposedModel(Protocol):
         storing every layer's activations — the dominant step-memory term at depth)."""
         ...
 
+    def stack_ci(self, ci_lower: dict[str, Array]) -> Any:
+        """Build the target-specific SHARED CI form (opaque, like `prepare_compute_weights`):
+        the CI envelope reshaped ONCE per step so the stochastic recon forwards can reuse it.
+        A scan target stacks the per-site CI into its per-layer scan layout (shared, so N
+        forwards' mask stacks collapse to one — the memory win); a target without that structure
+        returns `ci_lower` unchanged. Consumed only by `masked_output_stochastic`."""
+        ...
+
+    def masked_output_stochastic(
+        self,
+        prepared: Any,
+        inputs: Any,
+        /,
+        ci_stacked: Any,
+        draw_key: Array,
+        routes: SiteRoutes,
+        live: tuple[str, ...],
+        has_delta: bool,
+        *,
+        remat: bool,
+    ) -> Any:
+        """Stochastic recon forward that builds masks INTERNALLY from the shared `ci_stacked`
+        (`= stack_ci(ci.lower)`) + per-position draws from `draw_key`, rather than taking
+        pre-built masks. A scan target RECOMPUTES the masks inside its checkpointed block (the
+        per-forward mask is never held — a memory win, faithful by checkpoint determinism);
+        targets without that structure delegate to `run_stochastic_masked_output` (build masks,
+        then `masked_output`). Same forward semantics as `masked_output` with stochastic sources;
+        the random draw need not match any other path's (only fwd==bwd faithfulness matters)."""
+        ...
+
     def masked_site_outputs(
         self,
         prepared: Any,
@@ -158,6 +189,48 @@ class DecomposedModel(Protocol):
     def weight_deltas(self, vu: DecompVU) -> dict[str, Float[Array, "d_out d_in"]]:
         """fp32 `W − V@U` per site from the fp32 master `vu` (SPEC N2)."""
         ...
+
+
+def stochastic_site_masks(
+    ci_lower: dict[str, Array], live: tuple[str, ...], draw_key: Array, has_delta: bool
+) -> tuple[dict[str, Array], dict[str, Array]]:
+    """Per-live-site stochastic masks `ci + (1−ci)·U[0,1]` (+ delta `U[0,1]`), keyed per site
+    from `draw_key`. The generic stochastic-source formula (SPEC S12 stochastic), shared by the
+    non-recompute `masked_output_stochastic` fallback."""
+    mask_key, delta_key = jax_random.split(draw_key)
+    masks: dict[str, Array] = {}
+    delta_masks: dict[str, Array] = {}
+    for site_idx, site in enumerate(live):
+        ci = ci_lower[site]
+        masks[site] = ci + (1.0 - ci) * jax_random.uniform(
+            jax_random.fold_in(mask_key, site_idx), ci.shape, ci.dtype
+        )
+        if has_delta:
+            delta_masks[site] = jax_random.uniform(
+                jax_random.fold_in(delta_key, site_idx), ci.shape[:-1], ci.dtype
+            )
+    return masks, delta_masks
+
+
+def run_stochastic_masked_output(
+    model: "DecomposedModel",
+    prepared: Any,
+    inputs: Any,
+    ci_lower: dict[str, Array],
+    draw_key: Array,
+    routes: SiteRoutes,
+    live: tuple[str, ...],
+    has_delta: bool,
+    *,
+    remat: bool,
+) -> Any:
+    """Default `masked_output_stochastic` for targets without an in-block recompute: build the
+    stochastic masks here (no shared-CI reuse — `stack_ci` was identity), then run the standard
+    `masked_output`. Correct + uniform; only scan targets override for the memory win."""
+    masks, delta_masks = stochastic_site_masks(ci_lower, live, draw_key, has_delta)
+    return model.masked_output(
+        prepared, inputs, masks, delta_masks, routes, live, has_delta, remat=remat
+    )
 
 
 def chunk_sites(site_names: tuple[str, ...], sites_per_chunk: int) -> tuple[tuple[str, ...], ...]:

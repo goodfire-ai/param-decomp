@@ -91,33 +91,29 @@ def test_stamp_config_noop_without_wandb_knobs(tmp_path: Path):
 
 def test_default_launch_env_matches_legacy_hardcoded_block():
     env = LaunchEnv().as_env()
+    # XLA compiler flags are NOT here anymore — they go via RuntimeConfig.compiler_options.
     assert env == {
         "NCCL_DEBUG": "WARN",
         "MALLOC_ARENA_MAX": "2",
         "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.92",
         "XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB": "1024",
-        "XLA_FLAGS": "--xla_gpu_enable_command_buffer=",
     }
 
 
-def test_launch_env_renders_allocator_profile_and_free_form_overrides():
+def test_launch_env_renders_allocator_and_free_form_overrides():
     env = LaunchEnv(
-        xla_flags={"gpu_enable_command_buffer": "", "gpu_autotune_level": "0"},
         xla_python_client_allocator="platform",
         profile=ProfileConfig(trace=True, trace_start=10, trace_steps=5, no_checkpoint=True),
         env={"NCCL_DEBUG": "INFO"},  # free-form block overrides a typed knob (merged last)
     ).as_env()
-    assert env["XLA_FLAGS"] == "--xla_gpu_enable_command_buffer= --xla_gpu_autotune_level=0"
     assert env["XLA_PYTHON_CLIENT_ALLOCATOR"] == "platform"
-    assert env["PD_PROFILE_TRACE"] == "1"
-    assert env["PD_PROFILE_START"] == "10" and env["PD_PROFILE_STEPS"] == "5"
-    assert env["PD_NO_CHECKPOINT"] == "1"
     assert env["NCCL_DEBUG"] == "INFO"
+    # neither profiling toggles nor XLA compiler flags leak into the rank env (config-native)
+    assert not any(k.startswith("PD_") for k in env)
+    assert "XLA_FLAGS" not in env
 
 
-def test_render_rank_env_shell_quotes_multiflag_and_appends_ld_library_path():
-    block = _render_rank_env(
-        LaunchEnv(xla_flags={"gpu_enable_command_buffer": "", "gpu_autotune_level": "0"})
-    )
-    assert "export XLA_FLAGS='--xla_gpu_enable_command_buffer= --xla_gpu_autotune_level=0'" in block
+def test_render_rank_env_renders_knobs_and_appends_ld_library_path():
+    block = _render_rank_env(LaunchEnv(xla_python_client_allocator="platform"))
+    assert "export XLA_PYTHON_CLIENT_ALLOCATOR=platform" in block
     assert block.splitlines()[-1].startswith("export LD_LIBRARY_PATH=")

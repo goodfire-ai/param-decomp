@@ -14,7 +14,7 @@ immutable workspace.
 
 The rank env (XLA flags, NCCL/host-memory knobs, `PD_*` profiling toggles) is rendered from
 the config's `runtime.launch_env` (single source of truth, defaults in `LaunchEnv`), plus a
-submit-time-computed `LD_LIBRARY_PATH`. So a run's `config.yaml` fully captures the
+submit-time-computed `LD_LIBRARY_PATH`. So a run's `launch_config.yaml` fully captures the
 environment it ran with, and A/B-ing a flag is a config edit, not a launcher edit.
 """
 
@@ -90,7 +90,7 @@ def main(
     qos: str | None = None,
     run_id: str | None = None,
     group: str | None = None,
-    tags: str | None = None,
+    tags: str | tuple[str, ...] | None = None,
     comment: str | None = None,
 ) -> None:
     """Launch a decomposition trainer (`param_decomp_lab.experiments.lm.run`) run. The mode
@@ -113,11 +113,18 @@ def main(
         comment: SLURM `--comment`; defaults to the wandb run URL (or run id).
 
     The rank env (XLA flags, NCCL/host-memory knobs, profiling toggles) is config-driven
-    via `runtime.launch_env` — set it in the YAML, not here (so `config.yaml` records it).
+    via `runtime.launch_env` — set it in the YAML, not here (so `launch_config.yaml` records it).
     """
     config_rel = _config_path_relative_to_repo(config_path)
     cfg, run_name = _validate_config(REPO_ROOT / config_rel)
-    tag_list = [s.strip() for s in tags.split(",")] if tags is not None else []
+    # Python Fire parses a comma-separated `--tags a,b,c` into a tuple, but keeps a value with a
+    # hyphen (e.g. `a,b,c-d`) as a string — normalize both (and the single-token case) to a list.
+    if tags is None:
+        tag_list = []
+    elif isinstance(tags, str):
+        tag_list = [s.strip() for s in tags.split(",") if s.strip()]
+    else:
+        tag_list = [str(t).strip() for t in tags]
 
     dp = cfg.runtime.dp
     if dp is None:

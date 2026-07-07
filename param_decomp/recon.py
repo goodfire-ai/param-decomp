@@ -92,7 +92,7 @@ class FreshPGDSources:
 class PersistentSources:
     """Sources living in `TrainState.adversaries[state_key]` across steps (PPGD). Carries
     the shared `PersistentPGDReconLossConfig` so the term is self-describing — the step
-    reads its scope/optimizer/warmup/`start_frac` straight off `cfg`. `state_key` indexes
+    reads its scope/optimizer/warmup straight off `cfg`. `state_key` indexes
     `TrainState.adversaries` (one key per persistent term, SPEC S23)."""
 
     state_key: str

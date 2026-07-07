@@ -1,0 +1,62 @@
+# Params used for all experiments
+global:
+  # seed:
+  #   values: [0, 1, 2]
+  # ci_fn_hidden_dims:
+  #   values: [32, 128, 256,512]
+  # Sweep over reconstruction loss coefficients
+  # lr:
+  #   values: [1e-3, 1e-4, 1e-5]
+
+  # batch_size: 
+  #   values: [1024, 2048]
+  # lr:
+  #   values: [3e-4, 1e-3]
+  loss_metric_configs:
+    - classname: "ImportanceMinimalityLoss"
+      coeff:
+        values: [2e-4, 1e-4]
+      p_anneal_final_p:
+        values: [0.3]
+    - classname: "PGDReconSubsetLoss"
+      coeff:
+        values: [32.0, 16.0, 8.0]
+      n_steps:
+        values: [1]
+    - classname: "StochasticReconSubsetLoss"
+      coeff:
+        values: [32.0, 16.0, 8.0]
+  #     pnorm:
+  #     pnorm:
+  #       values: [0.9, 2.0]
+    - classname: "StochasticHiddenActsReconLoss"
+      coeff:
+        values: [0.0, 0.1]
+    # - classname: "FaithfulnessLoss"
+    #   coeff:
+    #     values: [100.0, 1.0]
+  # faithfulness_warmup_steps: 
+  #   values: [200]
+  
+
+  # gate_type:
+  #   values: ["linear_gates"]
+  # Example: Sweep over separate learning rates for gates and components
+  # gate_lr:
+  #   values: [1e-4, 1e-3]
+  # component_lr:
+  #   values: [1e-4, 1e-3]
+  # gate_lr_schedule:
+  #   values: ["constant", "cosine", "linear"]
+  # component_lr_schedule:
+  #   values: ["constant", "cosine", "linear"]
+  # component_noise_std:
+  #   values: [0.0, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2]
+  # component_noise_schedule:
+  #   values: ["linear"]
+
+  #
+
+
+
+# Experiment-specific params that override the global params

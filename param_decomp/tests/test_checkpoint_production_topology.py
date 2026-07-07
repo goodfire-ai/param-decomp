@@ -131,7 +131,6 @@ def _build_sharded(seed: int):
             state_key=state_key,
             coeff=ppgd_cfg.coeff,
             adam=ppgd_cfg.optimizer,
-            start_frac=ppgd_cfg.start_frac,
             n_warmup=ppgd_cfg.n_warmup_steps,
         )
     state = TrainState(

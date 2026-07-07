@@ -155,7 +155,6 @@ pd:
       type: adam
     scope:
       type: per_batch_per_position
-    start_frac: 0.0
     type: PersistentPGDReconLoss
   - coeff: 10000000.0
     type: FaithfulnessLoss

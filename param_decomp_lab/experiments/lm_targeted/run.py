@@ -20,7 +20,7 @@ import jax
 from jax import random
 from jax.sharding import Mesh
 
-from param_decomp.built_run import BuiltRun, DataConfig
+from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, BuiltRun, DataConfig
 from param_decomp.data import BatchSchedule, ShardServer, scan_shards
 from param_decomp.hf_http import configure_hf_http_retries
 from param_decomp.lm import DecomposedModel
@@ -100,7 +100,13 @@ def train(
     # TARGET stream: the fixed prompt pool, tokenized once at build time.
     assert cfg.data.prompts_file is not None
     prompt_tokens, recon_positions = load_prompt_tokens(
-        cfg.data.prompts_file, cfg.data.tokenizer_name, cfg.data.max_seq_len
+        cfg.data.prompts_file,
+        cfg.data.tokenizer_name,
+        cfg.data.max_seq_len,
+        cfg.data.add_special_tokens,
+    )
+    target_prompts = TargetPromptGeometry(
+        recon_positions=recon_positions, seq_len=int(prompt_tokens.shape[1])
     )
     target_prompts = TargetPromptGeometry(
         recon_positions=recon_positions, seq_len=int(prompt_tokens.shape[1])
@@ -141,6 +147,9 @@ def train(
         data=data,
         remat_recon_forwards=built.runtime.remat_recon_forwards,
         remat_ci_fn=built.runtime.remat_ci_fn,
+        ascend_replicate=built.runtime.ascend_replicate,
+        compiler_options=built.runtime.compiler_options,
+        profile=built.runtime.launch_env.profile,
         sample_batch=sample_batch,
         eval_fn=eval_fn,
         eval_every=eval_every,
@@ -170,7 +179,7 @@ def main(config: Path, run_id: str) -> None:
         cache_dir.mkdir(parents=True, exist_ok=True)
         built.run.run_dir.mkdir(parents=True, exist_ok=True)
         setup_logger(built.run.run_dir / "logs.log")
-        _pin_config_copy(built.run.run_dir, "config.yaml", config)
+        _pin_config_copy(built.run.run_dir, LAUNCH_CONFIG_FILENAME, config)
         print(f"persistent XLA compilation cache: {cache_dir}", flush=True)
         assert isinstance(built.data, DataConfig)
         print(

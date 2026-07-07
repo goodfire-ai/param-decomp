@@ -62,18 +62,25 @@ BATCH_AXES = ("replicate", "fsdp")
 """The full-mesh batch sharding: data shards over BOTH axes (per-rank batch = B/N)."""
 
 
-def hsdp_mesh() -> Mesh:
-    """The 2-D HSDP device mesh `(replicate, fsdp)`. `fsdp` is the intra-node NVLink axis
-    (the FSDP weight-gather / grad-reduce axis), so it is the FAST-VARYING / minor axis of
-    the reshape — `jax.devices()` lists a node's GPUs contiguously, so a row of the
-    `(n_nodes, GPUS_PER_NODE)` reshape is exactly one node. `replicate` (= n_devices // 8)
-    is the across-node axis. At a single node (8 devices) `replicate` is size 1; on CPU sim
-    with a non-multiple-of-8 device count the `fsdp` axis takes the full count and
-    `replicate` is 1 (so the divisibility asserts still bite on the real shard dims)."""
+def hsdp_mesh(tp: int = 1) -> Mesh:
+    """The 3-D HSDP+TP device mesh `(replicate, fsdp, tp)`. Both `fsdp` and `tp` are
+    intra-node NVLink axes carved from a node's GPUs (`fsdp * tp = GPUS_PER_NODE`); `tp` is
+    the FAST-VARYING / minor axis so a tp group is adjacent GPUs, and a node's contiguous
+    block in `jax.devices()` becomes one `(fsdp, tp)` plane. `replicate` (= n_devices //
+    GPUS_PER_NODE) is the across-node axis. `tp = 1` is a degenerate `(replicate, fsdp, 1)`
+    mesh — identical to the old 2-D mesh for any `("replicate","fsdp")`-only sharding, so
+    behaviour-preserving. At a single node `replicate` is 1; on CPU sim with a
+    non-multiple-of-8 device count the in-node block takes the full count (so the
+    divisibility asserts still bite on the real shard dims)."""
     devices = np.array(jax.devices())
     n = devices.size
-    fsdp = _GPUS_PER_NODE if n % _GPUS_PER_NODE == 0 else n
-    return Mesh(devices.reshape(n // fsdp, fsdp), axis_names=BATCH_AXES)
+    assert n % tp == 0, f"device count {n} not divisible by tp={tp}"
+    in_node = _GPUS_PER_NODE if n % _GPUS_PER_NODE == 0 else n
+    assert in_node % tp == 0, f"in-node block {in_node} not divisible by tp={tp}"
+    return Mesh(
+        devices.reshape(n // in_node, in_node // tp, tp),
+        axis_names=("replicate", "fsdp", "tp"),
+    )
 
 
 def place_via_shardings[T](tree: T, shardings: T) -> T:

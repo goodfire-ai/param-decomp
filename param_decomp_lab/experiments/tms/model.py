@@ -33,6 +33,7 @@ from jaxtyping import Array, Float
 
 from param_decomp.ci_fn import CI
 from param_decomp.components import DecompVU, SiteC, SiteSpec, site_out
+from param_decomp.lm import run_stochastic_masked_output
 
 LINEAR1 = "linear1"
 LINEAR2 = "linear2"
@@ -350,6 +351,25 @@ class TMSDecomposedModel(eqx.Module):
 
         forward = jax.checkpoint(forward) if remat else forward
         return forward(prepared, resid, masks, delta_masks, routes)
+
+    def stack_ci(self, ci_lower: dict[str, Array]) -> dict[str, Array]:
+        return ci_lower
+
+    def masked_output_stochastic(
+        self,
+        prepared: DecompVU,
+        resid: Float[Array, "B n_features"],
+        ci_stacked: dict[str, Array],
+        draw_key: Array,
+        routes: dict[str, Array] | None,
+        live: tuple[str, ...],
+        has_delta: bool,
+        *,
+        remat: bool,
+    ) -> Array:
+        return run_stochastic_masked_output(
+            self, prepared, resid, ci_stacked, draw_key, routes, live, has_delta, remat=remat
+        )
 
     def masked_site_outputs(
         self,

@@ -1,0 +1,119 @@
+run_name: tpd-bench-numpy-pandas
+cadence:
+  keep_last_n_checkpoints: 1
+  save_every: 100000
+  train_log_every: 10
+data:
+  tokenizer_name: EleutherAI/gpt-neox-20b
+  prompts_file: param_decomp_lab/experiments/lm_targeted/prompts/numpy_and_pandas.txt
+  max_seq_len: 16
+nontarget:
+  batch_size: 64
+  impmin_coeff_ratio: 2.0
+  data:
+    dataset_name: parquet
+    data_files: /mnt/polished-lake/home/lee/datasets/pile_neox_tok_512/data/*.parquet
+    column_name: input_ids
+    tokenizer_name: EleutherAI/gpt-neox-20b
+    max_seq_len: 512
+    is_tokenized: true
+    streaming: false
+    eval_split: train
+eval:
+  batch_size: 64
+  every: 100000
+  metrics:
+  - ci_alive_threshold: 0.0
+    groups:
+      total:
+      - '*'
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  n_steps: 1
+  slow_every: 100000
+  slow_on_first_step: false
+pd:
+  batch_size: 64
+  ci_config:
+    type: chunkwise_transformer
+    blocks_per_chunk: 1
+    d_model: 512
+    n_blocks: 1
+    n_heads: 8
+    mlp_hidden: 1024
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: null
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 0.01
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  decomposition_targets:
+  - C: 96
+    module_pattern: h.*.mlp.c_fc
+  - C: 96
+    module_pattern: h.*.mlp.down_proj
+  - C: 64
+    module_pattern: h.*.attn.q_proj
+  - C: 64
+    module_pattern: h.*.attn.k_proj
+  - C: 64
+    module_pattern: h.*.attn.v_proj
+  - C: 96
+    module_pattern: h.*.attn.o_proj
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 0
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - frequency:
+      coeff: 0.0001
+      reference_token_count: 65536
+    coeff: 0.0002
+    eps: 1.0e-12
+    p_anneal_end_frac: 1.0
+    p_anneal_final_p: 0.4
+    p_anneal_start_frac: 0.0
+    pnorm: 2.0
+    type: ImportanceMinimalityLoss
+  - coeff: 0.5
+    routing:
+      type: uniform_k_subset
+    type: StochasticReconSubsetLoss
+  - coeff: 0.5
+    init: random
+    mask_scope: unique_per_datapoint
+    n_steps: 1
+    step_size: 1.0
+    type: PGDReconLoss
+  - coeff: 0.0
+    type: FaithfulnessLoss
+  seed: 0
+  steps: 50
+runtime:
+  remat_recon_forwards: false
+  dp: null
+  launch_env:
+    env:
+      PARAM_DECOMP_OUT_DIR: /mnt/polished-lake/home/lee/param-decomp/out
+target:
+  weights_dtype: bfloat16
+  spec:
+    kind: pretrained
+    model_class: param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
+    run_path: goodfire/spd/runs/t-9d2b8f02

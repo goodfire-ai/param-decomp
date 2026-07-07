@@ -1,26 +1,25 @@
 from functools import cached_property
 from pathlib import Path
 
+from param_decomp.built_run import LAUNCH_CONFIG_FILENAME
 from param_decomp_lab.autointerp.schemas import ModelMetadata
 from param_decomp_lab.experiments.lm.config import LMExperimentConfig
 from param_decomp_lab.experiments.lm.load_run import RunMetadata, run_metadata
 from param_decomp_lab.harvest.schemas import get_harvest_dir
 from param_decomp_lab.topology.path_schemas import path_schema_for_model_type
 
-JAX_RUN_CONFIG_FILENAME = "config.yaml"
-
 
 def is_jax_run(decomposition_id: str) -> bool:
     """A JAX single-pool run dir pins its single self-contained run config as
-    `config.yaml` and checkpoints with orbax under `ckpts/`; a torch run instead has
+    `launch_config.yaml` and checkpoints with orbax under `ckpts/`; a torch run instead has
     `model_*.pth` and no orbax `ckpts/`. The orbax `ckpts/` dir is the explicit marker."""
     run_dir = get_harvest_dir(decomposition_id).parent
-    return (run_dir / JAX_RUN_CONFIG_FILENAME).exists() and (run_dir / "ckpts").is_dir()
+    return (run_dir / LAUNCH_CONFIG_FILENAME).exists() and (run_dir / "ckpts").is_dir()
 
 
 class PDAdapter:
     """Autointerp/clustering adapter for a JAX single-pool run, read torch-free from its
-    pinned config. Autointerp consumes harvest output plus run metadata only — no trained
+    pinned launch config. Autointerp consumes harvest output plus run metadata only — no trained
     components — so the target topology (`n_blocks`, vocab, per-site `(name, C)`) comes
     from `param_decomp_lab.experiments.lm.load_run.run_metadata` (config + pretrain-cache `model_config`,
     no orbax restore); canonical layer descriptions render via the torch-free path schema."""
@@ -34,7 +33,7 @@ class PDAdapter:
 
     @cached_property
     def cfg(self) -> LMExperimentConfig:
-        config_path = self._run_dir / JAX_RUN_CONFIG_FILENAME
+        config_path = self._run_dir / LAUNCH_CONFIG_FILENAME
         assert config_path.exists(), f"config not found: {config_path}"
         return LMExperimentConfig.from_file(config_path)
 

@@ -53,6 +53,11 @@ def restore_step(mgr: ocp.CheckpointManager, reference: TrainState, step: int) -
     (a freshly-initialised, correctly-placed `TrainState`)."""
     abstract = jax.tree.map(ocp.utils.to_shape_dtype_struct, reference)
     restored = mgr.restore(step, args=ocp.args.StandardRestore(abstract))
+    # Force the restored tree onto the reference's exact shardings. StandardRestore honors the
+    # abstract target's shardings, but this makes the docstring's contract explicit and guards
+    # against a multi-host restore landing a leaf on a layout that differs from what the jitted
+    # step was compiled for (which triggers a costly entry-reshard on the first post-resume step).
+    restored = jax.device_put(restored, jax.tree.map(lambda s: s.sharding, abstract))
     return cast(TrainState, restored)
 
 

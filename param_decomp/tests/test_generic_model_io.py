@@ -39,7 +39,7 @@ from param_decomp.configs import (
     ImportanceMinimalityLossConfig,
     StochasticReconLossConfig,
 )
-from param_decomp.lm import DecomposedModel
+from param_decomp.lm import DecomposedModel, run_stochastic_masked_output
 from param_decomp.recon import build_loss_terms
 from param_decomp.train import TrainState, make_train_step
 
@@ -112,6 +112,25 @@ class SyntheticDecomposedModel(eqx.Module):
             delta = W - (V @ U).T
             hidden = hidden + delta_masks[SITE][..., None] * (resid @ delta.T)
         return self._heads(hidden)
+
+    def stack_ci(self, ci_lower: dict[str, Array]) -> dict[str, Array]:
+        return ci_lower
+
+    def masked_output_stochastic(
+        self,
+        vu: DecompVU,
+        resid: Array,
+        ci_stacked: dict[str, Array],
+        draw_key: Array,
+        routes: dict[str, Array] | None,
+        live: tuple[str, ...],
+        has_delta: bool,
+        *,
+        remat: bool,
+    ) -> tuple[Array, Array]:
+        return run_stochastic_masked_output(
+            self, vu, resid, ci_stacked, draw_key, routes, live, has_delta, remat=remat
+        )
 
     def masked_site_outputs(
         self,

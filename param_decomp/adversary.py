@@ -158,15 +158,13 @@ class PersistentAdversary(eqx.Module):
     Per step: `warmup_ascend` (n_warmup supplemental ascents vs a scoring forward, params
     + CI detached) → the warmed sources enter the main `value_and_grad` as leaves →
     `final_ascend` (one more ascent from the SAME backward's source-grad, unscaled by the
-    term's `coeff` — exact since one source bundle feeds exactly one term, SPEC S23).
-    `start_frac` freezes every update until `step/total_steps >= start_frac` (SPEC S32)."""
+    term's `coeff` — exact since one source bundle feeds exactly one term, SPEC S23)."""
 
     sources: dict[str, Array]  # site -> source in [0,1], `(*scope_leading, C+1)`
     opt_state: SourcesAdamState
     state_key: str = eqx.field(static=True)
     coeff: float = eqx.field(static=True)
     adam: AdamPGDConfig = eqx.field(static=True)
-    start_frac: float = eqx.field(static=True)
     n_warmup: int = eqx.field(static=True)
 
     def source_lr(self, step_f32: Array, total_steps: int) -> Array:
@@ -176,14 +174,6 @@ class PersistentAdversary(eqx.Module):
             self.adam.lr_schedule.start_val,
             self.adam.lr_schedule.warmup_pct,
         )
-
-    def _gate[T](self, step_f32: Array, total_steps: int, updated: T, base: T) -> T:
-        """Freeze updates until `start_frac` of training (SPEC S32). No-op (zero-overhead)
-        when `start_frac == 0.0`; otherwise `where`-selects per leaf."""
-        if self.start_frac == 0.0:
-            return updated
-        active = step_f32 >= self.start_frac * total_steps
-        return jax.tree.map(lambda u, b: jnp.where(active, u, b), updated, base)
 
     def warmup_ascend(
         self, scoring_loss: Callable[[dict[str, Array]], Array], step_f32: Array, total_steps: int
@@ -204,9 +194,6 @@ class PersistentAdversary(eqx.Module):
         (warmed, warmed_opt), _ = jax.lax.scan(
             body, (self.sources, self.opt_state), None, length=self.n_warmup
         )
-        warmed, warmed_opt = self._gate(
-            step_f32, total_steps, (warmed, warmed_opt), (self.sources, self.opt_state)
-        )
         return eqx.tree_at(
             lambda a: (a.sources, a.opt_state), self, (jax.lax.stop_gradient(warmed), warmed_opt)
         )
@@ -221,8 +208,5 @@ class PersistentAdversary(eqx.Module):
         grad = {s: g / self.coeff for s, g in source_grad_scaled.items()}
         ascended, ascended_opt = sources_adam_ascend_project(
             self.sources, grad, self.opt_state, lr, self.adam
-        )
-        ascended, ascended_opt = self._gate(
-            step_f32, total_steps, (ascended, ascended_opt), (self.sources, self.opt_state)
         )
         return eqx.tree_at(lambda a: (a.sources, a.opt_state), self, (ascended, ascended_opt))

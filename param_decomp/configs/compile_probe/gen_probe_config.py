@@ -141,7 +141,6 @@ def main(n_layers: int, dp: int, out_path: str, seq: int = 256, batch: int | Non
                         "type": "adam",
                     },
                     "scope": {"type": "per_batch_per_position"},
-                    "start_frac": 0.0,
                     "type": "PersistentPGDReconLoss",
                 },
                 {"coeff": 1000000.0, "type": "FaithfulnessLoss"},

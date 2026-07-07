@@ -17,6 +17,8 @@ from pydantic import Discriminator, Field, PositiveInt, model_validator
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.built_run import (
+    LAUNCH_CONFIG_FILENAME,
+    ArithmeticEvalConfig,
     AttnPatternsEvalConfig,
     BuiltRun,
     DataConfig,
@@ -27,6 +29,7 @@ from param_decomp.built_run import (
 from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch
 from param_decomp.components import SiteC
 from param_decomp.configs import (
+    ArithmeticCIGridConfig,
     CEandKLLossesConfig,
     ChunkwiseTransformerCiConfig,
     CI_L0Config,
@@ -143,6 +146,13 @@ class LMDataConfig(BaseConfig):
     streaming: bool = Field(default=False)
     buffer_size: PositiveInt = Field(default=1000)
     shuffle_each_epoch: bool = Field(default=True)
+    add_special_tokens: bool = Field(
+        default=False,
+        description="Prepend the tokenizer's special tokens (e.g. Llama's BOS) when tokenizing "
+        "a `prompts_file` target pool. Default False preserves the numpy/pandas tPD run; set "
+        "True to match an eval probe that tokenizes with add_special_tokens=True (the "
+        "ArithmeticCIGrid probe includes BOS).",
+    )
 
     @model_validator(mode="after")
     def _exactly_one_source(self) -> "LMDataConfig":
@@ -353,15 +363,25 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
     if cfg.eval is None:
         return None
     ce_kl = ci_l0 = density = pgd = None
+    arithmetic: ArithmeticEvalConfig | None = None
     attn_ci = attn_stoch = False
     attn_stoch_n_mask_samples = 1
     slow_n_batches_accum: int | None = None
+    density_heatmap_n_bins: int | None = None
     for metric in cfg.eval.metrics:
         match metric:
             case CEandKLLossesConfig():
                 ce_kl = metric
             case CI_L0Config():
                 ci_l0 = metric
+            case ArithmeticCIGridConfig():
+                arithmetic = ArithmeticEvalConfig(
+                    operation=metric.operation,
+                    a_range=metric.a_range,
+                    b_range=metric.b_range,
+                    thresholds=tuple(metric.thresholds),
+                    top_k=metric.top_k,
+                )
             case PGDReconLossConfig():
                 assert metric.init == "random" and metric.mask_scope == "c", metric
                 pgd = EvalPGDConfig(n_steps=metric.n_steps, step_size=metric.step_size)
@@ -374,6 +394,7 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
                 attn_stoch_n_mask_samples = metric.n_mask_samples
             case CIHistogramsConfig():
                 slow_n_batches_accum = metric.n_batches_accum
+                density_heatmap_n_bins = metric.density_heatmap_n_bins
             case ComponentActivationDensityConfig():
                 density = metric  # slow-tier; we read only its aliveness cutoff here
             case _ if metric.type in SLOW_TIER_EVAL_METRIC_TYPES:
@@ -390,6 +411,7 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
         slow_every=cfg.eval.slow_every,
         slow_on_first_step=cfg.eval.slow_on_first_step,
         slow_n_batches_accum=slow_n_batches_accum,
+        density_heatmap_n_bins=density_heatmap_n_bins,
         rounding_threshold=ce_kl.rounding_threshold,
         l0_ci_alive_threshold=ci_l0.ci_alive_threshold,
         density_ci_alive_threshold=(density.ci_alive_threshold if density is not None else 0.0),
@@ -408,6 +430,7 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
             if attn_ci or attn_stoch
             else None
         ),
+        arithmetic=arithmetic,
     )
 
 
@@ -466,8 +489,8 @@ def load_config(config_path: Path, run_id: str) -> tuple[BuiltRun, dict[str, Any
 
 
 def load_run_dir_config(run_dir: Path) -> BuiltRun:
-    """Rebuild a run's `BuiltRun` bundle from its single pinned `config.yaml`
+    """Rebuild a run's `BuiltRun` bundle from its single pinned launch config
     (for tools that read finished/live run dirs, e.g. harvest / fine-tune compat). The
     run id is the run-dir name."""
-    schema_raw = yaml.safe_load((run_dir / "config.yaml").read_text())
+    schema_raw = yaml.safe_load((run_dir / LAUNCH_CONFIG_FILENAME).read_text())
     return build_from_schema(schema_raw, run_dir.name)

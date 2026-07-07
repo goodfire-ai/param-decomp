@@ -16,6 +16,7 @@ from param_decomp.configs import (
     PersistentPGDReconLossConfig,
     PGDReconLossConfig,
     SCScope,
+    SmoothL0ImportanceMinimalityLossConfig,
     StochasticReconSubsetLossConfig,
 )
 from param_decomp.run import TargetPromptGeometry
@@ -30,7 +31,9 @@ _NEOX = "EleutherAI/gpt-neox-20b"
 def test_load_prompt_tokens_end_pads_and_returns_recon_positions(tmp_path: Path):
     f = tmp_path / "prompts.txt"
     f.write_text("import numpy as\nimport pandas as\n")  # both 3 neox tokens
-    tokens, recon_positions = load_prompt_tokens(str(f), _NEOX, max_seq_len=16)
+    tokens, recon_positions = load_prompt_tokens(
+        str(f), _NEOX, max_seq_len=16, add_special_tokens=False
+    )
     assert tokens.shape == (2, 16)
     assert recon_positions == 3
     # real tokens in the first 3 columns, END-padded with 0 after
@@ -43,14 +46,25 @@ def test_load_prompt_tokens_rejects_mixed_lengths(tmp_path: Path):
     f = tmp_path / "prompts.txt"
     f.write_text("import numpy as\nimport pandas\n")  # different token counts
     with pytest.raises(AssertionError):
-        load_prompt_tokens(str(f), _NEOX, max_seq_len=16)
+        load_prompt_tokens(str(f), _NEOX, max_seq_len=16, add_special_tokens=False)
 
 
 def test_load_prompt_tokens_rejects_over_length(tmp_path: Path):
     f = tmp_path / "prompts.txt"
     f.write_text("import numpy as\n")
     with pytest.raises(AssertionError):
-        load_prompt_tokens(str(f), _NEOX, max_seq_len=2)  # 3 tokens > 2
+        load_prompt_tokens(str(f), _NEOX, max_seq_len=2, add_special_tokens=False)  # 3 tokens > 2
+
+
+def test_load_prompt_tokens_prepends_special_tokens_when_requested(tmp_path: Path):
+    f = tmp_path / "prompts.txt"
+    f.write_text("import numpy as\nimport pandas as\n")
+    without = load_prompt_tokens(str(f), _NEOX, max_seq_len=16, add_special_tokens=False)
+    with_special = load_prompt_tokens(str(f), _NEOX, max_seq_len=16, add_special_tokens=True)
+    # gpt-neox prepends no BOS, so the two agree; the flag threads through regardless. The
+    # BOS-bearing case (Llama) is exercised end-to-end by the arithmetic config's matching
+    # add_special_tokens=True vs the ArithmeticCIGrid probe.
+    assert without[1] == with_special[1]
 
 
 def test_nontarget_loss_set_drops_both_pgd_variants():
@@ -82,6 +96,17 @@ def _persistent_pgd() -> PersistentPGDReconLossConfig:
         ),
         n_warmup_steps=2,
     )
+
+
+def test_nontarget_loss_set_scales_smooth_l0_impmin():
+    target: list[AnyLossMetricConfig] = [
+        FaithfulnessLossConfig(coeff=0.0),
+        SmoothL0ImportanceMinimalityLossConfig(coeff=1e-5, gamma=1.0),
+        StochasticReconSubsetLossConfig(coeff=1.0),
+    ]
+    out = build_nontarget_loss_metrics(target, impmin_coeff_ratio=2.0)
+    smooth = [m for m in out if isinstance(m, SmoothL0ImportanceMinimalityLossConfig)]
+    assert len(smooth) == 1 and smooth[0].coeff == pytest.approx(2e-5)  # S37
 
 
 def test_nontarget_loss_set_drops_persistent_pgd():
