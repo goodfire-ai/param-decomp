@@ -166,8 +166,8 @@ def _grad_norm_summary_window_stats(window: list[dict[str, jax.Array]]) -> dict[
     so the whole window reduces in a single host transfer here — the loop stays unsynced
     between logs rather than subsampling grad norms at the log step."""
     assert window, "grad-norm summary window is empty at a log boundary"
-    # Union of keys: under stale-CI replay the repeat steps carry no `ci_fns` family, so a
-    # key's stats reduce over the (fresh) steps that emitted it.
+    # Union of keys: under stale-CI replay only the ci_fn-updating steps carry the `ci_fns`
+    # family, so a key's stats reduce over the steps that emitted it.
     keys = sorted({k for snap in window for k in snap})
     stats = {
         key: (jnp.min(vals), jnp.max(vals), jnp.median(vals))
@@ -493,11 +493,13 @@ def run_decomposition_training(
 
     run.run_dir.mkdir(parents=True, exist_ok=True)
     opt_vu, opt_ci, (sched_vu, sched_ci) = build_optimizers(pd)
-    # Stale-CI replay (SPEC S34): repeat steps of a `train_batch_replay` window reuse the
-    # window-first CI envelope as a constant; the ci_fn updates only on window-first steps,
-    # under a unit-LR optimizer whose schedule the step applies at the global step.
-    stale_ci = data is not None and data.replay_stale_ci
-    if stale_ci:
+    # Stale-CI replay (SPEC S34): under a non-`every` `replay_ci_update` mode, one CI
+    # envelope per `train_batch_replay` window is reused as a constant on non-updating
+    # steps; the ci_fn updates once per window (mode `first`: window-first; `last`:
+    # window-last; `mean`: window-last with the mean of the window's per-step cotangents),
+    # under a unit-LR optimizer whose schedule the updating step applies at the global step.
+    replay_ci_update = data.replay_ci_update if data is not None else "every"
+    if replay_ci_update != "every":
         assert data is not None and data.train_batch_replay > 1, data
         opt_ci = unit_lr_ci_fn_optimizer(pd)
 
@@ -517,7 +519,7 @@ def run_decomposition_training(
 
     stale_steps: StaleCITrainSteps | None = None
     step_fn = None
-    if stale_ci:
+    if replay_ci_update != "every":
         assert data is not None
         stale_steps = make_stale_ci_train_steps(
             lm=lm,
@@ -548,23 +550,62 @@ def run_decomposition_training(
 
     replay_window = data.train_batch_replay if data is not None else 1
     ci_envelope: CIEnvelope | None = None
+    ci_cotangent_acc: tuple[CIEnvelope, int] | None = None
 
     def do_step(
         step: int, state: TrainState, batch: Any, step_key: PRNGKeyArray
     ) -> tuple[TrainState, dict[str, jax.Array]]:
-        """One train step, dispatching fresh vs repeat under stale-CI replay. The envelope
-        rides in a loop-local (never checkpointed): a requeue-resume landing mid-window
-        rebuilds it from the current ci_fn (see `StaleCITrainSteps.compute_ci`)."""
-        nonlocal ci_envelope
+        """One train step, dispatched per `replay_ci_update` (SPEC S34). The envelope and
+        mode `mean`'s (cotangent sum, n steps) accumulator ride in loop-locals (never
+        checkpointed): a requeue-resume landing mid-window rebuilds the envelope from the
+        current ci_fn (see `StaleCITrainSteps.compute_ci`) and restarts the accumulator,
+        so the window-last mean covers only the steps since resume."""
+        nonlocal ci_envelope, ci_cotangent_acc
         if stale_steps is None:
             assert step_fn is not None
             return step_fn(lm, state, batch, step_key)
-        if step % replay_window == 0:
-            new_state, metrics, ci_envelope = stale_steps.fresh(lm, state, batch, step_key)
-            return new_state, metrics
-        if ci_envelope is None:
-            ci_envelope = stale_steps.compute_ci(lm, state.ci_fn, batch)
-        return stale_steps.repeat((lm, ci_envelope), state, batch, step_key)
+        window_pos = step % replay_window
+        match replay_ci_update:
+            case "first":
+                if window_pos == 0:
+                    new_state, metrics, ci_envelope = stale_steps.fresh(lm, state, batch, step_key)
+                    return new_state, metrics
+                if ci_envelope is None:
+                    ci_envelope = stale_steps.compute_ci(lm, state.ci_fn, batch)
+                return stale_steps.repeat((lm, ci_envelope), state, batch, step_key)
+            case "last":
+                if window_pos == replay_window - 1:
+                    ci_envelope = None
+                    new_state, metrics, _ = stale_steps.fresh(lm, state, batch, step_key)
+                    return new_state, metrics
+                if window_pos == 0 or ci_envelope is None:
+                    ci_envelope = stale_steps.compute_ci(lm, state.ci_fn, batch)
+                return stale_steps.repeat((lm, ci_envelope), state, batch, step_key)
+            case "mean":
+                if window_pos == 0 or ci_envelope is None:
+                    ci_envelope = stale_steps.compute_ci(lm, state.ci_fn, batch)
+                    ci_cotangent_acc = None
+                if window_pos == replay_window - 1:
+                    acc, n_accumulated = (
+                        ci_cotangent_acc if ci_cotangent_acc is not None else (None, 0)
+                    )
+                    inv_window_len = jnp.asarray(1.0 / (n_accumulated + 1), jnp.float32)
+                    envelope = ci_envelope
+                    ci_envelope, ci_cotangent_acc = None, None
+                    return stale_steps.mean_update(
+                        (lm, envelope), state, batch, step_key, acc, inv_window_len
+                    )
+                new_state, metrics, cotangent = stale_steps.mean_accum(
+                    (lm, ci_envelope), state, batch, step_key
+                )
+                if ci_cotangent_acc is None:
+                    ci_cotangent_acc = (cotangent, 1)
+                else:
+                    acc, n_accumulated = ci_cotangent_acc
+                    ci_cotangent_acc = (jax.tree.map(jnp.add, acc, cotangent), n_accumulated + 1)
+                return new_state, metrics
+            case _:
+                raise AssertionError(f"unreachable replay_ci_update mode {replay_ci_update!r}")
 
     # The profile probes below want a bare `(model, state, batch, key) -> (state, metrics)`
     # with `.lower()` available; under stale-CI they probe the fresh (superset) step.

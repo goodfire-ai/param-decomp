@@ -24,12 +24,17 @@ never silently diverge. Cite IDs (`S14`, `N1`, …) in commit messages and revie
 
 ## Architecture in one breath
 
-**Stale-CI replay** (SPEC S34, experimental, `data.replay_stale_ci`): under free-AT batch
-replay (`train_batch_replay > 1`), repeat steps reuse the window-first CI envelope as a
-constant — no taps / CI-fn forward / CI-fn backward on repeats, ci_fn updates only on
-window-first steps (unit-LR optimizer + in-step global-step LR schedule). Built by
-`train.make_stale_ci_train_steps` (fresh/repeat/compute_ci), dispatched in
-`run.py::do_step`. Off by default; flag-off emits the unchanged step.
+**Stale-CI replay** (SPEC S34, experimental, `data.replay_ci_update`): under free-AT batch
+replay (`train_batch_replay > 1`), the non-`every` modes reuse one CI envelope per window
+as a constant on non-updating steps — no taps / CI-fn forward / CI-fn backward there — and
+update the ci_fn ONCE per window (unit-LR optimizer + in-step global-step LR schedule):
+`first` = full step at window-first; `last` = full step at window-last (window-first only
+computes the envelope, so the ci_fn gradient is taken against the window-end adversary
+state); `mean` = every step also emits the main backward's envelope cotangent, accumulated
+and pulled back through ONE CI-fn vjp at window-last (the exact mean of the window's
+per-step ci_fn grads — the vjp is window-constant). Built by
+`train.make_stale_ci_train_steps` (fresh/repeat/mean_accum/mean_update/compute_ci),
+dispatched in `run.py::do_step`. `every` (the default) emits the unchanged plain step.
 
 `lm.py` defines `DecomposedModel` — a `@runtime_checkable Protocol`: ordered `sites` +
 `leading_axes` + the methods `clean_output`, `read_activations`, `masked_output`,

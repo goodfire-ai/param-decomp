@@ -1,4 +1,4 @@
-# Code baseline for the stale-CI replay sweep: replay=1, replay_stale_ci OFF, run from
+# Code baseline for the stale-CI replay sweep: replay=1, replay_ci_update every (plain step), run from
 # the feature/replay-stale-ci branch. Identical config to the running
 # pile_ppgd_bsc_nw0_lr0p01_replay1_400k.yaml arm (only run_name differs) — it pins that
 # the stale-CI refactor's flag-off step path reproduces the parent branch's trajectory

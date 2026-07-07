@@ -1,8 +1,8 @@
 # Stale-CI replay-scaling arm (SPEC S34): free-AT batch replay x8 with
-# replay_stale_ci — repeat steps reuse the window-first CI envelope as a constant
+# replay_ci_update: first — repeat steps reuse the window-first CI envelope as a constant
 # (no taps / CI-fn fwd/bwd on repeats; ci_fn updates only on window-first steps, LR
 # still on the global-step schedule). Derived from
-# pile_ppgd_bsc_nw0_lr0p01_replay8_400k.yaml; only run_name / replay_stale_ci differ,
+# pile_ppgd_bsc_nw0_lr0p01_replay8_400k.yaml; only run_name / replay_ci_update differ,
 # so each arm A/Bs stale CI against its running replay-only twin. replay=1 has no
 # repeat steps (no stale-CI arm); the replay-only sweep's replay1 is the shared
 # unique-data baseline. `steps` counts optimizer steps (replay repeats ARE steps):
@@ -43,7 +43,7 @@ data:
   revision: null
   shuffle_each_epoch: true
   train_batch_replay: 8
-  replay_stale_ci: true
+  replay_ci_update: first
   streaming: false
   tokenizer_name: EleutherAI/gpt-neox-20b
   train_split: train

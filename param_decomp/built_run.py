@@ -49,11 +49,14 @@ class DataConfig:
     """Consecutive train steps that share one token batch (free-AT-style replay: the
     persistent adversary's once-per-step ascent becomes batch-matched on the repeated
     steps). 1 = a fresh batch every step."""
-    replay_stale_ci: bool
-    """Stale-CI replay (SPEC S34): repeat steps of a replay window reuse the window-first
-    step's CI envelope as a constant — no taps / CI-fn forward / CI-fn backward on
-    repeats; the ci_fn updates only on window-first steps. Requires
-    `train_batch_replay > 1`."""
+    replay_ci_update: Literal["every", "first", "last", "mean"]
+    """When within a replay window the ci_fn trains (SPEC S34). `every` = the plain step
+    (live CI + ci_fn update every step). The other modes reuse one CI envelope per window
+    as a constant on non-updating steps (no taps / CI-fn forward / CI-fn backward there)
+    and update the ci_fn once per window: `first` on the window-first step, `last` on the
+    window-last step (against the window-end adversary/component state), `mean` applies
+    the mean of the window's k per-step ci_fn gradients on the window-last step. All
+    non-`every` modes require `train_batch_replay > 1`."""
 
 
 @dataclass(frozen=True)

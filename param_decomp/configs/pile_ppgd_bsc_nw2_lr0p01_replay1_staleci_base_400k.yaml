@@ -1,5 +1,5 @@
 # Warmup-ascent control for the stale-CI sweep: n_warmup_steps=2, replay=1,
-# replay_stale_ci OFF, run from the feature/replay-stale-ci branch. Identical to
+# replay_ci_update every (plain step), run from the feature/replay-stale-ci branch. Identical to
 # pile_ppgd_bsc_nw2_lr0p01_replay1_400k.yaml (the scaling sweep's nw2 control; only
 # run_name differs) — the torch-production supplemental-ascent strength the stale-CI
 # arms' batch-matched ascents are competing against, on this sweep's codebase.

@@ -445,10 +445,20 @@ def test_step_trains_and_has_vpd_signature():
     assert state.ci_fn.chunks.in_proj_w.dtype == jnp.float32
 
 
-def test_stale_ci_repeat_step_semantics():
-    """SPEC S34: a repeat step given the fresh step's envelope trains the components and
-    ascends the adversary like the fresh step (CI live vs constant doesn't change their
-    gradients), while leaving the ci_fn and its optimizer state untouched."""
+def _copied[T](tree: T) -> T:
+    """Fresh buffers per step call — the jitted steps donate their state/batch args."""
+    return jax.tree.map(lambda x: jnp.copy(x) if eqx.is_array(x) else x, tree)
+
+
+def _stale_ci_harness(opt_ci: optax.GradientTransformation, ci_fn_lr: float):
+    """Shared tiny-model setup for the stale-CI mode tests (SPEC S34).
+
+    `opt_ci` MUST carry unit LR: the stale-CI factory's ci_fn-updating steps apply the
+    constant `ci_fn_lr` schedule in-step at the global step. Returns
+    `(lm, ci_fn, tokens, make_state, make_stale_steps, make_plain_step)` — `make_state`
+    mints a donation-safe fresh `TrainState`; the two factories share every other knob so
+    a plain step built with `plain_opt_ci` (LR baked into the optimizer) is the stale
+    bundle's semantic twin."""
     cfg = _tiny_cfg()
     seq = 16
     sites = site_specs(cfg, _MIXED_SITE_CS)
@@ -456,8 +466,6 @@ def test_stale_ci_repeat_step_semantics():
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     ci_fn = _build_chunkwise_ci_fn(lm, jax.random.PRNGKey(2))
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
-    # Unit-lr ci_fn optimizer: the stale-CI fresh step applies the schedule at the global step.
-    opt_ci = optax.adamw(1.0, weight_decay=0.0)
 
     src = init_persistent_sources(
         lm.site_names, tuple(s.C for s in lm.sites), (1, seq), jnp.float32, jax.random.PRNGKey(3)
@@ -475,12 +483,8 @@ def test_stale_ci_repeat_step_semantics():
     ppgd_coeff = ppgd_cfg.coeff
     assert ppgd_coeff is not None
 
-    def copied[T](tree: T) -> T:
-        """Fresh buffers per step call — the jitted steps donate their state/batch args."""
-        return jax.tree.map(lambda x: jnp.copy(x) if eqx.is_array(x) else x, tree)
-
     def make_state() -> TrainState:
-        vu_c, ci_fn_c, src_c = copied(vu), copied(ci_fn), copied(src)
+        vu_c, ci_fn_c, src_c = _copied(vu), _copied(ci_fn), _copied(src)
         return TrainState(
             components=vu_c, ci_fn=ci_fn_c,
             components_opt_state=opt_vu.init(eqx.filter(vu_c, eqx.is_array)),
@@ -512,19 +516,54 @@ def test_stale_ci_repeat_step_semantics():
         ),
         lm.site_names,
     )
-    steps = make_stale_ci_train_steps(
-        lm=lm,
-        losses=loss_terms,
-        components_optimizer=opt_vu,
-        ci_fn_optimizer=opt_ci,
-        ci_fn_lr_schedule=ScheduleConfig(start_val=1e-3),
-        total_steps=100,
-        remat_recon_forwards=True,
-        remat_ci_fn=False,
-        mesh=None,
-    )
+
+    def make_stale_steps():
+        return make_stale_ci_train_steps(
+            lm=lm,
+            losses=loss_terms,
+            components_optimizer=opt_vu,
+            ci_fn_optimizer=opt_ci,
+            ci_fn_lr_schedule=ScheduleConfig(start_val=ci_fn_lr),
+            total_steps=100,
+            remat_recon_forwards=True,
+            remat_ci_fn=False,
+            mesh=None,
+        )
+
+    def make_plain_step(plain_opt_ci: optax.GradientTransformation):
+        return make_train_step(
+            lm=lm,
+            losses=loss_terms,
+            components_optimizer=opt_vu,
+            ci_fn_optimizer=plain_opt_ci,
+            total_steps=100,
+            remat_recon_forwards=True,
+            remat_ci_fn=False,
+            mesh=None,
+        )
 
     tokens = jax.random.randint(jax.random.PRNGKey(4), (2, seq), 0, cfg.vocab_size)
+    return lm, ci_fn, tokens, make_state, make_stale_steps, make_plain_step
+
+
+def _assert_ci_fn_untouched(state: TrainState, ci_fn: ChunkwiseTransformerCIFn) -> None:
+    for got, want in zip(
+        jax.tree.leaves(eqx.filter(state.ci_fn, eqx.is_array)),
+        jax.tree.leaves(eqx.filter(ci_fn, eqx.is_array)),
+        strict=True,
+    ):
+        assert (got == want).all()
+
+
+def test_stale_ci_repeat_step_semantics():
+    """SPEC S34: a repeat step given the fresh step's envelope trains the components and
+    ascends the adversary like the fresh step (CI live vs constant doesn't change their
+    gradients), while leaving the ci_fn and its optimizer state untouched."""
+    # Unit-lr ci_fn optimizer: the stale-CI fresh step applies the schedule at the global step.
+    lm, ci_fn, tokens, make_state, make_stale_steps, _ = _stale_ci_harness(
+        optax.adamw(1.0, weight_decay=0.0), ci_fn_lr=1e-3
+    )
+    steps = make_stale_steps()
     key = jax.random.PRNGKey(100)
 
     envelope = steps.compute_ci(lm, ci_fn, tokens)
@@ -537,12 +576,7 @@ def test_stale_ci_repeat_step_semantics():
         assert jnp.allclose(envelope.upper[site], env_fresh.upper[site], atol=1e-6)
 
     # The repeat step leaves the ci_fn and its optimizer state bit-untouched...
-    for got, want in zip(
-        jax.tree.leaves(eqx.filter(state_rep.ci_fn, eqx.is_array)),
-        jax.tree.leaves(eqx.filter(ci_fn, eqx.is_array)),
-        strict=True,
-    ):
-        assert (got == want).all()
+    _assert_ci_fn_untouched(state_rep, ci_fn)
     # ...while the fresh step trained it.
     fresh_ci_leaves = jax.tree.leaves(eqx.filter(state_fresh.ci_fn, eqx.is_array))
     init_ci_leaves = jax.tree.leaves(eqx.filter(ci_fn, eqx.is_array))
@@ -555,8 +589,8 @@ def test_stale_ci_repeat_step_semantics():
     ):
         assert jnp.allclose(fv, rv, rtol=1e-4, atol=1e-6)
         assert jnp.allclose(fu, ru, rtol=1e-4, atol=1e-6)
-    adv_f = state_fresh.adversaries[ppgd_cfg.type]
-    adv_r = state_rep.adversaries[ppgd_cfg.type]
+    adv_f = state_fresh.adversaries["PersistentPGDReconLoss"]
+    adv_r = state_rep.adversaries["PersistentPGDReconLoss"]
     for site in adv_f.sources:
         assert jnp.allclose(adv_f.sources[site], adv_r.sources[site], rtol=1e-4, atol=1e-6)
 
@@ -564,6 +598,166 @@ def test_stale_ci_repeat_step_semantics():
     assert "grad_norms/summary/ci_fns" in m_fresh and "grad_norms/summary/ci_fns" not in m_rep
     assert jnp.isfinite(m_rep["total"]) and jnp.isfinite(m_fresh["total"])
     assert int(state_rep.step) == 1
+
+
+def test_stale_ci_last_mode_semantics():
+    """SPEC S34 mode `last` over a full window: the components + adversary trajectory
+    matches mode `first`'s (both windows run on the same envelope — taps and ci_fn params
+    are window-constant), the ci_fn is untouched before the window-last step, and the
+    window-last ci_fn update equals what a plain `make_train_step` step applies at the
+    same pre-step state."""
+    lm, ci_fn, tokens, make_state, make_stale_steps, make_plain_step = _stale_ci_harness(
+        optax.adamw(1.0, weight_decay=0.0), ci_fn_lr=1e-3
+    )
+    steps = make_stale_steps()
+    window = 3
+    keys = [jax.random.PRNGKey(100 + i) for i in range(window)]
+
+    # Mode "first": fresh at t=0, repeats after (the old replay_stale_ci: true).
+    first_traj: list[TrainState] = []
+    state = make_state()
+    state, _, envelope_first = steps.fresh(lm, state, jnp.copy(tokens), jnp.copy(keys[0]))
+    first_traj.append(state)
+    for t in range(1, window):
+        state, _ = steps.repeat(
+            (lm, envelope_first), _copied(first_traj[-1]), jnp.copy(tokens), jnp.copy(keys[t])
+        )
+        first_traj.append(state)
+
+    # Mode "last": compute_ci at t=0, repeats through t=k-2, fresh at t=k-1.
+    envelope = steps.compute_ci(lm, ci_fn, tokens)
+    for site in envelope.lower:
+        assert jnp.allclose(envelope.lower[site], envelope_first.lower[site], atol=1e-6)
+        assert jnp.allclose(envelope.upper[site], envelope_first.upper[site], atol=1e-6)
+    last_traj: list[TrainState] = []
+    state = make_state()
+    for t in range(window - 1):
+        state, metrics = steps.repeat(
+            (lm, envelope), _copied(state) if t else state, jnp.copy(tokens), jnp.copy(keys[t])
+        )
+        last_traj.append(state)
+        assert "grad_norms/summary/ci_fns" not in metrics
+        _assert_ci_fn_untouched(state, ci_fn)  # ci_fn + opt state ride through untouched
+    pre_last = last_traj[-1]
+    state, metrics, _ = steps.fresh(lm, _copied(pre_last), jnp.copy(tokens), jnp.copy(keys[-1]))
+    last_traj.append(state)
+    assert "grad_norms/summary/ci_fns" in metrics
+
+    # V/U + adversary see identical gradients under both modes at every window step (the
+    # envelope is the same constant; the ci_fn divergence never enters their backward).
+    for s_first, s_last in zip(first_traj, last_traj, strict=True):
+        for (fv, fu), (lv, lu) in zip(
+            s_first.components.vu.values(), s_last.components.vu.values(), strict=True
+        ):
+            assert jnp.allclose(fv, lv, rtol=1e-4, atol=1e-6)
+            assert jnp.allclose(fu, lu, rtol=1e-4, atol=1e-6)
+        adv_f = s_first.adversaries["PersistentPGDReconLoss"]
+        adv_l = s_last.adversaries["PersistentPGDReconLoss"]
+        for site in adv_f.sources:
+            assert jnp.allclose(adv_f.sources[site], adv_l.sources[site], rtol=1e-4, atol=1e-6)
+
+    # The window-last ci_fn update == a plain fresh step's at the same pre-step state
+    # (unit-LR Adam + in-step constant 1e-3 schedule vs LR-1e-3 Adam are the same update).
+    plain_step = make_plain_step(optax.adamw(1e-3, weight_decay=0.0))
+    plain_state, _ = plain_step(lm, _copied(pre_last), jnp.copy(tokens), jnp.copy(keys[-1]))
+    for got, want in zip(
+        jax.tree.leaves(eqx.filter(last_traj[-1].ci_fn, eqx.is_array)),
+        jax.tree.leaves(eqx.filter(plain_state.ci_fn, eqx.is_array)),
+        strict=True,
+    ):
+        assert jnp.allclose(got, want, rtol=1e-4, atol=1e-7)
+    # And it actually trained the ci_fn.
+    assert any(
+        (a != b).any()
+        for a, b in zip(
+            jax.tree.leaves(eqx.filter(last_traj[-1].ci_fn, eqx.is_array)),
+            jax.tree.leaves(eqx.filter(ci_fn, eqx.is_array)),
+            strict=True,
+        )
+    )
+
+
+def test_stale_ci_mean_mode_semantics():
+    """SPEC S34 mode `mean`: the window-last pulled-back ci_fn gradient equals the mean of
+    the k per-step ci_fn gradients computed independently (the fresh step's grad at each
+    window state, ci_fn params held at window-start — which they are: mean-mode steps never
+    touch the ci_fn mid-window). Uses unit-LR SGD so ci_fn deltas ARE (scheduled-LR-scaled)
+    gradients and the mean commutes with the update. The large in-step LR keeps the
+    SGD deltas well above the fp32 parameter ulp, so delta extraction is meaningful."""
+    lm, ci_fn, tokens, make_state, make_stale_steps, _ = _stale_ci_harness(
+        optax.sgd(1.0), ci_fn_lr=10.0
+    )
+    steps = make_stale_steps()
+    window = 3
+    keys = [jax.random.PRNGKey(100 + i) for i in range(window)]
+
+    def ci_leaves(state: TrainState) -> list[jax.Array]:
+        return jax.tree.leaves(eqx.filter(state.ci_fn, eqx.is_array))
+
+    envelope = steps.compute_ci(lm, ci_fn, tokens)
+    traj: list[TrainState] = [make_state()]
+    cotangents = []
+    for t in range(window - 1):
+        state, metrics, cotangent = steps.mean_accum(
+            (lm, envelope), _copied(traj[-1]), jnp.copy(tokens), jnp.copy(keys[t])
+        )
+        traj.append(state)
+        cotangents.append(cotangent)
+        assert "grad_norms/summary/ci_fns" not in metrics
+        _assert_ci_fn_untouched(state, ci_fn)  # untouched mid-window
+        assert all(leaf.dtype == jnp.float32 for leaf in jax.tree.leaves(cotangent))
+    acc = jax.tree.map(jnp.add, *cotangents)
+    final_state, metrics = steps.mean_update(
+        (lm, envelope),
+        _copied(traj[-1]),
+        jnp.copy(tokens),
+        jnp.copy(keys[-1]),
+        acc,
+        jnp.asarray(1.0 / window, jnp.float32),
+    )
+    assert "grad_norms/summary/ci_fns" in metrics
+
+    # Reference: the fresh step's ci_fn grad at each window state. With unit-LR SGD scaled
+    # in-step by the constant schedule, new_ci_fn - ci_fn = -lr * grad, so the mean of the
+    # per-step deltas is the delta the mean gradient applies. Compared per leaf in max-norm
+    # (diff bounded relative to the leaf's LARGEST entries): the mean cotangent is rounded
+    # to bf16 before the one pullback, while each reference delta pulls back its own bf16
+    # cotangent, so small entries carry rounding noise from the leaf's big ones.
+    per_step_deltas = []
+    for t in range(window):
+        fresh_state, _, _ = steps.fresh(lm, _copied(traj[t]), jnp.copy(tokens), jnp.copy(keys[t]))
+        per_step_deltas.append(
+            [f - i for f, i in zip(ci_leaves(fresh_state), ci_leaves(traj[t]), strict=True)]
+        )
+    mean_deltas = [
+        sum(step_deltas[i] for step_deltas in per_step_deltas) / window
+        for i in range(len(per_step_deltas[0]))
+    ]
+    got_deltas = [f - i for f, i in zip(ci_leaves(final_state), ci_leaves(traj[0]), strict=True)]
+    for got, want in zip(got_deltas, mean_deltas, strict=True):
+        max_diff = float(jnp.abs(got - want).max())
+        assert max_diff <= 1e-2 * float(jnp.abs(want).max()) + 1e-8, (
+            max_diff,
+            float(jnp.abs(want).max()),
+        )
+    # The tolerance has teeth: any SINGLE step's gradient deviates from the mean beyond it
+    # (the components/adversary move each step), so only the true mean passes.
+    for single_deltas in (per_step_deltas[0], per_step_deltas[-1]):
+        assert any(
+            float(jnp.abs(single - want).max()) > 1e-2 * float(jnp.abs(want).max()) + 1e-8
+            for single, want in zip(single_deltas, mean_deltas, strict=True)
+        )
+
+    # The mean-accum steps train components/adversary exactly like constant-envelope
+    # repeats (tracing the envelope only adds a cotangent output).
+    repeat_state, _ = steps.repeat(
+        (lm, envelope), make_state(), jnp.copy(tokens), jnp.copy(keys[0])
+    )
+    for (mv, mu), (rv, ru) in zip(
+        traj[1].components.vu.values(), repeat_state.components.vu.values(), strict=True
+    ):
+        assert jnp.allclose(mv, rv, rtol=1e-4, atol=1e-6)
+        assert jnp.allclose(mu, ru, rtol=1e-4, atol=1e-6)
 
 
 def test_faith_warmup_decreases_faith():

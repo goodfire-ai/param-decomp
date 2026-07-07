@@ -81,8 +81,10 @@ class TrainState:
 @dataclass(frozen=True)
 class CIEnvelope:
     """A step's detached CI squashings (stop-gradient'd, compute-dtype, sharding-pinned).
-    Under stale-CI replay (SPEC S34) the window-first step returns its envelope and the
-    window's repeat steps consume it as a CONSTANT."""
+    Under stale-CI replay (SPEC S34) one envelope per window is computed and the window's
+    repeat steps consume it as a CONSTANT. Mode `mean` reuses this container for the
+    envelope-shaped COTANGENT `d(step loss)/d(envelope)` and its fp32 window
+    accumulator."""
 
     lower: dict[str, Array]
     upper: dict[str, Array]
@@ -90,17 +92,32 @@ class CIEnvelope:
 
 @dataclass(frozen=True)
 class StaleCITrainSteps:
-    """The jitted step pair for stale-CI replay (SPEC S34), plus the mid-window resume
-    rebuild.
+    """The jitted steps for stale-CI replay (SPEC S34: `replay_ci_update` modes `first` /
+    `last` / `mean`), plus the mid-window resume rebuild. Each mode uses its subset:
 
-    `fresh` is the full step (taps → CI-fn forward/vjp → ci_fn update), additionally
-    returning its `CIEnvelope` for the window's repeats. `repeat` consumes that envelope
-    as a constant — no taps, no CI-fn forward/backward; the ci_fn and its optimizer state
-    pass through untouched. Its first arg bundles `(model, envelope)` so donation
-    (`all-except-first`) spares both across the window's repeats.
+    - `first`: window-first runs `fresh` — the full step (taps → CI-fn forward/vjp →
+      ci_fn update), additionally returning its `CIEnvelope` for the window's repeats.
+      The other steps run `repeat`.
+    - `last`: window-first computes the envelope via `compute_ci` (forward only, no vjp,
+      no update); steps 0..k-2 run `repeat`; the window-LAST step runs `fresh` (its own
+      CI forward reproduces the cached envelope — taps and ci_fn params are
+      window-constant — so only WHERE the one-per-window ci_fn gradient is taken moves:
+      to the window-end adversary/component state).
+    - `mean`: every step runs `mean_accum` — a repeat-style step whose main backward also
+      yields the envelope COTANGENT (fp32), accumulated host-side across the window —
+      except the window-LAST step, which runs `mean_update(…, cotangent_acc, inv_n)`:
+      it adds its own cotangent, means, pulls the mean back through ONE CI-fn vjp
+      (exact: the vjp is the same linear map all window), and applies ONE ci_fn update.
+      `cotangent_acc=None` (a resume landing on the window-last step) means the step's
+      own cotangent is the whole sum.
+
+    `repeat` / `mean_accum` / `mean_update` consume the envelope as a constant / traced
+    input — no CI-fn forward on `repeat`/`mean_accum`; the ci_fn and its optimizer state
+    pass through untouched on all non-updating steps. Their first arg bundles
+    `(model, envelope)` so donation (`all-except-first`) spares both across the window.
 
     `compute_ci(model, ci_fn, batch) -> CIEnvelope` rebuilds the envelope when a
-    requeue-resume lands mid-window. The ci_fn updates only on window-first steps, so the
+    requeue-resume lands mid-window (and seeds `last`/`mean` windows). Under `first` the
     rebuilt envelope reflects the last fresh step's POST-update ci_fn — one ci_fn Adam
     step fresher than the envelope the interrupted window was using (plus vjp-primal vs
     plain-forward compilation differences). A tiny, preemption-only trajectory wobble."""
@@ -111,6 +128,21 @@ class StaleCITrainSteps:
     ]
     repeat: Callable[
         [tuple[DecomposedModel, CIEnvelope], TrainState, Any, PRNGKeyArray],
+        tuple[TrainState, dict[str, Array]],
+    ]
+    mean_accum: Callable[
+        [tuple[DecomposedModel, CIEnvelope], TrainState, Any, PRNGKeyArray],
+        tuple[TrainState, dict[str, Array], CIEnvelope],
+    ]
+    mean_update: Callable[
+        [
+            tuple[DecomposedModel, CIEnvelope],
+            TrainState,
+            Any,
+            PRNGKeyArray,
+            CIEnvelope | None,
+            Array,
+        ],
         tuple[TrainState, dict[str, Array]],
     ]
     compute_ci: Callable[[DecomposedModel, Any, Any], CIEnvelope]
@@ -160,11 +192,16 @@ def _build_step_impl(
 ):
     """The un-jitted step machinery shared by `make_train_step` and
     `make_stale_ci_train_steps`: returns `(step_impl, compute_ci_impl)` where
-    `step_impl(model, state, batch, key, cached)` runs the full step when `cached is None`
-    (computing taps + the CI envelope, training the ci_fn) and the stale-CI repeat step
-    when `cached` is a `CIEnvelope` (SPEC S34: CI a constant, ci_fn untouched). The
-    `cached` switch is a Python-level trace decision — each variant jits to its own
-    program, and the `cached is None` program is the pre-S34 step unchanged.
+    `step_impl(model, state, batch, key, cached, envelope_cotangent, mean_update_args)`
+    runs the full step when `cached is None` (computing taps + the CI envelope, training
+    the ci_fn) and a stale-CI window step when `cached` is a `CIEnvelope` (SPEC S34):
+    with `envelope_cotangent=False` the repeat step (CI a constant, ci_fn untouched);
+    with `envelope_cotangent=True` the envelope enters the main loss as a TRACED input
+    and its cotangent is returned (mode `mean`'s accumulation step) or — when
+    `mean_update_args=(cotangent_acc, inv_window_len)` is given — combined into the mean
+    cotangent and pulled back through one CI-fn vjp into a ci_fn update (mode `mean`'s
+    window-last step). The switches are Python-level trace decisions — each variant jits
+    to its own program, and the `cached is None` program is the pre-S34 step unchanged.
 
     `stale_ci_fn_lr` (stale-CI mode only) is the ci_fn LR schedule applied IN-STEP at the
     global step: the ci_fn optimizer must then carry unit LR (`unit_lr_ci_fn_optimizer`),
@@ -306,22 +343,29 @@ def _build_step_impl(
         batch: Any,
         key: PRNGKeyArray,
         cached: CIEnvelope | None,
-    ) -> tuple[TrainState, dict[str, Array], CIEnvelope]:
+        envelope_cotangent: bool,
+        mean_update_args: tuple[CIEnvelope | None, Float[Array, ""]] | None,
+    ) -> tuple[TrainState, dict[str, Array], CIEnvelope | None]:
+        assert not envelope_cotangent or cached is not None
+        assert mean_update_args is None or envelope_cotangent
         step_f32 = state.step.astype(jnp.float32)
         imp_min_param = annealed_imp_min_param(step_f32, total_steps, imp_min)
 
         batch = batch_sharded(batch)
         with jax.named_scope("pd_clean_fwd"):
             clean_output = jax.lax.stop_gradient(batch_sharded(model.clean_output(batch)))
-        if cached is None:
+        if cached is None or mean_update_args is not None:
             with jax.named_scope("pd_read_taps"):
                 taps = model.read_activations(batch, state.ci_fn.input_names)
+        else:
+            taps = None
+        if cached is None:
+            assert taps is not None
             # `leading` (batch, *positions) — the shape masks/sources/routes live in. Sourced
             # from a tap (always `[*leading, d_tap]`), not the opaque batch, so the engine never
             # assumes the batch's rank/feature dim.
             leading = next(iter(taps.values())).shape[:-1]
         else:
-            taps = None
             leading = next(iter(cached.lower.values())).shape[:-1]
 
         # ── adversary ascents: params + CI detached (SPEC §4.5) ──
@@ -337,7 +381,7 @@ def _build_step_impl(
         # (≈10x-the-target) CI fn is forward-evaluated ONCE, not once detached for the ascend +
         # once inside the main backward. On a stale-CI repeat step it is not evaluated at all:
         # the window-first envelope is the constant CI everywhere.
-        if cached is None:
+        if cached is None or mean_update_args is not None:
             assert taps is not None
             with jax.named_scope("pd_ci_fn_fwd"):
                 ci, ci_vjp = eqx.filter_vjp(
@@ -346,12 +390,20 @@ def _build_step_impl(
                     ),
                     state.ci_fn,
                 )
+        else:
+            ci, ci_vjp = None, None
+        if cached is None:
+            assert ci is not None
             ci_detached = jax.lax.stop_gradient(ci)
             envelope = CIEnvelope(lower=ci_detached.lower, upper=ci_detached.upper)
         else:
-            ci, ci_vjp = None, None
+            # On a mean-update step the vjp's primal `ci` equals `cached` (taps and ci_fn
+            # params are window-constant); the loss consumes `cached` — the exact arrays
+            # every step of the window used.
             envelope = cached
-        ci_lower_detached = envelope.lower
+        ci_lower_detached = (
+            jax.lax.stop_gradient(envelope.lower) if envelope_cotangent else envelope.lower
+        )
 
         # ── persistent adversaries: each runs its supplemental ascents vs the route-ALL
         # all-sites forward (SPEC S24 — torch warmup parity, NOT the term's loss plan),
@@ -526,6 +578,7 @@ def _build_step_impl(
             return total_loss, (faith_loss, imp_lp, imp_freq, tuple(term_losses))
 
         warmed_sources = {k: a.sources for k, a in warmed_advs.items()}
+        envelope_grad_f32: CIEnvelope | None = None
         if cached is None:
             assert ci is not None and ci_vjp is not None
 
@@ -543,6 +596,48 @@ def _build_step_impl(
                 )
             prepared_grad, components_grad_faith, ci_grad, persistent_grads_scaled = grads
             ci_fn_grad = ci_vjp(ci_grad)[0]
+        elif envelope_cotangent:
+
+            def loss_fn_traced_envelope(
+                trainable: tuple[Any, DecompVU, CIEnvelope, dict[str, dict[str, Array]]],
+            ) -> tuple[Array, tuple[Array, Array, Array, tuple[Array, ...]]]:
+                prepared_t, components_t, envelope_t, persistent_t = trainable
+                return losses_body(
+                    prepared_t, components_t, envelope_t.lower, envelope_t.upper, persistent_t
+                )
+
+            with jax.named_scope("pd_value_and_grad"):
+                (total_loss, (faith_loss, imp_lp, imp_freq, term_losses)), grads = (
+                    eqx.filter_value_and_grad(loss_fn_traced_envelope, has_aux=True)(
+                        (prepared, state.components, envelope, warmed_sources)
+                    )
+                )
+            prepared_grad, components_grad_faith, envelope_grad, persistent_grads_scaled = grads
+            envelope_grad_f32 = CIEnvelope(
+                lower={s: g.astype(jnp.float32) for s, g in envelope_grad.lower.items()},
+                upper={s: g.astype(jnp.float32) for s, g in envelope_grad.upper.items()},
+            )
+            if mean_update_args is None:
+                ci_fn_grad = None
+            else:
+                assert ci is not None and ci_vjp is not None
+                cotangent_acc, inv_window_len = mean_update_args
+                summed = (
+                    envelope_grad_f32
+                    if cotangent_acc is None
+                    else jax.tree.map(jnp.add, cotangent_acc, envelope_grad_f32)
+                )
+                mean_cotangent = jax.tree.map(lambda g: g * inv_window_len, summed)
+                # Pull the window-mean cotangent back through ONE CI-fn vjp — exact, since
+                # the vjp is the same linear map at every step of the window (ci_fn params
+                # and taps are window-constant). `logits` got zero cotangent all window
+                # (unused in the step), so it is zero here too.
+                ci_cotangent = CI(
+                    logits=jax.tree.map(jnp.zeros_like, ci.logits),
+                    lower={s: mean_cotangent.lower[s].astype(v.dtype) for s, v in ci.lower.items()},
+                    upper={s: mean_cotangent.upper[s].astype(v.dtype) for s, v in ci.upper.items()},
+                )
+                ci_fn_grad = ci_vjp(ci_cotangent)[0]
         else:
 
             def loss_fn_repeat(
@@ -627,7 +722,12 @@ def _build_step_impl(
             metrics["src_lr"] = next(iter(source_lrs.values()))
         else:
             metrics |= {f"schedules/lr/src/{k}": v for k, v in source_lrs.items()}
-        return new_state, metrics, envelope
+        if not envelope_cotangent:
+            return new_state, metrics, envelope
+        if mean_update_args is None:
+            assert envelope_grad_f32 is not None
+            return new_state, metrics, envelope_grad_f32
+        return new_state, metrics, None
 
     def compute_ci_impl(model: DecomposedModel, ci_fn: CIFn, batch: Any) -> CIEnvelope:
         batch = batch_sharded(batch)
@@ -678,7 +778,7 @@ def make_train_step(
     def step(
         model: DecomposedModel, state: TrainState, batch: Any, key: PRNGKeyArray
     ) -> tuple[TrainState, dict[str, Array]]:
-        new_state, metrics, _ = step_impl(model, state, batch, key, None)
+        new_state, metrics, _ = step_impl(model, state, batch, key, None, False, None)
         return new_state, metrics
 
     return filter_jit(step, donate="all-except-first", compiler_options=compiler_options)
@@ -698,12 +798,13 @@ def make_stale_ci_train_steps(
     ascend_replicate: bool = False,
     compiler_options: dict[str, bool | int | str] | None = None,
 ) -> StaleCITrainSteps:
-    """Build the stale-CI replay step pair (SPEC S34; `DataConfig.replay_stale_ci`).
+    """Build the stale-CI replay steps (SPEC S34; `DataConfig.replay_ci_update` modes
+    `first` / `last` / `mean` — see `StaleCITrainSteps` for which steps each mode runs).
 
-    `ci_fn_optimizer` MUST carry unit LR (`run_state.unit_lr_ci_fn_optimizer`): the fresh
-    step applies `ci_fn_lr_schedule` itself at the GLOBAL step, so the ci_fn follows the
-    run's LR schedule even though its optax update count only advances on window-first
-    steps (a count-driven schedule would stretch by the replay factor)."""
+    `ci_fn_optimizer` MUST carry unit LR (`run_state.unit_lr_ci_fn_optimizer`): the
+    ci_fn-updating step applies `ci_fn_lr_schedule` itself at the GLOBAL step, so the
+    ci_fn follows the run's LR schedule even though its optax update count only advances
+    once per window (a count-driven schedule would stretch by the replay factor)."""
     step_impl, compute_ci_impl = _build_step_impl(
         lm,
         losses=losses,
@@ -720,7 +821,9 @@ def make_stale_ci_train_steps(
     def fresh(
         model: DecomposedModel, state: TrainState, batch: Any, key: PRNGKeyArray
     ) -> tuple[TrainState, dict[str, Array], CIEnvelope]:
-        return step_impl(model, state, batch, key, None)
+        new_state, metrics, envelope = step_impl(model, state, batch, key, None, False, None)
+        assert envelope is not None
+        return new_state, metrics, envelope
 
     def repeat(
         model_and_envelope: tuple[DecomposedModel, CIEnvelope],
@@ -729,12 +832,45 @@ def make_stale_ci_train_steps(
         key: PRNGKeyArray,
     ) -> tuple[TrainState, dict[str, Array]]:
         model, cached_envelope = model_and_envelope
-        new_state, metrics, _ = step_impl(model, state, batch, key, cached_envelope)
+        new_state, metrics, _ = step_impl(model, state, batch, key, cached_envelope, False, None)
+        return new_state, metrics
+
+    def mean_accum(
+        model_and_envelope: tuple[DecomposedModel, CIEnvelope],
+        state: TrainState,
+        batch: Any,
+        key: PRNGKeyArray,
+    ) -> tuple[TrainState, dict[str, Array], CIEnvelope]:
+        model, cached_envelope = model_and_envelope
+        new_state, metrics, cotangent = step_impl(
+            model, state, batch, key, cached_envelope, True, None
+        )
+        assert cotangent is not None
+        return new_state, metrics, cotangent
+
+    def mean_update(
+        model_and_envelope: tuple[DecomposedModel, CIEnvelope],
+        state: TrainState,
+        batch: Any,
+        key: PRNGKeyArray,
+        cotangent_acc: CIEnvelope | None,
+        inv_window_len: Array,
+    ) -> tuple[TrainState, dict[str, Array]]:
+        model, cached_envelope = model_and_envelope
+        new_state, metrics, _ = step_impl(
+            model, state, batch, key, cached_envelope, True, (cotangent_acc, inv_window_len)
+        )
         return new_state, metrics
 
     return StaleCITrainSteps(
         fresh=filter_jit(fresh, donate="all-except-first", compiler_options=compiler_options),
         repeat=filter_jit(repeat, donate="all-except-first", compiler_options=compiler_options),
+        mean_accum=filter_jit(
+            mean_accum, donate="all-except-first", compiler_options=compiler_options
+        ),
+        mean_update=filter_jit(
+            mean_update, donate="all-except-first", compiler_options=compiler_options
+        ),
         compute_ci=filter_jit(compute_ci_impl, compiler_options=compiler_options),
     )
 
