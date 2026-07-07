@@ -92,7 +92,12 @@ def _node_workspace_setup(run_id: str, snapshot_ref: str, origin_url: str, run_d
     (secrets, not in git) comes from the run dir, where submit staged it. The task `exec`s
     the trainer afterwards (bash is replaced, so no EXIT trap can run here) — normal-end
     cleanup is the batch script's trap (`_node_workspace_cleanup_trap`), and the up-front
-    sweep self-heals leftovers from jobs that died before their trap fired."""
+    sweep self-heals leftovers from jobs that died before their trap fired.
+
+    The CUDA extra is driver-gated per node (buildable here, unlike at submit on a
+    GPU-less login node): cuda13's runtime libs include the Blackwell-TMEM-fixed
+    cuBLAS >= 13.2 (cuBLAS 12.9 warns of silent corruption on B200) but need driver
+    >= r580, below which (and-gmi's r570) the node falls back to cu12."""
     return f"""\
 set -euo pipefail
 WORK_DIR="{_NODE_WORKSPACES_DIR}/{run_id}"
@@ -104,7 +109,10 @@ git fetch --quiet --depth 1 "{origin_url}" "{snapshot_ref}"
 git checkout --quiet FETCH_HEAD
 cp "{run_dir}/.env" .env
 unset VIRTUAL_ENV
-uv sync --all-packages --no-dev --extra cuda --link-mode copy -q
+DRIVER_MAJOR=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n 1 | cut -d. -f1)
+if [ "$DRIVER_MAJOR" -ge 580 ]; then CUDA_EXTRA=cuda13; else CUDA_EXTRA=cuda; fi
+echo "cuda extra: $CUDA_EXTRA (driver major $DRIVER_MAJOR)"
+uv sync --all-packages --no-dev --extra "$CUDA_EXTRA" --link-mode copy -q
 source .venv/bin/activate"""
 
 

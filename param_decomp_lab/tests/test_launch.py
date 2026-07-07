@@ -68,7 +68,11 @@ def test_rank_command_builds_node_workspace_then_execs_trainer():
     # per-node job-side workspace: snapshot checkout + CUDA venv, then exec (no EXIT trap
     # — bash is replaced, cleanup is the batch script's trap)
     assert "git checkout --quiet FETCH_HEAD" in command
-    assert "uv sync --all-packages --no-dev --extra cuda" in command
+    # the CUDA extra is driver-gated on the node (cuda13 needs >= r580; cuBLAS TMEM fix)
+    assert 'if [ "$DRIVER_MAJOR" -ge 580 ]; then CUDA_EXTRA=cuda13; else CUDA_EXTRA=cuda; fi' in (
+        command
+    )
+    assert 'uv sync --all-packages --no-dev --extra "$CUDA_EXTRA"' in command
     assert "trap" not in command
     # venv activation precedes the rank env (LD_LIBRARY_PATH shells out to the venv python)
     assert command.index("source .venv/bin/activate") < command.index("export FOO=1")
