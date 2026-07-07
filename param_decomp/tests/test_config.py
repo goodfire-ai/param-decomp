@@ -10,7 +10,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, DataConfig
+from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, ArithmeticEvalConfig, DataConfig
 from param_decomp.components import SiteC
 from param_decomp.configs import (
     ImportanceMinimalityLossConfig,
@@ -402,3 +402,16 @@ def test_run_id_drives_identity_and_rejects_malformed():
 
     with pytest.raises(AssertionError, match="run_id must be"):
         load_config(config, "run42")
+
+
+def test_arithmetic_ci_grid_metric_builds_to_arithmetic_eval_config():
+    # In-tree coverage of the ArithmeticCIGrid -> ArithmeticEvalConfig build path (C49k enables
+    # it by default; drop that entry and inject a known one so the assert is config-independent).
+    raw = yaml.safe_load((CONFIGS / "llama8b_l18_C49k_200k.yaml").read_text())
+    raw["eval"]["metrics"] = [m for m in raw["eval"]["metrics"] if m["type"] != "ArithmeticCIGrid"]
+    raw["eval"]["metrics"].append({"type": "ArithmeticCIGrid", "a_range": [1, 50]})
+    built = build_experiment_config(LMExperimentConfig(**raw), RUN_ID)
+    assert built.eval is not None
+    assert built.eval.arithmetic == ArithmeticEvalConfig(
+        operation="add", a_range=(1, 50), b_range=(1, 100), thresholds=(0.1,), top_k=24
+    )

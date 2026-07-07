@@ -18,6 +18,7 @@ from pydantic import Discriminator, Field, PositiveInt, model_validator
 from param_decomp.base_config import BaseConfig
 from param_decomp.built_run import (
     LAUNCH_CONFIG_FILENAME,
+    ArithmeticEvalConfig,
     AttnPatternsEvalConfig,
     BuiltRun,
     DataConfig,
@@ -28,6 +29,7 @@ from param_decomp.built_run import (
 from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch
 from param_decomp.components import SiteC
 from param_decomp.configs import (
+    ArithmeticCIGridConfig,
     CEandKLLossesConfig,
     ChunkwiseTransformerCiConfig,
     CI_L0Config,
@@ -339,6 +341,7 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
     if cfg.eval is None:
         return None
     ce_kl = ci_l0 = density = pgd = None
+    arithmetic: ArithmeticEvalConfig | None = None
     attn_ci = attn_stoch = False
     attn_stoch_n_mask_samples = 1
     slow_n_batches_accum: int | None = None
@@ -349,6 +352,14 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
                 ce_kl = metric
             case CI_L0Config():
                 ci_l0 = metric
+            case ArithmeticCIGridConfig():
+                arithmetic = ArithmeticEvalConfig(
+                    operation=metric.operation,
+                    a_range=metric.a_range,
+                    b_range=metric.b_range,
+                    thresholds=tuple(metric.thresholds),
+                    top_k=metric.top_k,
+                )
             case PGDReconLossConfig():
                 assert metric.init == "random" and metric.mask_scope == "c", metric
                 pgd = EvalPGDConfig(n_steps=metric.n_steps, step_size=metric.step_size)
@@ -397,6 +408,7 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
             if attn_ci or attn_stoch
             else None
         ),
+        arithmetic=arithmetic,
     )
 
 

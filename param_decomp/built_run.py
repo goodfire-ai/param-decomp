@@ -71,6 +71,19 @@ class AttnPatternsEvalConfig:
 
 
 @dataclass(frozen=True)
+class ArithmeticEvalConfig:
+    """The arithmetic CI-grid figure eval (`arithmetic_eval.py`): a fixed `a x b` operand-
+    grid probe built in-memory at startup from this spec + the target's tokenizer, with
+    per-component CI heatmaps + n_alive at each threshold. Renders on the slow tier."""
+
+    operation: Literal["add", "sub", "mul"]
+    a_range: tuple[int, int]
+    b_range: tuple[int, int]
+    thresholds: tuple[float, ...]
+    top_k: int
+
+
+@dataclass(frozen=True)
 class EvalConfig:
     """In-loop eval pass (torch `EvalLoop` analog). The FAST scalar tier runs every
     `every` steps; the SLOW/plot tier (CI histograms, activation density, mean-CI,
@@ -106,6 +119,7 @@ class EvalConfig:
     group-named key. None = per-site keys only."""
     pgd: EvalPGDConfig | None
     attn_patterns: AttnPatternsEvalConfig | None
+    arithmetic: ArithmeticEvalConfig | None
 
 
 @dataclass(frozen=True)

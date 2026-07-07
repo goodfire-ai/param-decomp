@@ -540,8 +540,28 @@ class UVPlotsConfig(_PermutationPlotsBaseConfig):
     type: Literal["UVPlots"] = "UVPlots"
 
 
+class ArithmeticCIGridConfig(BaseConfig):
+    """Per-component causal-importance heatmaps over an `a x b` arithmetic operand grid.
+
+    The probe is a SPEC, not a filesystem artifact: the `[a_range] x [b_range]` grid of
+    `"<a><op><b>="` prompts is built in-memory at startup from the target's tokenizer
+    (`experiments/lm/arithmetic_probe.py`), so configs stay cluster-portable. For each
+    threshold in `thresholds`, every component alive on the probe (max CI over the grid
+    `>` threshold) is counted in n_alive, and the `top_k` most-active (by max CI) get
+    `a x b` CI + activation heatmaps. A figure tier — renders on `eval.slow_every`. Any
+    alive beyond `top_k` are reported via n_dropped (not silently cut)."""
+
+    type: Literal["ArithmeticCIGrid"] = "ArithmeticCIGrid"
+    operation: Literal["add", "sub", "mul"] = "add"
+    a_range: tuple[int, int] = (1, 100)
+    b_range: tuple[int, int] = (1, 100)
+    thresholds: list[float] = Field(default_factory=lambda: [0.1])
+    top_k: PositiveInt = 24
+
+
 AnyEvalMetricConfig = Annotated[
-    CEandKLLossesConfig
+    ArithmeticCIGridConfig
+    | CEandKLLossesConfig
     | CIHiddenActsReconLossConfig
     | CIHistogramsConfig
     | CI_L0Config
@@ -1047,6 +1067,7 @@ METRIC_SHORT_NAMES: dict[str, str] = {
     "StochasticReconLoss": "StochRecon",
     "StochasticReconSubsetLoss": "StochReconSub",
     "UnmaskedReconLoss": "UnmaskedRecon",
+    "ArithmeticCIGrid": "ArithCIGrid",
     "CEandKLLosses": "CEandKL",
     "CIHiddenActsReconLoss": "CIHiddenActRecon",
     "CIHistograms": "CIHist",
