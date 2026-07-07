@@ -77,6 +77,9 @@ def test_jitted_sharded_inits_match_eager_values():
     n = jax.device_count()
     mesh = hsdp_mesh()
     cfg = _tiny_cfg()
+    # layers.{2,3}.mlp.gate_proj share (d_in, d_out, C), so the stacked init has a REAL
+    # multi-site V/U shape group (stack + unstack across sites, not just groups of one);
+    # they also make a 3-site C group for the stacked sources init below.
     sites = llama_site_specs(
         cfg,
         canonical_site_cs(
@@ -84,10 +87,14 @@ def test_jitted_sharded_inits_match_eager_values():
                 SiteC("layers.2.self_attn.q_proj", 8 * n),
                 SiteC("layers.2.self_attn.o_proj", 16 * n),
                 SiteC("layers.2.mlp.gate_proj", 8 * n),
+                SiteC("layers.3.mlp.gate_proj", 8 * n),
                 SiteC("layers.3.mlp.down_proj", 16 * n),
             )
         ),
     )
+    from param_decomp.components import vu_shape_groups
+
+    assert max(len(g) for g in vu_shape_groups(sites).values()) >= 2
     # Placement is MODEL-OWNED and true ÷N ZeRO-1, split across the data + TP axes: V shards
     # d_in over the data axes and C over `tp` (`P(("replicate","fsdp"), "tp")`); U shards C
     # over `tp` and d_out over the data axes (`P("tp", ("replicate","fsdp"))`). C now carries

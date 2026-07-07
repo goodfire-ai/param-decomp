@@ -538,3 +538,42 @@ def test_fresh_pgd_adversary_step():
     assert float(metrics["loss/PGDReconLoss"]) >= float(metrics_unascended["loss/PGDReconLoss"]), (
         "one sign step from the same init must not weaken the adversary"
     )
+
+
+def test_chunkwise_ci_init_vmap_matches_unrolled_reference():
+    """The vmapped multi-chunk CI init must be BIT-identical to the unrolled+stacked
+    per-chunk form it replaced (`eqx.filter_vmap` over the SAME `fold_in` keys) — with
+    n_chunks > 1 so the chunk axis is real, and heterogeneous per-slot C."""
+    from param_decomp.ci_fn import _init_chunk_transformer, init_chunkwise_transformer_ci_fn
+
+    kinds = (("self_attn.q_proj", 8), ("self_attn.v_proj", 12), ("mlp.down_proj", 16))
+    n_chunks = 3
+    sites = tuple(SiteSpec(f"layers.{i}.{k}", 24, 24, c) for i in range(n_chunks) for k, c in kinds)
+    arch = ChunkwiseTransformerCIArch(
+        chunks=tuple(
+            Chunk(
+                input_taps=(f"resid.{i}",),
+                output_sites=tuple(f"layers.{i}.{k}" for k, _ in kinds),
+            )
+            for i in range(n_chunks)
+        ),
+        input_dim=24, d_model=16, n_blocks=2, n_heads=2, mlp_hidden=32,
+    )  # fmt: skip
+    key = jax.random.PRNGKey(7)
+
+    new = init_chunkwise_transformer_ci_fn(arch, sites, key)
+    slot_cs = tuple(c for _, c in kinds)
+    ref_stacked = jax.tree.map(
+        lambda *xs: jnp.stack(xs),
+        *[
+            _init_chunk_transformer(arch, arch.input_dim, slot_cs, jax.random.fold_in(key, i))
+            for i in range(n_chunks)
+        ],
+    )
+    for got, want in zip(
+        jax.tree.leaves(eqx.filter(new.chunks, eqx.is_array)),
+        jax.tree.leaves(eqx.filter(ref_stacked, eqx.is_array)),
+        strict=True,
+    ):
+        assert got.shape == want.shape and got.dtype == want.dtype
+        assert jnp.array_equal(got, want)

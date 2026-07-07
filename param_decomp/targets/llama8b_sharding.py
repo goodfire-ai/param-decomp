@@ -90,8 +90,10 @@ def init_decomp_vu_placed(sites: tuple[SiteSpec, ...], key: PRNGKeyArray, mesh: 
     runs vmap-STACKED per V/U shape (2×n_shapes sharded outputs instead of 2×n_sites — the
     SPMD/layout pass over a 448-output RNG graph was a multi-minute compile at 32L), then a
     trivial slice jit fans the stacks out to the per-site layout. The stack axis is
-    unsharded (each trailing spec is the per-site spec behind a leading None); the stacked
-    input is donated so the transient stacked copy frees as the slices materialize."""
+    unsharded (each trailing spec is the per-site spec behind a leading None). The stacked
+    copy cannot be buffer-donated into the split outputs, so init peak briefly holds ONE
+    extra shard-local copy of the params (÷N; a few GB/rank at production dp32, against
+    an init-time-empty HBM), freed when the fan-out returns."""
     per_site_shardings = eqx.filter_eval_shape(partial(init_decomp_vu, sites), key).shardings(mesh)
     stacked_shardings = {
         shape: tuple(
@@ -101,11 +103,7 @@ def init_decomp_vu_placed(sites: tuple[SiteSpec, ...], key: PRNGKeyArray, mesh: 
         for shape, specs in vu_shape_groups(sites).items()
     }
     stacked = jax.jit(partial(init_decomp_vu_stacked, sites), out_shardings=stacked_shardings)(key)
-    return jax.jit(
-        partial(unstack_decomp_vu, sites),
-        out_shardings=per_site_shardings,
-        donate_argnums=0,
-    )(stacked)
+    return jax.jit(partial(unstack_decomp_vu, sites), out_shardings=per_site_shardings)(stacked)
 
 
 def init_ci_fn_placed(
@@ -153,8 +151,8 @@ def init_sources_sharded(
             leading_shape = (global_batch, seq_len)
             spec = P(("replicate", "fsdp"), None, None)
     # Two cheap compiles instead of one n_sites-sharded-output graph (same shape as
-    # `init_decomp_vu_placed`): the RNG runs vmap-STACKED per C group (leading stack axis
-    # unsharded), then a trivial slice jit (stacked input donated) fans out per site.
+    # `init_decomp_vu_placed`, incl. the transient: the stacked copy can't donate into
+    # split outputs, so init briefly holds one extra shard-local copy of the sources).
     stacked_shardings = {
         c: NamedSharding(mesh, P(None, *spec))
         for c in sources_c_groups(site_names, site_component_counts)
@@ -172,7 +170,6 @@ def init_sources_sharded(
     return jax.jit(
         partial(unstack_persistent_sources, site_names, site_component_counts),
         out_shardings=NamedSharding(mesh, spec),
-        donate_argnums=0,
     )(stacked)
 
 

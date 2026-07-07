@@ -277,8 +277,8 @@ shared FS, which `$PARAM_DECOMP_OUT_DIR` already is.
 - **Keep seeded inits few-outputs-under-jit**: a jit returning n_sites (hundreds of)
   sharded outputs — or n_chunks unrolled RNG bodies — is a multi-minute SPMD/layout
   compile. vmap-stack over the same per-site/per-chunk keys (bit-identical values),
-  then fan out with a trivial donated slice jit. `init_decomp_vu_placed` is the
-  template; `init_ci_fn_placed` / `init_sources_sharded` follow it.
+  then fan out with a trivial slice jit. `init_decomp_vu_placed` is the template;
+  `init_ci_fn_placed` / `init_sources_sharded` follow it.
 - **The `jit_step` compile (~5 min at dp32) is FLAT across graph structure**: recon
   chunk count, C, CI-fn depth, and PPGD warmup all measured within noise (~83%
   priority-fusion). Don't chase graph-shrink refactors for compile time without new
