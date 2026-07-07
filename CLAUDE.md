@@ -106,10 +106,11 @@ entry points, read `param_decomp/CLAUDE.md` and `SPEC.md`. In one breath:
   then calls the engine. Orbax sharded checkpoints; SIGTERM → save → SLURM requeue → resume.
 - **Launch from the lab side** via `pd-lm <config.yaml>` (login-node submission wrapper;
   CONFIG-DRIVEN via `runtime.dp`, no `--nodes` / `--local` flags). `dp = N` (multiple of 8)
-  → snapshots the tree to `refs/runs/snapshot/<id>`, pins the config as the run dir's
-  `launch_config.yaml`, and sbatches `python -m param_decomp_lab.experiments.lm.run`
-  across `N // 8` nodes — each node clones the snapshot into node-local `/tmp` and builds
-  the `[cuda]` venv at job start; `dp = null` → runs the trainer inline single-process.
+  → snapshots the tree to `refs/runs/snapshot/<id>` (pushed to origin, the ground truth
+  the nodes fetch from), stages the run dir (`launch_config.yaml` + `.env`), and sbatches
+  `python -m param_decomp_lab.experiments.lm.run` across `N // 8` nodes — each node
+  shallow-fetches the snapshot from origin into node-local `/tmp` and builds the `[cuda]`
+  venv at job start; `dp = null` → runs the trainer inline single-process.
   `lab → param_decomp` is a fine dependency; only `param_decomp → lab` is forbidden.
 
 ## Public API (consumer substrate)

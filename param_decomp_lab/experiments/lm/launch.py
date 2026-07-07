@@ -6,11 +6,12 @@ CONFIG-DRIVEN: the launch mode is a pure function of `runtime.dp` in the run con
 `nodes = dp // 8` nodes (8 GPUs each, one srun task per node claiming all 8 GPUs).
 
 The SLURM path mints the `p-<8hex>` run id, snapshots the working tree to
-`refs/runs/snapshot/<id>`, pins the (group/tags-stamped) config as the run dir's
-`launch_config.yaml` (the one copy the job — and every requeue — reads), and sbatches.
-Each node then builds its own workspace at job start: clone the snapshot into node-local
-`/tmp`, `uv sync --extra cuda`, exec the trainer. Nothing is built at submit time and no
-shared-FS workspace exists to leak or clean up.
+`refs/runs/snapshot/<id>` (pushed to origin — the ground truth the nodes fetch from),
+stages the run dir with the pinned (group/tags-stamped) `launch_config.yaml` + `.env`
+(the copies the job — and every requeue — reads), and sbatches. Each node then builds its
+own workspace at job start: shallow-fetch the snapshot from origin into node-local
+`/tmp`, `uv sync --extra cuda`, exec the trainer. Nothing is built at submit time, no
+shared-FS workspace exists to leak or clean up, and no local checkout is read by the job.
 
 The rank env (XLA flags, NCCL/host-memory knobs, `PD_*` profiling toggles) is rendered from
 the config's `runtime.launch_env` (single source of truth, defaults in `LaunchEnv`), plus
@@ -21,6 +22,7 @@ config edit, not a launcher edit.
 
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -72,36 +74,35 @@ def _render_rank_env(launch_env: LaunchEnv) -> str:
     return "\n".join(exports)
 
 
-def _snapshot_source_repo() -> Path:
-    """The repo the job-side clone/fetch reads: the submitting checkout's COMMON git dir
-    (the main checkout's `.git`, even when submitting from a worktree). Worktrees share
-    their main checkout's refs but may themselves be deleted before a requeue re-clones,
-    so the ephemeral worktree path must not be the source."""
+def _origin_url() -> str:
+    """Snapshot refs' ground truth is origin (`create_git_snapshot` fails the submit if
+    the push fails), so nodes fetch from there — no dependency on any local checkout."""
     result = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        ["git", "-C", str(REPO_ROOT), "remote", "get-url", "origin"],
         capture_output=True,
         text=True,
         check=True,
     )
-    return Path(result.stdout.strip())
+    return result.stdout.strip()
 
 
-def _node_workspace_setup(run_id: str, snapshot_ref: str, source_repo: Path) -> str:
-    """The start of each node's srun task: sweep stale workspaces, clone the snapshot into
-    node-local /tmp, build the CUDA venv, activate. The task `exec`s the trainer afterwards
-    (bash is replaced, so no EXIT trap can run here) — normal-end cleanup is the batch
-    script's trap (`_node_workspace_cleanup_trap`), and the up-front sweep self-heals
-    leftovers from jobs that died before their trap fired."""
+def _node_workspace_setup(run_id: str, snapshot_ref: str, origin_url: str, run_dir: Path) -> str:
+    """The start of each node's srun task: sweep stale workspaces, shallow-fetch the
+    snapshot from origin into node-local /tmp, build the CUDA venv, activate. The `.env`
+    (secrets, not in git) comes from the run dir, where submit staged it. The task `exec`s
+    the trainer afterwards (bash is replaced, so no EXIT trap can run here) — normal-end
+    cleanup is the batch script's trap (`_node_workspace_cleanup_trap`), and the up-front
+    sweep self-heals leftovers from jobs that died before their trap fired."""
     return f"""\
 set -euo pipefail
 WORK_DIR="{_NODE_WORKSPACES_DIR}/{run_id}"
 rm -rf "{_NODE_WORKSPACES_DIR}"
 mkdir -p "$WORK_DIR"
-git clone --quiet "{source_repo}" "$WORK_DIR"
 cd "$WORK_DIR"
-cp "{source_repo.parent}/.env" .env
-git fetch --quiet "{source_repo}" "{snapshot_ref}:{snapshot_ref}"
-git checkout --quiet "{snapshot_ref}"
+git init --quiet
+git fetch --quiet --depth 1 "{origin_url}" "{snapshot_ref}"
+git checkout --quiet FETCH_HEAD
+cp "{run_dir}/.env" .env
 unset VIRTUAL_ENV
 uv sync --all-packages --no-dev --extra cuda --link-mode copy -q
 source .venv/bin/activate"""
@@ -117,10 +118,11 @@ def _node_workspace_cleanup_trap(nodes: int) -> str:
 
 
 def _rank_command(
-    run_id: str, snapshot_ref: str, source_repo: Path, launch_config: Path, rank_env: str
+    run_id: str, snapshot_ref: str, origin_url: str, run_dir: Path, rank_env: str
 ) -> str:
+    launch_config = run_dir / LAUNCH_CONFIG_FILENAME
     return (
-        f"{_node_workspace_setup(run_id, snapshot_ref, source_repo)}\n{rank_env}\n"
+        f"{_node_workspace_setup(run_id, snapshot_ref, origin_url, run_dir)}\n{rank_env}\n"
         f"exec python -m param_decomp_lab.experiments.lm.run "
         f"{shlex.quote(str(launch_config))} --run-id {shlex.quote(run_id)}"
     )
@@ -177,20 +179,19 @@ def main(
     assert dp % GPUS_PER_NODE == 0, f"runtime.dp={dp} must be a multiple of {GPUS_PER_NODE}"
     nodes = dp // GPUS_PER_NODE
 
-    source_repo = _snapshot_source_repo()
-    env_file = source_repo.parent / ".env"
-    assert env_file.exists(), f".env with wandb credentials required: {env_file}"
-
+    origin_url = _origin_url()
     if run_id is None:
         run_id = generate_run_id("param_decomp")
         snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=run_id)
         logger.info(f"Created git snapshot: {snapshot_ref} ({commit_hash[:8]})")
-        launch_config = _write_launch_config(config, run_id, group, tag_list)
+        run_dir = _write_run_dir(config, run_id, group, tag_list)
+        _stage_env_file(run_dir)
     else:
         snapshot_ref = f"refs/runs/snapshot/{run_id}"
-        launch_config = PARAM_DECOMP_OUT_DIR / "runs" / run_id / LAUNCH_CONFIG_FILENAME
-        assert launch_config.exists(), f"no launch config to resubmit: {launch_config}"
-    _assert_snapshot_ref_exists(source_repo, snapshot_ref)
+        _assert_snapshot_ref_on_origin(origin_url, snapshot_ref)
+        run_dir = PARAM_DECOMP_OUT_DIR / "runs" / run_id
+        for staged in (LAUNCH_CONFIG_FILENAME, ".env"):
+            assert (run_dir / staged).exists(), f"no {staged} to resubmit: {run_dir / staged}"
 
     wandb_url = _wandb_url(cfg, run_id)
     job_name = f"pd-{run_name}"
@@ -210,7 +211,7 @@ def main(
     # One task per node: `--nodes=N --ntasks=N` (N whole-node tasks) can't pack onto one
     # node, so the trainer's single process per node claims all local GPUs.
     srun = f"srun --nodes={nodes} --ntasks={nodes} {_SRUN_FLAGS}"
-    rank_command = _rank_command(run_id, snapshot_ref, source_repo, launch_config, rank_env)
+    rank_command = _rank_command(run_id, snapshot_ref, origin_url, run_dir, rank_env)
     command = f"{srun} bash -c {shlex.quote(rank_command)}"
     script = generate_script(slurm_config, command, setup=_node_workspace_cleanup_trap(nodes))
     result = submit_slurm_job(script, "pd-lm")
@@ -223,7 +224,7 @@ def main(
         "Log file": result.log_pattern,
         "Script": str(result.script_path),
         "Snapshot": snapshot_ref,
-        "Launch config": str(launch_config),
+        "Launch config": str(run_dir / LAUNCH_CONFIG_FILENAME),
     }
     if wandb_url is not None:
         summary["WandB run URL"] = wandb_url
@@ -233,7 +234,7 @@ def main(
 def _run_local(config: Path, run_name: str, group: str | None, tags: list[str]) -> None:
     """Mint a run id, pin the launch config into the run dir, and run the trainer inline."""
     run_id = generate_run_id("param_decomp")
-    launch_config = _write_launch_config(config, run_id, group, tags)
+    launch_config = _write_run_dir(config, run_id, group, tags) / LAUNCH_CONFIG_FILENAME
     logger.section(f"pd-lm local: {run_name} ({run_id})")
     subprocess.run(
         [
@@ -266,8 +267,8 @@ def _validate_config(config_path: Path) -> tuple[LMExperimentConfig, str]:
     return cfg, cfg.run_name
 
 
-def _write_launch_config(config: Path, run_id: str, group: str | None, tags: list[str]) -> Path:
-    """Pin the run's config (with the wandb group/tags stamped in) as the run dir's
+def _write_run_dir(config: Path, run_id: str, group: str | None, tags: list[str]) -> Path:
+    """Mint the run dir and pin the config (wandb group/tags stamped in) as its
     `launch_config.yaml` — the one copy the job and every requeue read, and the same file
     the trainer pins (`run.py::_pin_config_copy` no-ops on it)."""
     run_dir = PARAM_DECOMP_OUT_DIR / "runs" / run_id
@@ -275,19 +276,26 @@ def _write_launch_config(config: Path, run_id: str, group: str | None, tags: lis
     launch_config = run_dir / LAUNCH_CONFIG_FILENAME
     launch_config.write_text(config.read_text())
     _stamp_config(launch_config, group, tags)
-    return launch_config
+    return run_dir
 
 
-def _assert_snapshot_ref_exists(source_repo: Path, snapshot_ref: str) -> None:
-    """Guaranteed by construction on a fresh submit (the snapshot was just created in a
-    checkout sharing `source_repo`'s refs); load-bearing on `--run-id` resubmits from a
-    different clone than the original submit's."""
+def _stage_env_file(run_dir: Path) -> None:
+    """Stage `.env` (secrets, not in git — they can't ride the snapshot) into the run dir
+    for the node setup to copy into its workspace. Mode-preserving copy (0o660 secrets
+    stay group-only under the runs dir's group-writable umask)."""
+    env_file = REPO_ROOT / ".env"
+    assert env_file.exists(), f".env with wandb credentials required: {env_file}"
+    shutil.copy(env_file, run_dir / ".env")
+
+
+def _assert_snapshot_ref_on_origin(origin_url: str, snapshot_ref: str) -> None:
+    """Guaranteed on a fresh submit (`create_git_snapshot` fails if the origin push
+    fails); load-bearing on `--run-id` resubmits."""
     result = subprocess.run(
-        ["git", "-C", str(source_repo), "rev-parse", "--verify", "--quiet", snapshot_ref],
-        capture_output=True,
+        ["git", "ls-remote", "--exit-code", origin_url, snapshot_ref], capture_output=True
     )
     assert result.returncode == 0, (
-        f"{snapshot_ref} not in {source_repo} — nodes clone the snapshot from there at job start"
+        f"{snapshot_ref} not on origin — nodes fetch the snapshot from there at job start"
     )
 
 

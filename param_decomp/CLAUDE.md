@@ -250,12 +250,13 @@ asserts matching sites (names + C) + ci-fn arch before the restore. Provenance f
 - `dp = null` → run the trainer INLINE in the current process (single device, no SLURM, no
   workspace). For smoke / debug.
 - `dp = N` (a multiple of 8) → submit to SLURM across `nodes = N // 8` nodes, one srun
-  task per node. Mints the `p-` run id, snapshots the tree to `refs/runs/snapshot/<id>`,
-  pins the config (wandb group / tags stamped) as
-  `$PARAM_DECOMP_OUT_DIR/runs/<id>/launch_config.yaml`, and sbatches. Each node builds its
-  own workspace at job start (clone the snapshot into node-local `/tmp` + the one CUDA
-  venv) and execs `python -m param_decomp_lab.experiments.lm.run <launch_config> --run-id
-  <id>` (no rank/topology flags).
+  task per node. Mints the `p-` run id, snapshots the tree to `refs/runs/snapshot/<id>`
+  (pushed to origin — the ground truth the nodes fetch from), stages
+  `$PARAM_DECOMP_OUT_DIR/runs/<id>/` with the pinned config (wandb group / tags stamped)
+  + `.env`, and sbatches. Each node builds its own workspace at job start (shallow-fetch
+  the snapshot from origin into node-local `/tmp` + the one CUDA venv) and execs
+  `python -m param_decomp_lab.experiments.lm.run <launch_config> --run-id <id>` (no
+  rank/topology flags).
 
 Requeues rebuild the node workspaces and re-read the pinned launch config, never the live
 checkout. `--run_id` resubmits an existing run. Don't hand-write sbatch files.
