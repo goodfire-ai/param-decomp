@@ -96,6 +96,10 @@ def generate_script(
 
 set -euo pipefail
 umask 002  # Ensure files are group-writable
+# NCCL cross-node bootstrap sockets exhaust the default 1024-fd soft limit at 4+ nodes
+# ("ncclOsSocketTryAccept: Accept failed: Too many open files"); srun propagates this shell's
+# limits to the ranks.
+ulimit -n "$(ulimit -Hn)"
 {env_exports}
 {setup}
 
@@ -158,6 +162,10 @@ esac
 
 set -euo pipefail
 umask 002  # Ensure files are group-writable
+# NCCL cross-node bootstrap sockets exhaust the default 1024-fd soft limit at 4+ nodes
+# ("ncclOsSocketTryAccept: Accept failed: Too many open files"); srun propagates this shell's
+# limits to the ranks.
+ulimit -n "$(ulimit -Hn)"
 {env_exports}
 {comment_section}
 {setup}
