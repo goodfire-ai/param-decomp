@@ -34,7 +34,10 @@ eval:
     type: CEandKLLosses
   - type: ArithmeticCIGrid
   n_steps: 1
-  slow_every: 100000
+  # slow_every == every so the slow tier (incl. ArithmeticCIGrid) fires within the 20-step
+  # smoke — the full config uses 10000. The full config's 100000-scale slow cadence would
+  # never fire in 20 steps, so the smoke can't inherit it and still exercise the arith eval.
+  slow_every: 10
   slow_on_first_step: false
 pd:
   batch_size: 32
