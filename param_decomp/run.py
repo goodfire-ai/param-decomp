@@ -634,7 +634,10 @@ def run_decomposition_training(
         os._exit(0)  # profiling-only path; donation has consumed `state`, so don't enter the loop
 
     for step in range(start_step, pd.steps):
-        if _profile_on and step == _profile_start:
+        # Rank 0 only: every host writing into the shared run_dir/profile breaks the
+        # perfetto exporter ("Invalid trace folder" — it expects ONE xplane per dir), and
+        # SPMD ranks are symmetric so rank-0's timeline is the whole story.
+        if _profile_on and is_main and step == _profile_start:
             jax.block_until_ready(state)
             if profile.profile_max_events is not None:
                 _popts = jax.profiler.ProfileOptions()
