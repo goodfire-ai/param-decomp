@@ -198,7 +198,7 @@ def _make_replay_eval_step(
         mean_ci = sum(
             (ci_lower[site].astype(jnp.float32).sum() for site in site_names),
             start=jnp.zeros((), jnp.float32),
-        ) / (n_positions * total_components)
+        ) / (float(n_positions) * total_components)
         return ReplayEvalOutput(
             pgd_losses=pgd_losses,
             l0=l0,
