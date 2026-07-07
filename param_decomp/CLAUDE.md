@@ -272,33 +272,17 @@ write cache entries from the first process … contention for writes on some fil
 so all ranks read but only rank 0 writes — no shared-FS race. Requires the cache dir on a
 shared FS, which `$PARAM_DECOMP_OUT_DIR` already is.
 
-### Cold-start compile budget (measured 2026-07-06, btdr, isolated-cache probe grid)
+### Compile time (measured 2026-07-06 probe grid; full data in PR #956)
 
-Method: one production-shape probe run per mutation (12 steps, eval/checkpoints off,
-`JAX_LOG_COMPILES=1`), each launched with its own `PARAM_DECOMP_OUT_DIR` so runs never
-share an XLA cache — cache isolation is a submit-time env var, nothing repo-side. Logs +
-launch configs archived on btdr (`compile_probe_grid_2026-07-06_logs.tgz`, sibling of
-`runs/`). Findings at the full 32L/224-site production shape:
-
-- The cold start is a SUM of serial compiles, and the inits used to dominate it:
-  `jit_init_decomp_vu` 211s + `jit_build_ci_fn` 167s + `jit_init_persistent_sources` 55s
-  before `jit_step` even started. All three are now vmap-stacked (few-outputs-under-jit;
-  `init_decomp_vu_placed` / `init_chunkwise_transformer_ci_fn` / `init_sources_sharded`),
-  bit-identically: measured after, V/U 16s, build_ci_fn 4.4s, sources <2s — the
-  historical "~24 min before step 0" was mostly this, not the step compile.
-- **`jit_step` compile is flat across GRAPH-STRUCTURE knobs**: recon chunk count 1/2/4/8,
-  halved C, 2-block CI fn, PPGD warmup on/off all land in the same ~4–6 min band at dp32
-  (PPGD removal saves ~1 min). Don't chase graph-shrink refactors for compile time
-  without new evidence.
-- **Topology slope is mild**: dp32 ≈ 290–306s, dp64 ≈ 345s (same code/hardware).
-- Per-pass attribution (TF_CPP_VMODULE=hlo_pass_pipeline=1, the `passes` arm):
-  `jit_step` pass time is ~83% priority-fusion (+ multi-output-fusion); shardy/SPMD and
-  layout-assignment are minor at these mesh sizes. The rest of the wall is
-  backend codegen + (cold-cache) autotuning; the per-fusion autotune cache is
-  persistent and shared, so real runs pay it once per new GEMM shape, not per config.
-- `keep new seeded inits few-outputs-under-jit`: a jit returning n_sites (hundreds of)
-  sharded outputs is a multi-minute SPMD/layout pass; vmap-stack per shape/C group, then
-  fan out with a trivial donated slice jit (`init_decomp_vu_placed` is the template).
+- **Keep seeded inits few-outputs-under-jit**: a jit returning n_sites (hundreds of)
+  sharded outputs — or n_chunks unrolled RNG bodies — is a multi-minute SPMD/layout
+  compile. vmap-stack over the same per-site/per-chunk keys (bit-identical values),
+  then fan out with a trivial donated slice jit. `init_decomp_vu_placed` is the
+  template; `init_ci_fn_placed` / `init_sources_sharded` follow it.
+- **The `jit_step` compile (~5 min at dp32) is FLAT across graph structure**: recon
+  chunk count, C, CI-fn depth, and PPGD warmup all measured within noise (~83%
+  priority-fusion). Don't chase graph-shrink refactors for compile time without new
+  evidence.
 
 ## Gotchas
 
