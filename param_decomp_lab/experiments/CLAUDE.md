@@ -56,7 +56,8 @@ core, in `param_decomp.configs`; the engine's `BuiltRun` bundle is core, in
 experiments/
 ├── utils.py                 # EXPERIMENT_CONFIG_FILENAME
 ├── lm/
-│   ├── launch.py        # pd-lm: snapshot + shared-FS workspace + sbatch
+│   ├── launch.py            # pd-lm: snapshot + shared-FS workspace + sbatch
+│   ├── replay_eval.py       # fixed-batch, multi-restart PGD replay analysis
 │   ├── data.py              # tokenize_and_concatenate (offline helper for prestage)
 │   └── prestage_tokenized.py  # HF text -> int32 parquet shards for the JAX trainer
 ├── tms/                     # pd-tms (CPU): model.py + run.py + configs/ + test_tms.py
