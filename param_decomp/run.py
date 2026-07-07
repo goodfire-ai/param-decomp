@@ -530,10 +530,7 @@ def run_decomposition_training(
     last_logged = start_step
     grad_norm_summary_window: list[dict[str, jax.Array]] = []
 
-    # SCRATCH PROFILER HOOK (revertable): env-gated jax.profiler.trace over a window of
-    # steady-state steps + per-step block_until_ready wall-clock. PD_PROFILE_TRACE=1 enables;
-    # PD_PROFILE_START / PD_PROFILE_STEPS pick the window (default start at first post-warmup
-    # step, 3 steps). Trace lands in run_dir/profile (rank-0 dir is the one to pull).
+    # Profiler hook: trace over steady-state steps. Trace lands in run_dir/profile (rank-0 only).
     _profile_on = profile.trace
     _profile_start = profile.trace_start if profile.trace_start is not None else start_step + 2
     _profile_steps = profile.trace_steps if profile.trace_steps is not None else 3
