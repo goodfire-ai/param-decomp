@@ -1,0 +1,5 @@
+# seq-512 / batch-64 / eps-1e-6 variant (2026-06-17, feature/jax) via the shared-config route.
+torch_config: torch/llama8b_l18_b64_200k_eps1e6_seq512_1pool.yaml
+run_name: jax-l18-b64-200k-eps1e6-seq512
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/jax_runs
+remat_recon_forwards: false
