@@ -1,33 +1,20 @@
+run_name: jax-llama-3.1-8b-l18
 pd:
   seed: 0
   ci_config:
-    mode: global
-    fn_type: global_shared_transformer
-    hidden_dims: null
-    simple_transformer_ci_cfg:
-      d_model: 4096
-      n_blocks: 8
-      mlp_hidden_dim:
-      - 16384
-      attn_config:
-        n_heads: 8
-        max_len: 512
-        rope_base: 10000.0
+    type: chunkwise_transformer
+    blocks_per_chunk: 1
+    d_model: 4096
+    n_blocks: 4
+    n_heads: 64
+    mlp_hidden: 16384
   decomposition_targets:
   - module_pattern: model.layers.18.mlp.gate_proj
-    C: 20000
+    C: 8192
   - module_pattern: model.layers.18.mlp.up_proj
-    C: 20000
+    C: 8192
   - module_pattern: model.layers.18.mlp.down_proj
-    C: 20000 # There are 14336 neurons
-  # - module_pattern: model.layers.*.self_attn.q_proj
-  #   C: 4096
-  # - module_pattern: model.layers.*.self_attn.k_proj
-  #   C: 4096
-  # - module_pattern: model.layers.*.self_attn.v_proj
-  #   C: 4096
-  # - module_pattern: model.layers.*.self_attn.o_proj
-  #   C: 2048
+    C: 8192 # There are 14336 neurons
   components_optimizer:
     lr_schedule:
       start_val: 5.0e-05
@@ -41,22 +28,22 @@ pd:
       warmup_pct: 0.0
       final_val_frac: 0.1
       fn_type: cosine
-  steps: 100000
-  batch_size: 64
+  steps: 400000
+  batch_size: 128
   faithfulness_warmup_steps: 400
   faithfulness_warmup_lr: 0.001
   faithfulness_warmup_weight_decay: 0.0
   loss_metrics:
-  - type: ImportanceMinimalityLoss
-    coeff: 0.000001
-    pnorm:
-      start_val: 2.0
-      fn_type: linear
-      final_val_frac: 0.2
-    frequency:
-      coeff: 5.0e-07
+  - frequency:
+      coeff: 2.0e-05
       reference_token_count: 32768
-    eps: 1.0e-12
+    coeff: 1.0e-05
+    type: SmoothL0ImportanceMinimalityLoss
+    gamma:
+      start_val: 1.0
+      fn_type: linear
+      final_val_frac: 0.01
+      warmup_pct: 0.0
   - type: StochasticReconSubsetLoss
     coeff: 0.5
     routing:
@@ -80,6 +67,8 @@ pd:
     coeff: 10000000.0
 cadence:
   train_log_every: 200
+  save_every: 5000
+  keep_last_n_checkpoints: 2
 eval:
   n_steps: 1
   batch_size: 128
@@ -107,22 +96,21 @@ target:
     kind: hf
     model_class: transformers.LlamaForCausalLM
     model_name: meta-llama/Llama-3.1-8B
+  weights_dtype: bfloat16
   output_extract: logits
 data:
   tokenizer_name: meta-llama/Llama-3.1-8B
-  max_seq_len: 512
+  max_seq_len: 2048
   buffer_size: 1000
-  dataset_name: HuggingFaceFW/fineweb
-  # the sample-350BT subset, globbed directly to avoid a 28k-file repo tree walk
-  data_files: sample/350BT/*.parquet
-  revision: 9bb295ddab0e05d785b879661af7260fed5140fc
-  column_name: text
+  dataset_name: parquet
+  data_files: /mnt/data/artifacts/mechanisms/param-decomp/datasets/fineweb_llama_tok_2048/*.parquet
+  column_name: input_ids
   train_split: train
   eval_split: train
   shuffle_each_epoch: true
-  is_tokenized: false
-  streaming: true
+  is_tokenized: true
+  streaming: false
 runtime:
-  dp: null
+  dp: 128
 wandb:
   project: param-decomp-llama
