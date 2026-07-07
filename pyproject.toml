@@ -32,6 +32,11 @@ dependencies = [
 # CUDA jaxlib wheels for the cluster; the per-run snapshot venv the launcher builds
 # installs this extra. The dev venv (CPU box) takes the base CPU jax above.
 cuda = ["jax[cuda12]==0.10.1"]
+# CUDA-13 wheel track: same jax, newer runtime libs. cuBLAS >= 13.2 fixes a Blackwell TMEM
+# double-free (silent-corruption hazard; cuBLAS 12.9 warns on B200). Needs driver >= r580 —
+# and-gmi (570.x) can't run it, so `cuda` (cu12) stays the default; pass
+# `pd-lm --cuda-extra cuda13` on cw-east / cw-rno2 / btdr.
+cuda13 = ["jax[cuda13]==0.10.1", "nvidia-cublas>=13.2.0.9"]
 
 [project.scripts]
 # No core console scripts: the trainers run as modules (`python -m param_decomp.run` /

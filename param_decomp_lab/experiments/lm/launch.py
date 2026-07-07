@@ -92,6 +92,7 @@ def main(
     group: str | None = None,
     tags: str | tuple[str, ...] | None = None,
     comment: str | None = None,
+    cuda_extra: str = "cuda",
 ) -> None:
     """Launch a decomposition trainer (`param_decomp_lab.experiments.lm.run`) run. The mode
     (inline vs SLURM) is a pure function of the config's `runtime.dp`.
@@ -111,6 +112,10 @@ def main(
         group: wandb UI group (no-op when the config omits `wandb:`).
         tags: Comma-separated wandb tags (no-op when `wandb:` is omitted).
         comment: SLURM `--comment`; defaults to the wandb run URL (or run id).
+        cuda_extra: Which CUDA extra the workspace venv installs — `cuda` (cu12, the
+            default, runs everywhere) or `cuda13` (cu12->cu13 runtime libs incl. the
+            Blackwell TMEM-fixed cuBLAS >= 13.2; needs driver >= r580, so not and-gmi).
+            Submit-time machine decision, like `LD_LIBRARY_PATH`.
 
     The rank env (XLA flags, NCCL/host-memory knobs, profiling toggles) is config-driven
     via `runtime.launch_env` — set it in the YAML, not here (so `launch_config.yaml` records it).
@@ -138,7 +143,7 @@ def main(
         snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=run_id)
         logger.info(f"Created git snapshot: {snapshot_ref} ({commit_hash[:8]})")
         workspace = WORKSPACES_DIR / run_id
-        _build_workspace(workspace, snapshot_ref, config_rel, group, tag_list)
+        _build_workspace(workspace, snapshot_ref, config_rel, group, tag_list, cuda_extra)
     else:
         snapshot_ref = f"refs/runs/snapshot/{run_id}"
         workspace = WORKSPACES_DIR / run_id
@@ -233,6 +238,7 @@ def _build_workspace(
     config_rel: Path,
     group: str | None,
     tags: list[str],
+    cuda_extra: str,
 ) -> None:
     """Materialize the snapshot as an immutable shared-FS checkout with the one CUDA
     venv, then stamp the wandb group/tags into the workspace's single config yaml. The run
@@ -255,9 +261,12 @@ def _build_workspace(
     assert env_file.exists(), f".env with wandb credentials required: {env_file}"
     (workspace / ".env").write_bytes(env_file.read_bytes())
 
-    logger.info("venv: uv sync --all-packages --no-dev --extra cuda (hardlink from uv_cache) ...")
+    assert cuda_extra in ("cuda", "cuda13"), f"unknown cuda extra: {cuda_extra!r}"
+    logger.info(
+        f"venv: uv sync --all-packages --no-dev --extra {cuda_extra} (hardlink from uv_cache) ..."
+    )
     run(
-        ["uv", "sync", "--all-packages", "--no-dev", "--extra", "cuda", "-q"],
+        ["uv", "sync", "--all-packages", "--no-dev", "--extra", cuda_extra, "-q"],
         cwd=workspace,
         env=build_env,
     )
