@@ -20,7 +20,7 @@ import jax
 from jax import random
 from jax.sharding import Mesh
 
-from param_decomp.built_run import BuiltRun, DataConfig
+from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, BuiltRun, DataConfig
 from param_decomp.data import BatchSchedule, ShardServer, scan_shards
 from param_decomp.hf_http import configure_hf_http_retries
 from param_decomp.lm import DecomposedModel
@@ -168,7 +168,7 @@ def main(config: Path, run_id: str) -> None:
         cache_dir.mkdir(parents=True, exist_ok=True)
         built.run.run_dir.mkdir(parents=True, exist_ok=True)
         setup_logger(built.run.run_dir / "logs.log")
-        _pin_config_copy(built.run.run_dir, "config.yaml", config)
+        _pin_config_copy(built.run.run_dir, LAUNCH_CONFIG_FILENAME, config)
         print(f"persistent XLA compilation cache: {cache_dir}", flush=True)
         assert isinstance(built.data, DataConfig)
         print(
