@@ -46,8 +46,8 @@ def create_git_snapshot(snapshot_id: str) -> tuple[str, str]:
 
     Creates a ref under `refs/runs/snapshot/<snapshot_id>` containing all current changes (staged
     and unstaged). Uses a temporary detached worktree to avoid affecting the current working
-    directory. Pushes the snapshot ref to origin and FAILS if the push fails: origin is the
-    ground truth for snapshot refs — SLURM jobs fetch them from origin at job start.
+    directory. Pushes the snapshot ref to origin as a best-effort provenance backup —
+    jobs fetch snapshots from the local shared-FS git dir, not origin.
 
     The ref lives outside `refs/heads/*` and `refs/tags/*`, so it is invisible to a default
     `git fetch` — clients only pull it down if they ask for it explicitly. This keeps the set of
@@ -130,19 +130,22 @@ def create_git_snapshot(snapshot_id: str) -> tuple[str, str]:
                 capture_output=True,
             )
 
-            # Origin is the ground truth for snapshot refs — SLURM jobs fetch them from
-            # origin at job start, so a failed push must fail the submit.
+            # Best-effort provenance backup — jobs fetch snapshots from the local shared-FS
+            # git dir, so a failed push shouldn't block the submit.
             push = subprocess.run(
                 ["git", "push", "origin", f"{snapshot_ref}:{snapshot_ref}"],
                 cwd=REPO_ROOT,
                 capture_output=True,
                 text=True,
             )
-            assert push.returncode == 0, (
-                f"pushing {snapshot_ref} to origin failed (jobs fetch snapshots from origin): "
-                f"{push.stderr.strip()}"
-            )
-            logger.info(f"Pushed snapshot ref '{snapshot_ref}' to origin")
+            if push.returncode == 0:
+                logger.info(f"Pushed snapshot ref '{snapshot_ref}' to origin")
+            else:
+                logger.warning(
+                    f"Could not push snapshot ref '{snapshot_ref}' to origin (continuing; "
+                    f"the ref exists locally and jobs fetch it from there): "
+                    f"{push.stderr.strip()}"
+                )
 
         finally:
             # Clean up worktree (the snapshot ref in the main repo remains)

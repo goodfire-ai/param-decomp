@@ -251,7 +251,7 @@ asserts matching sites (names + C) + ci-fn arch before the restore. Provenance f
   workspace). For smoke / debug.
 - `dp = N` (a multiple of 8) → submit to SLURM across `nodes = N // 8` nodes, one srun
   task per node. Mints the `p-` run id, snapshots the tree to `refs/runs/snapshot/<id>`
-  (hard-pushed to origin as the durable provenance record), stages
+  (pushed to origin best-effort, as a provenance backup), stages
   `$PARAM_DECOMP_OUT_DIR/runs/<id>/` with the pinned config (wandb group / tags stamped)
   + `.env`, and sbatches. Each node builds its own workspace at job start (shallow-fetch
   the snapshot from the submitting checkout's shared-FS git dir into node-local `/tmp` +

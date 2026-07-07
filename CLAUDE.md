@@ -106,8 +106,8 @@ entry points, read `param_decomp/CLAUDE.md` and `SPEC.md`. In one breath:
   then calls the engine. Orbax sharded checkpoints; SIGTERM → save → SLURM requeue → resume.
 - **Launch from the lab side** via `pd-lm <config.yaml>` (login-node submission wrapper;
   CONFIG-DRIVEN via `runtime.dp`, no `--nodes` / `--local` flags). `dp = N` (multiple of 8)
-  → snapshots the tree to `refs/runs/snapshot/<id>` (hard-pushed to origin as the durable
-  provenance record), stages the run dir (`launch_config.yaml` + `.env`), and sbatches
+  → snapshots the tree to `refs/runs/snapshot/<id>` (pushed to origin best-effort, as a
+  provenance backup), stages the run dir (`launch_config.yaml` + `.env`), and sbatches
   `python -m param_decomp_lab.experiments.lm.run` across `N // 8` nodes — each node
   shallow-fetches the snapshot from the submitting checkout's shared-FS git dir into
   node-local `/tmp` and builds the driver-gated CUDA venv at job start; `dp = null` →

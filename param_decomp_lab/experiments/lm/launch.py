@@ -6,7 +6,7 @@ CONFIG-DRIVEN: the launch mode is a pure function of `runtime.dp` in the run con
 `nodes = dp // 8` nodes (8 GPUs each, one srun task per node claiming all 8 GPUs).
 
 The SLURM path mints the `p-<8hex>` run id, snapshots the working tree to
-`refs/runs/snapshot/<id>` (hard-pushed to origin — the durable provenance record), stages
+`refs/runs/snapshot/<id>` (pushed to origin best-effort, as a provenance backup), stages
 the run dir with the pinned (group/tags-stamped) `launch_config.yaml` + `.env` (the
 copies the job — and every requeue — reads), and sbatches. Each node then builds its own
 workspace at job start: shallow-fetch the snapshot from the submitting checkout's
@@ -79,8 +79,8 @@ def _snapshot_source_repo() -> Path:
     """The local git state the nodes fetch the snapshot from: the submitting checkout's
     COMMON git dir (the main checkout's `.git`, even when submitting from a worktree —
     worktrees share refs but may be deleted before a requeue re-fetches). Shared FS, so
-    requeues never depend on GitHub reachability; origin (which `create_git_snapshot`
-    hard-pushes to) is the durable provenance record, not the job's fetch source."""
+    neither submits nor requeues depend on GitHub reachability; the best-effort origin
+    push in `create_git_snapshot` is a provenance backup, not the job's fetch source."""
     result = subprocess.run(
         ["git", "-C", str(REPO_ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"],
         capture_output=True,
