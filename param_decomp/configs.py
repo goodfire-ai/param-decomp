@@ -826,12 +826,14 @@ class RuntimeConfig(BaseConfig):
             "clean-forward / CI-fn GEMMs are unaffected."
         ),
     )
-    fp8_mode: Literal["per_tensor", "per_row"] = Field(
+    fp8_mode: Literal["per_tensor", "per_row", "mxfp8"] = Field(
         default="per_row",
         description=(
             "fp8 scaling granularity (when `fp8_scope` != off): `per_row` scales each "
             "token / output channel independently (better numerics); `per_tensor` uses one "
-            "scale per tensor (simpler, coarser)."
+            "scale per tensor (simpler, coarser); `mxfp8` is cuDNN block-scaled microscaling "
+            "via `jax.nn.scaled_dot_general` — hardware-accelerated on Blackwell (B200) "
+            "ONLY, do not use on Hopper/CPU."
         ),
     )
 

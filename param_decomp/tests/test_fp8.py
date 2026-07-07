@@ -60,3 +60,27 @@ def test_configure_switch():
     fp8.configure("components", "per_tensor")
     assert fp8.components_enabled()
     fp8.configure("off", "per_row")  # restore
+
+
+def test_mxfp8_traces_nd():
+    """mxfp8 has no CPU kernel (Blackwell-only), but the dims plumbing must abstract-eval:
+    N-D leading `a`, contraction on a's last / b's first, bf16 out."""
+    a = jax.ShapeDtypeStruct((2, 16, 64), jnp.bfloat16)
+    b = jax.ShapeDtypeStruct((64, 32), jnp.bfloat16)
+    out = jax.eval_shape(fp8._dot_mxfp8, a, b)
+    assert out.shape == (2, 16, 64)[:-1] + (32,)
+    assert out.dtype == jnp.bfloat16
+    grads = jax.eval_shape(
+        lambda a, b: jax.grad(
+            lambda a, b: jnp.sum(fp8._dot_mxfp8(a, b).astype(jnp.float32)), (0, 1)
+        )(a, b),
+        a,
+        b,
+    )
+    assert grads[0].shape == a.shape and grads[1].shape == b.shape
+
+
+def test_configure_mxfp8():
+    fp8.configure("components", "mxfp8")
+    assert fp8.components_enabled() and fp8.settings_repr().endswith("mode='mxfp8')")
+    fp8.configure("off", "per_row")  # restore

@@ -12,6 +12,11 @@ with `b`'s first) so the batch-sharded leading axes are never reshaped (no resha
 Per-row scaling quantizes along the NON-contracted axes (TE-style): an outlier in one row
 no longer sets the whole-tensor scale. The backward re-quantizes the operands along the
 backward's contracted axis (the "transposed re-quant"); residuals are the bf16 operands.
+
+`mxfp8` instead routes through `jax.nn.scaled_dot_general` (cuDNN block-scaled microscaling,
+32-element blocks, built-in backward — no custom_vjp). Hardware-accelerated ONLY on
+Blackwell (B200); Hopper has no kernel for it (orders of magnitude slower) and CPU has no
+lowering at all, so it is B200-opt-in, never a default.
 """
 
 from dataclasses import dataclass
@@ -32,7 +37,7 @@ _EPS = 1e-12
 @dataclass(frozen=True)
 class _Settings:
     components: bool
-    mode: str  # "per_tensor" | "per_row"
+    mode: str  # "per_tensor" | "per_row" | "mxfp8"
 
 
 _settings = _Settings(components=False, mode="per_row")
@@ -40,9 +45,9 @@ _settings = _Settings(components=False, mode="per_row")
 
 def configure(scope: str, mode: str) -> None:
     """Set the process-level fp8 switch. `scope`: "off" | "components". `mode`:
-    "per_tensor" | "per_row". Call before the train step is first traced."""
+    "per_tensor" | "per_row" | "mxfp8". Call before the train step is first traced."""
     assert scope in ("off", "components"), scope
-    assert mode in ("per_tensor", "per_row"), mode
+    assert mode in ("per_tensor", "per_row", "mxfp8"), mode
     global _settings
     _settings = _Settings(components=(scope == "components"), mode=mode)
 
@@ -155,6 +160,27 @@ def _dot_per_row_bwd(res: tuple[Array, Array], g: Array) -> tuple[Array, Array]:
 _dot_per_row.defvjp(_dot_per_row_fwd, _dot_per_row_bwd)
 
 
+# ───────────────────────── mxfp8 (Blackwell block-scaled) ─────────────────────────
+
+
+def _dot_mxfp8(a: Array, b: Array) -> Array:
+    ca = a.ndim - 1
+    cfg = jax.nn.get_scaled_dot_general_config("mxfp8")
+    out = jax.nn.scaled_dot_general(
+        a, b, (((ca,), (0,)), ((), ())),
+        preferred_element_type=jnp.bfloat16, configs=[cfg, cfg, cfg],
+    )  # fmt: skip
+    return out.astype(a.dtype)
+
+
 def matmul(a: Array, b: Array) -> Array:
     """fp8 `a @ b` (contract `a`'s last axis with `b`'s first), per the configured mode."""
-    return _dot_per_row(a, b) if _settings.mode == "per_row" else _dot_per_tensor(a, b)
+    match _settings.mode:
+        case "per_row":
+            return _dot_per_row(a, b)
+        case "per_tensor":
+            return _dot_per_tensor(a, b)
+        case "mxfp8":
+            return _dot_mxfp8(a, b)
+        case _:
+            raise AssertionError(_settings.mode)
