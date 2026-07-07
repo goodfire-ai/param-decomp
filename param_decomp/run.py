@@ -5,7 +5,7 @@
 remat_recon_forwards, sample_batch, eval_fn, eval_every, mesh)` owns
 the generic machinery: init / restore / fine-tune init / faith warmup
 (`_init_or_restore_state`), the recon-grid step factory, orbax checkpointing, schedules,
-metrics fan-out (`MetricsSink`), the in-loop slow/plot renderer (`SlowEvalRenderer`), and
+metrics fan-out (`MetricsSink`), the figure-tier background renderer (`BackgroundRenderer`), and
 SIGTERM-save for SLURM requeue. It reads the pydantic `PDConfig` / `Cadence` DIRECTLY; the
 target injects two seams: the data source (`sample_batch`) and the eval metric (`eval_fn`).
 
@@ -44,7 +44,12 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import PRNGKeyArray
 
-from param_decomp.built_run import DataConfig, RunInstance
+from param_decomp.arithmetic_eval import (
+    ArithmeticGrid,
+    ArithmeticSelection,
+    render_arithmetic_figures,
+)
+from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, DataConfig, RunInstance
 from param_decomp.checkpoint import (
     init_from_parent,
     make_checkpoint_manager,
@@ -52,7 +57,13 @@ from param_decomp.checkpoint import (
     save_state,
 )
 from param_decomp.ci_fn import CIFnArch
-from param_decomp.configs import AnyLossMetricConfig, Cadence, PDConfig, flatten_typed_lists
+from param_decomp.configs import (
+    AnyLossMetricConfig,
+    Cadence,
+    PDConfig,
+    ProfileConfig,
+    flatten_typed_lists,
+)
 from param_decomp.lm import DecomposedModel
 from param_decomp.recon import build_loss_terms
 from param_decomp.run_state import build_optimizers, init_train_state
@@ -135,8 +146,10 @@ _METRIC_KEYS = {
     "total": "train/loss/total",
     "faith": "train/loss/FaithfulnessLoss",
     "imp": "train/loss/ImportanceMinimalityLoss",
+    "imp_smooth_l0": "train/loss/SmoothL0ImportanceMinimalityLoss",
     "freq": "train/loss/FrequencyMinimalityLoss",
     "p_imp": "train/schedules/p_imp",
+    "gamma_imp": "train/schedules/gamma_imp",
     "src_lr": "train/schedules/lr/src",
     "step_time_s": "train/perf/step_time_s",
     "elapsed_s": "train/perf/elapsed_s",
@@ -190,13 +203,12 @@ class MetricsSink:
             resume="allow",
             config=wandb_config,
         )
-        # Persist the run's pinned config.yaml as a downloadable wandb run file
-        # (parity with the torch trainer's init_pd_run -> wandb.save), not just the
-        # flattened wandb.config dict. Pinned to run_dir before train() / wandb.init.
-        config_yaml = run.run_dir / "config.yaml"
-        assert config_yaml.exists(), config_yaml
-        wandb.save(str(config_yaml), base_path=str(run.run_dir), policy="now")
-        # The in-loop slow tier (`SlowEvalRenderer`) logs `slow_eval/*` on the live
+        # Save the pinned launch config as a downloadable wandb run file, alongside (not
+        # in place of) the flattened wandb.config dict; it exists from before wandb.init.
+        launch_config = run.run_dir / LAUNCH_CONFIG_FILENAME
+        assert launch_config.exists(), launch_config
+        wandb.save(str(launch_config), base_path=str(run.run_dir), policy="now")
+        # The in-loop slow tier (`BackgroundRenderer`) logs `slow_eval/*` on the live
         # `_step` axis at the eval step (SPEC S28/S29), so NO dedicated `slow_eval/step`
         # metric is defined here. Slow eval is in-loop only (no offline CLI).
         return cls(jsonl=jsonl, wandb_module=wandb)
@@ -227,30 +239,25 @@ class MetricsSink:
             _log_wandb_safe(self._wandb, record, step, "log")
 
 
-class SlowEvalRenderer:
-    """Rank-0 background renderer for the in-loop slow/plot tier (SPEC S28/S29).
+class BackgroundRenderer:
+    """Rank-0 background thread for a figure tier's pure-host tail (matplotlib +
+    `wandb.log`): the slow/plot tier (SPEC S28/S29, `render_and_log_slow_eval`) and the
+    arithmetic CI-grid tier (`render_and_log_arithmetic`) each hold one.
 
-    The collective part of slow eval (the jitted forward + the device->host pull whose
-    `np.asarray` triggers the C-shard all-gather) runs in lockstep on ALL ranks inside the
-    eval pass. This renderer takes ONLY the materialized numpy reductions (the per-site
-    `SiteReduction` plot inputs; when the config names a CI-heatmap/permutation metric, the
-    batch-mean `(T, C)` position CI; and when the config names `UVPlots`, the host-gathered
-    V/U `components`) and does the pure-host part — matplotlib + `wandb.log` — on a
-    background thread, so the main train loop on every rank proceeds immediately (near-zero
-    cross-rank divergence). The thread touches ZERO jax/device state. `UVPlots` is a NAIVE
-    full host gather of the C-sharded V/U: cheap small-scale, OOMs / breaks at production C
-    BY DESIGN (per Oli) — no special handling, the gather (collective, on the eval pass) is
-    the cost. The `IdentityCIError` SCALARS are computed synchronously on the collective path
-    (cheap, and `_step`-monotonic), not on this thread.
+    The collective part of a figure eval (the jitted forwards + the device->host pulls)
+    runs in lockstep on ALL ranks inside the eval pass. `submit` takes a `render` closure
+    over ONLY the materialized numpy results and runs it on a background thread, so the
+    main train loop on every rank proceeds immediately (near-zero cross-rank divergence).
+    The closure must touch ZERO jax/device state.
 
     One render in flight at a time: a `submit` while a render is still running blocks
-    briefly on `join()` first, so renders can't pile up (slow eval is forward-only and
+    briefly on `join()` first, so renders can't pile up (figure tiers are forward-only and
     coarse, so this effectively never blocks). The figures log on the live `_step` axis at
-    `step=now_step` — the slow tier lands on a fast-eval step, so the sink has just opened
+    `step=now_step` — the figure tiers land on a fast-eval step, so the sink has just opened
     `now_step` and the background `wandb.log(..., step=now_step)` merges into the same open
     step. A render that lands AFTER the next train-log advances the head is dropped by
     wandb's monotonic-`_step` rule (a benign one-figure-set miss, warned not raised; the
-    next slow eval renders fine) — slow eval is forward-only seconds against a coarse
+    next render lands fine) — the tiers are seconds of host work against a coarse
     `slow_every`, so this is not expected to fire. An `atexit` join flushes the last render
     before process exit (the trainer never calls `wandb.finish`). The atexit handler is
     registered on the FIRST submit, not in `__init__` — the first submit happens after
@@ -268,25 +275,14 @@ class SlowEvalRenderer:
             self._thread.join()
             self._thread = None
 
-    def submit(
-        self,
-        reductions: dict[str, SiteReduction],
-        perm_spec: PermutationMetricSpec,
-        position_ci: dict[str, PositionCI] | None,
-        components: dict[str, tuple[np.ndarray, np.ndarray]] | None,
-        now_step: int,
-    ) -> None:
+    def submit(self, render: Callable[[], None]) -> None:
         if not self._is_main:
             return
         if not self._atexit_registered:
             atexit.register(self.join)
             self._atexit_registered = True
         self.join()  # cap to one in-flight render
-        self._thread = threading.Thread(
-            target=_render_and_log_slow_eval,
-            args=(reductions, perm_spec, position_ci, components, now_step),
-            daemon=True,
-        )
+        self._thread = threading.Thread(target=render, daemon=True)
         self._thread.start()
 
 
@@ -298,17 +294,20 @@ def slow_eval_due(now_step: int, every: int, slow_every: int, slow_on_first_step
     return now_step % slow_every == 0 or (slow_on_first_step and now_step == every)
 
 
-def _render_and_log_slow_eval(
+def render_and_log_slow_eval(
     reductions: dict[str, SiteReduction],
     perm_spec: PermutationMetricSpec,
     position_ci: dict[str, PositionCI] | None,
     components: dict[str, tuple[np.ndarray, np.ndarray]] | None,
     now_step: int,
 ) -> None:
-    """Pure-host: render the slow figures (the base plot set plus, when `position_ci` is
-    materialized, the config-driven CI-heatmap/permutation figures, and when `components` is
-    the host-gathered V/U, the `UVPlots` heatmaps) and log them to wandb on the live `_step`
-    axis at `now_step`. No jax/device access — safe off the train loop."""
+    """Pure-host `BackgroundRenderer` target: render the slow figures off the materialized
+    numpy reductions (the per-site `SiteReduction` plot inputs; when the config names a
+    CI-heatmap/permutation metric, the batch-mean `(T, C)` position CI; and when the config
+    names `UVPlots`, the host-gathered V/U `components` — a NAIVE full gather that OOMs /
+    breaks at production C BY DESIGN, per Oli) and log them on the live `_step` axis at
+    `now_step`. The `IdentityCIError` SCALARS ride the synchronous collective path instead
+    (cheap, and `_step`-monotonic). No jax/device access — safe off the train loop."""
     import wandb
     from PIL import Image
 
@@ -319,6 +318,23 @@ def _render_and_log_slow_eval(
         f"slow_eval/{k}": wandb.Image(Image.open(io.BytesIO(v))) for k, v in figures.items()
     }
     _log_wandb_safe(wandb, payload, now_step, "slow-eval figures")
+
+
+def render_and_log_arithmetic(
+    selection: ArithmeticSelection, grid: ArithmeticGrid, top_k: int, now_step: int
+) -> None:
+    """Pure-host `BackgroundRenderer` target: render the per-`(threshold, site)` CI + `x@V`
+    activation heatmaps off the materialized `ArithmeticSelection` and log them on the live
+    `_step` axis at `now_step` (the n_alive / dropped SCALARS ride the synchronous
+    `eval_record` instead). No jax/device access — safe off the train loop."""
+    import wandb
+    from PIL import Image
+
+    figures = render_arithmetic_figures(selection, grid, top_k)
+    payload: dict[str, Any] = {
+        f"eval/arithmetic/{k}": wandb.Image(Image.open(io.BytesIO(v))) for k, v in figures.items()
+    }
+    _log_wandb_safe(wandb, payload, now_step, "arithmetic CI-grid figures")
 
 
 def _init_or_restore_state(
@@ -334,6 +350,8 @@ def _init_or_restore_state(
     mesh: Mesh,
     checkpoint_manager: ocp.CheckpointManager,
     is_main: bool,
+    no_checkpoint: bool,
+    compiler_options: dict[str, bool | int | str],
 ) -> tuple[TrainState, int] | None:
     """The shared init/restore/finetune/faith-warmup phase (SPEC S21/S22/S33).
 
@@ -375,7 +393,7 @@ def _init_or_restore_state(
         faith_warmup_opt_state = faith_warmup_optimizer.init(
             eqx.filter(state.components, eqx.is_array)
         )
-        faith_warmup_step = make_faith_warmup_step(faith_warmup_optimizer)
+        faith_warmup_step = make_faith_warmup_step(faith_warmup_optimizer, compiler_options)
         warmed_components = state.components
         t0 = time.time()
         faith_warmup_loss = None
@@ -403,7 +421,7 @@ def _init_or_restore_state(
                 f"final faith {float(faith_warmup_loss):.3e}",
                 flush=True,
             )
-    if os.environ.get("PD_NO_CHECKPOINT", "") != "1":  # profiling runs skip all saves
+    if not no_checkpoint:  # profiling runs skip all saves
         save_state(checkpoint_manager, 0, state)
     return state, 0
 
@@ -427,6 +445,9 @@ def run_decomposition_training(
     data: DataConfig | None,
     remat_recon_forwards: bool,
     remat_ci_fn: bool,
+    ascend_replicate: bool,
+    compiler_options: dict[str, bool | int | str],
+    profile: ProfileConfig,
     sample_batch: Callable[[int], Any],
     eval_fn: "Callable[[TrainState, int], LogRecord] | None",
     eval_every: int,
@@ -481,7 +502,7 @@ def run_decomposition_training(
     )
     init = _init_or_restore_state(
         pd, ci_fn, data, run, lm, opt_vu, opt_ci, init_key, src_key, mesh,
-        checkpoint_manager, is_main,
+        checkpoint_manager, is_main, profile.no_checkpoint, compiler_options,
     )  # fmt: skip
     if init is None:
         return  # SIGTERM mid-warmup: clean exit for requeue
@@ -498,6 +519,8 @@ def run_decomposition_training(
         total_steps=pd.steps,
         remat_recon_forwards=remat_recon_forwards,
         remat_ci_fn=remat_ci_fn,
+        ascend_replicate=ascend_replicate,
+        compiler_options=compiler_options,
         mesh=mesh,
         nontarget_loss_surface=nontarget_loss_surface,
         recon_positions=recon_positions,
@@ -526,17 +549,15 @@ def run_decomposition_training(
     # steady-state steps + per-step block_until_ready wall-clock. PD_PROFILE_TRACE=1 enables;
     # PD_PROFILE_START / PD_PROFILE_STEPS pick the window (default start at first post-warmup
     # step, 3 steps). Trace lands in run_dir/profile (rank-0 dir is the one to pull).
-    import os as _os
-
-    _profile_on = _os.environ.get("PD_PROFILE_TRACE", "") == "1"
-    _profile_start = int(_os.environ.get("PD_PROFILE_START", str(start_step + 2)))
-    _profile_steps = int(_os.environ.get("PD_PROFILE_STEPS", "3"))
+    _profile_on = profile.trace
+    _profile_start = profile.trace_start if profile.trace_start is not None else start_step + 2
+    _profile_steps = profile.trace_steps if profile.trace_steps is not None else 3
     _profile_dir = str(run.run_dir / "profile")
     _profiling = False
     _prof_t0 = 0.0
-    _time_steps = _os.environ.get("PD_TIME_STEPS", "") == "1"
+    _time_steps = profile.time_steps
 
-    if _os.environ.get("PD_LEAF_BENCH", "") == "1":
+    if profile.leaf_bench:
         import collections as _collections
 
         _ident = jax.jit(lambda s: s)
@@ -567,7 +588,7 @@ def run_decomposition_training(
                 flush=True,
             )
 
-    if _os.environ.get("PD_ASYNC_TEST", "") == "1":
+    if profile.async_test:
         _atk = random.fold_in(run_key, start_step)
         _ab = sample_batch(start_step)
         _aa0 = time.perf_counter()
@@ -588,7 +609,7 @@ def run_decomposition_training(
                 flush=True,
             )
 
-    if _os.environ.get("PD_MEM_PROFILE", "") == "1":
+    if profile.mem_profile:
         _gib = 1024**3
         _mb = sample_batch(start_step)
         _mk = random.fold_in(run_key, start_step)
@@ -625,15 +646,21 @@ def run_decomposition_training(
         jax.profiler.save_device_memory_profile(_prof_path)
         if is_main:
             print(f"PD_MEM: resident device-memory profile -> {_prof_path}", flush=True)
-        _os._exit(0)  # profiling-only path; donation has consumed `state`, so don't enter the loop
+        os._exit(0)  # profiling-only path; donation has consumed `state`, so don't enter the loop
 
     for step in range(start_step, pd.steps):
         if _profile_on and step == _profile_start:
             jax.block_until_ready(state)
-            _max_ev = _os.environ.get("PD_PROFILE_MAX_EVENTS", "")
-            if _max_ev:
+            if profile.profile_max_events is not None:
                 _popts = jax.profiler.ProfileOptions()
-                _popts.advanced_configuration = {"gpu_max_activity_api_events": int(_max_ev)}
+                # Host/python events are ~70% of the trace's event budget; the perfetto JSON
+                # exporter caps at 1M events, truncating the step mid-forward. Cut host tracing
+                # so the budget goes to GPU kernels (a full step's ~730k fit under the cap).
+                _popts.host_tracer_level = 1
+                _popts.python_tracer_level = 0
+                _popts.advanced_configuration = {
+                    "gpu_max_activity_api_events": profile.profile_max_events
+                }
                 jax.profiler.start_trace(
                     _profile_dir, create_perfetto_trace=True, profiler_options=_popts
                 )
@@ -725,7 +752,7 @@ def run_decomposition_training(
             sink.log(now_step, eval_record)
             window_t0 = time.time()
 
-        _skip_save = os.environ.get("PD_NO_CHECKPOINT", "") == "1"  # profiling runs skip all saves
+        _skip_save = profile.no_checkpoint  # profiling runs skip all saves
         if not _skip_save and (now_step % save_every == 0 or now_step == pd.steps or sigterm):
             save_state(checkpoint_manager, now_step, state)
             if is_main:

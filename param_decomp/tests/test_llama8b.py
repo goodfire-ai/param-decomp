@@ -186,6 +186,33 @@ def test_llama_site_specs_dims():
         llama_site_specs(cfg, tuple(reversed(mlp_family_site_cs(2, 2, 4))))
 
 
+def test_masked_component_activations_pre_mask_and_matches_outputs():
+    cfg = _tiny_cfg()
+    C = 8
+    sites = _mlp_sites(cfg, 4, 5, C)
+    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    b, t = 2, 16
+    tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
+    names = lm.site_names
+    prepared = lm.prepare_compute_weights(vu)
+    zeros_delta = {s: jnp.zeros((b, t)) for s in names}
+    ones = {s: jnp.ones((b, t, C)) for s in names}
+
+    acts = lm.masked_component_activations(prepared, tokens, ones, zeros_delta, None, names, False)
+    # `acts[s]` is `x@V` BEFORE the per-component `*mask` (shape (b, t, C)). With all-ones
+    # masks and no delta the site OUTPUT is exactly `(x@V) @ U`, so projecting the collected
+    # activation through U reproduces `masked_site_outputs` — pinning that we collected the
+    # pre-mask coefficient, not the post-mask/post-U output.
+    outputs = lm.masked_site_outputs(prepared, tokens, ones, zeros_delta, None, names, False)
+    for s in names:
+        assert acts[s].shape == (b, t, C)
+        assert jnp.all(jnp.isfinite(acts[s]))
+        _, u = vu.vu[s]
+        expected = acts[s].astype(jnp.float32) @ u.astype(jnp.float32)
+        assert jnp.allclose(outputs[s].astype(jnp.float32), expected, atol=1e-2), s
+
+
 @pytest.mark.parametrize("first,last", [(4, 4), (3, 6)])
 def test_clean_path_and_masked_identity(first: int, last: int):
     cfg = _tiny_cfg()
@@ -267,22 +294,26 @@ def test_attention_sites_clean_and_masked_identity():
     )
     assert jnp.allclose(clean, full, atol=1e-4), "mask=1 identity drifted (attention sites)"
 
-    # zero-mask + zero-delta on q alone must CHANGE the logits (the site is live on
-    # the attention path, ahead of RoPE/SDPA)
+    # zero-mask + zero-delta on layer 4's decomposed sites must CHANGE the logits (q is live on
+    # the attention path ahead of RoPE/SDPA). The segmented masked forward masks WHOLE layers, so
+    # we ablate layer 4's full decomposed set rather than q alone.
     q_site = "layers.4.self_attn.q_proj"
-    zero_mask = {q_site: jnp.zeros((b, t, 8))}
-    zero_delta = {q_site: jnp.zeros((b, t))}
+    site_c = {s.name: s.C for s in lm.sites}
+    layer4 = tuple(n for n in names if parse_site_name(n)[0] == 4)
+    assert q_site in layer4
+    zero_mask = {n: jnp.zeros((b, t, site_c[n])) for n in layer4}
+    zero_delta = {n: jnp.zeros((b, t)) for n in layer4}
     ablated = lm.masked_output(
         lm.prepare_compute_weights(vu),
         tokens,
         zero_mask,
         zero_delta,
         None,
-        (q_site,),
+        layer4,
         True,
         remat=False,
     )
-    assert not jnp.allclose(clean, ablated, atol=1e-4), "ablating q did nothing"
+    assert not jnp.allclose(clean, ablated, atol=1e-4), "ablating layer 4 did nothing"
 
     site_in = lm.read_activations(tokens, lm.site_names)
     assert set(site_in) == set(names)
@@ -363,7 +394,6 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
                 state_key=ppgd_cfg.type,
                 coeff=ppgd_cfg.coeff,
                 adam=ppgd_cfg.optimizer,
-                start_frac=ppgd_cfg.start_frac,
                 n_warmup=ppgd_cfg.n_warmup_steps,
             )
         },

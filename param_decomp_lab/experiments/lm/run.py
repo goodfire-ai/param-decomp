@@ -18,6 +18,8 @@ process computes the same global schedule and contributes its local batch slice.
 
 import os
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -36,6 +38,14 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import PRNGKeyArray
 
+from param_decomp.arithmetic_eval import (
+    ArithmeticGrid,
+    ArithmeticGridStep,
+    ComponentActivationModel,
+    compute_arithmetic_selection,
+    make_arithmetic_grid_step,
+    n_alive_scalars,
+)
 from param_decomp.attn_patterns_eval import (
     accumulate_attn_patterns,
     attn_pattern_for,
@@ -43,7 +53,13 @@ from param_decomp.attn_patterns_eval import (
     make_ci_attn_patterns_step,
     make_stochastic_attn_patterns_step,
 )
-from param_decomp.built_run import BuiltRun, DataConfig
+from param_decomp.built_run import (
+    LAUNCH_CONFIG_FILENAME,
+    BuiltRun,
+    DataConfig,
+    EvalConfig,
+    TargetSites,
+)
 from param_decomp.configs import ResumeProvenance
 from param_decomp.data import BatchSchedule, ShardServer, scan_shards
 from param_decomp.eval import make_eval_step
@@ -51,8 +67,10 @@ from param_decomp.hf_http import configure_hf_http_retries
 from param_decomp.lm import DecomposedModel
 from param_decomp.log import setup_logger
 from param_decomp.run import (
-    SlowEvalRenderer,
+    BackgroundRenderer,
     install_sigterm_flag,
+    render_and_log_arithmetic,
+    render_and_log_slow_eval,
     run_decomposition_training,
     slow_eval_due,
 )
@@ -71,7 +89,9 @@ from param_decomp.slow_eval import (
     stochastic_hidden_acts_n_mask_samples,
 )
 from param_decomp.train import TrainState
+from param_decomp_lab.experiments.lm.arithmetic_probe import build_arithmetic_probe
 from param_decomp_lab.experiments.lm.config import (
+    TargetConfig,
     load_config,
     load_run_dir_config,
 )
@@ -120,12 +140,121 @@ def _global_token_batch(local: np.ndarray, mesh: Mesh, global_batch: int) -> jax
     return jax.make_array_from_process_local_data(sharding, local, (global_batch, local.shape[1]))
 
 
+def _arithmetic_probe_global(tokens: np.ndarray, mesh: Mesh, n_proc: int) -> jax.Array:
+    """Shard the fixed probe over the mesh like a normal batch: pad the row count up to a
+    multiple of the device count (pad rows append AFTER the real grid and are trimmed off
+    after the gather) and hand each process its contiguous slice."""
+    n, t = tokens.shape
+    n_dev = mesh.devices.size
+    pad = (-n) % n_dev
+    if pad:
+        tokens = np.concatenate([tokens, np.zeros((pad, t), tokens.dtype)], axis=0)
+    n_pad = tokens.shape[0]
+    per_process = n_pad // n_proc
+    assert per_process % jax.local_device_count() == 0, (per_process, jax.local_device_count())
+    proc = jax.process_index()
+    local = tokens[proc * per_process : (proc + 1) * per_process]
+    return _global_token_batch(local, mesh, n_pad)
+
+
+@dataclass(frozen=True)
+class _ArithmeticEval:
+    """The arithmetic-grid eval, built once. `run` does the (collective) selection + column
+    gather, the n_alive scalars + the pad-masked fast-eval scalars on the probe, and the
+    off-thread figure submit — one self-contained block so `_make_lm_eval_fn` just calls it."""
+
+    step: ArithmeticGridStep
+    probe_eval_step: Callable[..., dict[str, jax.Array]]
+    """A dedicated `make_eval_step` instance with `n_valid_rows=n_prompts`, so the sharding
+    pad rows carry zero weight in the probe's CE/KL/L0/PGD scalars."""
+    model: ComponentActivationModel
+    tokens: jax.Array
+    grid: ArithmeticGrid
+    n_prompts: int
+    thresholds: tuple[float, ...]
+    top_k: int
+    renderer: BackgroundRenderer
+
+    def run(self, state: TrainState, scalar_key: PRNGKeyArray, now_step: int) -> "LogRecord":
+        selection = compute_arithmetic_selection(
+            self.step,
+            self.model,
+            state.components,
+            state.ci_fn,
+            self.tokens,
+            self.n_prompts,
+            self.thresholds,
+            self.top_k,
+        )
+        record: dict[str, LogValue] = {
+            f"eval/arithmetic/{k}": v
+            for k, v in n_alive_scalars(selection.active, self.top_k).items()
+        }
+        scalars = self.probe_eval_step(
+            self.model, state.components, state.ci_fn, self.tokens, scalar_key
+        )
+        record |= {f"eval/arithmetic/{k}": float(v) for k, v in scalars.items()}
+        self.renderer.submit(
+            partial(render_and_log_arithmetic, selection, self.grid, self.top_k, now_step)
+        )
+        return record
+
+
+def _make_arithmetic_eval(
+    eval_cfg: EvalConfig,
+    target: TargetSites,
+    lm: DecomposedModel,
+    mesh: Mesh,
+    n_proc: int,
+    is_main: bool,
+    compiler_options: dict[str, bool | int | str] | None,
+) -> _ArithmeticEval | None:
+    """Build the probe in-memory from the metric spec + the target's tokenizer. The build is
+    deterministic, so every rank constructs the identical grid — no rank-0 write, no barrier."""
+    arith = eval_cfg.arithmetic
+    if arith is None:
+        return None
+    assert isinstance(lm, ComponentActivationModel), (
+        f"arithmetic eval needs a model exposing masked_component_activations; "
+        f"{type(lm).__name__} does not"
+    )
+    assert isinstance(target, TargetConfig), (
+        f"arithmetic eval reads the probe tokenizer off the HF target; {type(target).__name__} "
+        f"carries no model_name"
+    )
+    from transformers import AutoTokenizer  # heavy import; only the arith probe needs it in-job
+
+    tokenizer = AutoTokenizer.from_pretrained(target.model_name, local_files_only=True)
+    probe = build_arithmetic_probe(arith.operation, arith.a_range, arith.b_range, tokenizer)
+    n_prompts = probe.tokens.shape[0]
+    return _ArithmeticEval(
+        step=make_arithmetic_grid_step(lm, probe.answer_position, n_prompts),
+        probe_eval_step=make_eval_step(
+            lm,
+            eval_cfg.rounding_threshold,
+            eval_cfg.l0_ci_alive_threshold,
+            eval_cfg.l0_groups,
+            eval_cfg.pgd,
+            mesh,
+            n_valid_rows=n_prompts,
+            compiler_options=compiler_options,
+        ),
+        model=lm,
+        tokens=_arithmetic_probe_global(probe.tokens, mesh, n_proc),
+        grid=probe.grid,
+        n_prompts=n_prompts,
+        thresholds=arith.thresholds,
+        top_k=arith.top_k,
+        renderer=BackgroundRenderer(is_main),
+    )
+
+
 def assert_finetune_structural_compat(built: BuiltRun, prov: ResumeProvenance) -> None:
     """Fine-tune requires the parent's decomposition STRUCTURE to match the new config's:
     same sites (names + C) and same ci-fn arch. A changed C / layers / target / ci-fn is a
     different-shaped decomposition and is NOT a fine-tune (the parent's V/U + ci_fn would
     not load onto the new reference). Only LR / coeffs / eps / seq / batch / steps may
-    change. Read from the parent's pinned `config.yaml` so the failure is a readable config
+    change. Read from the parent's pinned launch config so the failure is a readable config
     diff, not an opaque orbax tree mismatch."""
     parent = load_run_dir_config(prov.parent_run_dir)
     parent_sites = tuple((s.name, s.C) for s in parent.target.sites)
@@ -194,6 +323,9 @@ def train(
         data=data,
         remat_recon_forwards=built.runtime.remat_recon_forwards,
         remat_ci_fn=built.runtime.remat_ci_fn,
+        ascend_replicate=built.runtime.ascend_replicate,
+        compiler_options=built.runtime.compiler_options,
+        profile=built.runtime.launch_env.profile,
         sample_batch=sample_batch,
         eval_fn=eval_fn,
         eval_every=eval_every,
@@ -224,6 +356,7 @@ def _make_lm_eval_fn(
         eval_server.per_process,
         jax.local_device_count(),
     )
+    co = built.runtime.compiler_options
     eval_step_fn = make_eval_step(
         lm,
         eval.rounding_threshold,
@@ -231,27 +364,35 @@ def _make_lm_eval_fn(
         eval.l0_groups,
         eval.pgd,
         mesh,
+        n_valid_rows=None,
+        compiler_options=co,
     )
     attn_steps: dict[str, Any] = {}
     if eval.attn_patterns is not None:
         pattern_fn = attn_pattern_for(lm)
         if eval.attn_patterns.ci_masked:
-            attn_steps["CIMaskedAttnPatternsReconLoss"] = make_ci_attn_patterns_step(lm, pattern_fn)
+            attn_steps["CIMaskedAttnPatternsReconLoss"] = make_ci_attn_patterns_step(
+                lm, pattern_fn, co
+            )
         if eval.attn_patterns.stochastic:
             attn_steps["StochasticAttnPatternsReconLoss"] = make_stochastic_attn_patterns_step(
-                lm, pattern_fn, eval.attn_patterns.stochastic_n_mask_samples
+                lm, pattern_fn, eval.attn_patterns.stochastic_n_mask_samples, co
             )
 
-    slow_eval_step = make_slow_eval_step(lm, eval.density_ci_alive_threshold)
-    slow_renderer = SlowEvalRenderer(is_main)
+    slow_eval_step = make_slow_eval_step(
+        lm, eval.density_ci_alive_threshold, eval.density_heatmap_n_bins, co
+    )
+    slow_renderer = BackgroundRenderer(is_main)
     # The CI-heatmap / permutation / UV / identity-error metrics read off the run's typed
-    # `eval.metrics` (re-validated from the pinned config.yaml: the trainer's `EvalConfig`
-    # drops the raw metric list). config.yaml is pinned before train().
+    # `eval.metrics` (re-validated from the pinned launch config: the trainer's `EvalConfig`
+    # drops the raw metric list). The launch config is pinned before train().
     run_eval_metrics = eval_metrics_from_run_dir(built.run.run_dir)
     perm_spec = resolve_permutation_metrics(lm.site_names, run_eval_metrics)
     hidden_acts_n_mask_samples = stochastic_hidden_acts_n_mask_samples(run_eval_metrics)
     want_position_ci = perm_spec.any_plots or perm_spec.any_identity_error
-    position_ci_step = make_position_ci_step(lm) if want_position_ci else None
+    position_ci_step = make_position_ci_step(lm, co) if want_position_ci else None
+
+    arithmetic_eval = _make_arithmetic_eval(eval, built.target, lm, mesh, n_proc, is_main, co)
 
     def eval_fn(state: TrainState, now_step: int) -> "LogRecord":
         eval_pass_index = now_step // eval.every
@@ -302,7 +443,7 @@ def _make_lm_eval_fn(
             )
             hidden_acts_key = random.fold_in(run_key, 3 * pd.steps + eval_pass_index)
             hidden_acts = compute_hidden_acts_metrics(
-                lm, state, eval_batches, hidden_acts_n_mask_samples, hidden_acts_key
+                lm, state, eval_batches, hidden_acts_n_mask_samples, hidden_acts_key, co
             )
             eval_record |= {f"eval/slow/loss/{k}": v for k, v in hidden_acts.items()}
             # The position-CI all-gather is ALSO collective (every rank joins it), gated on
@@ -328,7 +469,22 @@ def _make_lm_eval_fn(
                     name: (np.asarray(V), np.asarray(U))
                     for name, (V, U) in state.components.vu.items()
                 }
-            slow_renderer.submit(site_reductions, perm_spec, position_ci, components, now_step)
+            slow_renderer.submit(
+                partial(
+                    render_and_log_slow_eval,
+                    site_reductions,
+                    perm_spec,
+                    position_ci,
+                    components,
+                    now_step,
+                )
+            )
+        if arithmetic_eval is not None and slow_due:
+            # ARITHMETIC GRID TIER (its own fixed probe, not the eval batches). The CI/activation
+            # gather is COLLECTIVE — all ranks join it; n_alive + recon/L0 SCALARS ride the
+            # synchronous `eval_record`, the heatmaps render off-loop on rank 0.
+            arith_key = random.fold_in(run_key, 4 * pd.steps + eval_pass_index)
+            eval_record |= arithmetic_eval.run(state, arith_key, now_step)
         if is_main and built.run.wandb is not None:
             # torch CI_L0.compute() emitted a per-layer L0 bar chart alongside the scalars;
             # rebuild it host-side from the `eval/l0/<thr>_<site|group>` scalars already in
@@ -352,7 +508,7 @@ def _make_lm_eval_fn(
         if is_main:
             headline = {
                 k: eval_record[f"eval/{k}"]
-                for k in ("ce_kl/kl_ci_masked", "ce_kl/ce_unrecovered_ci_masked")
+                for k in ("ce_kl/kl_ci_masked", "ce_kl/ce_difference_ci_masked")
             }
             print(f"[eval @ {now_step}] {headline}", flush=True)
         return eval_record
@@ -381,7 +537,7 @@ def main(config: Path, run_id: str) -> None:
     # Harden the cold-cache HF weight load against the 8N-rank startup burst before any
     # per-rank Hub call (no-op when huggingface_hub is absent / cache is pre-warmed).
     configure_hf_http_retries()
-    mesh = hsdp_mesh()
+    mesh = hsdp_mesh(built.runtime.tp)
 
     if built.run.resume_provenance is not None:
         assert_finetune_structural_compat(built, built.run.resume_provenance)
@@ -393,7 +549,7 @@ def main(config: Path, run_id: str) -> None:
         cache_dir.mkdir(parents=True, exist_ok=True)
         built.run.run_dir.mkdir(parents=True, exist_ok=True)
         setup_logger(built.run.run_dir / "logs.log")
-        _pin_config_copy(built.run.run_dir, "config.yaml", config)
+        _pin_config_copy(built.run.run_dir, LAUNCH_CONFIG_FILENAME, config)
         print(f"persistent XLA compilation cache: {cache_dir}", flush=True)
         site_kind_counts: dict[str, int] = {}
         for s in built.target.sites:

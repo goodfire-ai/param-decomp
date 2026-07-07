@@ -96,7 +96,8 @@ def build_optimizers(pd: PDConfig):
     """Returns (opt_vu, opt_ci, schedules): the schedule fns are returned too so the
     log path reports the exact LR the optimizer applies (single source of truth).
 
-    The canonical-shape asserts (cosine-to-0.1, plain AdamW, components-only clip) live in
+    The canonical-shape asserts (cosine-to-0.1, plain AdamW, required components clip, optional
+    CI-fn clip) live in
     the lab conversion (`experiments.config.assert_canonical_algorithm_config`); here we
     read the values straight off `PDConfig` so there is no second source of truth."""
     sched_vu = torch_cosine_schedule(
@@ -161,7 +162,6 @@ def init_train_state(
                 state_key=state_key,
                 coeff=term_coeff_by_state_key[state_key],
                 adam=cfg.optimizer,
-                start_frac=cfg.start_frac,
                 n_warmup=cfg.n_warmup_steps,
             )
     return TrainState(

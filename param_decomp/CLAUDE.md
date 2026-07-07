@@ -11,8 +11,7 @@ deliberately refused. The hidden-acts seam is now BUILT (SPEC S31 amended 2026-0
 a fifth model fn `masked_site_outputs` — NOT recon-grid training terms (the recon loss
 stays KL-on-final-logits). `sc` and `bsc` are supported (`bsc` is batch-sharded:
 an independent source per batch element and position, no cross-replica sync — SPEC
-S16/D1). Persistent `start_frac>0` is now implemented (SPEC S32, `term_active`
-`where`-gating); SPEC S24's two torch-parity quirks (PPGD warmup route-all, fresh-PGD
+S16/D1). SPEC S24's two torch-parity quirks (PPGD warmup route-all, fresh-PGD
 single routing draw) are pinned pending a team decision. CI-fn numerics are unified
 with the torch oracle (#624/#625/#730 resolved): GELU is exact-erf
 (`approximate=False`) and RMSNorm eps is `finfo(fp32).eps` (`CI_FN_RMS_EPS`).
@@ -74,7 +73,7 @@ bridge `jsp-export` / `pd-offline-eval` was retired). They run IN-LOOP ONLY on
 `eval.slow_every` next to the fast pass (SPEC S28/S29; there is NO offline/retrospective
 CLI — `slow_eval.py` is a pure library): the collective
 forward + device→host pull in lockstep on all ranks, the matplotlib render + `wandb.log`
-on a rank-0 background thread (`run.py::SlowEvalRenderer`), reusing the fast pass's eval
+on a rank-0 background thread (`run.py::BackgroundRenderer`), reusing the fast pass's eval
 batches and logging on the live `_step` axis. The config-gated position-CI metrics
 (`PermutedCIPlots` / CI heatmaps + `IdentityCIError`) ALSO run in-loop off the cheap
 `(T, C)` position-CI matrix (`accumulate_position_ci`, collective; the heatmap figures on
@@ -86,6 +85,31 @@ NAIVE host gather of the C-sharded V/U (gated on `want_uv_plots`) and passes `co
 special handling; for the positionless toys (TMS/ResidMLP) `toy_uv_eval.log_uv_figure`
 renders it off the small on-host V/U + the probe CI as permutation source (cheap, no
 gather), sharing `slow_eval.render_uv_figure` / `plot_uv_matrices` with the LM path.
+
+`arithmetic_eval.py` is a config-gated LM-only figure tier (`ArithmeticCIGrid`, on
+`eval.slow_every`) for inspecting how the decomposition reconstructs a `target model`'s
+modular-arithmetic mechanism (Feucht et al.'s L18 addition neurons). The probe is a FIXED
+`a x b` operand grid of `"<a><op><b>="` prompts (one prompt per row, all one token length,
+the `=` answer at a constant position) — NOT the streaming corpus, so it brings its own
+batch. The probe is a SPEC (`operation` + `a_range`/`b_range` on the metric config), not a
+filesystem artifact: `experiments/lm/run.py::_make_arithmetic_eval` builds it in-memory at
+startup from the target's tokenizer (`experiments/lm/arithmetic_probe.py`, deterministic —
+every rank builds the identical grid, no rank-0 write or barrier), so configs stay
+cluster-portable. The ONE fused `make_arithmetic_grid_step` slices, at the answer position with
+the BATCH axis KEPT as the grid, each component's lower-leaky CI (from the CI fn) and its
+pre-mask activation `x@V` (from the decomposed forward under all-ones masks — the
+`masked_component_activations` seam, llama8b-only, narrowed via the `ComponentActivationModel`
+Protocol). The device→host pull is TWO-PHASE (`compute_arithmetic_selection`), sized to what
+the figures need — never the full `(n_prompts, C)` grids (~GBs/site at production C): the
+step's replicated per-component max CI (over REAL rows only — the sharding-pad tail is
+masked) drives the host-side selection, identically on every rank, then only the ≤`top_k`
+selected columns are gathered. The active set per threshold (max CI > threshold) is selected
+ONCE (`select_active`, one stable descending ordering per site, so a higher threshold's set
+is a PREFIX of a lower's) and drives both the `n_alive` scalars and the CI + activation
+heatmaps; figures render off-loop on rank 0 (`run.py::BackgroundRenderer`). The probe's
+CE/KL/L0/PGD scalars come from a dedicated `make_eval_step` instance with
+`n_valid_rows=n_prompts`, so pad rows carry zero weight. Wired LM-side by
+`experiments/lm/run.py::_make_arithmetic_eval` (a `_ArithmeticEval` bundle).
 
 **The toys (TMS, ResidMLP) live in the lab, not the core.** The core trainer carries ZERO
 toy-specific code — the toy *targets* (`DecomposedModel`s, pretrain, identity-CI eval) are
@@ -241,7 +265,7 @@ onto the fresh reference and keeps ONLY the components + ci_fn; the optimizer st
 persistent sources, and `step` are FRESH (`step = 0`, no faith warmup) so the new LR /
 p-anneal schedule recomputes over the new `cfg.steps` from 0. A subsequent SLURM requeue
 (own `ckpts/` now non-empty) resumes from the run's own dir and ignores provenance.
-`run.py::assert_finetune_structural_compat` reads the parent's pinned `config.yaml` and
+`run.py::assert_finetune_structural_compat` reads the parent's pinned `launch_config.yaml` and
 asserts matching sites (names + C) + ci-fn arch before the restore. Provenance flows into
 `config.yaml` + `wandb.config`. Launch as usual via `pd-lm <config.yaml>`.
 

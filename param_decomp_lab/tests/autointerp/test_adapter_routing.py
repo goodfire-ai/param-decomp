@@ -1,10 +1,11 @@
 """`is_jax_run` validates a loadable PD run dir: orbax `ckpts/` plus a single
-self-contained `config.yaml`. A dir missing either is not a loadable run."""
+self-contained `launch_config.yaml`. A dir missing either is not a loadable run."""
 
 from pathlib import Path
 
 import pytest
 
+from param_decomp.built_run import LAUNCH_CONFIG_FILENAME
 from param_decomp_lab.adapters import pd
 from param_decomp_lab.adapters.pd import is_jax_run
 
@@ -19,7 +20,7 @@ def _make_run(runs_root: Path, run_id: str, *, config_yaml: str | None, ckpts: b
     run_dir = runs_root / run_id
     run_dir.mkdir(parents=True)
     if config_yaml is not None:
-        (run_dir / "config.yaml").write_text(config_yaml)
+        (run_dir / LAUNCH_CONFIG_FILENAME).write_text(config_yaml)
     if ckpts:
         (run_dir / "ckpts").mkdir()
 

@@ -75,7 +75,6 @@ def _adversary(src: dict[str, jax.Array], cfg: PersistentPGDReconLossConfig) -> 
         state_key=cfg.type,
         coeff=cfg.coeff,
         adam=cfg.optimizer,
-        start_frac=cfg.start_frac,
         n_warmup=cfg.n_warmup_steps,
     )
 

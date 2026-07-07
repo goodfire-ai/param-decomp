@@ -384,9 +384,8 @@ class PersistentPGDReconLossConfig(LossMetricConfig):
     """Persistent-PGD recon loss: adversarial mask sources persist across train steps,
     routed to all layers every forward.
 
-    `update()` returns `None` before `start_frac` of training. Sources are clamped to
-    `[0, 1]` after each step — the only implemented parameterization. (A sigmoid
-    parameterization was removed.)
+    Sources are clamped to `[0, 1]` after each step — the only implemented
+    parameterization. (A sigmoid parameterization was removed.)
     """
 
     @model_validator(mode="before")
@@ -418,7 +417,6 @@ class PersistentPGDReconLossConfig(LossMetricConfig):
             " computation."
         ),
     )
-    start_frac: Probability = 0.0
     n_samples: PositiveInt = 1
 
 
@@ -439,10 +437,14 @@ class CIHiddenActsReconLossConfig(BaseConfig):
 
 
 class CIHistogramsConfig(BaseConfig):
-    """`n_batches_accum=None` accumulates every batch in the eval pass."""
+    """`n_batches_accum=None` accumulates every batch in the eval pass. `density_heatmap_n_bins`
+    opts into the per-token per-component CI density heatmap (an on-device bincount into that
+    many log-spaced `[1e-9, 1]` bands sharing the same forward, accumulated over EVERY batch);
+    `None` disables it."""
 
     type: Literal["CIHistograms"] = "CIHistograms"
     n_batches_accum: PositiveInt | None
+    density_heatmap_n_bins: PositiveInt | None = None
 
 
 class CI_L0Config(BaseConfig):
@@ -539,8 +541,28 @@ class UVPlotsConfig(_PermutationPlotsBaseConfig):
     type: Literal["UVPlots"] = "UVPlots"
 
 
+class ArithmeticCIGridConfig(BaseConfig):
+    """Per-component causal-importance heatmaps over an `a x b` arithmetic operand grid.
+
+    The probe is a SPEC, not a filesystem artifact: the `[a_range] x [b_range]` grid of
+    `"<a><op><b>="` prompts is built in-memory at startup from the target's tokenizer
+    (`experiments/lm/arithmetic_probe.py`), so configs stay cluster-portable. For each
+    threshold in `thresholds`, every component alive on the probe (max CI over the grid
+    `>` threshold) is counted in n_alive, and the `top_k` most-active (by max CI) get
+    `a x b` CI + activation heatmaps. A figure tier — renders on `eval.slow_every`. Any
+    alive beyond `top_k` are reported via n_dropped (not silently cut)."""
+
+    type: Literal["ArithmeticCIGrid"] = "ArithmeticCIGrid"
+    operation: Literal["add", "sub", "mul"] = "add"
+    a_range: tuple[int, int] = (1, 100)
+    b_range: tuple[int, int] = (1, 100)
+    thresholds: list[float] = Field(default_factory=lambda: [0.1])
+    top_k: PositiveInt = 24
+
+
 AnyEvalMetricConfig = Annotated[
-    CEandKLLossesConfig
+    ArithmeticCIGridConfig
+    | CEandKLLossesConfig
     | CIHiddenActsReconLossConfig
     | CIHistogramsConfig
     | CI_L0Config
@@ -596,19 +618,16 @@ AnyLossMetricConfig = Annotated[
 
 
 class ProfileConfig(BaseConfig):
-    """Profiling/instrumentation toggles the trainer reads from `PD_*` env vars (`run.py`).
+    """Profiling/instrumentation toggles the trainer (`run.py`) reads DIRECTLY off the config.
 
-    A profiling run is then a CONFIG, not an env hack: the launcher renders these into the
-    rank env, so the pinned `config.yaml` records exactly which hooks ran. All hooks are
-    DEFAULT-OFF; the empty `ProfileConfig()` exports nothing of consequence (the trainer
-    treats missing/`"0"` `PD_*` vars as off).
+    A profiling run is a CONFIG, not an env hack: the trainer parses its `launch_config.yaml` and
+    reads these fields, so the pinned config records exactly which hooks ran. All hooks are
+    DEFAULT-OFF; the empty `ProfileConfig()` enables nothing.
 
-    Each field maps to one `PD_*` var read in `run.py` / `ci_fn.py` / `train.py`:
-    `mem_profile`→PD_MEM_PROFILE (static + runtime memory analysis, then exits),
-    `time_steps`→PD_TIME_STEPS (per-step wall breakdown), `trace`→PD_PROFILE_TRACE
-    (perfetto trace over `trace_start`..`trace_start+trace_steps`), `async_test`→PD_ASYNC_TEST,
-    `leaf_bench`→PD_LEAF_BENCH, `no_checkpoint`→PD_NO_CHECKPOINT (skip ALL saves — throwaway
-    profiling only), `replicate_weights`→PD_REPLICATE_WEIGHTS, `ci_broadcast`→PD_CI_BROADCAST.
+    `mem_profile` (static + runtime memory analysis, then exits), `time_steps` (per-step wall
+    breakdown), `trace` (perfetto trace over `trace_start`..`trace_start+trace_steps`),
+    `profile_max_events` (raise the perfetto GPU-activity event cap), `async_test`,
+    `leaf_bench`, `no_checkpoint` (skip ALL saves — throwaway profiling only).
     """
 
     mem_profile: bool = False
@@ -619,43 +638,24 @@ class ProfileConfig(BaseConfig):
     post-warmup step. Only meaningful when `trace` is set."""
     trace_steps: PositiveInt | None = None
     """Number of steps to trace; `None` lets `run.py` default it (3). Only with `trace`."""
+    profile_max_events: PositiveInt | None = None
+    """Raise the perfetto GPU-activity event cap (`gpu_max_activity_api_events`) so a full
+    step's kernels fit under the exporter's 1M-event limit. `None` leaves the default. Only
+    with `trace`."""
     async_test: bool = False
     leaf_bench: bool = False
     no_checkpoint: bool = False
-    replicate_weights: bool = False
-    ci_broadcast: bool = False
-
-    def as_env(self) -> dict[str, str]:
-        """The `PD_*` exports this profiling config requests (only the set toggles)."""
-        env: dict[str, str] = {}
-        if self.mem_profile:
-            env["PD_MEM_PROFILE"] = "1"
-        if self.time_steps:
-            env["PD_TIME_STEPS"] = "1"
-        if self.trace:
-            env["PD_PROFILE_TRACE"] = "1"
-        if self.trace_start is not None:
-            env["PD_PROFILE_START"] = str(self.trace_start)
-        if self.trace_steps is not None:
-            env["PD_PROFILE_STEPS"] = str(self.trace_steps)
-        if self.async_test:
-            env["PD_ASYNC_TEST"] = "1"
-        if self.leaf_bench:
-            env["PD_LEAF_BENCH"] = "1"
-        if self.no_checkpoint:
-            env["PD_NO_CHECKPOINT"] = "1"
-        if self.replicate_weights:
-            env["PD_REPLICATE_WEIGHTS"] = "1"
-        if self.ci_broadcast:
-            env["PD_CI_BROADCAST"] = "1"
-        return env
 
 
 class LaunchEnv(BaseConfig):
-    """The process-environment surface a SLURM-launched rank runs with — XLA flags, the XLA
-    client knobs, NCCL/glibc tuning, and the `PD_*` profiling toggles — lifted into the run
-    config so a run's `config.yaml` fully captures its environment (tracking + repro), and
-    A/B-ing a flag is a config edit, not a launcher edit.
+    """The process-environment surface a SLURM-launched rank runs with — the XLA *client*
+    knobs (mem fraction / allocator / host-memory limit), NCCL/glibc tuning, and a free-form
+    env escape hatch — lifted into the run config so a run's `launch_config.yaml` fully captures its
+    environment (tracking + repro), and A/B-ing a knob is a config edit, not a launcher edit.
+
+    XLA *compiler* flags are NOT here — they go through `RuntimeConfig.compiler_options`
+    (passed natively to each jit, no env round-trip; see that field). This class is only the
+    env that must exist before the process starts (read at backend/NCCL init).
 
     The launcher (`experiments/lm/launch.py`) renders this into the rank env it exports;
     `LD_LIBRARY_PATH` is NOT here (it is computed at submit time from the workspace venv's
@@ -663,17 +663,16 @@ class LaunchEnv(BaseConfig):
     launcher used to hardcode; they are the single source of truth.
     """
 
-    xla_flags: dict[str, str] = Field(
-        default_factory=lambda: {"gpu_enable_command_buffer": ""},
-        description=(
-            "Flags rendered into the single `XLA_FLAGS` env var as `--xla_<key>=<value>` "
-            "(in declared order). Empty-string value emits `--xla_<key>=` (e.g. "
-            "`gpu_enable_command_buffer: ''` disables CUDA-graph capture — measured ~0% cost, "
-            "avoids CUDA_ERROR_STREAM_CAPTURE_INVALIDATED). `xla_gpu_autotune_level: '0'` "
-            "skips the multi-hour full-model autotune. `run.py` APPENDS its HLO-dump flags "
-            "to whatever this produces."
-        ),
-    )
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_xla_flags(cls, data: object) -> object:
+        # Shared-storage shim: XLA compiler flags moved off `launch_env.xla_flags` (env) onto
+        # `RuntimeConfig.compiler_options` (native, in-process). Drop the stored env-form key
+        # so old run configs still load; the run picks up the current `compiler_options`.
+        if isinstance(data, dict):
+            data.pop("xla_flags", None)
+        return data
+
     xla_python_client_mem_fraction: PositiveFloat = 0.92
     """`XLA_PYTHON_CLIENT_MEM_FRACTION` — the BFC pool cap as a fraction of HBM. The XLA
     default 0.75 caps production steps too low (OOM, job 50644)."""
@@ -693,28 +692,27 @@ class LaunchEnv(BaseConfig):
     env: dict[str, str] = Field(
         default_factory=dict,
         description=(
-            "Arbitrary extra exports merged into the rank env LAST (after the typed knobs "
-            "and profiling toggles), so it can override any of them. The escape hatch for a "
-            "one-off var without a schema field."
+            "Arbitrary extra exports merged into the rank env LAST (after the typed knobs), "
+            "so it can override any of them. The escape hatch for a one-off var without a "
+            "schema field."
         ),
     )
     profile: ProfileConfig = Field(default_factory=ProfileConfig)
 
     def as_env(self) -> dict[str, str]:
-        """Render the full ordered `{VAR: value}` map the launcher exports (sans the
-        submit-time-computed `LD_LIBRARY_PATH`). Later keys override earlier ones, so the
+        """Render the ordered `{VAR: value}` map the launcher exports (sans the
+        submit-time-computed `LD_LIBRARY_PATH`). Only the env that must exist before
+        backend/NCCL init — XLA *compiler* flags are passed natively via
+        `RuntimeConfig.compiler_options`, not here. Later keys override earlier, so the
         free-form `env` block wins last."""
-        xla_flags_str = " ".join(f"--xla_{k}={v}" for k, v in self.xla_flags.items())
         rendered: dict[str, str] = {
             "NCCL_DEBUG": self.nccl_debug,
             "MALLOC_ARENA_MAX": str(self.malloc_arena_max),
             "XLA_PYTHON_CLIENT_MEM_FRACTION": str(self.xla_python_client_mem_fraction),
             "XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB": str(self.xla_pjrt_gpu_host_memory_limit_gb),
-            "XLA_FLAGS": xla_flags_str,
         }
         if self.xla_python_client_allocator is not None:
             rendered["XLA_PYTHON_CLIENT_ALLOCATOR"] = self.xla_python_client_allocator
-        rendered |= self.profile.as_env()
         rendered |= self.env
         return rendered
 
@@ -736,11 +734,6 @@ class RuntimeConfig(BaseConfig):
         if not isinstance(data, dict):
             return data
         data.pop("device", None)
-        # `tp` (the TP/Megatron-C degree) is dropped on this pure-HSDP branch: the mesh is
-        # fixed `(replicate, fsdp)` with `fsdp` = the intra-node GPUs, derived from the device
-        # count, so there is no tensor-parallel degree to configure. Strip it from stored
-        # configs (it only ever carried 1 or 2 in practice; the layout is now invariant).
-        data.pop("tp", None)
         if "autocast_bf16" in data:
             assert data.pop("autocast_bf16") is True, (
                 "autocast_bf16 was removed (the JAX trainer always computes in bf16)"
@@ -757,6 +750,18 @@ class RuntimeConfig(BaseConfig):
             "equals it. NEVER inferred from ambient SLURM env. None means a single device "
             "(the launcher runs the trainer inline, no jax.distributed). The batch is "
             "sharded data-parallel across the workers."
+        ),
+    )
+    tp: int = Field(
+        default=1,
+        ge=1,
+        le=8,
+        description=(
+            "Tensor-parallel (Megatron) degree, carved from the intra-node GPUs so "
+            "`fsdp * tp = GPUS_PER_NODE` — both stay on NVLink. Shards the component C axis "
+            "(V/U, CI-fn output heads) and the CI-fn MLP hidden, halving the per-layer weight "
+            "all-gather. `tp = 1` (default) is the pure-HSDP layout (degenerate tp axis, "
+            "behaviour-preserving). Must divide both the device count and GPUS_PER_NODE."
         ),
     )
     remat_recon_forwards: bool = Field(
@@ -776,15 +781,77 @@ class RuntimeConfig(BaseConfig):
             "batch on big targets. Compute substrate knob, no algorithm effect."
         ),
     )
+    scan_unroll: PositiveInt = Field(
+        default=1,
+        description=(
+            "`lax.scan(unroll=k)` over the layer block stack: emit k iterations as "
+            "straight-line code so XLA can prefetch gather(L+1) under matmul(L) (the "
+            "cross-iteration overlap a 1-layer while-body denies). Per-layer remat is "
+            "unchanged, so it is memory-neutral. 1 = plain per-layer scan. Compute substrate."
+        ),
+    )
+    gather_fp8: bool = Field(
+        default=False,
+        description=(
+            "Quantized all-gather: cast the ÷fsdp compute V/U to fp8 before the per-layer "
+            "÷fsdp→full gather (½ the bf16 bytes on the wire), dequantized to bf16 in the "
+            "block. Documented net-negative at b128 (fp8 on the wire was slower); kept as a "
+            "gated experiment. Compute substrate."
+        ),
+    )
+    ascend_replicate: bool = Field(
+        default=False,
+        description=(
+            "Replicate the ÷fsdp compute weights once before the adversary ascents so the "
+            "n_warmup ascend forwards skip the per-layer ÷fsdp→full gather (mask-independent "
+            "and detached, so the re-gather is pure redundancy). Numerics-identical. Trades "
+            "the full V/U resident during the ascend phase for the eliminated re-gathers."
+        ),
+    )
+    compiler_options: dict[str, bool | int | str] = Field(
+        default_factory=lambda: {
+            "xla_gpu_enable_latency_hiding_scheduler": True,
+            "xla_gpu_enable_triton_gemm": False,
+            "xla_gpu_enable_command_buffer": "",
+            "xla_gpu_enable_highest_priority_async_stream": True,
+            "xla_gpu_all_reduce_combine_threshold_bytes": 1073741824,
+            "xla_gpu_all_gather_combine_threshold_bytes": 1073741824,
+            "xla_gpu_reduce_scatter_combine_threshold_bytes": 134217728,
+            "xla_gpu_enable_pipelined_all_gather": True,
+            "xla_gpu_enable_pipelined_reduce_scatter": True,
+            "xla_gpu_enable_pipelined_all_reduce": True,
+            "xla_gpu_enable_while_loop_double_buffering": True,
+            "xla_gpu_enable_all_gather_combine_by_dim": False,
+            "xla_gpu_enable_reduce_scatter_combine_by_dim": False,
+        },
+        description=(
+            "XLA compiler flags passed NATIVELY to every jit's `compiler_options` — no "
+            "`XLA_FLAGS` env round-trip, and (unlike env) they ARE in the compile-cache key, "
+            "so changing one actually recompiles. Full `xla_*` flag names, typed values "
+            "(True/int/str, not 'true'). Default = the tuned MaxText set (latency-hiding "
+            "scheduler + 1 GiB combine thresholds + pipelined collectives + double-buffering; "
+            "`command_buffer:''` disables CUDA-graph capture, a correctness guard). Add "
+            "`xla_disable_hlo_passes: rematerialization` to opt into the disable-XLA-remat win "
+            "(validate save/resume first). On CPU (toys/tests) the GPU flags are ignored."
+        ),
+    )
     launch_env: LaunchEnv = Field(default_factory=LaunchEnv)
-    """The XLA-flag / env-var / profiling surface the SLURM launcher exports into the rank
-    env (single source of truth; defaults mirror the formerly-hardcoded launcher block).
-    Ignored on the inline `dp is None` path (which inherits the caller's environment)."""
+    """The pre-process env the SLURM launcher exports into each rank (XLA *client* / NCCL /
+    glibc knobs — the env that must exist before backend init; NOT compiler flags, which go
+    via `compiler_options`). Ignored on the inline `dp is None` path (inherits the caller's
+    environment)."""
 
     @model_validator(mode="after")
     def validate_dp(self) -> Self:
         if self.dp is not None:
             assert self.dp >= 2, "if set, dp must be at least 2 (pass None for single device)."
+        return self
+
+    @model_validator(mode="after")
+    def validate_gather_reshape(self) -> Self:
+        assert not (self.ascend_replicate and self.gather_fp8), (
+            "ascend_replicate and gather_fp8 both re-pin the compute-weight gather — pick one"
+        )
         return self
 
 
@@ -965,14 +1032,14 @@ class ResumeProvenance(BaseConfig):
     """Fine-tune lineage: a fresh run initialized from a PARENT decomposition. Lives on
     `ExperimentConfig`.
 
-    A fine-tune run gets its own `run_id` / `config.yaml` / `ckpts/`; this records the
+    A fine-tune run gets its own `run_id` / `launch_config.yaml` / `ckpts/`; this records the
     parent it forked from. The JAX trainer (SPEC S33) loads the parent checkpoint's
     V/U + ci_fn onto a fresh reference state and trains a clean schedule from step 0
     (fresh optimizer / sources) under the new config — only when the run's own `ckpts/`
     is empty (a subsequent SLURM requeue resumes from the run's own dir, ignoring
     provenance). The structure (sites / C / ci-fn arch) must match the parent; only
     LR / coeffs / eps / seq / batch / steps may change. Provenance flows into
-    `config.yaml` and `wandb.config` so the lineage is visible in the wandb UI. A run with
+    `launch_config.yaml` and `wandb.config` so the lineage is visible in the wandb UI. A run with
     `resume_provenance is None` is a fresh-from-init run.
     """
 
@@ -993,6 +1060,7 @@ METRIC_SHORT_NAMES: dict[str, str] = {
     "CIMaskedReconSubsetLoss": "CIMaskReconSub",
     "FaithfulnessLoss": "Faith",
     "ImportanceMinimalityLoss": "ImpMin",
+    "SmoothL0ImportanceMinimalityLoss": "SmoothL0ImpMin",
     "PersistentPGDReconLoss": "PersistPGDRecon",
     "PGDReconLayerwiseLoss": "PGDReconLayer",
     "PGDReconLoss": "PGDRecon",
@@ -1002,6 +1070,7 @@ METRIC_SHORT_NAMES: dict[str, str] = {
     "StochasticReconLoss": "StochRecon",
     "StochasticReconSubsetLoss": "StochReconSub",
     "UnmaskedReconLoss": "UnmaskedRecon",
+    "ArithmeticCIGrid": "ArithCIGrid",
     "CEandKLLosses": "CEandKL",
     "CIHiddenActsReconLoss": "CIHiddenActRecon",
     "CIHistograms": "CIHist",

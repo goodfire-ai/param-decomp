@@ -21,7 +21,7 @@ from param_decomp.ci_fn import (
 )
 from param_decomp.components import SiteSpec
 from param_decomp.eval import make_eval_step, next_token_cross_entropy
-from param_decomp.lm import DecomposedModel
+from param_decomp.lm import DecomposedModel, run_stochastic_masked_output
 from param_decomp.targets.llama8b import llama_site_specs, mlp_family_site_cs
 from param_decomp.tests.test_llama8b import (
     _tiny_cfg,
@@ -90,6 +90,25 @@ class _PositionlessStub(eqx.Module):
         del vu, resid, masks, delta_masks, routes, live, has_delta, remat
         raise AssertionError("positionless stub fn must not be called")
 
+    def stack_ci(self, ci_lower: dict[str, Any]) -> dict[str, Any]:
+        return ci_lower
+
+    def masked_output_stochastic(
+        self,
+        prepared: Any,
+        resid: Any,
+        ci_stacked: Any,
+        draw_key: Any,
+        routes: Any,
+        live: tuple[str, ...],
+        has_delta: bool,
+        *,
+        remat: bool,
+    ) -> Any:
+        return run_stochastic_masked_output(
+            self, prepared, resid, ci_stacked, draw_key, routes, live, has_delta, remat=remat
+        )
+
     def masked_site_outputs(
         self,
         vu: Any,
@@ -149,6 +168,7 @@ def test_eval_step_keys_identities_and_determinism():
         l0_group_patterns=None,
         pgd=None,
         mesh=None,
+        n_valid_rows=None,
     )
     out = eval_step(lm, vu, ci_fn, token_ids, jax.random.PRNGKey(5))
 
@@ -156,7 +176,6 @@ def test_eval_step_keys_identities_and_determinism():
     expected_keys = (
         {f"ce_kl/kl_{v}" for v in (*variants, "zero_masked")}
         | {f"ce_kl/ce_difference_{v}" for v in variants}
-        | {f"ce_kl/ce_unrecovered_{v}" for v in variants}
         | {f"l0/-1.0_{site}" for site in lm.site_names}
     )
     assert set(out) == expected_keys
@@ -188,6 +207,7 @@ def test_eval_step_keys_identities_and_determinism():
         l0_group_patterns=None,
         pgd=None,
         mesh=None,
+        n_valid_rows=None,
     )
     out_dead = eval_step_dead(lm, vu, ci_fn, token_ids, jax.random.PRNGKey(5))
     for site in lm.site_names:
@@ -216,6 +236,7 @@ def test_eval_step_fresh_pgd_probe():
         l0_group_patterns=None,
         pgd=EvalPGDConfig(n_steps=8, step_size=0.1),
         mesh=None,
+        n_valid_rows=None,
     )
     unascended = make_eval_step(
         lm,
@@ -224,6 +245,7 @@ def test_eval_step_fresh_pgd_probe():
         l0_group_patterns=None,
         pgd=EvalPGDConfig(n_steps=0, step_size=0.1),
         mesh=None,
+        n_valid_rows=None,
     )
     out = ascended(lm, vu, ci_fn, token_ids, jax.random.PRNGKey(5))
     out0 = unascended(lm, vu, ci_fn, token_ids, jax.random.PRNGKey(5))
@@ -269,11 +291,11 @@ def test_eval_step_fresh_pgd_probe_device_count_invariant():
 
     single_step = make_eval_step(
         lm, rounding_threshold=0.0, ci_alive_threshold=0.0,
-        l0_group_patterns=None, pgd=EvalPGDConfig(n_steps=8, step_size=0.1), mesh=None,
+        l0_group_patterns=None, pgd=EvalPGDConfig(n_steps=8, step_size=0.1), mesh=None, n_valid_rows=None,
     )  # fmt: skip
     sharded_step = make_eval_step(
         lm, rounding_threshold=0.0, ci_alive_threshold=0.0,
-        l0_group_patterns=None, pgd=EvalPGDConfig(n_steps=8, step_size=0.1), mesh=mesh,
+        l0_group_patterns=None, pgd=EvalPGDConfig(n_steps=8, step_size=0.1), mesh=mesh, n_valid_rows=None,
     )  # fmt: skip
 
     out_single = single_step(lm, vu, ci_fn, token_ids, jax.random.PRNGKey(5))
@@ -306,7 +328,7 @@ def test_eval_step_l0_groups_sum_member_sites():
     groups = {"layer_4": ("layers.4.*",), "total": ("*",)}
     eval_step = make_eval_step(
         lm, rounding_threshold=0.0, ci_alive_threshold=0.0,
-        l0_group_patterns=groups, pgd=None, mesh=None,
+        l0_group_patterns=groups, pgd=None, mesh=None, n_valid_rows=None,
     )  # fmt: skip
     out = eval_step(lm, vu, ci_fn, token_ids, jax.random.PRNGKey(5))
     layer4_sites = [s for s in lm.site_names if s.startswith("layers.4.")]
@@ -318,7 +340,7 @@ def test_eval_step_l0_groups_sum_member_sites():
     with pytest.raises(AssertionError, match="matches no sites"):
         make_eval_step(
             lm, rounding_threshold=0.0, ci_alive_threshold=0.0,
-            l0_group_patterns={"ghost": ("layers.99.*",)}, pgd=None, mesh=None,
+            l0_group_patterns={"ghost": ("layers.99.*",)}, pgd=None, mesh=None, n_valid_rows=None,
         )  # fmt: skip
 
 
@@ -330,5 +352,45 @@ def test_make_eval_step_rejects_positionless_target():
     with pytest.raises(AssertionError, match="LM-only"):
         make_eval_step(
             lm, rounding_threshold=0.0, ci_alive_threshold=0.0,
-            l0_group_patterns=None, pgd=None, mesh=None,
+            l0_group_patterns=None, pgd=None, mesh=None, n_valid_rows=None,
         )  # fmt: skip
+
+
+def test_eval_step_n_valid_rows_masks_pad_tail():
+    """A batch with garbage tail rows + `n_valid_rows` reproduces the unpadded scalars for
+    every key-independent metric (pad rows carry zero weight, including inside the PGD
+    objective). The stochastic variants draw shape-dependent randomness, so they only agree
+    in expectation and are excluded."""
+    cfg = _tiny_cfg()
+    sites = llama_site_specs(cfg, mlp_family_site_cs(4, 5, 8))
+    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+
+    from param_decomp.components import init_decomp_vu
+
+    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    ci_fn = _build_ci_fn(lm, cfg.n_embd, jax.random.PRNGKey(2))
+
+    b, pad, t = 3, 2, 16
+    tokens = jax.random.randint(jax.random.PRNGKey(3), (b, t), 0, cfg.vocab_size)
+    padded = jnp.concatenate([tokens, jnp.zeros((pad, t), tokens.dtype)], axis=0)
+
+    reference_step = make_eval_step(
+        lm, rounding_threshold=0.5, ci_alive_threshold=0.0, l0_group_patterns=None,
+        pgd=EvalPGDConfig(n_steps=4, step_size=0.1), mesh=None, n_valid_rows=None,
+    )  # fmt: skip
+    masked_step = make_eval_step(
+        lm, rounding_threshold=0.5, ci_alive_threshold=0.0, l0_group_patterns=None,
+        pgd=EvalPGDConfig(n_steps=4, step_size=0.1), mesh=None, n_valid_rows=b,
+    )  # fmt: skip
+    reference = reference_step(lm, vu, ci_fn, tokens, jax.random.PRNGKey(5))
+    masked = masked_step(lm, vu, ci_fn, padded, jax.random.PRNGKey(5))
+
+    assert set(masked) == set(reference)
+    deterministic = [k for k in reference if "stoch" not in k and "random" not in k]
+    assert any("PGDReconLoss" in k for k in deterministic)
+    for k in deterministic:
+        assert jnp.allclose(masked[k], reference[k], rtol=1e-3, atol=1e-5), (
+            k,
+            float(masked[k]),
+            float(reference[k]),
+        )

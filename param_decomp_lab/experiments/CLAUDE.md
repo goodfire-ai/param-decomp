@@ -58,7 +58,8 @@ experiments/
 ├── lm/
 │   ├── launch.py        # pd-lm: snapshot + shared-FS workspace + sbatch
 │   ├── data.py              # tokenize_and_concatenate (offline helper for prestage)
-│   └── prestage_tokenized.py  # HF text -> int32 parquet shards for the JAX trainer
+│   ├── prestage_tokenized.py  # HF text -> int32 parquet shards for the JAX trainer
+│   └── arithmetic_probe.py    # a x b arithmetic grid spec -> in-memory eval probe (ArithmeticCIGrid)
 ├── lm_targeted/            # pd-lm-targeted: tPD LM (fixed-prompt target + parquet non-target)
 ├── tms/                     # pd-tms (CPU): model.py + run.py + configs/ + test_tms.py
 └── resid_mlp/               # pd-resid-mlp (CPU): model.py + run.py + configs/ + test

@@ -63,6 +63,8 @@ eval:
     n_steps: 20
     step_size: 0.1
     type: PGDReconLoss
+  # probe built in-memory at startup from the target tokenizer (defaults: add, a,b in 1..100)
+  - type: ArithmeticCIGrid
   n_steps: 1
   slow_every: 10000
   slow_on_first_step: true
@@ -137,7 +139,6 @@ pd:
       type: adam
     scope:
       type: broadcast_across_batch
-    start_frac: 0.0
     type: PersistentPGDReconLoss
   - coeff: 100000.0
     type: FaithfulnessLoss
