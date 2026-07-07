@@ -450,6 +450,14 @@ grad = ∇_{components, ci_fn, sources} (L_target + L_nontarget)      # single v
   trailing pad causally invisible to those positions, so their logits equal the unpadded
   forward's. The non-target pass scores all positions. `recon_positions=None` (every non-tPD
   run + non-target pass) scores all positions unchanged.
+- **S39** — a persistent-PGD term (the VPD adversary) runs in the TARGET pass only (the
+  non-target grid excludes it, S35). Its sources size off the target stream's PADDED seq
+  (`TargetPromptGeometry.seq_len`, the S38 pad length) — NOT `data.seq_len`, which under tPD
+  describes the non-target parquet stream: `sc` is `(1, T_target, C+1)`, `bsc` is
+  `(B_target, T_target, C+1)` with `B_target = data.global_batch` (which doubles as the
+  target batch — `_targeted_data`). Warmup and final ascents score the S38-sliced target
+  recon loss, so pad-position sources get zero gradient and stay at init (causally inert per
+  S38). All non-tPD persistent semantics (S13′–S16, S22–S24, S32) apply unchanged.
 
 The target stream is task-specific and feeds the engine's `sample_batch` seam like any other
 data: for the toys it is `active_indices`-restricted sparse features; for the LM it is a fixed

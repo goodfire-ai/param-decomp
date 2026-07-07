@@ -157,8 +157,9 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
 
     opt_vu, opt_ci, _ = build_optimizers(cfg.pd)
     init_key, src_key = jax.random.split(jax.random.PRNGKey(cfg.pd.seed))
+    seq_len = cfg.data.seq_len if cfg.data is not None else None
     reference = init_train_state(
-        cfg.pd, lm, cfg.ci_fn, cfg.data, opt_vu, opt_ci, init_key, src_key, mesh
+        cfg.pd, lm, cfg.ci_fn, cfg.data, seq_len, opt_vu, opt_ci, init_key, src_key, mesh
     )
 
     assert cfg.cadence.keep_last_n_checkpoints is not None, cfg.cadence

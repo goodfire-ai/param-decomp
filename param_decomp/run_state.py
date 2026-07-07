@@ -114,12 +114,16 @@ def init_train_state(
     lm: DecomposedModel,
     ci_fn_arch: CIFnArch,
     data: DataConfig | None,
+    persistent_source_seq_len: int | None,
     opt_vu: optax.GradientTransformation,
     opt_ci: optax.GradientTransformation,
     init_key: PRNGKeyArray,
     src_key: PRNGKeyArray,
     mesh: Mesh,
 ) -> TrainState:
+    """`persistent_source_seq_len` is the seq length of the pass the persistent-PGD
+    adversaries ascend in — `data.seq_len` for a plain run, the padded target-prompt seq
+    for tPD (SPEC S39); `None` only when the config carries no persistent terms."""
     ci_key = random.fold_in(init_key, 1)
     # Placement is MODEL-OWNED: V/U + CI declare their own per-leaf shardings (asserting
     # divisibility), uniformly across mesh sizes — no scale inference, no replicate fallback.
@@ -143,13 +147,17 @@ def init_train_state(
         assert isinstance(data, DataConfig), (
             "persistent PGD sources need a sequence axis; TMS (leading_axes=()) has none"
         )
+        assert persistent_source_seq_len is not None, (
+            "persistent PGD terms need the ascent pass's seq length (data.seq_len for a "
+            "plain run, the padded target-prompt seq for tPD — SPEC S39)"
+        )
         for term_idx, state_key in enumerate(persistent):
             cfg = persistent[state_key]
             assert isinstance(cfg.optimizer, AdamPGDConfig)
             sources = init_sources_sharded(
                 lm.site_names,
                 tuple(s.C for s in lm.sites),
-                data.seq_len,
+                persistent_source_seq_len,
                 cfg.scope,
                 data.global_batch,
                 jnp.dtype(cfg.source_dtype),

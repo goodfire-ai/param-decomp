@@ -1,19 +1,27 @@
-"""Targeted-PD LM seams: the fixed-prompt loader (end-pad + recon_positions, SPEC S38) and
-the non-target loss-set exclusions (both PGD variants dropped, SPEC S35)."""
+"""Targeted-PD LM seams: the fixed-prompt loader (end-pad + recon_positions, SPEC S38), the
+non-target loss-set exclusions (both PGD variants dropped, SPEC S35), and persistent-PGD
+admission in the target pass (SPEC S39)."""
 
 from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 
 from param_decomp.configs import (
+    AdamPGDConfig,
     AnyLossMetricConfig,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
+    PersistentPGDReconLossConfig,
     PGDReconLossConfig,
+    SCScope,
     StochasticReconSubsetLossConfig,
 )
+from param_decomp.run import TargetPromptGeometry
+from param_decomp.schedule import ScheduleConfig
 from param_decomp_lab.experiments.config import build_nontarget_loss_metrics
+from param_decomp_lab.experiments.lm_targeted.config import LMTargetedExperimentConfig
 from param_decomp_lab.experiments.lm_targeted.data import load_prompt_tokens
 
 _NEOX = "EleutherAI/gpt-neox-20b"
@@ -76,3 +84,46 @@ def test_nontarget_loss_set_drops_both_pgd_variants():
     assert PGDReconLossConfig.__name__ not in kinds  # fresh-PGD excluded from non-target (S35)
     assert StochasticReconSubsetLossConfig.__name__ in kinds  # full-model recon retained
     assert FaithfulnessLossConfig.__name__ in kinds
+
+
+def _persistent_pgd() -> PersistentPGDReconLossConfig:
+    return PersistentPGDReconLossConfig(
+        coeff=0.5,
+        scope=SCScope(),
+        optimizer=AdamPGDConfig(
+            beta1=0.5, beta2=0.99, lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025)
+        ),
+        n_warmup_steps=2,
+    )
+
+
+def test_nontarget_loss_set_drops_persistent_pgd():
+    target: list[AnyLossMetricConfig] = [
+        FaithfulnessLossConfig(coeff=0.0),
+        StochasticReconSubsetLossConfig(coeff=1.0),
+        _persistent_pgd(),
+    ]
+    out = build_nontarget_loss_metrics(target, impmin_coeff_ratio=2.0)
+    kinds = {type(m).__name__ for m in out}
+    assert PersistentPGDReconLossConfig.__name__ not in kinds  # target-pass only (S35/S39)
+    assert StochasticReconSubsetLossConfig.__name__ in kinds
+
+
+def test_targeted_config_accepts_persistent_pgd():
+    ref = (
+        Path(__file__).parent / "configs" / "numpy_pandas_4L_targeted.yaml"
+    )  # S39: the tPD schema admits a persistent term (it sizes off the target seq at init)
+    raw = yaml.safe_load(ref.read_text())
+    raw["pd"]["loss_metrics"].append(_persistent_pgd().model_dump())
+    cfg = LMTargetedExperimentConfig(**raw)
+    kinds = [type(m).__name__ for m in cfg.pd.loss_metrics]
+    assert PersistentPGDReconLossConfig.__name__ in kinds
+
+
+def test_target_prompt_geometry_bounds():
+    geo = TargetPromptGeometry(recon_positions=3, seq_len=16)
+    assert (geo.recon_positions, geo.seq_len) == (3, 16)
+    with pytest.raises(AssertionError):
+        TargetPromptGeometry(recon_positions=17, seq_len=16)
+    with pytest.raises(AssertionError):
+        TargetPromptGeometry(recon_positions=0, seq_len=16)

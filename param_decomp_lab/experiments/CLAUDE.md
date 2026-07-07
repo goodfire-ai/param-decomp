@@ -71,10 +71,14 @@ Targeted PD (SPEC §11) decomposes only the mechanisms causally important on a n
 stream, keeping behavior faithful off-target via a broad NON-TARGET stream. The shared config
 surface lives in `experiments/config.py` (`NontargetConfig`, `build_nontarget_loss_metrics`,
 `assert_targeted_faithfulness_off`, `EXCLUDED_NONTARGET_LOSS_CONFIGS`); each domain's `run.py`
-builds a `param_decomp.run.NontargetPass` and passes it (plus `recon_positions` for the LM) to
+builds a `param_decomp.run.NontargetPass` and passes it (plus a
+`param_decomp.run.TargetPromptGeometry` for the LM — the S38 scored/padded prompt lengths) to
 the engine. TMS / ResidMLP make it a config option (`nontarget` + `data.active_indices`); the
 LM is a separate composition root (`lm_targeted/`, `pd-lm-targeted`) reusing the plain-LM
 target / eval / ci-fn resolution with a fixed-prompt target loader (`lm_targeted/data.py`).
+`PersistentPGDReconLoss` is supported in the TARGET pass (SPEC S39 — sources size at the
+padded prompt seq; `sc` scope recommended for a resampled prompt pool, `bsc` permitted); the
+non-target pass stays stochastic-only (S35).
 
 ## LM `target.spec`
 

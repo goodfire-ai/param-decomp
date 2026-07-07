@@ -25,7 +25,12 @@ from param_decomp.data import BatchSchedule, ShardServer, scan_shards
 from param_decomp.hf_http import configure_hf_http_retries
 from param_decomp.lm import DecomposedModel
 from param_decomp.log import setup_logger
-from param_decomp.run import NontargetPass, install_sigterm_flag, run_decomposition_training
+from param_decomp.run import (
+    NontargetPass,
+    TargetPromptGeometry,
+    install_sigterm_flag,
+    run_decomposition_training,
+)
 from param_decomp.sharding import hsdp_mesh, init_distributed
 from param_decomp_lab.experiments.config import build_nontarget_loss_metrics
 from param_decomp_lab.experiments.lm.load_run import build_target
@@ -100,6 +105,9 @@ def train(
         cfg.data.max_seq_len,
         cfg.data.add_special_tokens,
     )
+    target_prompts = TargetPromptGeometry(
+        recon_positions=recon_positions, seq_len=int(prompt_tokens.shape[1])
+    )
     sample_batch = make_prompt_sample_batch(
         prompt_tokens, data.global_batch, mesh, seed=built.pd.seed
     )
@@ -144,7 +152,7 @@ def train(
         eval_every=eval_every,
         mesh=mesh,
         nontarget=nontarget,
-        recon_positions=recon_positions,
+        target_prompts=target_prompts,
     )
 
 
