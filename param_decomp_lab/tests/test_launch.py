@@ -52,14 +52,15 @@ def test_rank_command_builds_node_workspace_then_execs_trainer():
     command = _rank_command(
         "p-abcd1234",
         "refs/runs/snapshot/p-abcd1234",
-        "git@github.com:goodfire-ai/param-decomp.git",
+        Path("/home/u/param-decomp/.git"),
         Path("/out/runs/p-abcd1234"),
         rank_env="export FOO=1",
     )
-    # the snapshot comes from origin (the refs' ground truth), never a local checkout;
-    # .env (secrets, not in git) comes from the run dir where submit staged it
+    # the snapshot comes from the shared-FS common git dir (file:// so --depth works —
+    # git ignores it on the bare-path local transport); .env (secrets, not in git) comes
+    # from the run dir where submit staged it
     fetch = (
-        'git fetch --quiet --depth 1 "git@github.com:goodfire-ai/param-decomp.git" '
+        'git fetch --quiet --depth 1 "file:///home/u/param-decomp/.git" '
         '"refs/runs/snapshot/p-abcd1234"'
     )
     assert fetch in command

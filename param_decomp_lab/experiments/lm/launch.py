@@ -6,12 +6,13 @@ CONFIG-DRIVEN: the launch mode is a pure function of `runtime.dp` in the run con
 `nodes = dp // 8` nodes (8 GPUs each, one srun task per node claiming all 8 GPUs).
 
 The SLURM path mints the `p-<8hex>` run id, snapshots the working tree to
-`refs/runs/snapshot/<id>` (pushed to origin — the ground truth the nodes fetch from),
-stages the run dir with the pinned (group/tags-stamped) `launch_config.yaml` + `.env`
-(the copies the job — and every requeue — reads), and sbatches. Each node then builds its
-own workspace at job start: shallow-fetch the snapshot from origin into node-local
-`/tmp`, `uv sync --extra cuda`, exec the trainer. Nothing is built at submit time, no
-shared-FS workspace exists to leak or clean up, and no local checkout is read by the job.
+`refs/runs/snapshot/<id>` (hard-pushed to origin — the durable provenance record), stages
+the run dir with the pinned (group/tags-stamped) `launch_config.yaml` + `.env` (the
+copies the job — and every requeue — reads), and sbatches. Each node then builds its own
+workspace at job start: shallow-fetch the snapshot from the submitting checkout's
+shared-FS git dir into node-local `/tmp`, `uv sync` with the driver-gated CUDA extra,
+exec the trainer. Nothing is built at submit time and no shared-FS workspace exists to
+leak or clean up; requeues depend only on shared FS, never on GitHub reachability.
 
 The rank env (XLA flags, NCCL/host-memory knobs, `PD_*` profiling toggles) is rendered from
 the config's `runtime.launch_env` (single source of truth, defaults in `LaunchEnv`), plus
@@ -74,25 +75,30 @@ def _render_rank_env(launch_env: LaunchEnv) -> str:
     return "\n".join(exports)
 
 
-def _origin_url() -> str:
-    """Snapshot refs' ground truth is origin (`create_git_snapshot` fails the submit if
-    the push fails), so nodes fetch from there — no dependency on any local checkout."""
+def _snapshot_source_repo() -> Path:
+    """The local git state the nodes fetch the snapshot from: the submitting checkout's
+    COMMON git dir (the main checkout's `.git`, even when submitting from a worktree —
+    worktrees share refs but may be deleted before a requeue re-fetches). Shared FS, so
+    requeues never depend on GitHub reachability; origin (which `create_git_snapshot`
+    hard-pushes to) is the durable provenance record, not the job's fetch source."""
     result = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "remote", "get-url", "origin"],
+        ["git", "-C", str(REPO_ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"],
         capture_output=True,
         text=True,
         check=True,
     )
-    return result.stdout.strip()
+    return Path(result.stdout.strip())
 
 
-def _node_workspace_setup(run_id: str, snapshot_ref: str, origin_url: str, run_dir: Path) -> str:
+def _node_workspace_setup(run_id: str, snapshot_ref: str, source_repo: Path, run_dir: Path) -> str:
     """The start of each node's srun task: sweep stale workspaces, shallow-fetch the
-    snapshot from origin into node-local /tmp, build the CUDA venv, activate. The `.env`
-    (secrets, not in git) comes from the run dir, where submit staged it. The task `exec`s
-    the trainer afterwards (bash is replaced, so no EXIT trap can run here) — normal-end
-    cleanup is the batch script's trap (`_node_workspace_cleanup_trap`), and the up-front
-    sweep self-heals leftovers from jobs that died before their trap fired.
+    snapshot from the shared-FS git dir into node-local /tmp, build the CUDA venv,
+    activate. (`file://` rather than the bare path — git silently ignores `--depth` on
+    the local transport.) The `.env` (secrets, not in git) comes from the run dir, where
+    submit staged it. The task `exec`s the trainer afterwards (bash is replaced, so no
+    EXIT trap can run here) — normal-end cleanup is the batch script's trap
+    (`_node_workspace_cleanup_trap`), and the up-front sweep self-heals leftovers from
+    jobs that died before their trap fired.
 
     The CUDA extra is driver-gated per node (buildable here, unlike at submit on a
     GPU-less login node): cuda13's runtime libs include the Blackwell-TMEM-fixed
@@ -105,7 +111,7 @@ rm -rf "{_NODE_WORKSPACES_DIR}"
 mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
 git init --quiet
-git fetch --quiet --depth 1 "{origin_url}" "{snapshot_ref}"
+git fetch --quiet --depth 1 "file://{source_repo}" "{snapshot_ref}"
 git checkout --quiet FETCH_HEAD
 cp "{run_dir}/.env" .env
 unset VIRTUAL_ENV
@@ -126,11 +132,11 @@ def _node_workspace_cleanup_trap(nodes: int) -> str:
 
 
 def _rank_command(
-    run_id: str, snapshot_ref: str, origin_url: str, run_dir: Path, rank_env: str
+    run_id: str, snapshot_ref: str, source_repo: Path, run_dir: Path, rank_env: str
 ) -> str:
     launch_config = run_dir / LAUNCH_CONFIG_FILENAME
     return (
-        f"{_node_workspace_setup(run_id, snapshot_ref, origin_url, run_dir)}\n{rank_env}\n"
+        f"{_node_workspace_setup(run_id, snapshot_ref, source_repo, run_dir)}\n{rank_env}\n"
         f"exec python -m param_decomp_lab.experiments.lm.run "
         f"{shlex.quote(str(launch_config))} --run-id {shlex.quote(run_id)}"
     )
@@ -187,7 +193,7 @@ def main(
     assert dp % GPUS_PER_NODE == 0, f"runtime.dp={dp} must be a multiple of {GPUS_PER_NODE}"
     nodes = dp // GPUS_PER_NODE
 
-    origin_url = _origin_url()
+    source_repo = _snapshot_source_repo()
     if run_id is None:
         run_id = generate_run_id("param_decomp")
         snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=run_id)
@@ -196,7 +202,7 @@ def main(
         _stage_env_file(run_dir)
     else:
         snapshot_ref = f"refs/runs/snapshot/{run_id}"
-        _assert_snapshot_ref_on_origin(origin_url, snapshot_ref)
+        _assert_snapshot_ref_exists(source_repo, snapshot_ref)
         run_dir = PARAM_DECOMP_OUT_DIR / "runs" / run_id
         for staged in (LAUNCH_CONFIG_FILENAME, ".env"):
             assert (run_dir / staged).exists(), f"no {staged} to resubmit: {run_dir / staged}"
@@ -219,7 +225,7 @@ def main(
     # One task per node: `--nodes=N --ntasks=N` (N whole-node tasks) can't pack onto one
     # node, so the trainer's single process per node claims all local GPUs.
     srun = f"srun --nodes={nodes} --ntasks={nodes} {_SRUN_FLAGS}"
-    rank_command = _rank_command(run_id, snapshot_ref, origin_url, run_dir, rank_env)
+    rank_command = _rank_command(run_id, snapshot_ref, source_repo, run_dir, rank_env)
     command = f"{srun} bash -c {shlex.quote(rank_command)}"
     script = generate_script(slurm_config, command, setup=_node_workspace_cleanup_trap(nodes))
     result = submit_slurm_job(script, "pd-lm")
@@ -296,14 +302,15 @@ def _stage_env_file(run_dir: Path) -> None:
     shutil.copy(env_file, run_dir / ".env")
 
 
-def _assert_snapshot_ref_on_origin(origin_url: str, snapshot_ref: str) -> None:
-    """Guaranteed on a fresh submit (`create_git_snapshot` fails if the origin push
-    fails); load-bearing on `--run-id` resubmits."""
+def _assert_snapshot_ref_exists(source_repo: Path, snapshot_ref: str) -> None:
+    """Load-bearing on `--run-id` resubmits (a fresh submit just created the ref in a
+    checkout sharing `source_repo`'s refs)."""
     result = subprocess.run(
-        ["git", "ls-remote", "--exit-code", origin_url, snapshot_ref], capture_output=True
+        ["git", "-C", str(source_repo), "rev-parse", "--verify", "--quiet", snapshot_ref],
+        capture_output=True,
     )
     assert result.returncode == 0, (
-        f"{snapshot_ref} not on origin — nodes fetch the snapshot from there at job start"
+        f"{snapshot_ref} not in {source_repo} — nodes fetch the snapshot from there at job start"
     )
 
 
