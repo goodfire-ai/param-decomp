@@ -1,6 +1,8 @@
-"""Schedule config (`ScheduleConfig`) plus `get_scheduled_value`, the host-numpy cosine
-parity reference (the trainer loop / PGD ascents use their own jitted schedules in
-`losses.py` / `run_state.py`; `get_scheduled_value` is exercised by `test_schedule.py`)."""
+"""The one schedule surface: `ScheduleConfig` plus `get_scheduled_value`, its host-numpy
+evaluator (the torch-parity reference). Every scheduled quantity (main LRs, PPGD source
+LR, imp-min `p` / `gamma`) is configured by `ScheduleConfig` and evaluated in-step by the
+jnp twin `losses.scheduled_value_traced` (jax lives there so this module — imported by
+the config schema — stays jax-free); `test_schedule.py` pins the pair pointwise."""
 
 from typing import Literal, Self
 
@@ -60,8 +62,6 @@ def get_scheduled_value(step: int, total_steps: int, config: ScheduleConfig) -> 
             multiplier = config.final_val_frac + (1 - config.final_val_frac) * (1 - progress)
             return config.start_val * multiplier
         case "cosine":
-            # Same cosine shape as `run_state.torch_cosine_schedule` (the optax LR), here in
-            # host numpy returning a float. Kept in sync by each one's torch-parity test.
             multiplier = config.final_val_frac + (1 - config.final_val_frac) * 0.5 * (
                 1 + np.cos(np.pi * progress)
             )

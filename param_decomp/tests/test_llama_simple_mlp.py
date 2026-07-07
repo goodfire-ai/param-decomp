@@ -395,10 +395,7 @@ def test_step_trains_and_has_vpd_signature():
             FaithfulnessLossConfig(coeff=1e5),
             ImportanceMinimalityLossConfig(
                 coeff=5e-6,
-                pnorm=2.0,
-                p_anneal_start_frac=0.0,
-                p_anneal_final_p=0.4,
-                p_anneal_end_frac=1.0,
+                pnorm=ScheduleConfig(start_val=2.0, fn_type="linear", final_val_frac=0.2),
             ),
             ChunkwiseSubsetReconLossConfig(
                 routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=2, n_samples=1

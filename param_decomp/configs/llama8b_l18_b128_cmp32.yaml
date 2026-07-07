@@ -59,13 +59,13 @@ pd:
     coeff: 100000.0
   - type: ImportanceMinimalityLoss
     coeff: 5.0e-06
-    pnorm: 2.0
+    pnorm:
+      start_val: 2.0
+      fn_type: linear
+      final_val_frac: 0.2
     frequency:
       coeff: 1.0e-06
       reference_token_count: 262144
-    p_anneal_start_frac: 0.0
-    p_anneal_final_p: 0.4
-    p_anneal_end_frac: 1.0
     eps: 1.0e-12
   - type: StochasticReconSubsetLoss
     coeff: 0.5
@@ -73,7 +73,6 @@ pd:
       type: uniform_k_subset
   - type: PersistentPGDReconLoss
     coeff: 0.5
-    n_samples: 1
     n_warmup_steps: 2
     optimizer:
       type: adam
@@ -86,7 +85,7 @@ pd:
         final_val_frac: 1.0
         fn_type: constant
     scope:
-      type: broadcast_across_batch
+      type: sc
 cadence:
   train_log_every: 20
   save_every: 1000

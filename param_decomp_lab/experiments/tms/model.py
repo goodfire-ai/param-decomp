@@ -8,10 +8,10 @@ n_hidden)` no bias, `linear2` `(n_hidden -> n_features)` with bias, with `linear
 weights TIED (`linear2.weight = linear1.weight.T`). The DECOMPOSITION is UNTIED — each site
 gets its own independent `(V, U)`.
 
-There is no prefix: the whole model is decomposed, so the "residual" entering the
-decomposed part is the raw input `x` `[B, n_features]` and `tms_input_residual` is the
-identity. The recon comparison is MSE on the post-ReLU `[B, n_features]` output (NOT
-KL): `recon_loss_fn = tms_mse` (torch `recon_loss_mse`, mean over batch × features).
+The whole model is decomposed: the batch entering the decomposed model is the raw input
+`x` `[B, n_features]`. The recon comparison is MSE on the post-ReLU `[B, n_features]`
+output (NOT KL): `recon_loss_fn = tms_mse` (torch `recon_loss_mse`, mean over
+batch × features).
 
 Site weights are right-mult oriented like the LM targets (`site_out = x @ W.T`): for
 `linear1` `W` is `(n_hidden, n_features)`; for `hidden_layers.{i}` `(n_hidden, n_hidden)`;
@@ -402,14 +402,6 @@ def replicate_target[T: (TMSTarget, TMSDecomposedModel)](target: T, mesh: Mesh) 
     analog; V/U / CI placement reuses the generic plan)."""
     repl = NamedSharding(mesh, P())
     return jax.tree.map(lambda a: jax.device_put(a, repl) if eqx.is_array(a) else a, target)
-
-
-def tms_input_residual(prefix: None, inputs: Float[Array, "B n_features"]) -> Array:
-    """No prefix: the residual entering the decomposed model IS the raw input `x`. Kept
-    as a `prefix_residual_fn` so the generic `run.py` harvest path is uniform across
-    targets (`prefix` is unused / `None`)."""
-    del prefix
-    return inputs
 
 
 # ----------------------------- from-scratch pretraining -----------------------------

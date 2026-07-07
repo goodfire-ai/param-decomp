@@ -70,7 +70,7 @@ eval:
   - type: CIHiddenActsReconLoss
   - coeff: null
     init: random
-    mask_scope: shared_across_batch
+    mask_scope: c
     n_steps: 20
     name: PGDReconLoss_20step
     step_size: 0.1
@@ -131,17 +131,16 @@ pd:
       reference_token_count: 65536
     coeff: 0.0002
     eps: 1.0e-12
-    p_anneal_end_frac: 1.0
-    p_anneal_final_p: 0.4
-    p_anneal_start_frac: 0.0
-    pnorm: 2.0
+    pnorm:
+      start_val: 2.0
+      fn_type: linear
+      final_val_frac: 0.2
     type: ImportanceMinimalityLoss
   - coeff: 0.5
     routing:
       type: uniform_k_subset
     type: StochasticReconSubsetLoss
   - coeff: 0.5
-    n_samples: 1
     n_warmup_steps: 2
     optimizer:
       beta1: 0.5
@@ -154,7 +153,7 @@ pd:
         warmup_pct: 0.025
       type: adam
     scope:
-      type: per_batch_per_position
+      type: bsc
     type: PersistentPGDReconLoss
   - coeff: 10000000.0
     type: FaithfulnessLoss

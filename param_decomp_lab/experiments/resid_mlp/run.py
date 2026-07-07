@@ -87,8 +87,8 @@ def run_resid_mlp_decomposition(
 ) -> None:
     """Build + pretrain the ResidMLP target, then decompose it through the generic engine.
 
-    The residual entering the decomposed model is `x @ W_E` (the prefix `W_E` is carried
-    inside the frozen target). The `eval_fn` reads the `lower_leaky` CI of the
+    The batch entering the decomposed model is `x @ W_E` (`W_E` is carried inside the
+    frozen target, not decomposed). The `eval_fn` reads the `lower_leaky` CI of the
     single-feature probe (embedded through `W_E`) and logs the ground-truth `IdentityCIError`
     per site every train-log step (`eval_every = cadence.train_log_every`)."""
     target_cfg = built.target

@@ -236,10 +236,9 @@ class LlamaLayer(eqx.Module):
     Wd: Float[Array, "d di"]
 
     def shardings(self, mesh: "Mesh") -> "LlamaLayer":
-        """Stacked FSDP on `fsdp` (no TP): every MLP weight shards its `d`-dim (4096) on
-        `fsdp`, the intermediate (14336) stays replicated; gathered per layer in the scan, on
-        NVLink. (`/fsdp` is ample for a frozen 16 GB model: 16 GB → 2 GB at fsdp=8.) Norms
-        replicate (tiny); attn delegates to `FrozenAttn.shardings`."""
+        """Stacked FSDP on `fsdp` (no TP): every MLP weight shards its `d`-dim on `fsdp`,
+        the intermediate dim stays replicated; gathered back per layer inside the scan.
+        Norms replicate; attn delegates to `FrozenAttn.shardings`."""
         in_fsdp = NamedSharding(mesh, P(None, None, "fsdp"))  # Wg/Wu [nc, di(repl), d on fsdp]
         out_fsdp = NamedSharding(mesh, P(None, "fsdp", None))  # Wd [nc, d on fsdp, di(repl)]
         repl = NamedSharding(mesh, P())
@@ -516,9 +515,7 @@ class LlamaDecomposedModel(eqx.Module):
 
     embed: Float[Array, "vocab d"]
     stacked: LlamaLayer  # the per-layer weights stacked on a leading layer axis (the scan
-    # `xs`). Stored pre-stacked so `_stack_layers` is NOT recomputed inside each forward — XLA
-    # re-stacked the full ~16 GB target every recon/faith/PGD forward AND in the rematerialized
-    # backward (~10×, ~160 GB OOM at 32L). As a model field it is a saved input: 1 copy.
+    # `xs`), stored pre-stacked: a saved jit input, never re-stacked inside a forward.
     n_layer: int = eqx.field(static=True)
     norm: Float[Array, " d"]
     lm_head: Float[Array, "vocab d"]
@@ -941,10 +938,19 @@ class LlamaDecomposedModel(eqx.Module):
 # ----------------------------- HF weight loading -----------------------------
 
 
-def _hf_snapshot_dir(model_name: str) -> Path:
+def hf_snapshot_dir(model_name: str) -> Path:
+    """Newest local snapshot of `model_name`. `HF_HUB_CACHE` overrides; otherwise on
+    cluster (`DATA_MOUNT` set) the shared world-readable cache is the source — a home
+    `~/.cache` hub is silently mutable, and a wiped entry strands running jobs that
+    reload weights on requeue."""
     import os
 
-    cache = Path(os.environ.get("HF_HUB_CACHE", str(Path.home() / ".cache/huggingface/hub")))
+    default_cache = (
+        f"{os.environ['DATA_MOUNT']}/artifacts/hf_cache/hub"
+        if "DATA_MOUNT" in os.environ
+        else str(Path.home() / ".cache/huggingface/hub")
+    )
+    cache = Path(os.environ.get("HF_HUB_CACHE", default_cache))
     repo = "models--" + model_name.replace("/", "--")
     snaps = sorted((cache / repo / "snapshots").iterdir())
     assert snaps, f"no snapshot for {model_name} under {cache}"
@@ -1040,7 +1046,7 @@ def load_decomposed_lm_from_hf(
     final norm, lm_head) as fields plus the static decomposition config (`sites`). Blocks
     without a decomposed site run the plain frozen path. `scan_unroll` / `gather_fp8` are the
     `RuntimeConfig` compute knobs."""
-    w = _HFWeights(_hf_snapshot_dir(model_name))
+    w = _HFWeights(hf_snapshot_dir(model_name))
     return build_decomposed_lm(
         embed=w.get("model.embed_tokens.weight"),
         layers=_load_blocks(w, cfg),

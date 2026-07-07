@@ -15,11 +15,11 @@ from param_decomp.configs import (
     SmoothL0ImportanceMinimalityLossConfig,
 )
 from param_decomp.losses import (
-    annealed_gamma,
     annealed_imp_min_param,
     imp_min_terms,
     smooth_l0_importance_minimality_terms,
 )
+from param_decomp.schedule import ScheduleConfig, get_scheduled_value
 
 
 def _phi(c: jax.Array, gamma: float) -> jax.Array:
@@ -73,19 +73,20 @@ def test_terms_match_manual_per_site_structure():
 def test_anneal_and_dispatch():
     cfg = SmoothL0ImportanceMinimalityLossConfig(
         coeff=2e-4,
-        gamma=1.0,
+        gamma=ScheduleConfig(start_val=1.0, fn_type="linear", final_val_frac=0.1),
         frequency=FrequencyMinimalityConfig(coeff=1e-4, reference_token_count=64),
-        gamma_anneal_start_frac=0.0,
-        gamma_anneal_final_gamma=0.1,
-        gamma_anneal_end_frac=1.0,
     )
     total = 100
-    assert abs(float(annealed_gamma(jnp.asarray(0.0), total, cfg)) - 1.0) < 1e-6
-    assert abs(float(annealed_gamma(jnp.asarray(50.0), total, cfg)) - 0.55) < 1e-6
-    assert abs(float(annealed_gamma(jnp.asarray(total), total, cfg)) - 0.1) < 1e-6
+    for step in (0, 50, total - 1):
+        param = annealed_imp_min_param(jnp.asarray(float(step)), total, cfg)
+        expected = get_scheduled_value(step, total, cfg.gamma)
+        assert abs(float(param) - expected) < 1e-6
+    assert abs(get_scheduled_value(0, total, cfg.gamma) - 1.0) < 1e-6
+    assert abs(get_scheduled_value(total - 1, total, cfg.gamma) - 0.1) < 1e-6
 
+    last = total - 1
     ci = {"a": jnp.array([[0.0, 0.5, 1.0], [0.2, 0.0, 0.9]])}
-    param = annealed_imp_min_param(jnp.asarray(float(total)), total, cfg)
+    param = annealed_imp_min_param(jnp.asarray(float(last)), total, cfg)
     via_dispatch = imp_min_terms(ci, cfg, param)
     direct = smooth_l0_importance_minimality_terms(ci, param, reference_token_count=64)
     assert jnp.allclose(via_dispatch[0], direct[0])

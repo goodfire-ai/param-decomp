@@ -24,10 +24,10 @@ pd:
     # coeff + p-anneal tuned for clean recovery: one component per target feature on mlp_in,
     # inert off-target. See notes/targeted_jax_plan.md for the sweep.
     coeff: 2e-4
-    pnorm: 2.0
-    p_anneal_start_frac: 0.0
-    p_anneal_final_p: 0.5
-    p_anneal_end_frac: 1.0
+    pnorm:
+      start_val: 2.0
+      fn_type: linear
+      final_val_frac: 0.25
   - type: StochasticReconLayerwiseLoss
     coeff: 1.0
   - type: StochasticReconLoss

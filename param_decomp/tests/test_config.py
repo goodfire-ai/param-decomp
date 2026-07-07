@@ -73,7 +73,11 @@ def test_legacy_top_level_n_mask_samples_pushes_onto_stochastic_terms():
         "n_mask_samples": 4,
         "loss_metrics": [
             {"type": "FaithfulnessLoss", "coeff": 1.0},
-            {"type": "ImportanceMinimalityLoss", "coeff": 1.0, "pnorm": 2.0},
+            {
+                "type": "ImportanceMinimalityLoss",
+                "coeff": 1.0,
+                "pnorm": {"start_val": 2.0, "fn_type": "constant"},
+            },
             {"type": "StochasticReconLoss", "coeff": 1.0},
             {"type": "StochasticReconSubsetLoss", "coeff": 1.0, "n_mask_samples": 7},
         ],
@@ -96,7 +100,7 @@ def test_b128_config_converts():
     )
     faith, imp = losses.faith, losses.imp
     assert isinstance(imp.cfg, ImportanceMinimalityLossConfig)
-    assert faith.coeff == 1e5 and imp.cfg.pnorm == 2.0
+    assert faith.coeff == 1e5 and imp.cfg.pnorm.start_val == 2.0
     (ppgd,) = persistent_configs(losses.recon).values()
     assert isinstance(ppgd, PersistentPGDReconLossConfig)
     assert ppgd.n_warmup_steps == 2
@@ -163,22 +167,25 @@ def test_unsupported_settings_refuse():
     with pytest.raises(AssertionError, match="unsupported training loss"):
         build_experiment_config(LMExperimentConfig(**hidden_acts_training_loss), RUN_ID)
 
-    sigmoid_ppgd = dict(
-        raw,
-        pd=dict(
-            raw["pd"],
-            loss_metrics=[
-                dict(m, use_sigmoid_parameterization=True)
-                if m["type"] == "PersistentPGDReconLoss"
-                else m
-                for m in raw["pd"]["loss_metrics"]
-            ],
-        ),
-    )
-    # use_sigmoid_parameterization was removed (clamp-only); the strip-on-load shim
-    # accepts False (stored configs) but rejects True at config construction.
-    with pytest.raises(ValidationError):
-        LMExperimentConfig(**sigmoid_ppgd)
+    def with_ppgd_fields(**fields: object):
+        return dict(
+            raw,
+            pd=dict(
+                raw["pd"],
+                loss_metrics=[
+                    dict(m, **fields) if m["type"] == "PersistentPGDReconLoss" else m
+                    for m in raw["pd"]["loss_metrics"]
+                ],
+            ),
+        )
+
+    # Removed PPGD fields (use_sigmoid_parameterization: clamp-only; n_samples: route-all +
+    # one persistent source bundle make every draw identical): the strip-on-load shim
+    # accepts the only-ever-supported value (stored configs) and rejects anything else.
+    LMExperimentConfig(**with_ppgd_fields(use_sigmoid_parameterization=False, n_samples=1))
+    for bad_field in ({"use_sigmoid_parameterization": True}, {"n_samples": 2}):
+        with pytest.raises(ValidationError):
+            LMExperimentConfig(**with_ppgd_fields(**bad_field))
 
     non_site_target = dict(
         raw,
@@ -275,9 +282,8 @@ def test_unsupported_model_family_refuses_and_supported_families_dispatch():
 
 
 def test_decaying_persistent_source_schedule_refuses():
-    """The JAX source schedule is `warmup_then_constant_lr` (no post-warmup decay);
-    a source `lr_schedule` that decays would silently flatten, so the conversion gate
-    must refuse it (issue #646; matrix S13/S20)."""
+    """The persistent-PGD source LR is constant-after-warmup only, so the conversion
+    gate must refuse a decaying source `lr_schedule` (issue #646; matrix S13/S20)."""
     raw = _reference_lm_raw()
     decaying_source = dict(
         raw,

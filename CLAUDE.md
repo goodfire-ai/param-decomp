@@ -92,16 +92,17 @@ numbered invariants, grounded in the torch oracle — JAX **conforms** to it). F
 entry points, read `param_decomp/CLAUDE.md` and `SPEC.md`. In one breath:
 
 - **`DecomposedModel`** (`param_decomp/lm.py`) — THE model interface: ordered `sites` +
-  pure fns (`clean_output` / `site_inputs` / `masked_output` / `weight_deltas`) over
-  `(frozen, vu)` pytrees. Generic over vendored LM targets. There is one recon
-  semantics: chunkwise masking through the suffix forward, KL on final logits.
+  pure fns (`clean_output` / `read_activations` / `masked_output` / `weight_deltas`) on an
+  `eqx.Module` carrying the frozen target weights as fields (the trainable `vu` is an
+  explicit method arg). Generic over vendored LM targets. There is one recon
+  semantics: chunkwise masking through the full token-input forward, KL on final logits.
 - **`run_decomposition_training(...)`** (`param_decomp/run.py`) — the generic ENGINE: the
   one train loop every target runs through (init/restore/finetune/faith-warmup, the
   recon-grid step factory, orbax checkpointing, schedules, metrics, in-loop slow eval,
   SIGTERM-save). A pure library — no `main()`, reads no YAML; takes built objects.
 - **`python -m param_decomp_lab.experiments.lm.run <config.yaml>`**
   (`param_decomp_lab/experiments/lm/run.py`) — the LM composition root + only I/O layer:
-  reads the canonical schema, builds the target / prefix / data loader / `ExperimentConfig`,
+  reads the canonical schema, builds the target / data loader / `ExperimentConfig`,
   then calls the engine. Orbax sharded checkpoints; SIGTERM → save → SLURM requeue → resume.
 - **Launch from the lab side** via `pd-lm <config.yaml>` (login-node submission wrapper;
   CONFIG-DRIVEN via `runtime.dp`, no `--nodes` / `--local` flags). `dp = N` (multiple of 8)

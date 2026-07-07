@@ -88,6 +88,7 @@ from param_decomp.slow_eval import (
     resolve_permutation_metrics,
     stochastic_hidden_acts_n_mask_samples,
 )
+from param_decomp.targets.llama8b import hf_snapshot_dir
 from param_decomp.train import TrainState
 from param_decomp_lab.experiments.lm.arithmetic_probe import build_arithmetic_probe
 from param_decomp_lab.experiments.lm.config import (
@@ -224,7 +225,11 @@ def _make_arithmetic_eval(
     )
     from transformers import AutoTokenizer  # heavy import; only the arith probe needs it in-job
 
-    tokenizer = AutoTokenizer.from_pretrained(target.model_name, local_files_only=True)
+    # resolve from the SAME snapshot the weights load from (llama8b.hf_snapshot_dir honors
+    # HF_HUB_CACHE / the shared cluster cache) — the default HF cache may be empty on cluster
+    tokenizer = AutoTokenizer.from_pretrained(
+        str(hf_snapshot_dir(target.model_name)), local_files_only=True
+    )
     probe = build_arithmetic_probe(arith.operation, arith.a_range, arith.b_range, tokenizer)
     n_prompts = probe.tokens.shape[0]
     return _ArithmeticEval(
@@ -564,7 +569,7 @@ def main(config: Path, run_id: str) -> None:
             flush=True,
         )
 
-    # The `lm` (an eqx model) IS the frozen target — it carries the suffix weights as fields,
+    # The `lm` (an eqx model) IS the frozen target — it carries the frozen weights as fields,
     # so the function-table era's separate `frozen` object is gone.
     lm, _vocab_size = build_target(built, mesh)
 

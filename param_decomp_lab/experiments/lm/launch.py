@@ -47,10 +47,10 @@ WORKSPACES_DIR = PARAM_DECOMP_OUT_DIR / "workspaces"
 UV_CACHE_DIR = PARAM_DECOMP_OUT_DIR / "uv_cache"
 
 # ONE srun task per node (the torch torchrun model): each task runs the trainer once and
-# `sharding.init_distributed` claims all 8 local GPUs for that one process. `--ntasks=N
+# `sharding.init_distributed` claims all local GPUs for that one process. `--ntasks=N
 # --ntasks-per-node=1` makes the step unpackable on this cluster's CR_Pack_Nodes selection
 # (N whole-node tasks can't collapse onto one node), so no --distribution / --cpu-bind /
-# --cpus-per-task games are needed. (Earlier 8-tasks-per-node attempts packed onto one node
+# --cpus-per-task games are needed. (Earlier one-task-per-GPU attempts packed onto one node
 # or hit "Unable to satisfy cpu bind request".)
 _SRUN_FLAGS = "--kill-on-bad-exit=1 --ntasks-per-node=1"
 
@@ -160,7 +160,7 @@ def main(
     )
     rank_env = _render_rank_env(cfg.runtime.launch_env)
     # One task per node: `--nodes=N --ntasks=N` (N whole-node tasks) can't pack onto one
-    # node, so the trainer's single process per node claims all 8 local GPUs.
+    # node, so the trainer's single process per node claims all local GPUs.
     srun = f"srun --nodes={nodes} --ntasks={nodes} {_SRUN_FLAGS}"
     command = f"{srun} bash -c {shlex.quote(_rank_command(config_rel, run_id, rank_env))}"
     script = generate_script(slurm_config, command, setup=f'cd "{workspace}"')

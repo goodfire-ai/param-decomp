@@ -18,6 +18,7 @@ from param_decomp.configs import (
     UnmaskedReconLossConfig,
 )
 from param_decomp.recon import build_loss_terms
+from param_decomp.schedule import ScheduleConfig
 from param_decomp.train import TrainState, make_train_step
 from param_decomp_lab.experiments.config import build_nontarget_loss_metrics
 from param_decomp_lab.experiments.tms.model import (
@@ -31,9 +32,8 @@ from param_decomp_lab.experiments.tms.model import (
 
 def _impmin(coeff: float) -> ImportanceMinimalityLossConfig:
     return ImportanceMinimalityLossConfig(
-        coeff=coeff, pnorm=2.0, p_anneal_start_frac=0.0, p_anneal_final_p=1.0,
-        p_anneal_end_frac=1.0,
-    )  # fmt: skip
+        coeff=coeff, pnorm=ScheduleConfig(start_val=2.0, fn_type="linear", final_val_frac=0.5)
+    )
 
 
 def _tiny_cfg() -> TMSConfig:

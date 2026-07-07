@@ -72,11 +72,8 @@ def test_nontarget_loss_set_drops_both_pgd_variants():
         FaithfulnessLossConfig(coeff=0.0),
         ImportanceMinimalityLossConfig(
             coeff=1e-3,
-            pnorm=2.0,
-            p_anneal_start_frac=0.0,
-            p_anneal_final_p=1.0,
-            p_anneal_end_frac=1.0,
-        ),  # fmt: skip
+            pnorm=ScheduleConfig(start_val=2.0, fn_type="linear", final_val_frac=0.5),
+        ),
         StochasticReconSubsetLossConfig(coeff=1.0),
         PGDReconLossConfig(coeff=0.5, init="random", n_steps=1, step_size=0.1, mask_scope="c"),
     ]
@@ -101,7 +98,7 @@ def _persistent_pgd() -> PersistentPGDReconLossConfig:
 def test_nontarget_loss_set_scales_smooth_l0_impmin():
     target: list[AnyLossMetricConfig] = [
         FaithfulnessLossConfig(coeff=0.0),
-        SmoothL0ImportanceMinimalityLossConfig(coeff=1e-5, gamma=1.0),
+        SmoothL0ImportanceMinimalityLossConfig(coeff=1e-5, gamma=ScheduleConfig(start_val=1.0)),
         StochasticReconSubsetLossConfig(coeff=1.0),
     ]
     out = build_nontarget_loss_metrics(target, impmin_coeff_ratio=2.0)

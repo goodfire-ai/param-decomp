@@ -363,7 +363,7 @@ divisibility for `nsc`) becomes a converter assert.
 | torch loss | tier | notes |
 |---|---|---|
 | `FaithfulnessLoss` | **already-runnable** | `losses.faithfulness_loss`, S17/N2 |
-| `ImportanceMinimalityLoss` | **already-runnable** | S7–S9, D2; `p_anneal_final_p=None` (constant p) is a trivial assert-relax |
+| `ImportanceMinimalityLoss` | **already-runnable** | S7–S9, D2; constant p is `pnorm.fn_type=constant` (#915) |
 | `ChunkwiseSubsetReconLoss` | **already-runnable** | the production stochastic term |
 | `StochasticReconSubsetLoss` (uniform_k) | **already-runnable** | converted today as 1-chunk plan |
 | `PersistentPGDReconLoss` (sc/bsc, Adam, clamp) | **already-runnable** | the production adversary; `bsc` is batch-sharded (`P("dp", None, None)`), no replica sync |

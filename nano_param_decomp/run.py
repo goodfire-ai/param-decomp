@@ -112,7 +112,7 @@ class Config:
     ci_mlp_hidden: int = 8192
     ci_rope_base: float = 10000.0
 
-    # Persistent PGD (per_batch_per_position scope, Adam)
+    # Persistent PGD (bsc scope: independent sources per batch element and position; Adam)
     ppgd_lr: float = 0.01
     ppgd_lr_final_frac: float = 1.0
     ppgd_warmup_pct: float = 0.025
@@ -509,7 +509,7 @@ def stochastic_recon_loss(
 class PersistentPGD:
     """Per-module adversarial sources that persist across training steps.
 
-    Scope is `per_batch_per_position`: sources have shape `[local_B, S, C + 1]` on each
+    Scope is `bsc` (batch, seq, C): sources have shape `[local_B, S, C + 1]` on each
     rank (+1 for the delta component's scalar mask), with no cross-rank sync. We maintain
     Adam state (m, v) alongside each source and a global step counter t.
 

@@ -163,19 +163,16 @@ class FrequencyMinimalityConfig(BaseConfig):
 class ImportanceMinimalityLossConfig(LossMetricConfig):
     """Config for the `L_p`-style importance-minimality penalty on upper-leaky CI values.
 
-    `pnorm` is the initial `p`, linearly annealed toward `p_anneal_final_p` between
-    `p_anneal_start_frac` and `p_anneal_end_frac` of training (no-op when
-    `p_anneal_final_p is None` or `p_anneal_start_frac == 1.0`). `frequency` (when present)
-    adds the batch-invariant frequency-minimality penalty over the same `(c + eps)^p`
-    per-component sums.
+    `pnorm` is the exponent's full schedule (SPEC S9; canonical is linear `2.0 → 0.4`:
+    `start_val=2.0, fn_type=linear, final_val_frac=0.2`; constant-`p` is
+    `fn_type=constant`). Warmup is refused where the term is built — a `p` ramping from 0
+    is never intended. `frequency` (when present) adds the batch-invariant
+    frequency-minimality penalty over the same `(c + eps)^p` per-component sums.
     """
 
     type: Literal["ImportanceMinimalityLoss"] = "ImportanceMinimalityLoss"
-    pnorm: NonNegativeFloat
+    pnorm: ScheduleConfig
     frequency: FrequencyMinimalityConfig | None = None
-    p_anneal_start_frac: Probability = 1.0
-    p_anneal_final_p: NonNegativeFloat | None = None
-    p_anneal_end_frac: Probability = 1.0
     eps: NonNegativeFloat = 1e-12
 
 
@@ -190,17 +187,14 @@ class SmoothL0ImportanceMinimalityLossConfig(LossMetricConfig):
     floor, no aggressive grad clip) — the gradient is localized on the threshold band
     `c ~ gamma/sqrt(3)` and redescends for clearly-on components.
 
-    `gamma` is annealed linearly toward `gamma_anneal_final_gamma` between
-    `gamma_anneal_start_frac` and `gamma_anneal_end_frac` of training; annealing it down
-    sharpens the count. A constant schedule is `gamma_anneal_final_gamma == gamma`.
+    `gamma` is the width's full schedule (SPEC S9′); annealing it down (e.g.
+    `fn_type=linear, final_val_frac < 1`) sharpens the count. Warmup is refused where
+    the term is built.
     """
 
     type: Literal["SmoothL0ImportanceMinimalityLoss"] = "SmoothL0ImportanceMinimalityLoss"
-    gamma: PositiveFloat
+    gamma: ScheduleConfig
     frequency: FrequencyMinimalityConfig | None = None
-    gamma_anneal_start_frac: Probability = 1.0
-    gamma_anneal_final_gamma: PositiveFloat | None = None
-    gamma_anneal_end_frac: Probability = 1.0
 
 
 # The two imp-min penalties share the `coeff` + optional `frequency` surface and the
@@ -390,14 +384,20 @@ class PersistentPGDReconLossConfig(LossMetricConfig):
 
     @model_validator(mode="before")
     @classmethod
-    def _strip_removed_use_sigmoid_parameterization(cls, data: object) -> object:
-        # Shared-storage shim: stored run configs carry `use_sigmoid_parameterization`
-        # (always False — clamp was the only implemented path). The field is removed; strip
-        # it so those configs still load. A True value was never supported -> reject.
-        if isinstance(data, dict) and "use_sigmoid_parameterization" in data:
-            assert not data.pop("use_sigmoid_parameterization"), (
-                "use_sigmoid_parameterization was removed (clamp-only)"
-            )
+    def _strip_removed_fields(cls, data: object) -> object:
+        # Shared-storage shim: stored run configs carry removed fields whose only
+        # supported value was inlined. Strip them so those configs still load; any
+        # other value never had an implementation -> reject.
+        if isinstance(data, dict):
+            if "use_sigmoid_parameterization" in data:
+                assert not data.pop("use_sigmoid_parameterization"), (
+                    "use_sigmoid_parameterization was removed (clamp-only)"
+                )
+            if "n_samples" in data:
+                assert data.pop("n_samples") == 1, (
+                    "n_samples was removed (route-all + one persistent source bundle make"
+                    " every draw identical, so only 1 was ever meaningful)"
+                )
         return data
 
     type: Literal["PersistentPGDReconLoss"] = "PersistentPGDReconLoss"
@@ -417,7 +417,6 @@ class PersistentPGDReconLossConfig(LossMetricConfig):
             " computation."
         ),
     )
-    n_samples: PositiveInt = 1
 
 
 # ---------------------------------------------------------------------------
@@ -674,16 +673,14 @@ class LaunchEnv(BaseConfig):
         return data
 
     xla_python_client_mem_fraction: PositiveFloat = 0.92
-    """`XLA_PYTHON_CLIENT_MEM_FRACTION` — the BFC pool cap as a fraction of HBM. The XLA
-    default 0.75 caps production steps too low (OOM, job 50644)."""
+    """`XLA_PYTHON_CLIENT_MEM_FRACTION` — the BFC pool cap as a fraction of HBM."""
     xla_python_client_allocator: str | None = None
     """`XLA_PYTHON_CLIENT_ALLOCATOR` — e.g. `platform` for the on-demand cudaMalloc allocator
     (avoids BFC fragmentation OOMs near the HBM cap, at some per-alloc cost). `None` leaves
     the XLA default (BFC). Replaces the old `pd-lm --allocator` flag."""
     xla_pjrt_gpu_host_memory_limit_gb: PositiveInt = 1024
-    """`XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB` — cap on XLA's pinned host-staging pool (allocated
-    on demand). The 64 GB default is blown past right after faith warmup on the full-model
-    step (job 127622); the b200 nodes carry ~2 TB RAM."""
+    """`XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB` — cap on XLA's pinned host-staging pool
+    (allocated on demand)."""
     nccl_debug: str = "WARN"
     """`NCCL_DEBUG` — overrides the cluster default (INFO + SUBSYS=ALL), which logs every
     collective and bloats slurm logs to tens of GB per run."""

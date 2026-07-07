@@ -1,12 +1,12 @@
 """Generate a small full-model-faithful compile-probe config.
 
 Derived from llama8b_full32L_seq512_b128_dp128.yaml: SAME per-kind C structure
-(q/k 2048, v/o 4096, gate/up 8192, down 10240) so the masked suffix forward takes the
+(q/k 2048, v/o 4096, gate/up 8192, down 10240) so the masked forward takes the
 uniform-per-kind `lax.scan` path (the production compile path), SAME chunkwise-recon +
 persistent-PGD + faith + imp-min machinery, SAME CI-fn arch (4-block transformer). The
-only knobs scaled down are layer count (decompose the LAST `n_layers` so the frozen
-suffix that the scan walks is exactly `n_layers` long), batch, seq, and the warmup/step
-counts so we reach the real recon step fast for timing.
+only knobs scaled down are layer count (decompose the LAST `n_layers`, so the live
+decomposed span the scan walks is exactly `n_layers` long), batch, seq, and the
+warmup/step counts so we reach the real recon step fast for timing.
 
 Usage: python gen_probe_config.py <n_layers> <dp> <out.yaml>
 """
@@ -111,10 +111,7 @@ def main(n_layers: int, dp: int, out_path: str, seq: int = 256, batch: int | Non
                     "beta": 0.2,
                     "coeff": 5.0e-06,
                     "eps": 1.0e-06,
-                    "p_anneal_end_frac": 1.0,
-                    "p_anneal_final_p": 0.4,
-                    "p_anneal_start_frac": 0.0,
-                    "pnorm": 2.0,
+                    "pnorm": {"start_val": 2.0, "fn_type": "linear", "final_val_frac": 0.2},
                     "type": "ImportanceMinimalityLoss",
                 },
                 {
@@ -126,7 +123,6 @@ def main(n_layers: int, dp: int, out_path: str, seq: int = 256, batch: int | Non
                 },
                 {
                     "coeff": 0.5,
-                    "n_samples": 1,
                     "n_warmup_steps": 2,
                     "optimizer": {
                         "beta1": 0.01,
@@ -140,7 +136,7 @@ def main(n_layers: int, dp: int, out_path: str, seq: int = 256, batch: int | Non
                         },
                         "type": "adam",
                     },
-                    "scope": {"type": "per_batch_per_position"},
+                    "scope": {"type": "bsc"},
                     "type": "PersistentPGDReconLoss",
                 },
                 {"coeff": 1000000.0, "type": "FaithfulnessLoss"},

@@ -47,10 +47,10 @@ pd:
   loss_metrics:
     - type: SmoothL0ImportanceMinimalityLoss
       coeff: 0.0002
-      gamma: 1.0
-      gamma_anneal_start_frac: 0.0
-      gamma_anneal_final_gamma: 0.01
-      gamma_anneal_end_frac: 1.0
+      gamma:
+        start_val: 1.0
+        fn_type: linear
+        final_val_frac: 0.01
       frequency:
         coeff: 1.0e-04
         reference_token_count: 32768

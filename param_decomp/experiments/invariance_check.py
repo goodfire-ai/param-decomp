@@ -113,9 +113,8 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
         (
             FaithfulnessLossConfig(coeff=1e5),
             ImportanceMinimalityLossConfig(
-                coeff=5e-6, pnorm=2.0,
+                coeff=5e-6, pnorm=ScheduleConfig(start_val=2.0, fn_type="linear", final_val_frac=0.2),
                 frequency=FrequencyMinimalityConfig(coeff=1e-6, reference_token_count=128),
-                p_anneal_start_frac=0.0, p_anneal_final_p=0.4, p_anneal_end_frac=1.0,
             ),
             ChunkwiseSubsetReconLossConfig(routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=3, n_samples=1),
             ppgd_cfg,
@@ -147,10 +146,8 @@ def main() -> None:
     single = _run(args.steps, sharded=False)
     sharded = _run(args.steps, sharded=True)
 
-    # ABS floor: the per-leaf grad-norm diagnostics include tiny norms (~1e-4) whose
-    # cross-shard reduction suffers cancellation — relative error there can graze 1e-4
-    # while every loss term sits at ~1e-6 (observed: one ci-fn wv leaf, abs err ~1e-8).
-    # The floor is far below any semantically meaningful metric's scale.
+    # The ABS floor absorbs cross-shard cancellation noise in the tiny per-leaf grad-norm
+    # diagnostics.
     REL, ABS = 1e-4, 1e-7
     ok = True
     worst = 0.0
