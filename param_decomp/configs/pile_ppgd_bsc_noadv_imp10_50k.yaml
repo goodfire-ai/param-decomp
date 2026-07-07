@@ -1,0 +1,141 @@
+# No-adv arm (imp-min coeff 1.0e-04) for the adv-vs-noadv investigation: identical to
+# pile_ppgd_bsc_nw2_50k_advref.yaml except the PersistentPGDReconLoss term is REMOVED,
+# StochasticReconSubsetLoss coeff 0.5 -> 1.0 (keeping total recon weight), and the
+# smooth-L0 imp-min coeff is swept (1.0e-04 here vs the advref's 2.0e-04) to match the
+# adv run's L0 / fidelity metrics without an adversary. The PGDReconLoss_20step eval
+# probe stays: it is eval-only and is the post-hoc robustness readout for this arm.
+# Target: LlamaSimpleMLP 4L pile model (t-9d2b8f02), the VPD-paper "Jose" model.
+run_name: pile4l-noadv-imp10-50k
+cadence:
+  keep_last_n_checkpoints: 2
+  save_every: 5000
+  train_log_every: 200
+data:
+  buffer_size: 1000
+  column_name: input_ids
+  data_files: /mnt/data/artifacts/mechanisms/param-decomp/datasets/pile_neox_tok_512/*.parquet
+  dataset_name: parquet
+  eval_split: train
+  is_tokenized: true
+  max_seq_len: 512
+  revision: null
+  shuffle_each_epoch: true
+  train_batch_replay: 1
+  streaming: false
+  tokenizer_name: EleutherAI/gpt-neox-20b
+  train_split: train
+eval:
+  batch_size: 128
+  every: 1000
+  metrics:
+  - n_batches_accum: 1
+    type: CIHistograms
+  - ci_alive_threshold: 0.0
+    type: ComponentActivationDensity
+  - ci_alive_threshold: 0.0
+    groups:
+      layer_0:
+      - h.0.*
+      layer_1:
+      - h.1.*
+      layer_2:
+      - h.2.*
+      layer_3:
+      - h.3.*
+      total:
+      - '*'
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  - type: CIMeanPerComponent
+  - coeff: null
+    type: StochasticHiddenActsReconLoss
+  - type: CIHiddenActsReconLoss
+  - coeff: null
+    init: random
+    mask_scope: shared_across_batch
+    n_steps: 20
+    name: PGDReconLoss_20step
+    step_size: 0.1
+    type: PGDReconLoss
+  n_steps: 1
+  slow_every: 10000
+  slow_on_first_step: true
+pd:
+  batch_size: 64
+  ci_config:
+    type: chunkwise_transformer
+    blocks_per_chunk: 1
+    d_model: 2048
+    n_blocks: 8
+    n_heads: 16
+    mlp_hidden: 8192
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: null
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 0.01
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  decomposition_targets:
+  - C: 3072
+    module_pattern: h.*.mlp.c_fc
+  - C: 3584
+    module_pattern: h.*.mlp.down_proj
+  - C: 512
+    module_pattern: h.*.attn.q_proj
+  - C: 512
+    module_pattern: h.*.attn.k_proj
+  - C: 1024
+    module_pattern: h.*.attn.v_proj
+  - C: 1024
+    module_pattern: h.*.attn.o_proj
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 400
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - frequency:
+      coeff: 1.0e-04
+      reference_token_count: 65536
+    coeff: 1.0e-04
+    gamma:
+      start_val: 1.0
+      fn_type: linear
+      final_val_frac: 0.01
+    type: SmoothL0ImportanceMinimalityLoss
+  - coeff: 1.0
+    routing:
+      type: uniform_k_subset
+    type: StochasticReconSubsetLoss
+  - coeff: 10000000.0
+    type: FaithfulnessLoss
+  seed: 0
+  steps: 50000
+runtime:
+  remat_recon_forwards: false
+  dp: 8
+target:
+  output_extract: 0
+  weights_dtype: bfloat16
+  spec:
+    kind: pretrained
+    model_class: param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
+    run_path: goodfire/spd/runs/t-9d2b8f02
+wandb:
+  entity: null
+  project: param-decomp
