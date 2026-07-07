@@ -457,7 +457,7 @@ grad = ∇_{components, ci_fn, sources} (L_target + L_nontarget)      # single v
   `(B_target, T_target, C+1)` with `B_target = data.global_batch` (which doubles as the
   target batch — `_targeted_data`). Warmup and final ascents score the S38-sliced target
   recon loss, so pad-position sources get zero gradient and stay at init (causally inert per
-  S38). All non-tPD persistent semantics (S13′–S16, S22–S24, S32) apply unchanged.
+  S38). All non-tPD persistent semantics (S13′–S16, S22–S24) apply unchanged.
 
 The target stream is task-specific and feeds the engine's `sample_batch` seam like any other
 data: for the toys it is `active_indices`-restricted sparse features; for the LM it is a fixed

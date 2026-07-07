@@ -40,6 +40,7 @@ from param_decomp.configs import (
     PGDReconSubsetLossConfig,
     ResumeProvenance,
     RuntimeConfig,
+    SmoothL0ImportanceMinimalityLossConfig,
     StochasticHiddenActsReconLossConfig,
     UnmaskedReconLossConfig,
     WandbConfig,
@@ -86,7 +87,10 @@ def build_nontarget_loss_metrics(
     for cfg in loss_metrics:
         if isinstance(cfg, EXCLUDED_NONTARGET_LOSS_CONFIGS):
             continue
-        if isinstance(cfg, ImportanceMinimalityLossConfig) and cfg.coeff is not None:
+        is_impmin = isinstance(
+            cfg, (ImportanceMinimalityLossConfig, SmoothL0ImportanceMinimalityLossConfig)
+        )
+        if is_impmin and cfg.coeff is not None:
             out.append(cfg.model_copy(update={"coeff": cfg.coeff * impmin_coeff_ratio}))
         else:
             out.append(cfg.model_copy())

@@ -16,6 +16,7 @@ from param_decomp.configs import (
     PersistentPGDReconLossConfig,
     PGDReconLossConfig,
     SCScope,
+    SmoothL0ImportanceMinimalityLossConfig,
     StochasticReconSubsetLossConfig,
 )
 from param_decomp.run import TargetPromptGeometry
@@ -95,6 +96,17 @@ def _persistent_pgd() -> PersistentPGDReconLossConfig:
         ),
         n_warmup_steps=2,
     )
+
+
+def test_nontarget_loss_set_scales_smooth_l0_impmin():
+    target: list[AnyLossMetricConfig] = [
+        FaithfulnessLossConfig(coeff=0.0),
+        SmoothL0ImportanceMinimalityLossConfig(coeff=1e-5, gamma=1.0),
+        StochasticReconSubsetLossConfig(coeff=1.0),
+    ]
+    out = build_nontarget_loss_metrics(target, impmin_coeff_ratio=2.0)
+    smooth = [m for m in out if isinstance(m, SmoothL0ImportanceMinimalityLossConfig)]
+    assert len(smooth) == 1 and smooth[0].coeff == pytest.approx(2e-5)  # S37
 
 
 def test_nontarget_loss_set_drops_persistent_pgd():
