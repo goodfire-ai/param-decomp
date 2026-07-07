@@ -1,0 +1,120 @@
+# SMOKE copy of arith_l18_targeted.yaml: dp 8 (1 node), tiny C + CI fn for a fast compile,
+# 20 steps, frequent save/eval. Keeps the ArithmeticCIGrid + CEandKLLosses + CI_L0 eval so
+# the smoke exercises the full metric path. Everything algorithmically else is identical.
+run_name: arith-l18-targeted-smoke
+cadence:
+  keep_last_n_checkpoints: 2
+  save_every: 10
+  train_log_every: 1
+data:
+  tokenizer_name: meta-llama/Llama-3.1-8B
+  prompts_file: param_decomp_lab/experiments/lm_targeted/prompts/arithmetic_add_1_100.txt
+  max_seq_len: 16
+  add_special_tokens: true
+nontarget:
+  batch_size: 32
+  impmin_coeff_ratio: 2.0
+  data:
+    dataset_name: parquet
+    data_files: /mnt/polished-lake/artifacts/mechanisms/param-decomp/datasets/fineweb_llama_tok_2048/*.parquet
+    column_name: input_ids
+    tokenizer_name: meta-llama/Llama-3.1-8B
+    max_seq_len: 2048
+    is_tokenized: true
+    streaming: false
+    eval_split: train
+eval:
+  batch_size: 32
+  every: 10
+  metrics:
+  - ci_alive_threshold: 0.0
+    groups: null
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  - type: ArithmeticCIGrid
+  n_steps: 1
+  slow_every: 100000
+  slow_on_first_step: false
+pd:
+  batch_size: 32
+  ci_config:
+    type: chunkwise_transformer
+    blocks_per_chunk: 1
+    d_model: 2048
+    n_blocks: 1
+    n_heads: 64
+    mlp_hidden: 16384
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: null
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 7.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 0.01
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 7.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  decomposition_targets:
+  - C: 4096
+    module_pattern: model.layers.18.mlp.gate_proj
+  - C: 4096
+    module_pattern: model.layers.18.mlp.up_proj
+  - C: 4096
+    module_pattern: model.layers.18.mlp.down_proj
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 0
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - frequency:
+      coeff: 1.0e-06
+      reference_token_count: 1048576
+    coeff: 5.0e-06
+    eps: 1.0e-12
+    p_anneal_end_frac: 1.0
+    p_anneal_final_p: 0.4
+    p_anneal_start_frac: 0.0
+    pnorm: 2.0
+    type: ImportanceMinimalityLoss
+  - coeff: 0.5
+    routing:
+      type: uniform_k_subset
+    type: StochasticReconSubsetLoss
+  - coeff: 0.5
+    init: random
+    mask_scope: unique_per_datapoint
+    n_steps: 1
+    step_size: 1.0
+    type: PGDReconLoss
+  - coeff: 0.0
+    type: FaithfulnessLoss
+  seed: 0
+  steps: 20
+runtime:
+  remat_recon_forwards: false
+  dp: 8
+  launch_env:
+    env:
+      HF_HOME: /mnt/polished-lake/artifacts/public/hf_cache
+      PARAM_DECOMP_OUT_DIR: /mnt/polished-lake/home/lee/param-decomp/out
+target:
+  weights_dtype: bfloat16
+  spec:
+    kind: hf
+    model_class: transformers.LlamaForCausalLM
+    model_name: meta-llama/Llama-3.1-8B
+wandb:
+  entity: null
+  project: param-decomp-llama

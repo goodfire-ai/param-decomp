@@ -146,6 +146,13 @@ class LMDataConfig(BaseConfig):
     streaming: bool = Field(default=False)
     buffer_size: PositiveInt = Field(default=1000)
     shuffle_each_epoch: bool = Field(default=True)
+    add_special_tokens: bool = Field(
+        default=False,
+        description="Prepend the tokenizer's special tokens (e.g. Llama's BOS) when tokenizing "
+        "a `prompts_file` target pool. Default False preserves the numpy/pandas tPD run; set "
+        "True to match an eval probe that tokenizes with add_special_tokens=True (the "
+        "ArithmeticCIGrid probe includes BOS).",
+    )
 
     @model_validator(mode="after")
     def _exactly_one_source(self) -> "LMDataConfig":
