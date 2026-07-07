@@ -56,7 +56,7 @@ core, in `param_decomp.configs`; the engine's `BuiltRun` bundle is core, in
 experiments/
 ├── utils.py                 # EXPERIMENT_CONFIG_FILENAME
 ├── lm/
-│   ├── launch.py        # pd-lm: snapshot + shared-FS workspace + sbatch
+│   ├── launch.py        # pd-lm: snapshot + pinned launch config + sbatch (per-node job-side venv)
 │   ├── data.py              # tokenize_and_concatenate (offline helper for prestage)
 │   ├── prestage_tokenized.py  # HF text -> int32 parquet shards for the JAX trainer
 │   └── arithmetic_probe.py    # a x b arithmetic grid spec -> in-memory eval probe (ArithmeticCIGrid)

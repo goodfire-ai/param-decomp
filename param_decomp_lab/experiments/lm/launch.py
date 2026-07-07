@@ -2,24 +2,28 @@
 
 CONFIG-DRIVEN: the launch mode is a pure function of `runtime.dp` in the run config — no
 `--nodes` / `--local` flags. `dp is None` → run the trainer INLINE in the current process
-(single device, no SLURM, no workspace; smoke / debug). `dp is not None` → submit to SLURM
-across `nodes = dp // 8` nodes (8 GPUs each, one srun task per node claiming all 8 GPUs).
+(single device, no SLURM; smoke / debug). `dp is not None` → submit to SLURM across
+`nodes = dp // 8` nodes (8 GPUs each, one srun task per node claiming all 8 GPUs).
 
 The SLURM path mints the `p-<8hex>` run id, snapshots the working tree to
-`refs/runs/snapshot/<id>`, materializes the snapshot as a shared-FS workspace (clone + the
-one CUDA venv, built at submit time on the login node — all nodes share the one FS
-workspace, so in-job cloning would race), stamps the run id (+ out_dir / wandb group /
-tags) into the workspace's single config yaml, and sbatches. Requeues re-enter the same
-immutable workspace.
+`refs/runs/snapshot/<id>` (pushed to origin best-effort, as a provenance backup), stages
+the run dir with the pinned (group/tags-stamped) `launch_config.yaml` + `.env` (the
+copies the job — and every requeue — reads), and sbatches. Each node then builds its own
+workspace at job start: shallow-fetch the snapshot from the submitting checkout's
+shared-FS git dir into node-local `/tmp`, `uv sync` with the driver-gated CUDA extra,
+exec the trainer. Nothing is built at submit time and no shared-FS workspace exists to
+leak or clean up; requeues depend only on shared FS, never on GitHub reachability.
 
 The rank env (XLA flags, NCCL/host-memory knobs, `PD_*` profiling toggles) is rendered from
-the config's `runtime.launch_env` (single source of truth, defaults in `LaunchEnv`), plus a
-submit-time-computed `LD_LIBRARY_PATH`. So a run's `launch_config.yaml` fully captures the
-environment it ran with, and A/B-ing a flag is a config edit, not a launcher edit.
+the config's `runtime.launch_env` (single source of truth, defaults in `LaunchEnv`), plus
+`LD_LIBRARY_PATH` computed in-job from the freshly-built venv. So a run's
+`launch_config.yaml` fully captures the environment it ran with, and A/B-ing a flag is a
+config edit, not a launcher edit.
 """
 
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -27,6 +31,7 @@ from pathlib import Path
 import fire
 import yaml
 
+from param_decomp.built_run import LAUNCH_CONFIG_FILENAME
 from param_decomp.configs import LaunchEnv
 from param_decomp.log import logger
 from param_decomp_lab.experiments.lm.config import LMExperimentConfig
@@ -37,14 +42,10 @@ from param_decomp_lab.infra.slurm import SlurmConfig, generate_script, submit_sl
 from param_decomp_lab.infra.wandb import get_wandb_entity
 
 GPUS_PER_NODE = 8
-WORKSPACES_DIR = PARAM_DECOMP_OUT_DIR / "workspaces"
 
-# uv hardlinks wheels from its cache into a venv when both share a filesystem, else
-# copies. The default cache (~/.cache/uv, home mount) and the workspaces (data mount) are
-# different PVCs, so every build copied multi-GB CUDA wheels; co-locating the cache here
-# makes it hardlink instead. Set per-build (below), not globally, so other cluster uv
-# usage keeps its default cache. uv falls back to copy if ever cross-FS — safe anywhere.
-UV_CACHE_DIR = PARAM_DECOMP_OUT_DIR / "uv_cache"
+# Node-local. Trainer jobs hold whole nodes (8/8 GPUs), so no concurrent job shares a
+# node with one — the start-of-task sweep below cannot race another run's workspace.
+_NODE_WORKSPACES_DIR = "/tmp/$USER/param-decomp/node-workspaces"
 
 # ONE srun task per node (the torch torchrun model): each task runs the trainer once and
 # `sharding.init_distributed` claims all local GPUs for that one process. `--ntasks=N
@@ -56,8 +57,7 @@ _SRUN_FLAGS = "--kill-on-bad-exit=1 --ntasks-per-node=1"
 
 # jax[cuda12]'s version check dlopens cuSPARSE et al. by soname and on this cluster doesn't
 # find the pip-installed nvidia libs ("Unable to load cuSPARSE") — point the loader at the
-# venv's nvidia/*/lib dirs. Computed at submit time (machine-specific), so it stays here
-# rather than in the tracked `runtime.launch_env`.
+# venv's nvidia/*/lib dirs. Evaluated in-job, after the node's venv is built and activated.
 _LD_LIBRARY_PATH_EXPORT = (
     "export LD_LIBRARY_PATH=\"$(python -c 'import nvidia, os, glob; "
     'print(":".join(sorted(glob.glob(os.path.join(list(nvidia.__path__)[0], "*", "lib")))))\')'
@@ -67,7 +67,7 @@ _LD_LIBRARY_PATH_EXPORT = (
 
 def _render_rank_env(launch_env: LaunchEnv) -> str:
     """The bash `export` block for a rank, from the config's `runtime.launch_env` plus the
-    submit-time-computed `LD_LIBRARY_PATH`. The typed knobs are the single source of truth
+    in-job-computed `LD_LIBRARY_PATH`. The typed knobs are the single source of truth
     (defaults in `LaunchEnv`); shell-quote each value so spaces (e.g. multi-flag `XLA_FLAGS`)
     survive."""
     exports = [f"export {k}={shlex.quote(v)}" for k, v in launch_env.as_env().items()]
@@ -75,11 +75,70 @@ def _render_rank_env(launch_env: LaunchEnv) -> str:
     return "\n".join(exports)
 
 
-def _rank_command(config_rel: Path, run_id: str, rank_env: str) -> str:
+def _snapshot_source_repo() -> Path:
+    """The local git state the nodes fetch the snapshot from: the submitting checkout's
+    COMMON git dir (the main checkout's `.git`, even when submitting from a worktree —
+    worktrees share refs but may be deleted before a requeue re-fetches). Shared FS, so
+    neither submits nor requeues depend on GitHub reachability; the best-effort origin
+    push in `create_git_snapshot` is a provenance backup, not the job's fetch source."""
+    result = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return Path(result.stdout.strip())
+
+
+def _node_workspace_setup(run_id: str, snapshot_ref: str, source_repo: Path, run_dir: Path) -> str:
+    """The start of each node's srun task: sweep stale workspaces, shallow-fetch the
+    snapshot from the shared-FS git dir into node-local /tmp, build the CUDA venv,
+    activate. (`file://` rather than the bare path — git silently ignores `--depth` on
+    the local transport.) The `.env` (secrets, not in git) comes from the run dir, where
+    submit staged it. The task `exec`s the trainer afterwards (bash is replaced, so no
+    EXIT trap can run here) — normal-end cleanup is the batch script's trap
+    (`_node_workspace_cleanup_trap`), and the up-front sweep self-heals leftovers from
+    jobs that died before their trap fired.
+
+    The CUDA extra is driver-gated per node (buildable here, unlike at submit on a
+    GPU-less login node): cuda13's runtime libs include the Blackwell-TMEM-fixed
+    cuBLAS >= 13.2 (cuBLAS 12.9 warns of silent corruption on B200) but need driver
+    >= r580, below which (and-gmi's r570) the node falls back to cu12."""
+    return f"""\
+set -euo pipefail
+WORK_DIR="{_NODE_WORKSPACES_DIR}/{run_id}"
+rm -rf "{_NODE_WORKSPACES_DIR}"
+mkdir -p "$WORK_DIR"
+cd "$WORK_DIR"
+git init --quiet
+git fetch --quiet --depth 1 "file://{source_repo}" "{snapshot_ref}"
+git checkout --quiet FETCH_HEAD
+cp "{run_dir}/.env" .env
+unset VIRTUAL_ENV
+DRIVER_MAJOR=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n 1 | cut -d. -f1)
+if [ "$DRIVER_MAJOR" -ge 580 ]; then CUDA_EXTRA=cuda13; else CUDA_EXTRA=cuda; fi
+echo "cuda extra: $CUDA_EXTRA (driver major $DRIVER_MAJOR)"
+uv sync --all-packages --no-dev --extra "$CUDA_EXTRA" --link-mode copy -q
+source .venv/bin/activate"""
+
+
+def _node_workspace_cleanup_trap(nodes: int) -> str:
+    """Batch-script EXIT trap: sweep every node's /tmp workspace after the run. Best
+    effort — a hard kill skips it; the next job's start-of-task sweep is the backstop."""
     return (
-        f"source .venv/bin/activate\n{rank_env}\n"
+        f"trap 'srun --nodes={nodes} --ntasks={nodes} --ntasks-per-node=1 "
+        f'rm -rf "{_NODE_WORKSPACES_DIR}"\' EXIT'
+    )
+
+
+def _rank_command(
+    run_id: str, snapshot_ref: str, source_repo: Path, run_dir: Path, rank_env: str
+) -> str:
+    launch_config = run_dir / LAUNCH_CONFIG_FILENAME
+    return (
+        f"{_node_workspace_setup(run_id, snapshot_ref, source_repo, run_dir)}\n{rank_env}\n"
         f"exec python -m param_decomp_lab.experiments.lm.run "
-        f"{shlex.quote(str(config_rel))} --run-id {shlex.quote(run_id)}"
+        f"{shlex.quote(str(launch_config))} --run-id {shlex.quote(run_id)}"
     )
 
 
@@ -98,16 +157,16 @@ def main(
 
     Args:
         config_path: Single self-contained run yaml (the canonical schema + top-level
-            `run_name`), inside the repo. `runtime.dp` declares the world size: `None` →
-            run inline (single device); `N` (a multiple of 8) → submit across `N // 8`
-            nodes. The `run_id` is minted here and passed to the trainer as a `--run-id`
-            CLI arg (so it survives requeue); the run dir is
-            `PARAM_DECOMP_OUT_DIR/runs/<run_id>`.
+            `run_name`). `runtime.dp` declares the world size: `None` → run inline
+            (single device); `N` (a multiple of 8) → submit across `N // 8` nodes.
+            The `run_id` is minted here; the config is pinned as
+            `PARAM_DECOMP_OUT_DIR/runs/<run_id>/launch_config.yaml` and the job reads
+            THAT copy, so this file is free to change after submit.
         time: SLURM time limit.
         qos: SLURM QoS (e.g. `opportunistic`); None is the normal QoS.
-        run_id: Resubmit an existing launch — reuses its workspace (and identity)
-            instead of building a new one. `group`/`tags` are ignored on resubmit
-            (the original workspace config already carries them).
+        run_id: Resubmit an existing launch — reuses its pinned launch config (and
+            identity). `group`/`tags` are ignored on resubmit (the pinned config
+            already carries them).
         group: wandb UI group (no-op when the config omits `wandb:`).
         tags: Comma-separated wandb tags (no-op when `wandb:` is omitted).
         comment: SLURM `--comment`; defaults to the wandb run URL (or run id).
@@ -115,8 +174,9 @@ def main(
     The rank env (XLA flags, NCCL/host-memory knobs, profiling toggles) is config-driven
     via `runtime.launch_env` — set it in the YAML, not here (so `launch_config.yaml` records it).
     """
-    config_rel = _config_path_relative_to_repo(config_path)
-    cfg, run_name = _validate_config(REPO_ROOT / config_rel)
+    config = Path(config_path).resolve()
+    assert config.exists(), f"config not found: {config}"
+    cfg, run_name = _validate_config(config)
     # Python Fire parses a comma-separated `--tags a,b,c` into a tuple, but keeps a value with a
     # hyphen (e.g. `a,b,c-d`) as a string — normalize both (and the single-token case) to a list.
     if tags is None:
@@ -128,21 +188,24 @@ def main(
 
     dp = cfg.runtime.dp
     if dp is None:
-        _run_local(config_rel, run_name, group, tag_list)
+        _run_local(config, run_name, group, tag_list)
         return
     assert dp % GPUS_PER_NODE == 0, f"runtime.dp={dp} must be a multiple of {GPUS_PER_NODE}"
     nodes = dp // GPUS_PER_NODE
 
+    source_repo = _snapshot_source_repo()
     if run_id is None:
         run_id = generate_run_id("param_decomp")
         snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=run_id)
         logger.info(f"Created git snapshot: {snapshot_ref} ({commit_hash[:8]})")
-        workspace = WORKSPACES_DIR / run_id
-        _build_workspace(workspace, snapshot_ref, config_rel, group, tag_list)
+        run_dir = _write_run_dir(config, run_id, group, tag_list)
+        _stage_env_file(run_dir)
     else:
         snapshot_ref = f"refs/runs/snapshot/{run_id}"
-        workspace = WORKSPACES_DIR / run_id
-        assert workspace.exists(), f"no workspace to resubmit: {workspace}"
+        _assert_snapshot_ref_exists(source_repo, snapshot_ref)
+        run_dir = PARAM_DECOMP_OUT_DIR / "runs" / run_id
+        for staged in (LAUNCH_CONFIG_FILENAME, ".env"):
+            assert (run_dir / staged).exists(), f"no {staged} to resubmit: {run_dir / staged}"
 
     wandb_url = _wandb_url(cfg, run_id)
     job_name = f"pd-{run_name}"
@@ -162,8 +225,9 @@ def main(
     # One task per node: `--nodes=N --ntasks=N` (N whole-node tasks) can't pack onto one
     # node, so the trainer's single process per node claims all local GPUs.
     srun = f"srun --nodes={nodes} --ntasks={nodes} {_SRUN_FLAGS}"
-    command = f"{srun} bash -c {shlex.quote(_rank_command(config_rel, run_id, rank_env))}"
-    script = generate_script(slurm_config, command, setup=f'cd "{workspace}"')
+    rank_command = _rank_command(run_id, snapshot_ref, source_repo, run_dir, rank_env)
+    command = f"{srun} bash -c {shlex.quote(rank_command)}"
+    script = generate_script(slurm_config, command, setup=_node_workspace_cleanup_trap(nodes))
     result = submit_slurm_job(script, "pd-lm")
 
     logger.section("pd-lm job submitted!")
@@ -174,25 +238,24 @@ def main(
         "Log file": result.log_pattern,
         "Script": str(result.script_path),
         "Snapshot": snapshot_ref,
-        "Workspace": str(workspace),
+        "Launch config": str(run_dir / LAUNCH_CONFIG_FILENAME),
     }
     if wandb_url is not None:
         summary["WandB run URL"] = wandb_url
     logger.values(summary)
 
 
-def _run_local(config_rel: Path, run_name: str, group: str | None, tags: list[str]) -> None:
-    """Mint a run id, stamp the live config in place, and run the trainer inline."""
+def _run_local(config: Path, run_name: str, group: str | None, tags: list[str]) -> None:
+    """Mint a run id, pin the launch config into the run dir, and run the trainer inline."""
     run_id = generate_run_id("param_decomp")
-    config = REPO_ROOT / config_rel
-    _stamp_config(config, group, tags)
+    launch_config = _write_run_dir(config, run_id, group, tags) / LAUNCH_CONFIG_FILENAME
     logger.section(f"pd-lm local: {run_name} ({run_id})")
     subprocess.run(
         [
             sys.executable,
             "-m",
             "param_decomp_lab.experiments.lm.run",
-            str(config_rel),
+            str(launch_config),
             "--run-id",
             run_id,
         ],
@@ -200,15 +263,6 @@ def _run_local(config_rel: Path, run_name: str, group: str | None, tags: list[st
         check=True,
         env=os.environ.copy(),
     )
-
-
-def _config_path_relative_to_repo(config_path: str) -> Path:
-    path = Path(config_path).resolve()
-    assert path.exists(), f"config not found: {path}"
-    assert path.is_relative_to(REPO_ROOT), (
-        f"config must live inside the repo so the snapshot carries it: {path}"
-    )
-    return path.relative_to(REPO_ROOT)
 
 
 def _validate_config(config_path: Path) -> tuple[LMExperimentConfig, str]:
@@ -227,46 +281,41 @@ def _validate_config(config_path: Path) -> tuple[LMExperimentConfig, str]:
     return cfg, cfg.run_name
 
 
-def _build_workspace(
-    workspace: Path,
-    snapshot_ref: str,
-    config_rel: Path,
-    group: str | None,
-    tags: list[str],
-) -> None:
-    """Materialize the snapshot as an immutable shared-FS checkout with the one CUDA
-    venv, then stamp the wandb group/tags into the workspace's single config yaml. The run
-    id rides as a `--run-id` CLI arg on the trainer command, not in the config."""
-    assert not workspace.exists(), f"workspace already exists: {workspace}"
-    workspace.parent.mkdir(parents=True, exist_ok=True)
-    UV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    build_env = {**os.environ, "UV_CACHE_DIR": str(UV_CACHE_DIR)}
+def _write_run_dir(config: Path, run_id: str, group: str | None, tags: list[str]) -> Path:
+    """Mint the run dir and pin the config (wandb group/tags stamped in) as its
+    `launch_config.yaml` — the one copy the job and every requeue read, and the same file
+    the trainer pins (`run.py::_pin_config_copy` no-ops on it)."""
+    run_dir = PARAM_DECOMP_OUT_DIR / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=False)
+    launch_config = run_dir / LAUNCH_CONFIG_FILENAME
+    launch_config.write_text(config.read_text())
+    _stamp_config(launch_config, group, tags)
+    return run_dir
 
-    def run(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> None:
-        subprocess.run(args, cwd=cwd, check=True, env=env)
 
-    logger.info(f"Building workspace {workspace} ...")
-    run(["git", "clone", "--quiet", str(REPO_ROOT), str(workspace)], cwd=REPO_ROOT)
-    run(
-        ["git", "fetch", "--quiet", str(REPO_ROOT), f"{snapshot_ref}:{snapshot_ref}"], cwd=workspace
-    )
-    run(["git", "checkout", "--quiet", snapshot_ref], cwd=workspace)
+def _stage_env_file(run_dir: Path) -> None:
+    """Stage `.env` (secrets, not in git — they can't ride the snapshot) into the run dir
+    for the node setup to copy into its workspace. Mode-preserving copy (0o660 secrets
+    stay group-only under the runs dir's group-writable umask)."""
     env_file = REPO_ROOT / ".env"
     assert env_file.exists(), f".env with wandb credentials required: {env_file}"
-    (workspace / ".env").write_bytes(env_file.read_bytes())
+    shutil.copy(env_file, run_dir / ".env")
 
-    logger.info("venv: uv sync --all-packages --no-dev --extra cuda (hardlink from uv_cache) ...")
-    run(
-        ["uv", "sync", "--all-packages", "--no-dev", "--extra", "cuda", "-q"],
-        cwd=workspace,
-        env=build_env,
+
+def _assert_snapshot_ref_exists(source_repo: Path, snapshot_ref: str) -> None:
+    """Load-bearing on `--run-id` resubmits (a fresh submit just created the ref in a
+    checkout sharing `source_repo`'s refs)."""
+    result = subprocess.run(
+        ["git", "-C", str(source_repo), "rev-parse", "--verify", "--quiet", snapshot_ref],
+        capture_output=True,
     )
-
-    _stamp_config(workspace / config_rel, group, tags)
+    assert result.returncode == 0, (
+        f"{snapshot_ref} not in {source_repo} — nodes fetch the snapshot from there at job start"
+    )
 
 
 def _stamp_config(config: Path, group: str | None, tags: list[str]) -> None:
-    """Stamp the wandb UI knobs onto the workspace's single config yaml's `wandb:` block
+    """Stamp the wandb UI knobs onto the pinned launch config's `wandb:` block
     (no-op when `wandb:` is omitted). The run id is NOT stamped — it is passed to the
     trainer as a `--run-id` CLI arg, and the run dir derives from it."""
     if group is None and not tags:

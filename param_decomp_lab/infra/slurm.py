@@ -78,9 +78,9 @@ def generate_script(
 ) -> str:
     """Generate a single SLURM job script. `env` is exported at the start of the script.
 
-    `setup` overrides the default workspace/venv section — for launches whose
-    workspace is materialized at submit time (e.g. the JAX launcher) rather than
-    cloned inside the job.
+    `setup` overrides the default workspace/venv section — for launches that manage
+    their own workspaces (e.g. `pd-lm`, whose nodes each build one inside the srun
+    command and whose `setup` is just the cleanup trap).
     """
     header = _sbatch_header_singleton(config)
     if setup is None:

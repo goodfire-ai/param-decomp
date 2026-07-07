@@ -48,13 +48,39 @@ _MINIMAL_LM = {
 }
 
 
-def test_rank_command_runs_trainer_as_module_with_run_id():
+def test_rank_command_builds_node_workspace_then_execs_trainer():
     command = _rank_command(
-        Path("param_decomp/configs/x.yaml"), "p-abcd1234", rank_env="export FOO=1"
+        "p-abcd1234",
+        "refs/runs/snapshot/p-abcd1234",
+        Path("/home/u/param-decomp/.git"),
+        Path("/out/runs/p-abcd1234"),
+        rank_env="export FOO=1",
     )
-    assert "exec python -m param_decomp_lab.experiments.lm.run" in command
-    assert "--run-id p-abcd1234" in command
-    assert "pd-train" not in command
+    # the snapshot comes from the shared-FS common git dir (file:// so --depth works —
+    # git ignores it on the bare-path local transport); .env (secrets, not in git) comes
+    # from the run dir where submit staged it
+    fetch = (
+        'git fetch --quiet --depth 1 "file:///home/u/param-decomp/.git" '
+        '"refs/runs/snapshot/p-abcd1234"'
+    )
+    assert fetch in command
+    assert "git clone" not in command
+    assert 'cp "/out/runs/p-abcd1234/.env" .env' in command
+    # per-node job-side workspace: snapshot checkout + CUDA venv, then exec (no EXIT trap
+    # — bash is replaced, cleanup is the batch script's trap)
+    assert "git checkout --quiet FETCH_HEAD" in command
+    # the CUDA extra is driver-gated on the node (cuda13 needs >= r580; cuBLAS TMEM fix)
+    assert 'if [ "$DRIVER_MAJOR" -ge 580 ]; then CUDA_EXTRA=cuda13; else CUDA_EXTRA=cuda; fi' in (
+        command
+    )
+    assert 'uv sync --all-packages --no-dev --extra "$CUDA_EXTRA"' in command
+    assert "trap" not in command
+    # venv activation precedes the rank env (LD_LIBRARY_PATH shells out to the venv python)
+    assert command.index("source .venv/bin/activate") < command.index("export FOO=1")
+    assert command.endswith(
+        "exec python -m param_decomp_lab.experiments.lm.run "
+        "/out/runs/p-abcd1234/launch_config.yaml --run-id p-abcd1234"
+    )
 
 
 def test_validate_config_returns_run_name(tmp_path: Path):
