@@ -40,11 +40,6 @@ from param_decomp_lab.infra.wandb import get_wandb_entity
 
 GPUS_PER_NODE = 8
 
-# The job-side clone/fetch source. NOT the submitting checkout (`REPO_ROOT`): that may be
-# an ephemeral worktree a later requeue would no longer find. Worktrees share their main
-# checkout's refs, so a snapshot ref created in one is visible here.
-_HOME_CHECKOUT = Path.home() / "param-decomp"
-
 # Node-local. Trainer jobs hold whole nodes (8/8 GPUs), so no concurrent job shares a
 # node with one — the start-of-task sweep below cannot race another run's workspace.
 _NODE_WORKSPACES_DIR = "/tmp/$USER/param-decomp/node-workspaces"
@@ -77,7 +72,21 @@ def _render_rank_env(launch_env: LaunchEnv) -> str:
     return "\n".join(exports)
 
 
-def _node_workspace_setup(run_id: str, snapshot_ref: str) -> str:
+def _snapshot_source_repo() -> Path:
+    """The repo the job-side clone/fetch reads: the submitting checkout's COMMON git dir
+    (the main checkout's `.git`, even when submitting from a worktree). Worktrees share
+    their main checkout's refs but may themselves be deleted before a requeue re-clones,
+    so the ephemeral worktree path must not be the source."""
+    result = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return Path(result.stdout.strip())
+
+
+def _node_workspace_setup(run_id: str, snapshot_ref: str, source_repo: Path) -> str:
     """The start of each node's srun task: sweep stale workspaces, clone the snapshot into
     node-local /tmp, build the CUDA venv, activate. The task `exec`s the trainer afterwards
     (bash is replaced, so no EXIT trap can run here) — normal-end cleanup is the batch
@@ -88,10 +97,10 @@ set -euo pipefail
 WORK_DIR="{_NODE_WORKSPACES_DIR}/{run_id}"
 rm -rf "{_NODE_WORKSPACES_DIR}"
 mkdir -p "$WORK_DIR"
-git clone --quiet "{_HOME_CHECKOUT}" "$WORK_DIR"
+git clone --quiet "{source_repo}" "$WORK_DIR"
 cd "$WORK_DIR"
-cp "{_HOME_CHECKOUT}/.env" .env
-git fetch --quiet "{_HOME_CHECKOUT}" "{snapshot_ref}:{snapshot_ref}"
+cp "{source_repo.parent}/.env" .env
+git fetch --quiet "{source_repo}" "{snapshot_ref}:{snapshot_ref}"
 git checkout --quiet "{snapshot_ref}"
 unset VIRTUAL_ENV
 uv sync --all-packages --no-dev --extra cuda --link-mode copy -q
@@ -107,9 +116,11 @@ def _node_workspace_cleanup_trap(nodes: int) -> str:
     )
 
 
-def _rank_command(run_id: str, snapshot_ref: str, launch_config: Path, rank_env: str) -> str:
+def _rank_command(
+    run_id: str, snapshot_ref: str, source_repo: Path, launch_config: Path, rank_env: str
+) -> str:
     return (
-        f"{_node_workspace_setup(run_id, snapshot_ref)}\n{rank_env}\n"
+        f"{_node_workspace_setup(run_id, snapshot_ref, source_repo)}\n{rank_env}\n"
         f"exec python -m param_decomp_lab.experiments.lm.run "
         f"{shlex.quote(str(launch_config))} --run-id {shlex.quote(run_id)}"
     )
@@ -166,20 +177,20 @@ def main(
     assert dp % GPUS_PER_NODE == 0, f"runtime.dp={dp} must be a multiple of {GPUS_PER_NODE}"
     nodes = dp // GPUS_PER_NODE
 
-    env_file = _HOME_CHECKOUT / ".env"
+    source_repo = _snapshot_source_repo()
+    env_file = source_repo.parent / ".env"
     assert env_file.exists(), f".env with wandb credentials required: {env_file}"
 
     if run_id is None:
         run_id = generate_run_id("param_decomp")
         snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=run_id)
         logger.info(f"Created git snapshot: {snapshot_ref} ({commit_hash[:8]})")
-        _assert_snapshot_visible_from_home_checkout(snapshot_ref)
         launch_config = _write_launch_config(config, run_id, group, tag_list)
     else:
         snapshot_ref = f"refs/runs/snapshot/{run_id}"
-        _assert_snapshot_visible_from_home_checkout(snapshot_ref)
         launch_config = PARAM_DECOMP_OUT_DIR / "runs" / run_id / LAUNCH_CONFIG_FILENAME
         assert launch_config.exists(), f"no launch config to resubmit: {launch_config}"
+    _assert_snapshot_ref_exists(source_repo, snapshot_ref)
 
     wandb_url = _wandb_url(cfg, run_id)
     job_name = f"pd-{run_name}"
@@ -199,7 +210,7 @@ def main(
     # One task per node: `--nodes=N --ntasks=N` (N whole-node tasks) can't pack onto one
     # node, so the trainer's single process per node claims all local GPUs.
     srun = f"srun --nodes={nodes} --ntasks={nodes} {_SRUN_FLAGS}"
-    rank_command = _rank_command(run_id, snapshot_ref, launch_config, rank_env)
+    rank_command = _rank_command(run_id, snapshot_ref, source_repo, launch_config, rank_env)
     command = f"{srun} bash -c {shlex.quote(rank_command)}"
     script = generate_script(slurm_config, command, setup=_node_workspace_cleanup_trap(nodes))
     result = submit_slurm_job(script, "pd-lm")
@@ -267,17 +278,16 @@ def _write_launch_config(config: Path, run_id: str, group: str | None, tags: lis
     return launch_config
 
 
-def _assert_snapshot_visible_from_home_checkout(snapshot_ref: str) -> None:
-    """The job-side clone fetches the snapshot from `_HOME_CHECKOUT`, so the ref must be
-    visible there — true when submitting from that checkout or any of its worktrees
-    (shared refs), NOT from an unrelated clone."""
+def _assert_snapshot_ref_exists(source_repo: Path, snapshot_ref: str) -> None:
+    """Guaranteed by construction on a fresh submit (the snapshot was just created in a
+    checkout sharing `source_repo`'s refs); load-bearing on `--run-id` resubmits from a
+    different clone than the original submit's."""
     result = subprocess.run(
-        ["git", "-C", str(_HOME_CHECKOUT), "rev-parse", "--verify", "--quiet", snapshot_ref],
+        ["git", "-C", str(source_repo), "rev-parse", "--verify", "--quiet", snapshot_ref],
         capture_output=True,
     )
     assert result.returncode == 0, (
-        f"{snapshot_ref} not visible from {_HOME_CHECKOUT} — nodes clone the snapshot from "
-        f"there at job start; launch from that checkout or one of its worktrees"
+        f"{snapshot_ref} not in {source_repo} — nodes clone the snapshot from there at job start"
     )
 
 

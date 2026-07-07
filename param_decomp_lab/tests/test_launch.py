@@ -52,9 +52,13 @@ def test_rank_command_builds_node_workspace_then_execs_trainer():
     command = _rank_command(
         "p-abcd1234",
         "refs/runs/snapshot/p-abcd1234",
+        Path("/home/u/param-decomp/.git"),
         Path("/out/runs/p-abcd1234/launch_config.yaml"),
         rank_env="export FOO=1",
     )
+    # clones/fetches the durable common git dir; .env comes from its checkout root
+    assert 'git clone --quiet "/home/u/param-decomp/.git"' in command
+    assert 'cp "/home/u/param-decomp/.env" .env' in command
     # per-node job-side workspace: snapshot checkout + CUDA venv, then exec (no EXIT trap
     # — bash is replaced, cleanup is the batch script's trap)
     assert 'git checkout --quiet "refs/runs/snapshot/p-abcd1234"' in command
