@@ -1,0 +1,129 @@
+# torch leg of the torch-vs-JAX runtime comparison (32 GPU / 4 nodes each side).
+# Same hyperparameters as llama8b_l18_b128_cmp32_1pool.yaml, but the target is the
+# STOCK HuggingFace `transformers.LlamaForCausalLM` (kind: hf) — exactly how the
+# reference 8B run p-19645bf7 loaded its target — rather than the vendored re-impl.
+# This is the faithful "how PyTorch actually trains 8B PD" baseline. The JAX converter
+# maps raw-HF and vendored Llama to the SAME JAX model, so the jax leg is unaffected.
+# Diffs vs the vendored config: spec kind/output_extract, module_pattern `model.`
+# prefix (HF naming), activation_checkpointing off (HF has no `enable_activation_
+# checkpointing` hook). Launch: pd-lm <this> --dp 32
+pd:
+  seed: 0
+  n_mask_samples: 1
+  ci_config:
+    mode: global
+    fn_type: global_shared_transformer
+    hidden_dims: null
+    simple_transformer_ci_cfg:
+      d_model: 4096
+      n_blocks: 4
+      mlp_hidden_dim:
+      - 16384
+      attn_config:
+        n_heads: 64
+        max_len: 2048
+        rope_base: 10000.0
+  sampling: continuous
+  sigmoid_type: leaky_hard
+  decomposition_targets:
+  - module_pattern: model.layers.18.mlp.gate_proj
+    C: 24576
+  - module_pattern: model.layers.18.mlp.up_proj
+    C: 24576
+  - module_pattern: model.layers.18.mlp.down_proj
+    C: 24576
+  identity_decomposition_targets: null
+  use_delta_component: true
+  tied_weights: null
+  components_optimizer:
+    lr_schedule:
+      start_val: 1.5e-04
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+    grad_clip_norm: 0.01
+    betas:
+    - 0.9
+    - 0.999
+    weight_decay: 0.0
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+    grad_clip_norm: null
+    betas:
+    - 0.9
+    - 0.999
+    weight_decay: 0.0
+  steps: 5000
+  batch_size: 128
+  faithfulness_warmup_steps: 400
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - type: FaithfulnessLoss
+    coeff: 100000.0
+  - type: ImportanceMinimalityLoss
+    coeff: 5.0e-06
+    pnorm: 2.0
+    beta: 0.2
+    p_anneal_start_frac: 0.0
+    p_anneal_final_p: 0.4
+    p_anneal_end_frac: 1.0
+    eps: 1.0e-12
+  - type: StochasticReconSubsetLoss
+    coeff: 0.5
+    routing:
+      type: uniform_k_subset
+  - type: PersistentPGDReconLoss
+    coeff: 0.5
+    n_samples: 1
+    n_warmup_steps: 2
+    optimizer:
+      type: adam
+      beta1: 0.5
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        start_val: 0.01
+        warmup_pct: 0.025
+        final_val_frac: 1.0
+        fn_type: constant
+    scope:
+      type: broadcast_across_batch
+    use_sigmoid_parameterization: false
+    start_frac: 0.0
+cadence:
+  train_log_every: 20
+  save_every: 1000
+  keep_last_n_checkpoints: 2
+target:
+  spec:
+    kind: hf
+    model_class: transformers.LlamaForCausalLM
+    model_name: meta-llama/Llama-3.1-8B
+  output_extract: logits
+  activation_checkpointing: false
+  weights_dtype: bfloat16
+data:
+  tokenizer_name: meta-llama/Llama-3.1-8B
+  max_seq_len: 2048
+  buffer_size: 1000
+  dataset_name: parquet
+  data_files: /mnt/data/artifacts/mechanisms/param-decomp/datasets/fineweb_llama_tok_2048/*.parquet
+  revision: null
+  column_name: input_ids
+  train_split: train
+  eval_split: train
+  shuffle_each_epoch: true
+  is_tokenized: true
+  streaming: true
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null
+wandb:
+  project: param-decomp-llama
+  entity: goodfire

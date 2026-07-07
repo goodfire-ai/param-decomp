@@ -1,0 +1,26 @@
+harvest:
+  config:
+    method_config:
+      type: ParamDecompHarvestConfig
+      wandb_path: goodfire/param-decomp-llama/runs/p-ec62b8cb
+      # One matrix per pass: the accumulator's dense [C,C]/[C,vocab] buffers can't
+      # hold all 3 matrices (C=73,728) on a single GPU. C=24,576 fits.
+      target_module_paths:
+        - model.layers.18.mlp.gate_proj
+    n_batches: 2500
+    batch_size: 16
+  n_gpus: 24
+  time: "12:00:00"
+autointerp:
+  config:
+    llm:
+      type: openrouter
+      model: google/gemini-3.1-pro-preview
+      reasoning_effort: medium
+    template_strategy:
+      type: canon
+    # limit omitted -> null: label all alive components of this matrix
+  evals: null             # labels only — no detection/fuzzing
+intruder: null
+attributions: null
+graph_interp: null
