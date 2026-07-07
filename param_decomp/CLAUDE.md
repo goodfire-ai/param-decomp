@@ -229,8 +229,8 @@ NOT changed C / sites / ci-fn arch). Add to the config:
 
 ```yaml
 resume_provenance:
-  # ABSOLUTE path — the trainer runs with cwd = <workspace> (the repo root), so a
-  # relative path would resolve under the workspace, not the output runs dir.
+  # ABSOLUTE path — the trainer runs with cwd = the node workspace (a repo checkout), so
+  # a relative path would resolve under the workspace, not the output runs dir.
   parent_run_dir: /mnt/data/artifacts/mechanisms/param-decomp/runs/p-bd3cd4d4
   parent_step: 175000
 ```
@@ -249,15 +249,16 @@ asserts matching sites (names + C) + ci-fn arch before the restore. Provenance f
 `runtime.dp`:
 - `dp = null` → run the trainer INLINE in the current process (single device, no SLURM, no
   workspace). For smoke / debug.
-- `dp = N` (a multiple of 8) → submit to SLURM across `nodes = N // 8` nodes,
-  `--ntasks-per-node=8`. Mints the `p-` run id, snapshots the tree to
-  `refs/runs/snapshot/<id>`, materializes an immutable shared-FS workspace (clone + the one
-  CUDA venv) at `$PARAM_DECOMP_OUT_DIR/workspaces/<id>`, stamps the id (+ out_dir / wandb
-  group / tags) into the workspace's single config yaml, and sbatches. The srun command is
-  bare `python -m param_decomp_lab.experiments.lm.run <config>` (no rank/topology flags).
+- `dp = N` (a multiple of 8) → submit to SLURM across `nodes = N // 8` nodes, one srun
+  task per node. Mints the `p-` run id, snapshots the tree to `refs/runs/snapshot/<id>`,
+  pins the config (wandb group / tags stamped) as
+  `$PARAM_DECOMP_OUT_DIR/runs/<id>/launch_config.yaml`, and sbatches. Each node builds its
+  own workspace at job start (clone the snapshot into node-local `/tmp` + the one CUDA
+  venv) and execs `python -m param_decomp_lab.experiments.lm.run <launch_config> --run-id
+  <id>` (no rank/topology flags).
 
-Requeues re-enter the workspace, never the live checkout. `--run_id` resubmits an existing
-workspace. Don't hand-write sbatch files.
+Requeues rebuild the node workspaces and re-read the pinned launch config, never the live
+checkout. `--run_id` resubmits an existing run. Don't hand-write sbatch files.
 
 `main` enables JAX's persistent compilation cache
 (`_enable_persistent_compilation_cache`) at `$PARAM_DECOMP_OUT_DIR/xla_compilation_cache`

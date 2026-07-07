@@ -106,11 +106,11 @@ entry points, read `param_decomp/CLAUDE.md` and `SPEC.md`. In one breath:
   then calls the engine. Orbax sharded checkpoints; SIGTERM → save → SLURM requeue → resume.
 - **Launch from the lab side** via `pd-lm <config.yaml>` (login-node submission wrapper;
   CONFIG-DRIVEN via `runtime.dp`, no `--nodes` / `--local` flags). `dp = N` (multiple of 8)
-  → snapshots the tree to an immutable shared-FS workspace, installs the `[cuda]` extra
-  there, sbatches `python -m param_decomp_lab.experiments.lm.run` across `N // 8` nodes;
-  `dp = null` → runs the trainer inline single-process. `lab → param_decomp` is a fine
-  dependency; only
-  `param_decomp → lab` is forbidden.
+  → snapshots the tree to `refs/runs/snapshot/<id>`, pins the config as the run dir's
+  `launch_config.yaml`, and sbatches `python -m param_decomp_lab.experiments.lm.run`
+  across `N // 8` nodes — each node clones the snapshot into node-local `/tmp` and builds
+  the `[cuda]` venv at job start; `dp = null` → runs the trainer inline single-process.
+  `lab → param_decomp` is a fine dependency; only `param_decomp → lab` is forbidden.
 
 ## Public API (consumer substrate)
 
@@ -245,9 +245,9 @@ via `pd-lm`. Slow/plot eval is in-loop only (no CLI).
 
 | Command | Entry point | Purpose |
 |---|---|---|
-| `python -m param_decomp_lab.experiments.lm.run` | `param_decomp_lab/experiments/lm/run.py` | The LM decomposition composition root (reads YAML, builds the target, calls the core engine; run inside a launch workspace) |
+| `python -m param_decomp_lab.experiments.lm.run` | `param_decomp_lab/experiments/lm/run.py` | The LM decomposition composition root (reads YAML, builds the target, calls the core engine; run inside a node workspace) |
 | `python -m pretrain.train` | `pretrain/train.py` | The core in-house target-LM pretrainer |
-| `pd-lm` | `experiments/lm/launch.py` | Launch a decomposition trainer run; config-driven via `runtime.dp` (`dp=N` → snapshot + workspace + sbatch across `N//8` nodes; `dp=null` → inline) |
+| `pd-lm` | `experiments/lm/launch.py` | Launch a decomposition trainer run; config-driven via `runtime.dp` (`dp=N` → snapshot + pinned launch config + sbatch across `N//8` nodes, per-node job-side venv; `dp=null` → inline) |
 | `pd-pretrain` | `experiments/lm/pretrain/launch.py` | Launch a pretrainer run; config-driven via `dp` (`dp=N` → sbatch; `dp=null` → inline) |
 | `pd-tms` / `pd-resid-mlp` | `experiments/{tms,resid_mlp}/run.py` | The CPU toy decomposition CLIs |
 | `pd-harvest` | `harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
