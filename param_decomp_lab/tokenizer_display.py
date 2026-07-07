@@ -159,7 +159,11 @@ class AppTokenizer:
             else:
                 spans.append("")
 
-        assert "".join(spans) == text
+        if "".join(spans) != text:
+            # Degenerate offset mappings (e.g. multi-byte unicode split across tokens at
+            # the sequence tail) can leave text uncovered; the incremental decode is the
+            # correct-by-construction oracle, same as the re-encode-mismatch path above.
+            return self._fallback_raw_spans(token_ids)
         return spans
 
     def get_tok_display(self, token_id: int) -> str:
