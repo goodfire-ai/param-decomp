@@ -21,7 +21,7 @@ data:
   max_seq_len: 16
   add_special_tokens: true
 nontarget:
-  batch_size: 256
+  batch_size: 64
   impmin_coeff_ratio: 2.0
   data:
     dataset_name: parquet
@@ -33,7 +33,7 @@ nontarget:
     streaming: false
     eval_split: train
 eval:
-  batch_size: 512
+  batch_size: 256
   every: 1000
   metrics:
   - ci_alive_threshold: 0.0
