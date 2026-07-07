@@ -59,6 +59,53 @@ def init_persistent_sources(
     }
 
 
+def sources_c_groups(
+    site_names: tuple[str, ...], site_component_counts: tuple[int, ...]
+) -> dict[int, tuple[str, ...]]:
+    """Site names grouped by C, site order preserved within a group."""
+    groups: dict[int, list[str]] = {}
+    for name, c in zip(site_names, site_component_counts, strict=True):
+        groups.setdefault(c, []).append(name)
+    return {c: tuple(names) for c, names in groups.items()}
+
+
+def init_persistent_sources_stacked(
+    site_names: tuple[str, ...],
+    site_component_counts: tuple[int, ...],
+    leading_shape: tuple[int, ...],
+    source_dtype: DTypeLike,
+    key: PRNGKeyArray,
+) -> dict[int, Array]:
+    """`init_persistent_sources` computed as same-C stacks `{C: [n, *leading, C+1]}`,
+    vmapped over the SAME per-site keys — `unstack_persistent_sources` recovers the
+    per-site dict BIT-IDENTICALLY. Under jit the graph has n_C_groups sharded outputs
+    instead of n_sites (the per-site form was a ~55s XLA compile at 224 sites)."""
+    keys = random.split(key, len(site_names))
+    site_index = {name: idx for idx, name in enumerate(site_names)}
+    stacked: dict[int, Array] = {}
+    for c, names in sources_c_groups(site_names, site_component_counts).items():
+        idxs = jnp.array([site_index[n] for n in names])
+        draws = jax.vmap(lambda k, s=(*leading_shape, c + 1): random.uniform(k, s, jnp.float32))(
+            keys[idxs]
+        )
+        stacked[c] = draws.astype(source_dtype)
+    return stacked
+
+
+def unstack_persistent_sources(
+    site_names: tuple[str, ...],
+    site_component_counts: tuple[int, ...],
+    stacked: dict[int, Array],
+) -> dict[str, Array]:
+    """Slice `init_persistent_sources_stacked`'s per-C stacks back into the per-site dict."""
+    sources: dict[str, Array] = {}
+    for c, names in sources_c_groups(site_names, site_component_counts).items():
+        assert stacked[c].shape[0] == len(names), (stacked[c].shape, len(names))
+        for j, name in enumerate(names):
+            sources[name] = stacked[c][j]
+    return {name: sources[name] for name in site_names}
+
+
 def init_fresh_pgd_sources(
     sites: tuple[SiteSpec, ...],
     init: PGDInitStrategy,

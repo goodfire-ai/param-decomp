@@ -79,6 +79,9 @@ def setup_logger(logfile: Path) -> _ParamDecompLogger:
 
     logging_config = {
         "version": 1,
+        # dictConfig defaults this to True, which DISABLES every already-created logger —
+        # including jax's, silencing JAX_LOG_COMPILES / persistent-cache diagnostics.
+        "disable_existing_loggers": False,
         "formatters": _FORMATTERS,
         "handlers": {
             "console": {

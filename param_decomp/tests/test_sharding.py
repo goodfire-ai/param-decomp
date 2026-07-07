@@ -77,6 +77,9 @@ def test_jitted_sharded_inits_match_eager_values():
     n = jax.device_count()
     mesh = hsdp_mesh()
     cfg = _tiny_cfg()
+    # layers.{2,3}.mlp.gate_proj share (d_in, d_out, C), so the stacked init has a REAL
+    # multi-site V/U shape group (stack + unstack across sites, not just groups of one);
+    # they also make a 3-site C group for the stacked sources init below.
     sites = llama_site_specs(
         cfg,
         canonical_site_cs(
@@ -84,10 +87,14 @@ def test_jitted_sharded_inits_match_eager_values():
                 SiteC("layers.2.self_attn.q_proj", 8 * n),
                 SiteC("layers.2.self_attn.o_proj", 16 * n),
                 SiteC("layers.2.mlp.gate_proj", 8 * n),
+                SiteC("layers.3.mlp.gate_proj", 8 * n),
                 SiteC("layers.3.mlp.down_proj", 16 * n),
             )
         ),
     )
+    from param_decomp.components import vu_shape_groups
+
+    assert max(len(g) for g in vu_shape_groups(sites).values()) >= 2
     # Placement is MODEL-OWNED and true ÷N ZeRO-1, split across the data + TP axes: V shards
     # d_in over the data axes and C over `tp` (`P(("replicate","fsdp"), "tp")`); U shards C
     # over `tp` and d_out over the data axes (`P("tp", ("replicate","fsdp"))`). C now carries
@@ -101,8 +108,26 @@ def test_jitted_sharded_inits_match_eager_values():
         assert isinstance(V.sharding, NamedSharding) and isinstance(U.sharding, NamedSharding)
         assert V.sharding.spec == P(full, "tp"), (spec.name, V.sharding.spec)
         assert U.sharding.spec == P("tp", full), (spec.name, U.sharding.spec)
-    for got, want in zip(jax.tree.leaves(vu_placed), jax.tree.leaves(vu_eager), strict=True):
+    # The placed init runs vmap-stacked per shape group (compile-time optimization) and
+    # must be BIT-identical to the jitted per-site `init_decomp_vu` it replaced (vmap over
+    # the same per-site keys) — the trajectory anchor. The unjitted eager reference differs
+    # from EITHER jitted path by ~1 ULP (XLA fusion), so it only gets allclose.
+    from functools import partial
+
+    import equinox as eqx
+
+    per_site_shardings = eqx.filter_eval_shape(
+        partial(init_decomp_vu, sites), jax.random.PRNGKey(1)
+    ).shardings(mesh)
+    vu_jitted_per_site = jax.jit(partial(init_decomp_vu, sites), out_shardings=per_site_shardings)(
+        jax.random.PRNGKey(1)
+    )
+    for got, want in zip(
+        jax.tree.leaves(vu_placed), jax.tree.leaves(vu_jitted_per_site), strict=True
+    ):
         assert got.shape == want.shape and got.dtype == want.dtype
+        assert jnp.array_equal(jnp.asarray(got), jnp.asarray(want))
+    for got, want in zip(jax.tree.leaves(vu_placed), jax.tree.leaves(vu_eager), strict=True):
         assert jnp.allclose(jnp.asarray(got), want, rtol=1e-6, atol=0)
 
     # A declared ÷N shard dim that does NOT tile the device count is a loud crash inside
@@ -144,11 +169,14 @@ def test_jitted_sharded_inits_match_eager_values():
     src_eager = init_persistent_sources(
         site_names, site_Cs, (1, 16), jnp.float32, jax.random.PRNGKey(3)
     )
+    # The sharded init runs vmap-stacked per C group (compile-time optimization) and must
+    # be BIT-identical to the per-site init (same per-site keys): uniform draws are pure
+    # threefry bit-ops, so even eager-vs-jit is exact.
     for name in site_names:
         src_sharding = src_sharded[name].sharding
         assert isinstance(src_sharding, NamedSharding)
         assert src_sharding.spec == P()
-        assert jnp.allclose(jnp.asarray(src_sharded[name]), src_eager[name], rtol=1e-6, atol=0)
+        assert jnp.array_equal(jnp.asarray(src_sharded[name]), src_eager[name]), name
 
     # bsc: one source per batch element, batch-sharded over the full mesh (axis 0), no
     # cross-rank sync.

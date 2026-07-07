@@ -287,7 +287,7 @@ workspace. Don't hand-write sbatch files.
 `main` enables JAX's persistent compilation cache
 (`_enable_persistent_compilation_cache`) at `$PARAM_DECOMP_OUT_DIR/xla_compilation_cache`
 — a SIBLING of `runs/` (derived from `out_dir.parent`), shared across all runs and all
-8N ranks, NOT per-run. The ~24-min chunkwise-step compile is keyed by HLO + backend +
+8N ranks, NOT per-run. The multi-minute chunkwise-step compile is keyed by HLO + backend +
 topology + jax/xla version, so a requeue/resume or a fresh run at the same config+topology
 loads the executable from disk in seconds. Set after `init_distributed` (the write gate
 reads the distributed state) and before the first compile; threshold 60s
@@ -296,6 +296,18 @@ safe on jax 0.10.1: jax gates the cache WRITE on `process_id == 0` (`compiler.py
 write cache entries from the first process … contention for writes on some filesystems"),
 so all ranks read but only rank 0 writes — no shared-FS race. Requires the cache dir on a
 shared FS, which `$PARAM_DECOMP_OUT_DIR` already is.
+
+### Compile time (measured 2026-07-06 probe grid; full data in PR #956)
+
+- **Keep seeded inits few-outputs-under-jit**: a jit returning n_sites (hundreds of)
+  sharded outputs — or n_chunks unrolled RNG bodies — is a multi-minute SPMD/layout
+  compile. vmap-stack over the same per-site/per-chunk keys (bit-identical values),
+  then fan out with a trivial slice jit. `init_decomp_vu_placed` is the template;
+  `init_ci_fn_placed` / `init_sources_sharded` follow it.
+- **The `jit_step` compile (~5 min at dp32) is FLAT across graph structure**: recon
+  chunk count, C, CI-fn depth, and PPGD warmup all measured within noise (~83%
+  priority-fusion). Don't chase graph-shrink refactors for compile time without new
+  evidence.
 
 ## Gotchas
 

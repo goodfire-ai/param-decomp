@@ -538,11 +538,14 @@ def init_chunkwise_transformer_ci_fn(
     assert arch.d_model % arch.n_heads == 0 and hd % 2 == 0, (arch.d_model, arch.n_heads)
     inv_freq = 1.0 / (10000.0 ** (jnp.arange(0, hd, 2, dtype=jnp.float32) / hd))
 
-    per_chunk = [
-        _init_chunk_transformer(arch, arch.input_dim, slot_cs, jax.random.fold_in(key, i))
-        for i in range(len(arch.chunks))
-    ]
-    stacked: ChunkTransformer = jax.tree.map(lambda *xs: jnp.stack(xs), *per_chunk)
+    # vmap over the per-chunk keys instead of unrolling n_chunks python-side inits and
+    # stacking: bit-identical draws (same fold_in key per chunk), same stacked layout, but
+    # the init graph is ONE chunk's RNG body — at 32 chunks the unrolled form was a
+    # multi-minute XLA compile (jit_build_ci_fn, measured 167s at the production shape).
+    chunk_keys = jax.vmap(lambda i: jax.random.fold_in(key, i))(jnp.arange(len(arch.chunks)))
+    stacked: ChunkTransformer = eqx.filter_vmap(
+        lambda k: _init_chunk_transformer(arch, arch.input_dim, slot_cs, k)
+    )(chunk_keys)
 
     return ChunkwiseTransformerCIFn(
         chunks=stacked,
