@@ -35,7 +35,7 @@ from param_decomp.targets.llama8b_sharding import (
     init_decomp_vu_placed,
     init_sources_sharded,
 )
-from param_decomp.train import Decomposition, TrainState
+from param_decomp.train import Decomposition, TrainingItem, TrainState
 
 
 def optax_schedule(config: ScheduleConfig, total_steps: int) -> Callable[[ArrayLike], Array]:
@@ -165,10 +165,11 @@ def init_train_state(
                 n_warmup=cfg.n_warmup_steps,
             )
     return TrainState(
-        components=components,
-        ci_fn=ci_fn,
-        components_opt_state=opt_vu.init(eqx.filter(components, eqx.is_array)),
-        ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        adversaries=adversaries,
-        step=jnp.zeros((), jnp.int32),
+        decomposition=decomposition,
+        training=TrainingItem(
+            components_opt_state=opt_vu.init(eqx.filter(components, eqx.is_array)),
+            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+            adversaries=adversaries,
+            step=jnp.zeros((), jnp.int32),
+        ),
     )

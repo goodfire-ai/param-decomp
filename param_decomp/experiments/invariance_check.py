@@ -54,7 +54,7 @@ from param_decomp.targets.llama8b import (
     mlp_family_site_cs,
 )
 from param_decomp.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
-from param_decomp.train import TrainState, make_train_step
+from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
 
 
 def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
@@ -94,20 +94,22 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
     )  # fmt: skip
     assert ppgd_cfg.coeff is not None
     state = TrainState(
-        components=vu, ci_fn=ci_fn,
-        components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
-        ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        adversaries={
-            ppgd_cfg.type: PersistentAdversary(
-                sources=src,
-                opt_state=init_sources_adam_state(src),
-                state_key=ppgd_cfg.type,
-                coeff=ppgd_cfg.coeff,
-                adam=ppgd_cfg.optimizer,
-                n_warmup=ppgd_cfg.n_warmup_steps,
-            )
-        },
-        step=jnp.zeros((), jnp.int32),
+        decomposition=Decomposition(components=vu, ci_fn=ci_fn),
+        training=TrainingItem(
+            components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
+            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+            adversaries={
+                ppgd_cfg.type: PersistentAdversary(
+                    sources=src,
+                    opt_state=init_sources_adam_state(src),
+                    state_key=ppgd_cfg.type,
+                    coeff=ppgd_cfg.coeff,
+                    adam=ppgd_cfg.optimizer,
+                    n_warmup=ppgd_cfg.n_warmup_steps,
+                )
+            },
+            step=jnp.zeros((), jnp.int32),
+        ),
     )  # fmt: skip
     loss_terms = build_loss_terms(
         (

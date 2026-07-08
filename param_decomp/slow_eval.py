@@ -806,16 +806,26 @@ def compute_hidden_acts_metrics(
 ) -> dict[str, float]:
     """Both hidden-acts recon eval metrics over the eval batches (`input_batches` holds
     the model's target-specific inputs — an LM's token ids), keyed by the torch
-    `<ClassName>[/<site>]` log keys. `state.components`/`state.ci_fn` are the restored
+    `<ClassName>[/<site>]` log keys. `state.decomposition.components`/`state.decomposition.ci_fn` are the restored
     trajectory; `base_key` seeds the stochastic variant's per-batch draws."""
     ci_key, stoch_key = random.split(base_key)
     ci_step = make_ci_hidden_acts_step(model, compiler_options)
     ci_reductions = accumulate_hidden_acts(
-        ci_step, model, state.components, state.ci_fn, input_batches, ci_key
+        ci_step,
+        model,
+        state.decomposition.components,
+        state.decomposition.ci_fn,
+        input_batches,
+        ci_key,
     )
     stoch_step = make_stochastic_hidden_acts_step(model, n_mask_samples, compiler_options)
     stoch_reductions = accumulate_hidden_acts(
-        stoch_step, model, state.components, state.ci_fn, input_batches, stoch_key
+        stoch_step,
+        model,
+        state.decomposition.components,
+        state.decomposition.ci_fn,
+        input_batches,
+        stoch_key,
     )
     return {
         **hidden_acts_log_entries("CIHiddenActsReconLoss", ci_reductions),

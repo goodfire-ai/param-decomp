@@ -365,7 +365,7 @@ def _init_or_restore_state(
     restored = restore_latest(checkpoint_manager, state)
     if restored is not None:
         state, ckpt_step = restored
-        assert int(state.step) == ckpt_step, (int(state.step), ckpt_step)
+        assert int(state.training.step) == ckpt_step, (int(state.training.step), ckpt_step)
         if is_main:
             print(f"resumed from checkpoint step {ckpt_step}", flush=True)
         return state, ckpt_step
@@ -392,10 +392,10 @@ def _init_or_restore_state(
             pd.faithfulness_warmup_lr, weight_decay=pd.faithfulness_warmup_weight_decay
         )
         faith_warmup_opt_state = faith_warmup_optimizer.init(
-            eqx.filter(state.components, eqx.is_array)
+            eqx.filter(state.decomposition.components, eqx.is_array)
         )
         faith_warmup_step = make_faith_warmup_step(faith_warmup_optimizer, compiler_options)
-        warmed_components = state.components
+        warmed_components = state.decomposition.components
         t0 = time.time()
         faith_warmup_loss = None
         for _ in range(pd.faithfulness_warmup_steps):
@@ -414,7 +414,9 @@ def _init_or_restore_state(
         jax.block_until_ready(faith_warmup_loss)
         new_opt_vu = _ensure_global(opt_vu.init(eqx.filter(warmed_components, eqx.is_array)), mesh)
         state = dataclasses.replace(
-            state, components=warmed_components, components_opt_state=new_opt_vu
+            state,
+            decomposition=dataclasses.replace(state.decomposition, components=warmed_components),
+            training=dataclasses.replace(state.training, components_opt_state=new_opt_vu),
         )
         if is_main:
             print(
@@ -554,7 +556,7 @@ def run_decomposition_training(
                 jax.block_until_ready(_ident(tree))
             return (time.perf_counter() - _b0) / n
 
-        _vu = state.components.vu
+        _vu = state.decomposition.components.vu
         _by_kind: dict[str, list[tuple[jax.Array, jax.Array]]] = _collections.defaultdict(list)
         for _name, _VU in _vu.items():
             _by_kind[_name.split(".")[-1]].append(_VU)

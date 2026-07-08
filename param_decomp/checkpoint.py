@@ -5,8 +5,11 @@ Each checkpoint step holds TWO orbax items, splitting the product from the proce
 - `decomposition` — `train.Decomposition` (V/U components + ci_fn), the trained product.
   Every consumer (harvest/autointerp/clustering/app/fine-tune init) restores ONLY this
   item, with zero knowledge of how training initializes its optimizers or adversaries.
-- `training` — `TrainingItem` (both optimizer states, the persistent adversaries, the
-  step counter), the trainer-only trajectory tail. Only trainer resume touches it.
+- `training` — `train.TrainingItem` (both optimizer states, the persistent adversaries,
+  the step counter), the trainer-only trajectory tail. Only trainer resume touches it.
+
+`TrainState` composes exactly these two — one representation — so save/restore map onto its
+own `.decomposition` / `.training` fields with no regrouping.
 
 Both items save **sharded** (every process writes its own shards, no full-gather on the
 training loop) and restore onto the reference state's shardings. The frozen target is
@@ -22,18 +25,14 @@ same component & ci-fn structure).
 """
 
 import dataclasses
-from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
 import jax
 import numpy as np
-import optax
 import orbax.checkpoint as ocp
-from jaxtyping import Array
 from orbax.checkpoint.type_handlers import ArrayHandler, register_type_handler
 
-from param_decomp.adversary import PersistentAdversary
 from param_decomp.train import Decomposition, TrainState
 
 # Replica-parallel writes (multiple hosts cooperatively writing a REPLICATED array)
@@ -41,41 +40,6 @@ from param_decomp.train import Decomposition, TrainState
 # here: the big leaves (V/U + moments) are C-sharded, the replicated leaves (sources,
 # scalars) are small. Single-replica writes are correct and simple.
 register_type_handler(jax.Array, ArrayHandler(use_replica_parallel=False), override=True)
-
-
-@jax.tree_util.register_dataclass
-@dataclass(frozen=True)
-class TrainingItem:
-    """The `training` checkpoint item: the trajectory state that is training's business
-    only — no consumer restores it."""
-
-    components_opt_state: optax.OptState
-    ci_fn_opt_state: optax.OptState
-    adversaries: dict[str, PersistentAdversary]
-    step: Array
-
-
-def _split(state: TrainState) -> tuple[Decomposition, TrainingItem]:
-    return (
-        Decomposition(components=state.components, ci_fn=state.ci_fn),
-        TrainingItem(
-            components_opt_state=state.components_opt_state,
-            ci_fn_opt_state=state.ci_fn_opt_state,
-            adversaries=state.adversaries,
-            step=state.step,
-        ),
-    )
-
-
-def _join(decomposition: Decomposition, training: TrainingItem) -> TrainState:
-    return TrainState(
-        components=decomposition.components,
-        ci_fn=decomposition.ci_fn,
-        components_opt_state=training.components_opt_state,
-        ci_fn_opt_state=training.ci_fn_opt_state,
-        adversaries=training.adversaries,
-        step=training.step,
-    )
 
 
 def make_checkpoint_manager(ckpt_dir: Path, keep_last: int) -> ocp.CheckpointManager:
@@ -89,12 +53,11 @@ def make_checkpoint_manager(ckpt_dir: Path, keep_last: int) -> ocp.CheckpointMan
 
 
 def save_state(mgr: ocp.CheckpointManager, step: int, state: TrainState) -> None:
-    decomposition, training = _split(state)
     mgr.save(
         step,
         args=ocp.args.Composite(
-            decomposition=ocp.args.StandardSave(decomposition),
-            training=ocp.args.StandardSave(training),
+            decomposition=ocp.args.StandardSave(state.decomposition),
+            training=ocp.args.StandardSave(state.training),
         ),
     )
     mgr.wait_until_finished()
@@ -103,17 +66,15 @@ def save_state(mgr: ocp.CheckpointManager, step: int, state: TrainState) -> None
 def restore_step(mgr: ocp.CheckpointManager, reference: TrainState, step: int) -> TrainState:
     """Restore checkpoint `step` onto `reference`'s shapes/dtypes/shardings
     (a freshly-initialised, correctly-placed `TrainState`)."""
-    abstract_decomp, abstract_training = jax.tree.map(
-        ocp.utils.to_shape_dtype_struct, _split(reference)
-    )
+    abstract = jax.tree.map(ocp.utils.to_shape_dtype_struct, reference)
     composite = mgr.restore(
         step,
         args=ocp.args.Composite(
-            decomposition=ocp.args.StandardRestore(abstract_decomp),
-            training=ocp.args.StandardRestore(abstract_training),
+            decomposition=ocp.args.StandardRestore(abstract.decomposition),
+            training=ocp.args.StandardRestore(abstract.training),
         ),
     )
-    restored = _join(composite["decomposition"], composite["training"])
+    restored = TrainState(decomposition=composite["decomposition"], training=composite["training"])
     # Coerce the restored tree onto the reference's exact FORMAT (layout + sharding), not just its
     # sharding. StandardRestore already honors the sharding SPEC (verified), so a device_put onto
     # sharding alone is a no-op — but orbax-restored arrays carry a default memory LAYOUT that
@@ -181,10 +142,6 @@ def init_from_parent(parent_ckpt_dir: Path, parent_step: int, reference: TrainSt
     assert parent_step in parent_mgr.all_steps(), (
         f"parent step {parent_step} not in {parent_ckpt_dir} (have {sorted(parent_mgr.all_steps())})"
     )
-    abstract = jax.tree.map(ocp.utils.to_shape_dtype_struct, _split(reference)[0])
+    abstract = jax.tree.map(ocp.utils.to_shape_dtype_struct, reference.decomposition)
     parent = restore_decomposition(parent_mgr, parent_step, abstract)
-    return dataclasses.replace(
-        reference,
-        components=parent.components,
-        ci_fn=parent.ci_fn,
-    )
+    return dataclasses.replace(reference, decomposition=parent)

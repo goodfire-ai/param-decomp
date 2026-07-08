@@ -53,7 +53,7 @@ from param_decomp.targets.llama8b_sharding import (
     init_sources_sharded,
 )
 from param_decomp.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
-from param_decomp.train import Decomposition, TrainState, make_train_step
+from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
 from vendored_jax.llama import LlamaConfig
 
 
@@ -114,11 +114,13 @@ def _build(seed: int):
     )
     ppgd_cfg = _ppgd_cfg(n_warmup=1)
     state = TrainState(
-        components=vu, ci_fn=ci_fn,
-        components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
-        ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        adversaries={ppgd_cfg.type: _adversary(src, ppgd_cfg)},
-        step=jnp.zeros((), jnp.int32),
+        decomposition=Decomposition(components=vu, ci_fn=ci_fn),
+        training=TrainingItem(
+            components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
+            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+            adversaries={ppgd_cfg.type: _adversary(src, ppgd_cfg)},
+            step=jnp.zeros((), jnp.int32),
+        ),
     )  # fmt: skip
     loss_terms = build_loss_terms(
         (
@@ -180,7 +182,7 @@ def test_persistent_adam_step_count_roundtrip_and_post_resume_bias_correction(tm
     for i in range(3):
         state, _ = step(lm, state, resid, jax.random.PRNGKey(i))
 
-    pre_save = state.adversaries[state_key].opt_state
+    pre_save = state.training.adversaries[state_key].opt_state
     n_ascents = int(pre_save.step_count)
     # Each train step runs n_warmup_steps (1) supplemental ascents + 1 final ascent.
     assert n_ascents == 3 * (1 + 1)
@@ -192,10 +194,10 @@ def test_persistent_adam_step_count_roundtrip_and_post_resume_bias_correction(tm
     restored = restore_latest(mgr, fresh)
     assert restored is not None
     loaded, _ = restored
-    loaded_adam = loaded.adversaries[state_key].opt_state
+    loaded_adam = loaded.training.adversaries[state_key].opt_state
 
     # (a) the step_count leaf survived the round-trip: present, fp32 scalar, value N.
-    assert state_key in loaded.adversaries
+    assert state_key in loaded.training.adversaries
     assert loaded_adam.step_count.dtype == jnp.float32
     assert loaded_adam.step_count.shape == ()
     assert float(loaded_adam.step_count) == float(n_ascents)
@@ -209,7 +211,7 @@ def test_persistent_adam_step_count_roundtrip_and_post_resume_bias_correction(tm
     adam_cfg = AdamPGDConfig(
         beta1=beta1, beta2=beta2, lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025)
     )
-    loaded_sources = loaded.adversaries[state_key].sources
+    loaded_sources = loaded.training.adversaries[state_key].sources
     grads = {site: jnp.ones_like(v) for site, v in loaded_sources.items()}
     _, post_resume = sources_adam_ascend_project(
         loaded_sources, grads, loaded_adam, jnp.asarray(0.01), adam_cfg
@@ -257,11 +259,11 @@ def test_consumer_restores_decomposition_to_host(tmp_path: Path):
     # A FRESH manager, as every real consumer opens: orbax pins an item's handler per
     # manager instance, so the saving manager can't PyTreeRestore what it StandardSave'd.
     consumer_mgr = make_checkpoint_manager(tmp_path / "ckpts", keep_last=2)
-    abstract = jax.eval_shape(lambda: Decomposition(components=state.components, ci_fn=state.ci_fn))
+    abstract = jax.eval_shape(lambda: state.decomposition)
     restored = restore_decomposition_to_host(consumer_mgr, 2, abstract)
     for a, b in zip(
-        jax.tree.leaves((state.components, state.ci_fn)),
-        jax.tree.leaves((restored.components, restored.ci_fn)),
+        jax.tree.leaves(state.decomposition),
+        jax.tree.leaves(restored),
         strict=True,
     ):
         assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
@@ -286,19 +288,21 @@ def test_init_from_parent_restores_decomposition_only(tmp_path: Path):
 
     # decomposition carries over from the parent...
     for a, b in zip(
-        jax.tree.leaves((finetuned.components, finetuned.ci_fn)),
-        jax.tree.leaves((parent.components, parent.ci_fn)),
+        jax.tree.leaves(finetuned.decomposition),
+        jax.tree.leaves(parent.decomposition),
         strict=True,
     ):
         assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
     # ...while optimizer state, adversaries and step stay the fresh reference's.
     for a, b in zip(
-        jax.tree.leaves((finetuned.components_opt_state, finetuned.ci_fn_opt_state)),
-        jax.tree.leaves((fresh.components_opt_state, fresh.ci_fn_opt_state)),
+        jax.tree.leaves(
+            (finetuned.training.components_opt_state, finetuned.training.ci_fn_opt_state)
+        ),
+        jax.tree.leaves((fresh.training.components_opt_state, fresh.training.ci_fn_opt_state)),
         strict=True,
     ):
         assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
-    assert int(finetuned.step) == 0
+    assert int(finetuned.training.step) == 0
 
 
 def _build_sharded(seed: int, mesh: Mesh):
@@ -329,11 +333,13 @@ def _build_sharded(seed: int, mesh: Mesh):
     )
     ppgd_cfg = _ppgd_cfg(n_warmup=1)
     state = TrainState(
-        components=vu, ci_fn=ci_fn,
-        components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
-        ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        adversaries={ppgd_cfg.type: _adversary(src, ppgd_cfg)},
-        step=jnp.asarray(7, jnp.int32),
+        decomposition=Decomposition(components=vu, ci_fn=ci_fn),
+        training=TrainingItem(
+            components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
+            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+            adversaries={ppgd_cfg.type: _adversary(src, ppgd_cfg)},
+            step=jnp.asarray(7, jnp.int32),
+        ),
     )  # fmt: skip
     return state
 
@@ -354,7 +360,7 @@ def test_sharded_roundtrip_bit_equal(tmp_path: Path):
     # The big V/U + ci_fn + sources leaves must be genuinely C-sharded over the mesh
     # (the multi-shard write path); only the small scalars (step) stay single-device.
     n_named = sum(isinstance(x.sharding, NamedSharding) for x in jax.tree.leaves(state))
-    assert n_named >= len(jax.tree.leaves(state.components)), n_named
+    assert n_named >= len(jax.tree.leaves(state.decomposition.components)), n_named
 
     mgr = make_checkpoint_manager(tmp_path / "ckpts", keep_last=2)
     save_state(mgr, 3, state)
