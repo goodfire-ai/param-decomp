@@ -15,6 +15,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from param_decomp_lab.infra.git import snapshot_source_repo
 from param_decomp_lab.infra.settings import REPO_ROOT, SBATCH_SCRIPTS_DIR, SLURM_LOGS_DIR
 
 # Bash expressions that uniquely identify a job invocation, used to name per-job /tmp
@@ -280,29 +281,33 @@ def _sbatch_header_array(config: SlurmArrayConfig, array_range: str) -> str:
 
 
 def generate_git_snapshot_setup(work_dir: str, snapshot_ref: str) -> str:
-    """Bash fragment to clone the repo, fetch `snapshot_ref`, check it out, and set up env.
+    """Bash fragment to fetch `snapshot_ref` into `work_dir`, check it out, set up env.
 
-    `git clone` only fetches `refs/heads/*` + tags, so custom namespaces like
-    `refs/runs/snapshot/*` need an explicit fetch. Also copies `.env` and activates the
-    venv. `work_dir` is a bash expression and can include `$SLURM_*` vars.
+    Shallow `git init` + `git fetch --depth 1` from the submitting checkout's common git
+    dir (shared FS, worktree-safe — see `git.snapshot_source_repo`), the same source the
+    pd-lm launcher fetches from. `file://` is required: git silently ignores `--depth` on
+    the bare-path local transport. `git clone` is avoided — it only fetches `refs/heads/*`
+    + tags, so custom namespaces like `refs/runs/snapshot/*` wouldn't come across anyway,
+    and a full clone of the worktree is needless when we want one commit.
 
-    Uses ``$HOME/param-decomp`` as the git source (resolved at shell-time on the
-    target node) rather than the Python-side ``REPO_ROOT``. This keeps the setup
-    portable: when this script is generated from inside another SLURM job
-    (e.g. async slow-eval submitted by training's ``sink.on_save``), ``REPO_ROOT``
-    would resolve to the submitting job's node-local ``/tmp/.../workspace-*`` —
-    which doesn't exist on the new job's nodes. ``$HOME/param-decomp`` always
-    points at the user's canonical shared-FS checkout.
+    `.env` (secrets, untracked, so no ref carries it) is copied from the durable main
+    checkout — the common git dir's parent worktree — NOT the possibly-ephemeral
+    submitting worktree (a node-local `/tmp` workspace when generated from inside another
+    SLURM job, e.g. async slow-eval submitted by training's `sink.on_save`).
+
+    `work_dir` is a bash expression and can include `$SLURM_*` vars.
     """
+    source_repo = snapshot_source_repo()
+    env_file = source_repo.parent / ".env"
     return f"""\
 WORK_DIR="{work_dir}"
 mkdir -p "$WORK_DIR"
 trap 'rm -rf "$WORK_DIR"' EXIT
-git clone "$HOME/param-decomp" "$WORK_DIR"
 cd "$WORK_DIR"
-[ -f "$HOME/param-decomp/.env" ] && cp "$HOME/param-decomp/.env" .env
-git fetch "$HOME/param-decomp" "{snapshot_ref}:{snapshot_ref}"
-git checkout "{snapshot_ref}"
+git init --quiet
+git fetch --quiet --depth 1 "file://{source_repo}" "{snapshot_ref}"
+git checkout --quiet FETCH_HEAD
+[ -f "{env_file}" ] && cp "{env_file}" .env
 deactivate 2>/dev/null || true
 unset VIRTUAL_ENV
 uv sync --all-packages --no-dev --link-mode copy -q
