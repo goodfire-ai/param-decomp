@@ -8,7 +8,6 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
-import orbax.checkpoint as ocp
 from jax.sharding import Mesh
 
 from param_decomp.adversary import (
@@ -234,8 +233,8 @@ def test_no_checkpoint_returns_none(tmp_path: Path):
 
 
 def test_saved_layout_is_two_items(tmp_path: Path):
-    """The on-disk item names are the cross-version contract every consumer and the
-    dual-read dispatch key on — pin them."""
+    """The on-disk item names are the cross-version contract every consumer keys on —
+    pin them."""
     _, state, _, _ = _build(seed=1)
     mgr = make_checkpoint_manager(tmp_path / "ckpts", keep_last=2)
     save_state(mgr, 0, state)
@@ -268,45 +267,35 @@ def test_consumer_restores_decomposition_to_host(tmp_path: Path):
         assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
 
 
-def _save_legacy_single_item(mgr: ocp.CheckpointManager, step: int, state: TrainState) -> None:
-    """Write the pre-split layout (one `default` item carrying the whole `TrainState`) —
-    what every run launched before the split keeps writing from its immutable workspace."""
-    mgr.save(step, args=ocp.args.StandardSave(state))
-    mgr.wait_until_finished()
-
-
-def test_legacy_single_item_dual_read(tmp_path: Path):
-    """Pre-split checkpoints must stay readable by every restore path: full trainer
-    restore (`restore_latest`), consumer partial restore
-    (`restore_decomposition_to_host`), and fine-tune init (`init_from_parent`)."""
-    lm, state, step, resid = _build(seed=1)
+def test_init_from_parent_restores_decomposition_only(tmp_path: Path):
+    """Fine-tune init (S33): `init_from_parent` restores ONLY the parent's
+    `decomposition` item (components + ci_fn) onto a fresh reference, keeping the fresh
+    reference's optimizer states / adversaries / `step=0` — never reading the parent's
+    `training` item, which may differ freely."""
+    lm, parent, step, resid = _build(seed=1)
     for i in range(2):
-        state, _ = step(lm, state, resid, jax.random.PRNGKey(i))
+        parent, _ = step(lm, parent, resid, jax.random.PRNGKey(i))
     mgr = make_checkpoint_manager(tmp_path / "ckpts", keep_last=2)
-    _save_legacy_single_item(mgr, 2, state)
-    assert (tmp_path / "ckpts" / "2" / "default").is_dir()
+    save_state(mgr, 2, parent)
 
+    # A fresh reference from a DIFFERENT seed: its components/ci_fn, optimizer state and
+    # adversaries all differ from the parent's, so the carry-over vs keep-fresh split is
+    # observable on every leaf.
     _, fresh, _, _ = _build(seed=7)
-    restored = restore_latest(mgr, fresh)
-    assert restored is not None
-    loaded, ckpt_step = restored
-    assert ckpt_step == 2
-    for a, b in zip(jax.tree.leaves(state), jax.tree.leaves(loaded), strict=True):
-        assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
+    finetuned = init_from_parent(tmp_path / "ckpts", parent_step=2, reference=fresh)
 
-    consumer_mgr = make_checkpoint_manager(tmp_path / "ckpts", keep_last=2)
-    abstract = jax.eval_shape(lambda: Decomposition(components=state.components, ci_fn=state.ci_fn))
-    decomp = restore_decomposition_to_host(consumer_mgr, 2, abstract)
+    # decomposition carries over from the parent...
     for a, b in zip(
-        jax.tree.leaves((state.components, state.ci_fn)),
-        jax.tree.leaves((decomp.components, decomp.ci_fn)),
+        jax.tree.leaves((finetuned.components, finetuned.ci_fn)),
+        jax.tree.leaves((parent.components, parent.ci_fn)),
         strict=True,
     ):
         assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
-
-    finetuned = init_from_parent(tmp_path / "ckpts", parent_step=2, reference=fresh)
+    # ...while optimizer state, adversaries and step stay the fresh reference's.
     for a, b in zip(
-        jax.tree.leaves(finetuned.components), jax.tree.leaves(state.components), strict=True
+        jax.tree.leaves((finetuned.components_opt_state, finetuned.ci_fn_opt_state)),
+        jax.tree.leaves((fresh.components_opt_state, fresh.ci_fn_opt_state)),
+        strict=True,
     ):
         assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
     assert int(finetuned.step) == 0

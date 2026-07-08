@@ -12,10 +12,6 @@ Both items save **sharded** (every process writes its own shards, no full-gather
 training loop) and restore onto the reference state's shardings. The frozen target is
 NOT saved (SPEC §3): resume rebuilds it from HF and loads only the trajectory.
 
-Runs saved before the split store one item named `default` carrying the whole
-`TrainState`; those runs keep training from immutable workspaces and keep writing that
-layout, so every restore path here dual-reads both layouts (`_stored_as_split`).
-
 Synchronous saves (no async): a SIGTERM-triggered save must be on disk before the
 process exits for SLURM requeue-resume.
 
@@ -26,10 +22,9 @@ same component & ci-fn structure).
 """
 
 import dataclasses
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import jax
 import numpy as np
@@ -93,18 +88,6 @@ def make_checkpoint_manager(ckpt_dir: Path, keep_last: int) -> ocp.CheckpointMan
     )
 
 
-def _stored_as_split(mgr: ocp.CheckpointManager, step: int) -> bool:
-    """Whether checkpoint `step` is stored as the two-item layout (`decomposition/` +
-    `training/`) or as the single `default/` item of runs launched before the split
-    (those runs keep writing it from their immutable workspaces)."""
-    step_dir = Path(mgr.directory) / str(step)
-    assert step_dir.is_dir(), f"no checkpoint dir {step_dir}"
-    split = (step_dir / "decomposition").is_dir()
-    legacy = (step_dir / "default").is_dir()
-    assert split != legacy, f"unrecognized checkpoint layout under {step_dir}"
-    return split
-
-
 def save_state(mgr: ocp.CheckpointManager, step: int, state: TrainState) -> None:
     decomposition, training = _split(state)
     mgr.save(
@@ -120,21 +103,17 @@ def save_state(mgr: ocp.CheckpointManager, step: int, state: TrainState) -> None
 def restore_step(mgr: ocp.CheckpointManager, reference: TrainState, step: int) -> TrainState:
     """Restore checkpoint `step` onto `reference`'s shapes/dtypes/shardings
     (a freshly-initialised, correctly-placed `TrainState`)."""
-    if _stored_as_split(mgr, step):
-        abstract_decomp, abstract_training = jax.tree.map(
-            ocp.utils.to_shape_dtype_struct, _split(reference)
-        )
-        composite = mgr.restore(
-            step,
-            args=ocp.args.Composite(
-                decomposition=ocp.args.StandardRestore(abstract_decomp),
-                training=ocp.args.StandardRestore(abstract_training),
-            ),
-        )
-        restored = _join(composite["decomposition"], composite["training"])
-    else:
-        abstract = jax.tree.map(ocp.utils.to_shape_dtype_struct, reference)
-        restored = mgr.restore(step, args=ocp.args.StandardRestore(abstract))
+    abstract_decomp, abstract_training = jax.tree.map(
+        ocp.utils.to_shape_dtype_struct, _split(reference)
+    )
+    composite = mgr.restore(
+        step,
+        args=ocp.args.Composite(
+            decomposition=ocp.args.StandardRestore(abstract_decomp),
+            training=ocp.args.StandardRestore(abstract_training),
+        ),
+    )
+    restored = _join(composite["decomposition"], composite["training"])
     # Coerce the restored tree onto the reference's exact FORMAT (layout + sharding), not just its
     # sharding. StandardRestore already honors the sharding SPEC (verified), so a device_put onto
     # sharding alone is a no-op — but orbax-restored arrays carry a default memory LAYOUT that
@@ -155,40 +134,15 @@ def restore_latest(
     return restore_step(mgr, reference, step), step
 
 
-def _legacy_partial_restore(
-    mgr: ocp.CheckpointManager,
-    step: int,
-    abstract: Decomposition,
-    restore_args_for_leaf: Callable[[Any], ocp.RestoreArgs],
-) -> Decomposition:
-    """Pull ONLY `components` + `ci_fn` out of a pre-split `default` item:
-    `partial_restore` skips every saved key absent from the item, so the
-    optimizer/adversary subtrees are never read off disk or materialized."""
-    item = {"components": abstract.components, "ci_fn": abstract.ci_fn}
-    restore_args = jax.tree.map(restore_args_for_leaf, item)
-    restored = mgr.restore(
-        step,
-        args=ocp.args.PyTreeRestore(item=item, restore_args=restore_args, partial_restore=True),
-    )
-    return Decomposition(components=restored["components"], ci_fn=restored["ci_fn"])
-
-
 def restore_decomposition(
     mgr: ocp.CheckpointManager, step: int, abstract: Decomposition
 ) -> Decomposition:
     """Restore ONLY the trained decomposition of checkpoint `step` onto `abstract`'s
     shapes/dtypes/shardings (`to_shape_dtype_struct` of a correctly-placed reference)."""
-    if _stored_as_split(mgr, step):
-        composite = mgr.restore(
-            step, args=ocp.args.Composite(decomposition=ocp.args.StandardRestore(abstract))
-        )
-        return cast(Decomposition, composite["decomposition"])
-    return _legacy_partial_restore(
-        mgr,
-        step,
-        abstract,
-        lambda leaf: ocp.ArrayRestoreArgs(sharding=leaf.sharding, dtype=leaf.dtype),
+    composite = mgr.restore(
+        step, args=ocp.args.Composite(decomposition=ocp.args.StandardRestore(abstract))
     )
+    return cast(Decomposition, composite["decomposition"])
 
 
 def restore_decomposition_to_host(
@@ -199,16 +153,14 @@ def restore_decomposition_to_host(
     `run_state.init_decomposition` yields it with zero allocation), and the caller
     `jax.device_put`s the result wherever it computes."""
     host_args_for_leaf = lambda _: ocp.RestoreArgs(restore_type=np.ndarray)  # noqa: E731
-    if _stored_as_split(mgr, step):
-        restore_args = jax.tree.map(host_args_for_leaf, abstract)
-        composite = mgr.restore(
-            step,
-            args=ocp.args.Composite(
-                decomposition=ocp.args.PyTreeRestore(item=abstract, restore_args=restore_args)
-            ),
-        )
-        return cast(Decomposition, composite["decomposition"])
-    return _legacy_partial_restore(mgr, step, abstract, host_args_for_leaf)
+    restore_args = jax.tree.map(host_args_for_leaf, abstract)
+    composite = mgr.restore(
+        step,
+        args=ocp.args.Composite(
+            decomposition=ocp.args.PyTreeRestore(item=abstract, restore_args=restore_args)
+        ),
+    )
+    return cast(Decomposition, composite["decomposition"])
 
 
 def init_from_parent(parent_ckpt_dir: Path, parent_step: int, reference: TrainState) -> TrainState:

@@ -212,8 +212,8 @@ HF at run time (the 80-rank thunderherd lesson). The batch schedule is a pure
 function of `(seed, step)` (O(1) resume, no replay); checkpoints are orbax sharded
 saves (no on-loop full-gather), TWO items per step — `decomposition` (V/U + ci_fn, the
 product every consumer restores alone) and `training` (opt states + adversaries + step,
-trainer-only); pre-split runs' single `default` item stays dual-readable (SPEC S22);
-SIGTERM → save → SLURM requeue → resume from latest.
+trainer-only) — a clean break, no in-code compat for pre-split `default`-item runs (SPEC
+S22); SIGTERM → save → SLURM requeue → resume from latest.
 Resume with a changed config is refused (byte-compare). Smokes before a long run
 MUST exercise save AND resume at the production per-rank shape.
 
