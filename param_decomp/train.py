@@ -209,6 +209,25 @@ def make_train_step(
             )
         )
 
+    def reference_output(
+        model: DecomposedModel,
+        prepared: Any,
+        batch: Any,
+        routes: dict[str, Bool[Array, "*leading"]] | None,
+        live_sites: tuple[str, ...],
+        ci_lower: dict[str, Float[Array, "*leading _"]],
+    ) -> Any:
+        """The recon KL reference: the SAME masked forward with every component mask 1.0 and
+        the delta path OFF (`has_delta=False`) — the pure `(x@V)@U` reconstruction over
+        `live_sites`, routed identically. The divergence against this reference isolates the
+        effect of MASKING components from the weight-delta residual (which the faithfulness
+        loss owns). NOTE: this REPLACES the old frozen `x@W` recon target (SPEC S3, S25) — a
+        deliberate deviation pending a spec amendment; gradient flows through it (not detached
+        like the old clean target). `ci_lower` supplies only the per-site mask shape/dtype
+        (`jnp.ones_like` carries no gradient to CI)."""
+        ones_masks = {site: jnp.ones_like(ci_lower[site]) for site in live_sites}
+        return masked_forward(model, prepared, batch, ones_masks, {}, routes, live_sites, False)
+
     def constant_entry_masks(
         strategy: ConstantSources,
         ci_lower: dict[str, Array],
@@ -229,12 +248,14 @@ def make_train_step(
         prepared: Any,
         ci_lower: dict[str, Array],
         batch: Any,
-        clean_output: Array,
         forward_fn: Any,
     ) -> Array:
         """Mean KL over the entry's draws with FIXED source values — the adversarial
         ascent objective (shared by fresh and persistent ascents, SPEC S12'). `prepared` is
-        the shared per-step compute weights (`prepare_compute_weights`)."""
+        the shared per-step compute weights (`prepare_compute_weights`). The KL reference is
+        the all-ones/no-delta `(x@V)@U` reconstruction, routed identically per draw — matching
+        the main recon loss (the reference is constant w.r.t. `sources`, so it does not perturb
+        the source ascent gradient)."""
         masks, delta_masks = source_masks(ci_lower, sources, entry.live_sites)
         total = jnp.zeros((), jnp.float32)
         for routes in routes_per_draw:
@@ -248,7 +269,10 @@ def make_train_step(
                 entry.live_sites,
                 entry.has_delta,
             )
-            total = total + recon_loss_fn(masked, clean_output)
+            reference = reference_output(
+                model, prepared, batch, routes, entry.live_sites, ci_lower
+            )
+            total = total + recon_loss_fn(masked, reference)
         return total / len(routes_per_draw)
 
     @jaxtyped(typechecker=beartype)
@@ -262,8 +286,6 @@ def make_train_step(
         imp_min_param = annealed_imp_min_param(step_f32, total_steps, imp_min)
 
         batch = batch_sharded(batch)
-        with jax.named_scope("pd_clean_fwd"):
-            clean_output = jax.lax.stop_gradient(batch_sharded(model.clean_output(batch)))
         with jax.named_scope("pd_read_taps"):
             taps = model.read_activations(batch, state.ci_fn.input_names)
         # `leading` (batch, *positions) — the shape masks/sources/routes live in. Sourced
@@ -294,12 +316,20 @@ def make_train_step(
         # all-sites forward (SPEC S24 — torch warmup parity, NOT the term's loss plan),
         # params + CI detached. The warmed sources then enter the main backward as leaves;
         # the LR schedule (S13′) lives in `PersistentAdversary`. ──
+        # Reference for the warmup ascent: the all-ones/no-delta reconstruction over ALL sites,
+        # route-all (matching the warmup forward's live-set + routing). Built once from the
+        # DETACHED compute weights — constant across the ascent scan, so it does not perturb
+        # the source gradient.
+        warmup_reference = reference_output(
+            model, prepared_ascend, batch, None, site_names, ci_lower_detached
+        )
+
         def warmup_scoring_loss(sources: dict[str, Array]) -> Array:
             masks, delta_masks = source_masks(ci_lower_detached, sources, site_names)
             masked = masked_forward(
                 model, prepared_ascend, batch, masks, delta_masks, None, site_names, True
             )
-            return recon_loss_fn(masked, clean_output)
+            return recon_loss_fn(masked, warmup_reference)
 
         with jax.named_scope("pd_pgd_warmup_ascend"):
             warmed_advs = {
@@ -339,7 +369,6 @@ def make_train_step(
                         prepared_ascend,
                         ci_lower_detached,
                         batch,
-                        clean_output,
                         masked_forward,
                     )
 
@@ -447,7 +476,11 @@ def make_train_step(
                                             entry.live_sites,
                                         )
                                     )
-                        total = total + recon_loss_fn(masked, clean_output)
+                        with jax.named_scope("pd_recon_reference_fwd"):
+                            reference = reference_output(
+                                model, prepared, batch, routes, entry.live_sites, ci.lower
+                            )
+                        total = total + recon_loss_fn(masked, reference)
                         n_forwards += 1
                 assert n_forwards > 0, f"term {term.name!r} produced no forwards"
                 term_loss = total / n_forwards
