@@ -84,11 +84,15 @@ async function unwrap<T>(response: Response, what: string): Promise<T> {
     return (await response.json()) as T;
 }
 
-export async function loadCircuitBuilder(source: string = "mock", seed: number = 0): Promise<{ run_id: string }> {
+export async function loadCircuitBuilder(
+    source: string = "mock",
+    runRef: string | null = null,
+    seed: number = 0,
+): Promise<{ run_id: string }> {
     const response = await fetch("/api/circuit_builder/load", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source, seed }),
+        body: JSON.stringify({ source, run_ref: runRef, seed }),
     });
     return unwrap(response, "load circuit builder");
 }

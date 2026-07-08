@@ -24,6 +24,9 @@
     } from "../lib/api/circuitBuilder";
 
     let status = $state<"unloaded" | "loading" | "ready">("unloaded");
+    let source = $state<"mock" | "run">("mock");
+    let runRef = $state("p-55ea3f9b");
+    let loadedRunId = $state<string | null>(null);
     let error = $state<string | null>(null);
     let sites = $state<SiteInfo[]>([]);
     let loras = $state<LoraSpec[]>([]);
@@ -77,7 +80,8 @@
     async function load() {
         status = "loading";
         await guard(async () => {
-            await loadCircuitBuilder("mock");
+            const res = await loadCircuitBuilder(source, source === "run" ? runRef : null);
+            loadedRunId = res.run_id;
             sites = await getSites();
             loras = await listLoras();
             status = "ready";
@@ -209,11 +213,19 @@
                 Circuit builder edits model weights by hand: pick a subcomponent's read direction,
                 point it at downstream subcomponents via j-vectors, and see what changes.
             </p>
+            <div class="row" style="justify-content: center">
+                <label><input type="radio" bind:group={source} value="mock" /> mock</label>
+                <label><input type="radio" bind:group={source} value="run" /> saved run</label>
+                {#if source === "run"}
+                    <input bind:value={runRef} placeholder="p-55ea3f9b" />
+                {/if}
+            </div>
             <button disabled={status === "loading"} onclick={load}>
-                {status === "loading" ? "Loading…" : "Load (mock data)"}
+                {status === "loading" ? "Loading…" : source === "mock" ? "Load (mock data)" : `Load ${runRef}`}
             </button>
         </div>
     {:else}
+        <div class="loaded-banner">run: <strong>{loadedRunId}</strong></div>
         <div class="columns">
             <!-- ===================== LoRA list ===================== -->
             <section class="panel">
@@ -665,5 +677,10 @@
         max-width: 32rem;
         margin: 3rem auto;
         text-align: center;
+    }
+    .loaded-banner {
+        font-size: 0.8rem;
+        color: var(--text-muted, #777);
+        margin-bottom: 0.5rem;
     }
 </style>

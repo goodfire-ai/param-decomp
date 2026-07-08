@@ -53,7 +53,8 @@ def _get_cb_state(manager: object) -> _CBState:
 
 
 class LoadRequest(BaseModel):
-    source: str = "mock"  # "mock" now; "run" once the real artifacts are synced
+    source: str = "mock"  # "mock" | "run"
+    run_ref: str | None = None  # run dir / wandb ref, e.g. "p-55ea3f9b" (source="run")
     seed: int = 0
 
 
@@ -101,12 +102,18 @@ class CompareRequest(BaseModel):
 @router.post("/load")
 @log_errors
 def load(request: LoadRequest, manager: DepStateManager) -> dict:
-    """Load the circuit-builder context. Mock only until the real run is synced."""
-    assert request.source == "mock", (
-        "only source='mock' is available until p-55ea3f9b is synced to this cluster"
-    )
-    manager._circuit_builder_state = _CBState(load_mock_context(seed=request.seed))  # type: ignore[attr-defined]
-    return {"run_id": "mock", "status": "loaded"}
+    """Load the circuit-builder context: source='mock' or source='run' + run_ref."""
+    if request.source == "mock":
+        ctx = load_mock_context(seed=request.seed)
+    else:
+        assert request.source == "run", f"unknown source {request.source!r}"
+        assert request.run_ref, "source='run' requires run_ref (e.g. 'p-55ea3f9b')"
+        from param_decomp_lab.app.backend.circuit_builder_loader import load_run_context
+
+        with getattr(manager, "gpu_lock")():
+            ctx = load_run_context(request.run_ref)
+    manager._circuit_builder_state = _CBState(ctx)  # type: ignore[attr-defined]
+    return {"run_id": ctx.run_id, "status": "loaded"}
 
 
 @router.get("/sites")
