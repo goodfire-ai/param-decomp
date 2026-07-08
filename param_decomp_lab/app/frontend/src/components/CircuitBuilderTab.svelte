@@ -20,6 +20,7 @@
         type LoraSpec,
         type SiteInfo,
         type SubcomponentInfo,
+        type TokenLogit,
     } from "../lib/api/circuitBuilder";
 
     let status = $state<"unloaded" | "loading" | "ready">("unloaded");
@@ -46,6 +47,20 @@
     let temperature = $state(0.8);
     let compareResult = $state<CompareResult | null>(null);
     let expandedPosition = $state<number | null>(null);
+    let tooltip = $state<{
+        x: number;
+        y: number;
+        title: string;
+        base: TokenLogit[] | null;
+        edited: TokenLogit[] | null;
+    } | null>(null);
+
+    function showTip(e: MouseEvent, title: string, base: TokenLogit[] | null, edited: TokenLogit[] | null) {
+        tooltip = { x: e.clientX + 14, y: e.clientY + 14, title, base, edited };
+    }
+    function hideTip() {
+        tooltip = null;
+    }
 
     async function guard(fn: () => Promise<void>) {
         error = null;
@@ -77,7 +92,6 @@
             read_idx: 0,
             writes: [],
             scale: 1.0,
-            normalize_j: true,
             n_prompts: 16,
             enabled: true,
         };
@@ -125,12 +139,12 @@
     function addWrite(sc: SubcomponentInfo) {
         if (!editing) return;
         if (editing.writes.some((w) => w.site === sc.site && w.idx === sc.idx)) return;
-        editing.writes = [...editing.writes, { site: sc.site, idx: sc.idx, weight: 1.0 }];
+        editing.writes = [...editing.writes, { site: sc.site, idx: sc.idx, weight: null }];
     }
 
     function removeWrite(i: number) {
         if (!editing) return;
-        editing.writes = editing.writes.toSpliced(i, 1);
+        editing.writes = editing.writes.filter((_, k) => k !== i);
     }
 
     async function computeJs() {
@@ -233,9 +247,6 @@
                         <label>name <input bind:value={editing.name} /></label>
                         <label>scale <input type="number" step="0.1" bind:value={editing.scale} /></label>
                         <label>n_prompts <input type="number" min="1" bind:value={editing.n_prompts} /></label>
-                        <label title="use unit-norm j-vectors so the weight is the magnitude">
-                            normalize j <input type="checkbox" bind:checked={editing.normalize_j} />
-                        </label>
                     </div>
 
                     <h4>Read vector (normalized V column)</h4>
@@ -306,8 +317,17 @@
                             {@const j = jInfo.find((x) => x.site === term.site && x.idx === term.idx)}
                             <div class="write-term">
                                 <span>{term.site}:{term.idx}</span>
-                                <label>λ <input type="number" step="0.5" bind:value={term.weight} /></label>
-                                {#if j}<span class="norm">|j|={j.raw_norm.toExponential(2)}</span>{/if}
+                                <label>
+                                    λ
+                                    <input
+                                        type="number"
+                                        step="0.5"
+                                        bind:value={term.weight}
+                                        placeholder={j ? j.raw_norm.toExponential(2) : "‖j‖"}
+                                        title="prefactor on the unit j-vector; empty = default ‖j‖ (raw derivative scale)"
+                                    />
+                                </label>
+                                {#if j}<span class="norm">‖j‖={j.raw_norm.toExponential(2)}{term.weight === null ? " (default λ)" : ""}</span>{/if}
                                 <button onclick={() => removeWrite(i)}>✕</button>
                             </div>
                         {/each}
@@ -342,18 +362,34 @@
 
                 {#if compareResult}
                     <div class="gen-grid">
-                        <div>
-                            <h4>base · greedy</h4>
-                            <pre>{compareResult.base.greedy}</pre>
-                            <h4>base · sampled</h4>
-                            <pre>{compareResult.base.sampled}</pre>
-                        </div>
-                        <div>
-                            <h4>edited · greedy</h4>
-                            <pre>{compareResult.edited.greedy}</pre>
-                            <h4>edited · sampled</h4>
-                            <pre>{compareResult.edited.sampled}</pre>
-                        </div>
+                        {#each [
+                            { name: "base", gen: compareResult.base },
+                            { name: "edited", gen: compareResult.edited },
+                        ] as side (side.name)}
+                            <div>
+                                {#each [
+                                    { kind: "greedy", tokens: side.gen.greedy_tokens },
+                                    { kind: "sampled", tokens: side.gen.sampled_tokens },
+                                ] as variant (variant.kind)}
+                                    <h4>{side.name} · {variant.kind}</h4>
+                                    <div class="gen-text">
+                                        {#each variant.tokens as t, i (i)}
+                                            <span
+                                                class="gen-tok"
+                                                role="note"
+                                                onmouseenter={(e) =>
+                                                    showTip(
+                                                        e,
+                                                        `${side.name} ${variant.kind} @ +${i}`,
+                                                        side.name === "base" ? t.top : null,
+                                                        side.name === "edited" ? t.top : null,
+                                                    )}
+                                                onmouseleave={hideTip}>{t.token}</span>
+                                        {/each}
+                                    </div>
+                                {/each}
+                            </div>
+                        {/each}
                     </div>
                     <h4>Per-position KL(base‖edited) — mean {compareResult.mean_kl.toExponential(3)}</h4>
                     <div class="kl-strip">
@@ -362,7 +398,14 @@
                                 class="kl-token"
                                 class:selected={expandedPosition === p.position}
                                 style={`--h:${Math.round((p.kl_base_to_edited / maxKl) * 100)}%`}
-                                title={`KL=${p.kl_base_to_edited.toExponential(3)}`}
+                                onmouseenter={(e) =>
+                                    showTip(
+                                        e,
+                                        `after "${p.token}" · KL=${p.kl_base_to_edited.toExponential(2)}`,
+                                        p.top_base,
+                                        p.top_edited,
+                                    )}
+                                onmouseleave={hideTip}
                                 onclick={() =>
                                     (expandedPosition = expandedPosition === p.position ? null : p.position)}
                             >
@@ -394,6 +437,29 @@
                     {/if}
                 {/if}
             </section>
+        </div>
+    {/if}
+    {#if tooltip}
+        <div class="tooltip" style={`left:${tooltip.x}px; top:${tooltip.y}px`}>
+            <div class="tooltip-title">{tooltip.title}</div>
+            <div class="tooltip-cols">
+                {#if tooltip.base}
+                    <div>
+                        {#if tooltip.edited}<div class="tooltip-col-head">base</div>{/if}
+                        {#each tooltip.base as t (t.token_id)}
+                            <div class="tok-row"><code>{t.token}</code><span>{(t.prob * 100).toFixed(1)}%</span></div>
+                        {/each}
+                    </div>
+                {/if}
+                {#if tooltip.edited}
+                    <div>
+                        {#if tooltip.base}<div class="tooltip-col-head">edited</div>{/if}
+                        {#each tooltip.edited as t (t.token_id)}
+                            <div class="tok-row"><code>{t.token}</code><span>{(t.prob * 100).toFixed(1)}%</span></div>
+                        {/each}
+                    </div>
+                {/if}
+            </div>
         </div>
     {/if}
 </div>
@@ -512,13 +578,43 @@
         grid-template-columns: 1fr 1fr;
         gap: 1rem;
     }
-    pre {
+    .gen-text {
         white-space: pre-wrap;
         background: var(--bg-base, #f8f8f8);
         padding: 0.5rem;
         border-radius: 4px;
         max-height: 8rem;
         overflow-y: auto;
+        font-family: monospace;
+        font-size: 0.85rem;
+    }
+    .gen-tok:hover {
+        background: var(--accent-soft, #e3f0ff);
+        outline: 1px solid var(--accent, #2563eb);
+    }
+    .tooltip {
+        position: fixed;
+        z-index: 1000;
+        background: var(--bg-surface, #fff);
+        border: 1px solid var(--border-default, #bbb);
+        border-radius: 6px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        padding: 0.5rem 0.75rem;
+        pointer-events: none;
+        max-width: 24rem;
+    }
+    .tooltip-title {
+        font-size: 0.75rem;
+        color: var(--text-muted, #777);
+        margin-bottom: 0.25rem;
+    }
+    .tooltip-cols {
+        display: flex;
+        gap: 1rem;
+    }
+    .tooltip-col-head {
+        font-size: 0.75rem;
+        font-weight: bold;
     }
     .kl-strip {
         display: flex;

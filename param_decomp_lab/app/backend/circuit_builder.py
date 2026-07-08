@@ -209,11 +209,16 @@ def compute_j_vectors(
 
 
 class WriteTerm(BaseModel):
-    """One term of a LoRA's write vector: a downstream subcomponent + prefactor."""
+    """One term of a LoRA's write vector: a downstream subcomponent + prefactor.
+
+    `weight is None` means "use the default": the raw j-vector norm, so the term
+    contributes the un-normalized averaged derivative. Once the user edits the
+    prefactor it becomes an explicit magnitude on the unit j-vector.
+    """
 
     site: str
     idx: int
-    weight: float  # lambda_i
+    weight: float | None = None  # lambda_i; None -> default to raw ||j||
 
 
 class LoraSpec(BaseModel):
@@ -224,7 +229,6 @@ class LoraSpec(BaseModel):
     read_idx: int
     writes: list[WriteTerm]
     scale: float = 1.0  # global multiplier on dW
-    normalize_j: bool = True  # use j_hat (unit norm) so lambda is the magnitude
     n_prompts: int = 16  # prompts to average j-vectors over
     enabled: bool = True
 
@@ -254,7 +258,8 @@ def build_lora(
     for term in spec.writes:
         r = by_ref[SubcomponentRef(term.site, term.idx)]
         j_norms[f"{term.site}:{term.idx}"] = r.raw_norm
-        w_total += term.weight * (r.j_hat if spec.normalize_j else r.j)
+        weight = term.weight if term.weight is not None else r.raw_norm
+        w_total += weight * r.j_hat
 
     delta_w = spec.scale * torch.outer(w_total, v_hat)
     return BuiltLora(spec=spec, delta_w=delta_w, j_norms=j_norms)
@@ -298,9 +303,17 @@ class PositionComparison(BaseModel):
     top_edited: list[TokenLogit]
 
 
+class GeneratedToken(BaseModel):
+    token: str
+    token_id: int
+    top: list[TokenLogit]  # top-k next-token candidates at the step that produced this token
+
+
 class GenerationResult(BaseModel):
     greedy: str
     sampled: str
+    greedy_tokens: list[GeneratedToken]
+    sampled_tokens: list[GeneratedToken]
 
 
 class CompareResult(BaseModel):
@@ -320,22 +333,31 @@ class TokenizerProtocol(Protocol):
 def _generate(
     model: ComponentModel,
     token_ids: Int[Tensor, "1 T"],
+    tokenizer: "TokenizerProtocol",
     max_new_tokens: int,
     temperature: float,
     seed: int,
     greedy: bool,
-) -> list[int]:
+    top_k: int,
+) -> list[GeneratedToken]:
+    """Autoregressive generation recording per-step top-k (for hover tooltips)."""
     generator = torch.Generator(device="cpu").manual_seed(seed)
     ids = token_ids.clone()
-    out: list[int] = []
+    out: list[GeneratedToken] = []
     for _ in range(max_new_tokens):
-        logits = model(ids)[:, -1, :].float()
+        logits = model(ids)[0, -1, :].float()
         if greedy:
             nxt = int(logits.argmax(dim=-1).item())
         else:
             probs = F.softmax(logits / max(temperature, 1e-6), dim=-1).cpu()
-            nxt = int(torch.multinomial(probs[0], 1, generator=generator).item())
-        out.append(nxt)
+            nxt = int(torch.multinomial(probs, 1, generator=generator).item())
+        out.append(
+            GeneratedToken(
+                token=tokenizer.decode_tokens([nxt])[0],
+                token_id=nxt,
+                top=_topk(logits, tokenizer, top_k),
+            )
+        )
         ids = torch.cat([ids, torch.tensor([[nxt]], device=ids.device)], dim=1)
     return out
 
@@ -369,16 +391,19 @@ def compare_models(
     token_ids = torch.tensor([ids], dtype=torch.long, device=device)
     prompt_tokens = tokenizer.decode_tokens(ids)
 
+    def generate_both(m: ComponentModel) -> tuple[list[GeneratedToken], list[GeneratedToken]]:
+        greedy = _generate(m, token_ids, tokenizer, max_new_tokens, temperature, seed, greedy=True, top_k=top_k)
+        sampled = _generate(m, token_ids, tokenizer, max_new_tokens, temperature, seed, greedy=False, top_k=top_k)
+        return greedy, sampled
+
     with torch.no_grad():
         base_logits = model(token_ids)[0].float()
-    base_greedy = _generate(model, token_ids, max_new_tokens, temperature, seed, greedy=True)
-    base_sampled = _generate(model, token_ids, max_new_tokens, temperature, seed, greedy=False)
+    base_greedy, base_sampled = generate_both(model)
 
     with apply_loras(model, loras):
         with torch.no_grad():
             edited_logits = model(token_ids)[0].float()
-        edited_greedy = _generate(model, token_ids, max_new_tokens, temperature, seed, greedy=True)
-        edited_sampled = _generate(model, token_ids, max_new_tokens, temperature, seed, greedy=False)
+        edited_greedy, edited_sampled = generate_both(model)
 
     base_logprobs = F.log_softmax(base_logits, dim=-1)
     edited_logprobs = F.log_softmax(edited_logits, dim=-1)
@@ -398,12 +423,16 @@ def compare_models(
         prompt_tokens=prompt_tokens,
         positions=positions,
         base=GenerationResult(
-            greedy="".join(tokenizer.decode_tokens(base_greedy)),
-            sampled="".join(tokenizer.decode_tokens(base_sampled)),
+            greedy="".join(t.token for t in base_greedy),
+            sampled="".join(t.token for t in base_sampled),
+            greedy_tokens=base_greedy,
+            sampled_tokens=base_sampled,
         ),
         edited=GenerationResult(
-            greedy="".join(tokenizer.decode_tokens(edited_greedy)),
-            sampled="".join(tokenizer.decode_tokens(edited_sampled)),
+            greedy="".join(t.token for t in edited_greedy),
+            sampled="".join(t.token for t in edited_sampled),
+            greedy_tokens=edited_greedy,
+            sampled_tokens=edited_sampled,
         ),
         mean_kl=float(kls.mean()),
     )

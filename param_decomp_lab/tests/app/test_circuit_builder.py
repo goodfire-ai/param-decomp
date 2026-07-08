@@ -137,9 +137,7 @@ def test_lora_build_and_apply(ctx):
     # (W + dW) x == Wx + scale * (v_hat . x) * w_total
     x = torch.randn(d_in)
     v_hat = read_vector(model, read)
-    w_total = sum(
-        w * r.j_hat for r, w in zip(j_results, [2.0, -1.0])
-    )
+    w_total = sum(w * r.j_hat for r, w in zip(j_results, [2.0, -1.0]))
     expected_extra = 0.5 * float(v_hat @ x) * w_total
 
     original = module.weight.data.clone()
@@ -193,3 +191,27 @@ def test_compare_models_end_to_end(ctx):
     # base model must be untouched after comparison: rerun without loras
     result2 = compare_models(model, [], ctx.tokenizer, "hello world", top_k=5, max_new_tokens=4)
     assert result2.mean_kl == pytest.approx(0.0, abs=1e-9)
+
+
+def test_write_term_default_weight_is_raw_norm(ctx):
+    """weight=None must contribute the raw (un-normalized) j-vector."""
+    model = ctx.model
+    read = SubcomponentRef("h.0.attn.v_proj", 1)
+    target = SubcomponentRef("h.1.mlp.c_fc", 4)
+    j_results = compute_j_vectors(
+        model, read.site, [target], ctx.token_provider.batches(2, 8), n_prompts=2
+    )
+    spec_default = LoraSpec(
+        name="d", read_site=read.site, read_idx=read.idx,
+        writes=[WriteTerm(site=target.site, idx=target.idx)],  # weight=None
+    )
+    spec_explicit = LoraSpec(
+        name="e", read_site=read.site, read_idx=read.idx,
+        writes=[WriteTerm(site=target.site, idx=target.idx, weight=j_results[0].raw_norm)],
+    )
+    dw_default = build_lora(model, spec_default, j_results).delta_w
+    dw_explicit = build_lora(model, spec_explicit, j_results).delta_w
+    assert torch.allclose(dw_default, dw_explicit)
+    # and it equals the raw j outer v_hat
+    manual = torch.outer(j_results[0].j, read_vector(model, read))
+    assert torch.allclose(dw_default, manual, atol=1e-6)

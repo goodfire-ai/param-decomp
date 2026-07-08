@@ -21,7 +21,7 @@ export interface SubcomponentInfo {
 export interface WriteTerm {
     site: string;
     idx: number;
-    weight: number;
+    weight: number | null; // null -> default: raw ||j||
 }
 
 export interface LoraSpec {
@@ -30,7 +30,6 @@ export interface LoraSpec {
     read_idx: number;
     writes: WriteTerm[];
     scale: number;
-    normalize_j: boolean;
     n_prompts: number;
     enabled: boolean;
 }
@@ -56,11 +55,24 @@ export interface PositionComparison {
     top_edited: TokenLogit[];
 }
 
+export interface GeneratedToken {
+    token: string;
+    token_id: number;
+    top: TokenLogit[];
+}
+
+export interface GenerationResult {
+    greedy: string;
+    sampled: string;
+    greedy_tokens: GeneratedToken[];
+    sampled_tokens: GeneratedToken[];
+}
+
 export interface CompareResult {
     prompt_tokens: string[];
     positions: PositionComparison[];
-    base: { greedy: string; sampled: string };
-    edited: { greedy: string; sampled: string };
+    base: GenerationResult;
+    edited: GenerationResult;
     mean_kl: number;
 }
 
