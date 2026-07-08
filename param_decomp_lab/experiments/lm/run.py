@@ -440,6 +440,14 @@ def main(config: Path, run_id: str) -> None:
         mhu.sync_global_devices("train_done")
         jax.distributed.shutdown()
 
+    # Cold-archive the finished run (rank 0, AFTER the multihost teardown so no rank
+    # waits on a barrier behind the upload). No-op unless the final-step checkpoint
+    # exists — a SIGTERM/requeue exit or profiling run never archives.
+    if is_main and not built.runtime.launch_env.profile.no_checkpoint:
+        from param_decomp_lab.tools.r2_cold import maybe_push_completed_run
+
+        maybe_push_completed_run(built.run.run_dir, built.pd.steps)
+
 
 def cli() -> None:
     fire.Fire(main)
