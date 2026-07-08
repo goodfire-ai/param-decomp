@@ -22,12 +22,13 @@ import fire
 import jax
 import jax.numpy as jnp
 import optax
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from param_decomp.built_run import DataConfig
 from param_decomp.ci_fn import (
     CIFn,
     FactoredCIArch,
+    FactoredCIFn,
     FactoredCtxArch,
     build_ci_fn,
     lower_leaky_hard_sigmoid,
@@ -39,12 +40,16 @@ from param_decomp.lm import DecomposedModel
 from param_decomp.train import COMPUTE_DT, cast_floating
 from param_decomp_lab.experiments.lm.load_run import open_jax_run
 
-LOG_EVERY = 100
+LOG_EVERY = 200
 SOFT_LEAK = 0.05
-ALIVE_THRESHOLD = 1e-6
+ALIVE_THRESHOLDS = (1e-6, 0.01, 0.1)
+"""1e-6 = the L0 counting threshold; 0.1 = the paper's rounding threshold (sub-0.1 CI
+carries essentially no performance — the mask-relevant boundary)."""
 LR = 1e-3
-STUDENT_LR = {"d2048-r512": 2e-4}
-"""Per-student peak-LR overrides: the d2048 trunk diverges at the shared 1e-3."""
+WARMUP_STEPS = 500
+STUDENT_LR = {"d2048-r512": 5e-4}
+"""Per-student peak-LR overrides: the d2048 trunk diverges at the shared 1e-3 without
+warmup; with warmup 5e-4 holds."""
 
 
 def _student_archs(
@@ -158,53 +163,75 @@ def _metrics(
     """Real-squashing agreement on the current batch, pooled over every (site, position,
     component) element, in fp32 (bf16 student forward — the dtype it would be consumed at)."""
     ci = cast_floating(student, COMPUTE_DT)(taps, vu=vu, remat=False)
+    one = jnp.asarray(1.0, jnp.float32)
     sq_lower = jnp.zeros((), jnp.float32)
     abs_lower = jnp.zeros((), jnp.float32)
-    agree = jnp.zeros((), jnp.float32)
     sq_upper = jnp.zeros((), jnp.float32)
-    hits = jnp.zeros((), jnp.float32)  # student-alive ∧ teacher-alive
-    t_alive_n = jnp.zeros((), jnp.float32)
-    s_alive_n = jnp.zeros((), jnp.float32)
-    sq_on_alive = jnp.zeros((), jnp.float32)  # lower MSE restricted to teacher-alive
+    w_hits = jnp.zeros((), jnp.float32)  # teacher-lower mass the student also marks alive
+    w_total = jnp.zeros((), jnp.float32)
+    by_thr = {
+        thr: {k: jnp.zeros((), jnp.float32) for k in ("hits", "t_n", "s_n", "sq")}
+        for thr in ALIVE_THRESHOLDS
+    }
     n = 0
     for site, t_logits in teacher_logits.items():
         t = t_logits.astype(jnp.float32)
         s = ci.logits[site].astype(jnp.float32)
         t_lower, s_lower = lower_leaky_hard_sigmoid(t), lower_leaky_hard_sigmoid(s)
-        t_alive = t_lower > ALIVE_THRESHOLD
-        s_alive = s_lower > ALIVE_THRESHOLD
         sq_lower += jnp.sum((s_lower - t_lower) ** 2)
         abs_lower += jnp.sum(jnp.abs(s_lower - t_lower))
-        agree += jnp.sum((t_alive == s_alive).astype(jnp.float32))
-        hits += jnp.sum((t_alive & s_alive).astype(jnp.float32))
-        t_alive_n += jnp.sum(t_alive.astype(jnp.float32))
-        s_alive_n += jnp.sum(s_alive.astype(jnp.float32))
-        sq_on_alive += jnp.sum(jnp.where(t_alive, (s_lower - t_lower) ** 2, 0.0))
         sq_upper += jnp.sum((upper_leaky_hard_sigmoid(s) - upper_leaky_hard_sigmoid(t)) ** 2)
+        # Value-weighted recall: what fraction of the teacher's total CI MASS lands on
+        # elements the student also marks alive — immune to a sea of mask-irrelevant
+        # boundary elements dominating the count-based recall.
+        base_alive = s_lower > ALIVE_THRESHOLDS[0]
+        w_hits += jnp.sum(jnp.where(base_alive, t_lower, 0.0))
+        w_total += jnp.sum(t_lower)
+        for thr, acc in by_thr.items():
+            t_alive = t_lower > thr
+            s_alive = s_lower > thr
+            acc["hits"] += jnp.sum((t_alive & s_alive).astype(jnp.float32))
+            acc["t_n"] += jnp.sum(t_alive.astype(jnp.float32))
+            acc["s_n"] += jnp.sum(s_alive.astype(jnp.float32))
+            acc["sq"] += jnp.sum(jnp.where(t_alive, (s_lower - t_lower) ** 2, 0.0))
         n += t.size
-    one = jnp.asarray(1.0, jnp.float32)
-    return {
+    out: dict[str, Float[Array, ""]] = {
         "mse_lower": sq_lower / n,
         "mae_lower": abs_lower / n,
-        "alive_agreement": agree / n,
-        # Base-rate-honest views: teacher-alive is ~1% of elements, so agreement alone is
-        # nearly the trivial all-dead predictor. Recall/precision/mse ON the alive set are
-        # what representability actually means for the masks.
-        "alive_recall": hits / jnp.maximum(t_alive_n, one),
-        "alive_precision": hits / jnp.maximum(s_alive_n, one),
-        "mse_on_alive": sq_on_alive / jnp.maximum(t_alive_n, one),
-        "teacher_alive_frac": t_alive_n / n,
-        "student_alive_frac": s_alive_n / n,
         "mse_upper": sq_upper / n,
+        "weighted_recall": w_hits / jnp.maximum(w_total, one),
     }
+    # Base-rate-honest views at a THRESHOLD LADDER: teacher-alive at 1e-6 is ~1% of
+    # elements and includes mask-irrelevant boundary values; 0.1 is the paper's rounding
+    # threshold (sub-0.1 CI carries essentially no performance).
+    for thr, acc in by_thr.items():
+        tag = f"@{thr:g}"
+        out[f"recall{tag}"] = acc["hits"] / jnp.maximum(acc["t_n"], one)
+        out[f"precision{tag}"] = acc["hits"] / jnp.maximum(acc["s_n"], one)
+        out[f"mse_on_alive{tag}"] = acc["sq"] / jnp.maximum(acc["t_n"], one)
+        out[f"teacher_frac{tag}"] = acc["t_n"] / n
+        out[f"student_frac{tag}"] = acc["s_n"] / n
+    return out
 
 
 def _n_params(student: CIFn) -> int:
     return sum(x.size for x in jax.tree.leaves(eqx.filter(student, eqx.is_inexact_array)))
 
 
+def _wake_context(student: CIFn, key: PRNGKeyArray) -> CIFn:
+    """Replace the zero-init ctx out_proj with a small Kaiming draw. The zero init is a
+    TRAINING-time feature (context grows in as the game demands it) but a supervised-probe
+    pathology: it makes the whole context pathway start at a saddle and crawl, so a short
+    probe systematically under-uses context. No-op for gate-only."""
+    if not isinstance(student, FactoredCIFn) or student.context is None:
+        return student
+    d_model = student.context.net.out_w.shape[0]
+    fresh = jax.random.normal(key, student.context.net.out_w.shape) * d_model**-0.5
+    return eqx.tree_at(lambda s: s.context.net.out_w, student, fresh)
+
+
 def main(
-    run_dir: str, steps: int = 4000, batch_size: int = 32, seed: int = 0, out: str | None = None
+    run_dir: str, steps: int = 20000, batch_size: int = 32, seed: int = 0, out: str | None = None
 ) -> None:
     run_path = Path(run_dir)
     out_path = Path(out) if out is not None else run_path / "distill_probe.jsonl"
@@ -233,7 +260,10 @@ def main(
     key = jax.random.PRNGKey(seed)
     archs = _student_archs(ctx_taps, input_dim, len(loaded.lm.sites))
     students: dict[str, CIFn] = {
-        name: build_ci_fn(arch, loaded.lm.sites, jax.random.fold_in(key, i))
+        name: _wake_context(
+            build_ci_fn(arch, loaded.lm.sites, jax.random.fold_in(key, i)),
+            jax.random.fold_in(key, 1000 + i),
+        )
         for i, (name, arch) in enumerate(archs.items())
     }
     merged_names = tuple(
@@ -241,7 +271,15 @@ def main(
     )
 
     optimizers = {
-        name: optax.adam(optax.cosine_decay_schedule(STUDENT_LR.get(name, LR), steps, alpha=0.1))
+        name: optax.adam(
+            optax.warmup_cosine_decay_schedule(
+                init_value=0.0,
+                peak_value=STUDENT_LR.get(name, LR),
+                warmup_steps=WARMUP_STEPS,
+                decay_steps=steps,
+                end_value=0.1 * STUDENT_LR.get(name, LR),
+            )
+        )
         for name in students
     }
     opt_states = {
@@ -259,6 +297,11 @@ def main(
     )
     for name, n in param_counts.items():
         print(f"  student {name:<12} {n:>14,} params", flush=True)
+
+    # Held-out batch (index past the training stream): metrics measure the FUNCTION fit,
+    # not memorization of the current training batch.
+    heldout_tokens = jnp.asarray(server.local_batch(steps + 7))
+    heldout_taps, heldout_labels = _read_and_label(loaded.lm, teacher, heldout_tokens, merged_names)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     last_record: dict[str, dict[str, float]] = {}
@@ -286,11 +329,15 @@ def main(
             if step % LOG_EVERY == 0 or step == steps - 1:
                 record: dict[str, dict[str, float]] = {}
                 for name, student in students.items():
-                    m = _metrics(student, taps, labels, vu_compute)
+                    m = _metrics(student, heldout_taps, heldout_labels, vu_compute)
                     record[name] = {k: float(v) for k, v in m.items()} | {
                         "train_loss": losses[name]
                     }
-                    stats = " ".join(f"{k}={v:.5f}" for k, v in record[name].items())
+                    brief = {
+                        k: record[name][k]
+                        for k in ("recall@1e-06", "recall@0.1", "weighted_recall", "train_loss")
+                    }
+                    stats = " ".join(f"{k}={v:.5f}" for k, v in brief.items())
                     print(f"[{step:>6}] {name:<12} {stats}", flush=True)
                 last_record = record
                 sink.write(json.dumps({"step": step, "students": record}) + "\n")
@@ -298,11 +345,11 @@ def main(
 
     print(f"\n=== distill probe summary: teacher {loaded.run_id} @ step {loaded.step} ===")
     cols = (
-        "alive_recall",
-        "alive_precision",
-        "mse_on_alive",
-        "student_alive_frac",
-        "mse_lower",
+        "recall@1e-06",
+        "recall@0.1",
+        "weighted_recall",
+        "precision@0.1",
+        "mse_on_alive@0.1",
         "train_loss",
     )
     print(f"{'student':<12} {'params':>14} " + " ".join(f"{c:>16}" for c in cols))
