@@ -91,7 +91,7 @@ def make_ci_hidden_acts_step(
         components_bf16 = cast_floating(components, COMPUTE_DT)
         prepared = model.prepare_compute_weights(components_bf16)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
-        ci_lower = ci_fn_bf16(taps, remat=False).lower
+        ci_lower = ci_fn_bf16(taps, vu=components_bf16, remat=False).lower
 
         leading = _waist_leading(ci_lower, site_names)
         zeros_delta = {s: jnp.zeros(leading, COMPUTE_DT) for s in site_names}
@@ -132,7 +132,7 @@ def make_stochastic_hidden_acts_step(
         components_bf16 = cast_floating(components, COMPUTE_DT)
         prepared = model.prepare_compute_weights(components_bf16)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
-        ci_lower = ci_fn_bf16(taps, remat=False).lower
+        ci_lower = ci_fn_bf16(taps, vu=components_bf16, remat=False).lower
 
         leading = _waist_leading(ci_lower, site_names)
         clean = model.masked_site_outputs(

@@ -25,7 +25,7 @@ from param_decomp.built_run import (
     EvalPGDConfig,
     WeightsDtype,
 )
-from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch
+from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch, FactoredCIArch, FactoredCtxArch
 from param_decomp.components import SiteC
 from param_decomp.configs import (
     CEandKLLossesConfig,
@@ -34,6 +34,7 @@ from param_decomp.configs import (
     CIHistogramsConfig,
     CIMaskedAttnPatternsReconLossConfig,
     ComponentActivationDensityConfig,
+    FactoredCiConfig,
     PGDReconLossConfig,
     StochasticAttnPatternsReconLossConfig,
 )
@@ -302,6 +303,27 @@ def _resolve_chunkwise_ci_arch(
     )
 
 
+def _resolve_factored_ci_arch(target: AnyLMTargetConfig, ci: FactoredCiConfig) -> FactoredCIArch:
+    """Resolve the factored arch against the LM target: the context net reads ONE residual
+    tap per decomposed block (`resid.{block}`, ascending); the per-site gate taps (the site
+    names themselves) are declared by the fn at init, not here."""
+    if ci.context is None:
+        return FactoredCIArch(ctx=None)
+    blocks = sorted({_block_of_site(target, spec.name) for spec in target.sites})
+    taps = tuple(f"resid.{block}" for block in blocks)
+    return FactoredCIArch(
+        ctx=FactoredCtxArch(
+            taps=taps,
+            input_dim=len(taps) * _resolve_d_resid(target),
+            d_model=ci.context.d_model,
+            n_blocks=ci.context.n_blocks,
+            n_heads=ci.context.n_heads,
+            mlp_hidden=ci.context.mlp_hidden,
+            rank=ci.context.rank,
+        )
+    )
+
+
 def _assert_losses_supported(cfg: LMExperimentConfig, site_names: tuple[str, ...]) -> None:
     """Run the schema's loss configs through `build_loss_terms` so unsupported metrics
     refuse at convert time rather than on the GPUs. The engine reads `pd.loss_metrics`
@@ -428,7 +450,11 @@ def build_experiment_config(cfg: LMExperimentConfig, run_id: str) -> BuiltRun:
         run=run_instance(cfg, run_id),
         target=target,
         data=data,
-        ci_fn=ci_arch(cfg.pd.ci_config, lambda ci: _resolve_chunkwise_ci_arch(target, ci)),
+        ci_fn=ci_arch(
+            cfg.pd.ci_config,
+            lambda ci: _resolve_chunkwise_ci_arch(target, ci),
+            lambda ci: _resolve_factored_ci_arch(target, ci),
+        ),
         eval=_eval(cfg),
     )
 

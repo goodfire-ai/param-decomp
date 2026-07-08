@@ -36,7 +36,7 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from param_decomp.components import SiteSpec
+from param_decomp.components import DecompVU, SiteSpec
 from vendored_jax.llama import apply_rope, rms_norm, rope_cos_sin
 
 CI_FN_RMS_EPS = float(jnp.finfo(jnp.float32).eps)
@@ -107,7 +107,12 @@ class CIFn(Protocol):
     output_names: tuple[str, ...]
     expects_axes: tuple[str, ...]
 
-    def __call__(self, taps: dict[str, Array], *, remat: bool) -> CI: ...
+    def __call__(self, taps: dict[str, Array], *, vu: DecompVU | None = None, remat: bool) -> CI:
+        """`vu` is the live decomposition (compute-dtype ok): the factored CI fn gates on
+        each component's own pre-activation `rms_norm(x_site)·V_c`, so it needs V. Every
+        other arch ignores it (None fine); the factored fn asserts it and stop-gradients V
+        internally — CI gradient never reaches the components through the gate."""
+        ...
 
     def shardings(self, mesh: Mesh) -> "CIFn":
         """Per-leaf `dp` placement matching this CI fn's pytree structure (each array leaf
@@ -392,7 +397,8 @@ class ChunkwiseTransformerCIFn(eqx.Module):
             (self.chunks.shardings(mesh), NamedSharding(mesh, P())),
         )
 
-    def __call__(self, taps: dict[str, Array], *, remat: bool) -> CI:
+    def __call__(self, taps: dict[str, Array], *, vu: DecompVU | None = None, remat: bool) -> CI:
+        del vu  # reads residual taps only
         per_chunk_in = [
             jnp.concatenate(
                 [_weightless_rms_norm(taps[k], self.eps) for k in m.input_taps], axis=-1
@@ -626,8 +632,8 @@ class LayerwiseMLPCIFn(eqx.Module):
         )
         return {name: self.site_mlps[name](taps[name]) for name in self.output_names}
 
-    def __call__(self, taps: dict[str, Array], *, remat: bool) -> CI:
-        del remat  # single-shot (no scan to bound) -> remat is a no-op for the MLP CI fns
+    def __call__(self, taps: dict[str, Array], *, vu: DecompVU | None = None, remat: bool) -> CI:
+        del vu, remat  # single-shot (no scan to bound) -> remat is a no-op for the MLP CI fns
         return CI.from_logits(self.site_logits(taps))
 
 
@@ -703,8 +709,8 @@ class GlobalMLPCIFn(eqx.Module):
             for i, name in enumerate(self.output_names)
         }
 
-    def __call__(self, taps: dict[str, Array], *, remat: bool) -> CI:
-        del remat  # single-shot (no scan to bound) -> remat is a no-op for the MLP CI fns
+    def __call__(self, taps: dict[str, Array], *, vu: DecompVU | None = None, remat: bool) -> CI:
+        del vu, remat  # single-shot (no scan to bound) -> remat is a no-op for the MLP CI fns
         return CI.from_logits(self.site_logits(taps))
 
 
@@ -728,10 +734,174 @@ def init_global_mlp_ci_fn(
     )
 
 
+# ----------------------------- factored gate (sequence domain) -----------------------------
+
+
+@dataclass(frozen=True)
+class FactoredCtxArch:
+    """The factored CI fn's small shared context net: `taps` (residual streams, RMS-normed
+    per tap and concatenated to `input_dim`) → in_proj → `n_blocks` bidirectional-RoPE
+    blocks at `d_model` → out_proj to a rank-`rank` code per position."""
+
+    taps: tuple[str, ...]
+    input_dim: int
+    d_model: int
+    n_blocks: int
+    n_heads: int
+    mlp_hidden: int
+    rank: int
+
+
+@dataclass(frozen=True)
+class FactoredCIArch:
+    """Factored CI fn: a per-component affine gate on the component's own pre-activation
+    `â_c = rms_norm(x_site)·V_c`, plus an optional rank-r contextual modulation from ONE
+    small shared net. `ctx=None` is the gate-only ablation (no context net, no `u`)."""
+
+    ctx: FactoredCtxArch | None
+
+
+class CtxNet(eqx.Module):
+    """in_proj → `CIBlock`s (bidirectional RoPE, no chunk axis) → out_proj to the code z."""
+
+    in_w: Float[Array, "input_dim d_model"]
+    in_b: Float[Array, " d_model"]
+    blocks: list[CIBlock]
+    out_w: Float[Array, "d_model rank"]
+    out_b: Float[Array, " rank"]
+    inv_freq: Array
+
+    def __call__(self, x: Float[Array, "*leading input_dim"]) -> Float[Array, "*leading rank"]:
+        h = einops.einsum(x, self.in_w, "... i, i o -> ... o") + self.in_b
+        inv_freq = jax.lax.stop_gradient(self.inv_freq)  # RoPE buffer, not a param (SPEC S27)
+        for block in self.blocks:
+            h = block(h, inv_freq)
+        return einops.einsum(h, self.out_w, "... i, i o -> ... o") + self.out_b
+
+
+class FactoredCIFn(eqx.Module):
+    """`logit_c = α_c·â_c + α'_c·|â_c| + β_c + ⟨u_c, z⟩` with `â_c = rms_norm(x_site)·V_c`.
+
+    The gate reads the LIVE decomposition (the `vu` call arg) but never trains it: V is
+    stop-gradiented, so CI-fn gradient stops at the gate and the components train only
+    through the recon/faith path. `context` bundles the shared net and the per-site rank-r
+    readouts `u [C, rank]` (both present or neither — gate-only when None)."""
+
+    alpha: dict[str, Array]  # site -> [C]
+    alpha_abs: dict[str, Array]  # site -> [C]
+    beta: dict[str, Array]  # site -> [C]
+    context: tuple[CtxNet, dict[str, Array]] | None  # (shared net, site -> u [C, rank])
+    ctx_taps: tuple[str, ...] = eqx.field(static=True)
+    input_names: tuple[str, ...] = eqx.field(static=True)
+    output_names: tuple[str, ...] = eqx.field(static=True)
+    eps: float = eqx.field(static=True)
+    expects_axes: tuple[str, ...] = eqx.field(static=True)
+
+    def shardings(self, mesh: Mesh) -> "FactoredCIFn":
+        """Replicate everything: the whole fn is ~C·(3+rank) + the small ctx net — a few
+        MB, nothing worth sharding (contrast the chunkwise transformer's ZeRO-1 layout)."""
+        repl = NamedSharding(mesh, P())
+        return jax.tree.map(lambda _: repl, self)
+
+    def __call__(self, taps: dict[str, Array], *, vu: DecompVU | None = None, remat: bool) -> CI:
+        del remat  # single-shot (no scan to bound)
+        assert vu is not None, "FactoredCIFn gates on â = rms(x_site)·V_c — pass vu"
+        zu: tuple[Array, dict[str, Array]] | None = None
+        if self.context is not None:
+            ctx_net, u = self.context
+            ctx_in = jnp.concatenate(
+                [_weightless_rms_norm(taps[k], self.eps) for k in self.ctx_taps], axis=-1
+            )
+            zu = (ctx_net(ctx_in), u)
+        logits: SiteDict = {}
+        for site in self.output_names:
+            x = _weightless_rms_norm(taps[site], self.eps)
+            v = jax.lax.stop_gradient(vu.site(site)[0]).astype(x.dtype)
+            a = einops.einsum(x, v, "... d, d c -> ... c")
+            lg = self.alpha[site] * a + self.alpha_abs[site] * jnp.abs(a) + self.beta[site]
+            if zu is not None:
+                z, u = zu
+                lg = lg + einops.einsum(z, u[site], "... r, c r -> ... c")
+            logits[site] = lg
+        return CI.from_logits(logits)
+
+
+def init_factored_ci_fn(
+    arch: FactoredCIArch, sites: tuple[SiteSpec, ...], key: PRNGKeyArray
+) -> FactoredCIFn:
+    """β ~ N(0,1) reproduces the chunkwise head's initial logit spread (O(1) normal,
+    scale-independent of â); α starts small (0.1), α' at 0, and the ctx out_proj at ZERO so
+    `⟨u, z⟩ = 0` at init (u random so the out_proj gradient is nonzero) — initial logits
+    are `0.1·â + β` regardless of context."""
+    beta_key, u_key, ctx_key = jax.random.split(key, 3)
+    alpha = {s.name: jnp.full((s.C,), 0.1) for s in sites}
+    alpha_abs = {s.name: jnp.zeros((s.C,)) for s in sites}
+    beta = {
+        s.name: jax.random.normal(jax.random.fold_in(beta_key, i), (s.C,))
+        for i, s in enumerate(sites)
+    }
+
+    context: tuple[CtxNet, dict[str, Array]] | None = None
+    ctx_taps: tuple[str, ...] = ()
+    if arch.ctx is not None:
+        ctx = arch.ctx
+        hd = ctx.d_model // ctx.n_heads
+        assert ctx.d_model % ctx.n_heads == 0 and hd % 2 == 0, (ctx.d_model, ctx.n_heads)
+        relu_gain = 2.0**0.5
+
+        def kaiming(k: PRNGKeyArray, shape: tuple[int, ...], fan_in: int, gain: float) -> Array:
+            return jax.random.normal(k, shape) * (gain / fan_in**0.5)
+
+        def attn_default(k: PRNGKeyArray, shape: tuple[int, ...], fan_in: int) -> Array:
+            bound = 1.0 / fan_in**0.5
+            return jax.random.uniform(k, shape, minval=-bound, maxval=bound)
+
+        def block(bkey: PRNGKeyArray) -> CIBlock:
+            kq, kk, kv, ko, k1, k2 = jax.random.split(bkey, 6)
+            d, mlp = ctx.d_model, ctx.mlp_hidden
+            return CIBlock(
+                wq=attn_default(kq, (d, d), d), wk=attn_default(kk, (d, d), d),
+                wv=attn_default(kv, (d, d), d), wo=attn_default(ko, (d, d), d),
+                w1=kaiming(k1, (d, mlp), d, relu_gain), b1=jnp.zeros((mlp,)),
+                w2=kaiming(k2, (mlp, d), mlp, 1.0), b2=jnp.zeros((d,)),
+                n_head=ctx.n_heads, eps=CI_FN_RMS_EPS,
+            )  # fmt: skip
+
+        in_key, *block_keys = jax.random.split(ctx_key, ctx.n_blocks + 1)
+        net = CtxNet(
+            in_w=kaiming(in_key, (ctx.input_dim, ctx.d_model), ctx.input_dim, relu_gain),
+            in_b=jnp.zeros((ctx.d_model,)),
+            blocks=[block(bk) for bk in block_keys],
+            out_w=jnp.zeros((ctx.d_model, ctx.rank)),
+            out_b=jnp.zeros((ctx.rank,)),
+            inv_freq=1.0 / (10000.0 ** (jnp.arange(0, hd, 2, dtype=jnp.float32) / hd)),
+        )
+        u = {
+            s.name: jax.random.normal(jax.random.fold_in(u_key, i), (s.C, ctx.rank))
+            * ctx.rank**-0.5
+            for i, s in enumerate(sites)
+        }
+        context = (net, u)
+        ctx_taps = ctx.taps
+
+    site_names = tuple(s.name for s in sites)
+    return FactoredCIFn(
+        alpha=alpha,
+        alpha_abs=alpha_abs,
+        beta=beta,
+        context=context,
+        ctx_taps=ctx_taps,
+        input_names=tuple(sorted({*site_names, *ctx_taps})),
+        output_names=site_names,
+        eps=CI_FN_RMS_EPS,
+        expects_axes=("sequence",),
+    )
+
+
 # ----------------------------- construction (placement-agnostic) -----------------------------
 
 
-CIFnArch = ChunkwiseTransformerCIArch | MLPCIArch | GlobalMLPCIArch
+CIFnArch = ChunkwiseTransformerCIArch | MLPCIArch | GlobalMLPCIArch | FactoredCIArch
 """Every CI-fn architecture. Construction goes through `build_ci_fn`; sharding/placement is
 a separate, scale-driven concern (see `llama8b_sharding`), never coupled to arch type."""
 
@@ -746,3 +916,5 @@ def build_ci_fn(arch: CIFnArch, sites: tuple[SiteSpec, ...], key: PRNGKeyArray) 
             return init_layerwise_mlp_ci_fn(arch, sites, key)
         case GlobalMLPCIArch():
             return init_global_mlp_ci_fn(arch, sites, key)
+        case FactoredCIArch():
+            return init_factored_ci_fn(arch, sites, key)

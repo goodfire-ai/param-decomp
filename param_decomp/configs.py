@@ -111,9 +111,35 @@ class ChunkwiseTransformerCiConfig(BaseConfig):
         return self
 
 
+class FactoredCiContextConfig(BaseConfig):
+    """The factored CI fn's small shared context net (reads every residual tap) and the
+    rank of the per-component contextual readout `⟨u_c, z⟩`."""
+
+    d_model: PositiveInt
+    n_blocks: PositiveInt
+    n_heads: PositiveInt
+    mlp_hidden: PositiveInt
+    rank: PositiveInt
+
+    @model_validator(mode="after")
+    def validate_heads(self) -> Self:
+        assert self.d_model % self.n_heads == 0, (self.d_model, self.n_heads)
+        assert (self.d_model // self.n_heads) % 2 == 0, "head_dim must be even for RoPE"
+        return self
+
+
+class FactoredCiConfig(BaseConfig):
+    """Factored CI fn (LMs): per-component affine gate on the component's own
+    pre-activation `â_c = rms_norm(x_site)·V_c` plus an optional rank-r contextual
+    modulation from one small shared net. `context: null` is the gate-only ablation."""
+
+    type: Literal["factored"] = "factored"
+    context: FactoredCiContextConfig | None
+
+
 # Flat discriminated union (by `type`): one self-contained config per CI fn.
 CiConfig = Annotated[
-    LayerwiseMlpCiConfig | GlobalMlpCiConfig | ChunkwiseTransformerCiConfig,
+    LayerwiseMlpCiConfig | GlobalMlpCiConfig | ChunkwiseTransformerCiConfig | FactoredCiConfig,
     Field(discriminator="type"),
 ]
 

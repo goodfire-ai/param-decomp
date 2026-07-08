@@ -146,7 +146,10 @@ def make_eval_step(
         prepared = model.prepare_compute_weights(components_bf16)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
         # keep CI C-on-`tp` (matches `x@V` in `site_out`); see train.py `ci_C_on_tp`
-        ci_lower = {site: ci_shard(v) for site, v in ci_fn_bf16(taps, remat=False).lower.items()}
+        ci_lower = {
+            site: ci_shard(v)
+            for site, v in ci_fn_bf16(taps, vu=components_bf16, remat=False).lower.items()
+        }
 
         leading = token_ids.shape
         zeros_delta = {site: jnp.zeros(leading, COMPUTE_DT) for site in site_names}

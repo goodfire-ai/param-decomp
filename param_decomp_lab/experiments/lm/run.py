@@ -307,7 +307,12 @@ def _make_lm_eval_fn(
             # hidden-acts scalars ride the live `_step` axis through `eval_record`; the
             # figures' pure-host render + wandb.log happen OFF the loop on rank 0.
             site_reductions = accumulate_site_reductions(
-                slow_eval_step, lm, state.ci_fn, eval_batches, eval.slow_n_batches_accum
+                slow_eval_step,
+                lm,
+                state.components,
+                state.ci_fn,
+                eval_batches,
+                eval.slow_n_batches_accum,
             )
             hidden_acts_key = random.fold_in(run_key, 3 * pd.steps + eval_pass_index)
             hidden_acts = compute_hidden_acts_metrics(
@@ -321,7 +326,7 @@ def _make_lm_eval_fn(
             position_ci: dict[str, PositionCI] | None = None
             if position_ci_step is not None:
                 position_ci = accumulate_position_ci(
-                    position_ci_step, lm, state.ci_fn, eval_batches
+                    position_ci_step, lm, state.components, state.ci_fn, eval_batches
                 )
                 identity_ci_errors = compute_identity_ci_errors(
                     perm_spec, position_ci, IDENTITY_CI_ERROR_TOLERANCE

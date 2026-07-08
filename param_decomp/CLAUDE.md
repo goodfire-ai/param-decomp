@@ -119,10 +119,15 @@ from the canonical schema and calls `run_decomposition_training`). They are posi
 (`leading_axes=()`) and use the MLP CI fns. All CI-fn architectures live together in
 `ci_fn.py`: `LayerwiseMLPCIFn` (`expects_axes=()`, one independent MLP per site mapping
 `site_input [B,d_in] -> [B,C]`), `GlobalMLPCIFn` (`expects_axes=()`, one shared MLP over all
-sites jointly, concat/split in canonical site order), and the LM `ChunkwiseTransformerCIFn`
+sites jointly, concat/split in canonical site order), the LM `ChunkwiseTransformerCIFn`
 (`expects_axes=("sequence",)`, per-chunk transformers reading residual taps, stacked +
 `lax.scan`'d with per-chunk remat, and **N per-site output heads** (one `[d_model, C_j]` per
-site-slot). NOTE: this is the pure-HSDP backup branch — the mesh is `(replicate, fsdp)` with
+site-slot), and the EXPERIMENTAL LM `FactoredCIFn` (`expects_axes=("sequence",)`,
+per-component affine gate on the component's own pre-activation `â_c = rms(x_site)·V_c` +
+an optional rank-r context readout from one small shared net; the CIFn protocol carries a
+`vu: DecompVU | None = None` kwarg for it — the fn stop-gradients V, other archs ignore it;
+SPEC §4.6/S4/S5 amendment pending with Oli before this merges to feature/jax). NOTE: this
+is the pure-HSDP backup branch — the mesh is `(replicate, fsdp)` with
 NO tensor-parallel / Megatron-C axis (`fsdp` = the 8 intra-node NVLink GPUs, `replicate` =
 across nodes). The CI output C axis is NEVER sharded, so the per-site heads are a layout
 convenience here (they were load-bearing under the prior TP layout, which sliced a tp-sharded

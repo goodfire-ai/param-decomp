@@ -283,9 +283,15 @@ def make_train_step(
         # `loss_fn` takes the live value and its ci-fn grad is pulled back through `ci_vjp`. So the
         # (≈10x-the-target) CI fn is forward-evaluated ONCE, not once detached for the ascend +
         # once inside the main backward.
+        # The factored CI fn gates on `rms(x_site)·V_c` — it takes the live components
+        # (compute-dtype) and stop-gradients V internally, so the vjp (w.r.t. ci_fn only)
+        # and the closed-over vu agree: no CI gradient reaches the components.
+        vu_for_ci = cast_floating(state.components, COMPUTE_DT)
         with jax.named_scope("pd_ci_fn_fwd"):
             ci, ci_vjp = eqx.filter_vjp(
-                lambda cf: ci_batch_sharded(cast_floating(cf, COMPUTE_DT)(taps, remat=remat_ci_fn)),
+                lambda cf: ci_batch_sharded(
+                    cast_floating(cf, COMPUTE_DT)(taps, vu=vu_for_ci, remat=remat_ci_fn)
+                ),
                 state.ci_fn,
             )
         ci_lower_detached = jax.lax.stop_gradient(ci).lower

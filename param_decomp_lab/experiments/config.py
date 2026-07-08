@@ -20,6 +20,7 @@ from param_decomp.built_run import RunInstance
 from param_decomp.ci_fn import (
     ChunkwiseTransformerCIArch,
     CIFnArch,
+    FactoredCIArch,
     GlobalMLPCIArch,
     MLPCIArch,
 )
@@ -28,6 +29,7 @@ from param_decomp.configs import (
     Cadence,
     ChunkwiseTransformerCiConfig,
     CiConfig,
+    FactoredCiConfig,
     GlobalMlpCiConfig,
     LayerwiseMlpCiConfig,
     OptimizerConfig,
@@ -110,12 +112,13 @@ _RUN_ID_PATTERN = re.compile(r"^p-[0-9a-f]{8}$")
 def ci_arch(
     ci_config: CiConfig,
     resolve_chunkwise: "Callable[[ChunkwiseTransformerCiConfig], ChunkwiseTransformerCIArch] | None",
+    resolve_factored: "Callable[[FactoredCiConfig], FactoredCIArch] | None" = None,
 ) -> CIFnArch:
     """The single config→arch converter. The MLP/global archs ARE their pydantic config
-    (strip `type`, list→tuple); the chunkwise arch RESOLVES against the LM target, so the
-    caller supplies `resolve_chunkwise` (a closure binding the resolved target — the chunk
-    generator + residual-width logic stays LM-side). The positionless toys never hit the
-    chunkwise branch and pass `resolve_chunkwise=None`."""
+    (strip `type`, list→tuple); the chunkwise and factored archs RESOLVE against the LM
+    target, so the caller supplies the matching closure (binding the resolved target — the
+    chunk/tap generator + residual-width logic stays LM-side). The positionless toys never
+    hit those branches and pass None."""
     match ci_config:
         case LayerwiseMlpCiConfig():
             return MLPCIArch(hidden_dims=tuple(ci_config.hidden_dims))
@@ -127,6 +130,12 @@ def ci_arch(
                 "the positionless toys can't request it"
             )
             return resolve_chunkwise(ci_config)
+        case FactoredCiConfig():
+            assert resolve_factored is not None, (
+                "factored CI fn needs an LM target to resolve against; "
+                "the positionless toys can't request it"
+            )
+            return resolve_factored(ci_config)
 
 
 def _assert_cosine_to_tenth(schedule: ScheduleConfig, who: str) -> None:

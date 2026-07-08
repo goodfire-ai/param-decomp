@@ -65,6 +65,7 @@ from matplotlib.figure import Figure
 
 from param_decomp.built_run import LAUNCH_CONFIG_FILENAME
 from param_decomp.ci_fn import lower_leaky_hard_sigmoid, upper_leaky_hard_sigmoid
+from param_decomp.components import DecompVU
 from param_decomp.configs import (
     DenseCITargetSpec,
     IdentityCIErrorConfig,
@@ -110,7 +111,7 @@ class SiteReduction:
 
 
 SlowEvalStep = Callable[
-    [DecomposedModel, Any, Float[Array, "*leading d"]],
+    [DecomposedModel, DecompVU, Any, Float[Array, "*leading d"]],
     tuple[
         dict[str, Array],
         dict[str, Array],
@@ -120,11 +121,11 @@ SlowEvalStep = Callable[
         dict[str, Array],
     ],
 ]
-"""`(model, ci_fn, residual) -> (density_counts, ci_sums, n_positions, flat_lower,
-flat_logits, density_hist)` — the per-batch reduction, pre-reduced over positions.
-`density_hist` maps site -> `(C, n_bins + 1)` counts (empty when the density heatmap is off).
-The slow plot metrics read only the CI arrays, so V/U (`components`) is not an input. `model`
-(frozen-weight-bearing) is the jit ARG."""
+"""`(model, components, ci_fn, residual) -> (density_counts, ci_sums, n_positions,
+flat_lower, flat_logits, density_hist)` — the per-batch reduction, pre-reduced over
+positions. `density_hist` maps site -> `(C, n_bins + 1)` counts (empty when the density
+heatmap is off). `components` feeds the CI fn only (the factored arch gates on `x·V_c`);
+`model` (frozen-weight-bearing) is the jit ARG."""
 
 
 CI_DENSITY_HEATMAP_FLOOR = 1e-9
@@ -161,7 +162,10 @@ def make_slow_eval_step(
     site_names = lm.site_names
 
     def slow_eval_step(
-        model: DecomposedModel, ci_fn: Any, residual: Float[Array, "*leading d"]
+        model: DecomposedModel,
+        components: DecompVU,
+        ci_fn: Any,
+        residual: Float[Array, "*leading d"],
     ) -> tuple[
         dict[str, Array],
         dict[str, Array],
@@ -173,11 +177,15 @@ def make_slow_eval_step(
         # Read the CI fn in training precision (bf16), like train.py / eval.py: the readout
         # reflects the deployed model, and cuDNN flash attention rejects fp32.
         ci_fn = cast_floating(ci_fn, COMPUTE_DT)
+        components_bf16 = cast_floating(components, COMPUTE_DT)
         taps = {
             k: x.astype(COMPUTE_DT)
             for k, x in model.read_activations(residual, ci_fn.input_names).items()
         }
-        logits = {s: v.astype(jnp.float32) for s, v in ci_fn(taps, remat=False).logits.items()}
+        logits = {
+            s: v.astype(jnp.float32)
+            for s, v in ci_fn(taps, vu=components_bf16, remat=False).logits.items()
+        }
         lower = {s: lower_leaky_hard_sigmoid(logits[s]) for s in site_names}
 
         density_counts = {
@@ -205,6 +213,7 @@ def make_slow_eval_step(
 def accumulate_site_reductions(
     slow_eval_step: SlowEvalStep,
     model: DecomposedModel,
+    components: DecompVU,
     ci_fn: Any,
     residual_batches: list[Float[Array, "*leading d"]],
     n_batches_accum: int | None,
@@ -221,7 +230,9 @@ def accumulate_site_reductions(
     logits_chunks: dict[str, list[np.ndarray]] = {}
     total_positions = 0
     for batch_idx, residual in enumerate(residual_batches):
-        d, s, n_pos, flat_lower, flat_logits, density_hist = slow_eval_step(model, ci_fn, residual)
+        d, s, n_pos, flat_lower, flat_logits, density_hist = slow_eval_step(
+            model, components, ci_fn, residual
+        )
         total_positions += int(n_pos)
         keep_sample = n_batches_accum is None or batch_idx < n_batches_accum
         for site in d:
@@ -255,10 +266,11 @@ def accumulate_site_reductions(
 
 
 PositionCIStep = Callable[
-    [DecomposedModel, Any, Float[Array, "*leading d"]],
+    [DecomposedModel, DecompVU, Any, Float[Array, "*leading d"]],
     tuple[dict[str, Array], dict[str, Array], Array],
 ]
-"""`(model, ci_fn, residual) -> ({site: lower (T, C)}, {site: upper (T, C)}, n_batch)` —
+"""`(model, components, ci_fn, residual) -> ({site: lower (T, C)}, {site: upper (T, C)},
+n_batch)` —
 the per-batch CI summed over the batch leading axis, position axis kept. Pairs with
 `accumulate_position_ci` to form a batch-mean `(T, C)` CI matrix per site. `model`
 (frozen-weight-bearing) is the jit ARG."""
@@ -273,15 +285,22 @@ def make_position_ci_step(
     site_names = lm.site_names
 
     def position_ci_step(
-        model: DecomposedModel, ci_fn: Any, residual: Float[Array, "*leading d"]
+        model: DecomposedModel,
+        components: DecompVU,
+        ci_fn: Any,
+        residual: Float[Array, "*leading d"],
     ) -> tuple[dict[str, Array], dict[str, Array], Array]:
         # Training precision (bf16) readout — see make_slow_eval_step; logits upcast to fp32.
         ci_fn = cast_floating(ci_fn, COMPUTE_DT)
+        components_bf16 = cast_floating(components, COMPUTE_DT)
         taps = {
             k: x.astype(COMPUTE_DT)
             for k, x in model.read_activations(residual, ci_fn.input_names).items()
         }
-        logits = {s: v.astype(jnp.float32) for s, v in ci_fn(taps, remat=False).logits.items()}
+        logits = {
+            s: v.astype(jnp.float32)
+            for s, v in ci_fn(taps, vu=components_bf16, remat=False).logits.items()
+        }
         lower = {s: lower_leaky_hard_sigmoid(logits[s]) for s in site_names}
         upper = {s: upper_leaky_hard_sigmoid(logits[s]) for s in site_names}
         first = lower[site_names[0]]
@@ -305,6 +324,7 @@ class PositionCI:
 def accumulate_position_ci(
     position_ci_step: PositionCIStep,
     model: DecomposedModel,
+    components: DecompVU,
     ci_fn: Any,
     residual_batches: list[Float[Array, "*leading d"]],
 ) -> dict[str, PositionCI]:
@@ -316,7 +336,7 @@ def accumulate_position_ci(
     upper: dict[str, np.ndarray] = {}
     total_batch = 0
     for batch_idx, residual in enumerate(residual_batches):
-        lo, hi, n_batch = position_ci_step(model, ci_fn, residual)
+        lo, hi, n_batch = position_ci_step(model, components, ci_fn, residual)
         total_batch += int(n_batch)
         for site in lo:
             lo_np, hi_np = np.asarray(lo[site]), np.asarray(hi[site])
