@@ -47,9 +47,9 @@ ALIVE_THRESHOLDS = (1e-6, 0.01, 0.1)
 carries essentially no performance — the mask-relevant boundary)."""
 LR = 1e-3
 WARMUP_STEPS = 500
-STUDENT_LR = {"d2048-r512": 5e-4}
-"""Per-student peak-LR overrides: the d2048 trunk diverges at the shared 1e-3 without
-warmup; with warmup 5e-4 holds."""
+STUDENT_LR = {"d2048-r512": 1e-4}
+"""Per-student peak-LR overrides: the d2048 trunk diverged at 1e-3 (no warmup) AND at
+5e-4 (with warmup, ~step 5k) — it needs a genuinely conservative LR here."""
 
 
 def _student_archs(
