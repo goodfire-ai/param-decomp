@@ -35,6 +35,27 @@ def repo_is_clean() -> bool:
     return status == ""
 
 
+def snapshot_source_repo() -> Path:
+    """The local git dir a SLURM job fetches its snapshot from: the submitting checkout's
+    COMMON git dir (the main checkout's `.git`, even when submitting from a linked
+    worktree — worktrees share refs, but a linked worktree may be a node-local ephemeral
+    `/tmp/.../workspace-*` deleted before a requeue re-fetches). Resolved at submit via
+    `git rev-parse --path-format=absolute --git-common-dir`; on shared FS, so neither
+    submits nor requeues depend on GitHub reachability — the best-effort origin push in
+    `create_git_snapshot` is a provenance backup, not the job's fetch source.
+
+    Single source of truth for both launchers: the pd-lm trainer launch
+    (`experiments.lm.launch`) and the shared SLURM job fragment (`infra.slurm`).
+    """
+    result = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return Path(result.stdout.strip())
+
+
 def repo_current_commit_hash() -> str:
     """Return the current commit hash of the active HEAD."""
     commit_hash: str = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()

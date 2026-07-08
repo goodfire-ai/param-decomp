@@ -35,7 +35,7 @@ from param_decomp.built_run import LAUNCH_CONFIG_FILENAME
 from param_decomp.configs import LaunchEnv
 from param_decomp.log import logger
 from param_decomp_lab.experiments.lm.config import LMExperimentConfig
-from param_decomp_lab.infra.git import create_git_snapshot
+from param_decomp_lab.infra.git import create_git_snapshot, snapshot_source_repo
 from param_decomp_lab.infra.run_files import generate_run_id
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR, REPO_ROOT
 from param_decomp_lab.infra.slurm import SlurmConfig, generate_script, submit_slurm_job
@@ -73,21 +73,6 @@ def _render_rank_env(launch_env: LaunchEnv) -> str:
     exports = [f"export {k}={shlex.quote(v)}" for k, v in launch_env.as_env().items()]
     exports.append(_LD_LIBRARY_PATH_EXPORT)
     return "\n".join(exports)
-
-
-def _snapshot_source_repo() -> Path:
-    """The local git state the nodes fetch the snapshot from: the submitting checkout's
-    COMMON git dir (the main checkout's `.git`, even when submitting from a worktree —
-    worktrees share refs but may be deleted before a requeue re-fetches). Shared FS, so
-    neither submits nor requeues depend on GitHub reachability; the best-effort origin
-    push in `create_git_snapshot` is a provenance backup, not the job's fetch source."""
-    result = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return Path(result.stdout.strip())
 
 
 def _node_workspace_setup(run_id: str, snapshot_ref: str, source_repo: Path, run_dir: Path) -> str:
@@ -193,7 +178,7 @@ def main(
     assert dp % GPUS_PER_NODE == 0, f"runtime.dp={dp} must be a multiple of {GPUS_PER_NODE}"
     nodes = dp // GPUS_PER_NODE
 
-    source_repo = _snapshot_source_repo()
+    source_repo = snapshot_source_repo()
     if run_id is None:
         run_id = generate_run_id("param_decomp")
         snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=run_id)
