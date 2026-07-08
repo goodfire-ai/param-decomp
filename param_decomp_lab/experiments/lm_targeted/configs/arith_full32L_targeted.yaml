@@ -3,6 +3,10 @@
 # under GQA — 2048 was 2x oversubscribed; Antoine's torch tPD also used ~half MLP C on
 # attn). ChunkwiseSubsetReconLoss 8x28 coeff 16 (Lucius p-8060450f); CI d_model 2048
 # bpc 4; batch 256 + nontarget seq 512 + SmoothL0 + PersistentPGD sc (S39).
+# NOTE dp=32 -> 4 processes: nontarget.batch_size is PER-PROCESS (64 x 4 = 256 global,
+# matching the combo run). 256/proc = 1024 global OOM'd jit_step at 191GiB (job 265544),
+# same failure as the first L18 full run. Target-pass batch rides data.global_batch =
+# nontarget.batch_size raw (=64 here) — seam coupling, to be fixed engine-side.
 run_name: arith-full32L-all-targeted
 cadence:
   keep_last_n_checkpoints: 3
@@ -14,7 +18,7 @@ data:
   max_seq_len: 16
   add_special_tokens: true
 nontarget:
-  batch_size: 256
+  batch_size: 64
   impmin_coeff_ratio: 2.0
   data:
     dataset_name: parquet
