@@ -2,6 +2,7 @@
     import { getContext } from "svelte";
     import { RUN_KEY, type RunContext } from "../lib/useRun.svelte";
     import ActivationContextsTab from "./ActivationContextsTab.svelte";
+    import CircuitBuilderTab from "./CircuitBuilderTab.svelte";
     import AutointerpCompareTab from "./AutointerpCompareTab.svelte";
     import ClusterPathInput from "./ClusterPathInput.svelte";
     import ClustersTab from "./ClustersTab.svelte";
@@ -26,6 +27,7 @@
         | "data-sources"
         | "investigations"
         | "clusters"
+        | "circuit-builder"
         | null
     >(null);
 
@@ -66,6 +68,14 @@
                 onclick={() => (activeTab = "investigations")}
             >
                 Investigations
+            </button>
+            <button
+                type="button"
+                class="tab-button"
+                class:active={activeTab === "circuit-builder"}
+                onclick={() => (activeTab = "circuit-builder")}
+            >
+                Circuit Builder
             </button>
             {#if runState.run.status === "loaded" && runState.run.data}
                 <button
@@ -143,6 +153,10 @@
         <!-- Investigations tab - always available, doesn't require loaded run -->
         <div class="tab-content" class:hidden={activeTab !== "investigations"}>
             <InvestigationsTab />
+        </div>
+        <!-- Circuit Builder tab - available without a loaded run (mock mode) -->
+        <div class="tab-content" class:hidden={activeTab !== "circuit-builder"}>
+            <CircuitBuilderTab />
         </div>
         {#if runState.prompts.status === "loaded"}
             <!-- Use hidden class instead of conditional rendering to preserve state -->

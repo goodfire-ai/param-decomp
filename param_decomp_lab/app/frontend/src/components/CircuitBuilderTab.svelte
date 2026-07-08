@@ -1,0 +1,573 @@
+<script lang="ts">
+    /**
+     * Circuit Builder: assemble rank-1 LoRAs from PD subcomponents and compare
+     * base vs edited model. Read vector = normalized V column of a subcomponent;
+     * write vector = weighted sum of downstream subcomponents' j-vectors
+     * (computed on the fly, averaged over n_prompts).
+     */
+    import {
+        computeJVectors,
+        deleteLora,
+        getDownstream,
+        getSites,
+        getSubcomponents,
+        listLoras,
+        loadCircuitBuilder,
+        putLora,
+        runCompare,
+        type CompareResult,
+        type JVectorInfo,
+        type LoraSpec,
+        type SiteInfo,
+        type SubcomponentInfo,
+    } from "../lib/api/circuitBuilder";
+
+    let status = $state<"unloaded" | "loading" | "ready">("unloaded");
+    let error = $state<string | null>(null);
+    let sites = $state<SiteInfo[]>([]);
+    let loras = $state<LoraSpec[]>([]);
+
+    // --- editor state ---
+    let editing = $state<LoraSpec | null>(null);
+    let readSubcomps = $state<SubcomponentInfo[]>([]);
+    let readPage = $state(0);
+    let downstream = $state<string[]>([]);
+    let writeSite = $state<string>("");
+    let writeSubcomps = $state<SubcomponentInfo[]>([]);
+    let writePage = $state(0);
+    let jInfo = $state<JVectorInfo[]>([]);
+    let busy = $state(false);
+    const PAGE = 25;
+
+    // --- compare state ---
+    let prompt = $state("The quick brown fox");
+    let topK = $state(8);
+    let maxNewTokens = $state(32);
+    let temperature = $state(0.8);
+    let compareResult = $state<CompareResult | null>(null);
+    let expandedPosition = $state<number | null>(null);
+
+    async function guard(fn: () => Promise<void>) {
+        error = null;
+        busy = true;
+        try {
+            await fn();
+        } catch (e) {
+            error = e instanceof Error ? e.message : String(e);
+        } finally {
+            busy = false;
+        }
+    }
+
+    async function load() {
+        status = "loading";
+        await guard(async () => {
+            await loadCircuitBuilder("mock");
+            sites = await getSites();
+            loras = await listLoras();
+            status = "ready";
+        });
+        if (error) status = "unloaded";
+    }
+
+    function newLora() {
+        editing = {
+            name: `circuit-${loras.length + 1}`,
+            read_site: sites[0]?.site ?? "",
+            read_idx: 0,
+            writes: [],
+            scale: 1.0,
+            normalize_j: true,
+            n_prompts: 16,
+            enabled: true,
+        };
+        jInfo = [];
+        void refreshReadSite();
+    }
+
+    async function refreshReadSite() {
+        if (!editing) return;
+        await guard(async () => {
+            readPage = 0;
+            readSubcomps = await getSubcomponents(editing!.read_site, 0, PAGE, 2);
+            downstream = await getDownstream(editing!.read_site);
+            writeSite = downstream[0] ?? "";
+            if (writeSite) {
+                writePage = 0;
+                writeSubcomps = await getSubcomponents(writeSite, 0, PAGE, 2);
+            } else {
+                writeSubcomps = [];
+            }
+        });
+    }
+
+    async function pageSubcomps(which: "read" | "write", delta: number) {
+        if (!editing) return;
+        await guard(async () => {
+            if (which === "read") {
+                readPage = Math.max(0, readPage + delta);
+                readSubcomps = await getSubcomponents(editing!.read_site, readPage * PAGE, PAGE, 2);
+            } else {
+                writePage = Math.max(0, writePage + delta);
+                writeSubcomps = await getSubcomponents(writeSite, writePage * PAGE, PAGE, 2);
+            }
+        });
+    }
+
+    async function changeWriteSite(site: string) {
+        writeSite = site;
+        writePage = 0;
+        await guard(async () => {
+            writeSubcomps = await getSubcomponents(site, 0, PAGE, 2);
+        });
+    }
+
+    function addWrite(sc: SubcomponentInfo) {
+        if (!editing) return;
+        if (editing.writes.some((w) => w.site === sc.site && w.idx === sc.idx)) return;
+        editing.writes = [...editing.writes, { site: sc.site, idx: sc.idx, weight: 1.0 }];
+    }
+
+    function removeWrite(i: number) {
+        if (!editing) return;
+        editing.writes = editing.writes.toSpliced(i, 1);
+    }
+
+    async function computeJs() {
+        if (!editing || editing.writes.length === 0) return;
+        await guard(async () => {
+            jInfo = await computeJVectors(
+                editing!.read_site,
+                editing!.writes.map((w) => ({ site: w.site, idx: w.idx })),
+                editing!.n_prompts,
+            );
+        });
+    }
+
+    async function saveLora() {
+        if (!editing) return;
+        await guard(async () => {
+            await putLora(editing!);
+            loras = await listLoras();
+            editing = null;
+        });
+    }
+
+    async function removeLora(name: string) {
+        await guard(async () => {
+            await deleteLora(name);
+            loras = await listLoras();
+        });
+    }
+
+    async function toggleLora(spec: LoraSpec) {
+        await guard(async () => {
+            await putLora({ ...spec, enabled: !spec.enabled });
+            loras = await listLoras();
+        });
+    }
+
+    async function compare() {
+        await guard(async () => {
+            compareResult = await runCompare({
+                prompt,
+                top_k: topK,
+                max_new_tokens: maxNewTokens,
+                temperature,
+                seed: 0,
+            });
+        });
+    }
+
+    const maxKl = $derived(
+        compareResult ? Math.max(1e-9, ...compareResult.positions.map((p) => p.kl_base_to_edited)) : 1,
+    );
+</script>
+
+<div class="cb-root">
+    {#if error}
+        <div class="error-banner">{error}</div>
+    {/if}
+
+    {#if status !== "ready"}
+        <div class="empty-state">
+            <p>
+                Circuit builder edits model weights by hand: pick a subcomponent's read direction,
+                point it at downstream subcomponents via j-vectors, and see what changes.
+            </p>
+            <button disabled={status === "loading"} onclick={load}>
+                {status === "loading" ? "Loading…" : "Load (mock data)"}
+            </button>
+        </div>
+    {:else}
+        <div class="columns">
+            <!-- ===================== LoRA list ===================== -->
+            <section class="panel">
+                <h3>LoRA adapters</h3>
+                {#each loras as lora (lora.name)}
+                    <div class="lora-card" class:disabled={!lora.enabled}>
+                        <div class="lora-head">
+                            <strong>{lora.name}</strong>
+                            <span>
+                                <button onclick={() => toggleLora(lora)}>{lora.enabled ? "on" : "off"}</button>
+                                <button onclick={() => (editing = structuredClone($state.snapshot(lora)))}>edit</button>
+                                <button onclick={() => removeLora(lora.name)}>✕</button>
+                            </span>
+                        </div>
+                        <div class="lora-detail">
+                            read {lora.read_site}:{lora.read_idx} → {lora.writes.length} write
+                            {lora.writes.length === 1 ? "term" : "terms"}, scale {lora.scale}
+                        </div>
+                    </div>
+                {:else}
+                    <p class="hint">No adapters yet.</p>
+                {/each}
+                <button class="primary" onclick={newLora}>+ New LoRA</button>
+            </section>
+
+            <!-- ===================== Editor ===================== -->
+            <section class="panel wide">
+                {#if editing}
+                    <h3>Edit: {editing.name}</h3>
+                    <div class="row">
+                        <label>name <input bind:value={editing.name} /></label>
+                        <label>scale <input type="number" step="0.1" bind:value={editing.scale} /></label>
+                        <label>n_prompts <input type="number" min="1" bind:value={editing.n_prompts} /></label>
+                        <label title="use unit-norm j-vectors so the weight is the magnitude">
+                            normalize j <input type="checkbox" bind:checked={editing.normalize_j} />
+                        </label>
+                    </div>
+
+                    <h4>Read vector (normalized V column)</h4>
+                    <div class="row">
+                        <label>
+                            site
+                            <select bind:value={editing.read_site} onchange={refreshReadSite}>
+                                {#each sites as s (s.site)}
+                                    <option value={s.site}>{s.site} (C={s.C})</option>
+                                {/each}
+                            </select>
+                        </label>
+                        <span class="hint">selected: {editing.read_site}:{editing.read_idx}</span>
+                    </div>
+                    <div class="subcomp-list">
+                        {#each readSubcomps as sc (sc.idx)}
+                            <button
+                                class="subcomp"
+                                class:selected={editing.read_idx === sc.idx}
+                                title={sc.examples.map((e) => e.tokens.join("")).join("\n")}
+                                onclick={() => (editing!.read_idx = sc.idx)}
+                            >
+                                <span class="idx">{sc.idx}</span>
+                                <span class="label">{sc.label ?? "(unlabeled)"}</span>
+                                <span class="norm">‖U‖·‖V‖={sc.u_norm_absorbed.toFixed(2)}</span>
+                            </button>
+                        {/each}
+                        <div class="pager">
+                            <button disabled={readPage === 0} onclick={() => pageSubcomps("read", -1)}>‹</button>
+                            page {readPage + 1}
+                            <button onclick={() => pageSubcomps("read", 1)}>›</button>
+                        </div>
+                    </div>
+
+                    <h4>Write vector (Σ λᵢ · j-vectors of downstream subcomponents)</h4>
+                    <div class="row">
+                        <label>
+                            downstream site
+                            <select value={writeSite} onchange={(e) => changeWriteSite(e.currentTarget.value)}>
+                                {#each downstream as s (s)}
+                                    <option value={s}>{s}</option>
+                                {/each}
+                            </select>
+                        </label>
+                    </div>
+                    <div class="subcomp-list">
+                        {#each writeSubcomps as sc (sc.idx)}
+                            <button
+                                class="subcomp"
+                                title={sc.examples.map((e) => e.tokens.join("")).join("\n")}
+                                onclick={() => addWrite(sc)}
+                            >
+                                <span class="idx">{sc.idx}</span>
+                                <span class="label">{sc.label ?? "(unlabeled)"}</span>
+                                <span class="norm">+</span>
+                            </button>
+                        {/each}
+                        <div class="pager">
+                            <button disabled={writePage === 0} onclick={() => pageSubcomps("write", -1)}>‹</button>
+                            page {writePage + 1}
+                            <button onclick={() => pageSubcomps("write", 1)}>›</button>
+                        </div>
+                    </div>
+
+                    {#if editing.writes.length > 0}
+                        <h4>Write terms</h4>
+                        {#each editing.writes as term, i (term.site + ":" + term.idx)}
+                            {@const j = jInfo.find((x) => x.site === term.site && x.idx === term.idx)}
+                            <div class="write-term">
+                                <span>{term.site}:{term.idx}</span>
+                                <label>λ <input type="number" step="0.5" bind:value={term.weight} /></label>
+                                {#if j}<span class="norm">|j|={j.raw_norm.toExponential(2)}</span>{/if}
+                                <button onclick={() => removeWrite(i)}>✕</button>
+                            </div>
+                        {/each}
+                        <button disabled={busy} onclick={computeJs}>
+                            {busy ? "computing…" : `Compute j-vectors (${editing.n_prompts} prompts)`}
+                        </button>
+                    {/if}
+
+                    <div class="row">
+                        <button class="primary" disabled={editing.writes.length === 0} onclick={saveLora}>
+                            Save LoRA
+                        </button>
+                        <button onclick={() => (editing = null)}>Cancel</button>
+                    </div>
+                {:else}
+                    <p class="hint">Select a LoRA to edit, or create a new one.</p>
+                {/if}
+            </section>
+
+            <!-- ===================== Compare ===================== -->
+            <section class="panel wide">
+                <h3>Base vs edited</h3>
+                <textarea rows="3" bind:value={prompt}></textarea>
+                <div class="row">
+                    <label>top-k <input type="number" min="1" max="50" bind:value={topK} /></label>
+                    <label>new tokens <input type="number" min="1" max="256" bind:value={maxNewTokens} /></label>
+                    <label>temperature <input type="number" step="0.1" min="0" bind:value={temperature} /></label>
+                    <button class="primary" disabled={busy} onclick={compare}>
+                        {busy ? "running…" : "Run comparison"}
+                    </button>
+                </div>
+
+                {#if compareResult}
+                    <div class="gen-grid">
+                        <div>
+                            <h4>base · greedy</h4>
+                            <pre>{compareResult.base.greedy}</pre>
+                            <h4>base · sampled</h4>
+                            <pre>{compareResult.base.sampled}</pre>
+                        </div>
+                        <div>
+                            <h4>edited · greedy</h4>
+                            <pre>{compareResult.edited.greedy}</pre>
+                            <h4>edited · sampled</h4>
+                            <pre>{compareResult.edited.sampled}</pre>
+                        </div>
+                    </div>
+                    <h4>Per-position KL(base‖edited) — mean {compareResult.mean_kl.toExponential(3)}</h4>
+                    <div class="kl-strip">
+                        {#each compareResult.positions as p (p.position)}
+                            <button
+                                class="kl-token"
+                                class:selected={expandedPosition === p.position}
+                                style={`--h:${Math.round((p.kl_base_to_edited / maxKl) * 100)}%`}
+                                title={`KL=${p.kl_base_to_edited.toExponential(3)}`}
+                                onclick={() =>
+                                    (expandedPosition = expandedPosition === p.position ? null : p.position)}
+                            >
+                                <span class="bar"></span>
+                                <span class="tok">{p.token}</span>
+                            </button>
+                        {/each}
+                    </div>
+                    {#if expandedPosition !== null}
+                        {@const p = compareResult.positions[expandedPosition]}
+                        <div class="topk-grid">
+                            <div>
+                                <h4>base @ {p.position} ("{p.token}")</h4>
+                                {#each p.top_base as t (t.token_id)}
+                                    <div class="tok-row">
+                                        <code>{t.token}</code><span>{(t.prob * 100).toFixed(1)}%</span>
+                                    </div>
+                                {/each}
+                            </div>
+                            <div>
+                                <h4>edited @ {p.position}</h4>
+                                {#each p.top_edited as t (t.token_id)}
+                                    <div class="tok-row">
+                                        <code>{t.token}</code><span>{(t.prob * 100).toFixed(1)}%</span>
+                                    </div>
+                                {/each}
+                            </div>
+                        </div>
+                    {/if}
+                {/if}
+            </section>
+        </div>
+    {/if}
+</div>
+
+<style>
+    .cb-root {
+        padding: 1rem;
+    }
+    .error-banner {
+        background: #fee;
+        border: 1px solid #c00;
+        color: #900;
+        padding: 0.5rem 1rem;
+        margin-bottom: 1rem;
+        border-radius: 4px;
+    }
+    .columns {
+        display: grid;
+        grid-template-columns: 260px 1fr 1fr;
+        gap: 1rem;
+        align-items: start;
+    }
+    .panel {
+        background: var(--bg-surface, #fff);
+        border: 1px solid var(--border-default, #ddd);
+        border-radius: 6px;
+        padding: 0.75rem;
+    }
+    .row {
+        display: flex;
+        gap: 0.75rem;
+        align-items: center;
+        flex-wrap: wrap;
+        margin: 0.5rem 0;
+    }
+    .row label {
+        display: flex;
+        gap: 0.3rem;
+        align-items: center;
+        font-size: 0.85rem;
+    }
+    input[type="number"] {
+        width: 5rem;
+    }
+    textarea {
+        width: 100%;
+        box-sizing: border-box;
+    }
+    .subcomp-list {
+        max-height: 220px;
+        overflow-y: auto;
+        border: 1px solid var(--border-default, #eee);
+        border-radius: 4px;
+    }
+    .subcomp {
+        display: flex;
+        gap: 0.5rem;
+        width: 100%;
+        text-align: left;
+        border: none;
+        background: none;
+        padding: 0.25rem 0.5rem;
+        cursor: pointer;
+        font-size: 0.85rem;
+    }
+    .subcomp:hover {
+        background: var(--bg-hover, #f5f5f5);
+    }
+    .subcomp.selected {
+        background: var(--accent-soft, #e3f0ff);
+    }
+    .subcomp .idx {
+        min-width: 3rem;
+        color: var(--text-muted, #888);
+    }
+    .subcomp .label {
+        flex: 1;
+    }
+    .subcomp .norm {
+        color: var(--text-muted, #888);
+    }
+    .pager {
+        display: flex;
+        gap: 0.5rem;
+        justify-content: center;
+        padding: 0.25rem;
+        font-size: 0.8rem;
+    }
+    .write-term {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+        font-size: 0.85rem;
+        padding: 0.15rem 0;
+    }
+    .lora-card {
+        border: 1px solid var(--border-default, #ddd);
+        border-radius: 4px;
+        padding: 0.4rem;
+        margin-bottom: 0.5rem;
+    }
+    .lora-card.disabled {
+        opacity: 0.5;
+    }
+    .lora-head {
+        display: flex;
+        justify-content: space-between;
+    }
+    .lora-detail {
+        font-size: 0.75rem;
+        color: var(--text-muted, #777);
+    }
+    .gen-grid,
+    .topk-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+    }
+    pre {
+        white-space: pre-wrap;
+        background: var(--bg-base, #f8f8f8);
+        padding: 0.5rem;
+        border-radius: 4px;
+        max-height: 8rem;
+        overflow-y: auto;
+    }
+    .kl-strip {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        gap: 1px;
+    }
+    .kl-token {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        border: none;
+        background: none;
+        cursor: pointer;
+        padding: 0;
+    }
+    .kl-token .bar {
+        width: 100%;
+        min-width: 0.8rem;
+        height: 40px;
+        background: linear-gradient(to top, var(--accent, #d33) var(--h), transparent var(--h));
+    }
+    .kl-token .tok {
+        font-size: 0.7rem;
+        font-family: monospace;
+    }
+    .kl-token.selected .tok {
+        font-weight: bold;
+    }
+    .tok-row {
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.85rem;
+    }
+    .hint {
+        color: var(--text-muted, #888);
+        font-size: 0.85rem;
+    }
+    .primary {
+        background: var(--accent, #2563eb);
+        color: white;
+        border: none;
+        padding: 0.35rem 0.8rem;
+        border-radius: 4px;
+        cursor: pointer;
+    }
+    .empty-state {
+        max-width: 32rem;
+        margin: 3rem auto;
+        text-align: center;
+    }
+</style>

@@ -34,6 +34,9 @@ from param_decomp_lab.app.backend.routers.agents import router as agents_router
 from param_decomp_lab.app.backend.routers.autointerp_compare import (
     router as autointerp_compare_router,
 )
+from param_decomp_lab.app.backend.routers.circuit_builder import (
+    router as circuit_builder_router,
+)
 from param_decomp_lab.app.backend.routers.clusters import router as clusters_router
 from param_decomp_lab.app.backend.routers.correlations import router as correlations_router
 from param_decomp_lab.app.backend.routers.data_sources import router as data_sources_router
@@ -190,6 +193,7 @@ app.include_router(activation_contexts_router)
 app.include_router(correlations_router)
 app.include_router(clusters_router)
 app.include_router(intervention_router)
+app.include_router(circuit_builder_router)
 app.include_router(dataset_search_router)
 app.include_router(dataset_attributions_router)
 app.include_router(agents_router)
