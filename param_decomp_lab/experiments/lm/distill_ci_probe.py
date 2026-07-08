@@ -43,6 +43,8 @@ LOG_EVERY = 100
 SOFT_LEAK = 0.05
 ALIVE_THRESHOLD = 1e-6
 LR = 1e-3
+STUDENT_LR = {"d2048-r512": 2e-4}
+"""Per-student peak-LR overrides: the d2048 trunk diverges at the shared 1e-3."""
 
 
 def _student_archs(
@@ -160,22 +162,39 @@ def _metrics(
     abs_lower = jnp.zeros((), jnp.float32)
     agree = jnp.zeros((), jnp.float32)
     sq_upper = jnp.zeros((), jnp.float32)
+    hits = jnp.zeros((), jnp.float32)  # student-alive ∧ teacher-alive
+    t_alive_n = jnp.zeros((), jnp.float32)
+    s_alive_n = jnp.zeros((), jnp.float32)
+    sq_on_alive = jnp.zeros((), jnp.float32)  # lower MSE restricted to teacher-alive
     n = 0
     for site, t_logits in teacher_logits.items():
         t = t_logits.astype(jnp.float32)
         s = ci.logits[site].astype(jnp.float32)
         t_lower, s_lower = lower_leaky_hard_sigmoid(t), lower_leaky_hard_sigmoid(s)
+        t_alive = t_lower > ALIVE_THRESHOLD
+        s_alive = s_lower > ALIVE_THRESHOLD
         sq_lower += jnp.sum((s_lower - t_lower) ** 2)
         abs_lower += jnp.sum(jnp.abs(s_lower - t_lower))
-        agree += jnp.sum(
-            ((t_lower > ALIVE_THRESHOLD) == (s_lower > ALIVE_THRESHOLD)).astype(jnp.float32)
-        )
+        agree += jnp.sum((t_alive == s_alive).astype(jnp.float32))
+        hits += jnp.sum((t_alive & s_alive).astype(jnp.float32))
+        t_alive_n += jnp.sum(t_alive.astype(jnp.float32))
+        s_alive_n += jnp.sum(s_alive.astype(jnp.float32))
+        sq_on_alive += jnp.sum(jnp.where(t_alive, (s_lower - t_lower) ** 2, 0.0))
         sq_upper += jnp.sum((upper_leaky_hard_sigmoid(s) - upper_leaky_hard_sigmoid(t)) ** 2)
         n += t.size
+    one = jnp.asarray(1.0, jnp.float32)
     return {
         "mse_lower": sq_lower / n,
         "mae_lower": abs_lower / n,
         "alive_agreement": agree / n,
+        # Base-rate-honest views: teacher-alive is ~1% of elements, so agreement alone is
+        # nearly the trivial all-dead predictor. Recall/precision/mse ON the alive set are
+        # what representability actually means for the masks.
+        "alive_recall": hits / jnp.maximum(t_alive_n, one),
+        "alive_precision": hits / jnp.maximum(s_alive_n, one),
+        "mse_on_alive": sq_on_alive / jnp.maximum(t_alive_n, one),
+        "teacher_alive_frac": t_alive_n / n,
+        "student_alive_frac": s_alive_n / n,
         "mse_upper": sq_upper / n,
     }
 
@@ -221,11 +240,15 @@ def main(
         sorted({*teacher.input_names, *(n for s in students.values() for n in s.input_names)})
     )
 
-    optimizer = optax.adam(optax.cosine_decay_schedule(LR, steps, alpha=0.1))
-    opt_states = {
-        name: optimizer.init(eqx.filter(s, eqx.is_inexact_array)) for name, s in students.items()
+    optimizers = {
+        name: optax.adam(optax.cosine_decay_schedule(STUDENT_LR.get(name, LR), steps, alpha=0.1))
+        for name in students
     }
-    update = _make_update(optimizer)
+    opt_states = {
+        name: optimizers[name].init(eqx.filter(s, eqx.is_inexact_array))
+        for name, s in students.items()
+    }
+    updates_fns = {name: _make_update(opt) for name, opt in optimizers.items()}
 
     param_counts = {name: _n_params(s) for name, s in students.items()}
     print(
@@ -256,7 +279,7 @@ def main(
             taps, labels = _read_and_label(loaded.lm, teacher, tokens, merged_names)
             losses: dict[str, float] = {}
             for name in students:
-                students[name], opt_states[name], loss = update(
+                students[name], opt_states[name], loss = updates_fns[name](
                     students[name], opt_states[name], taps, labels, vu_compute
                 )
                 losses[name] = float(loss)
@@ -274,7 +297,14 @@ def main(
                 sink.flush()
 
     print(f"\n=== distill probe summary: teacher {loaded.run_id} @ step {loaded.step} ===")
-    cols = ("mse_lower", "mae_lower", "alive_agreement", "mse_upper", "train_loss")
+    cols = (
+        "alive_recall",
+        "alive_precision",
+        "mse_on_alive",
+        "student_alive_frac",
+        "mse_lower",
+        "train_loss",
+    )
     print(f"{'student':<12} {'params':>14} " + " ".join(f"{c:>16}" for c in cols))
     for name in students:
         vals = " ".join(f"{last_record[name][c]:>16.6f}" for c in cols)
