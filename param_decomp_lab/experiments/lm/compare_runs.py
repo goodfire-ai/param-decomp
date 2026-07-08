@@ -573,12 +573,13 @@ def compare(
     )
     assert type(cfg_a.target) is type(cfg_b.target)
     assert cfg_a.ci_fn == cfg_b.ci_fn, "CI fn archs must match for tap sharing"
-    assert cfg_a.pd.seed == cfg_b.pd.seed, "shared eval stream is seeded off pd.seed"
     assert cfg_a.cadence.keep_last_n_checkpoints is not None
     assert cfg_b.cadence.keep_last_n_checkpoints is not None
 
     mesh = hsdp_mesh()
     assert mesh.devices.size <= batch_size and batch_size % mesh.devices.size == 0
+    # The shared eval stream follows run A's seed (both runs are evaluated on it either
+    # way; cross-seed pairs just mean the stream matches neither run's train schedule).
     schedule = BatchSchedule(scan_shards(cfg_a.data.dir), batch_size, cfg_a.pd.seed + 1)
     server = ShardServer(schedule, cfg_a.data.seq_len, process_index=0, process_count=1)
     batches = tuple(
