@@ -35,8 +35,13 @@ from param_decomp.train import TrainState, make_train_step
 
 SITES = (SiteSpec("h.0.attn.q_proj", 16, 16, 8), SiteSpec("h.0.mlp.c_fc", 16, 32, 12))
 CTX = FactoredCtxArch(
-    taps=("resid.0",), input_dim=16, d_model=8, n_blocks=1, n_heads=2, mlp_hidden=16, rank=4
-)
+    taps=("resid.0",), input_dim=16, d_model=8, n_blocks=1, n_heads=2, mlp_hidden=16, rank=4,
+    summary_k=None, modulate_slopes=False,
+)  # fmt: skip
+CTX_FULL = FactoredCtxArch(
+    taps=("resid.0",), input_dim=16 + 2 * 3, d_model=8, n_blocks=1, n_heads=2, mlp_hidden=16,
+    rank=4, summary_k=3, modulate_slopes=True,
+)  # fmt: skip
 
 
 def _taps(key: PRNGKeyArray):
@@ -51,7 +56,7 @@ def _taps(key: PRNGKeyArray):
 def test_factored_shapes_and_partition():
     vu = init_decomp_vu(SITES, jax.random.key(0))
     taps = _taps(jax.random.key(1))
-    for ctx in (None, CTX):
+    for ctx in (None, CTX, CTX_FULL):
         fn = build_ci_fn(FactoredCIArch(ctx=ctx), SITES, jax.random.key(2))
         assert fn.output_names == tuple(s.name for s in SITES)
         assert fn.expects_axes == ("sequence",)
@@ -80,14 +85,18 @@ def test_factored_stop_grad_v():
 
 
 def test_factored_ctx_zero_init_matches_gate_only():
+    """The zero-init ctx out_proj kills EVERY z-dependent term at init — additive readout,
+    slope modulation, and (transitively) the summary inputs — so all variants start at the
+    same `0.1·â + β` logits."""
     vu = init_decomp_vu(SITES, jax.random.key(0))
     taps = _taps(jax.random.key(1))
     gate_only = build_ci_fn(FactoredCIArch(ctx=None), SITES, jax.random.key(2))
-    with_ctx = build_ci_fn(FactoredCIArch(ctx=CTX), SITES, jax.random.key(2))
     lg_gate = gate_only(taps, vu=vu, remat=False).logits
-    lg_ctx = with_ctx(taps, vu=vu, remat=False).logits
-    for site in lg_gate:
-        assert jnp.allclose(lg_ctx[site], lg_gate[site]), site
+    for ctx in (CTX, CTX_FULL):
+        with_ctx = build_ci_fn(FactoredCIArch(ctx=ctx), SITES, jax.random.key(2))
+        lg_ctx = with_ctx(taps, vu=vu, remat=False).logits
+        for site in lg_gate:
+            assert jnp.allclose(lg_ctx[site], lg_gate[site]), (ctx.summary_k, site)
 
 
 def test_factored_train_step_end_to_end():
@@ -101,8 +110,9 @@ def test_factored_train_step_end_to_end():
     lm = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     ctx = FactoredCtxArch(
-        taps=("resid.2", "resid.3"), input_dim=2 * cfg.n_embd,
+        taps=("resid.2", "resid.3"), input_dim=2 * cfg.n_embd + 4 * 3,
         d_model=16, n_blocks=1, n_heads=2, mlp_hidden=32, rank=4,
+        summary_k=3, modulate_slopes=True,
     )  # fmt: skip
     ci_fn = build_ci_fn(FactoredCIArch(ctx=ctx), lm.sites, jax.random.PRNGKey(2))
     assert isinstance(ci_fn, FactoredCIFn)

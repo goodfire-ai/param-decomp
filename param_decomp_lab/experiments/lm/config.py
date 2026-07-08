@@ -311,15 +311,19 @@ def _resolve_factored_ci_arch(target: AnyLMTargetConfig, ci: FactoredCiConfig) -
         return FactoredCIArch(ctx=None)
     blocks = sorted({_block_of_site(target, spec.name) for spec in target.sites})
     taps = tuple(f"resid.{block}" for block in blocks)
+    summary_k = ci.context.summary_k
+    summary_dim = len(target.sites) * summary_k if summary_k is not None else 0
     return FactoredCIArch(
         ctx=FactoredCtxArch(
             taps=taps,
-            input_dim=len(taps) * _resolve_d_resid(target),
+            input_dim=len(taps) * _resolve_d_resid(target) + summary_dim,
             d_model=ci.context.d_model,
             n_blocks=ci.context.n_blocks,
             n_heads=ci.context.n_heads,
             mlp_hidden=ci.context.mlp_hidden,
             rank=ci.context.rank,
+            summary_k=summary_k,
+            modulate_slopes=ci.context.modulate_slopes,
         )
     )
 

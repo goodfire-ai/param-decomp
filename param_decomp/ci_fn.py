@@ -740,8 +740,15 @@ def init_global_mlp_ci_fn(
 @dataclass(frozen=True)
 class FactoredCtxArch:
     """The factored CI fn's small shared context net: `taps` (residual streams, RMS-normed
-    per tap and concatenated to `input_dim`) → in_proj → `n_blocks` bidirectional-RoPE
-    blocks at `d_model` → out_proj to a rank-`rank` code per position."""
+    per tap and concatenated) → in_proj → `n_blocks` bidirectional-RoPE blocks at `d_model`
+    → out_proj to a rank-`rank` code per position.
+
+    `summary_k` (when set) appends per-site ACTIVATION SUMMARIES to the ctx input: each
+    site's â is pooled through a learned `[C_s, summary_k]` map and RMS-normed, so the code
+    can carry "which parts of the dictionary are active here" — interaction visibility the
+    raw residuals only encode implicitly. `input_dim` must then include the extra
+    `n_sites·summary_k` width. `modulate_slopes` adds per-component rank-r readouts p/q that
+    let context RESCALE the gate (`(α+⟨p,z⟩)·â + (α′+⟨q,z⟩)·|â|`), not just shift it."""
 
     taps: tuple[str, ...]
     input_dim: int
@@ -750,6 +757,8 @@ class FactoredCtxArch:
     n_heads: int
     mlp_hidden: int
     rank: int
+    summary_k: int | None
+    modulate_slopes: bool
 
 
 @dataclass(frozen=True)
@@ -779,18 +788,33 @@ class CtxNet(eqx.Module):
         return einops.einsum(h, self.out_w, "... i, i o -> ... o") + self.out_b
 
 
+class FactoredContext(eqx.Module):
+    """The factored fn's context pathway: the shared net + the per-site rank-r readouts.
+
+    `u [C, rank]` per site is the additive readout (`+⟨u_c, z⟩`). `slopes` (when present)
+    is the pair `(p, q)` of same-shape readouts that let context RESCALE the gate. `pool`
+    (when present) is the per-site `[C_s, summary_k]` activation-summary map whose pooled,
+    RMS-normed `â` joins the ctx input."""
+
+    net: CtxNet
+    u: dict[str, Array]
+    slopes: tuple[dict[str, Array], dict[str, Array]] | None
+    pool: dict[str, Array] | None
+
+
 class FactoredCIFn(eqx.Module):
-    """`logit_c = α_c·â_c + α'_c·|â_c| + β_c + ⟨u_c, z⟩` with `â_c = rms_norm(x_site)·V_c`.
+    """`logit_c = (α_c + ⟨p_c,z⟩)·â_c + (α'_c + ⟨q_c,z⟩)·|â_c| + β_c + ⟨u_c, z⟩` with
+    `â_c = rms_norm(x_site)·V_c` (the p/q slope terms only when `context.slopes` is set;
+    plain additive context otherwise; no context at all when `context is None`).
 
     The gate reads the LIVE decomposition (the `vu` call arg) but never trains it: V is
     stop-gradiented, so CI-fn gradient stops at the gate and the components train only
-    through the recon/faith path. `context` bundles the shared net and the per-site rank-r
-    readouts `u [C, rank]` (both present or neither — gate-only when None)."""
+    through the recon/faith path."""
 
     alpha: dict[str, Array]  # site -> [C]
     alpha_abs: dict[str, Array]  # site -> [C]
     beta: dict[str, Array]  # site -> [C]
-    context: tuple[CtxNet, dict[str, Array]] | None  # (shared net, site -> u [C, rank])
+    context: FactoredContext | None
     ctx_taps: tuple[str, ...] = eqx.field(static=True)
     input_names: tuple[str, ...] = eqx.field(static=True)
     output_names: tuple[str, ...] = eqx.field(static=True)
@@ -798,31 +822,46 @@ class FactoredCIFn(eqx.Module):
     expects_axes: tuple[str, ...] = eqx.field(static=True)
 
     def shardings(self, mesh: Mesh) -> "FactoredCIFn":
-        """Replicate everything: the whole fn is ~C·(3+rank) + the small ctx net — a few
-        MB, nothing worth sharding (contrast the chunkwise transformer's ZeRO-1 layout)."""
+        """Replicate everything: the whole fn is ~C·(3+rank·(1|3)) + the small ctx net —
+        a few MB, nothing worth sharding (contrast the chunkwise ZeRO-1 layout)."""
         repl = NamedSharding(mesh, P())
         return jax.tree.map(lambda _: repl, self)
 
     def __call__(self, taps: dict[str, Array], *, vu: DecompVU | None = None, remat: bool) -> CI:
         del remat  # single-shot (no scan to bound)
         assert vu is not None, "FactoredCIFn gates on â = rms(x_site)·V_c — pass vu"
-        zu: tuple[Array, dict[str, Array]] | None = None
-        if self.context is not None:
-            ctx_net, u = self.context
-            ctx_in = jnp.concatenate(
-                [_weightless_rms_norm(taps[k], self.eps) for k in self.ctx_taps], axis=-1
-            )
-            zu = (ctx_net(ctx_in), u)
-        logits: SiteDict = {}
+        a: SiteDict = {}
         for site in self.output_names:
             x = _weightless_rms_norm(taps[site], self.eps)
             v = jax.lax.stop_gradient(vu.site(site)[0]).astype(x.dtype)
-            a = einops.einsum(x, v, "... d, d c -> ... c")
-            lg = self.alpha[site] * a + self.alpha_abs[site] * jnp.abs(a) + self.beta[site]
-            if zu is not None:
-                z, u = zu
-                lg = lg + einops.einsum(z, u[site], "... r, c r -> ... c")
-            logits[site] = lg
+            a[site] = einops.einsum(x, v, "... d, d c -> ... c")
+
+        z: Array | None = None
+        if self.context is not None:
+            parts = [_weightless_rms_norm(taps[k], self.eps) for k in self.ctx_taps]
+            if self.context.pool is not None:
+                parts += [
+                    _weightless_rms_norm(
+                        einops.einsum(a[site], self.context.pool[site], "... c, c k -> ... k"),
+                        self.eps,
+                    )
+                    for site in self.output_names
+                ]
+            z = self.context.net(jnp.concatenate(parts, axis=-1))
+
+        logits: SiteDict = {}
+        for site in self.output_names:
+            slope = self.alpha[site]
+            slope_abs = self.alpha_abs[site]
+            lg = self.beta[site]
+            if z is not None:
+                assert self.context is not None
+                lg = lg + einops.einsum(z, self.context.u[site], "... r, c r -> ... c")
+                if self.context.slopes is not None:
+                    p, q = self.context.slopes
+                    slope = slope + einops.einsum(z, p[site], "... r, c r -> ... c")
+                    slope_abs = slope_abs + einops.einsum(z, q[site], "... r, c r -> ... c")
+            logits[site] = slope * a[site] + slope_abs * jnp.abs(a[site]) + lg
         return CI.from_logits(logits)
 
 
@@ -831,9 +870,9 @@ def init_factored_ci_fn(
 ) -> FactoredCIFn:
     """β ~ N(0,1) reproduces the chunkwise head's initial logit spread (O(1) normal,
     scale-independent of â); α starts small (0.1), α' at 0, and the ctx out_proj at ZERO so
-    `⟨u, z⟩ = 0` at init (u random so the out_proj gradient is nonzero) — initial logits
-    are `0.1·â + β` regardless of context."""
-    beta_key, u_key, ctx_key = jax.random.split(key, 3)
+    every z-dependent term vanishes at init (u/p/q random so the out_proj gradient is
+    nonzero) — initial logits are `0.1·â + β` regardless of context, slopes, or summaries."""
+    beta_key, u_key, ctx_key, pq_key, pool_key = jax.random.split(key, 5)
     alpha = {s.name: jnp.full((s.C,), 0.1) for s in sites}
     alpha_abs = {s.name: jnp.zeros((s.C,)) for s in sites}
     beta = {
@@ -841,7 +880,7 @@ def init_factored_ci_fn(
         for i, s in enumerate(sites)
     }
 
-    context: tuple[CtxNet, dict[str, Array]] | None = None
+    context: FactoredContext | None = None
     ctx_taps: tuple[str, ...] = ()
     if arch.ctx is not None:
         ctx = arch.ctx
@@ -876,12 +915,26 @@ def init_factored_ci_fn(
             out_b=jnp.zeros((ctx.rank,)),
             inv_freq=1.0 / (10000.0 ** (jnp.arange(0, hd, 2, dtype=jnp.float32) / hd)),
         )
-        u = {
-            s.name: jax.random.normal(jax.random.fold_in(u_key, i), (s.C, ctx.rank))
-            * ctx.rank**-0.5
-            for i, s in enumerate(sites)
-        }
-        context = (net, u)
+
+        def rank_readouts(base_key: PRNGKeyArray) -> dict[str, Array]:
+            return {
+                s.name: jax.random.normal(jax.random.fold_in(base_key, i), (s.C, ctx.rank))
+                * ctx.rank**-0.5
+                for i, s in enumerate(sites)
+            }
+
+        slopes = None
+        if ctx.modulate_slopes:
+            p_key, q_key = jax.random.split(pq_key)
+            slopes = (rank_readouts(p_key), rank_readouts(q_key))
+        pool = None
+        if ctx.summary_k is not None:
+            pool = {
+                s.name: jax.random.normal(jax.random.fold_in(pool_key, i), (s.C, ctx.summary_k))
+                * s.C**-0.5
+                for i, s in enumerate(sites)
+            }
+        context = FactoredContext(net=net, u=rank_readouts(u_key), slopes=slopes, pool=pool)
         ctx_taps = ctx.taps
 
     site_names = tuple(s.name for s in sites)

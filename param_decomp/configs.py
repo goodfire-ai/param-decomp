@@ -113,13 +113,19 @@ class ChunkwiseTransformerCiConfig(BaseConfig):
 
 class FactoredCiContextConfig(BaseConfig):
     """The factored CI fn's small shared context net (reads every residual tap) and the
-    rank of the per-component contextual readout `⟨u_c, z⟩`."""
+    rank of the per-component contextual readout `⟨u_c, z⟩`.
+
+    `summary_k` feeds per-site pooled activation summaries into the net (interaction
+    visibility: any component's CI can depend on which other components are active);
+    `modulate_slopes` lets context rescale the gate, not just shift it."""
 
     d_model: PositiveInt
     n_blocks: PositiveInt
     n_heads: PositiveInt
     mlp_hidden: PositiveInt
     rank: PositiveInt
+    summary_k: PositiveInt | None = None
+    modulate_slopes: bool = False
 
     @model_validator(mode="after")
     def validate_heads(self) -> Self:
