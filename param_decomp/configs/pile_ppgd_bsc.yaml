@@ -114,9 +114,9 @@ pd:
     module_pattern: h.*.mlp.c_fc
   - C: 3584
     module_pattern: h.*.mlp.down_proj
-  - C: 512
+  - C: 768
     module_pattern: h.*.attn.q_proj
-  - C: 512
+  - C: 768
     module_pattern: h.*.attn.k_proj
   - C: 1024
     module_pattern: h.*.attn.v_proj
@@ -155,13 +155,21 @@ pd:
     scope:
       type: bsc
     type: PersistentPGDReconLoss
-  - coeff: 10000000.0
+  - coeff: 100000000.0
     type: FaithfulnessLoss
   seed: 0
   steps: 400000
 runtime:
   remat_recon_forwards: false
   dp: 16
+  launch_env:
+    env:
+      # WORKAROUND (temporary): the shared xla_compilation_cache/
+      # xla_gpu_per_fusion_autotune_cache_dir is owned by another user without group-write,
+      # so non-owner runs crash writing autotune configs. Disable the XLA-side autotune DISK
+      # cache (the jax executable cache still works). Drop this once that dir is made
+      # group-writable.
+      JAX_PERSISTENT_CACHE_ENABLE_XLA_CACHES: none
 target:
   output_extract: 0
   weights_dtype: bfloat16
