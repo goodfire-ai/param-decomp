@@ -353,7 +353,7 @@ class SimpleMLPDecomposedModel(eqx.Module):
     def masked_start(
         self, inputs: Int[Array, "b t"], taps: dict[str, Array], live: tuple[str, ...]
     ) -> tuple[int, Array]:
-        del inputs  # the tap seed replaces the input edge
+        del inputs
         (tap,) = self.start_taps(live)
         return _tap_layer(tap), taps[tap]
 

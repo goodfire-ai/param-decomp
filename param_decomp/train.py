@@ -127,21 +127,21 @@ def make_train_step(
     recon_loss_fn = lm.recon_loss_fn  # static method: pure, holds no arrays — safe to close
     recon_terms = losses.recon
     # Static tap needs of the forward starts (SPEC S18/D5): each entry seeds its masked
-    # forwards at its earliest live block, the persistent warmups at the all-sites start.
+    # forwards at its earliest live block, the PPGD warmups at the all-sites start.
     # Unioned with the CI fn's `input_names` into the one clean pass's `wanted`.
     start_tap_names = tuple(
         dict.fromkeys(
-            tap
-            for term in recon_terms
-            for entry in term.plan
-            for tap in lm.start_taps(entry.live_sites)
+            (
+                *(
+                    t
+                    for term in recon_terms
+                    for e in term.plan
+                    for t in lm.start_taps(e.live_sites)
+                ),
+                *lm.start_taps(site_names),
+            )
         )
     )
-    uses_persistent = any(
-        isinstance(entry.sources, PersistentSources) for term in recon_terms for entry in term.plan
-    )
-    if uses_persistent:
-        start_tap_names = tuple(dict.fromkeys((*start_tap_names, *lm.start_taps(site_names))))
     faith_term = losses.faith
     imp_term = losses.imp
     faith_coeff = faith_term.coeff

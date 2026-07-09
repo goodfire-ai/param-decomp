@@ -22,9 +22,9 @@ from param_decomp.tests.test_llama_simple_mlp import (
 _ATOL = 1e-6  # fp32 CPU; the split scan preserves op order, only fusion may differ
 
 
-def _lm_and_masks(remat_key: int = 0):
+def _lm_and_masks():
     cfg = _tiny_cfg()
-    key = jax.random.PRNGKey(remat_key)
+    key = jax.random.PRNGKey(0)
     lm_key, vu_key, tok_key, mask_key = jax.random.split(key, 4)
     sites = _mlp_sites(cfg, 4, 5, 8)
     lm = _tiny_decomposed_lm(cfg, sites, lm_key)
