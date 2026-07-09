@@ -783,13 +783,20 @@
     }
     .gen-text {
         white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        word-break: break-word;
         background: var(--bg-base, #f8f8f8);
         padding: 0.5rem;
         border-radius: 4px;
         max-height: 8rem;
         overflow-y: auto;
+        overflow-x: hidden;
         font-family: monospace;
         font-size: 0.85rem;
+        min-width: 0;
+    }
+    .gen-grid > div {
+        min-width: 0;
     }
     .gen-tok:hover {
         background: var(--accent-soft, #e3f0ff);
