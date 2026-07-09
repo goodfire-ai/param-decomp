@@ -12,6 +12,9 @@ export default defineConfig({
         host: true,
         allowedHosts: true,
         hmr: false,
+        // The repo lives on NFS and edits often come from a different node than the
+        // dev server; inotify never fires for remote writes, so poll.
+        watch: { usePolling: true, interval: 2000 },
         proxy: {
             "/api": {
                 target: backendUrl,
