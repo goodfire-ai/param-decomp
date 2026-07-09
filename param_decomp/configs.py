@@ -419,6 +419,26 @@ class PersistentPGDReconLossConfig(LossMetricConfig):
     )
 
 
+class MergedStochasticPGDReconLossConfig(LossMetricConfig):
+    """ONE masked forward serving both recon pressures (SPEC S10' variation): per
+    position, the mask sources are the persistent-PGD adversary's with probability
+    `adv_fraction` and fresh `U[0,1]` otherwise; adversarial positions route all-live,
+    stochastic positions follow `routing`. `coeff` is the TOTAL (the stoch/adv split
+    arrives as the assignment expectation — coeff 1.0 + adv_fraction 0.5 replaces the
+    canonical 0.5/0.5 pair). Carries the persistent-adversary fields; one source bundle
+    feeds this one term (SPEC S23) and the S14' final ascent flows through its backward.
+    A mixed assignment is a legal point of the mask box, so this samples the SAME
+    feasible set as the two-term objective, under a different (joint) sampler."""
+
+    type: Literal["MergedStochasticPGDReconLoss"] = "MergedStochasticPGDReconLoss"
+    optimizer: AdamPGDConfig
+    scope: PersistentPGDSourceScope
+    source_dtype: Literal["float32", "bfloat16"] = "float32"
+    n_warmup_steps: NonNegativeInt = 0
+    adv_fraction: float = Field(gt=0.0, lt=1.0)
+    routing: SubsetRoutingType = Field(default_factory=UniformKSubsetRoutingConfig)
+
+
 # ---------------------------------------------------------------------------
 # Eval-metric configs
 # ---------------------------------------------------------------------------
@@ -582,6 +602,7 @@ AnyLossMetricConfig = Annotated[
     | CIMaskedReconSubsetLossConfig
     | FaithfulnessLossConfig
     | ImportanceMinimalityLossConfig
+    | MergedStochasticPGDReconLossConfig
     | PersistentPGDReconLossConfig
     | PGDReconLayerwiseLossConfig
     | PGDReconLossConfig

@@ -47,6 +47,7 @@ from param_decomp.recon import (
     ConstantSources,
     FreshPGDSources,
     LossSurface,
+    MixedPersistentStochasticSources,
     PersistentSources,
     ReconForward,
     Routes,
@@ -124,6 +125,7 @@ def make_train_step(
     (activation memory 1/N)."""
     site_names = lm.site_names
     sites = lm.sites
+    c_by_site = {spec.name: spec.C for spec in sites}
     recon_loss_fn = lm.recon_loss_fn  # static method: pure, holds no arrays — safe to close
     recon_terms = losses.recon
     faith_term = losses.faith
@@ -446,6 +448,58 @@ def make_train_step(
                                             persistent_sources[state_key],
                                             entry.live_sites,
                                         )
+                                    )
+                                case MixedPersistentStochasticSources(state_key=state_key):
+                                    # Per-position mixing (SPEC S10' variation): sources are
+                                    # the persistent bundle's where `assign`, fresh U[0,1]
+                                    # elsewhere; adversarial positions route all-live, the
+                                    # rest keep this draw's routing. One forward serves both
+                                    # pressures; the persistent sources stay live leaves so
+                                    # the S14' final ascent rides this term's backward.
+                                    mix_cfg = entry.sources.cfg
+                                    akey, ukey = random.split(draw_key)
+                                    assign = random.bernoulli(akey, mix_cfg.adv_fraction, leading)
+                                    fresh_uniform = {
+                                        site: random.uniform(
+                                            random.fold_in(ukey, site_idx),
+                                            (*leading, c_by_site[site] + 1),
+                                        )
+                                        for site_idx, site in enumerate(entry.live_sites)
+                                    }
+                                    adv_m, adv_d = source_masks(
+                                        ci.lower,
+                                        persistent_sources[state_key],
+                                        entry.live_sites,
+                                    )
+                                    st_m, st_d = source_masks(
+                                        ci.lower, fresh_uniform, entry.live_sites
+                                    )
+                                    sel = assign[..., None]
+                                    mixed_masks = {
+                                        site: jnp.where(sel, adv_m[site], st_m[site])
+                                        for site in entry.live_sites
+                                    }
+                                    mixed_dmasks = {
+                                        site: jnp.where(assign, adv_d[site], st_d[site])
+                                        for site in entry.live_sites
+                                    }
+                                    mixed_routes = (
+                                        None
+                                        if routes is None
+                                        else {
+                                            site: jnp.logical_or(assign, routes[site])
+                                            for site in entry.live_sites
+                                        }
+                                    )
+                                    masked = masked_forward(
+                                        model,
+                                        prepared,
+                                        batch,
+                                        mixed_masks,
+                                        mixed_dmasks,
+                                        mixed_routes,
+                                        entry.live_sites,
+                                        entry.has_delta,
                                     )
                         total = total + recon_loss_fn(masked, clean_output)
                         n_forwards += 1
