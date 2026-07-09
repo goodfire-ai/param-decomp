@@ -45,7 +45,8 @@ export interface ComponentDetail {
 export interface WriteTerm {
     site: string;
     idx: number;
-    weight: number | null; // null -> default: raw ||j||
+    weight: number | null; // null -> kind-specific default (||j|| or ||U||*||V||)
+    kind: "j" | "u"; // j-vector of a downstream subcomp, or same-site U row
 }
 
 export interface LoraSpec {

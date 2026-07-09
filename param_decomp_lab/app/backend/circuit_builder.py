@@ -35,7 +35,7 @@ mock with the same code path.
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Literal, Protocol
 
 import torch
 import torch.nn.functional as F
@@ -209,16 +209,18 @@ def compute_j_vectors(
 
 
 class WriteTerm(BaseModel):
-    """One term of a LoRA's write vector: a downstream subcomponent + prefactor.
+    """One term of a LoRA's write vector: a subcomponent + prefactor.
 
-    `weight is None` means "use the default": the raw j-vector norm, so the term
-    contributes the un-normalized averaged derivative. Once the user edits the
-    prefactor it becomes an explicit magnitude on the unit j-vector.
+    kind "j": the j-vector of a downstream subcomponent (unit-normalized; default
+    weight = raw ||j||, so the term contributes the un-normalized averaged derivative).
+    kind "u": the U row of a subcomponent at the READ site itself (unit-normalized;
+    default weight = ||U||*||V||, the V-normalization-absorbed output magnitude).
     """
 
     site: str
     idx: int
-    weight: float | None = None  # lambda_i; None -> default to raw ||j||
+    weight: float | None = None  # lambda_i; None -> kind-specific default
+    kind: Literal["j", "u"] = "j"
 
 
 class LoraSpec(BaseModel):
@@ -247,7 +249,10 @@ def build_lora(
     spec: LoraSpec,
     j_results: list[JVectorResult],
 ) -> BuiltLora:
-    """Assemble `dW = scale * (sum_i lambda_i j_i) (x) v_hat_read` from computed j-vectors."""
+    """Assemble `dW = scale * (sum_i lambda_i w_i) (x) v_hat_read`.
+
+    Each write direction w_i is a unit vector: a downstream subcomponent's j-vector
+    (kind "j", from `j_results`) or a same-site subcomponent's U row (kind "u")."""
     assert spec.writes, f"LoRA {spec.name!r} has no write terms"
     by_ref = {r.ref: r for r in j_results}
     v_hat = read_vector(model, SubcomponentRef(spec.read_site, spec.read_idx))
@@ -256,10 +261,22 @@ def build_lora(
     w_total = torch.zeros(d_out)
     j_norms: dict[str, float] = {}
     for term in spec.writes:
-        r = by_ref[SubcomponentRef(term.site, term.idx)]
-        j_norms[f"{term.site}:{term.idx}"] = r.raw_norm
-        weight = term.weight if term.weight is not None else r.raw_norm
-        w_total += weight * r.j_hat
+        if term.kind == "u":
+            assert term.site == spec.read_site, (
+                f"U write term {term.site}:{term.idx} must live at the read site {spec.read_site}"
+            )
+            comps = model.components[term.site]
+            u = comps.U[term.idx, :].detach().float().cpu()
+            assert u.norm() > 0, f"zero U row for {term.site}:{term.idx}"
+            absorbed = float(u.norm() * comps.V[:, term.idx].detach().float().norm())
+            j_norms[f"U:{term.site}:{term.idx}"] = absorbed
+            weight = term.weight if term.weight is not None else absorbed
+            w_total += weight * (u / u.norm())
+        else:
+            r = by_ref[SubcomponentRef(term.site, term.idx)]
+            j_norms[f"{term.site}:{term.idx}"] = r.raw_norm
+            weight = term.weight if term.weight is not None else r.raw_norm
+            w_total += weight * r.j_hat
 
     delta_w = spec.scale * torch.outer(w_total, v_hat)
     return BuiltLora(spec=spec, delta_w=delta_w, j_norms=j_norms)

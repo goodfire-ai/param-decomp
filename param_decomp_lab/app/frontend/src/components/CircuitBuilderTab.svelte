@@ -84,7 +84,7 @@
     }
 
     function pickWriteFromSearch(hit: SearchHit) {
-        addWrite({ site: hit.site, idx: hit.idx } as SubcomponentInfo);
+        addWrite({ site: hit.site, idx: hit.idx } as SubcomponentInfo, "j");
         void showDetail(hit.site, hit.idx);
     }
 
@@ -185,10 +185,15 @@
         });
     }
 
-    function addWrite(sc: SubcomponentInfo) {
+    const writeKind = $derived(
+        editing && writeSite === editing.read_site ? ("u" as const) : ("j" as const),
+    );
+
+    function addWrite(sc: SubcomponentInfo, kind: "j" | "u" = writeKind) {
         if (!editing) return;
-        if (editing.writes.some((w) => w.site === sc.site && w.idx === sc.idx)) return;
-        editing.writes = [...editing.writes, { site: sc.site, idx: sc.idx, weight: null }];
+        if (editing.writes.some((w) => w.site === sc.site && w.idx === sc.idx && w.kind === kind))
+            return;
+        editing.writes = [...editing.writes, { site: sc.site, idx: sc.idx, weight: null, kind }];
     }
 
     function removeWrite(i: number) {
@@ -201,7 +206,7 @@
         await guard(async () => {
             jInfo = await computeJVectors(
                 editing!.read_site,
-                editing!.writes.map((w) => ({ site: w.site, idx: w.idx })),
+                editing!.writes.filter((w) => w.kind === "j").map((w) => ({ site: w.site, idx: w.idx })),
                 editing!.n_prompts,
             );
         });
@@ -383,6 +388,7 @@
                         <label>
                             downstream site
                             <select value={writeSite} onchange={(e) => changeWriteSite(e.currentTarget.value)}>
+                                <option value={editing.read_site}>{editing.read_site} — same matrix (U vectors)</option>
                                 {#each downstream as s (s)}
                                     <option value={s}>{s}</option>
                                 {/each}
@@ -413,9 +419,10 @@
 
                     {#if editing.writes.length > 0}
                         <h4>Write terms</h4>
-                        {#each editing.writes as term, i (term.site + ":" + term.idx)}
+                        {#each editing.writes as term, i (term.kind + ":" + term.site + ":" + term.idx)}
                             {@const j = jInfo.find((x) => x.site === term.site && x.idx === term.idx)}
                             <div class="write-term">
+                                <span class="kind-tag">{term.kind === "u" ? "U" : "j"}</span>
                                 <span>{term.site}:{term.idx}</span>
                                 <label>
                                     λ
@@ -423,17 +430,25 @@
                                         type="number"
                                         step="0.5"
                                         bind:value={term.weight}
-                                        placeholder={j ? j.raw_norm.toExponential(2) : "‖j‖"}
-                                        title="prefactor on the unit j-vector; empty = default ‖j‖ (raw derivative scale)"
+                                        placeholder={term.kind === "u"
+                                            ? "‖U‖·‖V‖"
+                                            : j
+                                              ? j.raw_norm.toExponential(2)
+                                              : "‖j‖"}
+                                        title={term.kind === "u"
+                                            ? "prefactor on the unit U row; empty = default ‖U‖·‖V‖"
+                                            : "prefactor on the unit j-vector; empty = default ‖j‖ (raw derivative scale)"}
                                     />
                                 </label>
                                 {#if j}<span class="norm">‖j‖={j.raw_norm.toExponential(2)}{term.weight === null ? " (default λ)" : ""}</span>{/if}
                                 <button onclick={() => removeWrite(i)}>✕</button>
                             </div>
                         {/each}
-                        <button disabled={busy} onclick={computeJs}>
-                            {busy ? "computing…" : `Compute j-vectors (${editing.n_prompts} prompts)`}
-                        </button>
+                        {#if editing.writes.some((w) => w.kind === "j")}
+                            <button disabled={busy} onclick={computeJs}>
+                                {busy ? "computing…" : `Compute j-vectors (${editing.n_prompts} prompts)`}
+                            </button>
+                        {/if}
                     {/if}
 
                     <div class="row">
@@ -800,6 +815,14 @@
     }
     .detail-panel {
         grid-column: 1 / -1;
+    }
+    .kind-tag {
+        font-family: monospace;
+        font-weight: bold;
+        border: 1px solid var(--border-default, #bbb);
+        border-radius: 3px;
+        padding: 0 0.25rem;
+        font-size: 0.75rem;
     }
     .source-tag {
         font-size: 0.7rem;

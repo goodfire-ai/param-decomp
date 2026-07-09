@@ -271,7 +271,12 @@ def put_lora(name: str, spec: LoraSpec, manager: DepStateManager) -> LoraSpec:
     assert spec.read_site in model.target_module_paths, f"unknown site {spec.read_site}"
     allowed = set(downstream_sites(model, spec.read_site))
     for term in spec.writes:
-        assert term.site in allowed, f"{term.site} is not downstream of {spec.read_site}"
+        if term.kind == "u":
+            assert term.site == spec.read_site, (
+                f"U write term {term.site}:{term.idx} must be at the read site {spec.read_site}"
+            )
+        else:
+            assert term.site in allowed, f"{term.site} is not downstream of {spec.read_site}"
     state.loras[name] = spec
     return spec
 
@@ -297,7 +302,7 @@ def compare(request: CompareRequest, manager: DepStateManager) -> CompareResult:
         for spec in state.loras.values():
             if not spec.enabled:
                 continue
-            refs = [SubcomponentRef(t.site, t.idx) for t in spec.writes]
+            refs = [SubcomponentRef(t.site, t.idx) for t in spec.writes if t.kind == "j"]
             missing = [
                 r for r in refs
                 if (spec.read_site, r.site, r.idx, spec.n_prompts) not in state.j_cache

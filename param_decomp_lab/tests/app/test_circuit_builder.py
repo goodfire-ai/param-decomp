@@ -215,3 +215,30 @@ def test_write_term_default_weight_is_raw_norm(ctx):
     # and it equals the raw j outer v_hat
     manual = torch.outer(j_results[0].j, read_vector(model, read))
     assert torch.allclose(dw_default, manual, atol=1e-6)
+
+
+def test_u_write_term(ctx):
+    """kind='u' terms use the same-site normalized U row; default weight = ||U||*||V||."""
+    model = ctx.model
+    read = SubcomponentRef("h.1.attn.v_proj", 3)
+    u_target_idx = 7
+    spec = LoraSpec(
+        name="u-term", read_site=read.site, read_idx=read.idx,
+        writes=[WriteTerm(site=read.site, idx=u_target_idx, kind="u")],
+    )
+    lora = build_lora(model, spec, [])  # no j-vectors needed
+
+    comps = model.components[read.site]
+    u = comps.U[u_target_idx, :].detach().float()
+    absorbed = float(u.norm() * comps.V[:, u_target_idx].detach().float().norm())
+    v_hat = read_vector(model, read)
+    expected = absorbed * torch.outer(u / u.norm(), v_hat)
+    assert torch.allclose(lora.delta_w, expected, atol=1e-6)
+
+    # u-terms must live at the read site
+    bad = LoraSpec(
+        name="bad", read_site=read.site, read_idx=read.idx,
+        writes=[WriteTerm(site="h.2.mlp.c_fc", idx=0, kind="u")],
+    )
+    with pytest.raises(AssertionError, match="must live at the read site"):
+        build_lora(model, bad, [])
