@@ -103,6 +103,13 @@ class CompareRequest(BaseModel):
 @log_errors
 def load(request: LoadRequest, manager: DepStateManager) -> dict:
     """Load the circuit-builder context: source='mock' or source='run' + run_ref."""
+    existing = getattr(manager, "_circuit_builder_state", None)
+    if (
+        existing is not None
+        and request.source == "run"
+        and existing.ctx.run_id == request.run_ref
+    ):
+        return {"run_id": existing.ctx.run_id, "status": "already_loaded"}
     if request.source == "mock":
         ctx = load_mock_context(seed=request.seed)
     else:
