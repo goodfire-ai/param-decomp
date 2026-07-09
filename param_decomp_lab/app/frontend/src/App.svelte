@@ -12,7 +12,11 @@
 
     let backendUser = $state<Loadable<string>>({ status: "uninitialized" });
 
-    let showWhichView = $derived(runState.run.status === "loaded" ? "run-view" : "run-selector");
+    // The circuit builder works without a W&B run — let users skip the selector.
+    let skipToTabs = $state(false);
+    let showWhichView = $derived(
+        runState.run.status === "loaded" || skipToTabs ? "run-view" : "run-selector",
+    );
 
     async function handleLoadRun(wandbPath: string, contextLength: number) {
         await runState.loadRun(wandbPath, contextLength);
@@ -30,6 +34,31 @@
         isLoading={runState.run.status === "loading"}
         username={backendUser.status === "loaded" ? backendUser.data : null}
     />
+    <button class="circuit-builder-skip" onclick={() => (skipToTabs = true)}>
+        Circuit Builder → <span class="sub">(no W&B run needed)</span>
+    </button>
 {:else}
     <RunView />
 {/if}
+
+<style>
+    .circuit-builder-skip {
+        position: fixed;
+        top: 1rem;
+        right: 1rem;
+        z-index: 10;
+        padding: 0.5rem 1rem;
+        border: 1px solid var(--border-default, #bbb);
+        border-radius: 6px;
+        background: var(--bg-surface, #fff);
+        cursor: pointer;
+        font-size: 0.9rem;
+    }
+    .circuit-builder-skip:hover {
+        background: var(--bg-hover, #f0f4ff);
+    }
+    .circuit-builder-skip .sub {
+        color: var(--text-muted, #888);
+        font-size: 0.75rem;
+    }
+</style>

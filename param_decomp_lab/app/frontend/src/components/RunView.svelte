@@ -37,6 +37,13 @@
         }
     });
 
+    // Arriving without a loaded run (circuit-builder skip): land on that tab.
+    $effect(() => {
+        if (runState.run.status !== "loaded" && activeTab === null) {
+            activeTab = "circuit-builder";
+        }
+    });
+
     $effect(() => {
         if (activeTab === "clusters" && !runState.clusterMapping) {
             activeTab = "prompts";
