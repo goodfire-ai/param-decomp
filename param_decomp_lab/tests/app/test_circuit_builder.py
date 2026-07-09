@@ -242,3 +242,56 @@ def test_u_write_term(ctx):
     )
     with pytest.raises(AssertionError, match="must live at the read site"):
         build_lora(model, bad, [])
+
+
+def test_logit_j_vector_matches_finite_difference(ctx):
+    """A logit-target j-vector must match a finite-difference probe on the output logit."""
+    from param_decomp_lab.app.backend.circuit_builder import LOGITS_SITE
+
+    model = ctx.model
+    read_site = "h.1.attn.v_proj"
+    token_id = 65
+    target = SubcomponentRef(LOGITS_SITE, token_id)
+    token_ids = next(ctx.token_provider.batches(batch_size=2, seq_len=8))
+
+    (res,) = compute_j_vectors(model, read_site, [target], iter([token_ids]), n_prompts=2)
+
+    module = model.target_model.get_submodule(read_site)
+    direction = torch.randn(module.out_features)
+    direction /= direction.norm()
+    eps = 1e-3
+
+    def total_logit(delta):
+        def read_hook(_m, _a, out):
+            return out + delta if delta is not None else out
+
+        h = module.register_forward_hook(read_hook)
+        try:
+            with torch.no_grad():
+                logits = model(token_ids)
+        finally:
+            h.remove()
+        return float(logits[:, :, token_id].sum())
+
+    fd = (total_logit(eps * direction) - total_logit(-eps * direction)) / (2 * eps)
+    B, T = token_ids.shape
+    analytic = float(res.j @ direction) * B * T
+    assert abs(fd - analytic) / (abs(fd) + 1e-6) < 5e-2, (fd, analytic)
+
+
+def test_logit_write_term_in_lora(ctx):
+    from param_decomp_lab.app.backend.circuit_builder import LOGITS_SITE
+
+    model = ctx.model
+    read = SubcomponentRef("h.0.mlp.down_proj", 2)
+    target = SubcomponentRef(LOGITS_SITE, 100)
+    j_results = compute_j_vectors(
+        model, read.site, [target], ctx.token_provider.batches(2, 8), n_prompts=2
+    )
+    spec = LoraSpec(
+        name="logit-term", read_site=read.site, read_idx=read.idx,
+        writes=[WriteTerm(site=LOGITS_SITE, idx=100, kind="logit", label="d")],
+    )
+    lora = build_lora(model, spec, j_results)
+    manual = torch.outer(j_results[0].j, read_vector(model, read))
+    assert torch.allclose(lora.delta_w, manual, atol=1e-6)

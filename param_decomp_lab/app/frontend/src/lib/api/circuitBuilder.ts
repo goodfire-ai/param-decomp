@@ -44,9 +44,10 @@ export interface ComponentDetail {
 
 export interface WriteTerm {
     site: string;
-    idx: number;
+    idx: number; // component idx, or token id for kind "logit"
     weight: number | null; // null -> kind-specific default (||j|| or ||U||*||V||)
-    kind: "j" | "u"; // j-vector of a downstream subcomp, or same-site U row
+    kind: "j" | "u" | "logit";
+    label: string | null; // display only (token string for logit terms)
 }
 
 export interface LoraSpec {
@@ -128,6 +129,16 @@ export async function getSites(): Promise<SiteInfo[]> {
 
 export async function getDownstream(readSite: string): Promise<string[]> {
     return unwrap(await fetch(`/api/circuit_builder/downstream/${readSite}`), "get downstream sites");
+}
+
+export interface TokenInfo {
+    token_id: number;
+    token: string;
+}
+
+export async function tokenizeText(text: string): Promise<TokenInfo[]> {
+    const params = new URLSearchParams({ text });
+    return unwrap(await fetch(`/api/circuit_builder/tokens?${params}`), "tokenize text");
 }
 
 export async function searchLabels(

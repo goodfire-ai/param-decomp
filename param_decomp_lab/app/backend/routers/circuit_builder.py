@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from param_decomp_lab.app.backend.circuit_builder import (
+    LOGITS_SITE,
     CompareResult,
     JVectorResult,
     LoraSpec,
@@ -204,6 +205,22 @@ def search(
     return [SearchHit(**h) for h in hits[:limit]]
 
 
+class TokenInfo(BaseModel):
+    token_id: int
+    token: str
+
+
+@router.get("/tokens")
+@log_errors
+def tokens(text: str, manager: DepStateManager) -> list[TokenInfo]:
+    """Tokenize text so the user can pick token ids for logit write terms."""
+    state = _get_cb_state(manager)
+    assert text, "empty text"
+    ids = state.ctx.tokenizer.encode(text)
+    spans = state.ctx.tokenizer.decode_tokens(ids)
+    return [TokenInfo(token_id=i, token=t) for i, t in zip(ids, spans, strict=True)]
+
+
 @router.get("/component/{site:path}/{idx}")
 @log_errors
 def component_detail(
@@ -275,6 +292,8 @@ def put_lora(name: str, spec: LoraSpec, manager: DepStateManager) -> LoraSpec:
             assert term.site == spec.read_site, (
                 f"U write term {term.site}:{term.idx} must be at the read site {spec.read_site}"
             )
+        elif term.kind == "logit":
+            assert term.site == LOGITS_SITE, f"logit terms use site={LOGITS_SITE!r}"
         else:
             assert term.site in allowed, f"{term.site} is not downstream of {spec.read_site}"
     state.loras[name] = spec
@@ -302,7 +321,7 @@ def compare(request: CompareRequest, manager: DepStateManager) -> CompareResult:
         for spec in state.loras.values():
             if not spec.enabled:
                 continue
-            refs = [SubcomponentRef(t.site, t.idx) for t in spec.writes if t.kind == "j"]
+            refs = [SubcomponentRef(t.site, t.idx) for t in spec.writes if t.kind in ("j", "logit")]
             missing = [
                 r for r in refs
                 if (spec.read_site, r.site, r.idx, spec.n_prompts) not in state.j_cache

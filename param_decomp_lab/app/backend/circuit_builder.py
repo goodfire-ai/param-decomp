@@ -80,10 +80,15 @@ def downstream_sites(model: ComponentModel, read_site: str) -> list[str]:
 # =============================================================================
 
 
+# Sentinel "site" for logit j-vector targets: idx is then a vocab token id, and the
+# activation differentiated is the model's output logit for that token.
+LOGITS_SITE = "logits"
+
+
 @dataclass(frozen=True)
 class SubcomponentRef:
-    site: str  # decomposed module path, e.g. "h.1.attn.v_proj"
-    idx: int  # component index within the site
+    site: str  # decomposed module path (e.g. "h.1.attn.v_proj"), or LOGITS_SITE
+    idx: int  # component index within the site, or token id for LOGITS_SITE
 
 
 def read_vector(model: ComponentModel, ref: SubcomponentRef) -> Float[Tensor, " d_in"]:
@@ -137,6 +142,8 @@ def compute_j_vectors(
     assert n_prompts > 0
     allowed = set(downstream_sites(model, read_site))
     for t in targets:
+        if t.site == LOGITS_SITE:
+            continue  # the output logits are downstream of every site
         assert t.site in allowed, f"{t.site} is not downstream of {read_site}"
 
     device = next(model.parameters()).device
@@ -144,7 +151,7 @@ def compute_j_vectors(
     assert isinstance(read_module, nn.Linear), f"read site must be nn.Linear, got {read_module}"
     d_out = read_module.out_features
 
-    target_sites = sorted({t.site for t in targets}, key=site_rank)
+    target_sites = sorted({t.site for t in targets if t.site != LOGITS_SITE}, key=site_rank)
     sums = {t: torch.zeros(d_out, dtype=torch.float64) for t in targets}
     n_tokens_total = 0
     n_prompts_seen = 0
@@ -176,14 +183,17 @@ def compute_j_vectors(
         ]
         try:
             with torch.enable_grad():
-                model(token_ids)  # plain target forward; hooks do the work
+                logits = model(token_ids)  # hooks capture; output feeds logit targets
                 leaf = captured["__read_leaf__"]
                 B, T = token_ids.shape
                 for i, t in enumerate(targets):
-                    x_d = captured[t.site]
-                    comps = model.components[t.site]
-                    act = x_d.float() @ comps.V[:, t.idx].detach().float()
-                    act = act * comps.U[t.idx, :].detach().float().norm()
+                    if t.site == LOGITS_SITE:
+                        act = logits[:, :, t.idx].float()
+                    else:
+                        x_d = captured[t.site]
+                        comps = model.components[t.site]
+                        act = x_d.float() @ comps.V[:, t.idx].detach().float()
+                        act = act * comps.U[t.idx, :].detach().float().norm()
                     (grad,) = torch.autograd.grad(
                         act.sum(), leaf, retain_graph=(i < len(targets) - 1)
                     )
@@ -215,12 +225,14 @@ class WriteTerm(BaseModel):
     weight = raw ||j||, so the term contributes the un-normalized averaged derivative).
     kind "u": the U row of a subcomponent at the READ site itself (unit-normalized;
     default weight = ||U||*||V||, the V-normalization-absorbed output magnitude).
+    kind "logit": the j-vector of an output logit — site is LOGITS_SITE, idx a token id.
     """
 
     site: str
     idx: int
     weight: float | None = None  # lambda_i; None -> kind-specific default
-    kind: Literal["j", "u"] = "j"
+    kind: Literal["j", "u", "logit"] = "j"
+    label: str | None = None  # display only (e.g. the token string for logit terms)
 
 
 class LoraSpec(BaseModel):

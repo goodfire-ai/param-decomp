@@ -17,6 +17,7 @@
         putLora,
         runCompare,
         searchLabels,
+        tokenizeText,
         type CompareResult,
         type ComponentDetail,
         type JVectorInfo,
@@ -24,6 +25,7 @@
         type SearchHit,
         type SiteInfo,
         type SubcomponentInfo,
+        type TokenInfo,
         type TokenLogit,
     } from "../lib/api/circuitBuilder";
 
@@ -180,20 +182,47 @@
     async function changeWriteSite(site: string) {
         writeSite = site;
         writePage = 0;
+        if (site === LOGITS) {
+            writeSubcomps = [];
+            return;
+        }
         await guard(async () => {
             writeSubcomps = await getSubcomponents(site, 0, PAGE, 2);
         });
     }
 
+    const LOGITS = "logits";
+    let logitQuery = $state("");
+    let logitTokens = $state<TokenInfo[]>([]);
+
     const writeKind = $derived(
-        editing && writeSite === editing.read_site ? ("u" as const) : ("j" as const),
+        editing && writeSite === editing.read_site
+            ? ("u" as const)
+            : writeSite === LOGITS
+              ? ("logit" as const)
+              : ("j" as const),
     );
+
+    async function lookupTokens() {
+        await guard(async () => {
+            logitTokens = logitQuery ? await tokenizeText(logitQuery) : [];
+        });
+    }
+
+    function addLogitTerm(t: TokenInfo) {
+        if (!editing) return;
+        if (editing.writes.some((w) => w.kind === "logit" && w.idx === t.token_id)) return;
+        editing.writes = [
+            ...editing.writes,
+            { site: LOGITS, idx: t.token_id, weight: null, kind: "logit", label: t.token },
+        ];
+    }
 
     function addWrite(sc: SubcomponentInfo, kind: "j" | "u" = writeKind) {
         if (!editing) return;
         if (editing.writes.some((w) => w.site === sc.site && w.idx === sc.idx && w.kind === kind))
             return;
-        editing.writes = [...editing.writes, { site: sc.site, idx: sc.idx, weight: null, kind }];
+        editing.writes = [...editing.writes, { site: sc.site, idx: sc.idx, weight: null, kind, label: null }];
     }
 
     function removeWrite(i: number) {
@@ -206,7 +235,9 @@
         await guard(async () => {
             jInfo = await computeJVectors(
                 editing!.read_site,
-                editing!.writes.filter((w) => w.kind === "j").map((w) => ({ site: w.site, idx: w.idx })),
+                editing!.writes
+                    .filter((w) => w.kind === "j" || w.kind === "logit")
+                    .map((w) => ({ site: w.site, idx: w.idx })),
                 editing!.n_prompts,
             );
         });
@@ -389,13 +420,35 @@
                             downstream site
                             <select value={writeSite} onchange={(e) => changeWriteSite(e.currentTarget.value)}>
                                 <option value={editing.read_site}>{editing.read_site} — same matrix (U vectors)</option>
+                                <option value={LOGITS}>output logits — j-vectors of token logits</option>
                                 {#each downstream as s (s)}
                                     <option value={s}>{s}</option>
                                 {/each}
                             </select>
                         </label>
                     </div>
-                    <div class="subcomp-list">
+                    {#if writeSite === LOGITS}
+                        <div class="row">
+                            <input
+                                class="search"
+                                placeholder="type text, pick its tokens…"
+                                bind:value={logitQuery}
+                                oninput={lookupTokens}
+                            />
+                        </div>
+                        {#if logitTokens.length > 0}
+                            <div class="search-results">
+                                {#each logitTokens as t, i (i)}
+                                    <button class="subcomp" onclick={() => addLogitTerm(t)}>
+                                        <span class="idx">{t.token_id}</span>
+                                        <span class="label"><code>{t.token}</code></span>
+                                        <span class="norm">+</span>
+                                    </button>
+                                {/each}
+                            </div>
+                        {/if}
+                    {/if}
+                    <div class="subcomp-list" class:hidden={writeSite === LOGITS}>
                         {#each writeSubcomps as sc (sc.idx)}
                             <button
                                 class="subcomp"
@@ -422,8 +475,14 @@
                         {#each editing.writes as term, i (term.kind + ":" + term.site + ":" + term.idx)}
                             {@const j = jInfo.find((x) => x.site === term.site && x.idx === term.idx)}
                             <div class="write-term">
-                                <span class="kind-tag">{term.kind === "u" ? "U" : "j"}</span>
-                                <span>{term.site}:{term.idx}</span>
+                                <span class="kind-tag">{term.kind === "u" ? "U" : term.kind === "logit" ? "logit" : "j"}</span>
+                                <span>
+                                    {#if term.kind === "logit"}
+                                        <code>"{term.label ?? term.idx}"</code> (token {term.idx})
+                                    {:else}
+                                        {term.site}:{term.idx}
+                                    {/if}
+                                </span>
                                 <label>
                                     λ
                                     <input
@@ -444,7 +503,7 @@
                                 <button onclick={() => removeWrite(i)}>✕</button>
                             </div>
                         {/each}
-                        {#if editing.writes.some((w) => w.kind === "j")}
+                        {#if editing.writes.some((w) => w.kind === "j" || w.kind === "logit")}
                             <button disabled={busy} onclick={computeJs}>
                                 {busy ? "computing…" : `Compute j-vectors (${editing.n_prompts} prompts)`}
                             </button>
@@ -796,6 +855,9 @@
     .hint {
         color: var(--text-muted, #888);
         font-size: 0.85rem;
+    }
+    .hidden {
+        display: none;
     }
     .search {
         width: 100%;
