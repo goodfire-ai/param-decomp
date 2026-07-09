@@ -126,6 +126,22 @@ def make_train_step(
     sites = lm.sites
     recon_loss_fn = lm.recon_loss_fn  # static method: pure, holds no arrays — safe to close
     recon_terms = losses.recon
+    # Static tap needs of the forward starts (SPEC S18/D5): each entry seeds its masked
+    # forwards at its earliest live block, the persistent warmups at the all-sites start.
+    # Unioned with the CI fn's `input_names` into the one clean pass's `wanted`.
+    start_tap_names = tuple(
+        dict.fromkeys(
+            tap
+            for term in recon_terms
+            for entry in term.plan
+            for tap in lm.start_taps(entry.live_sites)
+        )
+    )
+    uses_persistent = any(
+        isinstance(entry.sources, PersistentSources) for term in recon_terms for entry in term.plan
+    )
+    if uses_persistent:
+        start_tap_names = tuple(dict.fromkeys((*start_tap_names, *lm.start_taps(site_names))))
     faith_term = losses.faith
     imp_term = losses.imp
     faith_coeff = faith_term.coeff
@@ -187,7 +203,7 @@ def make_train_step(
     def masked_forward(
         model: DecomposedModel,
         prepared: Any,
-        batch: Any,
+        start: Any,
         masks: dict[str, Float[Array, "*leading _"]],
         delta_masks: dict[str, Float[Array, "..."]],
         routes: dict[str, Bool[Array, "*leading"]] | None,
@@ -195,11 +211,12 @@ def make_train_step(
         has_delta: bool,
     ) -> Any:
         # `prepared` = `model.prepare_compute_weights(components_bf16)`, built ONCE per step and
-        # shared across all forwards (the ÷N→÷fsdp gather is not re-run per forward).
+        # shared across all forwards (the ÷N→÷fsdp gather is not re-run per forward). `start` is
+        # a forward start (`model.masked_start`), so the frozen prefix isn't re-run either.
         return batch_sharded(
             model.masked_output(
                 prepared,
-                batch,
+                start,
                 masks,
                 delta_masks,
                 routes,
@@ -228,20 +245,21 @@ def make_train_step(
         model: DecomposedModel,
         prepared: Any,
         ci_lower: dict[str, Array],
-        batch: Any,
+        start: Any,
         clean_output: Array,
         forward_fn: Any,
     ) -> Array:
         """Mean KL over the entry's draws with FIXED source values — the adversarial
         ascent objective (shared by fresh and persistent ascents, SPEC S12'). `prepared` is
-        the shared per-step compute weights (`prepare_compute_weights`)."""
+        the shared per-step compute weights (`prepare_compute_weights`); `start` the entry's
+        forward start."""
         masks, delta_masks = source_masks(ci_lower, sources, entry.live_sites)
         total = jnp.zeros((), jnp.float32)
         for routes in routes_per_draw:
             masked = forward_fn(
                 model,
                 prepared,
-                batch,
+                start,
                 masks,
                 delta_masks,
                 routes,
@@ -262,14 +280,19 @@ def make_train_step(
         imp_min_param = annealed_imp_min_param(step_f32, total_steps, imp_min)
 
         batch = batch_sharded(batch)
+        # ONE clean pass serves the recon target, the CI fn's taps, AND the forward starts
+        # (SPEC S18/D5) — the frozen prefix is never recomputed per consumer.
+        wanted_taps = tuple(dict.fromkeys((*state.ci_fn.input_names, *start_tap_names)))
         with jax.named_scope("pd_clean_fwd"):
-            clean_output = jax.lax.stop_gradient(batch_sharded(model.clean_output(batch)))
-        with jax.named_scope("pd_read_taps"):
-            taps = model.read_activations(batch, state.ci_fn.input_names)
+            clean_output, taps = model.clean_output_and_taps(batch, wanted_taps)
+            clean_output = jax.lax.stop_gradient(batch_sharded(clean_output))
+        # The MLP CI fns assert tap-set EQUALITY with their `input_names` — slice the
+        # start-widened tap dict back down for the CI call.
+        ci_taps = {name: taps[name] for name in state.ci_fn.input_names}
         # `leading` (batch, *positions) — the shape masks/sources/routes live in. Sourced
         # from a tap (always `[*leading, d_tap]`), not the opaque batch, so the engine never
         # assumes the batch's rank/feature dim.
-        leading = next(iter(taps.values())).shape[:-1]
+        leading = next(iter(ci_taps.values())).shape[:-1]
 
         # ── adversary ascents: params + CI detached (SPEC §4.5) ──
         prepared, recon_vjp = jax.vjp(
@@ -285,7 +308,9 @@ def make_train_step(
         # once inside the main backward.
         with jax.named_scope("pd_ci_fn_fwd"):
             ci, ci_vjp = eqx.filter_vjp(
-                lambda cf: ci_batch_sharded(cast_floating(cf, COMPUTE_DT)(taps, remat=remat_ci_fn)),
+                lambda cf: ci_batch_sharded(
+                    cast_floating(cf, COMPUTE_DT)(ci_taps, remat=remat_ci_fn)
+                ),
                 state.ci_fn,
             )
         ci_lower_detached = jax.lax.stop_gradient(ci).lower
@@ -297,7 +322,14 @@ def make_train_step(
         def warmup_scoring_loss(sources: dict[str, Array]) -> Array:
             masks, delta_masks = source_masks(ci_lower_detached, sources, site_names)
             masked = masked_forward(
-                model, prepared_ascend, batch, masks, delta_masks, None, site_names, True
+                model,
+                prepared_ascend,
+                model.masked_start(batch, taps, site_names),
+                masks,
+                delta_masks,
+                None,
+                site_names,
+                True,
             )
             return recon_loss_fn(masked, clean_output)
 
@@ -338,7 +370,7 @@ def make_train_step(
                         model,
                         prepared_ascend,
                         ci_lower_detached,
-                        batch,
+                        model.masked_start(batch, taps, entry.live_sites),
                         clean_output,
                         masked_forward,
                     )
@@ -404,7 +436,7 @@ def make_train_step(
                             return masked_forward(
                                 model,
                                 prepared,
-                                batch,
+                                model.masked_start(batch, taps, entry.live_sites),
                                 mds[0],
                                 mds[1],
                                 routes,
@@ -418,7 +450,7 @@ def make_train_step(
                                     masked = batch_sharded(
                                         model.masked_output_stochastic(
                                             prepared,
-                                            batch,
+                                            model.masked_start(batch, taps, entry.live_sites),
                                             ci_stacked,
                                             draw_key,
                                             routes,

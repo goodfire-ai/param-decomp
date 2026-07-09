@@ -285,8 +285,9 @@ class SimpleMLPDecomposedModel(eqx.Module):
     """The `LlamaSimpleMLP` `DecomposedModel` (the `lm.py` contract; SPEC §1).
 
     Carries the FROZEN full model (tied embedding, all blocks, final norm, lm_head) as array
-    fields — threaded into the jitted step as a pytree arg, weights traced not baked. Forward
-    methods take token `inputs` and embed internally; blocks with no decomposed site run the
+    fields — threaded into the jitted step as a pytree arg, weights traced not baked. The
+    clean path takes token `inputs` and embeds internally; masked forwards take a forward
+    start `(start_block, resid)` (SPEC S18/D5). Blocks with no decomposed site run the
     plain frozen block. The TRAINABLE V/U (`vu: DecompVU`) is an
     explicit method arg, NOT a field (separate lifecycle). `sites` / `leading_axes` / `n_ctx`
     / `eps` are static config."""
@@ -318,12 +319,43 @@ class SimpleMLPDecomposedModel(eqx.Module):
 
     def clean_output(self, inputs: Int[Array, "b t"]) -> Array:
         """The all-frozen forward — the recon target (SPEC S3)."""
+        output, _ = self.clean_output_and_taps(inputs, ())
+        return output
+
+    def clean_output_and_taps(
+        self, inputs: Int[Array, "b t"], wanted: tuple[str, ...]
+    ) -> tuple[Array, dict[str, Array]]:
+        """The all-frozen forward (SPEC S3) emitting `resid.{layer}` taps as boundary values
+        of the SAME pass (SPEC S18/D5). Serves `resid.*` only — per-site matrix-input taps
+        (harvest) live mid-block and stay on `read_activations`."""
+        assert all(key.startswith("resid.") for key in wanted), (
+            f"clean_output_and_taps serves resid.* taps only, got {sorted(wanted)}"
+        )
         assert inputs.shape[1] <= self.n_ctx, (inputs.shape, self.n_ctx)
+        wanted_set = frozenset(wanted)
+        taps: dict[str, Array] = {}
         x = self.embed_tokens(inputs)
-        for layer in self.layers:
+        for layer_idx, layer in enumerate(self.layers):
+            if f"resid.{layer_idx}" in wanted_set:
+                taps[f"resid.{layer_idx}"] = x
             x = _clean_block(layer, x, self.inv_freq, self.eps)
+        assert set(taps) == wanted_set, (sorted(taps), sorted(wanted))
         x = rms_norm(x, self.norm, self.eps)
-        return x @ self.lm_head.T
+        return x @ self.lm_head.T, taps
+
+    def start_from_inputs(self, inputs: Int[Array, "b t"]) -> tuple[int, Array]:
+        return 0, self.embed_tokens(inputs)
+
+    def start_taps(self, live: tuple[str, ...]) -> tuple[str, ...]:
+        assert live, "a forward start needs at least one live site"
+        return (f"resid.{min(_tap_layer(site) for site in live)}",)
+
+    def masked_start(
+        self, inputs: Int[Array, "b t"], taps: dict[str, Array], live: tuple[str, ...]
+    ) -> tuple[int, Array]:
+        del inputs  # the tap seed replaces the input edge
+        (tap,) = self.start_taps(live)
+        return _tap_layer(tap), taps[tap]
 
     def read_activations(
         self, inputs: Int[Array, "b t"], wanted: tuple[str, ...]
@@ -367,7 +399,8 @@ class SimpleMLPDecomposedModel(eqx.Module):
     def _run_masked_forward(
         self,
         vu: DecompVU,
-        inputs: Int[Array, "b t"],
+        x: Float[Array, "b t d"],
+        start_block: int,
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
         routes: dict[str, Array] | None,
@@ -378,14 +411,21 @@ class SimpleMLPDecomposedModel(eqx.Module):
         """The masked decomposed forward shared by `masked_output` and
         `masked_site_outputs` (SPEC §4.1, S2): sites in `live` run their decomposed forward
         with `masks[s]` / `delta_masks[s]` / `routes[s]`; every other site — and every site
-        absent from the decomposition entirely — runs the frozen `x @ W` path. `live` and
-        `has_delta` are static under jit; `has_delta` False skips the `x @ Δ` matmul
-        (LOSS_PARITY_DESIGN §4b). A non-None `collect` gathers per-site decomposed
-        outputs."""
-        assert inputs.shape[1] <= self.n_ctx, (inputs.shape, self.n_ctx)
+        absent from the decomposition entirely — runs the frozen `x @ W` path. `x` is the
+        residual entering `start_block` (a forward start, destructured by the caller so the
+        static int never crosses a `jax.checkpoint`); layers before it are the clean
+        forward's job (SPEC S18/D5). `live` and `has_delta` are static under jit;
+        `has_delta` False skips the `x @ Δ` matmul (LOSS_PARITY_DESIGN §4b). A non-None
+        `collect` gathers per-site decomposed outputs."""
+        assert x.shape[1] <= self.n_ctx, (x.shape, self.n_ctx)
         live_set = frozenset(live)
-        x = self.embed_tokens(inputs)
-        for layer_idx, layer in enumerate(self.layers):
+        if live_set:
+            first_live = min(_tap_layer(site) for site in live)
+            assert start_block <= first_live, (
+                f"start at block {start_block} is past the first live block {first_live}"
+            )
+        for layer_idx in range(start_block, len(self.layers)):
+            layer = self.layers[layer_idx]
             live_kinds = {kind for kind in KIND_ORDER if site_name(layer_idx, kind) in live_set}
             attn = layer.attn
             site_args = (masks, delta_masks, routes, live_set, has_delta, collect)
@@ -425,7 +465,7 @@ class SimpleMLPDecomposedModel(eqx.Module):
     def masked_output(
         self,
         prepared: DecompVU,
-        inputs: Int[Array, "b t"],
+        start: tuple[int, Array],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
         routes: dict[str, Array] | None,
@@ -436,21 +476,24 @@ class SimpleMLPDecomposedModel(eqx.Module):
     ) -> Array:
         # This arch's forward is an unrolled Python loop (heterogeneous per-layer live sites),
         # not a scan, so its natural remat granularity is the whole forward: recompute it in
-        # the backward rather than store its activations. `live`/`has_delta` are closed over
-        # (static); the checkpoint sees only array/pytree leaves.
+        # the backward rather than store its activations. `live`/`has_delta`/`start_block` are
+        # closed over (static); the checkpoint sees only array/pytree leaves — the start is
+        # destructured HERE so its static int never flattens into a checkpoint tracer.
+        start_block, x0 = start
+
         def forward(
             vu: DecompVU,
-            inputs: Array,
+            x0: Array,
             masks: dict[str, Array],
             delta_masks: dict[str, Array],
             routes: dict[str, Array] | None,
         ) -> Array:
             return self._run_masked_forward(
-                vu, inputs, masks, delta_masks, routes, live, has_delta, None
+                vu, x0, start_block, masks, delta_masks, routes, live, has_delta, None
             )
 
         forward = jax.checkpoint(forward) if remat else forward
-        return forward(prepared, inputs, masks, delta_masks, routes)
+        return forward(prepared, x0, masks, delta_masks, routes)
 
     def stack_ci(self, ci_lower: dict[str, Array]) -> dict[str, Array]:
         return ci_lower  # unrolled-loop target: no scan to share a stack across; identity
@@ -458,7 +501,7 @@ class SimpleMLPDecomposedModel(eqx.Module):
     def masked_output_stochastic(
         self,
         prepared: DecompVU,
-        inputs: Int[Array, "b t"],
+        start: tuple[int, Array],
         ci_stacked: dict[str, Array],
         draw_key: Array,
         routes: dict[str, Array] | None,
@@ -468,13 +511,13 @@ class SimpleMLPDecomposedModel(eqx.Module):
         remat: bool,
     ) -> Array:
         return run_stochastic_masked_output(
-            self, prepared, inputs, ci_stacked, draw_key, routes, live, has_delta, remat=remat
+            self, prepared, start, ci_stacked, draw_key, routes, live, has_delta, remat=remat
         )
 
     def masked_site_outputs(
         self,
         prepared: DecompVU,
-        inputs: Int[Array, "b t"],
+        start: tuple[int, Array],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
         routes: dict[str, Array] | None,
@@ -483,9 +526,10 @@ class SimpleMLPDecomposedModel(eqx.Module):
     ) -> dict[str, Array]:
         """Per-`live`-site decomposed output of the masked forward (SPEC S31). Runs the
         exact `masked_output` forward, discards the logits, returns the collected outputs."""
+        start_block, x0 = start
         collect: dict[str, Array] = {}
         self._run_masked_forward(
-            prepared, inputs, masks, delta_masks, routes, live, has_delta, collect
+            prepared, x0, start_block, masks, delta_masks, routes, live, has_delta, collect
         )
         assert set(collect) == set(live), (sorted(collect), sorted(live))
         return collect

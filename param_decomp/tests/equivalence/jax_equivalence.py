@@ -143,6 +143,7 @@ def compute_jax_terms(f: dict[str, np.ndarray]) -> dict[str, float]:
     the pytest so there is one term-computation path."""
     lm, vu, n_layers = _build(f)
     resid = jnp.asarray(f["resid"], dtype=FP)
+    start = lm.start_from_inputs(resid)
 
     clean = jax.lax.stop_gradient(lm.clean_output(resid))
 
@@ -180,7 +181,7 @@ def compute_jax_terms(f: dict[str, np.ndarray]) -> dict[str, float]:
         routes = {site_name(i, k): jnp.asarray(f[f"route_chunk{i}_{k}"]) for k in MLP_KINDS}
         pred = lm.masked_output(
             lm.prepare_compute_weights(vu),
-            resid,
+            start,
             masks,
             delta_masks,
             routes,
@@ -196,7 +197,7 @@ def compute_jax_terms(f: dict[str, np.ndarray]) -> dict[str, float]:
     masks, delta_masks = source_masks(ci_lower, source, lm.site_names)
     pred = lm.masked_output(
         lm.prepare_compute_weights(vu),
-        resid,
+        start,
         masks,
         delta_masks,
         None,
@@ -274,8 +275,9 @@ def chunk_plan_static_gate_kl(f: dict[str, np.ndarray]) -> tuple[float, float]:
     delta_masks = {s: stoch_delta[s] for s in live}
 
     gate_pred = lm.masked_output(
-        lm.prepare_compute_weights(vu), resid, masks, delta_masks, None, live, True, remat=False
-    )
+        lm.prepare_compute_weights(vu), lm.start_from_inputs(resid), masks, delta_masks, None,
+        live, True, remat=False,
+    )  # fmt: skip
     ref_pred = _suffix_with_split_mlp(
         lm, vu, resid, live_layer, live_kinds, masks, delta_masks, n_layers
     )

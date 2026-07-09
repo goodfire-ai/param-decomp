@@ -63,8 +63,9 @@ HiddenActsStep = Callable[
 """`(model, components, ci_fn, inputs, key) -> ({site: sum_mse}, {site: n_elements})`
 — one batch's per-site summed MSE (fp32) and element counts (the host folds these into
 `SiteMSEReduction`s). `inputs` is the model's target-specific input (an LM's `[batch, seq]`
-token ids), exactly as `read_activations` / `masked_site_outputs` take it. `key` is unused
-by the deterministic CI step. `model` (frozen-weight-bearing) is the jit ARG."""
+token ids), as `read_activations` takes it; the masked forwards run from
+`start_from_inputs(inputs)`. `key` is unused by the deterministic CI step. `model`
+(frozen-weight-bearing) is the jit ARG."""
 
 
 def _waist_leading(ci_lower: dict[str, Array], site_names: tuple[str, ...]) -> tuple[int, ...]:
@@ -88,6 +89,7 @@ def make_ci_hidden_acts_step(
         _key: PRNGKeyArray,
     ) -> tuple[dict[str, Array], dict[str, int]]:
         taps = model.read_activations(inputs, ci_fn.input_names)
+        start = model.start_from_inputs(inputs)
         components_bf16 = cast_floating(components, COMPUTE_DT)
         prepared = model.prepare_compute_weights(components_bf16)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
@@ -96,12 +98,12 @@ def make_ci_hidden_acts_step(
         leading = _waist_leading(ci_lower, site_names)
         zeros_delta = {s: jnp.zeros(leading, COMPUTE_DT) for s in site_names}
         clean = model.masked_site_outputs(
-            prepared, inputs,
+            prepared, start,
             {s: jnp.ones_like(ci_lower[s]) for s in site_names}, zeros_delta,
             all_false_routes(site_names, leading), site_names, False,
         )  # fmt: skip
         masked = model.masked_site_outputs(
-            prepared, inputs, ci_lower, zeros_delta, None, site_names, False
+            prepared, start, ci_lower, zeros_delta, None, site_names, False
         )
         sum_mse = _per_site_sum_mse(masked, clean, site_names)
         n_elements = {s: clean[s].size for s in site_names}
@@ -129,6 +131,7 @@ def make_stochastic_hidden_acts_step(
         key: PRNGKeyArray,
     ) -> tuple[dict[str, Array], dict[str, int]]:
         taps = model.read_activations(inputs, ci_fn.input_names)
+        start = model.start_from_inputs(inputs)
         components_bf16 = cast_floating(components, COMPUTE_DT)
         prepared = model.prepare_compute_weights(components_bf16)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
@@ -136,7 +139,7 @@ def make_stochastic_hidden_acts_step(
 
         leading = _waist_leading(ci_lower, site_names)
         clean = model.masked_site_outputs(
-            prepared, inputs,
+            prepared, start,
             {s: jnp.ones_like(ci_lower[s]) for s in site_names},
             {s: jnp.zeros(leading, COMPUTE_DT) for s in site_names},
             all_false_routes(site_names, leading), site_names, False,
@@ -156,7 +159,7 @@ def make_stochastic_hidden_acts_step(
                     random.fold_in(delta_key, site_idx), leading, COMPUTE_DT
                 )
             masked = model.masked_site_outputs(
-                prepared, inputs, masks, delta_masks, None, site_names, True
+                prepared, start, masks, delta_masks, None, site_names, True
             )
             draw_sum = _per_site_sum_mse(masked, clean, site_names)
             sum_mse = {s: sum_mse[s] + draw_sum[s] for s in site_names}

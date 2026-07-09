@@ -73,7 +73,7 @@ def _ascend_cscope_source(
         masks, delta_masks = source_masks(ci_lower, sources, lm.site_names)
         masked = lm.masked_output(
             lm.prepare_compute_weights(components),
-            residual,
+            lm.start_from_inputs(residual),
             masks,
             delta_masks,
             None,

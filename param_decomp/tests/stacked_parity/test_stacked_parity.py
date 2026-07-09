@@ -166,17 +166,18 @@ def test_site_inputs_and_weight_deltas_match():
 @_PENDING_REGEN
 def test_masked_output_match():
     f, lm, vu, resid = _load()
+    start = lm.start_from_inputs(resid)
     masks = {s: jnp.asarray(f[f"mask::{s}"]) for s in lm.site_names}
     delta_masks = {s: jnp.asarray(f[f"delta_mask::{s}"]) for s in lm.site_names}
     masked_all = lm.masked_output(
-        vu, resid, masks, delta_masks, None, lm.site_names, True, remat=False
+        vu, start, masks, delta_masks, None, lm.site_names, True, remat=False
     )
     _assert_close(masked_all, f["out::masked_all"], "masked_output (all live)")
 
     chunk0 = lm.site_names[:3]
     routes0 = {s: jnp.asarray(f[f"route0::{s}"]) for s in chunk0}
     masked_subset = lm.masked_output(
-        vu, resid,
+        vu, start,
         {s: masks[s] for s in chunk0}, {s: delta_masks[s] for s in chunk0}, routes0, chunk0, True,
         remat=False,
     )  # fmt: skip
@@ -205,8 +206,9 @@ def test_chunk_plan_static_live_set_matches():
     delta_masks = {s: jnp.asarray(f[f"delta_mask::{s}"]) for s in chunk0}
     routes = {s: jnp.asarray(f[f"route0::{s}"]) for s in chunk0}
     masked = lm.masked_output(
-        vu, resid, masks, delta_masks, routes, plan[0].live_sites, plan[0].has_delta, remat=False
-    )
+        vu, lm.start_from_inputs(resid), masks, delta_masks, routes, plan[0].live_sites,
+        plan[0].has_delta, remat=False,
+    )  # fmt: skip
     _assert_close(masked, f["out::masked_subset"], "chunk-plan static-live-set forward")
 
 

@@ -390,6 +390,27 @@ class ResidMLPDecomposedModel(eqx.Module):
         inputs = site_inputs(self.target, resid)
         return {k: inputs[k] for k in wanted}
 
+    def clean_output_and_taps(
+        self, resid: Float[Array, "B d_embed"], wanted: tuple[str, ...]
+    ) -> tuple[Array, dict[str, Array]]:
+        return self.clean_output(resid), self.read_activations(resid, wanted)
+
+    def start_from_inputs(self, resid: Float[Array, "B d_embed"]) -> Array:
+        return resid
+
+    def start_taps(self, live: tuple[str, ...]) -> tuple[str, ...]:
+        del live
+        return ()
+
+    def masked_start(
+        self,
+        resid: Float[Array, "B d_embed"],
+        taps: dict[str, Array],
+        live: tuple[str, ...],
+    ) -> Array:
+        del taps, live
+        return resid
+
     def prepare_compute_weights(self, vu: DecompVU) -> DecompVU:
         """Identity: ResidMLP weights are tiny + replicated, nothing to stack/gather/share."""
         return vu

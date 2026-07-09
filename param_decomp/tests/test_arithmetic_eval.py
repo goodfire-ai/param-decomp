@@ -71,7 +71,9 @@ def test_grid_step_ci_xv_and_masked_max_match_hand_rolled():
     leading = tokens.shape
     ones = {s: jnp.ones((*leading, C), COMPUTE_DT) for s in names}
     zeros_delta = {s: jnp.zeros(leading, COMPUTE_DT) for s in names}
-    outputs = lm.masked_site_outputs(prepared, tokens, ones, zeros_delta, None, names, False)
+    outputs = lm.masked_site_outputs(
+        prepared, lm.start_from_inputs(tokens), ones, zeros_delta, None, names, False
+    )
     for site in names:
         ci = np.asarray(ci_grids[site])
         ci_exp = np.asarray(lower_leaky_hard_sigmoid(logits[site]))[:, ANSWER_POSITION, :]

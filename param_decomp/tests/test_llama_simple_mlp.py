@@ -213,9 +213,10 @@ def test_clean_path_and_masked_identity():
 
     clean = lm.clean_output(tokens)
     assert clean.shape == (b, t, cfg.vocab_size)
+    start = lm.start_from_inputs(tokens)
 
     # SPEC S2: a masked forward with NO live sites is the frozen path — bit-identical.
-    none_masked = lm.masked_output(vu, tokens, {}, {}, None, (), True, remat=False)
+    none_masked = lm.masked_output(vu, start, {}, {}, None, (), True, remat=False)
     assert jnp.array_equal(clean, none_masked), "live=() must be the exact frozen path"
 
     # All-live, masks=1, delta=1, route-everywhere reconstructs the frozen path up to
@@ -223,7 +224,7 @@ def test_clean_path_and_masked_identity():
     names = lm.site_names
     ones_masks = {s.name: jnp.ones((b, t, s.C)) for s in lm.sites}
     ones_delta = {s: jnp.ones((b, t)) for s in names}
-    full = lm.masked_output(vu, tokens, ones_masks, ones_delta, None, names, True, remat=False)
+    full = lm.masked_output(vu, start, ones_masks, ones_delta, None, names, True, remat=False)
     assert jnp.allclose(clean, full, atol=1e-4), "mask=1 identity drifted"
 
     site_in = lm.read_activations(tokens, lm.site_names)
@@ -256,7 +257,7 @@ def test_zero_masking_one_site_changes_logits(ablated_site: str):
     clean = lm.clean_output(tokens)
     C = {s.name: s.C for s in _MIXED_SITE_CS}[ablated_site]
     ablated = lm.masked_output(
-        vu, tokens,
+        vu, lm.start_from_inputs(tokens),
         {ablated_site: jnp.zeros((b, t, C))}, {ablated_site: jnp.zeros((b, t))},
         None, (ablated_site,), True, remat=False,
     )  # fmt: skip
@@ -282,7 +283,7 @@ def test_masked_site_outputs_frozen_when_routed_false_or_unmasked():
     false_routes = {s: jnp.zeros((b, t), bool) for s in names}
 
     clean_outs = lm.masked_site_outputs(
-        vu, tokens, ones_masks, zeros_delta, false_routes, names, False
+        vu, lm.start_from_inputs(tokens), ones_masks, zeros_delta, false_routes, names, False
     )
     assert set(clean_outs) == set(names)
     # frozen `x @ W` per site, reconstructed independently from weight_deltas + V@U.
@@ -310,11 +311,12 @@ def test_masked_site_outputs_match_hand_computed_masked_linear(site_name_str: st
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
     x_in = lm.read_activations(tokens, (s,))[s]
+    start = lm.start_from_inputs(tokens)
     V, U = vu.site(s)
     mask = jax.random.uniform(jax.random.PRNGKey(7), (b, t, sites_cs[0].C))
 
     no_delta = lm.masked_site_outputs(
-        vu, tokens, {s: mask}, {s: jnp.zeros((b, t))}, None, names, False
+        vu, start, {s: mask}, {s: jnp.zeros((b, t))}, None, names, False
     )
     hand = ((x_in @ V) * mask) @ U
     assert jnp.allclose(no_delta[s], hand, atol=1e-4), s
@@ -322,7 +324,7 @@ def test_masked_site_outputs_match_hand_computed_masked_linear(site_name_str: st
     # delta path: + delta_mask · (x @ Δ), Δ = W − V@U == lm.weight_deltas (fp32 oracle)
     delta_in = lm.weight_deltas(vu)[s]
     delta_mask = jax.random.uniform(jax.random.PRNGKey(9), (b, t))
-    with_delta = lm.masked_site_outputs(vu, tokens, {s: mask}, {s: delta_mask}, None, names, True)
+    with_delta = lm.masked_site_outputs(vu, start, {s: mask}, {s: delta_mask}, None, names, True)
     hand_delta = delta_mask[..., None] * (x_in.astype(jnp.float32) @ delta_in.T)
     expected = hand.astype(jnp.float32) + hand_delta
     assert jnp.allclose(with_delta[s].astype(jnp.float32), expected, atol=1e-3), s
@@ -339,8 +341,8 @@ def test_o_site_masks_attention_output():
 
     clean = lm.clean_output(tokens)
     ones = lm.masked_output(
-        vu, tokens, {o_site: jnp.ones((b, t, 8))}, {o_site: jnp.ones((b, t))}, None,
-        (o_site,), True, remat=False,
+        vu, lm.start_from_inputs(tokens), {o_site: jnp.ones((b, t, 8))},
+        {o_site: jnp.ones((b, t))}, None, (o_site,), True, remat=False,
     )  # fmt: skip
     assert jnp.allclose(clean, ones, atol=1e-4)
     # o's clean site input is the pre-o_proj attention output, shape (b, t, qd)

@@ -25,8 +25,18 @@ never silently diverge. Cite IDs (`S14`, `N1`, …) in commit messages and revie
 ## Architecture in one breath
 
 `lm.py` defines `DecomposedModel` — a `@runtime_checkable Protocol`: ordered `sites` +
-`leading_axes` + the methods `clean_output`, `read_activations`, `masked_output`,
-`masked_site_outputs`, `weight_deltas`, and a `recon_loss_fn` (LM: `kl_per_position`). The
+`leading_axes` + the methods `clean_output`, `clean_output_and_taps`, `read_activations`,
+`masked_output`, `masked_site_outputs`, `weight_deltas`, the forward-start constructors
+(`start_from_inputs` / `start_taps` / `masked_start`), and a `recon_loss_fn`
+(LM: `kl_per_position`). **Masked forwards take a FORWARD START, not the batch** (SPEC
+S18/D5, prefix sharing): the step's ONE clean pass (`clean_output_and_taps`, a segmented
+scan) emits the CI taps AND the residual boundaries every masked/ascent forward seeds from
+(`masked_start` → `(first_live_block, resid)`), so the frozen prefix below the earliest
+live site is never recomputed — the dominant per-step saving for partial (per-block)
+decompositions. Eval tiers start at the input edge via `start_from_inputs`. Toys' start IS
+their input (identity constructors). Gotcha: a start's static int must be destructured
+OUTSIDE any `jax.checkpoint` (`llama_simple_mlp.masked_output`), else it flattens into a
+tracer. The
 concrete impl per target is an `eqx.Module` (`LlamaDecomposedModel`,
 `SimpleMLPDecomposedModel`, `TMSDecomposedModel`, `ResidMLPDecomposedModel`) carrying its
 FROZEN target weights as ARRAY FIELDS; the TRAINABLE V/U (`vu: DecompVU`) stays an explicit

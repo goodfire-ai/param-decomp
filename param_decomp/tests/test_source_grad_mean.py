@@ -91,7 +91,7 @@ def _source_grad(sharded: bool) -> dict[str, jax.Array]:
         masks, delta_masks = source_masks(ci_lower, sources, lm.site_names)
         masked = lm.masked_output(
             lm.prepare_compute_weights(components_bf16),
-            resid,
+            lm.start_from_inputs(resid),
             masks,
             delta_masks,
             None,

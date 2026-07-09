@@ -95,6 +95,24 @@ class SyntheticDecomposedModel(eqx.Module):
         assert wanted == (SITE,), wanted
         return {SITE: self._residual(inputs)}
 
+    def clean_output_and_taps(
+        self, inputs: dict[str, Array], wanted: tuple[str, ...]
+    ) -> tuple[tuple[Array, Array], dict[str, Array]]:
+        return self.clean_output(inputs), self.read_activations(inputs, wanted)
+
+    def start_from_inputs(self, inputs: dict[str, Array]) -> dict[str, Array]:
+        return inputs
+
+    def start_taps(self, live: tuple[str, ...]) -> tuple[str, ...]:
+        del live
+        return ()
+
+    def masked_start(
+        self, inputs: dict[str, Array], taps: dict[str, Array], live: tuple[str, ...]
+    ) -> dict[str, Array]:
+        del taps, live
+        return inputs
+
     def prepare_compute_weights(self, vu: DecompVU) -> DecompVU:
         return vu
 

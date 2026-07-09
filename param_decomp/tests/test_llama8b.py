@@ -196,15 +196,16 @@ def test_masked_component_activations_pre_mask_and_matches_outputs():
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
     names = lm.site_names
     prepared = lm.prepare_compute_weights(vu)
+    start = lm.start_from_inputs(tokens)
     zeros_delta = {s: jnp.zeros((b, t)) for s in names}
     ones = {s: jnp.ones((b, t, C)) for s in names}
 
-    acts = lm.masked_component_activations(prepared, tokens, ones, zeros_delta, None, names, False)
+    acts = lm.masked_component_activations(prepared, start, ones, zeros_delta, None, names, False)
     # `acts[s]` is `x@V` BEFORE the per-component `*mask` (shape (b, t, C)). With all-ones
     # masks and no delta the site OUTPUT is exactly `(x@V) @ U`, so projecting the collected
     # activation through U reproduces `masked_site_outputs` — pinning that we collected the
     # pre-mask coefficient, not the post-mask/post-U output.
-    outputs = lm.masked_site_outputs(prepared, tokens, ones, zeros_delta, None, names, False)
+    outputs = lm.masked_site_outputs(prepared, start, ones, zeros_delta, None, names, False)
     for s in names:
         assert acts[s].shape == (b, t, C)
         assert jnp.all(jnp.isfinite(acts[s]))
@@ -225,11 +226,12 @@ def test_clean_path_and_masked_identity(first: int, last: int):
 
     clean = lm.clean_output(tokens)
     assert clean.shape == (b, t, cfg.vocab_size)
+    start = lm.start_from_inputs(tokens)
 
     # SPEC S2: a masked forward with NO live sites is the frozen path — bit-identical
     # to the clean target.
     none_masked = lm.masked_output(
-        lm.prepare_compute_weights(vu), tokens, {}, {}, None, (), True, remat=False
+        lm.prepare_compute_weights(vu), start, {}, {}, None, (), True, remat=False
     )
     assert jnp.array_equal(clean, none_masked), "live=() must be the exact frozen path"
 
@@ -240,7 +242,7 @@ def test_clean_path_and_masked_identity(first: int, last: int):
     ones_delta = {s: jnp.ones((b, t)) for s in names}
     full = lm.masked_output(
         lm.prepare_compute_weights(vu),
-        tokens,
+        start,
         ones_masks,
         ones_delta,
         None,
@@ -274,8 +276,9 @@ def test_attention_sites_clean_and_masked_identity():
         assert V.shape == (spec.d_in, spec.C) and U.shape == (spec.C, spec.d_out)
 
     clean = lm.clean_output(tokens)
+    start = lm.start_from_inputs(tokens)
     none_masked = lm.masked_output(
-        lm.prepare_compute_weights(vu), tokens, {}, {}, None, (), True, remat=False
+        lm.prepare_compute_weights(vu), start, {}, {}, None, (), True, remat=False
     )
     assert jnp.array_equal(clean, none_masked), "live=() must be the exact frozen path"
 
@@ -284,7 +287,7 @@ def test_attention_sites_clean_and_masked_identity():
     ones_delta = {s: jnp.ones((b, t)) for s in names}
     full = lm.masked_output(
         lm.prepare_compute_weights(vu),
-        tokens,
+        start,
         ones_masks,
         ones_delta,
         None,
@@ -305,7 +308,7 @@ def test_attention_sites_clean_and_masked_identity():
     zero_delta = {n: jnp.zeros((b, t)) for n in layer4}
     ablated = lm.masked_output(
         lm.prepare_compute_weights(vu),
-        tokens,
+        start,
         zero_mask,
         zero_delta,
         None,
@@ -339,7 +342,7 @@ def test_o_site_masks_attention_output():
     clean = lm.clean_output(tokens)
     ones = lm.masked_output(
         lm.prepare_compute_weights(vu),
-        tokens,
+        lm.start_from_inputs(tokens),
         {o_site: jnp.ones((b, t, 8))},
         {o_site: jnp.ones((b, t))},
         None,

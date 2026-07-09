@@ -72,6 +72,22 @@ class _PositionlessStub(eqx.Module):
         del resid, wanted
         raise AssertionError("positionless stub fn must not be called")
 
+    def clean_output_and_taps(
+        self, resid: Any, wanted: tuple[str, ...]
+    ) -> tuple[Any, dict[str, jax.Array]]:
+        return self.clean_output(resid), self.read_activations(resid, wanted)
+
+    def start_from_inputs(self, resid: Any) -> Any:
+        return resid
+
+    def start_taps(self, live: tuple[str, ...]) -> tuple[str, ...]:
+        del live
+        return ()
+
+    def masked_start(self, resid: Any, taps: dict[str, Any], live: tuple[str, ...]) -> Any:
+        del taps, live
+        return resid
+
     def prepare_compute_weights(self, vu: Any) -> Any:
         return vu
 

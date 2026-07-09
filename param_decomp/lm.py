@@ -21,6 +21,14 @@ recon comparison (`recon_loss_fn`, `kl_per_position` for an LM).
 The frozen weights ride on the model `eqx.Module` and reach the jitted step as a pytree
 ARG (`eqx.filter_jit` traces the array leaves). Never close over the model in a jit: a
 frozen 8B target captured as a constant bakes multi-GB weights into the HLO.
+
+Masked forwards take a **forward start** (SPEC S18), not the raw input: a model-opaque
+value saying where the forward begins. `start_from_inputs(inputs)` starts at the input
+edge (an LM embeds; a toy's input already is the waist); `masked_start(inputs, taps,
+live)` starts at the deepest clean-forward residual boundary at or before the earliest
+live site, so a masked forward never recomputes the frozen prefix the clean forward
+already ran (prefix sharing, SPEC D5). The engine builds starts only through these two
+constructors — it never inspects one (the S4 opacity rule, applied to starts).
 """
 
 from typing import Any, Protocol, runtime_checkable
@@ -105,6 +113,42 @@ class DecomposedModel(Protocol):
         interpreter; core just routes by key."""
         ...
 
+    def clean_output_and_taps(
+        self, inputs: Any, /, wanted: tuple[str, ...]
+    ) -> tuple[Any, dict[str, Float[Array, "*leading d_tap"]]]:
+        """`(clean_output(inputs), read_activations(inputs, wanted))` from ONE frozen
+        forward — the step's single clean pass, feeding the recon target, the CI fn, and
+        the forward starts (SPEC S18/D5). A deep target emits the taps as boundary values
+        of the same forward instead of re-running the prefix per consumer."""
+        ...
+
+    def start_from_inputs(self, inputs: Any, /) -> Any:
+        """The forward start at the input edge (an LM embeds `inputs`; a toy's input
+        already is the waist). Off-hot-path consumers (eval tiers, harvest) use this;
+        the train step starts recon forwards from taps instead."""
+        ...
+
+    def start_taps(self, live: tuple[str, ...]) -> tuple[str, ...]:
+        """Tap names `masked_start` needs for a forward whose live sites are `live`
+        (an LM: the residual entering the earliest live block; a positionless target:
+        none). The engine unions these into `clean_output_and_taps`' `wanted`."""
+        ...
+
+    def masked_start(
+        self,
+        inputs: Any,
+        /,
+        taps: dict[str, Float[Array, "*leading d_tap"]],
+        live: tuple[str, ...],
+    ) -> Any:
+        """The forward start for a masked pass with live sites `live` — the deepest clean
+        boundary the target can seed from. An LM returns `(first_live_block,
+        taps[resid tap])`, skipping the frozen prefix the clean forward already computed
+        (equivalent to `start_from_inputs` up to float reassociation, SPEC D5); a
+        positionless target returns `inputs` unchanged. `taps` must cover
+        `start_taps(live)`."""
+        ...
+
     def prepare_compute_weights(self, vu: DecompVU) -> Any:
         """Build the per-step COMPUTE weights from the fp32 ÷N master `vu`, ONCE per step
         (SPEC unchanged — a read-only compute view). Mask-INDEPENDENT, so the result is shared
@@ -118,7 +162,7 @@ class DecomposedModel(Protocol):
     def masked_output(
         self,
         prepared: Any,
-        inputs: Any,
+        start: Any,
         /,
         masks: SiteMasks,
         delta_masks: SiteDeltaMasks,
@@ -129,7 +173,9 @@ class DecomposedModel(Protocol):
         remat: bool,
     ) -> Any:
         """The masked decomposed forward (SPEC §1.3, S2). `prepared` is the output of
-        `prepare_compute_weights` (the shared per-step compute weights). `live` (static under
+        `prepare_compute_weights` (the shared per-step compute weights). `start` is a forward
+        start from `start_from_inputs` / `masked_start` — where the forward begins; every
+        segment before it is the clean forward's job (SPEC S18/D5). `live` (static under
         jit) lists the sites running their decomposed forward; all other sites run the frozen
         `x @ W` path. `masks`/`delta_masks` may broadcast over the batch dim (the PPGD source
         case). `has_delta` (static) False skips the `x @ Δ` matmul for constant-source entries
@@ -150,7 +196,7 @@ class DecomposedModel(Protocol):
     def masked_output_stochastic(
         self,
         prepared: Any,
-        inputs: Any,
+        start: Any,
         /,
         ci_stacked: Any,
         draw_key: Array,
@@ -172,7 +218,7 @@ class DecomposedModel(Protocol):
     def masked_site_outputs(
         self,
         prepared: Any,
-        inputs: Any,
+        start: Any,
         /,
         masks: SiteMasks,
         delta_masks: SiteDeltaMasks,
@@ -215,7 +261,7 @@ def stochastic_site_masks(
 def run_stochastic_masked_output(
     model: "DecomposedModel",
     prepared: Any,
-    inputs: Any,
+    start: Any,
     ci_lower: dict[str, Array],
     draw_key: Array,
     routes: SiteRoutes,
@@ -229,7 +275,7 @@ def run_stochastic_masked_output(
     `masked_output`. Correct + uniform; only scan targets override for the memory win."""
     masks, delta_masks = stochastic_site_masks(ci_lower, live, draw_key, has_delta)
     return model.masked_output(
-        prepared, inputs, masks, delta_masks, routes, live, has_delta, remat=remat
+        prepared, start, masks, delta_masks, routes, live, has_delta, remat=remat
     )
 
 

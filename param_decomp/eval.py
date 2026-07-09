@@ -162,12 +162,12 @@ def make_eval_step(
         )
 
     def masked_forward(
-        model: DecomposedModel, prepared: Any, tokens: Array, masks: dict[str, Array],
+        model: DecomposedModel, prepared: Any, start: Any, masks: dict[str, Array],
         delta_masks: dict[str, Array],
     ) -> Array:  # fmt: skip
         return batch_sharded(
             model.masked_output(
-                prepared, tokens, masks, delta_masks, None, site_names, True, remat=False
+                prepared, start, masks, delta_masks, None, site_names, True, remat=False
             )
         )
 
@@ -179,8 +179,9 @@ def make_eval_step(
         key: PRNGKeyArray,
     ) -> dict[str, Array]:
         token_ids = batch_sharded(token_ids)
-        clean_output = batch_sharded(model.clean_output(token_ids))
-        taps = model.read_activations(token_ids, ci_fn.input_names)
+        clean_output, taps = model.clean_output_and_taps(token_ids, ci_fn.input_names)
+        clean_output = batch_sharded(clean_output)
+        start = model.masked_start(token_ids, taps, site_names)
 
         if n_valid_rows is None:
             row_mask = None
@@ -252,7 +253,7 @@ def make_eval_step(
         kl: dict[str, Array] = {}
         ce: dict[str, Array] = {}
         for variant, (masks, delta_masks) in variant_masks.items():
-            variant_logits = masked_forward(model, prepared, token_ids, masks, delta_masks)
+            variant_logits = masked_forward(model, prepared, start, masks, delta_masks)
             kl[variant] = kl_metric(variant_logits)
             ce[variant] = ce_metric(variant_logits)
         target_ce = ce_metric(clean_output)
@@ -289,7 +290,7 @@ def make_eval_step(
                     ci_site = ci_lower[site]
                     masks[site] = ci_site + (1.0 - ci_site) * source[..., :-1]
                     delta_masks[site] = source[..., -1]
-                masked = masked_forward(model, prepared, token_ids, masks, delta_masks)
+                masked = masked_forward(model, prepared, start, masks, delta_masks)
                 return kl_metric(masked)
 
             def ascend(

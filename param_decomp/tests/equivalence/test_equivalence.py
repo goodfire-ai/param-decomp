@@ -191,6 +191,7 @@ def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
     f = _load_fixtures()
     lm, vu, n_layers = _build(f)
     resid = jnp.asarray(f["resid"], dtype=FP)
+    start = lm.start_from_inputs(resid)
     B, T = int(f["_scalar_B"]), int(f["_scalar_T"])
     vocab = int(f["_scalar_VOCAB"])
     assert B != T
@@ -212,7 +213,7 @@ def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
 
     pred = lm.masked_output(
         lm.prepare_compute_weights(vu),
-        resid,
+        start,
         masks,
         delta_masks,
         None,
@@ -231,7 +232,7 @@ def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
         bad_masks, bad_delta = source_masks(ci_lower, bt_transposed, lm.site_names)
         lm.masked_output(
             lm.prepare_compute_weights(vu),
-            resid,
+            start,
             bad_masks,
             bad_delta,
             None,

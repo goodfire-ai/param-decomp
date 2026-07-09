@@ -47,6 +47,7 @@ and the tables (§2, §3, §6). Prose between them is orientation only. Notation
 | **PPGD warmup (`n_warmup`)** | supplemental source-ascent iterations inside each step | LR-schedule warmup; faithfulness warmup |
 | **LR warmup (`warmup_pct`)** | linear ramp 0 → start of a schedule's value | the above two |
 | **persistent** (PGD) | sources + their optimizer moments survive across training steps | re-initialized-per-step PGD (the eval-only `PGDReconLoss`) |
+| **forward start** | where a masked forward begins: a model-opaque value from `start_from_inputs` (the input edge) or `masked_start` (the clean forward's residual entering the earliest live block — prefix sharing, D5) | the recon target (`clean_output` is always the full frozen forward, S3) |
 
 ---
 
@@ -98,12 +99,19 @@ def site_out(x[.., d_in], s, mask[.., C]|ONES, delta_mask[..]|ONES, route[..]|AL
     y_dec  = ((x @ V_s) * mask) @ U_s  +  (x @ Δ_s) * delta_mask
     return where(route, y_dec, x @ W_s)                  # route=ALL ⇒ y_dec everywhere
 
-def masked_forward(batch, live_sites, masks, delta_masks, routes) -> logits[B,T,vocab]:
-    full forward (embed batch, all blocks, final norm, LM head);
+def masked_forward(start, live_sites, masks, delta_masks, routes) -> logits[B,T,vocab]:
+    forward from `start` — a FORWARD START `(k, resid entering block k)`, k ≤ the first
+    live block: `start_from_inputs(batch)` = embed (k=0); `masked_start(batch, taps, live)`
+    = the clean pass's `resid.{first live block}` tap (prefix sharing)              (S18, D5)
+    — through the remaining blocks, final norm, LM head;
     each site s ∈ live_sites computes site_out(x, s, masks[s], delta_masks[s], routes[s]);
     each site s ∉ live_sites computes x @ W_s            # frozen path, NOT y_dec(mask=1)   (S2)
 
-def clean_output(batch)   = masked_forward(batch, live_sites=∅)                             (S3)
+def clean_output(batch)   = clean_output_and_taps(batch, ())[0]                             (S3)
+def clean_output_and_taps(batch, wanted) -> (logits, {tap_key: [B,T,d_tap]})           (S3, S18)
+    # the step's ONE clean pass: the full frozen forward (embed batch, all blocks, final
+    # norm, LM head) emitting the wanted `resid.*` taps as boundary values of the SAME
+    # forward (a static scan split — carries bit-identical to the unsplit scan).
 def read_activations(batch, wanted: tuple[str,...]) -> {tap_key: [B,T,d_tap]}               (S4)
     # general clean-path activation accessor keyed by OPAQUE tap keys. `wanted` is the
     # CI fn's static `input_names`; the target is the sole key→activation interpreter.
@@ -180,9 +188,11 @@ def sources_update(sources, sources_grad, opt_state):
 
 ```
 def train_step(state, batch, step):                  # batch = fresh token batch            (S18)
-    cln      = sg[ clean_output(batch) ]                                                     (S3)
-    CI = ci(ci_fn, read_activations(batch, ci_fn.input_names))      # ONE conceptual CI eval/step;
+    cln, taps = clean_output_and_taps(batch, ci_fn.input_names ∪ start taps); cln = sg[cln] (S3)
+    CI = ci(ci_fn, taps[ci_fn.input_names])                         # ONE conceptual CI eval/step;
     ci_lower, ci_upper = CI.lower, CI.upper                         # recompute allowed (deterministic)
+    # every masked forward below runs from its entry's forward start — the clean pass's
+    # residual entering its earliest live block (`masked_start`)                    (S18, D5)
     # -- supplemental adversary ascents (components & CI detached) --
     set SRC_STEP lr = sched_src(step)                # stepped once per TRAINING step       (S13)
     repeat n_warmup:
@@ -287,7 +297,7 @@ faithfulness, sources/PPGD, the squashings (S5/S6), the imp-min reduction, the g
 | S15 | Every source update ends with `PROJ` (★ clamp to `[0,1]`). Init: ★ `sources ~ U[0,1]` i.i.d. |
 | S16 | Shared-scope sources are identical on every data-parallel replica at every step (identical init, identical updates from the global-batch gradient). `bsc` sources shard with the batch instead. (Implementation mapping in §8/§9.) |
 | S17 | `faithfulness_loss` is the global mean of squared delta entries over all sites' parameters (Σ‖Δ‖² / Σ numel), recomputed from live V/U each step. |
-| S18 | Each training step consumes a fresh token batch (a pure function of `(seed, step)` for O(1) resume); the model embeds it internally. **AMENDED 2026-06-24** (Oli-approved): removed the prefix harvest (residual-start) — there is no separate prefix forward; `clean_output` / `read_activations` / `masked_output` take the token batch directly. |
+| S18 | Each training step consumes a fresh token batch (a pure function of `(seed, step)` for O(1) resume); the model embeds it internally. **AMENDED 2026-06-24** (Oli-approved): removed the prefix harvest (residual-start) — there is no separate prefix forward; the clean path takes the token batch directly. **AMENDED 2026-07-09**: masked forwards take a FORWARD START instead of the token batch — `start_from_inputs(inputs)` (the input edge; eval tiers) or `masked_start(inputs, taps, live)` (the clean pass's `resid.{first live block}` boundary; every recon/ascent forward) — so the frozen prefix runs ONCE per step, inside `clean_output_and_taps`. The 2026-06-24 amendment's substance stands: the clean path (`clean_output` / `clean_output_and_taps` / `read_activations`) still takes the token batch and embeds internally, `clean_output` stays the whole-model frozen forward (S3), starts are model-opaque and built within the step graph (no engine `Prefix` / `first_layer` / harvest machinery, no tap ceiling). Equivalence contract: D5. |
 | S19 | Components gradients are global-norm-clipped at `0.01`, before the optimizer step. CI fn is unclipped (production). The clip coefficient uses torch's eps convention: `clip_coef = min(1, max_norm / (total_norm + 1e-6))` (`torch.nn.utils.clip_grad_norm_`). This `+1e-6` is canonical and matched JAX-side (#643); plain `optax.clip_by_global_norm` divides by `max(total_norm, max_norm)` with NO eps, which at `clip=0.01` (clip fires almost every step) gives a ~1e-4 relative component-grad difference each step — a real per-step deviation the JAX clip must avoid by reproducing the `+1e-6`. |
 | S20 | Both main optimizers are AdamW, `wd=0`, betas `(0.9, 0.999)`, eps `1e-8`; LR cosine to `0.1×` start, no warmup, stepped per training step. Cosine convention is canonical-torch: `progress = (step − warmup) / (decay_steps − 1)`, so LR reaches `0.1×` at `step = steps − 1` (`schedule.py`). This is matched JAX-side (#642); plain `optax.cosine_decay_schedule(lr, steps, alpha=0.1)` divides by `steps` and reaches `0.1×` one update LATER (at `count = steps`), a genuine formula divergence of ~O(1/steps) ≈ 2.5e-6/step at 400k that the JAX schedule must avoid by using the `decay_steps − 1` denominator. Both main LRs are evaluated by `scheduled_value_traced` honoring the full `ScheduleConfig`; the canonical cosine-to-0.1-no-warmup shape is pinned by the lab conversion gate (`assert_canonical_algorithm_config`). |
 | S21 | Faithfulness warmup (400 × AdamW lr `1e-3` on `faithfulness_loss` alone) precedes step 0; its optimizer is discarded. |
@@ -342,6 +352,7 @@ is global-batch math. This section is the whole answer to "now shard it":
 | D2 | Imp-min requires the exact global per-component sums *inside* the `log2` (S8) — the one term where mean-of-shard-results ≠ global result (Jensen). The reduction must also be autograd-aware so gradient reaches each shard's CI values. The eval-path imp-min reuses the one `importance_minimality_terms` impl (there is no separate non-autograd eval reduce as in torch), so the value is device-count invariant by D4; guarded directly at 1 vs N devices by `tests/test_imp_min_global_reduction.py`. |
 | D3 | Shared PPGD sources stay replica-identical per S16: identical init (broadcast or identical seeding), updates computed from the D1 gradient, identical optimizer steps. |
 | D4 | Validation property: with global batch + seed fixed, the metric trajectory is invariant to device count up to floating-point reassociation (cross-shard reduction order; observed rel ≤ ~1e-5 on the tiny-target harness, `experiments/invariance_check.py`). JAX's counter-based RNG makes even the stochastic draws identical across layouts. |
+| D5 | Prefix-start equivalence: with batch + seed fixed, a masked forward seeded from the clean pass's `resid.{k}` tap (k ≤ its first live block, `masked_start`) equals the input-edge (`start_from_inputs`) forward up to floating-point reassociation — a static scan split preserves the op sequence, so only XLA fusion differences remain. Guarded at fp32 by `tests/test_prefix_start.py` (deterministic + stochastic mask paths; the stochastic per-(layer,kind) keys fold over ABSOLUTE layer indices, so the draws are start-invariant). NOTE: a mid-run resume across the introduction of this seam is trajectory-continuous only up to reassociation (CI taps moved from the unrolled `read_activations` pass to the clean scan's boundary carries). |
 
 ---
 

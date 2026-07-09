@@ -507,9 +507,12 @@ class LlamaDecomposedModel(eqx.Module):
     separate lifecycle (own optimizer + checkpoint, C-sharded while these weights
     replicate), so it is NOT a field here.
 
-    Forward methods take token `inputs` and embed internally. Blocks with no decomposed
-    site run the plain frozen path — so a subset decomposition just leaves the rest
-    frozen.
+    The clean path takes token `inputs` and embeds internally; masked forwards take a
+    forward start `(start_block, resid)` — the residual entering `start_block`, from
+    `start_from_inputs` (block 0, the embed) or `start_from_taps` (a clean-forward
+    boundary at the earliest live block, so the frozen prefix is never recomputed —
+    SPEC S18/D5). Blocks with no decomposed site run the plain frozen path — so a
+    subset decomposition just leaves the rest frozen.
 
     `sites` / `leading_axes` are static config."""
 
@@ -561,20 +564,59 @@ class LlamaDecomposedModel(eqx.Module):
     def embed_tokens(self, tokens: Int[Array, "b t"]) -> Float[Array, "b t d"]:
         return self.embed[tokens]
 
+    def _slice_layers(self, lo: int, hi: int) -> LlamaLayer:
+        return jax.tree.map(lambda a: a[lo:hi], self.stacked)
+
     def clean_output(self, inputs: Int[Array, "b t"]) -> Array:
-        """The all-frozen forward — the recon target (SPEC S3). A `lax.scan` over the block
-        stack so XLA compiles one block body instead of unrolling all 32 layers (the compile
-        fix for the full model; the scan reassociates float ops vs an unrolled loop, within
-        fp32 tolerance)."""
+        """The all-frozen forward — the recon target (SPEC S3)."""
+        output, _ = self.clean_output_and_taps(inputs, ())
+        return output
+
+    def clean_output_and_taps(
+        self, inputs: Int[Array, "b t"], wanted: tuple[str, ...]
+    ) -> tuple[Array, dict[str, Array]]:
+        """The all-frozen forward (the recon target, SPEC S3) emitting `resid.{layer}` taps
+        as boundary values of the SAME forward (SPEC S18/D5) — the step's one clean pass. A
+        `lax.scan` over the block stack, split at the wanted tap layers: a static split
+        preserves the op sequence, so the output and taps are bit-identical to the unsplit
+        scan. Serves `resid.*` only — per-site matrix-input taps (harvest) live mid-block
+        and stay on `read_activations`."""
+        assert all(key.startswith("resid.") for key in wanted), (
+            f"clean_output_and_taps serves resid.* taps only, got {sorted(wanted)}"
+        )
+        boundaries = sorted({_tap_layer(key) for key in wanted})
+        assert all(0 <= b < self.n_layer for b in boundaries), (boundaries, self.n_layer)
 
         def block(x: Array, layer: LlamaLayer) -> tuple[Array, None]:
             x = x + layer.attn(rms_norm(x, layer.ln1, self.eps), self.inv_freq)
             x = x + _clean_mlp_out(layer, rms_norm(x, layer.ln2, self.eps))
             return x, None
 
-        x, _ = jax.lax.scan(block, self.embed_tokens(inputs), self.stacked)
+        x = self.embed_tokens(inputs)
+        taps: dict[str, Array] = {}
+        lo = 0
+        for boundary in boundaries:
+            if boundary > lo:
+                x, _ = jax.lax.scan(block, x, self._slice_layers(lo, boundary))
+                lo = boundary
+            taps[f"resid.{boundary}"] = x
+        x, _ = jax.lax.scan(block, x, self._slice_layers(lo, self.n_layer))
         x = rms_norm(x, self.norm, self.eps)
-        return x @ self.lm_head.T
+        return x @ self.lm_head.T, taps
+
+    def start_from_inputs(self, inputs: Int[Array, "b t"]) -> tuple[int, Array]:
+        return 0, self.embed_tokens(inputs)
+
+    def start_taps(self, live: tuple[str, ...]) -> tuple[str, ...]:
+        assert live, "a forward start needs at least one live site"
+        return (f"resid.{min(parse_site_name(site)[0] for site in live)}",)
+
+    def masked_start(
+        self, inputs: Int[Array, "b t"], taps: dict[str, Array], live: tuple[str, ...]
+    ) -> tuple[int, Array]:
+        del inputs  # the tap seed replaces the input edge
+        (tap,) = self.start_taps(live)
+        return _tap_layer(tap), taps[tap]
 
     def read_activations(
         self, inputs: Int[Array, "b t"], wanted: tuple[str, ...]
@@ -619,7 +661,7 @@ class LlamaDecomposedModel(eqx.Module):
     def _run_masked_forward(
         self,
         prepared: dict[str, dict[str, Array]],
-        inputs: Int[Array, "b t"],
+        start: tuple[int, Array],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
         routes: dict[str, Array] | None,
@@ -634,7 +676,10 @@ class LlamaDecomposedModel(eqx.Module):
         / `masked_site_outputs` / `masked_component_activations` (SPEC §1.3, S2). `live_set` is
         static at trace, so the forward runs as `[frozen prefix] → [live block] → [frozen suffix]`
         static sub-scans (no per-site `lax.cond`): only the live block carries + gathers V/U.
-        `live`/`has_delta` are static; a non-None `collect` gathers per-live-site decomposed
+        `start = (start_block, resid)` seeds the carry with the residual entering `start_block`
+        (static): the frozen prefix scan covers only `[start_block, first_live)` — empty when the
+        engine seeds at the first live block (SPEC S18/D5), the whole prefix for an input-edge
+        start. `live`/`has_delta` are static; a non-None `collect` gathers per-live-site decomposed
         OUTPUTS (`(x@V)*m@U + …`, SPEC S31), and a non-None `collect_activations` gathers
         per-live-site component ACTIVATIONS `x@V` (`[*leading, C]`, mask-independent — the
         pre-mask coefficient the arithmetic CI-grid eval visualizes). Assumes layer-aligned,
@@ -645,7 +690,7 @@ class LlamaDecomposedModel(eqx.Module):
         masks, so the ÷N→÷fsdp cross-node gather is not re-run here (SPEC unchanged; numerics
         identical — the reconstruction is mask-independent and the same for every forward)."""
         live_set = frozenset(live)
-        resid = self.embed_tokens(inputs)
+        start_block, resid = start
         leading = resid.shape[:-1]
         if stochastic is not None:
             ci_stacked, draw_key = stochastic
@@ -681,8 +726,11 @@ class LlamaDecomposedModel(eqx.Module):
             assert live_layers == list(range(first_live, last_live)), (
                 f"live layers must be contiguous, got {live_layers}"
             )
+            assert start_block <= first_live, (
+                f"start at block {start_block} is past the first live block {first_live}"
+            )
         else:
-            first_live = last_live = 0
+            first_live = last_live = start_block
 
         def decomp_site(x_in: Array, W: Array, e: dict[str, Array]) -> Array:
             v, u = e["V"], e["U"]
@@ -796,21 +844,18 @@ class LlamaDecomposedModel(eqx.Module):
                 jax.checkpoint(body, policy=policy), carry, xs, unroll=self.scan_unroll
             )
 
-        def slice_layers(lo: int, hi: int) -> LlamaLayer:
-            return jax.tree.map(lambda a: a[lo:hi], self.stacked)
-
         x = resid
         ys: tuple[dict[str, Array] | None, dict[str, Array] | None] | None = None
-        if first_live > 0:
-            x, _ = run_scan(frozen_block, x, slice_layers(0, first_live))
+        if first_live > start_block:
+            x, _ = run_scan(frozen_block, x, self._slice_layers(start_block, first_live))
         if last_live > first_live:
             pk_live = {
                 kind: {k: v[first_live:last_live] for k, v in e.items()}
                 for kind, e in per_kind.items()
             }
-            x, ys = run_scan(live_block, x, (slice_layers(first_live, last_live), pk_live))
+            x, ys = run_scan(live_block, x, (self._slice_layers(first_live, last_live), pk_live))
         if last_live < self.n_layer:
-            x, _ = run_scan(frozen_block, x, slice_layers(last_live, self.n_layer))
+            x, _ = run_scan(frozen_block, x, self._slice_layers(last_live, self.n_layer))
 
         x = rms_norm(x, self.norm, self.eps)
         logits = x @ self.lm_head.T
@@ -839,7 +884,7 @@ class LlamaDecomposedModel(eqx.Module):
     def masked_output(
         self,
         prepared: dict[str, dict[str, Array]],
-        inputs: Int[Array, "b t"],
+        start: tuple[int, Array],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
         routes: dict[str, Array] | None,
@@ -849,7 +894,7 @@ class LlamaDecomposedModel(eqx.Module):
         remat: bool,
     ) -> Array:
         return self._run_masked_forward(
-            prepared, inputs, masks, delta_masks, routes, live, has_delta, remat, None, None
+            prepared, start, masks, delta_masks, routes, live, has_delta, remat, None, None
         )
 
     def stack_ci(self, ci_lower: dict[str, Array]) -> dict[str, Array]:
@@ -861,7 +906,7 @@ class LlamaDecomposedModel(eqx.Module):
     def masked_output_stochastic(
         self,
         prepared: dict[str, dict[str, Array]],
-        inputs: Int[Array, "b t"],
+        start: tuple[int, Array],
         ci_stacked: dict[str, Array],
         draw_key: Array,
         routes: dict[str, Array] | None,
@@ -876,13 +921,13 @@ class LlamaDecomposedModel(eqx.Module):
         checkpointed block (faithful by checkpoint determinism). Same forward semantics as
         `masked_output` with stochastic sources — only the masks' liverange changes."""
         return self._run_masked_forward(
-            prepared, inputs, {}, {}, routes, live, has_delta, remat, None, (ci_stacked, draw_key)
+            prepared, start, {}, {}, routes, live, has_delta, remat, None, (ci_stacked, draw_key)
         )
 
     def masked_site_outputs(
         self,
         prepared: dict[str, dict[str, Array]],
-        inputs: Int[Array, "b t"],
+        start: tuple[int, Array],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
         routes: dict[str, Array] | None,
@@ -893,7 +938,7 @@ class LlamaDecomposedModel(eqx.Module):
         exact `masked_output` forward, discards the logits, returns the collected outputs."""
         collect: dict[str, Array] = {}
         self._run_masked_forward(
-            prepared, inputs, masks, delta_masks, routes, live, has_delta, False, collect, None
+            prepared, start, masks, delta_masks, routes, live, has_delta, False, collect, None
         )
         assert set(collect) == set(live), (sorted(collect), sorted(live))
         return collect
@@ -901,7 +946,7 @@ class LlamaDecomposedModel(eqx.Module):
     def masked_component_activations(
         self,
         prepared: dict[str, dict[str, Array]],
-        inputs: Int[Array, "b t"],
+        start: tuple[int, Array],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
         routes: dict[str, Array] | None,
@@ -916,7 +961,7 @@ class LlamaDecomposedModel(eqx.Module):
         LM-only, off the recon path."""
         collect_activations: dict[str, Array] = {}
         self._run_masked_forward(
-            prepared, inputs, masks, delta_masks, routes, live, has_delta, False, None,
+            prepared, start, masks, delta_masks, routes, live, has_delta, False, None,
             collect_activations=collect_activations,
         )  # fmt: skip
         assert set(collect_activations) == set(live), (sorted(collect_activations), sorted(live))

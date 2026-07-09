@@ -32,7 +32,7 @@ class ComponentActivationModel(DecomposedModel, Protocol):
     def masked_component_activations(
         self,
         prepared: Any,
-        inputs: Any,
+        start: Any,
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
         routes: dict[str, Array] | None,
@@ -116,7 +116,7 @@ def make_arithmetic_grid_step(
         ones = {s: jnp.ones((*leading, site_component_counts[s]), COMPUTE_DT) for s in site_names}
         zeros_delta = {s: jnp.zeros(leading, COMPUTE_DT) for s in site_names}
         acts = model.masked_component_activations(
-            prepared, tokens, ones, zeros_delta, None, site_names, False
+            prepared, model.start_from_inputs(tokens), ones, zeros_delta, None, site_names, False
         )
         xv = {s: acts[s][:, answer_position, :].astype(jnp.float32) for s in site_names}
         valid = (jnp.arange(tokens.shape[0]) < n_valid_rows)[:, None]
