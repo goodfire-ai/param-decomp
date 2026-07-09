@@ -452,6 +452,7 @@ def _attach_per_kind_stochastic(
 def _reconstruct_compute_weights(
     per_kind: dict[str, dict[str, Array]],
     fp8: bool,
+    resident: bool,
 ) -> dict[str, dict[str, Array]]:
     """The ZeRO-1 weight reconstruction (pure-HSDP backup layout). The stacked
     `[n_layer, d_in, C]` / `[n_layer, C, d_out]` compute weights arrive with their FSDP dim
@@ -470,8 +471,20 @@ def _reconstruct_compute_weights(
     unsharded. No-op off-mesh (CPU / single device); `run.py` sets the global mesh."""
     if jax.sharding.get_abstract_mesh().empty:
         return per_kind
-    v_spec = P(None, "fsdp", "tp")  # [n_layer, d_in ÷fsdp, C ÷tp] — d gathered/step, C stays ÷tp
-    u_spec = P(None, "tp", "fsdp")  # [n_layer, C ÷tp, d_out ÷fsdp]
+    if resident:
+        # RESIDENT-FULL layout (`RuntimeConfig.resident_full_weights`): gather d_in/d_out to
+        # FULL here, once per step — the per-layer scan body then runs plain matmuls with NO
+        # ÷fsdp→full gather in ANY masked pass (fwd or remat-recompute bwd). Trades the full
+        # bf16 V/U stacks resident for the eliminated per-layer-per-pass collectives (the
+        # dominant NCCL term in the dp128 profile). C stays ÷tp. Pure data movement —
+        # numerics bit-identical (same rationale as `ascend_replicate`, extended step-wide).
+        v_spec = P(None, None, "tp")
+        u_spec = P(None, "tp", None)
+    else:
+        v_spec = P(
+            None, "fsdp", "tp"
+        )  # [n_layer, d_in ÷fsdp, C ÷tp] — d gathered/step, C stays ÷tp
+        u_spec = P(None, "tp", "fsdp")  # [n_layer, C ÷tp, d_out ÷fsdp]
     out: dict[str, dict[str, Array]] = {}
     for kind, entry in per_kind.items():
         pinned = dict(entry)
@@ -528,6 +541,9 @@ class LlamaDecomposedModel(eqx.Module):
     plain per-layer scan."""
     gather_fp8: bool = eqx.field(static=True, default=False)
     """Quantized all-gather of the ÷fsdp compute V/U (`RuntimeConfig.gather_fp8`)."""
+    resident_full_weights: bool = eqx.field(static=True, default=False)
+    """Keep the bf16 compute V/U FULL (un-fsdp-sharded) for the whole step
+    (`RuntimeConfig.resident_full_weights`): one gather per step, zero per-layer re-gathers."""
 
     @property
     def site_names(self) -> tuple[str, ...]:
@@ -813,7 +829,9 @@ class LlamaDecomposedModel(eqx.Module):
         `masked_output` / `masked_site_outputs` calls — the cross-node gather then runs ONCE per
         step (ENTRY) instead of once per forward (the per-forward re-gather was ~10 co-resident
         copies of the ÷fsdp stack at peak)."""
-        return _reconstruct_compute_weights(_stack_per_kind_vu(vu, self.n_layer), self.gather_fp8)
+        return _reconstruct_compute_weights(
+            _stack_per_kind_vu(vu, self.n_layer), self.gather_fp8, self.resident_full_weights
+        )
 
     def masked_output(
         self,
@@ -967,6 +985,7 @@ def build_decomposed_lm(
     sites: tuple[SiteSpec, ...],
     scan_unroll: int = 1,
     gather_fp8: bool = False,
+    resident_full_weights: bool = False,
 ) -> LlamaDecomposedModel:
     """Assemble a `LlamaDecomposedModel` from the frozen full-model arrays + decomposition
     config. `sites` must be canonical-ordered with dims matching `cfg`. `scan_unroll` /
@@ -987,6 +1006,7 @@ def build_decomposed_lm(
         eps=cfg.rms_norm_eps,
         scan_unroll=scan_unroll,
         gather_fp8=gather_fp8,
+        resident_full_weights=resident_full_weights,
     )
 
 
@@ -996,6 +1016,7 @@ def load_decomposed_lm_from_hf(
     sites: tuple[SiteSpec, ...],
     scan_unroll: int = 1,
     gather_fp8: bool = False,
+    resident_full_weights: bool = False,
 ) -> LlamaDecomposedModel:
     """Load the Llama-8B `DecomposedModel`: the full frozen model (embedding, all blocks,
     final norm, lm_head) as fields plus the static decomposition config (`sites`). Blocks
@@ -1012,4 +1033,5 @@ def load_decomposed_lm_from_hf(
         sites=sites,
         scan_unroll=scan_unroll,
         gather_fp8=gather_fp8,
+        resident_full_weights=resident_full_weights,
     )

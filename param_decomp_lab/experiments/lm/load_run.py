@@ -92,6 +92,7 @@ def build_target(cfg: BuiltRun, mesh: jax.sharding.Mesh) -> tuple[DecomposedMode
                     sites,
                     scan_unroll=cfg.runtime.scan_unroll,
                     gather_fp8=cfg.runtime.gather_fp8,
+                    resident_full_weights=cfg.runtime.resident_full_weights,
                 ),
                 mesh,
             )

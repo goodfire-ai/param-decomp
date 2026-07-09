@@ -776,6 +776,17 @@ class RuntimeConfig(BaseConfig):
             "gated experiment. Compute substrate."
         ),
     )
+    resident_full_weights: bool = Field(
+        default=False,
+        description=(
+            "Keep the bf16 compute V/U FULL (un-fsdp-sharded) for the whole step: the "
+            "÷N→full gather runs once per step in ENTRY and every masked pass (and its "
+            "remat-recompute backward) runs plain matmuls with no per-layer ÷fsdp→full "
+            "gather — the dominant NCCL term in the dp128 profile. Costs the full bf16 V/U "
+            "stacks resident (≈ 2 bytes · Σ(d_in+d_out)·C); verify fit with a memprobe arm. "
+            "Numerics-identical (pure data movement). Compute substrate."
+        ),
+    )
     ascend_replicate: bool = Field(
         default=False,
         description=(
@@ -847,6 +858,12 @@ class RuntimeConfig(BaseConfig):
     def validate_gather_reshape(self) -> Self:
         assert not (self.ascend_replicate and self.gather_fp8), (
             "ascend_replicate and gather_fp8 both re-pin the compute-weight gather — pick one"
+        )
+        assert not (self.resident_full_weights and self.gather_fp8), (
+            "resident_full_weights keeps full bf16 weights — quantized gathers are moot"
+        )
+        assert not (self.resident_full_weights and self.ascend_replicate), (
+            "resident_full_weights supersedes ascend_replicate (whole-step residency)"
         )
         return self
 
