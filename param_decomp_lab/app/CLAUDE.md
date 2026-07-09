@@ -26,6 +26,17 @@ python -m param_decomp_lab.app.run_app
 
 This launches both backend (FastAPI/uvicorn) and frontend (Vite) dev servers.
 
+### Serving the circuit builder for the team
+
+```bash
+sbatch param_decomp_lab/app/serve_circuit_builder.sbatch
+```
+
+GPU job + tailnet tunnel (URL in the job log / `app-serve-<jobid>.url`), backend
+warm-loaded with `$CIRCUIT_BUILDER_RUN` (default `p-55ea3f9b`). 24h lifetime — resubmit
+when it expires. Needs a synced `.venv` and `npm ci` in `frontend/` first. The
+circuit-builder tab is reachable from the splash without a W&B run load.
+
 ---
 
 ## Architecture Overview
