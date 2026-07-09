@@ -376,7 +376,12 @@ PersistentPGDSourceScope = Annotated[
 
 class PersistentPGDReconLossConfig(LossMetricConfig):
     """Persistent-PGD recon loss: adversarial mask sources persist across train steps,
-    routed to all layers every forward.
+    routed per `routing` (default: all layers every forward).
+
+    With subset routing, one routing draw is taken per step; unrouted sites take the
+    all-on mask, so their sources see zero grad and skip that step's final ascent
+    (the S13' Adam update still runs on the zero grad). Warmup ascents stay route-all
+    (SPEC S24).
 
     Sources are clamped to `[0, 1]` after each step — the only implemented
     parameterization. (A sigmoid parameterization was removed.)
@@ -403,6 +408,7 @@ class PersistentPGDReconLossConfig(LossMetricConfig):
     type: Literal["PersistentPGDReconLoss"] = "PersistentPGDReconLoss"
     optimizer: AdamPGDConfig
     scope: PersistentPGDSourceScope
+    routing: Annotated[SubsetRoutingType, Field(discriminator="type")] = AllRoutingConfig()
     source_dtype: Literal["float32", "bfloat16"] = "float32"
     """Storage dtype for the persistent PPGD source tensors AND their Adam moments
     (`m`/`v`). `float32` (default) is SPEC N1 (fp32 SRC_STEP moments) and the only
