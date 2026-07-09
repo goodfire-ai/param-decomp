@@ -10,12 +10,36 @@ export interface SiteInfo {
     rank: number;
 }
 
+export interface ActivationExample {
+    tokens: string[];
+    active_position: number;
+    activation: number;
+}
+
 export interface SubcomponentInfo {
     site: string;
     idx: number;
     label: string | null;
+    label_source: string | null;
     u_norm_absorbed: number;
-    examples: { tokens: string[]; active_position: number; activation: number }[];
+    examples: ActivationExample[];
+}
+
+export interface SearchHit {
+    site: string;
+    idx: number;
+    label: string;
+    label_source: string;
+}
+
+export interface ComponentDetail {
+    site: string;
+    idx: number;
+    label: string | null;
+    label_source: string | null;
+    reasoning: string | null;
+    u_norm_absorbed: number;
+    examples: ActivationExample[];
 }
 
 export interface WriteTerm {
@@ -103,6 +127,27 @@ export async function getSites(): Promise<SiteInfo[]> {
 
 export async function getDownstream(readSite: string): Promise<string[]> {
     return unwrap(await fetch(`/api/circuit_builder/downstream/${readSite}`), "get downstream sites");
+}
+
+export async function searchLabels(
+    q: string,
+    limit: number,
+    downstreamOf: string | null = null,
+): Promise<SearchHit[]> {
+    const params = new URLSearchParams({ q, limit: String(limit) });
+    if (downstreamOf) params.set("downstream_of", downstreamOf);
+    return unwrap(await fetch(`/api/circuit_builder/search?${params}`), "search labels");
+}
+
+export async function getComponentDetail(
+    site: string,
+    idx: number,
+    examples: number = 8,
+): Promise<ComponentDetail> {
+    return unwrap(
+        await fetch(`/api/circuit_builder/component/${site}/${idx}?examples=${examples}`),
+        "get component detail",
+    );
 }
 
 export async function getSubcomponents(

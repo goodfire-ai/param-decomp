@@ -70,6 +70,24 @@ class SubcomponentInfo(BaseModel):
     site: str
     idx: int
     label: str | None
+    label_source: str | None  # "canon" | "fallback" | "mock"
+    u_norm_absorbed: float
+    examples: list[dict]
+
+
+class SearchHit(BaseModel):
+    site: str
+    idx: int
+    label: str
+    label_source: str
+
+
+class ComponentDetail(BaseModel):
+    site: str
+    idx: int
+    label: str | None
+    label_source: str | None
+    reasoning: str | None
     u_norm_absorbed: float
     examples: list[dict]
 
@@ -155,16 +173,56 @@ def subcomponents(
     C = model.components[site].V.shape[1]
     out = []
     for idx in range(offset, min(offset + limit, C)):
+        labeled = state.ctx.info.label(site, idx)
         out.append(
             SubcomponentInfo(
                 site=site,
                 idx=idx,
-                label=state.ctx.info.label(site, idx),
+                label=labeled[0] if labeled else None,
+                label_source=labeled[1] if labeled else None,
                 u_norm_absorbed=u_norm_absorbed(model, SubcomponentRef(site, idx)),
                 examples=state.ctx.info.activating_examples(site, idx, examples) if examples else [],
             )
         )
     return out
+
+
+@router.get("/search")
+@log_errors
+def search(
+    q: str, manager: DepStateManager, limit: int = 50, downstream_of: str | None = None
+) -> list[SearchHit]:
+    """Substring search over component labels; optionally only sites downstream of a site."""
+    state = _get_cb_state(manager)
+    assert q.strip(), "empty search query"
+    hits = state.ctx.info.search_labels(q.strip(), limit=500)
+    if downstream_of is not None:
+        allowed = set(downstream_sites(state.ctx.model, downstream_of))
+        hits = [h for h in hits if h["site"] in allowed]
+    known = set(state.ctx.model.target_module_paths)
+    hits = [h for h in hits if h["site"] in known]
+    return [SearchHit(**h) for h in hits[:limit]]
+
+
+@router.get("/component/{site:path}/{idx}")
+@log_errors
+def component_detail(
+    site: str, idx: int, manager: DepStateManager, examples: int = 8
+) -> ComponentDetail:
+    """Full autointerp explanation + activating examples for one component."""
+    state = _get_cb_state(manager)
+    model = state.ctx.model
+    assert site in model.target_module_paths, f"unknown site {site}"
+    interp = state.ctx.info.interpretation(site, idx)
+    return ComponentDetail(
+        site=site,
+        idx=idx,
+        label=interp["label"] if interp else None,
+        label_source=interp["label_source"] if interp else None,
+        reasoning=interp["reasoning"] if interp else None,
+        u_norm_absorbed=u_norm_absorbed(model, SubcomponentRef(site, idx)),
+        examples=state.ctx.info.activating_examples(site, idx, examples),
+    )
 
 
 @router.post("/j_vectors")

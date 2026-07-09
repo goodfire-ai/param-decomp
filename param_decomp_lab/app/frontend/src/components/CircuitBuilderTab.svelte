@@ -8,6 +8,7 @@
     import {
         computeJVectors,
         deleteLora,
+        getComponentDetail,
         getDownstream,
         getSites,
         getSubcomponents,
@@ -15,9 +16,12 @@
         loadCircuitBuilder,
         putLora,
         runCompare,
+        searchLabels,
         type CompareResult,
+        type ComponentDetail,
         type JVectorInfo,
         type LoraSpec,
+        type SearchHit,
         type SiteInfo,
         type SubcomponentInfo,
         type TokenLogit,
@@ -42,6 +46,47 @@
     let jInfo = $state<JVectorInfo[]>([]);
     let busy = $state(false);
     const PAGE = 25;
+
+    // --- label search + component detail ---
+    let readQuery = $state("");
+    let readHits = $state<SearchHit[]>([]);
+    let writeQuery = $state("");
+    let writeHits = $state<SearchHit[]>([]);
+    let detail = $state<ComponentDetail | null>(null);
+
+    async function runSearch(which: "read" | "write") {
+        await guard(async () => {
+            if (which === "read") {
+                readHits = readQuery.trim() ? await searchLabels(readQuery, 30) : [];
+            } else {
+                writeHits = writeQuery.trim()
+                    ? await searchLabels(writeQuery, 30, editing?.read_site ?? null)
+                    : [];
+            }
+        });
+    }
+
+    async function showDetail(site: string, idx: number) {
+        await guard(async () => {
+            detail = await getComponentDetail(site, idx);
+        });
+    }
+
+    async function pickReadFromSearch(hit: SearchHit) {
+        if (!editing) return;
+        editing.read_site = hit.site;
+        editing.read_idx = hit.idx;
+        readHits = [];
+        readQuery = "";
+        await refreshReadSite();
+        editing.read_idx = hit.idx;
+        void showDetail(hit.site, hit.idx);
+    }
+
+    function pickWriteFromSearch(hit: SearchHit) {
+        addWrite({ site: hit.site, idx: hit.idx } as SubcomponentInfo);
+        void showDetail(hit.site, hit.idx);
+    }
 
     // --- compare state ---
     let prompt = $state("The quick brown fox");
@@ -263,6 +308,24 @@
 
                     <h4>Read vector (normalized V column)</h4>
                     <div class="row">
+                        <input
+                            class="search"
+                            placeholder="search all labels…"
+                            bind:value={readQuery}
+                            oninput={() => runSearch("read")}
+                        />
+                    </div>
+                    {#if readHits.length > 0}
+                        <div class="search-results">
+                            {#each readHits as hit (hit.site + ":" + hit.idx)}
+                                <button class="subcomp" onclick={() => pickReadFromSearch(hit)}>
+                                    <span class="idx">{hit.site}:{hit.idx}</span>
+                                    <span class="label" class:fallback={hit.label_source === "fallback"}>{hit.label}</span>
+                                </button>
+                            {/each}
+                        </div>
+                    {/if}
+                    <div class="row">
                         <label>
                             site
                             <select bind:value={editing.read_site} onchange={refreshReadSite}>
@@ -279,10 +342,13 @@
                                 class="subcomp"
                                 class:selected={editing.read_idx === sc.idx}
                                 title={sc.examples.map((e) => e.tokens.join("")).join("\n")}
-                                onclick={() => (editing!.read_idx = sc.idx)}
+                                onclick={() => {
+                                    editing!.read_idx = sc.idx;
+                                    void showDetail(sc.site, sc.idx);
+                                }}
                             >
                                 <span class="idx">{sc.idx}</span>
-                                <span class="label">{sc.label ?? "(unlabeled)"}</span>
+                                <span class="label" class:fallback={sc.label_source === "fallback"}>{sc.label ?? "(unlabeled)"}</span>
                                 <span class="norm">‖U‖·‖V‖={sc.u_norm_absorbed.toFixed(2)}</span>
                             </button>
                         {/each}
@@ -294,6 +360,25 @@
                     </div>
 
                     <h4>Write vector (Σ λᵢ · j-vectors of downstream subcomponents)</h4>
+                    <div class="row">
+                        <input
+                            class="search"
+                            placeholder="search downstream labels…"
+                            bind:value={writeQuery}
+                            oninput={() => runSearch("write")}
+                        />
+                    </div>
+                    {#if writeHits.length > 0}
+                        <div class="search-results">
+                            {#each writeHits as hit (hit.site + ":" + hit.idx)}
+                                <button class="subcomp" onclick={() => pickWriteFromSearch(hit)}>
+                                    <span class="idx">{hit.site}:{hit.idx}</span>
+                                    <span class="label" class:fallback={hit.label_source === "fallback"}>{hit.label}</span>
+                                    <span class="norm">+</span>
+                                </button>
+                            {/each}
+                        </div>
+                    {/if}
                     <div class="row">
                         <label>
                             downstream site
@@ -309,10 +394,13 @@
                             <button
                                 class="subcomp"
                                 title={sc.examples.map((e) => e.tokens.join("")).join("\n")}
-                                onclick={() => addWrite(sc)}
+                                onclick={() => {
+                                    addWrite(sc);
+                                    void showDetail(sc.site, sc.idx);
+                                }}
                             >
                                 <span class="idx">{sc.idx}</span>
-                                <span class="label">{sc.label ?? "(unlabeled)"}</span>
+                                <span class="label" class:fallback={sc.label_source === "fallback"}>{sc.label ?? "(unlabeled)"}</span>
                                 <span class="norm">+</span>
                             </button>
                         {/each}
@@ -358,6 +446,35 @@
                     <p class="hint">Select a LoRA to edit, or create a new one.</p>
                 {/if}
             </section>
+
+            <!-- ===================== Component detail ===================== -->
+            {#if detail}
+                <section class="panel detail-panel">
+                    <h3>
+                        {detail.site}:{detail.idx}
+                        {#if detail.label_source}
+                            <span class="source-tag">{detail.label_source}</span>
+                        {/if}
+                    </h3>
+                    <p class="detail-label">{detail.label ?? "(no autointerp label)"}</p>
+                    {#if detail.reasoning}
+                        <h4>Explanation</h4>
+                        <p class="detail-reasoning">{detail.reasoning}</p>
+                    {/if}
+                    <h4>Activating examples</h4>
+                    {#each detail.examples as ex, i (i)}
+                        <div class="example">
+                            {#each ex.tokens as tok, t (t)}
+                                <span class="ex-tok" class:peak={t === ex.active_position}>{tok}</span>
+                            {/each}
+                            <span class="norm">act={ex.activation}</span>
+                        </div>
+                    {:else}
+                        <p class="hint">No harvested examples for this component.</p>
+                    {/each}
+                    <button onclick={() => (detail = null)}>close</button>
+                </section>
+            {/if}
 
             <!-- ===================== Compare ===================== -->
             <section class="panel wide">
@@ -664,6 +781,51 @@
     .hint {
         color: var(--text-muted, #888);
         font-size: 0.85rem;
+    }
+    .search {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 0.3rem 0.5rem;
+    }
+    .search-results {
+        max-height: 200px;
+        overflow-y: auto;
+        border: 1px solid var(--accent, #2563eb);
+        border-radius: 4px;
+        margin-bottom: 0.5rem;
+    }
+    .label.fallback {
+        opacity: 0.55;
+        font-style: italic;
+    }
+    .detail-panel {
+        grid-column: 1 / -1;
+    }
+    .source-tag {
+        font-size: 0.7rem;
+        border: 1px solid var(--border-default, #bbb);
+        border-radius: 3px;
+        padding: 0.05rem 0.3rem;
+        color: var(--text-muted, #777);
+        vertical-align: middle;
+    }
+    .detail-label {
+        font-weight: 600;
+    }
+    .detail-reasoning {
+        white-space: pre-wrap;
+        font-size: 0.9rem;
+    }
+    .example {
+        font-family: monospace;
+        font-size: 0.8rem;
+        padding: 0.2rem 0;
+        border-bottom: 1px dashed var(--border-default, #eee);
+    }
+    .ex-tok.peak {
+        background: var(--accent-soft, #ffe08a);
+        font-weight: bold;
+        border-radius: 2px;
     }
     .primary {
         background: var(--accent, #2563eb);

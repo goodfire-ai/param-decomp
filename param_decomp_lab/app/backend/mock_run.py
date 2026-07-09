@@ -60,8 +60,31 @@ class RandomTokenProvider:
 class MockInfoProvider:
     """Deterministic placeholder labels + activating examples."""
 
-    def label(self, site: str, idx: int) -> str | None:
-        return f"[mock] {site} component {idx}"
+    def label(self, site: str, idx: int) -> tuple[str, str] | None:
+        return (f"[mock] {site} component {idx}", "mock")
+
+    def interpretation(self, site: str, idx: int) -> dict | None:
+        return {
+            "label": f"[mock] {site} component {idx}",
+            "label_source": "mock",
+            "reasoning": f"Mock reasoning for {site}:{idx} — this text stands in for the "
+            "autointerp model's full explanation of the component.",
+        }
+
+    def search_labels(self, query: str, limit: int) -> list[dict]:
+        q = query.lower()
+        out = []
+        for b in range(4):
+            for within, c in [("attn.q_proj", 12), ("attn.k_proj", 12), ("attn.v_proj", 16),
+                              ("attn.o_proj", 16), ("mlp.c_fc", 24), ("mlp.down_proj", 24)]:
+                site = f"h.{b}.{within}"
+                for idx in range(c):
+                    label = f"[mock] {site} component {idx}"
+                    if q in label.lower():
+                        out.append({"site": site, "idx": idx, "label": label, "label_source": "mock"})
+                        if len(out) >= limit:
+                            return out
+        return out
 
     def activating_examples(self, site: str, idx: int, limit: int) -> list[dict]:
         return [

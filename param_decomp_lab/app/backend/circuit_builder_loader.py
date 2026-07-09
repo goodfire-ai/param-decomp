@@ -59,20 +59,50 @@ class RepoInfoProvider:
     """Autointerp labels + harvested activation examples for real runs.
 
     Component keys in both repos are `{concrete_module_path}:{idx}` — exactly the
-    circuit builder's (site, idx)."""
+    circuit builder's (site, idx). Labels come from a primary subrun (e.g. the canon
+    pass) with a fallback subrun (the coverage-max pass) filling the gaps; an in-memory
+    index over both serves substring search."""
 
     def __init__(
-        self, interp: InterpRepo | None, harvest: HarvestRepo | None, tokenizer: AppTokenizer
+        self,
+        primary: InterpRepo | None,
+        fallback: InterpRepo | None,
+        harvest: HarvestRepo | None,
+        tokenizer: AppTokenizer,
     ) -> None:
-        self._interp = interp
         self._harvest = harvest
         self._tokenizer = tokenizer
+        # key -> (InterpretationResult, source); primary wins over fallback.
+        self._index: dict[str, tuple[object, str]] = {}
+        if fallback is not None:
+            for key, r in fallback.get_all_interpretations().items():
+                self._index[key] = (r, "fallback")
+        if primary is not None:
+            for key, r in primary.get_all_interpretations().items():
+                self._index[key] = (r, "canon")
+        logger.info(f"label index: {len(self._index)} components")
 
-    def label(self, site: str, idx: int) -> str | None:
-        if self._interp is None:
+    def label(self, site: str, idx: int) -> tuple[str, str] | None:
+        hit = self._index.get(f"{site}:{idx}")
+        return (hit[0].label, hit[1]) if hit is not None else None  # type: ignore[attr-defined]
+
+    def interpretation(self, site: str, idx: int) -> dict | None:
+        hit = self._index.get(f"{site}:{idx}")
+        if hit is None:
             return None
-        result = self._interp.get_interpretation(f"{site}:{idx}")
-        return result.label if result is not None else None
+        result, source = hit
+        return {"label": result.label, "label_source": source, "reasoning": result.reasoning}  # type: ignore[attr-defined]
+
+    def search_labels(self, query: str, limit: int) -> list[dict]:
+        q = query.lower()
+        out = []
+        for key, (result, source) in self._index.items():
+            if q in result.label.lower():  # type: ignore[attr-defined]
+                site, idx = key.rsplit(":", 1)
+                out.append({"site": site, "idx": int(idx), "label": result.label, "label_source": source})  # type: ignore[attr-defined]
+                if len(out) >= limit:
+                    break
+        return out
 
     def activating_examples(self, site: str, idx: int, limit: int) -> list[dict]:
         if self._harvest is None:
@@ -92,6 +122,12 @@ class RepoInfoProvider:
                 }
             )
         return out
+
+
+# Preferred label subrun per run (requester-pinned); coverage-max pass fills the gaps.
+PRIMARY_INTERP_SUBRUNS = {
+    "p-55ea3f9b": "a-20260323_123740_605511-canon-v6b-medium-10k",
+}
 
 
 def load_run_context(
@@ -116,9 +152,11 @@ def load_run_context(
     run_id = saved.checkpoint_path.parent.name
     app_tokenizer = AppTokenizer.from_pretrained(saved.cfg.data.tokenizer_name)
 
-    interp = InterpRepo.open(run_id)
-    if interp is None:
+    fallback = InterpRepo.open(run_id)  # coverage-max subrun
+    if fallback is None:
         logger.warning(f"no autointerp data for {run_id} — labels will be empty")
+    primary_subrun = PRIMARY_INTERP_SUBRUNS.get(run_id)
+    primary = InterpRepo.open_subrun(run_id, primary_subrun) if primary_subrun else None
     harvest = HarvestRepo.open_most_recent(run_id)
     if harvest is None:
         logger.warning(f"no harvest data for {run_id} — activation examples will be empty")
@@ -128,7 +166,7 @@ def load_run_context(
         model=model,
         tokenizer=HFTokenizerAdapter(app_tokenizer),
         token_provider=EvalSplitTokenProvider(data_cfg=saved.cfg.data, device=device),
-        info=RepoInfoProvider(interp, harvest, app_tokenizer),
+        info=RepoInfoProvider(primary, fallback, harvest, app_tokenizer),
         seq_len=seq_len,
         batch_size=batch_size,
     )
