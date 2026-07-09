@@ -24,10 +24,38 @@ def _cache_dir(project: str, run_id: str) -> Path:
     return PARAM_DECOMP_OUT_DIR / "pretrain_cache" / f"{project}-{run_id}"
 
 
+def _cached_wandb_files(cache_dir: Path) -> WandbDownloadedFiles | None:
+    """Serve a fully-populated pretrain cache without touching the W&B API.
+
+    Returns None when any required file is missing (then the API path runs as before).
+    Keeps consumers usable on machines with the cache synced but no W&B credentials."""
+    config = cache_dir / "final_config.yaml"
+    model_config = cache_dir / "model_config.yaml"
+    step_re = re.compile(r"^model_step_(\d+)\.pt$")
+    ckpts = sorted(
+        (int(m.group(1)), f)
+        for f in cache_dir.glob("model_step_*.pt")
+        if (m := step_re.match(f.name))
+    )
+    if not (config.exists() and model_config.exists() and ckpts):
+        return None
+    tokenizer = cache_dir / "tokenizer.json"
+    return WandbDownloadedFiles(
+        checkpoint=ckpts[-1][1],
+        config=config,
+        model_config=model_config,
+        tokenizer=tokenizer if tokenizer.exists() else None,
+    )
+
+
 def _download_wandb_files(entity: str, project: str, run_id: str) -> WandbDownloadedFiles:
-    """Download core artifacts for the given W&B run."""
+    """Download core artifacts for the given W&B run (cache-first, API only on miss)."""
     cache_dir = _cache_dir(project, run_id)
     cache_dir.mkdir(parents=True, exist_ok=True)
+
+    cached = _cached_wandb_files(cache_dir)
+    if cached is not None:
+        return cached
 
     api = wandb.Api()
     run = api.run(f"{entity}/{project}/{run_id}")

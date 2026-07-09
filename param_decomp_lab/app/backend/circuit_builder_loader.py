@@ -103,6 +103,12 @@ def load_run_context(
 ) -> CircuitBuilderContext:
     """Open a saved PD run as a CircuitBuilderContext (the real counterpart of the mock)."""
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    # A bare run id resolves to the local runs dir when present (avoids the wandb path).
+    from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
+
+    local_dir = PARAM_DECOMP_OUT_DIR / "runs" / str(run_ref)
+    if local_dir.is_dir():
+        run_ref = local_dir
     saved = SavedLMRun.from_path(run_ref)
     model = saved.load_model().to(device)
     model.eval()

@@ -88,7 +88,7 @@ class SubcomponentRef:
 
 def read_vector(model: ComponentModel, ref: SubcomponentRef) -> Float[Tensor, " d_in"]:
     """Normalized read direction `v_hat` of a subcomponent (V column, unit norm)."""
-    v = model.components[ref.site].V[:, ref.idx].detach().float()
+    v = model.components[ref.site].V[:, ref.idx].detach().float().cpu()
     norm = v.norm()
     assert norm > 0, f"zero V column for {ref}"
     return v / norm

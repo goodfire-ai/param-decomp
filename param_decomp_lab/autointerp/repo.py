@@ -31,18 +31,31 @@ class InterpRepo:
 
     @classmethod
     def _find_latest_done_subrun_dir(cls, run_id: str) -> Path | None:
+        """Pick the completed subrun with the MOST interpretations (tie -> latest name).
+
+        Latest-by-name shadowed full passes with tiny smoke runs (e.g. p-55ea3f9b's
+        3-interpretation a-20260504_191444 hiding the 38k-label a-20260318_115137).
+        Coverage dominates for consumers labeling arbitrary components."""
         autointerp_dir = get_autointerp_dir(run_id)
         if not autointerp_dir.exists():
             return None
-        candidates = sorted(
-            [
-                d
-                for d in autointerp_dir.iterdir()
-                if d.is_dir() and d.name.startswith("a-") and (d / DONE_MARKER).exists()
-            ],
-            key=lambda d: d.name,
-        )
-        return candidates[-1] if candidates else None
+        candidates = [
+            d
+            for d in autointerp_dir.iterdir()
+            if d.is_dir() and d.name.startswith("a-") and (d / DONE_MARKER).exists()
+        ]
+
+        def coverage(d: Path) -> tuple[int, str]:
+            db_path = d / "interp.db"
+            if not db_path.exists():
+                return (0, d.name)
+            try:
+                count = InterpDB(db_path, readonly=True).get_interpretation_count()
+            except Exception:
+                count = 0
+            return (count, d.name)
+
+        return max(candidates, key=coverage) if candidates else None
 
     @classmethod
     def open(cls, run_id: str) -> "InterpRepo | None":

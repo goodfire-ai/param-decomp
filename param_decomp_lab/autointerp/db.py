@@ -147,6 +147,12 @@ class InterpDB:
         return bool(row[0])
 
     def get_interpretation_count(self) -> int:
+        # Aborted runs can leave a created-but-empty db with no schema; count those as 0.
+        table = self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='interpretations'"
+        ).fetchone()
+        if table is None:
+            return 0
         row = self._conn.execute("SELECT COUNT(*) FROM interpretations").fetchone()
         assert row is not None
         return row[0]
