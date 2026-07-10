@@ -9,7 +9,8 @@ is a reduction over the per-site causal-importance arrays from a masked-free for
 a numpy/matplotlib plot. The forward + reduction is JAX; the plotting is framework-agnostic
 (it mirrors the torch `param_decomp_lab/eval_metrics/plotting.py` reductions on numpy
 arrays, no torch). `accumulate_site_reductions` / `render_slow_eval_figures` /
-`compute_hidden_acts_metrics` are the SHARED interface both callers use.
+`compute_hidden_acts_metrics` are the LM in-loop tier's interface (`run.py`); the toys
+use only the UV figure helpers (`render_uv_figure` / `plot_uv_matrices`).
 
 The slow tier runs IN-LOOP on `eval.slow_every` next to the fast pass (`run.py`,
 SPEC S28/S29), reusing the fast pass's eval batches and logging `slow_eval/*` on the live
@@ -73,10 +74,9 @@ from param_decomp.configs import (
     UVPlotsConfig,
 )
 from param_decomp.hidden_acts_eval import (
+    HiddenActsStep,
     accumulate_hidden_acts,
     hidden_acts_log_entries,
-    make_ci_hidden_acts_step,
-    make_stochastic_hidden_acts_step,
 )
 from param_decomp.jit_util import filter_jit
 from param_decomp.lm import DecomposedModel
@@ -797,23 +797,24 @@ def render_slow_eval_figures(
 
 
 def compute_hidden_acts_metrics(
+    ci_step: HiddenActsStep,
+    stoch_step: HiddenActsStep,
     model: DecomposedModel,
     state: Any,
     input_batches: list[Any],
-    n_mask_samples: int,
     base_key: Array,
-    compiler_options: dict[str, bool | int | str] | None = None,
 ) -> dict[str, float]:
     """Both hidden-acts recon eval metrics over the eval batches (`input_batches` holds
     the model's target-specific inputs — an LM's token ids), keyed by the torch
-    `<ClassName>[/<site>]` log keys. `state.components`/`state.ci_fn` are the restored
+    `<ClassName>[/<site>]` log keys. `ci_step` / `stoch_step` are the PREBUILT jitted
+    steps (`make_ci_hidden_acts_step` / `make_stochastic_hidden_acts_step`), built once
+    per run next to the other slow-eval steps — rebuilding them per call would retrace +
+    recompile every slow-eval cycle. `state.components`/`state.ci_fn` are the restored
     trajectory; `base_key` seeds the stochastic variant's per-batch draws."""
     ci_key, stoch_key = random.split(base_key)
-    ci_step = make_ci_hidden_acts_step(model, compiler_options)
     ci_reductions = accumulate_hidden_acts(
         ci_step, model, state.components, state.ci_fn, input_batches, ci_key
     )
-    stoch_step = make_stochastic_hidden_acts_step(model, n_mask_samples, compiler_options)
     stoch_reductions = accumulate_hidden_acts(
         stoch_step, model, state.components, state.ci_fn, input_batches, stoch_key
     )

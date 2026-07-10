@@ -65,6 +65,10 @@ from param_decomp.configs import ResumeProvenance
 from param_decomp.data import BatchSchedule, ShardServer, scan_shards
 from param_decomp.eval import make_eval_step
 from param_decomp.hf_http import configure_hf_http_retries
+from param_decomp.hidden_acts_eval import (
+    make_ci_hidden_acts_step,
+    make_stochastic_hidden_acts_step,
+)
 from param_decomp.lm import DecomposedModel
 from param_decomp.log import setup_logger
 from param_decomp.run import (
@@ -394,7 +398,10 @@ def _make_lm_eval_fn(
     # drops the raw metric list). The launch config is pinned before train().
     run_eval_metrics = eval_metrics_from_run_dir(built.run.run_dir)
     perm_spec = resolve_permutation_metrics(lm.site_names, run_eval_metrics)
-    hidden_acts_n_mask_samples = stochastic_hidden_acts_n_mask_samples(run_eval_metrics)
+    ci_hidden_acts_step = make_ci_hidden_acts_step(lm, co)
+    stoch_hidden_acts_step = make_stochastic_hidden_acts_step(
+        lm, stochastic_hidden_acts_n_mask_samples(run_eval_metrics), co
+    )
     want_position_ci = perm_spec.any_plots or perm_spec.any_identity_error
     position_ci_step = make_position_ci_step(lm, co) if want_position_ci else None
 
@@ -449,8 +456,9 @@ def _make_lm_eval_fn(
             )
             hidden_acts_key = random.fold_in(run_key, 3 * pd.steps + eval_pass_index)
             hidden_acts = compute_hidden_acts_metrics(
-                lm, state, eval_batches, hidden_acts_n_mask_samples, hidden_acts_key, co
-            )
+                ci_hidden_acts_step, stoch_hidden_acts_step, lm, state, eval_batches,
+                hidden_acts_key,
+            )  # fmt: skip
             eval_record |= {f"eval/slow/loss/{k}": v for k, v in hidden_acts.items()}
             # The position-CI all-gather is ALSO collective (every rank joins it), gated on
             # the config naming a CI-heatmap / permutation / identity-error metric. The
