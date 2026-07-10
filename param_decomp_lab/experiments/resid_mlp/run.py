@@ -149,7 +149,7 @@ def run_resid_mlp_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: 
         model: resid_mlp.ResidMLPDecomposedModel, ci_fn: Any
     ) -> tuple[dict[str, jax.Array], dict[str, jax.Array]]:
         resid = resid_mlp.single_feature_probe(target_cfg.n_features) @ model.target.W_E
-        ci = ci_fn(model.read_activations(resid, ci_fn.input_names))
+        ci = ci_fn(model.read_activations(resid, ci_fn.input_names), remat=False)
         return ci.lower, ci.upper
 
     uv_spec = toy_uv_eval.toy_uv_spec(lm, raw_cfg)
