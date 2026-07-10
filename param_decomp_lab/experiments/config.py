@@ -10,24 +10,17 @@ the CI-fn architecture; each experiment's `run.py` assembles the rest (target + 
 """
 
 import re
-from collections.abc import Callable
-from typing import Any, Self
+from typing import Annotated, Self
 
 from pydantic import Field, PositiveInt, model_validator
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.built_run import RunInstance
-from param_decomp.ci_fn import (
-    ChunkwiseTransformerCIArch,
-    CIFnArch,
-    GlobalMLPCIArch,
-    MLPCIArch,
-)
+from param_decomp.ci_fn import CIFnArch, GlobalMLPCIArch, MLPCIArch
 from param_decomp.configs import (
     AnyEvalMetricConfig,
     Cadence,
-    ChunkwiseTransformerCiConfig,
-    CiConfig,
+    ExplicitCSpec,
     GlobalMlpCiConfig,
     LayerwiseMlpCiConfig,
     OptimizerConfig,
@@ -59,13 +52,23 @@ class EvalConfig(BaseConfig):
         return self
 
 
-class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):
-    """Full YAML schema for an in-repo experiment.
+class ToyDecompositionConfig(BaseConfig):
+    """Decomposition apparatus for the positionless toys (TMS / ResidMLP): arbitrary named
+    sites + an MLP CI fn. Toys have no arch grid and the MLP CI fns have no chunk-homogeneity
+    requirement, so `explicit` sites are safe here (the LM bundle forbids them)."""
 
-    Subclass with concrete `target` / `data` types per experiment:
+    sites: ExplicitCSpec
+    ci: Annotated[LayerwiseMlpCiConfig | GlobalMlpCiConfig, Field(discriminator="type")]
 
-        class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
-            pass
+
+class ExperimentConfig(BaseConfig):
+    """The domain-AGNOSTIC sections of an in-repo experiment YAML.
+
+    The domain-specific, co-varying config — `target`, the `decomposition` apparatus
+    (site-spec + CI-fn arch), and `data` — is declared as CONCRETE fields on each per-domain
+    subclass (`LMExperimentConfig`, `TMSExperimentConfig`, …), NOT as generic type params:
+    those three vary together as one axis (the domain), so binding them on the concrete
+    subclass makes a cross-domain mismatch (e.g. LM target + toy CI fn) unrepresentable.
 
     Omit the `eval:` block to skip eval entirely; omit `wandb:` to skip wandb (the run
     still writes `config.yaml` + checkpoints locally).
@@ -94,8 +97,6 @@ class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):
     pd: PDConfig
     runtime: RuntimeConfig
     cadence: Cadence
-    target: T
-    data: D
     eval: EvalConfig | None = None
     wandb: WandbConfig | None = None
     resume_provenance: ResumeProvenance | None = None
@@ -107,26 +108,15 @@ class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):
 _RUN_ID_PATTERN = re.compile(r"^p-[0-9a-f]{8}$")
 
 
-def ci_arch(
-    ci_config: CiConfig,
-    resolve_chunkwise: "Callable[[ChunkwiseTransformerCiConfig], ChunkwiseTransformerCIArch] | None",
-) -> CIFnArch:
-    """The single config→arch converter. The MLP/global archs ARE their pydantic config
-    (strip `type`, list→tuple); the chunkwise arch RESOLVES against the LM target, so the
-    caller supplies `resolve_chunkwise` (a closure binding the resolved target — the chunk
-    generator + residual-width logic stays LM-side). The positionless toys never hit the
-    chunkwise branch and pass `resolve_chunkwise=None`."""
+def ci_arch(ci_config: LayerwiseMlpCiConfig | GlobalMlpCiConfig) -> CIFnArch:
+    """Config→arch for the positionless-toy MLP CI fns — the arch IS the pydantic config (strip
+    `type`, list→tuple). The LM chunkwise arch resolves against the target and is built directly
+    in `experiments.lm.config._resolve_chunkwise_ci_arch`, so it never routes through here."""
     match ci_config:
         case LayerwiseMlpCiConfig():
             return MLPCIArch(hidden_dims=tuple(ci_config.hidden_dims))
         case GlobalMlpCiConfig():
             return GlobalMLPCIArch(hidden_dims=tuple(ci_config.hidden_dims))
-        case ChunkwiseTransformerCiConfig():
-            assert resolve_chunkwise is not None, (
-                "chunkwise_transformer CI fn needs an LM target to resolve against; "
-                "the positionless toys can't request it"
-            )
-            return resolve_chunkwise(ci_config)
 
 
 def _assert_cosine_to_tenth(schedule: ScheduleConfig, who: str) -> None:
@@ -141,7 +131,7 @@ def _assert_plain_adamw(optimizer: OptimizerConfig, who: str) -> None:
     assert optimizer.weight_decay == 0.0, f"{who}: weight_decay must be 0"
 
 
-def assert_canonical_algorithm_config(cfg: "ExperimentConfig[Any, Any]") -> None:
+def assert_canonical_algorithm_config(cfg: ExperimentConfig) -> None:
     """Assert the schema lives in the subspace the JAX trainer implements (the engine then
     reads `pd` / `cadence` DIRECTLY). The numerics-load-bearing constraints:
     cosine-to-0.1 LR with no warmup, plain AdamW (betas (0.9, 0.999), no weight decay),
@@ -171,7 +161,7 @@ def assert_canonical_algorithm_config(cfg: "ExperimentConfig[Any, Any]") -> None
     assert cadence.save_every is not None and cadence.keep_last_n_checkpoints is not None, cadence
 
 
-def run_instance(cfg: "ExperimentConfig[Any, Any]", run_id: str) -> RunInstance:
+def run_instance(cfg: ExperimentConfig, run_id: str) -> RunInstance:
     """The resolved run identity + logging lineage. `run_id` is minted by the launcher (a
     toy mints its own); the run dir is `PARAM_DECOMP_OUT_DIR/runs/<run_id>`."""
     assert _RUN_ID_PATTERN.match(run_id), f"run_id must be p-<8hex>, got {run_id!r}"

@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import NonNegativeInt, PositiveInt
 
 from param_decomp.base_config import BaseConfig, Probability
-from param_decomp_lab.experiments.config import ExperimentConfig
+from param_decomp_lab.experiments.config import ExperimentConfig, ToyDecompositionConfig
 
 TMSDataGenerationType = Literal[
     "exactly_one_active",
@@ -62,5 +62,7 @@ class TMSDataConfig(BaseConfig):
     data_generation_type: TMSDataGenerationType = "at_least_zero_active"
 
 
-class TMSExperimentConfig(ExperimentConfig[TMSTargetConfig, TMSDataConfig]):
-    pass
+class TMSExperimentConfig(ExperimentConfig):
+    target: TMSTargetConfig
+    decomposition: ToyDecompositionConfig
+    data: TMSDataConfig
