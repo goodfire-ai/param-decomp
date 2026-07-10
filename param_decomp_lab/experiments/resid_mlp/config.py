@@ -18,7 +18,7 @@ from typing import Literal
 from pydantic import PositiveInt, model_validator
 
 from param_decomp.base_config import BaseConfig, Probability
-from param_decomp_lab.experiments.config import ExperimentConfig
+from param_decomp_lab.experiments.config import ExperimentConfig, ToyDecompositionConfig
 
 ResidMLPDataGenerationType = Literal["exactly_one_active", "at_least_zero_active"]
 ResidMLPActFn = Literal["gelu", "relu"]
@@ -96,5 +96,7 @@ class ResidMLPDataConfig(BaseConfig):
     data_generation_type: ResidMLPDataGenerationType = "at_least_zero_active"
 
 
-class ResidMLPExperimentConfig(ExperimentConfig[ResidMLPTargetConfig, ResidMLPDataConfig]):
-    pass
+class ResidMLPExperimentConfig(ExperimentConfig):
+    target: ResidMLPTargetConfig
+    decomposition: ToyDecompositionConfig
+    data: ResidMLPDataConfig
