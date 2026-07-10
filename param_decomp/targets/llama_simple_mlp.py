@@ -56,11 +56,6 @@ MLP_KINDS = ("c_fc", "down_proj")
 SITE_NAME_PATTERN = re.compile(
     r"^h\.(\d+)\.(?:attn\.(q_proj|k_proj|v_proj|o_proj)|mlp\.(c_fc|down_proj))$"
 )
-WILDCARD_NAME_PATTERN = re.compile(
-    r"^h\.\*\.(?:attn\.(q_proj|k_proj|v_proj|o_proj)|mlp\.(c_fc|down_proj))$"
-)
-
-
 @dataclass(frozen=True)
 class LlamaSimpleMLPConfig:
     vocab_size: int
@@ -163,23 +158,6 @@ def canonical_site_cs(site_cs: tuple[SiteC, ...]) -> tuple[SiteC, ...]:
         return layer, KIND_ORDER.index(kind)
 
     return tuple(sorted(site_cs, key=order_key))
-
-
-def expand_wildcard_site_cs(entries: tuple[SiteC, ...], n_layer: int) -> tuple[SiteC, ...]:
-    """`h.*.<submodule>.<kind>` entries expand to every layer at that entry's C
-    (the torch `module_pattern` wildcard convention); explicit `h.{i}.` entries pass
-    through. Result is canonical-ordered; duplicates raise."""
-    expanded: list[SiteC] = []
-    for entry in entries:
-        wildcard = WILDCARD_NAME_PATTERN.match(entry.name)
-        if wildcard is None:
-            parse_site_name(entry.name)
-            expanded.append(entry)
-        else:
-            attn_kind, mlp_kind = wildcard.groups()
-            kind = attn_kind if attn_kind is not None else mlp_kind
-            expanded.extend(SiteC(site_name(layer, kind), entry.C) for layer in range(n_layer))
-    return canonical_site_cs(tuple(expanded))
 
 
 def site_specs(cfg: LlamaSimpleMLPConfig, site_cs: tuple[SiteC, ...]) -> tuple[SiteSpec, ...]:

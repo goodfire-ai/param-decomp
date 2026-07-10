@@ -173,7 +173,7 @@ full-model `[n_layer, full_d_in, C]` weight stack resident.
 (`MLPCIArch` / `GlobalMLPCIArch` / `ChunkwiseTransformerCIArch`) and uses replicated (not
 C-sharded) V/U + CI for the tiny toys; the core `config.CIFnArch` admits all three and the
 lab `experiments.config.ci_arch` builds the layerwise / global arch from the toy
-ci_config (validated end-to-end on CPU via
+`decomposition.ci` (validated end-to-end on CPU via
 `pd-resid-mlp`). Harvest / slow-eval / export over the toys are NOT wired
 (`experiments.lm.load_run.build_target` / `run_metadata` are LM-only).
 

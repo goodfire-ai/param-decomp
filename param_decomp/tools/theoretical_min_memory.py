@@ -43,36 +43,43 @@ KIND_DIMS = {
 }
 
 
-def _kind(module_pattern: str) -> str:
-    return module_pattern.rsplit(".", 1)[-1]
+def _tiled_spec(cfg: dict[str, Any]) -> tuple[int, dict[str, int]]:
+    """(number of selected layers, per-matrix C) from the tiled glu_transformer c-spec."""
+    sites = cfg["decomposition"]["sites"]
+    assert sites["kind"] == "glu_transformer", f"llama8b-only tool, got {sites['kind']!r}"
+    selection = sites["layers"]
+    match selection["kind"]:
+        case "all":
+            n_selected = N_LAYERS
+        case "range":
+            n_selected = selection["end"] - selection["start"]
+        case "list":
+            n_selected = len(selection["indices"])
+        case unknown:
+            raise ValueError(f"unknown layer selection {unknown!r}")
+    return n_selected, sites["cs"]
 
 
 def vu_params(cfg: dict[str, Any]) -> int:
     """Exact V/U leaf-param count: sum_site C*(d_in + d_out)."""
-    total = 0
-    for t in cfg["pd"]["decomposition_targets"]:
-        d_in, d_out = KIND_DIMS[_kind(t["module_pattern"])]
-        total += t["C"] * (d_in + d_out)
-    return total
+    n_selected, cs = _tiled_spec(cfg)
+    per_layer = sum(c * sum(KIND_DIMS[f"{matrix}_proj"]) for matrix, c in cs.items())
+    return n_selected * per_layer
 
 
 def ci_fn_params(cfg: dict[str, Any]) -> int:
     """Exact CI-fn leaf-param count for the chunkwise transformer (blocks_per_chunk=1 →
     one chunk per decomposed layer; each chunk = in_proj[d_resid,d] + n_blocks CIBlocks +
     glued out-head[d, ΣC_layer]). Mirrors ci_fn._init_chunk_transformer shapes."""
-    ci = cfg["pd"]["ci_config"]
+    ci = cfg["decomposition"]["ci"]
     d, mlp, n_blocks = ci["d_model"], ci["ffn"]["hidden"], ci["n_blocks"]
     bpc = ci["blocks_per_chunk"]
     d_resid = D_MODEL  # _resolve_d_resid -> n_embd
 
-    by_layer: dict[int, int] = {}
-    for t in cfg["pd"]["decomposition_targets"]:
-        layer = int(t["module_pattern"].split(".layers.")[1].split(".")[0])
-        by_layer[layer] = by_layer.get(layer, 0) + t["C"]
-    layers = sorted(by_layer)
-    assert len(layers) % bpc == 0
-    n_chunks = len(layers) // bpc
-    c_per_chunk = bpc * (sum(by_layer.values()) // len(layers))  # homogeneous per chunk
+    n_selected, cs = _tiled_spec(cfg)
+    assert n_selected % bpc == 0
+    n_chunks = n_selected // bpc
+    c_per_chunk = bpc * sum(cs.values())  # tiled ⇒ homogeneous per chunk by construction
 
     in_proj = d_resid * d + d
     block = 4 * (d * d) + (d * mlp + mlp) + (mlp * d + d)  # wq,wk,wv,wo + w1,b1 + w2,b2

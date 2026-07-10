@@ -54,7 +54,8 @@ remaining Phase-3 bucket.
 
 ## Layout
 
-The `ExperimentConfig[T,D]` schema generic + `EvalConfig` + the shared validation /
+The `ExperimentConfig` schema base (domain subclasses bind concrete
+`target`/`decomposition`/`data`) + `EvalConfig` + the shared validation /
 run-identity helpers live in `experiments/config.py` (`WandbConfig` / `ResumeProvenance` are
 core, in `param_decomp.configs`; the engine's `BuiltRun` bundle is core, in
 `param_decomp.built_run`); the LM schema + LM build (`LMExperimentConfig`, `LMTargetConfig`,

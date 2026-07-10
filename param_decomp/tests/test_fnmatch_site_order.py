@@ -1,19 +1,19 @@
-"""fnmatch site-resolution: JAX canonical order vs torch first-match order (E21, S5/S7/S10).
+"""Tiled site-resolution: JAX canonical order vs torch first-match order (E21, S5/S7/S10).
 
 torch (`param_decomp/decomposition_targets.py::resolve_decomposition_targets`, the
-ORACLE) resolves a target list by looping patterns in CONFIG order (outer) over
+ORACLE) resolved a module-pattern list by looping patterns in CONFIG order (outer) over
 `named_modules()` in DFS pre-order (inner), first-match-wins into an insertion-ordered
-dict. The resolved site ORDER is therefore pattern-major, then named_modules-major.
+dict. The resolved site ORDER was therefore pattern-major, then named_modules-major.
 
-JAX (`canonical_site_cs` / `expand_wildcard_site_cs`) instead CANONICALIZES the resolved
-set to layer-ascending, then `KIND_ORDER` within a layer — independent of the pattern
-order in the yaml.
+JAX resolves a tiled c-spec (`resolve_site_tree`) into a block-structured `SiteTree`
+whose flat view is CANONICAL by construction — layer-ascending, then the family's
+`KIND_ORDER` within a layer — with no pattern order to depend on (module patterns no
+longer exist in the config schema).
 
 Site order is RNG- and concat/split-load-bearing (S10), so the resolved SET must match
 torch exactly. The ORDER convention is a separate, still-open decision: this test
-asserts SET-equality unconditionally and PINS the
-ORDER divergence for the configs where it bites, so a silent convergence/regression is
-caught.
+asserts SET-equality unconditionally and PINS the ORDER divergence for the configs where
+it bites, so a silent convergence/regression is caught.
 
 The torch oracle here is reimplemented torch-free from the same algorithm + the vendored
 module-attribute order (which IS each arch's `named_modules()` DFS order); the test asserts
@@ -26,7 +26,10 @@ import fnmatch
 import pytest
 
 from param_decomp.components import SiteC
+from param_decomp.configs import AllLayers, GluTransformerCSpec, LayerList, SimpleMlpCSpec
+from param_decomp.site_tree import resolve_site_tree
 from param_decomp.targets import glu_transformer, llama_simple_mlp
+from param_decomp_lab.experiments.lm.config import GLU_FAMILY, SIMPLE_MLP_FAMILY
 
 
 def _named_modules_order(
@@ -93,27 +96,45 @@ def _simple_mlp_module_names(n_layer: int) -> tuple[str, ...]:
 
 
 def test_llama8b_single_layer_mlp_set_matches_torch():
-    """`layers.18.mlp.{gate,up,down}_proj` — JAX canonical vs torch first-match."""
-    targets = (
+    """L18 gate/up/down at one C — tiled spec vs torch first-match over the equivalent
+    module-pattern list."""
+    spec = GluTransformerCSpec(
+        layers=LayerList(indices=[18]), cs={"gate": 24576, "up": 24576, "down": 24576}
+    )
+    jax_sites = resolve_site_tree(spec, GLU_FAMILY, 32).site_cs(GLU_FAMILY.name_of)
+    torch_targets = (
         SiteC("layers.18.mlp.gate_proj", 24576),
         SiteC("layers.18.mlp.up_proj", 24576),
         SiteC("layers.18.mlp.down_proj", 24576),
     )
-    jax_sites = glu_transformer.canonical_site_cs(targets)
-    torch_sites = _torch_resolve(targets, _llama8b_module_names(32))
+    torch_sites = _torch_resolve(torch_targets, _llama8b_module_names(32))
 
     assert set(jax_sites) == set(torch_sites)
-    # Single C-equal family with one pattern per module in computation order: orders agree.
+    # Single C-equal family listed in computation order: orders agree.
     assert jax_sites == torch_sites
 
 
 # ----- multi-layer mixed attn+mlp: the order divergence actually bites here -----
 
 
-def test_simple_mlp_wildcard_mixed_set_matches_torch():
-    """Pile config (`pile_llama_simple_mlp_4l_pgd1`): `h.*` wildcards over c_fc, down_proj,
-    q/k/v/o at different Cs, in a pattern order that is NOT canonical."""
+def test_simple_mlp_all_layers_mixed_set_matches_torch():
+    """Pile config (`pile_llama_simple_mlp_4l_pgd1`): every matrix at its own C over all
+    layers — vs the torch `h.*` wildcards in the yaml's (non-canonical) pattern order."""
     n_layer = 4
+    spec = SimpleMlpCSpec(
+        layers=AllLayers(),
+        cs={
+            "c_fc": 3072,
+            "down_proj": 3584,
+            "q_proj": 512,
+            "k_proj": 512,
+            "v_proj": 1024,
+            "o_proj": 1024,
+        },
+    )
+    jax_sites = resolve_site_tree(spec, SIMPLE_MLP_FAMILY, n_layer).site_cs(
+        SIMPLE_MLP_FAMILY.name_of
+    )
     wildcard_targets = (
         SiteC("h.*.mlp.c_fc", 3072),
         SiteC("h.*.mlp.down_proj", 3584),
@@ -122,7 +143,6 @@ def test_simple_mlp_wildcard_mixed_set_matches_torch():
         SiteC("h.*.attn.v_proj", 1024),
         SiteC("h.*.attn.o_proj", 1024),
     )
-    jax_sites = llama_simple_mlp.expand_wildcard_site_cs(wildcard_targets, n_layer)
     torch_sites = _torch_resolve(wildcard_targets, _simple_mlp_module_names(n_layer))
 
     assert set(jax_sites) == set(torch_sites)
@@ -136,19 +156,25 @@ def test_simple_mlp_wildcard_mixed_set_matches_torch():
 
 
 def test_simple_mlp_canonical_pattern_order_matches_torch():
-    """When the yaml lists per-kind wildcards in canonical KIND_ORDER, torch's
+    """Even with the torch yaml's wildcards listed in canonical KIND_ORDER, torch's
     pattern-major order coincides with JAX canonical only up to the layer/kind nesting
     swap — torch is kind-major-across-layers, JAX is layer-major-across-kinds — so they
-    still differ for >1 layer. Documents that pattern order alone can't make them agree."""
+    still differ for >1 layer. Documents that pattern order alone couldn't make them
+    agree (the JAX side no longer has a pattern order at all: cs is an unordered map)."""
     n_layer = 2
-    targets = tuple(
+    spec = SimpleMlpCSpec(
+        layers=AllLayers(), cs={kind: 512 for kind in llama_simple_mlp.KIND_ORDER}
+    )
+    jax_sites = resolve_site_tree(spec, SIMPLE_MLP_FAMILY, n_layer).site_cs(
+        SIMPLE_MLP_FAMILY.name_of
+    )
+    torch_targets = tuple(
         SiteC(f"h.*.attn.{kind}", 512)
         if kind in llama_simple_mlp.ATTN_KINDS
         else SiteC(f"h.*.mlp.{kind}", 512)
         for kind in llama_simple_mlp.KIND_ORDER
     )
-    jax_sites = llama_simple_mlp.expand_wildcard_site_cs(targets, n_layer)
-    torch_sites = _torch_resolve(targets, _simple_mlp_module_names(n_layer))
+    torch_sites = _torch_resolve(torch_targets, _simple_mlp_module_names(n_layer))
 
     assert set(jax_sites) == set(torch_sites)
     assert jax_sites[1] == SiteC("h.0.attn.k_proj", 512)  # layer-major: next kind, same layer

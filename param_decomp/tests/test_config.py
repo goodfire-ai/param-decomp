@@ -190,25 +190,34 @@ def test_unsupported_settings_refuse():
         with pytest.raises(ValidationError):
             LMExperimentConfig(**with_ppgd_fields(**bad_field))
 
-    non_site_target = dict(
-        raw,
-        pd=dict(
-            raw["pd"],
-            decomposition_targets=[{"module_pattern": "layers.18.input_layernorm", "C": 512}],
-        ),
-    )
-    with pytest.raises(AssertionError, match="unsupported decomposition target"):
-        build_experiment_config(LMExperimentConfig(**non_site_target), RUN_ID)
+    # Non-matrix / cross-family site names are unrepresentable in the tiled spec: the cs
+    # keys are the family's Literal matrix vocabulary, so these are rejected at PARSE (the
+    # old module-pattern route deferred to a convert-time assert).
+    def _with_cs(cs: dict[str, int]):
+        sites = dict(raw["decomposition"]["sites"], cs=cs)
+        return dict(raw, decomposition=dict(raw["decomposition"], sites=sites))
 
-    embedding_target = dict(
+    with pytest.raises(ValidationError):
+        LMExperimentConfig(**_with_cs({"input_layernorm": 512}))
+
+    with pytest.raises(ValidationError):
+        LMExperimentConfig(**_with_cs({"embed_tokens": 512}))
+
+    # cross-family matrix name (simple-MLP's c_fc in a GLU spec)
+    with pytest.raises(ValidationError):
+        LMExperimentConfig(**_with_cs({"c_fc": 512}))
+
+    # family <-> target mismatch survives parse (both are well-formed) but is refused at
+    # resolve: a simple_mlp c-spec against the GLU llama8b target.
+    simple_mlp_sites = dict(
         raw,
-        pd=dict(
-            raw["pd"],
-            decomposition_targets=[{"module_pattern": "embed_tokens", "C": 512}],
+        decomposition=dict(
+            raw["decomposition"],
+            sites={"kind": "simple_mlp", "layers": {"kind": "all"}, "cs": {"c_fc": 512}},
         ),
     )
-    with pytest.raises(AssertionError, match="unsupported decomposition target"):
-        build_experiment_config(LMExperimentConfig(**embedding_target), RUN_ID)
+    with pytest.raises(AssertionError, match="c-spec family"):
+        build_experiment_config(LMExperimentConfig(**simple_mlp_sites), RUN_ID)
 
 
 def test_unsupported_model_family_refuses_and_supported_families_dispatch():
@@ -337,25 +346,31 @@ def test_decaying_persistent_source_schedule_accepted_and_decays():
     assert float(end) == pytest.approx(schedule.start_val * schedule.final_val_frac, rel=1e-3)
 
 
-def test_arbitrary_sites_with_per_site_c_convert():
-    """Attention + MLP sites across non-contiguous layers with heterogeneous C —
-    the general site space this trainer now implements."""
+def test_tiled_sites_with_per_matrix_c_convert():
+    """Attention + MLP matrices with heterogeneous per-matrix C, tiled over a
+    non-contiguous layer list — the general site space the tiled spec expresses. (Per-LAYER
+    heterogeneous C is deliberately unrepresentable now: tiling is what makes the chunkwise
+    CI fn's chunks homogeneous by construction.) Sites resolve in canonical order:
+    layer-ascending, KIND_ORDER within a layer."""
     raw = _reference_lm_raw()
     general = dict(
         raw,
-        pd=dict(
-            raw["pd"],
-            decomposition_targets=[
-                {"module_pattern": "layers.20.mlp.up_proj", "C": 64},
-                {"module_pattern": "model.layers.18.self_attn.q_proj", "C": 128},
-                {"module_pattern": "layers.18.self_attn.v_proj", "C": 32},
-            ],
+        decomposition=dict(
+            raw["decomposition"],
+            sites={
+                "kind": "glu_transformer",
+                "layers": {"kind": "list", "indices": [18, 20]},
+                "cs": {"up": 64, "q": 128, "v": 32},
+            },
         ),
     )
     cfg = build_experiment_config(LMExperimentConfig(**general), RUN_ID)
     assert cfg.target.sites == (
         SiteC("layers.18.self_attn.q_proj", 128),
         SiteC("layers.18.self_attn.v_proj", 32),
+        SiteC("layers.18.mlp.up_proj", 64),
+        SiteC("layers.20.self_attn.q_proj", 128),
+        SiteC("layers.20.self_attn.v_proj", 32),
         SiteC("layers.20.mlp.up_proj", 64),
     )
 

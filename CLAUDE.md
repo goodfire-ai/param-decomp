@@ -169,8 +169,9 @@ and returns JAX-native as the #10 torch->jax adapter.
 - `param_decomp_lab/adapters/` — `JaxPDAdapter`: torch-free autointerp/clustering metadata
   for a JAX run, keyed off `experiments.lm.load_run.run_metadata` (config + cache, no
   orbax restore). The torch `build_target` bridge was deleted with the rest of torch.
-- `param_decomp_lab/experiments/` — `config.py` (the shared `ExperimentConfig[T, D]` YAML
-  schema + the shared YAML→`ExperimentConfig` conversion). `experiments/lm/`: `run.py`
+- `param_decomp_lab/experiments/` — `config.py` (the shared `ExperimentConfig` YAML
+  schema base — each domain subclass binds concrete `target`/`decomposition`/`data` —
+  plus the shared YAML→`ExperimentConfig` conversion). `experiments/lm/`: `run.py`
   (the LM composition root — `python -m param_decomp_lab.experiments.lm.run`), `config.py`
   (LM schema + LM build), `load_run.py` (open a finished JAX run), `data.py` /
   `prestage_tokenized.py` (offline tokenize → parquet shards), `jax_launch.py` (`pd-lm`).

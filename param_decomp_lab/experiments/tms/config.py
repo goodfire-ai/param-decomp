@@ -39,7 +39,8 @@ class TMSTargetConfig(BaseConfig):
     """The TMS target architecture + its from-scratch pretraining.
 
     The target has tied weights (`linear2 = linear1ᵀ`); the *decomposition* is untied
-    (`pd.decomposition_targets = [linear1, linear2]` — each site gets its own components).
+    (`decomposition.sites` lists `linear1` and `linear2` — each site gets its own
+    components).
 
     `n_hidden_layers > 0` inserts that many FROZEN `n_hidden -> n_hidden` layers between
     `linear1` and `linear2` (`hidden_layer_init` = `identity` for the `-id` variant or
