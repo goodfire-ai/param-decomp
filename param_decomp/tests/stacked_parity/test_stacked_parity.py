@@ -22,6 +22,7 @@ git tag in a torch venv), out of scope for the API migration.
 from pathlib import Path
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
@@ -61,6 +62,16 @@ from vendored_jax.llama import llama3_inv_freq
 FIXTURES = Path(__file__).resolve().parent / "stacked_fixtures.npz"
 RTOL = 1e-4
 ATOL = 1e-5
+
+
+@pytest.fixture(autouse=True)
+def full_fp32_matmuls():
+    """XLA's f32 matmul default on GPU tensor cores is TF32 (~1e-3 rel), which swamps
+    RTOL — the committed goldens were pinned with full-fp32 matmuls. No-op on CPU CI,
+    where "highest" is already the default. Test-scope only."""
+    with jax.default_matmul_precision("highest"):
+        yield
+
 
 STABLE_FIXTURE_METRIC_KEYS = (
     "total", "faith", "imp", "stoch", "ppgd", "p_imp", "src_lr",

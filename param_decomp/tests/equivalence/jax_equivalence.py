@@ -210,7 +210,10 @@ def compute_jax_terms(f: dict[str, np.ndarray]) -> dict[str, float]:
 def main() -> None:
     f = dict(np.load(HERE / "fixtures.npz"))
     ref = json.loads((HERE / "torch_reference.json").read_text())
-    jaxv = compute_jax_terms(f)
+    # Same full-fp32 matmul pin as the pytest fixture: the GPU f32 default is TF32
+    # (~1e-3 rel), which swamps RTOL. No-op on CPU.
+    with jax.default_matmul_precision("highest"):
+        jaxv = compute_jax_terms(f)
     print(f"{'term':6} {'jax':>16} {'torch':>16} {'rel_err':>12}  ok")
     all_ok = True
     for term in ("faith", "imp", "stoch", "ppgd"):

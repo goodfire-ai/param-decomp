@@ -35,6 +35,7 @@ import inspect
 import json
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -48,6 +49,16 @@ from param_decomp.tests.equivalence.jax_equivalence import compute_jax_terms
 HERE = Path(__file__).resolve().parent
 RTOL = 2e-4
 ATOL = 1e-5
+
+
+@pytest.fixture(autouse=True)
+def full_fp32_matmuls():
+    """XLA's f32 matmul default on GPU tensor cores is TF32 (~1e-3 rel), which swamps
+    RTOL — unpinned GPU runs fail spuriously, or worse, teach us to read real torch↔JAX
+    divergence as precision noise. Pin full fp32 (a no-op on CPU CI, where "highest" is
+    already the default). Test-scope only: train numerics are bf16 by design."""
+    with jax.default_matmul_precision("highest"):
+        yield
 
 
 def _load_fixtures() -> dict[str, np.ndarray]:

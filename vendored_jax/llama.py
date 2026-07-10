@@ -112,16 +112,20 @@ def repeat_kv(x: Float[Array, "b kvh t hd"], n_rep: int) -> Float[Array, "b h t 
     return x.reshape(b, kvh * n_rep, t, hd)
 
 
-def attn_implementation() -> Literal["cudnn", "xla"]:
-    """cuDNN flash attention on GPU; the XLA composite elsewhere (CPU tests)."""
-    return "cudnn" if jax.default_backend() == "gpu" else "xla"
+def attn_implementation(dtype: jnp.dtype) -> Literal["cudnn", "xla"]:
+    """cuDNN flash attention on GPU for the half dtypes it supports; the XLA composite
+    elsewhere. cuDNN rejects fp32, so the fp32 paths (CPU tests, the GPU-run
+    equivalence goldens) take the XLA composite."""
+    if jax.default_backend() == "gpu" and dtype in (jnp.bfloat16, jnp.float16):
+        return "cudnn"
+    return "xla"
 
 
 def causal_sdpa(q: Array, k: Array, v: Array) -> Array:
     # q,k,v: (B, H, T, hd); jax.nn.dot_product_attention takes (B, T, H, D).
     qt, kt, vt = (a.transpose(0, 2, 1, 3) for a in (q, k, v))
     out = jax.nn.dot_product_attention(
-        qt, kt, vt, is_causal=True, implementation=attn_implementation()
+        qt, kt, vt, is_causal=True, implementation=attn_implementation(q.dtype)
     )
     return out.transpose(0, 2, 1, 3)
 

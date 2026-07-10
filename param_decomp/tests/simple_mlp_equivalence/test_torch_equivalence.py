@@ -15,6 +15,7 @@ catches RoPE / GELU-flavor / GQA / norm-eps mismatches:
 import json
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -29,6 +30,15 @@ from param_decomp.targets.llama_simple_mlp import (
 
 FIXTURE_DIR = Path(__file__).parent
 REAL_CACHE_DIR = Path("/mnt/data/artifacts/mechanisms/param-decomp/pretrain_cache/spd-t-9d2b8f02")
+
+
+@pytest.fixture(autouse=True)
+def full_fp32_matmuls():
+    """XLA's f32 matmul default on GPU tensor cores is TF32 (~1e-3 rel), which swamps
+    the absolute tolerances below — the goldens are full-fp32 torch logits. No-op on
+    CPU CI, where "highest" is already the default. Test-scope only."""
+    with jax.default_matmul_precision("highest"):
+        yield
 
 
 def _max_abs_diff(a: Array, b: np.ndarray) -> float:
