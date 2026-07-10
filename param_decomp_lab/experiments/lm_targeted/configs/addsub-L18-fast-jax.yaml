@@ -122,6 +122,9 @@ runtime:
   remat_recon_forwards: true
   dp: 2
   launch_env:
+    xla_flags:
+      gpu_enable_command_buffer: ""
+      gpu_autotune_level: "0"
     env:
       HF_HOME: /mnt/nw/home/a.vigouroux/.cache/huggingface
       PARAM_DECOMP_OUT_DIR: /mnt/nw/home/a.vigouroux/out
