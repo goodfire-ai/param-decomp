@@ -35,6 +35,7 @@ from jax.typing import DTypeLike
 from jaxtyping import Array, Float, Int
 from safetensors import safe_open
 
+from param_decomp import site_tree
 from param_decomp.components import (
     DecompVU,
     SiteC,
@@ -132,7 +133,7 @@ def parse_site_name(name: str) -> tuple[int, str]:
     return int(layer), attn_kind if attn_kind is not None else mlp_kind
 
 
-FAMILY = ArchFamily("glu_transformer", KIND_ORDER, site_name)
+FAMILY = ArchFamily("glu_transformer", KIND_ORDER, site_name, parse_site_name)
 """This family's matrix grammar as data — the vocabulary + name renderer the tiled
 `glu_transformer` c-specs resolve against (`resolve_site_tree`)."""
 
@@ -158,16 +159,7 @@ def site_dims(cfg: GLUArch, kind: str) -> tuple[int, int]:
 
 
 def canonical_site_cs(site_cs: tuple[SiteC, ...]) -> tuple[SiteC, ...]:
-    """Canonical site order: layer-ascending, `KIND_ORDER` within a layer. Names must
-    parse and be unique."""
-    names = [site.name for site in site_cs]
-    assert len(set(names)) == len(names), f"duplicate sites in {names}"
-
-    def order_key(site: SiteC) -> tuple[int, int]:
-        layer, kind = parse_site_name(site.name)
-        return layer, KIND_ORDER.index(kind)
-
-    return tuple(sorted(site_cs, key=order_key))
+    return site_tree.canonical_site_cs(FAMILY, site_cs)
 
 
 def mlp_family_site_cs(first_layer: int, last_layer: int, C: int) -> tuple[SiteC, ...]:
@@ -182,15 +174,7 @@ def mlp_family_site_cs(first_layer: int, last_layer: int, C: int) -> tuple[SiteC
 
 
 def glu_site_specs(cfg: GLUArch, site_cs: tuple[SiteC, ...]) -> tuple[SiteSpec, ...]:
-    """Shape-resolved specs in canonical order (input must already be canonical)."""
-    assert site_cs == canonical_site_cs(site_cs), f"sites not in canonical order: {site_cs}"
-    specs = []
-    for site in site_cs:
-        layer, kind = parse_site_name(site.name)
-        assert 0 <= layer < cfg.n_layer, (site.name, cfg.n_layer)
-        assert site.C >= 1, site
-        specs.append(SiteSpec(site.name, *site_dims(cfg, kind), site.C))
-    return tuple(specs)
+    return site_tree.site_specs(FAMILY, site_cs, lambda kind: site_dims(cfg, kind), cfg.n_layer)
 
 
 # ----------------------------- frozen layers -----------------------------
@@ -365,14 +349,6 @@ def _stack_layers(layers: list[GLULayer]) -> GLULayer:
     layer axis — the `xs` for a `lax.scan` over the (homogeneous) block stack. Static
     fields (attn head counts) ride in the treedef, shared across iterations."""
     return jax.tree.map(lambda *per_layer: jnp.stack(per_layer), *layers)
-
-
-def _tap_layer(key: str) -> int:
-    """Global block index a `read_activations` key reads at: the block a `resid.{L}` tap
-    enters, or the block a decomposed site lives in."""
-    if key.startswith("resid."):
-        return int(key.split(".")[1])
-    return parse_site_name(key)[0]
 
 
 def _per_kind_dims(components: DecompVU) -> dict[str, tuple[int, int, int]]:
@@ -686,7 +662,7 @@ class GLUDecomposedModel(eqx.Module):
         per-site intermediates come from the same RMSNorm/attn/MLP math. Stops once the last
         requested key's block is fully covered (no wasted block compute past it)."""
         wanted_set = frozenset(wanted)
-        last = max(_tap_layer(key) for key in wanted)
+        last = max(site_tree.tap_layer(FAMILY, key) for key in wanted)
         taps: dict[str, Array] = {}
         x = self.embed_tokens(inputs)
         for layer in range(self.n_layer):
