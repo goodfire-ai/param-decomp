@@ -211,32 +211,56 @@ AnyImportanceMinimalityLossConfig = (
 )
 
 
-class CIMaskedReconLossConfig(LossMetricConfig):
+class HiddenActsReconAux(BaseConfig):
+    """Auxiliary hidden-activation reconstruction riding on a recon loss (SPEC S31, amended).
+
+    Adds `coeff * MSE(masked_site_output, frozen x@W)` — per decomposed site's OUTPUT
+    activation — to the training loss, sharing the host recon term's masked forward (the
+    per-site outputs are collected from that forward; the frozen targets from the clean
+    forward already run each step, so NO extra forward). The MSE covers exactly the sites
+    ablated in each forward AND the positions routed True (an activation directly after a
+    replaced matrix), and is always logged as `loss/<host>/hidden_acts` whenever configured
+    — `coeff: 0.0` measures it without affecting training. Site-local recon as a training
+    signal is a deliberate S31 amendment (the KL recon stays final-logits-only)."""
+
+    coeff: float
+
+
+class ReconLossConfig(LossMetricConfig):
+    """Base for the reconstruction loss configs — the terms that run a masked forward and
+    compare against the clean output (KL on final logits). Carries the optional hidden-acts
+    auxiliary (`hidden_acts_recon`) generically, so it composes with any recon strategy
+    (stochastic / PGD / persistent / chunkwise)."""
+
+    hidden_acts_recon: HiddenActsReconAux | None = None
+
+
+class CIMaskedReconLossConfig(ReconLossConfig):
     type: Literal["CIMaskedReconLoss"] = "CIMaskedReconLoss"
 
 
-class CIMaskedReconLayerwiseLossConfig(LossMetricConfig):
+class CIMaskedReconLayerwiseLossConfig(ReconLossConfig):
     type: Literal["CIMaskedReconLayerwiseLoss"] = "CIMaskedReconLayerwiseLoss"
 
 
-class CIMaskedReconSubsetLossConfig(LossMetricConfig):
+class CIMaskedReconSubsetLossConfig(ReconLossConfig):
     type: Literal["CIMaskedReconSubsetLoss"] = "CIMaskedReconSubsetLoss"
     routing: Annotated[SubsetRoutingType, Field(discriminator="type")] = (
         UniformKSubsetRoutingConfig()
     )
 
 
-class StochasticReconLossConfig(LossMetricConfig):
+class StochasticReconLossConfig(ReconLossConfig):
     type: Literal["StochasticReconLoss"] = "StochasticReconLoss"
     n_mask_samples: PositiveInt = 1
 
 
-class StochasticReconLayerwiseLossConfig(LossMetricConfig):
+class StochasticReconLayerwiseLossConfig(ReconLossConfig):
     type: Literal["StochasticReconLayerwiseLoss"] = "StochasticReconLayerwiseLoss"
     n_mask_samples: PositiveInt = 1
 
 
-class StochasticReconSubsetLossConfig(LossMetricConfig):
+class StochasticReconSubsetLossConfig(ReconLossConfig):
     type: Literal["StochasticReconSubsetLoss"] = "StochasticReconSubsetLoss"
     routing: Annotated[SubsetRoutingType, Field(discriminator="type")] = (
         UniformKSubsetRoutingConfig()
@@ -249,11 +273,11 @@ class StochasticHiddenActsReconLossConfig(LossMetricConfig):
     n_mask_samples: PositiveInt = 1
 
 
-class UnmaskedReconLossConfig(LossMetricConfig):
+class UnmaskedReconLossConfig(ReconLossConfig):
     type: Literal["UnmaskedReconLoss"] = "UnmaskedReconLoss"
 
 
-class ChunkwiseSubsetReconLossConfig(LossMetricConfig):
+class ChunkwiseSubsetReconLossConfig(ReconLossConfig):
     """Reconstruction loss that mirrors the 3-pool / 2-pool chunkwise subset recon.
 
     The decomposed sites (`model.target_module_paths`, in order) are grouped into
@@ -306,7 +330,7 @@ MaskScopeLiteral = Literal["c", "bc", "bsc"]
 MaskScope = Annotated[MaskScopeLiteral, BeforeValidator(_alias_legacy_mask_scope)]
 
 
-class PGDConfig(LossMetricConfig):
+class PGDConfig(ReconLossConfig):
     """Shared base for per-step PGD loss configs."""
 
     init: PGDInitStrategy
@@ -380,7 +404,7 @@ PersistentPGDSourceScope = Annotated[
 ]
 
 
-class PersistentPGDReconLossConfig(LossMetricConfig):
+class PersistentPGDReconLossConfig(ReconLossConfig):
     """Persistent-PGD recon loss: adversarial mask sources persist across train steps,
     routed to all layers every forward.
 
@@ -614,23 +638,31 @@ class OptimizerConfig(BaseConfig):
     )
 
 
-AnyLossMetricConfig = Annotated[
+# The concrete recon loss configs — every `ReconLossConfig` subclass (the terms that run a
+# masked forward + KL against the clean output, and so carry the `hidden_acts_recon` aux).
+# A proper sub-union of `AnyLossMetricConfig` (all but the faith / imp-min terms).
+AnyReconLossConfig = (
     ChunkwiseSubsetReconLossConfig
     | CIMaskedReconLayerwiseLossConfig
     | CIMaskedReconLossConfig
     | CIMaskedReconSubsetLossConfig
-    | FaithfulnessLossConfig
-    | ImportanceMinimalityLossConfig
     | PersistentPGDReconLossConfig
     | PGDReconLayerwiseLossConfig
     | PGDReconLossConfig
     | PGDReconSubsetLossConfig
-    | SmoothL0ImportanceMinimalityLossConfig
-    | StochasticHiddenActsReconLossConfig
     | StochasticReconLayerwiseLossConfig
     | StochasticReconLossConfig
     | StochasticReconSubsetLossConfig
-    | UnmaskedReconLossConfig,
+    | UnmaskedReconLossConfig
+)
+
+
+AnyLossMetricConfig = Annotated[
+    AnyReconLossConfig
+    | FaithfulnessLossConfig
+    | ImportanceMinimalityLossConfig
+    | SmoothL0ImportanceMinimalityLossConfig
+    | StochasticHiddenActsReconLossConfig,
     Discriminator("type"),
 ]
 

@@ -33,15 +33,22 @@ def init_distributed(dp: int | None) -> bool:
     every process on a SLURM box (incl. a pytest worker), so sniffing it would wrongly
     fire `jax.distributed.initialize` mid-test.
 
-    `dp is None` → single device, no-op (return False). Otherwise the cluster recipe:
-    ONE process per node, each owning all its local GPUs (mirrors the torch torchrun
-    model — the launcher runs srun `--ntasks-per-node=1`). jax auto-detects the SLURM
-    topology (process_id = node rank, num_processes = node count) but its SLURM cluster
-    env claims only ONE device per process by default, so we pass the full local device
-    list explicitly (`CUDA_VISIBLE_DEVICES`, set to all 8 by `--gpus-per-node=8`). The
-    realized total device count must equal `dp`. This avoids the 8-tasks-per-node srun
-    placement that the cluster's `CR_Pack_Nodes` selection packs onto one node. `dp`
-    (config) decides distributedness; SLURM env only supplies the topology.
+    `dp is None` → single device, no-op (return False). `dp <= _GPUS_PER_NODE` → a single
+    partial-node allocation, ONE process owning all its local GPUs directly (the launcher
+    runs it with no `srun`) — `jax.distributed.initialize` is SKIPPED here: JAX's SLURM
+    auto-detection needs `srun`-only env vars (`SLURM_STEP_NODELIST` etc.) that a bare
+    `sbatch` process doesn't have, so calling it would raise `coordinator_address should be
+    defined`. A single process needs no coordination anyway — jax already sees its
+    `CUDA_VISIBLE_DEVICES` GPUs as local devices, and defaults `process_count`/
+    `process_index` to `1`/`0` on its own. Otherwise (`dp > _GPUS_PER_NODE`) the cluster
+    recipe: ONE process per node, each owning all its local GPUs (mirrors the torch
+    torchrun model — the launcher runs srun `--ntasks-per-node=1`). jax auto-detects the
+    SLURM topology (process_id = node rank, num_processes = node count) but its SLURM
+    cluster env claims only ONE device per process by default, so we pass the full local
+    device list explicitly (`CUDA_VISIBLE_DEVICES`, set to all 8 by `--gpus-per-node=8`).
+    This avoids the 8-tasks-per-node srun placement that the cluster's `CR_Pack_Nodes`
+    selection packs onto one node. `dp` (config) decides distributedness; SLURM env only
+    supplies the topology. Either way the realized total device count must equal `dp`.
     """
     if dp is None:
         return False
@@ -51,7 +58,8 @@ def init_distributed(dp: int | None) -> bool:
     )
     cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
     n_local = len([d for d in cuda_visible.split(",") if d]) or _GPUS_PER_NODE
-    jax.distributed.initialize(local_device_ids=list(range(n_local)))
+    if dp > _GPUS_PER_NODE:
+        jax.distributed.initialize(local_device_ids=list(range(n_local)))
     assert jax.device_count() == dp, (
         f"runtime.dp={dp} != realized device count {jax.device_count()} "
         f"({jax.process_count()} procs × {jax.local_device_count()} local GPUs; "

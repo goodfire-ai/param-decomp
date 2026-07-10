@@ -85,6 +85,9 @@ class _NontargetInputs:
     clean_output: Any
     taps: dict[str, Array]
     leading: tuple[int, ...]
+    clean_site_targets: dict[str, Array] | None
+    """Frozen per-site `x@W` outputs collected from the clean forward — the hidden-acts recon
+    targets (SPEC S31 amended), or None when no non-target recon term uses the aux."""
 
 
 def _grad_norm_metrics(components_grad: DecompVU, ci_fn_grad: Any) -> dict[str, Array]:
@@ -184,6 +187,14 @@ def make_train_step(
     recon_terms = losses.recon
     faith_term = losses.faith
     imp_term = losses.imp
+
+    # Hidden-acts recon aux (SPEC S31 amended): a term with `hidden_acts` set adds a site-local
+    # MSE riding its masked forward, against frozen per-site targets collected from the clean
+    # forward. Gate the collection per pass so runs without the aux pay nothing.
+    target_wants_hidden_acts = any(t.hidden_acts is not None for t in recon_terms)
+    nontarget_wants_hidden_acts = nontarget_loss_surface is not None and any(
+        t.hidden_acts is not None for t in nontarget_loss_surface.recon
+    )
     faith_coeff = faith_term.coeff
     imp_min = imp_term.cfg
     imp_coeff = imp_term.coeff
@@ -231,21 +242,27 @@ def make_train_step(
         routes: dict[str, Bool[Array, "*leading"]] | None,
         live_sites: tuple[str, ...],
         has_delta: bool,
+        collect_site_outputs: dict[str, Array] | None = None,
     ) -> Any:
         # `prepared` = `model.prepare_compute_weights(components_bf16)`, built ONCE per step and
         # shared across all forwards (the ÷N→÷fsdp gather is not re-run per forward).
-        return batch_sharded(
-            model.masked_output(
-                prepared,
-                batch,
-                masks,
-                delta_masks,
-                routes,
-                live_sites,
-                has_delta,
-                remat=remat_recon_forwards,
-            )
+        # `collect_site_outputs` (hidden-acts recon aux) rides this forward: it is filled with
+        # the `live` sites' masked outputs, batch-sharded to match the clean targets.
+        logits = model.masked_output(
+            prepared,
+            batch,
+            masks,
+            delta_masks,
+            routes,
+            live_sites,
+            has_delta,
+            remat=remat_recon_forwards,
+            collect_site_outputs=collect_site_outputs,
         )
+        if collect_site_outputs is not None:
+            for site in collect_site_outputs:
+                collect_site_outputs[site] = batch_sharded(collect_site_outputs[site])
+        return batch_sharded(logits)
 
     def stochastic_entry_masks(
         ci_lower: dict[str, Array],
@@ -285,6 +302,32 @@ def make_train_step(
             site: ci_lower[site] + (1.0 - ci_lower[site]) * strategy.value for site in live_sites
         }
         return masks, {}
+
+    def route_masked_site_mse(
+        masked_sites: dict[str, Array],
+        clean_targets: dict[str, Array],
+        live_sites: tuple[str, ...],
+        routes: Routes,
+    ) -> tuple[Array, Array]:
+        """Hidden-acts recon aux (SPEC S31 amended): per `live` site, `Σ (masked − frozen)²`
+        over positions ROUTED TRUE (the activations directly after an actually-replaced matrix),
+        plus the routed element count. `routes` None (route-all) counts every position. Returns
+        `(sum_sq, n_elements)` in fp32 so the term accumulates across draws and divides once."""
+        sum_sq = jnp.zeros((), jnp.float32)
+        n = jnp.zeros((), jnp.float32)
+        for site in live_sites:
+            se = (
+                masked_sites[site].astype(jnp.float32) - clean_targets[site].astype(jnp.float32)
+            ) ** 2
+            d_out = se.shape[-1]
+            if routes is None:
+                sum_sq = sum_sq + jnp.sum(se)
+                n = n + jnp.asarray(se.size, jnp.float32)
+            else:
+                w = routes[site].astype(jnp.float32)
+                sum_sq = sum_sq + jnp.sum(se * w[..., None])
+                n = n + jnp.sum(w) * d_out
+        return sum_sq, n
 
     def entry_loss_for_sources(
         entry: ReconForward,
@@ -329,8 +372,15 @@ def make_train_step(
         imp_min_param = annealed_imp_min_param(step_f32, total_steps, imp_min)
 
         batch = batch_sharded(batch)
+        clean_site_targets: dict[str, Array] | None = {} if target_wants_hidden_acts else None
         with jax.named_scope("pd_clean_fwd"):
-            clean_output = jax.lax.stop_gradient(batch_sharded(model.clean_output(batch)))
+            clean_output = jax.lax.stop_gradient(
+                batch_sharded(model.clean_output(batch, clean_site_targets))
+            )
+        if clean_site_targets is not None:
+            clean_site_targets = {
+                s: jax.lax.stop_gradient(batch_sharded(v)) for s, v in clean_site_targets.items()
+            }
         with jax.named_scope("pd_read_taps"):
             taps = model.read_activations(batch, state.ci_fn.input_names)
 
@@ -340,8 +390,17 @@ def make_train_step(
         if nontarget_loss_surface is not None:
             assert nontarget_batch is not None, "non-target pass active but no nontarget_batch"
             nt_batch = batch_sharded(nontarget_batch)
+            nt_site_targets: dict[str, Array] | None = (
+                {} if nontarget_wants_hidden_acts else None
+            )
             with jax.named_scope("pd_nt_clean_fwd"):
-                nt_clean = jax.lax.stop_gradient(batch_sharded(model.clean_output(nt_batch)))
+                nt_clean = jax.lax.stop_gradient(
+                    batch_sharded(model.clean_output(nt_batch, nt_site_targets))
+                )
+            if nt_site_targets is not None:
+                nt_site_targets = {
+                    s: jax.lax.stop_gradient(batch_sharded(v)) for s, v in nt_site_targets.items()
+                }
             with jax.named_scope("pd_nt_read_taps"):
                 nt_taps = model.read_activations(nt_batch, state.ci_fn.input_names)
             nt_inputs = _NontargetInputs(
@@ -349,6 +408,7 @@ def make_train_step(
                 clean_output=nt_clean,
                 taps=nt_taps,
                 leading=next(iter(nt_taps.values())).shape[:-1],
+                clean_site_targets=nt_site_targets,
             )
         # `leading` (batch, *positions) — the shape masks/sources/routes live in. Sourced
         # from a tap (always `[*leading, d_tap]`), not the opaque batch, so the engine never
@@ -445,7 +505,15 @@ def make_train_step(
             trainable: tuple[DecompVU, CIFn, dict[str, dict[str, Array]]],
         ) -> tuple[
             Array,
-            tuple[Array, Array, Array, tuple[Array, ...], dict[str, Array], dict[str, Array]],
+            tuple[
+                Array,
+                Array,
+                Array,
+                tuple[Array, ...],
+                dict[str, Array],
+                dict[str, Array],
+                dict[str, Array],
+            ],
         ]:
             components, ci_fn, persistent_sources = trainable
             components_bf16 = cast_floating(components, COMPUTE_DT)
@@ -482,18 +550,24 @@ def make_train_step(
                 key_offset: int,
                 force_delta_on: bool,
                 recon_loss: Callable[[Any, Any], Array],
-            ) -> list[tuple[ReconLossTerm, Array]]:
+                clean_site_targets: dict[str, Array] | None,
+            ) -> list[tuple[ReconLossTerm, Array, Array | None]]:
                 """Mean-KL recon over the term/entry/draw grid (SPEC S10'), shared by the target
                 pass and the tPD non-target pass. `force_delta_on` (S35) pins the delta on and
                 restricts the set to stochastic/constant sources; the target pass
                 (`force_delta_on=False`) additionally handles fresh-PGD / persistent sources.
                 `recon_loss` is the target's position-sliced fn (S38) or the plain full-seq fn.
-                `key_offset` keeps the two passes' per-term RNG disjoint (R1)."""
-                out: list[tuple[ReconLossTerm, Array]] = []
+                `key_offset` keeps the two passes' per-term RNG disjoint (R1). A term with
+                `hidden_acts` also returns its site-local MSE (SPEC S31 amended), collected from
+                the SAME masked forwards against `clean_site_targets`; `None` otherwise."""
+                out: list[tuple[ReconLossTerm, Array, Array | None]] = []
                 for term_idx, term in enumerate(grid_terms):
                     term_key = random.fold_in(key, key_offset + term_idx)
                     total = jnp.zeros((), jnp.float32)
                     n_forwards = 0
+                    ha_active = term.hidden_acts is not None
+                    ha_sum_sq = jnp.zeros((), jnp.float32)
+                    ha_n = jnp.zeros((), jnp.float32)
                     for entry_idx, entry in enumerate(term.plan):
                         entry_key, routing_key = random.split(random.fold_in(term_key, entry_idx))
                         match entry.sources:
@@ -532,6 +606,7 @@ def make_train_step(
                                     masks, delta_masks = source_masks(
                                         ci.lower, persistent_sources[state_key], entry.live_sites
                                     )
+                            site_collect: dict[str, Array] | None = {} if ha_active else None
                             with jax.named_scope("pd_recon_masked_fwd"):
                                 masked = masked_forward(
                                     model,
@@ -542,17 +617,31 @@ def make_train_step(
                                     routes,
                                     entry.live_sites,
                                     entry.has_delta,
+                                    collect_site_outputs=site_collect,
                                 )
                             total = total + recon_loss(masked, clean_output)
                             n_forwards += 1
+                            if site_collect is not None:
+                                assert clean_site_targets is not None, (
+                                    f"term {term.name!r} has hidden_acts but no clean site targets"
+                                )
+                                sum_sq, n_el = route_masked_site_mse(
+                                    site_collect, clean_site_targets, entry.live_sites, routes
+                                )
+                                ha_sum_sq = ha_sum_sq + sum_sq
+                                ha_n = ha_n + n_el
                     assert n_forwards > 0, f"term {term.name!r} produced no forwards"
                     term_loss = total / n_forwards
+                    ha_mse = ha_sum_sq / jnp.maximum(ha_n, 1.0) if ha_active else None
                     first_sources = term.plan[0].sources
                     if isinstance(first_sources, PersistentSources):
                         start_frac = state.adversaries[first_sources.state_key].start_frac
                         if start_frac > 0.0:
-                            term_loss = (step_f32 >= start_frac * total_steps) * term_loss
-                    out.append((term, term_loss))
+                            gate = step_f32 >= start_frac * total_steps
+                            term_loss = gate * term_loss
+                            if ha_mse is not None:
+                                ha_mse = gate * ha_mse
+                    out.append((term, term_loss, ha_mse))
                 return out
 
             total_loss = faith_coeff * faith_loss + imp_coeff * imp_lp + freq_coeff * imp_freq
@@ -565,10 +654,16 @@ def make_train_step(
                 key_offset=1,
                 force_delta_on=False,
                 recon_loss=target_recon_loss_fn,
+                clean_site_targets=clean_site_targets,
             )
-            for term, term_loss in target_grid:
+            hidden_acts_metrics: dict[str, Array] = {}
+            for term, term_loss, ha_mse in target_grid:
                 total_loss = total_loss + term.coeff * term_loss
-            term_losses = tuple(term_loss for _, term_loss in target_grid)
+                if ha_mse is not None:
+                    assert term.hidden_acts is not None
+                    total_loss = total_loss + term.hidden_acts.coeff * ha_mse
+                    hidden_acts_metrics[f"loss/{term.name}/hidden_acts"] = ha_mse
+            term_losses = tuple(term_loss for _, term_loss, _ in target_grid)
 
             # ── tPD non-target pass (S34-S37): a fresh CI forward on the non-target taps + a
             # recon grid with the delta forced on (S35) + scaled imp-min (S37), all added to
@@ -595,20 +690,34 @@ def make_train_step(
                     key_offset=1 + len(recon_terms),
                     force_delta_on=True,
                     recon_loss=recon_loss_fn,
+                    clean_site_targets=nt_inputs.clean_site_targets,
                 )
-                for term, nt_term_loss in nt_grid:
+                for term, nt_term_loss, nt_ha_mse in nt_grid:
                     nt_total = nt_total + term.coeff * nt_term_loss
                     nt_aux[f"nontarget/loss/{term.name}"] = nt_term_loss
+                    if nt_ha_mse is not None:
+                        assert term.hidden_acts is not None
+                        nt_total = nt_total + term.hidden_acts.coeff * nt_ha_mse
+                        nt_aux[f"nontarget/loss/{term.name}/hidden_acts"] = nt_ha_mse
                 nt_aux["nontarget/total"] = nt_total
                 total_loss = total_loss + nt_total
 
-            return total_loss, (faith_loss, imp_lp, imp_freq, term_losses, nt_aux, ci_wd_max)
+            return total_loss, (
+                faith_loss,
+                imp_lp,
+                imp_freq,
+                term_losses,
+                nt_aux,
+                ci_wd_max,
+                hidden_acts_metrics,
+            )
 
         with jax.named_scope("pd_value_and_grad"):
-            (total_loss, (faith_loss, imp_lp, imp_freq, term_losses, nt_aux, ci_wd_max)), grads = (
-                eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-                    (state.components, state.ci_fn, {k: a.sources for k, a in warmed_advs.items()})
-                )
+            (
+                total_loss,
+                (faith_loss, imp_lp, imp_freq, term_losses, nt_aux, ci_wd_max, hidden_acts_metrics),
+            ), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(
+                (state.components, state.ci_fn, {k: a.sources for k, a in warmed_advs.items()})
             )
         components_grad, ci_fn_grad, persistent_grads_scaled = grads
         if mesh is not None and os.environ.get("PD_REPLICATE_WEIGHTS", "") == "1":
@@ -671,6 +780,7 @@ def make_train_step(
             **{f"loss/{t.name}": v for t, v in zip(recon_terms, term_losses, strict=True)},
             **grad_norm_metrics,
             **nt_aux,
+            **hidden_acts_metrics,
         }
         source_lrs = {
             k: adv.source_lr(step_f32, total_steps) for k, adv in state.adversaries.items()

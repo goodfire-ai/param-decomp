@@ -88,11 +88,18 @@ class DecomposedModel(Protocol):
         """Recon comparison the step minimizes (SPEC §2.3). LM: `kl_per_position`."""
         ...
 
-    def clean_output(self, inputs: Any, /) -> Any:
+    def clean_output(
+        self, inputs: Any, /, collect_site_outputs: dict[str, Array] | None = None
+    ) -> Any:
         """All-frozen forward — the recon target (SPEC S3); never the `mask=1` decomposed
         identity. `inputs` is positional-only and target-specific (an LM's token ids → embed;
         a toy's feature vector, which already is the waist). `Any` return: an LM emits
-        `[*leading, vocab]` logits, a bio target a tuple of heads or coordinates."""
+        `[*leading, vocab]` logits, a bio target a tuple of heads or coordinates.
+
+        `collect_site_outputs` (when a dict is passed) is FILLED with each decomposed site's
+        frozen `x @ W` OUTPUT activation from THIS forward — the hidden-acts recon targets
+        (SPEC S31 amended), an intermediate of the same forward, so no extra pass. The logits
+        computation is unaffected. Only the llama8b target implements collection today."""
         ...
 
     def read_activations(
@@ -126,6 +133,7 @@ class DecomposedModel(Protocol):
         has_delta: bool,
         *,
         remat: bool,
+        collect_site_outputs: dict[str, Array] | None = None,
     ) -> Any:
         """The masked decomposed forward (SPEC §1.3, S2). `prepared` is the output of
         `prepare_compute_weights` (the shared per-step compute weights). `live` (static under
@@ -135,7 +143,11 @@ class DecomposedModel(Protocol):
         whose delta mask is a constant 0 (LOSS_PARITY_DESIGN §4b). `remat` (static) gates
         gradient-checkpointing the forward at the model's natural granularity (a deep target
         rematerializes per-layer, recomputing one layer at a time in the backward instead of
-        storing every layer's activations — the dominant step-memory term at depth)."""
+        storing every layer's activations — the dominant step-memory term at depth).
+
+        `collect_site_outputs` (when a dict is passed) is FILLED with each `live` site's masked
+        OUTPUT activation from THIS forward — the hidden-acts recon aux shares the recon
+        forward instead of running its own (SPEC S31 amended). Only llama8b collects today."""
         ...
 
     def masked_site_outputs(
