@@ -79,15 +79,26 @@ eval:
   n_steps: 1
   slow_every: 10000
   slow_on_first_step: true
-pd:
-  batch_size: 128
-  ci_config:
+decomposition:
+  sites:
+    kind: glu_transformer
+    layers:
+      kind: range
+      start: 18
+      end: 27
+    cs:
+      gate: 49152
+      up: 49152
+      down: 49152
+  ci:
     type: chunkwise_transformer
     blocks_per_chunk: 1
     d_model: 4096
     n_blocks: 4
     n_heads: 64
     mlp_hidden: 16384
+pd:
+  batch_size: 128
   ci_fn_optimizer:
     betas:
     - 0.9
@@ -110,61 +121,6 @@ pd:
       start_val: 1.5e-04
       warmup_pct: 0.0
     weight_decay: 0.0
-  decomposition_targets:
-  - C: 49152
-    module_pattern: model.layers.18.mlp.gate_proj
-  - C: 49152
-    module_pattern: model.layers.18.mlp.up_proj
-  - C: 49152
-    module_pattern: model.layers.18.mlp.down_proj
-  - C: 49152
-    module_pattern: model.layers.19.mlp.gate_proj
-  - C: 49152
-    module_pattern: model.layers.19.mlp.up_proj
-  - C: 49152
-    module_pattern: model.layers.19.mlp.down_proj
-  - C: 49152
-    module_pattern: model.layers.20.mlp.gate_proj
-  - C: 49152
-    module_pattern: model.layers.20.mlp.up_proj
-  - C: 49152
-    module_pattern: model.layers.20.mlp.down_proj
-  - C: 49152
-    module_pattern: model.layers.21.mlp.gate_proj
-  - C: 49152
-    module_pattern: model.layers.21.mlp.up_proj
-  - C: 49152
-    module_pattern: model.layers.21.mlp.down_proj
-  - C: 49152
-    module_pattern: model.layers.22.mlp.gate_proj
-  - C: 49152
-    module_pattern: model.layers.22.mlp.up_proj
-  - C: 49152
-    module_pattern: model.layers.22.mlp.down_proj
-  - C: 49152
-    module_pattern: model.layers.23.mlp.gate_proj
-  - C: 49152
-    module_pattern: model.layers.23.mlp.up_proj
-  - C: 49152
-    module_pattern: model.layers.23.mlp.down_proj
-  - C: 49152
-    module_pattern: model.layers.24.mlp.gate_proj
-  - C: 49152
-    module_pattern: model.layers.24.mlp.up_proj
-  - C: 49152
-    module_pattern: model.layers.24.mlp.down_proj
-  - C: 49152
-    module_pattern: model.layers.25.mlp.gate_proj
-  - C: 49152
-    module_pattern: model.layers.25.mlp.up_proj
-  - C: 49152
-    module_pattern: model.layers.25.mlp.down_proj
-  - C: 49152
-    module_pattern: model.layers.26.mlp.gate_proj
-  - C: 49152
-    module_pattern: model.layers.26.mlp.up_proj
-  - C: 49152
-    module_pattern: model.layers.26.mlp.down_proj
   faithfulness_warmup_lr: 0.001
   faithfulness_warmup_steps: 400
   faithfulness_warmup_weight_decay: 0.0

@@ -46,15 +46,30 @@ eval:
   n_steps: 1
   slow_every: 100000
   slow_on_first_step: false
-pd:
-  batch_size: 128
-  ci_config:
+decomposition:
+  sites:
+    kind: glu_transformer
+    layers:
+      kind: list
+      indices:
+      - 18
+    cs:
+      q: 4096
+      k: 4096
+      v: 8192
+      o: 8192
+      gate: 16384
+      up: 16384
+      down: 20480
+  ci:
     type: chunkwise_transformer
     blocks_per_chunk: 1
     d_model: 4096
     n_blocks: 4
     n_heads: 64
     mlp_hidden: 16384
+pd:
+  batch_size: 128
   ci_fn_optimizer:
     betas:
     - 0.9
@@ -77,21 +92,6 @@ pd:
       start_val: 2.83e-05
       warmup_pct: 0.0
     weight_decay: 0.0
-  decomposition_targets:
-  - C: 4096
-    module_pattern: model.layers.18.self_attn.q_proj
-  - C: 4096
-    module_pattern: model.layers.18.self_attn.k_proj
-  - C: 8192
-    module_pattern: model.layers.18.self_attn.v_proj
-  - C: 8192
-    module_pattern: model.layers.18.self_attn.o_proj
-  - C: 16384
-    module_pattern: model.layers.18.mlp.gate_proj
-  - C: 16384
-    module_pattern: model.layers.18.mlp.up_proj
-  - C: 20480
-    module_pattern: model.layers.18.mlp.down_proj
   faithfulness_warmup_lr: 0.001
   faithfulness_warmup_steps: 0
   faithfulness_warmup_weight_decay: 0.0

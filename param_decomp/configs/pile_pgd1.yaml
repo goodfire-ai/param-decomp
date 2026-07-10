@@ -71,15 +71,27 @@ eval:
   n_steps: 1
   slow_every: 10000
   slow_on_first_step: true
-pd:
-  batch_size: 64
-  ci_config:
+decomposition:
+  sites:
+    kind: simple_mlp
+    layers:
+      kind: all
+    cs:
+      q_proj: 512
+      k_proj: 512
+      v_proj: 1024
+      o_proj: 1024
+      c_fc: 3072
+      down_proj: 3584
+  ci:
     type: chunkwise_transformer
     blocks_per_chunk: 1
     d_model: 2048
     n_blocks: 8
     n_heads: 16
     mlp_hidden: 8192
+pd:
+  batch_size: 64
   ci_fn_optimizer:
     betas:
     - 0.9
@@ -102,19 +114,6 @@ pd:
       start_val: 5.0e-05
       warmup_pct: 0.0
     weight_decay: 0.0
-  decomposition_targets:
-  - C: 3072
-    module_pattern: h.*.mlp.c_fc
-  - C: 3584
-    module_pattern: h.*.mlp.down_proj
-  - C: 512
-    module_pattern: h.*.attn.q_proj
-  - C: 512
-    module_pattern: h.*.attn.k_proj
-  - C: 1024
-    module_pattern: h.*.attn.v_proj
-  - C: 1024
-    module_pattern: h.*.attn.o_proj
   faithfulness_warmup_lr: 0.001
   faithfulness_warmup_steps: 400
   faithfulness_warmup_weight_decay: 0.0
