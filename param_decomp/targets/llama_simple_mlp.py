@@ -28,6 +28,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import get_args
 
 import equinox as eqx
 import jax
@@ -42,20 +43,26 @@ from safetensors import safe_open
 
 from param_decomp import taps
 from param_decomp.components import ComponentStacks, SiteC, SiteSpec, site_out
+from param_decomp.configs import SimpleMlpMatrix
 from param_decomp.lm import run_stochastic_masked_output
 from param_decomp.losses import kl_per_position
+from param_decomp.site_tree import ArchFamily
 from param_decomp.targets.glu_transformer import FrozenAttn
 from vendored_jax.llama import rms_norm
 
-KIND_ORDER = ("q_proj", "k_proj", "v_proj", "o_proj", "c_fc", "down_proj")
-"""Within-layer canonical site order = computation order. The canonical site order
-(`site_specs`) is layer-ascending, then this."""
+KIND_ORDER: tuple[str, ...] = get_args(SimpleMlpMatrix)
+"""Within-layer canonical site order = computation order, DERIVED from the config-side
+`SimpleMlpMatrix` vocabulary (one source of truth — a c-spec key and a target matrix
+cannot drift). The canonical site order (`site_specs`) is layer-ascending, then this."""
 ATTN_KINDS = ("q_proj", "k_proj", "v_proj", "o_proj")
 MLP_KINDS = ("c_fc", "down_proj")
+assert KIND_ORDER == ATTN_KINDS + MLP_KINDS, KIND_ORDER
 
 SITE_NAME_PATTERN = re.compile(
     r"^h\.(\d+)\.(?:attn\.(q_proj|k_proj|v_proj|o_proj)|mlp\.(c_fc|down_proj))$"
 )
+
+
 @dataclass(frozen=True)
 class LlamaSimpleMLPConfig:
     vocab_size: int
@@ -125,6 +132,11 @@ def parse_site_name(name: str) -> tuple[int, str]:
     assert match is not None, f"unsupported site name {name!r}"
     layer, attn_kind, mlp_kind = match.groups()
     return int(layer), attn_kind if attn_kind is not None else mlp_kind
+
+
+FAMILY = ArchFamily("simple_mlp", KIND_ORDER, site_name)
+"""This target's matrix grammar as data — the vocabulary + name renderer the tiled
+`simple_mlp` c-specs resolve against (`resolve_site_tree`)."""
 
 
 def site_dims(cfg: LlamaSimpleMLPConfig, kind: str) -> tuple[int, int]:

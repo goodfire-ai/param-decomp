@@ -271,12 +271,6 @@ SLOW_TIER_EVAL_METRIC_TYPES = frozenset(
 )
 
 
-GLU_FAMILY = ArchFamily("glu_transformer", glu_transformer.KIND_ORDER, glu_transformer.site_name)
-SIMPLE_MLP_FAMILY = ArchFamily(
-    "simple_mlp", llama_simple_mlp.KIND_ORDER, llama_simple_mlp.site_name
-)
-
-
 @dataclass(frozen=True)
 class _ResolvedDecomposition:
     """Target config + its block-structured `SiteTree` + arch family, resolved once and shared
@@ -309,21 +303,21 @@ def _resolve_decomposition(cfg: LMExperimentConfig) -> _ResolvedDecomposition:
                         f"{spec.model_class!r} is not {spec.model_name!r}'s family"
                     )
             hf_family = hf_model_family(spec.model_name)  # refuses unknown model names
-            tree = resolve_site_tree(sites, GLU_FAMILY, hf_family.arch_config().n_layer)
+            tree = resolve_site_tree(sites, glu_transformer.FAMILY, hf_family.arch_config().n_layer)
             target = TargetConfig(
-                model_name=spec.model_name, sites=tree.site_cs(GLU_FAMILY.name_of)
+                model_name=spec.model_name, sites=tree.site_cs(glu_transformer.FAMILY.name_of)
             )
-            return _ResolvedDecomposition(target, tree, GLU_FAMILY)
+            return _ResolvedDecomposition(target, tree, glu_transformer.FAMILY)
         case PretrainedTarget():
             assert spec.model_class.rsplit(".", 1)[-1] == "LlamaSimpleMLP", spec.model_class
             cache_dir = llama_simple_mlp.pretrain_cache_dir(spec.run_path)
             arch = llama_simple_mlp.load_model_config(cache_dir)
             assert cfg.data.max_seq_len <= arch.n_ctx, (cfg.data.max_seq_len, arch.n_ctx)
-            tree = resolve_site_tree(sites, SIMPLE_MLP_FAMILY, arch.n_layer)
+            tree = resolve_site_tree(sites, llama_simple_mlp.FAMILY, arch.n_layer)
             target = LlamaSimpleMLPTargetConfig(
-                pretrain_run_path=spec.run_path, sites=tree.site_cs(SIMPLE_MLP_FAMILY.name_of)
+                pretrain_run_path=spec.run_path, sites=tree.site_cs(llama_simple_mlp.FAMILY.name_of)
             )
-            return _ResolvedDecomposition(target, tree, SIMPLE_MLP_FAMILY)
+            return _ResolvedDecomposition(target, tree, llama_simple_mlp.FAMILY)
 
 
 def _resolve_target(cfg: LMExperimentConfig) -> AnyLMTargetConfig:

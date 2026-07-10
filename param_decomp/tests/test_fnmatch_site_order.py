@@ -29,7 +29,6 @@ from param_decomp.components import SiteC
 from param_decomp.configs import AllLayers, GluTransformerCSpec, LayerList, SimpleMlpCSpec
 from param_decomp.site_tree import resolve_site_tree
 from param_decomp.targets import glu_transformer, llama_simple_mlp
-from param_decomp_lab.experiments.lm.config import GLU_FAMILY, SIMPLE_MLP_FAMILY
 
 
 def _named_modules_order(
@@ -101,7 +100,9 @@ def test_llama8b_single_layer_mlp_set_matches_torch():
     spec = GluTransformerCSpec(
         layers=LayerList(indices=[18]), cs={"gate": 24576, "up": 24576, "down": 24576}
     )
-    jax_sites = resolve_site_tree(spec, GLU_FAMILY, 32).site_cs(GLU_FAMILY.name_of)
+    jax_sites = resolve_site_tree(spec, glu_transformer.FAMILY, 32).site_cs(
+        glu_transformer.FAMILY.name_of
+    )
     torch_targets = (
         SiteC("layers.18.mlp.gate_proj", 24576),
         SiteC("layers.18.mlp.up_proj", 24576),
@@ -132,8 +133,8 @@ def test_simple_mlp_all_layers_mixed_set_matches_torch():
             "o_proj": 1024,
         },
     )
-    jax_sites = resolve_site_tree(spec, SIMPLE_MLP_FAMILY, n_layer).site_cs(
-        SIMPLE_MLP_FAMILY.name_of
+    jax_sites = resolve_site_tree(spec, llama_simple_mlp.FAMILY, n_layer).site_cs(
+        llama_simple_mlp.FAMILY.name_of
     )
     wildcard_targets = (
         SiteC("h.*.mlp.c_fc", 3072),
@@ -165,8 +166,8 @@ def test_simple_mlp_canonical_pattern_order_matches_torch():
     spec = SimpleMlpCSpec(
         layers=AllLayers(), cs={kind: 512 for kind in llama_simple_mlp.KIND_ORDER}
     )
-    jax_sites = resolve_site_tree(spec, SIMPLE_MLP_FAMILY, n_layer).site_cs(
-        SIMPLE_MLP_FAMILY.name_of
+    jax_sites = resolve_site_tree(spec, llama_simple_mlp.FAMILY, n_layer).site_cs(
+        llama_simple_mlp.FAMILY.name_of
     )
     torch_targets = tuple(
         SiteC(f"h.*.attn.{kind}", 512)

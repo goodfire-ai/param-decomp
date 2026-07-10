@@ -6,8 +6,10 @@ chunkwise CI resolver consumes it directly (a chunk = a slice of consecutive `Bl
 nothing downstream recovers block structure by regex-ing site-name strings.
 
 `ArchFamily` is a target's matrix grammar as data: the ordered, exhaustive matrix set (canonical
-within-block order) + the `(layer, matrix) -> site name` renderer. The concrete families (GLU
-for llama8b, plain-MLP for LlamaSimpleMLP) are built lab-side, binding each target's `site_name`.
+within-block order) + the `(layer, matrix) -> site name` renderer. Each target module builds its
+OWN family (`llama8b.FAMILY`, `llama_simple_mlp.FAMILY`), with `matrices` derived from the same
+config-side `Literal` vocabulary its c-spec keys are typed by — so a c-spec key outside the
+family's vocabulary is unrepresentable, not merely asserted.
 """
 
 from collections.abc import Callable
@@ -77,11 +79,9 @@ def resolve_site_tree(
     is homogeneous by construction — which is exactly what makes the chunkwise CI fn's chunks
     homogeneous. Asserts the spec's declared family matches the target's."""
     assert sites.kind == family.key, f"c-spec family {sites.kind!r} != target family {family.key!r}"
-    cs: dict[str, int] = {k: v for k, v in sites.cs.items()}
-    assert set(cs) <= set(family.matrices), (
-        f"c-spec matrices {set(cs) - set(family.matrices)} not in the {family.key} vocabulary "
-        f"{family.matrices} (GluMatrix/SimpleMlpMatrix and the target KIND_ORDER have drifted)"
-    )
-    slots = tuple((m, cs[m]) for m in family.matrices if m in cs)
+    # cs keys are Literal-typed by the family vocabulary `matrices` derives from, so every
+    # key is a family matrix by construction — ordering is the only work left.
+    rank = {matrix: i for i, matrix in enumerate(family.matrices)}
+    slots = tuple(sorted(sites.cs.items(), key=lambda slot: rank[slot[0]]))
     layers = _select_layers(sites.layers, n_layer)
     return SiteTree(tuple(BlockSites(layer, slots) for layer in layers))
