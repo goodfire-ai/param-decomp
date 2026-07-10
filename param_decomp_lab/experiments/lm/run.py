@@ -61,6 +61,7 @@ from param_decomp.built_run import (
     EvalConfig,
     TargetSites,
 )
+from param_decomp.compile_cache import enable_persistent_compilation_cache
 from param_decomp.configs import ResumeProvenance
 from param_decomp.data import BatchSchedule, ShardServer, scan_shards
 from param_decomp.eval import make_eval_step
@@ -98,24 +99,6 @@ from param_decomp_lab.experiments.lm.config import (
     load_run_dir_config,
 )
 from param_decomp_lab.experiments.lm.load_run import build_target
-
-
-def _enable_persistent_compilation_cache(out_dir: Path) -> Path:
-    """Cache compiled XLA executables to a shared-FS dir reused across runs/requeues.
-
-    The ~24-min compile of the chunkwise step is keyed by HLO + backend + topology +
-    jax/xla version, so a matching re-compile (requeue, or a fresh run at the same
-    config+topology) loads from disk in seconds. The dir is a SIBLING of `runs/` (not
-    per-run, not inside the immutable per-run workspace) so every run shares it; all 8N
-    ranks point at the same shared-FS path. Only process 0 writes (jax gates the write on
-    `process_id == 0` to avoid shared-FS write contention); every rank reads. Must run
-    after `init_distributed` (the rank gate reads the distributed state) and before the
-    first compile."""
-    cache_dir = out_dir.parent / "xla_compilation_cache"
-    jax.config.update("jax_compilation_cache_dir", str(cache_dir))
-    jax.config.update("jax_persistent_cache_min_compile_time_secs", 60.0)
-    jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
-    return cache_dir
 
 
 def _enable_hlo_dump(run_dir: Path) -> None:
@@ -548,7 +531,7 @@ def main(config: Path, run_id: str) -> None:
     if built.run.resume_provenance is not None:
         assert_finetune_structural_compat(built, built.run.resume_provenance)
 
-    cache_dir = _enable_persistent_compilation_cache(built.run.out_dir)
+    cache_dir = enable_persistent_compilation_cache(built.run.out_dir)
 
     is_main = jax.process_index() == 0
     if is_main:

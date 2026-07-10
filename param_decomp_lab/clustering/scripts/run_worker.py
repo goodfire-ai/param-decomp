@@ -22,6 +22,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from param_decomp.built_run import DataConfig
+from param_decomp.compile_cache import enable_persistent_compilation_cache
 from param_decomp.data import BatchSchedule, ShardServer, scan_shards
 from param_decomp.log import logger
 from param_decomp_lab.clustering.harvest_config import HarvestConfig
@@ -106,6 +107,8 @@ def run_harvest_to_dir(config: HarvestConfig, harvest_id: str, step: int | None)
     dir for `harvest_id`, and return that dir. Used by the standalone CLI and the ensemble
     pipeline (which pre-assigns the harvest id so its dependent merge can find the snapshot).
     """
+    cache_dir = enable_persistent_compilation_cache(Path(config.model_path).parent)
+    logger.info(f"persistent XLA compilation cache: {cache_dir}")
     run = open_jax_run(Path(config.model_path), step)
     output_dir = clustering_harvest_dir(harvest_id)
     output_dir.mkdir(parents=True, exist_ok=True)

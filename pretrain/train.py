@@ -37,6 +37,7 @@ from jax.typing import ArrayLike
 from jaxtyping import Array, Float, Int
 from orbax.checkpoint.type_handlers import ArrayHandler, register_type_handler
 
+from param_decomp.compile_cache import enable_persistent_compilation_cache
 from param_decomp.data import BatchSchedule, ShardServer, scan_shards
 from param_decomp.sharding import hsdp_mesh, init_distributed
 from pretrain.cache import (
@@ -380,7 +381,8 @@ def main(config: Path) -> None:
     if cfg.out_dir is None or cfg.run_id is None:
         # Local hand-run without the launcher: mint an ephemeral identity under cwd.
         cfg = _mint_local_identity(cfg)
-    _maybe_enable_compilation_cache(cfg)
+    assert cfg.out_dir is not None
+    enable_persistent_compilation_cache(cfg.out_dir)
     train(cfg)
 
 
@@ -390,14 +392,6 @@ def _mint_local_identity(cfg: PretrainConfig) -> PretrainConfig:
     out_dir = cfg.out_dir or (Path(os.environ.get("PARAM_DECOMP_OUT_DIR", "out")) / "runs")
     run_id = cfg.run_id or f"t-{secrets.token_hex(4)}"
     return cfg.model_copy(update={"out_dir": out_dir, "run_id": run_id})
-
-
-def _maybe_enable_compilation_cache(cfg: PretrainConfig) -> None:
-    if cfg.out_dir is None:
-        return
-    cache = cfg.out_dir.parent / "xla_compilation_cache"
-    jax.config.update("jax_compilation_cache_dir", str(cache))
-    jax.config.update("jax_persistent_cache_min_compile_time_secs", 60)
 
 
 def cli() -> None:

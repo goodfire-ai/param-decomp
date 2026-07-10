@@ -28,6 +28,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from param_decomp.built_run import DataConfig
+from param_decomp.compile_cache import enable_persistent_compilation_cache
 from param_decomp.data import BatchSchedule, ShardServer, scan_shards
 from param_decomp.log import logger
 from param_decomp_lab.experiments.lm.load_run import HarvestForward, LoadedJaxRun, open_jax_run
@@ -152,6 +153,8 @@ def main() -> None:
     args = ap.parse_args()
     assert (args.rank is None) == (args.world_size is None)
 
+    cache_dir = enable_persistent_compilation_cache(args.run_dir.parent)
+    logger.info(f"persistent XLA compilation cache: {cache_dir}")
     run = open_jax_run(args.run_dir, args.step)
     subrun_id = args.subrun_id or "h-" + datetime.now().strftime("%Y%m%d_%H%M%S")
     config = HarvestConfig(

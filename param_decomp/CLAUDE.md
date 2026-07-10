@@ -288,13 +288,16 @@ Requeues rebuild the node workspaces and re-read the pinned launch config, never
 checkout. `--run_id` resubmits an existing run. Don't hand-write sbatch files.
 
 `main` enables JAX's persistent compilation cache
-(`_enable_persistent_compilation_cache`) at `$PARAM_DECOMP_OUT_DIR/xla_compilation_cache`
-— a SIBLING of `runs/` (derived from `out_dir.parent`), shared across all runs and all
-8N ranks, NOT per-run. The multi-minute chunkwise-step compile is keyed by HLO + backend +
-topology + jax/xla version, so a requeue/resume or a fresh run at the same config+topology
-loads the executable from disk in seconds. Set after `init_distributed` (the write gate
-reads the distributed state) and before the first compile; threshold 60s
-(`jax_persistent_cache_min_compile_time_secs`) so only the big compiles cache. Multi-host
+(`param_decomp.compile_cache.enable_persistent_compilation_cache` — the ONE policy
+definition, also called at startup by `pretrain.train` and the harvest/clustering
+workers) at `$PARAM_DECOMP_OUT_DIR/xla_compilation_cache` — a SIBLING of `runs/`
+(derived from `out_dir.parent`), shared across all runs and all 8N ranks, NOT per-run.
+The multi-minute chunkwise-step compile is keyed by HLO + backend + topology + jax/xla
+version, so a requeue/resume or a fresh run at the same config+topology loads the
+executable from disk in seconds. Set before the first compile (the cache initializes
+lazily, so before/after `init_distributed` both work); threshold 5s
+(`jax_persistent_cache_min_compile_time_secs`) so step-level compiles cache but trivial
+slice/utility jits don't churn the dir. Multi-host
 safe on jax 0.10.1: jax gates the cache WRITE on `process_id == 0` (`compiler.py` — "Only
 write cache entries from the first process … contention for writes on some filesystems"),
 so all ranks read but only rank 0 writes — no shared-FS race. Requires the cache dir on a
