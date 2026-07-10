@@ -58,15 +58,76 @@ SubsetRoutingType = UniformKSubsetRoutingConfig | StaticProbabilityRoutingConfig
 
 
 # ---------------------------------------------------------------------------
-# Decomposition target
+# Decomposition site (C) specs
 # ---------------------------------------------------------------------------
 
 
-class DecompositionTargetConfig(BaseConfig):
-    module_pattern: str = Field(..., description="fnmatch-style pattern to match module names")
-    C: PositiveInt = Field(
-        ..., description="Number of components for modules matching this pattern"
-    )
+class AllLayers(BaseConfig):
+    kind: Literal["all"] = "all"
+
+
+class LayerRange(BaseConfig):
+    """Half-open `[start, end)` — matches `range()` / slice semantics."""
+
+    kind: Literal["range"] = "range"
+    start: NonNegativeInt
+    end: PositiveInt
+
+    @model_validator(mode="after")
+    def _nonempty(self) -> Self:
+        assert self.start < self.end, (self.start, self.end)
+        return self
+
+
+class LayerList(BaseConfig):
+    kind: Literal["list"] = "list"
+    indices: list[NonNegativeInt] = Field(..., min_length=1)
+
+    @model_validator(mode="after")
+    def _unique_sorted(self) -> Self:
+        assert self.indices == sorted(set(self.indices)), self.indices
+        return self
+
+
+LayerSelection = Annotated[AllLayers | LayerRange | LayerList, Field(discriminator="kind")]
+
+
+# Per-family matrix vocabularies (the single source of truth; each target's `KIND_ORDER`
+# derives via `typing.get_args`). GLU = SwiGLU MLP (llama8b); simple-MLP = plain GELU.
+GluMatrix = Literal["q", "k", "v", "o", "gate", "up", "down"]
+SimpleMlpMatrix = Literal["q_proj", "k_proj", "v_proj", "o_proj", "c_fc", "down_proj"]
+
+
+class GluTransformerCSpec(BaseConfig):
+    """Per-matrix-type C tiled across the selected layers (GLU family, e.g. llama8b). Every
+    selected layer is decomposed at the same `cs` matrices and C; a matrix absent from `cs`
+    is not decomposed on any layer. Tiled ⇒ every block is structurally identical, so the
+    chunkwise CI fn's chunks are homogeneous by construction."""
+
+    kind: Literal["glu_transformer"] = "glu_transformer"
+    layers: LayerSelection
+    cs: dict[GluMatrix, PositiveInt] = Field(..., min_length=1)
+
+
+class SimpleMlpCSpec(BaseConfig):
+    """Per-matrix-type C tiled across the selected layers (plain-GELU family, LlamaSimpleMLP)."""
+
+    kind: Literal["simple_mlp"] = "simple_mlp"
+    layers: LayerSelection
+    cs: dict[SimpleMlpMatrix, PositiveInt] = Field(..., min_length=1)
+
+
+class ExplicitSite(BaseConfig):
+    name: str
+    C: PositiveInt
+
+
+class ExplicitCSpec(BaseConfig):
+    """Arbitrary named sites with per-site C — the positionless toys (no arch grid, and the
+    MLP CI fns have no chunk-homogeneity requirement)."""
+
+    kind: Literal["explicit"] = "explicit"
+    sites: list[ExplicitSite] = Field(..., min_length=1)
 
 
 # ---------------------------------------------------------------------------
@@ -1050,11 +1111,12 @@ class RuntimeConfig(BaseConfig):
 
 
 class PDConfig(BaseConfig):
-    """Algorithm specification: seed, CI function, losses, optimizers, target modules.
+    """Algorithm specification: seed, losses, optimizers, faithfulness warmup.
 
-    Flipping any field here changes what algorithm runs. Pair with `RuntimeConfig`
-    (substrate), `Cadence` (when to emit) and `RunSink` (where output goes) when
-    running the trainer (`param_decomp.run`).
+    Domain-agnostic — the target-coupled apparatus (which sites to decompose + the CI-fn
+    arch) lives in the per-domain `decomposition` section, not here. Flipping any field here
+    changes what algorithm runs. Pair with `RuntimeConfig` (substrate), `Cadence` (when to
+    emit) and `RunSink` (where output goes) when running the trainer (`param_decomp.run`).
     """
 
     @model_validator(mode="before")
@@ -1110,15 +1172,6 @@ class PDConfig(BaseConfig):
     seed: int = Field(
         default=0,
         description="Random seed for reproducibility, including LM dataset shuffling.",
-    )
-    ci_config: CiConfig = Field(
-        ...,
-        discriminator="type",
-        description="Configuration for the causal importance function.",
-    )
-    decomposition_targets: list[DecompositionTargetConfig] = Field(
-        ...,
-        description="List of module patterns with C values specifying which modules to decompose.",
     )
     loss_metrics: list[AnyLossMetricConfig] = Field(
         default_factory=list,
