@@ -65,8 +65,8 @@ recon semantics: masks thread through the full token-input forward, loss is KL o
 t-9d2b8f02; sites `h.{i}.attn.{q,k,v,o}_proj` / `h.{i}.mlp.{c_fc,down_proj}`) —
 config dispatch is `TargetConfig` (the HF GLU families) vs `LlamaSimpleMLPTargetConfig`, both LAB-side
 (`param_decomp_lab/experiments/lm/config.py`, which reads the canonical schema DIRECTLY —
-`build_experiment_config`/`load_config` — routing `kind: pretrained` specs + `h.*`
-wildcards), target build in the LM composition root
+`build_experiment_config`/`load_config` — resolving each target's tiled
+`decomposition.sites` via its `ArchFamily`), target build in the LM composition root
 `param_decomp_lab/experiments/lm/run.py::main`. The slow plot metrics are computed
 NATIVELY in JAX (`slow_eval.py`) — no torch export round-trip (the torch offline-eval
 bridge `jsp-export` / `pd-offline-eval` was retired). They run IN-LOOP ONLY on
