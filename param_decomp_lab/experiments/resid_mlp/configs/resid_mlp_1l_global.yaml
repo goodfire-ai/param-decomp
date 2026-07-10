@@ -7,18 +7,21 @@ run_name: jax-resid-mlp-1l-global
 # from this ci_config, config.CIFnArch admits it, and run_state.init_train_state dispatches
 # it (replicated, via llama8b_sharding.init_global_mlp_ci_fn_replicated). Runs on CPU via
 # pd-resid-mlp.
-pd:
-  seed: 0
-  ci_config:
+decomposition:
+  sites:
+    kind: explicit
+    sites:
+    - name: layers.0.mlp_in
+      C: 100
+    - name: layers.0.mlp_out
+      C: 100
+  ci:
     type: global_mlp
     hidden_dims:
     - 400
     - 300
-  decomposition_targets:
-  - module_pattern: layers.0.mlp_in
-    C: 100
-  - module_pattern: layers.0.mlp_out
-    C: 100
+pd:
+  seed: 0
   loss_metrics:
   - type: ImportanceMinimalityLoss
     coeff: 1e-5

@@ -4,19 +4,22 @@
 # ground-truth CI is the dense pattern (all n_hidden directions live). 20000 steps.
 # CI fn: layerwise per-site MLP (type=layerwise_mlp, hidden_dims=[16]). Runs on 1 GPU.
 run_name: jax-tms-40-10-id
-pd:
-  seed: 0
-  ci_config:
+decomposition:
+  sites:
+    kind: explicit
+    sites:
+    - name: linear1
+      C: 200
+    - name: hidden_layers.0
+      C: 200
+    - name: linear2
+      C: 200
+  ci:
     type: layerwise_mlp
     hidden_dims:
     - 16
-  decomposition_targets:
-  - module_pattern: linear1
-    C: 200
-  - module_pattern: hidden_layers.0
-    C: 200
-  - module_pattern: linear2
-    C: 200
+pd:
+  seed: 0
   loss_metrics:
   - type: ImportanceMinimalityLoss
     coeff: 1e-4

@@ -7,22 +7,25 @@ run_name: jax-resid-mlp-2l
 # CI fn is global_mlp, not the torch config's per-site layerwise_mlp[16]: at this C, a
 # 16-hidden-unit per-site MLP is a severe output bottleneck (400 logits from 16 units) and
 # recovers a visibly noisier identity/dense pattern than the shared global net.
-pd:
-  seed: 0
-  ci_config:
+decomposition:
+  sites:
+    kind: explicit
+    sites:
+    - name: layers.0.mlp_in
+      C: 400
+    - name: layers.0.mlp_out
+      C: 400
+    - name: layers.1.mlp_in
+      C: 400
+    - name: layers.1.mlp_out
+      C: 400
+  ci:
     type: global_mlp
     hidden_dims:
     - 1200
     - 600
-  decomposition_targets:
-  - module_pattern: layers.0.mlp_in
-    C: 400
-  - module_pattern: layers.0.mlp_out
-    C: 400
-  - module_pattern: layers.1.mlp_in
-    C: 400
-  - module_pattern: layers.1.mlp_out
-    C: 400
+pd:
+  seed: 0
   loss_metrics:
   - type: ImportanceMinimalityLoss
     coeff: 1e-5

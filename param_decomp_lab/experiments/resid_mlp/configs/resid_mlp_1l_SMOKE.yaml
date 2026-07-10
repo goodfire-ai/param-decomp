@@ -5,17 +5,20 @@ run_name: jax-resid-mlp-1l-smoke
 # (d_mlp == n_features == d_embed, no superposition), tiny step count for a pd-train
 # smoke (full-loop composition-root validation: pretrain -> faith warmup -> step loop ->
 # checkpoint -> in-loop target-CI metric). 1 GPU / CPU.
-pd:
-  seed: 0
-  ci_config:
+decomposition:
+  sites:
+    kind: explicit
+    sites:
+    - name: layers.0.mlp_in
+      C: 5
+    - name: layers.0.mlp_out
+      C: 5
+  ci:
     type: layerwise_mlp
     hidden_dims:
     - 16
-  decomposition_targets:
-  - module_pattern: layers.0.mlp_in
-    C: 5
-  - module_pattern: layers.0.mlp_out
-    C: 5
+pd:
+  seed: 0
   loss_metrics:
   - type: ImportanceMinimalityLoss
     coeff: 3e-3
