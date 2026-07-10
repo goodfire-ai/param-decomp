@@ -16,6 +16,7 @@ from param_decomp.configs import (
     ImportanceMinimalityLossConfig,
     PDConfig,
     PersistentPGDReconLossConfig,
+    ProfileConfig,
 )
 from param_decomp.recon import (
     build_loss_terms,
@@ -87,6 +88,15 @@ def test_legacy_top_level_n_mask_samples_pushes_onto_stochastic_terms():
     by_type = {m.type: m for m in validated.loss_metrics}
     assert by_type["StochasticReconLoss"].n_mask_samples == 4  # pyright: ignore[reportAttributeAccessIssue]
     assert by_type["StochasticReconSubsetLoss"].n_mask_samples == 7  # pyright: ignore[reportAttributeAccessIssue]
+
+
+def test_profile_exiting_hooks_are_mutually_exclusive():
+    # Both hooks consume `state` via step_fn donation and os._exit(0) before the loop,
+    # so a config combining them would silently skip whichever runs second.
+    ProfileConfig(async_test=True)
+    ProfileConfig(mem_profile=True)
+    with pytest.raises(ValidationError, match="one at a time"):
+        ProfileConfig(async_test=True, mem_profile=True)
 
 
 def test_b128_config_converts():

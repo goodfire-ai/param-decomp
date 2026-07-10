@@ -625,8 +625,9 @@ class ProfileConfig(BaseConfig):
 
     `mem_profile` (static + runtime memory analysis, then exits), `time_steps` (per-step wall
     breakdown), `trace` (perfetto trace over `trace_start`..`trace_start+trace_steps`),
-    `profile_max_events` (raise the perfetto GPU-activity event cap), `async_test`,
-    `leaf_bench`, `no_checkpoint` (skip ALL saves — throwaway profiling only).
+    `profile_max_events` (raise the perfetto GPU-activity event cap), `async_test`
+    (dispatch-asynchrony probe, then exits), `leaf_bench`, `no_checkpoint` (skip ALL
+    saves — throwaway profiling only).
     """
 
     mem_profile: bool = False
@@ -644,6 +645,14 @@ class ProfileConfig(BaseConfig):
     async_test: bool = False
     leaf_bench: bool = False
     no_checkpoint: bool = False
+
+    @model_validator(mode="after")
+    def validate_exclusive_exiting_hooks(self) -> Self:
+        assert not (self.async_test and self.mem_profile), (
+            "async_test and mem_profile each consume `state` via step_fn donation and exit "
+            "before the loop — run them one at a time"
+        )
+        return self
 
 
 class LaunchEnv(BaseConfig):

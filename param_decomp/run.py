@@ -599,6 +599,7 @@ def run_decomposition_training(
                 f"sync/host-bound => each call big)",
                 flush=True,
             )
+        os._exit(0)  # profiling-only path; donation has consumed `state`, so don't enter the loop
 
     if profile.mem_profile:
         _gib = 1024**3
