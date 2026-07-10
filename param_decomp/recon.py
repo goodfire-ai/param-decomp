@@ -37,6 +37,7 @@ from param_decomp.configs import (
     PGDReconSubsetLossConfig,
     SmoothL0ImportanceMinimalityLossConfig,
     StaticProbabilityRoutingConfig,
+    StochasticHiddenActsReconLossConfig,
     StochasticReconLayerwiseLossConfig,
     StochasticReconLossConfig,
     StochasticReconSubsetLossConfig,
