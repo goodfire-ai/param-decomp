@@ -23,7 +23,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, get_args
 
 import equinox as eqx
 import jax
@@ -43,8 +43,10 @@ from param_decomp.components import (
     quantize_fp8,
     site_out,
 )
+from param_decomp.configs import GluMatrix
 from param_decomp.losses import kl_per_position
 from param_decomp.sharding import assert_divisible
+from param_decomp.site_tree import ArchFamily
 from vendored_jax.llama import apply_rope, causal_sdpa, repeat_kv, rms_norm, rope_cos_sin
 
 
@@ -102,11 +104,13 @@ def default_inv_freq(head_dim: int, rope_theta: float) -> Float[Array, " hd2"]:
     return 1.0 / (rope_theta ** (jnp.arange(0, head_dim, 2, dtype=jnp.float32) / head_dim))
 
 
-KIND_ORDER = ("q", "k", "v", "o", "gate", "up", "down")
-"""Within-layer canonical site order = computation order. The canonical site order
-(`glu_site_specs`) is layer-ascending, then this."""
+KIND_ORDER: tuple[str, ...] = get_args(GluMatrix)
+"""Within-layer canonical site order = computation order, DERIVED from the config-side
+`GluMatrix` vocabulary (one source of truth — a c-spec key and a target matrix cannot
+drift). The canonical site order (`glu_site_specs`) is layer-ascending, then this."""
 ATTN_KINDS = ("q", "k", "v", "o")
 MLP_KINDS = ("gate", "up", "down")
+assert KIND_ORDER == ATTN_KINDS + MLP_KINDS, KIND_ORDER
 
 SITE_NAME_PATTERN = re.compile(
     r"^layers\.(\d+)\.(?:self_attn\.(q|k|v|o)|mlp\.(gate|up|down))_proj$"
@@ -126,6 +130,11 @@ def parse_site_name(name: str) -> tuple[int, str]:
     assert match is not None, f"unsupported site name {name!r}"
     layer, attn_kind, mlp_kind = match.groups()
     return int(layer), attn_kind if attn_kind is not None else mlp_kind
+
+
+FAMILY = ArchFamily("glu_transformer", KIND_ORDER, site_name)
+"""This family's matrix grammar as data — the vocabulary + name renderer the tiled
+`glu_transformer` c-specs resolve against (`resolve_site_tree`)."""
 
 
 def site_dims(cfg: GLUArch, kind: str) -> tuple[int, int]:

@@ -172,17 +172,17 @@ def _validate_lm(path: Path) -> str:
     (pretrained specs need the pretrain cache to resolve, so they get parse-only)."""
     from param_decomp.components import SiteC
     from param_decomp.site_tree import resolve_site_tree
-    from param_decomp.targets import llama8b
-    from param_decomp.targets.llama8b import canonical_site_cs
-    from param_decomp_lab.experiments.lm.config import GLU_FAMILY, LMExperimentConfig
+    from param_decomp.targets import glu_transformer, llama8b
+    from param_decomp.targets.glu_transformer import canonical_site_cs
+    from param_decomp_lab.experiments.lm.config import LMExperimentConfig
 
     cfg = LMExperimentConfig.model_validate(yaml.safe_load(path.read_text()))
     if cfg.decomposition.sites.kind != "glu_transformer":
         return "parse-only (pretrained target; resolution needs the pretrain cache)"
     tree = resolve_site_tree(
-        cfg.decomposition.sites, GLU_FAMILY, llama8b.llama31_8b_config().n_layer
+        cfg.decomposition.sites, glu_transformer.FAMILY, llama8b.llama31_8b_config().n_layer
     )
-    new_sites = tree.site_cs(GLU_FAMILY.name_of)
+    new_sites = tree.site_cs(glu_transformer.FAMILY.name_of)
     old_targets = _OLD_RAW[path]["pd"]["decomposition_targets"]
     old_sites = canonical_site_cs(
         tuple(SiteC(t["module_pattern"].removeprefix("model."), t["C"]) for t in old_targets)
