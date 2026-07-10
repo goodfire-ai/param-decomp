@@ -479,18 +479,56 @@ class LlamaDecomposedModel(eqx.Module):
     def embed_tokens(self, tokens: Int[Array, "b t"]) -> Float[Array, "b t d"]:
         return self.embed[tokens]
 
-    def clean_output(self, inputs: Int[Array, "b t"]) -> Array:
+    def clean_output(
+        self,
+        inputs: Int[Array, "b t"],
+        collect_site_outputs: dict[str, Array] | None = None,
+    ) -> Array:
         """The all-frozen forward — the recon target (SPEC S3). A `lax.scan` over the block
         stack so XLA compiles one block body instead of unrolling all 32 layers (the compile
         fix for the full model; the scan reassociates float ops vs an unrolled loop, within
-        fp32 tolerance)."""
+        fp32 tolerance).
 
-        def block(x: Array, layer: LlamaLayer) -> tuple[Array, None]:
-            x = x + layer.attn(rms_norm(x, layer.ln1, self.eps), self.inv_freq)
-            x = x + _clean_mlp_out(layer, rms_norm(x, layer.ln2, self.eps))
-            return x, None
+        `collect_site_outputs` (hidden-acts recon targets, SPEC S31 amended) is filled with
+        each decomposed site's frozen `x @ W` output — an intermediate of THIS forward, so no
+        extra pass. The collecting block runs the identical logits math (same matmuls, just
+        naming the projection outputs), so the returned logits are unchanged."""
+        if collect_site_outputs is None:
 
-        x, _ = jax.lax.scan(block, self.embed_tokens(inputs), self.stacked)
+            def block(x: Array, layer: LlamaLayer) -> tuple[Array, None]:
+                x = x + layer.attn(rms_norm(x, layer.ln1, self.eps), self.inv_freq)
+                x = x + _clean_mlp_out(layer, rms_norm(x, layer.ln2, self.eps))
+                return x, None
+
+            x, _ = jax.lax.scan(block, self.embed_tokens(inputs), self.stacked)
+            x = rms_norm(x, self.norm, self.eps)
+            return x @ self.lm_head.T
+
+        # Collecting path: same math, additionally stacking each decomposed KIND's frozen output
+        # over layers (matching `_run_masked_forward`'s collect), then indexing the sites.
+        wanted_kinds = tuple({parse_site_name(s)[1] for s in self.site_names})
+
+        def collecting_block(x: Array, layer: LlamaLayer) -> tuple[Array, dict[str, Array]]:
+            attn = layer.attn
+            h1 = rms_norm(x, layer.ln1, self.eps)
+            q = h1 @ attn.wq.T
+            k = h1 @ attn.wk.T
+            v = h1 @ attn.wv.T
+            o = attn.core(q, k, v, self.inv_freq) @ attn.wo.T
+            post_attn = x + o
+            h2 = rms_norm(post_attn, layer.ln2, self.eps)
+            g = h2 @ layer.Wg.T
+            u = h2 @ layer.Wu.T
+            d = (jax.nn.silu(g) * u) @ layer.Wd.T
+            by_kind: dict[str, Array] = {
+                "q": q, "k": k, "v": v, "o": o, "gate": g, "up": u, "down": d,
+            }  # fmt: skip
+            return post_attn + d, {kind: by_kind[kind] for kind in wanted_kinds}
+
+        x, ys = jax.lax.scan(collecting_block, self.embed_tokens(inputs), self.stacked)
+        for site in self.site_names:
+            layer_idx, kind = parse_site_name(site)
+            collect_site_outputs[site] = ys[kind][layer_idx]
         x = rms_norm(x, self.norm, self.eps)
         return x @ self.lm_head.T
 
@@ -676,10 +714,14 @@ class LlamaDecomposedModel(eqx.Module):
         has_delta: bool,
         *,
         remat: bool,
+        collect_site_outputs: dict[str, Array] | None = None,
     ) -> Array:
+        # `collect_site_outputs` (hidden-acts recon aux, SPEC S31 amended) rides this same
+        # forward: the per-`live`-site masked outputs are the `collect` sink of `_run_masked_forward`.
         return self._run_masked_forward(
-            prepared, inputs, masks, delta_masks, routes, live, has_delta, remat, None
-        )
+            prepared, inputs, masks, delta_masks, routes, live, has_delta, remat,
+            collect_site_outputs,
+        )  # fmt: skip
 
     def masked_site_outputs(
         self,

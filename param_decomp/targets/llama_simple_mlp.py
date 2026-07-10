@@ -317,8 +317,13 @@ class SimpleMLPDecomposedModel(eqx.Module):
     def embed_tokens(self, tokens: Int[Array, "b t"]) -> Float[Array, "b t d"]:
         return self.embed[tokens]
 
-    def clean_output(self, inputs: Int[Array, "b t"]) -> Array:
+    def clean_output(
+        self,
+        inputs: Int[Array, "b t"],
+        collect_site_outputs: dict[str, Array] | None = None,
+    ) -> Array:
         """The all-frozen forward — the recon target (SPEC S3)."""
+        assert collect_site_outputs is None, "hidden-acts recon collection is llama8b-only"
         assert inputs.shape[1] <= self.n_ctx, (inputs.shape, self.n_ctx)
         x = self.embed_tokens(inputs)
         for layer in self.layers:
@@ -434,7 +439,10 @@ class SimpleMLPDecomposedModel(eqx.Module):
         has_delta: bool,
         *,
         remat: bool,
+        collect_site_outputs: dict[str, Array] | None = None,
     ) -> Array:
+        assert collect_site_outputs is None, "hidden-acts recon collection is llama8b-only"
+
         # This arch's forward is an unrolled Python loop (heterogeneous per-layer live sites),
         # not a scan, so its natural remat granularity is the whole forward: recompute it in
         # the backward rather than store its activations. `live`/`has_delta` are closed over

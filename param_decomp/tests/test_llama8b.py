@@ -28,10 +28,13 @@ from param_decomp.configs import (
     AdamPGDConfig,
     ChunkwiseSubsetReconLossConfig,
     FaithfulnessLossConfig,
+    HiddenActsReconAux,
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
     PGDReconLossConfig,
     SCScope,
+    StochasticReconLossConfig,
+    StochasticReconSubsetLossConfig,
     UniformKSubsetRoutingConfig,
 )
 from param_decomp.lm import DecomposedModel
@@ -420,6 +423,65 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
         assert V.dtype == jnp.float32 and U.dtype == jnp.float32
     assert isinstance(state.ci_fn, ChunkwiseTransformerCIFn)
     assert state.ci_fn.chunks.in_proj_w.dtype == jnp.float32
+
+
+def test_hidden_acts_recon_aux_logs_and_steps():
+    """The `hidden_acts_recon` aux (SPEC S31 amended) rides recon terms' masked forwards:
+    it collects per-site outputs (route-all AND subset-routed paths) + frozen targets from
+    the clean forward, logs `loss/<name>/hidden_acts`, and a `coeff=0` aux is measure-only."""
+    cfg = _tiny_cfg()
+    seq = 16
+    sites = llama_site_specs(cfg, mlp_family_site_cs(3, 6, 8))
+    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    ci_fn = _build_chunkwise_ci_fn(lm, jax.random.PRNGKey(2), n_blocks=2)
+    opt_vu = optax.adamw(1e-3, weight_decay=0.0)
+    opt_ci = optax.adamw(1e-3, weight_decay=0.0)
+    state = TrainState(
+        components=vu, ci_fn=ci_fn,
+        components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
+        ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+        adversaries={}, step=jnp.zeros((), jnp.int32),
+    )  # fmt: skip
+    loss_terms = build_loss_terms(
+        (
+            FaithfulnessLossConfig(coeff=1.0),
+            ImportanceMinimalityLossConfig(
+                coeff=1e-6, pnorm=2.0, p_anneal_start_frac=0.0, p_anneal_final_p=2.0
+            ),
+            # route-all path, aux ON (enters the loss)
+            StochasticReconLossConfig(
+                coeff=0.5, n_mask_samples=1, hidden_acts_recon=HiddenActsReconAux(coeff=0.1)
+            ),
+            # subset-routed path (exercises the per-position route mask), aux measure-only
+            StochasticReconSubsetLossConfig(
+                name="subset",
+                coeff=0.5,
+                n_mask_samples=1,
+                routing=UniformKSubsetRoutingConfig(),
+                hidden_acts_recon=HiddenActsReconAux(coeff=0.0),
+            ),
+        ),
+        lm.site_names,
+    )
+    assert loss_terms.recon[0].hidden_acts is not None
+    step = make_train_step(
+        lm=lm,
+        losses=loss_terms,
+        components_optimizer=opt_vu,
+        ci_fn_optimizer=opt_ci,
+        total_steps=100,
+        remat_recon_forwards=True,
+        remat_ci_fn=False,
+        mesh=None,
+    )
+    tokens = jax.random.randint(jax.random.PRNGKey(4), (2, seq), 0, cfg.vocab_size)
+    state, m = step(lm, state, tokens, jax.random.PRNGKey(100))
+    assert all(jnp.isfinite(jnp.array(list(m.values()))).all() for _ in [m])
+    # both paths log a non-negative MSE (route-all + subset-routed)
+    assert float(m["loss/StochasticReconLoss/hidden_acts"]) >= 0.0
+    assert float(m["loss/subset/hidden_acts"]) >= 0.0
+    assert int(state.step) == 1
 
 
 def test_faith_warmup_decreases_faith():

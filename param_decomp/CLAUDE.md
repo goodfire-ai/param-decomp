@@ -9,7 +9,12 @@ deliberately refused. The hidden-acts seam is now BUILT (SPEC S31 amended 2026-0
 `CIHiddenActsReconLoss` / `StochasticHiddenActsReconLoss` are standalone eval metrics
 (`hidden_acts_eval.py`, computed in-loop on `eval.slow_every`) over
 a fifth model fn `masked_site_outputs` — NOT recon-grid training terms (the recon loss
-stays KL-on-final-logits). `sc` and `bsc` are supported (`bsc` is batch-sharded:
+stays KL-on-final-logits). SPEC S31 further amended 2026-07-10 (pending Oli sign-off): a
+hidden-acts recon *training* aux exists as `hidden_acts_recon: {coeff}` on any
+`ReconLossConfig` — it rides the host recon term's masked forward (`collect_site_outputs`
+sink on `masked_output`) + the clean forward (same sink on `clean_output`, llama8b only),
+route-masks the per-site MSE, adds `coeff·MSE` to the loss and logs `loss/<host>/hidden_acts`
+(`coeff: 0` = measure-only). Absent config ⇒ no collection, no overhead. `sc` and `bsc` are supported (`bsc` is batch-sharded:
 an independent source per batch element and position, no cross-replica sync — SPEC
 S16/D1). Persistent `start_frac>0` is now implemented (SPEC S32, `term_active`
 `where`-gating); SPEC S24's two torch-parity quirks (PPGD warmup route-all, fresh-PGD

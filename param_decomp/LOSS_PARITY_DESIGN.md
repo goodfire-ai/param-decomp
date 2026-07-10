@@ -286,7 +286,14 @@ calls a conceptual no-no. Oli's stance (hidden-acts ≈ eval metric) matches the
 plumbing reality: it is already in `OFFLINE_EVAL_METRIC_TYPES` and `pd-offline-eval`
 computes it bit-faithfully on exported checkpoints. **Decided (SPEC S31):
 keep-on-bridge; do not build the seam unless a training-loss use case appears, and
-then as an explicit amendment to S31.** (Note: PPGD's eval-time hidden-acts extras
+then as an explicit amendment to S31.** **UPDATE 2026-07-10: that use case appeared** —
+the training form is now the `hidden_acts_recon: {coeff}` aux on any `ReconLossConfig`,
+sharing the host recon term's masked forward (no separate seam-per-term, no extra
+forwards; llama8b only). The three strains above are resolved: (i) no new per-target fn
+(reuses `masked_output`/`clean_output` collect sinks); (ii) the per-element MSE is
+route-masked and additive, not folded into the KL grid; (iii) the site-local-recon
+objection is accepted deliberately (SPEC S31 amendment, pending Oli sign-off). (Note:
+PPGD's eval-time hidden-acts extras
 in `_accum_hidden_acts` are eval-only decoration on the metric, not part of the
 training loss — they ride the same bridge.)
 

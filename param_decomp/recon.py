@@ -23,11 +23,13 @@ from param_decomp.configs import (
     AllRoutingConfig,
     AnyImportanceMinimalityLossConfig,
     AnyLossMetricConfig,
+    AnyReconLossConfig,
     ChunkwiseSubsetReconLossConfig,
     CIMaskedReconLayerwiseLossConfig,
     CIMaskedReconLossConfig,
     CIMaskedReconSubsetLossConfig,
     FaithfulnessLossConfig,
+    HiddenActsReconAux,
     ImportanceMinimalityLossConfig,
     MaskScopeLiteral,
     PersistentPGDReconLossConfig,
@@ -130,11 +132,14 @@ ReconPlan = tuple[ReconForward, ...]
 class ReconLossTerm:
     """One coefficiented recon loss: mean over ALL draws of ALL plan entries of
     `kl_per_position` (SPEC S10'). `name` is the torch `instance_key` (`cfg.name` or
-    the type literal) — the metric log key is `loss/<name>`."""
+    the type literal) — the metric log key is `loss/<name>`. `hidden_acts` (when set)
+    adds the site-local hidden-acts MSE auxiliary riding this term's masked forwards
+    (SPEC S31 amended); its contribution is logged separately as `loss/<name>/hidden_acts`."""
 
     name: str
     coeff: float
     plan: ReconPlan
+    hidden_acts: HiddenActsReconAux | None
 
 
 @dataclass(frozen=True)
@@ -346,9 +351,9 @@ def build_loss_terms(
         assert name not in taken, f"duplicate loss instance_key {name!r}"
         return name
 
-    def recon(cfg: AnyLossMetricConfig, plan: ReconPlan) -> ReconLossTerm:
+    def recon(cfg: AnyReconLossConfig, plan: ReconPlan) -> ReconLossTerm:
         assert cfg.coeff is not None
-        return ReconLossTerm(unique_name(cfg), cfg.coeff, plan)
+        return ReconLossTerm(unique_name(cfg), cfg.coeff, plan, cfg.hidden_acts_recon)
 
     for cfg in loss_metrics:
         assert cfg.coeff is not None, f"{cfg.type}: training losses need a coeff"
@@ -433,8 +438,9 @@ def build_loss_terms(
                 )
                 recon_terms.append(recon(cfg, plan))
             case _:
-                # StochasticHiddenActsReconLoss lands here by design: it is keep-on-bridge
-                # (offline-eval only), not a JAX training loss (SPEC S31, LOSS_PARITY_DESIGN §4c).
+                # The standalone StochasticHiddenActsReconLoss stays eval-only (offline metric);
+                # its TRAINING form is the `hidden_acts_recon` aux on a recon term (SPEC S31
+                # amended), not a top-level loss type. Anything else is genuinely unsupported.
                 raise AssertionError(f"unsupported training loss {cfg.type!r}")
 
     assert faith is not None and imp is not None, (

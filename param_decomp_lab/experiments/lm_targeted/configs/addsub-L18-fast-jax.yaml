@@ -6,7 +6,7 @@ cadence:
 data:
   tokenizer_name: meta-llama/Llama-3.1-8B
   prompts_file: param_decomp_lab/experiments/lm_targeted/prompts/arithmetic_add_1_100.txt
-  max_seq_len: 16
+  max_seq_len: 8
   add_special_tokens: true
 nontarget:
   batch_size: 128
@@ -119,7 +119,7 @@ pd:
   seed: 0
   steps: 20000
 runtime:
-  remat_recon_forwards: false
+  remat_recon_forwards: true
   dp: 2
   launch_env:
     env:

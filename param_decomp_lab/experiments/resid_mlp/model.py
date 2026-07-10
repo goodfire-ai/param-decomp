@@ -380,7 +380,12 @@ class ResidMLPDecomposedModel(eqx.Module):
     ) -> Array:
         return resid_mlp_mse(masked_output, clean_output)
 
-    def clean_output(self, resid: Float[Array, "B d_embed"]) -> Array:
+    def clean_output(
+        self,
+        resid: Float[Array, "B d_embed"],
+        collect_site_outputs: dict[str, Array] | None = None,
+    ) -> Array:
+        assert collect_site_outputs is None, "hidden-acts recon collection is llama8b-only"
         return clean_output(self.target, resid)
 
     def read_activations(
@@ -404,7 +409,10 @@ class ResidMLPDecomposedModel(eqx.Module):
         has_delta: bool,
         *,
         remat: bool,
+        collect_site_outputs: dict[str, Array] | None = None,
     ) -> Array:
+        assert collect_site_outputs is None, "hidden-acts recon collection is llama8b-only"
+
         def forward(
             vu: DecompVU,
             resid: Array,

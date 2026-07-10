@@ -64,8 +64,8 @@ class _PositionlessStub(eqx.Module):
         del masked_output, clean_output
         raise AssertionError("positionless stub fn must not be called")
 
-    def clean_output(self, resid: Any) -> Any:
-        del resid
+    def clean_output(self, resid: Any, collect_site_outputs: Any = None) -> Any:
+        del resid, collect_site_outputs
         raise AssertionError("positionless stub fn must not be called")
 
     def read_activations(self, resid: Any, wanted: tuple[str, ...]) -> dict[str, jax.Array]:
@@ -86,8 +86,9 @@ class _PositionlessStub(eqx.Module):
         has_delta: bool,
         *,
         remat: bool,
+        collect_site_outputs: Any = None,
     ) -> Any:
-        del vu, resid, masks, delta_masks, routes, live, has_delta, remat
+        del vu, resid, masks, delta_masks, routes, live, has_delta, remat, collect_site_outputs
         raise AssertionError("positionless stub fn must not be called")
 
     def masked_site_outputs(

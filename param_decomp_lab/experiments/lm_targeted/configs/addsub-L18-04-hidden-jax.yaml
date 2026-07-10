@@ -109,6 +109,8 @@ pd:
     routing:
       type: uniform_k_subset
     type: StochasticReconSubsetLoss
+    hidden_acts_recon:
+      coeff: 0.001
   - coeff: 0.5
     scope:
       type: sc
