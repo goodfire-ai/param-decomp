@@ -143,6 +143,7 @@ _METRIC_KEYS = {
     "gamma_imp": "train/schedules/gamma_imp",
     "src_lr": "train/schedules/lr/src",
     "step_time_s": "train/perf/step_time_s",
+    "compile_s": "train/perf/compile_s",
     "elapsed_s": "train/perf/elapsed_s",
     "eta_s": "train/perf/eta_s",
 }
@@ -481,6 +482,11 @@ def run_decomposition_training(
     """
     is_main = jax.process_index() == 0
     ndev = mesh.devices.size
+    if profile.log_compiles:
+        # Before the first compile (init/warmup jits included). The lines land on stderr via
+        # logging's last-resort handler; `log.py` keeps jax's loggers enabled for this.
+        jax.config.update("jax_log_compiles", True)
+        jax.config.update("jax_explain_cache_misses", True)
     # Activate the mesh so bare-PartitionSpec `with_sharding_constraint`s inside the forward
     # resolve (the attn q/k/v batch-sharding pin in `FrozenAttn.core`, needed for cuDNN
     # flash attention under the scan+cond masked forward). Explicit NamedShardings elsewhere
@@ -537,6 +543,7 @@ def run_decomposition_training(
     sink = MetricsSink.for_run(run, wandb_config, is_main)
     window_t0 = loop_t0 = time.time()
     last_logged = start_step
+    first_step_s: float | None = None
     grad_norm_summary_window: list[dict[str, jax.Array]] = []
 
     # Profiler hook: trace over steady-state steps. Trace lands in run_dir/profile (rank-0 only).
@@ -694,6 +701,19 @@ def run_decomposition_training(
             batch = sample_batch(step)
             state, metrics = step_fn(lm, state, batch, random.fold_in(run_key, step))
 
+        if step == start_step:
+            # First-step wall time is the jit_step compile (persistent-cache miss, ~minutes
+            # at scale) or the cache load (seconds) plus one execution — logged one-shot as
+            # `train/perf/compile_s` instead of folding silently into the first
+            # `step_time_s` window. The window restarts here so `step_time_s` stays a
+            # steady-state number.
+            jax.block_until_ready((state, metrics["total"]))
+            first_step_s = time.time() - window_t0
+            if is_main:
+                print(f"first step (compile or cache load): {first_step_s:.1f}s", flush=True)
+            window_t0 = time.time()
+            last_logged = step + 1
+
         grad_norm_summary_window.append(
             {k: v for k, v in metrics.items() if k.startswith("grad_norms/summary/")}
         )
@@ -735,6 +755,9 @@ def run_decomposition_training(
                     f"non-finite loss {loss_name!r} at step {now_step}: {record[loss_name]}"
                 )
             record["step_time_s"] = per_step
+            if first_step_s is not None:  # one-shot, on the first train log after start
+                record["compile_s"] = first_step_s
+                first_step_s = None
             record["elapsed_s"] = time.time() - loop_t0
             record["eta_s"] = (pd.steps - now_step) * per_step
             # the LR this step applied (optax count is the pre-increment `step` == now_step - 1)

@@ -626,7 +626,8 @@ class ProfileConfig(BaseConfig):
     `mem_profile` (static + runtime memory analysis, then exits), `time_steps` (per-step wall
     breakdown), `trace` (perfetto trace over `trace_start`..`trace_start+trace_steps`),
     `profile_max_events` (raise the perfetto GPU-activity event cap), `async_test`,
-    `leaf_bench`, `no_checkpoint` (skip ALL saves — throwaway profiling only).
+    `leaf_bench`, `log_compiles` (per-compile jax log lines + cache-miss explanations),
+    `no_checkpoint` (skip ALL saves — throwaway profiling only).
     """
 
     mem_profile: bool = False
@@ -643,6 +644,11 @@ class ProfileConfig(BaseConfig):
     with `trace`."""
     async_test: bool = False
     leaf_bench: bool = False
+    log_compiles: bool = False
+    """Promote jax's per-compile trace/compile log lines to WARNING (`jax_log_compiles`) and
+    explain every tracing-cache miss (`jax_explain_cache_misses`) — the recompile-hunting
+    view. `log.py` keeps jax's loggers alive (`disable_existing_loggers: False`) for exactly
+    this."""
     no_checkpoint: bool = False
 
 
