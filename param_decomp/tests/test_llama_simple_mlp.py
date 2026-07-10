@@ -44,7 +44,6 @@ from param_decomp.targets.llama_simple_mlp import (
     SimpleMLPLayer,
     build_decomposed_simple_mlp,
     canonical_site_cs,
-    expand_wildcard_site_cs,
     parse_site_name,
     site_name,
     site_specs,
@@ -161,24 +160,6 @@ def test_site_name_helpers():
     )
     with pytest.raises(AssertionError):
         canonical_site_cs((SiteC("h.0.mlp.c_fc", 4), SiteC("h.0.mlp.c_fc", 8)))
-
-
-def test_expand_wildcard_site_cs():
-    expanded = expand_wildcard_site_cs(
-        (SiteC("h.*.mlp.c_fc", 8), SiteC("h.*.attn.q_proj", 4), SiteC("h.1.mlp.down_proj", 16)),
-        n_layer=2,
-    )
-    assert expanded == (
-        SiteC("h.0.attn.q_proj", 4),
-        SiteC("h.0.mlp.c_fc", 8),
-        SiteC("h.1.attn.q_proj", 4),
-        SiteC("h.1.mlp.c_fc", 8),
-        SiteC("h.1.mlp.down_proj", 16),
-    )
-    with pytest.raises(AssertionError, match="duplicate"):
-        expand_wildcard_site_cs((SiteC("h.*.mlp.c_fc", 8), SiteC("h.0.mlp.c_fc", 4)), n_layer=2)
-    with pytest.raises(AssertionError, match="unsupported site name"):
-        expand_wildcard_site_cs((SiteC("h.*.mlp.gate_proj", 8),), n_layer=2)
 
 
 def test_site_specs_dims():
@@ -475,21 +456,21 @@ def test_decomp_vu_shapes_fp32():
 
 
 _REAL_CACHE_DIR = Path("/mnt/data/artifacts/mechanisms/param-decomp/pretrain_cache/spd-t-9d2b8f02")
-_PRODUCTION_PATTERN_CS = {
-    "h.*.mlp.c_fc": 3072,
-    "h.*.mlp.down_proj": 3584,
-    "h.*.attn.q_proj": 512,
-    "h.*.attn.k_proj": 512,
-    "h.*.attn.v_proj": 1024,
-    "h.*.attn.o_proj": 1024,
+_PRODUCTION_CS = {
+    "c_fc": 3072,
+    "down_proj": 3584,
+    "q_proj": 512,
+    "k_proj": 512,
+    "v_proj": 1024,
+    "o_proj": 1024,
 }
 """The pile production decomposition (torch `pile_llama_simple_mlp-4L.yaml`)."""
 
 
 @pytest.mark.skipif(not _REAL_CACHE_DIR.exists(), reason="t-9d2b8f02 pretrain cache not mounted")
-def test_pretrained_target_converts_with_wildcards():
-    """`kind: pretrained` LlamaSimpleMLP target specs convert, expanding `h.*`
-    wildcard decomposition patterns over the checkpoint's n_layer (4)."""
+def test_pretrained_target_converts_with_all_layers():
+    """`kind: pretrained` LlamaSimpleMLP target specs convert, tiling the simple_mlp
+    c-spec over the checkpoint's n_layer (4)."""
     import yaml
 
     from param_decomp.built_run import DataConfig
@@ -508,9 +489,11 @@ def test_pretrained_target_converts_with_wildcards():
         ),
         "run_path": "goodfire/spd/runs/t-9d2b8f02",
     }
-    raw["pd"]["decomposition_targets"] = [
-        {"module_pattern": pattern, "C": C} for pattern, C in _PRODUCTION_PATTERN_CS.items()
-    ]
+    raw["decomposition"]["sites"] = {
+        "kind": "simple_mlp",
+        "layers": {"kind": "all"},
+        "cs": dict(_PRODUCTION_CS),
+    }
     raw["data"]["max_seq_len"] = 512  # the model's n_ctx
 
     cfg = build_experiment_config(LMExperimentConfig(**raw), "p-00000000")

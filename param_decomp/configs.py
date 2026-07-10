@@ -1,14 +1,15 @@
 """The torch-free pydantic config schema for the algorithm core.
 
 Every algorithm-level config class lives here (or in the sibling `base_config` /
-`schedule` modules): routing, decomposition targets, the CI-fn config tree,
+`schedule` modules): routing, the decomposition site (C) specs, the CI-fn config tree,
 loss-metric configs, eval-metric configs, the top-level `PDConfig` / `RuntimeConfig` /
 `Cadence`, and the `wandb.config` shaping helpers. Depends only on pydantic / numpy /
 pyyaml / annotated-types (via `base_config`), so non-trainer consumers validate the same
 YAML run configs without pulling jax/wandb.
 
-Experiment-level schema (the `ExperimentConfig[T, D]` generic and its LM / TMS / ResidMLP
-subclasses) lives lab-side under `param_decomp_lab/experiments/`.
+Experiment-level schema (the `ExperimentConfig` base and its LM / TMS / ResidMLP
+subclasses, each binding concrete `target`/`decomposition`/`data` sections) lives
+lab-side under `param_decomp_lab/experiments/`.
 """
 
 from pathlib import Path

@@ -17,9 +17,13 @@ from param_decomp_lab.experiments.lm.launch import (
 
 _MINIMAL_LM = {
     "run_name": "r",
-    "pd": {
-        "seed": 0,
-        "ci_config": {
+    "decomposition": {
+        "sites": {
+            "kind": "glu_transformer",
+            "layers": {"kind": "list", "indices": [0]},
+            "cs": {"gate": 4},
+        },
+        "ci": {
             "type": "chunkwise_transformer",
             "blocks_per_chunk": 1,
             "d_model": 16,
@@ -27,7 +31,9 @@ _MINIMAL_LM = {
             "n_heads": 1,
             "mlp_hidden": 16,
         },
-        "decomposition_targets": [{"module_pattern": "layers.0.mlp.gate_proj", "C": 4}],
+    },
+    "pd": {
+        "seed": 0,
         "components_optimizer": {"lr_schedule": {"start_val": 1e-4, "fn_type": "cosine"}},
         "ci_fn_optimizer": {"lr_schedule": {"start_val": 1e-4, "fn_type": "cosine"}},
         "steps": 10,
