@@ -18,6 +18,7 @@ from matplotlib.figure import Figure
 
 from param_decomp.ci_fn import lower_leaky_hard_sigmoid
 from param_decomp.components import DecompVU
+from param_decomp.jit_util import filter_jit
 from param_decomp.lm import DecomposedModel
 from param_decomp.train import COMPUTE_DT, cast_floating
 
@@ -80,7 +81,10 @@ over the REAL (`< n_valid_rows`) rows only. `model` (frozen-weight-bearing) is t
 
 
 def make_arithmetic_grid_step(
-    lm: ComponentActivationModel, answer_position: int, n_valid_rows: int
+    lm: ComponentActivationModel,
+    answer_position: int,
+    n_valid_rows: int,
+    compiler_options: dict[str, bool | int | str] | None = None,
 ) -> ArithmeticGridStep:
     """Build the jit'd step returning, at `answer_position` with the batch axis KEPT as the
     grid, BOTH per-component lower-leaky CI (from the CI fn) and the pre-mask activation `x@V`
@@ -93,7 +97,6 @@ def make_arithmetic_grid_step(
 
     # HLO-baking rule: read STATIC config (site_names, Cs) off the closed-over `lm`; all array
     # access goes through the traced `model` arg.
-    @eqx.filter_jit
     def step(
         model: ComponentActivationModel,
         components: DecompVU,
@@ -123,9 +126,11 @@ def make_arithmetic_grid_step(
         max_ci = {s: jnp.where(valid, ci[s], -jnp.inf).max(axis=0) for s in site_names}
         return ci, xv, max_ci
 
-    return step
+    return filter_jit(step, compiler_options=compiler_options)
 
 
+# Trivial gather; deliberately compiled WITHOUT `compiler_options` (module-level, no config
+# in scope — GPU compiler flags don't move a `jnp.take`).
 @eqx.filter_jit
 def _take_columns(per_prompt: Float[Array, "n_pad C"], idx: Int[Array, " k"]) -> Array:
     return jnp.take(per_prompt, idx, axis=1)

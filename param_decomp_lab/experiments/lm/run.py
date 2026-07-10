@@ -217,7 +217,9 @@ def _make_arithmetic_eval(
     probe = build_arithmetic_probe(arith.operation, arith.a_range, arith.b_range, tokenizer)
     n_prompts = probe.tokens.shape[0]
     return _ArithmeticEval(
-        step=make_arithmetic_grid_step(lm, probe.answer_position, n_prompts),
+        step=make_arithmetic_grid_step(
+            lm, probe.answer_position, n_prompts, compiler_options=compiler_options
+        ),
         probe_eval_step=make_eval_step(
             lm,
             eval_cfg.rounding_threshold,

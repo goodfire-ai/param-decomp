@@ -27,7 +27,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Int
@@ -36,6 +35,7 @@ from param_decomp.built_run import BuiltRun
 from param_decomp.checkpoint import make_checkpoint_manager, restore_latest, restore_step
 from param_decomp.ci_fn import CIFn
 from param_decomp.components import DecompVU
+from param_decomp.jit_util import filter_jit
 from param_decomp.lm import DecomposedModel
 from param_decomp.run_state import build_optimizers, init_train_state
 from param_decomp.sharding import hsdp_mesh, place_via_shardings
@@ -176,7 +176,6 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
 
     # `model` is the filter_jit ARG (frozen weights traced, not baked). It embeds the token
     # ids internally — the harvest forward feeds tokens straight in.
-    @eqx.filter_jit
     def forward(
         model: DecomposedModel,
         components: DecompVU,
@@ -210,7 +209,9 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
         config=cfg,
         vocab_size=vocab_size,
         _state=state,
-        _forward=forward,
+        # The run's pinned `compiler_options` so the consumer forward compiles with the
+        # same XLA flags as training (they enter the compile-cache key).
+        _forward=filter_jit(forward, compiler_options=cfg.runtime.compiler_options),
     )
 
 
