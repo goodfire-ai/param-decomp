@@ -1,0 +1,35 @@
+.render-perf__container {
+	position: fixed;
+	pointer-events: none;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	box-sizing: border-box;
+	z-index: 1000000000;
+}
+
+.render-perf__box {
+	box-sizing: border-box;
+	font-family: sans-serif;
+	display: block;
+	position: fixed;
+	pointer-events: none;
+	border: 1px solid #2189b5;
+	background-color: rgba(33, 137, 181, 0.05);
+	transition: opacity 0.25s;
+}
+
+.render-perf__title {
+	display: inline-block;
+	min-width: max-content;
+	box-sizing: content-box;
+	font-size: 0.75rem;
+	border: 1px solid #2189b5;
+	border-bottom: none;
+	padding: 0.125rem 0.5rem;
+	color: white;
+	background-color: #2189b5;
+	position: relative;
+	top: -1.5rem;
+}
