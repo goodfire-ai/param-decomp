@@ -578,9 +578,12 @@ class AdamWOptimizerConfig(BaseConfig):
 
 
 class MuonOptimizerConfig(BaseConfig):
-    """Muon (`optax.contrib.muon`): Newton-Schulz-orthogonalized momentum for the group's 2D
-    leaves; non-2D leaves fall back to Adam(0.9, 0.999) at the same LR. Experimental
-    (non-canonical) — the V/U components tree is all-2D so the fallback never fires there."""
+    """Muon (`optax.contrib.muon`): Newton-Schulz-orthogonalized momentum for the group's
+    matrix leaves; the rest fall back to Adam(0.9, 0.999) at the same LR. Experimental
+    (non-canonical). Which leaves are matrices is per-group (`run_state.build_optimizers`):
+    the V/U components tree is all-2D (fallback never fires); the chunkwise CI fn is
+    per-chunk stacks, so its 3D leaves are muon'd over the trailing two axes (chunk axis
+    batched) and its 2D bias stacks take the fallback; the MLP CI fns use the plain 2D rule."""
 
     type: Literal["muon"]
     lr_schedule: ScheduleConfig = Field(..., description="Learning rate schedule")

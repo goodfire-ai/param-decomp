@@ -17,6 +17,7 @@ from pydantic import TypeAdapter
 from param_decomp.configs import AdamWOptimizerConfig, AnyOptimizerConfig, MuonOptimizerConfig
 from param_decomp.run_state import (
     _optimizer_with_clip,
+    chunk_stacked_muon_dimension_numbers,
     clip_by_global_norm_with_eps,
     torch_cosine_schedule,
 )
@@ -113,7 +114,7 @@ def test_muon_orthogonalizes_2d_leaves_and_adam_falls_back_elsewhere():
         grad_clip_norm=0.01,
     )
     lr = 1e-3
-    opt = _optimizer_with_clip(muon_cfg, lambda count: jnp.float32(lr))
+    opt = _optimizer_with_clip(muon_cfg, lambda count: jnp.float32(lr), None)
     key = jax.random.key(0)
     params = {"V": jnp.zeros((16, 8)), "scale": jnp.zeros((8,))}
     grads = {
@@ -137,6 +138,49 @@ def test_muon_orthogonalizes_2d_leaves_and_adam_falls_back_elsewhere():
     assert bool(jnp.all(jnp.isfinite(updates["scale"])))
     assert 0.3 * lr < scale_update_magnitude < 3 * lr, (
         f"non-2D leaf takes an Adam-fallback step of O(lr), got {scale_update_magnitude}"
+    )
+
+
+def test_muon_chunk_stacked_dimension_numbers_orthogonalize_3d_and_adam_2d_bias_stacks():
+    """SPEC S20 amendment (2026-07-11): under `chunk_stacked_muon_dimension_numbers` a 3D
+    `[n_chunks, d_in, d_out]` matrix stack is NS-orthogonalized per chunk slice, while a 2D
+    `[n_chunks, d]` bias stack takes the Adam fallback — the reverse of optax's default 2D
+    rule, which on the chunkwise CI-fn tree would orthogonalize the bias stacks."""
+    muon_cfg = MuonOptimizerConfig(
+        type="muon",
+        lr_schedule=ScheduleConfig(
+            fn_type="cosine", start_val=1e-3, final_val_frac=0.1, warmup_pct=0.0
+        ),
+        grad_clip_norm=None,
+    )
+    lr = 1e-3
+    opt = _optimizer_with_clip(
+        muon_cfg, lambda count: jnp.float32(lr), chunk_stacked_muon_dimension_numbers
+    )
+    key = jax.random.key(0)
+    n_chunks = 3
+    params = {"w": jnp.zeros((n_chunks, 16, 8)), "b": jnp.zeros((n_chunks, 8))}
+    grads = {
+        "w": jax.random.normal(key, (n_chunks, 16, 8)),
+        "b": jax.random.normal(jax.random.fold_in(key, 1), (n_chunks, 8)),
+    }
+    updates, _ = opt.update(grads, opt.init(params), params)
+    _, treedef = jax.tree.flatten(grads)
+    updates = jax.tree.unflatten(treedef, jax.tree.leaves(updates))
+
+    for chunk in range(n_chunks):
+        grad_sv = jnp.linalg.svd(grads["w"][chunk], compute_uv=False)
+        update_sv = jnp.linalg.svd(updates["w"][chunk], compute_uv=False)
+        grad_flatness = float(grad_sv.max() / grad_sv.min())
+        update_flatness = float(update_sv.max() / update_sv.min())
+        assert update_flatness < 2.0 and update_flatness < grad_flatness / 2, (
+            f"chunk {chunk}: 3D stack slice must be near-orthogonal:"
+            f" grad {grad_flatness:.2f} -> update {update_flatness:.2f}"
+        )
+    bias_update_magnitude = float(jnp.abs(updates["b"]).max())
+    assert bool(jnp.all(jnp.isfinite(updates["b"])))
+    assert 0.3 * lr < bias_update_magnitude < 3 * lr, (
+        f"2D bias stack takes an Adam-fallback step of O(lr), got {bias_update_magnitude}"
     )
 
 
