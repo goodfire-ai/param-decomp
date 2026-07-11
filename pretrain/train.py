@@ -37,6 +37,7 @@ from jax.typing import ArrayLike
 from jaxtyping import Array, Float, Int
 from orbax.checkpoint.type_handlers import ArrayHandler, register_type_handler
 
+from param_decomp.compile_cache import ensure_group_writable_cache_dirs
 from param_decomp.data import BatchSchedule, ShardServer, scan_shards
 from param_decomp.sharding import hsdp_mesh, init_distributed
 from pretrain.cache import (
@@ -396,6 +397,7 @@ def _maybe_enable_compilation_cache(cfg: PretrainConfig) -> None:
     if cfg.out_dir is None:
         return
     cache = cfg.out_dir.parent / "xla_compilation_cache"
+    ensure_group_writable_cache_dirs(cache)
     jax.config.update("jax_compilation_cache_dir", str(cache))
     jax.config.update("jax_persistent_cache_min_compile_time_secs", 60)
 

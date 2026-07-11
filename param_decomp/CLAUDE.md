@@ -300,6 +300,14 @@ write cache entries from the first process … contention for writes on some fil
 so all ranks read but only rank 0 writes — no shared-FS race. Requires the cache dir on a
 shared FS, which `$PARAM_DECOMP_OUT_DIR` already is.
 
+The cache dir is shared across USERS, and jax >= 0.10 auto-enables the XLA per-fusion
+autotune side cache under it — whose dirs XLA creates itself with hardcoded 0755
+(umask-independent), so whichever user ran first used to lock everyone else out
+(PERMISSION_DENIED at the first train step). Every jax entrypoint therefore pre-creates
+the cache tree group-writable via `compile_cache.ensure_group_writable_cache_dirs`
+before jax initializes the cache (trainer: rank 0 in the LM composition root;
+pretrainer: `_maybe_enable_compilation_cache`).
+
 ### Compile time (measured 2026-07-06 probe grid; full data in PR #956)
 
 - **Keep seeded inits few-outputs-under-jit**: a jit returning n_sites (hundreds of)

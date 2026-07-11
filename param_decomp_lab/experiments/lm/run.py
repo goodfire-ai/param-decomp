@@ -61,6 +61,7 @@ from param_decomp.built_run import (
     EvalConfig,
     TargetSites,
 )
+from param_decomp.compile_cache import ensure_group_writable_cache_dirs
 from param_decomp.configs import ResumeProvenance
 from param_decomp.data import BatchSchedule, ShardServer, scan_shards
 from param_decomp.eval import make_eval_step
@@ -114,7 +115,10 @@ def _enable_persistent_compilation_cache(out_dir: Path) -> Path:
     ranks point at the same shared-FS path. Only process 0 writes (jax gates the write on
     `process_id == 0` to avoid shared-FS write contention); every rank reads. Must run
     after `init_distributed` (the rank gate reads the distributed state) and before the
-    first compile."""
+    first compile. jax >= 0.10 also auto-enables the XLA per-fusion autotune side cache
+    under this dir; rank 0 pre-creates its dirs group-writable
+    (`ensure_group_writable_cache_dirs`) because XLA would create them 0755, locking
+    every other user out of the shared cache."""
     cache_dir = out_dir.parent / "xla_compilation_cache"
     jax.config.update("jax_compilation_cache_dir", str(cache_dir))
     jax.config.update("jax_persistent_cache_min_compile_time_secs", 60.0)
@@ -560,7 +564,7 @@ def main(config: Path, run_id: str) -> None:
 
     is_main = jax.process_index() == 0
     if is_main:
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        ensure_group_writable_cache_dirs(cache_dir)
         built.run.run_dir.mkdir(parents=True, exist_ok=True)
         setup_logger(built.run.run_dir / "logs.log")
         _pin_config_copy(built.run.run_dir, LAUNCH_CONFIG_FILENAME, config)
