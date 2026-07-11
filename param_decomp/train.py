@@ -378,7 +378,14 @@ def make_train_step(
             # checkpointed block (mask never held, the memory win); others fall back to building
             # masks then `masked_output`. Either way the engine holds no per-forward mask stacks.
             ci_stacked = model.stack_ci(ci.lower)
-            faith_loss = faithfulness_loss(model.weight_deltas(components))
+            # Remat: the loss reduce's backward needs the deltas (grad = 2Δ/N), so a target
+            # returning stacked deltas would otherwise keep every [n_sites, d_out, d_in]
+            # fp32 stack alive from forward to backward (≈ a full fp32 model of stored
+            # temps; +3.3GiB/rank static temp measured at dp32). Recomputing them in the
+            # backward is one matmul per stack.
+            faith_loss = jax.checkpoint(
+                lambda components_: faithfulness_loss(model.weight_deltas(components_))
+            )(components)
             imp_lp, imp_freq = imp_min_terms(ci.upper, imp_min, imp_min_param)
 
             term_losses: list[Array] = []
@@ -542,6 +549,9 @@ def make_faith_warmup_step(
     def warmup_step(
         model: DecomposedModel, components: DecompVU, opt_state: optax.OptState
     ) -> tuple[DecompVU, optax.OptState, Array]:
+        # jax.checkpoint for the same reason as the train step's faith term: don't store
+        # the delta stacks for the backward, recompute them.
+        @jax.checkpoint
         def loss_fn(components_: DecompVU) -> Array:
             return faithfulness_loss(model.weight_deltas(components_))
 

@@ -946,6 +946,7 @@ class LlamaDecomposedModel(eqx.Module):
         for spec in self.sites:
             layer, kind = parse_site_name(spec.name)
             layers_by_kind.setdefault(kind, []).append(layer)
+
         out: dict[str, Array] = {}
         for kind, layers in layers_by_kind.items():
             all_layers = _frozen_site_weight(self.stacked, kind)
