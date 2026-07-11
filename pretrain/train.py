@@ -38,6 +38,7 @@ from jaxtyping import Array, Float, Int
 from orbax.checkpoint.type_handlers import ArrayHandler, register_type_handler
 
 from param_decomp.data import BatchSchedule, ShardServer, scan_shards
+from param_decomp.donation import buffer_bytes_by_ptr, warn_if_not_donated
 from param_decomp.sharding import hsdp_mesh, init_distributed
 from pretrain.cache import (
     cache_dir_for,
@@ -119,7 +120,9 @@ def make_train_step(cfg: PretrainConfig, optimizer: optax.GradientTransformation
     compute_dtype = jnp.bfloat16 if cfg.dtype == "bfloat16" else jnp.float32
     block = cfg.block_size
 
-    @eqx.filter_jit
+    # Donate everything: the loop rebinds `state` every step (holding old+new state live
+    # would double the resident model+Adam memory) and `tokens` is fresh per step.
+    @eqx.filter_jit(donate="all")
     def step_fn(state: TrainState, tokens: Int[Array, "b tplus1"]) -> tuple[TrainState, Array]:
         def loss_fn(model: PretrainModel) -> Array:
             cast_model = _cast_arrays(model, compute_dtype)
@@ -188,12 +191,18 @@ def _save(mgr: ocp.CheckpointManager, step: int, state: TrainState) -> None:
 def _restore_latest(
     mgr: ocp.CheckpointManager, reference: TrainState
 ) -> tuple[TrainState, int] | None:
+    """Restore the newest checkpoint onto `reference`'s shapes/shardings, re-materialised
+    as jit outputs: orbax-restored arrays are not reliably donatable to the jitted train
+    step (jax#18617), and a dispatch-time donation failure silently copies — the first
+    resumed step then peaks one full `TrainState` above steady state (the resume OOM
+    mechanism, `param_decomp.checkpoint.restore_step`'s precedent)."""
     step = mgr.latest_step()
     if step is None:
         return None
     abstract = jax.tree.map(ocp.utils.to_shape_dtype_struct, reference)
     restored = mgr.restore(step, args=ocp.args.StandardRestore(abstract))
-    return cast(TrainState, restored), step
+    rematerialize = jax.jit(lambda t: t, out_shardings=jax.tree.map(lambda r: r.format, reference))
+    return cast(TrainState, rematerialize(restored)), step
 
 
 class MetricsSink:
@@ -287,10 +296,18 @@ def train(cfg: PretrainConfig) -> None:
     tokens_per_step = cfg.global_batch * cfg.block_size
     window_t0 = time.time()
 
+    # The restored state should donate like fresh state (rematerialised in
+    # `_restore_latest`); dispatch-time failure is silent, so check the first resumed step.
+    resumed_state_buffers = buffer_bytes_by_ptr(state) if start_step > 0 else None
+
     for step in range(start_step, cfg.num_iterations):
         tokens = _global_token_batch(server.local_batch(step), mesh, cfg.global_batch)
         state, loss = step_fn(state, tokens)
         now = step + 1
+
+        if resumed_state_buffers is not None:
+            warn_if_not_donated(resumed_state_buffers, state, "the first resumed step")
+            resumed_state_buffers = None
 
         if now % cfg.log_every == 0 or now == cfg.num_iterations:
             jax.block_until_ready(loss)

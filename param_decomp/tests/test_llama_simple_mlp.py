@@ -34,6 +34,7 @@ from param_decomp.configs import (
     SCScope,
     UniformKSubsetRoutingConfig,
 )
+from param_decomp.donation import buffer_bytes_by_ptr, reused_fraction
 from param_decomp.lm import DecomposedModel
 from param_decomp.recon import build_loss_terms
 from param_decomp.schedule import ScheduleConfig
@@ -455,6 +456,25 @@ def test_faith_warmup_decreases_faith():
         first_loss = float(loss) if first_loss is None else first_loss
     assert first_loss is not None and loss is not None
     assert float(loss) < first_loss * 0.9, (first_loss, float(loss))
+
+
+def test_faith_warmup_step_donates():
+    """The warmup step reuses the components + opt-state buffers (donation, checked at
+    the pointer level) and leaves the model — the non-donated first arg — readable."""
+    cfg = _tiny_cfg()
+    sites = site_specs(cfg, canonical_site_cs(_MIXED_SITE_CS))
+    lm = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
+    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    opt = optax.adamw(1e-2, weight_decay=0.0)
+    wstep = make_faith_warmup_step(opt)
+    ostate = opt.init(eqx.filter(vu, eqx.is_array))
+    vu, ostate, _ = wstep(lm, vu, ostate)  # settle: inputs below are jit outputs
+    in_buffers = buffer_bytes_by_ptr((vu, ostate))
+    new_vu, new_ostate, _ = wstep(lm, vu, ostate)
+    jax.block_until_ready((new_vu, new_ostate))
+    fraction = reused_fraction(in_buffers, (new_vu, new_ostate))
+    assert fraction >= 0.95, f"only {fraction:.2%} of warmup state bytes reused"
+    jax.block_until_ready(eqx.filter(lm, eqx.is_array))  # model survives donation
 
 
 def test_decomp_vu_shapes_fp32():

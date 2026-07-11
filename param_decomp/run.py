@@ -58,6 +58,7 @@ from param_decomp.checkpoint import (
 )
 from param_decomp.ci_fn import CIFnArch
 from param_decomp.configs import Cadence, PDConfig, ProfileConfig, flatten_typed_lists
+from param_decomp.donation import buffer_bytes_by_ptr, warn_if_not_donated
 from param_decomp.lm import DecomposedModel
 from param_decomp.recon import build_loss_terms
 from param_decomp.run_state import build_optimizers, init_train_state
@@ -407,10 +408,18 @@ def _init_or_restore_state(
         warmed_components = state.components
         t0 = time.time()
         faith_warmup_loss = None
+        # The warmup step donates components + opt state; dispatch-time donation failure
+        # is silent (a resident extra copy right before the run's peak phase), so check
+        # buffer reuse loudly on the first iteration.
+        warmup_in_buffers = buffer_bytes_by_ptr((warmed_components, faith_warmup_opt_state))
         for _ in range(pd.faithfulness_warmup_steps):
             warmed_components, faith_warmup_opt_state, faith_warmup_loss = faith_warmup_step(
                 lm, warmed_components, faith_warmup_opt_state
             )
+            if warmup_in_buffers is not None:
+                out_trees = (warmed_components, faith_warmup_opt_state)
+                warn_if_not_donated(warmup_in_buffers, out_trees, "the first faith-warmup step")
+                warmup_in_buffers = None
             if _sigterm_consensus():
                 # No valid checkpoint exists yet (the step-0 save happens only after warmup
                 # completes, and resume skips warmup whenever a checkpoint is present — a

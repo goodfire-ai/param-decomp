@@ -4,6 +4,7 @@ short end-to-end training smoke (loss decreases)."""
 import tempfile
 from pathlib import Path
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -12,6 +13,7 @@ import pyarrow.parquet as pq
 import pytest
 
 import param_decomp.targets.llama_simple_mlp as lsm
+from param_decomp.donation import buffer_bytes_by_ptr, reused_fraction
 from pretrain.cache import torch_model_config_dict, write_pretrain_cache
 from pretrain.config import PretrainConfig, PretrainDataConfig
 from pretrain.models import (
@@ -21,7 +23,15 @@ from pretrain.models import (
     init_model,
     model_logits,
 )
-from pretrain.train import train
+from pretrain.train import (
+    TrainState,
+    _make_checkpoint_manager,
+    _restore_latest,
+    _save,
+    make_optimizer,
+    make_train_step,
+    train,
+)
 
 
 def _tiny_mlp_cfg() -> LlamaSimpleMLPConfig:
@@ -147,6 +157,65 @@ def test_training_smoke_loss_decreases():
         loaded_cfg = lsm.load_model_config(cache)
         target = lsm.load_target_from_pretrain_cache(cache, loaded_cfg, jnp.float32)
         assert target.lm_head.shape == (mc.vocab_size, mc.n_embd)
+
+
+def _tiny_train_setup():
+    mc = _tiny_mlp_cfg()
+    cfg = PretrainConfig(
+        model=mc,
+        data=PretrainDataConfig(dir=Path("/tmp"), tokenizer_name="x"),
+        global_batch=4,
+        num_iterations=4,
+        learning_rate=1e-3,
+        warmup_iters=0,
+        learning_rate_decay_frac=0.1,
+        weight_decay=0.0,
+        grad_clip=1.0,
+        dtype="float32",
+        run_name="t",
+    )
+    model = init_model(mc, jax.random.PRNGKey(0))
+    optimizer = make_optimizer(cfg, model)
+    state = TrainState(
+        model=model,
+        opt_state=optimizer.init(eqx.filter(model, eqx.is_array)),
+        step=jnp.zeros((), jnp.int32),
+    )
+    return mc, make_train_step(cfg, optimizer), state
+
+
+def _tokens(mc: LlamaSimpleMLPConfig, seed: int) -> jax.Array:
+    return jax.random.randint(jax.random.PRNGKey(seed), (4, mc.block_size + 1), 0, mc.vocab_size)
+
+
+def test_pretrain_step_donates_state():
+    """The train step reuses the model + opt-state buffers (donation, pointer-checked)."""
+    mc, step_fn, state = _tiny_train_setup()
+    state, _ = step_fn(state, _tokens(mc, 1))  # settle: state is now jit outputs
+    in_buffers = buffer_bytes_by_ptr(state)
+    new_state, _ = step_fn(state, _tokens(mc, 2))
+    jax.block_until_ready(new_state)
+    fraction = reused_fraction(in_buffers, new_state)
+    assert fraction >= 0.95, f"only {fraction:.2%} of state bytes reused"
+
+
+def test_restored_pretrain_state_is_donatable(tmp_path: Path):
+    """Orbax round-trip preserves donatability: `_restore_latest` re-materialises the
+    restored tree as jit outputs, so the first resumed step's donation aliases instead of
+    silently copying (jax#18617)."""
+    mc, step_fn, state = _tiny_train_setup()
+    state, _ = step_fn(state, _tokens(mc, 1))
+    mgr = _make_checkpoint_manager(tmp_path / "ckpts", keep_last=1)
+    _save(mgr, 1, state)
+    restored = _restore_latest(mgr, state)
+    assert restored is not None
+    restored_state, restored_step = restored
+    assert restored_step == 1
+    in_buffers = buffer_bytes_by_ptr(restored_state)
+    new_state, _ = step_fn(restored_state, _tokens(mc, 2))
+    jax.block_until_ready(new_state)
+    fraction = reused_fraction(in_buffers, new_state)
+    assert fraction >= 0.95, f"only {fraction:.2%} of restored state bytes reused"
 
 
 if __name__ == "__main__":

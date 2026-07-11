@@ -537,7 +537,12 @@ def make_faith_warmup_step(
     compiler_options: dict[str, bool | int | str] | None = None,
 ) -> Callable[[DecomposedModel, DecompVU, optax.OptState], tuple[DecompVU, optax.OptState, Array]]:
     """`model` is the jit ARG (frozen weights traced, not baked) — `weight_deltas` reads its
-    per-site W slices, so closing over the model would bake them into the HLO."""
+    per-site W slices, so closing over the model would bake them into the HLO.
+
+    Donating (all but the model, matching the train step): the warmup loop rebinds
+    components + opt state every iteration right before the run's peak-memory phase, so
+    the step must not hold both copies live. Callers may not reuse the passed-in
+    components/opt state after a call."""
 
     def warmup_step(
         model: DecomposedModel, components: DecompVU, opt_state: optax.OptState
@@ -549,4 +554,4 @@ def make_faith_warmup_step(
         updates, opt_state = opt.update(grad, opt_state, eqx.filter(components, eqx.is_array))
         return eqx.apply_updates(components, updates), opt_state, loss
 
-    return filter_jit(warmup_step, compiler_options=compiler_options)
+    return filter_jit(warmup_step, donate="all-except-first", compiler_options=compiler_options)
