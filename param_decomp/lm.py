@@ -105,6 +105,16 @@ class DecomposedModel(Protocol):
         interpreter; core just routes by key."""
         ...
 
+    def clean_output_and_activations(
+        self, inputs: Any, /, wanted: tuple[str, ...]
+    ) -> tuple[Any, dict[str, Float[Array, "*leading d_tap"]]]:
+        """`(clean_output(inputs), read_activations(inputs, wanted))` — SPEC S3+S4
+        unchanged, evaluated in ONE frozen forward where the target can (a scan target
+        emits the taps as ys of its clean-forward scan; XLA does not CSE the two passes
+        apart). Targets without that structure just call both. For the steps that need
+        both on the same batch (train, fast eval)."""
+        ...
+
     def prepare_compute_weights(self, vu: ComponentStacks) -> Any:
         """Build the per-step COMPUTE weights from the fp32 ÷N master `vu`, ONCE per step
         (SPEC unchanged — a read-only compute view). Mask-INDEPENDENT, so the result is shared

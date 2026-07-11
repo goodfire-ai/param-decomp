@@ -293,10 +293,11 @@ def make_train_step(
         imp_min_param = annealed_imp_min_param(step_f32, total_steps, imp_min)
 
         batch = batch_sharded(batch)
-        with jax.named_scope("pd_clean_fwd"):
-            clean_output = jax.lax.stop_gradient(batch_sharded(model.clean_output(batch)))
-        with jax.named_scope("pd_read_taps"):
-            taps = model.read_activations(batch, decomposition.ci_fn.input_names)
+        with jax.named_scope("pd_clean_fwd_and_taps"):
+            clean_output, taps = model.clean_output_and_activations(
+                batch, decomposition.ci_fn.input_names
+            )
+            clean_output = jax.lax.stop_gradient(batch_sharded(clean_output))
         # `leading` (batch, *positions) — the shape masks/sources/routes live in. Sourced
         # from a tap (always `[*leading, d_tap]`), not the opaque batch, so the engine never
         # assumes the batch's rank/feature dim.

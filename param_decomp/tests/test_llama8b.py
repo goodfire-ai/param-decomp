@@ -334,6 +334,31 @@ def test_attention_sites_clean_and_masked_identity():
     assert deltas["layers.4.self_attn.v_proj"].shape == (kvd, cfg.n_embd)
 
 
+def test_clean_output_and_activations_shares_the_forward():
+    """The fused accessor must be exactly the two separate calls (SPEC S3+S4): taps
+    bit-equal to `read_activations`, and — when the taps reach the last block, every
+    production config — clean logits bit-equal to `clean_output` (one full-depth scan,
+    no tail; a mid-stack tap cutoff may recompile the tail within fp32 tolerance).
+    Also pins tap invariance to the `wanted` set (a tap can't depend on its neighbors)."""
+    cfg = _tiny_cfg()
+    sites = _mlp_sites(cfg, 3, 6, 8)
+    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    tokens = jax.random.randint(jax.random.PRNGKey(2), (2, 16), 0, cfg.vocab_size)
+
+    resid_taps = tuple(f"resid.{i}" for i in range(cfg.n_layer))
+    wanted = resid_taps + lm.site_names
+    logits, taps = lm.clean_output_and_activations(tokens, wanted)
+    assert jnp.array_equal(logits, lm.clean_output(tokens)), "fused clean logits drifted"
+    separate = lm.read_activations(tokens, wanted)
+    assert set(taps) == set(wanted)
+    for key in wanted:
+        assert jnp.array_equal(taps[key], separate[key]), key
+
+    subset = ("resid.0", "resid.5", site_name(4, "gate"))
+    for key, tap in lm.read_activations(tokens, subset).items():
+        assert jnp.array_equal(tap, separate[key]), key
+
+
 def test_o_site_masks_attention_output():
     cfg = _tiny_cfg()
     o_site = "layers.4.self_attn.o_proj"

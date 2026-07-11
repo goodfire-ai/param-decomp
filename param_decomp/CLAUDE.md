@@ -25,8 +25,11 @@ never silently diverge. Cite IDs (`S14`, `N1`, …) in commit messages and revie
 ## Architecture in one breath
 
 `lm.py` defines `DecomposedModel` — a `@runtime_checkable Protocol`: ordered `sites` +
-`leading_axes` + the methods `clean_output`, `read_activations`, `masked_output`,
-`masked_site_outputs`, `weight_deltas`, and a `recon_loss_fn` (LM: `kl_per_position`). The
+`leading_axes` + the methods `clean_output`, `read_activations`,
+`clean_output_and_activations` (both from ONE frozen forward — the GLU target emits
+the taps as ys of its clean-forward `lax.scan`; what the train + fast-eval steps call),
+`masked_output`, `masked_site_outputs`, `weight_deltas`, and a `recon_loss_fn`
+(LM: `kl_per_position`). The
 concrete impl per target is an `eqx.Module` (`GLUDecomposedModel`,
 `SimpleMLPDecomposedModel`, `TMSDecomposedModel`, `ResidMLPDecomposedModel`) carrying its
 FROZEN target weights as ARRAY FIELDS; the TRAINABLE V/U (`vu: ComponentStacks`) stays an explicit

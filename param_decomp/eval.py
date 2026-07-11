@@ -179,8 +179,8 @@ def make_eval_step(
         key: PRNGKeyArray,
     ) -> dict[str, Array]:
         token_ids = batch_sharded(token_ids)
-        clean_output = batch_sharded(model.clean_output(token_ids))
-        taps = model.read_activations(token_ids, ci_fn.input_names)
+        clean_output, taps = model.clean_output_and_activations(token_ids, ci_fn.input_names)
+        clean_output = batch_sharded(clean_output)
 
         if n_valid_rows is None:
             row_mask = None

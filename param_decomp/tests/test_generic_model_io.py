@@ -96,6 +96,11 @@ class SyntheticDecomposedModel(eqx.Module):
         assert wanted == (SITE,), wanted
         return {SITE: self._residual(inputs)}
 
+    def clean_output_and_activations(
+        self, inputs: dict[str, Array], wanted: tuple[str, ...]
+    ) -> tuple[tuple[Array, Array], dict[str, Array]]:
+        return self.clean_output(inputs), self.read_activations(inputs, wanted)
+
     def prepare_compute_weights(self, vu: ComponentStacks) -> ComponentStacks:
         return vu
 

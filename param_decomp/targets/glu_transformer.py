@@ -370,6 +370,23 @@ def _tap_layer(key: str) -> int:
             return parse_site_name(name)[0]
 
 
+_TAP_CLASS_BY_KIND = {
+    "q": "h1", "k": "h1", "v": "h1", "o": "attn_y",
+    "gate": "mlp_in", "up": "mlp_in", "down": "down_in",
+}  # fmt: skip
+"""The block intermediate a site kind's tap reads — the activation entering that site's
+weight on the frozen path (`_clean_forward`'s per-class scan-ys stacks are keyed by
+these)."""
+
+
+def _tap_class(key: str) -> str:
+    match taps.parse_tap(key):
+        case taps.ResidIn():
+            return "resid"
+        case taps.SiteInput(name):
+            return _TAP_CLASS_BY_KIND[parse_site_name(name)[1]]
+
+
 def _per_kind_dims(components: ComponentStacks) -> dict[str, tuple[int, int, int]]:
     """Per decomposed KIND, the `(d_in, C, d_out)` shared across its layers — asserting
     uniformity, the precondition for the layer-`lax.scan` masked forward (it stacks each
@@ -700,15 +717,9 @@ class GLUDecomposedModel(eqx.Module):
         stack so XLA compiles one block body instead of unrolling all 32 layers (the compile
         fix for the full model; the scan reassociates float ops vs an unrolled loop, within
         fp32 tolerance)."""
-
-        def block(x: Array, layer: GLULayer) -> tuple[Array, None]:
-            x = x + layer.attn(rms_norm(x, layer.ln1, self.eps), self.inv_freq)
-            x = x + _clean_mlp_out(layer, rms_norm(x, layer.ln2, self.eps))
-            return x, None
-
-        x, _ = jax.lax.scan(block, self.embed_tokens(inputs), self.stacked)
-        x = rms_norm(x, self.norm, self.eps)
-        return x @ self.lm_head.T
+        logits, _ = self._clean_forward(inputs, (), to_logits=True)
+        assert logits is not None
+        return logits
 
     def read_activations(
         self, inputs: Int[Array, "b t"], wanted: tuple[str, ...]
@@ -721,35 +732,68 @@ class GLUDecomposedModel(eqx.Module):
         that site's weight on the frozen path: `q/k/v_proj` ← post-LN1 residual, `o_proj` ←
         the attention output, `gate/up_proj` ← post-LN2 residual, `down_proj` ←
         `silu(gate)·up`). The residual is threaded identically to `clean_output`; the
-        per-site intermediates come from the same RMSNorm/attn/MLP math. Stops once the last
-        requested key's block is fully covered (no wasted block compute past it)."""
-        wanted_set = frozenset(wanted)
-        last = max(_tap_layer(key) for key in wanted)
-        out: dict[str, Array] = {}
+        per-site intermediates come from the same RMSNorm/attn/MLP math. The scan covers
+        only the blocks up to the last requested key's (no wasted block compute past it)."""
+        assert wanted, "read_activations with no wanted taps"
+        _, taps = self._clean_forward(inputs, wanted, to_logits=False)
+        return taps
+
+    def clean_output_and_activations(
+        self, inputs: Int[Array, "b t"], wanted: tuple[str, ...]
+    ) -> tuple[Array, dict[str, Array]]:
+        logits, taps = self._clean_forward(inputs, wanted, to_logits=True)
+        assert logits is not None
+        return logits, taps
+
+    def _clean_forward(
+        self, inputs: Int[Array, "b t"], wanted: tuple[str, ...], *, to_logits: bool
+    ) -> tuple[Array | None, dict[str, Array]]:
+        """The frozen-path `lax.scan` behind `clean_output` / `read_activations` /
+        `clean_output_and_activations`. Taps ride out as scan ys — one stacked
+        `[tapped_depth, b, t, d]` array per block INTERMEDIATE `wanted` reads (see
+        `_tap_class`) — and the flat tap dict is indexed out of the stacks after the scan
+        (the `_run_masked_forward` per-kind-ys pattern; no per-layer `lax.cond`). Only the
+        block prefix up to the last tapped layer emits ys; the remaining depth (run only
+        when `to_logits`) scans the same body emitting nothing — so an unread intermediate
+        or an untapped layer stacks nothing."""
+
+        def block_body(emit: frozenset[str]):
+            def block(x: Array, layer: GLULayer) -> tuple[Array, dict[str, Array]]:
+                # `FrozenAttn.__call__` / `_clean_mlp_out` expanded — identical math
+                # (family behavior rides in `attn.core`'s `_prep_qk`), with the tap
+                # intermediates in scope.
+                attn = layer.attn
+                h1 = rms_norm(x, layer.ln1, self.eps)
+                attn_y = attn.core(h1 @ attn.wq.T, h1 @ attn.wk.T, h1 @ attn.wv.T, self.inv_freq)
+                post_attn = x + attn_y @ attn.wo.T
+                mlp_in = rms_norm(post_attn, layer.ln2, self.eps)
+                down_in = jax.nn.silu(mlp_in @ layer.Wg.T) * (mlp_in @ layer.Wu.T)
+                intermediates = {
+                    "resid": x, "h1": h1, "attn_y": attn_y,
+                    "mlp_in": mlp_in, "down_in": down_in,
+                }  # fmt: skip
+                return post_attn + down_in @ layer.Wd.T, {c: intermediates[c] for c in emit}
+
+            return block
+
+        def slice_layers(lo: int, hi: int) -> GLULayer:
+            return jax.tree.map(lambda a: a[lo:hi], self.stacked)
+
+        tapped_depth = 1 + max((_tap_layer(key) for key in wanted), default=-1)
         x = self.embed_tokens(inputs)
-        for layer in range(self.n_layer):
-            block = jax.tree.map(lambda a, li=layer: a[li], self.stacked)
-            resid_key = taps.tap_key(taps.ResidIn(layer))
-            if resid_key in wanted_set:
-                out[resid_key] = x
-            attn = block.attn
-            h1 = rms_norm(x, block.ln1, self.eps)
-            attn_y = attn.core(h1 @ attn.wq.T, h1 @ attn.wk.T, h1 @ attn.wv.T, self.inv_freq)
-            post_attn = x + attn_y @ attn.wo.T
-            mlp_in = rms_norm(post_attn, block.ln2, self.eps)
-            down_in = jax.nn.silu(mlp_in @ block.Wg.T) * (mlp_in @ block.Wu.T)
-            for kind, site_input in (
-                ("q", h1), ("k", h1), ("v", h1), ("o", attn_y),
-                ("gate", mlp_in), ("up", mlp_in), ("down", down_in),
-            ):  # fmt: skip
-                name = site_name(layer, kind)
-                if name in wanted_set:
-                    out[name] = site_input
-            x = post_attn + down_in @ block.Wd.T
-            if layer == last:
-                break
-        assert set(out) == wanted_set, (sorted(out), sorted(wanted))
-        return out
+        stacks: dict[str, Array] = {}
+        if tapped_depth:
+            emit = frozenset(_tap_class(key) for key in wanted)
+            x, stacks = jax.lax.scan(block_body(emit), x, slice_layers(0, tapped_depth))
+        taps = {key: stacks[_tap_class(key)][_tap_layer(key)] for key in wanted}
+        if not to_logits:
+            return None, taps
+        if tapped_depth < self.n_layer:
+            x, _ = jax.lax.scan(
+                block_body(frozenset()), x, slice_layers(tapped_depth, self.n_layer)
+            )
+        x = rms_norm(x, self.norm, self.eps)
+        return x @ self.lm_head.T, taps
 
     def _run_masked_forward(
         self,

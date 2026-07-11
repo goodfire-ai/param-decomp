@@ -196,9 +196,11 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
         ci_fn: CIFn,
         token_ids: Int[Array, "B T"],
     ) -> tuple[dict[str, Array], dict[str, Array], Array]:
-        clean_output = model.clean_output(token_ids)
-        taps = model.read_activations(token_ids, ci_fn.input_names)
-        site_inputs = model.read_activations(token_ids, site_names)
+        clean_output, all_taps = model.clean_output_and_activations(
+            token_ids, ci_fn.input_names + site_names
+        )
+        taps = {k: all_taps[k] for k in ci_fn.input_names}
+        site_inputs = {k: all_taps[k] for k in site_names}
 
         components_bf16 = cast_floating(components, COMPUTE_DT)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
