@@ -72,6 +72,12 @@ class _PositionlessStub(eqx.Module):
         del resid, wanted
         raise AssertionError("positionless stub fn must not be called")
 
+    def clean_output_and_activations(
+        self, resid: Any, wanted: tuple[str, ...]
+    ) -> tuple[Any, dict[str, jax.Array]]:
+        del resid, wanted
+        raise AssertionError("positionless stub fn must not be called")
+
     def prepare_compute_weights(self, vu: Any) -> Any:
         return vu
 
