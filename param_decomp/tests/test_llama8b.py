@@ -35,17 +35,21 @@ from param_decomp.configs import (
     UniformKSubsetRoutingConfig,
 )
 from param_decomp.lm import DecomposedModel
+from param_decomp.losses import faithfulness_loss
 from param_decomp.recon import build_loss_terms
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.targets.llama8b import (
+    KIND_ORDER,
     FrozenAttn,
     LlamaDecomposedModel,
     LlamaLayer,
+    _frozen_site_weight,
     build_decomposed_lm,
     canonical_site_cs,
     llama_site_specs,
     mlp_family_site_cs,
     parse_site_name,
+    per_kind_delta_index,
     site_name,
 )
 from param_decomp.train import TrainState, make_faith_warmup_step, make_train_step
@@ -254,8 +258,9 @@ def test_clean_path_and_masked_identity(first: int, last: int):
     assert set(site_in) == set(names)
     deltas = lm.weight_deltas(vu)
     d, di = cfg.n_embd, cfg.n_intermediate
-    assert deltas[names[0]].shape == (di, d)  # gate: (d_out, d_in)
-    assert deltas[names[2]].shape == (d, di)  # down
+    n_sites = last - first + 1
+    assert deltas["gate"].shape == (n_sites, di, d)  # (n_sites, d_out, d_in)
+    assert deltas["down"].shape == (n_sites, d, di)
     assert all(v.dtype == jnp.float32 for v in deltas.values())
 
 
@@ -323,8 +328,8 @@ def test_attention_sites_clean_and_masked_identity():
 
     deltas = lm.weight_deltas(vu)
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
-    assert deltas[q_site].shape == (qd, cfg.n_embd)
-    assert deltas["layers.4.self_attn.v_proj"].shape == (kvd, cfg.n_embd)
+    assert deltas["q"].shape == (1, qd, cfg.n_embd)
+    assert deltas["v"].shape == (1, kvd, cfg.n_embd)
 
 
 def test_o_site_masks_attention_output():
@@ -351,6 +356,63 @@ def test_o_site_masks_attention_output():
     # o's clean site input is the pre-o_proj attention output, shape (b, t, qd)
     site_in = lm.read_activations(tokens, lm.site_names)
     assert site_in[o_site].shape == (b, t, cfg.n_head * cfg.head_dim)
+
+
+@pytest.mark.parametrize(
+    "site_cs",
+    [
+        canonical_site_cs(
+            tuple(
+                SiteC(site_name(layer, kind), 8)
+                for layer in range(_tiny_cfg().n_layer)
+                for kind in KIND_ORDER
+            )
+        ),
+        mlp_family_site_cs(3, 6, 8),
+        _QVDOWN_SITE_CS,
+    ],
+    ids=["all_kinds_all_layers", "mlp_l3_6", "qv_down_l4"],
+)
+def test_weight_deltas_match_per_site_reference(site_cs: tuple[SiteC, ...]):
+    """The per-kind batched `weight_deltas` reproduces the per-site fp32 `W − (V@U).T` loop
+    bit-identically (SPEC N2 — same math, batched). The faithfulness loss over the stacks
+    matches the per-site loss to fp32 summation-regrouping tolerance (per-site partial sums
+    become per-kind reduces; S17's mean is grouping-invariant in exact math); its V/U grads
+    have no cross-site accumulation, so they must stay bit-identical."""
+    cfg = _tiny_cfg()
+    sites = llama_site_specs(cfg, site_cs)
+    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+
+    def per_site_reference(vu_: DecompVU) -> dict[str, jax.Array]:
+        out: dict[str, jax.Array] = {}
+        for spec in lm.sites:
+            layer, kind = parse_site_name(spec.name)
+            W = _frozen_site_weight(jax.tree.map(lambda a, li=layer: a[li], lm.stacked), kind)
+            V, U = vu_.site(spec.name)
+            out[spec.name] = (
+                W.astype(jnp.float32) - (V.astype(jnp.float32) @ U.astype(jnp.float32)).T
+            )
+        return out
+
+    deltas = lm.weight_deltas(vu)
+    reference = per_site_reference(vu)
+    index = per_kind_delta_index(lm.sites)
+    assert {kind for kind, _ in index.values()} == set(deltas)
+    assert all(v.dtype == jnp.float32 for v in deltas.values())
+    for name, (kind, row) in index.items():
+        assert jnp.array_equal(deltas[kind][row], reference[name]), name
+
+    ref_loss, ref_grad = eqx.filter_value_and_grad(
+        lambda vu_: faithfulness_loss(per_site_reference(vu_))
+    )(vu)
+    new_loss, new_grad = eqx.filter_value_and_grad(
+        lambda vu_: faithfulness_loss(lm.weight_deltas(vu_))
+    )(vu)
+    assert jnp.allclose(new_loss, ref_loss, rtol=1e-6), (new_loss, ref_loss)
+    for name in lm.site_names:
+        for got, want, which in zip(new_grad.vu[name], ref_grad.vu[name], ("V", "U"), strict=True):
+            assert jnp.array_equal(got, want), (name, which)
 
 
 @pytest.mark.parametrize(

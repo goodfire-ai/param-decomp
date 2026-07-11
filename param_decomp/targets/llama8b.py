@@ -310,6 +310,18 @@ def _per_kind_dims(components: DecompVU) -> dict[str, tuple[int, int, int]]:
     return kind_dims
 
 
+def per_kind_delta_index(sites: tuple[SiteSpec, ...]) -> dict[str, tuple[str, int]]:
+    """Site name -> `(kind, row)` into the per-kind stacks `weight_deltas` returns (rows are
+    layer-ascending within a kind — canonical site order restricted to the kind)."""
+    index: dict[str, tuple[str, int]] = {}
+    rows: dict[str, int] = {}
+    for spec in sites:
+        kind = parse_site_name(spec.name)[1]
+        index[spec.name] = (kind, rows.get(kind, 0))
+        rows[kind] = rows.get(kind, 0) + 1
+    return index
+
+
 def _stack_per_kind_vu(components: DecompVU, n_layers: int) -> dict[str, dict[str, Array]]:
     """Per decomposed KIND, the layer-stacked `(V, U)` arrays — the MASK-INDEPENDENT part of
     the scan inputs (a leading layer axis, one homogeneous body across layers). Mask/live/
@@ -923,15 +935,29 @@ class LlamaDecomposedModel(eqx.Module):
         return collect_activations
 
     def weight_deltas(self, vu: DecompVU) -> dict[str, Array]:
-        """fp32 `W − V@U` per site from fp32 masters (SPEC N2; faithfulness input)."""
-        out: dict[str, Array] = {}
+        """fp32 `W − V@U` from fp32 masters (SPEC N2; faithfulness input), stacked per KIND:
+        `{kind: [n_sites, d_out, d_in]}`, rows layer-ascending (`per_kind_delta_index`). One
+        batched matmul per kind instead of a matmul group per site (224 sites → 7 groups in
+        the loss graph — compile time; S17's mean is grouping-invariant). Per-kind dims must
+        be uniform across layers (`_per_kind_dims`), as the scan masked forward already
+        requires."""
+        _per_kind_dims(vu)
+        layers_by_kind: dict[str, list[int]] = {}
         for spec in self.sites:
             layer, kind = parse_site_name(spec.name)
-            W = _frozen_site_weight(jax.tree.map(lambda a, li=layer: a[li], self.stacked), kind)
-            V, U = vu.site(spec.name)
-            out[spec.name] = (
-                W.astype(jnp.float32) - (V.astype(jnp.float32) @ U.astype(jnp.float32)).T
+            layers_by_kind.setdefault(kind, []).append(layer)
+        out: dict[str, Array] = {}
+        for kind, layers in layers_by_kind.items():
+            all_layers = _frozen_site_weight(self.stacked, kind)
+            W = (
+                all_layers
+                if layers == list(range(self.n_layer))
+                else all_layers[jnp.asarray(layers)]
             )
+            V = jnp.stack([vu.site(site_name(layer, kind))[0] for layer in layers])
+            U = jnp.stack([vu.site(site_name(layer, kind))[1] for layer in layers])
+            VU = V.astype(jnp.float32) @ U.astype(jnp.float32)
+            out[kind] = W.astype(jnp.float32) - VU.transpose(0, 2, 1)
         return out
 
 

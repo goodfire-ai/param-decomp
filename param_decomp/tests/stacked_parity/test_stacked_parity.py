@@ -53,6 +53,7 @@ from param_decomp.targets.llama8b import (
     build_decomposed_lm,
     llama_site_specs,
     mlp_family_site_cs,
+    per_kind_delta_index,
 )
 from param_decomp.tests.test_llama8b import _tiny_cfg
 from param_decomp.train import TrainState, make_train_step
@@ -158,9 +159,9 @@ def test_site_inputs_and_weight_deltas_match():
     site_inputs = lm.read_activations(resid, lm.site_names)
     for name in lm.site_names:
         _assert_close(site_inputs[name], f[f"out::site_input::{name}"], f"site_input {name}")
-    deltas = lm.weight_deltas(vu)
-    for name in lm.site_names:
-        _assert_close(deltas[name], f[f"out::wd::{name}"], f"weight_delta {name}")
+    deltas = lm.weight_deltas(vu)  # per-kind stacks; fixtures are keyed per site
+    for name, (kind, row) in per_kind_delta_index(lm.sites).items():
+        _assert_close(deltas[kind][row], f[f"out::wd::{name}"], f"weight_delta {name}")
 
 
 @_PENDING_REGEN

@@ -67,9 +67,10 @@ def kl_per_position(
 
 
 @jaxtyped(typechecker=beartype)
-def faithfulness_loss(weight_deltas: dict[str, Float[Array, "_ _"]]) -> Float[Array, ""]:
-    """`Σ_s ‖Δ_s‖² / Σ_s numel` over fp32 deltas (SPEC S17). Each `Δ_s` is `(d_out, d_in)`;
-    dims are per-site (anonymous, not bound across sites)."""
+def faithfulness_loss(weight_deltas: dict[str, Float[Array, "..."]]) -> Float[Array, ""]:
+    """`Σ_s ‖Δ_s‖² / Σ_s numel` over fp32 deltas (SPEC S17). Values are per-site `(d_out,
+    d_in)` deltas or stacks of them with a leading site axis (`DecomposedModel.weight_deltas`
+    picks the grouping); the global mean is grouping-invariant."""
     numerator = sum(
         ((delta.astype(jnp.float32) ** 2).sum() for delta in weight_deltas.values()),
         start=jnp.zeros((), jnp.float32),

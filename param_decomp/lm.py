@@ -186,8 +186,11 @@ class DecomposedModel(Protocol):
         the recon grid, which stays KL-on-final-logits."""
         ...
 
-    def weight_deltas(self, vu: DecompVU) -> dict[str, Float[Array, "d_out d_in"]]:
-        """fp32 `W − V@U` per site from the fp32 master `vu` (SPEC N2)."""
+    def weight_deltas(self, vu: DecompVU) -> dict[str, Float[Array, "..."]]:
+        """fp32 `W − V@U` deltas from the fp32 master `vu` (SPEC N2), grouped as the target
+        chooses — per-site `(d_out, d_in)` entries, or per-kind stacks with a leading site
+        axis (llama8b). Consumed only by `faithfulness_loss` (S17), whose global mean is
+        grouping-invariant."""
         ...
 
 
