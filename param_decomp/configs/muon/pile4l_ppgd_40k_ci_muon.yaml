@@ -142,6 +142,13 @@ pd:
 runtime:
   remat_recon_forwards: false
   dp: 8
+  launch_env:
+    env:
+      # The shared xla_gpu_per_fusion_autotune_cache_dir was created group-unwritable
+      # (2026-07-11, PERMISSION_DENIED at first step for any non-owner run); the main
+      # executable cache is unaffected. The 2026-07-03 sibling arms predate that dir,
+      # so disabling it also matches their autotune behavior.
+      JAX_PERSISTENT_CACHE_ENABLE_XLA_CACHES: none
 target:
   output_extract: 0
   weights_dtype: bfloat16
