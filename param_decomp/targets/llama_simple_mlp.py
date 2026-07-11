@@ -375,6 +375,13 @@ class SimpleMLPDecomposedModel(eqx.Module):
         assert set(taps) == wanted_set, (sorted(taps), sorted(wanted))
         return taps
 
+    def clean_output_and_activations(
+        self, inputs: Int[Array, "b t"], wanted: tuple[str, ...]
+    ) -> tuple[Array, dict[str, Array]]:
+        # Two frozen passes: the blocks are an unstacked Python loop over few layers, so
+        # there is no scan to emit the taps from and no compile pressure to fuse.
+        return self.clean_output(inputs), self.read_activations(inputs, wanted)
+
     def _run_masked_forward(
         self,
         vu: DecompVU,
