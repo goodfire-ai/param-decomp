@@ -76,6 +76,7 @@ def _recon_terms(recon_configs: tuple[object, ...]) -> tuple[ReconLossTerm, ...]
     terms = build_loss_terms(
         (*_non_recon_configs(), *recon_configs),  # pyright: ignore[reportArgumentType]
         site_names=SITE_NAMES,
+        total_steps=100,
     )
     return terms.recon
 

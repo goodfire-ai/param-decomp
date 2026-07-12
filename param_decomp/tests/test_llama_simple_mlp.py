@@ -403,6 +403,7 @@ def test_step_trains_and_has_vpd_signature():
             ppgd_cfg,
         ),
         lm.site_names,
+        100,
     )
     step = make_train_step(
         lm=lm,
@@ -530,6 +531,7 @@ def test_pretrained_target_converts_with_wildcards():
     loss_terms = build_loss_terms(
         cfg.pd.loss_metrics,
         tuple(sc.name for sc in target.sites),
+        cfg.pd.steps,
     )
     (stoch_term,) = [t for t in loss_terms.recon if t.name == "StochasticReconSubsetLoss"]
     (stoch_entry,) = stoch_term.plan

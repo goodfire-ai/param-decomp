@@ -412,6 +412,7 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
             ppgd_cfg,
         ),
         lm.site_names,
+        100,
     )
     step = make_train_step(
         lm=lm,
@@ -533,6 +534,7 @@ def test_fresh_pgd_adversary_step():
                 ),
             ),
             lm.site_names,
+            100,
         )
         step = make_train_step(
             lm=lm,

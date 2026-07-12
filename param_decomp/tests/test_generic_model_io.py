@@ -259,6 +259,7 @@ def test_train_step_runs_through_generic_target():
             StochasticReconLossConfig(coeff=1.0),
         ),
         lm.site_names,
+        10,
     )
     step_fn = make_train_step(
         lm=lm,

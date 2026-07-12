@@ -252,7 +252,7 @@ def _make_state_and_step(
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
         adversaries={}, step=jnp.zeros((), jnp.int32),
     )  # fmt: skip
-    loss_terms = build_loss_terms(_loss_metrics(), lm.site_names)
+    loss_terms = build_loss_terms(_loss_metrics(), lm.site_names, 100)
     step = make_train_step(
         lm=lm, losses=loss_terms, components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
         total_steps=total_steps, remat_recon_forwards=False, remat_ci_fn=False, mesh=None,
@@ -358,7 +358,7 @@ def _faith_warmed_state(
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
         adversaries={}, step=jnp.zeros((), jnp.int32),
     )  # fmt: skip
-    loss_terms = build_loss_terms(_recovery_loss_metrics(), lm.site_names)
+    loss_terms = build_loss_terms(_recovery_loss_metrics(), lm.site_names, 100)
     step = make_train_step(
         lm=lm, losses=loss_terms, components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
         total_steps=total_steps, remat_recon_forwards=False, remat_ci_fn=False, mesh=None,

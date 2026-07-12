@@ -120,6 +120,7 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
             ppgd_cfg,
         ),
         lm.site_names,
+        100,
     )  # fmt: skip
     step = make_train_step(
         lm=lm,
