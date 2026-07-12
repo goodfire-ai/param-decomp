@@ -155,7 +155,7 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
     mesh = hsdp_mesh()
     lm, vocab_size = build_target(cfg, mesh)
 
-    opt_vu, opt_ci, _ = build_optimizers(cfg.pd)
+    opt_vu, opt_ci, _ = build_optimizers(cfg.pd, mesh)
     init_key, src_key = jax.random.split(jax.random.PRNGKey(cfg.pd.seed))
     reference = init_train_state(
         cfg.pd, lm, cfg.ci_fn, cfg.data, opt_vu, opt_ci, init_key, src_key, mesh

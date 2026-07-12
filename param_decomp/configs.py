@@ -603,6 +603,26 @@ class MuonOptimizerConfig(BaseConfig):
         default=None,
         description="If set, clip the grad norm of this group's parameters to this value",
     )
+    impl: Literal["optax", "stacked"] = Field(
+        default="optax",
+        description=(
+            "NS implementation. `optax` = per-leaf `optax.contrib.muon` (the 2026-07-02/11"
+            " experiment arms' exact semantics). `stacked` = same-shape leaves batched into"
+            " one NS with the stack axis sharded over (replicate, fsdp) — device-local"
+            " orthogonalization, no per-iteration collectives (`muon_stacked.py`); same"
+            " trajectory up to float reassociation (the SPEC D4 tolerance class)."
+        ),
+    )
+    ns_steps: PositiveInt = Field(
+        default=5, description="Newton-Schulz iterations (optax default 5; fewer = cheaper/looser)"
+    )
+    ns_dtype: Literal["float32", "bfloat16"] = Field(
+        default="float32",
+        description=(
+            "Dtype of the NS orthogonalization only (masters/momentum stay fp32 per N1);"
+            " bfloat16 halves NS compute+comm (the Kimi recipe). `stacked` impl only."
+        ),
+    )
 
 
 def _default_optimizer_type_adamw(data: object) -> object:

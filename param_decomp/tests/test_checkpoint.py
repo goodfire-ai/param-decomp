@@ -2,6 +2,7 @@
 trainer state (SPEC S22): a restored `TrainState` must continue the EXACT trajectory —
 including the persistent adversary's sources and Adam moments."""
 
+from collections.abc import Callable
 from pathlib import Path
 
 import equinox as eqx
@@ -38,6 +39,7 @@ from param_decomp.configs import (
     UniformKSubsetRoutingConfig,
 )
 from param_decomp.lm import DecomposedModel
+from param_decomp.muon_stacked import stacked_muon
 from param_decomp.recon import build_loss_terms
 from param_decomp.run_state import chunk_stacked_muon_dimension_numbers
 from param_decomp.schedule import ScheduleConfig
@@ -95,25 +97,34 @@ def _chunkwise_arch(lm: DecomposedModel, cfg: LlamaConfig) -> ChunkwiseTransform
     )
 
 
-def _build(seed: int, muon_components: bool = False, muon_ci_fn: bool = False):
+def _build(
+    seed: int, muon_components: bool = False, muon_ci_fn: bool = False, stacked_impl: bool = False
+):
     cfg = _tiny_cfg()
     C, seq = 8, 16
     sites = llama_site_specs(cfg, mlp_family_site_cs(3, 4, C))
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(seed))
     ci_fn = build_ci_fn(_chunkwise_arch(lm, cfg), lm.sites, jax.random.PRNGKey(seed + 1))
-    inner_vu = (
-        optax.contrib.muon(1e-3, consistent_rms=0.2)
-        if muon_components
-        else optax.adamw(1e-3, weight_decay=0.0)
-    )
+
+    def muon_impl(dim_nums: "Callable[[optax.Params], optax.Params] | None"):
+        if stacked_impl:
+            return stacked_muon(
+                1e-3,
+                beta=0.95,
+                weight_decay=0.0,
+                consistent_rms=0.2,
+                muon_weight_dimension_numbers=dim_nums,
+                ns_steps=5,
+                ns_dtype=jnp.dtype(jnp.float32),
+                mesh=None,
+            )
+        return optax.contrib.muon(1e-3, consistent_rms=0.2, muon_weight_dimension_numbers=dim_nums)
+
+    inner_vu = muon_impl(None) if muon_components else optax.adamw(1e-3, weight_decay=0.0)
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), inner_vu)
     opt_ci = (
-        optax.contrib.muon(
-            1e-3,
-            consistent_rms=0.2,
-            muon_weight_dimension_numbers=chunk_stacked_muon_dimension_numbers,
-        )
+        muon_impl(chunk_stacked_muon_dimension_numbers)
         if muon_ci_fn
         else optax.adamw(1e-3, weight_decay=0.0)
     )
@@ -156,9 +167,11 @@ def _build(seed: int, muon_components: bool = False, muon_ci_fn: bool = False):
 
 
 def _roundtrip_and_exact_resume(
-    tmp_path: Path, muon_components: bool, muon_ci_fn: bool = False
+    tmp_path: Path, muon_components: bool, muon_ci_fn: bool = False, stacked_impl: bool = False
 ) -> None:
-    lm, state, step, resid = _build(seed=1, muon_components=muon_components, muon_ci_fn=muon_ci_fn)
+    lm, state, step, resid = _build(
+        seed=1, muon_components=muon_components, muon_ci_fn=muon_ci_fn, stacked_impl=stacked_impl
+    )
     for i in range(2):
         state, _ = step(lm, state, resid, jax.random.PRNGKey(i))
 
@@ -166,7 +179,9 @@ def _roundtrip_and_exact_resume(
     save_state(mgr, 2, state)
 
     # Restore onto a DIFFERENTLY-seeded reference: every leaf must come from disk.
-    _, fresh, _, _ = _build(seed=7, muon_components=muon_components, muon_ci_fn=muon_ci_fn)
+    _, fresh, _, _ = _build(
+        seed=7, muon_components=muon_components, muon_ci_fn=muon_ci_fn, stacked_impl=stacked_impl
+    )
     restored = restore_latest(mgr, fresh)
     assert restored is not None
     loaded, ckpt_step = restored
@@ -199,6 +214,13 @@ def test_muon_ci_fn_roundtrip_and_exact_resume(tmp_path: Path):
     partitioned by `chunk_stacked_muon_dimension_numbers` (3D chunk stacks muon'd, 2D bias
     stacks in the Adam-fallback mask)."""
     _roundtrip_and_exact_resume(tmp_path, muon_components=True, muon_ci_fn=True)
+
+
+def test_stacked_muon_roundtrip_and_exact_resume(tmp_path: Path):
+    """SPEC S20 `impl: stacked`: the stacked-NS muon state is optax's `MuonState` pytree
+    verbatim, so the same roundtrip + exact-resume guarantee holds — and a checkpoint
+    written under either impl restores under the other."""
+    _roundtrip_and_exact_resume(tmp_path, muon_components=True, muon_ci_fn=True, stacked_impl=True)
 
 
 def test_persistent_adam_step_count_roundtrip_and_post_resume_bias_correction(tmp_path: Path):
