@@ -84,6 +84,9 @@ def hsdp_mesh() -> Mesh:
     devices = np.array(jax.devices())
     n = devices.size
     fsdp = _GPUS_PER_NODE if n % _GPUS_PER_NODE == 0 else n
+    if os.environ.get("PD_SUBNODE_REPLICATE", "") == "1":
+        assert n % _GPUS_PER_NODE != 0, "PD_SUBNODE_REPLICATE is for sub-node (n<8) runs"
+        fsdp = 1
     return Mesh(devices.reshape(n // fsdp, fsdp), axis_names=BATCH_AXES)
 
 
