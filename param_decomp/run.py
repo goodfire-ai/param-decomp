@@ -508,7 +508,7 @@ def run_decomposition_training(
 
     step_fn = make_train_step(
         lm=lm,
-        losses=build_loss_terms(pd.loss_metrics, lm.site_names),
+        losses=build_loss_terms(pd.loss_metrics, lm.site_names, pd.steps),
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=pd.steps,

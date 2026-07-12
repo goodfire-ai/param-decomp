@@ -46,6 +46,32 @@ class StaticProbabilityRoutingConfig(BaseConfig):
     p: Probability
 
 
+class FixedKSubsetRoutingConfig(BaseConfig):
+    """Route each position to a uniformly-drawn subset of exactly `k` of the live sites."""
+
+    type: Literal["fixed_k_subset"] = "fixed_k_subset"
+    k: PositiveInt
+
+
+class ScheduledProbabilityRoutingConfig(BaseConfig):
+    """`static_probability` with `p` evaluated per step from a schedule. The schedule ends
+    at `start_val * final_val_frac`; an increasing ramp uses `final_val_frac > 1`. Both
+    endpoints must be valid probabilities."""
+
+    type: Literal["scheduled_probability"] = "scheduled_probability"
+    p: ScheduleConfig
+
+    @model_validator(mode="after")
+    def validate_probability_endpoints(self) -> Self:
+        end_val = self.p.start_val * self.p.final_val_frac
+        if not (self.p.start_val <= 1.0 and end_val <= 1.0):
+            raise ValueError(
+                f"p schedule endpoints must be probabilities: "
+                f"start={self.p.start_val}, end={end_val}"
+            )
+        return self
+
+
 class AllRoutingConfig(BaseConfig):
     """Route every position to every module (the `"all"` fast path)."""
 
@@ -53,7 +79,13 @@ class AllRoutingConfig(BaseConfig):
 
 
 # Discriminated union over the subset-routing configs (keyed by ``type``).
-SubsetRoutingType = UniformKSubsetRoutingConfig | StaticProbabilityRoutingConfig | AllRoutingConfig
+SubsetRoutingType = (
+    UniformKSubsetRoutingConfig
+    | StaticProbabilityRoutingConfig
+    | FixedKSubsetRoutingConfig
+    | ScheduledProbabilityRoutingConfig
+    | AllRoutingConfig
+)
 
 
 # ---------------------------------------------------------------------------

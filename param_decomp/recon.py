@@ -28,6 +28,7 @@ from param_decomp.configs import (
     CIMaskedReconLossConfig,
     CIMaskedReconSubsetLossConfig,
     FaithfulnessLossConfig,
+    FixedKSubsetRoutingConfig,
     ImportanceMinimalityLossConfig,
     MaskScopeLiteral,
     PersistentPGDReconLossConfig,
@@ -35,6 +36,7 @@ from param_decomp.configs import (
     PGDReconLayerwiseLossConfig,
     PGDReconLossConfig,
     PGDReconSubsetLossConfig,
+    ScheduledProbabilityRoutingConfig,
     SmoothL0ImportanceMinimalityLossConfig,
     StaticProbabilityRoutingConfig,
     StochasticReconLayerwiseLossConfig,
@@ -45,17 +47,20 @@ from param_decomp.configs import (
     UnmaskedReconLossConfig,
 )
 from param_decomp.lm import chunk_sites
+from param_decomp.losses import scheduled_value_traced
+from param_decomp.schedule import ScheduleConfig
 
 Routes = dict[str, Array] | None
-RoutingSampler = Callable[[PRNGKeyArray, tuple[int, ...]], tuple[Routes, ...]]
-"""`(key, leading_shape) -> (routes, ...)` — a STATICALLY-sized family of routing draws,
-each `{site: bool[*leading]}` (or None = route everywhere) becoming ONE forward. The torch
-`Router.get_masks` made pure: fresh draws per step require the key threaded in —
-samplers run INSIDE the jitted step, so they must be traceable (SPEC R1). Returning
+RoutingSampler = Callable[[PRNGKeyArray, tuple[int, ...], Array], tuple[Routes, ...]]
+"""`(key, leading_shape, step_f32) -> (routes, ...)` — a STATICALLY-sized family of routing
+draws, each `{site: bool[*leading]}` (or None = route everywhere) becoming ONE forward. The
+torch `Router.get_masks` made pure: fresh draws per step require the key threaded in —
+samplers run INSIDE the jitted step, so they must be traceable (SPEC R1). `step_f32` is the
+traced step, read only by scheduled samplers (all others ignore it). Returning
 several draws from one invocation enables JOINTLY-sampled families (independent
 repeats, antithetic/complementary subsets, per-step random covers) that duplicated
 plan entries with independent keys cannot express. The plan's structure — live-sets,
-sampler identities, family sizes — is static; only the key varies per step."""
+sampler identities, family sizes — is static; only the key (and step) vary per step."""
 
 
 # ───────────────────────────── mask-source strategies ─────────────────────────────
@@ -194,9 +199,36 @@ def uniform_k_subset_routes(
 def uniform_k_routing(live_sites: tuple[str, ...], n_draws: int) -> RoutingSampler:
     """`n_draws` independent per-position uniform-k-subset draws over `live_sites`."""
 
-    def sample(key: PRNGKeyArray, leading_shape: tuple[int, ...]) -> tuple[Routes, ...]:
+    def sample(
+        key: PRNGKeyArray, leading_shape: tuple[int, ...], _step_f32: Array
+    ) -> tuple[Routes, ...]:
         return tuple(
             uniform_k_subset_routes(draw_key, live_sites, leading_shape)
+            for draw_key in random.split(key, n_draws)
+        )
+
+    return sample
+
+
+def fixed_k_subset_routes(
+    key: PRNGKeyArray, live_sites: tuple[str, ...], k: int, leading_shape: tuple[int, ...]
+) -> dict[str, Array]:
+    """Per position: a uniform subset of exactly `k` of the live sites routes True."""
+    n_sites = len(live_sites)
+    perms = random.uniform(key, (n_sites, *leading_shape)).argsort(axis=0)
+    routed = perms < k
+    return {name: routed[j] for j, name in enumerate(live_sites)}
+
+
+def fixed_k_routing(live_sites: tuple[str, ...], k: int, n_draws: int) -> RoutingSampler:
+    """`n_draws` independent per-position exactly-k-subset draws over `live_sites`."""
+    assert 1 <= k <= len(live_sites), f"k={k} outside 1..{len(live_sites)} live sites"
+
+    def sample(
+        key: PRNGKeyArray, leading_shape: tuple[int, ...], _step_f32: Array
+    ) -> tuple[Routes, ...]:
+        return tuple(
+            fixed_k_subset_routes(draw_key, live_sites, k, leading_shape)
             for draw_key in random.split(key, n_draws)
         )
 
@@ -209,7 +241,29 @@ def static_probability_routing(
     """`n_draws` independent draws routing each position to each live site with
     probability `p` (torch `StaticProbabilityRouter`)."""
 
-    def sample(key: PRNGKeyArray, leading_shape: tuple[int, ...]) -> tuple[Routes, ...]:
+    def sample(
+        key: PRNGKeyArray, leading_shape: tuple[int, ...], _step_f32: Array
+    ) -> tuple[Routes, ...]:
+        return tuple(
+            {
+                name: random.bernoulli(random.fold_in(draw_key, j), p, leading_shape)
+                for j, name in enumerate(live_sites)
+            }
+            for draw_key in random.split(key, n_draws)
+        )
+
+    return sample
+
+
+def scheduled_probability_routing(
+    live_sites: tuple[str, ...], p_schedule: ScheduleConfig, total_steps: int, n_draws: int
+) -> RoutingSampler:
+    """`static_probability_routing` with `p` evaluated at the traced step."""
+
+    def sample(
+        key: PRNGKeyArray, leading_shape: tuple[int, ...], step_f32: Array
+    ) -> tuple[Routes, ...]:
+        p = scheduled_value_traced(step_f32, total_steps, p_schedule)
         return tuple(
             {
                 name: random.bernoulli(random.fold_in(draw_key, j), p, leading_shape)
@@ -224,20 +278,26 @@ def static_probability_routing(
 def route_all_n(n_draws: int) -> RoutingSampler:
     """`n_draws` forwards, each routing every position to every live site (`AllRoutingConfig`)."""
 
-    def sample(_key: PRNGKeyArray, _leading_shape: tuple[int, ...]) -> tuple[Routes, ...]:
+    def sample(
+        _key: PRNGKeyArray, _leading_shape: tuple[int, ...], _step_f32: Array
+    ) -> tuple[Routes, ...]:
         return (None,) * n_draws
 
     return sample
 
 
 def routing_sampler_from_config(
-    routing: SubsetRoutingType, live_sites: tuple[str, ...], n_draws: int
+    routing: SubsetRoutingType, live_sites: tuple[str, ...], n_draws: int, total_steps: int
 ) -> RoutingSampler:
     match routing:
         case UniformKSubsetRoutingConfig():
             return uniform_k_routing(live_sites, n_draws)
+        case FixedKSubsetRoutingConfig():
+            return fixed_k_routing(live_sites, routing.k, n_draws)
         case StaticProbabilityRoutingConfig():
             return static_probability_routing(live_sites, routing.p, n_draws)
+        case ScheduledProbabilityRoutingConfig():
+            return scheduled_probability_routing(live_sites, routing.p, total_steps, n_draws)
         case AllRoutingConfig():
             return route_all_n(n_draws)
 
@@ -272,15 +332,17 @@ def make_plan(
     routing: SubsetRoutingType,
     sources: MaskSourceStrategy,
     n_samples: int,
+    total_steps: int,
 ) -> ReconPlan:
     """One `ReconForward` per chunk: that chunk live, the rest frozen `x@W` (SPEC S2),
     with `n_samples` routing draws from `routing` over the chunk's own sites (SPEC S11)
-    and the shared `sources`. The chunking (`one_chunk`/`per_site`/`into_groups`) and the
+    and the shared `sources`. `total_steps` anchors scheduled routing (read only by
+    `scheduled_probability`). The chunking (`one_chunk`/`per_site`/`into_groups`) and the
     routing/source choices are orthogonal — see LOSS_PARITY_DESIGN.md."""
     return tuple(
         ReconForward(
             live_sites=chunk,
-            sample_routing=routing_sampler_from_config(routing, chunk, n_samples),
+            sample_routing=routing_sampler_from_config(routing, chunk, n_samples, total_steps),
             sources=sources,
         )
         for chunk in chunks
@@ -292,11 +354,16 @@ def subset_chunk_plan(
     sites_per_chunk: int,
     n_samples: int,
     sources: MaskSourceStrategy,
+    total_steps: int,
 ) -> ReconPlan:
     """The production plan: `n_samples` uniform-k forwards per chunk (torch
     `SubsetReconPlan` over `ThreePoolTopology` chunks)."""
     return make_plan(
-        into_groups(site_names, sites_per_chunk), UniformKSubsetRoutingConfig(), sources, n_samples
+        into_groups(site_names, sites_per_chunk),
+        UniformKSubsetRoutingConfig(),
+        sources,
+        n_samples,
+        total_steps,
     )
 
 
@@ -321,6 +388,7 @@ def persistent_configs(
 def build_loss_terms(
     loss_metrics: Sequence[AnyLossMetricConfig],
     site_names: tuple[str, ...],
+    total_steps: int,
 ) -> LossSurface:
     """Validate the shared torch loss configs into the `LossSurface` record
     (LOSS_PARITY_DESIGN §3): exactly one faithfulness + one importance-minimality term,
@@ -367,17 +435,21 @@ def build_loss_terms(
             case UnmaskedReconLossConfig() | CIMaskedReconLossConfig():
                 value = 1.0 if isinstance(cfg, UnmaskedReconLossConfig) else 0.0
                 plan = make_plan(
-                    one_chunk(site_names), AllRoutingConfig(), ConstantSources(value), n_samples=1
+                    one_chunk(site_names),
+                    AllRoutingConfig(),
+                    ConstantSources(value),
+                    1,
+                    total_steps,
                 )
                 recon_terms.append(recon(cfg, plan))
             case CIMaskedReconSubsetLossConfig():
                 plan = make_plan(
-                    one_chunk(site_names), cfg.routing, ConstantSources(0.0), n_samples=1
+                    one_chunk(site_names), cfg.routing, ConstantSources(0.0), 1, total_steps
                 )
                 recon_terms.append(recon(cfg, plan))
             case CIMaskedReconLayerwiseLossConfig():
                 plan = make_plan(
-                    per_site(site_names), AllRoutingConfig(), ConstantSources(0.0), n_samples=1
+                    per_site(site_names), AllRoutingConfig(), ConstantSources(0.0), 1, total_steps
                 )
                 recon_terms.append(recon(cfg, plan))
             case StochasticReconLossConfig():
@@ -386,11 +458,16 @@ def build_loss_terms(
                     AllRoutingConfig(),
                     StochasticSources(),
                     cfg.n_mask_samples,
+                    total_steps,
                 )
                 recon_terms.append(recon(cfg, plan))
             case StochasticReconSubsetLossConfig():
                 plan = make_plan(
-                    one_chunk(site_names), cfg.routing, StochasticSources(), cfg.n_mask_samples
+                    one_chunk(site_names),
+                    cfg.routing,
+                    StochasticSources(),
+                    cfg.n_mask_samples,
+                    total_steps,
                 )
                 recon_terms.append(recon(cfg, plan))
             case StochasticReconLayerwiseLossConfig():
@@ -399,6 +476,7 @@ def build_loss_terms(
                     AllRoutingConfig(),
                     StochasticSources(),
                     cfg.n_mask_samples,
+                    total_steps,
                 )
                 recon_terms.append(recon(cfg, plan))
             case ChunkwiseSubsetReconLossConfig():
@@ -408,6 +486,7 @@ def build_loss_terms(
                     cfg.routing,
                     StochasticSources(),
                     cfg.n_samples,
+                    total_steps,
                 )
                 recon_terms.append(recon(cfg, plan))
             case PGDReconLossConfig() | PGDReconSubsetLossConfig():
@@ -415,11 +494,11 @@ def build_loss_terms(
                 routing = (
                     cfg.routing if isinstance(cfg, PGDReconSubsetLossConfig) else AllRoutingConfig()
                 )
-                plan = make_plan(one_chunk(site_names), routing, fresh, n_samples=1)
+                plan = make_plan(one_chunk(site_names), routing, fresh, 1, total_steps)
                 recon_terms.append(recon(cfg, plan))
             case PGDReconLayerwiseLossConfig():
                 fresh = FreshPGDSources(cfg.init, cfg.n_steps, cfg.step_size, cfg.mask_scope)
-                plan = make_plan(per_site(site_names), AllRoutingConfig(), fresh, n_samples=1)
+                plan = make_plan(per_site(site_names), AllRoutingConfig(), fresh, 1, total_steps)
                 recon_terms.append(recon(cfg, plan))
             case PersistentPGDReconLossConfig():
                 schedule = cfg.optimizer.lr_schedule
@@ -429,7 +508,8 @@ def build_loss_terms(
                     one_chunk(site_names),
                     AllRoutingConfig(),
                     PersistentSources(state_key=key, cfg=cfg),
-                    n_samples=1,
+                    1,
+                    total_steps,
                 )
                 recon_terms.append(recon(cfg, plan))
             case _:

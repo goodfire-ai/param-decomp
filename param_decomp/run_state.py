@@ -117,7 +117,7 @@ def init_train_state(
     assert ci_fn.expects_axes == lm.leading_axes, (
         f"CI fn expects leading axes {ci_fn.expects_axes} but model has {lm.leading_axes}"
     )
-    losses = build_loss_terms(pd.loss_metrics, lm.site_names)
+    losses = build_loss_terms(pd.loss_metrics, lm.site_names, pd.steps)
     persistent = persistent_configs(losses.recon)
     term_coeff_by_state_key = {
         entry.sources.state_key: term.coeff
