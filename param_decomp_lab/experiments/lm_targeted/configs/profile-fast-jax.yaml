@@ -1,4 +1,4 @@
-run_name: addsub-L18-fast-jax
+run_name: addsub-L18-fast-jax-profile
 cadence:
   keep_last_n_checkpoints: 3
   save_every: 2000
@@ -25,7 +25,7 @@ eval:
   every: 1000
   n_steps: 1
   slow_every: 2000
-  slow_on_first_step: true
+  slow_on_first_step: false
   metrics:
   - ci_alive_threshold: 0.0
     groups: null
@@ -114,12 +114,12 @@ runtime:
     env:
       HF_HOME: /mnt/nw/home/a.vigouroux/.cache/huggingface
       PARAM_DECOMP_OUT_DIR: /mnt/nw/home/a.vigouroux/out
+    profile:
+      time_steps: true
+      no_checkpoint: true
 target:
   weights_dtype: bfloat16
   spec:
     kind: hf
     model_class: transformers.LlamaForCausalLM
     model_name: meta-llama/Llama-3.1-8B
-wandb:
-  entity: null
-  project: param-decomp-llama
