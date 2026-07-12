@@ -22,6 +22,9 @@ run_name: ai-jax-pile4l-ppgd-bsc
 #      address it).
 #   3. cadence.save_every: null -> 5000, keep_last null -> 2 (upstream saves
 #      nothing; the JAX leg checkpoints for requeue-resume + offline eval).
+#   4. ImportanceMinimalityLoss.eps: 1e-12 -> 1e-6, matching the L18-23 line. The
+#      imp-min gradient p(c+eps)^(p-1) is singular at c=0 for p<1, capped only by
+#      eps; at 1e-12 the cap is ~6e6 per dead component's CI late in the p-anneal.
 # Everything else (pd losses/optimizers/CI fn, 400k steps, batch 64, eval set) is
 # upstream-identical.
 cadence:
@@ -130,7 +133,7 @@ pd:
       coeff: 1.0e-04
       reference_token_count: 65536
     coeff: 0.0002
-    eps: 1.0e-12
+    eps: 1.0e-06
     pnorm:
       start_val: 2.0
       fn_type: linear
