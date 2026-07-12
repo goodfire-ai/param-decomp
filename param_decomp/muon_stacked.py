@@ -75,16 +75,19 @@ def _grouped_newton_schulz(
     for shape, indices in groups.items():
         stacks = [canon[i][0] for i in indices]
         sizes = [s.shape[0] for s in stacks]
-        grouped = jnp.concatenate(stacks, axis=0)
+        out_dtype = stacks[0].dtype
+        # Cast BEFORE the sharding constraint so the ingress reshard moves ns_dtype
+        # bytes (half, for bf16 NS), not fp32.
+        grouped = jnp.concatenate(stacks, axis=0).astype(ns_dtype)
         grouped = _pad_to_multiple(grouped, n_shards)
         if stack_sharding is not None:
             grouped = jax.lax.with_sharding_constraint(grouped, stack_sharding)
         orthogonalized = orthogonalize_via_newton_schulz(
-            grouped.astype(ns_dtype),
+            grouped,
             jnp.asarray(ns_coeffs, ns_dtype),
             ns_steps=ns_steps,
             dimension_numbers=_NS_DIMS,
-        ).astype(grouped.dtype)
+        ).astype(out_dtype)
         offset = 0
         for i, size in zip(indices, sizes, strict=True):
             piece = orthogonalized[offset : offset + size]
