@@ -1,4 +1,4 @@
-run_name: addsub-L18-fast-jax
+run_name: addsub-L18-fast-jax-profile
 cadence:
   keep_last_n_checkpoints: 3
   save_every: 2000
@@ -9,7 +9,7 @@ data:
   max_seq_len: 6
   add_special_tokens: true
 nontarget:
-  batch_size: 64
+  batch_size: 32
   impmin_coeff_ratio: 2.0
   data:
     dataset_name: parquet
@@ -21,11 +21,11 @@ nontarget:
     streaming: false
     eval_split: train
 eval:
-  batch_size: 128
+  batch_size: 64
   every: 1000
   n_steps: 1
   slow_every: 2000
-  slow_on_first_step: true
+  slow_on_first_step: false
   metrics:
   - ci_alive_threshold: 0.0
     groups: null
@@ -34,7 +34,7 @@ eval:
     type: CEandKLLosses
   - type: ArithmeticCIGrid
 pd:
-  batch_size: 128
+  batch_size: 64
   ci_config:
     type: chunkwise_transformer
     blocks_per_chunk: 1
@@ -114,12 +114,16 @@ runtime:
     env:
       HF_HOME: /mnt/nw/home/a.vigouroux/.cache/huggingface
       PARAM_DECOMP_OUT_DIR: /mnt/nw/home/a.vigouroux/out
+      PD_SUBNODE_REPLICATE: '1'
+    profile:
+      time_steps: true
+      no_checkpoint: true
+    xla_flags:
+      gpu_enable_command_buffer: ''
+    xla_python_client_mem_fraction: 0.97
 target:
   weights_dtype: bfloat16
   spec:
     kind: hf
     model_class: transformers.LlamaForCausalLM
     model_name: meta-llama/Llama-3.1-8B
-wandb:
-  entity: null
-  project: param-decomp-llama
