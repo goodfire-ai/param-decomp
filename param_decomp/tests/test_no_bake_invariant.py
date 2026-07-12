@@ -80,6 +80,7 @@ def _build_step_and_args():
             StochasticReconLossConfig(coeff=1.0),
         ),
         lm.site_names,
+        10,
     )
     step_fn = make_train_step(
         lm=lm,

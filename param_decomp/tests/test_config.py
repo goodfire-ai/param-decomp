@@ -96,7 +96,9 @@ def test_b128_config_converts():
     assert converted.data is not None and converted.data.global_batch == 128
     assert converted.target.sites == mlp_family_site_cs(18, 18, 24576)
     losses = build_loss_terms(
-        converted.pd.loss_metrics, tuple(sc.name for sc in converted.target.sites)
+        converted.pd.loss_metrics,
+        tuple(sc.name for sc in converted.target.sites),
+        converted.pd.steps,
     )
     faith, imp = losses.faith, losses.imp
     assert isinstance(imp.cfg, ImportanceMinimalityLossConfig)

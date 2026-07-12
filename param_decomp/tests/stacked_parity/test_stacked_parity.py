@@ -195,7 +195,7 @@ def test_chunk_plan_static_live_set_matches():
     f, lm, vu, resid = _load()
 
     plan = subset_chunk_plan(
-        lm.site_names, sites_per_chunk=3, n_samples=1, sources=StochasticSources()
+        lm.site_names, sites_per_chunk=3, n_samples=1, sources=StochasticSources(), total_steps=100
     )
     chunk0 = lm.site_names[:3]
     assert plan[0].live_sites == chunk0, (plan[0].live_sites, chunk0)
@@ -277,6 +277,7 @@ def test_train_trajectory_matches():
             ppgd_cfg,
         ),
         lm.site_names,
+        100,
     )
     step_fn = make_train_step(
         lm=lm,

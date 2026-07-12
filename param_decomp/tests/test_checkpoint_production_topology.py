@@ -155,6 +155,7 @@ def _build_sharded(seed: int):
             *ppgd_cfgs,
         ),
         lm.site_names,
+        100,
     )  # fmt: skip
     assert tuple(persistent_configs(loss_terms.recon)) == PERSISTENT_TERMS, loss_terms
 

@@ -321,7 +321,7 @@ def make_train_step(
                     continue
                 fresh_cfg = entry.sources
                 routing_key, init_key = random.split(random.fold_in(term_key, entry_idx))
-                routes_per_draw = entry.sample_routing(routing_key, leading)
+                routes_per_draw = entry.sample_routing(routing_key, leading, step_f32)
                 fixed_routes[(term_idx, entry_idx)] = routes_per_draw
                 live_specs = tuple(s for s in sites if s.name in entry.live_sites)
                 init = init_fresh_pgd_sources(
@@ -394,7 +394,7 @@ def make_train_step(
                         case FreshPGDSources():
                             routes_per_draw = fixed_routes[(term_idx, entry_idx)]
                         case _:
-                            routes_per_draw = entry.sample_routing(routing_key, leading)
+                            routes_per_draw = entry.sample_routing(routing_key, leading, step_f32)
                     for draw_idx, routes in enumerate(routes_per_draw):
                         draw_key = random.fold_in(entry_key, draw_idx)
 

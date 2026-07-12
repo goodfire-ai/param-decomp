@@ -52,6 +52,7 @@ def build_tms_built_run(cfg: TMSExperimentConfig, run_id: str) -> BuiltRun:
     build_loss_terms(
         cfg.pd.loss_metrics,
         tuple(sc.name for sc in site_cs),
+        cfg.pd.steps,
     )
     target = tms.TMSTargetConfig(
         n_features=cfg.target.n_features,
