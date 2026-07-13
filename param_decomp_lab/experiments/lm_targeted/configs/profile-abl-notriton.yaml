@@ -1,4 +1,4 @@
-run_name: addsub-L18-fast-jax
+run_name: addsub-L18-fast-jax-notriton
 cadence:
   keep_last_n_checkpoints: 3
   save_every: 2000
@@ -25,7 +25,7 @@ eval:
   every: 1000
   n_steps: 1
   slow_every: 2000
-  slow_on_first_step: true
+  slow_on_first_step: false
   metrics:
   - ci_alive_threshold: 0.0
     groups: null
@@ -115,15 +115,17 @@ runtime:
       HF_HOME: /mnt/nw/home/a.vigouroux/.cache/huggingface
       PARAM_DECOMP_OUT_DIR: /mnt/nw/home/a.vigouroux/out
       PD_SUBNODE_REPLICATE: '1'
+      CUDA_VISIBLE_DEVICES: 4,5
     xla_flags:
       gpu_enable_latency_hiding_scheduler: 'true'
+      gpu_enable_triton_gemm: 'false'
     xla_python_client_mem_fraction: 0.97
+    profile:
+      time_steps: true
+      no_checkpoint: true
 target:
   weights_dtype: bfloat16
   spec:
     kind: hf
     model_class: transformers.LlamaForCausalLM
     model_name: meta-llama/Llama-3.1-8B
-wandb:
-  entity: null
-  project: param-decomp-llama
