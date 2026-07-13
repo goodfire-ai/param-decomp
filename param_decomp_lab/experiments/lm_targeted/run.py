@@ -100,7 +100,10 @@ def train(
     # TARGET stream: the fixed prompt pool, tokenized once at build time.
     assert cfg.data.prompts_file is not None
     prompt_tokens, recon_positions = load_prompt_tokens(
-        cfg.data.prompts_file, cfg.data.tokenizer_name, cfg.data.max_seq_len
+        cfg.data.prompts_file,
+        cfg.data.tokenizer_name,
+        cfg.data.max_seq_len,
+        cfg.data.add_special_tokens,
     )
     target_prompts = TargetPromptGeometry(
         recon_positions=recon_positions, seq_len=int(prompt_tokens.shape[1])

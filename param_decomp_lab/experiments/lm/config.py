@@ -137,6 +137,12 @@ class LMDataConfig(BaseConfig):
     tokenizer_name: str = Field(..., description="HF tokenizer id or path")
     column_name: str = Field(default="text", description="Dataset column with the text/tokens")
     max_seq_len: PositiveInt = Field(default=512, description="Max sequence length")
+    add_special_tokens: bool = Field(
+        default=False,
+        description="Prepend the tokenizer's special tokens (e.g. Llama BOS) when tokenizing "
+        "the tPD prompt pool; must match the eval probe's tokenization. Default False "
+        "preserves the numpy/pandas run.",
+    )
     train_split: str = Field(default="train")
     eval_split: str = Field(default="test")
     is_tokenized: bool = Field(default=False)
