@@ -13,9 +13,11 @@ closed over by the jit'd step; only keys (and, for persistent terms, `TrainState
 entries) vary per step.
 """
 
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+import jax.numpy as jnp
 from jax import random
 from jaxtyping import Array, PRNGKeyArray
 
@@ -27,6 +29,7 @@ from param_decomp.configs import (
     CIMaskedReconLayerwiseLossConfig,
     CIMaskedReconLossConfig,
     CIMaskedReconSubsetLossConfig,
+    DepthPhasedProbabilityRoutingConfig,
     FaithfulnessLossConfig,
     FixedKSubsetRoutingConfig,
     ImportanceMinimalityLossConfig,
@@ -275,6 +278,52 @@ def scheduled_probability_routing(
     return sample
 
 
+def depth_phased_probability_routing(
+    live_sites: tuple[str, ...],
+    p_template: ScheduleConfig,
+    wave_span_frac: float,
+    direction: str,
+    total_steps: int,
+    n_draws: int,
+) -> RoutingSampler:
+    """Per-site `Bernoulli(p_layer(step))`: each layer runs `p_template` compressed onto
+    `[t_layer, total_steps]`. Backward: deepest layer starts at 0, shallowest at
+    `wave_span_frac * total_steps`; forward is mirrored. Requires `h.<i>.` site names."""
+    layer_re = re.compile(r"^h\.(\d+)\.")
+    matches = [layer_re.match(s) for s in live_sites]
+    assert all(m is not None for m in matches), (
+        f"depth_phased_probability needs h.<i>.* site names, got {live_sites}"
+    )
+    layers = [int(m.group(1)) for m in matches if m is not None]
+    lo, hi = min(layers), max(layers)
+    span = max(hi - lo, 1)
+
+    def start_step(layer: int) -> int:
+        depth_frac = (layer - lo) / span
+        stagger = (1.0 - depth_frac) if direction == "backward" else depth_frac
+        return int(wave_span_frac * total_steps * stagger)
+
+    site_windows = tuple((start_step(layer), total_steps - start_step(layer)) for layer in layers)
+    assert all(w > 0 for _, w in site_windows)
+
+    def sample(
+        key: PRNGKeyArray, leading_shape: tuple[int, ...], step_f32: Array
+    ) -> tuple[Routes, ...]:
+        site_ps = [
+            scheduled_value_traced(jnp.maximum(step_f32 - t0, 0.0), window, p_template)
+            for t0, window in site_windows
+        ]
+        return tuple(
+            {
+                name: random.bernoulli(random.fold_in(draw_key, j), site_ps[j], leading_shape)
+                for j, name in enumerate(live_sites)
+            }
+            for draw_key in random.split(key, n_draws)
+        )
+
+    return sample
+
+
 def route_all_n(n_draws: int) -> RoutingSampler:
     """`n_draws` forwards, each routing every position to every live site (`AllRoutingConfig`)."""
 
@@ -298,6 +347,15 @@ def routing_sampler_from_config(
             return static_probability_routing(live_sites, routing.p, n_draws)
         case ScheduledProbabilityRoutingConfig():
             return scheduled_probability_routing(live_sites, routing.p, total_steps, n_draws)
+        case DepthPhasedProbabilityRoutingConfig():
+            return depth_phased_probability_routing(
+                live_sites,
+                routing.p,
+                routing.wave_span_frac,
+                routing.direction,
+                total_steps,
+                n_draws,
+            )
         case AllRoutingConfig():
             return route_all_n(n_draws)
 

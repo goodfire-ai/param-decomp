@@ -72,6 +72,31 @@ class ScheduledProbabilityRoutingConfig(BaseConfig):
         return self
 
 
+class DepthPhasedProbabilityRoutingConfig(BaseConfig):
+    """`scheduled_probability` with per-layer staggered start times — a routing wave over
+    depth. Each site's layer (parsed from the `h.<i>.` site-name prefix) runs the `p`
+    template compressed onto `[t_layer, total_steps]`; `direction="backward"` starts the
+    DEEPEST layer at step 0 with layer start times staggered linearly up to
+    `wave_span_frac` of training for the shallowest (shortest-causal-path-first);
+    `"forward"` is the mirrored control. `wave_span_frac=0` degenerates to
+    `scheduled_probability`. Both `p` endpoints must be valid probabilities."""
+
+    type: Literal["depth_phased_probability"] = "depth_phased_probability"
+    p: ScheduleConfig
+    wave_span_frac: Probability
+    direction: Literal["backward", "forward"] = "backward"
+
+    @model_validator(mode="after")
+    def validate_probability_endpoints(self) -> Self:
+        end_val = self.p.start_val * self.p.final_val_frac
+        if not (self.p.start_val <= 1.0 and end_val <= 1.0):
+            raise ValueError(
+                f"p schedule endpoints must be probabilities: "
+                f"start={self.p.start_val}, end={end_val}"
+            )
+        return self
+
+
 class AllRoutingConfig(BaseConfig):
     """Route every position to every module (the `"all"` fast path)."""
 
@@ -84,6 +109,7 @@ SubsetRoutingType = (
     | StaticProbabilityRoutingConfig
     | FixedKSubsetRoutingConfig
     | ScheduledProbabilityRoutingConfig
+    | DepthPhasedProbabilityRoutingConfig
     | AllRoutingConfig
 )
 
