@@ -450,15 +450,26 @@ def make_train_step(
                                         )
                                     )
                                 case MixedPersistentStochasticSources(state_key=state_key):
-                                    # Per-position mixing (SPEC S10' variation): sources are
-                                    # the persistent bundle's where `assign`, fresh U[0,1]
+                                    # Mixing (SPEC S10' variation): sources are the
+                                    # persistent bundle's where `assign`, fresh U[0,1]
                                     # elsewhere; adversarial positions route all-live, the
                                     # rest keep this draw's routing. One forward serves both
                                     # pressures; the persistent sources stay live leaves so
                                     # the S14' final ascent rides this term's backward.
+                                    # `assign` is per (batch, position) or — with
+                                    # assignment=per_sample — per batch element, shape
+                                    # (B, 1, ...) broadcasting over the position axes so a
+                                    # sequence never mixes families.
                                     mix_cfg = entry.sources.cfg
                                     akey, ukey = random.split(draw_key)
-                                    assign = random.bernoulli(akey, mix_cfg.adv_fraction, leading)
+                                    assign_shape = (
+                                        leading
+                                        if mix_cfg.assignment == "per_position"
+                                        else (leading[0], *(1,) * (len(leading) - 1))
+                                    )
+                                    assign = random.bernoulli(
+                                        akey, mix_cfg.adv_fraction, assign_shape
+                                    )
                                     fresh_uniform = {
                                         site: random.uniform(
                                             random.fold_in(ukey, site_idx),

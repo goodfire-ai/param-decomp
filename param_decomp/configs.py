@@ -428,7 +428,13 @@ class MergedStochasticPGDReconLossConfig(LossMetricConfig):
     canonical 0.5/0.5 pair). Carries the persistent-adversary fields; one source bundle
     feeds this one term (SPEC S23) and the S14' final ascent flows through its backward.
     A mixed assignment is a legal point of the mask box, so this samples the SAME
-    feasible set as the two-term objective, under a different (joint) sampler."""
+    feasible set as the two-term objective, under a different (joint) sampler.
+
+    `assignment` picks the Bernoulli granularity: `per_position` draws one bit per
+    (batch element, position) — a sequence's masked forward sees both families, coupled
+    through attention; `per_sample` draws one bit per batch element, so every position
+    in a sequence takes the same family (no within-sample mixing — each sample's loss is
+    scored against a pure-family context)."""
 
     type: Literal["MergedStochasticPGDReconLoss"] = "MergedStochasticPGDReconLoss"
     optimizer: AdamPGDConfig
@@ -436,6 +442,7 @@ class MergedStochasticPGDReconLossConfig(LossMetricConfig):
     source_dtype: Literal["float32", "bfloat16"] = "float32"
     n_warmup_steps: NonNegativeInt = 0
     adv_fraction: float = Field(gt=0.0, lt=1.0)
+    assignment: Literal["per_position", "per_sample"] = "per_position"
     routing: SubsetRoutingType = Field(default_factory=UniformKSubsetRoutingConfig)
 
 

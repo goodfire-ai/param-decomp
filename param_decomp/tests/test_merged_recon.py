@@ -1,9 +1,12 @@
 """MergedStochasticPGDReconLoss: the one-forward stoch+PPGD term through the jitted step."""
 
+from typing import Literal
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
+import pytest
 
 from param_decomp.adversary import (
     PersistentAdversary,
@@ -31,10 +34,13 @@ from param_decomp.tests.test_llama_simple_mlp import (
 from param_decomp.train import TrainState, make_train_step
 
 
-def _merged_cfg(n_warmup: int) -> MergedStochasticPGDReconLossConfig:
+def _merged_cfg(
+    n_warmup: int, assignment: Literal["per_position", "per_sample"] = "per_position"
+) -> MergedStochasticPGDReconLossConfig:
     return MergedStochasticPGDReconLossConfig(
         coeff=1.0,
         adv_fraction=0.5,
+        assignment=assignment,
         routing=UniformKSubsetRoutingConfig(),
         scope=SCScope(),
         optimizer=AdamPGDConfig(
@@ -64,7 +70,8 @@ def test_merged_term_builds_one_entry():
     assert entry.has_delta
 
 
-def test_merged_train_step_end_to_end():
+@pytest.mark.parametrize("assignment", ["per_position", "per_sample"])
+def test_merged_train_step_end_to_end(assignment: Literal["per_position", "per_sample"]):
     """Full jitted step with ONE merged recon term: finite losses, the persistent
     adversary updates (n_warmup + 1 per step through warmup + the S14' final ascent),
     sources stay projected."""
@@ -78,7 +85,7 @@ def test_merged_train_step_end_to_end():
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
 
-    merged = _merged_cfg(n_warmup)
+    merged = _merged_cfg(n_warmup, assignment)
     src = init_persistent_sources(
         lm.site_names, tuple(s.C for s in lm.sites), (1, seq), jnp.float32, jax.random.PRNGKey(3)
     )

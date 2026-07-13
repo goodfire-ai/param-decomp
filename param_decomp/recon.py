@@ -102,9 +102,10 @@ class PersistentSources:
 
 @dataclass(frozen=True)
 class MixedPersistentStochasticSources:
-    """The merged stochastic+PPGD strategy: per position, the persistent bundle's sources
-    (probability `cfg.adv_fraction`, routed all-live) or fresh `U[0,1]` (routed per the
-    entry's sampler). `state_key` indexes `TrainState.adversaries` like `PersistentSources`."""
+    """The merged stochastic+PPGD strategy: per position (or per batch element, per
+    `cfg.assignment`), the persistent bundle's sources (probability `cfg.adv_fraction`,
+    routed all-live) or fresh `U[0,1]` (routed per the entry's sampler). `state_key`
+    indexes `TrainState.adversaries` like `PersistentSources`."""
 
     state_key: str
     cfg: "MergedStochasticPGDReconLossConfig"
