@@ -475,6 +475,18 @@ def test_decomp_vu_shapes_fp32():
 
 
 _REAL_CACHE_DIR = Path("/mnt/data/artifacts/mechanisms/param-decomp/pretrain_cache/spd-t-9d2b8f02")
+
+
+def _real_cache_mounted() -> bool:
+    # Path.exists() raises PermissionError (not False) when a parent dir denies stat —
+    # the cache lives under a group-restricted dir, so collection dies for users
+    # outside that group without this guard.
+    try:
+        return _REAL_CACHE_DIR.exists()
+    except PermissionError:
+        return False
+
+
 _PRODUCTION_PATTERN_CS = {
     "h.*.mlp.c_fc": 3072,
     "h.*.mlp.down_proj": 3584,
@@ -486,7 +498,7 @@ _PRODUCTION_PATTERN_CS = {
 """The pile production decomposition (torch `pile_llama_simple_mlp-4L.yaml`)."""
 
 
-@pytest.mark.skipif(not _REAL_CACHE_DIR.exists(), reason="t-9d2b8f02 pretrain cache not mounted")
+@pytest.mark.skipif(not _real_cache_mounted(), reason="t-9d2b8f02 pretrain cache not mounted")
 def test_pretrained_target_converts_with_wildcards():
     """`kind: pretrained` LlamaSimpleMLP target specs convert, expanding `h.*`
     wildcard decomposition patterns over the checkpoint's n_layer (4)."""
