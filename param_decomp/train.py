@@ -122,7 +122,6 @@ def make_train_step(
     (when given) pins every batch-leading activation over the full mesh
     (`P(('replicate', 'fsdp'), ...)`) so the masked re-forwards stay on per-rank sub-batches
     (activation memory 1/N)."""
-    site_names = lm.site_names
     sites = lm.sites
     recon_loss_fn = lm.recon_loss_fn  # static method: pure, holds no arrays — safe to close
     recon_terms = losses.recon
@@ -290,20 +289,47 @@ def make_train_step(
             )
         ci_lower_detached = jax.lax.stop_gradient(ci).lower
 
-        # ── persistent adversaries: each runs its supplemental ascents vs the route-ALL
-        # all-sites forward (SPEC S24 — torch warmup parity, NOT the term's loss plan),
-        # params + CI detached. The warmed sources then enter the main backward as leaves;
-        # the LR schedule (S13′) lives in `PersistentAdversary`. ──
-        def warmup_scoring_loss(sources: dict[str, Array]) -> Array:
-            masks, delta_masks = source_masks(ci_lower_detached, sources, site_names)
-            masked = masked_forward(
-                model, prepared_ascend, batch, masks, delta_masks, None, site_names, True
-            )
-            return recon_loss_fn(masked, clean_output)
+        # ── persistent adversaries: ONE routing draw per entry per step, shared by the
+        # warmup ascents AND the main loss forward (SPEC S24, amended 2026-07-13 — the
+        # adversary trains and is scored under the same routing; route-all configs are
+        # byte-identical to the old warmup), params + CI detached. The warmed sources
+        # then enter the main backward as leaves; the LR schedule (S13′) lives in
+        # `PersistentAdversary`. ──
+        fixed_routes: dict[tuple[int, int], tuple[Routes, ...]] = {}
+        persistent_warmup: dict[str, tuple[ReconForward, Routes]] = {}
+        for term_idx, term in enumerate(recon_terms):
+            term_key = random.fold_in(key, 1 + term_idx)
+            for entry_idx, entry in enumerate(term.plan):
+                if not isinstance(entry.sources, PersistentSources):
+                    continue
+                _, routing_key = random.split(random.fold_in(term_key, entry_idx))
+                routes_per_draw = entry.sample_routing(routing_key, leading, step_f32)
+                fixed_routes[(term_idx, entry_idx)] = routes_per_draw
+                (entry_routes,) = routes_per_draw
+                persistent_warmup[entry.sources.state_key] = (entry, entry_routes)
+
+        def warmup_scoring_loss(state_key: str) -> Callable[[dict[str, Array]], Array]:
+            entry, routes = persistent_warmup[state_key]
+
+            def scoring(sources: dict[str, Array]) -> Array:
+                masks, delta_masks = source_masks(ci_lower_detached, sources, entry.live_sites)
+                masked = masked_forward(
+                    model,
+                    prepared_ascend,
+                    batch,
+                    masks,
+                    delta_masks,
+                    routes,
+                    entry.live_sites,
+                    True,
+                )
+                return recon_loss_fn(masked, clean_output)
+
+            return scoring
 
         with jax.named_scope("pd_pgd_warmup_ascend"):
             warmed_advs = {
-                state_key: adv.warmup_ascend(warmup_scoring_loss, step_f32, total_steps)
+                state_key: adv.warmup_ascend(warmup_scoring_loss(state_key), step_f32, total_steps)
                 for state_key, adv in state.adversaries.items()
             }
 
@@ -311,7 +337,6 @@ def make_train_step(
         # ascents and the main loss forward (SPEC S24); sign-ascend `n_steps`, then
         # the sources are constants in the main backward (torch parity).
         fresh_sources: dict[tuple[int, int], dict[str, Array]] = {}
-        fixed_routes: dict[tuple[int, int], tuple[Routes, ...]] = {}
         for term_idx, term in enumerate(recon_terms):
             term_key = random.fold_in(key, 1 + term_idx)
             for entry_idx, entry in enumerate(term.plan):
@@ -389,7 +414,7 @@ def make_train_step(
                 for entry_idx, entry in enumerate(term.plan):
                     entry_key, routing_key = random.split(random.fold_in(term_key, entry_idx))
                     match entry.sources:
-                        case FreshPGDSources():
+                        case FreshPGDSources() | PersistentSources():
                             routes_per_draw = fixed_routes[(term_idx, entry_idx)]
                         case _:
                             routes_per_draw = entry.sample_routing(routing_key, leading, step_f32)
