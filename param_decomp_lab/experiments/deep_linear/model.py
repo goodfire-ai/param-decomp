@@ -11,6 +11,7 @@ one-hot per-feature CI (the TMS `identity_ci_error` pattern).
 """
 
 from dataclasses import dataclass
+from typing import Literal
 
 import equinox as eqx
 import jax
@@ -40,10 +41,19 @@ def _parse_layer_index(name: str) -> int:
     return int(name[len(LAYER_PREFIX) :])
 
 
+ReconKind = Literal["kl", "mse"]
+
+
 @dataclass(frozen=True)
 class DeepLinearConfig:
+    """`logit_scale` multiplies the FINAL output only (a softmax temperature for the KL
+    recon — the layers stay exact identities, so the per-site ground truth is unchanged);
+    `recon` picks the recon comparison (`kl` = LM semantics, `mse` = raw logits)."""
+
     n_features: int
     n_layers: int
+    logit_scale: float = 1.0
+    recon: ReconKind = "kl"
 
 
 @dataclass(frozen=True)
@@ -56,6 +66,8 @@ class DeepLinearTargetConfig:
 
     n_features: int
     n_layers: int
+    logit_scale: float
+    recon: ReconKind
     sites: tuple[SiteC, ...]
     global_batch: int
 
@@ -174,6 +186,8 @@ class DeepLinearDecomposedModel(eqx.Module):
     target: DeepLinearTarget
     sites: tuple[SiteSpec, ...] = eqx.field(static=True)
     leading_axes: tuple[str, ...] = eqx.field(static=True)
+    logit_scale: float = eqx.field(static=True)
+    recon: ReconKind = eqx.field(static=True)
 
     @property
     def site_names(self) -> tuple[str, ...]:
@@ -184,14 +198,20 @@ class DeepLinearDecomposedModel(eqx.Module):
         repl = NamedSharding(mesh, P())
         return jax.tree.map(lambda _a: repl, self)
 
-    @staticmethod
     def recon_loss_fn(
-        masked_output: Float[Array, "B n_features"], clean_output: Float[Array, "B n_features"]
+        self,
+        masked_output: Float[Array, "B n_features"],
+        clean_output: Float[Array, "B n_features"],
     ) -> Array:
-        return kl_per_position(masked_output, clean_output)
+        """Pure over static config only (no arrays closed over) — safe for the jitted step."""
+        if self.recon == "kl":
+            return kl_per_position(masked_output, clean_output)
+        masked_output = masked_output.astype(jnp.float32)
+        clean_output = clean_output.astype(jnp.float32)
+        return jnp.mean((masked_output - clean_output) ** 2)
 
     def clean_output(self, resid: Float[Array, "B n_features"]) -> Array:
-        return clean_output(self.target, resid)
+        return clean_output(self.target, resid) * self.logit_scale
 
     def read_activations(
         self, resid: Float[Array, "B n_features"], wanted: tuple[str, ...]
@@ -222,8 +242,11 @@ class DeepLinearDecomposedModel(eqx.Module):
             delta_masks: dict[str, Array],
             routes: dict[str, Array] | None,
         ) -> Array:
-            return _run_masked(
-                self.target, vu, resid, masks, delta_masks, routes, live, has_delta, None
+            return (
+                _run_masked(
+                    self.target, vu, resid, masks, delta_masks, routes, live, has_delta, None
+                )
+                * self.logit_scale
             )
 
         forward = jax.checkpoint(forward) if remat else forward
@@ -272,7 +295,13 @@ class DeepLinearDecomposedModel(eqx.Module):
 def deep_linear_decomposed_model(
     cfg: DeepLinearConfig, target: DeepLinearTarget, sites: tuple[SiteC, ...]
 ) -> DeepLinearDecomposedModel:
-    return DeepLinearDecomposedModel(target=target, sites=site_specs(cfg, sites), leading_axes=())
+    return DeepLinearDecomposedModel(
+        target=target,
+        sites=site_specs(cfg, sites),
+        leading_axes=(),
+        logit_scale=cfg.logit_scale,
+        recon=cfg.recon,
+    )
 
 
 def replicate_target[T: (DeepLinearTarget, DeepLinearDecomposedModel)](target: T, mesh: Mesh) -> T:

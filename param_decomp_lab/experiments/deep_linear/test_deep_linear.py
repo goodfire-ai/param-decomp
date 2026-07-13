@@ -139,6 +139,7 @@ def test_chunkwise_plan_over_layers(sites_per_chunk: int, n_chunks: int):
             ChunkwiseSubsetReconLossConfig(coeff=1.0, sites_per_chunk=sites_per_chunk),
         ),
         names,
+        100,
     )
     (term,) = terms.recon
     assert isinstance(term, ReconLossTerm)
@@ -177,7 +178,7 @@ def _state_and_step(
     ci_fn = init_layerwise_mlp_ci_fn(MLPCIArch(hidden_dims=(16,)), sites, jax.random.PRNGKey(2))
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
-    loss_terms = build_loss_terms(_loss_metrics(sites_per_chunk), lm.site_names)
+    loss_terms = build_loss_terms(_loss_metrics(sites_per_chunk), lm.site_names, total_steps)
     state = TrainState(
         components=vu, ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),

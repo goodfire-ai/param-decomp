@@ -480,7 +480,6 @@ def build_loss_terms(
                 )
                 recon_terms.append(recon(cfg, plan))
             case ChunkwiseSubsetReconLossConfig():
-                assert isinstance(cfg.routing, UniformKSubsetRoutingConfig), cfg.routing
                 plan = make_plan(
                     into_groups(site_names, cfg.sites_per_chunk),
                     cfg.routing,

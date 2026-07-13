@@ -54,10 +54,13 @@ def build_deep_linear_built_run(cfg: DeepLinearExperimentConfig, run_id: str) ->
     build_loss_terms(
         cfg.pd.loss_metrics,
         tuple(sc.name for sc in site_cs),
+        cfg.pd.steps,
     )
     target = deep_linear.DeepLinearTargetConfig(
         n_features=cfg.target.n_features,
         n_layers=cfg.target.n_layers,
+        logit_scale=cfg.target.logit_scale,
+        recon=cfg.target.recon,
         sites=site_cs,
         global_batch=cfg.pd.batch_size,
     )
@@ -79,7 +82,10 @@ def run_deep_linear_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh
     assert isinstance(target_cfg, deep_linear.DeepLinearTargetConfig)
 
     dl_cfg = deep_linear.DeepLinearConfig(
-        n_features=target_cfg.n_features, n_layers=target_cfg.n_layers
+        n_features=target_cfg.n_features,
+        n_layers=target_cfg.n_layers,
+        logit_scale=target_cfg.logit_scale,
+        recon=target_cfg.recon,
     )
     target = deep_linear.init_deep_linear_target(dl_cfg)
     lm = deep_linear.replicate_target(
