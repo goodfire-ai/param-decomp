@@ -564,7 +564,7 @@ def build_loss_terms(
                 key = unique_name(cfg)
                 plan = make_plan(
                     one_chunk(site_names),
-                    AllRoutingConfig(),
+                    cfg.routing,
                     PersistentSources(state_key=key, cfg=cfg),
                     1,
                     total_steps,

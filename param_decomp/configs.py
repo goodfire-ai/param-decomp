@@ -433,8 +433,8 @@ PersistentPGDSourceScope = Annotated[
 
 
 class PersistentPGDReconLossConfig(LossMetricConfig):
-    """Persistent-PGD recon loss: adversarial mask sources persist across train steps,
-    routed to all layers every forward.
+    """Persistent-PGD recon loss: adversarial mask sources persist across train steps;
+    the main loss forward routes per `routing` (default all).
 
     Sources are clamped to `[0, 1]` after each step — the only implemented
     parameterization. (A sigmoid parameterization was removed.)
@@ -461,6 +461,10 @@ class PersistentPGDReconLossConfig(LossMetricConfig):
     type: Literal["PersistentPGDReconLoss"] = "PersistentPGDReconLoss"
     optimizer: AdamPGDConfig
     scope: PersistentPGDSourceScope
+    routing: Annotated["SubsetRoutingType", Field(discriminator="type")] = AllRoutingConfig()
+    """Routing for the main loss forward. Warmup ascents stay route-all regardless
+    (SPEC S24 torch parity). An unrouted position's persistent source gets zero
+    gradient that step (frozen path) and resumes when re-routed."""
     source_dtype: Literal["float32", "bfloat16"] = "float32"
     """Storage dtype for the persistent PPGD source tensors AND their Adam moments
     (`m`/`v`). `float32` (default) is SPEC N1 (fp32 SRC_STEP moments) and the only
