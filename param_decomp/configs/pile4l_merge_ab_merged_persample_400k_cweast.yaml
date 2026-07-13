@@ -14,7 +14,7 @@ data:
   # pd-user-readable staging of the same HF dataset (danbraunai/pile-uncopyrighted-tok-shuffled);
   # the canonical /mnt/data/.../pile_neox_tok_512 copy is group-locked to goodfire, which the
   # crew user is not in.
-  data_files: /mnt/home/pd-user/param-decomp-runs/datasets/pile_neox_tok_512/data/train-*.parquet
+  data_files: /mnt/home/pd-user/param-decomp-runs/datasets/pile_neox_tok_512/data/*.parquet
   dataset_name: parquet
   eval_split: train
   is_tokenized: true
