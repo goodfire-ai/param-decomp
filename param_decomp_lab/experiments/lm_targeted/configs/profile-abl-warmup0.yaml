@@ -1,4 +1,4 @@
-run_name: addsub-L18-fast-jax
+run_name: addsub-L18-fast-jax-warmup0
 cadence:
   keep_last_n_checkpoints: 3
   save_every: 2000
@@ -25,7 +25,7 @@ eval:
   every: 1000
   n_steps: 1
   slow_every: 2000
-  slow_on_first_step: true
+  slow_on_first_step: false
   metrics:
   - ci_alive_threshold: 0.0
     groups: null
@@ -101,7 +101,7 @@ pd:
         warmup_pct: 0.025
         final_val_frac: 1.0
         fn_type: constant
-    n_warmup_steps: 2
+    n_warmup_steps: 0
     type: PersistentPGDReconLoss
   - coeff: 0.0
     type: FaithfulnessLoss
@@ -118,12 +118,12 @@ runtime:
     xla_flags:
       gpu_enable_latency_hiding_scheduler: 'true'
     xla_python_client_mem_fraction: 0.97
+    profile:
+      time_steps: true
+      no_checkpoint: true
 target:
   weights_dtype: bfloat16
   spec:
     kind: hf
     model_class: transformers.LlamaForCausalLM
     model_name: meta-llama/Llama-3.1-8B
-wandb:
-  entity: null
-  project: param-decomp-llama
