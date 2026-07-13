@@ -213,7 +213,8 @@ def assert_canonical_algorithm_config(cfg: "ExperimentConfig[Any, Any]") -> None
     """Assert the schema lives in the subspace the JAX trainer implements (the engine then
     reads `pd` / `cadence` DIRECTLY). The numerics-load-bearing constraints:
     cosine-to-0.1 LR with no warmup, plain AdamW (betas (0.9, 0.999), no weight decay),
-    components-only grad clip, and a fully-specified checkpoint cadence. (Leaky-hard
+    a required components grad clip (CI-fn grad clip is optional), and a fully-specified
+    checkpoint cadence. (Leaky-hard
     sigmoid, the always-built delta component, and no tied weights are now enforced by
     REMOVAL of those fields from `PDConfig` — `extra=forbid` rejects any attempt to set
     them.)"""
@@ -224,7 +225,6 @@ def assert_canonical_algorithm_config(cfg: "ExperimentConfig[Any, Any]") -> None
     _assert_plain_adamw(vu_opt, "components_optimizer")
     _assert_plain_adamw(ci_opt, "ci_fn_optimizer")
     assert vu_opt.grad_clip_norm is not None, "components grad clip is part of the method"
-    assert ci_opt.grad_clip_norm is None, "CI-fn grad clip unsupported"
 
     # The persistent-PGD source LR is constant-after-warmup only — `source_lr` ignores
     # `fn_type` / `final_val_frac`, so a decaying source schedule would be silently flattened.
