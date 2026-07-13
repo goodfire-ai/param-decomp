@@ -14,7 +14,7 @@ autointerp/clustering read a run's target topology from
 `experiments.lm.load_run.run_metadata` (config + pretrain cache, no checkpoint restore) —
 see `param_decomp_lab/adapters/pd.py`.
 
-## Toy domains (TMS, ResidMLP)
+## Toy domains (TMS, ResidMLP, DeepLinear)
 
 The TMS and ResidualMLP toys are LAB experiments that call the core engine as a library
 (the core itself has zero toy-specific code). Each `experiments/{tms,resid_mlp}/` carries:
@@ -37,6 +37,14 @@ The TMS and ResidualMLP toys are LAB experiments that call the core engine as a 
   `eval.metrics` list is read straight off the raw schema dict (`toy_uv_eval.toy_uv_spec`).
 - `configs/*.yaml` — the canonical `experiments.{tms,resid_mlp}.config` schema (TMS: 5-2 /
   40-10 / the `-id` deeper variants; ResidMLP: 1l/2l/3l + the global-CI variant).
+
+`experiments/deep_linear/` is the third toy, same shape minus pretraining: `n_layers`
+FROZEN `eye(n_features)` sites (`layers.{i}`, `layers.*` wildcard expansion), uniform
+one-hot data sampled on the fly, and — unlike the MSE toys — the LM's `kl_per_position`
+recon on the final logits, making it the smallest end-to-end `ChunkwiseSubsetReconLoss`
+testbed (`sites_per_chunk` must divide `n_layers`). No `PersistentPGDReconLoss`: the
+engine pins persistent sources to a sequence axis, and positionless targets have none
+(`build_deep_linear_built_run` rejects it loudly).
 
 TMS deeper variant (`n_hidden_layers>0`, the `-id` configs) + the ResidMLP `global` CI arch
 (`fn_type=global_shared_mlp`) are restored and wired end-to-end (the global arch dispatches
@@ -61,7 +69,8 @@ experiments/
 │   ├── prestage_tokenized.py  # HF text -> int32 parquet shards for the JAX trainer
 │   └── arithmetic_probe.py    # a x b arithmetic grid spec -> in-memory eval probe (ArithmeticCIGrid)
 ├── tms/                     # pd-tms (CPU): model.py + run.py + configs/ + test_tms.py
-└── resid_mlp/               # pd-resid-mlp (CPU): model.py + run.py + configs/ + test
+├── resid_mlp/               # pd-resid-mlp (CPU): model.py + run.py + configs/ + test
+└── deep_linear/             # pd-deep-linear (CPU/1 GPU): frozen identity stack, KL recon, chunkwise-recon testbed
 ```
 
 ## LM `target.spec`

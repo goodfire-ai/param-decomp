@@ -41,6 +41,7 @@ pd-lm = "param_decomp_lab.experiments.lm.launch:cli"
 # core engine `run_decomposition_training`). Run synchronously, no SLURM.
 pd-tms = "param_decomp_lab.experiments.tms.run:cli"
 pd-resid-mlp = "param_decomp_lab.experiments.resid_mlp.run:cli"
+pd-deep-linear = "param_decomp_lab.experiments.deep_linear.run:cli"
 # Target-model pretraining launcher: snapshot + workspace + sbatch
 # `python -m pretrain.train` (or `--local`). The core pretrain trainer lives at the root
 # sibling `pretrain/`.

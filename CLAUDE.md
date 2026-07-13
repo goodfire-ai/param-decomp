@@ -174,9 +174,9 @@ and returns JAX-native as the #10 torch->jax adapter.
   (the LM composition root — `python -m param_decomp_lab.experiments.lm.run`), `config.py`
   (LM schema + LM build), `load_run.py` (open a finished JAX run), `data.py` /
   `prestage_tokenized.py` (offline tokenize → parquet shards), `jax_launch.py` (`pd-lm`).
-  The TMS and ResidualMLP domains live under `experiments/{tms,resid_mlp}/`
-  (`run.py` + `config.py` + `model.py`; `pd-tms` / `pd-resid-mlp`), calling the core
-  engine as a library.
+  The TMS, ResidualMLP and DeepLinear domains live under
+  `experiments/{tms,resid_mlp,deep_linear}/` (`run.py` + `config.py` + `model.py`;
+  `pd-tms` / `pd-resid-mlp` / `pd-deep-linear`), calling the core engine as a library.
 - `param_decomp_lab/{harvest,autointerp,clustering,investigate}/`
   — post-pipeline stages, each with its own CLAUDE.md.
 - `param_decomp_lab/postprocess/` — orchestrates the post-pipeline stages.
@@ -252,7 +252,7 @@ via `pd-lm`. Slow/plot eval is in-loop only (no CLI).
 | `python -m pretrain.train` | `pretrain/train.py` | The core in-house target-LM pretrainer |
 | `pd-lm` | `experiments/lm/launch.py` | Launch a decomposition trainer run; config-driven via `runtime.dp` (`dp=N` → snapshot + pinned launch config + sbatch across `N//8` nodes, per-node job-side venv; `dp=null` → inline) |
 | `pd-pretrain` | `experiments/lm/pretrain/launch.py` | Launch a pretrainer run; config-driven via `dp` (`dp=N` → sbatch; `dp=null` → inline) |
-| `pd-tms` / `pd-resid-mlp` | `experiments/{tms,resid_mlp}/run.py` | The CPU toy decomposition CLIs |
+| `pd-tms` / `pd-resid-mlp` / `pd-deep-linear` | `experiments/{tms,resid_mlp,deep_linear}/run.py` | The CPU toy decomposition CLIs |
 | `pd-harvest` | `harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
 | `pd-autointerp` | `autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
 | `pd-clustering` / `pd-cluster-merge` / `pd-cluster-distances` | `clustering/scripts/` | Clustering ensemble / merge / consensus distances |

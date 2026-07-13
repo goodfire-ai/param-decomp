@@ -1,0 +1,68 @@
+# Deep-linear identity decomposition, d=30 — the smallest target that exercises
+# ChunkwiseSubsetReconLoss end-to-end. Every site is a frozen eye(30); with one-hot
+# inputs the ground truth is 30 live rank-1 components e_i e_iT per site, so
+# eval/identity_ci_error/<site> -> 0 is full recovery. Loss stack mirrors the production
+# pile_ppgd_bsc.yaml minus the persistent-PGD adversary (the engine pins persistent
+# sources to a sequence axis, which positionless targets lack), at toy-scale LRs. layers.* expands to
+# n_layers sites; the sweep rewrites n_layers (5/50/200) and sites_per_chunk (1 = one
+# chunk per layer ... n_layers = 1 chunk == StochasticReconSubsetLoss; must divide
+# n_layers). Runs on 1 GPU or CPU.
+run_name: jax-deep-linear-30-L5
+pd:
+  seed: 0
+  ci_config:
+    type: layerwise_mlp
+    hidden_dims:
+    - 32
+  decomposition_targets:
+  - module_pattern: layers.*
+    C: 60
+  loss_metrics:
+  - type: ImportanceMinimalityLoss
+    coeff: 2e-4
+    eps: 1e-6
+    pnorm:
+      start_val: 2.0
+      fn_type: linear
+      final_val_frac: 0.2
+    frequency:
+      coeff: 1e-4
+      reference_token_count: 1024
+  - type: ChunkwiseSubsetReconLoss
+    coeff: 1.0
+    sites_per_chunk: 1
+    routing:
+      type: uniform_k_subset
+  - type: FaithfulnessLoss
+    coeff: 1.0
+  batch_size: 1024
+  steps: 20000
+  components_optimizer:
+    grad_clip_norm: 0.01
+    lr_schedule:
+      start_val: 1e-3
+      fn_type: cosine
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 1e-3
+      fn_type: cosine
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+  faithfulness_warmup_steps: 200
+  faithfulness_warmup_lr: 0.01
+  faithfulness_warmup_weight_decay: 0.0
+runtime:
+  remat_recon_forwards: false
+  dp: null
+cadence:
+  train_log_every: 200
+  save_every: 5000
+  keep_last_n_checkpoints: 2
+target:
+  n_features: 30
+  n_layers: 5
+data: {}
+wandb:
+  project: param-decomp
