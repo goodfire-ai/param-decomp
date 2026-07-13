@@ -12,8 +12,15 @@ import optax
 import pytest
 from jax.typing import ArrayLike
 from jaxtyping import Array
+from pydantic import TypeAdapter
 
-from param_decomp.run_state import clip_by_global_norm_with_eps, optax_schedule
+from param_decomp.configs import AdamWOptimizerConfig, AnyOptimizerConfig, MuonOptimizerConfig
+from param_decomp.run_state import (
+    _optimizer_with_clip,
+    chunk_stacked_muon_dimension_numbers,
+    clip_by_global_norm_with_eps,
+    optax_schedule,
+)
 from param_decomp.schedule import ScheduleConfig
 
 
@@ -96,3 +103,183 @@ def test_grad_clip_noop_below_threshold():
     out = _clip(clip, grads)
     assert float(out["a"][0]) == pytest.approx(3.0)
     assert float(out["a"][1]) == pytest.approx(4.0)
+
+
+def test_muon_orthogonalizes_2d_leaves_and_adam_falls_back_elsewhere():
+    """`type: muon` (SPEC S20 amendment): a 2D leaf's update is NS-orthogonalized (flat
+    singular values), a non-2D leaf falls back to Adam; default `type: adamw` keeps the
+    canonical optimizer so existing configs are untouched."""
+    muon_cfg = MuonOptimizerConfig(
+        type="muon",
+        lr_schedule=ScheduleConfig(
+            fn_type="cosine", start_val=1e-3, final_val_frac=0.1, warmup_pct=0.0
+        ),
+        grad_clip_norm=0.01,
+    )
+    lr = 1e-3
+    opt = _optimizer_with_clip(muon_cfg, lambda count: jnp.float32(lr), None, mesh=None)
+    key = jax.random.key(0)
+    params = {"V": jnp.zeros((16, 8)), "scale": jnp.zeros((8,))}
+    grads = {
+        "V": jax.random.normal(key, (16, 8)),
+        "scale": jax.random.normal(jax.random.fold_in(key, 1), (8,)),
+    }
+    updates, _ = opt.update(grads, opt.init(params), params)
+    _, treedef = jax.tree.flatten(grads)
+    updates = jax.tree.unflatten(treedef, jax.tree.leaves(updates))
+
+    grad_sv = jnp.linalg.svd(grads["V"], compute_uv=False)
+    update_sv = jnp.linalg.svd(updates["V"], compute_uv=False)
+    grad_flatness = float(grad_sv.max() / grad_sv.min())
+    update_flatness = float(update_sv.max() / update_sv.min())
+    assert update_flatness < 2.0 and update_flatness < grad_flatness / 2, (
+        "muon update on a 2D leaf must be near-orthogonal (5-step NS is approximate, so the"
+        f" spectrum is flat-ish, not exactly flat): grad {grad_flatness:.2f} ->"
+        f" update {update_flatness:.2f}"
+    )
+    scale_update_magnitude = float(jnp.abs(updates["scale"]).max())
+    assert bool(jnp.all(jnp.isfinite(updates["scale"])))
+    assert 0.3 * lr < scale_update_magnitude < 3 * lr, (
+        f"non-2D leaf takes an Adam-fallback step of O(lr), got {scale_update_magnitude}"
+    )
+
+
+def test_muon_chunk_stacked_dimension_numbers_orthogonalize_3d_and_adam_2d_bias_stacks():
+    """SPEC S20 amendment (2026-07-11): under `chunk_stacked_muon_dimension_numbers` a 3D
+    `[n_chunks, d_in, d_out]` matrix stack is NS-orthogonalized per chunk slice, while a 2D
+    `[n_chunks, d]` bias stack takes the Adam fallback — the reverse of optax's default 2D
+    rule, which on the chunkwise CI-fn tree would orthogonalize the bias stacks."""
+    muon_cfg = MuonOptimizerConfig(
+        type="muon",
+        lr_schedule=ScheduleConfig(
+            fn_type="cosine", start_val=1e-3, final_val_frac=0.1, warmup_pct=0.0
+        ),
+        grad_clip_norm=None,
+    )
+    lr = 1e-3
+    opt = _optimizer_with_clip(
+        muon_cfg, lambda count: jnp.float32(lr), chunk_stacked_muon_dimension_numbers, mesh=None
+    )
+    key = jax.random.key(0)
+    n_chunks = 3
+    params = {"w": jnp.zeros((n_chunks, 16, 8)), "b": jnp.zeros((n_chunks, 8))}
+    grads = {
+        "w": jax.random.normal(key, (n_chunks, 16, 8)),
+        "b": jax.random.normal(jax.random.fold_in(key, 1), (n_chunks, 8)),
+    }
+    updates, _ = opt.update(grads, opt.init(params), params)
+    _, treedef = jax.tree.flatten(grads)
+    updates = jax.tree.unflatten(treedef, jax.tree.leaves(updates))
+
+    for chunk in range(n_chunks):
+        grad_sv = jnp.linalg.svd(grads["w"][chunk], compute_uv=False)
+        update_sv = jnp.linalg.svd(updates["w"][chunk], compute_uv=False)
+        grad_flatness = float(grad_sv.max() / grad_sv.min())
+        update_flatness = float(update_sv.max() / update_sv.min())
+        assert update_flatness < 2.0 and update_flatness < grad_flatness / 2, (
+            f"chunk {chunk}: 3D stack slice must be near-orthogonal:"
+            f" grad {grad_flatness:.2f} -> update {update_flatness:.2f}"
+        )
+    bias_update_magnitude = float(jnp.abs(updates["b"]).max())
+    assert bool(jnp.all(jnp.isfinite(updates["b"])))
+    assert 0.3 * lr < bias_update_magnitude < 3 * lr, (
+        f"2D bias stack takes an Adam-fallback step of O(lr), got {bias_update_magnitude}"
+    )
+
+
+def test_stacked_muon_update_matches_optax_muon():
+    """SPEC S20 `impl: stacked`: the stack-by-shape batched NS produces the same updates as
+    per-leaf `optax.contrib.muon` (same momentum, same partition, same post-NS chain) up to
+    float reassociation — on a tree mixing 2D matrices (shared-shape group + a transposed
+    member), a 3D chunk stack, and Adam-fallback leaves."""
+    schedule = ScheduleConfig(fn_type="cosine", start_val=1e-3, final_val_frac=0.1, warmup_pct=0.0)
+    lr = lambda count: jnp.float32(1e-3)
+    key = jax.random.key(7)
+    params = {
+        "w_a": jnp.zeros((16, 24)),
+        "w_b": jnp.zeros((24, 16)),
+        "stack": jnp.zeros((3, 16, 24)),
+        "bias_stack": jnp.zeros((3, 24)),
+    }
+    grads = {
+        name: jax.random.normal(jax.random.fold_in(key, i), p.shape)
+        for i, (name, p) in enumerate(params.items())
+    }
+    dim_nums = chunk_stacked_muon_dimension_numbers
+
+    from typing import Literal
+
+    def cfg(impl: Literal["optax", "stacked"]) -> MuonOptimizerConfig:
+        return MuonOptimizerConfig(
+            type="muon", lr_schedule=schedule, grad_clip_norm=0.01, consistent_rms=0.2, impl=impl
+        )
+
+    def two_steps(impl: Literal["optax", "stacked"]):
+        opt = _optimizer_with_clip(cfg(impl), lr, dim_nums, mesh=None)
+        state = opt.init(params)
+        p = params
+        for _ in range(2):
+            updates, state = opt.update(grads, state, p)
+            p = jax.tree.map(lambda x, u: x + u, p, updates)
+        return p
+
+    optax_p, stacked_p = two_steps("optax"), two_steps("stacked")
+    for k in params:
+        assert jnp.allclose(optax_p[k], stacked_p[k], rtol=1e-4, atol=1e-6), (
+            f"{k}: stacked impl diverged from optax beyond reassociation tolerance"
+        )
+
+
+def test_stacked_muon_sharded_matches_unsharded():
+    """The stack-axis sharding constraint is layout-only: at >1 devices the sharded
+    stacked NS reproduces the mesh=None updates (and preserves finiteness). Structural
+    no-op at 1 device; the real leg runs under
+    `XLA_FLAGS=--xla_force_host_platform_device_count=4`."""
+    from jax.sharding import Mesh
+
+    from param_decomp.muon_stacked import stacked_muon
+    from param_decomp.sharding import hsdp_mesh
+
+    key = jax.random.key(3)
+    params = {
+        "w": jnp.zeros((4, 16, 24)),
+        "v": jnp.zeros((24, 16)),
+        "b": jnp.zeros((4, 24)),
+    }
+    grads = {
+        name: jax.random.normal(jax.random.fold_in(key, i), p.shape)
+        for i, (name, p) in enumerate(params.items())
+    }
+    dim_nums = chunk_stacked_muon_dimension_numbers
+
+    def one_update(mesh: "Mesh | None"):
+        opt = stacked_muon(
+            lambda count: jnp.float32(1e-3),
+            beta=0.95,
+            weight_decay=0.0,
+            consistent_rms=0.2,
+            muon_weight_dimension_numbers=dim_nums,
+            ns_steps=5,
+            ns_dtype=jnp.dtype(jnp.float32),
+            mesh=mesh,
+        )
+        updates, _ = jax.jit(opt.update)(grads, opt.init(params), params)
+        _, treedef = jax.tree.flatten(grads)
+        return jax.tree.unflatten(treedef, jax.tree.leaves(updates))
+
+    unsharded, sharded = one_update(None), one_update(hsdp_mesh())
+    for k in params:
+        assert bool(jnp.all(jnp.isfinite(sharded[k]))), k
+        assert jnp.allclose(unsharded[k], sharded[k], rtol=1e-5, atol=1e-7), (
+            f"{k}: sharded stacked NS diverged from unsharded"
+        )
+
+
+def test_optimizer_config_type_discriminator():
+    schedule = {"fn_type": "cosine", "start_val": 5e-5, "final_val_frac": 0.1}
+    adapter = TypeAdapter(AnyOptimizerConfig)
+    default = adapter.validate_python({"lr_schedule": schedule})
+    assert isinstance(default, AdamWOptimizerConfig), "untyped configs stay canonical AdamW"
+    muon = adapter.validate_python({"type": "muon", "lr_schedule": schedule})
+    assert isinstance(muon, MuonOptimizerConfig)
+    assert muon.beta == 0.95 and muon.consistent_rms is None

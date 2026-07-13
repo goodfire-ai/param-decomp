@@ -490,7 +490,7 @@ def run_decomposition_training(
     save_every = cadence.save_every
 
     run.run_dir.mkdir(parents=True, exist_ok=True)
-    opt_vu, opt_ci, (sched_vu, sched_ci) = build_optimizers(pd)
+    opt_vu, opt_ci, (sched_vu, sched_ci) = build_optimizers(pd, mesh)
 
     key = random.PRNGKey(pd.seed)
     init_key, src_key, run_key = random.split(key, 3)

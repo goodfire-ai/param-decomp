@@ -21,9 +21,16 @@ from jaxtyping import Array, PRNGKeyArray
 from param_decomp.adversary import PersistentAdversary, init_sources_adam_state
 from param_decomp.built_run import DataConfig
 from param_decomp.ci_fn import CIFnArch
-from param_decomp.configs import AdamPGDConfig, OptimizerConfig, PDConfig
+from param_decomp.configs import (
+    AdamPGDConfig,
+    AdamWOptimizerConfig,
+    ChunkwiseTransformerCiConfig,
+    MuonOptimizerConfig,
+    PDConfig,
+)
 from param_decomp.lm import DecomposedModel
 from param_decomp.losses import scheduled_value_traced
+from param_decomp.muon_stacked import stacked_muon
 from param_decomp.recon import (
     PersistentSources,
     build_loss_terms,
@@ -71,30 +78,80 @@ def clip_by_global_norm_with_eps(max_norm: float, eps: float) -> optax.GradientT
     return optax.GradientTransformation(init, update)
 
 
-def _adamw_with_clip(opt: OptimizerConfig, schedule: Callable[[ArrayLike], Array]):
-    """AdamW (fp32 master, optax wd default overridden to the config's — torch's is 0)
-    over `schedule`, optionally preceded by torch-parity global-norm clip (SPEC S19/N1).
-    Adam eps is the torch/optax default 1e-8 (not exposed on `OptimizerConfig`)."""
-    adamw = optax.adamw(
-        schedule, b1=opt.betas[0], b2=opt.betas[1], eps=1e-8, weight_decay=opt.weight_decay
-    )
+def chunk_stacked_muon_dimension_numbers(params: optax.Params) -> optax.Params:
+    """Muon leaf labeling for the chunkwise CI fn's per-chunk stacks (`ci_fn.py`): every
+    3D leaf is a `[n_chunks, d_in, d_out]` stack of `x @ W` matrices — orthogonalize the
+    trailing two axes, chunk axis batched — and everything else (`[n_chunks, d]` bias
+    stacks) takes the Adam fallback. optax's default rule (2D → muon) would do the
+    REVERSE on this tree: NS-orthogonalize the bias stacks and Adam the matrices."""
+    dims = optax.contrib.MuonDimensionNumbers(reduction_axis=-2, output_axis=-1)
+    return jax.tree.map(lambda leaf: dims if leaf.ndim == 3 else None, params)
+
+
+def _optimizer_with_clip(
+    opt: AdamWOptimizerConfig | MuonOptimizerConfig,
+    schedule: Callable[[ArrayLike], Array],
+    muon_dimension_numbers: Callable[[optax.Params], optax.Params] | None,
+    mesh: Mesh | None,
+):
+    """The group optimizer (fp32 master) over `schedule`, optionally preceded by
+    torch-parity global-norm clip (SPEC S19/N1). AdamW is canonical (eps is the torch/optax
+    default 1e-8, not exposed on `AdamWOptimizerConfig`; optax's wd default overridden to the
+    config's — torch's is 0); Muon is a config-gated experimental variant (SPEC S19').
+    `muon_dimension_numbers` labels the group's leaves for muon (None = optax's default
+    2D-matrix rule, correct for the all-2D V/U tree and the MLP CI fns); ignored for adamw.
+    `mesh` shards the stacked-impl NS batch axis; None (toys, CPU tests) = unsharded."""
+    match opt:
+        case AdamWOptimizerConfig():
+            inner = optax.adamw(
+                schedule, b1=opt.betas[0], b2=opt.betas[1], eps=1e-8, weight_decay=opt.weight_decay
+            )
+        case MuonOptimizerConfig(impl="optax"):
+            assert opt.ns_dtype == "float32", "ns_dtype is a stacked-impl knob (optax NS is fp32)"
+            inner = optax.contrib.muon(
+                schedule,
+                beta=opt.beta,
+                weight_decay=opt.weight_decay,
+                consistent_rms=opt.consistent_rms,
+                muon_weight_dimension_numbers=muon_dimension_numbers,
+                ns_steps=opt.ns_steps,
+            )
+        case MuonOptimizerConfig():
+            assert opt.impl == "stacked", opt.impl
+            inner = stacked_muon(
+                schedule,
+                beta=opt.beta,
+                weight_decay=opt.weight_decay,
+                consistent_rms=opt.consistent_rms,
+                muon_weight_dimension_numbers=muon_dimension_numbers,
+                ns_steps=opt.ns_steps,
+                ns_dtype=jnp.dtype(opt.ns_dtype),
+                mesh=mesh,
+            )
     if opt.grad_clip_norm is None:
-        return adamw
-    return optax.chain(clip_by_global_norm_with_eps(opt.grad_clip_norm, eps=1e-6), adamw)
+        return inner
+    return optax.chain(clip_by_global_norm_with_eps(opt.grad_clip_norm, eps=1e-6), inner)
 
 
-def build_optimizers(pd: PDConfig):
+def build_optimizers(pd: PDConfig, mesh: Mesh | None):
     """Returns (opt_vu, opt_ci, schedules): the schedule fns are returned too so the
     log path reports the exact LR the optimizer applies (single source of truth).
 
-    The canonical-shape asserts (cosine-to-0.1, plain AdamW, required components clip, optional
-    CI-fn clip) live in
+    The canonical-shape asserts (cosine-to-0.1, canonical optimizer shape, required components
+    clip, optional CI-fn clip) live in
     the lab conversion (`experiments.config.assert_canonical_algorithm_config`); here we
     read the values straight off `PDConfig` so there is no second source of truth."""
     sched_vu = optax_schedule(pd.components_optimizer.lr_schedule, pd.steps)
     sched_ci = optax_schedule(pd.ci_fn_optimizer.lr_schedule, pd.steps)
-    opt_vu = _adamw_with_clip(pd.components_optimizer, sched_vu)
-    opt_ci = _adamw_with_clip(pd.ci_fn_optimizer, sched_ci)
+    opt_vu = _optimizer_with_clip(
+        pd.components_optimizer, sched_vu, muon_dimension_numbers=None, mesh=mesh
+    )
+    ci_muon_dim_nums = (
+        chunk_stacked_muon_dimension_numbers
+        if isinstance(pd.ci_config, ChunkwiseTransformerCiConfig)
+        else None
+    )
+    opt_ci = _optimizer_with_clip(pd.ci_fn_optimizer, sched_ci, ci_muon_dim_nums, mesh=mesh)
     return opt_vu, opt_ci, (sched_vu, sched_ci)
 
 
