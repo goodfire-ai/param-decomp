@@ -159,6 +159,17 @@ ci_config (validated end-to-end on CPU via
 `pd-resid-mlp`). Harvest / slow-eval / export over the toys are NOT wired
 (`experiments.lm.load_run.build_target` / `run_metadata` are LM-only).
 
+## Prefix reuse (S3/S18 amendment 2026-07-13, pending Oli sign-off)
+
+A target whose decomposed sites all live past a frozen lead (`LlamaDecomposedModel.split_layer
+> 0`, set by `build_decomposed_lm` to the min site layer) exposes `prefix_residual(tokens)`
+(`lm.py::SupportsPrefixResidual`); the train step computes that stop-gradient residual ONCE per
+stream and passes a `ResidualStart` to every forward (clean, taps, recon grid, adversary
+ascents), which then run blocks `[split_layer, n_layer)` only. The prefix is mask-independent,
+so this is pure recompute elimination (~2x on an L18-only decomposition; equivalence pinned by
+`tests/test_prefix_reuse.py`). Token inputs still work on every method — evals/consumers are
+unchanged — and a site in block 0 disables the whole path.
+
 ## The HLO-baking rule (filter_jit discipline)
 
 The decomposed model is an `eqx.Module` whose frozen target weights are ARRAY FIELDS — a

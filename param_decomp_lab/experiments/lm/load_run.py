@@ -85,9 +85,9 @@ def build_target(cfg: BuiltRun, mesh: jax.sharding.Mesh) -> tuple[DecomposedMode
         case TargetConfig():
             llama_cfg = llama31_8b_config()
             sites = llama_site_specs(llama_cfg, cfg.target.sites)
-            lm = place_target(
-                load_decomposed_lm_from_hf(cfg.target.model_name, llama_cfg, sites), mesh
-            )
+            with jax.default_device(jax.devices("cpu")[0]):
+                loaded_lm = load_decomposed_lm_from_hf(cfg.target.model_name, llama_cfg, sites)
+            lm = place_target(loaded_lm, mesh)
             return lm, llama_cfg.vocab_size
         case _:
             raise AssertionError(f"build_target is LM-only; got target {type(cfg.target).__name__}")
