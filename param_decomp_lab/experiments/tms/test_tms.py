@@ -342,7 +342,7 @@ def test_end_to_end_pretrain_decompose_recovers_identity():
             jax.random.fold_in(data_key, i), 2048, 5, 0.05, "at_least_zero_active"
         )
         state, m = step(lm, state, x, jax.random.fold_in(jax.random.PRNGKey(321), i))
-        totals.append(float(m["total"]))
+        totals.append(float(m["train/loss/total"]))
     assert totals[-1] < totals[0], (totals[0], totals[-1])
 
     ci_lower = single_feature_ci(lm, state.ci_fn, n_features=5)

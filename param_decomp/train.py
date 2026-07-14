@@ -76,24 +76,23 @@ class TrainState:
 
 
 def _grad_norm_metrics(components_grad: DecompVU, ci_fn_grad: Any) -> dict[str, Array]:
-    """Pre-clip gradient L2 norms, matching the torch `component_grad_norms` families:
-    per-leaf `grad_norms/components<path>` / `grad_norms/ci_fns<path>` (paths are this
-    pytree's own — e.g. `.vu['layers.18.mlp.gate_proj'][0]` for the per-site Llama
-    layout, vs torch's per-site names) and the overlay-critical
-    `grad_norms/summary/{components,ci_fns,total}`."""
+    """Pre-clip gradient L2 norms: per-leaf `train/grad_norms/components<path>` /
+    `train/grad_norms/ci_fns<path>` (paths are this pytree's own — e.g.
+    `.vu['layers.18.mlp.gate_proj'][0]` for the per-site Llama layout) and the
+    overlay-critical `train/grad_norms/summary/{components,ci_fns,total}`."""
     out: dict[str, Array] = {}
 
     def family(grad_tree: Any, prefix: str) -> Array:
         sum_sq = jnp.zeros((), jnp.float32)
         for path, leaf in jax.tree_util.tree_flatten_with_path(grad_tree)[0]:
             leaf_sum_sq = jnp.sum(leaf.astype(jnp.float32) ** 2)
-            out[f"grad_norms/{prefix}{jax.tree_util.keystr(path)}"] = jnp.sqrt(leaf_sum_sq)
+            out[f"train/grad_norms/{prefix}{jax.tree_util.keystr(path)}"] = jnp.sqrt(leaf_sum_sq)
             sum_sq = sum_sq + leaf_sum_sq
-        out[f"grad_norms/summary/{prefix}"] = jnp.sqrt(sum_sq)
+        out[f"train/grad_norms/summary/{prefix}"] = jnp.sqrt(sum_sq)
         return sum_sq
 
     total_sq = family(components_grad, "components") + family(ci_fn_grad, "ci_fns")
-    out["grad_norms/summary/total"] = jnp.sqrt(total_sq)
+    out["train/grad_norms/summary/total"] = jnp.sqrt(total_sq)
     return out
 
 
@@ -132,11 +131,12 @@ def make_train_step(
     imp_min = imp_term.cfg
     imp_coeff = imp_term.coeff
     freq_coeff = imp_min.frequency.coeff if imp_min.frequency is not None else 0.0
-    # Log the imp-min loss + its annealed param under penalty-kind-specific keys: the param
-    # is `p` for L_p / `gamma` for smooth-L0, and the loss carries the penalty's class name.
+    # Every term logs under `train/loss/<term.name>` (`cfg.name` override or the config
+    # `type` literal). The imp-min annealed param key is penalty-kind-specific: `p` for
+    # L_p, `gamma` for smooth-L0.
     is_smooth_l0 = isinstance(imp_min, SmoothL0ImportanceMinimalityLossConfig)
-    imp_loss_key = "imp_smooth_l0" if is_smooth_l0 else "imp"
-    imp_min_param_key = "gamma_imp" if is_smooth_l0 else "p_imp"
+    imp_loss_key = f"train/loss/{imp_term.name}"
+    imp_min_param_key = f"train/schedules/{'gamma_imp' if is_smooth_l0 else 'p_imp'}"
 
     def batch_sharded(x: Array) -> Array:
         return batch_shard_leading(x, mesh)
@@ -509,21 +509,21 @@ def make_train_step(
             step=state.step + 1,
         )
         metrics = {
-            "total": total_loss,
-            "faith": faith_loss,
+            "train/loss/total": total_loss,
+            f"train/loss/{faith_term.name}": faith_loss,
             imp_loss_key: imp_lp,
-            "freq": imp_freq,
+            "train/loss/FrequencyMinimalityLoss": imp_freq,
             imp_min_param_key: imp_min_param,
-            **{f"loss/{t.name}": v for t, v in zip(recon_terms, term_losses, strict=True)},
+            **{f"train/loss/{t.name}": v for t, v in zip(recon_terms, term_losses, strict=True)},
             **grad_norm_metrics,
         }
         source_lrs = {
             k: adv.source_lr(step_f32, total_steps) for k, adv in state.adversaries.items()
         }
         if len(source_lrs) == 1:
-            metrics["src_lr"] = next(iter(source_lrs.values()))
+            metrics["train/schedules/lr/src"] = next(iter(source_lrs.values()))
         else:
-            metrics |= {f"schedules/lr/src/{k}": v for k, v in source_lrs.items()}
+            metrics |= {f"train/schedules/lr/src/{k}": v for k, v in source_lrs.items()}
         return new_state, metrics
 
     return filter_jit(step, donate="all-except-first", compiler_options=compiler_options)

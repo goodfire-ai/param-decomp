@@ -1,20 +1,16 @@
-"""E11 logged-key parity: every `train/loss/*` key a JAX run emits must equal the
-torch key for the same config, so a torch-vs-jax run pair overlays on one wandb panel.
+"""Logged-key pins: every loss term logs under `train/loss/<term.name>` where
+`term.name` is `cfg.name or cfg.type`, and `MetricsSink.log` rejects keys outside the
+canonical namespace tree (`run._WANDB_KEY_NAMESPACES`).
 
-Two emit paths feed `train/loss/*`:
-
-  * Fixed scalar terms (`faith`, `imp`) — mapped through `run._METRIC_KEYS`.
-  * Recon terms — arrive from the jitted step already shaped `loss/<term.name>`
-    (`train.py`), then `train/`-prefixed by the sink.
-
-`term.name` is set by `recon.build_loss_terms` to `cfg.name or cfg.type`. Torch's
-`Metric.instance_key` is `cfg.name or type(self).__name__`. They agree byte-for-byte
-because torch's `LOSS_METRIC_CLASSES` is keyed by `cls.__name__` and dispatch does
-`LOSS_METRIC_CLASSES[cfg.type](cfg)` — so torch can only run a config whose `type`
-literal equals the class name. This test pins the JAX half (`term.name == cfg.type`);
-the torch half (`cls.__name__ == cfg.type`) was pinned against live torch dispatch
-before push-1 severed the torch import — it now holds by the frozen `type` literals.
+The `type` literals are the torch-era class names — frozen when the JAX trainer took
+over so run pairs overlay across the transition, kept now for continuity of the
+existing wandb corpus.
 """
+
+import json
+from pathlib import Path
+
+import pytest
 
 from param_decomp.configs import (
     AdamPGDConfig,
@@ -34,6 +30,7 @@ from param_decomp.configs import (
     UnmaskedReconLossConfig,
 )
 from param_decomp.recon import ReconLossTerm, build_loss_terms
+from param_decomp.run import MetricsSink
 from param_decomp.schedule import ScheduleConfig
 
 SITE_NAMES = ("h.0.mlp.c_fc", "h.0.mlp.down_proj")
@@ -82,36 +79,42 @@ def _recon_terms(recon_configs: tuple[object, ...]) -> tuple[ReconLossTerm, ...]
 
 def test_recon_term_name_is_config_type_by_default():
     """Each recon term's log-key suffix (`term.name`) is the config `type` literal when
-    no `name` override is set — the JAX half of torch's `instance_key`."""
+    no `name` override is set."""
     emitted = {term.name for term in _recon_terms(RECON_CONFIGS)}
     expected = {cfg.type for cfg in RECON_CONFIGS}
     assert emitted == expected, emitted ^ expected
 
 
 def test_recon_term_name_honors_name_override():
-    """A `name` override on the config flows to `term.name`, exactly as torch's
-    `instance_key` returns `cfg.name` when set."""
+    """A `name` override on the config flows to `term.name` (and so to the
+    `train/loss/<name>` key)."""
     cfg = StochasticReconLossConfig(coeff=1.0, name="StochasticReconLoss_probe")
     (term,) = _recon_terms((cfg,))
     assert term.name == "StochasticReconLoss_probe"
 
 
-def test_fixed_scalar_loss_keys_use_torch_class_names():
-    """`run._METRIC_KEYS` maps the two non-recon scalar terms to `train/loss/<ClassName>`;
-    pin those suffixes to the config `type` literals (== torch class names)."""
-    from param_decomp.run import _METRIC_KEYS
+def test_fixed_term_names_are_the_frozen_class_literals():
+    """The faith/imp singleton terms carry the frozen class-name literals — the
+    `train/loss/<term.name>` keys existing panels select on."""
+    faith_cfg, imp_cfg = _non_recon_configs()
+    terms = build_loss_terms(
+        (faith_cfg, imp_cfg, StochasticReconLossConfig(coeff=1.0)),
+        site_names=SITE_NAMES,
+    )
+    assert terms.faith.name == "FaithfulnessLoss"
+    assert terms.imp.name == "ImportanceMinimalityLoss"
 
-    faith, imp = _non_recon_configs()
-    assert _METRIC_KEYS["faith"] == f"train/loss/{faith.type}"
-    assert _METRIC_KEYS["imp"] == f"train/loss/{imp.type}"
 
-
-def test_no_train_loss_no_beta_key():
-    """Torch's `ImportanceMinimalityLoss_no_beta` diagnostic is emitted only by
-    `Metric.compute` (the eval path), never from the train step. The JAX trainer must
-    not emit a `train/loss/*_no_beta` key — doing so was a logged-key divergence from
-    torch (#647)."""
-    from param_decomp.run import _METRIC_KEYS
-
-    assert not any(k.endswith("_no_beta") for k in _METRIC_KEYS), _METRIC_KEYS
-    assert not any(v.endswith("_no_beta") for v in _METRIC_KEYS.values()), _METRIC_KEYS
+def test_sink_rejects_keys_outside_the_canonical_tree(tmp_path: Path):
+    """`MetricsSink.log` asserts every key lives under a declared namespace — a bare or
+    typo'd key fails fast instead of drifting to the wandb top level."""
+    jsonl_path = tmp_path / "metrics.jsonl"
+    with jsonl_path.open("a") as jsonl:
+        sink = MetricsSink(jsonl=jsonl, wandb_module=None)
+        sink.log(1, {"train/loss/total": 1.0, "eval/ce_kl/kl_ci_masked": 0.5})
+        with pytest.raises(AssertionError, match="canonical wandb tree"):
+            sink.log(2, {"step_time_s": 0.1})
+        with pytest.raises(AssertionError, match="canonical wandb tree"):
+            sink.log(3, {"train/losss/total": 1.0})
+    logged = [json.loads(line) for line in jsonl_path.read_text().splitlines()]
+    assert logged == [{"step": 1, "train/loss/total": 1.0, "eval/ce_kl/kl_ci_masked": 0.5}]

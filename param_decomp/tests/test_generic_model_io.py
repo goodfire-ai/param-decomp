@@ -275,8 +275,8 @@ def test_train_step_runs_through_generic_target():
     run_key = random.PRNGKey(3)
     for step_idx in range(2):
         state, metrics = step_fn(lm, state, inputs, random.fold_in(run_key, step_idx))
-        assert jnp.isfinite(metrics["total"]), (step_idx, metrics["total"])
-        assert "loss/StochasticReconLoss" in metrics
+        assert jnp.isfinite(metrics["train/loss/total"]), (step_idx, metrics["train/loss/total"])
+        assert "train/loss/StochasticReconLoss" in metrics
 
     assert not jnp.allclose(state.components.site(SITE)[0], V_before), (
         "V did not move — step is a no-op"

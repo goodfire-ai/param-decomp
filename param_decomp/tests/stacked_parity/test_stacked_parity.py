@@ -75,12 +75,20 @@ STABLE_FIXTURE_METRIC_KEYS = (
     "grad_norms/summary/components", "grad_norms/summary/ci_fns", "grad_norms/summary/total",
 )  # fmt: skip
 METRIC_KEY_BY_FIXTURE_KEY = {
-    "stoch": "loss/ChunkwiseSubsetReconLoss",
-    "ppgd": "loss/PersistentPGDReconLoss",
+    "total": "train/loss/total",
+    "faith": "train/loss/FaithfulnessLoss",
+    "imp": "train/loss/ImportanceMinimalityLoss",
+    "stoch": "train/loss/ChunkwiseSubsetReconLoss",
+    "ppgd": "train/loss/PersistentPGDReconLoss",
+    "p_imp": "train/schedules/p_imp",
+    "src_lr": "train/schedules/lr/src",
+    "grad_norms/summary/components": "train/grad_norms/summary/components",
+    "grad_norms/summary/ci_fns": "train/grad_norms/summary/ci_fns",
+    "grad_norms/summary/total": "train/grad_norms/summary/total",
 }
-"""The fixtures predate the recon-loss-terms unification; their metric keys are the
-old fixed names. The stored arrays themselves are untouched — only the lookup into
-the live metrics dict is remapped."""
+"""The fixtures predate the recon-loss-terms unification and the canonical-key sink;
+their metric keys are the old short names. The stored arrays themselves are untouched —
+only the lookup into the live metrics dict is remapped."""
 
 
 def _load() -> tuple[dict[str, np.ndarray], DecomposedModel, DecompVU, jnp.ndarray]:

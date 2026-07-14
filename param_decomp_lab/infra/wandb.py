@@ -1,16 +1,10 @@
 import os
 import re
-from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 import wandb
-import wandb.errors
 from dotenv import load_dotenv
 from wandb.apis.public import File, Run
-
-from param_decomp.log import logger
-from param_decomp_lab.infra.settings import REPO_ROOT
 
 # Regex patterns for parsing W&B run references. PD run IDs are formatted as
 # `p-<8 hex chars>` (see `RUN_TYPE_ABBREVIATIONS`). Legacy `s-…` IDs predate the
@@ -121,69 +115,3 @@ def download_wandb_file(run: Run, wandb_run_dir: Path, file_name: str) -> Path:
     assert isinstance(file_on_wandb, File)
     file_on_wandb.download(exist_ok=True, replace=False, root=str(wandb_run_dir))
     return wandb_run_dir / file_name
-
-
-def init_wandb(
-    project: str,
-    run_id: str,
-    config_dict: dict[str, Any],
-    *,
-    resume: bool,
-    entity: str | None = None,
-    name: str | None = None,
-    tags: list[str] | None = None,
-    group: str | None = None,
-    view_meta: dict[str, Any] | None = None,
-) -> None:
-    """Initialise W&B and log `config_dict` (already rendered to a flat-ish dict by the
-    caller — see `eval_metrics.wandb_config_dict`).
-
-    `entity` falls back to `get_wandb_entity()`; `view_meta` is merged under a
-    `view_meta/` prefix so the UI can group runs by researcher-facing axes. `resume=True`
-    continues the existing wandb run `run_id` (continuous curves across a SLURM requeue);
-    `resume=False` creates a fresh run.
-    """
-    wandb.init(
-        id=run_id,
-        project=project,
-        entity=entity or get_wandb_entity(),
-        name=name,
-        tags=tags,
-        group=group,
-        resume="allow" if resume else None,
-    )
-    assert wandb.run is not None
-    wandb.run.log_code(root=str(REPO_ROOT / "param_decomp"))
-
-    # Slow eval keys ride a dedicated `slow_eval/step` axis. The single-pool path
-    # logs them in-train (monotonic); the 3-pool path logs them retroactively from
-    # the async job (non-monotonic on the default axis). Defining the axis here lets
-    # both share the same panels. The async job redefines it too — idempotent.
-    wandb.define_metric("slow_eval/step")
-    wandb.define_metric("slow_eval/*", step_metric="slow_eval/step")
-
-    wandb.config.update(config_dict)
-
-    if view_meta:
-        wandb.config.update({f"view_meta/{k}": v for k, v in view_meta.items()})
-
-
-_n_try_wandb_comm_errors = 0
-
-
-# this exists to stop infra issues from crashing training runs
-def try_wandb[**P, T](wandb_fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T | None:
-    """Call `wandb_fn`, warning and returning `None` on a wandb `CommError`.
-
-    `CommError` is chosen to catch issues communicating with the wandb server but not
-    legitimate logging errors (e.g. not passing a dict to `wandb.log`, or the wrong
-    arguments to `wandb.save`).
-    """
-    global _n_try_wandb_comm_errors
-    try:
-        return wandb_fn(*args, **kwargs)
-    except wandb.errors.CommError as e:
-        _n_try_wandb_comm_errors += 1
-        logger.error(
-            f"wandb communication error, skipping log (total comm errors: {_n_try_wandb_comm_errors}): {e}"
-        )

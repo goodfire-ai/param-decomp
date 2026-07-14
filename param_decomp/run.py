@@ -129,23 +129,26 @@ def _ensure_global[T](tree: T, mesh: Mesh) -> T:
     return eqx.combine(mesh_placed, fixed)
 
 
-# wandb keys match the torch trainer's (`train_step.py` emits `loss/<instance_key>`,
-# `optimize.py` prefixes `train/`) so a torch-vs-jax run pair overlays on one panel.
-# Recon-term keys arrive from the step already shaped (`loss/<instance_key>`) and are
-# train/-prefixed by the sink; this table maps only the step's fixed scalar keys.
-_METRIC_KEYS = {
-    "total": "train/loss/total",
-    "faith": "train/loss/FaithfulnessLoss",
-    "imp": "train/loss/ImportanceMinimalityLoss",
-    "imp_smooth_l0": "train/loss/SmoothL0ImportanceMinimalityLoss",
-    "freq": "train/loss/FrequencyMinimalityLoss",
-    "p_imp": "train/schedules/p_imp",
-    "gamma_imp": "train/schedules/gamma_imp",
-    "src_lr": "train/schedules/lr/src",
-    "step_time_s": "train/perf/step_time_s",
-    "elapsed_s": "train/perf/elapsed_s",
-    "eta_s": "train/perf/eta_s",
-}
+# The canonical wandb key tree. Every producer emits full keys (no sink-side remapping),
+# and `MetricsSink.log` asserts each key lives under one of these namespaces — a new
+# metric joins the tree deliberately instead of drifting to the wandb top level. The
+# `train/loss/` leaf names are the loss-config `type` literals (torch-era class names,
+# kept so runs overlay across the torch->jax transition). The figure tiers log outside
+# the sink (`render_and_log_slow_eval` -> `slow_eval/`, `render_and_log_arithmetic` ->
+# `eval/arithmetic/`) on rank-0 background threads.
+_WANDB_KEY_NAMESPACES = (
+    "train/loss/",  # total + one key per loss term (`train/loss/<term.name>`)
+    "train/schedules/",  # p_imp | gamma_imp, lr/{components,ci_fn,src[/<state_key>]}
+    "train/perf/",  # step_time_s, elapsed_s, eta_s
+    "train/mem/",  # peak_gb_per_rank
+    "train/grad_norms/",  # summary/{components,ci_fns,total}/{min,max,median} + per-leaf
+    "eval/ce_kl/",  # {kl,ce_difference}_<masking variant>
+    "eval/l0/",  # per-site + per-group L0 at the config threshold, bar_chart
+    "eval/loss/",  # PGDReconLoss (the sweep referee), attn-patterns terms
+    "eval/slow/",  # slow-tier scalars: loss/<hidden-acts terms>, identity_ci_error/*
+    "eval/arithmetic/",  # arithmetic-grid scalars (n_alive etc.)
+    "eval/identity_ci_error/",  # the toys' ground-truth CI eval
+)
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -226,12 +229,8 @@ class MetricsSink:
     def log(self, step: int, record: "LogRecord") -> None:
         if self._jsonl is None:
             return
-        record = {
-            _METRIC_KEYS.get(
-                k, f"train/{k}" if k.startswith(("grad_norms/", "loss/", "schedules/")) else k
-            ): v
-            for k, v in record.items()
-        }  # keys already starting "train/" or "eval/" pass through verbatim
+        off_tree = [k for k in record if not k.startswith(_WANDB_KEY_NAMESPACES)]
+        assert not off_tree, f"metric keys outside the canonical wandb tree: {off_tree}"
         # wandb-only viz objects (e.g. the CI_L0 bar chart) ride alongside the scalars to
         # wandb but are not jsonl/console serializable; split them off.
         scalars = {k: v for k, v in record.items() if isinstance(v, float)}
@@ -589,7 +588,7 @@ def run_decomposition_training(
         _aa2 = time.perf_counter()
         _as3, _am3 = step_fn(lm, _as2, _ab, _atk)
         _aa3 = time.perf_counter()
-        jax.block_until_ready((_as3, _am3["total"]))
+        jax.block_until_ready((_as3, _am3["train/loss/total"]))
         _aa4 = time.perf_counter()
         if is_main:
             print(
@@ -622,7 +621,7 @@ def run_decomposition_training(
         _dev.memory_stats()  # reset peak baseline read
         _ms_state, _ms_metrics = step_fn(lm, state, _mb, _mk)
         _ms_state, _ms_metrics = step_fn(lm, _ms_state, _mb, _mk)
-        jax.block_until_ready((_ms_state, _ms_metrics["total"]))
+        jax.block_until_ready((_ms_state, _ms_metrics["train/loss/total"]))
         _ms = _dev.memory_stats()
         if is_main and _ms is not None:
             print(
@@ -683,7 +682,7 @@ def run_decomposition_training(
             _ts1 = time.perf_counter()
             state, metrics = step_fn(lm, state, batch, random.fold_in(run_key, step))
             _ts2 = time.perf_counter()
-            jax.block_until_ready((state, metrics["total"]))
+            jax.block_until_ready((state, metrics["train/loss/total"]))
             _ts3 = time.perf_counter()
             print(
                 f"PD_TIME step {step}: sample={_ts1 - _ts0:.3f}s dispatch(py)={_ts2 - _ts1:.3f}s "
@@ -695,11 +694,11 @@ def run_decomposition_training(
             state, metrics = step_fn(lm, state, batch, random.fold_in(run_key, step))
 
         grad_norm_summary_window.append(
-            {k: v for k, v in metrics.items() if k.startswith("grad_norms/summary/")}
+            {k: v for k, v in metrics.items() if k.startswith("train/grad_norms/summary/")}
         )
 
         if _profiling:
-            jax.block_until_ready((state, metrics["total"]))
+            jax.block_until_ready((state, metrics["train/loss/total"]))
             if is_main:
                 print(
                     f"PD_PROFILE: step {step} wall {time.time() - _prof_t0:.3f}s (cumulative)",
@@ -721,22 +720,24 @@ def run_decomposition_training(
             or (dense is not None and now_step <= dense.until_step and now_step % dense.every == 0)
         )
         if log_now:
-            jax.block_until_ready(metrics["total"])
+            jax.block_until_ready(metrics["train/loss/total"])
             dt = time.time() - window_t0
             per_step = dt / max(now_step - last_logged, 1)
             last_logged = now_step
             record = {
-                k: float(v) for k, v in metrics.items() if not k.startswith("grad_norms/summary/")
+                k: float(v)
+                for k, v in metrics.items()
+                if not k.startswith("train/grad_norms/summary/")
             }
             record.update(_grad_norm_summary_window_stats(grad_norm_summary_window))
             grad_norm_summary_window.clear()
-            for loss_name in ("total", *(k for k in record if k.startswith("loss/"))):
+            for loss_name in (k for k in record if k.startswith("train/loss/")):
                 assert math.isfinite(record[loss_name]), (
                     f"non-finite loss {loss_name!r} at step {now_step}: {record[loss_name]}"
                 )
-            record["step_time_s"] = per_step
-            record["elapsed_s"] = time.time() - loop_t0
-            record["eta_s"] = (pd.steps - now_step) * per_step
+            record["train/perf/step_time_s"] = per_step
+            record["train/perf/elapsed_s"] = time.time() - loop_t0
+            record["train/perf/eta_s"] = (pd.steps - now_step) * per_step
             # the LR this step applied (optax count is the pre-increment `step` == now_step - 1)
             record["train/schedules/lr/components"] = float(jnp.asarray(sched_vu(now_step - 1)))
             record["train/schedules/lr/ci_fn"] = float(jnp.asarray(sched_ci(now_step - 1)))

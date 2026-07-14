@@ -440,7 +440,7 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
     for v in ppgd_adv.sources.values():
         assert float(v.min()) >= 0.0 and float(v.max()) <= 1.0
     # SPEC S9: p annealed below its 2.0 start by step 4 of 100.
-    assert losses[-1]["p_imp"] < 2.0
+    assert losses[-1]["train/schedules/p_imp"] < 2.0
     # fp32 masters preserved through updates (SPEC N1).
     assert isinstance(state.components, DecompVU)
     for V, U in state.components.vu.values():
@@ -548,13 +548,18 @@ def test_fresh_pgd_adversary_step():
         return step(lm, make_state(), tokens, jax.random.PRNGKey(100))
 
     state, metrics = run_step(n_ascent_steps=1)
-    assert "loss/PGDReconLoss" in metrics
-    assert "loss/PersistentPGDReconLoss" not in metrics and "src_lr" not in metrics
+    assert "train/loss/PGDReconLoss" in metrics
+    assert "train/loss/PersistentPGDReconLoss" not in metrics
+    assert "train/schedules/lr/src" not in metrics
     assert jnp.isfinite(
         jnp.array(
             [
                 float(metrics[k])
-                for k in ("total", "loss/PGDReconLoss", "loss/ChunkwiseSubsetReconLoss")
+                for k in (
+                    "train/loss/total",
+                    "train/loss/PGDReconLoss",
+                    "train/loss/ChunkwiseSubsetReconLoss",
+                )
             ]
         )
     ).all()
@@ -562,9 +567,9 @@ def test_fresh_pgd_adversary_step():
     assert int(state.step) == 1
 
     _, metrics_unascended = run_step(n_ascent_steps=0)
-    assert float(metrics["loss/PGDReconLoss"]) >= float(metrics_unascended["loss/PGDReconLoss"]), (
-        "one sign step from the same init must not weaken the adversary"
-    )
+    assert float(metrics["train/loss/PGDReconLoss"]) >= float(
+        metrics_unascended["train/loss/PGDReconLoss"]
+    ), "one sign step from the same init must not weaken the adversary"
 
 
 def test_chunkwise_ci_init_vmap_matches_unrolled_reference():

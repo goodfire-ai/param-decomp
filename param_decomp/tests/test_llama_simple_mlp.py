@@ -431,7 +431,7 @@ def test_step_trains_and_has_vpd_signature():
     for v in ppgd_adv.sources.values():
         assert float(v.min()) >= 0.0 and float(v.max()) <= 1.0
     # SPEC S9: p annealed below its 2.0 start by step 4 of 100.
-    assert losses[-1]["p_imp"] < 2.0
+    assert losses[-1]["train/schedules/p_imp"] < 2.0
     # fp32 masters preserved through updates (SPEC N1).
     assert isinstance(state.components, DecompVU)
     for V, U in state.components.vu.values():
