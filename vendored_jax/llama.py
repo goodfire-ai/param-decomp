@@ -42,6 +42,9 @@ class LlamaConfig:
     rope_low_freq_factor: float | None = None
     rope_high_freq_factor: float | None = None
     rope_original_max_position_embeddings: int | None = None
+    # Qwen3-style per-head RMSNorm on q/k after projection, before RoPE
+    # (HF `Qwen3Attention.q_norm`/`k_norm`). False => the plain Llama attention.
+    qk_norm: bool = False
 
     @property
     def head_dim(self) -> int:

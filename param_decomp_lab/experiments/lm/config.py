@@ -147,7 +147,8 @@ class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
 
 @dataclass(frozen=True)
 class TargetConfig:
-    """The Llama-3.1-8B HF target (`param_decomp.llama8b`)."""
+    """An HF GLU-transformer target (`param_decomp.targets.llama8b` — Llama-3.1-8B or
+    Qwen3-8B-Base; `model_name` must be in `llama8b.HF_MODEL_CONFIGS`)."""
 
     model_name: str
     sites: tuple[SiteC, ...]
@@ -230,9 +231,13 @@ def _resolve_target(cfg: LMExperimentConfig) -> AnyLMTargetConfig:
             match spec:
                 case HFWeightsInVendored():
                     assert spec.model_class.rsplit(".", 1)[-1] == "VendoredLlama", spec.model_class
+                    assert "Llama-3.1-8B" in spec.model_name, spec.model_name
                 case HFTarget():
-                    assert spec.model_class == "transformers.LlamaForCausalLM", spec.model_class
-            assert "Llama-3.1-8B" in spec.model_name, spec.model_name
+                    assert spec.model_class in (
+                        "transformers.LlamaForCausalLM",
+                        "transformers.Qwen3ForCausalLM",
+                    ), spec.model_class
+            llama8b.hf_model_config(spec.model_name)  # refuse unknown model names here
             return TargetConfig(model_name=spec.model_name, sites=_site_cs(cfg))
         case PretrainedTarget():
             assert spec.model_class.rsplit(".", 1)[-1] == "LlamaSimpleMLP", spec.model_class
@@ -261,7 +266,7 @@ def _resolve_d_resid(target: AnyLMTargetConfig) -> int:
     each chunk reads one residual tap of this width."""
     match target:
         case TargetConfig():
-            return llama8b.llama31_8b_config().n_embd
+            return llama8b.hf_model_config(target.model_name).n_embd
         case LlamaSimpleMLPTargetConfig():
             cache_dir = llama_simple_mlp.pretrain_cache_dir(target.pretrain_run_path)
             return llama_simple_mlp.load_model_config(cache_dir).n_embd

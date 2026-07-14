@@ -39,29 +39,49 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 from param_decomp.components import DecompVU
 from param_decomp.jit_util import filter_jit
 from param_decomp.lm import DecomposedModel, all_false_routes
-from param_decomp.targets.llama8b import FrozenAttn, LlamaDecomposedModel
+from param_decomp.targets.llama8b import FrozenAttn, LlamaDecomposedModel, parse_site_name
 from param_decomp.targets.llama_simple_mlp import SimpleMLPDecomposedModel
 from param_decomp.train import COMPUTE_DT, cast_floating
-from vendored_jax.llama import apply_rope, repeat_kv, rope_cos_sin
+from vendored_jax.llama import apply_rope, repeat_kv, rms_norm, rope_cos_sin
 
-AttnPatternFn = Callable[[Float[Array, "B T qd"], Float[Array, "B T kvd"]], Float[Array, "B H T T"]]
-"""`(q_flat, k_flat) -> (B, n_heads, T_query, T_key)` post-softmax causal attention map
-from a layer's flat Q/K projections — the per-target attention recipe."""
+AttnPatternFn = Callable[
+    [str, Float[Array, "B T qd"], Float[Array, "B T kvd"]], Float[Array, "B H T T"]
+]
+"""`(q_proj_site, q_flat, k_flat) -> (B, n_heads, T_query, T_key)` post-softmax causal
+attention map from a layer's flat Q/K projections — the per-target attention recipe. The
+site name identifies the layer (Qwen3's QK-norm weights are per-layer)."""
+
+QKNormFor = Callable[[str], tuple[Array, Array]]
+"""`q_proj_site -> (q_norm, k_norm)` — that layer's QK-norm weights."""
 
 
 def _attn_pattern_from_config(
-    n_head: int, n_kv_head: int, head_dim: int, n_rep: int, inv_freq: Array
+    n_head: int,
+    n_kv_head: int,
+    head_dim: int,
+    n_rep: int,
+    inv_freq: Array,
+    qk_norm_for: QKNormFor | None,
+    eps: float,
 ) -> AttnPatternFn:
     """The shared RoPE + GQA + causal-softmax pattern recipe, parameterised by a target's
-    attention config. Reuses the vendored `rope_cos_sin`/`apply_rope`/`repeat_kv` — never
-    a reimplemented RoPE. Scores in fp32, scaled by `1/√head_dim`, causal-masked, softmaxed."""
+    attention config. Reuses the vendored `rms_norm`/`rope_cos_sin`/`apply_rope`/`repeat_kv`
+    — never a reimplemented RoPE. `qk_norm_for` (Qwen3 targets) applies the layer's per-head
+    QK-norm exactly as `FrozenAttn.core` does, before RoPE. Scores in fp32, scaled by
+    `1/√head_dim`, causal-masked, softmaxed."""
 
-    def attn_pattern(q_flat: Array, k_flat: Array) -> Array:
+    def attn_pattern(q_site: str, q_flat: Array, k_flat: Array) -> Array:
         b, t, _ = q_flat.shape
         assert q_flat.shape[-1] == n_head * head_dim, q_flat.shape
         assert k_flat.shape[-1] == n_kv_head * head_dim, k_flat.shape
-        q = q_flat.reshape(b, t, n_head, head_dim).transpose(0, 2, 1, 3)
-        k = k_flat.reshape(b, t, n_kv_head, head_dim).transpose(0, 2, 1, 3)
+        q = q_flat.reshape(b, t, n_head, head_dim)
+        k = k_flat.reshape(b, t, n_kv_head, head_dim)
+        if qk_norm_for is not None:
+            q_norm, k_norm = qk_norm_for(q_site)
+            q = rms_norm(q, q_norm, eps)
+            k = rms_norm(k, k_norm, eps)
+        q = q.transpose(0, 2, 1, 3)
+        k = k.transpose(0, 2, 1, 3)
         cos, sin = rope_cos_sin(inv_freq, t, q_flat.dtype)
         q, k = apply_rope(q, k, cos, sin)
         k = repeat_kv(k, n_rep)
@@ -72,6 +92,19 @@ def _attn_pattern_from_config(
         return jax.nn.softmax(scores, axis=-1)
 
     return attn_pattern
+
+
+def _stacked_qk_norm_for(stacked: FrozenAttn) -> QKNormFor:
+    """Per-layer QK-norm lookup over the layer-STACKED attention weights (Qwen3): the
+    site name's layer indexes the `[n_layer, head_dim]` norm stacks."""
+    q_norms, k_norms = stacked.q_norm, stacked.k_norm
+    assert q_norms is not None and k_norms is not None
+
+    def qk_norm_for(q_site: str) -> tuple[Array, Array]:
+        layer = parse_site_name(q_site)[0]
+        return q_norms[layer], k_norms[layer]
+
+    return qk_norm_for
 
 
 def _frozen_attn(target: LlamaDecomposedModel | SimpleMLPDecomposedModel) -> FrozenAttn:
@@ -90,9 +123,14 @@ def attn_pattern_for(target: Any) -> AttnPatternFn:
     match target:
         case LlamaDecomposedModel() | SimpleMLPDecomposedModel():
             attn = _frozen_attn(target)
+            qk_norm_for = None
+            if attn.q_norm is not None:
+                assert isinstance(target, LlamaDecomposedModel)  # QK-norm is the Qwen3 target
+                qk_norm_for = _stacked_qk_norm_for(target.stacked.attn)
             return _attn_pattern_from_config(
-                attn.n_head, attn.n_kv_head, attn.head_dim, attn.n_rep, target.inv_freq
-            )
+                attn.n_head, attn.n_kv_head, attn.head_dim, attn.n_rep, target.inv_freq,
+                qk_norm_for, attn.eps,
+            )  # fmt: skip
         case _:
             raise AssertionError(
                 f"attn-patterns metric only applies to attention targets, got {type(target).__name__}"
@@ -162,7 +200,7 @@ def _clean_patterns(
         {s: jnp.zeros(leading, COMPUTE_DT) for s in site_names},
         all_false_routes(site_names, leading), site_names, False,
     )  # fmt: skip
-    return {q: pattern_fn(clean_outputs[q], clean_outputs[k]) for q, k in layer_pairs}
+    return {q: pattern_fn(q, clean_outputs[q], clean_outputs[k]) for q, k in layer_pairs}
 
 
 def _masked_patterns_kl(
@@ -172,7 +210,7 @@ def _masked_patterns_kl(
     target_patterns: dict[str, Array],
 ) -> dict[str, Array]:
     return {
-        q: _pattern_kl(target_patterns[q], pattern_fn(masked_outputs[q], masked_outputs[k]))
+        q: _pattern_kl(target_patterns[q], pattern_fn(q, masked_outputs[q], masked_outputs[k]))
         for q, k in layer_pairs
     }
 

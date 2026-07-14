@@ -88,7 +88,19 @@ target:
     kind: hf_weights_in_vendored        # HF weights loaded into a vendored, componentizable arch
     model_class: param_decomp_lab.experiments.lm.vendored.llama_3_1.model.VendoredLlama
     model_name: meta-llama/Llama-3.1-8B
+
+# or
+target:
+  spec:
+    kind: hf                            # Qwen3-8B-Base (same vendored JAX target + QK-norm)
+    model_class: transformers.Qwen3ForCausalLM
+    model_name: Qwen/Qwen3-8B-Base
 ```
+
+`kind: hf`/`hf_weights_in_vendored` model names must be in `llama8b.HF_MODEL_CONFIGS`
+(Llama-3.1-8B, Qwen3-8B-Base) — anything else refuses at convert time. A Qwen3 run needs
+a Qwen3-tokenized prestaged dataset (`prestage_tokenized` with
+`--tokenizer_name Qwen/Qwen3-8B-Base`).
 
 The JAX prediction tensor is always the final logits (there is no `output_extract` —
 it was a torch-era field, stripped on load for back-compat). The `model_class` strings

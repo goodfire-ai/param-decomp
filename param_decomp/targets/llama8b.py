@@ -1,4 +1,6 @@
-"""Llama-3.1-8B vendored target — the first `DecomposedModel` implementation.
+"""The vendored HF GLU-transformer targets — Llama-3.1-8B (the first `DecomposedModel`
+implementation) and Qwen3-8B-Base (the same model + `LlamaConfig.qk_norm`: per-head
+RMSNorm on q/k before RoPE). `hf_model_config` maps the HF model name to its arch config.
 
 The decomposed sites are any per-layer weight matrices (SPEC §1/§3) named torch-style:
 `layers.{i}.self_attn.{q,k,v,o}_proj` and `layers.{i}.mlp.{gate,up,down}_proj`, each
@@ -16,6 +18,7 @@ Real HF weights load straight from the cached safetensors (no torch dep).
 
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +79,40 @@ def llama31_8b_config() -> LlamaConfig:
         rope_high_freq_factor=4.0,
         rope_original_max_position_embeddings=8192,
     )
+
+
+def qwen3_8b_config() -> LlamaConfig:
+    """Qwen3-8B(-Base): Llama-shaped GLU transformer + QK-norm, plain RoPE (HF
+    `Qwen/Qwen3-8B-Base` config.json). HF's explicit `head_dim` (128) coincides with
+    `n_embd // n_head` for 8B, so the derived `LlamaConfig.head_dim` is exact."""
+    return LlamaConfig(
+        vocab_size=151936,
+        n_layer=36,
+        n_head=32,
+        n_kv_head=8,
+        n_embd=4096,
+        n_intermediate=12288,
+        rope_theta=1000000.0,
+        rms_norm_eps=1e-6,
+        max_position_embeddings=32768,
+        qk_norm=True,
+    )
+
+
+HF_MODEL_CONFIGS: dict[str, Callable[[], LlamaConfig]] = {
+    "meta-llama/Llama-3.1-8B": llama31_8b_config,
+    "Qwen/Qwen3-8B-Base": qwen3_8b_config,
+}
+"""The HF model names this target implements. Anything else refuses loudly at convert
+time — a new model gets an explicit config here (checked against its HF config.json),
+never a silent guess."""
+
+
+def hf_model_config(model_name: str) -> LlamaConfig:
+    assert model_name in HF_MODEL_CONFIGS, (
+        f"no vendored arch config for {model_name!r}; supported: {sorted(HF_MODEL_CONFIGS)}"
+    )
+    return HF_MODEL_CONFIGS[model_name]()
 
 
 def site_name(layer: int, kind: str) -> str:
@@ -161,6 +198,16 @@ class FrozenAttn(eqx.Module):
     n_kv_head: int = eqx.field(static=True)
     head_dim: int = eqx.field(static=True)
     n_rep: int = eqx.field(static=True)
+    q_norm: Float[Array, " hd"] | None = None
+    """Qwen3-style per-head RMSNorm weight on q after projection, before RoPE
+    (`LlamaConfig.qk_norm`); None => the plain Llama attention."""
+    k_norm: Float[Array, " hd"] | None = None
+    eps: float = eqx.field(static=True, default=0.0)
+    """RMSNorm eps for `q_norm`/`k_norm` only (the block norms use the model-level eps)."""
+
+    def __check_init__(self):
+        assert (self.q_norm is None) == (self.k_norm is None), "q_norm/k_norm come as a pair"
+        assert self.q_norm is None or self.eps > 0.0, "qk-norm needs a real eps"
 
     def shardings(self, mesh: "Mesh") -> "FrozenAttn":
         """Stacked (leading `n_layer`, UNSHARDED — the scan axis) FSDP on `fsdp`: the `d` dim
@@ -174,9 +221,13 @@ class FrozenAttn(eqx.Module):
         for w in (self.wq, self.wk, self.wv):
             assert_divisible(w.shape[2], mesh, "fsdp", "FrozenAttn qkv in (d)")
         assert_divisible(self.wo.shape[1], mesh, "fsdp", "FrozenAttn out-proj out (d)")
-        return eqx.tree_at(
+        out = eqx.tree_at(
             lambda a: (a.wq, a.wk, a.wv, a.wo), self, (in_fsdp, in_fsdp, in_fsdp, out_fsdp)
         )
+        if self.q_norm is not None:
+            repl = NamedSharding(mesh, P())
+            out = eqx.tree_at(lambda a: (a.q_norm, a.k_norm), out, (repl, repl))
+        return out
 
     def core(
         self,
@@ -191,8 +242,16 @@ class FrozenAttn(eqx.Module):
         assert q_flat.shape[-1] == self.n_head * self.head_dim, q_flat.shape
         assert k_flat.shape[-1] == self.n_kv_head * self.head_dim, k_flat.shape
         assert v_flat.shape[-1] == self.n_kv_head * self.head_dim, v_flat.shape
-        q = q_flat.reshape(b, t, self.n_head, self.head_dim).transpose(0, 2, 1, 3)
-        k = k_flat.reshape(b, t, self.n_kv_head, self.head_dim).transpose(0, 2, 1, 3)
+        q = q_flat.reshape(b, t, self.n_head, self.head_dim)
+        k = k_flat.reshape(b, t, self.n_kv_head, self.head_dim)
+        if self.q_norm is not None:
+            # Qwen3 QK-norm: per-head RMSNorm over head_dim, before RoPE (HF
+            # `Qwen3Attention`). A masked q/k site output feeds this norm, then RoPE/SDPA.
+            assert self.k_norm is not None
+            q = rms_norm(q, self.q_norm, self.eps)
+            k = rms_norm(k, self.k_norm, self.eps)
+        q = q.transpose(0, 2, 1, 3)
+        k = k.transpose(0, 2, 1, 3)
         v = v_flat.reshape(b, t, self.n_kv_head, self.head_dim).transpose(0, 2, 1, 3)
         cos, sin = rope_cos_sin(inv_freq, t, q_flat.dtype)
         q, k = apply_rope(q, k, cos, sin)
@@ -984,6 +1043,9 @@ def _load_attn(w: _HFWeights, i: int, cfg: LlamaConfig) -> FrozenAttn:
         n_kv_head=cfg.n_kv_head,
         head_dim=cfg.head_dim,
         n_rep=cfg.n_rep,
+        q_norm=w.get(f"{pre}.{i}.self_attn.q_norm.weight") if cfg.qk_norm else None,
+        k_norm=w.get(f"{pre}.{i}.self_attn.k_norm.weight") if cfg.qk_norm else None,
+        eps=cfg.rms_norm_eps if cfg.qk_norm else 0.0,
     )
 
 

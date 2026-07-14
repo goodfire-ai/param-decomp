@@ -75,7 +75,7 @@ def test_attn_pattern_for_shape_and_causal_softmax_llama():
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
     q = jax.random.normal(jax.random.PRNGKey(1), (b, t, qd))
     k = jax.random.normal(jax.random.PRNGKey(2), (b, t, kvd))
-    pattern = np.asarray(pattern_fn(q, k))
+    pattern = np.asarray(pattern_fn("layers.0.self_attn.q_proj", q, k))
 
     assert pattern.shape == (b, cfg.n_head, t, t)
     np.testing.assert_allclose(pattern.sum(-1), 1.0, rtol=1e-5, atol=1e-5)
@@ -93,7 +93,7 @@ def test_attn_pattern_for_shape_and_causal_softmax_simple_mlp():
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
     q = jax.random.normal(jax.random.PRNGKey(1), (b, t, qd))
     k = jax.random.normal(jax.random.PRNGKey(2), (b, t, kvd))
-    pattern = np.asarray(pattern_fn(q, k))
+    pattern = np.asarray(pattern_fn("h.0.attn.q_proj", q, k))
 
     assert pattern.shape == (b, cfg.n_head, t, t)
     np.testing.assert_allclose(pattern.sum(-1), 1.0, rtol=1e-5, atol=1e-5)
@@ -293,7 +293,7 @@ def test_attn_patterns_steps_reject_positionless_target():
         leading_axes=(),
     )
     assert lm.leading_axes == ()
-    dummy_pattern_fn = lambda q, k: q  # noqa: E731 — never reached; assert fires first
+    dummy_pattern_fn = lambda site, q, k: q  # noqa: E731 — never reached; assert fires first
     with pytest.raises(AssertionError, match="LM-only"):
         make_ci_attn_patterns_step(lm, dummy_pattern_fn)
     with pytest.raises(AssertionError, match="LM-only"):

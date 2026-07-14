@@ -209,8 +209,8 @@ def test_unsupported_settings_refuse():
 
 
 def test_unsupported_model_family_refuses_and_supported_families_dispatch():
-    """E23: only Llama-3.1-8B (`hf`/`hf_weights_in_vendored`
-    → `TargetConfig`) and `LlamaSimpleMLP` (`pretrained` →
+    """E23: only the `llama8b.HF_MODEL_CONFIGS` models (`hf`/`hf_weights_in_vendored`
+    → `TargetConfig`; Llama-3.1-8B and Qwen3-8B-Base) and `LlamaSimpleMLP` (`pretrained` →
     `LlamaSimpleMLPTargetConfig`) convert; every other family is refused at convert
     time. The schema's `LMTargetSpec` discriminated union still validates a GPT-2 spec
     (it's a well-formed `kind`), so the refusal must come from `_resolve_target`'s
@@ -242,6 +242,15 @@ def test_unsupported_model_family_refuses_and_supported_families_dispatch():
         }
     )
     assert isinstance(raw_hf_llama, TargetConfig)
+
+    raw_hf_qwen3 = _converted_target(
+        {
+            "kind": "hf",
+            "model_class": "transformers.Qwen3ForCausalLM",
+            "model_name": "Qwen/Qwen3-8B-Base",
+        }
+    )
+    assert isinstance(raw_hf_qwen3, TargetConfig)
 
     gpt2_hf = {
         "kind": "hf",

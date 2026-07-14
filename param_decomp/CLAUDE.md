@@ -58,7 +58,7 @@ single `make_plan` constructor, built from the shared configs by `recon.build_lo
 see LOSS_PARITY_DESIGN.md),
 consuming `losses.py` (pure loss terms + schedules) and `adversary.py` (persistent
 vs fresh source machinery — semantically distinct adversaries sharing only
-`source_masks`); `ci_fn.py` the shared CI transformer; `targets/llama8b.py` + `targets/llama8b_sharding.py` the first target. There is ONE
+`source_masks`); `ci_fn.py` the shared CI transformer; `targets/llama8b.py` + `targets/llama8b_sharding.py` the first target. `targets/llama8b.py` implements BOTH vendored HF GLU-transformer targets — Llama-3.1-8B and Qwen3-8B-Base (`qwen3_8b_config`; the one structural delta is `LlamaConfig.qk_norm`, per-head RMSNorm on q/k before RoPE, optional `FrozenAttn.q_norm`/`k_norm` fields) — dispatched by HF model name via `hf_model_config`. Qwen3 JAX↔HF parity is pinned DIRECTLY by `tests/qwen3_hf_parity/` (a tiny-random `Qwen3ForCausalLM` golden at fp32 tolerance + a slow real-weights logits check; goldens regenerate via its torch-env `gen_hf_fixtures.py`). There is ONE
 recon semantics: masks thread through the full token-input forward, loss is KL on final logits
 (SPEC §2.3–2.5). Site-local recon is a conceptual no-no, not a "simplification".
 `targets/llama_simple_mlp.py` is the second target (the pile-pretrained `LlamaSimpleMLP`,
