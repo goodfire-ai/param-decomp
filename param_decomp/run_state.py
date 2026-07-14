@@ -21,7 +21,14 @@ from jaxtyping import Array, PRNGKeyArray
 from param_decomp.adversary import PersistentAdversary, init_sources_adam_state
 from param_decomp.built_run import DataConfig
 from param_decomp.ci_fn import CIFnArch
-from param_decomp.configs import AdamPGDConfig, OptimizerConfig, PDConfig
+from param_decomp.component_norm import component_norm_optimizer
+from param_decomp.configs import (
+    AdamPGDConfig,
+    ComponentNormOptimizerConfig,
+    NesterovSGDOptimizerConfig,
+    OptimizerConfig,
+    PDConfig,
+)
 from param_decomp.lm import DecomposedModel
 from param_decomp.losses import scheduled_value_traced
 from param_decomp.recon import (
@@ -93,7 +100,24 @@ def build_optimizers(pd: PDConfig):
     read the values straight off `PDConfig` so there is no second source of truth."""
     sched_vu = optax_schedule(pd.components_optimizer.lr_schedule, pd.steps)
     sched_ci = optax_schedule(pd.ci_fn_optimizer.lr_schedule, pd.steps)
-    opt_vu = _adamw_with_clip(pd.components_optimizer, sched_vu)
+    match pd.components_optimizer:
+        case OptimizerConfig() as adam:
+            opt_vu = _adamw_with_clip(adam, sched_vu)
+        case ComponentNormOptimizerConfig() as comp_norm:
+            clip = (
+                None
+                if comp_norm.grad_clip_norm is None
+                else clip_by_global_norm_with_eps(comp_norm.grad_clip_norm, eps=1e-6)
+            )
+            opt_vu = component_norm_optimizer(comp_norm, sched_vu, clip)
+        case NesterovSGDOptimizerConfig() as sgd:
+            transforms: list[optax.GradientTransformation] = []
+            if sgd.grad_clip_norm is not None:
+                transforms.append(clip_by_global_norm_with_eps(sgd.grad_clip_norm, eps=1e-6))
+            if sgd.momentum is not None:
+                transforms.append(optax.trace(decay=sgd.momentum, nesterov=True))
+            transforms.append(optax.scale_by_learning_rate(sched_vu))
+            opt_vu = optax.chain(*transforms)
     opt_ci = _adamw_with_clip(pd.ci_fn_optimizer, sched_ci)
     return opt_vu, opt_ci, (sched_vu, sched_ci)
 
