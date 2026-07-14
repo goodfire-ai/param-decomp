@@ -584,6 +584,7 @@ AnyEvalMetricConfig = Annotated[
 
 
 class OptimizerConfig(BaseConfig):
+    type: Literal["adam"] = "adam"
     lr_schedule: ScheduleConfig = Field(..., description="Learning rate schedule")
     weight_decay: NonNegativeFloat = Field(default=0.0, description="AdamW weight decay")
     betas: tuple[Probability, Probability] = Field(
@@ -593,6 +594,45 @@ class OptimizerConfig(BaseConfig):
         default=None,
         description="If set, clip the grad norm of this group's parameters to this value",
     )
+
+
+class ComponentNormOptimizerConfig(BaseConfig):
+    """Muon-style per-subcomponent normalized SGD for the V/U masters (experimental).
+
+    Per component `c`, the (optionally momentum-averaged) gradient pair `(gV_c, gU_c)` is
+    divided by the norm of its induced first-order weight-space update
+    `dW_c = gV_c ⊗ U_c + V_c ⊗ gU_c`, so every component moves its slice of `W_hat` by the
+    same `lr`-sized amount regardless of gradient magnitude. There is no global grad clip:
+    the per-component normalization IS the trust region."""
+
+    type: Literal["component_norm"]
+    lr_schedule: ScheduleConfig = Field(..., description="Learning rate schedule")
+    momentum: Probability | None = Field(
+        ...,
+        description="Nesterov momentum decay applied before normalization (Muon uses 0.95); "
+        "null normalizes the raw per-step gradient",
+    )
+    norm: Literal["frobenius", "spectral"] = Field(
+        ...,
+        description="Which norm of the induced rank-≤2 weight update dW_c to normalize by",
+    )
+    eps: NonNegativeFloat = Field(
+        default=1e-8, description="Added to the norm before dividing (guards dead components)"
+    )
+
+
+def _default_optimizer_type_adam(data: object) -> object:
+    # Stored run configs predate the `type` discriminator; they are all adam.
+    if isinstance(data, dict) and "type" not in data:
+        return {**data, "type": "adam"}
+    return data
+
+
+AnyComponentsOptimizerConfig = Annotated[
+    OptimizerConfig | ComponentNormOptimizerConfig,
+    BeforeValidator(_default_optimizer_type_adam),
+    Discriminator("type"),
+]
 
 
 AnyLossMetricConfig = Annotated[
@@ -933,7 +973,7 @@ class PDConfig(BaseConfig):
     )
 
     # --- Training ---
-    components_optimizer: OptimizerConfig = Field(
+    components_optimizer: AnyComponentsOptimizerConfig = Field(
         ..., description="Optimizer config for the component (LinearComponent etc.) parameters"
     )
     ci_fn_optimizer: OptimizerConfig = Field(
