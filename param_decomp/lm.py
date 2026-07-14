@@ -23,8 +23,10 @@ ARG (`eqx.filter_jit` traces the array leaves). Never close over the model in a 
 frozen 8B target captured as a constant bakes multi-GB weights into the HLO.
 """
 
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh
 from jaxtyping import Array, Bool, Float
@@ -36,6 +38,32 @@ SiteDeltaMasks = dict[str, Float[Array, "*leading"]]
 SiteRoutes = dict[str, Bool[Array, "*leading"]] | None
 """Per-site per-position routing; `None` routes every position to the decomposition
 (SPEC §1.3). Positions routing False take the frozen `x @ W` path."""
+
+
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class ResidualStart:
+    """A precomputed frozen-prefix residual standing in for token `inputs` (SPEC S3/S18
+    prefix reuse): the residual ENTERING the model's `split_layer` block. Forwards receiving
+    one skip the embedding + frozen lead blocks and run the suffix only — the prefix is
+    mask-independent and identical across every forward in a step, so the step computes it
+    once per stream via `SupportsPrefixResidual.prefix_residual` and shares it. Only valid
+    for a model whose decomposed sites all live at layers >= `split_layer`."""
+
+    resid: Float[Array, "b t d"]
+
+
+@runtime_checkable
+class SupportsPrefixResidual(Protocol):
+    """Optional target capability: a frozen prefix worth reusing (`split_layer > 0`), whose
+    forwards accept a `ResidualStart` in place of token `inputs`."""
+
+    split_layer: int
+
+    def prefix_residual(self, inputs: Any, /) -> Float[Array, "b t d"]:
+        """The stop-gradient residual entering block `split_layer` (embed + frozen lead
+        blocks, run once per batch). Wrap in `ResidualStart` and pass as `inputs`."""
+        ...
 
 
 def all_false_routes(site_names: tuple[str, ...], leading: tuple[int, ...]) -> dict[str, Array]:
