@@ -158,6 +158,7 @@ and returns JAX-native as the #10 torch->jax adapter.
   `DataConfig` / `EvalConfig` / … + the `TargetSites` protocol). The engine + numerics
   (`run.py` = `run_decomposition_training`, `lm.py` / `train.py` / `ci_fn.py` /
   `targets/llama8b.py` / `targets/llama_simple_mlp.py` / `adversary.py` / `recon.py` / `losses.py` /
+  `component_norm.py` (the experimental Muon-style per-subcomponent components optimizer, config-gated) /
   `checkpoint.py` / `sharding.py` / `eval.py` / `slow_eval.py` / `arithmetic_eval.py` +
   `log.py`) plus `configs/`
   (the self-contained run yamls) and `tests/` (incl. the `tests/equivalence/` frozen
