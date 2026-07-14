@@ -27,7 +27,7 @@ never silently diverge. Cite IDs (`S14`, `N1`, …) in commit messages and revie
 `lm.py` defines `DecomposedModel` — a `@runtime_checkable Protocol`: ordered `sites` +
 `leading_axes` + the methods `clean_output`, `read_activations`, `masked_output`,
 `masked_site_outputs`, `weight_deltas`, and a `recon_loss_fn` (LM: `kl_per_position`). The
-concrete impl per target is an `eqx.Module` (`LlamaDecomposedModel`,
+concrete impl per target is an `eqx.Module` (`GLUDecomposedModel`,
 `SimpleMLPDecomposedModel`, `TMSDecomposedModel`, `ResidMLPDecomposedModel`) carrying its
 FROZEN target weights as ARRAY FIELDS; the TRAINABLE V/U (`vu: DecompVU`) stays an explicit
 METHOD ARG (separate lifecycle — own optimizer + checkpoint, C-sharded while the frozen
