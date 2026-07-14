@@ -97,7 +97,7 @@ target:
     model_name: Qwen/Qwen3-8B-Base
 ```
 
-`kind: hf`/`hf_weights_in_vendored` model names must be in `llama8b.HF_MODEL_CONFIGS`
+`kind: hf`/`hf_weights_in_vendored` model names must be in `experiments/lm/config.py::HF_MODEL_FAMILIES`
 (Llama-3.1-8B, Qwen3-8B-Base) — anything else refuses at convert time. A Qwen3 run needs
 a Qwen3-tokenized prestaged dataset (`prestage_tokenized` with
 `--tokenizer_name Qwen/Qwen3-8B-Base`).

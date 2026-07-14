@@ -21,7 +21,7 @@ from param_decomp.recon import (
     build_loss_terms,
     persistent_configs,
 )
-from param_decomp.targets.llama8b import mlp_family_site_cs
+from param_decomp.targets.glu_transformer import mlp_family_site_cs
 from param_decomp_lab.experiments.lm.config import (
     LMExperimentConfig,
     assert_supported_weights_dtype,
@@ -209,7 +209,7 @@ def test_unsupported_settings_refuse():
 
 
 def test_unsupported_model_family_refuses_and_supported_families_dispatch():
-    """E23: only the `llama8b.HF_MODEL_CONFIGS` models (`hf`/`hf_weights_in_vendored`
+    """E23: only the `HF_MODEL_FAMILIES` models (`hf`/`hf_weights_in_vendored`
     → `TargetConfig`; Llama-3.1-8B and Qwen3-8B-Base) and `LlamaSimpleMLP` (`pretrained` →
     `LlamaSimpleMLPTargetConfig`) convert; every other family is refused at convert
     time. The schema's `LMTargetSpec` discriminated union still validates a GPT-2 spec

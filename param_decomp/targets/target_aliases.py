@@ -5,7 +5,7 @@ The toy targets (TMS, ResidMLP) live in the lab and are NOT members of this unio
 generic engine (`run_decomposition_training`) takes the model as `DecomposedModel`, so the
 core never names a toy."""
 
-from param_decomp.targets.llama8b import LlamaDecomposedModel
+from param_decomp.targets.glu_transformer import GLUDecomposedModel
 from param_decomp.targets.llama_simple_mlp import SimpleMLPDecomposedModel
 
-AnyDecomposedModel = LlamaDecomposedModel | SimpleMLPDecomposedModel
+AnyDecomposedModel = GLUDecomposedModel | SimpleMLPDecomposedModel

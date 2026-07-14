@@ -31,8 +31,8 @@ from param_decomp.adversary import init_fresh_pgd_sources, source_masks
 from param_decomp.components import init_decomp_vu
 from param_decomp.losses import kl_per_position
 from param_decomp.sharding import hsdp_mesh, shard_batch
-from param_decomp.targets.llama8b import (
-    llama_site_specs,
+from param_decomp.targets.glu_transformer import (
+    glu_site_specs,
     mlp_family_site_cs,
 )
 from param_decomp.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
@@ -51,7 +51,7 @@ def _ascend_cscope_source(
     cfg = _tiny_cfg()
     first_layer = 3
     C, seq, gbatch = 8, 16, 8
-    sites = llama_site_specs(cfg, mlp_family_site_cs(first_layer, first_layer + 2, C))
+    sites = glu_site_specs(cfg, mlp_family_site_cs(first_layer, first_layer + 2, C))
     lm = _tiny_decomposed_lm(cfg, sites, random.PRNGKey(0))
     components = jax.tree.map(
         lambda x: jax.lax.stop_gradient(x), init_decomp_vu(sites, random.PRNGKey(1))

@@ -1,7 +1,7 @@
 """Direct JAX-vs-HuggingFace parity for the Qwen3 target.
 
 The tiny test rebuilds `gen_hf_fixtures.py`'s seeded random `Qwen3ForCausalLM` as a
-`LlamaDecomposedModel` (qk_norm) from the golden's own state dict, fp32, and matches HF's
+`GLUDecomposedModel` (Qwen3 family) from the golden's own state dict, fp32, and matches HF's
 logits at fp32 tolerance — the exact-architecture check (QK-norm, GQA, plain RoPE at
 theta 1e6). The slow test loads the REAL `Qwen/Qwen3-8B-Base` snapshot through the
 production loader (`load_decomposed_lm_from_hf`, bf16) and matches HF's bf16
@@ -16,25 +16,28 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from param_decomp.targets.llama8b import (
-    FrozenAttn,
-    LlamaDecomposedModel,
-    LlamaLayer,
+from param_decomp.targets.glu_transformer import (
+    GLUConfig,
+    GLUDecomposedModel,
+    GLULayer,
     build_decomposed_lm,
+    default_inv_freq,
     hf_snapshot_dir,
-    load_decomposed_lm_from_hf,
+)
+from param_decomp.targets.qwen3_8b import (
+    Qwen3FrozenAttn,
+    load_decomposed_qwen3_from_hf,
     qwen3_8b_config,
 )
-from vendored_jax.llama import LlamaConfig, llama3_inv_freq
 
 HERE = Path(__file__).resolve().parent
 
 
-def _tiny_cfg_from_golden(config_json: str) -> LlamaConfig:
+def _tiny_cfg_from_golden(config_json: str) -> GLUConfig:
     hf = json.loads(config_json)
     assert hf["head_dim"] * hf["num_attention_heads"] == hf["hidden_size"], hf
     assert not hf["tie_word_embeddings"] and not hf["attention_bias"], hf
-    return LlamaConfig(
+    return GLUConfig(
         vocab_size=hf["vocab_size"],
         n_layer=hf["num_hidden_layers"],
         n_head=hf["num_attention_heads"],
@@ -44,21 +47,20 @@ def _tiny_cfg_from_golden(config_json: str) -> LlamaConfig:
         rope_theta=hf["rope_theta"],
         rms_norm_eps=hf["rms_norm_eps"],
         max_position_embeddings=hf["max_position_embeddings"],
-        qk_norm=True,
     )
 
 
-def _build_from_hf_state(cfg: LlamaConfig, sd: dict[str, np.ndarray]) -> LlamaDecomposedModel:
-    """`_load_blocks`/`_load_attn` mirrored over an in-memory fp32 HF state dict (the
+def _build_from_hf_state(cfg: GLUConfig, sd: dict[str, np.ndarray]) -> GLUDecomposedModel:
+    """The Qwen3 family loader mirrored over an in-memory fp32 HF state dict (the
     production loader reads sharded safetensors and casts bf16; here we stay fp32 so the
     comparison isolates the MATH from rounding)."""
     a = lambda key: jnp.asarray(sd[key], jnp.float32)  # noqa: E731
     pre = "model.layers"
     layers = [
-        LlamaLayer(
+        GLULayer(
             ln1=a(f"{pre}.{i}.input_layernorm.weight"),
             ln2=a(f"{pre}.{i}.post_attention_layernorm.weight"),
-            attn=FrozenAttn(
+            attn=Qwen3FrozenAttn(
                 wq=a(f"{pre}.{i}.self_attn.q_proj.weight"),
                 wk=a(f"{pre}.{i}.self_attn.k_proj.weight"),
                 wv=a(f"{pre}.{i}.self_attn.v_proj.weight"),
@@ -82,7 +84,7 @@ def _build_from_hf_state(cfg: LlamaConfig, sd: dict[str, np.ndarray]) -> LlamaDe
         layers=layers,
         norm=a("model.norm.weight"),
         lm_head=a("lm_head.weight"),
-        inv_freq=llama3_inv_freq(cfg),
+        inv_freq=default_inv_freq(cfg.head_dim, cfg.rope_theta),
         cfg=cfg,
         sites=(),
     )
@@ -107,7 +109,7 @@ def test_real_qwen3_8b_matches_hf():
     except (AssertionError, FileNotFoundError, KeyError):
         pytest.skip("no local Qwen/Qwen3-8B-Base snapshot")
     f = np.load(HERE / "qwen3_8b_real_logits.npz")
-    lm = load_decomposed_lm_from_hf("Qwen/Qwen3-8B-Base", qwen3_8b_config(), ())
+    lm = load_decomposed_qwen3_from_hf("Qwen/Qwen3-8B-Base", qwen3_8b_config(), ())
     logits = np.asarray(lm.clean_output(jnp.asarray(f["tokens"]))[:, -1, :].astype(jnp.float32))
     ref = f["final_logits"]
     # tie-aware argmax: the golden is bf16, so distinct plausible tokens often carry the

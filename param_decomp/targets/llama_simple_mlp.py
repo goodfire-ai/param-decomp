@@ -43,7 +43,7 @@ from safetensors import safe_open
 from param_decomp.components import DecompVU, SiteC, SiteSpec, site_out
 from param_decomp.lm import run_stochastic_masked_output
 from param_decomp.losses import kl_per_position
-from param_decomp.targets.llama8b import FrozenAttn
+from param_decomp.targets.glu_transformer import FrozenAttn
 from vendored_jax.llama import rms_norm
 
 KIND_ORDER = ("q_proj", "k_proj", "v_proj", "o_proj", "c_fc", "down_proj")
@@ -308,6 +308,17 @@ class SimpleMLPDecomposedModel(eqx.Module):
     def shardings(self, mesh: Mesh) -> "SimpleMLPDecomposedModel":
         repl = NamedSharding(mesh, P())
         return jax.tree.map(lambda _a: repl, self)
+
+    def attn_pattern(
+        self,
+        q_site: str,
+        q_flat: Float[Array, "b t qd"],
+        k_flat: Float[Array, "b t kvd"],
+    ) -> Float[Array, "b h t t"]:
+        """The target-owned attn-patterns eval recipe (`attn_patterns_eval`'s
+        `AttnPatternModel` protocol): that layer's own attention module's pattern."""
+        layer = parse_site_name(q_site)[0]
+        return self.layers[layer].attn.pattern(q_flat, k_flat, self.inv_freq)
 
     @staticmethod
     def recon_loss_fn(masked_output: Array, clean_output: Array) -> Array:

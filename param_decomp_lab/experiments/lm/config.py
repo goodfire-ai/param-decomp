@@ -8,6 +8,7 @@ the JAX trainer doesn't implement. The composition entry (`run.py`) calls `load_
 `build_from_schema`; consumers that read a finished run dir call `load_run_dir_config`.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -40,8 +41,8 @@ from param_decomp.configs import (
     StochasticAttnPatternsReconLossConfig,
 )
 from param_decomp.recon import build_loss_terms
-from param_decomp.targets import llama8b, llama_simple_mlp
-from param_decomp.targets.llama8b import SITE_NAME_PATTERN, canonical_site_cs
+from param_decomp.targets import glu_transformer, llama8b, llama_simple_mlp, qwen3_8b
+from param_decomp.targets.glu_transformer import SITE_NAME_PATTERN, canonical_site_cs
 from param_decomp_lab.experiments.config import (
     ExperimentConfig,
     assert_canonical_algorithm_config,
@@ -146,9 +147,44 @@ class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
 
 
 @dataclass(frozen=True)
+class HFModelFamily:
+    """One vendored HF model family the LM composition can target: its arch config, its
+    HF loader (the family file's `load_decomposed_*_from_hf`), and the path-schema model
+    type consumers key on. The families live in `param_decomp/targets/{llama8b,qwen3_8b}.py`
+    over the shared `glu_transformer` machinery; this registry is the ONLY place a model
+    name selects a family."""
+
+    arch_config: "Callable[[], glu_transformer.GLUArch]"
+    load: "Callable[..., glu_transformer.GLUDecomposedModel]"
+    """`(model_name, cfg, sites, scan_unroll=..., gather_fp8=...)` — cfg is the family's
+    own arch-config type, so the common signature is erased here."""
+    model_type: str
+
+
+HF_MODEL_FAMILIES: dict[str, HFModelFamily] = {
+    "meta-llama/Llama-3.1-8B": HFModelFamily(
+        llama8b.llama31_8b_config, llama8b.load_decomposed_llama_from_hf, "Llama"
+    ),
+    "Qwen/Qwen3-8B-Base": HFModelFamily(
+        qwen3_8b.qwen3_8b_config, qwen3_8b.load_decomposed_qwen3_from_hf, "Qwen3"
+    ),
+}
+"""The HF model names the LM composition implements. Anything else refuses loudly at
+convert time — a new model gets an explicit family entry (config checked against its HF
+config.json), never a silent guess."""
+
+
+def hf_model_family(model_name: str) -> HFModelFamily:
+    assert model_name in HF_MODEL_FAMILIES, (
+        f"no vendored model family for {model_name!r}; supported: {sorted(HF_MODEL_FAMILIES)}"
+    )
+    return HF_MODEL_FAMILIES[model_name]
+
+
+@dataclass(frozen=True)
 class TargetConfig:
-    """An HF GLU-transformer target (`param_decomp.targets.llama8b` — Llama-3.1-8B or
-    Qwen3-8B-Base; `model_name` must be in `llama8b.HF_MODEL_CONFIGS`)."""
+    """An HF GLU-transformer target (`model_name` must be in `HF_MODEL_FAMILIES` —
+    Llama-3.1-8B or Qwen3-8B-Base)."""
 
     model_name: str
     sites: tuple[SiteC, ...]
@@ -237,7 +273,7 @@ def _resolve_target(cfg: LMExperimentConfig) -> AnyLMTargetConfig:
                         "transformers.LlamaForCausalLM",
                         "transformers.Qwen3ForCausalLM",
                     ), spec.model_class
-            llama8b.hf_model_config(spec.model_name)  # refuse unknown model names here
+            hf_model_family(spec.model_name)  # refuse unknown model names here
             return TargetConfig(model_name=spec.model_name, sites=_site_cs(cfg))
         case PretrainedTarget():
             assert spec.model_class.rsplit(".", 1)[-1] == "LlamaSimpleMLP", spec.model_class
@@ -256,7 +292,7 @@ def _block_of_site(target: AnyLMTargetConfig, site_name: str) -> int:
     grammar (`layers.{i}...` for llama8b, `h.{i}...` for LlamaSimpleMLP)."""
     match target:
         case TargetConfig():
-            return llama8b.parse_site_name(site_name)[0]
+            return glu_transformer.parse_site_name(site_name)[0]
         case LlamaSimpleMLPTargetConfig():
             return llama_simple_mlp.parse_site_name(site_name)[0]
 
@@ -266,7 +302,7 @@ def _resolve_d_resid(target: AnyLMTargetConfig) -> int:
     each chunk reads one residual tap of this width."""
     match target:
         case TargetConfig():
-            return llama8b.hf_model_config(target.model_name).n_embd
+            return hf_model_family(target.model_name).arch_config().n_embd
         case LlamaSimpleMLPTargetConfig():
             cache_dir = llama_simple_mlp.pretrain_cache_dir(target.pretrain_run_path)
             return llama_simple_mlp.load_model_config(cache_dir).n_embd

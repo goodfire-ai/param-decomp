@@ -8,7 +8,7 @@ case with a leaf-equality sweep; this adds the parts that only bite at productio
 topology:
 
   * the V/U + Adam states are C-SHARDED and the sources/moments REPLICATED over a
-    multi-device `dp` mesh (`llama8b_sharding.py`), exactly as `init_train_state` places
+    multi-device `dp` mesh (`glu_transformer_sharding.py`), exactly as `init_train_state` places
     them — so the test exercises the sharded save/restore path, not the all-on-one path;
   * MULTIPLE persistent terms (SPEC S23: one `adversaries` entry per term), so a
     per-term moment tree that got dropped would surface;
@@ -50,8 +50,8 @@ from param_decomp.configs import (
 from param_decomp.recon import build_loss_terms, persistent_configs
 from param_decomp.run import _ensure_global
 from param_decomp.schedule import ScheduleConfig
-from param_decomp.targets.llama8b import llama_site_specs, mlp_family_site_cs
-from param_decomp.targets.llama8b_sharding import (
+from param_decomp.targets.glu_transformer import glu_site_specs, mlp_family_site_cs
+from param_decomp.targets.glu_transformer_sharding import (
     hsdp_mesh,
     init_ci_fn_placed,
     init_decomp_vu_placed,
@@ -89,7 +89,7 @@ def _build_sharded(seed: int):
     mesh = hsdp_mesh()
     cfg = _tiny_cfg()
     C, seq = 8, 16
-    sites = llama_site_specs(cfg, mlp_family_site_cs(3, 4, C))
+    sites = glu_site_specs(cfg, mlp_family_site_cs(3, 4, C))
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
 
     by_layer: dict[int, list[str]] = {}

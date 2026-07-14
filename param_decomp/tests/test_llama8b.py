@@ -6,8 +6,6 @@ MLP site family AND for attention (q/k/v/o) sites with heterogeneous per-site C 
 without real weights or a GPU.
 """
 
-from collections.abc import Callable
-
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -39,13 +37,13 @@ from param_decomp.configs import (
 from param_decomp.lm import DecomposedModel
 from param_decomp.recon import build_loss_terms
 from param_decomp.schedule import ScheduleConfig
-from param_decomp.targets.llama8b import (
+from param_decomp.targets.glu_transformer import (
     FrozenAttn,
-    LlamaDecomposedModel,
-    LlamaLayer,
+    GLUDecomposedModel,
+    GLULayer,
     build_decomposed_lm,
     canonical_site_cs,
-    llama_site_specs,
+    glu_site_specs,
     mlp_family_site_cs,
     parse_site_name,
     site_name,
@@ -72,26 +70,10 @@ def _tiny_cfg() -> LlamaConfig:
     )
 
 
-def _tiny_qwen_cfg() -> LlamaConfig:
-    """Qwen3-shaped tiny config: QK-norm, plain RoPE (same dims as `_tiny_cfg`)."""
-    return LlamaConfig(
-        vocab_size=64,
-        n_layer=8,
-        n_head=4,
-        n_kv_head=2,
-        n_embd=32,
-        n_intermediate=64,
-        rope_theta=1000000.0,
-        rms_norm_eps=1e-6,
-        max_position_embeddings=512,
-        qk_norm=True,
-    )
-
-
 def _tiny_decomposed_lm(
     cfg: LlamaConfig, sites: tuple[SiteSpec, ...], key: jax.Array
-) -> LlamaDecomposedModel:
-    """A tiny random `LlamaDecomposedModel` (random embedding + full frozen layer stack
+) -> GLUDecomposedModel:
+    """A tiny random `GLUDecomposedModel` (random embedding + full frozen layer stack
     plus the decomposition `sites`) — the CPU-test analog of `load_decomposed_lm_from_hf`."""
     ks = iter(jax.random.split(key, 1024))
     d, di = cfg.n_embd, cfg.n_intermediate
@@ -101,21 +83,13 @@ def _tiny_decomposed_lm(
         return jax.random.normal(next(ks), shape) * (s or d**-0.5)
 
     def fattn():
-        weights = (n((qd, d)), n((kvd, d)), n((kvd, d)), n((d, qd)))
-        if cfg.qk_norm:
-            # non-trivial norm weights (≈1) so a wrong/missing norm application shows
-            q_norm = 1.0 + 0.1 * jax.random.normal(next(ks), (cfg.head_dim,))
-            k_norm = 1.0 + 0.1 * jax.random.normal(next(ks), (cfg.head_dim,))
-            return FrozenAttn(
-                *weights, cfg.n_head, cfg.n_kv_head, cfg.head_dim, cfg.n_rep,
-                q_norm=q_norm, k_norm=k_norm, eps=cfg.rms_norm_eps,
-            )  # fmt: skip
-        return FrozenAttn(*weights, cfg.n_head, cfg.n_kv_head, cfg.head_dim, cfg.n_rep)
+        return FrozenAttn(
+            n((qd, d)), n((kvd, d)), n((kvd, d)), n((d, qd)),
+            cfg.n_head, cfg.n_kv_head, cfg.head_dim, cfg.n_rep,
+        )  # fmt: skip
 
     def layer():
-        return LlamaLayer(
-            jnp.ones((d,)), jnp.ones((d,)), fattn(), n((di, d)), n((di, d)), n((d, di))
-        )
+        return GLULayer(jnp.ones((d,)), jnp.ones((d,)), fattn(), n((di, d)), n((di, d)), n((d, di)))
 
     return build_decomposed_lm(
         embed=n((cfg.vocab_size, d), 0.02),
@@ -129,7 +103,7 @@ def _tiny_decomposed_lm(
 
 
 def _mlp_sites(cfg: LlamaConfig, first: int, last: int, C: int) -> tuple[SiteSpec, ...]:
-    return llama_site_specs(cfg, mlp_family_site_cs(first, last, C))
+    return glu_site_specs(cfg, mlp_family_site_cs(first, last, C))
 
 
 _QVDOWN_SITE_CS = (
@@ -187,10 +161,10 @@ def test_site_name_helpers():
         canonical_site_cs((SiteC("layers.3.mlp.up_proj", 4), SiteC("layers.3.mlp.up_proj", 8)))
 
 
-def test_llama_site_specs_dims():
+def test_glu_site_specs_dims():
     cfg = _tiny_cfg()
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
-    specs = llama_site_specs(
+    specs = glu_site_specs(
         cfg,
         canonical_site_cs(
             tuple(SiteC(site_name(2, kind), 4) for kind in ("q", "k", "v", "o", "gate", "down"))
@@ -207,7 +181,7 @@ def test_llama_site_specs_dims():
     assert dims(by_name["layers.2.mlp.gate_proj"]) == (cfg.n_embd, cfg.n_intermediate, 4)
     assert dims(by_name["layers.2.mlp.down_proj"]) == (cfg.n_intermediate, cfg.n_embd, 4)
     with pytest.raises(AssertionError, match="canonical"):
-        llama_site_specs(cfg, tuple(reversed(mlp_family_site_cs(2, 2, 4))))
+        glu_site_specs(cfg, tuple(reversed(mlp_family_site_cs(2, 2, 4))))
 
 
 def test_masked_component_activations_pre_mask_and_matches_outputs():
@@ -237,10 +211,9 @@ def test_masked_component_activations_pre_mask_and_matches_outputs():
         assert jnp.allclose(outputs[s].astype(jnp.float32), expected, atol=1e-2), s
 
 
-@pytest.mark.parametrize("tiny_cfg", [_tiny_cfg, _tiny_qwen_cfg], ids=["llama", "qwen"])
 @pytest.mark.parametrize("first,last", [(4, 4), (3, 6)])
-def test_clean_path_and_masked_identity(first: int, last: int, tiny_cfg: Callable[[], LlamaConfig]):
-    cfg = tiny_cfg()
+def test_clean_path_and_masked_identity(first: int, last: int):
+    cfg = _tiny_cfg()
     C = 8
     sites = _mlp_sites(cfg, first, last, C)
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
@@ -284,10 +257,9 @@ def test_clean_path_and_masked_identity(first: int, last: int, tiny_cfg: Callabl
     assert all(v.dtype == jnp.float32 for v in deltas.values())
 
 
-@pytest.mark.parametrize("tiny_cfg", [_tiny_cfg, _tiny_qwen_cfg], ids=["llama", "qwen"])
-def test_attention_sites_clean_and_masked_identity(tiny_cfg: Callable[[], LlamaConfig]):
-    cfg = tiny_cfg()
-    sites = llama_site_specs(cfg, _QVDOWN_SITE_CS)
+def test_attention_sites_clean_and_masked_identity():
+    cfg = _tiny_cfg()
+    sites = glu_site_specs(cfg, _QVDOWN_SITE_CS)
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
@@ -356,7 +328,7 @@ def test_attention_sites_clean_and_masked_identity(tiny_cfg: Callable[[], LlamaC
 def test_o_site_masks_attention_output():
     cfg = _tiny_cfg()
     o_site = "layers.4.self_attn.o_proj"
-    sites = llama_site_specs(cfg, (SiteC(o_site, 8),))
+    sites = glu_site_specs(cfg, (SiteC(o_site, 8),))
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
@@ -380,22 +352,15 @@ def test_o_site_masks_attention_output():
 
 
 @pytest.mark.parametrize(
-    "tiny_cfg,site_cs",
-    [
-        (_tiny_cfg, mlp_family_site_cs(4, 4, 8)),
-        (_tiny_cfg, mlp_family_site_cs(3, 6, 8)),
-        (_tiny_cfg, _QVDOWN_SITE_CS),
-        (_tiny_qwen_cfg, _QVDOWN_SITE_CS),
-    ],
-    ids=["mlp_l4", "mlp_l3_6", "qv_down_l4", "qwen_qv_down_l4"],
+    "site_cs",
+    [mlp_family_site_cs(4, 4, 8), mlp_family_site_cs(3, 6, 8), _QVDOWN_SITE_CS],
+    ids=["mlp_l4", "mlp_l3_6", "qv_down_l4"],
 )
-def test_step_trains_and_has_vpd_signature(
-    tiny_cfg: Callable[[], LlamaConfig], site_cs: tuple[SiteC, ...]
-):
-    cfg = tiny_cfg()
+def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
+    cfg = _tiny_cfg()
     seq = 16
     n_warmup = 2
-    sites = llama_site_specs(cfg, site_cs)
+    sites = glu_site_specs(cfg, site_cs)
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     ci_fn = _build_chunkwise_ci_fn(lm, jax.random.PRNGKey(2), n_blocks=2)
@@ -482,34 +447,6 @@ def test_step_trains_and_has_vpd_signature(
     assert state.ci_fn.chunks.in_proj_w.dtype == jnp.float32
 
 
-def test_qwen_qk_norm_is_load_bearing():
-    """The QK-norm actually enters the forward: scaling `q_norm` changes the logits, and
-    the pre-projection site inputs (`read_activations`) stay norm-independent (q/k sites
-    decompose BEFORE the norm — the masked site output feeds q_norm → RoPE → SDPA)."""
-    cfg = _tiny_qwen_cfg()
-    sites = llama_site_specs(cfg, _QVDOWN_SITE_CS)
-    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    tokens = jax.random.randint(jax.random.PRNGKey(2), (2, 16), 0, cfg.vocab_size)
-
-    q_norm = lm.stacked.attn.q_norm
-    assert q_norm is not None and q_norm.shape == (cfg.n_layer, cfg.head_dim)
-    # scale ONLY layer 4's q_norm so the residual ENTERING layer 4 stays untouched
-    scaled = eqx.tree_at(lambda m: m.stacked.attn.q_norm, lm, q_norm.at[4].mul(2.0))
-    assert not jnp.allclose(lm.clean_output(tokens), scaled.clean_output(tokens), atol=1e-4)
-
-    # q/k/v site inputs are the post-LN1 residual, untouched by the qk-norm
-    taps = lm.read_activations(tokens, lm.site_names)
-    scaled_taps = scaled.read_activations(tokens, lm.site_names)
-    q_site = "layers.4.self_attn.q_proj"
-    assert jnp.array_equal(taps[q_site], scaled_taps[q_site])
-    # o's site input is the attention output, which the norm DOES shape
-    o_taps = lm.read_activations(tokens, ("layers.4.self_attn.o_proj",))
-    o_taps_scaled = scaled.read_activations(tokens, ("layers.4.self_attn.o_proj",))
-    assert not jnp.allclose(
-        o_taps["layers.4.self_attn.o_proj"], o_taps_scaled["layers.4.self_attn.o_proj"]
-    )
-
-
 def test_faith_warmup_decreases_faith():
     cfg = _tiny_cfg()
     sites = _mlp_sites(cfg, 3, 4, 8)
@@ -529,7 +466,7 @@ def test_faith_warmup_decreases_faith():
 
 def test_decomp_vu_shapes_fp32():
     cfg = _tiny_cfg()
-    sites = llama_site_specs(cfg, _QVDOWN_SITE_CS)
+    sites = glu_site_specs(cfg, _QVDOWN_SITE_CS)
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     d, di = cfg.n_embd, cfg.n_intermediate
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
@@ -555,7 +492,7 @@ def test_fresh_pgd_adversary_step():
         SiteC("layers.4.mlp.down_proj", 12),
     )
     seq = 16
-    sites = llama_site_specs(cfg, site_cs)
+    sites = glu_site_specs(cfg, site_cs)
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)

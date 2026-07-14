@@ -55,7 +55,7 @@ lab is composition / IO / CLI / experiment assembly**:
 - **`param-decomp`** (root: `param_decomp/` + sibling `pretrain/` + sibling
   `vendored_jax/`) — the core: the generic JAX single-pool VPD trainer ENGINE
   (`param_decomp/`: run.py = `run_decomposition_training`, lm.py, train.py, ci_fn.py,
-  targets/llama8b.py, …), the torch-free pydantic config SCHEMA it now carries directly
+  targets/glu_transformer.py + its llama8b/qwen3_8b family files, …), the torch-free pydantic config SCHEMA it now carries directly
   (`base_config.py` = `BaseConfig`, `schedule.py`, `configs.py` = `PDConfig` /
   `RuntimeConfig` / `Cadence` / loss + eval-metric configs / routing / ci-fn / wandb
   shaping), the built-run bundle (`built_run.py`: `BuiltRun` / `DataConfig` /
@@ -157,7 +157,7 @@ and returns JAX-native as the #10 torch->jax adapter.
   built-run bundle the engine consumes (`built_run.py`: `BuiltRun` /
   `DataConfig` / `EvalConfig` / … + the `TargetSites` protocol). The engine + numerics
   (`run.py` = `run_decomposition_training`, `lm.py` / `train.py` / `ci_fn.py` /
-  `targets/llama8b.py` / `targets/llama_simple_mlp.py` / `adversary.py` / `recon.py` / `losses.py` /
+  `targets/glu_transformer.py` (+ `targets/{llama8b,qwen3_8b}.py` family files) / `targets/llama_simple_mlp.py` / `adversary.py` / `recon.py` / `losses.py` /
   `checkpoint.py` / `sharding.py` / `eval.py` / `slow_eval.py` / `arithmetic_eval.py` +
   `log.py`) plus `configs/`
   (the self-contained run yamls) and `tests/` (incl. the `tests/equivalence/` frozen

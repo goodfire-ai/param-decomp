@@ -26,7 +26,7 @@ import fnmatch
 import pytest
 
 from param_decomp.components import SiteC
-from param_decomp.targets import llama8b, llama_simple_mlp
+from param_decomp.targets import glu_transformer, llama_simple_mlp
 
 
 def _named_modules_order(
@@ -72,8 +72,8 @@ def _llama8b_module_names(n_layer: int) -> tuple[str, ...]:
         "layers",
         "self_attn",
         "mlp",
-        tuple(f"{k}_proj" for k in llama8b.KIND_ORDER),
-        tuple(f"{k}_proj" for k in llama8b.ATTN_KINDS),
+        tuple(f"{k}_proj" for k in glu_transformer.KIND_ORDER),
+        tuple(f"{k}_proj" for k in glu_transformer.ATTN_KINDS),
         n_layer,
     )
 
@@ -99,7 +99,7 @@ def test_llama8b_single_layer_mlp_set_matches_torch():
         SiteC("layers.18.mlp.up_proj", 24576),
         SiteC("layers.18.mlp.down_proj", 24576),
     )
-    jax_sites = llama8b.canonical_site_cs(targets)
+    jax_sites = glu_transformer.canonical_site_cs(targets)
     torch_sites = _torch_resolve(targets, _llama8b_module_names(32))
 
     assert set(jax_sites) == set(torch_sites)

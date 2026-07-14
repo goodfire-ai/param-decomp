@@ -207,7 +207,7 @@ class _GPT2PathSchema(_PathSchema):
 
 class _HFGLUPathSchema(_PathSchema):
     """The raw-HF GLU-transformer site grammar (`layers.{i}.self_attn.q_proj`, …) the
-    llama8b/qwen3 `DecomposedModel` targets emit (`param_decomp.targets.llama8b`)."""
+    Llama/Qwen3 `DecomposedModel` targets emit (`param_decomp.targets.glu_transformer`)."""
 
     embedding_path = "embed_tokens"
     blocks = "layers"
