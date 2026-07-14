@@ -28,6 +28,7 @@ from param_decomp.configs import (
     Cadence,
     ChunkwiseTransformerCiConfig,
     CiConfig,
+    ComponentNormOptimizerConfig,
     GlobalMlpCiConfig,
     LayerwiseMlpCiConfig,
     OptimizerConfig,
@@ -153,11 +154,17 @@ def assert_canonical_algorithm_config(cfg: "ExperimentConfig[Any, Any]") -> None
     them.)"""
     vu_opt = cfg.pd.components_optimizer
     ci_opt = cfg.pd.ci_fn_optimizer
-    _assert_cosine_to_tenth(vu_opt.lr_schedule, "components_optimizer")
     _assert_cosine_to_tenth(ci_opt.lr_schedule, "ci_fn_optimizer")
-    _assert_plain_adamw(vu_opt, "components_optimizer")
     _assert_plain_adamw(ci_opt, "ci_fn_optimizer")
-    assert vu_opt.grad_clip_norm is not None, "components grad clip is part of the method"
+    match vu_opt:
+        case OptimizerConfig():
+            _assert_cosine_to_tenth(vu_opt.lr_schedule, "components_optimizer")
+            _assert_plain_adamw(vu_opt, "components_optimizer")
+            assert vu_opt.grad_clip_norm is not None, "components grad clip is part of the method"
+        case ComponentNormOptimizerConfig():
+            # Experimental optimizer (SPEC S20 amendment 2026-07-14): schedule shape and
+            # trust-region are the experiment's to vary, so nothing is pinned here.
+            pass
 
     # The persistent-PGD source LR is constant-after-warmup only (`build_loss_terms`
     # refuses anything else); pin it here too so the refusal happens at conversion.
