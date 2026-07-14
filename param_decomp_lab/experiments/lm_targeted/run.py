@@ -57,10 +57,10 @@ def _nontarget_sample_batch(
     cfg: LMTargetedExperimentConfig, seq_len: int, mesh: Mesh
 ) -> Callable[[int], jax.Array]:
     """The parquet NON-TARGET stream `sample_batch` (the normal LM path, built from
-    `nontarget.data` at `nontarget.batch_size * world`)."""
+    `nontarget.data` at the GLOBAL `nontarget.batch_size`, split per-process by ShardServer)."""
     n_proc = jax.process_count()
     n_dev = mesh.devices.size
-    nontarget_global_batch = cfg.nontarget.batch_size * n_proc
+    nontarget_global_batch = cfg.nontarget.batch_size
     parquet_dir = nontarget_parquet_dir(cfg)
     assert nontarget_global_batch % n_dev == 0, (nontarget_global_batch, n_dev)
     assert nontarget_global_batch >= n_dev, (
@@ -100,7 +100,10 @@ def train(
     # TARGET stream: the fixed prompt pool, tokenized once at build time.
     assert cfg.data.prompts_file is not None
     prompt_tokens, recon_positions = load_prompt_tokens(
-        cfg.data.prompts_file, cfg.data.tokenizer_name, cfg.data.max_seq_len
+        cfg.data.prompts_file,
+        cfg.data.tokenizer_name,
+        cfg.data.max_seq_len,
+        cfg.data.add_special_tokens,
     )
     target_prompts = TargetPromptGeometry(
         recon_positions=recon_positions, seq_len=int(prompt_tokens.shape[1])
@@ -176,7 +179,7 @@ def main(config: Path, run_id: str) -> None:
         print(
             f"run {built.run.run_name} | {mesh.devices.size} GPU / {jax.process_count()} proc | "
             f"target B={built.data.global_batch} seq={built.data.seq_len} "
-            f"nontarget B={cfg.nontarget.batch_size * jax.process_count()} "
+            f"nontarget B={cfg.nontarget.batch_size} "
             f"seq={cfg.nontarget.data.max_seq_len} sites={len(built.target.sites)} "
             f"steps={built.pd.steps}",
             flush=True,
