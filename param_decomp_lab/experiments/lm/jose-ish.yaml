@@ -1,3 +1,14 @@
+# jose-ish: the flagship jose.yaml (José's paper 4L-pile PPGD-bsc decomposition,
+# torch run p-20f9fc15) migrated to the current JAX schema — "-ish" = a close-but-not-
+# identical baseline, runnable today. Deliberate deviations from José's exact run
+# (Oli, 2026-07-14):
+#   - imp-min eps 1e-12 -> 1e-6 (the #976 endgame-recon-ramp fix; matches pile_ppgd_bsc)
+#   - slow/plot eval enabled every 2k steps (was effectively off)
+#   - runtime.dp: 8 (1 node)
+#   - pnorm anneal expressed as the unified ScheduleConfig (#939); same anneal
+#     (p: 2.0 -> 0.4 linear over the full run)
+# Kept from José: blocks_per_chunk 4, frequency reference_token_count 32768, all
+# losses/coeffs/optimizers/C. Launch: pd-lm <this file>.
 run_name: jose-ish
 pd:
   seed: 0
@@ -42,14 +53,14 @@ pd:
   loss_metrics:
     - type: ImportanceMinimalityLoss
       coeff: 0.0002
-      pnorm: 2.0
+      pnorm:
+        start_val: 2.0
+        fn_type: linear
+        final_val_frac: 0.2
       frequency:
         coeff: 1.0e-04
         reference_token_count: 32768
-      p_anneal_start_frac: 0.0
-      p_anneal_final_p: 0.4
-      p_anneal_end_frac: 1.0
-      eps: 1.0e-12
+      eps: 1.0e-06
     - type: StochasticReconSubsetLoss
       coeff: 0.5
       routing:
@@ -79,8 +90,8 @@ eval:
   n_steps: 1
   batch_size: 128
   every: 1000
-  slow_every: 100000000
-  slow_on_first_step: false
+  slow_every: 2000
+  slow_on_first_step: true
   metrics:
     - type: CIHistograms
       n_batches_accum: 1
