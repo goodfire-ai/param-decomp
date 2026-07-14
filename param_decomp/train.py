@@ -34,6 +34,7 @@ from param_decomp.adversary import (
     source_masks,
 )
 from param_decomp.ci_fn import CI, CIFn
+from param_decomp.component_norm import component_prenorm, rank2_pair_frobenius
 from param_decomp.components import DecompVU
 from param_decomp.configs import SmoothL0ImportanceMinimalityLossConfig
 from param_decomp.jit_util import filter_jit
@@ -73,6 +74,45 @@ class TrainState:
     state + static config). One state_key per persistent loss term (SPEC S23); empty when
     no persistent term."""
     step: Array
+
+
+def _component_update_metrics(
+    components: DecompVU, updates: DecompVU, prenorm: dict[str, Array] | None
+) -> dict[str, Array]:
+    """Distribution (min/median/max over ALL components, sites concatenated) of this step's
+    per-component weight-space movement, `optim/components/*`:
+
+    - `dw_first_order` — ‖ΔV_c ⊗ U_c + V_c ⊗ ΔU_c‖_F, what `component_norm` promises = lr
+    - `dw_finite` — ‖(V+ΔV)_c ⊗ (U+ΔU)_c − V_c ⊗ U_c‖_F, what the step actually did
+    - `dw_second_over_first` — ‖ΔV_c‖·‖ΔU_c‖ / first-order: the neglected bilinear term
+    - `dw_prenorm` — ‖dW_c‖ BEFORE normalization (component_norm only): how weak the
+      components getting full-sized steps really are
+
+    Everything is 2×2-Gram closed form (`rank2_pair_frobenius`) — no materialized dW."""
+    fo_parts: list[Array] = []
+    fin_parts: list[Array] = []
+    so_parts: list[Array] = []
+    for name, (dV, dU) in updates.vu.items():
+        V, U = components.vu[name]
+        fo_parts.append(rank2_pair_frobenius(dV, U, V, dU))
+        # finite ΔW_c = ΔV⊗(U+ΔU) + V⊗ΔU: every Gram term is O(‖Δ‖) — the algebraically
+        # equal (V+ΔV)⊗(U+ΔU) − V⊗U form cancels O(‖V‖²‖U‖²) terms and loses ~3 digits in fp32
+        fin_parts.append(rank2_pair_frobenius(dV, U + dU, V, dU))
+        so_parts.append(jnp.sqrt(jnp.sum(dV * dV, axis=0) * jnp.sum(dU * dU, axis=1)))
+    out: dict[str, Array] = {}
+
+    def summarize(key: str, values: Array) -> None:
+        out[f"optim/components/{key}/min"] = jnp.min(values)
+        out[f"optim/components/{key}/median"] = jnp.median(values)
+        out[f"optim/components/{key}/max"] = jnp.max(values)
+
+    fo = jnp.concatenate(fo_parts)
+    summarize("dw_first_order", fo)
+    summarize("dw_finite", jnp.concatenate(fin_parts))
+    summarize("dw_second_over_first", jnp.concatenate(so_parts) / (fo + 1e-30))
+    if prenorm is not None:
+        summarize("dw_prenorm", jnp.concatenate([prenorm[name] for name in updates.vu]))
+    return out
 
 
 def _grad_norm_metrics(components_grad: DecompVU, ci_fn_grad: Any) -> dict[str, Array]:
@@ -497,6 +537,10 @@ def make_train_step(
         ci_fn_updates, new_ci_fn_opt_state = ci_fn_optimizer.update(
             ci_fn_grad, state.ci_fn_opt_state, eqx.filter(state.ci_fn, eqx.is_array)
         )
+        assert isinstance(components_updates, DecompVU)
+        component_update_metrics = _component_update_metrics(
+            state.components, components_updates, component_prenorm(new_components_opt_state)
+        )
         new_components = eqx.apply_updates(state.components, components_updates)
         new_ci_fn = eqx.apply_updates(state.ci_fn, ci_fn_updates)
 
@@ -516,6 +560,7 @@ def make_train_step(
             imp_min_param_key: imp_min_param,
             **{f"loss/{t.name}": v for t, v in zip(recon_terms, term_losses, strict=True)},
             **grad_norm_metrics,
+            **component_update_metrics,
         }
         source_lrs = {
             k: adv.source_lr(step_f32, total_steps) for k, adv in state.adversaries.items()
