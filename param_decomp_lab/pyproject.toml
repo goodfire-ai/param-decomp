@@ -45,6 +45,8 @@ pd-resid-mlp = "param_decomp_lab.experiments.resid_mlp.run:cli"
 # `python -m pretrain.train` (or `--local`). The core pretrain trainer lives at the root
 # sibling `pretrain/`.
 pd-pretrain = "param_decomp_lab.experiments.lm.pretrain.launch:cli"
+# Save the standard wandb workspace view for a campaign group (see experiments/campaign_view.py)
+pd-campaign-view = "param_decomp_lab.experiments.campaign_view:cli"
 # Post-processing pipeline CLIs (SLURM-driven; lab subtrees).
 pd-clustering = "param_decomp_lab.clustering.scripts.run_pipeline:cli"
 pd-cluster-merge = "param_decomp_lab.clustering.scripts.run_merge:cli"

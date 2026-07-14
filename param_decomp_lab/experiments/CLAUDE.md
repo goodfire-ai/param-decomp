@@ -130,3 +130,8 @@ Every `pd-*` run command accepts `--group <id>` and `--tags a,b,c` (no-ops when
 - **`--group`** sets wandb's first-class `group` field — used by the UI's native
   collapsing and matched by workspace filters via `ws.Metric("Group")`.
 - **`--tags`** adds wandb tags — orthogonal to `group`, many per run, user-defined.
+
+A campaign (one group + its saved workspace view) gets its view from
+`pd-campaign-view <group> [--project ...]` (`experiments/campaign_view.py`): the
+standard section layout (referee / recon quality / train losses / health / schedules),
+coded in the repo so it evolves by PR instead of per-campaign UI hand-building.
