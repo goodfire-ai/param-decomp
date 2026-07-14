@@ -17,7 +17,7 @@ Per-term RNG: term i draws from `fold_in(step_key, 1 + i)` in config-list order
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 import equinox as eqx
 import jax
@@ -36,7 +36,7 @@ from param_decomp.adversary import (
 )
 from param_decomp.ci_fn import CI, CIFn
 from param_decomp.components import DecompVU
-from param_decomp.lm import DecomposedModel
+from param_decomp.lm import DecomposedModel, ResidualStart, SupportsPrefixResidual
 from param_decomp.losses import (
     annealed_imp_min_param,
     faithfulness_loss,
@@ -187,6 +187,13 @@ def make_train_step(
     site_names = lm.site_names
     sites = lm.sites
     recon_loss_fn = lm.recon_loss_fn  # static method: pure, holds no arrays — safe to close
+    # Prefix reuse (SPEC S3/S18 amendment 2026-07-13): a target whose decomposed sites all
+    # live past a frozen lead (`split_layer > 0`) computes that prefix's residual ONCE per
+    # stream per step and every forward (clean, taps, recon grid, adversary ascents) resumes
+    # from it — the prefix is mask-independent, so re-running it inside each forward is waste.
+    # Duck-typed (not `isinstance` against the runtime Protocol — that trips over eqx Module
+    # internals on array-bearing instances).
+    use_prefix_start = getattr(lm, "split_layer", 0) > 0 and hasattr(lm, "prefix_residual")
 
     # tPD short-prompt targets (SPEC S38): score recon on only the first `recon_positions`
     # sequence positions. Causal attention makes trailing pad positions invisible to these, so
@@ -401,6 +408,10 @@ def make_train_step(
         imp_min_param = annealed_imp_min_param(step_f32, total_steps, imp_min)
 
         batch = batch_sharded(batch)
+        if use_prefix_start:
+            prefix_model = cast(SupportsPrefixResidual, cast(object, model))
+            with jax.named_scope("pd_prefix_fwd"):
+                batch = ResidualStart(batch_sharded(prefix_model.prefix_residual(batch)))
 
         def clean_forward(inputs: Any, want_targets: bool) -> tuple[Array, dict[str, Array] | None]:
             """Frozen clean logits + (when the hidden-acts aux is on) the frozen per-site targets
@@ -426,6 +437,10 @@ def make_train_step(
         if nontarget_loss_surface is not None:
             assert nontarget_batch is not None, "non-target pass active but no nontarget_batch"
             nt_batch = batch_sharded(nontarget_batch)
+            if use_prefix_start:
+                prefix_model = cast(SupportsPrefixResidual, cast(object, model))
+                with jax.named_scope("pd_nt_prefix_fwd"):
+                    nt_batch = ResidualStart(batch_sharded(prefix_model.prefix_residual(nt_batch)))
             with jax.named_scope("pd_nt_clean_fwd"):
                 nt_clean, nt_site_targets = clean_forward(nt_batch, nontarget_wants_hidden_acts)
             with jax.named_scope("pd_nt_read_taps"):
