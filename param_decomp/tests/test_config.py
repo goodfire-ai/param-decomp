@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, ArithmeticEvalConfig, DataConfig
 from param_decomp.components import SiteC
 from param_decomp.configs import (
+    AdamWOptimizerConfig,
     ImportanceMinimalityLossConfig,
     PDConfig,
     PersistentPGDReconLossConfig,
@@ -104,6 +105,7 @@ def test_b128_config_converts():
     (ppgd,) = persistent_configs(losses.recon).values()
     assert isinstance(ppgd, PersistentPGDReconLossConfig)
     assert ppgd.n_warmup_steps == 2
+    assert isinstance(converted.pd.components_optimizer, AdamWOptimizerConfig)
     assert converted.pd.components_optimizer.grad_clip_norm == 0.01
     assert [t.name for t in losses.recon] == [
         "StochasticReconSubsetLoss",

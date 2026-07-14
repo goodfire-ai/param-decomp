@@ -21,11 +21,14 @@ from jaxtyping import Array, PRNGKeyArray
 from param_decomp.adversary import PersistentAdversary, init_sources_adam_state
 from param_decomp.built_run import DataConfig
 from param_decomp.ci_fn import CIFnArch
+from param_decomp.component_norm import component_norm_optimizer
 from param_decomp.configs import (
     AdamPGDConfig,
     AdamWOptimizerConfig,
     ChunkwiseTransformerCiConfig,
+    ComponentNormOptimizerConfig,
     MuonOptimizerConfig,
+    NesterovSGDOptimizerConfig,
     PDConfig,
 )
 from param_decomp.lm import DecomposedModel
@@ -89,7 +92,10 @@ def chunk_stacked_muon_dimension_numbers(params: optax.Params) -> optax.Params:
 
 
 def _optimizer_with_clip(
-    opt: AdamWOptimizerConfig | MuonOptimizerConfig,
+    opt: AdamWOptimizerConfig
+    | MuonOptimizerConfig
+    | ComponentNormOptimizerConfig
+    | NesterovSGDOptimizerConfig,
     schedule: Callable[[ArrayLike], Array],
     muon_dimension_numbers: Callable[[optax.Params], optax.Params] | None,
     mesh: Mesh | None,
@@ -128,6 +134,17 @@ def _optimizer_with_clip(
                 ns_dtype=jnp.dtype(opt.ns_dtype),
                 mesh=mesh,
             )
+        case ComponentNormOptimizerConfig():
+            # per-subcomponent normalized SGD (V/U group only; needs the DecompVU pytree).
+            # Clip composes below: chain(clip, chain(...)) == the clip-first chain.
+            inner = component_norm_optimizer(opt, schedule, None)
+        case NesterovSGDOptimizerConfig():
+            # the component_norm chain minus the normalization stage (momentum control)
+            sgd_stages: list[optax.GradientTransformation] = []
+            if opt.momentum is not None:
+                sgd_stages.append(optax.trace(decay=opt.momentum, nesterov=True))
+            sgd_stages.append(optax.scale_by_learning_rate(schedule))
+            inner = optax.chain(*sgd_stages)
     if opt.grad_clip_norm is None:
         return inner
     return optax.chain(clip_by_global_norm_with_eps(opt.grad_clip_norm, eps=1e-6), inner)

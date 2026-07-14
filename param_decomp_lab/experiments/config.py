@@ -29,9 +29,11 @@ from param_decomp.configs import (
     Cadence,
     ChunkwiseTransformerCiConfig,
     CiConfig,
+    ComponentNormOptimizerConfig,
     GlobalMlpCiConfig,
     LayerwiseMlpCiConfig,
     MuonOptimizerConfig,
+    NesterovSGDOptimizerConfig,
     PDConfig,
     PersistentPGDReconLossConfig,
     ResumeProvenance,
@@ -139,10 +141,15 @@ def _assert_cosine_to_tenth(schedule: ScheduleConfig, who: str) -> None:
 
 
 def _assert_canonical_optimizer(
-    optimizer: AdamWOptimizerConfig | MuonOptimizerConfig, who: str
+    optimizer: "AdamWOptimizerConfig | MuonOptimizerConfig | ComponentNormOptimizerConfig | NesterovSGDOptimizerConfig",
+    who: str,
 ) -> None:
     """AdamW is canonical; Muon is a deliberate, config-gated experimental deviation (still
-    constrained to the trainer's no-weight-decay subspace)."""
+    constrained to the trainer's no-weight-decay subspace). component_norm / nesterov_sgd
+    are components-only (they act on the DecompVU pytree) — never the CI fn."""
+    assert isinstance(optimizer, AdamWOptimizerConfig | MuonOptimizerConfig), (
+        f"{who}: {optimizer.type} is a components-only experimental optimizer"
+    )
     if isinstance(optimizer, AdamWOptimizerConfig):
         assert optimizer.betas == (0.9, 0.999), f"{who}: betas must be (0.9, 0.999)"
     assert optimizer.weight_decay == 0.0, f"{who}: weight_decay must be 0"
@@ -160,11 +167,17 @@ def assert_canonical_algorithm_config(cfg: "ExperimentConfig[Any, Any]") -> None
     them.)"""
     vu_opt = cfg.pd.components_optimizer
     ci_opt = cfg.pd.ci_fn_optimizer
-    _assert_cosine_to_tenth(vu_opt.lr_schedule, "components_optimizer")
     _assert_cosine_to_tenth(ci_opt.lr_schedule, "ci_fn_optimizer")
-    _assert_canonical_optimizer(vu_opt, "components_optimizer")
+    match vu_opt:
+        case AdamWOptimizerConfig() | MuonOptimizerConfig():
+            _assert_cosine_to_tenth(vu_opt.lr_schedule, "components_optimizer")
+            _assert_canonical_optimizer(vu_opt, "components_optimizer")
+            assert vu_opt.grad_clip_norm is not None, "components grad clip is part of the method"
+        case ComponentNormOptimizerConfig() | NesterovSGDOptimizerConfig():
+            # Experimental optimizers (SPEC S20 amendment 2026-07-14): schedule shape and
+            # trust-region are the experiment's to vary, so nothing is pinned here.
+            pass
     _assert_canonical_optimizer(ci_opt, "ci_fn_optimizer")
-    assert vu_opt.grad_clip_norm is not None, "components grad clip is part of the method"
 
     # The persistent-PGD source LR is constant-after-warmup only (`build_loss_terms`
     # refuses anything else); pin it here too so the refusal happens at conversion.

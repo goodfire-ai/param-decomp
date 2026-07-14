@@ -644,6 +644,57 @@ class MuonOptimizerConfig(BaseConfig):
     )
 
 
+class ComponentNormOptimizerConfig(BaseConfig):
+    """Muon-style per-subcomponent normalized SGD for the V/U masters (experimental).
+
+    Per component `c`, the (optionally momentum-averaged) gradient pair `(gV_c, gU_c)` is
+    divided by the norm of its induced first-order weight-space update
+    `dW_c = gV_c ⊗ U_c + V_c ⊗ gU_c`, so every component moves its slice of `W_hat` by the
+    same `lr`-sized amount regardless of gradient magnitude. The per-component
+    normalization is the trust region; `grad_clip_norm` exists only to match the muon
+    arms' clip semantics in controlled comparisons."""
+
+    type: Literal["component_norm"]
+    lr_schedule: ScheduleConfig = Field(..., description="Learning rate schedule")
+    momentum: Probability | None = Field(
+        ...,
+        description="Nesterov momentum decay applied before normalization (Muon uses 0.95); "
+        "null normalizes the raw per-step gradient",
+    )
+    norm: Literal["frobenius", "spectral"] = Field(
+        ...,
+        description="Which norm of the induced rank-≤2 weight update dW_c to normalize by",
+    )
+    eps: NonNegativeFloat = Field(
+        default=1e-8, description="Added to the norm before dividing (guards dead components)"
+    )
+    norm_floor: NonNegativeFloat = Field(
+        default=0.0,
+        description="Components with ‖dW_c‖ below this move proportionally instead of the "
+        "full lr step (anti-churn for rare/noisy components); 0 = every component steps lr",
+    )
+    grad_clip_norm: PositiveFloat | None = Field(
+        default=None,
+        description="Optional S19-style global clip BEFORE momentum — ~inert through the "
+        "per-component normalization; set to match the muon arms in controlled comparisons",
+    )
+
+
+class NesterovSGDOptimizerConfig(BaseConfig):
+    """Nesterov-SGD control (experimental): the `component_norm` chain minus the
+    normalization stage — isolates momentum/schedule/clip effects from per-slice
+    normalization in the muon-lineage comparisons."""
+
+    type: Literal["nesterov_sgd"]
+    lr_schedule: ScheduleConfig = Field(..., description="Learning rate schedule")
+    momentum: Probability | None = Field(
+        ..., description="Nesterov momentum decay; null = plain SGD"
+    )
+    grad_clip_norm: PositiveFloat | None = Field(
+        default=None, description="S19-style global grad clip before momentum"
+    )
+
+
 def _default_optimizer_type_adamw(data: object) -> object:
     """AdamW is the canonical optimizer, so a config without `type` (every config predating
     the muon gate, and the common case going forward) discriminates to it."""
@@ -653,7 +704,10 @@ def _default_optimizer_type_adamw(data: object) -> object:
 
 
 AnyOptimizerConfig = Annotated[
-    AdamWOptimizerConfig | MuonOptimizerConfig,
+    AdamWOptimizerConfig
+    | MuonOptimizerConfig
+    | ComponentNormOptimizerConfig
+    | NesterovSGDOptimizerConfig,
     Discriminator("type"),
     BeforeValidator(_default_optimizer_type_adamw),
 ]
