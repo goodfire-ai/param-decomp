@@ -31,6 +31,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
+from jax.typing import DTypeLike
 from jaxtyping import Array, Float, Int
 from safetensors import safe_open
 
@@ -45,8 +46,6 @@ from param_decomp.components import (
 from param_decomp.losses import kl_per_position
 from param_decomp.sharding import assert_divisible
 from vendored_jax.llama import apply_rope, causal_sdpa, repeat_kv, rms_norm, rope_cos_sin
-
-DT = jnp.bfloat16
 
 
 class GLUArch(Protocol):
@@ -1046,19 +1045,22 @@ def hf_snapshot_dir(model_name: str) -> Path:
 
 
 class HFWeights:
-    """Lazy keyed access to the sharded safetensors of an HF checkpoint."""
+    """Lazy keyed access to the sharded safetensors of an HF checkpoint, cast to the
+    FAMILY's frozen-weights dtype (SPEC N1: bf16 storage — the families pass it; this
+    module holds no dtype opinion)."""
 
-    def __init__(self, snapshot: Path):
+    def __init__(self, snapshot: Path, dtype: DTypeLike):
         index = json.loads((snapshot / "model.safetensors.index.json").read_text())
         self._key_to_file = index["weight_map"]
         self._snapshot = snapshot
+        self._dtype = dtype
         self._open: dict[str, Any] = {}
 
     def get(self, key: str) -> Array:
         fname = self._key_to_file[key]
         if fname not in self._open:
             self._open[fname] = safe_open(str(self._snapshot / fname), framework="numpy")
-        return jnp.asarray(np.array(self._open[fname].get_tensor(key)), dtype=DT)
+        return jnp.asarray(np.array(self._open[fname].get_tensor(key)), dtype=self._dtype)
 
 
 AttnLoader = Callable[[HFWeights, int], FrozenAttn]
@@ -1120,6 +1122,7 @@ def load_decomposed_glu_from_hf(
     sites: tuple[SiteSpec, ...],
     load_attn: AttnLoader,
     inv_freq: Array,
+    weights_dtype: DTypeLike,
     scan_unroll: int = 1,
     gather_fp8: bool = False,
 ) -> GLUDecomposedModel:
@@ -1128,7 +1131,7 @@ def load_decomposed_glu_from_hf(
     decomposition config (`sites`). The FAMILY contributes `load_attn` + `inv_freq` (its
     RoPE flavor); blocks without a decomposed site run the plain frozen path.
     `scan_unroll` / `gather_fp8` are the `RuntimeConfig` compute knobs."""
-    w = HFWeights(hf_snapshot_dir(model_name))
+    w = HFWeights(hf_snapshot_dir(model_name), weights_dtype)
     return build_decomposed_lm(
         embed=w.get("model.embed_tokens.weight"),
         layers=load_glu_blocks(w, cfg, load_attn),

@@ -2,6 +2,8 @@
 rope scaling) and its HF loader over the shared GLU-transformer machinery
 (`targets/glu_transformer.py` — plain `FrozenAttn`, no pre-RoPE extras)."""
 
+import jax.numpy as jnp
+
 from param_decomp.components import SiteSpec
 from param_decomp.targets.glu_transformer import (
     FrozenAttn,
@@ -57,6 +59,7 @@ def load_decomposed_llama_from_hf(
         cfg,
         sites,
         load_attn=lambda w, i: _load_attn(w, i, cfg),
+        weights_dtype=jnp.bfloat16,  # the family is bf16-only (TargetConfig.supported_weights_dtypes)
         inv_freq=llama3_inv_freq(cfg),
         scan_unroll=scan_unroll,
         gather_fp8=gather_fp8,

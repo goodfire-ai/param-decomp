@@ -10,6 +10,7 @@ JAX↔HF parity is pinned directly by `param_decomp/tests/qwen3_hf_parity/`."""
 from typing import override
 
 import equinox as eqx
+import jax.numpy as jnp
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float
@@ -99,6 +100,7 @@ def load_decomposed_qwen3_from_hf(
         cfg,
         sites,
         load_attn=lambda w, i: _load_attn(w, i, cfg),
+        weights_dtype=jnp.bfloat16,  # the family is bf16-only (TargetConfig.supported_weights_dtypes)
         inv_freq=default_inv_freq(cfg.head_dim, cfg.rope_theta),
         scan_unroll=scan_unroll,
         gather_fp8=gather_fp8,

@@ -191,8 +191,8 @@ class TargetConfig:
     """Decomposed sites with per-site C, in canonical order (`canonical_site_cs`)."""
 
     supported_weights_dtypes: frozenset[WeightsDtype] = frozenset({"bfloat16"})
-    """Frozen-target weight dtypes the loader supports (`llama8b.py` is bf16-only:
-    `DT = jnp.bfloat16`). A config requesting a dtype outside this set is refused at
+    """Frozen-target weight dtypes the loader supports (the HF family loaders pass
+    bf16). A config requesting a dtype outside this set is refused at
     convert time — no silent downgrade (issue #727)."""
 
 
