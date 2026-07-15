@@ -124,7 +124,7 @@ def _clean_patterns(
 
 
 def _masked_patterns_kl(
-    model: "DecomposedModel",
+    model: DecomposedModel,
     layer_pairs: tuple[tuple[str, str], ...],
     masked_outputs: dict[str, Array],
     target_patterns: dict[str, Array],

@@ -62,7 +62,7 @@ class Qwen3FrozenAttn(FrozenAttn):
         return rms_norm(q, self.q_norm, self.eps), rms_norm(k, self.k_norm, self.eps)
 
     @override
-    def shardings(self, mesh: "Mesh") -> "Qwen3FrozenAttn":
+    def shardings(self, mesh: Mesh) -> "Qwen3FrozenAttn":
         """The shared projection layout plus replicated norm vectors."""
         repl = NamedSharding(mesh, P())
         placed = super().shardings(mesh)

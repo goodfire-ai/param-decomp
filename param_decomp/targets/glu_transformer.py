@@ -207,7 +207,7 @@ class FrozenAttn(eqx.Module):
         """Family hook between the head reshape and RoPE; identity for plain attention."""
         return q, k
 
-    def shardings(self, mesh: "Mesh") -> "FrozenAttn":
+    def shardings(self, mesh: Mesh) -> "FrozenAttn":
         """Stacked (leading `n_layer`, UNSHARDED — the scan axis) FSDP on `fsdp`: the `d` dim
         shards on `fsdp` (gathered per layer in the scan, on NVLink); the HEAD dim stays
         REPLICATED. `core` runs batch-parallel attention (q/k/v constrained batch over the
@@ -306,7 +306,7 @@ class GLULayer(eqx.Module):
     Wu: Float[Array, "di d"]
     Wd: Float[Array, "d di"]
 
-    def shardings(self, mesh: "Mesh") -> "GLULayer":
+    def shardings(self, mesh: Mesh) -> "GLULayer":
         """Stacked FSDP on `fsdp` (no TP): every MLP weight shards its `d`-dim on `fsdp`,
         the intermediate dim stays replicated; gathered back per layer inside the scan.
         Norms replicate; attn delegates to `FrozenAttn.shardings`."""
@@ -626,7 +626,7 @@ class GLUDecomposedModel(eqx.Module):
         attn = jax.tree.map(lambda a, idx=layer: a[idx], self.stacked.attn)
         return attn.pattern(q_flat, k_flat, self.inv_freq)
 
-    def shardings(self, mesh: "Mesh") -> "GLUDecomposedModel":
+    def shardings(self, mesh: Mesh) -> "GLUDecomposedModel":
         """FSDP-on-`fsdp` the per-layer weights (`stacked.shardings` — `d` on `fsdp`,
         head/intermediate replicated; the ~14 GB layer bulk shards `/fsdp`, gathered per layer
         inside the scan, on NVLink). embed / lm_head / norm / inv_freq REPLICATE — the ~2 GB

@@ -154,8 +154,8 @@ class HFModelFamily:
     over the shared `glu_transformer` machinery; this registry is the ONLY place a model
     name selects a family."""
 
-    arch_config: "Callable[[], glu_transformer.GLUArch]"
-    load: "Callable[..., glu_transformer.GLUDecomposedModel]"
+    arch_config: Callable[[], glu_transformer.GLUArch]
+    load: Callable[..., glu_transformer.GLUDecomposedModel]
     """`(model_name, cfg, sites, scan_unroll=..., gather_fp8=...)` — cfg is the family's
     own arch-config type, so the common signature is erased here."""
     model_type: str
