@@ -2,8 +2,10 @@
 # arms: their d1024x4 CI fn is ~8x smaller than Jose's d2048x8, and they swapped Lp
 # imp-min for SmoothL0 — every round-1 arm, control included, sits well below the paper
 # baseline: klCI 0.39-0.45 vs 0.337, klStoch 0.26-0.28 vs 0.21, PGD ~0.9-1.3 vs 0.64).
-# This round changes ONLY the recon-term structure between arms; CI fn, Lp imp-min, seed,
-# data, 400k steps all byte-match pile_ppgd_bsc.yaml (the Jose replication).
+# This round changes ONLY the recon-term structure between arms; CI fn, seed, data, 400k
+# steps all match pile_ppgd_bsc.yaml (the Jose replication) EXCEPT imp-min stays SmoothL0
+# (per Braun: earlier experiments showed SmoothL0 <-> Lp parity, and SmoothL0 is the
+# going-forward penalty) - so only the CI-fn capacity changes vs round 1.
 # data_files points at the crew user's staging of the same HF dataset (the canonical
 # /mnt/data copy is group-locked). Task: recon-pass-consolidation-results.
 # ARM B (merged, per-position): MergedStochasticPGDReconLoss replaces the pair.
@@ -131,15 +133,14 @@ pd:
   faithfulness_warmup_weight_decay: 0.0
   loss_metrics:
   - frequency:
-      coeff: 1.0e-04
+      coeff: 0.0001
       reference_token_count: 65536
     coeff: 0.0002
-    eps: 1.0e-12
-    pnorm:
-      start_val: 2.0
+    gamma:
+      start_val: 1.0
       fn_type: linear
-      final_val_frac: 0.2
-    type: ImportanceMinimalityLoss
+      final_val_frac: 0.01
+    type: SmoothL0ImportanceMinimalityLoss
   - type: MergedStochasticPGDReconLoss
     coeff: 1.0
     adv_fraction: 0.5
