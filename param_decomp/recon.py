@@ -528,6 +528,7 @@ def build_loss_terms(
                     cfg.routing,
                     MixedPersistentStochasticSources(state_key=key, cfg=cfg),
                     n_samples=1,
+                    total_steps=total_steps,
                 )
                 recon_terms.append(recon(cfg, plan))
             case PersistentPGDReconLossConfig():

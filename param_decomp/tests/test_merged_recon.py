@@ -62,6 +62,7 @@ def test_merged_term_builds_one_entry():
             cfg,
         ),
         ("a", "b"),
+        total_steps=100,
     )
     (term,) = losses.recon
     (entry,) = term.plan
@@ -116,6 +117,7 @@ def test_merged_train_step_end_to_end(assignment: Literal["per_position", "per_s
             merged,
         ),
         lm.site_names,
+        total_steps=100,
     )
     step = make_train_step(
         lm=lm,
