@@ -25,7 +25,7 @@ from param_decomp.train import COMPUTE_DT, cast_floating
 @runtime_checkable
 class ComponentActivationModel(DecomposedModel, Protocol):
     """A `DecomposedModel` that also exposes per-component activations `x@V`. The arithmetic
-    activation heatmaps need this seam; it is LM-only (currently `LlamaDecomposedModel`), so
+    activation heatmaps need this seam; it is LM-only (currently `GLUDecomposedModel`), so
     the eval narrows to it with an `isinstance` check rather than widening the core
     `DecomposedModel` Protocol every target must satisfy."""
 

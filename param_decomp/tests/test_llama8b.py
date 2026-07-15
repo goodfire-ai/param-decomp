@@ -37,13 +37,13 @@ from param_decomp.configs import (
 from param_decomp.lm import DecomposedModel
 from param_decomp.recon import build_loss_terms
 from param_decomp.schedule import ScheduleConfig
-from param_decomp.targets.llama8b import (
+from param_decomp.targets.glu_transformer import (
     FrozenAttn,
-    LlamaDecomposedModel,
-    LlamaLayer,
+    GLUDecomposedModel,
+    GLULayer,
     build_decomposed_lm,
     canonical_site_cs,
-    llama_site_specs,
+    glu_site_specs,
     mlp_family_site_cs,
     parse_site_name,
     site_name,
@@ -72,8 +72,8 @@ def _tiny_cfg() -> LlamaConfig:
 
 def _tiny_decomposed_lm(
     cfg: LlamaConfig, sites: tuple[SiteSpec, ...], key: jax.Array
-) -> LlamaDecomposedModel:
-    """A tiny random `LlamaDecomposedModel` (random embedding + full frozen layer stack
+) -> GLUDecomposedModel:
+    """A tiny random `GLUDecomposedModel` (random embedding + full frozen layer stack
     plus the decomposition `sites`) — the CPU-test analog of `load_decomposed_lm_from_hf`."""
     ks = iter(jax.random.split(key, 1024))
     d, di = cfg.n_embd, cfg.n_intermediate
@@ -89,9 +89,7 @@ def _tiny_decomposed_lm(
         )  # fmt: skip
 
     def layer():
-        return LlamaLayer(
-            jnp.ones((d,)), jnp.ones((d,)), fattn(), n((di, d)), n((di, d)), n((d, di))
-        )
+        return GLULayer(jnp.ones((d,)), jnp.ones((d,)), fattn(), n((di, d)), n((di, d)), n((d, di)))
 
     return build_decomposed_lm(
         embed=n((cfg.vocab_size, d), 0.02),
@@ -105,7 +103,7 @@ def _tiny_decomposed_lm(
 
 
 def _mlp_sites(cfg: LlamaConfig, first: int, last: int, C: int) -> tuple[SiteSpec, ...]:
-    return llama_site_specs(cfg, mlp_family_site_cs(first, last, C))
+    return glu_site_specs(cfg, mlp_family_site_cs(first, last, C))
 
 
 _QVDOWN_SITE_CS = (
@@ -163,10 +161,10 @@ def test_site_name_helpers():
         canonical_site_cs((SiteC("layers.3.mlp.up_proj", 4), SiteC("layers.3.mlp.up_proj", 8)))
 
 
-def test_llama_site_specs_dims():
+def test_glu_site_specs_dims():
     cfg = _tiny_cfg()
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
-    specs = llama_site_specs(
+    specs = glu_site_specs(
         cfg,
         canonical_site_cs(
             tuple(SiteC(site_name(2, kind), 4) for kind in ("q", "k", "v", "o", "gate", "down"))
@@ -183,7 +181,7 @@ def test_llama_site_specs_dims():
     assert dims(by_name["layers.2.mlp.gate_proj"]) == (cfg.n_embd, cfg.n_intermediate, 4)
     assert dims(by_name["layers.2.mlp.down_proj"]) == (cfg.n_intermediate, cfg.n_embd, 4)
     with pytest.raises(AssertionError, match="canonical"):
-        llama_site_specs(cfg, tuple(reversed(mlp_family_site_cs(2, 2, 4))))
+        glu_site_specs(cfg, tuple(reversed(mlp_family_site_cs(2, 2, 4))))
 
 
 def test_masked_component_activations_pre_mask_and_matches_outputs():
@@ -261,7 +259,7 @@ def test_clean_path_and_masked_identity(first: int, last: int):
 
 def test_attention_sites_clean_and_masked_identity():
     cfg = _tiny_cfg()
-    sites = llama_site_specs(cfg, _QVDOWN_SITE_CS)
+    sites = glu_site_specs(cfg, _QVDOWN_SITE_CS)
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
@@ -330,7 +328,7 @@ def test_attention_sites_clean_and_masked_identity():
 def test_o_site_masks_attention_output():
     cfg = _tiny_cfg()
     o_site = "layers.4.self_attn.o_proj"
-    sites = llama_site_specs(cfg, (SiteC(o_site, 8),))
+    sites = glu_site_specs(cfg, (SiteC(o_site, 8),))
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
@@ -362,7 +360,7 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
     cfg = _tiny_cfg()
     seq = 16
     n_warmup = 2
-    sites = llama_site_specs(cfg, site_cs)
+    sites = glu_site_specs(cfg, site_cs)
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     ci_fn = _build_chunkwise_ci_fn(lm, jax.random.PRNGKey(2), n_blocks=2)
@@ -468,7 +466,7 @@ def test_faith_warmup_decreases_faith():
 
 def test_decomp_vu_shapes_fp32():
     cfg = _tiny_cfg()
-    sites = llama_site_specs(cfg, _QVDOWN_SITE_CS)
+    sites = glu_site_specs(cfg, _QVDOWN_SITE_CS)
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     d, di = cfg.n_embd, cfg.n_intermediate
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
@@ -494,7 +492,7 @@ def test_fresh_pgd_adversary_step():
         SiteC("layers.4.mlp.down_proj", 12),
     )
     seq = 16
-    sites = llama_site_specs(cfg, site_cs)
+    sites = glu_site_specs(cfg, site_cs)
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)

@@ -49,7 +49,6 @@ from param_decomp.arithmetic_eval import (
 )
 from param_decomp.attn_patterns_eval import (
     accumulate_attn_patterns,
-    attn_pattern_for,
     attn_patterns_log_entries,
     make_ci_attn_patterns_step,
     make_stochastic_attn_patterns_step,
@@ -93,7 +92,7 @@ from param_decomp.slow_eval import (
     resolve_permutation_metrics,
     stochastic_hidden_acts_n_mask_samples,
 )
-from param_decomp.targets.llama8b import hf_snapshot_dir
+from param_decomp.targets.glu_transformer import hf_snapshot_dir
 from param_decomp.train import TrainState
 from param_decomp_lab.experiments.lm.arithmetic_probe import build_arithmetic_probe
 from param_decomp_lab.experiments.lm.config import (
@@ -230,7 +229,7 @@ def _make_arithmetic_eval(
     )
     from transformers import AutoTokenizer  # heavy import; only the arith probe needs it in-job
 
-    # resolve from the SAME snapshot the weights load from (llama8b.hf_snapshot_dir honors
+    # resolve from the SAME snapshot the weights load from (hf_snapshot_dir honors
     # HF_HUB_CACHE / the shared cluster cache) — the default HF cache may be empty on cluster
     tokenizer = AutoTokenizer.from_pretrained(
         str(hf_snapshot_dir(target.model_name)), local_files_only=True
@@ -379,14 +378,11 @@ def _make_lm_eval_fn(
     )
     attn_steps: dict[str, Any] = {}
     if eval.attn_patterns is not None:
-        pattern_fn = attn_pattern_for(lm)
         if eval.attn_patterns.ci_masked:
-            attn_steps["CIMaskedAttnPatternsReconLoss"] = make_ci_attn_patterns_step(
-                lm, pattern_fn, co
-            )
+            attn_steps["CIMaskedAttnPatternsReconLoss"] = make_ci_attn_patterns_step(lm, co)
         if eval.attn_patterns.stochastic:
             attn_steps["StochasticAttnPatternsReconLoss"] = make_stochastic_attn_patterns_step(
-                lm, pattern_fn, eval.attn_patterns.stochastic_n_mask_samples, co
+                lm, eval.attn_patterns.stochastic_n_mask_samples, co
             )
 
     slow_eval_step = make_slow_eval_step(

@@ -1,4 +1,4 @@
-"""GSPMD sharding plan for the Llama-8B single-pool step — the pure-HSDP memory story.
+"""GSPMD sharding plan for the GLU-transformer (Llama-8B / Qwen3-8B) single-pool step — the pure-HSDP memory story.
 
 The 2-D `(replicate, fsdp)` mesh: `fsdp` is the 8 intra-node NVLink GPUs (the FSDP
 weight-gather / grad-reduce axis), `replicate` the across-node axis. There is NO TP /
@@ -12,7 +12,7 @@ Megatron-C. The memory consumers, and how each is placed:
     fp32 Adam m/v are the dominant non-activation footprint; true ZeRO-1 ÷N (master + m + v
     each ÷(replicate·fsdp)) takes them from ÷fsdp (≈76 GB/GPU fixed) to ÷N (≈5 GB, scaling).
     COMPUTE re-pins the bf16 weights to `fsdp`-only ONCE per step (the ZeRO-1 reconstruction,
-    in ENTRY, off the per-layer hot path; see `llama8b._reconstruct_compute_weights`).
+    in ENTRY, off the per-layer hot path; see `glu_transformer._reconstruct_compute_weights`).
   * CI fn + Adam states: sharded ÷N over the full mesh along d_model (in_proj / blocks /
     heads), same ZeRO-1 reconstruction to `fsdp`-only before the chunk scan.
   * PGD source (broadcast scope, `{site: (1,T,C+1)}`): REPLICATED. A single adversarial
@@ -66,7 +66,7 @@ from param_decomp.components import (
 from param_decomp.configs import BSCScope, SCScope
 from param_decomp.sharding import hsdp_mesh, place_via_shardings
 from param_decomp.sharding import shard_batch as _generic_shard_batch
-from param_decomp.targets.llama8b import LlamaDecomposedModel
+from param_decomp.targets.glu_transformer import GLUDecomposedModel
 
 __all__ = [
     "hsdp_mesh",
@@ -78,7 +78,7 @@ __all__ = [
 ]
 
 
-def place_target(tgt: LlamaDecomposedModel, mesh: Mesh) -> LlamaDecomposedModel:
+def place_target(tgt: GLUDecomposedModel, mesh: Mesh) -> GLUDecomposedModel:
     """Eager `device_put` of the already-loaded frozen target onto its own declared
     placement (`tgt.shardings(mesh)` — FSDP-on-`fsdp`)."""
     return place_via_shardings(tgt, tgt.shardings(mesh))

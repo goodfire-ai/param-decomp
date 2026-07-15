@@ -34,14 +34,14 @@ from param_decomp.losses import (  # noqa: E402
     importance_minimality_terms,
     kl_per_position,
 )
-from param_decomp.targets.llama8b import (  # noqa: E402
+from param_decomp.targets.glu_transformer import (  # noqa: E402
     MLP_KINDS,
     FrozenAttn,
-    LlamaDecomposedModel,
-    LlamaLayer,
+    GLUDecomposedModel,
+    GLULayer,
     _clean_mlp_out,  # noqa: E402  (reference suffix forward in the chunk-plan gate check)
     build_decomposed_lm,
-    llama_site_specs,
+    glu_site_specs,
     mlp_family_site_cs,
     site_name,
 )
@@ -81,7 +81,7 @@ def _build(f: dict[str, np.ndarray]):
     C = int(f[f"Vg_0"].shape[-1])  # noqa: F541
 
     decomp_layers = [
-        LlamaLayer(
+        GLULayer(
             ln1=a(f"ln1_{i}"),
             ln2=a(f"ln2_{i}"),
             attn=_zero_attn(d, di),
@@ -92,7 +92,7 @@ def _build(f: dict[str, np.ndarray]):
         for i in range(n_layers)
     ]
     tail = [
-        LlamaLayer(
+        GLULayer(
             ln1=a(f"tail_ln1_{j}"),
             ln2=a(f"tail_ln2_{j}"),
             attn=_zero_attn(d, di),
@@ -133,7 +133,7 @@ def _build(f: dict[str, np.ndarray]):
         lm_head=a("lm_head"),
         inv_freq=inv_freq,
         cfg=cfg,
-        sites=llama_site_specs(cfg, mlp_family_site_cs(0, n_layers - 1, C)),
+        sites=glu_site_specs(cfg, mlp_family_site_cs(0, n_layers - 1, C)),
     )
     return lm, vu, n_layers
 
@@ -210,7 +210,7 @@ def compute_jax_terms(f: dict[str, np.ndarray]) -> dict[str, float]:
 
 
 def _suffix_with_split_mlp(
-    tgt: LlamaDecomposedModel,
+    tgt: GLUDecomposedModel,
     vu: DecompVU,
     resid: jnp.ndarray,
     live_layer: int,

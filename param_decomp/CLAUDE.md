@@ -27,7 +27,7 @@ never silently diverge. Cite IDs (`S14`, `N1`, …) in commit messages and revie
 `lm.py` defines `DecomposedModel` — a `@runtime_checkable Protocol`: ordered `sites` +
 `leading_axes` + the methods `clean_output`, `read_activations`, `masked_output`,
 `masked_site_outputs`, `weight_deltas`, and a `recon_loss_fn` (LM: `kl_per_position`). The
-concrete impl per target is an `eqx.Module` (`LlamaDecomposedModel`,
+concrete impl per target is an `eqx.Module` (`GLUDecomposedModel`,
 `SimpleMLPDecomposedModel`, `TMSDecomposedModel`, `ResidMLPDecomposedModel`) carrying its
 FROZEN target weights as ARRAY FIELDS; the TRAINABLE V/U (`vu: DecompVU`) stays an explicit
 METHOD ARG (separate lifecycle — own optimizer + checkpoint, C-sharded while the frozen
@@ -58,12 +58,12 @@ single `make_plan` constructor, built from the shared configs by `recon.build_lo
 see LOSS_PARITY_DESIGN.md),
 consuming `losses.py` (pure loss terms + schedules) and `adversary.py` (persistent
 vs fresh source machinery — semantically distinct adversaries sharing only
-`source_masks`); `ci_fn.py` the shared CI transformer; `targets/llama8b.py` + `targets/llama8b_sharding.py` the first target. There is ONE
+`source_masks`); `ci_fn.py` the shared CI transformer; `targets/glu_transformer.py` + `targets/glu_transformer_sharding.py` the SHARED HF GLU-transformer target machinery (site grammar, `FrozenAttn`/`GLULayer`/`GLUDecomposedModel`, the scan/masked-forward engine, HF loading), with the model FAMILIES in their own files: `targets/llama8b.py` (vendored `LlamaConfig`, llama3 rope) and `targets/qwen3_8b.py` (`Qwen3FrozenAttn` — REQUIRED `q_norm`/`k_norm` fields applied in the `_prep_qk` pre-RoPE hook; Qwen3's one structural delta). Nothing in the shared file switches on a family; the model-name → family registry is LAB-side (`experiments/lm/config.py::HF_MODEL_FAMILIES`). Qwen3 JAX↔HF parity is pinned DIRECTLY by `tests/qwen3_hf_parity/` (a tiny-random `Qwen3ForCausalLM` golden at fp32 tolerance + a slow real-weights logits check; goldens regenerate via its torch-env `gen_hf_fixtures.py`). There is ONE
 recon semantics: masks thread through the full token-input forward, loss is KL on final logits
 (SPEC §2.3–2.5). Site-local recon is a conceptual no-no, not a "simplification".
 `targets/llama_simple_mlp.py` is the second target (the pile-pretrained `LlamaSimpleMLP`,
 t-9d2b8f02; sites `h.{i}.attn.{q,k,v,o}_proj` / `h.{i}.mlp.{c_fc,down_proj}`) —
-config dispatch is `TargetConfig` (llama8b) vs `LlamaSimpleMLPTargetConfig`, both LAB-side
+config dispatch is `TargetConfig` (the HF GLU families) vs `LlamaSimpleMLPTargetConfig`, both LAB-side
 (`param_decomp_lab/experiments/lm/config.py`, which reads the canonical schema DIRECTLY —
 `build_experiment_config`/`load_config` — routing `kind: pretrained` specs + `h.*`
 wildcards), target build in the LM composition root
@@ -98,7 +98,7 @@ every rank builds the identical grid, no rank-0 write or barrier), so configs st
 cluster-portable. The ONE fused `make_arithmetic_grid_step` slices, at the answer position with
 the BATCH axis KEPT as the grid, each component's lower-leaky CI (from the CI fn) and its
 pre-mask activation `x@V` (from the decomposed forward under all-ones masks — the
-`masked_component_activations` seam, llama8b-only, narrowed via the `ComponentActivationModel`
+`masked_component_activations` seam, GLU-target-only, narrowed via the `ComponentActivationModel`
 Protocol). The device→host pull is TWO-PHASE (`compute_arithmetic_selection`), sized to what
 the figures need — never the full `(n_prompts, C)` grids (~GBs/site at production C): the
 step's replicated per-component max CI (over REAL rows only — the sharding-pad tail is
@@ -155,7 +155,7 @@ glued-ΣC head mid-site). **ZeRO-1 ÷N**: the trainable V/U + CI-fn fp32 masters
 m/v shard ÷N over the FULL mesh (`("replicate","fsdp")` on V's d_in / U's d_out / the CI fn's
 d_model) — the dominant optimizer-state memory scales 1/N, not the fixed 1/fsdp. The bf16
 COMPUTE weights are reconstructed to the `fsdp`-sharded (÷fsdp) layout ONCE per step in ENTRY
-(the cross-`replicate` gather, off the hot path — `llama8b._reconstruct_compute_weights` /
+(the cross-`replicate` gather, off the hot path — `glu_transformer._reconstruct_compute_weights` /
 `ci_fn._reconstruct_ci_compute_weights` pin `P(None,"fsdp",...)` BEFORE the per-layer /
 per-chunk scan), landing a SMALL ÷fsdp-resident stack; the scan body then gathers ONE layer's
 `fsdp` shard to full d_in transiently (NVLink, freed each iteration) — NEVER a

@@ -25,7 +25,7 @@ from param_decomp.arithmetic_eval import (
 )
 from param_decomp.ci_fn import lower_leaky_hard_sigmoid
 from param_decomp.components import init_decomp_vu
-from param_decomp.targets.llama8b import llama_site_specs, mlp_family_site_cs
+from param_decomp.targets.glu_transformer import glu_site_specs, mlp_family_site_cs
 from param_decomp.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
 from param_decomp.tests.test_slow_eval import _build_ci_fn
 from param_decomp.train import COMPUTE_DT, cast_floating
@@ -39,7 +39,7 @@ SITE = "layers.4.mlp.gate_proj"
 def _tiny_setup():
     cfg = _tiny_cfg()
     C = 8
-    sites = llama_site_specs(cfg, mlp_family_site_cs(4, 5, C))
+    sites = glu_site_specs(cfg, mlp_family_site_cs(4, 5, C))
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     ci_fn = _build_ci_fn(lm, cfg.n_embd, jax.random.PRNGKey(2))
     return cfg, lm, ci_fn, C

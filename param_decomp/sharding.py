@@ -13,7 +13,7 @@ weight gather on `fsdp`, the grad reduce-scatter on `fsdp` + the cross-node all-
 the batch axis. No manual NCCL, no pool-coordination code.
 
 Placement is expressed as `NamedSharding`: target-specific plans (like
-`llama8b_sharding.py`) FSDP-shard params on `fsdp`; `shard_batch` shards the data axis over
+`glu_transformer_sharding.py`) FSDP-shard params on `fsdp`; `shard_batch` shards the data axis over
 the full mesh.
 """
 
