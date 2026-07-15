@@ -194,6 +194,12 @@ and returns JAX-native as the #10 torch->jax adapter.
 | `param_decomp_lab/clustering/` | `param_decomp_lab/clustering/CLAUDE.md` | Hierarchical clustering of components |
 | `param_decomp_lab/investigate/` | `param_decomp_lab/investigate/CLAUDE.md` | Agent investigation of a research question |
 
+**Experiment-driving playbook:**
+[`.claude/skills/parameter-decomposition/SKILL.md`](.claude/skills/parameter-decomposition/SKILL.md)
+— the end-to-end VPD run recipe (build the config from a reference YAML, sweep the
+importance-minimality coeff, smoke-test, judge convergence and pathologies). Loaded
+automatically as a Claude Code skill.
+
 > **The torch web-app (`param_decomp_lab/app/`) was temporarily removed during the JAX
 > migration** to shed torch surface for the JAX-primary merge. It is slated for re-add,
 > likely as a JAX-native viewer. The reusable tokenizer-display helpers it once owned
