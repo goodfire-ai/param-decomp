@@ -386,13 +386,13 @@ def test_all_block_resids_concatenates_one_tap_per_block():
     def _two_block_cfg(input_tap: str) -> dict[str, Any]:
         return dict(
             raw,
-            pd=dict(
-                raw["pd"],
-                ci_config=dict(raw["pd"]["ci_config"], blocks_per_chunk=2, input_tap=input_tap),
-                decomposition_targets=[
-                    {"module_pattern": "layers.18.mlp.down_proj", "C": 64},
-                    {"module_pattern": "layers.19.mlp.down_proj", "C": 64},
-                ],
+            decomposition=dict(
+                sites={
+                    "kind": "glu_transformer",
+                    "layers": {"kind": "range", "start": 18, "end": 20},
+                    "cs": {"down": 64},
+                },
+                ci=dict(raw["decomposition"]["ci"], blocks_per_chunk=2, input_tap=input_tap),
             ),
         )
 
