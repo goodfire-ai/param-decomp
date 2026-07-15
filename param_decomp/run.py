@@ -1,7 +1,7 @@
 """The generic VPD decomposition-training ENGINE — the one train loop every target
 (LM, TMS, ResidMLP, …) runs through.
 
-`run_decomposition_training(pd, cadence, run, lm, ci_fn, data,
+`run_decomposition_training(pd, cadence, run, raw_cfg, lm, ci_fn, data,
 remat_recon_forwards, sample_batch, eval_fn, eval_every, mesh)` owns
 the generic machinery: init / restore / fine-tune init / faith warmup
 (`_init_or_restore_state`), the recon-grid step factory, orbax checkpointing, schedules,
@@ -440,6 +440,7 @@ def run_decomposition_training(
     pd: PDConfig,
     cadence: Cadence,
     run: RunInstance,
+    raw_cfg: dict[str, object],
     lm: DecomposedModel,
     ci_fn: CIFnArch,
     data: DataConfig | None,
@@ -458,7 +459,9 @@ def run_decomposition_training(
 
     Reads the pydantic algorithm config DIRECTLY: `pd` (seed / steps / optimizers / loss
     metrics / faith warmup), `cadence` (log / save / checkpoint-retention
-    rhythm), `run` (the run identity + wandb lineage). The lab-built objects ride alongside:
+    rhythm), `run` (the run identity + wandb lineage), `raw_cfg` (the launch config as the
+    composition root read it, logged into `wandb.config` for programmatic access). The
+    lab-built objects ride alongside:
     the decomposed model `lm` (an `eqx.Module` carrying the frozen target weights as
     fields — threaded into the jitted step as a pytree arg, never closed over), the CI-fn
     arch `ci_fn`, the data source `data` (None for a toy), and the `remat_recon_forwards`
@@ -519,11 +522,14 @@ def run_decomposition_training(
         mesh=mesh,
     )
 
-    # record what this run actually executes on so wandb never lies about topology.
-    # flatten the metric lists into the same flat keys torch logs (E14) so cross-impl
-    # wandb config queries line up.
+    # the full launch config goes into wandb.config so programmatic config access works;
+    # the yaml's `runtime` block is the request, so a jax_runtime section records what
+    # this run ACTUALLY executes on (wandb must never lie about topology). flatten the
+    # metric lists into the same flat keys torch logs (E14) so cross-impl wandb config
+    # queries line up.
     wandb_config = flatten_typed_lists(
         dict(
+            raw_cfg,
             jax_runtime={
                 "n_devices": ndev,
                 "n_processes": jax.process_count(),
