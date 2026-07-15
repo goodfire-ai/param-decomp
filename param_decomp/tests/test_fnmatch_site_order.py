@@ -164,7 +164,15 @@ def test_simple_mlp_canonical_pattern_order_matches_torch():
     agree (the JAX side no longer has a pattern order at all: cs is an unordered map)."""
     n_layer = 2
     spec = SimpleMlpCSpec(
-        layers=AllLayers(), cs={kind: 512 for kind in llama_simple_mlp.KIND_ORDER}
+        layers=AllLayers(),
+        cs={
+            "q_proj": 512,
+            "k_proj": 512,
+            "v_proj": 512,
+            "o_proj": 512,
+            "c_fc": 512,
+            "down_proj": 512,
+        },
     )
     jax_sites = resolve_site_tree(spec, llama_simple_mlp.FAMILY, n_layer).site_cs(
         llama_simple_mlp.FAMILY.name_of
