@@ -159,14 +159,23 @@ class HFModelFamily:
     """`(model_name, cfg, sites, scan_unroll=..., gather_fp8=...)` — cfg is the family's
     own arch-config type, so the common signature is erased here."""
     model_type: str
+    model_class: str
+    """The `target.spec.model_class` this family answers to (a stable identifier, never
+    imported — see experiments/CLAUDE.md)."""
 
 
 HF_MODEL_FAMILIES: dict[str, HFModelFamily] = {
     "meta-llama/Llama-3.1-8B": HFModelFamily(
-        llama8b.llama31_8b_config, llama8b.load_decomposed_llama_from_hf, "Llama"
+        llama8b.llama31_8b_config,
+        llama8b.load_decomposed_llama_from_hf,
+        "Llama",
+        "transformers.LlamaForCausalLM",
     ),
     "Qwen/Qwen3-8B-Base": HFModelFamily(
-        qwen3_8b.qwen3_8b_config, qwen3_8b.load_decomposed_qwen3_from_hf, "Qwen3"
+        qwen3_8b.qwen3_8b_config,
+        qwen3_8b.load_decomposed_qwen3_from_hf,
+        "Qwen3",
+        "transformers.Qwen3ForCausalLM",
     ),
 }
 """The HF model names the LM composition implements. Anything else refuses loudly at
@@ -269,10 +278,11 @@ def _resolve_target(cfg: LMExperimentConfig) -> AnyLMTargetConfig:
                     assert spec.model_class.rsplit(".", 1)[-1] == "VendoredLlama", spec.model_class
                     assert "Llama-3.1-8B" in spec.model_name, spec.model_name
                 case HFTarget():
-                    assert spec.model_class in (
-                        "transformers.LlamaForCausalLM",
-                        "transformers.Qwen3ForCausalLM",
-                    ), spec.model_class
+                    known_classes = {f.model_class for f in HF_MODEL_FAMILIES.values()}
+                    assert spec.model_class in known_classes, spec.model_class
+                    assert spec.model_class == hf_model_family(spec.model_name).model_class, (
+                        f"{spec.model_class!r} is not {spec.model_name!r}'s family"
+                    )
             hf_model_family(spec.model_name)  # refuse unknown model names here
             return TargetConfig(model_name=spec.model_name, sites=_site_cs(cfg))
         case PretrainedTarget():

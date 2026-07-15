@@ -570,8 +570,8 @@ def _reconstruct_compute_weights(
 
 
 class GLUDecomposedModel(eqx.Module):
-    """The GLU-transformer `DecomposedModel` (the `lm.py` contract; SPEC §1), shared by
-    the Llama and Qwen3 families — a family's identity lives in its `stacked.attn` module
+    """The GLU-transformer `DecomposedModel` (the `lm.py` contract; SPEC §1), shared
+    across the HF GLU families — a family's identity lives in its `stacked.attn` module
     (its `FrozenAttn` variant) and `inv_freq`, never in a switch here.
 
     Carries the FROZEN full model (embedding, all blocks, final norm, lm_head) as array
