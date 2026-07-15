@@ -278,7 +278,6 @@ def assert_finetune_structural_compat(built: BuiltRun, prov: ResumeProvenance) -
 
 def train(
     built: BuiltRun,
-    raw_cfg: dict[str, object],
     lm: DecomposedModel,
     mesh: Mesh,
 ) -> None:
@@ -328,7 +327,6 @@ def train(
         pd=built.pd,
         cadence=built.cadence,
         run=built.run,
-        raw_cfg=raw_cfg,
         lm=lm,
         ci_fn=built.ci_fn,
         data=data,
@@ -541,7 +539,7 @@ def _pin_config_copy(run_dir: Path, name: str, source: Path) -> None:
 
 def main(config: Path, run_id: str) -> None:
     config = Path(config)
-    built, raw_cfg = load_config(config, run_id)
+    built, _raw_cfg = load_config(config, run_id)
 
     install_sigterm_flag()
     _enable_hlo_dump(built.run.run_dir)
@@ -580,7 +578,7 @@ def main(config: Path, run_id: str) -> None:
     # so the function-table era's separate `frozen` object is gone.
     lm, _vocab_size = build_target(built, mesh)
 
-    train(built, raw_cfg, lm, mesh)
+    train(built, lm, mesh)
 
     if jax.process_count() > 1:
         import jax.experimental.multihost_utils as mhu
