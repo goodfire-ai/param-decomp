@@ -560,7 +560,7 @@ def run_decomposition_training(
                 jax.block_until_ready(_ident(tree))
             return (time.perf_counter() - _b0) / n
 
-        _vu = state.components.vu
+        _vu = dict(state.components.sites_items())
         _by_kind: dict[str, list[tuple[jax.Array, jax.Array]]] = _collections.defaultdict(list)
         for _name, _VU in _vu.items():
             _by_kind[_name.split(".")[-1]].append(_VU)

@@ -41,7 +41,7 @@ from param_decomp.configs import (
 from param_decomp.lm import DecomposedModel
 from param_decomp.muon_stacked import stacked_muon
 from param_decomp.recon import build_loss_terms
-from param_decomp.run_state import chunk_stacked_muon_dimension_numbers
+from param_decomp.run_state import stacked_muon_dimension_numbers
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.sharding import hsdp_mesh
 from param_decomp.targets.llama8b import (
@@ -124,7 +124,7 @@ def _build(
     inner_vu = muon_impl(None) if muon_components else optax.adamw(1e-3, weight_decay=0.0)
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), inner_vu)
     opt_ci = (
-        muon_impl(chunk_stacked_muon_dimension_numbers)
+        muon_impl(stacked_muon_dimension_numbers)
         if muon_ci_fn
         else optax.adamw(1e-3, weight_decay=0.0)
     )
@@ -210,7 +210,7 @@ def test_muon_roundtrip_and_exact_resume(tmp_path: Path):
 
 def test_muon_ci_fn_roundtrip_and_exact_resume(tmp_path: Path):
     """SPEC S20 amendment (2026-07-11): same guarantee with muon on BOTH groups, the ci-fn
-    partitioned by `chunk_stacked_muon_dimension_numbers` (3D chunk stacks muon'd, 2D bias
+    partitioned by `stacked_muon_dimension_numbers` (3D chunk stacks muon'd, 2D bias
     stacks in the Adam-fallback mask)."""
     _roundtrip_and_exact_resume(tmp_path, muon_components=True, muon_ci_fn=True)
 

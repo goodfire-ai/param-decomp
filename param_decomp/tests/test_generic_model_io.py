@@ -32,7 +32,7 @@ from param_decomp.ci_fn import (
     ChunkwiseTransformerCIArch,
     build_ci_fn,
 )
-from param_decomp.components import DecompVU, SiteSpec
+from param_decomp.components import DecompVU, SiteSpec, decomp_vu_from_sites
 from param_decomp.configs import (
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
@@ -181,7 +181,7 @@ def _synthetic_lm(key: jax.Array) -> SyntheticDecomposedModel:
 def _synthetic_vu(key: jax.Array) -> DecompVU:
     V = random.normal(random.fold_in(key, 3), (D, C)) * 0.1
     U = random.normal(random.fold_in(key, 4), (C, D)) * 0.1
-    return DecompVU(vu={SITE: (V, U)})
+    return decomp_vu_from_sites({SITE: (V, U)})
 
 
 def _synthetic_inputs(key: jax.Array) -> dict[str, Array]:

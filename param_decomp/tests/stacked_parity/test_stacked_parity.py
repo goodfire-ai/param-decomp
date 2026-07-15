@@ -33,7 +33,7 @@ from param_decomp.adversary import (
     init_persistent_sources,
     init_sources_adam_state,
 )
-from param_decomp.components import DecompVU
+from param_decomp.components import DecompVU, decomp_vu_from_sites
 from param_decomp.configs import (
     AdamPGDConfig,
     ChunkwiseSubsetReconLossConfig,
@@ -120,7 +120,9 @@ def _load() -> tuple[dict[str, np.ndarray], DecomposedModel, DecompVU, jnp.ndarr
         layers=layers, norm=a("tgt::norm"), lm_head=a("tgt::lm_head"),
         inv_freq=llama3_inv_freq(cfg), cfg=cfg, sites=sites,
     )  # fmt: skip
-    vu = DecompVU(vu={s.name: (a(f"vu::V::{s.name}"), a(f"vu::U::{s.name}")) for s in sites})
+    vu = decomp_vu_from_sites(
+        {s.name: (a(f"vu::V::{s.name}"), a(f"vu::U::{s.name}")) for s in sites}
+    )
     return f, lm, vu, a("resid")
 
 

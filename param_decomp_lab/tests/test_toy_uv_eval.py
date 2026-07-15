@@ -71,7 +71,9 @@ def test_log_uv_figure_renders_png_when_configured(monkeypatch: pytest.MonkeyPat
     fake = _FakeWandb()
     monkeypatch.setitem(sys.modules, "wandb", fake)
 
-    toy_uv_eval.log_uv_figure(spec, vu.vu, probe_upper, now_step=42, wandb_active=True)
+    toy_uv_eval.log_uv_figure(
+        spec, dict(vu.sites_items()), probe_upper, now_step=42, wandb_active=True
+    )
 
     assert len(fake.logged) == 1
     payload, step = fake.logged[0]
@@ -86,12 +88,16 @@ def test_log_uv_figure_noop_when_unconfigured_or_wandb_off(monkeypatch: pytest.M
 
     # config does not name UVPlots -> no-op
     no_uv = toy_uv_eval.toy_uv_spec(lm, _raw([]))
-    toy_uv_eval.log_uv_figure(no_uv, vu.vu, probe_upper, now_step=42, wandb_active=True)
+    toy_uv_eval.log_uv_figure(
+        no_uv, dict(vu.sites_items()), probe_upper, now_step=42, wandb_active=True
+    )
     assert fake.logged == []
 
     # configured but wandb off -> no-op
     with_uv = toy_uv_eval.toy_uv_spec(
         lm, _raw([{"type": "UVPlots", "identity_patterns": None, "dense_patterns": None}])
     )
-    toy_uv_eval.log_uv_figure(with_uv, vu.vu, probe_upper, now_step=42, wandb_active=False)
+    toy_uv_eval.log_uv_figure(
+        with_uv, dict(vu.sites_items()), probe_upper, now_step=42, wandb_active=False
+    )
     assert fake.logged == []

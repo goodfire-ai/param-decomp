@@ -434,7 +434,7 @@ def test_step_trains_and_has_vpd_signature():
     assert losses[-1]["p_imp"] < 2.0
     # fp32 masters preserved through updates (SPEC N1).
     assert isinstance(state.components, DecompVU)
-    for V, U in state.components.vu.values():
+    for _, (V, U) in state.components.sites_items():
         assert V.dtype == jnp.float32 and U.dtype == jnp.float32
     assert isinstance(state.ci_fn, ChunkwiseTransformerCIFn)
     assert state.ci_fn.chunks.in_proj_w.dtype == jnp.float32
@@ -471,7 +471,7 @@ def test_decomp_vu_shapes_fp32():
     assert V_v.shape == (d, 12) and U_v.shape == (12, kvd)
     assert V_fc.shape == (d, 8) and U_fc.shape == (8, di)
     assert V_dn.shape == (di, 16) and U_dn.shape == (16, d)
-    assert all(a.dtype == jnp.float32 for pair in vu.vu.values() for a in pair)
+    assert all(a.dtype == jnp.float32 for pair in vu.stacks.values() for a in pair)
 
 
 _REAL_CACHE_DIR = Path("/mnt/data/artifacts/mechanisms/param-decomp/pretrain_cache/spd-t-9d2b8f02")

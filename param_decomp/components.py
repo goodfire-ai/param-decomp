@@ -1,14 +1,17 @@
 """The decomposition representation, shared by every target (LM and toy alike).
 
 `SiteC` / `SiteSpec` are the per-site shape primitives (config-level name+C, and the
-shape-carrying spec); `DecompVU` is the trainable per-site V/U master pytree;
-`init_decomp_vu` seeds it; `site_out` is the one decomposed-linear primitive (SPEC §4.1,
-`((x@V)*m)@U + (x@Δ)*d`). These are domain-neutral — they depend only on the site shapes
-and the V/U/W arrays — so they live here rather than inside `lm.py` (whose `DecomposedModel`
-Protocol references `DecompVU`/`SiteSpec`) or any one target.
+shape-carrying spec); `DecompVU` is the trainable master pytree, persisted as same-shape
+STACKS (owner-partitioned layout); `init_decomp_vu` seeds it; `site_out` is the one
+decomposed-linear primitive (SPEC §4.1, `((x@V)*m)@U + (x@Δ)*d`). These are domain-neutral
+— they depend only on the site shapes and the V/U/W arrays — so they live here rather than
+inside `lm.py` (whose `DecomposedModel` Protocol references `DecompVU`/`SiteSpec`) or any
+one target.
 """
 
+from collections.abc import Iterator
 from dataclasses import dataclass
+from functools import cache
 from typing import Generic, TypeVar
 
 import equinox as eqx
@@ -35,12 +38,6 @@ class SiteSpec:
     d_in: int
     d_out: int
     C: int
-
-
-# The V/U leaf type: `Array` for the real fp32 masters (the default — so bare `DecompVU`
-# means `DecompVU[Array]` and no call site needs the parameter), or `NamedSharding` for the
-# same-structure placement tree `.shardings` returns for `jax.jit(out_shardings=...)`.
-VULeaf = TypeVar("VULeaf", default=Array)
 
 
 _FP8_E4M3_MAX = 448.0  # largest finite magnitude of float8_e4m3fn
@@ -70,58 +67,15 @@ def dequantize_fp8(q: Array, scale: Array) -> Array:
     return q.astype(jnp.bfloat16) * scale.astype(jnp.bfloat16)
 
 
-class DecompVU(eqx.Module, Generic[VULeaf]):
-    """Per-decomposed-site V `(d_in, C_s)` / U `(C_s, d_out)`, keyed by site name. The leaves
-    are fp32 master Arrays (`DecompVU[Array]`), or `NamedSharding`s in the placement tree
-    returned by `.shardings` (`DecompVU[NamedSharding]`) — same pytree structure, sharding
-    leaves, for `jax.jit(out_shardings=...)`."""
-
-    vu: dict[str, tuple[VULeaf, VULeaf]]
-
-    def site(self, name: str) -> tuple[VULeaf, VULeaf]:
-        return self.vu[name]
-
-    def shardings(self: "DecompVU[Array]", mesh: "Mesh") -> "DecompVU[NamedSharding]":
-        """True ÷N ZeRO-1 PERSISTENCE layout for the STORED masters, split across the data and
-        TP axes: V `(d_in, C)` shards d_in over `("replicate","fsdp")` and C over `tp`; U
-        `(C, d_out)` shards C over `tp` and d_out over `("replicate","fsdp")`. So both still
-        shard ÷(replicate·fsdp·tp) = ÷N total (C now carries the `tp` factor — the Megatron-C
-        axis). The fp32 masters + their Adam m/v inherit this; the dominant memory term stays
-        ÷N. `tp = 1` ⇒ C unsharded, identical to the pure-HSDP layout.
-
-        COMPUTE re-pins d to `fsdp` only (C stays on `tp`): the bf16 compute weights are
-        reconstructed to `P(None, "fsdp", "tp")` ONCE per step in ENTRY (the ÷N→÷fsdp gather
-        across `replicate`, off the hot path), so the per-layer scan body gathers only the
-        `fsdp`-sharded d on NVLink — and only HALF the weight, since C is ÷tp. Asserts d tiles
-        the data axes and C tiles `tp`."""
-        data = ("replicate", "fsdp")
-        shard_V = NamedSharding(mesh, P(data, "tp"))  # d_in ÷(rep·fsdp), C ÷tp → ÷N
-        shard_U = NamedSharding(mesh, P("tp", data))  # C ÷tp, d_out ÷(rep·fsdp) → ÷N
-        n_data = mesh.shape["replicate"] * mesh.shape["fsdp"]
-        n_tp = mesh.shape["tp"]
-        placed: dict[str, tuple[NamedSharding, NamedSharding]] = {}
-        for name, (V, U) in self.vu.items():
-            assert V.shape[0] % n_data == 0, f"DecompVU[{name}].V.d_in {V.shape[0]} not ÷ {n_data}"
-            assert V.shape[1] % n_tp == 0, f"DecompVU[{name}].V.C {V.shape[1]} not ÷ tp={n_tp}"
-            assert U.shape[1] % n_data == 0, f"DecompVU[{name}].U.d_out {U.shape[1]} not ÷ {n_data}"
-            placed[name] = (shard_V, shard_U)
-        return DecompVU(vu=placed)
-
-
-def init_decomp_vu(sites: tuple[SiteSpec, ...], key: Array) -> DecompVU:
-    """Small random fp32 V ~ N(0, d_in^-0.5), U ~ N(0, C^-0.5) per site; the
-    weight-delta channel carries the faithfulness residual at init (before
-    faithfulness warmup)."""
-    keys = jax.random.split(key, 2 * len(sites))
-    vu: dict[str, tuple[Array, Array]] = {}
-    for site_idx, spec in enumerate(sites):
-        V = jax.random.normal(keys[2 * site_idx], (spec.d_in, spec.C)) * spec.d_in**-0.5
-        U = jax.random.normal(keys[2 * site_idx + 1], (spec.C, spec.d_out)) * spec.C**-0.5
-        vu[spec.name] = (V, U)
-    return DecompVU(vu=vu)
-
-
 VUShape = tuple[int, int, int]  # (d_in, d_out, C)
+
+# site name -> (shape group, slot on the group's stack axis); static, canonical site order
+SiteSlots = tuple[tuple[str, VUShape, int], ...]
+
+# The V/U leaf type: `Array` for the real fp32 masters (the default — so bare `DecompVU`
+# means `DecompVU[Array]` and no call site needs the parameter), or `NamedSharding` for the
+# same-structure placement tree `.shardings` returns for `jax.jit(out_shardings=...)`.
+VULeaf = TypeVar("VULeaf", default=Array)
 
 
 def vu_shape_groups(sites: tuple[SiteSpec, ...]) -> dict[VUShape, tuple[SiteSpec, ...]]:
@@ -132,14 +86,93 @@ def vu_shape_groups(sites: tuple[SiteSpec, ...]) -> dict[VUShape, tuple[SiteSpec
     return {shape: tuple(specs) for shape, specs in groups.items()}
 
 
+def site_slots_for(sites: tuple[SiteSpec, ...]) -> SiteSlots:
+    """The canonical site→(shape, slot) mapping: slots follow site order within each shape
+    group (`vu_shape_groups` preserves it), entries follow overall site order."""
+    by_name: dict[str, tuple[VUShape, int]] = {}
+    for shape, specs in vu_shape_groups(sites).items():
+        for slot, spec in enumerate(specs):
+            by_name[spec.name] = (shape, slot)
+    return tuple((spec.name, *by_name[spec.name]) for spec in sites)
+
+
+@cache
+def _slot_index(site_slots: SiteSlots) -> dict[str, tuple[VUShape, int]]:
+    return {name: (shape, slot) for name, shape, slot in site_slots}
+
+
+class DecompVU(eqx.Module, Generic[VULeaf]):
+    """The trainable V/U masters, persisted as same-shape STACKS — the owner-partitioned
+    layout: one `(Vs [g, d_in, C], Us [g, C, d_out])` pair per `(d_in, d_out, C)` shape
+    group, with `site_slots` (static) mapping each site name to its slot on the stack axis.
+
+    Why stacks: per-matrix ownership is only expressible under SPMD by sharding a STACK
+    axis (a per-site leaf cannot live wholly on one rank), the llama8b scan consumes
+    per-kind stacks natively, and the checkpoint/init trees shrink from `2·n_sites` leaves
+    to `2·n_shapes`. Per-site access is `site(name)` — a static slice of the stack.
+
+    Leaves are fp32 master Arrays (`DecompVU[Array]`) or `NamedSharding`s in the placement
+    tree `.shardings` returns (`DecompVU[NamedSharding]` — same pytree structure)."""
+
+    stacks: dict[VUShape, tuple[VULeaf, VULeaf]]
+    site_slots: SiteSlots = eqx.field(static=True)
+
+    def site(self: "DecompVU[Array]", name: str) -> tuple[Array, Array]:
+        shape, slot = _slot_index(self.site_slots)[name]
+        Vs, Us = self.stacks[shape]
+        return Vs[slot], Us[slot]
+
+    @property
+    def site_names(self) -> tuple[str, ...]:
+        return tuple(name for name, _, _ in self.site_slots)
+
+    def sites_items(self: "DecompVU[Array]") -> Iterator[tuple[str, tuple[Array, Array]]]:
+        """`(name, (V, U))` in canonical site order — the per-site view of the stacks."""
+        for name, _, _ in self.site_slots:
+            yield name, self.site(name)
+
+    def shardings(self: "DecompVU[Array]", mesh: Mesh) -> "DecompVU[NamedSharding]":
+        """Owner-partitioned ÷N persistence (hybrid HSDP rule): the STACK axis shards over
+        `replicate` (whole matrices owned per node-group — the cross-node axis carries ZERO
+        per-step weight collectives; muon NS on the masters is node-local), matrix d dims
+        over `fsdp` (NVLink-cheap), C over `tp`. Total ÷(replicate·fsdp·tp) = ÷N — the same
+        memory as the retired intra-matrix ZeRO-1 layout.
+
+        A group whose stack length does not tile `replicate` (site subsets, e.g. an
+        L18-only decomposition at multi-node dp) falls back PER-GROUP to intra-matrix data
+        sharding (`P(None, ("replicate","fsdp"), …)`) — the old layout behind a leading
+        stack axis. At `replicate == 1` (single node) the two rules coincide."""
+        n_rep = mesh.shape["replicate"]
+        n_fsdp = mesh.shape["fsdp"]
+        n_tp = mesh.shape["tp"]
+        placed: dict[VUShape, tuple[NamedSharding, NamedSharding]] = {}
+        for (d_in, d_out, c), (Vs, _) in self.stacks.items():
+            g = Vs.shape[0]
+            assert c % n_tp == 0, f"C {c} not ÷ tp={n_tp}"
+            if g % n_rep == 0:
+                assert d_in % n_fsdp == 0, f"d_in {d_in} not ÷ fsdp={n_fsdp}"
+                assert d_out % n_fsdp == 0, f"d_out {d_out} not ÷ fsdp={n_fsdp}"
+                shard_V = NamedSharding(mesh, P("replicate", "fsdp", "tp"))
+                shard_U = NamedSharding(mesh, P("replicate", "tp", "fsdp"))
+            else:
+                data = ("replicate", "fsdp")
+                n_data = n_rep * n_fsdp
+                assert d_in % n_data == 0, f"d_in {d_in} not ÷ {n_data}"
+                assert d_out % n_data == 0, f"d_out {d_out} not ÷ {n_data}"
+                shard_V = NamedSharding(mesh, P(None, data, "tp"))
+                shard_U = NamedSharding(mesh, P(None, "tp", data))
+            placed[(d_in, d_out, c)] = (shard_V, shard_U)
+        return DecompVU(stacks=placed, site_slots=self.site_slots)
+
+
 def init_decomp_vu_stacked(
     sites: tuple[SiteSpec, ...], key: Array
 ) -> dict[VUShape, tuple[Array, Array]]:
-    """`init_decomp_vu` computed as same-shape stacks: `{(d_in, d_out, C):
-    (V [n, d_in, C], U [n, C, d_out])}`, vmapped over the SAME per-site keys — so
-    `unstack_decomp_vu` recovers `init_decomp_vu`'s output BIT-IDENTICALLY (pinned by
-    `test_sharding`). Under jit the graph has 2×n_shapes sharded outputs instead of
-    2×n_sites, which cuts the production init compile ~10× (448 outputs → 14 at 32L)."""
+    """Seeded stack init: `{(d_in, d_out, C): (V [g, d_in, C], U [g, C, d_out])}`, vmapped
+    over per-site keys drawn in site order — each site's slice is BIT-IDENTICAL to the
+    retired per-site init's draw (pinned by `test_sharding`). Under jit the graph has
+    2×n_shapes sharded outputs instead of 2×n_sites, which cuts the production init compile
+    ~10× (448 outputs → 14 at 32L)."""
     keys = jax.random.split(key, 2 * len(sites))
     site_index = {spec.name: idx for idx, spec in enumerate(sites)}
     stacked: dict[VUShape, tuple[Array, Array]] = {}
@@ -151,17 +184,29 @@ def init_decomp_vu_stacked(
     return stacked
 
 
-def unstack_decomp_vu(
-    sites: tuple[SiteSpec, ...], stacked: dict[VUShape, tuple[Array, Array]]
-) -> DecompVU:
-    """Slice `init_decomp_vu_stacked`'s per-shape stacks back into the per-site DecompVU."""
-    vu: dict[str, tuple[Array, Array]] = {}
-    for shape, specs in vu_shape_groups(sites).items():
-        Vs, Us = stacked[shape]
-        assert Vs.shape[0] == len(specs), (Vs.shape, len(specs))
-        for j, spec in enumerate(specs):
-            vu[spec.name] = (Vs[j], Us[j])
-    return DecompVU(vu={spec.name: vu[spec.name] for spec in sites})
+def decomp_vu_from_sites(vu: dict[str, tuple[Array, Array]]) -> DecompVU:
+    """Build the stacked `DecompVU` from a per-site `{name: (V, U)}` dict (site order =
+    dict order). The explicit-arrays constructor for toys and tests; the trainer inits
+    directly in the stacked layout (`init_decomp_vu`)."""
+    sites = tuple(
+        SiteSpec(name=name, d_in=V.shape[0], d_out=U.shape[1], C=V.shape[1])
+        for name, (V, U) in vu.items()
+    )
+    stacks = {
+        shape: (
+            jnp.stack([vu[s.name][0] for s in specs]),
+            jnp.stack([vu[s.name][1] for s in specs]),
+        )
+        for shape, specs in vu_shape_groups(sites).items()
+    }
+    return DecompVU(stacks=stacks, site_slots=site_slots_for(sites))
+
+
+def init_decomp_vu(sites: tuple[SiteSpec, ...], key: Array) -> DecompVU:
+    """Small random fp32 V ~ N(0, d_in^-0.5), U ~ N(0, C^-0.5) per site, built directly in
+    the stacked persistence layout; the weight-delta channel carries the faithfulness
+    residual at init (before faithfulness warmup)."""
+    return DecompVU(stacks=init_decomp_vu_stacked(sites, key), site_slots=site_slots_for(sites))
 
 
 def site_out(
@@ -181,15 +226,15 @@ def site_out(
     # Pin the decomposed matmuls DATA-PARALLEL over the FULL mesh: the d_in/d_out-space
     # activation `x` stays batch-sharded over `('replicate', 'fsdp')`, feature-replicated, and
     # the component-space activation `x@V` stays batch-sharded, C-REPLICATED (no TP axis).
-    # This forces the `fsdp`-sharded V/U masters to be GATHERED for compute and their grads
-    # reduce-scattered back on `fsdp` (symmetric FSDP on NVLink — the intended layout).
-    # WITHOUT pinning `x`, the weight-grad backward is free to instead shard `x`'s feature
-    # dim on `fsdp` and REPLICATE the batch (the forward gathers V, the backward does not),
-    # which GSPMD can't reshard cheaply -> involuntary full rematerialization -> OOM. Pinning
-    # the activations (not V/U) keeps the weights as plain matmul args. Guarded so it's a
-    # no-op off-mesh (CPU tests / single device); `run.py` sets the global mesh. waist is
-    # `[*leading, d]`, leading = (batch, *position): pin batch over the full mesh (positions +
-    # feature replicated for `x`; C replicated for `x@V`).
+    # This forces the sharded V/U masters to be GATHERED for compute and their grads
+    # reduced back to the master layout (symmetric — the intended layout). WITHOUT pinning
+    # `x`, the weight-grad backward is free to instead shard `x`'s feature dim and REPLICATE
+    # the batch (the forward gathers V, the backward does not), which GSPMD can't reshard
+    # cheaply -> involuntary full rematerialization -> OOM. Pinning the activations (not
+    # V/U) keeps the weights as plain matmul args. Guarded so it's a no-op off-mesh (CPU
+    # tests / single device); `run.py` sets the global mesh. waist is `[*leading, d]`,
+    # leading = (batch, *position): pin batch over the full mesh (positions + feature
+    # replicated for `x`; C replicated for `x@V`).
     on_mesh = not jax.sharding.get_abstract_mesh().empty
     batch_axes = ("replicate", "fsdp")
     if on_mesh:
@@ -209,8 +254,8 @@ def site_out(
     if delta_mask is not None:
         # `(x @ Δ.T)` for `Δ = W − (V@U).T`, expanded to activation space as
         # `x@W.T − (x@V)@U` so the `[d_out, d_in]` weight delta is NEVER formed. Under
-        # FSDP that delta would mix V's dp-sharded d_in with U's dp-sharded d_out (two dims
-        # demanding the dp axis) and force a replicate-then-repartition reshard; the
+        # FSDP that delta would mix V's sharded d_in with U's sharded d_out (two dims
+        # demanding the data axis) and force a replicate-then-repartition reshard; the
         # activation-space form is all activation×weight matmuls that shard cleanly.
         # (Still a bf16-rounding DIVERGENCE vs the fp32 oracle delta — accepted; the
         # faithfulness loss uses the fp32 `weight_deltas`, SPEC N2, not this path.)

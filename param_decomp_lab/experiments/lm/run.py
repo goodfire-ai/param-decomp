@@ -481,7 +481,7 @@ def _make_lm_eval_fn(
             if perm_spec.want_uv_plots:
                 components = {
                     name: (np.asarray(V), np.asarray(U))
-                    for name, (V, U) in state.components.vu.items()
+                    for name, (V, U) in state.components.sites_items()
                 }
             slow_renderer.submit(
                 partial(

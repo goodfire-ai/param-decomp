@@ -80,7 +80,7 @@ def test_grid_step_ci_xv_and_masked_max_match_hand_rolled():
         np.testing.assert_allclose(ci, ci_exp, rtol=1e-4, atol=1e-4)
         xv = np.asarray(xv_grids[site])
         assert xv.shape == (n_pad, C) and np.all(np.isfinite(xv))
-        _, u = vu.vu[site]
+        _, u = vu.site(site)
         out_got = np.asarray(outputs[site])[:, ANSWER_POSITION, :].astype(np.float32)
         np.testing.assert_allclose(out_got, xv @ np.asarray(u, np.float32), atol=1e-2)
         # max CI is over the REAL rows only — the garbage tail must not decide liveness

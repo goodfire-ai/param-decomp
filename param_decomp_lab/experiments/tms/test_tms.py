@@ -229,7 +229,7 @@ def test_step_trains_positionless_no_persistent_sources():
     assert state.adversaries == {}
     # fp32 masters preserved
     assert isinstance(state.components, DecompVU)
-    for V, U in state.components.vu.values():
+    for _, (V, U) in state.components.sites_items():
         assert V.dtype == jnp.float32 and U.dtype == jnp.float32
 
 

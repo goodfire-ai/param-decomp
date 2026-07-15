@@ -28,7 +28,7 @@ import numpy as np
 jax.config.update("jax_enable_x64", False)
 
 from param_decomp.adversary import source_masks  # noqa: E402
-from param_decomp.components import DecompVU, site_out  # noqa: E402
+from param_decomp.components import DecompVU, decomp_vu_from_sites, site_out  # noqa: E402
 from param_decomp.losses import (  # noqa: E402
     faithfulness_loss,
     importance_minimality_terms,
@@ -104,8 +104,8 @@ def _build(f: dict[str, np.ndarray]):
     ]
     # inv_freq unused (attn zeroed); a dummy valid-shaped array.
     inv_freq = jnp.ones((d // 4,), jnp.float32)
-    vu = DecompVU(
-        vu={
+    vu = decomp_vu_from_sites(
+        {
             site_name(i, kind): (a(f"V{kind[0]}_{i}"), a(f"U{kind[0]}_{i}"))
             for i in range(n_layers)
             for kind in MLP_KINDS

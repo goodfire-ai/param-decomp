@@ -141,7 +141,7 @@ def run_tms_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) 
         ci_lower, ci_upper = single_feature_ci(lm, state.ci_fn)
         toy_uv_eval.log_uv_figure(
             uv_spec,
-            state.components.vu,
+            dict(state.components.sites_items()),
             ci_upper,
             now_step,
             wandb_active=built.run.wandb is not None,

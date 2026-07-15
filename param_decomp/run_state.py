@@ -78,12 +78,14 @@ def clip_by_global_norm_with_eps(max_norm: float, eps: float) -> optax.GradientT
     return optax.GradientTransformation(init, update)
 
 
-def chunk_stacked_muon_dimension_numbers(params: optax.Params) -> optax.Params:
-    """Muon leaf labeling for the chunkwise CI fn's per-chunk stacks (`ci_fn.py`): every
-    3D leaf is a `[n_chunks, d_in, d_out]` stack of `x @ W` matrices — orthogonalize the
-    trailing two axes, chunk axis batched — and everything else (`[n_chunks, d]` bias
-    stacks) takes the Adam fallback. optax's default rule (2D → muon) would do the
-    REVERSE on this tree: NS-orthogonalize the bias stacks and Adam the matrices."""
+def stacked_muon_dimension_numbers(params: optax.Params) -> optax.Params:
+    """Muon leaf labeling for matrix-STACK trees: every 3D leaf is a `[stack, a, b]` stack
+    of matrices — orthogonalize the trailing two axes, stack axis batched — and everything
+    else (e.g. the CI fn's `[n_chunks, d]` bias stacks) takes the Adam fallback. Covers
+    BOTH optimizer groups now: the chunkwise CI fn's per-chunk stacks (`ci_fn.py`) and the
+    owner-partitioned V/U shape-group stacks (`components.py` — all leaves 3D, so the
+    fallback never fires there). optax's default rule (2D → muon) would Adam every V/U
+    leaf silently and, on the CI tree, NS-orthogonalize the bias stacks instead."""
     dims = optax.contrib.MuonDimensionNumbers(reduction_axis=-2, output_axis=-1)
     return jax.tree.map(lambda leaf: dims if leaf.ndim == 3 else None, params)
 
@@ -144,10 +146,10 @@ def build_optimizers(pd: PDConfig, mesh: Mesh | None):
     sched_vu = optax_schedule(pd.components_optimizer.lr_schedule, pd.steps)
     sched_ci = optax_schedule(pd.ci_fn_optimizer.lr_schedule, pd.steps)
     opt_vu = _optimizer_with_clip(
-        pd.components_optimizer, sched_vu, muon_dimension_numbers=None, mesh=mesh
+        pd.components_optimizer, sched_vu, stacked_muon_dimension_numbers, mesh=mesh
     )
     ci_muon_dim_nums = (
-        chunk_stacked_muon_dimension_numbers
+        stacked_muon_dimension_numbers
         if isinstance(pd.ci_config, ChunkwiseTransformerCiConfig)
         else None
     )

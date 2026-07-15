@@ -59,9 +59,6 @@ from param_decomp.components import (
     DecompVU,
     SiteSpec,
     init_decomp_vu,
-    init_decomp_vu_stacked,
-    unstack_decomp_vu,
-    vu_shape_groups,
 )
 from param_decomp.configs import BSCScope, SCScope
 from param_decomp.sharding import hsdp_mesh, place_via_shardings
@@ -85,25 +82,12 @@ def place_target(tgt: LlamaDecomposedModel, mesh: Mesh) -> LlamaDecomposedModel:
 
 
 def init_decomp_vu_placed(sites: tuple[SiteSpec, ...], key: PRNGKeyArray, mesh: Mesh) -> DecompVU:
-    """Seeded per-site V/U init placed by `DecompVU.shardings`, bit-identical to
-    `init_decomp_vu` (pinned by `test_sharding`) but compiled in two cheap stages: the RNG
-    runs vmap-STACKED per V/U shape (2×n_shapes sharded outputs instead of 2×n_sites — the
-    SPMD/layout pass over a 448-output RNG graph was a multi-minute compile at 32L), then a
-    trivial slice jit fans the stacks out to the per-site layout. The stack axis is
-    unsharded (each trailing spec is the per-site spec behind a leading None). The stacked
-    copy cannot be buffer-donated into the split outputs, so init peak briefly holds ONE
-    extra shard-local copy of the params (÷N; a few GB/rank at production dp32, against
-    an init-time-empty HBM), freed when the fan-out returns."""
-    per_site_shardings = eqx.filter_eval_shape(partial(init_decomp_vu, sites), key).shardings(mesh)
-    stacked_shardings = {
-        shape: tuple(
-            NamedSharding(mesh, P(None, *per_site_shardings.vu[specs[0].name][i].spec))
-            for i in range(2)
-        )
-        for shape, specs in vu_shape_groups(sites).items()
-    }
-    stacked = jax.jit(partial(init_decomp_vu_stacked, sites), out_shardings=stacked_shardings)(key)
-    return jax.jit(partial(unstack_decomp_vu, sites), out_shardings=per_site_shardings)(stacked)
+    """Seeded V/U init placed by `DecompVU.shardings` (the owner-partitioned stack layout),
+    values bit-identical to the retired per-site init (pinned by `test_sharding`). One jit,
+    2×n_shapes sharded outputs — the persistence layout IS the stacked layout, so the old
+    two-stage stack-then-unstack fan-out (and its transient extra copy) is gone."""
+    placement = eqx.filter_eval_shape(partial(init_decomp_vu, sites), key).shardings(mesh)
+    return jax.jit(partial(init_decomp_vu, sites), out_shardings=placement)(key)
 
 
 def init_ci_fn_placed(

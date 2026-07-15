@@ -277,7 +277,7 @@ def test_step_trains_positionless_no_persistent_sources():
     assert int(state.step) == 6
     assert state.adversaries == {}  # no persistent sources for the stochastic configs
     assert isinstance(state.components, DecompVU)
-    for V, U in state.components.vu.values():
+    for _, (V, U) in state.components.sites_items():
         assert V.dtype == jnp.float32 and U.dtype == jnp.float32
 
 

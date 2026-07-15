@@ -208,7 +208,7 @@ def test_masked_component_activations_pre_mask_and_matches_outputs():
     for s in names:
         assert acts[s].shape == (b, t, C)
         assert jnp.all(jnp.isfinite(acts[s]))
-        _, u = vu.vu[s]
+        _, u = vu.site(s)
         expected = acts[s].astype(jnp.float32) @ u.astype(jnp.float32)
         assert jnp.allclose(outputs[s].astype(jnp.float32), expected, atol=1e-2), s
 
@@ -443,7 +443,7 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
     assert losses[-1]["p_imp"] < 2.0
     # fp32 masters preserved through updates (SPEC N1).
     assert isinstance(state.components, DecompVU)
-    for V, U in state.components.vu.values():
+    for _, (V, U) in state.components.sites_items():
         assert V.dtype == jnp.float32 and U.dtype == jnp.float32
     assert isinstance(state.ci_fn, ChunkwiseTransformerCIFn)
     assert state.ci_fn.chunks.in_proj_w.dtype == jnp.float32
@@ -479,7 +479,7 @@ def test_decomp_vu_shapes_fp32():
     assert V_v.shape == (d, 12) and U_v.shape == (12, kvd)
     assert V_d.shape == (di, 8) and U_d.shape == (8, d)
     assert isinstance(vu, DecompVU)
-    assert all(a.dtype == jnp.float32 for pair in vu.vu.values() for a in pair)
+    assert all(a.dtype == jnp.float32 for pair in vu.stacks.values() for a in pair)
 
 
 def test_fresh_pgd_adversary_step():

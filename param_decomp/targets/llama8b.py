@@ -300,9 +300,9 @@ def _per_kind_dims(components: DecompVU) -> dict[str, tuple[int, int, int]]:
     uniformity, the precondition for the layer-`lax.scan` masked forward (it stacks each
     kind across layers, so every layer's matrix of that kind must be the same shape)."""
     kind_dims: dict[str, tuple[int, int, int]] = {}
-    for name, (V, U) in components.vu.items():
+    for name, (d_in, d_out, c), _slot in components.site_slots:
         kind = parse_site_name(name)[1]
-        dims = (V.shape[0], V.shape[1], U.shape[1])
+        dims = (d_in, c, d_out)
         assert kind_dims.setdefault(kind, dims) == dims, (
             f"per-kind dims must be uniform across layers for the scan masked forward: "
             f"{kind} {dims} != {kind_dims[kind]}"
@@ -318,22 +318,41 @@ def _stack_per_kind_vu(components: DecompVU, n_layers: int) -> dict[str, dict[st
     forward in a step, so they are built ONCE via `prepare_compute_weights` and shared.
     Per-kind dims (d_in, C, d_out) must be uniform across layers (asserted in `_per_kind_dims`)."""
     kind_dims = _per_kind_dims(components)
-    vu_dt = next(iter(components.vu.values()))[0].dtype
+    slot_of = {name: (shape, slot) for name, shape, slot in components.site_slots}
+    vu_dt = next(iter(components.stacks.values()))[0].dtype
     per_kind: dict[str, dict[str, Array]] = {}
     for kind, (d_in, C, d_out) in kind_dims.items():
         names = [site_name(layer, kind) for layer in range(n_layers)]
-        Vs = jnp.stack(
-            [
-                components.vu[n][0] if n in components.vu else jnp.zeros((d_in, C), vu_dt)
-                for n in names
-            ]
+        present = [slot_of[n] for n in names if n in slot_of]
+        shapes = {shape for shape, _ in present}
+        slots = [slot for _, slot in present]
+        contiguous = (
+            len(names) == len(present)
+            and len(shapes) == 1
+            and slots == list(range(slots[0], slots[0] + len(slots)))
         )
-        Us = jnp.stack(
-            [
-                components.vu[n][1] if n in components.vu else jnp.zeros((C, d_out), vu_dt)
-                for n in names
-            ]
-        )
+        if contiguous:
+            # Full-kind fast path: one shape group, consecutive slots — the per-kind scan
+            # stack is a STATIC SLICE of the resting stack (no restack, no zero-fill; the
+            # owner->compute reshard downstream is the only data movement).
+            (shape,) = shapes
+            Vs_all, Us_all = components.stacks[shape]
+            lo = slots[0]
+            Vs = Vs_all[lo : lo + len(slots)]
+            Us = Us_all[lo : lo + len(slots)]
+        else:
+            Vs = jnp.stack(
+                [
+                    components.site(n)[0] if n in slot_of else jnp.zeros((d_in, C), vu_dt)
+                    for n in names
+                ]
+            )
+            Us = jnp.stack(
+                [
+                    components.site(n)[1] if n in slot_of else jnp.zeros((C, d_out), vu_dt)
+                    for n in names
+                ]
+            )
         per_kind[kind] = {"V": Vs, "U": Us}
     return per_kind
 

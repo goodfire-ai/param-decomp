@@ -151,9 +151,13 @@ site-slot). NOTE: this is the pure-HSDP backup branch — the mesh is `(replicat
 NO tensor-parallel / Megatron-C axis (`fsdp` = the 8 intra-node NVLink GPUs, `replicate` =
 across nodes). The CI output C axis is NEVER sharded, so the per-site heads are a layout
 convenience here (they were load-bearing under the prior TP layout, which sliced a tp-sharded
-glued-ΣC head mid-site). **ZeRO-1 ÷N**: the trainable V/U + CI-fn fp32 masters AND their Adam
-m/v shard ÷N over the FULL mesh (`("replicate","fsdp")` on V's d_in / U's d_out / the CI fn's
-d_model) — the dominant optimizer-state memory scales 1/N, not the fixed 1/fsdp. The bf16
+glued-ΣC head mid-site). **Persistence layouts (÷N)**: the trainable V/U masters AND their
+optimizer moments persist as same-shape STACKS (`DecompVU.stacks`, owner-partitioned: stack
+axis ÷`replicate` — whole matrices owned per node-group, zero cross-node weight collectives,
+muon NS node-local — matrix d dims ÷`fsdp`, C ÷`tp`; SPEC D4 amendment 2026-07-15; per-group
+fallback to intra-matrix data sharding when a stack doesn't tile `replicate`). The CI-fn
+masters + moments keep intra-matrix ZeRO-1 (`("replicate","fsdp")` on d_model). Either way
+the dominant optimizer-state memory scales 1/N, not the fixed 1/fsdp. The bf16
 COMPUTE weights are reconstructed to the `fsdp`-sharded (÷fsdp) layout ONCE per step in ENTRY
 (the cross-`replicate` gather, off the hot path — `llama8b._reconstruct_compute_weights` /
 `ci_fn._reconstruct_ci_compute_weights` pin `P(None,"fsdp",...)` BEFORE the per-layer /

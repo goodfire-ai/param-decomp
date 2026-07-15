@@ -17,9 +17,9 @@ from pydantic import TypeAdapter
 from param_decomp.configs import AdamWOptimizerConfig, AnyOptimizerConfig, MuonOptimizerConfig
 from param_decomp.run_state import (
     _optimizer_with_clip,
-    chunk_stacked_muon_dimension_numbers,
     clip_by_global_norm_with_eps,
     optax_schedule,
+    stacked_muon_dimension_numbers,
 )
 from param_decomp.schedule import ScheduleConfig
 
@@ -145,7 +145,7 @@ def test_muon_orthogonalizes_2d_leaves_and_adam_falls_back_elsewhere():
 
 
 def test_muon_chunk_stacked_dimension_numbers_orthogonalize_3d_and_adam_2d_bias_stacks():
-    """SPEC S20 amendment (2026-07-11): under `chunk_stacked_muon_dimension_numbers` a 3D
+    """SPEC S20 amendment (2026-07-11): under `stacked_muon_dimension_numbers` a 3D
     `[n_chunks, d_in, d_out]` matrix stack is NS-orthogonalized per chunk slice, while a 2D
     `[n_chunks, d]` bias stack takes the Adam fallback — the reverse of optax's default 2D
     rule, which on the chunkwise CI-fn tree would orthogonalize the bias stacks."""
@@ -158,7 +158,7 @@ def test_muon_chunk_stacked_dimension_numbers_orthogonalize_3d_and_adam_2d_bias_
     )
     lr = 1e-3
     opt = _optimizer_with_clip(
-        muon_cfg, lambda count: jnp.float32(lr), chunk_stacked_muon_dimension_numbers, mesh=None
+        muon_cfg, lambda count: jnp.float32(lr), stacked_muon_dimension_numbers, mesh=None
     )
     key = jax.random.key(0)
     n_chunks = 3
@@ -205,7 +205,7 @@ def test_stacked_muon_update_matches_optax_muon():
         name: jax.random.normal(jax.random.fold_in(key, i), p.shape)
         for i, (name, p) in enumerate(params.items())
     }
-    dim_nums = chunk_stacked_muon_dimension_numbers
+    dim_nums = stacked_muon_dimension_numbers
 
     from typing import Literal
 
@@ -250,7 +250,7 @@ def test_stacked_muon_sharded_matches_unsharded():
         name: jax.random.normal(jax.random.fold_in(key, i), p.shape)
         for i, (name, p) in enumerate(params.items())
     }
-    dim_nums = chunk_stacked_muon_dimension_numbers
+    dim_nums = stacked_muon_dimension_numbers
 
     def one_update(mesh: "Mesh | None"):
         opt = stacked_muon(
