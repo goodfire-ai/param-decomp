@@ -15,6 +15,8 @@
 #      1 -> 4 (ONE shared 2048/8L/16h/8192ff CI transformer, as the paper; was 4 of
 #      them) + input_tap: all_block_resids (4 RMS-normed concat resid streams,
 #      D=3072 — the paper fed all 24 per-matrix inputs, D=27648; deliberately less).
+#   6. C >= rank everywhere: q_proj/k_proj C 512 -> 768 (= min(d_in, d_out); the paper
+#      ran them sub-rank). C_total 38912 -> 40960.
 # Sweep arms derive from this file, varying ONLY the optimizer lrs (and whatever
 # Lucius's round-2 issues dictate). Launch: pd-lm param_decomp/configs/jose2/<f>.yaml
 cadence:
@@ -106,9 +108,9 @@ pd:
     module_pattern: h.*.mlp.c_fc
   - C: 3584
     module_pattern: h.*.mlp.down_proj
-  - C: 512
+  - C: 768
     module_pattern: h.*.attn.q_proj
-  - C: 512
+  - C: 768
     module_pattern: h.*.attn.k_proj
   - C: 1024
     module_pattern: h.*.attn.v_proj
