@@ -124,8 +124,12 @@ def _weightless_rms_norm(x: Array, eps: float) -> Array:
 
 
 class CIBlock(eqx.Module):
-    """Pre-norm block: weightless-RMSNorm → bidirectional RoPE MHA → residual;
-    weightless-RMSNorm → Linear+b → GELU → Linear+b → residual."""
+    """Pre-norm block: weightless-RMSNorm → bidirectional RoPE attention → residual;
+    weightless-RMSNorm → Linear+b → GELU → Linear+b → residual.
+
+    `n_kv_head < n_head` is grouped-query attention: `wk`/`wv` project to `n_kv_head * head_dim`
+    and `jax.nn.dot_product_attention` broadcasts each K/V head over its group of query heads.
+    `n_kv_head == n_head` is MHA."""
 
     wq: Array
     wk: Array
@@ -136,6 +140,7 @@ class CIBlock(eqx.Module):
     w2: Array
     b2: Array
     n_head: int = eqx.field(static=True)
+    n_kv_head: int = eqx.field(static=True)
     eps: float = eqx.field(static=True)
 
     def shardings(self, mesh: Mesh) -> "CIBlock":
@@ -144,6 +149,8 @@ class CIBlock(eqx.Module):
         MLP is Megatron-on-mlp_hidden including the `tp` axis (so it shards ÷N, not ÷(rep·fsdp)):
 
         - qkv (`[nc, head_out, d_model_in]`): d_model (axis2) ÷(rep·fsdp), head + tp replicated.
+          `head_out` is `n_kv_head * head_dim` for k/v under GQA — the sharded axis is the
+          d_model INPUT, so a narrower K/V head_out changes no sharding.
         - out-proj (`[nc, d_model_out, head_in]`): d_model (axis1) ÷(rep·fsdp), head + tp replicated.
         - w1 up-proj (`[nc, d_model_in, mlp_hidden_out]`): **mlp_hidden (axis2) ÷N** (incl tp),
           d_model replicated (column-parallel).
@@ -182,16 +189,18 @@ class CIBlock(eqx.Module):
         t = x.shape[1]
         h = _weightless_rms_norm(x, self.eps)
 
-        def heads(w: Array) -> Array:  # [b, t, d] -> [b, nh, t, hd]  (RoPE layout)
+        def heads(w: Array, n_head: int) -> Array:  # [b, t, d] -> [b, nh, t, hd]  (RoPE layout)
             proj = einops.einsum(h, w, "b t i, o i -> b t o")
-            return einops.rearrange(proj, "b t (nh hd) -> b nh t hd", nh=self.n_head)
+            return einops.rearrange(proj, "b t (nh hd) -> b nh t hd", nh=n_head)
 
-        q, k, v = heads(self.wq), heads(self.wk), heads(self.wv)
+        q = heads(self.wq, self.n_head)
+        k, v = heads(self.wk, self.n_kv_head), heads(self.wv, self.n_kv_head)
         cos, sin = rope_cos_sin(inv_freq, t, x.dtype)
-        q, k = apply_rope(q, k, cos, sin)
+        q, k = apply_rope(q, k, cos, sin)  # cos/sin broadcast over the head axis: any count
         qt, kt, vt = (einops.rearrange(a, "b nh t hd -> b t nh hd") for a in (q, k, v))
         # cuDNN flash on GPU (its partitioner requires device-local heads — true here, no
-        # head-sharding); XLA elsewhere (CPU tests have no cuDNN). Bidirectional.
+        # head-sharding); XLA elsewhere (CPU tests have no cuDNN). Bidirectional. Fewer K/V
+        # heads than query heads is GQA, grouped natively by dot_product_attention.
         impl = "cudnn" if jax.default_backend() == "gpu" else "xla"
         y = jax.nn.dot_product_attention(qt, kt, vt, is_causal=False, implementation=impl)
         x = x + einops.einsum(
@@ -233,13 +242,17 @@ class ChunkwiseTransformerCIArch:
     `input_dim` is the per-chunk concatenated input width — a plain linear-layer input
     dimension. The lab computes it from the taps it authored (their widths summed); core
     stays agnostic to what the taps mean, so no transformer concept (residual width) leaks
-    in. All chunks share one `input_dim` (the vmap homogeneity requirement)."""
+    in. All chunks share one `input_dim` (the vmap homogeneity requirement).
+
+    `n_kv_heads` is RESOLVED — a concrete K/V head count, `== n_heads` for MHA (the schema's
+    `null` is resolved lab-side). It divides `n_heads`."""
 
     chunks: tuple[Chunk, ...]
     input_dim: int
     d_model: int
     n_blocks: int
     n_heads: int
+    n_kv_heads: int
     mlp_hidden: int
 
 
@@ -474,6 +487,7 @@ def _init_chunk_transformer(
     can't silently drift out of sync with the number of draws."""
     relu_gain = 2.0**0.5
     d, mlp = arch.d_model, arch.mlp_hidden
+    d_kv = (d // arch.n_heads) * arch.n_kv_heads  # K/V project to their own head count (GQA)
 
     def kaiming(k: PRNGKeyArray, shape: tuple[int, ...], fan_in: int, gain: float) -> Array:
         return jax.random.normal(k, shape) * (gain / fan_in**0.5)
@@ -485,11 +499,11 @@ def _init_chunk_transformer(
     def block(bkey: PRNGKeyArray) -> CIBlock:
         kq, kk, kv, ko, k1, k2 = jax.random.split(bkey, 6)
         return CIBlock(
-            wq=attn_default(kq, (d, d), d), wk=attn_default(kk, (d, d), d),
-            wv=attn_default(kv, (d, d), d), wo=attn_default(ko, (d, d), d),
+            wq=attn_default(kq, (d, d), d), wk=attn_default(kk, (d_kv, d), d),
+            wv=attn_default(kv, (d_kv, d), d), wo=attn_default(ko, (d, d), d),
             w1=kaiming(k1, (d, mlp), d, relu_gain), b1=jnp.zeros((mlp,)),
             w2=kaiming(k2, (mlp, d), mlp, 1.0), b2=jnp.zeros((d,)),
-            n_head=arch.n_heads, eps=CI_FN_RMS_EPS,
+            n_head=arch.n_heads, n_kv_head=arch.n_kv_heads, eps=CI_FN_RMS_EPS,
         )  # fmt: skip
 
     in_key, out_key, *block_keys = jax.random.split(key, arch.n_blocks + 2)
@@ -536,6 +550,7 @@ def init_chunkwise_transformer_ci_fn(
 
     hd = arch.d_model // arch.n_heads
     assert arch.d_model % arch.n_heads == 0 and hd % 2 == 0, (arch.d_model, arch.n_heads)
+    assert arch.n_heads % arch.n_kv_heads == 0, (arch.n_heads, arch.n_kv_heads)
     inv_freq = 1.0 / (10000.0 ** (jnp.arange(0, hd, 2, dtype=jnp.float32) / hd))
 
     # vmap over the per-chunk keys instead of unrolling n_chunks python-side inits and

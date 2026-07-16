@@ -153,6 +153,7 @@ def test_jitted_sharded_inits_match_eager_values():
         d_model=16,
         n_blocks=1,
         n_heads=2,
+        n_kv_heads=2,
         mlp_hidden=8 * n,
     )
     ci_placed = init_ci_fn_placed(arch, sites, jax.random.PRNGKey(2), mesh)

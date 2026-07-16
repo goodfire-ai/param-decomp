@@ -140,6 +140,7 @@ def _build_trajectory_ci_fn(lm: DecomposedModel, key: jnp.ndarray):
         d_model=16,
         n_blocks=2,
         n_heads=2,
+        n_kv_heads=2,
         mlp_hidden=32,
     )
     return build_ci_fn(arch, lm.sites, key)

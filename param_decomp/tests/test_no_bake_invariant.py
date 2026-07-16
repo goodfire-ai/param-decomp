@@ -57,6 +57,7 @@ def _build_step_and_args():
         d_model=8,
         n_blocks=1,
         n_heads=2,
+        n_kv_heads=2,
         mlp_hidden=16,
     )
     ci_fn = build_ci_fn(ci_arch, lm.sites, random.PRNGKey(11))

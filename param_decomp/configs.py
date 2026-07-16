@@ -96,19 +96,32 @@ class ChunkwiseTransformerCiConfig(BaseConfig):
     """Chunkwise-transformer CI fn (LMs). Each chunk is `blocks_per_chunk` consecutive
     transformer blocks; its input is the residual stream entering the chunk and its output
     is CI for every matrix site in those blocks. `d_model`/`n_blocks`/`n_heads`/`mlp_hidden`
-    size the per-chunk CI transformer (`d_model % n_heads == 0`; head_dim even for RoPE)."""
+    size the per-chunk CI transformer (`d_model % n_heads == 0`; head_dim even for RoPE).
+
+    `n_kv_heads` selects grouped-query attention: `n_heads // n_kv_heads` query heads share
+    each K/V head. It narrows `wk`/`wv` alone — head_dim, the RoPE tables, `wq`/`wo` and every
+    sharding are identical to MHA. `null` means MHA (`n_kv_heads == n_heads`); the resolved
+    `ChunkwiseTransformerCIArch.n_kv_heads` is always a concrete count."""
 
     type: Literal["chunkwise_transformer"] = "chunkwise_transformer"
     blocks_per_chunk: PositiveInt
     d_model: PositiveInt
     n_blocks: PositiveInt
     n_heads: PositiveInt
+    n_kv_heads: PositiveInt | None = Field(
+        default=None, description="GQA K/V head count; null = MHA (n_kv_heads == n_heads)"
+    )
     mlp_hidden: PositiveInt
 
     @model_validator(mode="after")
     def validate_heads(self) -> Self:
         assert self.d_model % self.n_heads == 0, (self.d_model, self.n_heads)
         assert (self.d_model // self.n_heads) % 2 == 0, "head_dim must be even for RoPE"
+        if self.n_kv_heads is not None:
+            assert self.n_heads % self.n_kv_heads == 0, (
+                "n_heads must be divisible by n_kv_heads (each K/V head serves an equal group "
+                f"of query heads): {self.n_heads} % {self.n_kv_heads}"
+            )
         return self
 
 

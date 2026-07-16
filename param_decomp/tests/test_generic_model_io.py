@@ -245,6 +245,7 @@ def test_train_step_runs_through_generic_target():
         d_model=8,
         n_blocks=1,
         n_heads=2,
+        n_kv_heads=2,
         mlp_hidden=16,
     )
     state, opt_vu, opt_ci = _initial_state(lm, components, ci_arch)

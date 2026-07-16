@@ -104,6 +104,7 @@ def _build_sharded(seed: int):
         d_model=16,
         n_blocks=2,
         n_heads=2,
+        n_kv_heads=2,
         mlp_hidden=32,
     )
     vu = init_decomp_vu_placed(lm.sites, jax.random.PRNGKey(seed), mesh)

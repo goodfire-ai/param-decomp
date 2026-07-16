@@ -90,6 +90,7 @@ def _chunkwise_arch(lm: DecomposedModel, cfg: LlamaConfig) -> ChunkwiseTransform
         d_model=16,
         n_blocks=2,
         n_heads=2,
+        n_kv_heads=2,
         mlp_hidden=32,
     )
 
