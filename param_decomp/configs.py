@@ -92,14 +92,24 @@ class GlobalMlpCiConfig(BaseConfig):
     )
 
 
+ChunkInputTap = Literal["first_block_resid", "all_block_resids"]
+"""Which activations each chunkwise-CI chunk reads. Extend here + add a match arm in the lab
+resolver (`experiments.lm.config._chunk_input_taps`)."""
+
+
 class ChunkwiseTransformerCiConfig(BaseConfig):
     """Chunkwise-transformer CI fn (LMs). Each chunk is `blocks_per_chunk` consecutive
-    transformer blocks; its input is the residual stream entering the chunk and its output
+    transformer blocks; `input_tap` names which activations the chunk reads and its output
     is CI for every matrix site in those blocks. `d_model`/`n_blocks`/`n_heads`/`mlp_hidden`
     size the per-chunk CI transformer (`d_model % n_heads == 0`; head_dim even for RoPE)."""
 
     type: Literal["chunkwise_transformer"] = "chunkwise_transformer"
     blocks_per_chunk: PositiveInt
+    input_tap: ChunkInputTap = "first_block_resid"
+    """`first_block_resid`: the residual stream entering the chunk's first block — one tap.
+    `all_block_resids`: the residual entering EVERY block the chunk runs over, RMS-normed
+    per tap and concatenated (`ci_fn.Chunk.input_taps` is generic over tap count) —
+    `blocks_per_chunk`x the per-chunk CI transformer's input width."""
     d_model: PositiveInt
     n_blocks: PositiveInt
     n_heads: PositiveInt

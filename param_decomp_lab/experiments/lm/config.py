@@ -32,6 +32,7 @@ from param_decomp.components import SiteC
 from param_decomp.configs import (
     ArithmeticCIGridConfig,
     CEandKLLossesConfig,
+    ChunkInputTap,
     ChunkwiseTransformerCiConfig,
     CI_L0Config,
     CIHistogramsConfig,
@@ -318,13 +319,23 @@ def _resolve_d_resid(target: AnyLMTargetConfig) -> int:
             return llama_simple_mlp.load_model_config(cache_dir).n_embd
 
 
-def _resolved_chunks(target: AnyLMTargetConfig, blocks_per_chunk: int) -> tuple[Chunk, ...]:
+def _chunk_input_taps(input_tap: ChunkInputTap, chunk_blocks: list[int]) -> tuple[str, ...]:
+    """The tap keys a chunk reads, from its config source + the blocks it spans."""
+    match input_tap:
+        case "first_block_resid":
+            return (f"resid.{chunk_blocks[0]}",)
+        case "all_block_resids":
+            return tuple(f"resid.{b}" for b in chunk_blocks)
+
+
+def _resolved_chunks(
+    target: AnyLMTargetConfig, blocks_per_chunk: int, input_tap: ChunkInputTap
+) -> tuple[Chunk, ...]:
     """Group the decomposition sites into chunks of `blocks_per_chunk` CONSECUTIVE blocks.
 
-    Each chunk reads ONE residual tap — `resid.{first_block_of_chunk}`, the residual
-    entering the chunk — and emits CI for every site in those blocks. Sites are grouped by
-    block, the distinct blocks sorted ascending, then partitioned into consecutive
-    `blocks_per_chunk`-block groups (no ragged tail)."""
+    Each chunk reads the taps `input_tap` selects over its blocks and emits CI for every
+    site in those blocks. Sites are grouped by block, the distinct blocks sorted ascending,
+    then partitioned into consecutive `blocks_per_chunk`-block groups (no ragged tail)."""
     sites_by_block: dict[int, list[str]] = {}
     for spec in target.sites:
         sites_by_block.setdefault(_block_of_site(target, spec.name), []).append(spec.name)
@@ -336,7 +347,9 @@ def _resolved_chunks(target: AnyLMTargetConfig, blocks_per_chunk: int) -> tuple[
     for start in range(0, len(blocks), blocks_per_chunk):
         chunk_blocks = blocks[start : start + blocks_per_chunk]
         output_sites = tuple(name for block in chunk_blocks for name in sites_by_block[block])
-        chunks.append(Chunk(input_taps=(f"resid.{chunk_blocks[0]}",), output_sites=output_sites))
+        chunks.append(
+            Chunk(input_taps=_chunk_input_taps(input_tap, chunk_blocks), output_sites=output_sites)
+        )
     return tuple(chunks)
 
 
@@ -344,10 +357,12 @@ def _resolve_chunkwise_ci_arch(
     target: AnyLMTargetConfig, ci: ChunkwiseTransformerCiConfig
 ) -> ChunkwiseTransformerCIArch:
     """Resolve the chunkwise-transformer arch against the LM target: the chunk generator
-    (`_resolved_chunks`) + the per-chunk input width (`_resolve_d_resid`)."""
+    (`_resolved_chunks`) + the per-chunk input width (`_resolve_d_resid`, x`blocks_per_chunk`
+    when `all_block_resids` concatenates one tap per block)."""
+    n_taps_per_chunk = ci.blocks_per_chunk if ci.input_tap == "all_block_resids" else 1
     return ChunkwiseTransformerCIArch(
-        chunks=_resolved_chunks(target, ci.blocks_per_chunk),
-        input_dim=_resolve_d_resid(target),
+        chunks=_resolved_chunks(target, ci.blocks_per_chunk, ci.input_tap),
+        input_dim=_resolve_d_resid(target) * n_taps_per_chunk,
         d_model=ci.d_model,
         n_blocks=ci.n_blocks,
         n_heads=ci.n_heads,

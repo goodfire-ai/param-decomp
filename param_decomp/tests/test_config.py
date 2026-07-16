@@ -5,6 +5,7 @@ helpers as an explicit arg (`RUN_ID` here), and the run dir derives from it
 (`PARAM_DECOMP_OUT_DIR/runs/<run_id>`)."""
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -341,6 +342,46 @@ def test_arbitrary_sites_with_per_site_c_convert():
         SiteC("layers.18.self_attn.v_proj", 32),
         SiteC("layers.20.mlp.up_proj", 64),
     )
+
+
+def test_all_block_resids_concatenates_one_tap_per_block():
+    """`input_tap` default (`first_block_resid`): a multi-block chunk reads ONE tap — the
+    residual entering its first block. `all_block_resids` concatenates one tap per block in
+    the chunk, widening `ci_fn.input_dim` `blocks_per_chunk`x."""
+    from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch
+
+    raw = _reference_lm_raw()
+
+    def _two_block_cfg(input_tap: str) -> dict[str, Any]:
+        return dict(
+            raw,
+            pd=dict(
+                raw["pd"],
+                ci_config=dict(raw["pd"]["ci_config"], blocks_per_chunk=2, input_tap=input_tap),
+                decomposition_targets=[
+                    {"module_pattern": "layers.18.mlp.down_proj", "C": 64},
+                    {"module_pattern": "layers.19.mlp.down_proj", "C": 64},
+                ],
+            ),
+        )
+
+    output_sites = ("layers.18.mlp.down_proj", "layers.19.mlp.down_proj")
+
+    default_cfg = build_experiment_config(
+        LMExperimentConfig(**_two_block_cfg("first_block_resid")), RUN_ID
+    )
+    assert isinstance(default_cfg.ci_fn, ChunkwiseTransformerCIArch)
+    assert default_cfg.ci_fn.chunks == (Chunk(input_taps=("resid.18",), output_sites=output_sites),)
+    assert default_cfg.ci_fn.input_dim == 4096
+
+    all_taps_cfg = build_experiment_config(
+        LMExperimentConfig(**_two_block_cfg("all_block_resids")), RUN_ID
+    )
+    assert isinstance(all_taps_cfg.ci_fn, ChunkwiseTransformerCIArch)
+    assert all_taps_cfg.ci_fn.chunks == (
+        Chunk(input_taps=("resid.18", "resid.19"), output_sites=output_sites),
+    )
+    assert all_taps_cfg.ci_fn.input_dim == 4096 * 2
 
 
 def test_c49k_config_converts():
