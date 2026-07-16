@@ -100,7 +100,7 @@ git fetch --quiet --depth 1 "file://{source_repo}" "{snapshot_ref}"
 git checkout --quiet FETCH_HEAD
 cp "{run_dir}/.env" .env
 unset VIRTUAL_ENV
-DRIVER_MAJOR=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n 1 | cut -d. -f1)
+DRIVER_MAJOR=$(nvidia-smi --id=0 --query-gpu=driver_version --format=csv,noheader | cut -d. -f1)
 if [ "$DRIVER_MAJOR" -ge 580 ]; then CUDA_EXTRA=cuda13; else CUDA_EXTRA=cuda; fi
 echo "cuda extra: $CUDA_EXTRA (driver major $DRIVER_MAJOR)"
 uv sync --all-packages --no-dev --extra "$CUDA_EXTRA" --link-mode copy -q
