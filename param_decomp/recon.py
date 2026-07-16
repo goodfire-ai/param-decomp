@@ -30,6 +30,7 @@ from param_decomp.configs import (
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     MaskScopeLiteral,
+    MergedStochasticPGDReconLossConfig,
     PersistentPGDReconLossConfig,
     PGDInitStrategy,
     PGDReconLayerwiseLossConfig,
@@ -99,7 +100,24 @@ class PersistentSources:
     cfg: PersistentPGDReconLossConfig
 
 
-MaskSourceStrategy = StochasticSources | ConstantSources | FreshPGDSources | PersistentSources
+@dataclass(frozen=True)
+class MixedPersistentStochasticSources:
+    """The merged stochastic+PPGD strategy: per batch element, the persistent bundle's
+    sources (probability `cfg.adv_fraction`, routed all-live) or fresh `U[0,1]` (routed
+    per the entry's sampler). `state_key` indexes `TrainState.adversaries` like
+    `PersistentSources`."""
+
+    state_key: str
+    cfg: "MergedStochasticPGDReconLossConfig"
+
+
+MaskSourceStrategy = (
+    StochasticSources
+    | ConstantSources
+    | FreshPGDSources
+    | PersistentSources
+    | MixedPersistentStochasticSources
+)
 
 
 @dataclass(frozen=True)
@@ -305,14 +323,15 @@ def subset_chunk_plan(
 
 def persistent_configs(
     recon_terms: tuple[ReconLossTerm, ...],
-) -> dict[str, PersistentPGDReconLossConfig]:
-    """`state_key -> config` for every persistent recon term (SPEC S23: each key feeds
-    exactly one term). Derived from the terms, not stored separately — the config rides
-    each `PersistentSources` strategy."""
-    out: dict[str, PersistentPGDReconLossConfig] = {}
+) -> "dict[str, PersistentPGDReconLossConfig | MergedStochasticPGDReconLossConfig]":
+    """`state_key -> config` for every persistent-source-carrying recon term (SPEC S23:
+    each key feeds exactly one term). Derived from the terms, not stored separately — the
+    config rides each `PersistentSources` / `MixedPersistentStochasticSources` strategy;
+    both carry the same adversary fields (optimizer/scope/source_dtype/n_warmup_steps)."""
+    out: dict[str, PersistentPGDReconLossConfig | MergedStochasticPGDReconLossConfig] = {}
     for term in recon_terms:
         for entry in term.plan:
-            if isinstance(entry.sources, PersistentSources):
+            if isinstance(entry.sources, (PersistentSources, MixedPersistentStochasticSources)):
                 assert entry.sources.state_key not in out, entry.sources.state_key
                 out[entry.sources.state_key] = entry.sources.cfg
     return out
@@ -420,6 +439,17 @@ def build_loss_terms(
             case PGDReconLayerwiseLossConfig():
                 fresh = FreshPGDSources(cfg.init, cfg.n_steps, cfg.step_size, cfg.mask_scope)
                 plan = make_plan(per_site(site_names), AllRoutingConfig(), fresh, n_samples=1)
+                recon_terms.append(recon(cfg, plan))
+            case MergedStochasticPGDReconLossConfig():
+                schedule = cfg.optimizer.lr_schedule
+                assert schedule.fn_type == "constant" and schedule.final_val_frac == 1.0, schedule
+                key = unique_name(cfg)
+                plan = make_plan(
+                    one_chunk(site_names),
+                    cfg.routing,
+                    MixedPersistentStochasticSources(state_key=key, cfg=cfg),
+                    n_samples=1,
+                )
                 recon_terms.append(recon(cfg, plan))
             case PersistentPGDReconLossConfig():
                 schedule = cfg.optimizer.lr_schedule
