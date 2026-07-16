@@ -456,6 +456,7 @@ def run_decomposition_training(
     remat_recon_forwards: bool,
     remat_ci_fn: bool,
     ascend_replicate: bool,
+    sequence_recon_entries: bool,
     compiler_options: dict[str, bool | int | str],
     profile: ProfileConfig,
     sample_batch: Callable[[int], Any],
@@ -537,6 +538,7 @@ def run_decomposition_training(
         remat_recon_forwards=remat_recon_forwards,
         remat_ci_fn=remat_ci_fn,
         ascend_replicate=ascend_replicate,
+        sequence_recon_entries=sequence_recon_entries,
         compiler_options=compiler_options,
         mesh=mesh,
     )
