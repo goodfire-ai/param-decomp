@@ -29,6 +29,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.ad_checkpoint import checkpoint_name
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jax.typing import DTypeLike
@@ -397,20 +398,24 @@ def _stack_per_kind_vu(components: ComponentStacks, n_layers: int) -> dict[str, 
         present = [slot_of[n] for n in names if n in slot_of]
         shapes = {shape for shape, _ in present}
         slots = [slot for _, slot in present]
-        contiguous = (
+        stride = slots[1] - slots[0] if len(slots) > 1 else 1
+        arithmetic = (
             len(names) == len(present)
             and len(shapes) == 1
-            and slots == list(range(slots[0], slots[0] + len(slots)))
+            and stride >= 1
+            and slots == list(range(slots[0], slots[0] + stride * len(slots), stride))
         )
-        if contiguous:
-            # Full-kind fast path: one shape group, consecutive slots — the per-kind scan
-            # stack is a STATIC SLICE of the resting stack (no restack, no zero-fill; the
-            # owner->compute reshard downstream is the only data movement).
+        if arithmetic:
+            # Full-kind fast path: one shape group, slots an arithmetic progression — the
+            # per-kind scan stack is a STATIC (possibly strided) SLICE of the resting stack
+            # (no restack, no zero-fill; the owner->compute reshard downstream is the only
+            # data movement). Kinds sharing a shape group interleave layer-major (gate/up,
+            # and q/o when qd == d), so their slots stride by the kinds-per-group count.
             (shape,) = shapes
             Vs_all, Us_all = components.stacks[shape]
-            lo = slots[0]
-            Vs = Vs_all[lo : lo + len(slots)]
-            Us = Us_all[lo : lo + len(slots)]
+            lo, hi = slots[0], slots[-1] + 1
+            Vs = jax.lax.slice(Vs_all, (lo, 0, 0), (hi, *Vs_all.shape[1:]), (stride, 1, 1))
+            Us = jax.lax.slice(Us_all, (lo, 0, 0), (hi, *Us_all.shape[1:]), (stride, 1, 1))
         else:
             Vs = jnp.stack(
                 [
@@ -587,6 +592,25 @@ def _reconstruct_compute_weights(
             )
         out[kind] = pinned
     return out
+
+
+GATHERED_WEIGHTS_CHECKPOINT_NAME = "gathered_compute_weights"
+"""`checkpoint_name` tag on every full-layout (÷fsdp→full gathered) weight formed inside
+the checkpointed scan body — the masked-forward remat policy excludes this name from the
+saved set, so the backward RE-GATHERS the weights (cheap NVLink collectives) instead of
+holding one full gathered copy per recon forward across the fwd→bwd liverange."""
+
+
+def _gather_full_weight(w: Array, spec: P) -> Array:
+    """Form the full-layout compute weight INSIDE the checkpointed scan body: the explicit
+    per-layer sharding constraint anchors the ÷fsdp→full all-gather in the loop body (without
+    it GSPMD is free to hoist the gather of the WHOLE per-chunk stack out of the `lax.scan`
+    while-loop, where it stays resident from each forward until its backward), and the
+    `checkpoint_name` tag keeps the gathered value out of every remat save set. Constraint is
+    a no-op off-mesh (CPU tests / single device); the tag is transparent everywhere."""
+    if not jax.sharding.get_abstract_mesh().empty:
+        w = jax.lax.with_sharding_constraint(w, spec)
+    return checkpoint_name(w, GATHERED_WEIGHTS_CHECKPOINT_NAME)
 
 
 class GLUDecomposedModel(eqx.Module):
@@ -796,18 +820,30 @@ class GLUDecomposedModel(eqx.Module):
             if "V_scale" in e:  # fp8 QAG: gather the fp8 ÷fsdp weight to full d (½ bytes on the
                 # wire), THEN dequant to bf16 — the barrier keeps the convert after the gather so
                 # the collective moves fp8, not bf16.
-                v = dequantize_fp8(
-                    jax.lax.optimization_barrier(
-                        jax.lax.with_sharding_constraint(v, P(None, "tp"))
+                v = checkpoint_name(
+                    dequantize_fp8(
+                        jax.lax.optimization_barrier(
+                            jax.lax.with_sharding_constraint(v, P(None, "tp"))
+                        ),
+                        e["V_scale"],
                     ),
-                    e["V_scale"],
+                    GATHERED_WEIGHTS_CHECKPOINT_NAME,
                 )
-                u = dequantize_fp8(
-                    jax.lax.optimization_barrier(
-                        jax.lax.with_sharding_constraint(u, P("tp", None))
+                u = checkpoint_name(
+                    dequantize_fp8(
+                        jax.lax.optimization_barrier(
+                            jax.lax.with_sharding_constraint(u, P("tp", None))
+                        ),
+                        e["U_scale"],
                     ),
-                    e["U_scale"],
+                    GATHERED_WEIGHTS_CHECKPOINT_NAME,
                 )
+            else:
+                # bf16: the same in-body ÷fsdp→full gather anchor the fp8 path has (full on d,
+                # C stays ÷tp) — the per-layer gather lives INSIDE the checkpointed body, so it
+                # is transient in the forward and re-run in the remat'd backward.
+                v = _gather_full_weight(v, P(None, "tp"))
+                u = _gather_full_weight(u, P("tp", None))
             if "ci" in e:  # stochastic recompute: draw source from the per-layer key and build the
                 # mask INLINE (recomputed in the backward, not held — the shared `ci` stack + tiny
                 # key replace the per-forward mask stack).
@@ -882,21 +918,33 @@ class GLUDecomposedModel(eqx.Module):
             return x, None
 
         # Per-LAYER checkpoint of the scan BODY in BOTH modes — `remat` controls ONLY whether the
-        # layer ACTIVATIONS are recomputed; it NEVER controls the ÷fsdp→full V/U gather. That
-        # gather is a NON-dot collective, so it is never a saved residual under either policy — it
-        # re-gathers in the backward, transient one layer at a time (without checkpoint XLA keeps
-        # every layer's full gathered V/U live across the scan → OOM).
+        # layer ACTIVATIONS are recomputed; it NEVER controls the ÷fsdp→full V/U gather. The
+        # gather is anchored INSIDE this checkpointed body (`_gather_full_weight`) and its
+        # outputs carry the GATHERED_WEIGHTS_CHECKPOINT_NAME tag, which the policy excludes
+        # from the save set in BOTH modes — so the gathered full weights are transient one
+        # layer at a time in the forward and RE-gathered in the backward, never a per-forward
+        # fwd→bwd resident (without the in-body anchor GSPMD hoists the whole-chunk V/U gather
+        # out of the while-loop, where it is saved once per recon forward — the dominant temp
+        # class of the full32L step).
         #   remat=True  → nothing_saveable: recompute activations AND the gather (min memory).
         #   remat=False → dots_saveable: SAVE the activation matmuls (no batch dims here → they
         #     qualify) but still recompute the gather + cheap elementwise. Pure recompute either
         #     way; zero numerics change.
         # `scan_unroll` (native `lax.scan(unroll=k)`) emits k iterations straight-line so XLA can
         # prefetch gather(L+1) under matmul(L) — the overlap a 1-layer while-body denies.
-        policy = (
+        base_policy = (
             jax.checkpoint_policies.nothing_saveable
             if remat
             else jax.checkpoint_policies.dots_saveable
         )
+        never_save_gathered = jax.checkpoint_policies.save_anything_except_these_names(
+            GATHERED_WEIGHTS_CHECKPOINT_NAME
+        )
+
+        def policy(prim: Any, *args: Any, **params: Any) -> bool:
+            return bool(base_policy(prim, *args, **params)) and bool(
+                never_save_gathered(prim, *args, **params)
+            )
 
         def run_scan(body: Any, carry: Array, xs: Any) -> tuple[Array, Any]:
             return jax.lax.scan(
