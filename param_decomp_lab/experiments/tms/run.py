@@ -22,6 +22,7 @@ from jax import random
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 
+from param_decomp import placement
 from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, BuiltRun
 from param_decomp.components import SiteC
 from param_decomp.log import setup_logger
@@ -167,7 +168,7 @@ def run_tms_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) 
         eval_fn=eval_fn,
         eval_every=built.cadence.train_log_every,
         mesh=mesh,
-        sharding=built.runtime.sharding,
+        placement_rules=placement.from_config(built.runtime.sharding, mesh),
     )
 
 

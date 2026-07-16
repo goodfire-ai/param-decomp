@@ -94,3 +94,51 @@ def test_describe_prints_rules_and_derived_audit():
     # the audit shares the fail-fast path: a bad shape refuses to print
     with pytest.raises(AssertionError, match="does not tile"):
         rules.describe(tensors={"bad": ("params/persist", V_AXES, (31, 4096, 512))})
+
+
+def test_duplicate_mesh_axis_within_one_assignment_rejected_statically():
+    with pytest.raises(AssertionError, match="repeats a mesh axis"):
+        PlacementRules(mesh=MESH, sites={"x": {"a": ("fsdp", "fsdp")}})
+
+
+def test_from_config_manifest_and_preset_validation():
+    from param_decomp.placement import from_config
+
+    with pytest.raises(AssertionError, match="unknown placement preset"):
+        from_config("fsdp2", MESH)
+    with pytest.raises(AssertionError, match="missing required sites"):
+        from_config({"activations": {"batch": ["replicate", "fsdp"]}}, MESH)
+    rules = from_config(
+        {"params/persist": {"stack": ["replicate", "fsdp"]}, "params/persist.subset": {}},
+        MESH,
+    )
+    # YAML lists arrive as ordered tuples — nested-axis ORDER is semantics
+    assert rules.spec_for("params/persist", V_AXES) == P(("replicate", "fsdp"), None, None)
+
+
+def test_describe_marks_unenforced_rows_and_flags_large_replication():
+    rules = preset("ddp", MESH)
+    big = {"V big": ("params/persist", V_AXES, (32, 4096, 24576))}
+    out = rules.describe(tensors=big, not_audited=("ci_fn", "frozen target"))
+    # ddp persists replicated: a >10M-elem tensor must be flagged, loudly
+    assert "FULLY REPLICATED" in out
+    # rows nobody consumes yet must say so
+    assert out.count("NOT yet enforced") >= 2  # activations + params/forward
+    assert "params/persist " in out or "params/persist\t" in out
+    # enforced rows must NOT carry the mark
+    for line in out.splitlines():
+        if line.strip().startswith("params/persist "):
+            assert "NOT yet enforced" not in line
+    assert "NOT AUDITED" in out and "ci_fn" in out
+
+
+def test_preset_names_match_runtime_config_literal():
+    import typing
+
+    from param_decomp.configs import RuntimeConfig
+    from param_decomp.placement import PRESET_NAMES
+
+    ann = RuntimeConfig.model_fields["sharding"].annotation
+    literals = [a for a in typing.get_args(ann) if typing.get_origin(a) is typing.Literal]
+    assert literals, ann
+    assert set(typing.get_args(literals[0])) == set(PRESET_NAMES)

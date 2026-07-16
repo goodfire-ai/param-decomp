@@ -7,12 +7,15 @@ Megatron-C. The memory consumers, and how each is placed:
   * frozen target: FSDP-sharded on `fsdp` (the `d`-dim of every per-layer weight); the
     ~16 GB bulk shards `/fsdp` (8), gathered per layer in the scan on NVLink. embed /
     lm_head / norm / inv_freq replicate.
-  * components (V/U) + their Adam states: sharded ÷N over the FULL mesh
-    (`("replicate","fsdp")`) — V's d_in, U's d_out; C is NEVER sharded. The fp32 masters +
-    fp32 Adam m/v are the dominant non-activation footprint; true ZeRO-1 ÷N (master + m + v
-    each ÷(replicate·fsdp)) takes them from ÷fsdp (≈76 GB/GPU fixed) to ÷N (≈5 GB, scaling).
-    COMPUTE re-pins the bf16 weights to `fsdp`-only ONCE per step (the ZeRO-1 reconstruction,
-    in ENTRY, off the per-layer hot path; see `llama8b._reconstruct_compute_weights`).
+  * components (V/U) + their Adam states: placed by the run's `PlacementRules`
+    (`ComponentStacks.shardings(rules)` — `runtime.sharding`). Under the default `owner`
+    preset: the shape-group STACK axis ÷`replicate` (whole matrices owned per node-group),
+    d dims ÷`fsdp`, C ÷`tp` — ÷N total, same memory as the retired intra-matrix zero1
+    layout (kept as a preset for A/B). The fp32 masters + fp32 Adam m/v are the dominant
+    non-activation footprint (÷N ≈5 GB/GPU at dp32, scaling). COMPUTE re-pins the bf16
+    weights to `fsdp`-only ONCE per step (in ENTRY, off the per-layer hot path; see
+    `llama8b._reconstruct_compute_weights` — hand-written until placement migration
+    stage 3 wires it through the `params/forward` row).
   * CI fn + Adam states: sharded ÷N over the full mesh along d_model (in_proj / blocks /
     heads), same ZeRO-1 reconstruction to `fsdp`-only before the chunk scan.
   * PGD source (broadcast scope, `{site: (1,T,C+1)}`): REPLICATED. A single adversarial

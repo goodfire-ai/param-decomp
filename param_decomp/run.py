@@ -46,7 +46,6 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import PRNGKeyArray
 
-from param_decomp import placement
 from param_decomp.arithmetic_eval import (
     ArithmeticGrid,
     ArithmeticSelection,
@@ -459,7 +458,7 @@ def run_decomposition_training(
     eval_fn: "Callable[[TrainState, int], LogRecord] | None",
     eval_every: int,
     mesh: Mesh,
-    sharding: "str | dict[str, dict[str, str | list[str] | None]]" = "owner",
+    placement_rules: PlacementRules,
 ) -> None:
     """The generic VPD decomposition-training engine — the ONE train loop every target
     (LM, TMS, ResidMLP, …) runs through.
@@ -506,12 +505,18 @@ def run_decomposition_training(
     checkpoint_manager = make_checkpoint_manager(
         run.run_dir / "ckpts", cadence.keep_last_n_checkpoints
     )
-    rules = placement.from_config(sharding, mesh)
+    rules = placement_rules
     if is_main:
         audit = eqx.filter_eval_shape(
             _partial(init_component_stacks, lm.sites), init_key
         ).placement_audit(rules)
-        print(rules.describe(tensors=audit), flush=True)
+        print(
+            rules.describe(
+                tensors=audit,
+                not_audited=("ci_fn", "frozen target", "persistent sources", "opt state"),
+            ),
+            flush=True,
+        )
     init = _init_or_restore_state(
         pd, ci_fn, data, run, lm, opt_vu, opt_ci, init_key, src_key, mesh, rules,
         checkpoint_manager, is_main, profile.no_checkpoint, compiler_options,

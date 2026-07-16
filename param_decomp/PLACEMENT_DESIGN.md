@@ -1,6 +1,7 @@
 # Placement rules — the ab-initio sharding design
 
-Status: DRAFT (Oli + Claude, 2026-07-15). First increment: `placement.py` (the rules
+Status: DRAFT (Oli + Claude, 2026-07-15; externally reviewed 2026-07-16 — fresh-Claude
+verdict adopt-with-changes, fixes applied; Codex review pending). First increment: `placement.py` (the rules
 engine + presets + tests). Not yet wired into the trainer — see "Migration" below.
 History check (2026-07-15 archaeology pass over git + lore): DONE — see "Lessons from
 history" below.
@@ -36,9 +37,11 @@ by `transition_bytes` — the startup lint prints the whole policy + per-tensor 
 
 Every historical layout is one table: **zero1** (intra-matrix ÷N), **owner** (stack
 ÷replicate, d ÷fsdp — PR #989 / SPEC D4 amendment), **ddp** (all replicated), and
-muon's `impl: optax|stacked` distinction dissolves into whether `optim/muon.ns` matches
-`params/persist` (owner-resident: reshard derives to zero) or spreads the stack axis
-(transient: two reshards, priced).
+muon's NS *layout* can be derived from an `optim/muon.ns` row (owner-resident: reshard
+derives to zero; spread: two priced reshards). CORRECTED after external review: the
+`impl:` knob does NOT fully dissolve — `stacked` is also an OP RESTRUCTURING
+(concat same-canonical-shape leaves + pad + one batched NS), which a placement table
+cannot express. The table owns where; the impl owns how.
 
 ### Constraints, not choices, from code
 
@@ -59,8 +62,14 @@ tables for everyone else.
   one-offs get a literal-spec override on a named site.
 - Pin only load-bearing surfaces (persist trees, phase entries, the waist); GSPMD
   propagates between pins, as today.
-- Cost model is an honest upper bound (spec differs ⇒ ≤ full tensor bytes), refined
-  only if a profile says the bound misleads.
+- Cost model is an honest upper bound PER MATERIALIZATION (spec differs ⇒ ≤ full tensor
+  bytes). Known-unmodeled: materialization multiplicity (recon-grid forwards, remat
+  replays), residency-vs-regather (the real 8B memory trade), op-count, axis locality.
+  Sufficient to rank resting layouts; NOT sufficient to drive `sharding: auto` — fixing
+  the unit precedes any auto-search.
+- Out-of-table placement policy that stays out (named, not smuggled): `ascend_replicate`
+  and `gather_fp8` (RuntimeConfig knobs — an adversary-ascent phase and a layout×dtype
+  transform), and program-position choices (shard_map, init out_shardings).
 
 
 ## Lessons from history (git + lore archaeology, 2026-07-15)
@@ -99,10 +108,13 @@ Nothing like this rules table was tried before. What WAS tried, and what it teac
 
 ## Prior art
 
-t5x/flax "logical axis rules" (params carry semantic names; first-match rules map
-logical→mesh) — proven at scale; this design adds the two things t5x never needed:
-phase-dependence and optimizer constraint declarations. PyTorch DTensor/DeviceMesh is
-converging on the same vocabulary.
+t5x/flax "logical axis rules" (params carry semantic names; a rules list maps
+logical→mesh) — proven at scale. flax's rules are a context manager, so coarse
+phase-dependence IS expressible there (rarely used); what it lacks is the priced
+transitions + audit. We reimplement ~150 lines locally rather than dragging flax into
+an equinox codebase. This design's additions: explicit sites, transition pricing, the
+startup audit, optimizer constraint declarations (planned). PyTorch DTensor/DeviceMesh
+converges on the same vocabulary.
 
 ## Migration (staged, each lands green)
 

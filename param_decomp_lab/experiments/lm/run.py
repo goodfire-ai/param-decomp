@@ -39,6 +39,7 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import PRNGKeyArray
 
+from param_decomp import placement
 from param_decomp.arithmetic_eval import (
     ArithmeticGrid,
     ArithmeticGridStep,
@@ -340,7 +341,7 @@ def train(
         eval_fn=eval_fn,
         eval_every=eval_every,
         mesh=mesh,
-        sharding=built.runtime.sharding,
+        placement_rules=placement.from_config(built.runtime.sharding, mesh),
     )
 
 

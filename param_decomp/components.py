@@ -137,6 +137,14 @@ class ComponentStacks(eqx.Module, Generic[VULeaf]):
     V_AXES: "ClassVar[tuple[str, ...]]" = ("stack", "d_in", "C")
     U_AXES: "ClassVar[tuple[str, ...]]" = ("stack", "C", "d_out")
 
+    def _group_lengths(self) -> dict[VUShape, int]:
+        """Stack length per shape group, from the STATIC index — the single source the
+        site choice and the audit both read (shardings asserts the arrays agree)."""
+        lengths: dict[VUShape, int] = {}
+        for _name, shape, slot in self.site_slots:
+            lengths[shape] = max(lengths.get(shape, 0), slot + 1)
+        return lengths
+
     def _site_for_group(self, g: int, rules: "PlacementRules") -> str:
         """The placement-site choice per shape group: `params/persist` when the stack
         tiles its assignment, else the per-group `params/persist.subset` fallback (site
@@ -155,9 +163,13 @@ class ComponentStacks(eqx.Module, Generic[VULeaf]):
         `V (stack, d_in, C)` / `U (stack, C, d_out)`; see `placement.py` presets — `owner`
         is the hybrid HSDP layout of the 2026-07-15 SPEC D4 amendment). Divisibility is
         validated per stack, loudly."""
+        lengths = self._group_lengths()
         placed: dict[VUShape, tuple[NamedSharding, NamedSharding]] = {}
         for (d_in, d_out, c), (Vs, _) in self.stacks.items():
             g = Vs.shape[0]
+            assert g == lengths[(d_in, d_out, c)], (
+                "stacks disagree with the static site_slots index — the audit would lie"
+            )
             site = self._site_for_group(g, rules)
             rules.validate_shape(site, ComponentStacks.V_AXES, (g, d_in, c))
             rules.validate_shape(site, ComponentStacks.U_AXES, (g, c, d_out))
@@ -172,11 +184,8 @@ class ComponentStacks(eqx.Module, Generic[VULeaf]):
     ) -> dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]]:
         """`{label: (site, axes, shape)}` for `rules.describe(...)` — the startup audit.
         Group lengths come from the static `site_slots` (works on eval-shape trees)."""
-        lengths: dict[VUShape, int] = {}
-        for _name, shape, slot in self.site_slots:
-            lengths[shape] = max(lengths.get(shape, 0), slot + 1)
         out: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {}
-        for (d_in, d_out, c), g in lengths.items():
+        for (d_in, d_out, c), g in self._group_lengths().items():
             site = self._site_for_group(g, rules)
             group = f"(d_in={d_in}, d_out={d_out}, C={c})"
             out[f"V {group}"] = (site, ComponentStacks.V_AXES, (g, d_in, c))

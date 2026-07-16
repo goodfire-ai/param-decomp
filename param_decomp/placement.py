@@ -14,8 +14,8 @@ persist→optimizer at the update step) are then mechanical reshards between two
 the table — `transition_bytes` prices them, `describe` prints the whole policy as one
 table (the startup lint AND the documentation).
 
-The rule language is deliberately WEAK: name → mesh axes, first-match, no conditionals,
-no expressions. Weird cases get a literal spec override on a named site, not a smarter
+The rule language is deliberately WEAK: exact-name lookup (semantic axis name → mesh
+axes), no patterns, no conditionals, no expressions. Weird cases get a literal spec override on a named site, not a smarter
 language. Load-bearing surfaces only: rules pin the persist trees, phase entries, and the
 activation waist; GSPMD propagates between pins as today.
 """
@@ -64,6 +64,10 @@ class PlacementRules:
                     f"placement rule {site!r}: axis {axis!r} maps to unknown mesh "
                     f"axes {sorted(unknown)} (mesh has {sorted(mesh_axes)})"
                 )
+                per = _mesh_axes_of(assignment)
+                assert len(per) == len(set(per)), (
+                    f"placement rule {site!r}: axis {axis!r} repeats a mesh axis ({assignment})"
+                )
             # NOTE: one mesh axis MAY appear under several semantic names in a rule
             # (`d_in -> fsdp, d_out -> fsdp`) because no single tensor carries both;
             # uniqueness is a per-TENSOR invariant, checked in `spec_for`.
@@ -106,33 +110,57 @@ class PlacementRules:
     def transition_bytes(
         self, site_from: str, site_to: str, axes: Axes, shape: tuple[int, ...], dtype: jnp.dtype
     ) -> int:
-        """Upper-bound bytes moved PER STEP resharding a tensor between two sites' layouts
-        (0 when the derived specs match — the owner-resident case). The honest cost model
-        for the startup lint: a differing spec moves ≤ the full global tensor."""
+        """Upper-bound bytes moved PER MATERIALIZATION of the `site_to` layout (0 when the
+        derived specs match — the owner-resident case; else ≤ the full global tensor).
+        Deliberately unmodeled: multiplicity (the recon grid materializes the forward
+        layout many times per step; remat may replay it), residency-vs-regather, op-count,
+        and axis locality — see PLACEMENT_DESIGN.md lessons 3-4. Good enough to rank
+        resting layouts; NOT sufficient to drive an automatic search."""
         if self.spec_for(site_from, axes) == self.spec_for(site_to, axes):
             return 0
         return prod(shape) * jnp.dtype(dtype).itemsize
 
     def describe(
-        self, tensors: Mapping[str, tuple[str, Axes, tuple[int, ...]]] | None = None
+        self,
+        tensors: Mapping[str, tuple[str, Axes, tuple[int, ...]]] | None = None,
+        not_audited: tuple[str, ...] = (),
     ) -> str:
         """The policy as one printable table (startup log + documentation). With `tensors`
         (`{label: (site, axes, shape)}`) it also prints each tensor's derived spec and
-        per-device share — the placement audit a human or agent reads before a run."""
+        per-device share — the placement audit a human or agent reads before a run.
+
+        Honesty rules: rows for sites no code consumes yet are marked (an audit that
+        overstates enforcement is worse than none); any audited tensor larger than
+        `REPLICATION_FLAG_ELEMS` that derives to fully replicated is flagged; tensor
+        families still placed by legacy mesh-vocabulary `.shardings` are listed as
+        NOT AUDITED rather than silently omitted."""
         lines = ["placement rules:"]
         mesh_desc = ", ".join(f"{a}={s}" for a, s in self.mesh.shape.items())
         lines.append(f"  mesh: {mesh_desc}")
         for site in sorted(self.sites):
             rule = self.sites[site]
             body = ", ".join(f"{k}->{v}" for k, v in rule.items()) if rule else "(replicated)"
-            lines.append(f"  {site:<18} {body}")
+            mark = "" if site in ENFORCED_SITES else "   [declared — NOT yet enforced]"
+            lines.append(f"  {site:<22} {body}{mark}")
         if tensors:
             lines.append("derived placements:")
             for label, (site, axes, shape) in tensors.items():
                 self.validate_shape(site, axes, shape)
                 spec = self.spec_for(site, axes)
-                share = prod(shape) // prod(self.shard_count(site, n) for n in axes)
-                lines.append(f"  {label:<28} {site:<18} {str(spec):<40} per-device {share:,} elems")
+                n_shards = prod(self.shard_count(site, n) for n in axes)
+                share = prod(shape) // n_shards
+                flag = (
+                    "   ⚠ FULLY REPLICATED (large)"
+                    if n_shards == 1 and prod(shape) > REPLICATION_FLAG_ELEMS
+                    else ""
+                )
+                lines.append(
+                    f"  {label:<36} {site:<22} {str(spec):<40} per-device {share:,} elems{flag}"
+                )
+        if not_audited:
+            lines.append(
+                "  NOT AUDITED (legacy mesh-vocabulary .shardings): " + ", ".join(not_audited)
+            )
         return "\n".join(lines)
 
 
@@ -143,6 +171,22 @@ class PlacementRules:
 # full data mesh) — that surface is layout-invariant (SPEC §4.1 pins).
 
 _DATA = ("replicate", "fsdp")
+
+PRESET_NAMES = ("owner", "zero1", "ddp")
+
+# Sites consumers dereference TODAY. A table (preset or explicit) must declare these;
+# `from_config` validates the manifest up front so a custom table fails at parse time,
+# not at whatever step first hits the missing site.
+REQUIRED_SITES = ("params/persist", "params/persist.subset")
+
+# Sites whose rows are actually CONSUMED by code today. Everything else in a table is
+# declared intent for the staged migration (PLACEMENT_DESIGN.md) — `describe` marks such
+# rows loudly so the printed policy never overstates what is enforced.
+ENFORCED_SITES = frozenset(REQUIRED_SITES)
+
+# describe() flags any audited tensor this large that ends up fully replicated — the
+# design's precondition for the quiet unlisted-axis-replicates default (lesson 2).
+REPLICATION_FLAG_ELEMS = 10_000_000
 
 
 def preset(name: str, mesh: Mesh | AbstractMesh) -> PlacementRules:
@@ -186,12 +230,6 @@ def preset(name: str, mesh: Mesh | AbstractMesh) -> PlacementRules:
     return PlacementRules(mesh=mesh, sites=sites)
 
 
-def vu_axes(ndim_stack: bool = True) -> tuple[Axes, Axes]:
-    """Semantic axes of the V/U stacks: `(stack, d_in, C)` and `(stack, C, d_out)`."""
-    assert ndim_stack
-    return ("stack", "d_in", "C"), ("stack", "C", "d_out")
-
-
 def from_config(
     spec: "str | Mapping[str, Mapping[str, str | list[str] | None]]",
     mesh: Mesh | AbstractMesh,
@@ -199,9 +237,15 @@ def from_config(
     """`RuntimeConfig.sharding` → `PlacementRules`: a preset name, or an explicit sites
     table (YAML lists become ordered tuples — nested-axis ORDER is semantics, PR #927)."""
     if isinstance(spec, str):
+        assert spec in PRESET_NAMES, f"unknown placement preset {spec!r} (have {PRESET_NAMES})"
         return preset(spec, mesh)
     sites = {
         site: {axis: tuple(v) if isinstance(v, list) else v for axis, v in rule.items()}
         for site, rule in spec.items()
     }
+    missing = [s for s in REQUIRED_SITES if s not in sites]
+    assert not missing, (
+        f"placement table missing required sites {missing} — consumers dereference these "
+        f"(declare them even if empty; see placement.REQUIRED_SITES)"
+    )
     return PlacementRules(mesh=mesh, sites=sites)
