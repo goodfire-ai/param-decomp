@@ -8,11 +8,14 @@ their single-feature probe CI `(n_features, C)` instead. Toy V/U is small / repl
 host, so the render is cheap (no gather) — `render_uv_figure` does the framework-agnostic
 plot, this module is the thin wandb I/O the toy `eval_fn` calls.
 
-The identity-CI heatmap (`log_identity_ci_heatmap`) is the visual companion to the
+The permuted-CI heatmap (`log_permuted_ci_heatmap`) is the visual companion to the
 `eval/identity_ci_error/<site>` scalar every toy already logs unconditionally: same
-Hungarian-toward-identity permutation, rendered as an image instead of a discrete distance,
-so a recovered decomposition is visibly an identity matrix (up to permutation) rather than
-just a small number. Unconditional like the scalar — no config gate, no `EvalConfig`
+per-site target permutation (identity via Hungarian assignment, dense via column-mass
+sort), rendered as an image instead of a discrete distance, so a recovered decomposition
+is visibly the EXPECTED pattern rather than just a small number — for sites whose target
+is dense (TMS's frozen `hidden_layers.*`, ResidMLP's `mlp_out`), that expected pattern is
+a sorted dense block, not a diagonal; permuting those toward identity would make a
+correctly-trained site look wrong. Unconditional — no config gate, no `EvalConfig`
 required (toys have none)."""
 
 import io
@@ -71,28 +74,30 @@ def log_uv_figure(
     wandb.log(payload, step=now_step)
 
 
-def identity_ci_heatmap_due(now_step: int, total_steps: int, save_every: int | None) -> bool:
-    """Cadence for `log_identity_ci_heatmap`: alongside each checkpoint (`save_every`, when
+def permuted_ci_heatmap_due(now_step: int, total_steps: int, save_every: int | None) -> bool:
+    """Cadence for `log_permuted_ci_heatmap`: alongside each checkpoint (`save_every`, when
     set) and always at the final step — one heatmap per saved snapshot, cheaper than every
-    `train_log_every` eval step over a 5k-40k-step toy run."""
+    `train_log_every` eval step over a 5k-100k-step toy run."""
     return now_step == total_steps or (save_every is not None and now_step % save_every == 0)
 
 
-def log_identity_ci_heatmap(
+def log_permuted_ci_heatmap(
     ci_lower: dict[str, Any],
     ci_upper: dict[str, Any],
+    permutation: dict[str, Literal["identity", "dense"]],
     now_step: int,
     wandb_active: bool,
 ) -> None:
-    """Render + log the identity-permuted CI heatmap for every site's single-feature-probe
-    CI. No-op unless wandb is on."""
+    """Render + log the permuted CI heatmap for every site's single-feature-probe CI, each
+    site permuted toward ITS target pattern (`permutation`; identity sites via Hungarian
+    assignment, dense sites by column mass — `slow_eval.plot_permuted_ci_heatmaps`). No-op
+    unless wandb is on."""
     if not wandb_active:
         return
     position_ci = {
         name: PositionCI(lower=np.asarray(ci_lower[name]), upper=np.asarray(ci_upper[name]))
         for name in ci_lower
     }
-    permutation: dict[str, Literal["identity", "dense"]] = {name: "identity" for name in ci_lower}
     lower_png, upper_png = plot_permuted_ci_heatmaps(position_ci, permutation)
     import wandb
     from PIL import Image
