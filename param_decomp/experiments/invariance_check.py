@@ -49,8 +49,8 @@ from param_decomp.configs import (
 from param_decomp.recon import build_loss_terms
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.sharding import hsdp_mesh, shard_batch
-from param_decomp.targets.llama8b import (
-    llama_site_specs,
+from param_decomp.targets.glu_transformer import (
+    glu_site_specs,
     mlp_family_site_cs,
 )
 from param_decomp.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
@@ -60,7 +60,7 @@ from param_decomp.train import TrainState, make_train_step
 def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
     cfg = _tiny_cfg()
     C, seq, gbatch = 8, 16, 8
-    sites = llama_site_specs(cfg, mlp_family_site_cs(3, 6, C))
+    sites = glu_site_specs(cfg, mlp_family_site_cs(3, 6, C))
     lm = _tiny_decomposed_lm(cfg, sites, random.PRNGKey(0))
     vu = init_component_stacks(sites, random.PRNGKey(1))
     arch = ChunkwiseTransformerCIArch(

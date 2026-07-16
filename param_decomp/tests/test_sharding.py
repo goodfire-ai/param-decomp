@@ -63,8 +63,8 @@ def test_jitted_sharded_inits_match_eager_values():
     )
     from param_decomp.components import SiteC, init_component_stacks
     from param_decomp.configs import BSCScope, SCScope
-    from param_decomp.targets.llama8b import canonical_site_cs, llama_site_specs
-    from param_decomp.targets.llama8b_sharding import (
+    from param_decomp.targets.glu_transformer import canonical_site_cs, glu_site_specs
+    from param_decomp.targets.glu_transformer_sharding import (
         init_ci_fn_placed,
         init_component_stacks_placed,
         init_sources_sharded,
@@ -81,7 +81,7 @@ def test_jitted_sharded_inits_match_eager_values():
     # layers.{2,3}.mlp.gate_proj share (d_in, d_out, C), so the stacked init has a REAL
     # multi-site V/U shape group (stack + unstack across sites, not just groups of one);
     # they also make a 3-site C group for the stacked sources init below.
-    sites = llama_site_specs(
+    sites = glu_site_specs(
         cfg,
         canonical_site_cs(
             (

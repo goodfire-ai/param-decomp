@@ -185,7 +185,7 @@ def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
     `delta_mask[..., None]` / mask broadcast (`components.site_out`) the way the PPGD path
     does, and pins the broadcast AXIS: transposing the source to `(1, B, C+1)` (B != T)
     must break the forward rather than silently re-interpret the time axis as batch."""
-    from param_decomp.targets.llama8b import MLP_KINDS, site_name
+    from param_decomp.targets.glu_transformer import MLP_KINDS, site_name
     from param_decomp.tests.equivalence.jax_equivalence import FP, _build
 
     f = _load_fixtures()

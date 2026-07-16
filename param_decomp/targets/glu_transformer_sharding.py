@@ -1,4 +1,4 @@
-"""GSPMD sharding plan for the Llama-8B single-pool step — the pure-HSDP memory story.
+"""GSPMD sharding plan for the GLU-transformer (Llama-8B / Qwen3-8B) single-pool step — the pure-HSDP memory story.
 
 The 2-D `(replicate, fsdp)` mesh: `fsdp` is the 8 intra-node NVLink GPUs (the FSDP
 weight-gather / grad-reduce axis), `replicate` the across-node axis. There is NO TP /
@@ -14,7 +14,7 @@ Megatron-C. The memory consumers, and how each is placed:
     layout (kept as a preset for A/B). The fp32 masters + fp32 Adam m/v are the dominant
     non-activation footprint (÷N ≈5 GB/GPU at dp32, scaling). COMPUTE re-pins the bf16
     weights to `fsdp`-only ONCE per step (in ENTRY, off the per-layer hot path; see
-    `llama8b._reconstruct_compute_weights` — hand-written until placement migration
+    `glu_transformer._reconstruct_compute_weights` — hand-written until placement migration
     stage 3 wires it through the `params/forward` row).
   * CI fn + Adam states: sharded ÷N over the full mesh along d_model (in_proj / blocks /
     heads), same ZeRO-1 reconstruction to `fsdp`-only before the chunk scan.
@@ -67,7 +67,7 @@ from param_decomp.configs import BSCScope, SCScope
 from param_decomp.placement import PlacementRules
 from param_decomp.sharding import hsdp_mesh, place_via_shardings
 from param_decomp.sharding import shard_batch as _generic_shard_batch
-from param_decomp.targets.llama8b import LlamaDecomposedModel
+from param_decomp.targets.glu_transformer import GLUDecomposedModel
 
 __all__ = [
     "hsdp_mesh",
@@ -79,7 +79,7 @@ __all__ = [
 ]
 
 
-def place_target(tgt: LlamaDecomposedModel, mesh: Mesh) -> LlamaDecomposedModel:
+def place_target(tgt: GLUDecomposedModel, mesh: Mesh) -> GLUDecomposedModel:
     """Eager `device_put` of the already-loaded frozen target onto its own declared
     placement (`tgt.shardings(mesh)` — FSDP-on-`fsdp`)."""
     return place_via_shardings(tgt, tgt.shardings(mesh))

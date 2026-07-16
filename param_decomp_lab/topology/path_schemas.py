@@ -205,11 +205,24 @@ class _GPT2PathSchema(_PathSchema):
     unembed_path = "lm_head"
 
 
+class _HFGLUPathSchema(_PathSchema):
+    """The raw-HF GLU-transformer site grammar (`layers.{i}.self_attn.q_proj`, …) the
+    Llama/Qwen3 `DecomposedModel` targets emit (`param_decomp.targets.glu_transformer`)."""
+
+    embedding_path = "embed_tokens"
+    blocks = "layers"
+    attn = _SeparateAttnPathSchema(base="self_attn", q="q_proj", k="k_proj", v="v_proj", o="o_proj")
+    mlp = _GLUPathSchema(base="mlp", gate="gate_proj", up="up_proj", down="down_proj")
+    unembed_path = "lm_head"
+
+
 _MODEL_TYPE_PATH_SCHEMAS: dict[str, type[_PathSchema]] = {
     "LlamaSimple": _LlamaSimplePathSchema,
     "LlamaSimpleMLP": _LlamaSimpleMLPPathSchema,
     "GPT2Simple": _GPT2SimplePathSchema,
     "GPT2": _GPT2PathSchema,
+    "Llama": _HFGLUPathSchema,
+    "Qwen3": _HFGLUPathSchema,
 }
 
 

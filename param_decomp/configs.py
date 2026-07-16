@@ -11,6 +11,7 @@ Experiment-level schema (the `ExperimentConfig[T, D]` generic and its LM / TMS /
 subclasses) lives lab-side under `param_decomp_lab/experiments/`.
 """
 
+import copy
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
@@ -1196,7 +1197,7 @@ def flatten_typed_lists(config_dict: dict[str, Any]) -> dict[str, Any]:
             for i, item in enumerate(obj):
                 walk(item, f"{path}.{i}")
 
-    out = dict(config_dict)
+    out = copy.deepcopy(config_dict)  # walk dels nested keys; never mutate the caller's dict
     walk(out, "")
     out.update(flattened)
     return out

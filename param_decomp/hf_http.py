@@ -1,7 +1,7 @@
 """Make huggingface_hub's HTTP backend resilient to a cold-cache startup burst.
 
 The JAX trainer normally loads the frozen target's weights from a pre-warmed local
-HF snapshot (`llama8b.hf_snapshot_dir` asserts the snapshot exists, no network call).
+HF snapshot (`glu_transformer.hf_snapshot_dir` asserts the snapshot exists, no network call).
 But at production topology (8 ranks/node x N nodes) a *cold* cache turns startup into an
 8N-rank simultaneous Hub burst, and a single `ReadTimeout` on one rank tears the whole
 job down before training begins. This mounts a retrying adapter on huggingface_hub's

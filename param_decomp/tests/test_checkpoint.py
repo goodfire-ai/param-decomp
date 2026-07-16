@@ -45,11 +45,11 @@ from param_decomp.recon import build_loss_terms
 from param_decomp.run_state import stacked_muon_dimension_numbers
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.sharding import hsdp_mesh
-from param_decomp.targets.llama8b import (
-    llama_site_specs,
+from param_decomp.targets.glu_transformer import (
+    glu_site_specs,
     mlp_family_site_cs,
 )
-from param_decomp.targets.llama8b_sharding import (
+from param_decomp.targets.glu_transformer_sharding import (
     init_ci_fn_placed,
     init_component_stacks_placed,
     init_sources_sharded,
@@ -103,7 +103,7 @@ def _build(
 ):
     cfg = _tiny_cfg()
     C, seq = 8, 16
-    sites = llama_site_specs(cfg, mlp_family_site_cs(3, 4, C))
+    sites = glu_site_specs(cfg, mlp_family_site_cs(3, 4, C))
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(seed))
     ci_fn = build_ci_fn(_chunkwise_arch(lm, cfg), lm.sites, jax.random.PRNGKey(seed + 1))
@@ -295,7 +295,7 @@ def _build_sharded(seed: int, mesh: Mesh):
     cfg = _tiny_cfg()
     n = mesh.devices.size
     C, seq = 8 * n, 16
-    sites = llama_site_specs(cfg, mlp_family_site_cs(3, 4, C))
+    sites = glu_site_specs(cfg, mlp_family_site_cs(3, 4, C))
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks_placed(sites, jax.random.PRNGKey(seed), preset("owner", mesh))
     ci_fn = init_ci_fn_placed(

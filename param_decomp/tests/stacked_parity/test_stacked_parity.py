@@ -47,11 +47,11 @@ from param_decomp.configs import (
 from param_decomp.lm import DecomposedModel
 from param_decomp.recon import StochasticSources, build_loss_terms, subset_chunk_plan
 from param_decomp.schedule import ScheduleConfig
-from param_decomp.targets.llama8b import (
+from param_decomp.targets.glu_transformer import (
     FrozenAttn,
-    LlamaLayer,
+    GLULayer,
     build_decomposed_lm,
-    llama_site_specs,
+    glu_site_specs,
     mlp_family_site_cs,
 )
 from param_decomp.tests.test_llama8b import _tiny_cfg
@@ -95,7 +95,7 @@ def _load() -> tuple[dict[str, np.ndarray], DecomposedModel, ComponentStacks, jn
         return jnp.asarray(f[key])
 
     layers = [
-        LlamaLayer(
+        GLULayer(
             ln1=a(f"tgt::layers.{i}.ln1"),
             ln2=a(f"tgt::layers.{i}.ln2"),
             attn=FrozenAttn(
@@ -114,7 +114,7 @@ def _load() -> tuple[dict[str, np.ndarray], DecomposedModel, ComponentStacks, jn
         )
         for i in range(first, cfg.n_layer)
     ]
-    sites = llama_site_specs(cfg, mlp_family_site_cs(first, last, C))
+    sites = glu_site_specs(cfg, mlp_family_site_cs(first, last, C))
     lm = build_decomposed_lm(
         embed=jnp.zeros((cfg.vocab_size, cfg.n_embd), jnp.float32),
         layers=layers, norm=a("tgt::norm"), lm_head=a("tgt::lm_head"),

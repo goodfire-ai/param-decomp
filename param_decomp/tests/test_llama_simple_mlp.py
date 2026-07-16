@@ -37,7 +37,7 @@ from param_decomp.configs import (
 from param_decomp.lm import DecomposedModel
 from param_decomp.recon import build_loss_terms
 from param_decomp.schedule import ScheduleConfig
-from param_decomp.targets.llama8b import FrozenAttn
+from param_decomp.targets.glu_transformer import FrozenAttn
 from param_decomp.targets.llama_simple_mlp import (
     LlamaSimpleMLPConfig,
     SimpleMLPDecomposedModel,

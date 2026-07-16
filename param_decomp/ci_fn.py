@@ -741,7 +741,7 @@ def init_global_mlp_ci_fn(
 
 CIFnArch = ChunkwiseTransformerCIArch | MLPCIArch | GlobalMLPCIArch
 """Every CI-fn architecture. Construction goes through `build_ci_fn`; sharding/placement is
-a separate, scale-driven concern (see `llama8b_sharding`), never coupled to arch type."""
+a separate, scale-driven concern (see `glu_transformer_sharding`), never coupled to arch type."""
 
 
 def build_ci_fn(arch: CIFnArch, sites: tuple[SiteSpec, ...], key: PRNGKeyArray) -> CIFn:

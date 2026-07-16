@@ -16,21 +16,21 @@ The clean (target) and masked Q/K are obtained via the existing `masked_site_out
 seam — the same all-false-routes trick `hidden_acts_eval` uses for its clean target (one
 all-false forward) plus one masked forward — so `DecomposedModel` gains no new method.
 
-The attention-pattern reproduction is target-specific (RoPE base, GQA, head reshape) and
-lives HERE, not on `DecomposedModel`: `attn_pattern_for` dispatches on the concrete frozen
-target, reusing that target's OWN RoPE helper and attention config. A non-attention target
-(no `FrozenAttn`/`inv_freq`) raises — the metric only applies to attention-bearing targets.
+The attention-pattern reproduction is target-specific (RoPE base, GQA, head reshape,
+Qwen3's per-layer QK-norm), so it is TARGET-OWNED: the model exposes
+`attn_pattern(q_site, q_flat, k_flat)` (the `AttnPatternModel` protocol below —
+`GLUDecomposedModel` / `SimpleMLPDecomposedModel` delegate to their own attention
+modules). This file only drives it; nothing here switches on a model family. A target
+without the method refuses at step-build time.
 
 Masked and clean Q/K run in COMPUTE_DT (bf16, matching the trained model); the
 pattern softmax and the KL reduction are fp32.
 """
 
-import math
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import random
@@ -39,64 +39,22 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 from param_decomp.components import ComponentStacks
 from param_decomp.jit_util import filter_jit
 from param_decomp.lm import DecomposedModel, all_false_routes
-from param_decomp.targets.llama8b import FrozenAttn, LlamaDecomposedModel
-from param_decomp.targets.llama_simple_mlp import SimpleMLPDecomposedModel
 from param_decomp.train import COMPUTE_DT, cast_floating
-from vendored_jax.llama import apply_rope, repeat_kv, rope_cos_sin
-
-AttnPatternFn = Callable[[Float[Array, "B T qd"], Float[Array, "B T kvd"]], Float[Array, "B H T T"]]
-"""`(q_flat, k_flat) -> (B, n_heads, T_query, T_key)` post-softmax causal attention map
-from a layer's flat Q/K projections — the per-target attention recipe."""
 
 
-def _attn_pattern_from_config(
-    n_head: int, n_kv_head: int, head_dim: int, n_rep: int, inv_freq: Array
-) -> AttnPatternFn:
-    """The shared RoPE + GQA + causal-softmax pattern recipe, parameterised by a target's
-    attention config. Reuses the vendored `rope_cos_sin`/`apply_rope`/`repeat_kv` — never
-    a reimplemented RoPE. Scores in fp32, scaled by `1/√head_dim`, causal-masked, softmaxed."""
+@runtime_checkable
+class AttnPatternModel(Protocol):
+    """The capability this eval needs from a target: the post-softmax `(B, H, T, T)`
+    causal attention map from one layer's flat Q/K projections, identified by the
+    layer's `q_proj` site name (the recipe is the target's own — RoPE flavor, GQA,
+    any pre-RoPE math like Qwen3's per-layer QK-norm)."""
 
-    def attn_pattern(q_flat: Array, k_flat: Array) -> Array:
-        b, t, _ = q_flat.shape
-        assert q_flat.shape[-1] == n_head * head_dim, q_flat.shape
-        assert k_flat.shape[-1] == n_kv_head * head_dim, k_flat.shape
-        q = q_flat.reshape(b, t, n_head, head_dim).transpose(0, 2, 1, 3)
-        k = k_flat.reshape(b, t, n_kv_head, head_dim).transpose(0, 2, 1, 3)
-        cos, sin = rope_cos_sin(inv_freq, t, q_flat.dtype)
-        q, k = apply_rope(q, k, cos, sin)
-        k = repeat_kv(k, n_rep)
-        scores = jnp.einsum("bhqd,bhkd->bhqk", q.astype(jnp.float32), k.astype(jnp.float32))
-        scores = scores / math.sqrt(head_dim)
-        causal = jnp.triu(jnp.ones((t, t), bool), k=1)
-        scores = jnp.where(causal, -jnp.inf, scores)
-        return jax.nn.softmax(scores, axis=-1)
-
-    return attn_pattern
-
-
-def _frozen_attn(target: LlamaDecomposedModel | SimpleMLPDecomposedModel) -> FrozenAttn:
-    """The first layer's attention — every layer shares the same attn config, so
-    one `FrozenAttn` fixes `n_head`/`n_kv_head`/`head_dim`/`n_rep` for the recipe."""
-    assert target.layers, "attn-patterns metric needs at least one layer"
-    return target.layers[0].attn
-
-
-def attn_pattern_for(target: Any) -> AttnPatternFn:
-    """The per-target attention-pattern recipe, dispatched on the concrete frozen target.
-
-    Reuses the target's OWN attention config (`FrozenAttn`) and RoPE frequencies
-    (`inv_freq`). A non-attention target raises — the metric only applies to
-    attention-bearing targets (localize-and-assert: fail loudly, never silently)."""
-    match target:
-        case LlamaDecomposedModel() | SimpleMLPDecomposedModel():
-            attn = _frozen_attn(target)
-            return _attn_pattern_from_config(
-                attn.n_head, attn.n_kv_head, attn.head_dim, attn.n_rep, target.inv_freq
-            )
-        case _:
-            raise AssertionError(
-                f"attn-patterns metric only applies to attention targets, got {type(target).__name__}"
-            )
+    def attn_pattern(
+        self,
+        q_site: str,
+        q_flat: Float[Array, "B T qd"],
+        k_flat: Float[Array, "B T kvd"],
+    ) -> Float[Array, "B H T T"]: ...
 
 
 def _attn_layer_sites(site_names: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
@@ -145,7 +103,6 @@ deterministic CI step. `model` (frozen-weight-bearing) is the jit ARG."""
 
 def _clean_patterns(
     model: DecomposedModel,
-    pattern_fn: AttnPatternFn,
     layer_pairs: tuple[tuple[str, str], ...],
     prepared: Any,
     tokens: Int[Array, "*leading"],
@@ -162,25 +119,29 @@ def _clean_patterns(
         {s: jnp.zeros(leading, COMPUTE_DT) for s in site_names},
         all_false_routes(site_names, leading), site_names, False,
     )  # fmt: skip
-    return {q: pattern_fn(clean_outputs[q], clean_outputs[k]) for q, k in layer_pairs}
+    assert isinstance(model, AttnPatternModel)
+    return {q: model.attn_pattern(q, clean_outputs[q], clean_outputs[k]) for q, k in layer_pairs}
 
 
 def _masked_patterns_kl(
-    pattern_fn: AttnPatternFn,
+    model: DecomposedModel,
     layer_pairs: tuple[tuple[str, str], ...],
     masked_outputs: dict[str, Array],
     target_patterns: dict[str, Array],
 ) -> dict[str, Array]:
+    assert isinstance(model, AttnPatternModel)
     return {
-        q: _pattern_kl(target_patterns[q], pattern_fn(masked_outputs[q], masked_outputs[k]))
+        q: _pattern_kl(
+            target_patterns[q], model.attn_pattern(q, masked_outputs[q], masked_outputs[k])
+        )
         for q, k in layer_pairs
     }
 
 
 def _assert_attention_sequence_axes(lm: DecomposedModel) -> None:
     """Attention patterns are `(B, H, T_query, T_key)` causal maps over a sequence axis;
-    the metric only applies to a sequence-axis LM target (complements the per-target
-    `attn_pattern_for` dispatch, which rejects non-attention targets)."""
+    the metric only applies to a sequence-axis LM target (the `AttnPatternModel`
+    capability assert in the step factories rejects non-attention targets)."""
     assert lm.leading_axes == ("sequence",), (
         f"attn-patterns eval is LM-only (causal attention over a sequence axis); model "
         f"has leading_axes={lm.leading_axes}"
@@ -189,12 +150,14 @@ def _assert_attention_sequence_axes(lm: DecomposedModel) -> None:
 
 def make_ci_attn_patterns_step(
     lm: DecomposedModel,
-    pattern_fn: AttnPatternFn,
     compiler_options: dict[str, bool | int | str] | None = None,
 ) -> AttnPatternsStep:
     """Deterministic CI-mask attn-patterns step: `lower_leaky` CI, no delta, one masked
     forward + one clean (all-false) forward."""
     _assert_attention_sequence_axes(lm)
+    assert isinstance(lm, AttnPatternModel), (
+        f"attn-patterns eval needs a target exposing attn_pattern; {type(lm).__name__} does not"
+    )
     site_names = lm.site_names
     layer_pairs = _attn_layer_sites(site_names)
 
@@ -211,15 +174,13 @@ def make_ci_attn_patterns_step(
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
         ci_lower = ci_fn_bf16(taps, remat=False).lower
 
-        target_patterns = _clean_patterns(
-            model, pattern_fn, layer_pairs, prepared, tokens, ci_lower
-        )
+        target_patterns = _clean_patterns(model, layer_pairs, prepared, tokens, ci_lower)
         leading = tokens.shape
         zeros_delta = {s: jnp.zeros(leading, COMPUTE_DT) for s in site_names}
         masked_outputs = model.masked_site_outputs(
             prepared, tokens, ci_lower, zeros_delta, None, site_names, False
         )
-        sum_kl = _masked_patterns_kl(pattern_fn, layer_pairs, masked_outputs, target_patterns)
+        sum_kl = _masked_patterns_kl(model, layer_pairs, masked_outputs, target_patterns)
         n_distributions = {q: int(np.prod(target_patterns[q].shape[:3])) for q, _ in layer_pairs}
         return sum_kl, n_distributions
 
@@ -228,7 +189,6 @@ def make_ci_attn_patterns_step(
 
 def make_stochastic_attn_patterns_step(
     lm: DecomposedModel,
-    pattern_fn: AttnPatternFn,
     n_mask_samples: int,
     compiler_options: dict[str, bool | int | str] | None = None,
 ) -> AttnPatternsStep:
@@ -236,6 +196,9 @@ def make_stochastic_attn_patterns_step(
     (with weight deltas), per-draw per-layer pattern KL summed. RNG via per-draw / per-site
     `fold_in` (the eval-step discipline, mirrors `hidden_acts_eval`)."""
     _assert_attention_sequence_axes(lm)
+    assert isinstance(lm, AttnPatternModel), (
+        f"attn-patterns eval needs a target exposing attn_pattern; {type(lm).__name__} does not"
+    )
     assert n_mask_samples >= 1, n_mask_samples
     site_names = lm.site_names
     layer_pairs = _attn_layer_sites(site_names)
@@ -253,9 +216,7 @@ def make_stochastic_attn_patterns_step(
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
         ci_lower = ci_fn_bf16(taps, remat=False).lower
 
-        target_patterns = _clean_patterns(
-            model, pattern_fn, layer_pairs, prepared, tokens, ci_lower
-        )
+        target_patterns = _clean_patterns(model, layer_pairs, prepared, tokens, ci_lower)
         leading = tokens.shape
 
         sum_kl = {q: jnp.zeros((), jnp.float32) for q, _ in layer_pairs}
@@ -274,7 +235,7 @@ def make_stochastic_attn_patterns_step(
             masked_outputs = model.masked_site_outputs(
                 prepared, tokens, masks, delta_masks, None, site_names, True
             )
-            draw_kl = _masked_patterns_kl(pattern_fn, layer_pairs, masked_outputs, target_patterns)
+            draw_kl = _masked_patterns_kl(model, layer_pairs, masked_outputs, target_patterns)
             sum_kl = {q: sum_kl[q] + draw_kl[q] for q, _ in layer_pairs}
 
         n_distributions = {

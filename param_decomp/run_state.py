@@ -38,7 +38,7 @@ from param_decomp.recon import (
     persistent_configs,
 )
 from param_decomp.schedule import ScheduleConfig
-from param_decomp.targets.llama8b_sharding import (
+from param_decomp.targets.glu_transformer_sharding import (
     init_ci_fn_placed,
     init_component_stacks_placed,
     init_sources_sharded,

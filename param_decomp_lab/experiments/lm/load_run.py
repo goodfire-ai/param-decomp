@@ -41,16 +41,13 @@ from param_decomp.lm import DecomposedModel
 from param_decomp.run_state import build_optimizers, init_train_state
 from param_decomp.sharding import hsdp_mesh, place_via_shardings
 from param_decomp.targets import llama_simple_mlp
-from param_decomp.targets.llama8b import (
-    llama31_8b_config,
-    llama_site_specs,
-    load_decomposed_lm_from_hf,
-)
-from param_decomp.targets.llama8b_sharding import place_target
+from param_decomp.targets.glu_transformer import glu_site_specs
+from param_decomp.targets.glu_transformer_sharding import place_target
 from param_decomp.train import COMPUTE_DT, TrainState, cast_floating
 from param_decomp_lab.experiments.lm.config import (
     LlamaSimpleMLPTargetConfig,
     TargetConfig,
+    hf_model_family,
     load_run_dir_config,
 )
 
@@ -69,7 +66,7 @@ def build_target(cfg: BuiltRun, mesh: jax.sharding.Mesh) -> tuple[DecomposedMode
     """`(lm, vocab_size)` for the run's target config. The `lm` (an `eqx.Module`) IS the
     frozen target — it carries the full model weights (embedding included) as fields and
     embeds its token input internally. SimpleMLP reads its local pretrain cache (no network);
-    llama8b reads the HF snapshot (frozen bf16 weights + fp32-compute, matching `run.py::main`).
+    the HF families read the HF snapshot (frozen bf16 weights + fp32-compute, matching `run.py::main`).
 
     LM-only: harvest/slow-eval over the toy (TMS/ResidMLP) targets is not wired — those
     validate via their in-loop target-CI metric in the lab provider, not this path."""
@@ -84,19 +81,20 @@ def build_target(cfg: BuiltRun, mesh: jax.sharding.Mesh) -> tuple[DecomposedMode
             lm = place_via_shardings(loaded_lm, loaded_lm.shardings(mesh))
             return lm, simple_cfg.vocab_size
         case TargetConfig():
-            llama_cfg = llama31_8b_config()
-            sites = llama_site_specs(llama_cfg, cfg.target.sites)
+            family = hf_model_family(cfg.target.model_name)
+            arch_cfg = family.arch_config()
+            sites = glu_site_specs(arch_cfg, cfg.target.sites)
             lm = place_target(
-                load_decomposed_lm_from_hf(
+                family.load(
                     cfg.target.model_name,
-                    llama_cfg,
+                    arch_cfg,
                     sites,
                     scan_unroll=cfg.runtime.scan_unroll,
                     gather_fp8=cfg.runtime.gather_fp8,
                 ),
                 mesh,
             )
-            return lm, llama_cfg.vocab_size
+            return lm, arch_cfg.vocab_size
         case _:
             raise AssertionError(f"build_target is LM-only; got target {type(cfg.target).__name__}")
 
@@ -246,11 +244,12 @@ def run_metadata(run_dir: Path) -> RunMetadata:
                 layer_activation_sizes=[(s.name, s.C) for s in cfg.target.sites],
             )
         case TargetConfig():
-            llama_cfg = llama31_8b_config()
+            family = hf_model_family(cfg.target.model_name)
+            arch_cfg = family.arch_config()
             return RunMetadata(
-                model_type="Llama",
-                n_blocks=llama_cfg.n_layer,
-                vocab_size=llama_cfg.vocab_size,
+                model_type=family.model_type,
+                n_blocks=arch_cfg.n_layer,
+                vocab_size=arch_cfg.vocab_size,
                 layer_activation_sizes=[(s.name, s.C) for s in cfg.target.sites],
             )
         case _:

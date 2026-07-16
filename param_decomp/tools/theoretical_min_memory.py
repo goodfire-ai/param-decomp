@@ -93,7 +93,7 @@ def main() -> None:
     trainable = vu + ci
     target = N_LAYERS * sum(d_in * d_out for d_in, d_out in KIND_DIMS.values())
     # embed + lm_head are NOT decomposed and are REPLICATED (not ÷fsdp) on the frozen target
-    # (targets/llama8b.py:449-450) — full-resident per GPU. Llama-8B does not tie them.
+    # (targets/glu_transformer.py) — full-resident per GPU. Llama-8B does not tie them.
     embed_lmhead = 2 * VOCAB * D_MODEL
 
     GB = 1024**3
@@ -101,7 +101,7 @@ def main() -> None:
     opt = trainable * 12 / dp / GB  # EXACT (sharding.py: master+m+v ÷N)
     vu_bf16 = vu * 2 / fsdp / GB  # ÷fsdp resident compute weight (EXACT layout)
     ci_bf16 = ci * 2 / fsdp / GB  # ÷fsdp resident compute weight (EXACT layout)
-    tgt_bf16 = target * 2 / fsdp / GB  # EXACT: layer weights ÷fsdp (targets/llama8b.py:236-244)
+    tgt_bf16 = target * 2 / fsdp / GB  # EXACT: layer weights ÷fsdp (targets/glu_transformer.py)
     embed_bf16 = embed_lmhead * 2 / GB  # EXACT: embed+lm_head REPLICATED (full-resident)
     # ONE forward's activations (per-layer remat => residual carry stack + logits), per GPU.
     resid_stack = N_LAYERS * seq_per_gpu * SEQ * D_MODEL * 2 / GB  # bf16 [L,b,t,d] carry
