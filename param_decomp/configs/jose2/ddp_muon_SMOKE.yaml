@@ -56,12 +56,13 @@ eval:
 pd:
   batch_size: 64
   ci_config:
-    blocks_per_chunk: 1
+    blocks_per_chunk: 4
     d_model: 2048
     mlp_hidden: 8192
     n_blocks: 8
     n_heads: 16
     type: chunkwise_transformer
+    input_tap: all_block_resids
   ci_fn_optimizer:
     betas:
     - 0.9

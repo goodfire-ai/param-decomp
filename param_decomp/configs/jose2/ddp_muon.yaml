@@ -11,6 +11,10 @@
 #   4. imp-min: Lp (eps 1e-6) -> SmoothL0 (Geman-McClure), coeff 2e-4 kept, gamma
 #      1.0 -> 0.01 linear full-window, frequency sub-term kept (matches the
 #      smooth-l0-matrix-100k cells, lore:2026-07-13--smooth-l0-muon-matrix-100k).
+#   5. CI fn: paper mirror ("Interpreting LM Parameters" App. C) — blocks_per_chunk
+#      1 -> 4 (ONE shared 2048/8L/16h/8192ff CI transformer, as the paper; was 4 of
+#      them) + input_tap: all_block_resids (4 RMS-normed concat resid streams,
+#      D=3072 — the paper fed all 24 per-matrix inputs, D=27648; deliberately less).
 # Sweep arms derive from this file, varying ONLY the optimizer lrs (and whatever
 # Lucius's round-2 issues dictate). Launch: pd-lm param_decomp/configs/jose2/<f>.yaml
 cadence:
@@ -70,12 +74,13 @@ eval:
 pd:
   batch_size: 64
   ci_config:
-    blocks_per_chunk: 1
+    blocks_per_chunk: 4
     d_model: 2048
     mlp_hidden: 8192
     n_blocks: 8
     n_heads: 16
     type: chunkwise_transformer
+    input_tap: all_block_resids
   ci_fn_optimizer:
     betas:
     - 0.9
