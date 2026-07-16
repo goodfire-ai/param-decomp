@@ -45,8 +45,12 @@ The TMS and ResidualMLP toys are LAB experiments that call the core engine as a 
 
 TMS deeper variant (`n_hidden_layers>0`, the `-id` configs) + the ResidMLP `global` CI arch
 (`fn_type=global_shared_mlp`) are restored and wired end-to-end (the global arch dispatches
-through the core `init_train_state` via `experiments.config.ci_arch`). Toy harvest /
-autointerp / clustering is NOT yet wired (`load_run` is LM-only) — the remaining Phase-3 bucket.
+through the core `init_train_state` via `experiments.config.ci_arch`). `resid_mlp_2l`/`_3l`
+also use `global_mlp` (not `resid_mlp_1l`'s historical torch counterpart's per-site
+`layerwise_mlp`): at their much larger `C` (400/500, restored to the historical value), a
+16/128-hidden-unit per-site MLP is an output bottleneck the shared global net doesn't have.
+Toy harvest / autointerp / clustering is NOT yet wired (`load_run` is LM-only) — the
+remaining Phase-3 bucket.
 
 ## Layout
 
