@@ -156,7 +156,9 @@ optimizer moments persist as same-shape STACKS (`ComponentStacks.stacks`, owner-
 axis ÷`replicate` — whole matrices owned per node-group, zero cross-node weight collectives,
 muon NS node-local — matrix d dims ÷`fsdp`, C ÷`tp`; SPEC D4 amendment 2026-07-15; per-group
 fallback to intra-matrix data sharding when a stack doesn't tile `replicate`). The CI-fn
-masters + moments keep intra-matrix ZeRO-1 (`("replicate","fsdp")` on d_model). Either way
+masters + moments keep intra-matrix ZeRO-1 (`("fsdp","replicate")` on d_model — fsdp-major,
+so the ÷N→÷fsdp reconstruct is a pure all-gather over `replicate`; replicate-major cost a
+~13 GiB/rank/step grid-transpose collective-permute, PR #927). Either way
 the dominant optimizer-state memory scales 1/N, not the fixed 1/fsdp. The bf16
 COMPUTE weights are reconstructed to the `fsdp`-sharded (÷fsdp) layout ONCE per step in ENTRY
 (the cross-`replicate` gather, off the hot path — `llama8b._reconstruct_compute_weights` /

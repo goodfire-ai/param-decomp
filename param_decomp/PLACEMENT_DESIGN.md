@@ -96,7 +96,9 @@ Nothing like this rules table was tried before. What WAS tried, and what it teac
    fewer bytes and lost 63% on op-count — lore `2026-07-01--tp-loses-...`), and
    **nested-axis ORDER inside one assignment is semantics** (fsdp-major vs
    replicate-major linearization cost ~13 GiB/rank/step of collective-permutes,
-   PR #927). ⇒ `transition_bytes` is a v0; rule tuples like `[node, device]` are
+   PR #927 — discovered 2026-07-16 to have NEVER MERGED; its fsdp-major flip is now
+   integrated here as `placement._ZERO1_DATA` + the CI-fn `.shardings`, and
+   `tools/xplane_attr.py` came with it). ⇒ `transition_bytes` is a v0; rule tuples like `[node, device]` are
    ordered and the order must round-trip exactly.
 5. **Some placement problems are program-POSITION problems** (shard_map for a post-scan
    psum; jit `out_shardings` at init) that no static table expresses. ⇒ named

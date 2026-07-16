@@ -170,7 +170,20 @@ class PlacementRules:
 # per-tensor axes tuples. All presets share the activation waist rule (batch over the
 # full data mesh) — that surface is layout-invariant (SPEC §4.1 pins).
 
-_DATA = ("replicate", "fsdp")
+# ÷N master rows linearize FSDP-MAJOR (compute axes first, `replicate` last): each fsdp
+# group's ÷fsdp compute shard is then the contiguous concat of its own replicate-group's
+# ÷N shards, so the persist→forward reconstruct (and its grad reverse) partitions as a
+# pure all-gather / reduce-scatter over `replicate`. Replicate-major scatters the ÷N
+# shards across the WRONG fsdp groups and GSPMD legalizes both directions as a full
+# (replicate, fsdp) grid-transpose collective-permute — measured at dp32: 117 permutes,
+# ~13 GiB/rank/step cross-node, −14% step time when fixed (PR #927). Nested-axis order
+# is semantics (PLACEMENT_DESIGN.md lesson 4); this constant is where the trainer says so.
+_ZERO1_DATA = ("fsdp", "replicate")
+
+# The activation waist stays replicate-major: it matches the live batch pins (token /
+# bsc-source device_puts). Batch never reconstructs to an fsdp-only layout, so the order
+# carries consistency weight only, no comms cost.
+_BATCH = ("replicate", "fsdp")
 
 PRESET_NAMES = ("owner", "zero1", "ddp")
 
@@ -193,7 +206,7 @@ def preset(name: str, mesh: Mesh | AbstractMesh) -> PlacementRules:
     """The built-in tables: `owner` (stack ÷replicate, d ÷fsdp — the D4-amended layout),
     `zero1` (intra-matrix ÷N — the retired layout, kept for A/B), `ddp` (everything
     replicated — single-node / small-model runs)."""
-    activations: Rule = {"batch": _DATA, "C": "tp"}
+    activations: Rule = {"batch": _BATCH, "C": "tp"}
     match name:
         case "owner":
             sites: dict[str, Rule] = {
@@ -207,11 +220,11 @@ def preset(name: str, mesh: Mesh | AbstractMesh) -> PlacementRules:
                 # groups whose stack length does not tile `replicate` (site subsets): the
                 # CONSUMER picks this site instead — conditionals are site choices in code,
                 # never expressions in rules.
-                "params/persist.subset": {"d_in": _DATA, "d_out": _DATA, "C": "tp"},
+                "params/persist.subset": {"d_in": _ZERO1_DATA, "d_out": _ZERO1_DATA, "C": "tp"},
                 "params/forward": {"d_in": "fsdp", "d_out": "fsdp", "C": "tp"},
             }
         case "zero1":
-            intra: Rule = {"d_in": _DATA, "d_out": _DATA, "C": "tp"}
+            intra: Rule = {"d_in": _ZERO1_DATA, "d_out": _ZERO1_DATA, "C": "tp"}
             sites = {
                 "activations": activations,
                 "params/persist": intra,

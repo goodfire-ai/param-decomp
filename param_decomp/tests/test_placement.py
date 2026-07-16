@@ -16,8 +16,9 @@ def test_owner_preset_derives_the_d4_layout():
     rules = preset("owner", MESH)
     assert rules.spec_for("params/persist", V_AXES) == P("replicate", "fsdp", "tp")
     assert rules.spec_for("params/persist", U_AXES) == P("replicate", "tp", "fsdp")
-    # subset fallback site = intra-matrix behind the stack axis
-    assert rules.spec_for("params/persist.subset", V_AXES) == P(None, ("replicate", "fsdp"), "tp")
+    # subset fallback site = intra-matrix behind the stack axis; fsdp-major (PR #927:
+    # replicate-major turns the ÷N→÷fsdp reconstruct into a grid-transpose permute)
+    assert rules.spec_for("params/persist.subset", V_AXES) == P(None, ("fsdp", "replicate"), "tp")
     # forward: stack unlisted -> replicated across node-groups, d on fsdp
     assert rules.spec_for("params/forward", V_AXES) == P(None, "fsdp", "tp")
 
