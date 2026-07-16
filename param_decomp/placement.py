@@ -138,7 +138,7 @@ class PlacementRules:
 
 # ── presets ──────────────────────────────────────────────────────────────────
 # Named rule tables for the layouts this trainer has actually run. `stack` is the V/U
-# shape-group stack axis (components.DecompVU); `d` covers both d_in and d_out via the
+# shape-group stack axis (components.ComponentStacks); `d` covers both d_in and d_out via the
 # per-tensor axes tuples. All presets share the activation waist rule (batch over the
 # full data mesh) — that surface is layout-invariant (SPEC §4.1 pins).
 
@@ -167,15 +167,18 @@ def preset(name: str, mesh: Mesh | AbstractMesh) -> PlacementRules:
                 "params/forward": {"d_in": "fsdp", "d_out": "fsdp", "C": "tp"},
             }
         case "zero1":
+            intra: Rule = {"d_in": _DATA, "d_out": _DATA, "C": "tp"}
             sites = {
                 "activations": activations,
-                "params/persist": {"d_in": _DATA, "d_out": _DATA, "C": "tp"},
+                "params/persist": intra,
+                "params/persist.subset": intra,
                 "params/forward": {"d_in": "fsdp", "d_out": "fsdp", "C": "tp"},
             }
         case "ddp":
             sites = {
                 "activations": activations,
                 "params/persist": {},
+                "params/persist.subset": {},
                 "params/forward": {},
             }
         case _:
@@ -187,3 +190,18 @@ def vu_axes(ndim_stack: bool = True) -> tuple[Axes, Axes]:
     """Semantic axes of the V/U stacks: `(stack, d_in, C)` and `(stack, C, d_out)`."""
     assert ndim_stack
     return ("stack", "d_in", "C"), ("stack", "C", "d_out")
+
+
+def from_config(
+    spec: "str | Mapping[str, Mapping[str, str | list[str] | None]]",
+    mesh: Mesh | AbstractMesh,
+) -> PlacementRules:
+    """`RuntimeConfig.sharding` → `PlacementRules`: a preset name, or an explicit sites
+    table (YAML lists become ordered tuples — nested-axis ORDER is semantics, PR #927)."""
+    if isinstance(spec, str):
+        return preset(spec, mesh)
+    sites = {
+        site: {axis: tuple(v) if isinstance(v, list) else v for axis, v in rule.items()}
+        for site, rule in spec.items()
+    }
+    return PlacementRules(mesh=mesh, sites=sites)

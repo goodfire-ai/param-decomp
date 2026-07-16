@@ -39,7 +39,7 @@ from jax.sharding import PartitionSpec as P
 
 from param_decomp.adversary import init_persistent_sources, source_masks
 from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch, build_ci_fn
-from param_decomp.components import init_decomp_vu
+from param_decomp.components import init_component_stacks
 from param_decomp.losses import kl_per_position
 from param_decomp.sharding import hsdp_mesh, shard_batch
 from param_decomp.targets.llama8b import (
@@ -58,7 +58,7 @@ def _source_grad(sharded: bool) -> dict[str, jax.Array]:
     C, seq, gbatch = 8, 16, 8
     sites = llama_site_specs(cfg, mlp_family_site_cs(3, 6, C))
     lm = _tiny_decomposed_lm(cfg, sites, random.PRNGKey(0))
-    vu = init_decomp_vu(sites, random.PRNGKey(1))
+    vu = init_component_stacks(sites, random.PRNGKey(1))
     first_block = min(int(name.split(".")[1]) for name in lm.site_names)
     ci_arch = ChunkwiseTransformerCIArch(
         chunks=(Chunk(input_taps=(f"resid.{first_block}",), output_sites=lm.site_names),),

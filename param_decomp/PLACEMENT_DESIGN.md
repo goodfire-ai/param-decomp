@@ -108,7 +108,7 @@ converging on the same vocabulary.
 
 1. `placement.py` engine + presets + tests (THIS increment).
 2. `RuntimeConfig.sharding: preset-name | rules-table`; thread `PlacementRules` into
-   `run.py` → `init_train_state`; `DecompVU.shardings` / CI-fn `.shardings` consume
+   `run.py` → `init_train_state`; `ComponentStacks.shardings` / CI-fn `.shardings` consume
    `rules.sharding_for(site, axes)` instead of hardcoding specs (their current bodies
    become the `owner`/`zero1` preset rows). Startup prints `describe(...)` with every
    persistent tensor.

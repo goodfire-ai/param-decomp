@@ -12,6 +12,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+from param_decomp.placement import preset
 from param_decomp.sharding import hsdp_mesh, shard_batch
 
 # Needs >1 jax device; hangs at the default 1 device, so gated behind --runmultidevice.
@@ -60,12 +61,12 @@ def test_jitted_sharded_inits_match_eager_values():
         ChunkwiseTransformerCIArch,
         build_ci_fn,
     )
-    from param_decomp.components import SiteC, init_decomp_vu
+    from param_decomp.components import SiteC, init_component_stacks
     from param_decomp.configs import BSCScope, SCScope
     from param_decomp.targets.llama8b import canonical_site_cs, llama_site_specs
     from param_decomp.targets.llama8b_sharding import (
         init_ci_fn_placed,
-        init_decomp_vu_placed,
+        init_component_stacks_placed,
         init_sources_sharded,
     )
     from param_decomp.tests.test_llama8b import _tiny_cfg
@@ -99,8 +100,8 @@ def test_jitted_sharded_inits_match_eager_values():
     # shards over `replicate` (whole matrices owned per node-group), matrix d dims over
     # `fsdp`, C over `tp` — total ÷(replicate·fsdp·tp) = ÷N. On the sim mesh replicate is 1
     # (every stack length tiles it), so every group takes the stack rule.
-    vu_placed = init_decomp_vu_placed(sites, jax.random.PRNGKey(1), mesh)
-    vu_eager = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu_placed = init_component_stacks_placed(sites, jax.random.PRNGKey(1), preset("owner", mesh))
+    vu_eager = init_component_stacks(sites, jax.random.PRNGKey(1))
     for Vs, Us in vu_placed.stacks.values():
         assert isinstance(Vs.sharding, NamedSharding) and isinstance(Us.sharding, NamedSharding)
         assert Vs.sharding.spec == P("replicate", "fsdp", "tp"), Vs.sharding.spec
@@ -111,7 +112,7 @@ def test_jitted_sharded_inits_match_eager_values():
     # ~1 ULP (XLA fusion), so it only gets allclose.
     from functools import partial
 
-    vu_jitted_unplaced = jax.jit(partial(init_decomp_vu, sites))(jax.random.PRNGKey(1))
+    vu_jitted_unplaced = jax.jit(partial(init_component_stacks, sites))(jax.random.PRNGKey(1))
     for got, want in zip(
         jax.tree.leaves(vu_placed), jax.tree.leaves(vu_jitted_unplaced), strict=True
     ):
@@ -125,14 +126,16 @@ def test_jitted_sharded_inits_match_eager_values():
     if n > 1:
         from param_decomp.components import SiteSpec
 
-        # d_in = n+1 (does not tile N=n) -> DecompVU.shardings must crash.
+        # d_in = n+1 (does not tile N=n) -> ComponentStacks.shardings must crash.
         indivisible = (SiteSpec("layers.2.mlp.gate_proj", n + 1, 8 * n, 16),)
         try:
-            init_decomp_vu_placed(indivisible, jax.random.PRNGKey(1), mesh)
+            init_component_stacks_placed(indivisible, jax.random.PRNGKey(1), preset("owner", mesh))
         except AssertionError:
             pass
         else:
-            raise AssertionError("expected a non-dividing d_in to fail in DecompVU.shardings")
+            raise AssertionError(
+                "expected a non-dividing d_in to fail in ComponentStacks.shardings"
+            )
 
     first_block = min(int(s.name.split(".")[1]) for s in sites)
     arch = ChunkwiseTransformerCIArch(

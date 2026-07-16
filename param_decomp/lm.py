@@ -30,7 +30,7 @@ from jax import random as jax_random
 from jax.sharding import Mesh
 from jaxtyping import Array, Bool, Float
 
-from param_decomp.components import DecompVU, SiteSpec
+from param_decomp.components import ComponentStacks, SiteSpec
 
 SiteMasks = dict[str, Float[Array, "*leading C"]]
 SiteDeltaMasks = dict[str, Float[Array, "*leading"]]
@@ -105,7 +105,7 @@ class DecomposedModel(Protocol):
         interpreter; core just routes by key."""
         ...
 
-    def prepare_compute_weights(self, vu: DecompVU) -> Any:
+    def prepare_compute_weights(self, vu: ComponentStacks) -> Any:
         """Build the per-step COMPUTE weights from the fp32 ÷N master `vu`, ONCE per step
         (SPEC unchanged — a read-only compute view). Mask-INDEPENDENT, so the result is shared
         by every forward in the step: the engine calls this once and passes the result as the
@@ -186,7 +186,7 @@ class DecomposedModel(Protocol):
         the recon grid, which stays KL-on-final-logits."""
         ...
 
-    def weight_deltas(self, vu: DecompVU) -> dict[str, Float[Array, "d_out d_in"]]:
+    def weight_deltas(self, vu: ComponentStacks) -> dict[str, Float[Array, "d_out d_in"]]:
         """fp32 `W − V@U` per site from the fp32 master `vu` (SPEC N2)."""
         ...
 

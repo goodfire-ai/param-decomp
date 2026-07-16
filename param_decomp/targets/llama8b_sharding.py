@@ -30,7 +30,7 @@ before the layer scan, so `x @ V` gathers the `fsdp`-sharded d_in on NVLink and 
 all-reduce. No manual collectives.
 
 Placement is MODEL-OWNED: each param owner declares its per-leaf `NamedSharding` via a
-`.shardings(mesh)` method (V/U on `DecompVU`, the HSDP layout on the chunkwise CI fn,
+`.shardings(mesh)` method (V/U on `ComponentStacks`, the HSDP layout on the chunkwise CI fn,
 FSDP-on-`fsdp` on the frozen target). The helpers below only drive the apply: compute the
 shardings on the `eqx.filter_eval_shape`'d abstract model, then run the seeded init under
 `jax.jit(init, out_shardings=...)` so each device generates only its own shard and no
@@ -56,11 +56,12 @@ from param_decomp.adversary import (
 )
 from param_decomp.ci_fn import CIFn, CIFnArch, build_ci_fn
 from param_decomp.components import (
-    DecompVU,
+    ComponentStacks,
     SiteSpec,
-    init_decomp_vu,
+    init_component_stacks,
 )
 from param_decomp.configs import BSCScope, SCScope
+from param_decomp.placement import PlacementRules
 from param_decomp.sharding import hsdp_mesh, place_via_shardings
 from param_decomp.sharding import shard_batch as _generic_shard_batch
 from param_decomp.targets.llama8b import LlamaDecomposedModel
@@ -68,7 +69,7 @@ from param_decomp.targets.llama8b import LlamaDecomposedModel
 __all__ = [
     "hsdp_mesh",
     "place_target",
-    "init_decomp_vu_placed",
+    "init_component_stacks_placed",
     "init_ci_fn_placed",
     "init_sources_sharded",
     "shard_batch",
@@ -81,13 +82,15 @@ def place_target(tgt: LlamaDecomposedModel, mesh: Mesh) -> LlamaDecomposedModel:
     return place_via_shardings(tgt, tgt.shardings(mesh))
 
 
-def init_decomp_vu_placed(sites: tuple[SiteSpec, ...], key: PRNGKeyArray, mesh: Mesh) -> DecompVU:
-    """Seeded V/U init placed by `DecompVU.shardings` (the owner-partitioned stack layout),
+def init_component_stacks_placed(
+    sites: tuple[SiteSpec, ...], key: PRNGKeyArray, rules: PlacementRules
+) -> ComponentStacks:
+    """Seeded V/U init placed by `ComponentStacks.shardings(rules)` (the run's placement policy),
     values bit-identical to the retired per-site init (pinned by `test_sharding`). One jit,
     2×n_shapes sharded outputs — the persistence layout IS the stacked layout, so the old
     two-stage stack-then-unstack fan-out (and its transient extra copy) is gone."""
-    placement = eqx.filter_eval_shape(partial(init_decomp_vu, sites), key).shardings(mesh)
-    return jax.jit(partial(init_decomp_vu, sites), out_shardings=placement)(key)
+    placement = eqx.filter_eval_shape(partial(init_component_stacks, sites), key).shardings(rules)
+    return jax.jit(partial(init_component_stacks, sites), out_shardings=placement)(key)
 
 
 def init_ci_fn_placed(
@@ -112,7 +115,7 @@ def init_sources_sharded(
     mesh: Mesh,
 ) -> dict[str, Array]:
     """Seeded PPGD-source init -> placed per scope (jit + `out_shardings`; same
-    no-host-tree rationale as `init_decomp_vu_placed`).
+    no-host-tree rationale as `init_component_stacks_placed`).
 
     `sc`: `{site: (1, T, C+1)}` REPLICATED. One adversarial source shared across the whole
     global batch (leading batch axis = 1, broadcast); it combines elementwise with the
@@ -135,7 +138,7 @@ def init_sources_sharded(
             leading_shape = (global_batch, seq_len)
             spec = P(("replicate", "fsdp"), None, None)
     # Two cheap compiles instead of one n_sites-sharded-output graph (same shape as
-    # `init_decomp_vu_placed`, incl. the transient: the stacked copy can't donate into
+    # `init_component_stacks_placed`, incl. the transient: the stacked copy can't donate into
     # split outputs, so init briefly holds one extra shard-local copy of the sources).
     stacked_shardings = {
         c: NamedSharding(mesh, P(None, *spec))

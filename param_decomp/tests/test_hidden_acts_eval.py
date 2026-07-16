@@ -10,7 +10,7 @@ import jax
 import numpy as np
 
 from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch, CIFn, build_ci_fn
-from param_decomp.components import SiteC, init_decomp_vu
+from param_decomp.components import SiteC, init_component_stacks
 from param_decomp.hidden_acts_eval import (
     accumulate_hidden_acts,
     hidden_acts_log_entries,
@@ -56,7 +56,7 @@ def _setup():
         )
     )
     lm = _tiny_decomposed_model(cfg, site_specs(cfg, site_cs), jax.random.PRNGKey(0))
-    components = init_decomp_vu(lm.sites, jax.random.PRNGKey(1))
+    components = init_component_stacks(lm.sites, jax.random.PRNGKey(1))
     ci_fn = _build_ci_fn(lm, cfg.n_embd, jax.random.PRNGKey(2))
     tokens = jax.random.randint(jax.random.PRNGKey(3), (_BATCH, _SEQ), 0, cfg.vocab_size)
     site_d_out = {

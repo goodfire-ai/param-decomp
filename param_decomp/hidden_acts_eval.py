@@ -31,7 +31,7 @@ import numpy as np
 from jax import random
 from jaxtyping import Array, PRNGKeyArray
 
-from param_decomp.components import DecompVU
+from param_decomp.components import ComponentStacks
 from param_decomp.jit_util import filter_jit
 from param_decomp.lm import DecomposedModel, all_false_routes
 from param_decomp.train import COMPUTE_DT, cast_floating
@@ -82,7 +82,7 @@ def make_ci_hidden_acts_step(
 
     def step(
         model: DecomposedModel,
-        components: DecompVU,
+        components: ComponentStacks,
         ci_fn: Any,
         inputs: Any,
         _key: PRNGKeyArray,
@@ -123,7 +123,7 @@ def make_stochastic_hidden_acts_step(
 
     def step(
         model: DecomposedModel,
-        components: DecompVU,
+        components: ComponentStacks,
         ci_fn: Any,
         inputs: Any,
         key: PRNGKeyArray,
@@ -170,7 +170,7 @@ def make_stochastic_hidden_acts_step(
 def accumulate_hidden_acts(
     step: HiddenActsStep,
     model: DecomposedModel,
-    components: DecompVU,
+    components: ComponentStacks,
     ci_fn: Any,
     input_batches: list[Any],
     base_key: PRNGKeyArray,

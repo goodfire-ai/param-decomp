@@ -184,6 +184,7 @@ def run_resid_mlp_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: 
         eval_fn=eval_fn,
         eval_every=built.cadence.train_log_every,
         mesh=mesh,
+        sharding=built.runtime.sharding,
     )
 
 

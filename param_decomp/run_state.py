@@ -31,6 +31,7 @@ from param_decomp.configs import (
 from param_decomp.lm import DecomposedModel
 from param_decomp.losses import scheduled_value_traced
 from param_decomp.muon_stacked import stacked_muon
+from param_decomp.placement import PlacementRules
 from param_decomp.recon import (
     PersistentSources,
     build_loss_terms,
@@ -39,7 +40,7 @@ from param_decomp.recon import (
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.targets.llama8b_sharding import (
     init_ci_fn_placed,
-    init_decomp_vu_placed,
+    init_component_stacks_placed,
     init_sources_sharded,
 )
 from param_decomp.train import TrainState
@@ -167,11 +168,12 @@ def init_train_state(
     init_key: PRNGKeyArray,
     src_key: PRNGKeyArray,
     mesh: Mesh,
+    rules: PlacementRules,
 ) -> TrainState:
     ci_key = random.fold_in(init_key, 1)
     # Placement is MODEL-OWNED: V/U + CI declare their own per-leaf shardings (asserting
     # divisibility), uniformly across mesh sizes — no scale inference, no replicate fallback.
-    components = init_decomp_vu_placed(lm.sites, init_key, mesh)
+    components = init_component_stacks_placed(lm.sites, init_key, rules)
     ci_fn = init_ci_fn_placed(ci_fn_arch, lm.sites, ci_key, mesh)
     assert ci_fn.expects_axes == lm.leading_axes, (
         f"CI fn expects leading axes {ci_fn.expects_axes} but model has {lm.leading_axes}"

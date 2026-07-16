@@ -1,25 +1,28 @@
 """The decomposition representation, shared by every target (LM and toy alike).
 
 `SiteC` / `SiteSpec` are the per-site shape primitives (config-level name+C, and the
-shape-carrying spec); `DecompVU` is the trainable master pytree, persisted as same-shape
-STACKS (owner-partitioned layout); `init_decomp_vu` seeds it; `site_out` is the one
+shape-carrying spec); `ComponentStacks` is the trainable master pytree, persisted as same-shape
+STACKS (owner-partitioned layout); `init_component_stacks` seeds it; `site_out` is the one
 decomposed-linear primitive (SPEC §4.1, `((x@V)*m)@U + (x@Δ)*d`). These are domain-neutral
 — they depend only on the site shapes and the V/U/W arrays — so they live here rather than
-inside `lm.py` (whose `DecomposedModel` Protocol references `DecompVU`/`SiteSpec`) or any
+inside `lm.py` (whose `DecomposedModel` Protocol references `ComponentStacks`/`SiteSpec`) or any
 one target.
 """
 
 from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import cache
-from typing import Generic, TypeVar
+from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jax.sharding import Mesh, NamedSharding
+from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array
+
+if TYPE_CHECKING:
+    from param_decomp.placement import PlacementRules
 
 
 @dataclass(frozen=True)
@@ -72,8 +75,8 @@ VUShape = tuple[int, int, int]  # (d_in, d_out, C)
 # site name -> (shape group, slot on the group's stack axis); static, canonical site order
 SiteSlots = tuple[tuple[str, VUShape, int], ...]
 
-# The V/U leaf type: `Array` for the real fp32 masters (the default — so bare `DecompVU`
-# means `DecompVU[Array]` and no call site needs the parameter), or `NamedSharding` for the
+# The V/U leaf type: `Array` for the real fp32 masters (the default — so bare `ComponentStacks`
+# means `ComponentStacks[Array]` and no call site needs the parameter), or `NamedSharding` for the
 # same-structure placement tree `.shardings` returns for `jax.jit(out_shardings=...)`.
 VULeaf = TypeVar("VULeaf", default=Array)
 
@@ -101,7 +104,7 @@ def _slot_index(site_slots: SiteSlots) -> dict[str, tuple[VUShape, int]]:
     return {name: (shape, slot) for name, shape, slot in site_slots}
 
 
-class DecompVU(eqx.Module, Generic[VULeaf]):
+class ComponentStacks(eqx.Module, Generic[VULeaf]):
     """The trainable V/U masters, persisted as same-shape STACKS — the owner-partitioned
     layout: one `(Vs [g, d_in, C], Us [g, C, d_out])` pair per `(d_in, d_out, C)` shape
     group, with `site_slots` (static) mapping each site name to its slot on the stack axis.
@@ -111,13 +114,13 @@ class DecompVU(eqx.Module, Generic[VULeaf]):
     per-kind stacks natively, and the checkpoint/init trees shrink from `2·n_sites` leaves
     to `2·n_shapes`. Per-site access is `site(name)` — a static slice of the stack.
 
-    Leaves are fp32 master Arrays (`DecompVU[Array]`) or `NamedSharding`s in the placement
-    tree `.shardings` returns (`DecompVU[NamedSharding]` — same pytree structure)."""
+    Leaves are fp32 master Arrays (`ComponentStacks[Array]`) or `NamedSharding`s in the placement
+    tree `.shardings` returns (`ComponentStacks[NamedSharding]` — same pytree structure)."""
 
     stacks: dict[VUShape, tuple[VULeaf, VULeaf]]
     site_slots: SiteSlots = eqx.field(static=True)
 
-    def site(self: "DecompVU[Array]", name: str) -> tuple[Array, Array]:
+    def site(self: "ComponentStacks[Array]", name: str) -> tuple[Array, Array]:
         shape, slot = _slot_index(self.site_slots)[name]
         Vs, Us = self.stacks[shape]
         return Vs[slot], Us[slot]
@@ -126,46 +129,62 @@ class DecompVU(eqx.Module, Generic[VULeaf]):
     def site_names(self) -> tuple[str, ...]:
         return tuple(name for name, _, _ in self.site_slots)
 
-    def sites_items(self: "DecompVU[Array]") -> Iterator[tuple[str, tuple[Array, Array]]]:
+    def sites_items(self: "ComponentStacks[Array]") -> Iterator[tuple[str, tuple[Array, Array]]]:
         """`(name, (V, U))` in canonical site order — the per-site view of the stacks."""
         for name, _, _ in self.site_slots:
             yield name, self.site(name)
 
-    def shardings(self: "DecompVU[Array]", mesh: Mesh) -> "DecompVU[NamedSharding]":
-        """Owner-partitioned ÷N persistence (hybrid HSDP rule): the STACK axis shards over
-        `replicate` (whole matrices owned per node-group — the cross-node axis carries ZERO
-        per-step weight collectives; muon NS on the masters is node-local), matrix d dims
-        over `fsdp` (NVLink-cheap), C over `tp`. Total ÷(replicate·fsdp·tp) = ÷N — the same
-        memory as the retired intra-matrix ZeRO-1 layout.
+    V_AXES: "ClassVar[tuple[str, ...]]" = ("stack", "d_in", "C")
+    U_AXES: "ClassVar[tuple[str, ...]]" = ("stack", "C", "d_out")
 
-        A group whose stack length does not tile `replicate` (site subsets, e.g. an
-        L18-only decomposition at multi-node dp) falls back PER-GROUP to intra-matrix data
-        sharding (`P(None, ("replicate","fsdp"), …)`) — the old layout behind a leading
-        stack axis. At `replicate == 1` (single node) the two rules coincide."""
-        n_rep = mesh.shape["replicate"]
-        n_fsdp = mesh.shape["fsdp"]
-        n_tp = mesh.shape["tp"]
+    def _site_for_group(self, g: int, rules: "PlacementRules") -> str:
+        """The placement-site choice per shape group: `params/persist` when the stack
+        tiles its assignment, else the per-group `params/persist.subset` fallback (site
+        subsets, e.g. an L18-only decomposition at multi-node dp). Conditionals are site
+        choices in consumer code — never expressions in rules (PLACEMENT_DESIGN.md)."""
+        return (
+            "params/persist"
+            if g % rules.shard_count("params/persist", "stack") == 0
+            else "params/persist.subset"
+        )
+
+    def shardings(
+        self: "ComponentStacks[Array]", rules: "PlacementRules"
+    ) -> "ComponentStacks[NamedSharding]":
+        """Persistence placement DERIVED from the run's `PlacementRules` (semantic axes
+        `V (stack, d_in, C)` / `U (stack, C, d_out)`; see `placement.py` presets — `owner`
+        is the hybrid HSDP layout of the 2026-07-15 SPEC D4 amendment). Divisibility is
+        validated per stack, loudly."""
         placed: dict[VUShape, tuple[NamedSharding, NamedSharding]] = {}
         for (d_in, d_out, c), (Vs, _) in self.stacks.items():
             g = Vs.shape[0]
-            assert c % n_tp == 0, f"C {c} not ÷ tp={n_tp}"
-            if g % n_rep == 0:
-                assert d_in % n_fsdp == 0, f"d_in {d_in} not ÷ fsdp={n_fsdp}"
-                assert d_out % n_fsdp == 0, f"d_out {d_out} not ÷ fsdp={n_fsdp}"
-                shard_V = NamedSharding(mesh, P("replicate", "fsdp", "tp"))
-                shard_U = NamedSharding(mesh, P("replicate", "tp", "fsdp"))
-            else:
-                data = ("replicate", "fsdp")
-                n_data = n_rep * n_fsdp
-                assert d_in % n_data == 0, f"d_in {d_in} not ÷ {n_data}"
-                assert d_out % n_data == 0, f"d_out {d_out} not ÷ {n_data}"
-                shard_V = NamedSharding(mesh, P(None, data, "tp"))
-                shard_U = NamedSharding(mesh, P(None, "tp", data))
-            placed[(d_in, d_out, c)] = (shard_V, shard_U)
-        return DecompVU(stacks=placed, site_slots=self.site_slots)
+            site = self._site_for_group(g, rules)
+            rules.validate_shape(site, ComponentStacks.V_AXES, (g, d_in, c))
+            rules.validate_shape(site, ComponentStacks.U_AXES, (g, c, d_out))
+            placed[(d_in, d_out, c)] = (
+                rules.sharding_for(site, ComponentStacks.V_AXES),
+                rules.sharding_for(site, ComponentStacks.U_AXES),
+            )
+        return ComponentStacks(stacks=placed, site_slots=self.site_slots)
+
+    def placement_audit(
+        self, rules: "PlacementRules"
+    ) -> dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]]:
+        """`{label: (site, axes, shape)}` for `rules.describe(...)` — the startup audit.
+        Group lengths come from the static `site_slots` (works on eval-shape trees)."""
+        lengths: dict[VUShape, int] = {}
+        for _name, shape, slot in self.site_slots:
+            lengths[shape] = max(lengths.get(shape, 0), slot + 1)
+        out: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {}
+        for (d_in, d_out, c), g in lengths.items():
+            site = self._site_for_group(g, rules)
+            group = f"(d_in={d_in}, d_out={d_out}, C={c})"
+            out[f"V {group}"] = (site, ComponentStacks.V_AXES, (g, d_in, c))
+            out[f"U {group}"] = (site, ComponentStacks.U_AXES, (g, c, d_out))
+        return out
 
 
-def init_decomp_vu_stacked(
+def init_stack_arrays(
     sites: tuple[SiteSpec, ...], key: Array
 ) -> dict[VUShape, tuple[Array, Array]]:
     """Seeded stack init: `{(d_in, d_out, C): (V [g, d_in, C], U [g, C, d_out])}`, vmapped
@@ -184,10 +203,10 @@ def init_decomp_vu_stacked(
     return stacked
 
 
-def decomp_vu_from_sites(vu: dict[str, tuple[Array, Array]]) -> DecompVU:
-    """Build the stacked `DecompVU` from a per-site `{name: (V, U)}` dict (site order =
+def component_stacks_from_sites(vu: dict[str, tuple[Array, Array]]) -> ComponentStacks:
+    """Build the stacked `ComponentStacks` from a per-site `{name: (V, U)}` dict (site order =
     dict order). The explicit-arrays constructor for toys and tests; the trainer inits
-    directly in the stacked layout (`init_decomp_vu`)."""
+    directly in the stacked layout (`init_component_stacks`)."""
     sites = tuple(
         SiteSpec(name=name, d_in=V.shape[0], d_out=U.shape[1], C=V.shape[1])
         for name, (V, U) in vu.items()
@@ -199,14 +218,14 @@ def decomp_vu_from_sites(vu: dict[str, tuple[Array, Array]]) -> DecompVU:
         )
         for shape, specs in vu_shape_groups(sites).items()
     }
-    return DecompVU(stacks=stacks, site_slots=site_slots_for(sites))
+    return ComponentStacks(stacks=stacks, site_slots=site_slots_for(sites))
 
 
-def init_decomp_vu(sites: tuple[SiteSpec, ...], key: Array) -> DecompVU:
+def init_component_stacks(sites: tuple[SiteSpec, ...], key: Array) -> ComponentStacks:
     """Small random fp32 V ~ N(0, d_in^-0.5), U ~ N(0, C^-0.5) per site, built directly in
     the stacked persistence layout; the weight-delta channel carries the faithfulness
     residual at init (before faithfulness warmup)."""
-    return DecompVU(stacks=init_decomp_vu_stacked(sites, key), site_slots=site_slots_for(sites))
+    return ComponentStacks(stacks=init_stack_arrays(sites, key), site_slots=site_slots_for(sites))
 
 
 def site_out(

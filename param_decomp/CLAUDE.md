@@ -29,7 +29,7 @@ never silently diverge. Cite IDs (`S14`, `N1`, …) in commit messages and revie
 `masked_site_outputs`, `weight_deltas`, and a `recon_loss_fn` (LM: `kl_per_position`). The
 concrete impl per target is an `eqx.Module` (`LlamaDecomposedModel`,
 `SimpleMLPDecomposedModel`, `TMSDecomposedModel`, `ResidMLPDecomposedModel`) carrying its
-FROZEN target weights as ARRAY FIELDS; the TRAINABLE V/U (`vu: DecompVU`) stays an explicit
+FROZEN target weights as ARRAY FIELDS; the TRAINABLE V/U (`vu: ComponentStacks`) stays an explicit
 METHOD ARG (separate lifecycle — own optimizer + checkpoint, C-sharded while the frozen
 weights replicate). Flat site-name-keyed dicts at the boundary; the model threads into the
 jitted step as a pytree ARG (never a jit-closure constant — an 8B target becomes a multi-GB
@@ -152,7 +152,7 @@ NO tensor-parallel / Megatron-C axis (`fsdp` = the 8 intra-node NVLink GPUs, `re
 across nodes). The CI output C axis is NEVER sharded, so the per-site heads are a layout
 convenience here (they were load-bearing under the prior TP layout, which sliced a tp-sharded
 glued-ΣC head mid-site). **Persistence layouts (÷N)**: the trainable V/U masters AND their
-optimizer moments persist as same-shape STACKS (`DecompVU.stacks`, owner-partitioned: stack
+optimizer moments persist as same-shape STACKS (`ComponentStacks.stacks`, owner-partitioned: stack
 axis ÷`replicate` — whole matrices owned per node-group, zero cross-node weight collectives,
 muon NS node-local — matrix d dims ÷`fsdp`, C ÷`tp`; SPEC D4 amendment 2026-07-15; per-group
 fallback to intra-matrix data sharding when a stack doesn't tile `replicate`). The CI-fn
@@ -309,7 +309,7 @@ shared FS, which `$PARAM_DECOMP_OUT_DIR` already is.
 - **Keep seeded inits few-outputs-under-jit**: a jit returning n_sites (hundreds of)
   sharded outputs — or n_chunks unrolled RNG bodies — is a multi-minute SPMD/layout
   compile. vmap-stack over the same per-site/per-chunk keys (bit-identical values),
-  then fan out with a trivial slice jit. `init_decomp_vu_placed` is the template;
+  then fan out with a trivial slice jit. `init_component_stacks_placed` is the template;
   `init_ci_fn_placed` / `init_sources_sharded` follow it.
 - **The `jit_step` compile (~5 min at dp32) is FLAT across graph structure**: recon
   chunk count, C, CI-fn depth, and PPGD warmup all measured within noise (~83%

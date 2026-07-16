@@ -50,7 +50,7 @@ from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from param_decomp.built_run import EvalPGDConfig
-from param_decomp.components import DecompVU
+from param_decomp.components import ComponentStacks
 from param_decomp.jit_util import filter_jit
 from param_decomp.lm import DecomposedModel
 from param_decomp.losses import kl_per_position
@@ -173,7 +173,7 @@ def make_eval_step(
 
     def eval_step(
         model: DecomposedModel,
-        components: DecompVU,
+        components: ComponentStacks,
         ci_fn: Any,
         token_ids: Int[Array, "B T"],
         key: PRNGKeyArray,

@@ -34,7 +34,7 @@ from param_decomp.adversary import (
     source_masks,
 )
 from param_decomp.ci_fn import CI, CIFn
-from param_decomp.components import DecompVU
+from param_decomp.components import ComponentStacks
 from param_decomp.configs import SmoothL0ImportanceMinimalityLossConfig
 from param_decomp.jit_util import filter_jit
 from param_decomp.lm import DecomposedModel
@@ -64,7 +64,7 @@ def cast_floating(tree: Any, dtype: Any) -> Any:
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class TrainState:
-    components: DecompVU  # the universal trainable V/U pytree, fp32 masters
+    components: ComponentStacks  # the universal trainable V/U pytree, fp32 masters
     ci_fn: CIFn  # fp32 masters
     components_opt_state: optax.OptState
     ci_fn_opt_state: optax.OptState
@@ -75,7 +75,7 @@ class TrainState:
     step: Array
 
 
-def _grad_norm_metrics(components_grad: DecompVU, ci_fn_grad: Any) -> dict[str, Array]:
+def _grad_norm_metrics(components_grad: ComponentStacks, ci_fn_grad: Any) -> dict[str, Array]:
     """Pre-clip gradient L2 norms, matching the torch `component_grad_norms` families:
     per-leaf `grad_norms/components<path>` / `grad_norms/ci_fns<path>` (paths are this
     pytree's own — e.g. `.vu['layers.18.mlp.gate_proj'][0]` for the per-site Llama
@@ -370,7 +370,7 @@ def make_train_step(
         # are NOT detached here, but components/ci grads through them are what torch
         # gets too (sources are leaves). ──
         def loss_fn(
-            trainable: tuple[Any, DecompVU, CI, dict[str, dict[str, Array]]],
+            trainable: tuple[Any, ComponentStacks, CI, dict[str, dict[str, Array]]],
         ) -> tuple[Array, tuple[Array, Array, Array, tuple[Array, ...]]]:
             prepared, components, ci, persistent_sources = trainable
             # Stochastic recon builds its masks INSIDE the target's `masked_output_stochastic`
@@ -535,14 +535,17 @@ def make_train_step(
 def make_faith_warmup_step(
     opt: optax.GradientTransformation,
     compiler_options: dict[str, bool | int | str] | None = None,
-) -> Callable[[DecomposedModel, DecompVU, optax.OptState], tuple[DecompVU, optax.OptState, Array]]:
+) -> Callable[
+    [DecomposedModel, ComponentStacks, optax.OptState],
+    tuple[ComponentStacks, optax.OptState, Array],
+]:
     """`model` is the jit ARG (frozen weights traced, not baked) — `weight_deltas` reads its
     per-site W slices, so closing over the model would bake them into the HLO."""
 
     def warmup_step(
-        model: DecomposedModel, components: DecompVU, opt_state: optax.OptState
-    ) -> tuple[DecompVU, optax.OptState, Array]:
-        def loss_fn(components_: DecompVU) -> Array:
+        model: DecomposedModel, components: ComponentStacks, opt_state: optax.OptState
+    ) -> tuple[ComponentStacks, optax.OptState, Array]:
+        def loss_fn(components_: ComponentStacks) -> Array:
             return faithfulness_loss(model.weight_deltas(components_))
 
         loss, grad = eqx.filter_value_and_grad(loss_fn)(components)

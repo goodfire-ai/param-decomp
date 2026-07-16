@@ -24,7 +24,7 @@ from param_decomp.arithmetic_eval import (
     select_active,
 )
 from param_decomp.ci_fn import lower_leaky_hard_sigmoid
-from param_decomp.components import init_decomp_vu
+from param_decomp.components import init_component_stacks
 from param_decomp.targets.llama8b import llama_site_specs, mlp_family_site_cs
 from param_decomp.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
 from param_decomp.tests.test_slow_eval import _build_ci_fn
@@ -52,7 +52,7 @@ def _grid() -> ArithmeticGrid:
 def test_grid_step_ci_xv_and_masked_max_match_hand_rolled():
     cfg, lm, ci_fn, C = _tiny_setup()
     assert isinstance(lm, ComponentActivationModel)
-    vu = init_decomp_vu(lm.sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(lm.sites, jax.random.PRNGKey(1))
     n_pad = N_A * N_B + 2  # two garbage tail rows, as the sharding pad would append
     tokens = jax.random.randint(jax.random.PRNGKey(4), (n_pad, T), 0, cfg.vocab_size)
     step = make_arithmetic_grid_step(lm, ANSWER_POSITION, n_valid_rows=N_A * N_B)
@@ -90,7 +90,7 @@ def test_grid_step_ci_xv_and_masked_max_match_hand_rolled():
 def test_compute_arithmetic_selection_gathers_only_shown_columns():
     cfg, lm, ci_fn, _ = _tiny_setup()
     assert isinstance(lm, ComponentActivationModel)
-    vu = init_decomp_vu(lm.sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(lm.sites, jax.random.PRNGKey(1))
     tokens = jax.random.randint(jax.random.PRNGKey(4), (N_A * N_B, T), 0, cfg.vocab_size)
     step = make_arithmetic_grid_step(lm, ANSWER_POSITION, n_valid_rows=N_A * N_B)
     top_k = 3

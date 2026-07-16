@@ -8,7 +8,7 @@ step as a pytree arg; layers without sites run the plain frozen block.
 
 q/k/v sites are decomposed BEFORE RoPE/SDPA (the masked site output feeds the
 attention math); the o site applies to the attention output. V/U masters are fp32
-keyed per site (`DecompVU`); frozen weights are stored bf16 (SPEC N1) — the trainer
+keyed per site (`ComponentStacks`); frozen weights are stored bf16 (SPEC N1) — the trainer
 casts for compute.
 
 Real HF weights load straight from the cached safetensors (no torch dep).
@@ -29,7 +29,7 @@ from jaxtyping import Array, Float, Int
 from safetensors import safe_open
 
 from param_decomp.components import (
-    DecompVU,
+    ComponentStacks,
     SiteC,
     SiteSpec,
     dequantize_fp8,
@@ -295,7 +295,7 @@ def _tap_layer(key: str) -> int:
     return parse_site_name(key)[0]
 
 
-def _per_kind_dims(components: DecompVU) -> dict[str, tuple[int, int, int]]:
+def _per_kind_dims(components: ComponentStacks) -> dict[str, tuple[int, int, int]]:
     """Per decomposed KIND, the `(d_in, C, d_out)` shared across its layers — asserting
     uniformity, the precondition for the layer-`lax.scan` masked forward (it stacks each
     kind across layers, so every layer's matrix of that kind must be the same shape)."""
@@ -310,7 +310,7 @@ def _per_kind_dims(components: DecompVU) -> dict[str, tuple[int, int, int]]:
     return kind_dims
 
 
-def _stack_per_kind_vu(components: DecompVU, n_layers: int) -> dict[str, dict[str, Array]]:
+def _stack_per_kind_vu(components: ComponentStacks, n_layers: int) -> dict[str, dict[str, Array]]:
     """Per decomposed KIND, the layer-stacked `(V, U)` arrays — the MASK-INDEPENDENT part of
     the scan inputs (a leading layer axis, one homogeneous body across layers). Mask/live/
     delta/route are attached per-forward by `_attach_per_kind_masks`; the V/U stack +
@@ -522,7 +522,7 @@ class LlamaDecomposedModel(eqx.Module):
 
     Carries the FROZEN full model (embedding, all blocks, final norm, lm_head) as array
     fields — so it threads into the jitted step as a pytree arg, its weights traced not
-    baked. The TRAINABLE V/U (`vu: DecompVU`) is passed to the forward methods explicitly:
+    baked. The TRAINABLE V/U (`vu: ComponentStacks`) is passed to the forward methods explicitly:
     separate lifecycle (own optimizer + checkpoint, C-sharded while these weights
     replicate), so it is NOT a field here.
 
@@ -845,7 +845,7 @@ class LlamaDecomposedModel(eqx.Module):
                     sink[site] = stacked[kind][layer - first_live]
         return logits
 
-    def prepare_compute_weights(self, vu: DecompVU) -> dict[str, dict[str, Array]]:
+    def prepare_compute_weights(self, vu: ComponentStacks) -> dict[str, dict[str, Array]]:
         """Build the shared per-kind compute weights ONCE per step (SPEC unchanged): stack the
         per-site V/U into the layer-stacked `[n_layer, …]` form and run the ÷N→÷fsdp cross-node
         reconstruction + bf16 cast. The result is mask-independent and identical for every
@@ -941,7 +941,7 @@ class LlamaDecomposedModel(eqx.Module):
         assert set(collect_activations) == set(live), (sorted(collect_activations), sorted(live))
         return collect_activations
 
-    def weight_deltas(self, vu: DecompVU) -> dict[str, Array]:
+    def weight_deltas(self, vu: ComponentStacks) -> dict[str, Array]:
         """fp32 `W − V@U` per site from fp32 masters (SPEC N2; faithfulness input)."""
         out: dict[str, Array] = {}
         for spec in self.sites:

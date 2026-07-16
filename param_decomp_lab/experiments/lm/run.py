@@ -340,6 +340,7 @@ def train(
         eval_fn=eval_fn,
         eval_every=eval_every,
         mesh=mesh,
+        sharding=built.runtime.sharding,
     )
 
 

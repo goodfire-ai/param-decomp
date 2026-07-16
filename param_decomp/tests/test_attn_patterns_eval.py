@@ -25,7 +25,7 @@ from param_decomp.ci_fn import (
     CIFn,
     build_ci_fn,
 )
-from param_decomp.components import SiteC, SiteSpec, init_decomp_vu
+from param_decomp.components import SiteC, SiteSpec, init_component_stacks
 from param_decomp.lm import DecomposedModel, run_stochastic_masked_output
 from param_decomp.targets.llama8b import (
     llama_site_specs,
@@ -118,7 +118,7 @@ def _llama_attn_setup():
 
     sites = llama_site_specs(cfg, canonical_site_cs(site_cs))
     lm = _llama_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    components = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    components = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = _build_ci_fn(lm, cfg.n_embd, jax.random.PRNGKey(2))
     return cfg, lm, components, ci_fn
 
@@ -190,7 +190,7 @@ def test_simple_mlp_step_runs_end_to_end():
     site_cs = simple_canonical((SiteC("h.0.attn.q_proj", 6), SiteC("h.0.attn.k_proj", 6)))
     sites = simple_site_specs(cfg, site_cs)
     lm = _simple_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
-    components = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    components = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = _build_ci_fn(lm, cfg.n_embd, jax.random.PRNGKey(2))
     step = make_ci_attn_patterns_step(lm, attn_pattern_for(lm))
     b, t = 2, 10

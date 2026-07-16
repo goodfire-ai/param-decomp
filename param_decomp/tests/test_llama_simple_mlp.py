@@ -24,7 +24,7 @@ from param_decomp.ci_fn import (
     ChunkwiseTransformerCIFn,
     build_ci_fn,
 )
-from param_decomp.components import DecompVU, SiteC, SiteSpec, init_decomp_vu
+from param_decomp.components import ComponentStacks, SiteC, SiteSpec, init_component_stacks
 from param_decomp.configs import (
     AdamPGDConfig,
     ChunkwiseSubsetReconLossConfig,
@@ -201,7 +201,7 @@ def test_clean_path_and_masked_identity():
     cfg = _tiny_cfg()
     sites = site_specs(cfg, _MIXED_SITE_CS)
     lm = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
@@ -249,7 +249,7 @@ def test_zero_masking_one_site_changes_logits(ablated_site: str):
     cfg = _tiny_cfg()
     sites = site_specs(cfg, _MIXED_SITE_CS)
     lm = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
@@ -271,7 +271,7 @@ def test_masked_site_outputs_frozen_when_routed_false_or_unmasked():
     sites_cs = (SiteC("h.2.attn.q_proj", 8), SiteC("h.2.mlp.c_fc", 12))
     sites = site_specs(cfg, sites_cs)
     lm = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     names = lm.site_names
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
@@ -303,7 +303,7 @@ def test_masked_site_outputs_match_hand_computed_masked_linear(site_name_str: st
     sites_cs = (SiteC(site_name_str, 8),)
     sites = site_specs(cfg, sites_cs)
     lm = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     names = lm.site_names
     s = site_name_str
     b, t = 2, 16
@@ -333,7 +333,7 @@ def test_o_site_masks_attention_output():
     o_site = "h.2.attn.o_proj"
     sites = site_specs(cfg, (SiteC(o_site, 8),))
     lm = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
@@ -355,7 +355,7 @@ def test_step_trains_and_has_vpd_signature():
     n_warmup = 2
     sites = site_specs(cfg, site_cs)
     lm = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = _build_chunkwise_ci_fn(lm, jax.random.PRNGKey(2))
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
@@ -433,7 +433,7 @@ def test_step_trains_and_has_vpd_signature():
     # SPEC S9: p annealed below its 2.0 start by step 4 of 100.
     assert losses[-1]["p_imp"] < 2.0
     # fp32 masters preserved through updates (SPEC N1).
-    assert isinstance(state.components, DecompVU)
+    assert isinstance(state.components, ComponentStacks)
     for _, (V, U) in state.components.sites_items():
         assert V.dtype == jnp.float32 and U.dtype == jnp.float32
     assert isinstance(state.ci_fn, ChunkwiseTransformerCIFn)
@@ -444,7 +444,7 @@ def test_faith_warmup_decreases_faith():
     cfg = _tiny_cfg()
     sites = site_specs(cfg, canonical_site_cs(_MIXED_SITE_CS))
     lm = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     opt = optax.adamw(1e-2, weight_decay=0.0)
     wstep = make_faith_warmup_step(opt)
     ostate = opt.init(eqx.filter(vu, eqx.is_array))
@@ -457,10 +457,10 @@ def test_faith_warmup_decreases_faith():
     assert float(loss) < first_loss * 0.9, (first_loss, float(loss))
 
 
-def test_decomp_vu_shapes_fp32():
+def test_component_stacks_shapes_fp32():
     cfg = _tiny_cfg()
     sites = site_specs(cfg, _MIXED_SITE_CS)
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     d, di = cfg.n_embd, cfg.n_intermediate
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
     V_q, U_q = vu.site("h.2.attn.q_proj")

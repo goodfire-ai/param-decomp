@@ -47,6 +47,7 @@ from param_decomp.configs import (
     SCScope,
     UniformKSubsetRoutingConfig,
 )
+from param_decomp.placement import preset
 from param_decomp.recon import build_loss_terms, persistent_configs
 from param_decomp.run import _ensure_global
 from param_decomp.schedule import ScheduleConfig
@@ -54,7 +55,7 @@ from param_decomp.targets.llama8b import llama_site_specs, mlp_family_site_cs
 from param_decomp.targets.llama8b_sharding import (
     hsdp_mesh,
     init_ci_fn_placed,
-    init_decomp_vu_placed,
+    init_component_stacks_placed,
     init_sources_sharded,
 )
 from param_decomp.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
@@ -106,7 +107,7 @@ def _build_sharded(seed: int):
         n_heads=2,
         mlp_hidden=32,
     )
-    vu = init_decomp_vu_placed(lm.sites, jax.random.PRNGKey(seed), mesh)
+    vu = init_component_stacks_placed(lm.sites, jax.random.PRNGKey(seed), preset("owner", mesh))
     ci_fn = init_ci_fn_placed(ci_arch, lm.sites, jax.random.PRNGKey(seed + 1), mesh)
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)

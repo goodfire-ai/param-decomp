@@ -151,9 +151,9 @@ def test_eval_step_keys_identities_and_determinism():
     sites = llama_site_specs(cfg, mlp_family_site_cs(4, 5, C))
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
 
-    from param_decomp.components import init_decomp_vu
+    from param_decomp.components import init_component_stacks
 
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = _build_ci_fn(lm, cfg.n_embd, jax.random.PRNGKey(2))
 
     b, t = 2, 16
@@ -222,9 +222,9 @@ def test_eval_step_fresh_pgd_probe():
     sites = llama_site_specs(cfg, mlp_family_site_cs(4, 4, C))
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
 
-    from param_decomp.components import init_decomp_vu
+    from param_decomp.components import init_component_stacks
 
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = _build_ci_fn(lm, cfg.n_embd, jax.random.PRNGKey(2))
     b, t = 2, 16
     token_ids = jax.random.randint(jax.random.PRNGKey(3), (b, t), 0, cfg.vocab_size)
@@ -274,7 +274,7 @@ def test_eval_step_fresh_pgd_probe_device_count_invariant():
     the two paths are identical; the test bites under
     `XLA_FLAGS=--xla_force_host_platform_device_count=4`.
     """
-    from param_decomp.components import init_decomp_vu
+    from param_decomp.components import init_component_stacks
     from param_decomp.sharding import hsdp_mesh
 
     mesh = hsdp_mesh()
@@ -283,7 +283,7 @@ def test_eval_step_fresh_pgd_probe_device_count_invariant():
     cfg = _tiny_cfg()
     sites = llama_site_specs(cfg, mlp_family_site_cs(4, 4, 8))
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = _build_ci_fn(lm, cfg.n_embd, jax.random.PRNGKey(2))
 
     b, t = 4 * n_dev, 16
@@ -319,9 +319,9 @@ def test_eval_step_l0_groups_sum_member_sites():
     cfg = _tiny_cfg()
     sites = llama_site_specs(cfg, mlp_family_site_cs(4, 5, 8))
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    from param_decomp.components import init_decomp_vu
+    from param_decomp.components import init_component_stacks
 
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = _build_ci_fn(lm, cfg.n_embd, jax.random.PRNGKey(2))
     token_ids = jax.random.randint(jax.random.PRNGKey(3), (2, 16), 0, cfg.vocab_size)
 
@@ -365,9 +365,9 @@ def test_eval_step_n_valid_rows_masks_pad_tail():
     sites = llama_site_specs(cfg, mlp_family_site_cs(4, 5, 8))
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
 
-    from param_decomp.components import init_decomp_vu
+    from param_decomp.components import init_component_stacks
 
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = _build_ci_fn(lm, cfg.n_embd, jax.random.PRNGKey(2))
 
     b, pad, t = 3, 2, 16

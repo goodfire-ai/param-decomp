@@ -11,7 +11,7 @@ import optax
 from jax import random
 
 from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch, build_ci_fn
-from param_decomp.components import SiteSpec, decomp_vu_from_sites
+from param_decomp.components import SiteSpec, component_stacks_from_sites
 from param_decomp.configs import (
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
@@ -39,7 +39,7 @@ def _build_step_and_args():
         leading_axes=("sequence",),
     )
     assert lm.W.size == FROZEN_W_SIZE
-    components = decomp_vu_from_sites(
+    components = component_stacks_from_sites(
         {
             SITE: (
                 random.normal(random.fold_in(key, 3), (D, C)) * 0.1,

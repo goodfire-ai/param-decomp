@@ -35,7 +35,7 @@ from param_decomp.ci_fn import (
     ChunkwiseTransformerCIArch,
     build_ci_fn,
 )
-from param_decomp.components import init_decomp_vu
+from param_decomp.components import init_component_stacks
 from param_decomp.configs import (
     AdamPGDConfig,
     ChunkwiseSubsetReconLossConfig,
@@ -62,7 +62,7 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
     C, seq, gbatch = 8, 16, 8
     sites = llama_site_specs(cfg, mlp_family_site_cs(3, 6, C))
     lm = _tiny_decomposed_lm(cfg, sites, random.PRNGKey(0))
-    vu = init_decomp_vu(sites, random.PRNGKey(1))
+    vu = init_component_stacks(sites, random.PRNGKey(1))
     arch = ChunkwiseTransformerCIArch(
         chunks=(Chunk(input_taps=("resid.3",), output_sites=lm.site_names),),
         input_dim=cfg.n_embd,

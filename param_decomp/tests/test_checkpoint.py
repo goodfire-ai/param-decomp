@@ -28,7 +28,7 @@ from param_decomp.ci_fn import (
     ChunkwiseTransformerCIArch,
     build_ci_fn,
 )
-from param_decomp.components import init_decomp_vu
+from param_decomp.components import init_component_stacks
 from param_decomp.configs import (
     AdamPGDConfig,
     ChunkwiseSubsetReconLossConfig,
@@ -40,6 +40,7 @@ from param_decomp.configs import (
 )
 from param_decomp.lm import DecomposedModel
 from param_decomp.muon_stacked import stacked_muon
+from param_decomp.placement import preset
 from param_decomp.recon import build_loss_terms
 from param_decomp.run_state import stacked_muon_dimension_numbers
 from param_decomp.schedule import ScheduleConfig
@@ -50,7 +51,7 @@ from param_decomp.targets.llama8b import (
 )
 from param_decomp.targets.llama8b_sharding import (
     init_ci_fn_placed,
-    init_decomp_vu_placed,
+    init_component_stacks_placed,
     init_sources_sharded,
 )
 from param_decomp.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
@@ -104,7 +105,7 @@ def _build(
     C, seq = 8, 16
     sites = llama_site_specs(cfg, mlp_family_site_cs(3, 4, C))
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(seed))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(seed))
     ci_fn = build_ci_fn(_chunkwise_arch(lm, cfg), lm.sites, jax.random.PRNGKey(seed + 1))
 
     def muon_impl(dim_nums: "Callable[[optax.Params], optax.Params] | None"):
@@ -296,7 +297,7 @@ def _build_sharded(seed: int, mesh: Mesh):
     C, seq = 8 * n, 16
     sites = llama_site_specs(cfg, mlp_family_site_cs(3, 4, C))
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu_placed(sites, jax.random.PRNGKey(seed), mesh)
+    vu = init_component_stacks_placed(sites, jax.random.PRNGKey(seed), preset("owner", mesh))
     ci_fn = init_ci_fn_placed(
         _chunkwise_arch(lm, cfg), lm.sites, jax.random.PRNGKey(seed + 1), mesh
     )

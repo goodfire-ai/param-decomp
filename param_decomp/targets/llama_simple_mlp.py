@@ -40,7 +40,7 @@ from jax.typing import DTypeLike
 from jaxtyping import Array, Float, Int
 from safetensors import safe_open
 
-from param_decomp.components import DecompVU, SiteC, SiteSpec, site_out
+from param_decomp.components import ComponentStacks, SiteC, SiteSpec, site_out
 from param_decomp.lm import run_stochastic_masked_output
 from param_decomp.losses import kl_per_position
 from param_decomp.targets.llama8b import FrozenAttn
@@ -255,7 +255,7 @@ def _tap_layer(key: str) -> int:
 
 
 def _masked_site_out(
-    components: DecompVU,
+    components: ComponentStacks,
     site: str,
     W: Array,
     x_in: Array,
@@ -287,7 +287,7 @@ class SimpleMLPDecomposedModel(eqx.Module):
     Carries the FROZEN full model (tied embedding, all blocks, final norm, lm_head) as array
     fields — threaded into the jitted step as a pytree arg, weights traced not baked. Forward
     methods take token `inputs` and embed internally; blocks with no decomposed site run the
-    plain frozen block. The TRAINABLE V/U (`vu: DecompVU`) is an
+    plain frozen block. The TRAINABLE V/U (`vu: ComponentStacks`) is an
     explicit method arg, NOT a field (separate lifecycle). `sites` / `leading_axes` / `n_ctx`
     / `eps` are static config."""
 
@@ -366,7 +366,7 @@ class SimpleMLPDecomposedModel(eqx.Module):
 
     def _run_masked_forward(
         self,
-        vu: DecompVU,
+        vu: ComponentStacks,
         inputs: Int[Array, "b t"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -416,7 +416,7 @@ class SimpleMLPDecomposedModel(eqx.Module):
         x = rms_norm(x, self.norm, self.eps)
         return x @ self.lm_head.T
 
-    def prepare_compute_weights(self, vu: DecompVU) -> DecompVU:
+    def prepare_compute_weights(self, vu: ComponentStacks) -> ComponentStacks:
         """Identity: this arch reads `vu` per-site in its unrolled forward (no layer-stacked
         ÷N→÷fsdp reconstruction to share), so there is nothing to hoist — the per-step
         compute weights ARE the (already bf16) `vu`."""
@@ -424,7 +424,7 @@ class SimpleMLPDecomposedModel(eqx.Module):
 
     def masked_output(
         self,
-        prepared: DecompVU,
+        prepared: ComponentStacks,
         inputs: Int[Array, "b t"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -439,7 +439,7 @@ class SimpleMLPDecomposedModel(eqx.Module):
         # the backward rather than store its activations. `live`/`has_delta` are closed over
         # (static); the checkpoint sees only array/pytree leaves.
         def forward(
-            vu: DecompVU,
+            vu: ComponentStacks,
             inputs: Array,
             masks: dict[str, Array],
             delta_masks: dict[str, Array],
@@ -457,7 +457,7 @@ class SimpleMLPDecomposedModel(eqx.Module):
 
     def masked_output_stochastic(
         self,
-        prepared: DecompVU,
+        prepared: ComponentStacks,
         inputs: Int[Array, "b t"],
         ci_stacked: dict[str, Array],
         draw_key: Array,
@@ -473,7 +473,7 @@ class SimpleMLPDecomposedModel(eqx.Module):
 
     def masked_site_outputs(
         self,
-        prepared: DecompVU,
+        prepared: ComponentStacks,
         inputs: Int[Array, "b t"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -490,7 +490,7 @@ class SimpleMLPDecomposedModel(eqx.Module):
         assert set(collect) == set(live), (sorted(collect), sorted(live))
         return collect
 
-    def weight_deltas(self, vu: DecompVU) -> dict[str, Array]:
+    def weight_deltas(self, vu: ComponentStacks) -> dict[str, Array]:
         """fp32 `W − V@U` per site from fp32 masters (SPEC N2; faithfulness input)."""
         out: dict[str, Array] = {}
         for spec in self.sites:

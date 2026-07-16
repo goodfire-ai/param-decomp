@@ -33,6 +33,8 @@ if TYPE_CHECKING:
 
     LogRecord = Mapping[str, float | wandb.plot.CustomChart]
 
+from functools import partial as _partial
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -44,6 +46,7 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import PRNGKeyArray
 
+from param_decomp import placement
 from param_decomp.arithmetic_eval import (
     ArithmeticGrid,
     ArithmeticSelection,
@@ -57,8 +60,10 @@ from param_decomp.checkpoint import (
     save_state,
 )
 from param_decomp.ci_fn import CIFnArch
+from param_decomp.components import init_component_stacks
 from param_decomp.configs import Cadence, PDConfig, ProfileConfig, flatten_typed_lists
 from param_decomp.lm import DecomposedModel
+from param_decomp.placement import PlacementRules
 from param_decomp.recon import build_loss_terms
 from param_decomp.run_state import build_optimizers, init_train_state
 from param_decomp.slow_eval import (
@@ -358,6 +363,7 @@ def _init_or_restore_state(
     init_key: PRNGKeyArray,
     src_key: PRNGKeyArray,
     mesh: Mesh,
+    rules: PlacementRules,
     checkpoint_manager: ocp.CheckpointManager,
     is_main: bool,
     no_checkpoint: bool,
@@ -368,7 +374,8 @@ def _init_or_restore_state(
     Returns `(state, start_step)`, or `None` when a SIGTERM landed mid-warmup (the caller
     must exit cleanly for requeue — no valid checkpoint exists pre-step-0)."""
     state = _ensure_global(
-        init_train_state(pd, lm, ci_fn_arch, data, opt_vu, opt_ci, init_key, src_key, mesh), mesh
+        init_train_state(pd, lm, ci_fn_arch, data, opt_vu, opt_ci, init_key, src_key, mesh, rules),
+        mesh,
     )
 
     restored = restore_latest(checkpoint_manager, state)
@@ -452,6 +459,7 @@ def run_decomposition_training(
     eval_fn: "Callable[[TrainState, int], LogRecord] | None",
     eval_every: int,
     mesh: Mesh,
+    sharding: "str | dict[str, dict[str, str | list[str] | None]]" = "owner",
 ) -> None:
     """The generic VPD decomposition-training engine — the ONE train loop every target
     (LM, TMS, ResidMLP, …) runs through.
@@ -498,8 +506,14 @@ def run_decomposition_training(
     checkpoint_manager = make_checkpoint_manager(
         run.run_dir / "ckpts", cadence.keep_last_n_checkpoints
     )
+    rules = placement.from_config(sharding, mesh)
+    if is_main:
+        audit = eqx.filter_eval_shape(
+            _partial(init_component_stacks, lm.sites), init_key
+        ).placement_audit(rules)
+        print(rules.describe(tensors=audit), flush=True)
     init = _init_or_restore_state(
-        pd, ci_fn, data, run, lm, opt_vu, opt_ci, init_key, src_key, mesh,
+        pd, ci_fn, data, run, lm, opt_vu, opt_ci, init_key, src_key, mesh, rules,
         checkpoint_manager, is_main, profile.no_checkpoint, compiler_options,
     )  # fmt: skip
     if init is None:

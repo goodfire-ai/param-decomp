@@ -32,7 +32,7 @@ from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float
 
 from param_decomp.ci_fn import CI
-from param_decomp.components import DecompVU, SiteC, SiteSpec, site_out
+from param_decomp.components import ComponentStacks, SiteC, SiteSpec, site_out
 from param_decomp.lm import run_stochastic_masked_output
 
 LINEAR1 = "linear1"
@@ -190,7 +190,7 @@ def site_inputs(target: TMSTarget, resid: Float[Array, "B n_features"]) -> dict[
 
 
 def _masked_site_out(
-    components: DecompVU,
+    components: ComponentStacks,
     site: str,
     W: Array,
     x_in: Array,
@@ -215,7 +215,7 @@ def _masked_site_out(
 
 def _run_masked(
     target: TMSTarget,
-    components: DecompVU,
+    components: ComponentStacks,
     resid: Float[Array, "B n_features"],
     masks: dict[str, Array],
     delta_masks: dict[str, Array],
@@ -238,7 +238,7 @@ def _run_masked(
 
 def masked_output(
     target: TMSTarget,
-    components: DecompVU,
+    components: ComponentStacks,
     resid: Float[Array, "B n_features"],
     masks: dict[str, Array],
     delta_masks: dict[str, Array],
@@ -251,7 +251,7 @@ def masked_output(
 
 def masked_site_outputs(
     target: TMSTarget,
-    components: DecompVU,
+    components: ComponentStacks,
     resid: Float[Array, "B n_features"],
     masks: dict[str, Array],
     delta_masks: dict[str, Array],
@@ -267,7 +267,7 @@ def masked_site_outputs(
 
 
 def weight_deltas_fp32(
-    target: TMSTarget, components: DecompVU, sites: tuple[SiteSpec, ...]
+    target: TMSTarget, components: ComponentStacks, sites: tuple[SiteSpec, ...]
 ) -> dict[str, Array]:
     """fp32 `W − V@U` per site from fp32 masters (SPEC N2; faithfulness input)."""
     out: dict[str, Array] = {}
@@ -291,7 +291,7 @@ class TMSDecomposedModel(eqx.Module):
     (`leading_axes=()`).
 
     Carries the FROZEN `TMSTarget` weights as a field — threaded into the jitted step as a
-    pytree arg, weights traced not baked. The TRAINABLE V/U (`vu: DecompVU`) is an explicit
+    pytree arg, weights traced not baked. The TRAINABLE V/U (`vu: ComponentStacks`) is an explicit
     method arg, NOT a field (separate lifecycle). `sites` / `leading_axes` are static."""
 
     target: TMSTarget
@@ -322,13 +322,13 @@ class TMSDecomposedModel(eqx.Module):
         inputs = site_inputs(self.target, resid)
         return {k: inputs[k] for k in wanted}
 
-    def prepare_compute_weights(self, vu: DecompVU) -> DecompVU:
+    def prepare_compute_weights(self, vu: ComponentStacks) -> ComponentStacks:
         """Identity: TMS weights are tiny + replicated, nothing to stack/gather/share."""
         return vu
 
     def masked_output(
         self,
-        prepared: DecompVU,
+        prepared: ComponentStacks,
         resid: Float[Array, "B n_features"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -339,7 +339,7 @@ class TMSDecomposedModel(eqx.Module):
         remat: bool,
     ) -> Array:
         def forward(
-            vu: DecompVU,
+            vu: ComponentStacks,
             resid: Array,
             masks: dict[str, Array],
             delta_masks: dict[str, Array],
@@ -357,7 +357,7 @@ class TMSDecomposedModel(eqx.Module):
 
     def masked_output_stochastic(
         self,
-        prepared: DecompVU,
+        prepared: ComponentStacks,
         resid: Float[Array, "B n_features"],
         ci_stacked: dict[str, Array],
         draw_key: Array,
@@ -373,7 +373,7 @@ class TMSDecomposedModel(eqx.Module):
 
     def masked_site_outputs(
         self,
-        prepared: DecompVU,
+        prepared: ComponentStacks,
         resid: Float[Array, "B n_features"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -385,7 +385,7 @@ class TMSDecomposedModel(eqx.Module):
             self.target, prepared, resid, masks, delta_masks, routes, live, has_delta
         )
 
-    def weight_deltas(self, vu: DecompVU) -> dict[str, Array]:
+    def weight_deltas(self, vu: ComponentStacks) -> dict[str, Array]:
         return weight_deltas_fp32(self.target, vu, self.sites)
 
 

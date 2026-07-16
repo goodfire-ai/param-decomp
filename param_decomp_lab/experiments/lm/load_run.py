@@ -32,10 +32,11 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Int
 
+from param_decomp import placement
 from param_decomp.built_run import BuiltRun
 from param_decomp.checkpoint import make_checkpoint_manager, restore_latest, restore_step
 from param_decomp.ci_fn import CIFn
-from param_decomp.components import DecompVU
+from param_decomp.components import ComponentStacks
 from param_decomp.lm import DecomposedModel
 from param_decomp.run_state import build_optimizers, init_train_state
 from param_decomp.sharding import hsdp_mesh, place_via_shardings
@@ -100,7 +101,9 @@ def build_target(cfg: BuiltRun, mesh: jax.sharding.Mesh) -> tuple[DecomposedMode
             raise AssertionError(f"build_target is LM-only; got target {type(cfg.target).__name__}")
 
 
-def _u_norms(components: DecompVU, site_names: tuple[str, ...]) -> dict[str, Float[Array, " C"]]:
+def _u_norms(
+    components: ComponentStacks, site_names: tuple[str, ...]
+) -> dict[str, Float[Array, " C"]]:
     """Per-component output-direction magnitude ‖U_c‖ — the harvest `component_activation`
     scale (torch `harvest_fn/param_decomp.py`: `component.U.norm(dim=1)`)."""
     return {
@@ -122,7 +125,7 @@ class LoadedJaxRun:
     vocab_size: int
     _state: TrainState
     _forward: Callable[
-        [DecomposedModel, DecompVU, CIFn, Int[Array, "B T"]],
+        [DecomposedModel, ComponentStacks, CIFn, Int[Array, "B T"]],
         tuple[dict[str, Array], dict[str, Array], Array],
     ]
 
@@ -157,8 +160,9 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
 
     opt_vu, opt_ci, _ = build_optimizers(cfg.pd, mesh)
     init_key, src_key = jax.random.split(jax.random.PRNGKey(cfg.pd.seed))
+    rules = placement.from_config(cfg.runtime.sharding, mesh)
     reference = init_train_state(
-        cfg.pd, lm, cfg.ci_fn, cfg.data, opt_vu, opt_ci, init_key, src_key, mesh
+        cfg.pd, lm, cfg.ci_fn, cfg.data, opt_vu, opt_ci, init_key, src_key, mesh, rules
     )
 
     assert cfg.cadence.keep_last_n_checkpoints is not None, cfg.cadence
@@ -169,7 +173,7 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
         state, resolved_step = restored
     else:
         state, resolved_step = restore_step(manager, reference, step), step
-    assert isinstance(state.components, DecompVU)
+    assert isinstance(state.components, ComponentStacks)
 
     site_names = lm.site_names
     u_norms = _u_norms(state.components, site_names)
@@ -179,7 +183,7 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
     @eqx.filter_jit
     def forward(
         model: DecomposedModel,
-        components: DecompVU,
+        components: ComponentStacks,
         ci_fn: CIFn,
         token_ids: Int[Array, "B T"],
     ) -> tuple[dict[str, Array], dict[str, Array], Array]:

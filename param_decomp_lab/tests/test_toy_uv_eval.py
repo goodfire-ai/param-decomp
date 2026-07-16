@@ -14,7 +14,7 @@ import jax
 import pytest
 
 from param_decomp.ci_fn import MLPCIArch, init_layerwise_mlp_ci_fn
-from param_decomp.components import SiteC, init_decomp_vu
+from param_decomp.components import SiteC, init_component_stacks
 from param_decomp_lab.experiments import toy_uv_eval
 from param_decomp_lab.experiments.tms.model import (
     TMSConfig,
@@ -31,7 +31,7 @@ def _toy_setup():
     target = init_tms_target(cfg, jax.random.PRNGKey(3))
     lm = tms_decomposed_model(cfg, target, sites)
     ci_fn = init_layerwise_mlp_ci_fn(MLPCIArch(hidden_dims=(16,)), sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     probe = single_feature_probe(cfg.n_features)
     probe_upper = ci_fn(lm.read_activations(probe, ci_fn.input_names), remat=False).upper
     return lm, vu, probe_upper
