@@ -87,7 +87,9 @@ def run_resid_mlp_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: 
     The batch entering the decomposed model is `x @ W_E` (`W_E` is carried inside the
     frozen target, not decomposed). The `eval_fn` reads the `lower_leaky` CI of the
     single-feature probe (embedded through `W_E`) and logs the ground-truth `IdentityCIError`
-    per site every train-log step (`eval_every = cadence.train_log_every`)."""
+    per site every train-log step (`eval_every = cadence.train_log_every`), plus the
+    identity-permuted CI heatmap image alongside each checkpoint
+    (`toy_uv_eval.log_identity_ci_heatmap`)."""
     target_cfg = built.target
     assert isinstance(target_cfg, resid_mlp.ResidMLPTargetConfig)
     is_main = jax.process_index() == 0
@@ -163,6 +165,10 @@ def run_resid_mlp_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: 
             now_step,
             wandb_active=built.run.wandb is not None,
         )
+        if toy_uv_eval.identity_ci_heatmap_due(now_step, built.pd.steps, built.cadence.save_every):
+            toy_uv_eval.log_identity_ci_heatmap(
+                ci_lower, ci_upper, now_step, wandb_active=built.run.wandb is not None
+            )
         return {
             f"eval/identity_ci_error/{site}": float(resid_mlp.identity_ci_error(ci, tolerance=0.1))
             for site, ci in ci_lower.items()

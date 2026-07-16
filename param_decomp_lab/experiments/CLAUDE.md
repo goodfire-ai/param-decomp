@@ -29,8 +29,11 @@ The TMS and ResidualMLP toys are LAB experiments that call the core engine as a 
   (`config.assert_canonical_algorithm_config` / `run_instance` / `ci_arch`),
   pretrains + builds the target, and calls `run_decomposition_training` with a synthetic
   `sample_batch` + an `identity_ci_error` `eval_fn`. CPU, synchronous, no SLURM. The toy
-  `eval_fn` ALSO renders the config-gated `UVPlots` figure when the run's `eval.metrics`
-  names it (`toy_uv_eval.log_uv_figure`): the toys feed `UVPlots` their probe CI as the
+  `eval_fn` ALSO logs the identity-permuted CI heatmap alongside each checkpoint
+  (`toy_uv_eval.log_identity_ci_heatmap`, unconditional — the visual companion to the
+  `IdentityCIError` scalar, same Hungarian-toward-identity permutation, no config gate)
+  and renders the config-gated `UVPlots` figure when the run's `eval.metrics` names it
+  (`toy_uv_eval.log_uv_figure`): the toys feed `UVPlots` their probe CI as the
   column-permutation source and their small on-host V/U, sharing `slow_eval.render_uv_figure`
   / `plot_uv_matrices` with the LM in-loop tier (SPEC S28). The toy `BuiltRun.eval`
   stays `None` (the toy validates via the target-CI metric, not the LM scalar pass); the
