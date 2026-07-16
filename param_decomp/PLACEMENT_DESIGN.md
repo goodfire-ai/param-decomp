@@ -106,6 +106,21 @@ Nothing like this rules table was tried before. What WAS tried, and what it teac
    different axis than comms; do not structurally close the door), and pin the PRODUCER
    once (per-consumer resharding was a recurring pathology).
 
+## Validation (2026-07-16)
+
+- Compile matrix (`experiments/placement_compile_probe.py`): {owner, zero1, ddp} ×
+  {adamw, muon-stacked} all compile at a real 2×2 (replicate, fsdp) sim mesh. Finding:
+  `impl: stacked` under ddp persist does a redundant NS spread (210 collective-permutes)
+  — the stage-4 derive-NS-layout-from-table fix, evidenced.
+- José scale (4L, dp=8, real GPUs): `sharding: owner` 0.204 s/step vs `sharding: ddp`
+  0.201 s/step (~1.5%) — DDP works via one config word; the 4L sharding tax was already
+  negligible. Startup audit + large-replication flag verified in production logs.
+- D4 invariance harness: rules-driven derivation byte-equivalent (rel 9.6e-6).
+- 8B (full32L dp=32): BLOCKED by a pre-existing tip regression, NOT this layer — the
+  savesmoke OOMs (~48 GiB single alloc, empty op name) identically on owner+stacked,
+  zero1+stacked, and the pre-stack per-site baseline (board:
+  full32l-savesmoke-oom-at-tip). The flagship probe re-runs when that's fixed.
+
 ## Prior art
 
 t5x/flax "logical axis rules" (params carry semantic names; a rules list maps
