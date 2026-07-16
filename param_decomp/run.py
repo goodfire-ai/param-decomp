@@ -39,6 +39,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import orbax.checkpoint as ocp
+import yaml
 from jax import random
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
@@ -193,9 +194,7 @@ class MetricsSink:
         return cls(jsonl=None, wandb_module=None)
 
     @classmethod
-    def for_run(
-        cls, run: RunInstance, wandb_config: dict[str, object], is_main: bool
-    ) -> "MetricsSink":
+    def for_run(cls, run: RunInstance, is_main: bool) -> "MetricsSink":
         if not is_main:
             return cls.silent()
         jsonl = (run.run_dir / "metrics.jsonl").open("a")
@@ -203,6 +202,13 @@ class MetricsSink:
             return cls(jsonl=jsonl, wandb_module=None)
         import wandb
 
+        # wandb.config is the pinned launch config verbatim — the run's ONE self-contained
+        # yaml (the same bytes resume byte-compares), so programmatic config access works.
+        # The metric lists flatten into the same flat keys torch logged (E14) so cross-impl
+        # wandb config queries line up. Nothing else rides along: topology is config-driven
+        # (`runtime.dp`, asserted in `init_distributed`), so the config IS the topology.
+        launch_config = run.run_dir / LAUNCH_CONFIG_FILENAME
+        assert launch_config.exists(), launch_config
         wandb.init(
             project=run.wandb.project,
             entity=run.wandb.entity,
@@ -211,12 +217,10 @@ class MetricsSink:
             group=run.wandb.group,
             tags=list(run.wandb.tags),
             resume="allow",
-            config=wandb_config,
+            config=flatten_typed_lists(yaml.safe_load(launch_config.read_text())),
         )
-        # Save the pinned launch config as a downloadable wandb run file, alongside (not
-        # in place of) the flattened wandb.config dict; it exists from before wandb.init.
-        launch_config = run.run_dir / LAUNCH_CONFIG_FILENAME
-        assert launch_config.exists(), launch_config
+        # Also save the pin as a downloadable wandb run file, alongside (not in place of)
+        # the wandb.config dict.
         wandb.save(str(launch_config), base_path=str(run.run_dir), policy="now")
         # The in-loop slow tier (`BackgroundRenderer`) logs `slow_eval/*` on the live
         # `_step` axis at the eval step (SPEC S28/S29), so NO dedicated `slow_eval/step`
@@ -480,7 +484,6 @@ def run_decomposition_training(
     numerics are identical across targets; only the data source and the eval metric differ.
     """
     is_main = jax.process_index() == 0
-    ndev = mesh.devices.size
     # Activate the mesh so bare-PartitionSpec `with_sharding_constraint`s inside the forward
     # resolve (the attn q/k/v batch-sharding pin in `FrozenAttn.core`, needed for cuDNN
     # flash attention under the scan+cond masked forward). Explicit NamedShardings elsewhere
@@ -519,22 +522,7 @@ def run_decomposition_training(
         mesh=mesh,
     )
 
-    # record what this run actually executes on so wandb never lies about topology.
-    # flatten the metric lists into the same flat keys torch logs (E14) so cross-impl
-    # wandb config queries line up.
-    wandb_config = flatten_typed_lists(
-        dict(
-            jax_runtime={
-                "n_devices": ndev,
-                "n_processes": jax.process_count(),
-                "remat_recon_forwards": remat_recon_forwards,
-                "remat_ci_fn": remat_ci_fn,
-                "run_id": run.run_id,
-                "run_dir": str(run.run_dir),
-            },
-        )
-    )
-    sink = MetricsSink.for_run(run, wandb_config, is_main)
+    sink = MetricsSink.for_run(run, is_main)
     window_t0 = loop_t0 = time.time()
     last_logged = start_step
     grad_norm_summary_window: list[dict[str, jax.Array]] = []
