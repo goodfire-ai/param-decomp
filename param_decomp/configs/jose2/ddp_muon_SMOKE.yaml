@@ -99,16 +99,16 @@ pd:
   faithfulness_warmup_steps: 50
   faithfulness_warmup_weight_decay: 0.0
   loss_metrics:
-  - coeff: 0.0002
-    eps: 1.0e-06
+  - type: SmoothL0ImportanceMinimalityLoss
+    coeff: 0.0002
+    gamma:
+      fn_type: linear
+      start_val: 1.0
+      final_val_frac: 0.01
+      warmup_pct: 0.0
     frequency:
       coeff: 0.0001
       reference_token_count: 65536
-    pnorm:
-      final_val_frac: 0.2
-      fn_type: linear
-      start_val: 2.0
-    type: ImportanceMinimalityLoss
   - coeff: 0.5
     routing:
       type: uniform_k_subset

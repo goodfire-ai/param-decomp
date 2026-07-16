@@ -5,6 +5,9 @@
 #      lore:2026-07-16--placement-rules-declarative-sharding-design).
 #   2. runtime.dp: 16 -> 8 (one node, matching every 2026-07 campaign arm).
 #
+#   4. imp-min: Lp (eps 1e-6) -> SmoothL0 (Geman-McClure), coeff 2e-4 kept, gamma
+#      1.0 -> 0.01 linear full-window, frequency sub-term kept (matches the
+#      smooth-l0-matrix-100k cells, lore:2026-07-13--smooth-l0-muon-matrix-100k).
 # Sweep arms derive from this file, varying ONLY the optimizer lrs (and whatever
 # Lucius's round-2 issues dictate). Launch: pd-lm param_decomp/configs/jose2/<f>.yaml
 cadence:
@@ -109,16 +112,16 @@ pd:
   faithfulness_warmup_steps: 400
   faithfulness_warmup_weight_decay: 0.0
   loss_metrics:
-  - coeff: 0.0002
-    eps: 1.0e-06
+  - type: SmoothL0ImportanceMinimalityLoss
+    coeff: 0.0002
+    gamma:
+      fn_type: linear
+      start_val: 1.0
+      final_val_frac: 0.01
+      warmup_pct: 0.0
     frequency:
       coeff: 0.0001
       reference_token_count: 65536
-    pnorm:
-      final_val_frac: 0.2
-      fn_type: linear
-      start_val: 2.0
-    type: ImportanceMinimalityLoss
   - coeff: 0.5
     routing:
       type: uniform_k_subset
