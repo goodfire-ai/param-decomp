@@ -22,8 +22,7 @@ pd:
     coeff: 1e-4
     pnorm:
       start_val: 2.0
-      fn_type: linear
-      final_val_frac: 0.5
+      fn_type: constant
   - type: StochasticReconLoss
     coeff: 1.0
   - type: StochasticReconLayerwiseLoss
@@ -31,7 +30,7 @@ pd:
   - type: FaithfulnessLoss
     coeff: 1.0
   batch_size: 4096
-  steps: 20000
+  steps: 40000
   components_optimizer:
     grad_clip_norm: 0.01
     lr_schedule:

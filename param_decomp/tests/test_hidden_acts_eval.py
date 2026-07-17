@@ -9,7 +9,13 @@ sequence axis — the regression that crashed the stochastic step's delta/route 
 import jax
 import numpy as np
 
-from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch, CIFn, build_ci_fn
+from param_decomp.ci_fn import (
+    Chunk,
+    ChunkwiseTransformerCIArch,
+    CIFn,
+    MHACIAttention,
+    build_ci_fn,
+)
 from param_decomp.components import SiteC, init_decomp_vu
 from param_decomp.hidden_acts_eval import (
     accumulate_hidden_acts,
@@ -39,7 +45,7 @@ def _build_ci_fn(lm: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
         input_dim=n_embd,
         d_model=16,
         n_blocks=1,
-        n_heads=2,
+        attention=MHACIAttention(n_heads=2),
         mlp_hidden=32,
     )
     return build_ci_fn(arch, lm.sites, key)

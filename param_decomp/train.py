@@ -31,6 +31,7 @@ from jaxtyping import Array, Bool, Float, PRNGKeyArray, jaxtyped
 from param_decomp.adversary import (
     PersistentAdversary,
     init_fresh_pgd_sources,
+    mixed_persistent_stochastic_masks,
     source_masks,
 )
 from param_decomp.ci_fn import CI, CIFn
@@ -42,6 +43,7 @@ from param_decomp.losses import (
     annealed_imp_min_param,
     faithfulness_loss,
     imp_min_terms,
+    scheduled_value_traced,
 )
 from param_decomp.recon import (
     ConstantSources,
@@ -450,59 +452,27 @@ def make_train_step(
                                         )
                                     )
                                 case MixedPersistentStochasticSources(state_key=state_key):
-                                    # SPEC S10' variation: `assign` marks whole batch
-                                    # elements adversarial — shape (B, 1, ...) broadcasts
-                                    # over the position axes, so a sequence never mixes
-                                    # mask families. Adversarial samples take the
-                                    # persistent bundle's sources and route all-live;
-                                    # stochastic samples take fresh U[0,1] and this draw's
-                                    # routing. The persistent sources stay live leaves so
-                                    # the S14' final ascent rides this term's backward.
-                                    mix_cfg = entry.sources.cfg
-                                    akey, ukey = random.split(draw_key)
-                                    assign = random.bernoulli(
-                                        akey,
-                                        mix_cfg.adv_fraction,
-                                        (leading[0], *(1,) * (len(leading) - 1)),
+                                    adv_fraction = scheduled_value_traced(
+                                        step_f32, total_steps, entry.sources.cfg.adv_fraction
                                     )
-                                    fresh_uniform = {
-                                        site: random.uniform(
-                                            random.fold_in(ukey, site_idx),
-                                            (*leading, c_by_site[site] + 1),
+                                    mixed_masks, mixed_deltas, mixed_routes = (
+                                        mixed_persistent_stochastic_masks(
+                                            draw_key,
+                                            ci.lower,
+                                            persistent_sources[state_key],
+                                            entry.live_sites,
+                                            c_by_site,
+                                            leading,
+                                            adv_fraction,
+                                            routes,
                                         )
-                                        for site_idx, site in enumerate(entry.live_sites)
-                                    }
-                                    adv_m, adv_d = source_masks(
-                                        ci.lower,
-                                        persistent_sources[state_key],
-                                        entry.live_sites,
-                                    )
-                                    st_m, st_d = source_masks(
-                                        ci.lower, fresh_uniform, entry.live_sites
-                                    )
-                                    sel = assign[..., None]
-                                    mixed_masks = {
-                                        site: jnp.where(sel, adv_m[site], st_m[site])
-                                        for site in entry.live_sites
-                                    }
-                                    mixed_dmasks = {
-                                        site: jnp.where(assign, adv_d[site], st_d[site])
-                                        for site in entry.live_sites
-                                    }
-                                    mixed_routes = (
-                                        None
-                                        if routes is None
-                                        else {
-                                            site: jnp.logical_or(assign, routes[site])
-                                            for site in entry.live_sites
-                                        }
                                     )
                                     masked = masked_forward(
                                         model,
                                         prepared,
                                         batch,
                                         mixed_masks,
-                                        mixed_dmasks,
+                                        mixed_deltas,
                                         mixed_routes,
                                         entry.live_sites,
                                         entry.has_delta,

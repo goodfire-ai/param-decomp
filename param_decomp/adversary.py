@@ -197,6 +197,56 @@ def source_masks(
     return masks, delta_masks
 
 
+def per_sample_adversarial_assignment(
+    key: PRNGKeyArray, adv_fraction: Array, leading: tuple[int, ...]
+) -> Array:
+    """One Bernoulli(`adv_fraction`) bit per batch element, shaped to broadcast over the
+    position axes — a whole sample takes one mask family (SPEC S34)."""
+    one_flag_per_sample = (leading[0], *(1,) * (len(leading) - 1))
+    return random.bernoulli(key, adv_fraction, one_flag_per_sample)
+
+
+def mixed_persistent_stochastic_masks(
+    key: PRNGKeyArray,
+    ci_lower: dict[str, Array],
+    persistent_sources: dict[str, Array],
+    live_sites: tuple[str, ...],
+    components_per_site: dict[str, int],
+    leading: tuple[int, ...],
+    adv_fraction: Array,
+    stochastic_routes: dict[str, Array] | None,
+) -> tuple[dict[str, Array], dict[str, Array], dict[str, Array] | None]:
+    """Forward inputs for the merged stochastic+PPGD term (SPEC S34). Adversarial-assigned
+    samples take the persistent bundle's masks and route every live site; the rest take
+    fresh `U[0,1]` masks with `stochastic_routes`. The persistent sources stay live graph
+    leaves — the per-sample `where` gates their gradient to adversarial samples, and the
+    S14' final ascent rides this term's backward."""
+    assignment_key, uniform_key = random.split(key)
+    adversarial = per_sample_adversarial_assignment(assignment_key, adv_fraction, leading)
+    fresh_uniform_sources = {
+        site: random.uniform(
+            random.fold_in(uniform_key, site_idx),
+            (*leading, components_per_site[site] + 1),
+        )
+        for site_idx, site in enumerate(live_sites)
+    }
+    adv_masks, adv_deltas = source_masks(ci_lower, persistent_sources, live_sites)
+    stoch_masks, stoch_deltas = source_masks(ci_lower, fresh_uniform_sources, live_sites)
+    masks = {
+        site: jnp.where(adversarial[..., None], adv_masks[site], stoch_masks[site])
+        for site in live_sites
+    }
+    delta_masks = {
+        site: jnp.where(adversarial, adv_deltas[site], stoch_deltas[site]) for site in live_sites
+    }
+    routes = (
+        None
+        if stochastic_routes is None
+        else {site: jnp.logical_or(adversarial, stochastic_routes[site]) for site in live_sites}
+    )
+    return masks, delta_masks, routes
+
+
 class PersistentAdversary(eqx.Module):
     """One persistent-PGD adversary (SPEC §3): the per-site sources + their Adam moments
     that persist across steps, plus the lifecycle the trainer drives around the shared

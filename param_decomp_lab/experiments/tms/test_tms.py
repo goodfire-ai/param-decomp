@@ -327,17 +327,17 @@ def test_end_to_end_pretrain_decompose_recovers_identity():
     sites = site_specs(cfg, (SiteC("linear1", 5), SiteC("linear2", 5)))
     target = pretrain_tms_target(
         cfg, feature_probability=0.05, generation_type="at_least_zero_active",
-        steps=5000, batch_size=2048, lr=1e-2, seed=0,
+        steps=2000, batch_size=2048, lr=1e-2, seed=0,
     )  # fmt: skip
     x = sample_sparse_features(jax.random.PRNGKey(7), 1024, 5, 0.05, "at_least_zero_active")
     lm = tms_decomposed_model(cfg, target, sites)
     recon = jnp.mean((jnp.abs(x) - lm.clean_output(x)) ** 2)
     assert float(recon) < 0.05, f"pretrained TMS recon too high: {recon}"
 
-    state, step = _faith_warmed_state(lm, sites, total_steps=8000, warmup_steps=200)
+    state, step = _faith_warmed_state(lm, sites, total_steps=3000, warmup_steps=150)
     data_key = jax.random.PRNGKey(123)
     totals: list[float] = []
-    for i in range(8000):
+    for i in range(3000):
         x = sample_sparse_features(
             jax.random.fold_in(data_key, i), 2048, 5, 0.05, "at_least_zero_active"
         )

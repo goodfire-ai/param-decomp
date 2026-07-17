@@ -24,7 +24,7 @@ _MINIMAL_LM = {
             "blocks_per_chunk": 1,
             "d_model": 16,
             "n_blocks": 1,
-            "n_heads": 1,
+            "attention": {"kind": "mha", "n_heads": 1},
             "mlp_hidden": 16,
         },
         "decomposition_targets": [{"module_pattern": "layers.0.mlp.gate_proj", "C": 4}],

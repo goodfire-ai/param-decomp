@@ -10,7 +10,12 @@ import jax.numpy as jnp
 import optax
 from jax import random
 
-from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch, build_ci_fn
+from param_decomp.ci_fn import (
+    Chunk,
+    ChunkwiseTransformerCIArch,
+    MHACIAttention,
+    build_ci_fn,
+)
 from param_decomp.components import DecompVU, SiteSpec
 from param_decomp.configs import (
     FaithfulnessLossConfig,
@@ -56,7 +61,7 @@ def _build_step_and_args():
         input_dim=D,
         d_model=8,
         n_blocks=1,
-        n_heads=2,
+        attention=MHACIAttention(n_heads=2),
         mlp_hidden=16,
     )
     ci_fn = build_ci_fn(ci_arch, lm.sites, random.PRNGKey(11))

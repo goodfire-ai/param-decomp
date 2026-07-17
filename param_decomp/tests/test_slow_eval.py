@@ -21,6 +21,7 @@ from param_decomp.ci_fn import (
     Chunk,
     ChunkwiseTransformerCIArch,
     CIFn,
+    MHACIAttention,
     build_ci_fn,
     lower_leaky_hard_sigmoid,
 )
@@ -68,7 +69,7 @@ def _build_ci_fn(lm: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
         input_dim=n_embd,
         d_model=16,
         n_blocks=1,
-        n_heads=2,
+        attention=MHACIAttention(n_heads=2),
         mlp_hidden=32,
     )
     return build_ci_fn(arch, lm.sites, key)

@@ -25,6 +25,7 @@ from param_decomp.checkpoint import (
 from param_decomp.ci_fn import (
     Chunk,
     ChunkwiseTransformerCIArch,
+    MHACIAttention,
     build_ci_fn,
 )
 from param_decomp.components import init_decomp_vu
@@ -89,7 +90,7 @@ def _chunkwise_arch(lm: DecomposedModel, cfg: LlamaConfig) -> ChunkwiseTransform
         input_dim=cfg.n_embd,
         d_model=16,
         n_blocks=2,
-        n_heads=2,
+        attention=MHACIAttention(n_heads=2),
         mlp_hidden=32,
     )
 

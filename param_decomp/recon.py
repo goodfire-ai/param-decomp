@@ -441,8 +441,6 @@ def build_loss_terms(
                 plan = make_plan(per_site(site_names), AllRoutingConfig(), fresh, n_samples=1)
                 recon_terms.append(recon(cfg, plan))
             case MergedStochasticPGDReconLossConfig():
-                schedule = cfg.optimizer.lr_schedule
-                assert schedule.fn_type == "constant" and schedule.final_val_frac == 1.0, schedule
                 key = unique_name(cfg)
                 plan = make_plan(
                     one_chunk(site_names),
@@ -452,8 +450,6 @@ def build_loss_terms(
                 )
                 recon_terms.append(recon(cfg, plan))
             case PersistentPGDReconLossConfig():
-                schedule = cfg.optimizer.lr_schedule
-                assert schedule.fn_type == "constant" and schedule.final_val_frac == 1.0, schedule
                 key = unique_name(cfg)
                 plan = make_plan(
                     one_chunk(site_names),

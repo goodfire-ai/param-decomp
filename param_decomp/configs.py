@@ -92,23 +92,62 @@ class GlobalMlpCiConfig(BaseConfig):
     )
 
 
+class MHACiAttentionConfig(BaseConfig):
+    """Every query head carries its own K/V head."""
+
+    kind: Literal["mha"] = "mha"
+    n_heads: PositiveInt
+
+
+class GQACiAttentionConfig(BaseConfig):
+    """Grouped-query attention: `n_heads // n_kv_heads` query heads share each K/V head, so
+    `wk`/`wv` narrow to `n_kv_heads * head_dim`. head_dim, the RoPE tables, `wq`/`wo` and
+    every sharding are identical to MHA — only the K/V projections change."""
+
+    kind: Literal["gqa"] = "gqa"
+    n_heads: PositiveInt
+    n_kv_heads: PositiveInt
+
+    @model_validator(mode="after")
+    def validate_grouping(self) -> Self:
+        assert self.n_heads % self.n_kv_heads == 0, (
+            "n_heads must be divisible by n_kv_heads (each K/V head serves an equal group "
+            f"of query heads): {self.n_heads} % {self.n_kv_heads}"
+        )
+        assert self.n_kv_heads < self.n_heads, (
+            f"n_kv_heads == n_heads ({self.n_heads}) is MHA — use `kind: mha` rather than "
+            "spelling it as a degenerate gqa"
+        )
+        return self
+
+
+CiAttentionConfig = Annotated[
+    MHACiAttentionConfig | GQACiAttentionConfig, Field(discriminator="kind")
+]
+"""The CI transformer's attention, keyed by CLASS rather than an optional `n_kv_heads` —
+so a K/V head count cannot exist without meaning, and the grouping invariant lives on the
+arm that has both fields instead of being a runtime check on a shape that shouldn't parse.
+Mirrors how the target's attention variants are keyed (see the Qwen3 family split)."""
+
+
 class ChunkwiseTransformerCiConfig(BaseConfig):
     """Chunkwise-transformer CI fn (LMs). Each chunk is `blocks_per_chunk` consecutive
     transformer blocks; its input is the residual stream entering the chunk and its output
-    is CI for every matrix site in those blocks. `d_model`/`n_blocks`/`n_heads`/`mlp_hidden`
+    is CI for every matrix site in those blocks. `d_model`/`n_blocks`/`attention`/`mlp_hidden`
     size the per-chunk CI transformer (`d_model % n_heads == 0`; head_dim even for RoPE)."""
 
     type: Literal["chunkwise_transformer"] = "chunkwise_transformer"
     blocks_per_chunk: PositiveInt
     d_model: PositiveInt
     n_blocks: PositiveInt
-    n_heads: PositiveInt
+    attention: CiAttentionConfig
     mlp_hidden: PositiveInt
 
     @model_validator(mode="after")
-    def validate_heads(self) -> Self:
-        assert self.d_model % self.n_heads == 0, (self.d_model, self.n_heads)
-        assert (self.d_model // self.n_heads) % 2 == 0, "head_dim must be even for RoPE"
+    def validate_head_dim(self) -> Self:
+        n_heads = self.attention.n_heads
+        assert self.d_model % n_heads == 0, (self.d_model, n_heads)
+        assert (self.d_model // n_heads) % 2 == 0, "head_dim must be even for RoPE"
         return self
 
 
@@ -425,8 +464,10 @@ class MergedStochasticPGDReconLossConfig(LossMetricConfig):
     element is assigned adversarial with probability `adv_fraction` (mask sources = the
     persistent-PGD adversary's, every site routed) or stochastic otherwise (fresh
     `U[0,1]` sources, routed per `routing`) — the whole sequence takes one family, so no
-    sample's loss is scored against a mixed-family attention context. `coeff` is the
-    TOTAL: coeff 1.0 + adv_fraction 0.5 replaces the canonical 0.5 stochastic + 0.5
+    sample's loss is scored against a mixed-family attention context. `adv_fraction` is a
+    `ScheduleConfig`, evaluated per step like the imp-min pnorm — a constant is the plain
+    merge; a ramp anneals the adversarial share over training. `coeff` is the TOTAL:
+    coeff 1.0 + constant adv_fraction 0.5 replaces the canonical 0.5 stochastic + 0.5
     persistent-PGD pair in expectation. Carries the persistent-adversary fields; one
     source bundle feeds this one term (SPEC S23) and the S14' final ascent rides its
     backward — no extra forward."""
@@ -436,8 +477,16 @@ class MergedStochasticPGDReconLossConfig(LossMetricConfig):
     scope: PersistentPGDSourceScope
     source_dtype: Literal["float32", "bfloat16"] = "float32"
     n_warmup_steps: NonNegativeInt = 0
-    adv_fraction: float = Field(gt=0.0, lt=1.0)
+    adv_fraction: ScheduleConfig
     routing: SubsetRoutingType = Field(default_factory=UniformKSubsetRoutingConfig)
+
+    @model_validator(mode="after")
+    def validate_adv_fraction_is_probability(self) -> Self:
+        start = self.adv_fraction.start_val
+        end = start * self.adv_fraction.final_val_frac
+        if not (start <= 1.0 and end <= 1.0):
+            raise ValueError(f"adv_fraction must stay within [0, 1]: {self.adv_fraction}")
+        return self
 
 
 # ---------------------------------------------------------------------------
