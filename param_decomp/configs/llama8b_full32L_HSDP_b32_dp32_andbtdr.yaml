@@ -588,6 +588,8 @@ pd:
   seed: 0
   steps: 200000
 runtime:
+  sharding: zero1
+  sequence_recon_entries: true
   dp: 32
   tp: 1
   remat_recon_forwards: true
