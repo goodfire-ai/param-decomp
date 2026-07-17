@@ -10,11 +10,12 @@ These toys train in seconds; `pd-resid-mlp` runs synchronously on CPU in the mai
 """
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import equinox as eqx
 import fire
 import jax
+import numpy as np
 import yaml
 from jax import random
 from jax.sharding import Mesh, NamedSharding
@@ -26,6 +27,7 @@ from param_decomp.log import setup_logger
 from param_decomp.recon import build_loss_terms
 from param_decomp.run import run_decomposition_training
 from param_decomp.sharding import hsdp_mesh
+from param_decomp.slow_eval import dense_ci_error
 from param_decomp.train import TrainState
 from param_decomp_lab.experiments import toy_uv_eval
 from param_decomp_lab.experiments.config import (
@@ -87,7 +89,9 @@ def run_resid_mlp_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: 
     The batch entering the decomposed model is `x @ W_E` (`W_E` is carried inside the
     frozen target, not decomposed). The `eval_fn` reads the `lower_leaky` CI of the
     single-feature probe (embedded through `W_E`) and logs the ground-truth `IdentityCIError`
-    per site every train-log step (`eval_every = cadence.train_log_every`)."""
+    per site every train-log step (`eval_every = cadence.train_log_every`), plus the
+    per-site-permuted CI heatmap image alongside each checkpoint
+    (`toy_uv_eval.log_permuted_ci_heatmap` — `mlp_out` permutes toward dense, not identity)."""
     target_cfg = built.target
     assert isinstance(target_cfg, resid_mlp.ResidMLPTargetConfig)
     is_main = jax.process_index() == 0
@@ -153,6 +157,12 @@ def run_resid_mlp_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: 
         return ci.lower, ci.upper
 
     uv_spec = toy_uv_eval.toy_uv_spec(lm, raw_cfg)
+    # `mlp_out` targets DENSE recovery (every d_mlp direction stays live), not identity —
+    # torch parity (`resid_mlp{1,2,3}_config.yaml` `dense_patterns: [layers.*.mlp_out]`).
+    # `mlp_in` targets identity.
+    ci_permutation: dict[str, Literal["identity", "dense"]] = {
+        site: "dense" if site.endswith(resid_mlp.MLP_OUT) else "identity" for site in lm.site_names
+    }
 
     def eval_fn(state: TrainState, now_step: int) -> dict[str, float]:
         ci_lower, ci_upper = single_feature_ci(lm, state.ci_fn)
@@ -163,10 +173,31 @@ def run_resid_mlp_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: 
             now_step,
             wandb_active=built.run.wandb is not None,
         )
-        return {
+        if toy_uv_eval.permuted_ci_heatmap_due(now_step, built.pd.steps, built.cadence.save_every):
+            toy_uv_eval.log_permuted_ci_heatmap(
+                ci_lower,
+                ci_upper,
+                ci_permutation,
+                now_step,
+                wandb_active=built.run.wandb is not None,
+            )
+        metrics = {
             f"eval/identity_ci_error/{site}": float(resid_mlp.identity_ci_error(ci, tolerance=0.1))
             for site, ci in ci_lower.items()
+            if ci_permutation[site] == "identity"
         }
+        # `mlp_out`'s target is every d_mlp direction alive (k = the site's own width) —
+        # scored separately since it's a different target shape than `identity_ci_error`.
+        metrics.update(
+            {
+                f"eval/dense_ci_error/{site}": float(
+                    dense_ci_error(np.asarray(ci_lower[site]), k=target_cfg.d_mlp, tolerance=0.1)
+                )
+                for site in ci_lower
+                if ci_permutation[site] == "dense"
+            }
+        )
+        return metrics
 
     run_decomposition_training(
         pd=built.pd,
@@ -187,7 +218,7 @@ def run_resid_mlp_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: 
     )
 
 
-def main(config: str, group: str | None = None, tags: str | None = None) -> None:
+def main(config: str, group: str | None = None, tags: str | tuple[str, ...] | None = None) -> None:
     schema_raw = yaml.safe_load(Path(config).read_text())
     run_id = generate_run_id("param_decomp")
     if group is not None or tags is not None:
@@ -195,7 +226,13 @@ def main(config: str, group: str | None = None, tags: str | None = None) -> None
         if group is not None:
             wandb_cfg["group"] = group
         if tags is not None:
-            wandb_cfg["tags"] = tags.split(",")
+            # Fire parses a comma-separated `--tags a,b,c` into a tuple, but keeps a value
+            # with a hyphen (e.g. `a,b,c-d`) as a string — normalize both to a list.
+            wandb_cfg["tags"] = (
+                [s.strip() for s in tags.split(",") if s.strip()]
+                if isinstance(tags, str)
+                else [str(t).strip() for t in tags]
+            )
         schema_raw["wandb"] = wandb_cfg
     built = build_resid_mlp_built_run(ResidMLPExperimentConfig(**schema_raw), run_id)
     built.run.run_dir.mkdir(parents=True, exist_ok=True)

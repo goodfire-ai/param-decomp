@@ -12,7 +12,7 @@ SLURM / `param_decomp.run` / CUDA). It mints its own `p-<8hex>` run id (toys do 
 """
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import equinox as eqx
 import fire
@@ -86,7 +86,9 @@ def run_tms_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) 
     The batch entering the decomposed model IS the raw input `x`. The
     `eval_fn` reads the `lower_leaky` CI of the single-feature probe and logs the
     ground-truth `IdentityCIError` per site every train-log step (TMS has no separate eval
-    cadence — `eval_every = cadence.train_log_every`)."""
+    cadence — `eval_every = cadence.train_log_every`), plus the per-site-permuted CI
+    heatmap image alongside each checkpoint (`toy_uv_eval.log_permuted_ci_heatmap` — the
+    frozen `hidden_layers.*` sites permute toward dense, not identity)."""
     target_cfg = built.target
     assert isinstance(target_cfg, tms.TMSTargetConfig)
     is_main = jax.process_index() == 0
@@ -136,6 +138,12 @@ def run_tms_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) 
         return ci.lower, ci.upper
 
     uv_spec = toy_uv_eval.toy_uv_spec(lm, raw_cfg)
+    # The frozen `hidden_layers.*` sites (the `-id` variant) target DENSE recovery — every
+    # direction stays live — not identity; canonical torch parity (`tms_40-10-id_config.yaml`
+    # `dense_patterns: [hidden_layers.0]`). `linear1`/`linear2` target identity.
+    ci_permutation: dict[str, Literal["identity", "dense"]] = {
+        site: "dense" if site.startswith("hidden_layers.") else "identity" for site in lm.site_names
+    }
 
     def eval_fn(state: TrainState, now_step: int) -> dict[str, float]:
         ci_lower, ci_upper = single_feature_ci(lm, state.ci_fn)
@@ -146,9 +154,20 @@ def run_tms_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) 
             now_step,
             wandb_active=built.run.wandb is not None,
         )
+        if toy_uv_eval.permuted_ci_heatmap_due(now_step, built.pd.steps, built.cadence.save_every):
+            toy_uv_eval.log_permuted_ci_heatmap(
+                ci_lower,
+                ci_upper,
+                ci_permutation,
+                now_step,
+                wandb_active=built.run.wandb is not None,
+            )
+        # `identity_ci_error` only applies to identity-target sites (torch parity: the
+        # canonical -id configs never scored `hidden_layers.*` numerically, only visually).
         return {
             f"eval/identity_ci_error/{site}": float(tms.identity_ci_error(ci, tolerance=0.1))
             for site, ci in ci_lower.items()
+            if ci_permutation[site] == "identity"
         }
 
     run_decomposition_training(
@@ -170,7 +189,7 @@ def run_tms_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) 
     )
 
 
-def main(config: str, group: str | None = None, tags: str | None = None) -> None:
+def main(config: str, group: str | None = None, tags: str | tuple[str, ...] | None = None) -> None:
     schema_raw = yaml.safe_load(Path(config).read_text())
     run_id = generate_run_id("param_decomp")
     if group is not None or tags is not None:
@@ -178,7 +197,13 @@ def main(config: str, group: str | None = None, tags: str | None = None) -> None
         if group is not None:
             wandb_cfg["group"] = group
         if tags is not None:
-            wandb_cfg["tags"] = tags.split(",")
+            # Fire parses a comma-separated `--tags a,b,c` into a tuple, but keeps a value
+            # with a hyphen (e.g. `a,b,c-d`) as a string — normalize both to a list.
+            wandb_cfg["tags"] = (
+                [s.strip() for s in tags.split(",") if s.strip()]
+                if isinstance(tags, str)
+                else [str(t).strip() for t in tags]
+            )
         schema_raw["wandb"] = wandb_cfg
     built = build_tms_built_run(TMSExperimentConfig(**schema_raw), run_id)
     built.run.run_dir.mkdir(parents=True, exist_ok=True)
