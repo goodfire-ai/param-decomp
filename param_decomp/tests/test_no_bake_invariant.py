@@ -25,7 +25,7 @@ from param_decomp.configs import (
 from param_decomp.recon import build_loss_terms
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.tests.test_generic_model_io import SyntheticDecomposedModel
-from param_decomp.train import TrainState, make_train_step
+from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
 
 SITE = "block.0.proj"
 B, T, D, C = 2, 3, 32, 5
@@ -70,12 +70,13 @@ def _build_step_and_args():
     opt_vu = optax.adamw(1e-2, weight_decay=0.0)
     opt_ci = optax.adamw(1e-2, weight_decay=0.0)
     state = TrainState(
-        components=components,
-        ci_fn=ci_fn,
-        components_opt_state=opt_vu.init(eqx.filter(components, eqx.is_array)),
-        ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        adversaries={},
-        step=jnp.zeros((), jnp.int32),
+        decomposition=Decomposition(components=components, ci_fn=ci_fn),
+        training=TrainingItem(
+            components_opt_state=opt_vu.init(eqx.filter(components, eqx.is_array)),
+            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+            adversaries={},
+            step=jnp.zeros((), jnp.int32),
+        ),
     )
     loss_terms = build_loss_terms(
         (

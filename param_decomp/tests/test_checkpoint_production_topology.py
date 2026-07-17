@@ -62,7 +62,7 @@ from param_decomp.targets.glu_transformer_sharding import (
     init_sources_sharded,
 )
 from param_decomp.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
-from param_decomp.train import TrainState, make_train_step
+from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
 
 # Needs >1 jax device (production topology); hangs at the default 1 device, so gated behind
 # --runmultidevice. Run via `make test-multidevice` (simulated CPU devices). See conftest.
@@ -140,11 +140,13 @@ def _build_sharded(seed: int):
             n_warmup=ppgd_cfg.n_warmup_steps,
         )
     state = TrainState(
-        components=vu, ci_fn=ci_fn,
-        components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
-        ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        adversaries=adversaries,
-        step=jnp.zeros((), jnp.int32),
+        decomposition=Decomposition(components=vu, ci_fn=ci_fn),
+        training=TrainingItem(
+            components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
+            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+            adversaries=adversaries,
+            step=jnp.zeros((), jnp.int32),
+        ),
     )  # fmt: skip
     # run.py:185 — normalize eager scalar stragglers (Adam `count`, `step`) onto the mesh
     # so the whole state is global-array placed, exactly as a production run / restore.
@@ -202,7 +204,7 @@ def test_sharded_roundtrip_persists_source_moments(tmp_path: Path):
     for i in range(2):
         state, _ = step(lm, state, resid, jax.random.PRNGKey(i))
     # The ascents must have advanced each term's Adam counter before we save.
-    _assert_moments_present(state.adversaries)
+    _assert_moments_present(state.training.adversaries)
 
     mgr = make_checkpoint_manager(tmp_path / "ckpts", keep_last=2)
     save_state(mgr, 2, state)
@@ -216,7 +218,7 @@ def test_sharded_roundtrip_persists_source_moments(tmp_path: Path):
     assert ckpt_step == 2
 
     # The persisted pytree itself carries the moments + step_count for every term.
-    _assert_moments_present(loaded.adversaries)
+    _assert_moments_present(loaded.training.adversaries)
 
     # Values come from disk, and each leaf is reconstructed onto the REFERENCE sharding.
     # Pull leaves to host before comparing: a sharded leaf and a single-device leaf can't

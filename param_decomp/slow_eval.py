@@ -809,14 +809,25 @@ def compute_hidden_acts_metrics(
     `<ClassName>[/<site>]` log keys. `ci_step` / `stoch_step` are the PREBUILT jitted
     steps (`make_ci_hidden_acts_step` / `make_stochastic_hidden_acts_step`), built once
     per run next to the other slow-eval steps — rebuilding them per call would retrace +
-    recompile every slow-eval cycle. `state.components`/`state.ci_fn` are the restored
-    trajectory; `base_key` seeds the stochastic variant's per-batch draws."""
+    recompile every slow-eval cycle. `state.decomposition.components`/
+    `state.decomposition.ci_fn` are the restored trajectory; `base_key` seeds the
+    stochastic variant's per-batch draws."""
     ci_key, stoch_key = random.split(base_key)
     ci_reductions = accumulate_hidden_acts(
-        ci_step, model, state.components, state.ci_fn, input_batches, ci_key
+        ci_step,
+        model,
+        state.decomposition.components,
+        state.decomposition.ci_fn,
+        input_batches,
+        ci_key,
     )
     stoch_reductions = accumulate_hidden_acts(
-        stoch_step, model, state.components, state.ci_fn, input_batches, stoch_key
+        stoch_step,
+        model,
+        state.decomposition.components,
+        state.decomposition.ci_fn,
+        input_batches,
+        stoch_key,
     )
     return {
         **hidden_acts_log_entries("CIHiddenActsReconLoss", ci_reductions),

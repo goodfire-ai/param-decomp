@@ -188,7 +188,7 @@ def test_step_trains():
     from param_decomp.recon import build_loss_terms
     from param_decomp.schedule import ScheduleConfig
     from param_decomp.tests.test_llama8b import _build_chunkwise_ci_fn
-    from param_decomp.train import TrainState, make_train_step
+    from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
 
     cfg = _tiny_cfg()
     sites = glu_site_specs(cfg, _QVDOWN_SITE_CS)
@@ -198,12 +198,14 @@ def test_step_trains():
     opt_vu = optax.adamw(1e-3, weight_decay=0.0)
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
     state = TrainState(
-        components=vu, ci_fn=ci_fn,
-        components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
-        ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        adversaries={},
-        step=jnp.zeros((), jnp.int32),
-    )  # fmt: skip
+        decomposition=Decomposition(components=vu, ci_fn=ci_fn),
+        training=TrainingItem(
+            components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
+            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+            adversaries={},
+            step=jnp.zeros((), jnp.int32),
+        ),
+    )
     loss_terms = build_loss_terms(
         (
             FaithfulnessLossConfig(coeff=1e5),
@@ -230,4 +232,4 @@ def test_step_trains():
     tokens = jax.random.randint(jax.random.PRNGKey(4), (2, 16), 0, cfg.vocab_size)
     state, metrics = step(lm, state, tokens, jax.random.PRNGKey(100))
     assert all(jnp.isfinite(jnp.asarray(v)).all() for v in metrics.values())
-    assert int(state.step) == 1
+    assert int(state.training.step) == 1
