@@ -32,7 +32,6 @@ from param_decomp.configs import (
     LayerwiseMlpCiConfig,
     OptimizerConfig,
     PDConfig,
-    PersistentPGDReconLossConfig,
     ResumeProvenance,
     RuntimeConfig,
     WandbConfig,
@@ -158,15 +157,6 @@ def assert_canonical_algorithm_config(cfg: "ExperimentConfig[Any, Any]") -> None
     _assert_plain_adamw(vu_opt, "components_optimizer")
     _assert_plain_adamw(ci_opt, "ci_fn_optimizer")
     assert vu_opt.grad_clip_norm is not None, "components grad clip is part of the method"
-
-    # The persistent-PGD source LR is constant-after-warmup only (`build_loss_terms`
-    # refuses anything else); pin it here too so the refusal happens at conversion.
-    for metric in cfg.pd.loss_metrics:
-        if isinstance(metric, PersistentPGDReconLossConfig):
-            sched = metric.optimizer.lr_schedule
-            assert sched.fn_type == "constant", (
-                f"persistent-PGD source LR is constant-only, got {sched.fn_type!r}"
-            )
 
     cadence = cfg.cadence
     assert cadence.save_every is not None and cadence.keep_last_n_checkpoints is not None, cadence
