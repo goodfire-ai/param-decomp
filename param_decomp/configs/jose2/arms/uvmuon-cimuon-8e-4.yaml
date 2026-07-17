@@ -1,4 +1,5 @@
-# jose2 200k arm: one deviation from its jose2/ base (see that header).
+# jose2 200k arm: 2x2 optimizer matrix cell, UV-lr = CI-lr tied.
+# One deviation set vs its jose2/ base (see that header).
 cadence:
   keep_last_n_checkpoints: 2
   save_every: 5000
@@ -64,27 +65,23 @@ pd:
     type: chunkwise_transformer
     input_tap: all_block_resids
   ci_fn_optimizer:
-    betas:
-    - 0.9
-    - 0.999
-    grad_clip_norm: null
+    type: muon
+    consistent_rms: 0.2
+    impl: stacked
     lr_schedule:
       final_val_frac: 0.1
       fn_type: cosine
-      start_val: 5.0e-05
+      start_val: 0.0008
       warmup_pct: 0.0
-    weight_decay: 0.0
   components_optimizer:
-    betas:
-    - 0.9
-    - 0.999
+    type: muon
+    consistent_rms: 0.2
     grad_clip_norm: 0.01
     lr_schedule:
       final_val_frac: 0.1
       fn_type: cosine
       start_val: 0.0008
       warmup_pct: 0.0
-    weight_decay: 0.0
   decomposition_targets:
   - C: 3072
     module_pattern: h.*.mlp.c_fc
@@ -135,7 +132,7 @@ pd:
     type: FaithfulnessLoss
   seed: 0
   steps: 200000
-run_name: jose2-uv-adam-8e-4
+run_name: jose2-uvmuon-cimuon-8e-4
 runtime:
   dp: 8
   remat_recon_forwards: false

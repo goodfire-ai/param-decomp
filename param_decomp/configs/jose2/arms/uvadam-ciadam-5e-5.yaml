@@ -1,4 +1,5 @@
-# jose2 200k arm: one deviation from its jose2/ base (see that header).
+# jose2 200k arm: 2x2 optimizer matrix cell, UV-lr = CI-lr tied.
+# One deviation set vs its jose2/ base (see that header).
 cadence:
   keep_last_n_checkpoints: 2
   save_every: 5000
@@ -135,7 +136,7 @@ pd:
     type: FaithfulnessLoss
   seed: 0
   steps: 200000
-run_name: jose2-baseline-adam-5e-5
+run_name: jose2-uvadam-ciadam-5e-5
 runtime:
   dp: 8
   remat_recon_forwards: false
