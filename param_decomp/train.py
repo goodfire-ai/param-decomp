@@ -31,6 +31,7 @@ from jaxtyping import Array, Bool, Float, PRNGKeyArray, jaxtyped
 from param_decomp.adversary import (
     PersistentAdversary,
     init_fresh_pgd_sources,
+    mixed_persistent_stochastic_masks,
     source_masks,
 )
 from param_decomp.ci_fn import CI, CIFn
@@ -42,11 +43,13 @@ from param_decomp.losses import (
     annealed_imp_min_param,
     faithfulness_loss,
     imp_min_terms,
+    scheduled_value_traced,
 )
 from param_decomp.recon import (
     ConstantSources,
     FreshPGDSources,
     LossSurface,
+    MixedPersistentStochasticSources,
     PersistentSources,
     ReconForward,
     Routes,
@@ -124,6 +127,7 @@ def make_train_step(
     (activation memory 1/N)."""
     site_names = lm.site_names
     sites = lm.sites
+    c_by_site = {spec.name: spec.C for spec in sites}
     recon_loss_fn = lm.recon_loss_fn  # static method: pure, holds no arrays — safe to close
     recon_terms = losses.recon
     faith_term = losses.faith
@@ -446,6 +450,32 @@ def make_train_step(
                                             persistent_sources[state_key],
                                             entry.live_sites,
                                         )
+                                    )
+                                case MixedPersistentStochasticSources(state_key=state_key):
+                                    adv_fraction = scheduled_value_traced(
+                                        step_f32, total_steps, entry.sources.cfg.adv_fraction
+                                    )
+                                    mixed_masks, mixed_deltas, mixed_routes = (
+                                        mixed_persistent_stochastic_masks(
+                                            draw_key,
+                                            ci.lower,
+                                            persistent_sources[state_key],
+                                            entry.live_sites,
+                                            c_by_site,
+                                            leading,
+                                            adv_fraction,
+                                            routes,
+                                        )
+                                    )
+                                    masked = masked_forward(
+                                        model,
+                                        prepared,
+                                        batch,
+                                        mixed_masks,
+                                        mixed_deltas,
+                                        mixed_routes,
+                                        entry.live_sites,
+                                        entry.has_delta,
                                     )
                         total = total + recon_loss_fn(masked, clean_output)
                         n_forwards += 1

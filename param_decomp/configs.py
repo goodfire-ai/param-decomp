@@ -420,6 +420,36 @@ class PersistentPGDReconLossConfig(LossMetricConfig):
     )
 
 
+class MergedStochasticPGDReconLossConfig(LossMetricConfig):
+    """ONE masked forward serving both recon pressures (SPEC S10' variation): each batch
+    element is assigned adversarial with probability `adv_fraction` (mask sources = the
+    persistent-PGD adversary's, every site routed) or stochastic otherwise (fresh
+    `U[0,1]` sources, routed per `routing`) — the whole sequence takes one family, so no
+    sample's loss is scored against a mixed-family attention context. `adv_fraction` is a
+    `ScheduleConfig`, evaluated per step like the imp-min pnorm — a constant is the plain
+    merge; a ramp anneals the adversarial share over training. `coeff` is the TOTAL:
+    coeff 1.0 + constant adv_fraction 0.5 replaces the canonical 0.5 stochastic + 0.5
+    persistent-PGD pair in expectation. Carries the persistent-adversary fields; one
+    source bundle feeds this one term (SPEC S23) and the S14' final ascent rides its
+    backward — no extra forward."""
+
+    type: Literal["MergedStochasticPGDReconLoss"] = "MergedStochasticPGDReconLoss"
+    optimizer: AdamPGDConfig
+    scope: PersistentPGDSourceScope
+    source_dtype: Literal["float32", "bfloat16"] = "float32"
+    n_warmup_steps: NonNegativeInt = 0
+    adv_fraction: ScheduleConfig
+    routing: SubsetRoutingType = Field(default_factory=UniformKSubsetRoutingConfig)
+
+    @model_validator(mode="after")
+    def validate_adv_fraction_is_probability(self) -> Self:
+        start = self.adv_fraction.start_val
+        end = start * self.adv_fraction.final_val_frac
+        if not (start <= 1.0 and end <= 1.0):
+            raise ValueError(f"adv_fraction must stay within [0, 1]: {self.adv_fraction}")
+        return self
+
+
 # ---------------------------------------------------------------------------
 # Eval-metric configs
 # ---------------------------------------------------------------------------
@@ -603,6 +633,7 @@ AnyLossMetricConfig = Annotated[
     | CIMaskedReconSubsetLossConfig
     | FaithfulnessLossConfig
     | ImportanceMinimalityLossConfig
+    | MergedStochasticPGDReconLossConfig
     | PersistentPGDReconLossConfig
     | PGDReconLayerwiseLossConfig
     | PGDReconLossConfig

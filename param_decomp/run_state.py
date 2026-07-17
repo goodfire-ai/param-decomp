@@ -25,6 +25,7 @@ from param_decomp.configs import AdamPGDConfig, OptimizerConfig, PDConfig
 from param_decomp.lm import DecomposedModel
 from param_decomp.losses import scheduled_value_traced
 from param_decomp.recon import (
+    MixedPersistentStochasticSources,
     PersistentSources,
     build_loss_terms,
     persistent_configs,
@@ -123,7 +124,7 @@ def init_train_state(
         entry.sources.state_key: term.coeff
         for term in losses.recon
         for entry in term.plan
-        if isinstance(entry.sources, PersistentSources)
+        if isinstance(entry.sources, (PersistentSources, MixedPersistentStochasticSources))
     }
     assert set(term_coeff_by_state_key) == set(persistent)
     adversaries: dict[str, PersistentAdversary] = {}
