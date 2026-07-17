@@ -23,7 +23,7 @@
 #      compile wall — ~80 min + near-OOM — since the whole CI forward materialises).
 #   6. data seq 512 (fineweb_llama_tok_512), matching the reference's seq.
 # out_dir / run_id are minted by pd-lm.
-run_name: jax-full32L-allmat-seq512-b64-dp64-tp4
+run_name: jax-full32L-HSDP-b64-dp64-andbtdr-PROFILE
 cadence:
   keep_last_n_checkpoints: 2
   save_every: 5000
@@ -31,7 +31,7 @@ cadence:
 data:
   buffer_size: 1000
   column_name: input_ids
-  data_files: /mnt/data/artifacts/mechanisms/param-decomp/datasets/fineweb_llama_tok_512/*.parquet
+  data_files: /mnt/delicate-frog/home/pd-user/pd-out/datasets/fineweb_llama_tok_512/*.parquet
   dataset_name: parquet
   eval_split: train
   is_tokenized: true
@@ -548,7 +548,7 @@ pd:
   - C: 10240
     module_pattern: model.layers.31.mlp.down_proj
   faithfulness_warmup_lr: 0.001
-  faithfulness_warmup_steps: 400
+  faithfulness_warmup_steps: 0
   faithfulness_warmup_weight_decay: 0.0
   identity_decomposition_targets: null
   loss_metrics:
@@ -589,9 +589,13 @@ pd:
   steps: 200000
 runtime:
   dp: 64
-  tp: 4
+  tp: 1
   remat_recon_forwards: true
   remat_ci_fn: true
+  launch_env:
+    profile:
+      mem_profile: true
+      no_checkpoint: true
 target:
   output_extract: logits
   weights_dtype: bfloat16

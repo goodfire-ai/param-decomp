@@ -8,13 +8,11 @@
 # fn arch, same LRs/coeffs/eval set. DELIBERATE EDITS vs that reference:
 #   1. sites: 18 (MLP, layers 18-23) -> 224 (all matrices, all 32 layers). Per-matrix C
 #      from the 2026-06-22 full-llama8b BOTEC, rounded UP to multiples of 128 (the V/U
-#      C-axis shards on the `tp` mesh axis; init asserts C % tp == 0):
+#      C-axis shards over the dp=128 mesh; init asserts C % dp == 0):
 #      q/k 2048, v/o 4096, gate/up 8192, down 10240. ΣC=1,245,184; V/U=18.3B params
 #      (~1.1x the reference's 16.3B — params shard cheaply, not the binding constraint).
-#   2. HIGH-WATER-MARK topology: runtime.dp=128 (16 nodes, power-of-2), tp=4 → dp_axis=32,
-#      and batch 32 -> per-DP=1 (global_batch / dp_axis = 32/32). This is the lightest
-#      activation footprint (the botec's ~105 GiB / per-DP-1 point). NOTE: b128/tp8 OOM'd
-#      (~72 GiB alloc) because tp=8 -> dp_axis=16 -> per-DP=8, ~8x these activations.
+#   2. runtime.dp: 64 -> 128 (16 nodes). batch 128 -> per-rank 1 (vs 2 in the reference);
+#      the botec puts per-rank-1 at ~105 GiB, safe under the 180 GiB B200 cap.
 #   3. ChunkwiseSubsetReconLoss sites_per_chunk: 9 -> 56 (8 layers/chunk -> 4 chunks).
 #      Fewer, larger chunks for the first launch: minimises compile time and per-step
 #      compute (each chunk's suffix forward now spans the full network). coeff scaled
@@ -25,7 +23,7 @@
 #      compile wall — ~80 min + near-OOM — since the whole CI forward materialises).
 #   6. data seq 512 (fineweb_llama_tok_512), matching the reference's seq.
 # out_dir / run_id are minted by pd-lm.
-run_name: jax-full32L-allmat-seq512-b32-dp128-tp4
+run_name: jax-full32L-HSDP-b64-dp64-andbtdr
 cadence:
   keep_last_n_checkpoints: 2
   save_every: 5000
@@ -33,7 +31,7 @@ cadence:
 data:
   buffer_size: 1000
   column_name: input_ids
-  data_files: /mnt/data/artifacts/mechanisms/param-decomp/datasets/fineweb_llama_tok_512/*.parquet
+  data_files: /mnt/delicate-frog/home/pd-user/pd-out/datasets/fineweb_llama_tok_512/*.parquet
   dataset_name: parquet
   eval_split: train
   is_tokenized: true
@@ -44,7 +42,7 @@ data:
   tokenizer_name: meta-llama/Llama-3.1-8B
   train_split: train
 eval:
-  batch_size: 32
+  batch_size: 64
   every: 1000
   metrics:
   - n_batches_accum: 1
@@ -70,7 +68,7 @@ eval:
   slow_every: 10000
   slow_on_first_step: true
 pd:
-  batch_size: 32
+  batch_size: 64
   ci_config:
     type: chunkwise_transformer
     blocks_per_chunk: 1
@@ -550,7 +548,7 @@ pd:
   - C: 10240
     module_pattern: model.layers.31.mlp.down_proj
   faithfulness_warmup_lr: 0.001
-  faithfulness_warmup_steps: 400
+  faithfulness_warmup_steps: 0
   faithfulness_warmup_weight_decay: 0.0
   identity_decomposition_targets: null
   loss_metrics:
@@ -590,8 +588,8 @@ pd:
   seed: 0
   steps: 200000
 runtime:
-  dp: 128
-  tp: 4
+  dp: 64
+  tp: 1
   remat_recon_forwards: true
   remat_ci_fn: true
 target:
