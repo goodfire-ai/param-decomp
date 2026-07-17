@@ -4,6 +4,8 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
+import pytest
+from pydantic import ValidationError
 
 from param_decomp.adversary import (
     PersistentAdversary,
@@ -31,10 +33,12 @@ from param_decomp.tests.test_llama_simple_mlp import (
 from param_decomp.train import TrainState, make_train_step
 
 
-def _merged_cfg(n_warmup: int) -> MergedStochasticPGDReconLossConfig:
+def _merged_cfg(
+    n_warmup: int, adv_fraction: ScheduleConfig | None = None
+) -> MergedStochasticPGDReconLossConfig:
     return MergedStochasticPGDReconLossConfig(
         coeff=1.0,
-        adv_fraction=0.5,
+        adv_fraction=adv_fraction or ScheduleConfig(start_val=0.5),
         routing=UniformKSubsetRoutingConfig(),
         scope=SCScope(),
         optimizer=AdamPGDConfig(
@@ -42,6 +46,16 @@ def _merged_cfg(n_warmup: int) -> MergedStochasticPGDReconLossConfig:
         ),
         n_warmup_steps=n_warmup,
     )
+
+
+def test_adv_fraction_ramp_accepted_and_bounded():
+    ramp_to_one = ScheduleConfig(start_val=0.1, fn_type="linear", final_val_frac=10.0)
+    cfg = _merged_cfg(n_warmup=0, adv_fraction=ramp_to_one)
+    assert cfg.adv_fraction.final_val_frac == 10.0
+
+    escapes_probability_range = ScheduleConfig(start_val=0.5, fn_type="linear", final_val_frac=4.0)
+    with pytest.raises(ValidationError, match="adv_fraction"):
+        _merged_cfg(n_warmup=0, adv_fraction=escapes_probability_range)
 
 
 def test_merged_term_builds_one_entry():
