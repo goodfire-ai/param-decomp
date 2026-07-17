@@ -218,7 +218,7 @@ def run_resid_mlp_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: 
     )
 
 
-def main(config: str, group: str | None = None, tags: str | None = None) -> None:
+def main(config: str, group: str | None = None, tags: str | tuple[str, ...] | None = None) -> None:
     schema_raw = yaml.safe_load(Path(config).read_text())
     run_id = generate_run_id("param_decomp")
     if group is not None or tags is not None:
@@ -226,7 +226,13 @@ def main(config: str, group: str | None = None, tags: str | None = None) -> None
         if group is not None:
             wandb_cfg["group"] = group
         if tags is not None:
-            wandb_cfg["tags"] = tags.split(",")
+            # Fire parses a comma-separated `--tags a,b,c` into a tuple, but keeps a value
+            # with a hyphen (e.g. `a,b,c-d`) as a string — normalize both to a list.
+            wandb_cfg["tags"] = (
+                [s.strip() for s in tags.split(",") if s.strip()]
+                if isinstance(tags, str)
+                else [str(t).strip() for t in tags]
+            )
         schema_raw["wandb"] = wandb_cfg
     built = build_resid_mlp_built_run(ResidMLPExperimentConfig(**schema_raw), run_id)
     built.run.run_dir.mkdir(parents=True, exist_ok=True)
