@@ -92,36 +92,62 @@ class GlobalMlpCiConfig(BaseConfig):
     )
 
 
+class MHACiAttentionConfig(BaseConfig):
+    """Every query head carries its own K/V head."""
+
+    kind: Literal["mha"] = "mha"
+    n_heads: PositiveInt
+
+
+class GQACiAttentionConfig(BaseConfig):
+    """Grouped-query attention: `n_heads // n_kv_heads` query heads share each K/V head, so
+    `wk`/`wv` narrow to `n_kv_heads * head_dim`. head_dim, the RoPE tables, `wq`/`wo` and
+    every sharding are identical to MHA — only the K/V projections change."""
+
+    kind: Literal["gqa"] = "gqa"
+    n_heads: PositiveInt
+    n_kv_heads: PositiveInt
+
+    @model_validator(mode="after")
+    def validate_grouping(self) -> Self:
+        assert self.n_heads % self.n_kv_heads == 0, (
+            "n_heads must be divisible by n_kv_heads (each K/V head serves an equal group "
+            f"of query heads): {self.n_heads} % {self.n_kv_heads}"
+        )
+        assert self.n_kv_heads < self.n_heads, (
+            f"n_kv_heads == n_heads ({self.n_heads}) is MHA — use `kind: mha` rather than "
+            "spelling it as a degenerate gqa"
+        )
+        return self
+
+
+CiAttentionConfig = Annotated[
+    MHACiAttentionConfig | GQACiAttentionConfig, Field(discriminator="kind")
+]
+"""The CI transformer's attention, keyed by CLASS rather than an optional `n_kv_heads` —
+so a K/V head count cannot exist without meaning, and the grouping invariant lives on the
+arm that has both fields instead of being a runtime check on a shape that shouldn't parse.
+Mirrors how the target's attention variants are keyed (see the Qwen3 family split)."""
+
+
 class ChunkwiseTransformerCiConfig(BaseConfig):
     """Chunkwise-transformer CI fn (LMs). Each chunk is `blocks_per_chunk` consecutive
     transformer blocks; its input is the residual stream entering the chunk and its output
-    is CI for every matrix site in those blocks. `d_model`/`n_blocks`/`n_heads`/`mlp_hidden`
-    size the per-chunk CI transformer (`d_model % n_heads == 0`; head_dim even for RoPE).
-
-    `n_kv_heads` selects grouped-query attention: `n_heads // n_kv_heads` query heads share
-    each K/V head. It narrows `wk`/`wv` alone — head_dim, the RoPE tables, `wq`/`wo` and every
-    sharding are identical to MHA. `null` means MHA (`n_kv_heads == n_heads`); the resolved
-    `ChunkwiseTransformerCIArch.n_kv_heads` is always a concrete count."""
+    is CI for every matrix site in those blocks. `d_model`/`n_blocks`/`attention`/`mlp_hidden`
+    size the per-chunk CI transformer (`d_model % n_heads == 0`; head_dim even for RoPE)."""
 
     type: Literal["chunkwise_transformer"] = "chunkwise_transformer"
     blocks_per_chunk: PositiveInt
     d_model: PositiveInt
     n_blocks: PositiveInt
-    n_heads: PositiveInt
-    n_kv_heads: PositiveInt | None = Field(
-        default=None, description="GQA K/V head count; null = MHA (n_kv_heads == n_heads)"
-    )
+    attention: CiAttentionConfig
     mlp_hidden: PositiveInt
 
     @model_validator(mode="after")
-    def validate_heads(self) -> Self:
-        assert self.d_model % self.n_heads == 0, (self.d_model, self.n_heads)
-        assert (self.d_model // self.n_heads) % 2 == 0, "head_dim must be even for RoPE"
-        if self.n_kv_heads is not None:
-            assert self.n_heads % self.n_kv_heads == 0, (
-                "n_heads must be divisible by n_kv_heads (each K/V head serves an equal group "
-                f"of query heads): {self.n_heads} % {self.n_kv_heads}"
-            )
+    def validate_head_dim(self) -> Self:
+        n_heads = self.attention.n_heads
+        assert self.d_model % n_heads == 0, (self.d_model, n_heads)
+        assert (self.d_model // n_heads) % 2 == 0, "head_dim must be even for RoPE"
         return self
 
 

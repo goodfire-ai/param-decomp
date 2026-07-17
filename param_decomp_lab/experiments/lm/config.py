@@ -37,6 +37,8 @@ from param_decomp.configs import (
     CIHistogramsConfig,
     CIMaskedAttnPatternsReconLossConfig,
     ComponentActivationDensityConfig,
+    GQACiAttentionConfig,
+    MHACiAttentionConfig,
     PGDReconLossConfig,
     StochasticAttnPatternsReconLossConfig,
 )
@@ -344,15 +346,22 @@ def _resolve_chunkwise_ci_arch(
     target: AnyLMTargetConfig, ci: ChunkwiseTransformerCiConfig
 ) -> ChunkwiseTransformerCIArch:
     """Resolve the chunkwise-transformer arch against the LM target: the chunk generator
-    (`_resolved_chunks`) + the per-chunk input width (`_resolve_d_resid`). The schema's
-    optional `n_kv_heads` resolves here: `null` → MHA (`n_kv_heads == n_heads`)."""
+    (`_resolved_chunks`) + the per-chunk input width (`_resolve_d_resid`). The `attention`
+    union collapses here to two concrete head counts — MHA is `n_kv_heads == n_heads` — so
+    nothing downstream re-derives the grouping, and the fine-tune `parent.ci_fn ==
+    built.ci_fn` compare sees concrete values on both sides."""
+    match ci.attention:
+        case MHACiAttentionConfig():
+            n_heads = n_kv_heads = ci.attention.n_heads
+        case GQACiAttentionConfig():
+            n_heads, n_kv_heads = ci.attention.n_heads, ci.attention.n_kv_heads
     return ChunkwiseTransformerCIArch(
         chunks=_resolved_chunks(target, ci.blocks_per_chunk),
         input_dim=_resolve_d_resid(target),
         d_model=ci.d_model,
         n_blocks=ci.n_blocks,
-        n_heads=ci.n_heads,
-        n_kv_heads=ci.n_heads if ci.n_kv_heads is None else ci.n_kv_heads,
+        n_heads=n_heads,
+        n_kv_heads=n_kv_heads,
         mlp_hidden=ci.mlp_hidden,
     )
 

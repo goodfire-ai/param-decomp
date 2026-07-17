@@ -17,7 +17,11 @@ from param_decomp.ci_fn import (
     init_chunkwise_transformer_ci_fn,
 )
 from param_decomp.components import SiteSpec
-from param_decomp.configs import ChunkwiseTransformerCiConfig
+from param_decomp.configs import (
+    ChunkwiseTransformerCiConfig,
+    GQACiAttentionConfig,
+    MHACiAttentionConfig,
+)
 from vendored_jax.llama import apply_rope, repeat_kv, rope_cos_sin
 
 
@@ -143,17 +147,56 @@ def test_gqa_ci_fn_runs_end_to_end():
             assert jnp.isfinite(squashed).all()
 
 
-def _ci_config(n_heads: int, n_kv_heads: int | None) -> ChunkwiseTransformerCiConfig:
-    return ChunkwiseTransformerCiConfig(
-        blocks_per_chunk=1, d_model=16, n_blocks=1, n_heads=n_heads, n_kv_heads=n_kv_heads,
-        mlp_hidden=32,
-    )  # fmt: skip
+def _ci_config(attention: dict[str, object]) -> ChunkwiseTransformerCiConfig:
+    """Validated from a dict, the shape a run yaml actually arrives as — so these exercise
+    the discriminator the way a config file hits it, not the typed constructor."""
+    return ChunkwiseTransformerCiConfig.model_validate(
+        {
+            "blocks_per_chunk": 1,
+            "d_model": 16,
+            "n_blocks": 1,
+            "attention": attention,
+            "mlp_hidden": 32,
+        }
+    )
 
 
-def test_config_defaults_to_mha():
-    assert _ci_config(4, None).n_kv_heads is None
+def test_mha_arm_parses():
+    cfg = _ci_config({"kind": "mha", "n_heads": 4})
+    assert isinstance(cfg.attention, MHACiAttentionConfig)
+    assert cfg.attention.n_heads == 4
 
 
-def test_config_refuses_indivisible_kv_heads():
+def test_gqa_arm_parses():
+    cfg = _ci_config({"kind": "gqa", "n_heads": 4, "n_kv_heads": 2})
+    assert isinstance(cfg.attention, GQACiAttentionConfig)
+    assert (cfg.attention.n_heads, cfg.attention.n_kv_heads) == (4, 2)
+
+
+def test_mha_arm_cannot_carry_n_kv_heads():
+    """The point of the union: a K/V head count can't exist where it has no meaning. Under
+    the old flat `n_kv_heads: int | None` this parsed fine and was silently ignored."""
+    with pytest.raises(ValidationError, match="n_kv_heads"):
+        _ci_config({"kind": "mha", "n_heads": 4, "n_kv_heads": 2})
+
+
+def test_gqa_arm_requires_n_kv_heads():
+    with pytest.raises(ValidationError, match="n_kv_heads"):
+        _ci_config({"kind": "gqa", "n_heads": 4})
+
+
+def test_gqa_refuses_indivisible_kv_heads():
     with pytest.raises(ValidationError, match="divisible"):
-        _ci_config(4, 3)
+        _ci_config({"kind": "gqa", "n_heads": 4, "n_kv_heads": 3})
+
+
+def test_gqa_refuses_degenerate_mha():
+    """`n_kv_heads == n_heads` IS mha; two spellings of one arch is exactly the ambiguity
+    the union removes."""
+    with pytest.raises(ValidationError, match="is MHA"):
+        _ci_config({"kind": "gqa", "n_heads": 4, "n_kv_heads": 4})
+
+
+def test_unknown_attention_kind_refuses():
+    with pytest.raises(ValidationError):
+        _ci_config({"kind": "mqa", "n_heads": 4})
