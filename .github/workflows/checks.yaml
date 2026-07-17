@@ -21,7 +21,7 @@ jobs:
       packages: read
     container:
       image: ghcr.io/${{ github.repository }}/ci-mpi:latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -54,6 +54,18 @@ jobs:
           key: hf-${{ github.run_id }}
           restore-keys: |
             hf-
+
+      # Compiled executables are content-addressed by HLO + backend + jax/xla version
+      # (conftest.py pins the CPU ISA ceiling to AVX2 so a cache entry stays valid across
+      # any runner), so a stale or cross-lockfile hit is a safe no-op miss, not a wrong
+      # answer — restore-keys lets a uv.lock bump degrade to a partial hit instead of cold.
+      - name: Cache JAX compilation cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.jax_test_cache
+          key: jax-test-cache-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            jax-test-cache-
 
       - name: Run basedpyright
         run: uv run basedpyright

@@ -185,8 +185,8 @@ class _ArithmeticEval:
         selection = compute_arithmetic_selection(
             self.step,
             self.model,
-            state.components,
-            state.ci_fn,
+            state.decomposition.components,
+            state.decomposition.ci_fn,
             self.tokens,
             self.n_prompts,
             self.thresholds,
@@ -197,7 +197,11 @@ class _ArithmeticEval:
             for k, v in n_alive_scalars(selection.active, self.top_k).items()
         }
         scalars = self.probe_eval_step(
-            self.model, state.components, state.ci_fn, self.tokens, scalar_key
+            self.model,
+            state.decomposition.components,
+            state.decomposition.ci_fn,
+            self.tokens,
+            scalar_key,
         )
         record |= {f"eval/arithmetic/{k}": float(v) for k, v in scalars.items()}
         self.renderer.submit(
@@ -425,7 +429,9 @@ def _make_lm_eval_fn(
             eval_batches.append(eval_tokens)
             # fold values >= pd.steps never collide with the train step keys
             eval_key = random.fold_in(run_key, pd.steps + eval_pass_index * eval.n_steps + j)
-            eval_metrics = eval_step_fn(lm, state.components, state.ci_fn, eval_tokens, eval_key)
+            eval_metrics = eval_step_fn(
+                lm, state.decomposition.components, state.decomposition.ci_fn, eval_tokens, eval_key
+            )
             for k, v in eval_metrics.items():
                 metric_sums[k] = metric_sums.get(k, jnp.zeros(())) + v
         eval_record: dict[str, LogValue] = {
@@ -436,7 +442,12 @@ def _make_lm_eval_fn(
             # is summed over distributions, divided by their count.
             attn_key = random.fold_in(run_key, 2 * pd.steps + eval_pass_index)
             reductions = accumulate_attn_patterns(
-                attn_step, lm, state.components, state.ci_fn, eval_batches, attn_key
+                attn_step,
+                lm,
+                state.decomposition.components,
+                state.decomposition.ci_fn,
+                eval_batches,
+                attn_key,
             )
             eval_record |= {
                 f"eval/loss/{k}": v
@@ -451,7 +462,11 @@ def _make_lm_eval_fn(
             # hidden-acts scalars ride the live `_step` axis through `eval_record`; the
             # figures' pure-host render + wandb.log happen OFF the loop on rank 0.
             site_reductions = accumulate_site_reductions(
-                slow_eval_step, lm, state.ci_fn, eval_batches, eval.slow_n_batches_accum
+                slow_eval_step,
+                lm,
+                state.decomposition.ci_fn,
+                eval_batches,
+                eval.slow_n_batches_accum,
             )
             hidden_acts_key = random.fold_in(run_key, 3 * pd.steps + eval_pass_index)
             hidden_acts = compute_hidden_acts_metrics(
@@ -466,7 +481,7 @@ def _make_lm_eval_fn(
             position_ci: dict[str, PositionCI] | None = None
             if position_ci_step is not None:
                 position_ci = accumulate_position_ci(
-                    position_ci_step, lm, state.ci_fn, eval_batches
+                    position_ci_step, lm, state.decomposition.ci_fn, eval_batches
                 )
                 identity_ci_errors = compute_identity_ci_errors(
                     perm_spec, position_ci, IDENTITY_CI_ERROR_TOLERANCE
@@ -480,7 +495,7 @@ def _make_lm_eval_fn(
             if perm_spec.want_uv_plots:
                 components = {
                     name: (np.asarray(V), np.asarray(U))
-                    for name, (V, U) in state.components.sites_items()
+                    for name, (V, U) in state.decomposition.components.sites_items()
                 }
             slow_renderer.submit(
                 partial(

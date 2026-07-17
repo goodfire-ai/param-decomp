@@ -22,6 +22,7 @@ from param_decomp.ci_fn import (
     Chunk,
     ChunkwiseTransformerCIArch,
     CIFn,
+    MHACIAttention,
     build_ci_fn,
 )
 from param_decomp.components import SiteC, SiteSpec, init_component_stacks
@@ -57,8 +58,10 @@ def _build_ci_fn(lm: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
         input_dim=n_embd,
         d_model=16,
         n_blocks=1,
-        n_heads=2,
-        mlp_hidden=32,
+        attention=MHACIAttention(n_heads=2),
+        ffn_hidden=32,
+        ffn_kind="gelu",
+        learned_norm_scale=False,
     )
     return build_ci_fn(arch, lm.sites, key)
 

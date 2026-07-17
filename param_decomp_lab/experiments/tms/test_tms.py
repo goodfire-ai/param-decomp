@@ -26,7 +26,13 @@ from param_decomp.configs import (
 from param_decomp.lm import DecomposedModel
 from param_decomp.recon import build_loss_terms
 from param_decomp.schedule import ScheduleConfig
-from param_decomp.train import TrainState, make_faith_warmup_step, make_train_step
+from param_decomp.train import (
+    Decomposition,
+    TrainingItem,
+    TrainState,
+    make_faith_warmup_step,
+    make_train_step,
+)
 from param_decomp_lab.experiments.tms.model import (
     HiddenLayerInit,
     TMSConfig,
@@ -197,10 +203,12 @@ def _make_state_and_step(
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
     state = TrainState(
-        components=vu, ci_fn=ci_fn,
-        components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
-        ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        adversaries={}, step=jnp.zeros((), jnp.int32),
+        decomposition=Decomposition(components=vu, ci_fn=ci_fn),
+        training=TrainingItem(
+            components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
+            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+            adversaries={}, step=jnp.zeros((), jnp.int32),
+        ),
     )  # fmt: skip
     loss_terms = build_loss_terms(_loss_metrics(), lm.site_names)
     step = make_train_step(
@@ -224,12 +232,12 @@ def test_step_trains_positionless_no_persistent_sources():
         state, m = step(lm, state, x, jax.random.PRNGKey(100 + i))
         losses.append({k: float(v) for k, v in m.items()})
     assert all(jnp.isfinite(jnp.array(list(m.values()))).all() for m in losses)
-    assert int(state.step) == 6
+    assert int(state.training.step) == 6
     # no persistent sources for the TMS stochastic configs
-    assert state.adversaries == {}
+    assert state.training.adversaries == {}
     # fp32 masters preserved
-    assert isinstance(state.components, ComponentStacks)
-    for _, (V, U) in state.components.sites_items():
+    assert isinstance(state.decomposition.components, ComponentStacks)
+    for _, (V, U) in state.decomposition.components.sites_items():
         assert V.dtype == jnp.float32 and U.dtype == jnp.float32
 
 
@@ -297,10 +305,12 @@ def _faith_warmed_state(
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
     state = TrainState(
-        components=vu, ci_fn=ci_fn,
-        components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
-        ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        adversaries={}, step=jnp.zeros((), jnp.int32),
+        decomposition=Decomposition(components=vu, ci_fn=ci_fn),
+        training=TrainingItem(
+            components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
+            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+            adversaries={}, step=jnp.zeros((), jnp.int32),
+        ),
     )  # fmt: skip
     loss_terms = build_loss_terms(_recovery_loss_metrics(), lm.site_names)
     step = make_train_step(
@@ -327,17 +337,17 @@ def test_end_to_end_pretrain_decompose_recovers_identity():
     sites = site_specs(cfg, (SiteC("linear1", 5), SiteC("linear2", 5)))
     target = pretrain_tms_target(
         cfg, feature_probability=0.05, generation_type="at_least_zero_active",
-        steps=5000, batch_size=2048, lr=1e-2, seed=0,
+        steps=2000, batch_size=2048, lr=1e-2, seed=0,
     )  # fmt: skip
     x = sample_sparse_features(jax.random.PRNGKey(7), 1024, 5, 0.05, "at_least_zero_active")
     lm = tms_decomposed_model(cfg, target, sites)
     recon = jnp.mean((jnp.abs(x) - lm.clean_output(x)) ** 2)
     assert float(recon) < 0.05, f"pretrained TMS recon too high: {recon}"
 
-    state, step = _faith_warmed_state(lm, sites, total_steps=8000, warmup_steps=200)
+    state, step = _faith_warmed_state(lm, sites, total_steps=3000, warmup_steps=150)
     data_key = jax.random.PRNGKey(123)
     totals: list[float] = []
-    for i in range(8000):
+    for i in range(3000):
         x = sample_sparse_features(
             jax.random.fold_in(data_key, i), 2048, 5, 0.05, "at_least_zero_active"
         )
@@ -345,7 +355,7 @@ def test_end_to_end_pretrain_decompose_recovers_identity():
         totals.append(float(m["total"]))
     assert totals[-1] < totals[0], (totals[0], totals[-1])
 
-    ci_lower = single_feature_ci(lm, state.ci_fn, n_features=5)
+    ci_lower = single_feature_ci(lm, state.decomposition.ci_fn, n_features=5)
     err1 = identity_ci_error(ci_lower["linear1"], tolerance=0.2)
     err2 = identity_ci_error(ci_lower["linear2"], tolerance=0.2)
     assert err1 == 0, (

@@ -1,4 +1,5 @@
-"""CPU tests for the config-gated toy `UVPlots` figure (`toy_uv_eval`).
+"""CPU tests for the toy figure metrics (`toy_uv_eval`): the config-gated `UVPlots` V/U
+heatmap and the unconditional identity-permuted CI heatmap.
 
 The toys feed `UVPlots` their probe CI `(n_features, C)` as the permutation source and their
 small on-host V/U — so a toy config that names `UVPlots` produces a V/U-heatmap figure
@@ -8,7 +9,7 @@ shared `slow_eval.render_uv_figure`, so this only pins the toy-side wiring + the
 
 import sys
 import types
-from typing import Any
+from typing import Any, Literal
 
 import jax
 import pytest
@@ -33,8 +34,8 @@ def _toy_setup():
     ci_fn = init_layerwise_mlp_ci_fn(MLPCIArch(hidden_dims=(16,)), sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     probe = single_feature_probe(cfg.n_features)
-    probe_upper = ci_fn(lm.read_activations(probe, ci_fn.input_names), remat=False).upper
-    return lm, vu, probe_upper
+    ci = ci_fn(lm.read_activations(probe, ci_fn.input_names), remat=False)
+    return lm, vu, ci.lower, ci.upper
 
 
 def _raw(metrics: list[dict[str, Any]]) -> dict[str, Any]:
@@ -54,7 +55,7 @@ class _FakeWandb(types.ModuleType):
 
 
 def test_toy_uv_spec_gates_on_uvplots_in_config():
-    lm, _, _ = _toy_setup()
+    lm, _, _, _ = _toy_setup()
     assert toy_uv_eval.toy_uv_spec(lm, {}).want_uv_plots is False
     assert toy_uv_eval.toy_uv_spec(lm, _raw([])).want_uv_plots is False
     no_uv = _raw([{"type": "PermutedCIPlots", "identity_patterns": None, "dense_patterns": None}])
@@ -64,7 +65,7 @@ def test_toy_uv_spec_gates_on_uvplots_in_config():
 
 
 def test_log_uv_figure_renders_png_when_configured(monkeypatch: pytest.MonkeyPatch):
-    lm, vu, probe_upper = _toy_setup()
+    lm, vu, _, probe_upper = _toy_setup()
     spec = toy_uv_eval.toy_uv_spec(
         lm, _raw([{"type": "UVPlots", "identity_patterns": None, "dense_patterns": None}])
     )
@@ -82,7 +83,7 @@ def test_log_uv_figure_renders_png_when_configured(monkeypatch: pytest.MonkeyPat
 
 
 def test_log_uv_figure_noop_when_unconfigured_or_wandb_off(monkeypatch: pytest.MonkeyPatch):
-    lm, vu, probe_upper = _toy_setup()
+    lm, vu, _, probe_upper = _toy_setup()
     fake = _FakeWandb()
     monkeypatch.setitem(sys.modules, "wandb", fake)
 
@@ -101,3 +102,64 @@ def test_log_uv_figure_noop_when_unconfigured_or_wandb_off(monkeypatch: pytest.M
         with_uv, dict(vu.sites_items()), probe_upper, now_step=42, wandb_active=False
     )
     assert fake.logged == []
+
+
+def test_permuted_ci_heatmap_due_fires_on_save_every_and_final_step():
+    assert toy_uv_eval.permuted_ci_heatmap_due(5000, 20000, save_every=5000) is True
+    assert toy_uv_eval.permuted_ci_heatmap_due(5001, 20000, save_every=5000) is False
+    assert toy_uv_eval.permuted_ci_heatmap_due(20000, 20000, save_every=5000) is True
+    # save_every unset -> only the final step fires
+    assert toy_uv_eval.permuted_ci_heatmap_due(20000, 20000, save_every=None) is True
+    assert toy_uv_eval.permuted_ci_heatmap_due(10000, 20000, save_every=None) is False
+
+
+def test_log_permuted_ci_heatmap_renders_both_leaky_views(monkeypatch: pytest.MonkeyPatch):
+    lm, _, ci_lower, ci_upper = _toy_setup()
+    fake = _FakeWandb()
+    monkeypatch.setitem(sys.modules, "wandb", fake)
+    permutation: dict[str, Literal["identity", "dense"]] = {
+        name: "identity" for name in lm.site_names
+    }
+
+    toy_uv_eval.log_permuted_ci_heatmap(
+        ci_lower, ci_upper, permutation, now_step=5000, wandb_active=True
+    )
+
+    assert len(fake.logged) == 1
+    payload, step = fake.logged[0]
+    assert step == 5000
+    assert set(payload) == {
+        "slow_eval/figures/causal_importances",
+        "slow_eval/figures/causal_importances_upper_leaky",
+    }
+
+
+def test_log_permuted_ci_heatmap_noop_when_wandb_off(monkeypatch: pytest.MonkeyPatch):
+    lm, _, ci_lower, ci_upper = _toy_setup()
+    fake = _FakeWandb()
+    monkeypatch.setitem(sys.modules, "wandb", fake)
+    permutation: dict[str, Literal["identity", "dense"]] = {
+        name: "identity" for name in lm.site_names
+    }
+
+    toy_uv_eval.log_permuted_ci_heatmap(
+        ci_lower, ci_upper, permutation, now_step=5000, wandb_active=False
+    )
+
+    assert fake.logged == []
+
+
+def test_log_permuted_ci_heatmap_dense_site_permutes_by_mass_not_hungarian(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    lm, _, ci_lower, ci_upper = _toy_setup()
+    fake = _FakeWandb()
+    monkeypatch.setitem(sys.modules, "wandb", fake)
+    permutation: dict[str, Literal["identity", "dense"]] = {name: "dense" for name in lm.site_names}
+
+    # A dense-target site should render without error under the dense (column-mass) sort —
+    # it must not silently fall back to the identity/Hungarian permutation.
+    toy_uv_eval.log_permuted_ci_heatmap(
+        ci_lower, ci_upper, permutation, now_step=5000, wandb_active=True
+    )
+    assert len(fake.logged) == 1

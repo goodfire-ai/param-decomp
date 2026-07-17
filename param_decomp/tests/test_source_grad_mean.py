@@ -38,7 +38,12 @@ from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
 from param_decomp.adversary import init_persistent_sources, source_masks
-from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch, build_ci_fn
+from param_decomp.ci_fn import (
+    Chunk,
+    ChunkwiseTransformerCIArch,
+    MHACIAttention,
+    build_ci_fn,
+)
 from param_decomp.components import init_component_stacks
 from param_decomp.losses import kl_per_position
 from param_decomp.sharding import hsdp_mesh, shard_batch
@@ -65,8 +70,10 @@ def _source_grad(sharded: bool) -> dict[str, jax.Array]:
         input_dim=cfg.n_embd,
         d_model=16,
         n_blocks=2,
-        n_heads=2,
-        mlp_hidden=32,
+        attention=MHACIAttention(n_heads=2),
+        ffn_hidden=32,
+        ffn_kind="gelu",
+        learned_norm_scale=False,
     )
     ci_fn = build_ci_fn(ci_arch, lm.sites, random.PRNGKey(2))
     src = init_persistent_sources(

@@ -55,7 +55,7 @@ from param_decomp.targets.glu_transformer import (
     mlp_family_site_cs,
 )
 from param_decomp.tests.test_llama8b import _tiny_cfg
-from param_decomp.train import TrainState, make_train_step
+from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
 from vendored_jax.llama import llama3_inv_freq
 
 FIXTURES = Path(__file__).resolve().parent / "stacked_fixtures.npz"
@@ -133,7 +133,12 @@ def _assert_close(got: jnp.ndarray, want: np.ndarray, what: str) -> None:
 def _build_trajectory_ci_fn(lm: DecomposedModel, key: jnp.ndarray):
     """The new chunkwise CI fn (one chunk over all sites, reading the residual entering the
     first decomposed block) — the migrated replacement for the old per-site `CIArch`."""
-    from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch, build_ci_fn
+    from param_decomp.ci_fn import (
+        Chunk,
+        ChunkwiseTransformerCIArch,
+        MHACIAttention,
+        build_ci_fn,
+    )
 
     first_block = min(int(n.split(".")[1]) for n in lm.site_names)
     arch = ChunkwiseTransformerCIArch(
@@ -141,8 +146,10 @@ def _build_trajectory_ci_fn(lm: DecomposedModel, key: jnp.ndarray):
         input_dim=_tiny_cfg().n_embd,
         d_model=16,
         n_blocks=2,
-        n_heads=2,
-        mlp_hidden=32,
+        attention=MHACIAttention(n_heads=2),
+        ffn_hidden=32,
+        ffn_kind="gelu",
+        learned_norm_scale=False,
     )
     return build_ci_fn(arch, lm.sites, key)
 
@@ -250,20 +257,22 @@ def test_train_trajectory_matches():
     )
     assert ppgd_cfg.coeff is not None
     state = TrainState(
-        components=vu, ci_fn=ci_fn,
-        components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
-        ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        adversaries={
-            ppgd_cfg.type: PersistentAdversary(
-                sources=sources,
-                opt_state=init_sources_adam_state(sources),
-                state_key=ppgd_cfg.type,
-                coeff=ppgd_cfg.coeff,
-                adam=ppgd_cfg.optimizer,
-                n_warmup=ppgd_cfg.n_warmup_steps,
-            )
-        },
-        step=jnp.zeros((), jnp.int32),
+        decomposition=Decomposition(components=vu, ci_fn=ci_fn),
+        training=TrainingItem(
+            components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
+            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+            adversaries={
+                ppgd_cfg.type: PersistentAdversary(
+                    sources=sources,
+                    opt_state=init_sources_adam_state(sources),
+                    state_key=ppgd_cfg.type,
+                    coeff=ppgd_cfg.coeff,
+                    adam=ppgd_cfg.optimizer,
+                    n_warmup=ppgd_cfg.n_warmup_steps,
+                )
+            },
+            step=jnp.zeros((), jnp.int32),
+        ),
     )  # fmt: skip
     loss_terms = build_loss_terms(
         (
@@ -301,11 +310,11 @@ def test_train_trajectory_matches():
                 f"step{step_idx} {fixture_key}: per-site {got!r} vs stacked {want!r}"
             )
 
-    assert isinstance(state.components, ComponentStacks)
+    assert isinstance(state.decomposition.components, ComponentStacks)
     for name in lm.site_names:
-        V, U = state.components.site(name)
+        V, U = state.decomposition.components.site(name)
         _assert_close(V, f[f"out::final_V::{name}"], f"final V {name}")
         _assert_close(U, f[f"out::final_U::{name}"], f"final U {name}")
-    final_sources = state.adversaries["PersistentPGDReconLoss"].sources
+    final_sources = state.training.adversaries["PersistentPGDReconLoss"].sources
     for name in lm.site_names:
         _assert_close(final_sources[name], f[f"out::final_src::{name}"], f"final src {name}")

@@ -7,6 +7,7 @@ helpers as an explicit arg (`RUN_ID` here), and the run dir derives from it
 from pathlib import Path
 from typing import Any
 
+import jax.numpy as jnp
 import pytest
 import yaml
 from pydantic import ValidationError
@@ -18,6 +19,7 @@ from param_decomp.configs import (
     PDConfig,
     PersistentPGDReconLossConfig,
 )
+from param_decomp.losses import scheduled_value_traced
 from param_decomp.recon import (
     build_loss_terms,
     persistent_configs,
@@ -291,9 +293,13 @@ def test_unsupported_model_family_refuses_and_supported_families_dispatch():
     assert LlamaSimpleMLPTargetConfig is not None  # the `pretrained` happy-path type
 
 
-def test_decaying_persistent_source_schedule_refuses():
-    """The persistent-PGD source LR is constant-after-warmup only, so the conversion
-    gate must refuse a decaying source `lr_schedule` (issue #646; matrix S13/S20)."""
+def test_decaying_persistent_source_schedule_accepted_and_decays():
+    """Issue #646 refused a decaying persistent-source `lr_schedule` because the JAX
+    source LR was computed by a specialized `warmup_then_constant_lr` with no decay
+    branch at all — a configured decay would have silently flattened. `adversary.py`'s
+    `source_lr` now goes through the same generic `scheduled_value_traced` every other
+    optimizer uses, so that gap is gone: the conversion accepts a decaying source
+    schedule, and the schedule actually decays (not silently flattened)."""
     raw = _reference_lm_raw()
     decaying_source = dict(
         raw,
@@ -317,8 +323,18 @@ def test_decaying_persistent_source_schedule_refuses():
             ],
         ),
     )
-    with pytest.raises(AssertionError):
-        build_experiment_config(LMExperimentConfig(**decaying_source), RUN_ID)
+    built = build_experiment_config(LMExperimentConfig(**decaying_source), RUN_ID)
+    losses = build_loss_terms(built.pd.loss_metrics, tuple(sc.name for sc in built.target.sites))
+    (cfg,) = persistent_configs(losses.recon).values()
+    schedule = cfg.optimizer.lr_schedule
+    assert schedule.fn_type == "cosine" and schedule.final_val_frac == 0.1
+
+    total_steps = built.pd.steps
+    warmup_steps = int(total_steps * schedule.warmup_pct)
+    post_warmup = scheduled_value_traced(jnp.float32(warmup_steps), total_steps, schedule)
+    end = scheduled_value_traced(jnp.float32(total_steps - 1), total_steps, schedule)
+    assert float(post_warmup) == pytest.approx(schedule.start_val, rel=1e-3)
+    assert float(end) == pytest.approx(schedule.start_val * schedule.final_val_frac, rel=1e-3)
 
 
 def test_arbitrary_sites_with_per_site_c_convert():

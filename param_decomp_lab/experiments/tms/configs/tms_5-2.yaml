@@ -33,7 +33,7 @@ pd:
   - type: FaithfulnessLoss
     coeff: 1.0
   batch_size: 4096
-  steps: 10000
+  steps: 40000
   components_optimizer:
     grad_clip_norm: 0.01
     lr_schedule:

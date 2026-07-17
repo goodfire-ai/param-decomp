@@ -23,7 +23,7 @@ import numpy as np
 import optax
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
-from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch
+from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch, MHACIAttention
 from param_decomp.configs import (
     ChunkwiseSubsetReconLossConfig,
     FaithfulnessLossConfig,
@@ -45,7 +45,7 @@ from param_decomp.targets.glu_transformer_sharding import (
     init_component_stacks_placed,
 )
 from param_decomp.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
-from param_decomp.train import TrainState, make_train_step
+from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
 
 COLLECTIVES = ("all-gather", "all-reduce", "reduce-scatter", "collective-permute", "all-to-all")
 
@@ -69,7 +69,8 @@ def build_cell(layout: str, opt_name: str, mesh: Mesh):
             Chunk(input_taps=(f"resid.{layer}",), output_sites=tuple(names))
             for layer, names in sorted(by_layer.items())
         ),
-        input_dim=cfg.n_embd, d_model=16, n_blocks=2, n_heads=2, mlp_hidden=32,
+        input_dim=cfg.n_embd, d_model=16, n_blocks=2, attention=MHACIAttention(n_heads=2),
+        ffn_hidden=32, ffn_kind="gelu", learned_norm_scale=False,
     )  # fmt: skip
     vu = init_component_stacks_placed(lm.sites, jax.random.PRNGKey(3), rules)
     ci_fn = init_ci_fn_placed(ci_arch, lm.sites, jax.random.PRNGKey(4), mesh)
@@ -89,11 +90,13 @@ def build_cell(layout: str, opt_name: str, mesh: Mesh):
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
 
     state = TrainState(
-        components=vu, ci_fn=ci_fn,
-        components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
-        ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        adversaries={},
-        step=jnp.zeros((), jnp.int32),
+        decomposition=Decomposition(components=vu, ci_fn=ci_fn),
+        training=TrainingItem(
+            components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
+            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+            adversaries={},
+            step=jnp.zeros((), jnp.int32),
+        ),
     )  # fmt: skip
     state = _ensure_global(state, mesh)
 

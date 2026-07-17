@@ -12,6 +12,31 @@ from urllib.parse import urlparse
 import pytest
 from pytest import Config, Item, Parser
 
+# Must land before the first `import jax` anywhere in the suite (jax reads XLA_FLAGS at
+# backend init) — merge rather than overwrite, since `make test-multidevice` sets its own
+# XLA_FLAGS. Caps codegen at AVX2 so a cached executable stays valid across any x86-64-v3+
+# host, not just the one that compiled it: an AVX512-tier compile embeds a target-cpu guess
+# that can mismatch the loading host's feature set (harmless-looking warning, but "harmless"
+# isn't good enough for a shared CI cache — this makes cross-host reuse safe by construction).
+_MAX_ISA_FLAG = "--xla_cpu_max_isa=AVX2"
+if _MAX_ISA_FLAG not in os.environ.get("XLA_FLAGS", ""):
+    os.environ["XLA_FLAGS"] = f"{os.environ.get('XLA_FLAGS', '')} {_MAX_ISA_FLAG}".strip()
+
+import jax  # noqa: E402
+
+# Compiles are keyed by HLO + backend + jax/xla version, so this only ever serves a bit-exact
+# rerun of the same compile; a threshold of 1s skips caching the hundreds of sub-second
+# internal jits (which would otherwise bloat the dir and spam load-time log lines) while
+# still catching every test-suite compile worth caching (the slow ones run 4-20s). One dir
+# per xdist worker: jax's own writer-gating (`process_id == 0`) is a no-op here since each
+# worker is an independent single-process jax runtime that trivially IS "process 0" — a
+# shared dir would let concurrent workers race on the same cache files, so give each its own.
+_cache_root = Path(__file__).parent / ".jax_test_cache"
+_worker_cache_dir = _cache_root / os.environ.get("PYTEST_XDIST_WORKER", "master")
+jax.config.update("jax_compilation_cache_dir", str(_worker_cache_dir))
+jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
+jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
+
 
 def pytest_addoption(parser: Parser) -> None:
     parser.addoption("--runslow", action="store_true", default=False, help="run slow tests")

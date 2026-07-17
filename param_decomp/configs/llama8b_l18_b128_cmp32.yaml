@@ -18,8 +18,12 @@ pd:
     blocks_per_chunk: 1
     d_model: 4096
     n_blocks: 4
-    n_heads: 64
-    mlp_hidden: 16384
+    attention:
+      kind: mha
+      n_heads: 64
+    ffn:
+      kind: gelu
+      hidden: 16384
   decomposition_targets:
   - module_pattern: layers.18.mlp.gate_proj
     C: 24576

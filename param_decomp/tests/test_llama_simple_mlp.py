@@ -22,6 +22,7 @@ from param_decomp.ci_fn import (
     Chunk,
     ChunkwiseTransformerCIArch,
     ChunkwiseTransformerCIFn,
+    MHACIAttention,
     build_ci_fn,
 )
 from param_decomp.components import ComponentStacks, SiteC, SiteSpec, init_component_stacks
@@ -49,7 +50,13 @@ from param_decomp.targets.llama_simple_mlp import (
     site_name,
     site_specs,
 )
-from param_decomp.train import TrainState, make_faith_warmup_step, make_train_step
+from param_decomp.train import (
+    Decomposition,
+    TrainingItem,
+    TrainState,
+    make_faith_warmup_step,
+    make_train_step,
+)
 
 
 def _tiny_cfg() -> LlamaSimpleMLPConfig:
@@ -129,8 +136,10 @@ def _build_chunkwise_ci_fn(lm: DecomposedModel, key: jax.Array) -> ChunkwiseTran
         input_dim=_tiny_cfg().n_embd,
         d_model=16,
         n_blocks=2,
-        n_heads=2,
-        mlp_hidden=32,
+        attention=MHACIAttention(n_heads=2),
+        ffn_hidden=32,
+        ffn_kind="gelu",
+        learned_norm_scale=False,
     )
     ci_fn = build_ci_fn(arch, lm.sites, key)
     assert isinstance(ci_fn, ChunkwiseTransformerCIFn)
@@ -375,20 +384,22 @@ def test_step_trains_and_has_vpd_signature():
     )
     assert ppgd_cfg.coeff is not None
     state = TrainState(
-        components=vu, ci_fn=ci_fn,
-        components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
-        ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        adversaries={
-            ppgd_cfg.type: PersistentAdversary(
-                sources=src,
-                opt_state=init_sources_adam_state(src),
-                state_key=ppgd_cfg.type,
-                coeff=ppgd_cfg.coeff,
-                adam=ppgd_cfg.optimizer,
-                n_warmup=ppgd_cfg.n_warmup_steps,
-            )
-        },
-        step=jnp.zeros((), jnp.int32),
+        decomposition=Decomposition(components=vu, ci_fn=ci_fn),
+        training=TrainingItem(
+            components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
+            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+            adversaries={
+                ppgd_cfg.type: PersistentAdversary(
+                    sources=src,
+                    opt_state=init_sources_adam_state(src),
+                    state_key=ppgd_cfg.type,
+                    coeff=ppgd_cfg.coeff,
+                    adam=ppgd_cfg.optimizer,
+                    n_warmup=ppgd_cfg.n_warmup_steps,
+                )
+            },
+            step=jnp.zeros((), jnp.int32),
+        ),
     )  # fmt: skip
     loss_terms = build_loss_terms(
         (
@@ -423,9 +434,9 @@ def test_step_trains_and_has_vpd_signature():
         losses.append({k: float(v) for k, v in m.items()})
 
     assert all(jnp.isfinite(jnp.array(list(m.values()))).all() for m in losses)
-    assert int(state.step) == n_steps
+    assert int(state.training.step) == n_steps
     # SPEC S13: n_warmup + 1 source-Adam updates per training step, moments persist.
-    ppgd_adv = state.adversaries["PersistentPGDReconLoss"]
+    ppgd_adv = state.training.adversaries["PersistentPGDReconLoss"]
     assert float(ppgd_adv.opt_state.step_count) == n_steps * (n_warmup + 1)
     # SPEC S15: sources stay projected to [0,1].
     for v in ppgd_adv.sources.values():
@@ -433,11 +444,11 @@ def test_step_trains_and_has_vpd_signature():
     # SPEC S9: p annealed below its 2.0 start by step 4 of 100.
     assert losses[-1]["p_imp"] < 2.0
     # fp32 masters preserved through updates (SPEC N1).
-    assert isinstance(state.components, ComponentStacks)
-    for _, (V, U) in state.components.sites_items():
+    assert isinstance(state.decomposition.components, ComponentStacks)
+    for _, (V, U) in state.decomposition.components.sites_items():
         assert V.dtype == jnp.float32 and U.dtype == jnp.float32
-    assert isinstance(state.ci_fn, ChunkwiseTransformerCIFn)
-    assert state.ci_fn.chunks.in_proj_w.dtype == jnp.float32
+    assert isinstance(state.decomposition.ci_fn, ChunkwiseTransformerCIFn)
+    assert state.decomposition.ci_fn.chunks.in_proj_w.dtype == jnp.float32
 
 
 def test_faith_warmup_decreases_faith():

@@ -30,6 +30,7 @@ from jaxtyping import Array, Float
 from param_decomp.ci_fn import (
     Chunk,
     ChunkwiseTransformerCIArch,
+    MHACIAttention,
     build_ci_fn,
 )
 from param_decomp.components import ComponentStacks, SiteSpec, component_stacks_from_sites
@@ -41,7 +42,7 @@ from param_decomp.configs import (
 from param_decomp.lm import DecomposedModel, run_stochastic_masked_output
 from param_decomp.recon import build_loss_terms
 from param_decomp.schedule import ScheduleConfig
-from param_decomp.train import TrainState, make_train_step
+from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
 
 B, T, D, C = 2, 3, 8, 5
 K_COORDS, M_AUX = 4, 2
@@ -223,12 +224,13 @@ def _initial_state(
     opt_ci = optax.adamw(1e-2, weight_decay=0.0)
     ci_fn = build_ci_fn(ci_arch, lm.sites, random.PRNGKey(11))
     state = TrainState(
-        components=components,
-        ci_fn=ci_fn,
-        components_opt_state=opt_vu.init(eqx.filter(components, eqx.is_array)),
-        ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        adversaries={},
-        step=jnp.zeros((), jnp.int32),
+        decomposition=Decomposition(components=components, ci_fn=ci_fn),
+        training=TrainingItem(
+            components_opt_state=opt_vu.init(eqx.filter(components, eqx.is_array)),
+            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+            adversaries={},
+            step=jnp.zeros((), jnp.int32),
+        ),
     )
     return state, opt_vu, opt_ci
 
@@ -246,8 +248,10 @@ def test_train_step_runs_through_generic_target():
         input_dim=D,
         d_model=8,
         n_blocks=1,
-        n_heads=2,
-        mlp_hidden=16,
+        attention=MHACIAttention(n_heads=2),
+        ffn_hidden=16,
+        ffn_kind="gelu",
+        learned_norm_scale=False,
     )
     state, opt_vu, opt_ci = _initial_state(lm, components, ci_arch)
 
@@ -273,13 +277,15 @@ def test_train_step_runs_through_generic_target():
         mesh=None,
     )
 
-    V_before = jax.device_get(state.components.site(SITE)[0])  # host copy survives step donation
+    V_before = jax.device_get(
+        state.decomposition.components.site(SITE)[0]
+    )  # host copy survives step donation
     run_key = random.PRNGKey(3)
     for step_idx in range(2):
         state, metrics = step_fn(lm, state, inputs, random.fold_in(run_key, step_idx))
         assert jnp.isfinite(metrics["total"]), (step_idx, metrics["total"])
         assert "loss/StochasticReconLoss" in metrics
 
-    assert not jnp.allclose(state.components.site(SITE)[0], V_before), (
+    assert not jnp.allclose(state.decomposition.components.site(SITE)[0], V_before), (
         "V did not move — step is a no-op"
     )

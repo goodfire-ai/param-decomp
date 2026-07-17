@@ -63,7 +63,7 @@ C = 8
 B, T = 2, 16
 N_TRAIN_STEPS = 2
 N_WARMUP = 2
-CI_ARCH = CIArch(d_model=16, n_blocks=2, n_heads=2, mlp_hidden=32)
+CI_ARCH = CIArch(d_model=16, n_blocks=2, n_heads=2, ffn_hidden=32)
 STABLE_METRIC_KEYS = (
     "total", "faith", "imp", "stoch", "ppgd", "p_imp", "src_lr",
     "grad_norms/summary/components", "grad_norms/summary/ci_fns", "grad_norms/summary/total",

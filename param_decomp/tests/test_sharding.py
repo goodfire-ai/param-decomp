@@ -59,6 +59,7 @@ def test_jitted_sharded_inits_match_eager_values():
     from param_decomp.ci_fn import (
         Chunk,
         ChunkwiseTransformerCIArch,
+        MHACIAttention,
         build_ci_fn,
     )
     from param_decomp.components import SiteC, init_component_stacks
@@ -145,8 +146,10 @@ def test_jitted_sharded_inits_match_eager_values():
         input_dim=cfg.n_embd,
         d_model=16,
         n_blocks=1,
-        n_heads=2,
-        mlp_hidden=8 * n,
+        attention=MHACIAttention(n_heads=2),
+        ffn_hidden=8 * n,
+        ffn_kind="gelu",
+        learned_norm_scale=False,
     )
     ci_placed = init_ci_fn_placed(arch, sites, jax.random.PRNGKey(2), mesh)
     ci_eager = build_ci_fn(arch, sites, jax.random.PRNGKey(2))

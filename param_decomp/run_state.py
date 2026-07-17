@@ -33,6 +33,7 @@ from param_decomp.losses import scheduled_value_traced
 from param_decomp.muon_stacked import stacked_muon
 from param_decomp.placement import PlacementRules
 from param_decomp.recon import (
+    MixedPersistentStochasticSources,
     PersistentSources,
     build_loss_terms,
     persistent_configs,
@@ -43,7 +44,7 @@ from param_decomp.targets.glu_transformer_sharding import (
     init_component_stacks_placed,
     init_sources_sharded,
 )
-from param_decomp.train import TrainState
+from param_decomp.train import Decomposition, TrainingItem, TrainState
 
 
 def optax_schedule(config: ScheduleConfig, total_steps: int) -> Callable[[ArrayLike], Array]:
@@ -158,6 +159,27 @@ def build_optimizers(pd: PDConfig, mesh: Mesh | None):
     return opt_vu, opt_ci, (sched_vu, sched_ci)
 
 
+def init_decomposition(
+    lm: DecomposedModel,
+    ci_fn_arch: CIFnArch,
+    init_key: PRNGKeyArray,
+    mesh: Mesh,
+    rules: PlacementRules,
+) -> Decomposition:
+    """The trained-product half of `init_train_state`, factored out so a consumer can
+    `jax.eval_shape` it to recover the saved `decomposition` item's tree structure
+    without building (or knowing about) the optimizers/adversaries."""
+    ci_key = random.fold_in(init_key, 1)
+    # V/U placement derives from the rules table; the CI fn still declares its own
+    # per-leaf shardings (stage 3 of the placement migration).
+    components = init_component_stacks_placed(lm.sites, init_key, rules)
+    ci_fn = init_ci_fn_placed(ci_fn_arch, lm.sites, ci_key, mesh)
+    assert ci_fn.expects_axes == lm.leading_axes, (
+        f"CI fn expects leading axes {ci_fn.expects_axes} but model has {lm.leading_axes}"
+    )
+    return Decomposition(components=components, ci_fn=ci_fn)
+
+
 def init_train_state(
     pd: PDConfig,
     lm: DecomposedModel,
@@ -170,21 +192,15 @@ def init_train_state(
     mesh: Mesh,
     rules: PlacementRules,
 ) -> TrainState:
-    ci_key = random.fold_in(init_key, 1)
-    # Placement is MODEL-OWNED: V/U + CI declare their own per-leaf shardings (asserting
-    # divisibility), uniformly across mesh sizes — no scale inference, no replicate fallback.
-    components = init_component_stacks_placed(lm.sites, init_key, rules)
-    ci_fn = init_ci_fn_placed(ci_fn_arch, lm.sites, ci_key, mesh)
-    assert ci_fn.expects_axes == lm.leading_axes, (
-        f"CI fn expects leading axes {ci_fn.expects_axes} but model has {lm.leading_axes}"
-    )
+    decomposition = init_decomposition(lm, ci_fn_arch, init_key, mesh, rules)
+    components, ci_fn = decomposition.components, decomposition.ci_fn
     losses = build_loss_terms(pd.loss_metrics, lm.site_names)
     persistent = persistent_configs(losses.recon)
     term_coeff_by_state_key = {
         entry.sources.state_key: term.coeff
         for term in losses.recon
         for entry in term.plan
-        if isinstance(entry.sources, PersistentSources)
+        if isinstance(entry.sources, (PersistentSources, MixedPersistentStochasticSources))
     }
     assert set(term_coeff_by_state_key) == set(persistent)
     adversaries: dict[str, PersistentAdversary] = {}
@@ -215,10 +231,11 @@ def init_train_state(
                 n_warmup=cfg.n_warmup_steps,
             )
     return TrainState(
-        components=components,
-        ci_fn=ci_fn,
-        components_opt_state=opt_vu.init(eqx.filter(components, eqx.is_array)),
-        ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        adversaries=adversaries,
-        step=jnp.zeros((), jnp.int32),
+        decomposition=decomposition,
+        training=TrainingItem(
+            components_opt_state=opt_vu.init(eqx.filter(components, eqx.is_array)),
+            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+            adversaries=adversaries,
+            step=jnp.zeros((), jnp.int32),
+        ),
     )

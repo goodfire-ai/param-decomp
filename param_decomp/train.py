@@ -31,6 +31,7 @@ from jaxtyping import Array, Bool, Float, PRNGKeyArray, jaxtyped
 from param_decomp.adversary import (
     PersistentAdversary,
     init_fresh_pgd_sources,
+    mixed_persistent_stochastic_masks,
     source_masks,
 )
 from param_decomp.ci_fn import CI, CIFn
@@ -42,11 +43,13 @@ from param_decomp.losses import (
     annealed_imp_min_param,
     faithfulness_loss,
     imp_min_terms,
+    scheduled_value_traced,
 )
 from param_decomp.recon import (
     ConstantSources,
     FreshPGDSources,
     LossSurface,
+    MixedPersistentStochasticSources,
     PersistentSources,
     ReconForward,
     ReconLossTerm,
@@ -64,9 +67,21 @@ def cast_floating(tree: Any, dtype: Any) -> Any:
 
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
-class TrainState:
+class Decomposition:
+    """The trained PRODUCT: V/U components + the CI fn (fp32 masters). Checkpointed as
+    its own orbax item so consumers (harvest/autointerp/clustering/app) restore it with
+    zero knowledge of the training process (optimizer states, adversaries, step)."""
+
     components: ComponentStacks  # the universal trainable V/U pytree, fp32 masters
     ci_fn: CIFn  # fp32 masters
+
+
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class TrainingItem:
+    """The trainer-only trajectory tail: both optimizer states, the persistent adversaries,
+    the step counter. Checkpointed as its own orbax item — no consumer restores it."""
+
     components_opt_state: optax.OptState
     ci_fn_opt_state: optax.OptState
     adversaries: dict[str, PersistentAdversary]
@@ -74,6 +89,17 @@ class TrainState:
     state + static config). One state_key per persistent loss term (SPEC S23); empty when
     no persistent term."""
     step: Array
+
+
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class TrainState:
+    """The full training pytree, composed of the two checkpoint items so there is ONE
+    representation: `decomposition` is the trained product, `training` the trajectory tail.
+    Save/restore maps directly onto these two fields — no regrouping."""
+
+    decomposition: Decomposition
+    training: TrainingItem
 
 
 def _grad_norm_metrics(components_grad: ComponentStacks, ci_fn_grad: Any) -> dict[str, Array]:
@@ -126,6 +152,7 @@ def make_train_step(
     (activation memory 1/N)."""
     site_names = lm.site_names
     sites = lm.sites
+    c_by_site = {spec.name: spec.C for spec in sites}
     recon_loss_fn = lm.recon_loss_fn  # static method: pure, holds no arrays — safe to close
     recon_terms = losses.recon
     faith_term = losses.faith
@@ -260,14 +287,16 @@ def make_train_step(
         batch: Any,
         key: PRNGKeyArray,
     ) -> tuple[TrainState, dict[str, Array]]:
-        step_f32 = state.step.astype(jnp.float32)
+        decomposition = state.decomposition
+        training = state.training
+        step_f32 = training.step.astype(jnp.float32)
         imp_min_param = annealed_imp_min_param(step_f32, total_steps, imp_min)
 
         batch = batch_sharded(batch)
         with jax.named_scope("pd_clean_fwd"):
             clean_output = jax.lax.stop_gradient(batch_sharded(model.clean_output(batch)))
         with jax.named_scope("pd_read_taps"):
-            taps = model.read_activations(batch, state.ci_fn.input_names)
+            taps = model.read_activations(batch, decomposition.ci_fn.input_names)
         # `leading` (batch, *positions) — the shape masks/sources/routes live in. Sourced
         # from a tap (always `[*leading, d_tap]`), not the opaque batch, so the engine never
         # assumes the batch's rank/feature dim.
@@ -276,7 +305,7 @@ def make_train_step(
         # ── adversary ascents: params + CI detached (SPEC §4.5) ──
         prepared, recon_vjp = jax.vjp(
             lambda c: model.prepare_compute_weights(cast_floating(c, COMPUTE_DT)),
-            state.components,
+            decomposition.components,
         )
         prepared_detached = jax.lax.stop_gradient(prepared)
         prepared_ascend = replicate_for_ascend(prepared_detached)
@@ -288,7 +317,7 @@ def make_train_step(
         with jax.named_scope("pd_ci_fn_fwd"):
             ci, ci_vjp = eqx.filter_vjp(
                 lambda cf: ci_batch_sharded(cast_floating(cf, COMPUTE_DT)(taps, remat=remat_ci_fn)),
-                state.ci_fn,
+                decomposition.ci_fn,
             )
         ci_lower_detached = jax.lax.stop_gradient(ci).lower
 
@@ -306,7 +335,7 @@ def make_train_step(
         with jax.named_scope("pd_pgd_warmup_ascend"):
             warmed_advs = {
                 state_key: adv.warmup_ascend(warmup_scoring_loss, step_f32, total_steps)
-                for state_key, adv in state.adversaries.items()
+                for state_key, adv in training.adversaries.items()
             }
 
         # Fresh-PGD entries: ONE routing draw per entry per step, shared by all
@@ -431,6 +460,24 @@ def make_train_step(
                             model, prepared, batch, masks, delta_masks,
                             routes, entry.live_sites, entry.has_delta,
                         )  # fmt: skip
+                    case MixedPersistentStochasticSources(state_key=state_key):
+                        adv_fraction = scheduled_value_traced(
+                            step_f32, total_steps, entry.sources.cfg.adv_fraction
+                        )
+                        mixed_masks, mixed_deltas, mixed_routes = mixed_persistent_stochastic_masks(
+                            draw_key,
+                            ci_lower,
+                            persistent_sources[state_key],
+                            entry.live_sites,
+                            c_by_site,
+                            leading,
+                            adv_fraction,
+                            routes,
+                        )
+                        masked = masked_forward(
+                            model, prepared, batch, mixed_masks, mixed_deltas,
+                            mixed_routes, entry.live_sites, entry.has_delta,
+                        )  # fmt: skip
             return recon_loss_fn(masked, clean_output)
 
         def term_draws(
@@ -505,7 +552,7 @@ def make_train_step(
 
             (_, (faith_loss, imp_lp, imp_freq)), (components_grad_faith, upper_grad) = (
                 eqx.filter_value_and_grad(faith_imp_loss, has_aux=True)(
-                    (state.components, ci.upper)
+                    (decomposition.components, ci.upper)
                 )
             )
 
@@ -572,7 +619,7 @@ def make_train_step(
             else:
                 (total_loss, (faith_loss, imp_lp, imp_freq, term_losses)), grads = (
                     eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-                        (prepared, state.components, ci, warmed_sources)
+                        (prepared, decomposition.components, ci, warmed_sources)
                     )
                 )
         prepared_grad, components_grad_faith, ci_grad, persistent_grads_scaled = grads
@@ -597,22 +644,23 @@ def make_train_step(
 
         components_updates, new_components_opt_state = components_optimizer.update(
             components_grad,
-            state.components_opt_state,
-            eqx.filter(state.components, eqx.is_array),
+            training.components_opt_state,
+            eqx.filter(decomposition.components, eqx.is_array),
         )
         ci_fn_updates, new_ci_fn_opt_state = ci_fn_optimizer.update(
-            ci_fn_grad, state.ci_fn_opt_state, eqx.filter(state.ci_fn, eqx.is_array)
+            ci_fn_grad, training.ci_fn_opt_state, eqx.filter(decomposition.ci_fn, eqx.is_array)
         )
-        new_components = eqx.apply_updates(state.components, components_updates)
-        new_ci_fn = eqx.apply_updates(state.ci_fn, ci_fn_updates)
+        new_components = eqx.apply_updates(decomposition.components, components_updates)
+        new_ci_fn = eqx.apply_updates(decomposition.ci_fn, ci_fn_updates)
 
         new_state = TrainState(
-            components=new_components,
-            ci_fn=new_ci_fn,
-            components_opt_state=new_components_opt_state,
-            ci_fn_opt_state=new_ci_fn_opt_state,
-            adversaries=new_adversaries,
-            step=state.step + 1,
+            decomposition=Decomposition(components=new_components, ci_fn=new_ci_fn),
+            training=TrainingItem(
+                components_opt_state=new_components_opt_state,
+                ci_fn_opt_state=new_ci_fn_opt_state,
+                adversaries=new_adversaries,
+                step=training.step + 1,
+            ),
         )
         metrics = {
             "total": total_loss,
@@ -624,7 +672,7 @@ def make_train_step(
             **grad_norm_metrics,
         }
         source_lrs = {
-            k: adv.source_lr(step_f32, total_steps) for k, adv in state.adversaries.items()
+            k: adv.source_lr(step_f32, total_steps) for k, adv in training.adversaries.items()
         }
         if len(source_lrs) == 1:
             metrics["src_lr"] = next(iter(source_lrs.values()))
