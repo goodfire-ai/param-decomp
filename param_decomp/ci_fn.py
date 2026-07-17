@@ -26,7 +26,7 @@ architectures differ by domain (sequence vs positionless), not by status.
 """
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 import einops
 import equinox as eqx
@@ -123,6 +123,14 @@ def _weightless_rms_norm(x: Array, eps: float) -> Array:
     return rms_norm(x, jnp.ones((x.shape[-1],), x.dtype), eps)
 
 
+def _rms_norm_maybe_scaled(x: Array, scale: Array | None, eps: float) -> Array:
+    """`scale is None` is the weightless norm — `ones` in x's dtype, i.e. today's numerics
+    exactly (and no bf16→fp32 promotion, which an fp32 scale leaf would cause)."""
+    if scale is None:
+        return _weightless_rms_norm(x, eps)
+    return rms_norm(x, scale, eps)
+
+
 @dataclass(frozen=True)
 class MHACIAttention:
     """Every query head carries its own K/V head."""
@@ -161,13 +169,27 @@ site never dispatches — but MHA derives its K/V count from the TYPE instead of
 one. GQA's grouping invariant is checked at construction, not at init."""
 
 
-class CIBlock(eqx.Module):
-    """Pre-norm block: weightless-RMSNorm → bidirectional RoPE attention → residual;
-    weightless-RMSNorm → Linear+b → GELU → Linear+b → residual.
+CIFfnKind = Literal["gelu", "swiglu"]
+"""`gelu`: `Linear+b → GELU → Linear+b`. `swiglu`: a second projection gates the first —
+`silu(h@wg + bg) * (h@w1 + b1) → Linear+b`. SwiGLU is a THIRD matrix, so it grows the MLP
+~50% at a fixed `ffn_hidden`; iso-param means setting `ffn_hidden` to ~2/3. Nothing here
+rescales it — the width is the config author's to state."""
 
-    `n_kv_head < n_head` is grouped-query attention: `wk`/`wv` project to `n_kv_head * head_dim`
-    and `jax.nn.dot_product_attention` broadcasts each K/V head over its group of query heads.
-    `n_kv_head == n_head` is MHA."""
+
+class CIBlock(eqx.Module):
+    """Pre-norm block: RMSNorm → bidirectional RoPE attention → residual;
+    RMSNorm → FFN (`gelu` or `swiglu`) → residual.
+
+    `attention` is the resolved variant: under `GQACIAttention` the K/V projections narrow to
+    `n_kv_heads * head_dim` and `jax.nn.dot_product_attention` broadcasts each K/V head over
+    its group of query heads. Both arms answer `n_kv_heads`, so nothing here dispatches.
+
+    `gate is None` ⟺ the GELU FFN; a present gate ⟺ SwiGLU. The gate's `(w, b)` ride in one
+    optional tuple because they vary together, and its presence IS the FFN discriminator — so
+    there's no separate tag to desync from the params.
+
+    `norm_scales is None` ⟺ the weightless norms (today's behaviour); present ⟺ learned
+    per-channel scales, `(pre-attn, pre-MLP)`."""
 
     wq: Array
     wk: Array
@@ -177,31 +199,33 @@ class CIBlock(eqx.Module):
     b1: Array
     w2: Array
     b2: Array
+    gate: tuple[Array, Array] | None
+    norm_scales: tuple[Array, Array] | None
     attention: CIAttention = eqx.field(static=True)
     eps: float = eqx.field(static=True)
 
     def shardings(self, mesh: Mesh) -> "CIBlock":
         """ZeRO-1 PERSISTENCE layout (master + Adam m/v); leading `n_chunks` axis (axis 0)
         UNSHARDED. Attention is FSDP-on-d_model (tp-replicated — v1 skips attn Megatron); the
-        MLP is Megatron-on-mlp_hidden including the `tp` axis (so it shards ÷N, not ÷(rep·fsdp)):
+        MLP is Megatron-on-ffn_hidden including the `tp` axis (so it shards ÷N, not ÷(rep·fsdp)):
 
         - qkv (`[nc, head_out, d_model_in]`): d_model (axis2) ÷(rep·fsdp), head + tp replicated.
           `head_out` is `n_kv_head * head_dim` for k/v under GQA — the sharded axis is the
           d_model INPUT, so a narrower K/V head_out changes no sharding.
         - out-proj (`[nc, d_model_out, head_in]`): d_model (axis1) ÷(rep·fsdp), head + tp replicated.
-        - w1 up-proj (`[nc, d_model_in, mlp_hidden_out]`): **mlp_hidden (axis2) ÷N** (incl tp),
+        - w1 up-proj (`[nc, d_model_in, ffn_hidden_out]`): **ffn_hidden (axis2) ÷N** (incl tp),
           d_model replicated (column-parallel).
-        - w2 down-proj (`[nc, mlp_hidden_in, d_model_out]`): **mlp_hidden (axis1) ÷N** (incl tp),
+        - w2 down-proj (`[nc, ffn_hidden_in, d_model_out]`): **ffn_hidden (axis1) ÷N** (incl tp),
           d_model replicated (row-parallel → in-node reduce over fsdp·tp).
 
-        Biases replicate. COMPUTE re-pins to `fsdp` (attn d_model) / `fsdp·tp` (MLP mlp_hidden)
+        Biases replicate. COMPUTE re-pins to `fsdp` (attn d_model) / `fsdp·tp` (MLP ffn_hidden)
         before the chunk scan (`ChunkwiseTransformerCIFn.__call__`), all intra-node NVLink."""
         data = ("replicate", "fsdp")
         full = ("replicate", "fsdp", "tp")
         attn_in = NamedSharding(mesh, P(None, None, data))  # qkv: d_model (axis2) ÷(rep·fsdp)
         attn_out = NamedSharding(mesh, P(None, data, None))  # wo: d_model (axis1) ÷(rep·fsdp)
-        mlp_in = NamedSharding(mesh, P(None, None, full))  # w1: mlp_hidden (axis2) ÷N
-        mlp_out = NamedSharding(mesh, P(None, full, None))  # w2: mlp_hidden (axis1) ÷N
+        ffn_in = NamedSharding(mesh, P(None, None, full))  # w1: ffn_hidden (axis2) ÷N
+        ffn_out = NamedSharding(mesh, P(None, full, None))  # w2: ffn_hidden (axis1) ÷N
         repl = NamedSharding(mesh, P())
         n_data = mesh.shape["replicate"] * mesh.shape["fsdp"]
         n_full = mesh.devices.size
@@ -211,20 +235,31 @@ class CIBlock(eqx.Module):
             f"CIBlock wo d_model {self.wo.shape[1]} not ÷ {n_data}"
         )
         assert self.w1.shape[2] % n_full == 0, (
-            f"CIBlock w1 mlp_hidden {self.w1.shape[2]} not ÷ N={n_full}"
+            f"CIBlock w1 ffn_hidden {self.w1.shape[2]} not ÷ N={n_full}"
         )
         assert self.w2.shape[1] % n_full == 0, (
-            f"CIBlock w2 mlp_hidden {self.w2.shape[1]} not ÷ N={n_full}"
+            f"CIBlock w2 ffn_hidden {self.w2.shape[1]} not ÷ N={n_full}"
         )
-        return eqx.tree_at(
+        placed = eqx.tree_at(
             lambda b: (b.wq, b.wk, b.wv, b.wo, b.w1, b.b1, b.w2, b.b2),
             self,
-            (attn_in, attn_in, attn_in, attn_out, mlp_in, repl, mlp_out, repl),
+            (attn_in, attn_in, attn_in, attn_out, ffn_in, repl, ffn_out, repl),
         )
+        if self.gate is not None:
+            # The swiglu gate is a second `[nc, d_model, ffn_hidden]` up-proj: same
+            # Megatron-on-ffn_hidden placement as w1, same ÷N divisibility requirement.
+            assert self.gate[0].shape[2] % n_full == 0, (
+                f"CIBlock swiglu gate ffn_hidden {self.gate[0].shape[2]} not ÷ N={n_full}"
+            )
+            placed = eqx.tree_at(lambda b: b.gate, placed, (ffn_in, repl))
+        if self.norm_scales is not None:
+            placed = eqx.tree_at(lambda b: b.norm_scales, placed, (repl, repl))
+        return placed
 
     def __call__(self, x: Float[Array, "b t d"], inv_freq: Array) -> Array:
         t = x.shape[1]
-        h = _weightless_rms_norm(x, self.eps)
+        attn_scale, mlp_scale = (None, None) if self.norm_scales is None else self.norm_scales
+        h = _rms_norm_maybe_scaled(x, attn_scale, self.eps)
 
         def heads(w: Array, n_head: int) -> Array:  # [b, t, d] -> [b, nh, t, hd]  (RoPE layout)
             proj = einops.einsum(h, w, "b t i, o i -> b t o")
@@ -244,10 +279,14 @@ class CIBlock(eqx.Module):
         x = x + einops.einsum(
             einops.rearrange(y, "b t nh hd -> b t (nh hd)"), self.wo, "b t i, o i -> b t o"
         )
-        h = _weightless_rms_norm(x, self.eps)
-        hidden = jax.nn.gelu(
-            einops.einsum(h, self.w1, "b t i, i o -> b t o") + self.b1, approximate=False
-        )
+        h = _rms_norm_maybe_scaled(x, mlp_scale, self.eps)
+        up = einops.einsum(h, self.w1, "b t i, i o -> b t o") + self.b1
+        if self.gate is None:
+            hidden = jax.nn.gelu(up, approximate=False)
+        else:
+            w_gate, b_gate = self.gate
+            gate = einops.einsum(h, w_gate, "b t i, i o -> b t o") + b_gate
+            hidden = jax.nn.silu(gate) * up
         return x + einops.einsum(hidden, self.w2, "b t i, i o -> b t o") + self.b2
 
 
@@ -289,7 +328,9 @@ class ChunkwiseTransformerCIArch:
     d_model: int
     n_blocks: int
     attention: CIAttention
-    mlp_hidden: int
+    ffn_hidden: int
+    ffn_kind: CIFfnKind
+    learned_norm_scale: bool
 
 
 class ChunkTransformer(eqx.Module):
@@ -384,9 +425,10 @@ def _reconstruct_ci_compute_weights(chunks: "ChunkTransformer") -> "ChunkTransfo
     d_axis2 = P(None, None, "fsdp")  # attn d_model axis2 (gathered), tp-replicated
     d_axis1 = P(None, "fsdp", None)  # attn d_model axis1 (gathered), tp-replicated
     out_ws_axis = P(None, "fsdp", "tp")  # out_ws [nc, d_model÷fsdp, C÷tp] — d gathered, C Megatron
-    mlp_in_c = P(None, None, ("fsdp", "tp"))  # w1 [nc, d_model, mlp_hidden÷(fsdp·tp)] — Megatron
-    mlp_out_c = P(None, ("fsdp", "tp"), None)  # w2 [nc, mlp_hidden÷(fsdp·tp), d_model] — Megatron
+    ffn_in_c = P(None, None, ("fsdp", "tp"))  # w1 [nc, d_model, ffn_hidden÷(fsdp·tp)] — Megatron
+    ffn_out_c = P(None, ("fsdp", "tp"), None)  # w2 [nc, ffn_hidden÷(fsdp·tp), d_model] — Megatron
     in_proj_c = P(None, "tp", "fsdp")  # in_proj [nc, total_d_in÷tp, d_model÷fsdp] — row-parallel
+    repl_c = P()  # the swiglu gate bias / norm scales: [nc, d]-shaped, replicated like b1/b2
 
     def pin(x: Array, spec: "P") -> Array:
         # optimization_barrier: cast bf16 BEFORE the gather (else XLA sinks the convert past
@@ -395,15 +437,32 @@ def _reconstruct_ci_compute_weights(chunks: "ChunkTransformer") -> "ChunkTransfo
             jax.lax.optimization_barrier(x.astype(jnp.bfloat16)), spec
         )
 
-    pinned_blocks = [
-        eqx.tree_at(
+    def pin_block(blk: CIBlock) -> CIBlock:
+        pinned = eqx.tree_at(
             lambda b: (b.wq, b.wk, b.wv, b.wo, b.w1, b.w2),
             blk,
             (pin(blk.wq, d_axis2), pin(blk.wk, d_axis2), pin(blk.wv, d_axis2),
-             pin(blk.wo, d_axis1), pin(blk.w1, mlp_in_c), pin(blk.w2, mlp_out_c)),
-        )
-        for blk in chunks.blocks
-    ]  # fmt: skip
+             pin(blk.wo, d_axis1), pin(blk.w1, ffn_in_c), pin(blk.w2, ffn_out_c)),
+        )  # fmt: skip
+        if blk.gate is not None:
+            # The swiglu gate MUST be cast with the rest: left as an fp32 master it would
+            # promote the whole `silu(gate) * up` product (and everything after it) back to
+            # fp32 — a silent numerics + memory regression that still trains.
+            pinned = eqx.tree_at(
+                lambda b: b.gate, pinned, (pin(blk.gate[0], ffn_in_c), pin(blk.gate[1], repl_c))
+            )
+        if blk.norm_scales is not None:
+            # Same trap, sharper: `rms_norm` returns `weight * x`, so an fp32 scale promotes
+            # the block's bf16 residual stream to fp32. The weightless path dodges it only
+            # because it builds its `ones` in x's own dtype.
+            pinned = eqx.tree_at(
+                lambda b: b.norm_scales,
+                pinned,
+                tuple(pin(s, repl_c) for s in blk.norm_scales),
+            )
+        return pinned
+
+    pinned_blocks = [pin_block(blk) for blk in chunks.blocks]
     return eqx.tree_at(
         lambda ct: (ct.in_proj_w, ct.blocks, ct.out_ws),
         chunks,
@@ -519,10 +578,10 @@ def _init_chunk_transformer(
     the math is the same, only the partitioning differs.
 
     Each consumer takes its OWN explicit key — the split count lives next to its use
-    (`n_blocks + 2` at the top = in_proj + out + one per block; 6 within a block), so it
-    can't silently drift out of sync with the number of draws."""
+    (`n_blocks + 2` at the top = in_proj + out + one per block; 6 within a block, 7 with
+    swiglu's gate), so it can't silently drift out of sync with the number of draws."""
     relu_gain = 2.0**0.5
-    d, mlp = arch.d_model, arch.mlp_hidden
+    d, ffn = arch.d_model, arch.ffn_hidden
     d_kv = (d // arch.attention.n_heads) * arch.attention.n_kv_heads  # narrower under GQA
 
     def kaiming(k: PRNGKeyArray, shape: tuple[int, ...], fan_in: int, gain: float) -> Array:
@@ -533,12 +592,23 @@ def _init_chunk_transformer(
         return jax.random.uniform(k, shape, minval=-bound, maxval=bound)
 
     def block(bkey: PRNGKeyArray) -> CIBlock:
-        kq, kk, kv, ko, k1, k2 = jax.random.split(bkey, 6)
+        # 6 draws for gelu, 7 for swiglu's extra gate — NOT 7 unconditionally: the split
+        # count determines every derived key, so widening it would silently redraw every
+        # gelu param and move the equivalence goldens.
+        match arch.ffn_kind:
+            case "gelu":
+                kq, kk, kv, ko, k1, k2 = jax.random.split(bkey, 6)
+                gate = None
+            case "swiglu":
+                kq, kk, kv, ko, k1, k2, kg = jax.random.split(bkey, 7)
+                gate = (kaiming(kg, (d, ffn), d, relu_gain), jnp.zeros((ffn,)))
+        norm_scales = (jnp.ones((d,)), jnp.ones((d,))) if arch.learned_norm_scale else None
         return CIBlock(
             wq=attn_default(kq, (d, d), d), wk=attn_default(kk, (d_kv, d), d),
             wv=attn_default(kv, (d_kv, d), d), wo=attn_default(ko, (d, d), d),
-            w1=kaiming(k1, (d, mlp), d, relu_gain), b1=jnp.zeros((mlp,)),
-            w2=kaiming(k2, (mlp, d), mlp, 1.0), b2=jnp.zeros((d,)),
+            w1=kaiming(k1, (d, ffn), d, relu_gain), b1=jnp.zeros((ffn,)),
+            w2=kaiming(k2, (ffn, d), ffn, 1.0), b2=jnp.zeros((d,)),
+            gate=gate, norm_scales=norm_scales,
             attention=arch.attention, eps=CI_FN_RMS_EPS,
         )  # fmt: skip
 

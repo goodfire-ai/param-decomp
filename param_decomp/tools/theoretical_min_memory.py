@@ -61,7 +61,7 @@ def ci_fn_params(cfg: dict[str, Any]) -> int:
     one chunk per decomposed layer; each chunk = in_proj[d_resid,d] + n_blocks CIBlocks +
     glued out-head[d, ΣC_layer]). Mirrors ci_fn._init_chunk_transformer shapes."""
     ci = cfg["pd"]["ci_config"]
-    d, mlp, n_blocks = ci["d_model"], ci["mlp_hidden"], ci["n_blocks"]
+    d, mlp, n_blocks = ci["d_model"], ci["ffn"]["hidden"], ci["n_blocks"]
     bpc = ci["blocks_per_chunk"]
     d_resid = D_MODEL  # _resolve_d_resid -> n_embd
 

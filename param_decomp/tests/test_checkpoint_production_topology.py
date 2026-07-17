@@ -108,7 +108,9 @@ def _build_sharded(seed: int):
         d_model=16,
         n_blocks=2,
         attention=MHACIAttention(n_heads=2),
-        mlp_hidden=32,
+        ffn_hidden=32,
+        ffn_kind="gelu",
+        learned_norm_scale=False,
     )
     vu = init_decomp_vu_placed(lm.sites, jax.random.PRNGKey(seed), mesh)
     ci_fn = init_ci_fn_placed(ci_arch, lm.sites, jax.random.PRNGKey(seed + 1), mesh)

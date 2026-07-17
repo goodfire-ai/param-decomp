@@ -145,7 +145,9 @@ def _build_trajectory_ci_fn(lm: DecomposedModel, key: jnp.ndarray):
         d_model=16,
         n_blocks=2,
         attention=MHACIAttention(n_heads=2),
-        mlp_hidden=32,
+        ffn_hidden=32,
+        ffn_kind="gelu",
+        learned_norm_scale=False,
     )
     return build_ci_fn(arch, lm.sites, key)
 

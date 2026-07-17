@@ -154,7 +154,9 @@ def test_jitted_sharded_inits_match_eager_values():
         d_model=16,
         n_blocks=1,
         attention=MHACIAttention(n_heads=2),
-        mlp_hidden=8 * n,
+        ffn_hidden=8 * n,
+        ffn_kind="gelu",
+        learned_norm_scale=False,
     )
     ci_placed = init_ci_fn_placed(arch, sites, jax.random.PRNGKey(2), mesh)
     ci_eager = build_ci_fn(arch, sites, jax.random.PRNGKey(2))

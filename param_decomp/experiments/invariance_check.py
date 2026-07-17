@@ -70,7 +70,9 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
         d_model=16,
         n_blocks=2,
         attention=MHACIAttention(n_heads=2),
-        mlp_hidden=32,
+        ffn_hidden=32,
+        ffn_kind="gelu",
+        learned_norm_scale=False,
     )
     ci_fn = build_ci_fn(arch, lm.sites, random.PRNGKey(2))
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))

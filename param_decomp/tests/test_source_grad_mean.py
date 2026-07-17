@@ -71,7 +71,9 @@ def _source_grad(sharded: bool) -> dict[str, jax.Array]:
         d_model=16,
         n_blocks=2,
         attention=MHACIAttention(n_heads=2),
-        mlp_hidden=32,
+        ffn_hidden=32,
+        ffn_kind="gelu",
+        learned_norm_scale=False,
     )
     ci_fn = build_ci_fn(ci_arch, lm.sites, random.PRNGKey(2))
     src = init_persistent_sources(
