@@ -41,7 +41,9 @@ def _build_ci_fn(lm: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
         d_model=16,
         n_blocks=1,
         attention=MHACIAttention(n_heads=2),
-        mlp_hidden=32,
+        ffn_hidden=32,
+        ffn_kind="gelu",
+        learned_norm_scale=False,
     )
     return build_ci_fn(arch, lm.sites, key)
 

@@ -20,7 +20,9 @@ pd:
     attention:
       kind: mha
       n_heads: 16
-    mlp_hidden: 8192
+    ffn:
+      kind: gelu
+      hidden: 8192
   decomposition_targets:
   - module_pattern: h.*.mlp.c_fc
     C: 3072

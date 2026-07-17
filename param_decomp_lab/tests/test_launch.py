@@ -25,7 +25,7 @@ _MINIMAL_LM = {
             "d_model": 16,
             "n_blocks": 1,
             "attention": {"kind": "mha", "n_heads": 1},
-            "mlp_hidden": 16,
+            "ffn": {"kind": "gelu", "hidden": 16},
         },
         "decomposition_targets": [{"module_pattern": "layers.0.mlp.gate_proj", "C": 4}],
         "components_optimizer": {"lr_schedule": {"start_val": 1e-4, "fn_type": "cosine"}},

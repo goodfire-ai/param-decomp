@@ -35,7 +35,9 @@ def _arch(attention: CIAttention, sites: tuple[SiteSpec, ...]) -> ChunkwiseTrans
         d_model=16,
         n_blocks=2,
         attention=attention,
-        mlp_hidden=32,
+        ffn_hidden=32,
+        ffn_kind="gelu",
+        learned_norm_scale=False,
     )
 
 
@@ -55,6 +57,8 @@ def _block(n_head: int, n_kv_head: int, key: jax.Array) -> CIBlock:
         b1=jnp.zeros((mlp,)),
         w2=jax.random.normal(k2, (mlp, d)) * 0.1,
         b2=jnp.zeros((d,)),
+        gate=None,
+        norm_scales=None,
         attention=(
             MHACIAttention(n_heads=n_head)
             if n_kv_head == n_head
@@ -161,7 +165,7 @@ def _ci_config(attention: dict[str, object]) -> ChunkwiseTransformerCiConfig:
             "d_model": 16,
             "n_blocks": 1,
             "attention": attention,
-            "mlp_hidden": 32,
+            "ffn": {"kind": "gelu", "hidden": 32},
         }
     )
 

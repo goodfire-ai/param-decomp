@@ -368,7 +368,9 @@ def _resolve_chunkwise_ci_arch(
         d_model=ci.d_model,
         n_blocks=ci.n_blocks,
         attention=attention,
-        mlp_hidden=ci.mlp_hidden,
+        ffn_hidden=ci.ffn.hidden,
+        ffn_kind=ci.ffn.kind,
+        learned_norm_scale=ci.learned_norm_scale,
     )
 
 

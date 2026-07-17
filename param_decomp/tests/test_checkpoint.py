@@ -91,7 +91,9 @@ def _chunkwise_arch(lm: DecomposedModel, cfg: LlamaConfig) -> ChunkwiseTransform
         d_model=16,
         n_blocks=2,
         attention=MHACIAttention(n_heads=2),
-        mlp_hidden=32,
+        ffn_hidden=32,
+        ffn_kind="gelu",
+        learned_norm_scale=False,
     )
 
 

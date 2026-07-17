@@ -246,7 +246,9 @@ def test_train_step_runs_through_generic_target():
         d_model=8,
         n_blocks=1,
         attention=MHACIAttention(n_heads=2),
-        mlp_hidden=16,
+        ffn_hidden=16,
+        ffn_kind="gelu",
+        learned_norm_scale=False,
     )
     state, opt_vu, opt_ci = _initial_state(lm, components, ci_arch)
 

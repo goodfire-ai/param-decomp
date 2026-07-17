@@ -21,7 +21,9 @@ pd:
     attention:
       kind: mha
       n_heads: 64
-    mlp_hidden: 16384
+    ffn:
+      kind: gelu
+      hidden: 16384
   decomposition_targets:
   - module_pattern: layers.18.mlp.gate_proj
     C: 24576

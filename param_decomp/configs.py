@@ -121,6 +121,29 @@ class GQACiAttentionConfig(BaseConfig):
         return self
 
 
+class GeluCiFfnConfig(BaseConfig):
+    """`Linear+b -> GELU -> Linear+b` — two matrices."""
+
+    kind: Literal["gelu"] = "gelu"
+    hidden: PositiveInt
+
+
+class SwigluCiFfnConfig(BaseConfig):
+    """`silu(h@w_gate + b_gate) * (h@w1 + b1) -> Linear+b` — THREE matrices, so at a given
+    `hidden` this is ~1.5x the GELU FFN's params. Iso-param is `hidden` at 2/3 (Shazeer's GLU
+    variants: "decrease d_ff by a factor of 2/3"); nothing here rescales it, because a width
+    that silently differs from the one you wrote is worse than doing the arithmetic."""
+
+    kind: Literal["swiglu"] = "swiglu"
+    hidden: PositiveInt
+
+
+CiFfnConfig = Annotated[GeluCiFfnConfig | SwigluCiFfnConfig, Field(discriminator="kind")]
+"""The CI transformer's feed-forward sublayer. Named FFN, not MLP: `swiglu` is a gated
+linear unit, not a multi-layer perceptron — FFN is the name that stays honest across both
+arms. `hidden` belongs to the FFN, not to the transformer around it."""
+
+
 CiAttentionConfig = Annotated[
     MHACiAttentionConfig | GQACiAttentionConfig, Field(discriminator="kind")
 ]
@@ -133,7 +156,7 @@ Mirrors how the target's attention variants are keyed (see the Qwen3 family spli
 class ChunkwiseTransformerCiConfig(BaseConfig):
     """Chunkwise-transformer CI fn (LMs). Each chunk is `blocks_per_chunk` consecutive
     transformer blocks; its input is the residual stream entering the chunk and its output
-    is CI for every matrix site in those blocks. `d_model`/`n_blocks`/`attention`/`mlp_hidden`
+    is CI for every matrix site in those blocks. `d_model`/`n_blocks`/`attention`/`ffn`
     size the per-chunk CI transformer (`d_model % n_heads == 0`; head_dim even for RoPE)."""
 
     type: Literal["chunkwise_transformer"] = "chunkwise_transformer"
@@ -141,7 +164,12 @@ class ChunkwiseTransformerCiConfig(BaseConfig):
     d_model: PositiveInt
     n_blocks: PositiveInt
     attention: CiAttentionConfig
-    mlp_hidden: PositiveInt
+    ffn: CiFfnConfig
+    learned_norm_scale: bool = Field(
+        default=False,
+        description="Learned per-channel scale on the block RMSNorms (the per-tap input norms "
+        "stay weightless). Inits to ones, so step 0 is identical to weightless.",
+    )
 
     @model_validator(mode="after")
     def validate_head_dim(self) -> Self:

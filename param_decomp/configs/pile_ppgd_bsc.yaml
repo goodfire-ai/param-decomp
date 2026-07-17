@@ -91,7 +91,9 @@ pd:
     attention:
       kind: mha
       n_heads: 16
-    mlp_hidden: 8192
+    ffn:
+      kind: gelu
+      hidden: 8192
   ci_fn_optimizer:
     betas:
     - 0.9

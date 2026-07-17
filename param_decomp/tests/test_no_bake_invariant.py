@@ -62,7 +62,9 @@ def _build_step_and_args():
         d_model=8,
         n_blocks=1,
         attention=MHACIAttention(n_heads=2),
-        mlp_hidden=16,
+        ffn_hidden=16,
+        ffn_kind="gelu",
+        learned_norm_scale=False,
     )
     ci_fn = build_ci_fn(ci_arch, lm.sites, random.PRNGKey(11))
     opt_vu = optax.adamw(1e-2, weight_decay=0.0)
