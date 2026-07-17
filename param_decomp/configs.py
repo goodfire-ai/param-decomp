@@ -154,9 +154,10 @@ class GlobalMlpCiConfig(BaseConfig):
     )
 
 
-ChunkInputTap = Literal["first_block_resid", "all_block_resids"]
+ChunkInputTap = Literal["first_block_resid", "all_block_resids", "all_site_inputs"]
 """Which activations each chunkwise-CI chunk reads. Extend here + add a match arm in the lab
-resolver (`experiments.lm.config._chunk_input_taps`)."""
+resolver (`experiments.lm.config._chunk_input_taps`); addresses and widths are the site-tree
+tap grammar's (`site_tree.TapAddress` / `tap_width`)."""
 
 
 class MHACiAttentionConfig(BaseConfig):
@@ -232,7 +233,10 @@ class ChunkwiseTransformerCiConfig(BaseConfig):
     """`first_block_resid`: the residual stream entering the chunk's first block — one tap.
     `all_block_resids`: the residual entering EVERY block the chunk runs over, RMS-normed
     per tap and concatenated (`ci_fn.Chunk.input_taps` is generic over tap count) —
-    `blocks_per_chunk`x the per-chunk CI transformer's input width."""
+    `blocks_per_chunk`x the per-chunk CI transformer's input width.
+    `all_site_inputs`: the input activation of every decomposed site in the chunk (the
+    paper's D = Σd_l input set) — widths are per-site d_in, NOT d_resid (down/o
+    projections read intermediates), summed into `input_dim`."""
     d_model: PositiveInt
     n_blocks: PositiveInt
     attention: CiAttentionConfig

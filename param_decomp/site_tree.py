@@ -7,9 +7,17 @@ nothing downstream recovers block structure by regex-ing site-name strings.
 
 `ArchFamily` is a target's matrix grammar as data: the ordered, exhaustive matrix set (canonical
 within-block order) + the `(layer, matrix) -> site name` renderer. Each target module builds its
-OWN family (`llama8b.FAMILY`, `llama_simple_mlp.FAMILY`), with `matrices` derived from the same
-config-side `Literal` vocabulary its c-spec keys are typed by — so a c-spec key outside the
+OWN family (`glu_transformer.FAMILY`, `llama_simple_mlp.FAMILY`), with `matrices` derived from the
+same config-side `Literal` vocabulary its c-spec keys are typed by — so a c-spec key outside the
 family's vocabulary is unrepresentable, not merely asserted.
+
+The activation-TAP address grammar lives here too (`ResidIn | SiteInput`, `tap_key`/`parse_tap`,
+`tap_layer`/`tap_width`): taps name locations in the same target grammar as sites, so one module
+owns both vocabularies. The string forms are the wire format (`Chunk.input_taps` carries them as
+pytree-static keys) — consumers (the CI-fn chunk resolver lab-side, the targets'
+`read_activations`, the hidden-acts eval) must not mint or split key strings themselves.
+Deliberately separate, still: `param_decomp_lab/topology/` (the consumer-side canonical
+weight/component address space) — the third naming system, out of scope here.
 """
 
 from collections.abc import Callable
@@ -94,12 +102,65 @@ def site_specs(
     return tuple(specs)
 
 
+_RESID_PREFIX = "resid."
+
+
+@dataclass(frozen=True)
+class ResidIn:
+    """The residual stream ENTERING block `layer` (before its attention norm)."""
+
+    layer: int
+
+
+@dataclass(frozen=True)
+class SiteInput:
+    """The input activation of decomposed site `name` — the vector its matrix multiplies.
+
+    Width is the site's d_in, NOT the residual width (down/o projections read
+    intermediates) — `tap_width` consults the site dims."""
+
+    name: str
+
+
+TapAddress = ResidIn | SiteInput
+
+
+def tap_key(tap: TapAddress) -> str:
+    """The canonical string form — the only place these strings are minted."""
+    match tap:
+        case ResidIn(layer):
+            return f"{_RESID_PREFIX}{layer}"
+        case SiteInput(name):
+            return name
+
+
+def parse_tap(key: str) -> TapAddress:
+    """Inverse of `tap_key`. Anything that isn't a `resid.{L}` form is a site name; the
+    caller validates site names against its family grammar (they are target-specific)."""
+    if key.startswith(_RESID_PREFIX):
+        return ResidIn(int(key.removeprefix(_RESID_PREFIX)))
+    return SiteInput(key)
+
+
 def tap_layer(family: ArchFamily, key: str) -> int:
     """Global block index a `read_activations` key reads at: the block a `resid.{L}` tap
     enters, or the block a decomposed site lives in."""
-    if key.startswith("resid."):
-        return int(key.split(".")[1])
-    return family.parse(key)[0]
+    match parse_tap(key):
+        case ResidIn(layer):
+            return layer
+        case SiteInput(name):
+            return family.parse(name)[0]
+
+
+def tap_width(tap: TapAddress, d_resid: int, d_in_of: Callable[[str], int]) -> int:
+    """Concat width contribution of one tap: a residual tap is `d_resid` wide; a site-input
+    tap is as wide as the site's d_in (`d_in_of(site_name)` — down/o projections read
+    intermediates, not the residual)."""
+    match tap:
+        case ResidIn():
+            return d_resid
+        case SiteInput(name):
+            return d_in_of(name)
 
 
 def _select_layers(sel: LayerSelection, n_layer: int) -> tuple[int, ...]:

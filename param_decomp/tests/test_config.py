@@ -414,6 +414,17 @@ def test_all_block_resids_concatenates_one_tap_per_block():
     )
     assert all_taps_cfg.ci_fn.input_dim == 4096 * 2
 
+    # `all_site_inputs`: tap widths are per-site d_in, not d_resid — a down_proj tap is the
+    # MLP intermediate (14336 on llama8b), and the wire keys are the site names themselves.
+    site_inputs_cfg = build_experiment_config(
+        LMExperimentConfig(**_two_block_cfg("all_site_inputs")), RUN_ID
+    )
+    assert isinstance(site_inputs_cfg.ci_fn, ChunkwiseTransformerCIArch)
+    assert site_inputs_cfg.ci_fn.chunks == (
+        Chunk(input_taps=output_sites, output_sites=output_sites),
+    )
+    assert site_inputs_cfg.ci_fn.input_dim == 14336 * 2
+
 
 def test_c49k_config_converts():
     """The C49k/200k config (raw-HF target spec, bf16 weights_dtype, `model.`-prefixed

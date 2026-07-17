@@ -16,7 +16,6 @@ from typing import Annotated, Any, Literal
 import yaml
 from pydantic import Discriminator, Field, PositiveInt, model_validator
 
-from param_decomp import taps
 from param_decomp.base_config import BaseConfig
 from param_decomp.built_run import (
     LAUNCH_CONFIG_FILENAME,
@@ -52,7 +51,17 @@ from param_decomp.configs import (
     StochasticAttnPatternsReconLossConfig,
 )
 from param_decomp.recon import build_loss_terms
-from param_decomp.site_tree import ArchFamily, SiteTree, resolve_site_tree
+from param_decomp.site_tree import (
+    ArchFamily,
+    BlockSites,
+    ResidIn,
+    SiteInput,
+    SiteTree,
+    TapAddress,
+    resolve_site_tree,
+    tap_key,
+    tap_width,
+)
 from param_decomp.targets import glu_transformer, llama8b, llama_simple_mlp, qwen3_8b
 from param_decomp_lab.experiments.config import (
     ExperimentConfig,
@@ -274,11 +283,14 @@ SLOW_TIER_EVAL_METRIC_TYPES = frozenset(
 @dataclass(frozen=True)
 class _ResolvedDecomposition:
     """Target config + its block-structured `SiteTree` + arch family, resolved once and shared
-    by the target's flat `.sites`, the chunkwise chunk generator, and validation."""
+    by the target's flat `.sites`, the chunkwise chunk generator, and validation. `dims_of`
+    is the target's per-matrix `(d_in, d_out)` shape table, closed over its arch config —
+    what site-input tap widths resolve against."""
 
     target: AnyLMTargetConfig
     tree: SiteTree
     family: ArchFamily
+    dims_of: Callable[[str], tuple[int, int]]
 
 
 def _resolve_decomposition(cfg: LMExperimentConfig) -> _ResolvedDecomposition:
@@ -303,11 +315,13 @@ def _resolve_decomposition(cfg: LMExperimentConfig) -> _ResolvedDecomposition:
                         f"{spec.model_class!r} is not {spec.model_name!r}'s family"
                     )
             hf_family = hf_model_family(spec.model_name)  # refuses unknown model names
-            tree = resolve_site_tree(sites, glu_transformer.FAMILY, hf_family.arch_config().n_layer)
+            arch = hf_family.arch_config()
+            tree = resolve_site_tree(sites, glu_transformer.FAMILY, arch.n_layer)
             target = TargetConfig(
                 model_name=spec.model_name, sites=tree.site_cs(glu_transformer.FAMILY.name_of)
             )
-            return _ResolvedDecomposition(target, tree, glu_transformer.FAMILY)
+            dims_of = lambda kind: glu_transformer.site_dims(arch, kind)  # noqa: E731
+            return _ResolvedDecomposition(target, tree, glu_transformer.FAMILY, dims_of)
         case PretrainedTarget():
             assert spec.model_class.rsplit(".", 1)[-1] == "LlamaSimpleMLP", spec.model_class
             cache_dir = llama_simple_mlp.pretrain_cache_dir(spec.run_path)
@@ -317,7 +331,8 @@ def _resolve_decomposition(cfg: LMExperimentConfig) -> _ResolvedDecomposition:
             target = LlamaSimpleMLPTargetConfig(
                 pretrain_run_path=spec.run_path, sites=tree.site_cs(llama_simple_mlp.FAMILY.name_of)
             )
-            return _ResolvedDecomposition(target, tree, llama_simple_mlp.FAMILY)
+            dims_of = lambda kind: llama_simple_mlp.site_dims(arch, kind)  # noqa: E731
+            return _ResolvedDecomposition(target, tree, llama_simple_mlp.FAMILY, dims_of)
 
 
 def _resolve_target(cfg: LMExperimentConfig) -> AnyLMTargetConfig:
@@ -336,24 +351,18 @@ def _resolve_d_resid(target: AnyLMTargetConfig) -> int:
 
 
 def _chunk_input_taps(
-    input_tap: ChunkInputTap, chunk_blocks: list[int]
-) -> tuple[taps.TapAddress, ...]:
+    input_tap: ChunkInputTap, blocks: tuple[BlockSites, ...], family: ArchFamily
+) -> tuple[TapAddress, ...]:
     """The tap addresses a chunk reads, from its config source + the blocks it spans."""
     match input_tap:
         case "first_block_resid":
-            return (taps.ResidIn(chunk_blocks[0]),)
+            return (ResidIn(blocks[0].layer_idx),)
         case "all_block_resids":
-            return tuple(taps.ResidIn(b) for b in chunk_blocks)
-
-
-def _tap_width(tap: taps.TapAddress, d_resid: int) -> int:
-    """Concat width contribution of one tap. Site-input taps (`taps.SiteInput`) are the
-    grammar's next arm — their width is the site's d_in, which needs the arch dims here."""
-    match tap:
-        case taps.ResidIn():
-            return d_resid
-        case taps.SiteInput(name):
-            raise NotImplementedError(f"site-input tap widths not wired yet: {name}")
+            return tuple(ResidIn(b.layer_idx) for b in blocks)
+        case "all_site_inputs":
+            return tuple(
+                SiteInput(family.name_of(b.layer_idx, kind)) for b in blocks for kind, _ in b.slots
+            )
 
 
 def _resolved_chunks(
@@ -373,10 +382,10 @@ def _resolved_chunks(
         output_sites = tuple(
             family.name_of(block.layer_idx, kind) for block in group for kind, _ in block.slots
         )
-        chunk_taps = _chunk_input_taps(input_tap, [block.layer_idx for block in group])
+        chunk_taps = _chunk_input_taps(input_tap, group, family)
         chunks.append(
             Chunk(
-                input_taps=tuple(taps.tap_key(tap) for tap in chunk_taps),
+                input_taps=tuple(tap_key(tap) for tap in chunk_taps),
                 output_sites=output_sites,
             )
         )
@@ -384,16 +393,22 @@ def _resolved_chunks(
 
 
 def _resolve_chunkwise_ci_arch(
-    tree: SiteTree, family: ArchFamily, ci: ChunkwiseTransformerCiConfig, d_resid: int
+    tree: SiteTree,
+    family: ArchFamily,
+    ci: ChunkwiseTransformerCiConfig,
+    d_resid: int,
+    dims_of: Callable[[str], tuple[int, int]],
 ) -> ChunkwiseTransformerCIArch:
     """Resolve the chunkwise-transformer arch from the site tree: the chunk generator
     (`_resolved_chunks`) + the per-chunk input width (the sum of the chunk's tap widths —
-    `_tap_width` per `taps.TapAddress`). The `attention` union collapses here to two
-    concrete head counts — MHA is `n_kv_heads == n_heads` — so nothing downstream
-    re-derives the grouping, and the fine-tune `parent.ci_fn == built.ci_fn` compare sees
-    concrete values on both sides."""
-    first_chunk_taps = _chunk_input_taps(ci.input_tap, list(range(ci.blocks_per_chunk)))
-    input_dim = sum(_tap_width(tap, d_resid) for tap in first_chunk_taps)
+    `site_tree.tap_width`; site-input taps resolve d_in via `dims_of`). The tree is
+    homogeneous by construction, so the first chunk's width is every chunk's. The
+    `attention` union collapses here to two concrete head counts — MHA is
+    `n_kv_heads == n_heads` — so nothing downstream re-derives the grouping, and the
+    fine-tune `parent.ci_fn == built.ci_fn` compare sees concrete values on both sides."""
+    first_chunk_taps = _chunk_input_taps(ci.input_tap, tree.blocks[: ci.blocks_per_chunk], family)
+    d_in_of = lambda name: dims_of(family.parse(name)[1])[0]  # noqa: E731
+    input_dim = sum(tap_width(tap, d_resid, d_in_of) for tap in first_chunk_taps)
     match ci.attention:
         case MHACiAttentionConfig():
             attention = MHACIAttention(n_heads=ci.attention.n_heads)
@@ -543,7 +558,11 @@ def build_experiment_config(cfg: LMExperimentConfig, run_id: str) -> BuiltRun:
     _assert_losses_supported(cfg, tuple(sc.name for sc in target.sites))
     data = _data(cfg)
     ci_fn = _resolve_chunkwise_ci_arch(
-        resolved.tree, resolved.family, cfg.decomposition.ci, _resolve_d_resid(target)
+        resolved.tree,
+        resolved.family,
+        cfg.decomposition.ci,
+        _resolve_d_resid(target),
+        resolved.dims_of,
     )
 
     return BuiltRun(

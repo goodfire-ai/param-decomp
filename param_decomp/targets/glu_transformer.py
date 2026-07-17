@@ -36,7 +36,7 @@ from jax.typing import DTypeLike
 from jaxtyping import Array, Float, Int
 from safetensors import safe_open
 
-from param_decomp import site_tree, taps
+from param_decomp import site_tree
 from param_decomp.components import (
     ComponentStacks,
     SiteC,
@@ -355,11 +355,7 @@ def _stack_layers(layers: list[GLULayer]) -> GLULayer:
 def _tap_layer(key: str) -> int:
     """Global block index a `read_activations` key reads at: the block a `resid.{L}` tap
     enters, or the block a decomposed site lives in."""
-    match taps.parse_tap(key):
-        case taps.ResidIn(layer):
-            return layer
-        case taps.SiteInput(name):
-            return parse_site_name(name)[0]
+    return site_tree.tap_layer(FAMILY, key)
 
 
 _TAP_CLASS_BY_KIND = {
@@ -372,10 +368,10 @@ these)."""
 
 
 def _tap_class(key: str) -> str:
-    match taps.parse_tap(key):
-        case taps.ResidIn():
+    match site_tree.parse_tap(key):
+        case site_tree.ResidIn():
             return "resid"
-        case taps.SiteInput(name):
+        case site_tree.SiteInput(name):
             return _TAP_CLASS_BY_KIND[parse_site_name(name)[1]]
 
 

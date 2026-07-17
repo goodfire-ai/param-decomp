@@ -41,7 +41,7 @@ from jax.typing import DTypeLike
 from jaxtyping import Array, Float, Int
 from safetensors import safe_open
 
-from param_decomp import site_tree, taps
+from param_decomp import site_tree
 from param_decomp.components import ComponentStacks, SiteC, SiteSpec, site_out
 from param_decomp.configs import SimpleMlpMatrix
 from param_decomp.lm import run_stochastic_masked_output
@@ -320,7 +320,7 @@ class SimpleMLPDecomposedModel(eqx.Module):
         out: dict[str, Array] = {}
         x = self.embed_tokens(inputs)
         for layer_idx, layer in enumerate(self.layers):
-            resid_key = taps.tap_key(taps.ResidIn(layer_idx))
+            resid_key = site_tree.tap_key(site_tree.ResidIn(layer_idx))
             if resid_key in wanted_set:
                 out[resid_key] = x
             attn = layer.attn
