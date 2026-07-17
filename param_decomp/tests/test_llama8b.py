@@ -21,6 +21,7 @@ from param_decomp.ci_fn import (
     Chunk,
     ChunkwiseTransformerCIArch,
     ChunkwiseTransformerCIFn,
+    MHACIAttention,
     build_ci_fn,
 )
 from param_decomp.components import DecompVU, SiteC, SiteSpec, init_decomp_vu
@@ -127,8 +128,7 @@ def _build_chunkwise_ci_fn(
         input_dim=_tiny_cfg().n_embd,
         d_model=16,
         n_blocks=n_blocks,
-        n_heads=2,
-        n_kv_heads=2,
+        attention=MHACIAttention(n_heads=2),
         mlp_hidden=32,
     )
     ci_fn = build_ci_fn(arch, lm.sites, key)
@@ -583,7 +583,7 @@ def test_chunkwise_ci_init_vmap_matches_unrolled_reference():
             )
             for i in range(n_chunks)
         ),
-        input_dim=24, d_model=16, n_blocks=2, n_heads=2, n_kv_heads=2, mlp_hidden=32,
+        input_dim=24, d_model=16, n_blocks=2, attention=MHACIAttention(n_heads=2), mlp_hidden=32,
     )  # fmt: skip
     key = jax.random.PRNGKey(7)
 

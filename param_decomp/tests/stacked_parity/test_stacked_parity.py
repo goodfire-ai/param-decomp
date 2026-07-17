@@ -131,7 +131,12 @@ def _assert_close(got: jnp.ndarray, want: np.ndarray, what: str) -> None:
 def _build_trajectory_ci_fn(lm: DecomposedModel, key: jnp.ndarray):
     """The new chunkwise CI fn (one chunk over all sites, reading the residual entering the
     first decomposed block) — the migrated replacement for the old per-site `CIArch`."""
-    from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch, build_ci_fn
+    from param_decomp.ci_fn import (
+        Chunk,
+        ChunkwiseTransformerCIArch,
+        MHACIAttention,
+        build_ci_fn,
+    )
 
     first_block = min(int(n.split(".")[1]) for n in lm.site_names)
     arch = ChunkwiseTransformerCIArch(
@@ -139,8 +144,7 @@ def _build_trajectory_ci_fn(lm: DecomposedModel, key: jnp.ndarray):
         input_dim=_tiny_cfg().n_embd,
         d_model=16,
         n_blocks=2,
-        n_heads=2,
-        n_kv_heads=2,
+        attention=MHACIAttention(n_heads=2),
         mlp_hidden=32,
     )
     return build_ci_fn(arch, lm.sites, key)

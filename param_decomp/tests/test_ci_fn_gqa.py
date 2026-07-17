@@ -11,7 +11,10 @@ from param_decomp.ci_fn import (
     CI_FN_RMS_EPS,
     Chunk,
     ChunkwiseTransformerCIArch,
+    CIAttention,
     CIBlock,
+    GQACIAttention,
+    MHACIAttention,
     _weightless_rms_norm,
     build_ci_fn,
     init_chunkwise_transformer_ci_fn,
@@ -25,14 +28,13 @@ from param_decomp.configs import (
 from vendored_jax.llama import apply_rope, repeat_kv, rope_cos_sin
 
 
-def _arch(n_heads: int, n_kv_heads: int, sites: tuple[SiteSpec, ...]) -> ChunkwiseTransformerCIArch:
+def _arch(attention: CIAttention, sites: tuple[SiteSpec, ...]) -> ChunkwiseTransformerCIArch:
     return ChunkwiseTransformerCIArch(
         chunks=(Chunk(input_taps=("resid.0",), output_sites=tuple(s.name for s in sites)),),
         input_dim=12,
         d_model=16,
         n_blocks=2,
-        n_heads=n_heads,
-        n_kv_heads=n_kv_heads,
+        attention=attention,
         mlp_hidden=32,
     )
 
@@ -53,8 +55,11 @@ def _block(n_head: int, n_kv_head: int, key: jax.Array) -> CIBlock:
         b1=jnp.zeros((mlp,)),
         w2=jax.random.normal(k2, (mlp, d)) * 0.1,
         b2=jnp.zeros((d,)),
-        n_head=n_head,
-        n_kv_head=n_kv_head,
+        attention=(
+            MHACIAttention(n_heads=n_head)
+            if n_kv_head == n_head
+            else GQACIAttention(n_heads=n_head, n_kv_heads=n_kv_head)
+        ),
         eps=CI_FN_RMS_EPS,
     )
 
@@ -73,12 +78,12 @@ def _reference_gqa_attn_out(block: CIBlock, x: jax.Array, inv_freq: jax.Array) -
         proj = einops.einsum(h, w, "b t i, o i -> b t o")
         return einops.rearrange(proj, "b t (nh hd) -> b nh t hd", nh=nh)
 
-    q = heads(block.wq, block.n_head)
-    k, v = heads(block.wk, block.n_kv_head), heads(block.wv, block.n_kv_head)
+    q = heads(block.wq, block.attention.n_heads)
+    k, v = heads(block.wk, block.attention.n_kv_heads), heads(block.wv, block.attention.n_kv_heads)
     cos, sin = rope_cos_sin(inv_freq, t, x.dtype)
     q, k = apply_rope(q, k, cos, sin)
-    k = repeat_kv(k, block.n_head // block.n_kv_head)
-    v = repeat_kv(v, block.n_head // block.n_kv_head)
+    k = repeat_kv(k, block.attention.n_heads // block.attention.n_kv_heads)
+    v = repeat_kv(v, block.attention.n_heads // block.attention.n_kv_heads)
     hd = q.shape[-1]
     logits = einops.einsum(q, k, "b nh tq hd, b nh tk hd -> b nh tq tk") / hd**0.5
     y = einops.einsum(jax.nn.softmax(logits, axis=-1), v, "b nh tq tk, b nh tk hd -> b nh tq hd")
@@ -116,20 +121,20 @@ def test_gqa_matches_explicit_repeat_kv_reference(n_kv_head: int):
 
 
 def test_gqa_narrows_kv_projections_only():
-    arch = _arch(n_heads=4, n_kv_heads=1, sites=SITES)
+    arch = _arch(attention=GQACIAttention(n_heads=4, n_kv_heads=1), sites=SITES)
     ci_fn = init_chunkwise_transformer_ci_fn(arch, SITES, jax.random.PRNGKey(0))
-    hd = arch.d_model // arch.n_heads
+    hd = arch.d_model // arch.attention.n_heads
     for b in ci_fn.chunks.blocks:
         assert b.wq.shape[1:] == (arch.d_model, arch.d_model), b.wq.shape
         assert b.wo.shape[1:] == (arch.d_model, arch.d_model), b.wo.shape
-        assert b.wk.shape[1:] == (arch.n_kv_heads * hd, arch.d_model), b.wk.shape
-        assert b.wv.shape[1:] == (arch.n_kv_heads * hd, arch.d_model), b.wv.shape
+        assert b.wk.shape[1:] == (arch.attention.n_kv_heads * hd, arch.d_model), b.wk.shape
+        assert b.wv.shape[1:] == (arch.attention.n_kv_heads * hd, arch.d_model), b.wv.shape
 
 
 def test_mha_arch_is_unchanged_by_the_gqa_seam():
-    """`n_kv_heads == n_heads` draws the same shapes as plain MHA: the K/V projections stay
-    `[d_model, d_model]`, so existing runs' params and RNG consumption are untouched."""
-    arch = _arch(n_heads=4, n_kv_heads=4, sites=SITES)
+    """`MHACIAttention` draws the K/V projections at full `[d_model, d_model]`, so existing
+    runs' params and RNG consumption are untouched by the GQA seam."""
+    arch = _arch(attention=MHACIAttention(n_heads=4), sites=SITES)
     ci_fn = init_chunkwise_transformer_ci_fn(arch, SITES, jax.random.PRNGKey(0))
     for b in ci_fn.chunks.blocks:
         assert b.wk.shape[1:] == (arch.d_model, arch.d_model), b.wk.shape
@@ -137,7 +142,7 @@ def test_mha_arch_is_unchanged_by_the_gqa_seam():
 
 
 def test_gqa_ci_fn_runs_end_to_end():
-    arch = _arch(n_heads=4, n_kv_heads=2, sites=SITES)
+    arch = _arch(attention=GQACIAttention(n_heads=4, n_kv_heads=2), sites=SITES)
     ci_fn = build_ci_fn(arch, SITES, jax.random.PRNGKey(0))
     taps = {"resid.0": jax.random.normal(jax.random.PRNGKey(1), (2, 6, 12))}
     ci = ci_fn(taps, remat=False)

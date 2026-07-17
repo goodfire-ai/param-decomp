@@ -37,7 +37,11 @@ from param_decomp.adversary import (
     init_sources_adam_state,
 )
 from param_decomp.checkpoint import make_checkpoint_manager, restore_latest, save_state
-from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch
+from param_decomp.ci_fn import (
+    Chunk,
+    ChunkwiseTransformerCIArch,
+    MHACIAttention,
+)
 from param_decomp.configs import (
     AdamPGDConfig,
     ChunkwiseSubsetReconLossConfig,
@@ -103,8 +107,7 @@ def _build_sharded(seed: int):
         input_dim=cfg.n_embd,
         d_model=16,
         n_blocks=2,
-        n_heads=2,
-        n_kv_heads=2,
+        attention=MHACIAttention(n_heads=2),
         mlp_hidden=32,
     )
     vu = init_decomp_vu_placed(lm.sites, jax.random.PRNGKey(seed), mesh)

@@ -27,7 +27,12 @@ from param_decomp.built_run import (
     EvalPGDConfig,
     WeightsDtype,
 )
-from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch
+from param_decomp.ci_fn import (
+    Chunk,
+    ChunkwiseTransformerCIArch,
+    GQACIAttention,
+    MHACIAttention,
+)
 from param_decomp.components import SiteC
 from param_decomp.configs import (
     ArithmeticCIGridConfig,
@@ -352,16 +357,17 @@ def _resolve_chunkwise_ci_arch(
     built.ci_fn` compare sees concrete values on both sides."""
     match ci.attention:
         case MHACiAttentionConfig():
-            n_heads = n_kv_heads = ci.attention.n_heads
+            attention = MHACIAttention(n_heads=ci.attention.n_heads)
         case GQACiAttentionConfig():
-            n_heads, n_kv_heads = ci.attention.n_heads, ci.attention.n_kv_heads
+            attention = GQACIAttention(
+                n_heads=ci.attention.n_heads, n_kv_heads=ci.attention.n_kv_heads
+            )
     return ChunkwiseTransformerCIArch(
         chunks=_resolved_chunks(target, ci.blocks_per_chunk),
         input_dim=_resolve_d_resid(target),
         d_model=ci.d_model,
         n_blocks=ci.n_blocks,
-        n_heads=n_heads,
-        n_kv_heads=n_kv_heads,
+        attention=attention,
         mlp_hidden=ci.mlp_hidden,
     )
 

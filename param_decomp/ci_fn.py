@@ -123,6 +123,44 @@ def _weightless_rms_norm(x: Array, eps: float) -> Array:
     return rms_norm(x, jnp.ones((x.shape[-1],), x.dtype), eps)
 
 
+@dataclass(frozen=True)
+class MHACIAttention:
+    """Every query head carries its own K/V head."""
+
+    n_heads: int
+
+    @property
+    def n_kv_heads(self) -> int:
+        return self.n_heads
+
+
+@dataclass(frozen=True)
+class GQACIAttention:
+    """`n_heads // n_kv_heads` query heads share each K/V head, so `wk`/`wv` narrow to
+    `n_kv_heads * head_dim`. head_dim, the RoPE tables, `wq`/`wo` and every sharding are
+    identical to MHA — only the K/V projections change."""
+
+    n_heads: int
+    n_kv_heads: int
+
+    def __post_init__(self) -> None:
+        assert self.n_heads % self.n_kv_heads == 0, (
+            "n_heads must be divisible by n_kv_heads (each K/V head serves an equal group "
+            f"of query heads): {self.n_heads} % {self.n_kv_heads}"
+        )
+        assert self.n_kv_heads < self.n_heads, (
+            f"n_kv_heads == n_heads ({self.n_heads}) is MHA — use MHACIAttention rather than "
+            "a degenerate GQA"
+        )
+
+
+CIAttention = MHACIAttention | GQACIAttention
+"""The CI transformer's attention. Both arms answer `n_heads` and `n_kv_heads`, so the call
+site never dispatches — but MHA derives its K/V count from the TYPE instead of leaving
+`n_kv_heads == n_heads` as a convention a reader has to know, and cannot carry an explicit
+one. GQA's grouping invariant is checked at construction, not at init."""
+
+
 class CIBlock(eqx.Module):
     """Pre-norm block: weightless-RMSNorm → bidirectional RoPE attention → residual;
     weightless-RMSNorm → Linear+b → GELU → Linear+b → residual.
@@ -139,8 +177,7 @@ class CIBlock(eqx.Module):
     b1: Array
     w2: Array
     b2: Array
-    n_head: int = eqx.field(static=True)
-    n_kv_head: int = eqx.field(static=True)
+    attention: CIAttention = eqx.field(static=True)
     eps: float = eqx.field(static=True)
 
     def shardings(self, mesh: Mesh) -> "CIBlock":
@@ -193,8 +230,9 @@ class CIBlock(eqx.Module):
             proj = einops.einsum(h, w, "b t i, o i -> b t o")
             return einops.rearrange(proj, "b t (nh hd) -> b nh t hd", nh=n_head)
 
-        q = heads(self.wq, self.n_head)
-        k, v = heads(self.wk, self.n_kv_head), heads(self.wv, self.n_kv_head)
+        q = heads(self.wq, self.attention.n_heads)
+        kv = self.attention.n_kv_heads
+        k, v = heads(self.wk, kv), heads(self.wv, kv)
         cos, sin = rope_cos_sin(inv_freq, t, x.dtype)
         q, k = apply_rope(q, k, cos, sin)  # cos/sin broadcast over the head axis: any count
         qt, kt, vt = (einops.rearrange(a, "b nh t hd -> b t nh hd") for a in (q, k, v))
@@ -244,15 +282,13 @@ class ChunkwiseTransformerCIArch:
     stays agnostic to what the taps mean, so no transformer concept (residual width) leaks
     in. All chunks share one `input_dim` (the vmap homogeneity requirement).
 
-    `n_kv_heads` is RESOLVED — a concrete K/V head count, `== n_heads` for MHA (the schema's
-    `null` is resolved lab-side). It divides `n_heads`."""
+    `attention` is the resolved variant (the schema's `attention` union, translated)."""
 
     chunks: tuple[Chunk, ...]
     input_dim: int
     d_model: int
     n_blocks: int
-    n_heads: int
-    n_kv_heads: int
+    attention: CIAttention
     mlp_hidden: int
 
 
@@ -487,7 +523,7 @@ def _init_chunk_transformer(
     can't silently drift out of sync with the number of draws."""
     relu_gain = 2.0**0.5
     d, mlp = arch.d_model, arch.mlp_hidden
-    d_kv = (d // arch.n_heads) * arch.n_kv_heads  # K/V project to their own head count (GQA)
+    d_kv = (d // arch.attention.n_heads) * arch.attention.n_kv_heads  # narrower under GQA
 
     def kaiming(k: PRNGKeyArray, shape: tuple[int, ...], fan_in: int, gain: float) -> Array:
         return jax.random.normal(k, shape) * (gain / fan_in**0.5)
@@ -503,7 +539,7 @@ def _init_chunk_transformer(
             wv=attn_default(kv, (d_kv, d), d), wo=attn_default(ko, (d, d), d),
             w1=kaiming(k1, (d, mlp), d, relu_gain), b1=jnp.zeros((mlp,)),
             w2=kaiming(k2, (mlp, d), mlp, 1.0), b2=jnp.zeros((d,)),
-            n_head=arch.n_heads, n_kv_head=arch.n_kv_heads, eps=CI_FN_RMS_EPS,
+            attention=arch.attention, eps=CI_FN_RMS_EPS,
         )  # fmt: skip
 
     in_key, out_key, *block_keys = jax.random.split(key, arch.n_blocks + 2)
@@ -548,9 +584,9 @@ def init_chunkwise_transformer_ci_fn(
     # Per-chunk cat width must equal `arch.input_dim` (lab guarantees it; the runtime
     # `jnp.stack` / in_proj einsum fails loud if a chunk's taps don't sum to it).
 
-    hd = arch.d_model // arch.n_heads
-    assert arch.d_model % arch.n_heads == 0 and hd % 2 == 0, (arch.d_model, arch.n_heads)
-    assert arch.n_heads % arch.n_kv_heads == 0, (arch.n_heads, arch.n_kv_heads)
+    n_heads = arch.attention.n_heads
+    hd = arch.d_model // n_heads
+    assert arch.d_model % n_heads == 0 and hd % 2 == 0, (arch.d_model, n_heads)
     inv_freq = 1.0 / (10000.0 ** (jnp.arange(0, hd, 2, dtype=jnp.float32) / hd))
 
     # vmap over the per-chunk keys instead of unrolling n_chunks python-side inits and

@@ -30,6 +30,7 @@ from jaxtyping import Array, Float
 from param_decomp.ci_fn import (
     Chunk,
     ChunkwiseTransformerCIArch,
+    MHACIAttention,
     build_ci_fn,
 )
 from param_decomp.components import DecompVU, SiteSpec
@@ -244,8 +245,7 @@ def test_train_step_runs_through_generic_target():
         input_dim=D,
         d_model=8,
         n_blocks=1,
-        n_heads=2,
-        n_kv_heads=2,
+        attention=MHACIAttention(n_heads=2),
         mlp_hidden=16,
     )
     state, opt_vu, opt_ci = _initial_state(lm, components, ci_arch)
