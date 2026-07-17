@@ -36,6 +36,7 @@ from jax.typing import DTypeLike
 from jaxtyping import Array, Float, Int
 from safetensors import safe_open
 
+from param_decomp import taps
 from param_decomp.components import (
     ComponentStacks,
     SiteC,
@@ -362,9 +363,11 @@ def _stack_layers(layers: list[GLULayer]) -> GLULayer:
 def _tap_layer(key: str) -> int:
     """Global block index a `read_activations` key reads at: the block a `resid.{L}` tap
     enters, or the block a decomposed site lives in."""
-    if key.startswith("resid."):
-        return int(key.split(".")[1])
-    return parse_site_name(key)[0]
+    match taps.parse_tap(key):
+        case taps.ResidIn(layer):
+            return layer
+        case taps.SiteInput(name):
+            return parse_site_name(name)[0]
 
 
 def _per_kind_dims(components: ComponentStacks) -> dict[str, tuple[int, int, int]]:
@@ -722,12 +725,13 @@ class GLUDecomposedModel(eqx.Module):
         requested key's block is fully covered (no wasted block compute past it)."""
         wanted_set = frozenset(wanted)
         last = max(_tap_layer(key) for key in wanted)
-        taps: dict[str, Array] = {}
+        out: dict[str, Array] = {}
         x = self.embed_tokens(inputs)
         for layer in range(self.n_layer):
             block = jax.tree.map(lambda a, li=layer: a[li], self.stacked)
-            if f"resid.{layer}" in wanted_set:
-                taps[f"resid.{layer}"] = x
+            resid_key = taps.tap_key(taps.ResidIn(layer))
+            if resid_key in wanted_set:
+                out[resid_key] = x
             attn = block.attn
             h1 = rms_norm(x, block.ln1, self.eps)
             attn_y = attn.core(h1 @ attn.wq.T, h1 @ attn.wk.T, h1 @ attn.wv.T, self.inv_freq)
@@ -740,12 +744,12 @@ class GLUDecomposedModel(eqx.Module):
             ):  # fmt: skip
                 name = site_name(layer, kind)
                 if name in wanted_set:
-                    taps[name] = site_input
+                    out[name] = site_input
             x = post_attn + down_in @ block.Wd.T
             if layer == last:
                 break
-        assert set(taps) == wanted_set, (sorted(taps), sorted(wanted))
-        return taps
+        assert set(out) == wanted_set, (sorted(out), sorted(wanted))
+        return out
 
     def _run_masked_forward(
         self,

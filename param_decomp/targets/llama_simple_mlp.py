@@ -40,6 +40,7 @@ from jax.typing import DTypeLike
 from jaxtyping import Array, Float, Int
 from safetensors import safe_open
 
+from param_decomp import taps
 from param_decomp.components import ComponentStacks, SiteC, SiteSpec, site_out
 from param_decomp.lm import run_stochastic_masked_output
 from param_decomp.losses import kl_per_position
@@ -249,9 +250,11 @@ def _clean_block(layer: SimpleMLPLayer, x: Array, inv_freq: Array, eps: float) -
 def _tap_layer(key: str) -> int:
     """Global block index a `read_activations` key reads at: the block a `resid.{L}` tap
     enters, or the block a decomposed site lives in."""
-    if key.startswith("resid."):
-        return int(key.split(".")[1])
-    return parse_site_name(key)[0]
+    match taps.parse_tap(key):
+        case taps.ResidIn(layer):
+            return layer
+        case taps.SiteInput(name):
+            return parse_site_name(name)[0]
 
 
 def _masked_site_out(
@@ -351,11 +354,12 @@ class SimpleMLPDecomposedModel(eqx.Module):
         assert inputs.shape[1] <= self.n_ctx, (inputs.shape, self.n_ctx)
         wanted_set = frozenset(wanted)
         last = max(_tap_layer(key) for key in wanted)
-        taps: dict[str, Array] = {}
+        out: dict[str, Array] = {}
         x = self.embed_tokens(inputs)
         for layer_idx, layer in enumerate(self.layers):
-            if f"resid.{layer_idx}" in wanted_set:
-                taps[f"resid.{layer_idx}"] = x
+            resid_key = taps.tap_key(taps.ResidIn(layer_idx))
+            if resid_key in wanted_set:
+                out[resid_key] = x
             attn = layer.attn
             h1 = rms_norm(x, layer.ln1, self.eps)
             attn_y = attn.core(h1 @ attn.wq.T, h1 @ attn.wk.T, h1 @ attn.wv.T, self.inv_freq)
@@ -368,12 +372,12 @@ class SimpleMLPDecomposedModel(eqx.Module):
             ):  # fmt: skip
                 name = site_name(layer_idx, kind)
                 if name in wanted_set:
-                    taps[name] = site_input
+                    out[name] = site_input
             x = post_attn + down_in @ layer.Wdown.T
             if layer_idx == last:
                 break
-        assert set(taps) == wanted_set, (sorted(taps), sorted(wanted))
-        return taps
+        assert set(out) == wanted_set, (sorted(out), sorted(wanted))
+        return out
 
     def _run_masked_forward(
         self,

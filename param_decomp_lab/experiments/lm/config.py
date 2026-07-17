@@ -16,6 +16,7 @@ from typing import Annotated, Any, Literal
 import yaml
 from pydantic import Discriminator, Field, PositiveInt, model_validator
 
+from param_decomp import taps
 from param_decomp.base_config import BaseConfig
 from param_decomp.built_run import (
     LAUNCH_CONFIG_FILENAME,
@@ -326,13 +327,25 @@ def _resolve_d_resid(target: AnyLMTargetConfig) -> int:
             return llama_simple_mlp.load_model_config(cache_dir).n_embd
 
 
-def _chunk_input_taps(input_tap: ChunkInputTap, chunk_blocks: list[int]) -> tuple[str, ...]:
-    """The tap keys a chunk reads, from its config source + the blocks it spans."""
+def _chunk_input_taps(
+    input_tap: ChunkInputTap, chunk_blocks: list[int]
+) -> tuple[taps.TapAddress, ...]:
+    """The tap addresses a chunk reads, from its config source + the blocks it spans."""
     match input_tap:
         case "first_block_resid":
-            return (f"resid.{chunk_blocks[0]}",)
+            return (taps.ResidIn(chunk_blocks[0]),)
         case "all_block_resids":
-            return tuple(f"resid.{b}" for b in chunk_blocks)
+            return tuple(taps.ResidIn(b) for b in chunk_blocks)
+
+
+def _tap_width(tap: taps.TapAddress, d_resid: int) -> int:
+    """Concat width contribution of one tap. Site-input taps (`taps.SiteInput`) are the
+    grammar's next arm — their width is the site's d_in, which needs the arch dims here."""
+    match tap:
+        case taps.ResidIn():
+            return d_resid
+        case taps.SiteInput(name):
+            raise NotImplementedError(f"site-input tap widths not wired yet: {name}")
 
 
 def _resolved_chunks(
@@ -354,8 +367,12 @@ def _resolved_chunks(
     for start in range(0, len(blocks), blocks_per_chunk):
         chunk_blocks = blocks[start : start + blocks_per_chunk]
         output_sites = tuple(name for block in chunk_blocks for name in sites_by_block[block])
+        chunk_taps = _chunk_input_taps(input_tap, chunk_blocks)
         chunks.append(
-            Chunk(input_taps=_chunk_input_taps(input_tap, chunk_blocks), output_sites=output_sites)
+            Chunk(
+                input_taps=tuple(taps.tap_key(tap) for tap in chunk_taps),
+                output_sites=output_sites,
+            )
         )
     return tuple(chunks)
 
@@ -364,12 +381,14 @@ def _resolve_chunkwise_ci_arch(
     target: AnyLMTargetConfig, ci: ChunkwiseTransformerCiConfig
 ) -> ChunkwiseTransformerCIArch:
     """Resolve the chunkwise-transformer arch against the LM target: the chunk generator
-    (`_resolved_chunks`) + the per-chunk input width (`_resolve_d_resid`, x`blocks_per_chunk`
-    when `all_block_resids` concatenates one tap per block). The `attention`
+    (`_resolved_chunks`) + the per-chunk input width (the sum of the chunk's tap widths —
+    `_tap_width` per `taps.TapAddress`). The `attention`
     union collapses here to two concrete head counts — MHA is `n_kv_heads == n_heads` — so
     nothing downstream re-derives the grouping, and the fine-tune `parent.ci_fn ==
     built.ci_fn` compare sees concrete values on both sides."""
-    n_taps_per_chunk = ci.blocks_per_chunk if ci.input_tap == "all_block_resids" else 1
+    d_resid = _resolve_d_resid(target)
+    first_chunk_taps = _chunk_input_taps(ci.input_tap, list(range(ci.blocks_per_chunk)))
+    input_dim = sum(_tap_width(tap, d_resid) for tap in first_chunk_taps)
     match ci.attention:
         case MHACiAttentionConfig():
             attention = MHACIAttention(n_heads=ci.attention.n_heads)
@@ -379,7 +398,7 @@ def _resolve_chunkwise_ci_arch(
             )
     return ChunkwiseTransformerCIArch(
         chunks=_resolved_chunks(target, ci.blocks_per_chunk, ci.input_tap),
-        input_dim=_resolve_d_resid(target) * n_taps_per_chunk,
+        input_dim=input_dim,
         d_model=ci.d_model,
         n_blocks=ci.n_blocks,
         attention=attention,
