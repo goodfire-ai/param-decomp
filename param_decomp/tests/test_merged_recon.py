@@ -30,7 +30,7 @@ from param_decomp.tests.test_llama_simple_mlp import (
     _tiny_cfg,
     _tiny_decomposed_model,
 )
-from param_decomp.train import TrainState, make_train_step
+from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
 
 
 def _merged_cfg(
@@ -98,21 +98,23 @@ def test_merged_train_step_end_to_end():
     )
     assert merged.coeff is not None
     state = TrainState(
-        components=vu, ci_fn=ci_fn,
-        components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
-        ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        adversaries={
-            merged.type: PersistentAdversary(
-                sources=src,
-                opt_state=init_sources_adam_state(src),
-                state_key=merged.type,
-                coeff=merged.coeff,
-                adam=merged.optimizer,
-                n_warmup=merged.n_warmup_steps,
-            )
-        },
-        step=jnp.zeros((), jnp.int32),
-    )  # fmt: skip
+        decomposition=Decomposition(components=vu, ci_fn=ci_fn),
+        training=TrainingItem(
+            components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
+            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+            adversaries={
+                merged.type: PersistentAdversary(
+                    sources=src,
+                    opt_state=init_sources_adam_state(src),
+                    state_key=merged.type,
+                    coeff=merged.coeff,
+                    adam=merged.optimizer,
+                    n_warmup=merged.n_warmup_steps,
+                )
+            },
+            step=jnp.zeros((), jnp.int32),
+        ),
+    )
     losses = build_loss_terms(
         (
             FaithfulnessLossConfig(coeff=1e5),
@@ -141,12 +143,12 @@ def test_merged_train_step_end_to_end():
         state, metrics = step(lm, state, tokens, jax.random.PRNGKey(100 + i))
         assert all(bool(jnp.isfinite(v).all()) for v in metrics.values())
         assert "loss/MergedStochasticPGDReconLoss" in metrics
-    assert int(state.step) == n_steps
+    assert int(state.training.step) == n_steps
 
-    adv = state.adversaries[merged.type]
+    adv = state.training.adversaries[merged.type]
     assert float(adv.opt_state.step_count) == n_steps * (n_warmup + 1)
     for v in adv.sources.values():
         assert float(v.min()) >= 0.0 and float(v.max()) <= 1.0
-    assert isinstance(state.components, DecompVU)
-    for V, U in state.components.vu.values():
+    assert isinstance(state.decomposition.components, DecompVU)
+    for V, U in state.decomposition.components.vu.values():
         assert V.dtype == jnp.float32 and U.dtype == jnp.float32

@@ -165,10 +165,10 @@ def run_resid_mlp_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: 
     }
 
     def eval_fn(state: TrainState, now_step: int) -> dict[str, float]:
-        ci_lower, ci_upper = single_feature_ci(lm, state.ci_fn)
+        ci_lower, ci_upper = single_feature_ci(lm, state.decomposition.ci_fn)
         toy_uv_eval.log_uv_figure(
             uv_spec,
-            state.components.vu,
+            state.decomposition.components.vu,
             ci_upper,
             now_step,
             wandb_active=built.run.wandb is not None,

@@ -29,7 +29,7 @@ def test_init_from_parent_loads_components_resets_schedule(tmp_path: Path):
     lm, parent_state, step, resid = _build(seed=1)
     for i in range(2):
         parent_state, _ = step(lm, parent_state, resid, jax.random.PRNGKey(i))
-    assert int(parent_state.step) == 2
+    assert int(parent_state.training.step) == 2
 
     parent_ckpt_dir = tmp_path / "parent" / "ckpts"
     mgr = make_checkpoint_manager(parent_ckpt_dir, keep_last=2)
@@ -42,30 +42,34 @@ def test_init_from_parent_loads_components_resets_schedule(tmp_path: Path):
 
     # components + ci_fn come from the parent.
     for a, b in zip(
-        jax.tree.leaves(finetuned.components), jax.tree.leaves(parent_state.components), strict=True
+        jax.tree.leaves(finetuned.decomposition.components),
+        jax.tree.leaves(parent_state.decomposition.components),
+        strict=True,
     ):
         assert jnp.array_equal(a, b)
     for a, b in zip(
-        jax.tree.leaves(finetuned.ci_fn), jax.tree.leaves(parent_state.ci_fn), strict=True
+        jax.tree.leaves(finetuned.decomposition.ci_fn),
+        jax.tree.leaves(parent_state.decomposition.ci_fn),
+        strict=True,
     ):
         assert jnp.array_equal(a, b)
 
     # step resets to 0 for the fresh schedule.
-    assert int(finetuned.step) == 0
-    assert finetuned.step.dtype == jnp.int32
+    assert int(finetuned.training.step) == 0
+    assert finetuned.training.step.dtype == jnp.int32
 
     # optimizer states + sources are the FRESH reference's (not the parent's). The fresh
     # sources are RNG-drawn from seed 7; the parent's from seed 1 — they must differ.
-    for state_key, fresh_adv in fresh.adversaries.items():
+    for state_key, fresh_adv in fresh.training.adversaries.items():
         for site, arr in fresh_adv.sources.items():
-            assert jnp.array_equal(finetuned.adversaries[state_key].sources[site], arr)
+            assert jnp.array_equal(finetuned.training.adversaries[state_key].sources[site], arr)
             assert not jnp.array_equal(
-                finetuned.adversaries[state_key].sources[site],
-                parent_state.adversaries[state_key].sources[site],
+                finetuned.training.adversaries[state_key].sources[site],
+                parent_state.training.adversaries[state_key].sources[site],
             )
     for a, b in zip(
-        jax.tree.leaves(finetuned.components_opt_state),
-        jax.tree.leaves(fresh.components_opt_state),
+        jax.tree.leaves(finetuned.training.components_opt_state),
+        jax.tree.leaves(fresh.training.components_opt_state),
         strict=True,
     ):
         assert jnp.array_equal(a, b)

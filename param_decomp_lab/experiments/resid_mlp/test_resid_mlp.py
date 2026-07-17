@@ -32,7 +32,13 @@ from param_decomp.configs import (
 from param_decomp.lm import DecomposedModel
 from param_decomp.recon import build_loss_terms
 from param_decomp.schedule import ScheduleConfig
-from param_decomp.train import TrainState, make_faith_warmup_step, make_train_step
+from param_decomp.train import (
+    Decomposition,
+    TrainingItem,
+    TrainState,
+    make_faith_warmup_step,
+    make_train_step,
+)
 from param_decomp_lab.experiments.resid_mlp.model import (
     ResidMLPConfig,
     ResidMLPTarget,
@@ -247,10 +253,12 @@ def _make_state_and_step(
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
     state = TrainState(
-        components=vu, ci_fn=ci_fn,
-        components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
-        ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        adversaries={}, step=jnp.zeros((), jnp.int32),
+        decomposition=Decomposition(components=vu, ci_fn=ci_fn),
+        training=TrainingItem(
+            components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
+            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+            adversaries={}, step=jnp.zeros((), jnp.int32),
+        ),
     )  # fmt: skip
     loss_terms = build_loss_terms(_loss_metrics(), lm.site_names)
     step = make_train_step(
@@ -274,10 +282,10 @@ def test_step_trains_positionless_no_persistent_sources():
         state, m = step(lm, state, x @ target.W_E, jax.random.PRNGKey(100 + i))
         losses.append({k: float(v) for k, v in m.items()})
     assert all(jnp.isfinite(jnp.array(list(m.values()))).all() for m in losses)
-    assert int(state.step) == 6
-    assert state.adversaries == {}  # no persistent sources for the stochastic configs
-    assert isinstance(state.components, DecompVU)
-    for V, U in state.components.vu.values():
+    assert int(state.training.step) == 6
+    assert state.training.adversaries == {}  # no persistent sources for the stochastic configs
+    assert isinstance(state.decomposition.components, DecompVU)
+    for V, U in state.decomposition.components.vu.values():
         assert V.dtype == jnp.float32 and U.dtype == jnp.float32
 
 
@@ -353,10 +361,12 @@ def _faith_warmed_state(
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
     state = TrainState(
-        components=vu, ci_fn=ci_fn,
-        components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
-        ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        adversaries={}, step=jnp.zeros((), jnp.int32),
+        decomposition=Decomposition(components=vu, ci_fn=ci_fn),
+        training=TrainingItem(
+            components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
+            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+            adversaries={}, step=jnp.zeros((), jnp.int32),
+        ),
     )  # fmt: skip
     loss_terms = build_loss_terms(_recovery_loss_metrics(), lm.site_names)
     step = make_train_step(
@@ -403,7 +413,7 @@ def test_end_to_end_pretrain_decompose_recovers_identity():
         totals.append(float(m["total"]))
     assert totals[-1] < totals[0], (totals[0], totals[-1])
 
-    ci_lower = single_feature_ci(lm, state.ci_fn, n_features=5)
+    ci_lower = single_feature_ci(lm, state.decomposition.ci_fn, n_features=5)
     err = identity_ci_error(ci_lower["layers.0.mlp_in"], tolerance=0.2)
     assert err == 0, (
         f"mlp_in did not recover identity (err={err}):\n{jnp.round(ci_lower['layers.0.mlp_in'], 2)}"
