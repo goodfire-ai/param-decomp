@@ -17,7 +17,9 @@ pd:
     blocks_per_chunk: 4
     d_model: 2048
     n_blocks: 8
-    n_heads: 16
+    attention:
+      kind: mha
+      n_heads: 16
     mlp_hidden: 8192
   decomposition_targets:
   - module_pattern: h.*.mlp.c_fc
