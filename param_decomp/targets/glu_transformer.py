@@ -365,6 +365,11 @@ _TAP_CLASS_BY_KIND = {
 """The block intermediate a site kind's tap reads — the activation entering that site's
 weight on the frozen path (`_clean_forward`'s per-class scan-ys stacks are keyed by
 these)."""
+assert set(_TAP_CLASS_BY_KIND) == set(KIND_ORDER), (
+    "every GluMatrix kind needs a tap class",
+    _TAP_CLASS_BY_KIND.keys(),
+    KIND_ORDER,
+)
 
 
 def _tap_class(key: str) -> str:
