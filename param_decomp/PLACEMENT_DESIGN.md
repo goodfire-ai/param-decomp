@@ -110,7 +110,7 @@ Nothing like this rules table was tried before. What WAS tried, and what it teac
 
 ## Validation (2026-07-16)
 
-- Compile matrix (`experiments/placement_compile_probe.py`): {owner, zero1, ddp} ×
+- Compile matrix (probe script since deleted; results recorded here): {owner, zero1, ddp} ×
   {adamw, muon-stacked} all compile at a real 2×2 (replicate, fsdp) sim mesh. Finding:
   `impl: stacked` under ddp persist does a redundant NS spread (210 collective-permutes)
   — the stage-4 derive-NS-layout-from-table fix, evidenced.
