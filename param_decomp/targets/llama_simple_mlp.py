@@ -28,6 +28,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import get_args
 
 import equinox as eqx
 import jax
@@ -40,24 +41,25 @@ from jax.typing import DTypeLike
 from jaxtyping import Array, Float, Int
 from safetensors import safe_open
 
-from param_decomp import taps
+from param_decomp import site_tree
 from param_decomp.components import ComponentStacks, SiteC, SiteSpec, site_out
+from param_decomp.configs import SimpleMlpMatrix
 from param_decomp.lm import run_stochastic_masked_output
 from param_decomp.losses import kl_per_position
+from param_decomp.site_tree import ArchFamily
 from param_decomp.targets.glu_transformer import FrozenAttn
 from vendored_jax.llama import rms_norm
 
-KIND_ORDER = ("q_proj", "k_proj", "v_proj", "o_proj", "c_fc", "down_proj")
-"""Within-layer canonical site order = computation order. The canonical site order
-(`site_specs`) is layer-ascending, then this."""
+KIND_ORDER: tuple[str, ...] = get_args(SimpleMlpMatrix)
+"""Within-layer canonical site order = computation order, DERIVED from the config-side
+`SimpleMlpMatrix` vocabulary (one source of truth — a c-spec key and a target matrix
+cannot drift). The canonical site order (`site_specs`) is layer-ascending, then this."""
 ATTN_KINDS = ("q_proj", "k_proj", "v_proj", "o_proj")
 MLP_KINDS = ("c_fc", "down_proj")
+assert KIND_ORDER == ATTN_KINDS + MLP_KINDS, KIND_ORDER
 
 SITE_NAME_PATTERN = re.compile(
     r"^h\.(\d+)\.(?:attn\.(q_proj|k_proj|v_proj|o_proj)|mlp\.(c_fc|down_proj))$"
-)
-WILDCARD_NAME_PATTERN = re.compile(
-    r"^h\.\*\.(?:attn\.(q_proj|k_proj|v_proj|o_proj)|mlp\.(c_fc|down_proj))$"
 )
 
 
@@ -132,6 +134,11 @@ def parse_site_name(name: str) -> tuple[int, str]:
     return int(layer), attn_kind if attn_kind is not None else mlp_kind
 
 
+FAMILY = ArchFamily("simple_mlp", KIND_ORDER, site_name, parse_site_name)
+"""This target's matrix grammar as data — the vocabulary + name renderer the tiled
+`simple_mlp` c-specs resolve against (`resolve_site_tree`)."""
+
+
 def site_dims(cfg: LlamaSimpleMLPConfig, kind: str) -> tuple[int, int]:
     """(d_in, d_out) of one per-layer matrix, right-mult orientation."""
     d, di = cfg.n_embd, cfg.n_intermediate
@@ -153,45 +160,11 @@ def site_dims(cfg: LlamaSimpleMLPConfig, kind: str) -> tuple[int, int]:
 
 
 def canonical_site_cs(site_cs: tuple[SiteC, ...]) -> tuple[SiteC, ...]:
-    """Canonical site order: layer-ascending, `KIND_ORDER` within a layer. Names must
-    parse and be unique."""
-    names = [site.name for site in site_cs]
-    assert len(set(names)) == len(names), f"duplicate sites in {names}"
-
-    def order_key(site: SiteC) -> tuple[int, int]:
-        layer, kind = parse_site_name(site.name)
-        return layer, KIND_ORDER.index(kind)
-
-    return tuple(sorted(site_cs, key=order_key))
-
-
-def expand_wildcard_site_cs(entries: tuple[SiteC, ...], n_layer: int) -> tuple[SiteC, ...]:
-    """`h.*.<submodule>.<kind>` entries expand to every layer at that entry's C
-    (the torch `module_pattern` wildcard convention); explicit `h.{i}.` entries pass
-    through. Result is canonical-ordered; duplicates raise."""
-    expanded: list[SiteC] = []
-    for entry in entries:
-        wildcard = WILDCARD_NAME_PATTERN.match(entry.name)
-        if wildcard is None:
-            parse_site_name(entry.name)
-            expanded.append(entry)
-        else:
-            attn_kind, mlp_kind = wildcard.groups()
-            kind = attn_kind if attn_kind is not None else mlp_kind
-            expanded.extend(SiteC(site_name(layer, kind), entry.C) for layer in range(n_layer))
-    return canonical_site_cs(tuple(expanded))
+    return site_tree.canonical_site_cs(FAMILY, site_cs)
 
 
 def site_specs(cfg: LlamaSimpleMLPConfig, site_cs: tuple[SiteC, ...]) -> tuple[SiteSpec, ...]:
-    """Shape-resolved specs in canonical order (input must already be canonical)."""
-    assert site_cs == canonical_site_cs(site_cs), f"sites not in canonical order: {site_cs}"
-    specs = []
-    for site in site_cs:
-        layer, kind = parse_site_name(site.name)
-        assert 0 <= layer < cfg.n_layer, (site.name, cfg.n_layer)
-        assert site.C >= 1, site
-        specs.append(SiteSpec(site.name, *site_dims(cfg, kind), site.C))
-    return tuple(specs)
+    return site_tree.site_specs(FAMILY, site_cs, lambda kind: site_dims(cfg, kind), cfg.n_layer)
 
 
 # ----------------------------- frozen layers -----------------------------
@@ -245,16 +218,6 @@ def _clean_mlp_out(layer: SimpleMLPLayer, mlp_in: Array) -> Array:
 def _clean_block(layer: SimpleMLPLayer, x: Array, inv_freq: Array, eps: float) -> Array:
     x = x + layer.attn(rms_norm(x, layer.ln1, eps), inv_freq)
     return x + _clean_mlp_out(layer, rms_norm(x, layer.ln2, eps))
-
-
-def _tap_layer(key: str) -> int:
-    """Global block index a `read_activations` key reads at: the block a `resid.{L}` tap
-    enters, or the block a decomposed site lives in."""
-    match taps.parse_tap(key):
-        case taps.ResidIn(layer):
-            return layer
-        case taps.SiteInput(name):
-            return parse_site_name(name)[0]
 
 
 def _masked_site_out(
@@ -353,11 +316,11 @@ class SimpleMLPDecomposedModel(eqx.Module):
         the per-site intermediates come from the same RMSNorm/attn/MLP math."""
         assert inputs.shape[1] <= self.n_ctx, (inputs.shape, self.n_ctx)
         wanted_set = frozenset(wanted)
-        last = max(_tap_layer(key) for key in wanted)
+        last = max(site_tree.tap_layer(FAMILY, key) for key in wanted)
         out: dict[str, Array] = {}
         x = self.embed_tokens(inputs)
         for layer_idx, layer in enumerate(self.layers):
-            resid_key = taps.tap_key(taps.ResidIn(layer_idx))
+            resid_key = site_tree.tap_key(site_tree.ResidIn(layer_idx))
             if resid_key in wanted_set:
                 out[resid_key] = x
             attn = layer.attn

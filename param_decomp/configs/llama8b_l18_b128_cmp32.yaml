@@ -11,9 +11,18 @@ run_name: jax-l18-b128-cmp32-from-torch
 # same wandb keys (train/loss/*). At L18 (one 3-site chunk) StochasticReconSubsetLoss
 # is exactly the JAX chunkwise-subset recon.
 # Launch: pd-lm param_decomp_lab/experiments/lm/_llama8b/llama8b_l18_b128_cmp32_1pool.yaml --dp 32
-pd:
-  seed: 0
-  ci_config:
+decomposition:
+  sites:
+    kind: glu_transformer
+    layers:
+      kind: list
+      indices:
+      - 18
+    cs:
+      gate: 24576
+      up: 24576
+      down: 24576
+  ci:
     type: chunkwise_transformer
     blocks_per_chunk: 1
     d_model: 4096
@@ -24,13 +33,8 @@ pd:
     ffn:
       kind: gelu
       hidden: 16384
-  decomposition_targets:
-  - module_pattern: layers.18.mlp.gate_proj
-    C: 24576
-  - module_pattern: layers.18.mlp.up_proj
-    C: 24576
-  - module_pattern: layers.18.mlp.down_proj
-    C: 24576
+pd:
+  seed: 0
   components_optimizer:
     lr_schedule:
       start_val: 1.5e-04

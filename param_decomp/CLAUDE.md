@@ -68,8 +68,8 @@ recon semantics: masks thread through the full token-input forward, loss is KL o
 t-9d2b8f02; sites `h.{i}.attn.{q,k,v,o}_proj` / `h.{i}.mlp.{c_fc,down_proj}`) —
 config dispatch is `TargetConfig` (the HF GLU families) vs `LlamaSimpleMLPTargetConfig`, both LAB-side
 (`param_decomp_lab/experiments/lm/config.py`, which reads the canonical schema DIRECTLY —
-`build_experiment_config`/`load_config` — routing `kind: pretrained` specs + `h.*`
-wildcards), target build in the LM composition root
+`build_experiment_config`/`load_config` — resolving each target's tiled
+`decomposition.sites` via its `ArchFamily`), target build in the LM composition root
 `param_decomp_lab/experiments/lm/run.py::main`. The slow plot metrics are computed
 NATIVELY in JAX (`slow_eval.py`) — no torch export round-trip (the torch offline-eval
 bridge `jsp-export` / `pd-offline-eval` was retired). They run IN-LOOP ONLY on
@@ -173,7 +173,7 @@ full-model `[n_layer, full_d_in, C]` weight stack resident.
 (`MLPCIArch` / `GlobalMLPCIArch` / `ChunkwiseTransformerCIArch`) and uses replicated (not
 C-sharded) V/U + CI for the tiny toys; the core `config.CIFnArch` admits all three and the
 lab `experiments.config.ci_arch` builds the layerwise / global arch from the toy
-ci_config (validated end-to-end on CPU via
+`decomposition.ci` (validated end-to-end on CPU via
 `pd-resid-mlp`). Harvest / slow-eval / export over the toys are NOT wired
 (`experiments.lm.load_run.build_target` / `run_metadata` are LM-only).
 

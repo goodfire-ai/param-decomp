@@ -23,7 +23,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, get_args
 
 import equinox as eqx
 import jax
@@ -36,7 +36,7 @@ from jax.typing import DTypeLike
 from jaxtyping import Array, Float, Int
 from safetensors import safe_open
 
-from param_decomp import taps
+from param_decomp import site_tree
 from param_decomp.components import (
     ComponentStacks,
     SiteC,
@@ -45,8 +45,10 @@ from param_decomp.components import (
     quantize_fp8,
     site_out,
 )
+from param_decomp.configs import GluMatrix
 from param_decomp.losses import kl_per_position
 from param_decomp.sharding import assert_divisible
+from param_decomp.site_tree import ArchFamily
 from vendored_jax.llama import apply_rope, causal_sdpa, repeat_kv, rms_norm, rope_cos_sin
 
 
@@ -104,11 +106,13 @@ def default_inv_freq(head_dim: int, rope_theta: float) -> Float[Array, " hd2"]:
     return 1.0 / (rope_theta ** (jnp.arange(0, head_dim, 2, dtype=jnp.float32) / head_dim))
 
 
-KIND_ORDER = ("q", "k", "v", "o", "gate", "up", "down")
-"""Within-layer canonical site order = computation order. The canonical site order
-(`glu_site_specs`) is layer-ascending, then this."""
+KIND_ORDER: tuple[str, ...] = get_args(GluMatrix)
+"""Within-layer canonical site order = computation order, DERIVED from the config-side
+`GluMatrix` vocabulary (one source of truth — a c-spec key and a target matrix cannot
+drift). The canonical site order (`glu_site_specs`) is layer-ascending, then this."""
 ATTN_KINDS = ("q", "k", "v", "o")
 MLP_KINDS = ("gate", "up", "down")
+assert KIND_ORDER == ATTN_KINDS + MLP_KINDS, KIND_ORDER
 
 SITE_NAME_PATTERN = re.compile(
     r"^layers\.(\d+)\.(?:self_attn\.(q|k|v|o)|mlp\.(gate|up|down))_proj$"
@@ -128,6 +132,11 @@ def parse_site_name(name: str) -> tuple[int, str]:
     assert match is not None, f"unsupported site name {name!r}"
     layer, attn_kind, mlp_kind = match.groups()
     return int(layer), attn_kind if attn_kind is not None else mlp_kind
+
+
+FAMILY = ArchFamily("glu_transformer", KIND_ORDER, site_name, parse_site_name)
+"""This family's matrix grammar as data — the vocabulary + name renderer the tiled
+`glu_transformer` c-specs resolve against (`resolve_site_tree`)."""
 
 
 def site_dims(cfg: GLUArch, kind: str) -> tuple[int, int]:
@@ -151,16 +160,7 @@ def site_dims(cfg: GLUArch, kind: str) -> tuple[int, int]:
 
 
 def canonical_site_cs(site_cs: tuple[SiteC, ...]) -> tuple[SiteC, ...]:
-    """Canonical site order: layer-ascending, `KIND_ORDER` within a layer. Names must
-    parse and be unique."""
-    names = [site.name for site in site_cs]
-    assert len(set(names)) == len(names), f"duplicate sites in {names}"
-
-    def order_key(site: SiteC) -> tuple[int, int]:
-        layer, kind = parse_site_name(site.name)
-        return layer, KIND_ORDER.index(kind)
-
-    return tuple(sorted(site_cs, key=order_key))
+    return site_tree.canonical_site_cs(FAMILY, site_cs)
 
 
 def mlp_family_site_cs(first_layer: int, last_layer: int, C: int) -> tuple[SiteC, ...]:
@@ -175,15 +175,7 @@ def mlp_family_site_cs(first_layer: int, last_layer: int, C: int) -> tuple[SiteC
 
 
 def glu_site_specs(cfg: GLUArch, site_cs: tuple[SiteC, ...]) -> tuple[SiteSpec, ...]:
-    """Shape-resolved specs in canonical order (input must already be canonical)."""
-    assert site_cs == canonical_site_cs(site_cs), f"sites not in canonical order: {site_cs}"
-    specs = []
-    for site in site_cs:
-        layer, kind = parse_site_name(site.name)
-        assert 0 <= layer < cfg.n_layer, (site.name, cfg.n_layer)
-        assert site.C >= 1, site
-        specs.append(SiteSpec(site.name, *site_dims(cfg, kind), site.C))
-    return tuple(specs)
+    return site_tree.site_specs(FAMILY, site_cs, lambda kind: site_dims(cfg, kind), cfg.n_layer)
 
 
 # ----------------------------- frozen layers -----------------------------
@@ -363,11 +355,7 @@ def _stack_layers(layers: list[GLULayer]) -> GLULayer:
 def _tap_layer(key: str) -> int:
     """Global block index a `read_activations` key reads at: the block a `resid.{L}` tap
     enters, or the block a decomposed site lives in."""
-    match taps.parse_tap(key):
-        case taps.ResidIn(layer):
-            return layer
-        case taps.SiteInput(name):
-            return parse_site_name(name)[0]
+    return site_tree.tap_layer(FAMILY, key)
 
 
 _TAP_CLASS_BY_KIND = {
@@ -380,10 +368,10 @@ these)."""
 
 
 def _tap_class(key: str) -> str:
-    match taps.parse_tap(key):
-        case taps.ResidIn():
+    match site_tree.parse_tap(key):
+        case site_tree.ResidIn():
             return "resid"
-        case taps.SiteInput(name):
+        case site_tree.SiteInput(name):
             return _TAP_CLASS_BY_KIND[parse_site_name(name)[1]]
 
 

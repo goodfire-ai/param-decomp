@@ -36,7 +36,7 @@ from jaxtyping import Array, Float, Int
 from param_decomp import placement
 from param_decomp.built_run import BuiltRun
 from param_decomp.checkpoint import make_checkpoint_manager, restore_decomposition_to_host
-from param_decomp.ci_fn import CIFn
+from param_decomp.ci_fn import ChunkwiseTransformerCIFn
 from param_decomp.components import ComponentStacks
 from param_decomp.lm import DecomposedModel
 from param_decomp.run_state import init_decomposition
@@ -124,7 +124,7 @@ class LoadedJaxRun:
     vocab_size: int
     _decomposition: Decomposition
     _forward: Callable[
-        [DecomposedModel, ComponentStacks, CIFn, Int[Array, "B T"]],
+        [DecomposedModel, ComponentStacks, ChunkwiseTransformerCIFn, Int[Array, "B T"]],
         tuple[dict[str, Array], dict[str, Array], Array],
     ]
 
@@ -140,7 +140,9 @@ class LoadedJaxRun:
 
     def forward(self, token_ids: Int[Array, "B T"]) -> HarvestForward:
         ci_fn = self._decomposition.ci_fn
-        assert isinstance(ci_fn, CIFn), "harvest is the transformer-CI-fn (LM) path only"
+        assert isinstance(ci_fn, ChunkwiseTransformerCIFn), (
+            "harvest is the transformer-CI-fn (LM) path only"
+        )
         lower_leaky_ci, component_acts, output_probs = self._forward(
             self.lm, self._decomposition.components, ci_fn, token_ids
         )
@@ -193,7 +195,7 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
     def forward(
         model: DecomposedModel,
         components: ComponentStacks,
-        ci_fn: CIFn,
+        ci_fn: ChunkwiseTransformerCIFn,
         token_ids: Int[Array, "B T"],
     ) -> tuple[dict[str, Array], dict[str, Array], Array]:
         clean_output, all_taps = model.clean_output_and_activations(

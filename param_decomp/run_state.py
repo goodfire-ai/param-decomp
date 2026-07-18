@@ -20,11 +20,10 @@ from jaxtyping import Array, PRNGKeyArray
 
 from param_decomp.adversary import PersistentAdversary, init_sources_adam_state
 from param_decomp.built_run import DataConfig
-from param_decomp.ci_fn import CIFnArch
+from param_decomp.ci_fn import ChunkwiseTransformerCIArch, CIFnArch
 from param_decomp.configs import (
     AdamPGDConfig,
     AdamWOptimizerConfig,
-    ChunkwiseTransformerCiConfig,
     MuonOptimizerConfig,
     PDConfig,
 )
@@ -137,7 +136,7 @@ def _optimizer_with_clip(
     return optax.chain(clip_by_global_norm_with_eps(opt.grad_clip_norm, eps=1e-6), inner)
 
 
-def build_optimizers(pd: PDConfig, mesh: Mesh | None):
+def build_optimizers(pd: PDConfig, ci_fn_arch: CIFnArch, mesh: Mesh | None):
     """Returns (opt_vu, opt_ci, schedules): the schedule fns are returned too so the
     log path reports the exact LR the optimizer applies (single source of truth).
 
@@ -152,7 +151,7 @@ def build_optimizers(pd: PDConfig, mesh: Mesh | None):
     )
     ci_muon_dim_nums = (
         stacked_muon_dimension_numbers
-        if isinstance(pd.ci_config, ChunkwiseTransformerCiConfig)
+        if isinstance(ci_fn_arch, ChunkwiseTransformerCIArch)
         else None
     )
     opt_ci = _optimizer_with_clip(pd.ci_fn_optimizer, sched_ci, ci_muon_dim_nums, mesh=mesh)

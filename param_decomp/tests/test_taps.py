@@ -1,6 +1,6 @@
 """The tap-address grammar: round-trips, and the wire keys targets/eval already use."""
 
-from param_decomp.taps import ResidIn, SiteInput, parse_tap, tap_key
+from param_decomp.site_tree import ResidIn, SiteInput, parse_tap, tap_key
 
 
 def test_tap_key_round_trips():

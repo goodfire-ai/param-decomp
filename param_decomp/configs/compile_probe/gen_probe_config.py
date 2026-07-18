@@ -16,13 +16,13 @@ import sys
 import yaml
 
 PER_KIND_C = {
-    "self_attn.q_proj": 2048,
-    "self_attn.k_proj": 2048,
-    "self_attn.v_proj": 4096,
-    "self_attn.o_proj": 4096,
-    "mlp.gate_proj": 8192,
-    "mlp.up_proj": 8192,
-    "mlp.down_proj": 10240,
+    "q": 2048,
+    "k": 2048,
+    "v": 4096,
+    "o": 4096,
+    "gate": 8192,
+    "up": 8192,
+    "down": 10240,
 }
 N_TOTAL_LAYERS = 32
 
@@ -31,11 +31,8 @@ def main(n_layers: int, dp: int, out_path: str, seq: int = 256, batch: int | Non
     if batch is None:
         batch = dp  # per-rank 1
     first = N_TOTAL_LAYERS - n_layers
-    targets = []
-    for layer in range(first, N_TOTAL_LAYERS):
-        for mod, c in PER_KIND_C.items():
-            targets.append({"C": c, "module_pattern": f"model.layers.{layer}.{mod}"})
-    sites_per_chunk = len(targets)  # one chunk: minimise compile, still the chunkwise path
+    n_sites = n_layers * len(PER_KIND_C)
+    sites_per_chunk = n_sites  # one chunk: minimise compile, still the chunkwise path
 
     cfg = {
         "run_name": f"compileprobe-{n_layers}L-dp{dp}-seq{seq}",
@@ -66,19 +63,25 @@ def main(n_layers: int, dp: int, out_path: str, seq: int = 256, batch: int | Non
             "slow_every": 1000000,
             "slow_on_first_step": False,
         },
+        "decomposition": {
+            "sites": {
+                "kind": "glu_transformer",
+                "layers": {"kind": "range", "start": first, "end": N_TOTAL_LAYERS},
+                "cs": dict(PER_KIND_C),
+            },
+            # one chunk spanning every decomposed block: minimise compile count while
+            # still exercising the chunkwise path (matches the old sites_per_chunk=all)
+            "ci": {
+                "type": "chunkwise_transformer",
+                "blocks_per_chunk": n_layers,
+                "d_model": 4096,
+                "n_blocks": 4,
+                "n_heads": 64,
+                "mlp_hidden": 16384,
+            },
+        },
         "pd": {
             "batch_size": batch,
-            "ci_config": {
-                "fn_type": "global_shared_transformer",
-                "hidden_dims": None,
-                "mode": "global",
-                "simple_transformer_ci_cfg": {
-                    "attn_config": {"max_len": seq, "n_heads": 64, "rope_base": 10000.0},
-                    "d_model": 4096,
-                    "mlp_hidden_dim": [16384],
-                    "n_blocks": 4,
-                },
-            },
             "ci_fn_optimizer": {
                 "betas": [0.9, 0.999],
                 "grad_clip_norm": None,
@@ -101,14 +104,12 @@ def main(n_layers: int, dp: int, out_path: str, seq: int = 256, batch: int | Non
                 },
                 "weight_decay": 0.0,
             },
-            "decomposition_targets": targets,
             "faithfulness_warmup_lr": 0.001,
             "faithfulness_warmup_steps": 2,
             "faithfulness_warmup_weight_decay": 0.0,
             "identity_decomposition_targets": None,
             "loss_metrics": [
                 {
-                    "beta": 0.2,
                     "coeff": 5.0e-06,
                     "eps": 1.0e-06,
                     "pnorm": {"start_val": 2.0, "fn_type": "linear", "final_val_frac": 0.2},
@@ -141,8 +142,6 @@ def main(n_layers: int, dp: int, out_path: str, seq: int = 256, batch: int | Non
                 },
                 {"coeff": 1000000.0, "type": "FaithfulnessLoss"},
             ],
-            "n_mask_samples": 1,
-            "sampling": "continuous",
             "seed": 0,
             "steps": 10,
         },
@@ -164,7 +163,7 @@ def main(n_layers: int, dp: int, out_path: str, seq: int = 256, batch: int | Non
     with open(out_path, "w") as f:
         yaml.safe_dump(cfg, f, sort_keys=False)
     print(
-        f"wrote {out_path}: {n_layers}L (layers {first}..31), {len(targets)} sites, dp={dp}, batch={batch}, seq={seq}"
+        f"wrote {out_path}: {n_layers}L (layers {first}..31), {n_sites} sites, dp={dp}, batch={batch}, seq={seq}"
     )
 
 
