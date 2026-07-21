@@ -317,6 +317,14 @@ def get_config(path: Path) -> Config:
 - Don't add fallbacks for old formats or migration shims. Change it; migrate manually
   if needed.
 - Delete unused code. If an argument is always the same value, inline it.
+- **"Unused" is judged against the right caller set.** The two rules above apply to
+  internal code, whose callers are enumerable in-repo. Config schema fields, CLI flags,
+  and other user-facing surface have users the tree deliberately does not contain:
+  uncommitted sweeps and stored runs' pinned `launch_config.yaml`s (see CONFIGS.md — the
+  repo's job is more than running committed configs). "No committed config sets it" is
+  not evidence for removal; before deleting external surface, check the canonical seats,
+  stored-run pins, and intent. The fix for an untested capability flag is a test, not
+  deletion.
 
 ## Types & arguments
 
