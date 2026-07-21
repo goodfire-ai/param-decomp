@@ -230,12 +230,16 @@ def test_stacked_muon_update_matches_optax_muon():
         )
 
 
+@pytest.mark.multidevice
 def test_stacked_muon_sharded_matches_unsharded():
-    """The stack-axis sharding constraint is layout-only: at >1 devices the sharded
-    stacked NS reproduces the mesh=None updates (and preserves finiteness). Structural
-    no-op at 1 device; the real leg runs under
-    `XLA_FLAGS=--xla_force_host_platform_device_count=4`."""
+    """The stack-axis sharding constraint is layout-only: the sharded stacked NS
+    reproduces the mesh=None updates (and preserves finiteness). Needs >1 device to be
+    non-vacuous — at 4 sim devices the (16, 24) canonical group holds 5 matrices, so
+    `_pad_to_multiple` genuinely pads 5 -> 8 and each device owns a real sub-stack; at
+    1 device the constraint and the padding both collapse to no-ops."""
     from jax.sharding import Mesh
+
+    assert jax.device_count() >= 4, "needs 4 sim devices; run via `make test-multidevice`"
 
     from param_decomp.muon_stacked import stacked_muon
     from param_decomp.sharding import hsdp_mesh
@@ -273,6 +277,67 @@ def test_stacked_muon_sharded_matches_unsharded():
         assert jnp.allclose(unsharded[k], sharded[k], rtol=1e-5, atol=1e-7), (
             f"{k}: sharded stacked NS diverged from unsharded"
         )
+
+
+def test_stacked_muon_bf16_ns_is_sane():
+    """`ns_dtype: bfloat16` (the stacked-only Kimi recipe, SPEC N1: masters and momentum
+    stay fp32 — only the NS iteration itself runs half-precision). This pins "the fast
+    path is not fp16-degenerate and not garbage", NOT parity: bf16 NS genuinely drifts a
+    few percent from fp32 NS, so the update-norm comparison is a loose ~10% sanity bound.
+    The exactness claims live in the fp32-NS tests above."""
+    from typing import Literal
+
+    from param_decomp.muon_stacked import stacked_muon
+
+    key = jax.random.key(11)
+    params = {
+        "stack": jnp.zeros((3, 16, 24)),
+        "w": jnp.zeros((24, 16)),
+        "bias_stack": jnp.zeros((3, 24)),
+    }
+    grads = {
+        name: jax.random.normal(jax.random.fold_in(key, i), p.shape)
+        for i, (name, p) in enumerate(params.items())
+    }
+
+    _, treedef = jax.tree.flatten(params)
+
+    def run(ns_dtype: Literal["float32", "bfloat16"]) -> tuple[dict[str, Array], optax.OptState]:
+        opt = stacked_muon(
+            lambda count: jnp.float32(1e-3),
+            beta=0.95,
+            weight_decay=0.0,
+            consistent_rms=0.2,
+            muon_weight_dimension_numbers=stacked_muon_dimension_numbers,
+            ns_steps=5,
+            ns_dtype=jnp.dtype(ns_dtype),
+            mesh=None,
+        )
+        state = opt.init(params)
+        p = params
+        for _ in range(2):
+            raw, state = opt.update(grads, state, p)
+            p = jax.tree.map(
+                lambda x, u: x + u, p, jax.tree.unflatten(treedef, jax.tree.leaves(raw))
+            )
+        raw, state = opt.update(grads, state, p)
+        return jax.tree.unflatten(treedef, jax.tree.leaves(raw)), state
+
+    bf16_updates, bf16_state = run("bfloat16")
+    fp32_updates, _ = run("float32")
+
+    for leaf in jax.tree.leaves((bf16_updates, bf16_state)):
+        assert bool(jnp.all(jnp.isfinite(leaf)))
+        assert leaf.dtype != jnp.bfloat16, "bf16 must stay inside NS: updates + state are fp32"
+    for k in params:
+        bf16_norm = float(jnp.linalg.norm(bf16_updates[k]))
+        fp32_norm = float(jnp.linalg.norm(fp32_updates[k]))
+        assert abs(bf16_norm - fp32_norm) < 0.1 * fp32_norm, (
+            f"{k}: bf16-NS update norm {bf16_norm} vs fp32 {fp32_norm}"
+        )
+    assert not bool(jnp.array_equal(bf16_updates["stack"], fp32_updates["stack"])), (
+        "bit-identical updates: the ns_dtype knob did not reach the NS iteration"
+    )
 
 
 def test_stacked_muon_dim_numbers_fail_closed():

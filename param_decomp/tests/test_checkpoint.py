@@ -9,6 +9,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
+import pytest
 from jax.sharding import Mesh
 
 from param_decomp.adversary import (
@@ -248,8 +249,57 @@ def test_muon_ci_fn_roundtrip_and_exact_resume(tmp_path: Path):
 def test_stacked_muon_roundtrip_and_exact_resume(tmp_path: Path):
     """SPEC S20 `impl: stacked`: the stacked-NS muon state is optax's `MuonState` pytree
     verbatim, so the same roundtrip + exact-resume guarantee holds — and a checkpoint
-    written under either impl restores under the other."""
+    written under either impl restores under the other (pinned by
+    `test_muon_cross_impl_checkpoint_roundtrip`)."""
     _roundtrip_and_exact_resume(tmp_path, muon_components=True, muon_ci_fn=True, stacked_impl=True)
+
+
+@pytest.mark.parametrize(
+    ("save_impl", "restore_impl"), [("stacked", "optax"), ("optax", "stacked")]
+)
+def test_muon_cross_impl_checkpoint_roundtrip(tmp_path: Path, save_impl: str, restore_impl: str):
+    """SPEC S20: `impl: optax` and `impl: stacked` carry the SAME `MuonState` pytree, so a
+    checkpoint written under either impl restores bit-exact onto a reference built under
+    the other — and the other impl's train step consumes the restored state (continuing it
+    exactly as it continues the in-memory state). Muon on BOTH groups so the cross-impl
+    claim covers the V/U stacks and the ci-fn partition."""
+    lm, state, save_step, resid = _build(
+        seed=1, muon_components=True, muon_ci_fn=True, stacked_impl=save_impl == "stacked"
+    )
+    for i in range(2):
+        state, _ = save_step(lm, state, resid, jax.random.PRNGKey(i))
+    mgr = make_checkpoint_manager(tmp_path / "ckpts", keep_last=2)
+    save_state(mgr, 2, state)
+
+    # The reference — and the continuation step — are built under the OTHER impl.
+    _, fresh, restore_step_fn, _ = _build(
+        seed=7, muon_components=True, muon_ci_fn=True, stacked_impl=restore_impl == "stacked"
+    )
+    restored = restore_latest(mgr, fresh)
+    assert restored is not None
+    loaded, ckpt_step = restored
+    assert ckpt_step == 2
+    for a, b in zip(jax.tree.leaves(state), jax.tree.leaves(loaded), strict=True):
+        assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
+
+    # Non-vacuous: the cross-restored muon momentum is real, moved by the two save-side
+    # steps — not an untouched fresh-init tree.
+    [muon_state] = [
+        x
+        for x in jax.tree.leaves(
+            loaded.training.components_opt_state,
+            is_leaf=lambda x: isinstance(x, optax.contrib.MuonState),
+        )
+        if isinstance(x, optax.contrib.MuonState)
+    ]
+    assert all(bool(jnp.any(leaf != 0)) for leaf in jax.tree.leaves(muon_state.mu))
+
+    state_cont, m_cont = restore_step_fn(lm, state, resid, jax.random.PRNGKey(100))
+    loaded_cont, m_load = restore_step_fn(lm, loaded, resid, jax.random.PRNGKey(100))
+    for k in m_cont:
+        assert float(m_cont[k]) == float(m_load[k]), k
+    for a, b in zip(jax.tree.leaves(state_cont), jax.tree.leaves(loaded_cont), strict=True):
+        assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
 
 
 def test_persistent_adam_step_count_roundtrip_and_post_resume_bias_correction(tmp_path: Path):
