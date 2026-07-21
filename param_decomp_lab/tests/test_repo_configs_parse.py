@@ -1,4 +1,5 @@
-"""Every LM config yaml the repo maintains must parse at tip (CONFIGS.md rule 1).
+"""Every config yaml the repo maintains must parse at tip (CONFIGS.md rule 1) — the
+LM seats against `LMExperimentConfig`, the toy seats against their domain schemas.
 
 A schema PR that breaks a config here migrates it in the same PR, with an
 executed in-repo migration — never a script attached to a PR comment (#939
@@ -18,6 +19,8 @@ from param_decomp_lab.experiments.lm.config import (
     PretrainedTarget,
     assert_placement_claims,
 )
+from param_decomp_lab.experiments.resid_mlp.config import ResidMLPExperimentConfig
+from param_decomp_lab.experiments.tms.config import TMSExperimentConfig
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -72,3 +75,28 @@ def test_config_parses_and_is_canonical(path: Path) -> None:
 def test_known_broken_entries_still_exist() -> None:
     missing = [rel for rel in KNOWN_BROKEN if not (REPO / rel).exists()]
     assert not missing, f"KNOWN_BROKEN lists deleted files, prune it: {missing}"
+
+
+TOY_SCHEMA_BY_DIR = {
+    "param_decomp_lab/experiments/tms/configs": TMSExperimentConfig,
+    "param_decomp_lab/experiments/resid_mlp/configs": ResidMLPExperimentConfig,
+}
+
+TOY_CONFIG_PATHS = sorted(
+    path for rel_dir in TOY_SCHEMA_BY_DIR for path in REPO.glob(f"{rel_dir}/*.yaml")
+)
+
+
+@pytest.mark.parametrize("path", TOY_CONFIG_PATHS, ids=lambda p: str(p.relative_to(REPO)))
+def test_toy_config_parses_and_is_canonical(path: Path) -> None:
+    schema = TOY_SCHEMA_BY_DIR[str(path.parent.relative_to(REPO))]
+    cfg = schema.model_validate(_load(path))
+    assert_canonical_algorithm_config(cfg)
+
+
+def test_toy_gate_collects_both_domains() -> None:
+    """Anti-vacuity: a moved configs dir would silently drop its whole domain from the gate."""
+    collected_dirs = {str(p.parent.relative_to(REPO)) for p in TOY_CONFIG_PATHS}
+    assert collected_dirs == set(TOY_SCHEMA_BY_DIR), (
+        f"toy config glob collected {collected_dirs or 'nothing'} — did a configs dir move?"
+    )
