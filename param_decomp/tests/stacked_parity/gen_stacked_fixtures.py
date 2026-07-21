@@ -1,6 +1,6 @@
 """Pin the STACKED (pre-site-generality) Llama target's outputs as parity fixtures.
 
-This script runs against the `feature/jax-single-pool-pd` code (the stacked `ComponentStacks`
+This script runs against the `feature/jax-single-pool-pd` code (the stacked `DecompVU`
 with `(L, ., .)` arrays, `LayerRange`, `llama_decomposed_lm(cfg, layer_range, C)`); it
 does NOT run against `feature/jax-site-generality` or later — the names it imports were
 restructured away. Regenerate from a base-branch checkout, e.g.:
@@ -48,7 +48,7 @@ from param_decomp.schedule import ScheduleConfig  # noqa: E402
 from param_decomp.targets.llama8b import (  # noqa: E402
     KINDS,
     LayerRange,
-    init_component_stacks,
+    init_decomp_vu,
     llama_decomposed_lm,
     site_name,
 )
@@ -100,7 +100,7 @@ def main() -> None:
     layer_range = LayerRange(FIRST_LAYER, LAST_LAYER)
     tgt = _tiny_target(cfg, layer_range, random.PRNGKey(0))
     lm = llama_decomposed_lm(cfg, layer_range, C)
-    vu = init_component_stacks(cfg, C, layer_range.n_layers, random.PRNGKey(1))
+    vu = init_decomp_vu(cfg, C, layer_range.n_layers, random.PRNGKey(1))
     ci_fn = init_ci_fn(CI_ARCH, lm.sites, random.PRNGKey(2))
     sources = init_persistent_sources(
         lm.site_names, tuple(s.C for s in lm.sites), (1, T), jax.numpy.float32, random.PRNGKey(3)
