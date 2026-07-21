@@ -50,6 +50,7 @@ pd:
 runtime:
   remat_recon_forwards: false
   dp: null
+  sharding: ddp
 cadence:
   train_log_every: 5
   save_every: 10

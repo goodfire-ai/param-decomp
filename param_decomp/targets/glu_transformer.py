@@ -563,7 +563,7 @@ def _reconstruct_compute_weights(
 ) -> dict[str, dict[str, Array]]:
     """The ZeRO-1 weight reconstruction (pure-HSDP backup layout). The stacked
     `[n_layer, d_in, C]` / `[n_layer, C, d_out]` compute weights arrive with their FSDP dim
-    in the persistence layout the run's placement rules chose (default `owner`:
+    in the persistence layout the run's placement rules chose (e.g. `owner`:
     stack ÷replicate, d ÷fsdp — see `ComponentStacks.shardings`). Reconstruct
     them to the `fsdp`-sharded (÷fsdp) COMPUTE layout here — BEFORE the layer scan — so:
 

@@ -149,6 +149,8 @@ def main(n_layers: int, dp: int, out_path: str, seq: int = 256, batch: int | Non
             "autocast_bf16": True,
             "device": "cuda:0",
             "dp": dp,
+            # production (the dp64 seat) runs zero1; the probe times the production path
+            "sharding": "zero1",
             "remat_recon_forwards": True,
         },
         "target": {

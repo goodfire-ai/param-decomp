@@ -168,6 +168,7 @@ pd:
 runtime:
   remat_recon_forwards: false
   dp: 16
+  sharding: zero1
 target:
   output_extract: 0
   weights_dtype: bfloat16

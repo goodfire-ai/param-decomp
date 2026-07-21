@@ -1027,14 +1027,18 @@ class RuntimeConfig(BaseConfig):
         ),
     )
     sharding: Literal["owner", "owner+zero1", "zero1", "ddp"] | PlacementTableConfig = Field(
-        default="owner",
         description=(
-            "Placement policy for the trainable state (placement.py): a preset name "
-            "(`owner` = stack ÷replicate / d ÷fsdp / C ÷tp, the SPEC D4-amended layout, "
-            "STRICT — a shape group whose stack does not tile ÷replicate is an error; "
-            "`owner+zero1` = `owner` plus the `params.zero1` opt-in row, ZeRO-1-ing "
-            "exactly those non-tiling groups intra-matrix; `zero1` = retired intra-matrix "
-            "÷N, kept for A/B; `ddp` = fully replicated) or an explicit "
+            "Placement policy for the trainable state (placement.py). REQUIRED, no "
+            "default — a layout this consequential is written down per config. Presets: "
+            "`zero1` = intra-matrix ZeRO-1 over the full data mesh — the proven layout "
+            "(all production mileage to date; ~equivalent comms to `owner` under "
+            "elementwise optimizers); `owner` = whole-matrix ownership (stack ÷replicate, "
+            "d ÷fsdp, C ÷tp) — the muon-motivated layout (Newton-Schulz stays "
+            "node-local), validated (SPEC D4 harness byte-equivalence, 8B mem-fit probe) "
+            "but without production mileage yet; STRICT — a shape group whose stack does "
+            "not tile ÷replicate is an error; `owner+zero1` = `owner` plus the "
+            "`params.zero1` opt-in row, ZeRO-1-ing exactly those non-tiling groups "
+            "intra-matrix; `ddp` = fully replicated. Or an explicit "
             "`PlacementTableConfig` table (nested `params: {persist, zero1?, forward}` + "
             "`activations`, each row a semantic-axis -> mesh-axes rule; list order is "
             "semantics). Same math under every value — layouts differ only by float "

@@ -141,5 +141,6 @@ data:
   streaming: false
 runtime:
   dp: 8
+  sharding: zero1
 wandb:
   project: param-decomp

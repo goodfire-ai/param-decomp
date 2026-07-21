@@ -8,10 +8,10 @@ Megatron-C. The memory consumers, and how each is placed:
     ~16 GB bulk shards `/fsdp` (8), gathered per layer in the scan on NVLink. embed /
     lm_head / norm / inv_freq replicate.
   * components (V/U) + their Adam states: placed by the run's `PlacementRules`
-    (`ComponentStacks.shardings(rules)` — `runtime.sharding`). Under the default `owner`
+    (`ComponentStacks.shardings(rules)` — `runtime.sharding`). Under the `owner`
     preset: the shape-group STACK axis ÷`replicate` (whole matrices owned per node-group),
-    d dims ÷`fsdp`, C ÷`tp` — ÷N total, same memory as the retired intra-matrix zero1
-    layout (kept as a preset for A/B). The fp32 masters + fp32 Adam m/v are the dominant
+    d dims ÷`fsdp`, C ÷`tp` — ÷N total, same memory as the intra-matrix `zero1`
+    preset. The fp32 masters + fp32 Adam m/v are the dominant
     non-activation footprint (÷N ≈5 GB/GPU at dp32, scaling). COMPUTE re-pins the bf16
     weights to `fsdp`-only ONCE per step (in ENTRY, off the per-layer hot path; see
     `glu_transformer._reconstruct_compute_weights` — hand-written until placement migration

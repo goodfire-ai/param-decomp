@@ -122,6 +122,7 @@ data:
 runtime:
   remat_recon_forwards: true
   dp: null
+  sharding: zero1
 wandb:
   project: param-decomp-llama
   entity: goodfire

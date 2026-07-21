@@ -253,11 +253,12 @@ def _rules(
 
 
 def preset(name: str, mesh: Mesh | AbstractMesh) -> PlacementRules:
-    """The built-in tables: `owner` (stack ÷replicate, d ÷fsdp — the D4-amended layout,
-    STRICT: a stack that doesn't tile ÷replicate is an error), `owner+zero1` (`owner` plus
-    the `params.zero1` opt-in: non-tiling groups take intra-matrix ZeRO-1 behind the
-    stack axis), `zero1` (intra-matrix ÷N — the retired layout, kept for A/B), `ddp`
-    (everything replicated — single-node / small-model runs)."""
+    """The built-in tables: `zero1` (intra-matrix ÷N over the full data mesh — the proven
+    layout, all production mileage to date; ~equivalent comms to `owner` under elementwise
+    optimizers), `owner` (stack ÷replicate, d ÷fsdp — the muon-motivated D4-amended layout,
+    node-local NS; STRICT: a stack that doesn't tile ÷replicate is an error), `owner+zero1`
+    (`owner` plus the `params.zero1` opt-in: non-tiling groups take intra-matrix ZeRO-1
+    behind the stack axis), `ddp` (everything replicated — single-node / small-model runs)."""
     activations: Rule = {"batch": _BATCH, "C": "tp"}
     owner_persist: Rule = {"stack": "replicate", "d_in": "fsdp", "d_out": "fsdp", "C": "tp"}
     zero1_persist: Rule = {"d_in": _ZERO1_DATA, "d_out": _ZERO1_DATA, "C": "tp"}

@@ -40,7 +40,7 @@ _MINIMAL_LM = {
         "batch_size": 8,
         "loss_metrics": [{"type": "FaithfulnessLoss", "coeff": 1.0}],
     },
-    "runtime": {"device": "cuda:0"},
+    "runtime": {"device": "cuda:0", "sharding": "zero1"},
     "cadence": {"train_log_every": 1},
     "target": {
         "spec": {

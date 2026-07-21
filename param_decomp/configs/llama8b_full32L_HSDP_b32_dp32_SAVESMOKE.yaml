@@ -158,6 +158,8 @@ pd:
 runtime:
   dp: 32
   tp: 1
+  # the layout production runs (the dp64 seat) — a save/resume smoke must exercise it
+  sharding: zero1
   remat_recon_forwards: true
   remat_ci_fn: true
 target:
