@@ -22,7 +22,7 @@ from jax.sharding import PartitionSpec as P
 from jaxtyping import Array
 
 if TYPE_CHECKING:
-    from param_decomp.placement import PlacementRules
+    from param_decomp.placement import PlacedRule, PlacementRules
 
 
 @dataclass(frozen=True)
@@ -145,23 +145,23 @@ class ComponentStacks(eqx.Module, Generic[VULeaf]):
             lengths[shape] = max(lengths.get(shape, 0), slot + 1)
         return lengths
 
-    def _site_for_group(self, g: int, rules: "PlacementRules") -> str:
-        """The placement-site choice per shape group: `params/persist` when the stack
-        tiles its assignment, else the OPT-IN `params/persist.zero1` row (intra-matrix
+    def _row_for_group(self, g: int, rules: "PlacementRules") -> "PlacedRule":
+        """The placement-row choice per shape group: `params.persist` when the stack
+        tiles its assignment, else the OPT-IN `params.zero1` row (intra-matrix
         ZeRO-1 behind the stack axis — declared by the `owner+zero1` preset or an
-        explicit table; a table without it fails loudly here). Conditionals are site
+        explicit table; a table without it fails loudly here). Conditionals are row
         choices in consumer code — never expressions in rules (PLACEMENT_DESIGN.md)."""
-        n = rules.shard_count("params/persist", "stack")
+        n = rules.params.persist.shard_count("stack")
         if g % n == 0:
-            return "params/persist"
-        assert "params/persist.zero1" in rules.sites, (
-            f"shape group of {g} stacked matrices does not tile the params/persist stack "
-            f"sharding (÷{n}), and this placement table declares no params/persist.zero1 "
+            return rules.params.persist
+        assert rules.params.zero1 is not None, (
+            f"shape group of {g} stacked matrices does not tile the params.persist stack "
+            f"sharding (÷{n}), and this placement table declares no params.zero1 "
             f"row. Intended (e.g. a single-layer decomposition at multi-node dp)? Opt in: "
-            f"`sharding: owner+zero1`, or declare params/persist.zero1 in an explicit "
+            f"`sharding: owner+zero1`, or declare `params: {{zero1: ...}}` in an explicit "
             f"table. Not intended? Your site set and mesh disagree — fix one."
         )
-        return "params/persist.zero1"
+        return rules.params.zero1
 
     def shardings(
         self: "ComponentStacks[Array]", rules: "PlacementRules"
@@ -177,26 +177,26 @@ class ComponentStacks(eqx.Module, Generic[VULeaf]):
             assert g == lengths[(d_in, d_out, c)], (
                 "stacks disagree with the static site_slots index — the audit would lie"
             )
-            site = self._site_for_group(g, rules)
-            rules.validate_shape(site, ComponentStacks.V_AXES, (g, d_in, c))
-            rules.validate_shape(site, ComponentStacks.U_AXES, (g, c, d_out))
+            row = self._row_for_group(g, rules)
+            row.validate_shape(ComponentStacks.V_AXES, (g, d_in, c))
+            row.validate_shape(ComponentStacks.U_AXES, (g, c, d_out))
             placed[(d_in, d_out, c)] = (
-                rules.sharding_for(site, ComponentStacks.V_AXES),
-                rules.sharding_for(site, ComponentStacks.U_AXES),
+                row.sharding_for(ComponentStacks.V_AXES),
+                row.sharding_for(ComponentStacks.U_AXES),
             )
         return ComponentStacks(stacks=placed, site_slots=self.site_slots)
 
     def placement_audit(
         self, rules: "PlacementRules"
-    ) -> dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]]:
-        """`{label: (site, axes, shape)}` for `rules.describe(...)` — the startup audit.
+    ) -> dict[str, tuple["PlacedRule", tuple[str, ...], tuple[int, ...]]]:
+        """`{label: (row, axes, shape)}` for `rules.describe(...)` — the startup audit.
         Group lengths come from the static `site_slots` (works on eval-shape trees)."""
-        out: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {}
+        out: dict[str, tuple[PlacedRule, tuple[str, ...], tuple[int, ...]]] = {}
         for (d_in, d_out, c), g in self._group_lengths().items():
-            site = self._site_for_group(g, rules)
+            row = self._row_for_group(g, rules)
             group = f"(d_in={d_in}, d_out={d_out}, C={c})"
-            out[f"V {group}"] = (site, ComponentStacks.V_AXES, (g, d_in, c))
-            out[f"U {group}"] = (site, ComponentStacks.U_AXES, (g, c, d_out))
+            out[f"V {group}"] = (row, ComponentStacks.V_AXES, (g, d_in, c))
+            out[f"U {group}"] = (row, ComponentStacks.U_AXES, (g, c, d_out))
         return out
 
 

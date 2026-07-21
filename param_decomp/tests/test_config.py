@@ -507,3 +507,41 @@ def test_arithmetic_ci_grid_metric_builds_to_arithmetic_eval_config():
     assert built.eval.arithmetic == ArithmeticEvalConfig(
         operation="add", a_range=(1, 50), b_range=(1, 100), thresholds=(0.1,), top_k=24
     )
+
+
+def test_placement_table_parses_typed_and_fails_closed():
+    from param_decomp.configs import PlacementTableConfig, RuntimeConfig
+
+    table: dict[str, Any] = {
+        "params": {
+            "persist": {"stack": "replicate", "d_in": "fsdp", "d_out": "fsdp", "C": "tp"},
+            "zero1": {"d_in": ["fsdp", "replicate"], "d_out": ["fsdp", "replicate"], "C": "tp"},
+            "forward": {"d_in": "fsdp", "d_out": "fsdp", "C": "tp"},
+        },
+        "activations": {"batch": ["replicate", "fsdp"], "C": "tp"},
+    }
+    runtime = RuntimeConfig.model_validate({"sharding": table})
+    assert isinstance(runtime.sharding, PlacementTableConfig)
+    assert runtime.sharding.params.zero1 is not None
+
+    # zero1 is the opt-in arm: omitting it parses, as the strict layout
+    strict = PlacementTableConfig.model_validate(
+        {"params": {"persist": {}, "forward": {}}, "activations": {}}
+    )
+    assert strict.params.zero1 is None
+
+    # the row vocabulary is CLOSED: unknown rows die at parse, at either level
+    with pytest.raises(ValidationError):
+        PlacementTableConfig.model_validate({**table, "optim/muon.ns": {}})
+    with pytest.raises(ValidationError):
+        PlacementTableConfig.model_validate(
+            {"params": {**table["params"], "persist.zero1": {}}, "activations": {}}
+        )
+    # required rows are required fields, not a runtime manifest check
+    with pytest.raises(ValidationError):
+        PlacementTableConfig.model_validate({"params": {"persist": {}}, "activations": {}})
+    # a malformed rule value (axis -> non-mesh-axes) dies at parse too
+    with pytest.raises(ValidationError):
+        PlacementTableConfig.model_validate(
+            {"params": {"persist": {"d_in": 3}, "forward": {}}, "activations": {}}
+        )

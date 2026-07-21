@@ -953,6 +953,32 @@ class LaunchEnv(BaseConfig):
         return rendered
 
 
+RuleConfig = dict[str, str | list[str] | None]
+"""One placement row as configured: semantic axis name -> mesh axis, ordered mesh axes,
+or null (replicate). Axis-name keys are free-form — semantic names are declared by the
+code that owns each tensor, not enumerated here."""
+
+
+class ParamsPlacementConfig(BaseConfig):
+    """The trainable V/U placement rows of an explicit table (`placement.ParamsPlacement`)."""
+
+    persist: RuleConfig
+    zero1: RuleConfig | None = None
+    """The OPT-IN row for shape groups whose stack does not tile the persist stack
+    sharding. Absence is strictness: a non-tiling group is then a loud error."""
+    forward: RuleConfig
+
+
+class PlacementTableConfig(BaseConfig):
+    """An explicit placement table (`runtime.sharding`), mirroring the typed
+    `placement.PlacementRules`. The row vocabulary is CLOSED (extra keys are a parse
+    error); rule values are free-form axis-name -> mesh-axes mappings, where YAML list
+    order is semantics (nested-axis linearization, PR #927)."""
+
+    params: ParamsPlacementConfig
+    activations: RuleConfig
+
+
 class RuntimeConfig(BaseConfig):
     """Compute substrate: data-parallelism degree, rematerialization, and the launch-time
     env/XLA-flag surface (`launch_env`).
@@ -1000,21 +1026,19 @@ class RuntimeConfig(BaseConfig):
             "behaviour-preserving). Must divide both the device count and GPUS_PER_NODE."
         ),
     )
-    sharding: (
-        Literal["owner", "owner+zero1", "zero1", "ddp"]
-        | dict[str, dict[str, str | list[str] | None]]
-    ) = Field(
+    sharding: Literal["owner", "owner+zero1", "zero1", "ddp"] | PlacementTableConfig = Field(
         default="owner",
         description=(
             "Placement policy for the trainable state (placement.py): a preset name "
             "(`owner` = stack ÷replicate / d ÷fsdp / C ÷tp, the SPEC D4-amended layout, "
             "STRICT — a shape group whose stack does not tile ÷replicate is an error; "
-            "`owner+zero1` = `owner` plus the `params/persist.zero1` opt-in row, ZeRO-1-ing "
+            "`owner+zero1` = `owner` plus the `params.zero1` opt-in row, ZeRO-1-ing "
             "exactly those non-tiling groups intra-matrix; `zero1` = retired intra-matrix "
-            "÷N, kept for A/B; `ddp` = fully replicated) or an explicit sites table "
-            "(semantic axis -> mesh axes per role/phase site; list order is semantics). "
-            "Same math under every value — layouts differ only by float reassociation "
-            "(SPEC D4)."
+            "÷N, kept for A/B; `ddp` = fully replicated) or an explicit "
+            "`PlacementTableConfig` table (nested `params: {persist, zero1?, forward}` + "
+            "`activations`, each row a semantic-axis -> mesh-axes rule; list order is "
+            "semantics). Same math under every value — layouts differ only by float "
+            "reassociation (SPEC D4)."
         ),
     )
     remat_recon_forwards: bool = Field(

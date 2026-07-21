@@ -1,23 +1,26 @@
-"""Declarative placement: semantic axis names + a rules table → derived PartitionSpecs.
+"""Declarative placement: semantic axis names + a typed rules table → derived PartitionSpecs.
 
 The ab-initio sharding design (see PLACEMENT_DESIGN.md). Three vocabularies:
 
 - **Semantic axes** — dimension NAMES declared once by the code that owns each tensor
   (`("stack", "d_in", "C")` for a V stack; `("batch", "seq", "d")` for the waist).
 - **Mesh axes** — the physical grid the run config declares (`{node: 4, device: 8}`).
-- **Rules** — the config-owned mapping `semantic axis -> mesh axes`, per placement SITE
-  (a `role/phase` string like `params/persist`, `params/forward`, `optim/muon.ns`).
+- **Rules** — the config-owned mapping `semantic axis -> mesh axes`, one `Rule` per
+  placement row. The rows are TYPED FIELDS of `PlacementRules` (`params.persist`,
+  `params.zero1`, `params.forward`, `activations`) — never string keys; future rows
+  (an `optim/muon.ns` phase) become future fields.
 
-A tensor's PartitionSpec at a site is DERIVED: look up each of its dim names in that
-site's rule; unlisted names are replicated. Phase transitions (persist→forward at ENTRY,
+A tensor's PartitionSpec at a row is DERIVED: look up each of its dim names in that
+row's rule; unlisted names are replicated. Phase transitions (persist→forward at ENTRY,
 persist→optimizer at the update step) are then mechanical reshards between two rows of
 the table — `transition_bytes` prices them, `describe` prints the whole policy as one
 table (the startup lint AND the documentation).
 
 The rule language is deliberately WEAK: exact-name lookup (semantic axis name → mesh
-axes), no patterns, no conditionals, no expressions. Weird cases get a literal spec override on a named site, not a smarter
-language. Load-bearing surfaces only: rules pin the persist trees, phase entries, and the
-activation waist; GSPMD propagates between pins as today.
+axes), no patterns, no conditionals, no expressions. Weird cases get a literal spec
+override on a named row, not a smarter language. Load-bearing surfaces only: rules pin
+the persist trees, phase entries, and the activation waist; GSPMD propagates between
+pins as today.
 """
 
 from collections.abc import Mapping
@@ -27,6 +30,8 @@ from math import prod
 import jax.numpy as jnp
 from jax.sharding import AbstractMesh, Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
+
+from param_decomp.configs import PlacementTableConfig, RuleConfig
 
 # A semantic dim name -> the mesh axes it shards over (str, tuple of strs, or None).
 MeshAssignment = str | tuple[str, ...] | None
@@ -43,111 +48,142 @@ def _mesh_axes_of(assignment: MeshAssignment) -> tuple[str, ...]:
 
 
 @dataclass(frozen=True)
-class PlacementRules:
-    """The resolved placement policy for one run: a mesh plus one `Rule` per site.
-
-    Sites are `role/phase` strings (`params/persist`, `params/forward`, `optim/muon.ns`,
-    `activations`). `spec_for` derives a PartitionSpec from a tensor's semantic axes;
-    unknown SITES are a loud error (a site must be declared, even if `{}` = replicated),
-    while unlisted AXIS NAMES within a declared site are replicated — the quiet default
-    is per-axis, never per-site."""
+class PlacedRule:
+    """One row of the placement table, bound to the mesh: spec derivation + fail-fast
+    validation. `label` is PRINT-ONLY (audit lines, error messages) — never a lookup key.
+    Unlisted AXIS NAMES are replicated — the quiet default is per-axis, never per-row
+    (a row must be declared, even if `{}` = replicated)."""
 
     mesh: Mesh | AbstractMesh
-    sites: Mapping[str, Rule]
+    label: str
+    rule: Rule
 
     def __post_init__(self) -> None:
         mesh_axes = set(self.mesh.axis_names)
-        for site, rule in self.sites.items():
-            for axis, assignment in rule.items():
-                unknown = set(_mesh_axes_of(assignment)) - mesh_axes
-                assert not unknown, (
-                    f"placement rule {site!r}: axis {axis!r} maps to unknown mesh "
-                    f"axes {sorted(unknown)} (mesh has {sorted(mesh_axes)})"
-                )
-                per = _mesh_axes_of(assignment)
-                assert len(per) == len(set(per)), (
-                    f"placement rule {site!r}: axis {axis!r} repeats a mesh axis ({assignment})"
-                )
-            # NOTE: one mesh axis MAY appear under several semantic names in a rule
-            # (`d_in -> fsdp, d_out -> fsdp`) because no single tensor carries both;
-            # uniqueness is a per-TENSOR invariant, checked in `spec_for`.
+        for axis, assignment in self.rule.items():
+            unknown = set(_mesh_axes_of(assignment)) - mesh_axes
+            assert not unknown, (
+                f"placement rule {self.label!r}: axis {axis!r} maps to unknown mesh "
+                f"axes {sorted(unknown)} (mesh has {sorted(mesh_axes)})"
+            )
+            per = _mesh_axes_of(assignment)
+            assert len(per) == len(set(per)), (
+                f"placement rule {self.label!r}: axis {axis!r} repeats a mesh axis ({assignment})"
+            )
+        # NOTE: one mesh axis MAY appear under several semantic names in a rule
+        # (`d_in -> fsdp, d_out -> fsdp`) because no single tensor carries both;
+        # uniqueness is a per-TENSOR invariant, checked in `spec_for`.
 
-    def rule(self, site: str) -> Rule:
-        assert site in self.sites, (
-            f"no placement rule for site {site!r}; declared sites: {sorted(self.sites)}"
-        )
-        return self.sites[site]
-
-    def spec_for(self, site: str, axes: Axes) -> P:
-        """The derived PartitionSpec for a tensor with semantic `axes` at `site`."""
-        rule = self.rule(site)
-        entries = tuple(rule.get(name) for name in axes)
+    def spec_for(self, axes: Axes) -> P:
+        """The derived PartitionSpec for a tensor with semantic `axes` at this row."""
+        entries = tuple(self.rule.get(name) for name in axes)
         used: list[str] = []
         for e in entries:
             used.extend(_mesh_axes_of(e))
         assert len(used) == len(set(used)), (
-            f"{site}: tensor axes {axes} derive a spec using a mesh axis twice ({entries})"
+            f"{self.label}: tensor axes {axes} derive a spec using a mesh axis twice ({entries})"
         )
         return P(*entries)
 
-    def sharding_for(self, site: str, axes: Axes) -> NamedSharding:
-        return NamedSharding(self.mesh, self.spec_for(site, axes))
+    def sharding_for(self, axes: Axes) -> NamedSharding:
+        return NamedSharding(self.mesh, self.spec_for(axes))
 
-    def shard_count(self, site: str, axis_name: str) -> int:
-        """How many ways `axis_name` is split at `site` (1 = unsharded)."""
-        return prod(self.mesh.shape[a] for a in _mesh_axes_of(self.rule(site).get(axis_name)))
+    def shard_count(self, axis_name: str) -> int:
+        """How many ways `axis_name` is split at this row (1 = unsharded)."""
+        return prod(self.mesh.shape[a] for a in _mesh_axes_of(self.rule.get(axis_name)))
 
-    def validate_shape(self, site: str, axes: Axes, shape: tuple[int, ...]) -> None:
+    def validate_shape(self, axes: Axes, shape: tuple[int, ...]) -> None:
         """Fail-fast divisibility: every dim must tile its assigned mesh-axis product."""
-        assert len(axes) == len(shape), (site, axes, shape)
+        assert len(axes) == len(shape), (self.label, axes, shape)
         for name, dim in zip(axes, shape, strict=True):
-            n = self.shard_count(site, name)
+            n = self.shard_count(name)
             assert dim % n == 0, (
-                f"{site}: semantic axis {name!r} (dim {dim}) does not tile its mesh "
-                f"assignment ({self.rule(site).get(name)!r} = ÷{n})"
+                f"{self.label}: semantic axis {name!r} (dim {dim}) does not tile its mesh "
+                f"assignment ({self.rule.get(name)!r} = ÷{n})"
             )
 
     def transition_bytes(
-        self, site_from: str, site_to: str, axes: Axes, shape: tuple[int, ...], dtype: jnp.dtype
+        self, to: "PlacedRule", axes: Axes, shape: tuple[int, ...], dtype: jnp.dtype
     ) -> int:
-        """Upper-bound bytes moved PER MATERIALIZATION of the `site_to` layout (0 when the
+        """Upper-bound bytes moved PER MATERIALIZATION of the `to` layout (0 when the
         derived specs match — the owner-resident case; else ≤ the full global tensor).
         Deliberately unmodeled: multiplicity (the recon grid materializes the forward
         layout many times per step; remat may replay it), residency-vs-regather, op-count,
         and axis locality — see PLACEMENT_DESIGN.md lessons 3-4. Good enough to rank
         resting layouts; NOT sufficient to drive an automatic search."""
-        if self.spec_for(site_from, axes) == self.spec_for(site_to, axes):
+        assert self.mesh == to.mesh, (self.label, to.label)
+        if self.spec_for(axes) == to.spec_for(axes):
             return 0
         return prod(shape) * jnp.dtype(dtype).itemsize
 
+
+@dataclass(frozen=True)
+class ParamsPlacement:
+    """The trainable V/U placement rows. `persist` and `zero1` are enforced (consumed by
+    `ComponentStacks.shardings`); `forward` is declared intent for the staged migration
+    (PLACEMENT_DESIGN.md stage 3 — the compute-weight reconstruct is hand-written today)."""
+
+    persist: PlacedRule
+    # The OPT-IN row for shape groups whose stack does not tile the persist stack sharding
+    # (intra-matrix ZeRO-1 behind the stack axis). Absence IS strictness: without it a
+    # non-tiling group is a loud error (`ComponentStacks._row_for_group`).
+    zero1: PlacedRule | None
+    forward: PlacedRule
+
+
+@dataclass(frozen=True)
+class PlacementRules:
+    """The resolved placement policy for one run: a mesh plus one `PlacedRule` per row."""
+
+    mesh: Mesh | AbstractMesh
+    params: ParamsPlacement
+    activations: PlacedRule
+
+    def __post_init__(self) -> None:
+        for row, _ in self._rows():
+            assert row.mesh is self.mesh, (row.label, "row bound to a different mesh")
+
+    def _rows(self) -> tuple[tuple[PlacedRule, bool], ...]:
+        """`(row, enforced)` in table order. `enforced` = some code consumes the row
+        today; everything else is declared intent for the staged migration, which
+        `describe` marks loudly so the printed policy never overstates enforcement."""
+        zero1 = () if self.params.zero1 is None else ((self.params.zero1, True),)
+        return (
+            (self.params.persist, True),
+            *zero1,
+            (self.params.forward, False),
+            (self.activations, False),
+        )
+
     def describe(
         self,
-        tensors: Mapping[str, tuple[str, Axes, tuple[int, ...]]] | None = None,
+        tensors: Mapping[str, tuple[PlacedRule, Axes, tuple[int, ...]]] | None = None,
         not_audited: tuple[str, ...] = (),
     ) -> str:
         """The policy as one printable table (startup log + documentation). With `tensors`
-        (`{label: (site, axes, shape)}`) it also prints each tensor's derived spec and
+        (`{label: (row, axes, shape)}`) it also prints each tensor's derived spec and
         per-device share — the placement audit a human or agent reads before a run.
 
-        Honesty rules: rows for sites no code consumes yet are marked (an audit that
-        overstates enforcement is worse than none); any audited tensor larger than
+        Honesty rules: rows no code consumes yet are marked (an audit that overstates
+        enforcement is worse than none); any audited tensor larger than
         `REPLICATION_FLAG_ELEMS` that derives to fully replicated is flagged; tensor
         families still placed by legacy mesh-vocabulary `.shardings` are listed as
         NOT AUDITED rather than silently omitted."""
         lines = ["placement rules:"]
         mesh_desc = ", ".join(f"{a}={s}" for a, s in self.mesh.shape.items())
         lines.append(f"  mesh: {mesh_desc}")
-        for site in sorted(self.sites):
-            rule = self.sites[site]
-            body = ", ".join(f"{k}->{v}" for k, v in rule.items()) if rule else "(replicated)"
-            mark = "" if site in ENFORCED_SITES else "   [declared — NOT yet enforced]"
-            lines.append(f"  {site:<22} {body}{mark}")
+        for row, enforced in self._rows():
+            body = (
+                ", ".join(f"{k}->{v}" for k, v in row.rule.items()) if row.rule else "(replicated)"
+            )
+            mark = "" if enforced else "   [declared — NOT yet enforced]"
+            lines.append(f"  {row.label:<22} {body}{mark}")
         if tensors:
             lines.append("derived placements:")
-            for label, (site, axes, shape) in tensors.items():
-                self.validate_shape(site, axes, shape)
-                spec = self.spec_for(site, axes)
-                n_shards = prod(self.shard_count(site, n) for n in axes)
+            for label, (row, axes, shape) in tensors.items():
+                row.validate_shape(axes, shape)
+                spec = row.spec_for(axes)
+                n_shards = prod(row.shard_count(n) for n in axes)
                 share = prod(shape) // n_shards
                 flag = (
                     "   ⚠ FULLY REPLICATED (large)"
@@ -155,7 +191,7 @@ class PlacementRules:
                     else ""
                 )
                 lines.append(
-                    f"  {label:<36} {site:<22} {str(spec):<40} per-device {share:,} elems{flag}"
+                    f"  {label:<36} {row.label:<22} {str(spec):<40} per-device {share:,} elems{flag}"
                 )
         if not_audited:
             lines.append(
@@ -187,85 +223,88 @@ _BATCH = ("replicate", "fsdp")
 
 PRESET_NAMES = ("owner", "owner+zero1", "zero1", "ddp")
 
-# Sites consumers dereference TODAY. A table (preset or explicit) must declare these;
-# `from_config` validates the manifest up front so a custom table fails at parse time,
-# not at whatever step first hits the missing site. `params/persist.zero1` is
-# deliberately NOT here: declaring it is the OPT-IN for the per-group intra-matrix
-# ZeRO-1 layout on stacks that don't tile the stack sharding (components._site_for_group).
-REQUIRED_SITES = ("params/persist",)
-
-# Sites whose rows are actually CONSUMED by code today (`params/persist.zero1` when a
-# table declares it). Everything else in a table is declared intent for the staged
-# migration (PLACEMENT_DESIGN.md) — `describe` marks such rows loudly so the printed
-# policy never overstates what is enforced.
-ENFORCED_SITES = frozenset({"params/persist", "params/persist.zero1"})
-
 # describe() flags any audited tensor this large that ends up fully replicated — the
 # design's precondition for the quiet unlisted-axis-replicates default (lesson 2).
 REPLICATION_FLAG_ELEMS = 10_000_000
 
 
+def _rules(
+    mesh: Mesh | AbstractMesh,
+    *,
+    persist: Rule,
+    zero1: Rule | None,
+    forward: Rule,
+    activations: Rule,
+) -> PlacementRules:
+    """The one constructor binding rules to the mesh and stamping the printed labels."""
+
+    def row(label: str, rule: Rule) -> PlacedRule:
+        return PlacedRule(mesh=mesh, label=label, rule=rule)
+
+    return PlacementRules(
+        mesh=mesh,
+        params=ParamsPlacement(
+            persist=row("params/persist", persist),
+            zero1=None if zero1 is None else row("params/persist.zero1", zero1),
+            forward=row("params/forward", forward),
+        ),
+        activations=row("activations", activations),
+    )
+
+
 def preset(name: str, mesh: Mesh | AbstractMesh) -> PlacementRules:
     """The built-in tables: `owner` (stack ÷replicate, d ÷fsdp — the D4-amended layout,
     STRICT: a stack that doesn't tile ÷replicate is an error), `owner+zero1` (`owner` plus
-    the `params/persist.zero1` opt-in: non-tiling groups take intra-matrix ZeRO-1 behind
-    the stack axis), `zero1` (intra-matrix ÷N — the retired layout, kept for A/B), `ddp`
+    the `params.zero1` opt-in: non-tiling groups take intra-matrix ZeRO-1 behind the
+    stack axis), `zero1` (intra-matrix ÷N — the retired layout, kept for A/B), `ddp`
     (everything replicated — single-node / small-model runs)."""
     activations: Rule = {"batch": _BATCH, "C": "tp"}
     owner_persist: Rule = {"stack": "replicate", "d_in": "fsdp", "d_out": "fsdp", "C": "tp"}
+    zero1_persist: Rule = {"d_in": _ZERO1_DATA, "d_out": _ZERO1_DATA, "C": "tp"}
     forward: Rule = {"d_in": "fsdp", "d_out": "fsdp", "C": "tp"}
     match name:
         case "owner":
-            sites: dict[str, Rule] = {
-                "activations": activations,
-                "params/persist": owner_persist,
-                "params/forward": forward,
-            }
+            return _rules(
+                mesh, persist=owner_persist, zero1=None, forward=forward, activations=activations
+            )
         case "owner+zero1":
-            sites = {
-                "activations": activations,
-                "params/persist": owner_persist,
-                # groups whose stack length does not tile `replicate` (site subsets): the
-                # CONSUMER picks this site instead — conditionals are site choices in code,
-                # never expressions in rules.
-                "params/persist.zero1": {"d_in": _ZERO1_DATA, "d_out": _ZERO1_DATA, "C": "tp"},
-                "params/forward": forward,
-            }
+            # groups whose stack length does not tile `replicate` (row subsets): the
+            # CONSUMER picks this row instead — conditionals are row choices in code,
+            # never expressions in rules.
+            return _rules(
+                mesh,
+                persist=owner_persist,
+                zero1=zero1_persist,
+                forward=forward,
+                activations=activations,
+            )
         case "zero1":
-            sites = {
-                "activations": activations,
-                "params/persist": {"d_in": _ZERO1_DATA, "d_out": _ZERO1_DATA, "C": "tp"},
-                "params/forward": forward,
-            }
+            return _rules(
+                mesh, persist=zero1_persist, zero1=None, forward=forward, activations=activations
+            )
         case "ddp":
-            sites = {
-                "activations": activations,
-                "params/persist": {},
-                "params/forward": {},
-            }
+            return _rules(mesh, persist={}, zero1=None, forward={}, activations=activations)
         case _:
             raise AssertionError(f"unknown placement preset {name!r}")
-    return PlacementRules(mesh=mesh, sites=sites)
 
 
-def from_config(
-    spec: "str | Mapping[str, Mapping[str, str | list[str] | None]]",
-    mesh: Mesh | AbstractMesh,
-) -> PlacementRules:
-    """`RuntimeConfig.sharding` → `PlacementRules`: a preset name, or an explicit sites
-    table (YAML lists become ordered tuples — nested-axis ORDER is semantics, PR #927)."""
-    if isinstance(spec, str):
-        assert spec in PRESET_NAMES, f"unknown placement preset {spec!r} (have {PRESET_NAMES})"
-        return preset(spec, mesh)
-    sites = {
-        site: {axis: tuple(v) if isinstance(v, list) else v for axis, v in rule.items()}
-        for site, rule in spec.items()
-    }
-    missing = [s for s in REQUIRED_SITES if s not in sites]
-    assert not missing, (
-        f"placement table missing required sites {missing} — consumers dereference these "
-        f"(declare them even if empty; see placement.REQUIRED_SITES). "
-        f"`params/persist.zero1` is NOT required: declaring it is the opt-in for the "
-        f"per-group ZeRO-1 layout on stacks that don't tile the stack sharding"
-    )
-    return PlacementRules(mesh=mesh, sites=sites)
+def _rule(config: RuleConfig) -> Rule:
+    """YAML lists become ordered tuples — nested-axis ORDER is semantics (PR #927)."""
+    return {axis: tuple(v) if isinstance(v, list) else v for axis, v in config.items()}
+
+
+def from_config(spec: str | PlacementTableConfig, mesh: Mesh | AbstractMesh) -> PlacementRules:
+    """`RuntimeConfig.sharding` → `PlacementRules`: a preset name, or an explicit table
+    (already parse-validated by `PlacementTableConfig` — closed row vocabulary)."""
+    match spec:
+        case str():
+            assert spec in PRESET_NAMES, f"unknown placement preset {spec!r} (have {PRESET_NAMES})"
+            return preset(spec, mesh)
+        case PlacementTableConfig():
+            return _rules(
+                mesh,
+                persist=_rule(spec.params.persist),
+                zero1=None if spec.params.zero1 is None else _rule(spec.params.zero1),
+                forward=_rule(spec.params.forward),
+                activations=_rule(spec.activations),
+            )

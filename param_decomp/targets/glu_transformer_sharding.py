@@ -15,7 +15,7 @@ Megatron-C. The memory consumers, and how each is placed:
     non-activation footprint (÷N ≈5 GB/GPU at dp32, scaling). COMPUTE re-pins the bf16
     weights to `fsdp`-only ONCE per step (in ENTRY, off the per-layer hot path; see
     `glu_transformer._reconstruct_compute_weights` — hand-written until placement migration
-    stage 3 wires it through the `params/forward` row).
+    stage 3 wires it through the `params.forward` row).
   * CI fn + Adam states: sharded ÷N over the full mesh along d_model (in_proj / blocks /
     heads), same ZeRO-1 reconstruction to `fsdp`-only before the chunk scan.
   * PGD source (broadcast scope, `{site: (1,T,C+1)}`): REPLICATED. A single adversarial

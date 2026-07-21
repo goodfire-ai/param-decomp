@@ -25,10 +25,12 @@ Three vocabularies; the config owns only the mapping between them:
    by tree structure (momentum of a V stack is `(stack, d_in, C)`) — optimizer sharding
    stops being a separate problem.
 2. **Mesh axes** — the physical grid the run config declares.
-3. **Rules table** — per placement SITE (`role/phase`: `params/persist`,
-   `params/forward`, `optim/muon.ns`, `activations`), a mapping
-   `semantic axis → mesh axes`. A tensor's PartitionSpec anywhere is *derived*:
-   look up its dim names in the active site's rule; unlisted names replicate.
+3. **Rules table** — one `semantic axis → mesh axes` rule per placement ROW. The rows
+   are TYPED FIELDS of `placement.PlacementRules` (`params.persist`, `params.zero1`,
+   `params.forward`, `activations`; a future `optim/muon.ns` phase is a future field),
+   never string keys — consumers reference fields, labels like `params/persist` are
+   print-only. A tensor's PartitionSpec anywhere is *derived*: look up its dim names in
+   the active row's rule; unlisted names replicate.
 
 Phase boundaries (persist→forward at ENTRY; persist→optimizer at the update) are the
 only reshard points, derived mechanically as the diff between two table rows and priced
@@ -57,10 +59,10 @@ tables for everyone else.
 ### Deliberate weaknesses (the guardrails)
 
 - Rule language: name → mesh axes, first-match, **no conditionals or expressions**.
-  Conditionals become *site choices in consumer code* (e.g. the `owner+zero1` preset's
-  opt-in `params/persist.zero1` row for stacks that don't tile `replicate` — strict
+  Conditionals become *row choices in consumer code* (e.g. the `owner+zero1` preset's
+  opt-in `params.zero1` row for stacks that don't tile `replicate` — strict
   `owner` errors on those instead); true one-offs get a literal-spec override on a
-  named site.
+  named row.
 - Pin only load-bearing surfaces (persist trees, phase entries, the waist); GSPMD
   propagates between pins, as today.
 - Cost model is an honest upper bound PER MATERIALIZATION (spec differs ⇒ ≤ full tensor
@@ -137,11 +139,13 @@ converges on the same vocabulary.
 ## Migration (staged, each lands green)
 
 1. `placement.py` engine + presets + tests (THIS increment).
-2. `RuntimeConfig.sharding: preset-name | rules-table`; thread `PlacementRules` into
-   `run.py` → `init_train_state`; `ComponentStacks.shardings` / CI-fn `.shardings` consume
-   `rules.sharding_for(site, axes)` instead of hardcoding specs (their current bodies
-   become the `owner`/`zero1` preset rows). Startup prints `describe(...)` with every
-   persistent tensor.
+2. `RuntimeConfig.sharding: preset-name | PlacementTableConfig` (the explicit table is
+   a pydantic model mirroring the typed rows: `params: {persist, zero1?, forward}` +
+   `activations`, closed vocabulary — unknown rows die at parse); thread
+   `PlacementRules` into `run.py` → `init_train_state`; `ComponentStacks.shardings` /
+   CI-fn `.shardings` consume `rules.params.persist.sharding_for(axes)` instead of
+   hardcoding specs (their old bodies became the `owner`/`zero1` preset rows). Startup
+   prints `describe(...)` with every persistent tensor.
 3. Reroute the activation pins (`site_out`, train step) through `activations` rules.
 4. Muon: drop `impl:`, derive resident-vs-spread NS from the table; declare muon's
    locality constraint; wire the constraint checker.
