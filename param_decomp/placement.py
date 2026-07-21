@@ -16,6 +16,12 @@ persist→optimizer at the update step) are then mechanical reshards between two
 the table — `transition_bytes` prices them, `describe` prints the whole policy as one
 table (the startup lint AND the documentation).
 
+Construction is per-RUN: `from_config(spec, mesh, sites)` resolves the TOTAL per-shape-
+group row assignment (persist vs the opt-in zero1 arm) and asserts the spec's
+bidirectional claim, so the decision exists exactly once — at config build — and flows
+downward as data (`ParamsPlacement.groups`). Consumers validate what they receive; they
+never re-decide (PLACEMENT_DESIGN.md "Decision at build time").
+
 The rule language is deliberately WEAK: exact-name lookup (semantic axis name → mesh
 axes), no patterns, no conditionals, no expressions. Weird cases get a literal spec
 override on a named row, not a smarter language. Load-bearing surfaces only: rules pin
@@ -30,7 +36,9 @@ from math import prod
 import jax.numpy as jnp
 from jax.sharding import AbstractMesh, Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
+from jaxtyping import Array
 
+from param_decomp.components import ComponentStacks, SiteSpec, VUShape, vu_shape_groups
 from param_decomp.configs import PlacementTableConfig, RuleConfig
 
 # A semantic dim name -> the mesh axes it shards over (str, tuple of strs, or None).
@@ -118,17 +126,37 @@ class PlacedRule:
 
 
 @dataclass(frozen=True)
+class GroupPlacement:
+    """One V/U shape group's placement, decided at rules CONSTRUCTION: the group's stack
+    length as resolved from the run's site set (the consumer boundary re-checks its
+    arrays against it — `_component_stacks_rows`) and the row it persists on."""
+
+    stack_len: int
+    row: PlacedRule
+
+
+@dataclass(frozen=True)
 class ParamsPlacement:
-    """The trainable V/U placement rows. `persist` and `zero1` are enforced (consumed by
-    `ComponentStacks.shardings`); `forward` is declared intent for the staged migration
-    (PLACEMENT_DESIGN.md stage 3 — the compute-weight reconstruct is hand-written today)."""
+    """The trainable V/U placement rows, plus the per-shape-group row ASSIGNMENT resolved
+    at construction from the run's site set. The rules object is TOTAL: consumers look
+    rows up (`row_for`) and validate what they received — the persist-vs-zero1 decision
+    happens exactly once, in `_assign_groups`, never downstream. `persist` and the opt-in
+    `zero1` (intra-matrix ZeRO-1 behind the stack axis; declaring it CLAIMS some group
+    needs it — see `from_config`) are the rows the assignment draws from; `forward` is
+    declared intent for the staged migration (PLACEMENT_DESIGN.md stage 3 — the
+    compute-weight reconstruct is hand-written today)."""
 
     persist: PlacedRule
-    # The OPT-IN row for shape groups whose stack does not tile the persist stack sharding
-    # (intra-matrix ZeRO-1 behind the stack axis). Absence IS strictness: without it a
-    # non-tiling group is a loud error (`ComponentStacks._row_for_group`).
     zero1: PlacedRule | None
     forward: PlacedRule
+    groups: Mapping[VUShape, GroupPlacement]
+
+    def row_for(self, shape: VUShape) -> PlacedRule:
+        assert shape in self.groups, (
+            f"shape group {shape} is not in this placement's assignment "
+            f"(built for {sorted(self.groups)})"
+        )
+        return self.groups[shape].row
 
 
 @dataclass(frozen=True)
@@ -228,31 +256,85 @@ PRESET_NAMES = ("owner", "owner+zero1", "zero1", "ddp")
 REPLICATION_FLAG_ELEMS = 10_000_000
 
 
-def _rules(
+def _assign_groups(
+    desc: str, persist: PlacedRule, zero1: PlacedRule | None, sites: tuple[SiteSpec, ...]
+) -> dict[VUShape, GroupPlacement]:
+    """THE tiles-or-fallback decision (SPEC D4, amended 2026-07-15 / 2026-07-21), made
+    once, at construction: a shape group persists on `persist` when its stack length
+    tiles the row's stack sharding, else on the declared opt-in `zero1` row — with no row
+    to fall to, it fails closed here. Everything below receives the result as data and
+    only validates it; there is deliberately no second implementation of this branch."""
+    n = persist.shard_count("stack")
+    groups: dict[VUShape, GroupPlacement] = {}
+    for (d_in, d_out, c), specs in vu_shape_groups(sites).items():
+        g = len(specs)
+        if g % n == 0:
+            row = persist
+        else:
+            assert zero1 is not None, (
+                f"{desc}: shape group (d_in={d_in}, d_out={d_out}, C={c}) stacks {g} "
+                f"matrices, which does not tile the params.persist stack sharding (÷{n}), "
+                f"and this placement declares no params.zero1 row. Intended (e.g. a "
+                f"single-layer decomposition at multi-node dp)? Opt in: `sharding: "
+                f"owner+zero1`, or declare `params: {{zero1: ...}}` in an explicit table. "
+                f"Not intended? Your site set and mesh disagree — fix one."
+            )
+            row = zero1
+        row.validate_shape(ComponentStacks.V_AXES, (g, d_in, c))
+        row.validate_shape(ComponentStacks.U_AXES, (g, c, d_out))
+        groups[(d_in, d_out, c)] = GroupPlacement(stack_len=g, row=row)
+    return groups
+
+
+def _build(
+    desc: str,
     mesh: Mesh | AbstractMesh,
+    sites: tuple[SiteSpec, ...],
     *,
     persist: Rule,
     zero1: Rule | None,
     forward: Rule,
     activations: Rule,
+    launch_claims: bool,
 ) -> PlacementRules:
-    """The one constructor binding rules to the mesh and stamping the printed labels."""
+    """The one constructor: bind rules to the mesh, stamp the printed labels, resolve the
+    per-shape-group assignment, and (with `launch_claims`) assert the declared zero1 arm
+    is reachable — a spec is a bidirectional CLAIM about the run it launches."""
 
     def row(label: str, rule: Rule) -> PlacedRule:
         return PlacedRule(mesh=mesh, label=label, rule=rule)
 
+    persist_row = row("params/persist", persist)
+    zero1_row = None if zero1 is None else row("params/persist.zero1", zero1)
+    groups = _assign_groups(desc, persist_row, zero1_row, sites)
+    if launch_claims and zero1_row is not None:
+        n = persist_row.shard_count("stack")
+        lengths = {shape: gp.stack_len for shape, gp in sorted(groups.items())}
+        assert any(gp.row is zero1_row for gp in groups.values()), (
+            f"{desc} declares a params.zero1 row — the claim that some shape group's "
+            f"stack does NOT tile the params.persist stack sharding — but at this mesh "
+            f"every group tiles it (÷{n}; stack lengths {lengths}). A declared-but-"
+            f"unreachable arm is a misconfiguration, not a no-op. If the run genuinely "
+            f"has no non-tiling groups, declare that: `sharding: owner` (or drop the "
+            f"zero1 row). If this was meant to exercise owner+zero1 and dp was lowered "
+            f"for a smoke (e.g. `dp: null`), smoke at a multi-device topology instead — "
+            f"an inline single-device smoke cannot exercise the owner+zero1 layout."
+        )
     return PlacementRules(
         mesh=mesh,
         params=ParamsPlacement(
-            persist=row("params/persist", persist),
-            zero1=None if zero1 is None else row("params/persist.zero1", zero1),
+            persist=persist_row,
+            zero1=zero1_row,
             forward=row("params/forward", forward),
+            groups=groups,
         ),
         activations=row("activations", activations),
     )
 
 
-def preset(name: str, mesh: Mesh | AbstractMesh) -> PlacementRules:
+def _preset(
+    name: str, mesh: Mesh | AbstractMesh, sites: tuple[SiteSpec, ...], *, launch_claims: bool
+) -> PlacementRules:
     """The built-in tables: `zero1` (intra-matrix ÷N over the full data mesh — the proven
     layout, all production mileage to date; ~equivalent comms to `owner` under elementwise
     optimizers), `owner` (stack ÷replicate, d ÷fsdp — the muon-motivated D4-amended layout,
@@ -263,30 +345,30 @@ def preset(name: str, mesh: Mesh | AbstractMesh) -> PlacementRules:
     owner_persist: Rule = {"stack": "replicate", "d_in": "fsdp", "d_out": "fsdp", "C": "tp"}
     zero1_persist: Rule = {"d_in": _ZERO1_DATA, "d_out": _ZERO1_DATA, "C": "tp"}
     forward: Rule = {"d_in": "fsdp", "d_out": "fsdp", "C": "tp"}
+    replicated: Rule = {}
+    persist: Rule
+    zero1: Rule | None
     match name:
         case "owner":
-            return _rules(
-                mesh, persist=owner_persist, zero1=None, forward=forward, activations=activations
-            )
+            persist, zero1 = owner_persist, None
         case "owner+zero1":
-            # groups whose stack length does not tile `replicate` (row subsets): the
-            # CONSUMER picks this row instead — conditionals are row choices in code,
-            # never expressions in rules.
-            return _rules(
-                mesh,
-                persist=owner_persist,
-                zero1=zero1_persist,
-                forward=forward,
-                activations=activations,
-            )
+            persist, zero1 = owner_persist, zero1_persist
         case "zero1":
-            return _rules(
-                mesh, persist=zero1_persist, zero1=None, forward=forward, activations=activations
-            )
+            persist, zero1 = zero1_persist, None
         case "ddp":
-            return _rules(mesh, persist={}, zero1=None, forward={}, activations=activations)
+            persist, zero1, forward = replicated, None, replicated
         case _:
             raise AssertionError(f"unknown placement preset {name!r}")
+    return _build(
+        f"sharding preset {name!r}",
+        mesh,
+        sites,
+        persist=persist,
+        zero1=zero1,
+        forward=forward,
+        activations=activations,
+        launch_claims=launch_claims,
+    )
 
 
 def _rule(config: RuleConfig) -> Rule:
@@ -294,18 +376,117 @@ def _rule(config: RuleConfig) -> Rule:
     return {axis: tuple(v) if isinstance(v, list) else v for axis, v in config.items()}
 
 
-def from_config(spec: str | PlacementTableConfig, mesh: Mesh | AbstractMesh) -> PlacementRules:
-    """`RuntimeConfig.sharding` → `PlacementRules`: a preset name, or an explicit table
-    (already parse-validated by `PlacementTableConfig` — closed row vocabulary)."""
+def _from_spec(
+    spec: str | PlacementTableConfig,
+    mesh: Mesh | AbstractMesh,
+    sites: tuple[SiteSpec, ...],
+    *,
+    launch_claims: bool,
+) -> PlacementRules:
     match spec:
         case str():
             assert spec in PRESET_NAMES, f"unknown placement preset {spec!r} (have {PRESET_NAMES})"
-            return preset(spec, mesh)
+            return _preset(spec, mesh, sites, launch_claims=launch_claims)
         case PlacementTableConfig():
-            return _rules(
+            return _build(
+                "explicit placement table",
                 mesh,
+                sites,
                 persist=_rule(spec.params.persist),
                 zero1=None if spec.params.zero1 is None else _rule(spec.params.zero1),
                 forward=_rule(spec.params.forward),
                 activations=_rule(spec.activations),
+                launch_claims=launch_claims,
             )
+
+
+def from_config(
+    spec: str | PlacementTableConfig, mesh: Mesh | AbstractMesh, sites: tuple[SiteSpec, ...]
+) -> PlacementRules:
+    """`RuntimeConfig.sharding` + the run's resolved site set → the TOTAL placement
+    policy: a preset name, or an explicit table (already parse-validated by
+    `PlacementTableConfig` — closed row vocabulary). Construction is the decision point
+    AND the claim check: a table WITHOUT a zero1 row claims every shape group tiles the
+    persist stack sharding (a non-tiling group refuses); a table WITH one claims some
+    group does not (every-group-tiles refuses). Call this wherever the mesh is the run's
+    OWN topology — config build (`sharding.hsdp_abstract_mesh`, pre-sbatch) and the
+    composition roots. Consumers re-placing a finished run on a foreign mesh use
+    `from_config_for_consumer`."""
+    return _from_spec(spec, mesh, sites, launch_claims=True)
+
+
+def from_config_for_consumer(
+    spec: str | PlacementTableConfig, mesh: Mesh | AbstractMesh, sites: tuple[SiteSpec, ...]
+) -> PlacementRules:
+    """`from_config` minus the zero1-reachability claim — for a CONSUMER re-placing a
+    finished run's arrays on its own mesh (`open_jax_run` on one device), where a zero1
+    row declared for the run's launch topology is legitimately unreachable (everything
+    tiles at replicate=1). The fail-closed direction is unchanged: a non-tiling group
+    still requires the declared row."""
+    return _from_spec(spec, mesh, sites, launch_claims=False)
+
+
+# ── component-stack placement (lookup + boundary validation) ─────────────────
+# `ComponentStacks` is placement-free; this is where its persistence placement is read
+# off the rules. Deliberately LOOKUP-ONLY: the per-group persist-vs-zero1 decision was
+# made once, at construction above, and arrives here as `ParamsPlacement.groups`.
+
+
+def _component_stacks_rows(
+    stacks: ComponentStacks, rules: PlacementRules
+) -> dict[VUShape, PlacedRule]:
+    """BOUNDARY VALIDATION of the build-time row assignment against the stacks actually
+    held — validation of received data at a trust boundary, NOT a re-decision; this
+    function must never grow a tiles-or-fallback branch. Disagreement between the two
+    worlds (different shape groups, or a different stack length for one) is an upstream
+    bug and dies here."""
+    lengths = stacks.group_lengths()
+    groups = rules.params.groups
+    assert groups.keys() == lengths.keys(), (
+        f"placement assignment was built for shape groups {sorted(groups)}; "
+        f"these stacks hold {sorted(lengths)}"
+    )
+    for shape, g in lengths.items():
+        assert groups[shape].stack_len == g, (
+            f"placement assignment expects a {groups[shape].stack_len}-stack for "
+            f"shape group {shape}; these stacks hold {g}"
+        )
+    return {shape: rules.params.row_for(shape) for shape in lengths}
+
+
+def component_stacks_shardings(
+    stacks: ComponentStacks[Array], rules: PlacementRules
+) -> ComponentStacks[NamedSharding]:
+    """The V/U persistence placement, LOOKED UP from the rules' build-time assignment
+    (semantic axes `V (stack, d_in, C)` / `U (stack, C, d_out)`; `owner` is the hybrid
+    HSDP layout of the 2026-07-15 SPEC D4 amendment). Boundary-validated by
+    `_component_stacks_rows`; divisibility was validated at rules construction against
+    these same shapes."""
+    rows = _component_stacks_rows(stacks, rules)
+    lengths = stacks.group_lengths()
+    placed: dict[VUShape, tuple[NamedSharding, NamedSharding]] = {}
+    for shape, (Vs, _) in stacks.stacks.items():
+        assert Vs.shape[0] == lengths[shape], (
+            "stacks disagree with the static site_slots index — the audit would lie"
+        )
+        placed[shape] = (
+            rows[shape].sharding_for(ComponentStacks.V_AXES),
+            rows[shape].sharding_for(ComponentStacks.U_AXES),
+        )
+    return ComponentStacks(stacks=placed, site_slots=stacks.site_slots)
+
+
+def component_stacks_audit(
+    stacks: ComponentStacks, rules: PlacementRules
+) -> dict[str, tuple[PlacedRule, Axes, tuple[int, ...]]]:
+    """`{label: (row, axes, shape)}` for `rules.describe(...)` — the startup audit. Rows
+    come from the rules' build-time assignment (boundary-validated); group lengths from
+    the static `site_slots` (works on eval-shape trees)."""
+    rows = _component_stacks_rows(stacks, rules)
+    out: dict[str, tuple[PlacedRule, Axes, tuple[int, ...]]] = {}
+    for (d_in, d_out, c), g in stacks.group_lengths().items():
+        row = rows[(d_in, d_out, c)]
+        group = f"(d_in={d_in}, d_out={d_out}, C={c})"
+        out[f"V {group}"] = (row, ComponentStacks.V_AXES, (g, d_in, c))
+        out[f"U {group}"] = (row, ComponentStacks.U_AXES, (g, c, d_out))
+    return out

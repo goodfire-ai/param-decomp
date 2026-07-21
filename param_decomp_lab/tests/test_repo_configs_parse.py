@@ -13,7 +13,11 @@ import yaml
 from pydantic import ValidationError
 
 from param_decomp_lab.experiments.config import assert_canonical_algorithm_config
-from param_decomp_lab.experiments.lm.config import LMExperimentConfig
+from param_decomp_lab.experiments.lm.config import (
+    LMExperimentConfig,
+    PretrainedTarget,
+    assert_placement_claims,
+)
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -46,6 +50,12 @@ def test_config_parses_and_is_canonical(path: Path) -> None:
         pytest.skip(f"{rel}: known-broken seat awaiting migration (CONFIGS.md)")
     cfg = LMExperimentConfig.model_validate(_load(path))
     assert_canonical_algorithm_config(cfg)
+    # The placement gate resolves the site set from config + arch, so every maintained
+    # config's sharding claim is exercised at its pinned dp (the pre-sbatch check). A
+    # `kind: pretrained` target is the enumerated gap: its resolution reads the pretrain
+    # cache from the cluster FS, which this gate cannot assume.
+    if not isinstance(cfg.target.spec, PretrainedTarget):
+        assert_placement_claims(cfg)
 
 
 def test_known_broken_entries_still_exist() -> None:

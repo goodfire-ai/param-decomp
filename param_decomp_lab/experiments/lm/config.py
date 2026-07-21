@@ -16,6 +16,7 @@ from typing import Annotated, Any, Literal
 import yaml
 from pydantic import Discriminator, Field, PositiveInt, model_validator
 
+from param_decomp import placement
 from param_decomp.base_config import BaseConfig
 from param_decomp.built_run import (
     LAUNCH_CONFIG_FILENAME,
@@ -33,7 +34,7 @@ from param_decomp.ci_fn import (
     GQACIAttention,
     MHACIAttention,
 )
-from param_decomp.components import SiteC
+from param_decomp.components import SiteC, SiteSpec
 from param_decomp.configs import (
     ArithmeticCIGridConfig,
     CEandKLLossesConfig,
@@ -51,6 +52,7 @@ from param_decomp.configs import (
     StochasticAttnPatternsReconLossConfig,
 )
 from param_decomp.recon import build_loss_terms
+from param_decomp.sharding import hsdp_abstract_mesh
 from param_decomp.site_tree import (
     ArchFamily,
     BlockSites,
@@ -285,12 +287,15 @@ class _ResolvedDecomposition:
     """Target config + its block-structured `SiteTree` + arch family, resolved once and shared
     by the target's flat `.sites`, the chunkwise chunk generator, and validation. `dims_of`
     is the target's per-matrix `(d_in, d_out)` shape table, closed over its arch config —
-    what site-input tap widths resolve against."""
+    what site-input tap widths resolve against. `site_specs` are the shape-carrying specs
+    (built by the same per-family builder the composition root's target load uses), the
+    placement gate's input."""
 
     target: AnyLMTargetConfig
     tree: SiteTree
     family: ArchFamily
     dims_of: Callable[[str], tuple[int, int]]
+    site_specs: tuple[SiteSpec, ...]
 
 
 def _resolve_decomposition(cfg: LMExperimentConfig) -> _ResolvedDecomposition:
@@ -321,7 +326,8 @@ def _resolve_decomposition(cfg: LMExperimentConfig) -> _ResolvedDecomposition:
                 model_name=spec.model_name, sites=tree.site_cs(glu_transformer.FAMILY.name_of)
             )
             dims_of = lambda kind: glu_transformer.site_dims(arch, kind)  # noqa: E731
-            return _ResolvedDecomposition(target, tree, glu_transformer.FAMILY, dims_of)
+            site_specs = glu_transformer.glu_site_specs(arch, target.sites)
+            return _ResolvedDecomposition(target, tree, glu_transformer.FAMILY, dims_of, site_specs)
         case PretrainedTarget():
             assert spec.model_class.rsplit(".", 1)[-1] == "LlamaSimpleMLP", spec.model_class
             cache_dir = llama_simple_mlp.pretrain_cache_dir(spec.run_path)
@@ -332,7 +338,10 @@ def _resolve_decomposition(cfg: LMExperimentConfig) -> _ResolvedDecomposition:
                 pretrain_run_path=spec.run_path, sites=tree.site_cs(llama_simple_mlp.FAMILY.name_of)
             )
             dims_of = lambda kind: llama_simple_mlp.site_dims(arch, kind)  # noqa: E731
-            return _ResolvedDecomposition(target, tree, llama_simple_mlp.FAMILY, dims_of)
+            site_specs = llama_simple_mlp.site_specs(arch, target.sites)
+            return _ResolvedDecomposition(
+                target, tree, llama_simple_mlp.FAMILY, dims_of, site_specs
+            )
 
 
 def _resolve_target(cfg: LMExperimentConfig) -> AnyLMTargetConfig:
@@ -551,11 +560,33 @@ def assert_supported_weights_dtype(cfg: LMExperimentConfig) -> None:
     )
 
 
+def _assert_placement_claims(resolved: _ResolvedDecomposition, cfg: LMExperimentConfig) -> None:
+    """The config-build placement gate (SPEC D4 amendment 2026-07-21): construct the
+    run's `PlacementRules` at the mesh shape `runtime.{dp,tp}` implies, firing the
+    per-shape-group persist-vs-zero1 assignment and the sharding spec's bidirectional
+    claim where the resolved site set and the declared topology first coexist — at
+    `pd-lm` submit validation (pre-sbatch, on the login node) and at every in-job /
+    consumer config build. The composition root's `placement.from_config` at the
+    concrete mesh is the same construction; nothing decides later or deeper."""
+    placement.from_config(
+        cfg.runtime.sharding,
+        hsdp_abstract_mesh(cfg.runtime.dp, cfg.runtime.tp),
+        resolved.site_specs,
+    )
+
+
+def assert_placement_claims(cfg: LMExperimentConfig) -> None:
+    """Standalone spelling of the placement gate for pre-submit validation (`pd-lm`) and
+    the repo-config parse gate; `build_experiment_config` runs it on every build."""
+    _assert_placement_claims(_resolve_decomposition(cfg), cfg)
+
+
 def build_experiment_config(cfg: LMExperimentConfig, run_id: str) -> BuiltRun:
     resolved = _resolve_decomposition(cfg)
     target = resolved.target
     assert_canonical_algorithm_config(cfg)
     _assert_losses_supported(cfg, tuple(sc.name for sc in target.sites))
+    _assert_placement_claims(resolved, cfg)
     data = _data(cfg)
     ci_fn = _resolve_chunkwise_ci_arch(
         resolved.tree,

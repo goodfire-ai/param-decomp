@@ -8,7 +8,7 @@ Megatron-C. The memory consumers, and how each is placed:
     ~16 GB bulk shards `/fsdp` (8), gathered per layer in the scan on NVLink. embed /
     lm_head / norm / inv_freq replicate.
   * components (V/U) + their Adam states: placed by the run's `PlacementRules`
-    (`ComponentStacks.shardings(rules)` — `runtime.sharding`). Under the `owner`
+    (`placement.component_stacks_shardings` — `runtime.sharding`). Under the `owner`
     preset: the shape-group STACK axis ÷`replicate` (whole matrices owned per node-group),
     d dims ÷`fsdp`, C ÷`tp` — ÷N total, same memory as the intra-matrix `zero1`
     preset. The fp32 masters + fp32 Adam m/v are the dominant
@@ -32,15 +32,16 @@ before the layer scan, so `x @ V` gathers the `fsdp`-sharded d_in on NVLink and 
 `(.) @ U` produces a `fsdp`-sharded d_out and `jax.jit` inserts the reduce-scatter /
 all-reduce. No manual collectives.
 
-Placement is MODEL-OWNED: each param owner declares its per-leaf `NamedSharding` via a
-`.shardings(mesh)` method (V/U on `ComponentStacks`, the HSDP layout on the chunkwise CI fn,
-FSDP-on-`fsdp` on the frozen target). The helpers below only drive the apply: compute the
+Placement is declared, never inferred: the frozen target and the CI fn declare per-leaf
+`NamedSharding`s via `.shardings(mesh)` methods; the trainable V/U are placed by the run's
+`PlacementRules` (`placement.component_stacks_shardings` — the per-group row assignment
+resolved at config build). The helpers below only drive the apply: compute the
 shardings on the `eqx.filter_eval_shape`'d abstract model, then run the seeded init under
 `jax.jit(init, out_shardings=...)` so each device generates only its own shard and no
 host-side full tree exists — eager `device_put` of a host tree onto a multi-process
 non-replicated sharding triggers a `process_allgather` (a 168 GiB allocation for a
-12-layer chunk at C=24576). A non-dividing declared shard axis is a loud crash inside
-`.shardings` (fail-fast), never a silent replicate.
+12-layer chunk at C=24576). A non-dividing declared shard axis is a loud crash at
+placement construction / inside `.shardings` (fail-fast), never a silent replicate.
 """
 
 from functools import partial
@@ -64,7 +65,7 @@ from param_decomp.components import (
     init_component_stacks,
 )
 from param_decomp.configs import BSCScope, SCScope
-from param_decomp.placement import PlacementRules
+from param_decomp.placement import PlacementRules, component_stacks_shardings
 from param_decomp.sharding import hsdp_mesh, place_via_shardings
 from param_decomp.sharding import shard_batch as _generic_shard_batch
 from param_decomp.targets.glu_transformer import GLUDecomposedModel
@@ -88,11 +89,12 @@ def place_target(tgt: GLUDecomposedModel, mesh: Mesh) -> GLUDecomposedModel:
 def init_component_stacks_placed(
     sites: tuple[SiteSpec, ...], key: PRNGKeyArray, rules: PlacementRules
 ) -> ComponentStacks:
-    """Seeded V/U init placed by `ComponentStacks.shardings(rules)` (the run's placement policy),
-    values bit-identical to the retired per-site init (pinned by `test_sharding`). One jit,
-    2×n_shapes sharded outputs — the persistence layout IS the stacked layout, so the old
-    two-stage stack-then-unstack fan-out (and its transient extra copy) is gone."""
-    placement = eqx.filter_eval_shape(partial(init_component_stacks, sites), key).shardings(rules)
+    """Seeded V/U init placed by `component_stacks_shardings(_, rules)` (the run's placement
+    policy), values bit-identical to the retired per-site init (pinned by `test_sharding`).
+    One jit, 2×n_shapes sharded outputs — the persistence layout IS the stacked layout, so
+    the old two-stage stack-then-unstack fan-out (and its transient extra copy) is gone."""
+    abstract = eqx.filter_eval_shape(partial(init_component_stacks, sites), key)
+    placement = component_stacks_shardings(abstract, rules)
     return jax.jit(partial(init_component_stacks, sites), out_shardings=placement)(key)
 
 

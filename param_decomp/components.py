@@ -12,17 +12,13 @@ one target.
 from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import cache
-from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
+from typing import ClassVar, Generic, TypeVar
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array
-
-if TYPE_CHECKING:
-    from param_decomp.placement import PlacedRule, PlacementRules
 
 
 @dataclass(frozen=True)
@@ -76,8 +72,9 @@ VUShape = tuple[int, int, int]  # (d_in, d_out, C)
 SiteSlots = tuple[tuple[str, VUShape, int], ...]
 
 # The V/U leaf type: `Array` for the real fp32 masters (the default — so bare `ComponentStacks`
-# means `ComponentStacks[Array]` and no call site needs the parameter), or `NamedSharding` for the
-# same-structure placement tree `.shardings` returns for `jax.jit(out_shardings=...)`.
+# means `ComponentStacks[Array]` and no call site needs the parameter), or `NamedSharding` for
+# the same-structure placement tree `placement.component_stacks_shardings` returns for
+# `jax.jit(out_shardings=...)`.
 VULeaf = TypeVar("VULeaf", default=Array)
 
 
@@ -114,8 +111,10 @@ class ComponentStacks(eqx.Module, Generic[VULeaf]):
     per-kind stacks natively, and the checkpoint/init trees shrink from `2·n_sites` leaves
     to `2·n_shapes`. Per-site access is `site(name)` — a static slice of the stack.
 
-    Leaves are fp32 master Arrays (`ComponentStacks[Array]`) or `NamedSharding`s in the placement
-    tree `.shardings` returns (`ComponentStacks[NamedSharding]` — same pytree structure)."""
+    Leaves are fp32 master Arrays (`ComponentStacks[Array]`) or `NamedSharding`s in the
+    same-structure placement tree `placement.component_stacks_shardings` returns
+    (`ComponentStacks[NamedSharding]`). This module is placement-FREE: the per-group row
+    lookup and its boundary validation live in `placement.py`, above."""
 
     stacks: dict[VUShape, tuple[VULeaf, VULeaf]]
     site_slots: SiteSlots = eqx.field(static=True)
@@ -137,67 +136,14 @@ class ComponentStacks(eqx.Module, Generic[VULeaf]):
     V_AXES: "ClassVar[tuple[str, ...]]" = ("stack", "d_in", "C")
     U_AXES: "ClassVar[tuple[str, ...]]" = ("stack", "C", "d_out")
 
-    def _group_lengths(self) -> dict[VUShape, int]:
-        """Stack length per shape group, from the STATIC index — the single source the
-        site choice and the audit both read (shardings asserts the arrays agree)."""
+    def group_lengths(self) -> dict[VUShape, int]:
+        """Stack length per shape group, from the STATIC index (works on eval-shape
+        trees) — what the placement boundary validates the received row assignment
+        against (`placement.component_stacks_shardings` / `_audit`)."""
         lengths: dict[VUShape, int] = {}
         for _name, shape, slot in self.site_slots:
             lengths[shape] = max(lengths.get(shape, 0), slot + 1)
         return lengths
-
-    def _row_for_group(self, g: int, rules: "PlacementRules") -> "PlacedRule":
-        """The placement-row choice per shape group: `params.persist` when the stack
-        tiles its assignment, else the OPT-IN `params.zero1` row (intra-matrix
-        ZeRO-1 behind the stack axis — declared by the `owner+zero1` preset or an
-        explicit table; a table without it fails loudly here). Conditionals are row
-        choices in consumer code — never expressions in rules (PLACEMENT_DESIGN.md)."""
-        n = rules.params.persist.shard_count("stack")
-        if g % n == 0:
-            return rules.params.persist
-        assert rules.params.zero1 is not None, (
-            f"shape group of {g} stacked matrices does not tile the params.persist stack "
-            f"sharding (÷{n}), and this placement table declares no params.zero1 "
-            f"row. Intended (e.g. a single-layer decomposition at multi-node dp)? Opt in: "
-            f"`sharding: owner+zero1`, or declare `params: {{zero1: ...}}` in an explicit "
-            f"table. Not intended? Your site set and mesh disagree — fix one."
-        )
-        return rules.params.zero1
-
-    def shardings(
-        self: "ComponentStacks[Array]", rules: "PlacementRules"
-    ) -> "ComponentStacks[NamedSharding]":
-        """Persistence placement DERIVED from the run's `PlacementRules` (semantic axes
-        `V (stack, d_in, C)` / `U (stack, C, d_out)`; see `placement.py` presets — `owner`
-        is the hybrid HSDP layout of the 2026-07-15 SPEC D4 amendment). Divisibility is
-        validated per stack, loudly."""
-        lengths = self._group_lengths()
-        placed: dict[VUShape, tuple[NamedSharding, NamedSharding]] = {}
-        for (d_in, d_out, c), (Vs, _) in self.stacks.items():
-            g = Vs.shape[0]
-            assert g == lengths[(d_in, d_out, c)], (
-                "stacks disagree with the static site_slots index — the audit would lie"
-            )
-            row = self._row_for_group(g, rules)
-            row.validate_shape(ComponentStacks.V_AXES, (g, d_in, c))
-            row.validate_shape(ComponentStacks.U_AXES, (g, c, d_out))
-            placed[(d_in, d_out, c)] = (
-                row.sharding_for(ComponentStacks.V_AXES),
-                row.sharding_for(ComponentStacks.U_AXES),
-            )
-        return ComponentStacks(stacks=placed, site_slots=self.site_slots)
-
-    def placement_audit(
-        self, rules: "PlacementRules"
-    ) -> dict[str, tuple["PlacedRule", tuple[str, ...], tuple[int, ...]]]:
-        """`{label: (row, axes, shape)}` for `rules.describe(...)` — the startup audit.
-        Group lengths come from the static `site_slots` (works on eval-shape trees)."""
-        out: dict[str, tuple[PlacedRule, tuple[str, ...], tuple[int, ...]]] = {}
-        for (d_in, d_out, c), g in self._group_lengths().items():
-            row = self._row_for_group(g, rules)
-            group = f"(d_in={d_in}, d_out={d_out}, C={c})"
-            out[f"V {group}"] = (row, ComponentStacks.V_AXES, (g, d_in, c))
-            out[f"U {group}"] = (row, ComponentStacks.U_AXES, (g, c, d_out))
-        return out
 
 
 def init_stack_arrays(

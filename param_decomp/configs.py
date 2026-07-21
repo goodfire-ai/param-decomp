@@ -965,7 +965,9 @@ class ParamsPlacementConfig(BaseConfig):
     persist: RuleConfig
     zero1: RuleConfig | None = None
     """The OPT-IN row for shape groups whose stack does not tile the persist stack
-    sharding. Absence is strictness: a non-tiling group is then a loud error."""
+    sharding. A bidirectional claim, checked at config build (`placement.from_config`):
+    absence is strictness (a non-tiling group is a loud error), and declaring it when
+    every group tiles is equally an error (a declared-but-unreachable arm)."""
     forward: RuleConfig
 
 
@@ -1038,7 +1040,10 @@ class RuntimeConfig(BaseConfig):
             "but without production mileage yet; STRICT — a shape group whose stack does "
             "not tile ÷replicate is an error; `owner+zero1` = `owner` plus the "
             "`params.zero1` opt-in row, ZeRO-1-ing exactly those non-tiling groups "
-            "intra-matrix; `ddp` = fully replicated. Or an explicit "
+            "intra-matrix; `ddp` = fully replicated. Each value is a BIDIRECTIONAL claim "
+            "checked at config build (placement.from_config, pre-sbatch for `dp: N`): "
+            "`owner` claims every group tiles; `owner+zero1` claims at least one does "
+            "not — all-tiling under it is equally an error. Or an explicit "
             "`PlacementTableConfig` table (nested `params: {persist, zero1?, forward}` + "
             "`activations`, each row a semantic-axis -> mesh-axes rule; list order is "
             "semantics). Same math under every value — layouts differ only by float "

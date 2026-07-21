@@ -160,7 +160,12 @@ axis ÷`replicate` — whole matrices owned per node-group, zero cross-node weig
 muon NS node-local — matrix d dims ÷`fsdp`, C ÷`tp`; SPEC D4 amendments 2026-07-15 +
 2026-07-21; a stack that doesn't tile `replicate` is an ERROR under strict `owner` — the
 per-group fallback to intra-matrix data sharding is the config-opt-in `owner+zero1`
-preset / an explicit table's `params.zero1` row). The CI-fn
+preset / an explicit table's `params.zero1` row. The per-group assignment is resolved
+ONCE, at `placement.from_config(spec, mesh, sites)` during config build — bidirectional
+claim included: declaring `zero1` when every group tiles is equally an error, refused at
+`pd-lm` submit for `dp: N` — and flows down as data; the consumer boundary
+(`placement.component_stacks_shardings`) only validates the received assignment, never
+re-decides. See PLACEMENT_DESIGN.md "Decision at build time"). The CI-fn
 masters + moments keep intra-matrix ZeRO-1 (`("fsdp","replicate")` on d_model — fsdp-major,
 so the ÷N→÷fsdp reconstruct is a pure all-gather over `replicate`; replicate-major cost a
 ~13 GiB/rank/step grid-transpose collective-permute, PR #927). Either way

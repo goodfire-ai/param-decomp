@@ -59,10 +59,10 @@ tables for everyone else.
 ### Deliberate weaknesses (the guardrails)
 
 - Rule language: name → mesh axes, first-match, **no conditionals or expressions**.
-  Conditionals become *row choices in consumer code* (e.g. the `owner+zero1` preset's
-  opt-in `params.zero1` row for stacks that don't tile `replicate` — strict
-  `owner` errors on those instead); true one-offs get a literal-spec override on a
-  named row.
+  Conditionals become *row choices resolved at rules construction* (the `owner+zero1`
+  preset's opt-in `params.zero1` row for stacks that don't tile `replicate` — strict
+  `owner` errors on those instead; see "Decision at build time" below); true one-offs
+  get a literal-spec override on a named row.
 - Pin only load-bearing surfaces (persist trees, phase entries, the waist); GSPMD
   propagates between pins, as today.
 - Cost model is an honest upper bound PER MATERIALIZATION (spec differs ⇒ ≤ full tensor
@@ -125,6 +125,43 @@ Nothing like this rules table was tried before. What WAS tried, and what it teac
   savesmoke OOMs (~48 GiB single alloc, empty op name) identically on owner+stacked,
   zero1+stacked, and the pre-stack per-site baseline (board:
   full32l-savesmoke-oom-at-tip). The flagship probe re-runs when that's fixed.
+
+## Decision at build time, data downward (2026-07-21, Oli-approved)
+
+The per-shape-group persist-vs-zero1 choice is made ONCE, at `PlacementRules`
+construction — `from_config(spec, mesh, sites)` resolves a TOTAL assignment
+(`ParamsPlacement.groups: {VUShape: GroupPlacement}`) from the run's site set — and
+flows downward as data. Construction happens where the resolved site set and the run's
+topology first coexist: config build (`experiments.lm.config._assert_placement_claims`,
+against the `sharding.hsdp_abstract_mesh` the config's `runtime.{dp,tp}` implies — so a
+`dp: N` misconfiguration refuses at `pd-lm` submit, on the login node, before sbatch)
+and the composition roots (the same `from_config` at the concrete mesh). Shape groups
+derive from config + target dims alone — no weights, no devices.
+
+**The receiving end validates; it never re-decides.** `placement._component_stacks_rows`
+(behind `component_stacks_shardings` / `component_stacks_audit`) asserts the assignment's
+shape groups and stack lengths exactly match the arrays actually held — validation of
+received data at a trust boundary. There is deliberately NO second implementation of the
+tiles-or-fallback branch anywhere below construction (`_assign_groups` is the only one).
+A shared-function-called-twice "preview" (decide at build from config, re-decide at
+runtime from concrete arrays through one shared function) was explicitly rejected: two
+call sites feeding one function from different worlds makes the preview only as
+trustworthy as their input-equality, and a future runtime-dependent placement input
+would silently break it. Deciding once and validating the data at the boundary fails
+loudly on any divergence instead.
+
+**Disjoint claim semantics — a sharding spec is a bidirectional CLAIM, checked at
+construction.** A table WITHOUT a `params.zero1` row (`owner`, or an explicit table
+omitting it) claims every shape group tiles the persist stack sharding — a non-tiling
+group is an error. A table WITH one (`owner+zero1`) claims at least one group does NOT
+tile — if every group tiles at the declared topology, that is ALSO an error: the config
+claims a run shape that isn't happening, and a declared-but-unreachable arm is a
+misconfiguration (common trigger: lowering `dp` for a smoke — an inline single-device
+smoke cannot exercise the owner+zero1 layout). `zero1` / `ddp` shard no stack axis, so
+every group takes persist trivially and there is no claim. One exemption, enumerated by
+name: `from_config_for_consumer` skips only the reachability claim, for consumers
+re-placing a finished run's arrays on their own (typically single-device) mesh
+(`open_jax_run`) — the fail-closed direction still holds there.
 
 ## Prior art
 

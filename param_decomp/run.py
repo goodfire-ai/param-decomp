@@ -63,7 +63,7 @@ from param_decomp.ci_fn import CIFnArch
 from param_decomp.components import init_component_stacks
 from param_decomp.configs import Cadence, PDConfig, ProfileConfig, flatten_typed_lists
 from param_decomp.lm import DecomposedModel
-from param_decomp.placement import PlacementRules
+from param_decomp.placement import PlacementRules, component_stacks_audit
 from param_decomp.recon import build_loss_terms
 from param_decomp.run_state import build_optimizers, init_train_state
 from param_decomp.slow_eval import (
@@ -513,9 +513,9 @@ def run_decomposition_training(
     )
     rules = placement_rules
     if is_main:
-        audit = eqx.filter_eval_shape(
-            _partial(init_component_stacks, lm.sites), init_key
-        ).placement_audit(rules)
+        audit = component_stacks_audit(
+            eqx.filter_eval_shape(_partial(init_component_stacks, lm.sites), init_key), rules
+        )
         print(
             rules.describe(
                 tensors=audit,

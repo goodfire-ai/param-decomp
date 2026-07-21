@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from param_decomp.placement import preset
+from param_decomp.placement import from_config
 from param_decomp.sharding import hsdp_mesh, shard_batch
 
 # Needs >1 jax device; hangs at the default 1 device, so gated behind --runmultidevice.
@@ -101,7 +101,9 @@ def test_jitted_sharded_inits_match_eager_values():
     # shards over `replicate` (whole matrices owned per node-group), matrix d dims over
     # `fsdp`, C over `tp` — total ÷(replicate·fsdp·tp) = ÷N. On the sim mesh replicate is 1
     # (every stack length tiles it), so every group takes the stack rule.
-    vu_placed = init_component_stacks_placed(sites, jax.random.PRNGKey(1), preset("owner", mesh))
+    vu_placed = init_component_stacks_placed(
+        sites, jax.random.PRNGKey(1), from_config("owner", mesh, sites)
+    )
     vu_eager = init_component_stacks(sites, jax.random.PRNGKey(1))
     for Vs, Us in vu_placed.stacks.values():
         assert isinstance(Vs.sharding, NamedSharding) and isinstance(Us.sharding, NamedSharding)
@@ -122,21 +124,22 @@ def test_jitted_sharded_inits_match_eager_values():
     for got, want in zip(jax.tree.leaves(vu_placed), jax.tree.leaves(vu_eager), strict=True):
         assert jnp.allclose(jnp.asarray(got), want, rtol=1e-6, atol=0)
 
-    # A declared ÷N shard dim that does NOT tile the device count is a loud crash inside
-    # `.shardings` (fail-fast), not a silent replicate. (Only observable at n > 1.)
+    # A declared ÷N shard dim that does NOT tile the device count is a loud crash at
+    # `PlacementRules` construction (fail-fast), not a silent replicate. (Only observable
+    # at n > 1.)
     if n > 1:
         from param_decomp.components import SiteSpec
 
-        # d_in = n+1 (does not tile N=n) -> ComponentStacks.shardings must crash.
+        # d_in = n+1 (does not tile N=n) -> placement construction must crash.
         indivisible = (SiteSpec("layers.2.mlp.gate_proj", n + 1, 8 * n, 16),)
         try:
-            init_component_stacks_placed(indivisible, jax.random.PRNGKey(1), preset("owner", mesh))
+            init_component_stacks_placed(
+                indivisible, jax.random.PRNGKey(1), from_config("owner", mesh, indivisible)
+            )
         except AssertionError:
             pass
         else:
-            raise AssertionError(
-                "expected a non-dividing d_in to fail in ComponentStacks.shardings"
-            )
+            raise AssertionError("expected a non-dividing d_in to fail at placement construction")
 
     first_block = min(int(s.name.split(".")[1]) for s in sites)
     arch = ChunkwiseTransformerCIArch(

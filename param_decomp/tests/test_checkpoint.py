@@ -43,7 +43,7 @@ from param_decomp.configs import (
 )
 from param_decomp.lm import DecomposedModel
 from param_decomp.muon_stacked import stacked_muon
-from param_decomp.placement import preset
+from param_decomp.placement import from_config
 from param_decomp.recon import build_loss_terms
 from param_decomp.run_state import stacked_muon_dimension_numbers
 from param_decomp.schedule import ScheduleConfig
@@ -375,7 +375,9 @@ def _build_sharded(seed: int, mesh: Mesh):
     C, seq = 8 * n, 16
     sites = glu_site_specs(cfg, mlp_family_site_cs(3, 4, C))
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_component_stacks_placed(sites, jax.random.PRNGKey(seed), preset("owner", mesh))
+    vu = init_component_stacks_placed(
+        sites, jax.random.PRNGKey(seed), from_config("owner", mesh, sites)
+    )
     ci_fn = init_ci_fn_placed(
         _chunkwise_arch(lm, cfg), lm.sites, jax.random.PRNGKey(seed + 1), mesh
     )

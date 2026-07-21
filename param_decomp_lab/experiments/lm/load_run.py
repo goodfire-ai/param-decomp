@@ -166,7 +166,10 @@ def _restore_decomposition(
     optimizers); leaves restore as host numpy, then `device_put` onto the consumer's
     single default device."""
     init_key, _ = jax.random.split(jax.random.PRNGKey(cfg.pd.seed))
-    rules = placement.from_config(cfg.runtime.sharding, mesh)
+    # Consumer construction: this mesh is the CONSUMER's topology (often one device), not
+    # the run's launch topology, so the launch claims don't bind — a zero1 row declared
+    # for dp=N is legitimately unreachable here.
+    rules = placement.from_config_for_consumer(cfg.runtime.sharding, mesh, lm.sites)
     abstract = jax.eval_shape(lambda: init_decomposition(lm, cfg.ci_fn, init_key, mesh, rules))
 
     assert cfg.cadence.keep_last_n_checkpoints is not None, cfg.cadence

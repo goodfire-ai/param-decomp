@@ -188,7 +188,7 @@ def run_tms_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) 
         eval_fn=eval_fn,
         eval_every=built.cadence.train_log_every,
         mesh=mesh,
-        placement_rules=placement.from_config(built.runtime.sharding, mesh),
+        placement_rules=placement.from_config(built.runtime.sharding, mesh, lm.sites),
     )
 
 

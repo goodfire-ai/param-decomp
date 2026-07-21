@@ -345,7 +345,7 @@ def train(
         eval_fn=eval_fn,
         eval_every=eval_every,
         mesh=mesh,
-        placement_rules=placement.from_config(built.runtime.sharding, mesh),
+        placement_rules=placement.from_config(built.runtime.sharding, mesh, lm.sites),
     )
 
 

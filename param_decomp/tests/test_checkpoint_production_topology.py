@@ -51,7 +51,7 @@ from param_decomp.configs import (
     SCScope,
     UniformKSubsetRoutingConfig,
 )
-from param_decomp.placement import preset
+from param_decomp.placement import from_config
 from param_decomp.recon import build_loss_terms, persistent_configs
 from param_decomp.run import _ensure_global
 from param_decomp.schedule import ScheduleConfig
@@ -113,7 +113,9 @@ def _build_sharded(seed: int):
         ffn_kind="gelu",
         learned_norm_scale=False,
     )
-    vu = init_component_stacks_placed(lm.sites, jax.random.PRNGKey(seed), preset("owner", mesh))
+    vu = init_component_stacks_placed(
+        lm.sites, jax.random.PRNGKey(seed), from_config("owner", mesh, lm.sites)
+    )
     ci_fn = init_ci_fn_placed(ci_arch, lm.sites, jax.random.PRNGKey(seed + 1), mesh)
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)

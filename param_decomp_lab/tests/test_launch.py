@@ -103,6 +103,17 @@ def test_validate_config_rejects_pre_stamped_run_id(tmp_path: Path):
         _validate_config(config)
 
 
+def test_validate_config_fires_the_placement_claim_gate_pre_submit(tmp_path: Path):
+    """The build-time placement gate runs at submit validation, before any snapshot or
+    sbatch: an `owner+zero1` config whose declared topology makes every shape group tile
+    (here the single-site smoke at `dp: null`) refuses on the login node."""
+    raw = dict(_MINIMAL_LM, runtime={"sharding": "owner+zero1"})
+    config = tmp_path / "c.yaml"
+    config.write_text(yaml.safe_dump(raw))
+    with pytest.raises(AssertionError, match="single-device smoke cannot exercise"):
+        _validate_config(config)
+
+
 def test_stamp_config_writes_wandb_and_omits_run_identity(tmp_path: Path):
     config = tmp_path / "c.yaml"
     config.write_text(yaml.safe_dump(_MINIMAL_LM))
