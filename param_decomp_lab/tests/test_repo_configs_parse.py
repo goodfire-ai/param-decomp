@@ -41,6 +41,17 @@ def _load(path: Path) -> dict[str, Any]:
     return yaml.safe_load(path.read_text())
 
 
+def test_gate_collects_the_seat_registry() -> None:
+    """Anti-vacuity: a broken glob (moved roots, renamed dirs) collects zero files and
+    every per-config test silently vanishes green. Pin the collected set to the
+    CONFIGS.md seat policy: non-empty, and within the 10-LM-config registry cap."""
+    assert CONFIG_PATHS, "config glob collected nothing — did the config roots move?"
+    assert len(CONFIG_PATHS) <= 10, (
+        f"{len(CONFIG_PATHS)} LM configs exceed the CONFIGS.md registry cap of 10 — "
+        "adding a seat requires an eviction (or this is an uncommitted one-off, see rule 2)"
+    )
+
+
 @pytest.mark.parametrize("path", CONFIG_PATHS, ids=lambda p: str(p.relative_to(REPO)))
 def test_config_parses_and_is_canonical(path: Path) -> None:
     rel = str(path.relative_to(REPO))
