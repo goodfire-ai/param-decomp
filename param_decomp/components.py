@@ -147,14 +147,21 @@ class ComponentStacks(eqx.Module, Generic[VULeaf]):
 
     def _site_for_group(self, g: int, rules: "PlacementRules") -> str:
         """The placement-site choice per shape group: `params/persist` when the stack
-        tiles its assignment, else the per-group `params/persist.subset` fallback (site
-        subsets, e.g. an L18-only decomposition at multi-node dp). Conditionals are site
+        tiles its assignment, else the OPT-IN `params/persist.zero1` row (intra-matrix
+        ZeRO-1 behind the stack axis — declared by the `owner+zero1` preset or an
+        explicit table; a table without it fails loudly here). Conditionals are site
         choices in consumer code — never expressions in rules (PLACEMENT_DESIGN.md)."""
-        return (
-            "params/persist"
-            if g % rules.shard_count("params/persist", "stack") == 0
-            else "params/persist.subset"
+        n = rules.shard_count("params/persist", "stack")
+        if g % n == 0:
+            return "params/persist"
+        assert "params/persist.zero1" in rules.sites, (
+            f"shape group of {g} stacked matrices does not tile the params/persist stack "
+            f"sharding (÷{n}), and this placement table declares no params/persist.zero1 "
+            f"row. Intended (e.g. a single-layer decomposition at multi-node dp)? Opt in: "
+            f"`sharding: owner+zero1`, or declare params/persist.zero1 in an explicit "
+            f"table. Not intended? Your site set and mesh disagree — fix one."
         )
+        return "params/persist.zero1"
 
     def shardings(
         self: "ComponentStacks[Array]", rules: "PlacementRules"

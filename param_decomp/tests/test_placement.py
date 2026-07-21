@@ -16,11 +16,20 @@ def test_owner_preset_derives_the_d4_layout():
     rules = preset("owner", MESH)
     assert rules.spec_for("params/persist", V_AXES) == P("replicate", "fsdp", "tp")
     assert rules.spec_for("params/persist", U_AXES) == P("replicate", "tp", "fsdp")
-    # subset fallback site = intra-matrix behind the stack axis; fsdp-major (PR #927:
-    # replicate-major turns the ÷N→÷fsdp reconstruct into a grid-transpose permute)
-    assert rules.spec_for("params/persist.subset", V_AXES) == P(None, ("fsdp", "replicate"), "tp")
     # forward: stack unlisted -> replicated across node-groups, d on fsdp
     assert rules.spec_for("params/forward", V_AXES) == P(None, "fsdp", "tp")
+    # owner is STRICT: no ZeRO-1 opt-in row for non-tiling stacks
+    assert "params/persist.zero1" not in rules.sites
+
+
+def test_owner_zero1_preset_is_owner_plus_the_optin_row():
+    rules = preset("owner+zero1", MESH)
+    owner = preset("owner", MESH)
+    assert {s: rules.sites[s] for s in owner.sites} == dict(owner.sites)
+    # the opt-in row = intra-matrix ZeRO-1 behind the stack axis; fsdp-major (PR #927:
+    # replicate-major turns the ÷N→÷fsdp reconstruct into a grid-transpose permute)
+    assert rules.spec_for("params/persist.zero1", V_AXES) == P(None, ("fsdp", "replicate"), "tp")
+    assert rules.spec_for("params/persist.zero1", U_AXES) == P(None, "tp", ("fsdp", "replicate"))
 
 
 def test_ddp_preset_replicates_params_and_shards_batch():
@@ -109,10 +118,7 @@ def test_from_config_manifest_and_preset_validation():
         from_config("fsdp2", MESH)
     with pytest.raises(AssertionError, match="missing required sites"):
         from_config({"activations": {"batch": ["replicate", "fsdp"]}}, MESH)
-    rules = from_config(
-        {"params/persist": {"stack": ["replicate", "fsdp"]}, "params/persist.subset": {}},
-        MESH,
-    )
+    rules = from_config({"params/persist": {"stack": ["replicate", "fsdp"]}}, MESH)
     # YAML lists arrive as ordered tuples — nested-axis ORDER is semantics
     assert rules.spec_for("params/persist", V_AXES) == P(("replicate", "fsdp"), None, None)
 
@@ -131,6 +137,30 @@ def test_describe_marks_unenforced_rows_and_flags_large_replication():
         if line.strip().startswith("params/persist "):
             assert "NOT yet enforced" not in line
     assert "NOT AUDITED" in out and "ci_fn" in out
+
+
+def _stacks_with_tiling_and_non_tiling_groups():
+    """One shape group of 4 (tiles ÷replicate=4) and one of 1 (does not)."""
+    from param_decomp.components import component_stacks_from_sites
+
+    vu = {f"layers.{i}.mlp.gate_proj": (jnp.zeros((8, 3)), jnp.zeros((3, 8))) for i in range(4)}
+    vu["layers.18.mlp.down_proj"] = (jnp.zeros((16, 3)), jnp.zeros((3, 16)))
+    return component_stacks_from_sites(vu)
+
+
+def test_strict_owner_fails_closed_on_a_non_tiling_group():
+    stacks = _stacks_with_tiling_and_non_tiling_groups()
+    with pytest.raises(AssertionError, match="declares no params/persist.zero1"):
+        stacks.placement_audit(preset("owner", MESH))
+
+
+def test_owner_zero1_routes_only_non_tiling_groups_to_the_optin_row():
+    stacks = _stacks_with_tiling_and_non_tiling_groups()
+    audit = stacks.placement_audit(preset("owner+zero1", MESH))
+    sites = {label: site for label, (site, _axes, _shape) in audit.items()}
+    assert sites["V (d_in=8, d_out=8, C=3)"] == "params/persist"
+    assert sites["V (d_in=16, d_out=16, C=3)"] == "params/persist.zero1"
+    assert sites["U (d_in=16, d_out=16, C=3)"] == "params/persist.zero1"
 
 
 def test_preset_names_match_runtime_config_literal():

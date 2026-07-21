@@ -1000,18 +1000,22 @@ class RuntimeConfig(BaseConfig):
             "behaviour-preserving). Must divide both the device count and GPUS_PER_NODE."
         ),
     )
-    sharding: Literal["owner", "zero1", "ddp"] | dict[str, dict[str, str | list[str] | None]] = (
-        Field(
-            default="owner",
-            description=(
-                "Placement policy for the trainable state (placement.py): a preset name "
-                "(`owner` = stack ÷replicate / d ÷fsdp / C ÷tp, the SPEC D4-amended layout; "
-                "`zero1` = retired intra-matrix ÷N, kept for A/B; `ddp` = fully replicated) "
-                "or an explicit sites table (semantic axis -> mesh axes per role/phase site; "
-                "list order is semantics). Same math under every value — layouts differ only "
-                "by float reassociation (SPEC D4)."
-            ),
-        )
+    sharding: (
+        Literal["owner", "owner+zero1", "zero1", "ddp"]
+        | dict[str, dict[str, str | list[str] | None]]
+    ) = Field(
+        default="owner",
+        description=(
+            "Placement policy for the trainable state (placement.py): a preset name "
+            "(`owner` = stack ÷replicate / d ÷fsdp / C ÷tp, the SPEC D4-amended layout, "
+            "STRICT — a shape group whose stack does not tile ÷replicate is an error; "
+            "`owner+zero1` = `owner` plus the `params/persist.zero1` opt-in row, ZeRO-1-ing "
+            "exactly those non-tiling groups intra-matrix; `zero1` = retired intra-matrix "
+            "÷N, kept for A/B; `ddp` = fully replicated) or an explicit sites table "
+            "(semantic axis -> mesh axes per role/phase site; list order is semantics). "
+            "Same math under every value — layouts differ only by float reassociation "
+            "(SPEC D4)."
+        ),
     )
     remat_recon_forwards: bool = Field(
         default=False,

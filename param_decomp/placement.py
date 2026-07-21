@@ -185,17 +185,20 @@ _ZERO1_DATA = ("fsdp", "replicate")
 # carries consistency weight only, no comms cost.
 _BATCH = ("replicate", "fsdp")
 
-PRESET_NAMES = ("owner", "zero1", "ddp")
+PRESET_NAMES = ("owner", "owner+zero1", "zero1", "ddp")
 
 # Sites consumers dereference TODAY. A table (preset or explicit) must declare these;
 # `from_config` validates the manifest up front so a custom table fails at parse time,
-# not at whatever step first hits the missing site.
-REQUIRED_SITES = ("params/persist", "params/persist.subset")
+# not at whatever step first hits the missing site. `params/persist.zero1` is
+# deliberately NOT here: declaring it is the OPT-IN for the per-group intra-matrix
+# ZeRO-1 layout on stacks that don't tile the stack sharding (components._site_for_group).
+REQUIRED_SITES = ("params/persist",)
 
-# Sites whose rows are actually CONSUMED by code today. Everything else in a table is
-# declared intent for the staged migration (PLACEMENT_DESIGN.md) — `describe` marks such
-# rows loudly so the printed policy never overstates what is enforced.
-ENFORCED_SITES = frozenset(REQUIRED_SITES)
+# Sites whose rows are actually CONSUMED by code today (`params/persist.zero1` when a
+# table declares it). Everything else in a table is declared intent for the staged
+# migration (PLACEMENT_DESIGN.md) — `describe` marks such rows loudly so the printed
+# policy never overstates what is enforced.
+ENFORCED_SITES = frozenset({"params/persist", "params/persist.zero1"})
 
 # describe() flags any audited tensor this large that ends up fully replicated — the
 # design's precondition for the quiet unlisted-axis-replicates default (lesson 2).
@@ -203,39 +206,41 @@ REPLICATION_FLAG_ELEMS = 10_000_000
 
 
 def preset(name: str, mesh: Mesh | AbstractMesh) -> PlacementRules:
-    """The built-in tables: `owner` (stack ÷replicate, d ÷fsdp — the D4-amended layout),
-    `zero1` (intra-matrix ÷N — the retired layout, kept for A/B), `ddp` (everything
-    replicated — single-node / small-model runs)."""
+    """The built-in tables: `owner` (stack ÷replicate, d ÷fsdp — the D4-amended layout,
+    STRICT: a stack that doesn't tile ÷replicate is an error), `owner+zero1` (`owner` plus
+    the `params/persist.zero1` opt-in: non-tiling groups take intra-matrix ZeRO-1 behind
+    the stack axis), `zero1` (intra-matrix ÷N — the retired layout, kept for A/B), `ddp`
+    (everything replicated — single-node / small-model runs)."""
     activations: Rule = {"batch": _BATCH, "C": "tp"}
+    owner_persist: Rule = {"stack": "replicate", "d_in": "fsdp", "d_out": "fsdp", "C": "tp"}
+    forward: Rule = {"d_in": "fsdp", "d_out": "fsdp", "C": "tp"}
     match name:
         case "owner":
             sites: dict[str, Rule] = {
                 "activations": activations,
-                "params/persist": {
-                    "stack": "replicate",
-                    "d_in": "fsdp",
-                    "d_out": "fsdp",
-                    "C": "tp",
-                },
+                "params/persist": owner_persist,
+                "params/forward": forward,
+            }
+        case "owner+zero1":
+            sites = {
+                "activations": activations,
+                "params/persist": owner_persist,
                 # groups whose stack length does not tile `replicate` (site subsets): the
                 # CONSUMER picks this site instead — conditionals are site choices in code,
                 # never expressions in rules.
-                "params/persist.subset": {"d_in": _ZERO1_DATA, "d_out": _ZERO1_DATA, "C": "tp"},
-                "params/forward": {"d_in": "fsdp", "d_out": "fsdp", "C": "tp"},
+                "params/persist.zero1": {"d_in": _ZERO1_DATA, "d_out": _ZERO1_DATA, "C": "tp"},
+                "params/forward": forward,
             }
         case "zero1":
-            intra: Rule = {"d_in": _ZERO1_DATA, "d_out": _ZERO1_DATA, "C": "tp"}
             sites = {
                 "activations": activations,
-                "params/persist": intra,
-                "params/persist.subset": intra,
-                "params/forward": {"d_in": "fsdp", "d_out": "fsdp", "C": "tp"},
+                "params/persist": {"d_in": _ZERO1_DATA, "d_out": _ZERO1_DATA, "C": "tp"},
+                "params/forward": forward,
             }
         case "ddp":
             sites = {
                 "activations": activations,
                 "params/persist": {},
-                "params/persist.subset": {},
                 "params/forward": {},
             }
         case _:
@@ -259,6 +264,8 @@ def from_config(
     missing = [s for s in REQUIRED_SITES if s not in sites]
     assert not missing, (
         f"placement table missing required sites {missing} — consumers dereference these "
-        f"(declare them even if empty; see placement.REQUIRED_SITES)"
+        f"(declare them even if empty; see placement.REQUIRED_SITES). "
+        f"`params/persist.zero1` is NOT required: declaring it is the opt-in for the "
+        f"per-group ZeRO-1 layout on stacks that don't tile the stack sharding"
     )
     return PlacementRules(mesh=mesh, sites=sites)

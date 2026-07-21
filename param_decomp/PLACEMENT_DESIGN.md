@@ -57,9 +57,10 @@ tables for everyone else.
 ### Deliberate weaknesses (the guardrails)
 
 - Rule language: name → mesh axes, first-match, **no conditionals or expressions**.
-  Conditionals become *site choices in consumer code* (e.g. the owner preset's
-  `params/persist.subset` fallback for stacks that don't tile `replicate`); true
-  one-offs get a literal-spec override on a named site.
+  Conditionals become *site choices in consumer code* (e.g. the `owner+zero1` preset's
+  opt-in `params/persist.zero1` row for stacks that don't tile `replicate` — strict
+  `owner` errors on those instead); true one-offs get a literal-spec override on a
+  named site.
 - Pin only load-bearing surfaces (persist trees, phase entries, the waist); GSPMD
   propagates between pins, as today.
 - Cost model is an honest upper bound PER MATERIALIZATION (spec differs ⇒ ≤ full tensor
