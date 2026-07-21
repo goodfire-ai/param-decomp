@@ -18,7 +18,8 @@ reassociation — same tolerance class as device-count invariance (SPEC D4).
 """
 
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -39,10 +40,68 @@ def _canonicalize(leaf: Array) -> tuple[Array, bool]:
     """View a muon leaf as a `[g, a, b]` stack with `a <= b` (2D leaves get `g=1`).
     NS orthogonalization and the `consistent_rms`/`sqrt(max(fan_in, fan_out))` scalings
     are transpose-symmetric, so orientation only affects grouping, not semantics."""
-    assert leaf.ndim in (2, 3), f"muon leaf must be 2D or a 3D stack, got {leaf.shape}"
+    assert leaf.ndim in (2, 3), (
+        f"stacked NS handles only 2D matrices and 3D [stack, rows, cols] stacks, got shape"
+        f" {leaf.shape} — extend `_canonicalize` for this layout, or run this parameter"
+        f" family under `impl: optax`"
+    )
     stacked = leaf[None] if leaf.ndim == 2 else leaf
     transposed = stacked.shape[-2] > stacked.shape[-1]
     return (jnp.swapaxes(stacked, -2, -1) if transposed else stacked), transposed
+
+
+def _declares_executed_convention(spec: optax.contrib.MuonDimensionNumbers, ndim: int) -> bool:
+    """True iff the declared axes normalize (optax's `ax % ndim`) to exactly what this
+    impl hardcodes: reduction=ndim-2, output=ndim-1, on a 2D matrix or 3D [stack, a, b]
+    stack. Orientation is checked too: with `consistent_rms=None` optax honors the
+    declared orientation through the directional width scaling `sqrt(max(1, fan_out /
+    fan_in))`, which the `scale_by_shape` wiring here does not."""
+    if ndim not in (2, 3):
+        return False
+
+    def normalized_single_axis(axis: Sequence[int] | int) -> int | None:
+        axes = (axis,) if isinstance(axis, int) else tuple(axis)
+        return axes[0] % ndim if len(axes) == 1 else None
+
+    declared = (
+        normalized_single_axis(spec.reduction_axis),
+        normalized_single_axis(spec.output_axis),
+    )
+    return declared == (ndim - 2, ndim - 1)
+
+
+def _muon_mask_from_validated_dim_numbers(
+    resolved_dim_numbers: optax.Params, params: optax.Params
+) -> optax.Params:
+    """Muon/adam labels for `optax.partition`, refusing any muon-labeled leaf whose
+    declared axes differ from the convention the kernel executes. `_canonicalize` and
+    the `scale_by_shape` wiring DISCARD the declaration (hardcoded trailing-two axes),
+    while `impl: optax` honors it — a nonconforming declaration would silently break
+    the SPEC S20 cross-impl promise, so it dies here at optimizer build instead."""
+
+    def label(spec_path: tuple[Any, ...], spec: object, subtree: optax.Params) -> optax.Params:
+        assert spec is None or isinstance(spec, optax.contrib.MuonDimensionNumbers), spec
+        if spec is None:
+            return jax.tree.map(lambda _: "adam", subtree)
+        for leaf_path, leaf in jax.tree_util.tree_flatten_with_path(subtree)[0]:
+            assert _declares_executed_convention(spec, leaf.ndim), (
+                f"muon leaf {jax.tree_util.keystr(spec_path + leaf_path)} with shape"
+                f" {leaf.shape} declares MuonDimensionNumbers(reduction_axis="
+                f"{spec.reduction_axis}, output_axis={spec.output_axis}), but"
+                f" `impl: stacked` executes hardcoded trailing-two matrix axes"
+                f" (reduction=-2, output=-1; 3D = [stack, rows, cols]) and discards the"
+                f" declaration — extend `_canonicalize` and the `scale_by_shape` wiring"
+                f" to honor declared axes, or run this parameter family under"
+                f" `impl: optax`"
+            )
+        return jax.tree.map(lambda _: "muon", subtree)
+
+    return jax.tree_util.tree_map_with_path(
+        label,
+        resolved_dim_numbers,
+        params,
+        is_leaf=lambda x: x is None or isinstance(x, optax.contrib.MuonDimensionNumbers),
+    )
 
 
 def _pad_to_multiple(stack: Array, multiple: int) -> Array:
@@ -146,22 +205,15 @@ def stacked_muon(
     """Drop-in for `optax.contrib.muon(...)` at our call site (`run_state`): same
     muon/adam leaf partition, same post-NS chain, same state pytree — NS runs stacked,
     sharded over `(replicate, fsdp)` when a mesh is given (None => single-device, e.g.
-    CPU tests and the toys)."""
+    CPU tests and the toys). Muon-labeled leaves must declare exactly the trailing-two
+    convention the kernel executes; anything else dies at optimizer build
+    (`_muon_mask_from_validated_dim_numbers`)."""
     stack_sharding = (
         NamedSharding(mesh, P(("replicate", "fsdp"), None, None)) if mesh is not None else None
     )
     dim_nums = muon_weight_dimension_numbers
     if dim_nums is None:
         dim_nums = lambda params: jax.tree.map(lambda x: _NS_DIMS if x.ndim == 2 else None, params)
-
-    def param_labels(params: optax.Params) -> optax.Params:
-        resolved = dim_nums(params)
-        return jax.tree.map(
-            lambda spec, x: jax.tree.map(lambda _: "muon" if spec is not None else "adam", x),
-            resolved,
-            params,
-            is_leaf=lambda x: x is None or isinstance(x, optax.contrib.MuonDimensionNumbers),
-        )
 
     return optax.partition(
         transforms={
@@ -192,5 +244,5 @@ def stacked_muon(
                 nesterov=True,
             ),
         },
-        param_labels=param_labels,
+        param_labels=lambda params: _muon_mask_from_validated_dim_numbers(dim_nums(params), params),
     )

@@ -102,7 +102,7 @@ def _optimizer_with_clip(
     default 1e-8, not exposed on `AdamWOptimizerConfig`; optax's wd default overridden to the
     config's — torch's is 0); Muon is a config-gated experimental variant (SPEC S19').
     `muon_dimension_numbers` labels the group's leaves for muon (None = optax's default
-    2D-matrix rule, correct for the all-2D V/U tree and the MLP CI fns); ignored for adamw.
+    2D-matrix rule, correct for the MLP CI fns); ignored for adamw.
     `mesh` shards the stacked-impl NS batch axis; None (toys, CPU tests) = unsharded."""
     match opt:
         case AdamWOptimizerConfig():

@@ -275,6 +275,50 @@ def test_stacked_muon_sharded_matches_unsharded():
         )
 
 
+def test_stacked_muon_dim_numbers_fail_closed():
+    """SPEC S20 cross-impl promise: `impl: stacked` executes hardcoded trailing-two matrix
+    axes and DISCARDS the declared dim numbers, so a muon leaf honestly declaring any other
+    layout must die at optimizer build — `impl: optax` would honor the declaration and the
+    two impls would silently diverge. Conforming declarations (trailing-two, negative or
+    positive indices) build fine."""
+    from param_decomp.muon_stacked import stacked_muon
+
+    def build(params: dict[str, Array], spec: optax.contrib.MuonDimensionNumbers):
+        opt = stacked_muon(
+            lambda count: jnp.float32(1e-3),
+            beta=0.95,
+            weight_decay=0.0,
+            consistent_rms=0.2,
+            muon_weight_dimension_numbers=lambda p: jax.tree.map(lambda _: spec, p),
+            ns_steps=5,
+            ns_dtype=jnp.dtype(jnp.float32),
+            mesh=None,
+        )
+        return opt.init(params)
+
+    stack_3d = {"w": jnp.zeros((3, 16, 24))}
+    for reduction, output in ((-2, -1), (1, 2)):
+        build(stack_3d, optax.contrib.MuonDimensionNumbers(reduction, output))
+    matrix_2d = {"v": jnp.zeros((16, 24))}
+    for reduction, output in ((0, 1), (-2, -1)):
+        build(matrix_2d, optax.contrib.MuonDimensionNumbers(reduction, output))
+
+    # A 3D leaf whose stack axis is LAST, honestly declared: correct under `impl: optax`,
+    # silently wrong under stacked — must be refused, naming the escape paths.
+    stack_last = {"w": jnp.zeros((16, 24, 3))}
+    with pytest.raises(AssertionError, match=r"impl: optax"):
+        build(stack_last, optax.contrib.MuonDimensionNumbers(reduction_axis=0, output_axis=1))
+    # Swapped orientation: optax's width scaling (consistent_rms=None) is directional.
+    with pytest.raises(AssertionError, match=r"impl: optax"):
+        build(matrix_2d, optax.contrib.MuonDimensionNumbers(reduction_axis=1, output_axis=0))
+    # A 4D conv-style kernel lands on the ndim gate.
+    with pytest.raises(AssertionError, match=r"impl: optax"):
+        build(
+            {"k": jnp.zeros((3, 3, 8, 16))},
+            optax.contrib.MuonDimensionNumbers(reduction_axis=-2, output_axis=-1),
+        )
+
+
 def test_optimizer_config_type_discriminator():
     schedule = {"fn_type": "cosine", "start_val": 5e-5, "final_val_frac": 0.1}
     adapter = TypeAdapter(AnyOptimizerConfig)

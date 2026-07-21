@@ -127,7 +127,14 @@ def _build(
             )
         return optax.contrib.muon(1e-3, consistent_rms=0.2, muon_weight_dimension_numbers=dim_nums)
 
-    inner_vu = muon_impl(None) if muon_components else optax.adamw(1e-3, weight_decay=0.0)
+    # Production labeling (`run_state.build_optimizers`): the V/U tree is all-3D
+    # `ComponentStacks` stacks, so optax's default 2D rule (dim_nums=None) would label
+    # every leaf adam and leave the muon partition under test empty.
+    inner_vu = (
+        muon_impl(stacked_muon_dimension_numbers)
+        if muon_components
+        else optax.adamw(1e-3, weight_decay=0.0)
+    )
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), inner_vu)
     opt_ci = (
         muon_impl(stacked_muon_dimension_numbers)
@@ -195,6 +202,21 @@ def _roundtrip_and_exact_resume(
     assert ckpt_step == 2
     for a, b in zip(jax.tree.leaves(state), jax.tree.leaves(loaded), strict=True):
         assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
+
+    if muon_components:
+        # The muon partition under test is non-vacuous: the restored MuonState carries
+        # real (non-MaskedNode) momentum on the V/U stacks, moved by the two steps.
+        [muon_state] = [
+            x
+            for x in jax.tree.leaves(
+                loaded.training.components_opt_state,
+                is_leaf=lambda x: isinstance(x, optax.contrib.MuonState),
+            )
+            if isinstance(x, optax.contrib.MuonState)
+        ]
+        mu_leaves = jax.tree.leaves(muon_state.mu)
+        assert mu_leaves, "no V/U leaf labeled muon: the partition under test is empty"
+        assert all(bool(jnp.any(leaf != 0)) for leaf in mu_leaves)
 
     # SPEC S22: the restored state continues the exact trajectory.
     state_cont, m_cont = step(lm, state, resid, jax.random.PRNGKey(100))
