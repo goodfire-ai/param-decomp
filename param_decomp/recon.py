@@ -3,9 +3,9 @@ importance-minimality singletons and the recon Σ (each recon term a plan of whi
 live per forward, how positions route, and the mask-SOURCE strategy for the [0,1] source
 values). `build_loss_terms` validates the shared torch loss configs into that record.
 
-A plan is built from two orthogonal choices: how the sites are CHUNKED (a chunking
-helper `tuple[str, ...] -> list[Chunk]`) and how each chunk is turned into routed
-forwards (`make_plan`, sharing one routing config + source strategy across chunks).
+A plan is built from two orthogonal choices: how the sites are grouped into live-sets
+(a helper `tuple[str, ...] -> list[LiveSet]`) and how each live-set is turned into routed
+forwards (`make_plan`, sharing one routing config + source strategy across live-sets).
 The torch loss-class cartesian product (`CIMasked`/`Stochastic`/`Unmasked`/`PGD`/
 `PersistentPGD` x `_`/`Subset`/`Layerwise`) factors exactly as chunking x routing x
 source strategy — see LOSS_PARITY_DESIGN.md. Everything here is static structure
@@ -260,24 +260,24 @@ def routing_sampler_from_config(
             return route_all_n(n_draws)
 
 
-# ───────────────────────────── chunking helpers ─────────────────────────────
+# ───────────────────────────── live-set helpers ─────────────────────────────
 
-Chunk = tuple[str, ...]
-"""A live-set: the sites that run their decomposed path in one forward, everything else
-on the frozen `x@W` path (SPEC S2)."""
+LiveSet = tuple[str, ...]
+"""The sites that run their decomposed path in one forward, everything else on the
+frozen `x@W` path (SPEC S2)."""
 
 
-def one_chunk(sites: tuple[str, ...]) -> list[Chunk]:
-    """The whole model as a single chunk (torch `all_sites`: every site live)."""
+def all_sites_live(sites: tuple[str, ...]) -> list[LiveSet]:
+    """The whole model live in a single forward (torch `all_sites`)."""
     return [tuple(sites)]
 
 
-def per_site(sites: tuple[str, ...]) -> list[Chunk]:
-    """One single-site chunk per site (torch `*Layerwise`)."""
+def each_site_live(sites: tuple[str, ...]) -> list[LiveSet]:
+    """One single-site live-set per site (torch `*Layerwise`)."""
     return [(s,) for s in sites]
 
 
-def into_groups(sites: tuple[str, ...], k: int) -> list[Chunk]:
+def live_groups(sites: tuple[str, ...], k: int) -> list[LiveSet]:
     """Sequential size-`k` groups in canonical site order (torch chunkwise; SPEC S10)."""
     return list(chunk_sites(sites, k))
 
@@ -286,22 +286,22 @@ def into_groups(sites: tuple[str, ...], k: int) -> list[Chunk]:
 
 
 def make_plan(
-    chunks: list[Chunk],
+    live_sets: list[LiveSet],
     routing: SubsetRoutingType,
     sources: MaskSourceStrategy,
     n_samples: int,
 ) -> ReconPlan:
-    """One `ReconForward` per chunk: that chunk live, the rest frozen `x@W` (SPEC S2),
-    with `n_samples` routing draws from `routing` over the chunk's own sites (SPEC S11)
-    and the shared `sources`. The chunking (`one_chunk`/`per_site`/`into_groups`) and the
-    routing/source choices are orthogonal — see LOSS_PARITY_DESIGN.md."""
+    """One `ReconForward` per live-set: those sites live, the rest frozen `x@W` (SPEC S2),
+    with `n_samples` routing draws from `routing` over the live-set's own sites (SPEC S11)
+    and the shared `sources`. The live-set choice (`all_sites_live`/`each_site_live`/
+    `live_groups`) and the routing/source choices are orthogonal — see LOSS_PARITY_DESIGN.md."""
     return tuple(
         ReconForward(
-            live_sites=chunk,
-            sample_routing=routing_sampler_from_config(routing, chunk, n_samples),
+            live_sites=live_set,
+            sample_routing=routing_sampler_from_config(routing, live_set, n_samples),
             sources=sources,
         )
-        for chunk in chunks
+        for live_set in live_sets
     )
 
 
@@ -314,7 +314,7 @@ def subset_chunk_plan(
     """The production plan: `n_samples` uniform-k forwards per chunk (torch
     `SubsetReconPlan` over `ThreePoolTopology` chunks)."""
     return make_plan(
-        into_groups(site_names, sites_per_chunk), UniformKSubsetRoutingConfig(), sources, n_samples
+        live_groups(site_names, sites_per_chunk), UniformKSubsetRoutingConfig(), sources, n_samples
     )
 
 
@@ -386,22 +386,28 @@ def build_loss_terms(
             case UnmaskedReconLossConfig() | CIMaskedReconLossConfig():
                 value = 1.0 if isinstance(cfg, UnmaskedReconLossConfig) else 0.0
                 plan = make_plan(
-                    one_chunk(site_names), AllRoutingConfig(), ConstantSources(value), n_samples=1
+                    all_sites_live(site_names),
+                    AllRoutingConfig(),
+                    ConstantSources(value),
+                    n_samples=1,
                 )
                 recon_terms.append(recon(cfg, plan))
             case CIMaskedReconSubsetLossConfig():
                 plan = make_plan(
-                    one_chunk(site_names), cfg.routing, ConstantSources(0.0), n_samples=1
+                    all_sites_live(site_names), cfg.routing, ConstantSources(0.0), n_samples=1
                 )
                 recon_terms.append(recon(cfg, plan))
             case CIMaskedReconLayerwiseLossConfig():
                 plan = make_plan(
-                    per_site(site_names), AllRoutingConfig(), ConstantSources(0.0), n_samples=1
+                    each_site_live(site_names),
+                    AllRoutingConfig(),
+                    ConstantSources(0.0),
+                    n_samples=1,
                 )
                 recon_terms.append(recon(cfg, plan))
             case StochasticReconLossConfig():
                 plan = make_plan(
-                    one_chunk(site_names),
+                    all_sites_live(site_names),
                     AllRoutingConfig(),
                     StochasticSources(),
                     cfg.n_mask_samples,
@@ -409,12 +415,12 @@ def build_loss_terms(
                 recon_terms.append(recon(cfg, plan))
             case StochasticReconSubsetLossConfig():
                 plan = make_plan(
-                    one_chunk(site_names), cfg.routing, StochasticSources(), cfg.n_mask_samples
+                    all_sites_live(site_names), cfg.routing, StochasticSources(), cfg.n_mask_samples
                 )
                 recon_terms.append(recon(cfg, plan))
             case StochasticReconLayerwiseLossConfig():
                 plan = make_plan(
-                    per_site(site_names),
+                    each_site_live(site_names),
                     AllRoutingConfig(),
                     StochasticSources(),
                     cfg.n_mask_samples,
@@ -423,7 +429,7 @@ def build_loss_terms(
             case ChunkwiseSubsetReconLossConfig():
                 assert isinstance(cfg.routing, UniformKSubsetRoutingConfig), cfg.routing
                 plan = make_plan(
-                    into_groups(site_names, cfg.sites_per_chunk),
+                    live_groups(site_names, cfg.sites_per_chunk),
                     cfg.routing,
                     StochasticSources(),
                     cfg.n_samples,
@@ -434,16 +440,16 @@ def build_loss_terms(
                 routing = (
                     cfg.routing if isinstance(cfg, PGDReconSubsetLossConfig) else AllRoutingConfig()
                 )
-                plan = make_plan(one_chunk(site_names), routing, fresh, n_samples=1)
+                plan = make_plan(all_sites_live(site_names), routing, fresh, n_samples=1)
                 recon_terms.append(recon(cfg, plan))
             case PGDReconLayerwiseLossConfig():
                 fresh = FreshPGDSources(cfg.init, cfg.n_steps, cfg.step_size, cfg.mask_scope)
-                plan = make_plan(per_site(site_names), AllRoutingConfig(), fresh, n_samples=1)
+                plan = make_plan(each_site_live(site_names), AllRoutingConfig(), fresh, n_samples=1)
                 recon_terms.append(recon(cfg, plan))
             case MergedStochasticPGDReconLossConfig():
                 key = unique_name(cfg)
                 plan = make_plan(
-                    one_chunk(site_names),
+                    all_sites_live(site_names),
                     cfg.routing,
                     MixedPersistentStochasticSources(state_key=key, cfg=cfg),
                     n_samples=1,
@@ -452,7 +458,7 @@ def build_loss_terms(
             case PersistentPGDReconLossConfig():
                 key = unique_name(cfg)
                 plan = make_plan(
-                    one_chunk(site_names),
+                    all_sites_live(site_names),
                     AllRoutingConfig(),
                     PersistentSources(state_key=key, cfg=cfg),
                     n_samples=1,
