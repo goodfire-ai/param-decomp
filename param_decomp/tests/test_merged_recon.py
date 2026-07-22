@@ -1,4 +1,4 @@
-"""MergedStochasticPGDReconLoss: the one-forward stoch+PPGD term through the jitted step."""
+"""MergedStochasticSubsetPPGDReconLoss: the one-forward stoch+PPGD term through the jitted step."""
 
 import equinox as eqx
 import jax
@@ -17,7 +17,7 @@ from param_decomp.configs import (
     AdamPGDConfig,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
-    MergedStochasticPGDReconLossConfig,
+    MergedStochasticSubsetPPGDReconLossConfig,
     SourceShape,
     UniformKSubsetRoutingConfig,
 )
@@ -37,8 +37,8 @@ def _merged_cfg(
     n_warmup: int,
     adv_fraction: ScheduleConfig | None = None,
     source_shape: SourceShape = "sc",
-) -> MergedStochasticPGDReconLossConfig:
-    return MergedStochasticPGDReconLossConfig(
+) -> MergedStochasticSubsetPPGDReconLossConfig:
+    return MergedStochasticSubsetPPGDReconLossConfig(
         coeff=1.0,
         adv_fraction=adv_fraction or ScheduleConfig(start_val=0.5),
         routing=UniformKSubsetRoutingConfig(),
@@ -152,7 +152,7 @@ def test_merged_train_step_end_to_end(source_shape: SourceShape, src_leading: tu
     for i in range(n_steps):
         state, metrics = step(model, state, tokens, jax.random.PRNGKey(100 + i))
         assert all(bool(jnp.isfinite(v).all()) for v in metrics.values())
-        assert "loss/MergedStochasticPGDReconLoss" in metrics
+        assert "loss/MergedStochasticSubsetPPGDReconLoss" in metrics
     assert int(state.training.step) == n_steps
 
     adv = state.training.adversaries[merged.type]

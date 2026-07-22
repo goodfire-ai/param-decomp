@@ -29,7 +29,7 @@ from param_decomp.configs import (
     CIMaskedReconSubsetLossConfig,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
-    MergedStochasticPGDReconLossConfig,
+    MergedStochasticSubsetPPGDReconLossConfig,
     PersistentPGDReconLossConfig,
     PGDInitStrategy,
     PGDReconLayerwiseLossConfig,
@@ -108,7 +108,7 @@ class MixedPersistentStochasticSources:
     `PersistentSources`."""
 
     state_key: str
-    cfg: "MergedStochasticPGDReconLossConfig"
+    cfg: "MergedStochasticSubsetPPGDReconLossConfig"
 
 
 MaskSourceStrategy = (
@@ -323,12 +323,12 @@ def subset_chunk_plan(
 
 def persistent_configs(
     recon_terms: tuple[ReconLossTerm, ...],
-) -> "dict[str, PersistentPGDReconLossConfig | MergedStochasticPGDReconLossConfig]":
+) -> "dict[str, PersistentPGDReconLossConfig | MergedStochasticSubsetPPGDReconLossConfig]":
     """`state_key -> config` for every persistent-source-carrying recon term (SPEC S23:
     each key feeds exactly one term). Derived from the terms, not stored separately — the
     config rides each `PersistentSources` / `MixedPersistentStochasticSources` strategy;
     both carry the same adversary fields (optimizer/scope/source_dtype/n_warmup_steps)."""
-    out: dict[str, PersistentPGDReconLossConfig | MergedStochasticPGDReconLossConfig] = {}
+    out: dict[str, PersistentPGDReconLossConfig | MergedStochasticSubsetPPGDReconLossConfig] = {}
     for term in recon_terms:
         for entry in term.plan:
             if isinstance(entry.sources, (PersistentSources, MixedPersistentStochasticSources)):
@@ -440,7 +440,7 @@ def build_loss_terms(
                 fresh = FreshPGDSources(cfg.init, cfg.n_steps, cfg.step_size, cfg.source_shape)
                 plan = make_plan(per_site(site_names), AllRoutingConfig(), fresh, n_samples=1)
                 recon_terms.append(recon(cfg, plan))
-            case MergedStochasticPGDReconLossConfig():
+            case MergedStochasticSubsetPPGDReconLossConfig():
                 key = unique_name(cfg)
                 plan = make_plan(
                     one_chunk(site_names),

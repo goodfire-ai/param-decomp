@@ -485,7 +485,7 @@ class PersistentPGDReconLossConfig(PersistentPGDLossConfig):
     type: Literal["PersistentPGDReconLoss"] = "PersistentPGDReconLoss"
 
 
-class MergedStochasticPGDReconLossConfig(PersistentPGDLossConfig):
+class MergedStochasticSubsetPPGDReconLossConfig(PersistentPGDLossConfig):
     """ONE masked forward serving both recon pressures (SPEC S10' variation): each batch
     element is assigned adversarial with probability `adv_fraction` (mask sources = the
     persistent-PGD adversary's, every site routed) or stochastic otherwise (fresh
@@ -498,7 +498,7 @@ class MergedStochasticPGDReconLossConfig(PersistentPGDLossConfig):
     source bundle feeds this one term (SPEC S23) and the S14' final ascent rides its
     backward — no extra forward."""
 
-    type: Literal["MergedStochasticPGDReconLoss"] = "MergedStochasticPGDReconLoss"
+    type: Literal["MergedStochasticSubsetPPGDReconLoss"] = "MergedStochasticSubsetPPGDReconLoss"
     adv_fraction: ScheduleConfig
     routing: SubsetRoutingType = Field(default_factory=UniformKSubsetRoutingConfig)
 
@@ -694,7 +694,7 @@ AnyLossMetricConfig = Annotated[
     | CIMaskedReconSubsetLossConfig
     | FaithfulnessLossConfig
     | ImportanceMinimalityLossConfig
-    | MergedStochasticPGDReconLossConfig
+    | MergedStochasticSubsetPPGDReconLossConfig
     | PersistentPGDReconLossConfig
     | PGDReconLayerwiseLossConfig
     | PGDReconLossConfig
