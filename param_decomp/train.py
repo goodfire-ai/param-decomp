@@ -103,24 +103,41 @@ class TrainState:
 
 
 def _grad_norm_metrics(components_grad: ComponentStacks, ci_fn_grad: Any) -> dict[str, Array]:
-    """Pre-clip gradient L2 norms, matching the torch `component_grad_norms` families:
-    per-leaf `grad_norms/components<path>` / `grad_norms/ci_fns<path>` (paths are this
-    pytree's own — e.g. `.vu['layers.18.mlp.gate_proj'][0]` for the per-site Llama
-    layout, vs torch's per-site names) and the overlay-critical
+    """Pre-clip gradient L2 norms, matching the torch `component_grad_norms` families.
+
+    Components norms are per SITE per factor — `grad_norms/components.vu['<site>'][0|1]`
+    (0=V, 1=U), e.g. `grad_norms/components.vu['layers.18.mlp.gate_proj'][0]`. Sites are
+    the semantic unit; the shape-group stacks they're stored in are not. The key spells
+    the retired per-site pytree path so wandb histories overlay across the stacking
+    refactor. Ci-fn norms are per LEAF of whatever pytree the CI fn is
+    (`grad_norms/ci_fns<path>`), plus the overlay-critical
     `grad_norms/summary/{components,ci_fns,total}`."""
     out: dict[str, Array] = {}
 
-    def family(grad_tree: Any, prefix: str) -> Array:
-        sum_sq = jnp.zeros((), jnp.float32)
-        for path, leaf in jax.tree_util.tree_flatten_with_path(grad_tree)[0]:
-            leaf_sum_sq = jnp.sum(leaf.astype(jnp.float32) ** 2)
-            out[f"grad_norms/{prefix}{jax.tree_util.keystr(path)}"] = jnp.sqrt(leaf_sum_sq)
-            sum_sq = sum_sq + leaf_sum_sq
-        out[f"grad_norms/summary/{prefix}"] = jnp.sqrt(sum_sq)
-        return sum_sq
+    def per_slice_sq(stack: Float[Array, "g a b"]) -> Float[Array, " g"]:
+        return jnp.sum(stack.astype(jnp.float32) ** 2, axis=(1, 2))
 
-    total_sq = family(components_grad, "components") + family(ci_fn_grad, "ci_fns")
-    out["grad_norms/summary/total"] = jnp.sqrt(total_sq)
+    factor_sq = {
+        shape: (per_slice_sq(Vs), per_slice_sq(Us))
+        for shape, (Vs, Us) in components_grad.stacks.items()
+    }
+    for name, shape, slot in components_grad.site_slots:
+        v_sq, u_sq = factor_sq[shape]
+        out[f"grad_norms/components.vu['{name}'][0]"] = jnp.sqrt(v_sq[slot])
+        out[f"grad_norms/components.vu['{name}'][1]"] = jnp.sqrt(u_sq[slot])
+    components_sq = jnp.zeros((), jnp.float32)
+    for v_sq, u_sq in factor_sq.values():
+        components_sq = components_sq + jnp.sum(v_sq) + jnp.sum(u_sq)
+    out["grad_norms/summary/components"] = jnp.sqrt(components_sq)
+
+    ci_fn_sq = jnp.zeros((), jnp.float32)
+    for path, leaf in jax.tree_util.tree_flatten_with_path(ci_fn_grad)[0]:
+        leaf_sq = jnp.sum(leaf.astype(jnp.float32) ** 2)
+        out[f"grad_norms/ci_fns{jax.tree_util.keystr(path)}"] = jnp.sqrt(leaf_sq)
+        ci_fn_sq = ci_fn_sq + leaf_sq
+    out["grad_norms/summary/ci_fns"] = jnp.sqrt(ci_fn_sq)
+
+    out["grad_norms/summary/total"] = jnp.sqrt(components_sq + ci_fn_sq)
     return out
 
 
