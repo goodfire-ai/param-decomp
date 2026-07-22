@@ -21,7 +21,7 @@ jobs:
       packages: read
     container:
       image: ghcr.io/${{ github.repository }}/ci-mpi:latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@v6
