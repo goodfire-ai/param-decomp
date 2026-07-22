@@ -14,39 +14,70 @@ pd:
   ci_config:
     type: layerwise_mlp
     hidden_dims:
-    - 16
+    - 50
   decomposition_targets:
   - module_pattern: linear1
     C: 20
   - module_pattern: linear2
     C: 20
   loss_metrics:
-  - type: ImportanceMinimalityLoss
-    coeff: 3e-3
-    pnorm:
+  - frequency:
+      coeff: 4.0e-04
+      reference_token_count: 32768
+    coeff: 8.0e-04
+    type: SmoothL0ImportanceMinimalityLoss
+    gamma:
       start_val: 1.0
+      fn_type: linear
+      final_val_frac: 0.01
+      warmup_pct: 0.0
+  - type: MergedStochasticPGDReconLoss
+    coeff: 1.0
+    adv_fraction:
+      start_val: 0.5
       fn_type: constant
-  - type: StochasticReconLoss
-    coeff: 1.0
-  - type: StochasticReconLayerwiseLoss
-    coeff: 1.0
+      final_val_frac: 1.0
+      warmup_pct: 0.0
+    n_warmup_steps: 2
+    routing:
+      type: uniform_k_subset
+    optimizer:
+      beta1: 0.01
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        final_val_frac: 1.0
+        fn_type: constant
+        start_val: 0.01
+        warmup_pct: 0.025
+      type: adam
+    source_shape: bc
   - type: FaithfulnessLoss
     coeff: 1.0
   batch_size: 4096
-  steps: 40000
-  components_optimizer:
-    grad_clip_norm: 0.01
-    lr_schedule:
-      start_val: 1e-3
-      fn_type: cosine
-      warmup_pct: 0.0
-      final_val_frac: 0.1
+  steps: 20000
   ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 1.0
     lr_schedule:
-      start_val: 1e-3
-      fn_type: cosine
-      warmup_pct: 0.0
       final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 1e-03
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 1.0
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 1e-03
+      warmup_pct: 0.0
+    weight_decay: 0.0
   faithfulness_warmup_steps: 200
   faithfulness_warmup_lr: 0.01
   faithfulness_warmup_weight_decay: 0.0
@@ -69,3 +100,21 @@ target:
 data:
   feature_probability: 0.05
   data_generation_type: at_least_zero_active
+eval:
+  # Toys validate via the ground-truth CI metric; the permuted-CI heatmap logs
+  # unconditionally. `eval.metrics` here adds the master `loss/PGDReconLoss` probe
+  # (fresh sign-PGD adversarial recon); the cadence fields below are inert for toys.
+  batch_size: 4096
+  n_steps: 1
+  every: 1000
+  slow_every: 2000
+  metrics:
+  - type: PGDReconLoss
+    coeff: null
+    init: random
+    source_shape: c
+    n_steps: 20
+    step_size: 0.1
+wandb:
+  project: param-decomp-toys
+  entity: null
