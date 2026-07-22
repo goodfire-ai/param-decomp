@@ -7,12 +7,16 @@ Megatron-C. The memory consumers, and how each is placed:
   * frozen target: FSDP-sharded on `fsdp` (the `d`-dim of every per-layer weight); the
     ~16 GB bulk shards `/fsdp` (8), gathered per layer in the scan on NVLink. embed /
     lm_head / norm / inv_freq replicate.
-  * components (V/U) + their Adam states: sharded ÷N over the FULL mesh
-    (`("replicate","fsdp")`) — V's d_in, U's d_out; C is NEVER sharded. The fp32 masters +
-    fp32 Adam m/v are the dominant non-activation footprint; true ZeRO-1 ÷N (master + m + v
-    each ÷(replicate·fsdp)) takes them from ÷fsdp (≈76 GB/GPU fixed) to ÷N (≈5 GB, scaling).
-    COMPUTE re-pins the bf16 weights to `fsdp`-only ONCE per step (the ZeRO-1 reconstruction,
-    in ENTRY, off the per-layer hot path; see `glu_transformer._reconstruct_compute_weights`).
+  * components (V/U) + their Adam states: placed by the run's `PlacementRules`
+    (`placement.component_stacks_shardings` — `runtime.sharding`). Under the `owner`
+    preset: the shape-group STACK axis ÷`replicate` (whole matrices owned per node-group),
+    d dims ÷`fsdp`, C ÷`tp` — ÷N total, same memory as the intra-matrix `zero1`
+    preset. The fp32 masters + fp32 Adam m/v are the dominant
+    non-activation footprint (÷N, so the per-GPU cost shrinks with device count).
+    COMPUTE re-pins the bf16
+    weights to `fsdp`-only ONCE per step (in ENTRY, off the per-layer hot path; see
+    `glu_transformer._reconstruct_compute_weights` — hand-written until PLACEMENT_DESIGN.md
+    migration stage 3 wires it through the `params.forward` row).
   * CI fn + Adam states: sharded ÷N over the full mesh along d_model (in_proj / blocks /
     heads), same ZeRO-1 reconstruction to `fsdp`-only before the chunk scan.
   * PGD source (`shared` scope, `{site: (1,P,C+1)}`): REPLICATED. A single adversarial
@@ -29,15 +33,16 @@ before the layer scan, so `x @ V` gathers the `fsdp`-sharded d_in on NVLink and 
 `(.) @ U` produces a `fsdp`-sharded d_out and `jax.jit` inserts the reduce-scatter /
 all-reduce. No manual collectives.
 
-Placement is MODEL-OWNED: each param owner declares its per-leaf `NamedSharding` via a
-`.shardings(mesh)` method (V/U on `DecompVU`, the HSDP layout on the chunkwise CI fn,
-FSDP-on-`fsdp` on the frozen target). The helpers below only drive the apply: compute the
+Placement is declared, never inferred: the frozen target and the CI fn declare per-leaf
+`NamedSharding`s via `.shardings(mesh)` methods; the trainable V/U are placed by the run's
+`PlacementRules` (`placement.component_stacks_shardings` — the per-group row assignment
+resolved at config build). The helpers below only drive the apply: compute the
 shardings on the `eqx.filter_eval_shape`'d abstract model, then run the seeded init under
 `jax.jit(init, out_shardings=...)` so each device generates only its own shard and no
 host-side full tree exists — eager `device_put` of a host tree onto a multi-process
-non-replicated sharding triggers a `process_allgather` (a 168 GiB allocation for a
-12-layer chunk at C=24576). A non-dividing declared shard axis is a loud crash inside
-`.shardings` (fail-fast), never a silent replicate.
+non-replicated sharding triggers a `process_allgather` (a host allocation of the FULL
+unsharded tree per process). A non-dividing declared shard axis is a loud crash at
+placement construction / inside `.shardings` (fail-fast), never a silent replicate.
 """
 
 from functools import partial
@@ -56,15 +61,13 @@ from param_decomp.adversary import (
 )
 from param_decomp.ci_fn import CIFn, CIFnArch, build_ci_fn
 from param_decomp.components import (
-    DecompVU,
+    ComponentStacks,
     SiteSpec,
-    init_decomp_vu,
-    init_decomp_vu_stacked,
-    unstack_decomp_vu,
-    vu_shape_groups,
+    init_component_stacks,
 )
 from param_decomp.configs import SourceShape
 from param_decomp.model import PositionAxis, Positioned, Positionless
+from param_decomp.placement import PlacementRules, component_stacks_shardings
 from param_decomp.sharding import hsdp_mesh, place_via_shardings
 from param_decomp.sharding import shard_batch as _generic_shard_batch
 from param_decomp.targets.glu_transformer import GLUDecomposedModel
@@ -72,7 +75,7 @@ from param_decomp.targets.glu_transformer import GLUDecomposedModel
 __all__ = [
     "hsdp_mesh",
     "place_target",
-    "init_decomp_vu_placed",
+    "init_component_stacks_placed",
     "init_ci_fn_placed",
     "init_sources_sharded",
     "shard_batch",
@@ -85,26 +88,16 @@ def place_target(tgt: GLUDecomposedModel, mesh: Mesh) -> GLUDecomposedModel:
     return place_via_shardings(tgt, tgt.shardings(mesh))
 
 
-def init_decomp_vu_placed(sites: tuple[SiteSpec, ...], key: PRNGKeyArray, mesh: Mesh) -> DecompVU:
-    """Seeded per-site V/U init placed by `DecompVU.shardings`, bit-identical to
-    `init_decomp_vu` (pinned by `test_sharding`) but compiled in two cheap stages: the RNG
-    runs vmap-STACKED per V/U shape (2×n_shapes sharded outputs instead of 2×n_sites — the
-    SPMD/layout pass over a 448-output RNG graph was a multi-minute compile at 32L), then a
-    trivial slice jit fans the stacks out to the per-site layout. The stack axis is
-    unsharded (each trailing spec is the per-site spec behind a leading None). The stacked
-    copy cannot be buffer-donated into the split outputs, so init peak briefly holds ONE
-    extra shard-local copy of the params (÷N; a few GB/rank at production dp32, against
-    an init-time-empty HBM), freed when the fan-out returns."""
-    per_site_shardings = eqx.filter_eval_shape(partial(init_decomp_vu, sites), key).shardings(mesh)
-    stacked_shardings = {
-        shape: tuple(
-            NamedSharding(mesh, P(None, *per_site_shardings.vu[specs[0].name][i].spec))
-            for i in range(2)
-        )
-        for shape, specs in vu_shape_groups(sites).items()
-    }
-    stacked = jax.jit(partial(init_decomp_vu_stacked, sites), out_shardings=stacked_shardings)(key)
-    return jax.jit(partial(unstack_decomp_vu, sites), out_shardings=per_site_shardings)(stacked)
+def init_component_stacks_placed(
+    sites: tuple[SiteSpec, ...], key: PRNGKeyArray, rules: PlacementRules
+) -> ComponentStacks:
+    """Seeded V/U init placed by `component_stacks_shardings(_, rules)` (the run's placement
+    policy), values bit-identical to the retired per-site init (pinned by `test_sharding`).
+    One jit, 2×n_shapes sharded outputs — the persistence layout IS the stacked layout, so
+    the old two-stage stack-then-unstack fan-out (and its transient extra copy) is gone."""
+    abstract = eqx.filter_eval_shape(partial(init_component_stacks, sites), key)
+    placement = component_stacks_shardings(abstract, rules)
+    return jax.jit(partial(init_component_stacks, sites), out_shardings=placement)(key)
 
 
 def init_ci_fn_placed(
@@ -129,7 +122,7 @@ def init_sources_sharded(
     mesh: Mesh,
 ) -> dict[str, Array]:
     """Seeded PPGD-source init -> placed per `source_shape` (jit + `out_shardings`; same
-    no-host-tree rationale as `init_decomp_vu_placed`). Every stored (positions x
+    no-host-tree rationale as `init_component_stacks_placed`). Every stored (positions x
     source_shape) leading shape is written out in the match below; the rank always
     matches the waist, with size-1 broadcast axes for the letters `source_shape` omits
     (`configs.SourceShape`).
@@ -168,7 +161,7 @@ def init_sources_sharded(
             leading_shape = (global_batch, n)
             spec = P(("replicate", "fsdp"), None, None)
     # Two cheap compiles instead of one n_sites-sharded-output graph (same shape as
-    # `init_decomp_vu_placed`, incl. the transient: the stacked copy can't donate into
+    # `init_component_stacks_placed`, incl. the transient: the stacked copy can't donate into
     # split outputs, so init briefly holds one extra shard-local copy of the sources).
     stacked_shardings = {
         c: NamedSharding(mesh, P(None, *spec))

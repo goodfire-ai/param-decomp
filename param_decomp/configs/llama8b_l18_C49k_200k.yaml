@@ -68,9 +68,18 @@ eval:
   n_steps: 1
   slow_every: 10000
   slow_on_first_step: true
-pd:
-  batch_size: 512
-  ci_config:
+decomposition:
+  sites:
+    kind: glu_transformer
+    layers:
+      kind: list
+      indices:
+      - 18
+    cs:
+      gate: 49152
+      up: 49152
+      down: 49152
+  ci:
     type: chunkwise_transformer
     blocks_per_chunk: 1
     d_model: 4096
@@ -81,6 +90,8 @@ pd:
     ffn:
       kind: gelu
       hidden: 16384
+pd:
+  batch_size: 512
   ci_fn_optimizer:
     betas:
     - 0.9
@@ -103,13 +114,6 @@ pd:
       start_val: 7.0e-05
       warmup_pct: 0.0
     weight_decay: 0.0
-  decomposition_targets:
-  - C: 49152
-    module_pattern: model.layers.18.mlp.gate_proj
-  - C: 49152
-    module_pattern: model.layers.18.mlp.up_proj
-  - C: 49152
-    module_pattern: model.layers.18.mlp.down_proj
   faithfulness_warmup_lr: 0.001
   faithfulness_warmup_steps: 400
   faithfulness_warmup_weight_decay: 0.0
@@ -149,6 +153,9 @@ pd:
 runtime:
   remat_recon_forwards: false
   dp: 32
+  # L18-only: gate/up stack of 2 and down stack of 1 can't tile ÷replicate=4
+  # (dp 32 = 4 nodes); ZeRO-1 those groups.
+  sharding: owner+zero1
 target:
   output_extract: logits
   weights_dtype: bfloat16

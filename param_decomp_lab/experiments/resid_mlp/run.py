@@ -21,6 +21,7 @@ from jax import random
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 
+from param_decomp import placement
 from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, BuiltRun
 from param_decomp.components import SiteC
 from param_decomp.log import setup_logger
@@ -47,7 +48,7 @@ def build_resid_mlp_built_run(cfg: ResidMLPExperimentConfig, run_id: str) -> Bui
     scalar pass), so `eval` is `None`. The schema's `eval.metrics` list is still read at run
     time for the config-gated `UVPlots` figure (`toy_uv_eval`)."""
     site_cs = resid_mlp.canonical_site_cs(
-        tuple(SiteC(t.module_pattern, t.C) for t in cfg.pd.decomposition_targets)
+        tuple(SiteC(s.name, s.C) for s in cfg.decomposition.sites.sites)
     )
     assert_canonical_algorithm_config(cfg)
     build_loss_terms(
@@ -79,7 +80,7 @@ def build_resid_mlp_built_run(cfg: ResidMLPExperimentConfig, run_id: str) -> Bui
         run=run_instance(cfg, run_id),
         target=target,
         data=None,
-        ci_fn=ci_arch(cfg.pd.ci_config, resolve_chunkwise=None),
+        ci_fn=ci_arch(cfg.decomposition.ci),
         eval=None,
     )
 
@@ -170,7 +171,7 @@ def run_resid_mlp_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: 
         ci_lower, ci_upper = single_feature_ci(model, state.decomposition.ci_fn)
         toy_uv_eval.log_uv_figure(
             uv_spec,
-            state.decomposition.components.vu,
+            dict(state.decomposition.components.sites_items()),
             ci_upper,
             now_step,
             wandb_active=built.run.wandb is not None,
@@ -217,6 +218,7 @@ def run_resid_mlp_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: 
         eval_fn=eval_fn,
         eval_every=built.cadence.train_log_every,
         mesh=mesh,
+        placement_rules=placement.from_config(built.runtime.sharding, mesh, model.sites),
     )
 
 

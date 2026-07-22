@@ -34,7 +34,7 @@ import yaml
 from param_decomp.built_run import LAUNCH_CONFIG_FILENAME
 from param_decomp.configs import LaunchEnv
 from param_decomp.log import logger
-from param_decomp_lab.experiments.lm.config import LMExperimentConfig
+from param_decomp_lab.experiments.lm.config import LMExperimentConfig, assert_placement_claims
 from param_decomp_lab.infra.git import create_git_snapshot, snapshot_source_repo
 from param_decomp_lab.infra.run_files import generate_run_id
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR, REPO_ROOT
@@ -252,9 +252,11 @@ def _run_local(config: Path, run_name: str, group: str | None, tags: list[str]) 
 
 def _validate_config(config_path: Path) -> tuple[LMExperimentConfig, str]:
     """Validate the not-yet-stamped single run config against the shared torch-free LM
-    schema. `pd-lm` is LM-ONLY; the toy domains (TMS, ResidMLP) run on CPU in-process
-    via `pd-tms` / `pd-resid-mlp`, never here. A hand-authored config must NOT carry
-    `run_id` (minted at submit)."""
+    schema, then fire the placement gate: for a `dp: N` config the sharding spec's
+    per-shape-group assignment and bidirectional claim are checked at that topology HERE,
+    on the login node, before any sbatch. `pd-lm` is LM-ONLY; the toy domains (TMS,
+    ResidMLP) run on CPU in-process via `pd-tms` / `pd-resid-mlp`, never here. A
+    hand-authored config must NOT carry `run_id` (minted at submit)."""
     raw = yaml.safe_load(config_path.read_text())
     assert "run_id" not in raw, f"{config_path}: run_id is minted at submit, omit it"
     target = raw.get("target", {})
@@ -263,6 +265,7 @@ def _validate_config(config_path: Path) -> tuple[LMExperimentConfig, str]:
         f"{config_path}: pd-lm is LM-only; run TMS/ResidMLP toys on CPU via pd-tms / pd-resid-mlp"
     )
     cfg = LMExperimentConfig(**raw)
+    assert_placement_claims(cfg)
     return cfg, cfg.run_name
 
 

@@ -33,7 +33,7 @@ from param_decomp.adversary import (
     init_persistent_sources,
     init_sources_adam_state,
 )
-from param_decomp.components import DecompVU
+from param_decomp.components import ComponentStacks, component_stacks_from_sites
 from param_decomp.configs import (
     AdamPGDConfig,
     ChunkwiseSubsetReconLossConfig,
@@ -82,7 +82,7 @@ old fixed names. The stored arrays themselves are untouched — only the lookup 
 the live metrics dict is remapped."""
 
 
-def _load() -> tuple[dict[str, np.ndarray], DecomposedModel, DecompVU, jnp.ndarray]:
+def _load() -> tuple[dict[str, np.ndarray], DecomposedModel, ComponentStacks, jnp.ndarray]:
     assert FIXTURES.exists(), "regenerate via gen_stacked_fixtures.py on the base branch"
     f = dict(np.load(FIXTURES))
     cfg = _tiny_cfg()
@@ -119,7 +119,9 @@ def _load() -> tuple[dict[str, np.ndarray], DecomposedModel, DecompVU, jnp.ndarr
         layers=layers, norm=a("tgt::norm"), lm_head=a("tgt::lm_head"),
         inv_freq=llama3_inv_freq(cfg), cfg=cfg, sites=sites,
     )  # fmt: skip
-    vu = DecompVU(vu={s.name: (a(f"vu::V::{s.name}"), a(f"vu::U::{s.name}")) for s in sites})
+    vu = component_stacks_from_sites(
+        {s.name: (a(f"vu::V::{s.name}"), a(f"vu::U::{s.name}")) for s in sites}
+    )
     return f, model, vu, a("resid")
 
 
@@ -307,7 +309,7 @@ def test_train_trajectory_matches():
                 f"step{step_idx} {fixture_key}: per-site {got!r} vs stacked {want!r}"
             )
 
-    assert isinstance(state.decomposition.components, DecompVU)
+    assert isinstance(state.decomposition.components, ComponentStacks)
     for name in model.site_names:
         V, U = state.decomposition.components.site(name)
         _assert_close(V, f[f"out::final_V::{name}"], f"final V {name}")

@@ -3,7 +3,6 @@
 import jax
 import jax.numpy as jnp
 import pytest
-from pydantic import ValidationError
 
 from param_decomp.ci_fn import (
     Chunk,
@@ -12,11 +11,6 @@ from param_decomp.ci_fn import (
     init_chunkwise_transformer_ci_fn,
 )
 from param_decomp.components import SiteSpec
-from param_decomp.configs import (
-    ChunkwiseTransformerCiConfig,
-    GeluCiFfnConfig,
-    SwigluCiFfnConfig,
-)
 
 D, NH, FFN = 16, 4, 32
 SITES = (SiteSpec("layers.0.q_proj", 12, 12, 3), SiteSpec("layers.0.mlp", 12, 12, 5))
@@ -120,35 +114,8 @@ def test_every_combination_runs_end_to_end(ffn_kind: str, learned_norm_scale: bo
         assert jnp.isfinite(ci.lower[site.name]).all()
 
 
-# ----------------------------- the schema -----------------------------
-
-
-def _cfg(ffn: dict[str, object]) -> ChunkwiseTransformerCiConfig:
-    return ChunkwiseTransformerCiConfig.model_validate(
-        {
-            "blocks_per_chunk": 1,
-            "d_model": 16,
-            "n_blocks": 1,
-            "attention": {"kind": "mha", "n_heads": 4},
-            "ffn": ffn,
-        }
-    )
-
-
-def test_ffn_arms_parse():
-    assert isinstance(_cfg({"kind": "gelu", "hidden": 32}).ffn, GeluCiFfnConfig)
-    assert isinstance(_cfg({"kind": "swiglu", "hidden": 22}).ffn, SwigluCiFfnConfig)
-
-
-def test_ffn_requires_a_hidden_width():
-    """`hidden` is the FFN's, not the transformer's — it can't be omitted or left floating."""
-    with pytest.raises(ValidationError, match="hidden"):
-        _cfg({"kind": "swiglu"})
-
-
-def test_unknown_ffn_kind_refuses():
-    with pytest.raises(ValidationError):
-        _cfg({"kind": "geglu", "hidden": 32})
+# The authored-schema parse tests (`ChunkwiseTransformerCiConfig.ffn` arms) live with the
+# schema, lab-side: `param_decomp_lab/tests/test_lm_ci_schema.py`.
 
 
 def test_iso_param_swiglu_width_at_production_shape():

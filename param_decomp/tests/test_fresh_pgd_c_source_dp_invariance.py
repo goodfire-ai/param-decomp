@@ -28,7 +28,7 @@ import jax.numpy as jnp
 from jax import random
 
 from param_decomp.adversary import init_fresh_pgd_sources, source_masks
-from param_decomp.components import init_decomp_vu
+from param_decomp.components import init_component_stacks
 from param_decomp.losses import kl_per_position
 from param_decomp.sharding import hsdp_mesh, shard_batch
 from param_decomp.targets.glu_transformer import (
@@ -54,7 +54,7 @@ def _ascend_c_source(
     sites = glu_site_specs(cfg, mlp_family_site_cs(first_layer, first_layer + 2, C))
     model = _tiny_decomposed_lm(cfg, sites, random.PRNGKey(0))
     components = jax.tree.map(
-        lambda x: jax.lax.stop_gradient(x), init_decomp_vu(sites, random.PRNGKey(1))
+        lambda x: jax.lax.stop_gradient(x), init_component_stacks(sites, random.PRNGKey(1))
     )
 
     residual = random.randint(random.PRNGKey(4), (gbatch, seq), 0, cfg.vocab_size)

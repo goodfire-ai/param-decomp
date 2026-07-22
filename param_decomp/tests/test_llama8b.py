@@ -24,7 +24,7 @@ from param_decomp.ci_fn import (
     MHACIAttention,
     build_ci_fn,
 )
-from param_decomp.components import DecompVU, SiteC, SiteSpec, init_decomp_vu
+from param_decomp.components import ComponentStacks, SiteC, SiteSpec, init_component_stacks
 from param_decomp.configs import (
     AdamPGDConfig,
     ChunkwiseSubsetReconLossConfig,
@@ -169,7 +169,7 @@ def test_site_name_helpers():
         canonical_site_cs((SiteC("layers.3.mlp.up_proj", 4), SiteC("layers.3.mlp.up_proj", 8)))
 
 
-def test_glu_site_specs_dims():
+def test_llama_site_specs_dims():
     cfg = _tiny_cfg()
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
     specs = glu_site_specs(
@@ -197,7 +197,7 @@ def test_masked_component_activations_pre_mask_and_matches_outputs():
     C = 8
     sites = _mlp_sites(cfg, 4, 5, C)
     model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
     names = model.site_names
@@ -216,7 +216,7 @@ def test_masked_component_activations_pre_mask_and_matches_outputs():
     for s in names:
         assert acts[s].shape == (b, t, C)
         assert jnp.all(jnp.isfinite(acts[s]))
-        _, u = vu.vu[s]
+        _, u = vu.site(s)
         expected = acts[s].astype(jnp.float32) @ u.astype(jnp.float32)
         assert jnp.allclose(outputs[s].astype(jnp.float32), expected, atol=1e-2), s
 
@@ -227,7 +227,7 @@ def test_clean_path_and_masked_identity(first: int, last: int):
     C = 8
     sites = _mlp_sites(cfg, first, last, C)
     model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
@@ -271,7 +271,7 @@ def test_attention_sites_clean_and_masked_identity():
     cfg = _tiny_cfg()
     sites = glu_site_specs(cfg, _QVDOWN_SITE_CS)
     model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
@@ -335,12 +335,37 @@ def test_attention_sites_clean_and_masked_identity():
     assert deltas["layers.4.self_attn.v_proj"].shape == (kvd, cfg.n_embd)
 
 
+def test_clean_output_and_activations_shares_the_forward():
+    """The fused accessor must be exactly the two separate calls (SPEC S3+S4): taps
+    bit-equal to `read_activations`, and — when the taps reach the last block, every
+    production config — clean logits bit-equal to `clean_output` (one full-depth scan,
+    no tail; a mid-stack tap cutoff may recompile the tail within fp32 tolerance).
+    Also pins tap invariance to the `wanted` set (a tap can't depend on its neighbors)."""
+    cfg = _tiny_cfg()
+    sites = _mlp_sites(cfg, 3, 6, 8)
+    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    tokens = jax.random.randint(jax.random.PRNGKey(2), (2, 16), 0, cfg.vocab_size)
+
+    resid_taps = tuple(f"resid.{i}" for i in range(cfg.n_layer))
+    wanted = resid_taps + model.site_names
+    logits, taps = model.clean_output_and_activations(tokens, wanted)
+    assert jnp.array_equal(logits, model.clean_output(tokens)), "fused clean logits drifted"
+    separate = model.read_activations(tokens, wanted)
+    assert set(taps) == set(wanted)
+    for key in wanted:
+        assert jnp.array_equal(taps[key], separate[key]), key
+
+    subset = ("resid.0", "resid.5", site_name(4, "gate"))
+    for key, tap in model.read_activations(tokens, subset).items():
+        assert jnp.array_equal(tap, separate[key]), key
+
+
 def test_o_site_masks_attention_output():
     cfg = _tiny_cfg()
     o_site = "layers.4.self_attn.o_proj"
     sites = glu_site_specs(cfg, (SiteC(o_site, 8),))
     model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
@@ -372,7 +397,7 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
     n_warmup = 2
     sites = glu_site_specs(cfg, site_cs)
     model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = _build_chunkwise_ci_fn(model, jax.random.PRNGKey(2), n_blocks=2)
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
@@ -456,8 +481,8 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
     # SPEC S9: p annealed below its 2.0 start by step 4 of 100.
     assert losses[-1]["p_imp"] < 2.0
     # fp32 masters preserved through updates (SPEC N1).
-    assert isinstance(state.decomposition.components, DecompVU)
-    for V, U in state.decomposition.components.vu.values():
+    assert isinstance(state.decomposition.components, ComponentStacks)
+    for _, (V, U) in state.decomposition.components.sites_items():
         assert V.dtype == jnp.float32 and U.dtype == jnp.float32
     assert isinstance(state.decomposition.ci_fn, ChunkwiseTransformerCIFn)
     assert state.decomposition.ci_fn.chunks.in_proj_w.dtype == jnp.float32
@@ -467,7 +492,7 @@ def test_faith_warmup_decreases_faith():
     cfg = _tiny_cfg()
     sites = _mlp_sites(cfg, 3, 4, 8)
     model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     opt = optax.adamw(1e-2, weight_decay=0.0)
     wstep = make_faith_warmup_step(opt)
     ostate = opt.init(eqx.filter(vu, eqx.is_array))
@@ -480,10 +505,10 @@ def test_faith_warmup_decreases_faith():
     assert float(loss) < first_loss * 0.9, (first_loss, float(loss))
 
 
-def test_decomp_vu_shapes_fp32():
+def test_component_stacks_shapes_fp32():
     cfg = _tiny_cfg()
     sites = glu_site_specs(cfg, _QVDOWN_SITE_CS)
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     d, di = cfg.n_embd, cfg.n_intermediate
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
     V_q, U_q = vu.site("layers.4.self_attn.q_proj")
@@ -492,8 +517,8 @@ def test_decomp_vu_shapes_fp32():
     assert V_q.shape == (d, 8) and U_q.shape == (8, qd)
     assert V_v.shape == (d, 12) and U_v.shape == (12, kvd)
     assert V_d.shape == (di, 8) and U_d.shape == (8, d)
-    assert isinstance(vu, DecompVU)
-    assert all(a.dtype == jnp.float32 for pair in vu.vu.values() for a in pair)
+    assert isinstance(vu, ComponentStacks)
+    assert all(a.dtype == jnp.float32 for pair in vu.stacks.values() for a in pair)
 
 
 def test_fresh_pgd_adversary_step():
@@ -517,7 +542,7 @@ def test_fresh_pgd_adversary_step():
         # Fresh buffers per call: `step` donates the state, so a shared vu/ci_fn would be
         # deleted after the first run_step and crash the second. Deterministic keys keep
         # the two states' inits bit-identical (the "same init" the comparison below needs).
-        vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+        vu = init_component_stacks(sites, jax.random.PRNGKey(1))
         ci_fn = _build_chunkwise_ci_fn(model, jax.random.PRNGKey(2), n_blocks=1)
         return TrainState(
             decomposition=Decomposition(components=vu, ci_fn=ci_fn),

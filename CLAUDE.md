@@ -57,7 +57,7 @@ lab is composition / IO / CLI / experiment assembly**:
   (`param_decomp/`: run.py = `run_decomposition_training`, model.py, train.py, ci_fn.py,
   targets/glu_transformer.py + its llama8b/qwen3_8b family files, …), the torch-free pydantic config SCHEMA it now carries directly
   (`base_config.py` = `BaseConfig`, `schedule.py`, `configs.py` = `PDConfig` /
-  `RuntimeConfig` / `Cadence` / loss + eval-metric configs / routing / ci-fn / wandb
+  `RuntimeConfig` / `Cadence` / loss + eval-metric configs / routing / wandb
   shaping), the built-run bundle (`built_run.py`: `BuiltRun` / `DataConfig` /
   `EvalConfig` / `RunInstance` / `TargetSites`), the
   `param_decomp.log` logger, the in-house target-LM pretrainer (`pretrain/`), and the
@@ -152,8 +152,9 @@ and returns JAX-native as the #10 torch->jax adapter.
 
 - `param_decomp/` — the JAX trainer core. The pydantic config SCHEMA (`base_config.py` =
   `BaseConfig` / `Probability`; `schedule.py`; `configs.py` = routing +
-  decomposition-target + ci-fn + loss + eval-metric configs + `PDConfig` / `RuntimeConfig`
-  / `Cadence` / `WandbConfig` / `ResumeProvenance` + the wandb-shaping helpers). The
+  decomposition site-spec + loss + eval-metric configs + `PDConfig` / `RuntimeConfig`
+  / `Cadence` / `WandbConfig` / `ResumeProvenance` + the wandb-shaping helpers; the
+  authored `decomposition.ci` configs live with their domain schemas, lab-side). The
   built-run bundle the engine consumes (`built_run.py`: `BuiltRun` /
   `DataConfig` / `EvalConfig` / … + the `TargetSites` protocol). The engine + numerics
   (`run.py` = `run_decomposition_training`, `model.py` / `train.py` / `ci_fn.py` /
@@ -169,8 +170,9 @@ and returns JAX-native as the #10 torch->jax adapter.
 - `param_decomp_lab/adapters/` — `JaxPDAdapter`: torch-free autointerp/clustering metadata
   for a JAX run, keyed off `experiments.lm.load_run.run_metadata` (config + cache, no
   orbax restore). The torch `build_target` bridge was deleted with the rest of torch.
-- `param_decomp_lab/experiments/` — `config.py` (the shared `ExperimentConfig[T, D]` YAML
-  schema + the shared YAML→`ExperimentConfig` conversion). `experiments/lm/`: `run.py`
+- `param_decomp_lab/experiments/` — `config.py` (the shared `ExperimentConfig` YAML
+  schema base — each domain subclass binds concrete `target`/`decomposition`/`data` —
+  plus the shared YAML→`ExperimentConfig` conversion). `experiments/lm/`: `run.py`
   (the LM composition root — `python -m param_decomp_lab.experiments.lm.run`), `config.py`
   (LM schema + LM build), `load_run.py` (open a finished JAX run), `data.py` /
   `prestage_tokenized.py` (offline tokenize → parquet shards), `jax_launch.py` (`pd-lm`).
@@ -316,6 +318,14 @@ def get_config(path: Path) -> Config:
 - Don't add fallbacks for old formats or migration shims. Change it; migrate manually
   if needed.
 - Delete unused code. If an argument is always the same value, inline it.
+- **"Unused" is judged against the right caller set.** The two rules above apply to
+  internal code, whose callers are enumerable in-repo. Config schema fields, CLI flags,
+  and other user-facing surface have users the tree deliberately does not contain:
+  uncommitted sweeps and stored runs' pinned `launch_config.yaml`s (see CONFIGS.md — the
+  repo's job is more than running committed configs). "No committed config sets it" is
+  not evidence for removal; before deleting external surface, check the canonical seats,
+  stored-run pins, and intent. The fix for an untested capability flag is a test, not
+  deletion.
 
 ## Types & arguments
 
@@ -357,6 +367,14 @@ Comments describe what the code is, not what changed about it. No narrativizing:
 - `# the function now uses y instead of x` — bad
 - `# changed to be faster` — bad
 - `# we now traverse in reverse` — bad
+
+**Comments point inwards, not outwards.** A comment carries a constraint, invariant, or
+gotcha the code itself can't show. It must not narrate transient outward state:
+campaign measurements tied to a particular config ("~5x at the production plan"),
+strategy attributions ("per Oli: no TP"), PR war stories, current-canon claims. That
+content lives in lore, the PR thread, or an in-repo design doc (which MAY carry
+history) — with at most a short pointer from the code. SPEC invariant-ID citations
+(`S14`, `D4`, …) are sanctioned and required as before.
 
 ## Docstrings
 

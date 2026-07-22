@@ -11,11 +11,12 @@ the JAX trainer doesn't implement. The composition entry (`run.py`) calls `load_
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
 import yaml
 from pydantic import Discriminator, Field, PositiveInt, model_validator
 
+from param_decomp import placement
 from param_decomp.base_config import BaseConfig
 from param_decomp.built_run import (
     LAUNCH_CONFIG_FILENAME,
@@ -33,27 +34,32 @@ from param_decomp.ci_fn import (
     GQACIAttention,
     MHACIAttention,
 )
-from param_decomp.components import SiteC
+from param_decomp.components import SiteC, SiteSpec
 from param_decomp.configs import (
     ArithmeticCIGridConfig,
     CEandKLLossesConfig,
-    ChunkwiseTransformerCiConfig,
     CI_L0Config,
     CIHistogramsConfig,
     CIMaskedAttnPatternsReconLossConfig,
     ComponentActivationDensityConfig,
-    GQACiAttentionConfig,
-    MHACiAttentionConfig,
+    GluTransformerCSpec,
     PGDReconLossConfig,
+    SimpleMlpCSpec,
     StochasticAttnPatternsReconLossConfig,
 )
 from param_decomp.recon import build_loss_terms
+from param_decomp.sharding import hsdp_abstract_mesh
+from param_decomp.site_tree import (
+    ArchFamily,
+    BlockSites,
+    SiteTree,
+    resolve_site_tree,
+)
 from param_decomp.targets import glu_transformer, llama8b, llama_simple_mlp, qwen3_8b
-from param_decomp.targets.glu_transformer import SITE_NAME_PATTERN, canonical_site_cs
+from param_decomp.targets.transformer_taps import TransformerTapGrammar, resid_tap_key
 from param_decomp_lab.experiments.config import (
     ExperimentConfig,
     assert_canonical_algorithm_config,
-    ci_arch,
     run_instance,
 )
 
@@ -106,7 +112,7 @@ class LMTargetConfig(BaseConfig):
     """dtype for the FROZEN target weights. `bfloat16` halves the target's resident footprint
     on every pool (the dominant resident term for an 8B target) — for natively-bf16 models the
     matmuls already run bf16 under autocast, so this only changes residual/norm accumulation
-    precision (measured ~5e-4 nats KL on Llama-3.1-8B clean logits, negligible vs recon KLs).
+    precision (a clean-logit KL shift negligible vs recon KLs).
     Only the frozen target is cast; trained V/U components stay fp32 (their AdamW master)."""
 
     @model_validator(mode="before")
@@ -149,8 +155,122 @@ class LMDataConfig(BaseConfig):
     shuffle_each_epoch: bool = Field(default=True)
 
 
-class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
-    pass
+ChunkInputTap = Literal["first_block_resid", "all_block_resids", "all_site_inputs"]
+"""Which activations each chunkwise-CI chunk reads. Extend here + add a match arm in
+`_chunk_input_taps` below; the concrete tap keys and their widths are the family tap
+grammar's (`param_decomp.targets.transformer_taps`) — opaque strings everywhere generic."""
+
+
+class MHACiAttentionConfig(BaseConfig):
+    """Every query head carries its own K/V head."""
+
+    kind: Literal["mha"] = "mha"
+    n_heads: PositiveInt
+
+
+class GQACiAttentionConfig(BaseConfig):
+    """Grouped-query attention: `n_heads // n_kv_heads` query heads share each K/V head, so
+    `wk`/`wv` narrow to `n_kv_heads * head_dim`. head_dim, the RoPE tables, `wq`/`wo` and
+    every sharding are identical to MHA — only the K/V projections change."""
+
+    kind: Literal["gqa"] = "gqa"
+    n_heads: PositiveInt
+    n_kv_heads: PositiveInt
+
+    @model_validator(mode="after")
+    def validate_grouping(self) -> Self:
+        assert self.n_heads % self.n_kv_heads == 0, (
+            "n_heads must be divisible by n_kv_heads (each K/V head serves an equal group "
+            f"of query heads): {self.n_heads} % {self.n_kv_heads}"
+        )
+        assert self.n_kv_heads < self.n_heads, (
+            f"n_kv_heads == n_heads ({self.n_heads}) is MHA — use `kind: mha` rather than "
+            "spelling it as a degenerate gqa"
+        )
+        return self
+
+
+class GeluCiFfnConfig(BaseConfig):
+    """`Linear+b -> GELU -> Linear+b` — two matrices."""
+
+    kind: Literal["gelu"] = "gelu"
+    hidden: PositiveInt
+
+
+class SwigluCiFfnConfig(BaseConfig):
+    """`silu(h@w_gate + b_gate) * (h@w1 + b1) -> Linear+b` — THREE matrices, so at a given
+    `hidden` this is ~1.5x the GELU FFN's params. Iso-param is `hidden` at 2/3 (Shazeer's GLU
+    variants: "decrease d_ff by a factor of 2/3"); nothing here rescales it, because a width
+    that silently differs from the one you wrote is worse than doing the arithmetic."""
+
+    kind: Literal["swiglu"] = "swiglu"
+    hidden: PositiveInt
+
+
+CiFfnConfig = Annotated[GeluCiFfnConfig | SwigluCiFfnConfig, Field(discriminator="kind")]
+"""The CI transformer's feed-forward sublayer. Named FFN, not MLP: `swiglu` is a gated
+linear unit, not a multi-layer perceptron — FFN is the name that stays honest across both
+arms. `hidden` belongs to the FFN, not to the transformer around it."""
+
+
+CiAttentionConfig = Annotated[
+    MHACiAttentionConfig | GQACiAttentionConfig, Field(discriminator="kind")
+]
+"""The CI transformer's attention, keyed by CLASS rather than an optional `n_kv_heads` —
+so a K/V head count cannot exist without meaning, and the grouping invariant lives on the
+arm that has both fields instead of being a runtime check on a shape that shouldn't parse.
+Mirrors how the target's attention variants are keyed (see the Qwen3 family split)."""
+
+
+class ChunkwiseTransformerCiConfig(BaseConfig):
+    """Chunkwise-transformer CI fn (LMs). Each chunk is `blocks_per_chunk` consecutive
+    transformer blocks; `input_tap` names which activations the chunk reads and its output
+    is CI for every matrix site in those blocks. `d_model`/`n_blocks`/`attention`/`ffn`
+    size the per-chunk CI transformer (`d_model % n_heads == 0`; head_dim even for RoPE)."""
+
+    type: Literal["chunkwise_transformer"] = "chunkwise_transformer"
+    blocks_per_chunk: PositiveInt
+    input_tap: ChunkInputTap = "first_block_resid"
+    """`first_block_resid`: the residual stream entering the chunk's first block — one tap.
+    `all_block_resids`: the residual entering EVERY block the chunk runs over, RMS-normed
+    per tap and concatenated (`ci_fn.Chunk.input_taps` is generic over tap count) —
+    `blocks_per_chunk`x the per-chunk CI transformer's input width.
+    `all_site_inputs`: the input activation of every decomposed site in the chunk (the
+    paper's D = Σd_l input set) — widths are per-site d_in, NOT d_resid (down/o
+    projections read intermediates), summed into `input_dim`."""
+    d_model: PositiveInt
+    n_blocks: PositiveInt
+    attention: CiAttentionConfig
+    ffn: CiFfnConfig
+    learned_norm_scale: bool = Field(
+        default=False,
+        description="Learned per-channel scale on the block RMSNorms (the per-tap input norms "
+        "stay weightless). Inits to ones, so step 0 is identical to weightless.",
+    )
+
+    @model_validator(mode="after")
+    def validate_head_dim(self) -> Self:
+        n_heads = self.attention.n_heads
+        assert self.d_model % n_heads == 0, (self.d_model, n_heads)
+        assert (self.d_model // n_heads) % 2 == 0, "head_dim must be even for RoPE"
+        return self
+
+
+class LMDecompositionConfig(BaseConfig):
+    """The LM decomposition apparatus: a tiled site-spec (per-matrix-type C over a layer
+    selection) + the chunkwise-transformer CI-fn arch. Tiled-only ⇒ every block is
+    structurally identical ⇒ chunkwise chunks are homogeneous by construction (no `explicit`
+    variant here, so a non-compiling heterogeneous decomposition is unrepresentable). The
+    `sites.kind` family (glu vs simple-MLP) is checked against the target family at resolve."""
+
+    sites: Annotated[GluTransformerCSpec | SimpleMlpCSpec, Discriminator("kind")]
+    ci: ChunkwiseTransformerCiConfig
+
+
+class LMExperimentConfig(ExperimentConfig):
+    target: LMTargetConfig
+    decomposition: LMDecompositionConfig
+    data: LMDataConfig
 
 
 @dataclass(frozen=True)
@@ -255,29 +375,40 @@ SLOW_TIER_EVAL_METRIC_TYPES = frozenset(
 )
 
 
-def _site_cs(cfg: LMExperimentConfig) -> tuple[SiteC, ...]:
-    """Decomposition targets -> canonical per-site (name, C) pairs. Any per-layer
-    matrix site (q/k/v/o/gate/up/down) with its own C is supported; non-site module
-    patterns refuse. Raw-HF specs name modules `model.layers.*`; the vendored class drops
-    the prefix — same matrices either way."""
-    site_cs = []
-    for target in cfg.pd.decomposition_targets:
-        name = target.module_pattern.removeprefix("model.")
-        assert SITE_NAME_PATTERN.match(name), (
-            f"unsupported decomposition target {target.module_pattern!r}"
-        )
-        site_cs.append(SiteC(name, target.C))
-    return canonical_site_cs(tuple(site_cs))
+@dataclass(frozen=True)
+class _ResolvedDecomposition:
+    """Target config + its block-structured `SiteTree` + arch family, resolved once and shared
+    by the target's flat `.sites`, the chunkwise chunk generator, and validation. `grammar`
+    is the family tap grammar bound to this target's shape (block range, residual width,
+    per-site d_in) — what chunk tap keys and widths resolve against. `site_specs` are the
+    shape-carrying specs (built by the same per-family builder the composition root's target
+    load uses), the placement gate's input."""
+
+    target: AnyLMTargetConfig
+    tree: SiteTree
+    grammar: TransformerTapGrammar
+    site_specs: tuple[SiteSpec, ...]
 
 
-def _resolve_target(cfg: LMExperimentConfig) -> AnyLMTargetConfig:
-    """Target spec + decomposition patterns -> the JAX target config.
+def _bound_grammar(
+    family: ArchFamily, n_layer: int, d_resid: int, dims_of: Callable[[str], tuple[int, int]]
+) -> TransformerTapGrammar:
+    """The family tap grammar bound to a resolved target's shape; `dims_of(kind)` is the
+    target's per-matrix `(d_in, d_out)` shape table, closed over its arch config."""
+    return TransformerTapGrammar(
+        family, n_layer, d_resid, d_in_of=lambda name: dims_of(family.parse(name)[1])[0]
+    )
 
-    Vendored and raw-HF Llama specs load the SAME meta-llama weights (the export
-    bridge round-trip verified vendored == HF numerics); both map to the HF loader.
-    `kind: pretrained` LlamaSimpleMLP specs map to the pretrain-cache loader, with
-    `h.*` wildcard patterns expanded over the checkpoint's n_layer."""
+
+def _resolve_decomposition(cfg: LMExperimentConfig) -> _ResolvedDecomposition:
+    """Target spec + tiled `decomposition.sites` -> target config + `SiteTree`.
+
+    HF specs resolve their family from `HF_MODEL_FAMILIES` (all GLU-transformer targets); `kind:
+    pretrained` LlamaSimpleMLP specs map to the pretrain-cache loader (plain-MLP family). The
+    tree is tiled from the per-matrix-type `cs` over the selected layers; `resolve_site_tree`
+    asserts the c-spec's declared family matches the target's."""
     spec = cfg.target.spec
+    sites = cfg.decomposition.sites
     match spec:
         case HFWeightsInVendored() | HFTarget():
             match spec:
@@ -290,71 +421,97 @@ def _resolve_target(cfg: LMExperimentConfig) -> AnyLMTargetConfig:
                     assert spec.model_class == hf_model_family(spec.model_name).model_class, (
                         f"{spec.model_class!r} is not {spec.model_name!r}'s family"
                     )
-            hf_model_family(spec.model_name)  # refuse unknown model names here
-            return TargetConfig(model_name=spec.model_name, sites=_site_cs(cfg))
+            hf_family = hf_model_family(spec.model_name)  # refuses unknown model names
+            arch = hf_family.arch_config()
+            tree = resolve_site_tree(sites, glu_transformer.FAMILY, arch.n_layer)
+            target = TargetConfig(
+                model_name=spec.model_name, sites=tree.site_cs(glu_transformer.FAMILY.name_of)
+            )
+            grammar = _bound_grammar(
+                glu_transformer.FAMILY,
+                arch.n_layer,
+                arch.n_embd,
+                lambda kind: glu_transformer.site_dims(arch, kind),
+            )
+            site_specs = glu_transformer.glu_site_specs(arch, target.sites)
+            return _ResolvedDecomposition(target, tree, grammar, site_specs)
         case PretrainedTarget():
             assert spec.model_class.rsplit(".", 1)[-1] == "LlamaSimpleMLP", spec.model_class
             cache_dir = llama_simple_mlp.pretrain_cache_dir(spec.run_path)
             arch = llama_simple_mlp.load_model_config(cache_dir)
             assert cfg.data.max_seq_len <= arch.n_ctx, (cfg.data.max_seq_len, arch.n_ctx)
-            sites = llama_simple_mlp.expand_wildcard_site_cs(
-                tuple(SiteC(t.module_pattern, t.C) for t in cfg.pd.decomposition_targets),
-                arch.n_layer,
+            tree = resolve_site_tree(sites, llama_simple_mlp.FAMILY, arch.n_layer)
+            target = LlamaSimpleMLPTargetConfig(
+                pretrain_run_path=spec.run_path, sites=tree.site_cs(llama_simple_mlp.FAMILY.name_of)
             )
-            return LlamaSimpleMLPTargetConfig(pretrain_run_path=spec.run_path, sites=sites)
+            grammar = _bound_grammar(
+                llama_simple_mlp.FAMILY,
+                arch.n_layer,
+                arch.n_embd,
+                lambda kind: llama_simple_mlp.site_dims(arch, kind),
+            )
+            site_specs = llama_simple_mlp.site_specs(arch, target.sites)
+            return _ResolvedDecomposition(target, tree, grammar, site_specs)
 
 
-def _block_of_site(target: AnyLMTargetConfig, site_name: str) -> int:
-    """Transformer-block index of a decomposition site, parsed with the target's own site
-    grammar (`layers.{i}...` for llama8b, `h.{i}...` for LlamaSimpleMLP)."""
-    match target:
-        case TargetConfig():
-            return glu_transformer.parse_site_name(site_name)[0]
-        case LlamaSimpleMLPTargetConfig():
-            return llama_simple_mlp.parse_site_name(site_name)[0]
+def _resolve_target(cfg: LMExperimentConfig) -> AnyLMTargetConfig:
+    return _resolve_decomposition(cfg).target
 
 
-def _resolve_d_resid(target: AnyLMTargetConfig) -> int:
-    """Residual-stream width of the target — the per-chunk CI-transformer input dim, since
-    each chunk reads one residual tap of this width."""
-    match target:
-        case TargetConfig():
-            return hf_model_family(target.model_name).arch_config().n_embd
-        case LlamaSimpleMLPTargetConfig():
-            cache_dir = llama_simple_mlp.pretrain_cache_dir(target.pretrain_run_path)
-            return llama_simple_mlp.load_model_config(cache_dir).n_embd
+def _chunk_input_taps(
+    input_tap: ChunkInputTap, blocks: tuple[BlockSites, ...], family: ArchFamily
+) -> tuple[str, ...]:
+    """The tap keys a chunk reads, from its config source + the blocks it spans."""
+    match input_tap:
+        case "first_block_resid":
+            return (resid_tap_key(blocks[0].layer_idx),)
+        case "all_block_resids":
+            return tuple(resid_tap_key(b.layer_idx) for b in blocks)
+        case "all_site_inputs":
+            return tuple(family.name_of(b.layer_idx, kind) for b in blocks for kind, _ in b.slots)
 
 
-def _resolved_chunks(target: AnyLMTargetConfig, blocks_per_chunk: int) -> tuple[Chunk, ...]:
-    """Group the decomposition sites into chunks of `blocks_per_chunk` CONSECUTIVE blocks.
-
-    Each chunk reads ONE residual tap — `resid.{first_block_of_chunk}`, the residual
-    entering the chunk — and emits CI for every site in those blocks. Sites are grouped by
-    block, the distinct blocks sorted ascending, then partitioned into consecutive
-    `blocks_per_chunk`-block groups (no ragged tail)."""
-    sites_by_block: dict[int, list[str]] = {}
-    for spec in target.sites:
-        sites_by_block.setdefault(_block_of_site(target, spec.name), []).append(spec.name)
-    blocks = sorted(sites_by_block)
+def _resolved_chunks(
+    tree: SiteTree, blocks_per_chunk: int, input_tap: ChunkInputTap, family: ArchFamily
+) -> tuple[Chunk, ...]:
+    """Partition the site tree's blocks into consecutive `blocks_per_chunk`-block chunks. The
+    tree IS the block grouping (layer-ascending, already grouped), so there is no name parsing
+    and no groupby: a chunk reads the taps `input_tap` selects and emits CI for every slot in
+    its blocks, in tree order."""
+    blocks = tree.blocks
     assert len(blocks) % blocks_per_chunk == 0, (
         f"{len(blocks)} decomposed blocks not divisible by blocks_per_chunk={blocks_per_chunk}"
     )
     chunks = []
     for start in range(0, len(blocks), blocks_per_chunk):
-        chunk_blocks = blocks[start : start + blocks_per_chunk]
-        output_sites = tuple(name for block in chunk_blocks for name in sites_by_block[block])
-        chunks.append(Chunk(input_taps=(f"resid.{chunk_blocks[0]}",), output_sites=output_sites))
+        group = blocks[start : start + blocks_per_chunk]
+        output_sites = tuple(
+            family.name_of(block.layer_idx, kind) for block in group for kind, _ in block.slots
+        )
+        chunks.append(
+            Chunk(
+                input_taps=_chunk_input_taps(input_tap, group, family),
+                output_sites=output_sites,
+            )
+        )
     return tuple(chunks)
 
 
 def _resolve_chunkwise_ci_arch(
-    target: AnyLMTargetConfig, ci: ChunkwiseTransformerCiConfig
+    tree: SiteTree,
+    ci: ChunkwiseTransformerCiConfig,
+    grammar: TransformerTapGrammar,
 ) -> ChunkwiseTransformerCIArch:
-    """Resolve the chunkwise-transformer arch against the LM target: the chunk generator
-    (`_resolved_chunks`) + the per-chunk input width (`_resolve_d_resid`). The `attention`
-    union collapses here to two concrete head counts — MHA is `n_kv_heads == n_heads` — so
-    nothing downstream re-derives the grouping, and the fine-tune `parent.ci_fn ==
-    built.ci_fn` compare sees concrete values on both sides."""
+    """Resolve the chunkwise-transformer arch from the site tree: the chunk generator
+    (`_resolved_chunks`) + the per-chunk input width (the sum of the chunk's tap widths —
+    `grammar.width_of`). The tree is homogeneous by construction, so the first chunk's
+    width is every chunk's. The `attention` union collapses here to two concrete head
+    counts — MHA is `n_kv_heads == n_heads` — so nothing downstream re-derives the
+    grouping, and the fine-tune `parent.ci_fn == built.ci_fn` compare sees concrete
+    values on both sides."""
+    family = grammar.family
+    first_chunk_taps = _chunk_input_taps(ci.input_tap, tree.blocks[: ci.blocks_per_chunk], family)
+    input_dim = sum(grammar.width_of(key) for key in first_chunk_taps)
     match ci.attention:
         case MHACiAttentionConfig():
             attention = MHACIAttention(n_heads=ci.attention.n_heads)
@@ -363,8 +520,8 @@ def _resolve_chunkwise_ci_arch(
                 n_heads=ci.attention.n_heads, n_kv_heads=ci.attention.n_kv_heads
             )
     return ChunkwiseTransformerCIArch(
-        chunks=_resolved_chunks(target, ci.blocks_per_chunk),
-        input_dim=_resolve_d_resid(target),
+        chunks=_resolved_chunks(tree, ci.blocks_per_chunk, ci.input_tap, family),
+        input_dim=input_dim,
         d_model=ci.d_model,
         n_blocks=ci.n_blocks,
         attention=attention,
@@ -495,11 +652,35 @@ def assert_supported_weights_dtype(cfg: LMExperimentConfig) -> None:
     )
 
 
+def _assert_placement_claims(resolved: _ResolvedDecomposition, cfg: LMExperimentConfig) -> None:
+    """The config-build placement gate (SPEC D4 amendment 2026-07-21): construct the
+    run's `PlacementRules` at the mesh shape `runtime.{dp,tp}` implies, firing the
+    per-shape-group persist-vs-zero1 assignment and the sharding spec's bidirectional
+    claim where the resolved site set and the declared topology first coexist — at
+    `pd-lm` submit validation (pre-sbatch, on the login node) and at every in-job /
+    consumer config build. The composition root's `placement.from_config` at the
+    concrete mesh is the same construction; nothing decides later or deeper."""
+    placement.from_config(
+        cfg.runtime.sharding,
+        hsdp_abstract_mesh(cfg.runtime.dp, cfg.runtime.tp),
+        resolved.site_specs,
+    )
+
+
+def assert_placement_claims(cfg: LMExperimentConfig) -> None:
+    """Standalone spelling of the placement gate for pre-submit validation (`pd-lm`) and
+    the repo-config parse gate; `build_experiment_config` runs it on every build."""
+    _assert_placement_claims(_resolve_decomposition(cfg), cfg)
+
+
 def build_experiment_config(cfg: LMExperimentConfig, run_id: str) -> BuiltRun:
-    target = _resolve_target(cfg)
+    resolved = _resolve_decomposition(cfg)
+    target = resolved.target
     assert_canonical_algorithm_config(cfg)
     _assert_losses_supported(cfg, tuple(sc.name for sc in target.sites))
+    _assert_placement_claims(resolved, cfg)
     data = _data(cfg)
+    ci_fn = _resolve_chunkwise_ci_arch(resolved.tree, cfg.decomposition.ci, resolved.grammar)
 
     return BuiltRun(
         pd=cfg.pd,
@@ -508,7 +689,7 @@ def build_experiment_config(cfg: LMExperimentConfig, run_id: str) -> BuiltRun:
         run=run_instance(cfg, run_id),
         target=target,
         data=data,
-        ci_fn=ci_arch(cfg.pd.ci_config, lambda ci: _resolve_chunkwise_ci_arch(target, ci)),
+        ci_fn=ci_fn,
         eval=_eval(cfg),
     )
 

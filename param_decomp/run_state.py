@@ -19,10 +19,17 @@ from jax.typing import ArrayLike
 from jaxtyping import Array, PRNGKeyArray
 
 from param_decomp.adversary import PersistentAdversary, init_sources_adam_state
-from param_decomp.ci_fn import CIFnArch
-from param_decomp.configs import AdamPGDConfig, OptimizerConfig, PDConfig
+from param_decomp.ci_fn import ChunkwiseTransformerCIArch, CIFnArch
+from param_decomp.configs import (
+    AdamPGDConfig,
+    AdamWOptimizerConfig,
+    MuonOptimizerConfig,
+    PDConfig,
+)
 from param_decomp.losses import scheduled_value_traced
 from param_decomp.model import DecomposedModel, PositionAxis, Positioned
+from param_decomp.muon_stacked import stacked_muon
+from param_decomp.placement import PlacementRules
 from param_decomp.recon import (
     MixedPersistentStochasticSources,
     PersistentSources,
@@ -32,7 +39,7 @@ from param_decomp.recon import (
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.targets.glu_transformer_sharding import (
     init_ci_fn_placed,
-    init_decomp_vu_placed,
+    init_component_stacks_placed,
     init_sources_sharded,
 )
 from param_decomp.train import Decomposition, TrainingItem, TrainState
@@ -71,43 +78,99 @@ def clip_by_global_norm_with_eps(max_norm: float, eps: float) -> optax.GradientT
     return optax.GradientTransformation(init, update)
 
 
-def _adamw_with_clip(opt: OptimizerConfig, schedule: Callable[[ArrayLike], Array]):
-    """AdamW (fp32 master, optax wd default overridden to the config's — torch's is 0)
-    over `schedule`, optionally preceded by torch-parity global-norm clip (SPEC S19/N1).
-    Adam eps is the torch/optax default 1e-8 (not exposed on `OptimizerConfig`)."""
-    adamw = optax.adamw(
-        schedule, b1=opt.betas[0], b2=opt.betas[1], eps=1e-8, weight_decay=opt.weight_decay
-    )
+def stacked_muon_dimension_numbers(params: optax.Params) -> optax.Params:
+    """Muon leaf labeling for matrix-STACK trees: every 3D leaf is a `[stack, a, b]` stack
+    of matrices — orthogonalize the trailing two axes, stack axis batched — and everything
+    else (e.g. the CI fn's `[n_chunks, d]` bias stacks) takes the Adam fallback. Covers
+    BOTH optimizer groups now: the chunkwise CI fn's per-chunk stacks (`ci_fn.py`) and the
+    owner-partitioned V/U shape-group stacks (`components.py` — all leaves 3D, so the
+    fallback never fires there). optax's default rule (2D → muon) would Adam every V/U
+    leaf silently and, on the CI tree, NS-orthogonalize the bias stacks instead."""
+    dims = optax.contrib.MuonDimensionNumbers(reduction_axis=-2, output_axis=-1)
+    return jax.tree.map(lambda leaf: dims if leaf.ndim == 3 else None, params)
+
+
+def _optimizer_with_clip(
+    opt: AdamWOptimizerConfig | MuonOptimizerConfig,
+    schedule: Callable[[ArrayLike], Array],
+    muon_dimension_numbers: Callable[[optax.Params], optax.Params] | None,
+    mesh: Mesh | None,
+):
+    """The group optimizer (fp32 master) over `schedule`, optionally preceded by
+    torch-parity global-norm clip (SPEC S19/N1). AdamW is canonical (eps is the torch/optax
+    default 1e-8, not exposed on `AdamWOptimizerConfig`; optax's wd default overridden to the
+    config's — torch's is 0); Muon is a config-gated experimental variant (SPEC S19').
+    `muon_dimension_numbers` labels the group's leaves for muon (None = optax's default
+    2D-matrix rule, correct for the MLP CI fns); ignored for adamw.
+    `mesh` shards the stacked-impl NS batch axis; None (toys, CPU tests) = unsharded."""
+    match opt:
+        case AdamWOptimizerConfig():
+            inner = optax.adamw(
+                schedule, b1=opt.betas[0], b2=opt.betas[1], eps=1e-8, weight_decay=opt.weight_decay
+            )
+        case MuonOptimizerConfig(impl="optax"):
+            assert opt.ns_dtype == "float32", "ns_dtype is a stacked-impl knob (optax NS is fp32)"
+            inner = optax.contrib.muon(
+                schedule,
+                beta=opt.beta,
+                weight_decay=opt.weight_decay,
+                consistent_rms=opt.consistent_rms,
+                muon_weight_dimension_numbers=muon_dimension_numbers,
+                ns_steps=opt.ns_steps,
+            )
+        case MuonOptimizerConfig():
+            assert opt.impl == "stacked", opt.impl
+            inner = stacked_muon(
+                schedule,
+                beta=opt.beta,
+                weight_decay=opt.weight_decay,
+                consistent_rms=opt.consistent_rms,
+                muon_weight_dimension_numbers=muon_dimension_numbers,
+                ns_steps=opt.ns_steps,
+                ns_dtype=jnp.dtype(opt.ns_dtype),
+                mesh=mesh,
+            )
     if opt.grad_clip_norm is None:
-        return adamw
-    return optax.chain(clip_by_global_norm_with_eps(opt.grad_clip_norm, eps=1e-6), adamw)
+        return inner
+    return optax.chain(clip_by_global_norm_with_eps(opt.grad_clip_norm, eps=1e-6), inner)
 
 
-def build_optimizers(pd: PDConfig):
+def build_optimizers(pd: PDConfig, ci_fn_arch: CIFnArch, mesh: Mesh | None):
     """Returns (opt_vu, opt_ci, schedules): the schedule fns are returned too so the
     log path reports the exact LR the optimizer applies (single source of truth).
 
-    The canonical-shape asserts (cosine-to-0.1, plain AdamW, required components clip, optional
-    CI-fn clip) live in
+    The canonical-shape asserts (cosine-to-0.1, canonical optimizer shape, required components
+    clip, optional CI-fn clip) live in
     the lab conversion (`experiments.config.assert_canonical_algorithm_config`); here we
     read the values straight off `PDConfig` so there is no second source of truth."""
     sched_vu = optax_schedule(pd.components_optimizer.lr_schedule, pd.steps)
     sched_ci = optax_schedule(pd.ci_fn_optimizer.lr_schedule, pd.steps)
-    opt_vu = _adamw_with_clip(pd.components_optimizer, sched_vu)
-    opt_ci = _adamw_with_clip(pd.ci_fn_optimizer, sched_ci)
+    opt_vu = _optimizer_with_clip(
+        pd.components_optimizer, sched_vu, stacked_muon_dimension_numbers, mesh=mesh
+    )
+    ci_muon_dim_nums = (
+        stacked_muon_dimension_numbers
+        if isinstance(ci_fn_arch, ChunkwiseTransformerCIArch)
+        else None
+    )
+    opt_ci = _optimizer_with_clip(pd.ci_fn_optimizer, sched_ci, ci_muon_dim_nums, mesh=mesh)
     return opt_vu, opt_ci, (sched_vu, sched_ci)
 
 
 def init_decomposition(
-    model: DecomposedModel, ci_fn_arch: CIFnArch, init_key: PRNGKeyArray, mesh: Mesh
+    model: DecomposedModel,
+    ci_fn_arch: CIFnArch,
+    init_key: PRNGKeyArray,
+    mesh: Mesh,
+    rules: PlacementRules,
 ) -> Decomposition:
     """The trained-product half of `init_train_state`, factored out so a consumer can
     `jax.eval_shape` it to recover the saved `decomposition` item's tree structure
     without building (or knowing about) the optimizers/adversaries."""
     ci_key = random.fold_in(init_key, 1)
-    # Placement is MODEL-OWNED: V/U + CI declare their own per-leaf shardings (asserting
-    # divisibility), uniformly across mesh sizes — no scale inference, no replicate fallback.
-    components = init_decomp_vu_placed(model.sites, init_key, mesh)
+    # V/U placement derives from the rules table; the CI fn still declares its own
+    # per-leaf shardings (PLACEMENT_DESIGN.md migration stage 3).
+    components = init_component_stacks_placed(model.sites, init_key, rules)
     ci_fn = init_ci_fn_placed(ci_fn_arch, model.sites, ci_key, mesh)
     assert ci_fn.has_position_axis == model.has_position_axis, (
         f"CI fn has_position_axis={ci_fn.has_position_axis} but model declares "
@@ -126,12 +189,13 @@ def init_train_state(
     init_key: PRNGKeyArray,
     src_key: PRNGKeyArray,
     mesh: Mesh,
+    rules: PlacementRules,
 ) -> TrainState:
     """Persistent sources are shaped from `positions` (the run's waist geometry)."""
     assert isinstance(positions, Positioned) == model.has_position_axis, (
         f"{positions} does not match the model's has_position_axis={model.has_position_axis}"
     )
-    decomposition = init_decomposition(model, ci_fn_arch, init_key, mesh)
+    decomposition = init_decomposition(model, ci_fn_arch, init_key, mesh, rules)
     components, ci_fn = decomposition.components, decomposition.ci_fn
     losses = build_loss_terms(pd.loss_metrics, model.site_names)
     persistent = persistent_configs(losses.recon)

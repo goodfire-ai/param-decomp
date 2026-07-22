@@ -5,6 +5,7 @@ helpers as an explicit arg (`RUN_ID` here), and the run dir derives from it
 (`PARAM_DECOMP_OUT_DIR/runs/<run_id>`)."""
 
 from pathlib import Path
+from typing import Any
 
 import jax.numpy as jnp
 import pytest
@@ -229,25 +230,34 @@ def test_unsupported_settings_refuse():
         with pytest.raises(ValidationError):
             LMExperimentConfig(**with_ppgd_fields(**bad_field))
 
-    non_site_target = dict(
-        raw,
-        pd=dict(
-            raw["pd"],
-            decomposition_targets=[{"module_pattern": "layers.18.input_layernorm", "C": 512}],
-        ),
-    )
-    with pytest.raises(AssertionError, match="unsupported decomposition target"):
-        build_experiment_config(LMExperimentConfig(**non_site_target), RUN_ID)
+    # Non-matrix / cross-family site names are unrepresentable in the tiled spec: the cs
+    # keys are the family's Literal matrix vocabulary, so these are rejected at PARSE, not
+    # deferred to a convert-time assert.
+    def _with_cs(cs: dict[str, int]):
+        sites = dict(raw["decomposition"]["sites"], cs=cs)
+        return dict(raw, decomposition=dict(raw["decomposition"], sites=sites))
 
-    embedding_target = dict(
+    with pytest.raises(ValidationError):
+        LMExperimentConfig(**_with_cs({"input_layernorm": 512}))
+
+    with pytest.raises(ValidationError):
+        LMExperimentConfig(**_with_cs({"embed_tokens": 512}))
+
+    # cross-family matrix name (simple-MLP's c_fc in a GLU spec)
+    with pytest.raises(ValidationError):
+        LMExperimentConfig(**_with_cs({"c_fc": 512}))
+
+    # family <-> target mismatch survives parse (both are well-formed) but is refused at
+    # resolve: a simple_mlp c-spec against the GLU llama8b target.
+    simple_mlp_sites = dict(
         raw,
-        pd=dict(
-            raw["pd"],
-            decomposition_targets=[{"module_pattern": "embed_tokens", "C": 512}],
+        decomposition=dict(
+            raw["decomposition"],
+            sites={"kind": "simple_mlp", "layers": {"kind": "all"}, "cs": {"c_fc": 512}},
         ),
     )
-    with pytest.raises(AssertionError, match="unsupported decomposition target"):
-        build_experiment_config(LMExperimentConfig(**embedding_target), RUN_ID)
+    with pytest.raises(AssertionError, match="c-spec family"):
+        build_experiment_config(LMExperimentConfig(**simple_mlp_sites), RUN_ID)
 
 
 def test_unsupported_model_family_refuses_and_supported_families_dispatch():
@@ -376,27 +386,84 @@ def test_decaying_persistent_source_schedule_accepted_and_decays():
     assert float(end) == pytest.approx(schedule.start_val * schedule.final_val_frac, rel=1e-3)
 
 
-def test_arbitrary_sites_with_per_site_c_convert():
-    """Attention + MLP sites across non-contiguous layers with heterogeneous C —
-    the general site space this trainer now implements."""
+def test_tiled_sites_with_per_matrix_c_convert():
+    """Attention + MLP matrices with heterogeneous per-matrix C, tiled over a
+    non-contiguous layer list — the general site space the tiled spec expresses. (Per-LAYER
+    heterogeneous C is deliberately unrepresentable now: tiling is what makes the chunkwise
+    CI fn's chunks homogeneous by construction.) Sites resolve in canonical order:
+    layer-ascending, KIND_ORDER within a layer."""
     raw = _reference_lm_raw()
     general = dict(
         raw,
-        pd=dict(
-            raw["pd"],
-            decomposition_targets=[
-                {"module_pattern": "layers.20.mlp.up_proj", "C": 64},
-                {"module_pattern": "model.layers.18.self_attn.q_proj", "C": 128},
-                {"module_pattern": "layers.18.self_attn.v_proj", "C": 32},
-            ],
+        decomposition=dict(
+            raw["decomposition"],
+            sites={
+                "kind": "glu_transformer",
+                "layers": {"kind": "list", "indices": [18, 20]},
+                "cs": {"up": 64, "q": 128, "v": 32},
+            },
         ),
     )
     cfg = build_experiment_config(LMExperimentConfig(**general), RUN_ID)
     assert cfg.target.sites == (
         SiteC("layers.18.self_attn.q_proj", 128),
         SiteC("layers.18.self_attn.v_proj", 32),
+        SiteC("layers.18.mlp.up_proj", 64),
+        SiteC("layers.20.self_attn.q_proj", 128),
+        SiteC("layers.20.self_attn.v_proj", 32),
         SiteC("layers.20.mlp.up_proj", 64),
     )
+
+
+def test_all_block_resids_concatenates_one_tap_per_block():
+    """`input_tap` default (`first_block_resid`): a multi-block chunk reads ONE tap — the
+    residual entering its first block. `all_block_resids` concatenates one tap per block in
+    the chunk, widening `ci_fn.input_dim` `blocks_per_chunk`x."""
+    from param_decomp.ci_fn import Chunk, ChunkwiseTransformerCIArch
+
+    raw = _reference_lm_raw()
+
+    def _two_block_cfg(input_tap: str) -> dict[str, Any]:
+        return dict(
+            raw,
+            decomposition=dict(
+                sites={
+                    "kind": "glu_transformer",
+                    "layers": {"kind": "range", "start": 18, "end": 20},
+                    "cs": {"down": 64},
+                },
+                ci=dict(raw["decomposition"]["ci"], blocks_per_chunk=2, input_tap=input_tap),
+            ),
+        )
+
+    output_sites = ("layers.18.mlp.down_proj", "layers.19.mlp.down_proj")
+
+    default_cfg = build_experiment_config(
+        LMExperimentConfig(**_two_block_cfg("first_block_resid")), RUN_ID
+    )
+    assert isinstance(default_cfg.ci_fn, ChunkwiseTransformerCIArch)
+    assert default_cfg.ci_fn.chunks == (Chunk(input_taps=("resid.18",), output_sites=output_sites),)
+    assert default_cfg.ci_fn.input_dim == 4096
+
+    all_taps_cfg = build_experiment_config(
+        LMExperimentConfig(**_two_block_cfg("all_block_resids")), RUN_ID
+    )
+    assert isinstance(all_taps_cfg.ci_fn, ChunkwiseTransformerCIArch)
+    assert all_taps_cfg.ci_fn.chunks == (
+        Chunk(input_taps=("resid.18", "resid.19"), output_sites=output_sites),
+    )
+    assert all_taps_cfg.ci_fn.input_dim == 4096 * 2
+
+    # `all_site_inputs`: tap widths are per-site d_in, not d_resid — a down_proj tap is the
+    # MLP intermediate (14336 on llama8b), and the wire keys are the site names themselves.
+    site_inputs_cfg = build_experiment_config(
+        LMExperimentConfig(**_two_block_cfg("all_site_inputs")), RUN_ID
+    )
+    assert isinstance(site_inputs_cfg.ci_fn, ChunkwiseTransformerCIArch)
+    assert site_inputs_cfg.ci_fn.chunks == (
+        Chunk(input_taps=output_sites, output_sites=output_sites),
+    )
+    assert site_inputs_cfg.ci_fn.input_dim == 14336 * 2
 
 
 def test_c49k_config_converts():
@@ -480,3 +547,41 @@ def test_arithmetic_ci_grid_metric_builds_to_arithmetic_eval_config():
     assert built.eval.arithmetic == ArithmeticEvalConfig(
         operation="add", a_range=(1, 50), b_range=(1, 100), thresholds=(0.1,), top_k=24
     )
+
+
+def test_placement_table_parses_typed_and_fails_closed():
+    from param_decomp.configs import PlacementTableConfig, RuntimeConfig
+
+    table: dict[str, Any] = {
+        "params": {
+            "persist": {"stack": "replicate", "d_in": "fsdp", "d_out": "fsdp", "C": "tp"},
+            "zero1": {"d_in": ["fsdp", "replicate"], "d_out": ["fsdp", "replicate"], "C": "tp"},
+            "forward": {"d_in": "fsdp", "d_out": "fsdp", "C": "tp"},
+        },
+        "activations": {"batch": ["replicate", "fsdp"], "C": "tp"},
+    }
+    runtime = RuntimeConfig.model_validate({"sharding": table})
+    assert isinstance(runtime.sharding, PlacementTableConfig)
+    assert runtime.sharding.params.zero1 is not None
+
+    # zero1 is the opt-in arm: omitting it parses, as the strict layout
+    strict = PlacementTableConfig.model_validate(
+        {"params": {"persist": {}, "forward": {}}, "activations": {}}
+    )
+    assert strict.params.zero1 is None
+
+    # the row vocabulary is CLOSED: unknown rows die at parse, at either level
+    with pytest.raises(ValidationError):
+        PlacementTableConfig.model_validate({**table, "optim/muon.ns": {}})
+    with pytest.raises(ValidationError):
+        PlacementTableConfig.model_validate(
+            {"params": {**table["params"], "persist.zero1": {}}, "activations": {}}
+        )
+    # required rows are required fields, not a runtime manifest check
+    with pytest.raises(ValidationError):
+        PlacementTableConfig.model_validate({"params": {"persist": {}}, "activations": {}})
+    # a malformed rule value (axis -> non-mesh-axes) dies at parse too
+    with pytest.raises(ValidationError):
+        PlacementTableConfig.model_validate(
+            {"params": {"persist": {"d_in": 3}, "forward": {}}, "activations": {}}
+        )

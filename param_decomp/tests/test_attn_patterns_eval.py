@@ -25,7 +25,7 @@ from param_decomp.ci_fn import (
     MHACIAttention,
     build_ci_fn,
 )
-from param_decomp.components import SiteC, SiteSpec, init_decomp_vu
+from param_decomp.components import SiteC, SiteSpec, init_component_stacks
 from param_decomp.model import DecomposedModel, run_stochastic_masked_output
 from param_decomp.targets.glu_transformer import glu_site_specs
 from param_decomp.targets.llama_simple_mlp import (
@@ -111,7 +111,7 @@ def _llama_attn_setup():
 
     sites = glu_site_specs(cfg, canonical_site_cs(site_cs))
     model = _llama_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    components = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    components = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = _build_ci_fn(model, cfg.n_embd, jax.random.PRNGKey(2))
     return cfg, model, components, ci_fn
 
@@ -180,7 +180,7 @@ def test_simple_mlp_step_runs_end_to_end():
     site_cs = simple_canonical((SiteC("h.0.attn.q_proj", 6), SiteC("h.0.attn.k_proj", 6)))
     sites = simple_site_specs(cfg, site_cs)
     model = _simple_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
-    components = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    components = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = _build_ci_fn(model, cfg.n_embd, jax.random.PRNGKey(2))
     step = make_ci_attn_patterns_step(model)
     b, t = 2, 10
@@ -216,6 +216,12 @@ class _PositionlessStub(eqx.Module):
         raise AssertionError("positionless stub fn must not be called")
 
     def read_activations(self, resid: Any, wanted: tuple[str, ...]) -> dict[str, jax.Array]:
+        del resid, wanted
+        raise AssertionError("positionless stub fn must not be called")
+
+    def clean_output_and_activations(
+        self, resid: Any, wanted: tuple[str, ...]
+    ) -> tuple[Any, dict[str, jax.Array]]:
         del resid, wanted
         raise AssertionError("positionless stub fn must not be called")
 

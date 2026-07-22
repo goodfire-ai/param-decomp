@@ -219,9 +219,12 @@ class CIBlock(eqx.Module):
           d_model replicated (row-parallel → in-node reduce over fsdp·tp).
 
         Biases replicate. COMPUTE re-pins to `fsdp` (attn d_model) / `fsdp·tp` (MLP ffn_hidden)
-        before the chunk scan (`ChunkwiseTransformerCIFn.__call__`), all intra-node NVLink."""
-        data = ("replicate", "fsdp")
-        full = ("replicate", "fsdp", "tp")
+        before the chunk scan (`ChunkwiseTransformerCIFn.__call__`), all intra-node NVLink.
+
+        Fsdp-major linearization (compute axes first, `replicate` last) so the ÷N→compute
+        reconstruct is a pure all-gather over `replicate` — see `placement._ZERO1_DATA`."""
+        data = ("fsdp", "replicate")
+        full = ("fsdp", "tp", "replicate")
         attn_in = NamedSharding(mesh, P(None, None, data))  # qkv: d_model (axis2) ÷(rep·fsdp)
         attn_out = NamedSharding(mesh, P(None, data, None))  # wo: d_model (axis1) ÷(rep·fsdp)
         ffn_in = NamedSharding(mesh, P(None, None, full))  # w1: ffn_hidden (axis2) ÷N
@@ -362,8 +365,10 @@ class ChunkTransformer(eqx.Module):
         → ÷N total, and the CI output C is `tp`-sharded so it dovetails with V/U's C-on-tp (the
         `mask · xV` multiply stays local). Blocks delegate to `CIBlock.shardings`; biases
         replicate. COMPUTE re-pins to `fsdp` (d) × `tp` (C) before the chunk scan
-        (`ChunkwiseTransformerCIFn.__call__`)."""
-        data = ("replicate", "fsdp")
+        (`ChunkwiseTransformerCIFn.__call__`). Fsdp-major linearization (`replicate` last)
+        so the reconstruct is a pure all-gather over `replicate` — see
+        `placement._ZERO1_DATA`."""
+        data = ("fsdp", "replicate")
         in_proj_sh = NamedSharding(
             mesh, P(None, "tp", data)
         )  # in_proj: total_d_in ÷tp, d_model ÷(rep·fsdp) → ÷N (row-parallel)
@@ -661,8 +666,8 @@ def init_chunkwise_transformer_ci_fn(
 
     # vmap over the per-chunk keys instead of unrolling n_chunks python-side inits and
     # stacking: bit-identical draws (same fold_in key per chunk), same stacked layout, but
-    # the init graph is ONE chunk's RNG body — at 32 chunks the unrolled form was a
-    # multi-minute XLA compile (jit_build_ci_fn, measured 167s at the production shape).
+    # the init graph is ONE chunk's RNG body — the unrolled form's XLA compile time grows
+    # with chunk count (multi-minute at tens of chunks).
     chunk_keys = jax.vmap(lambda i: jax.random.fold_in(key, i))(jnp.arange(len(arch.chunks)))
     stacked: ChunkTransformer = eqx.filter_vmap(
         lambda k: _init_chunk_transformer(arch, arch.input_dim, slot_cs, k)

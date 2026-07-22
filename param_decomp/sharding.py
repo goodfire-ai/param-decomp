@@ -21,7 +21,7 @@ import os
 
 import jax
 import numpy as np
-from jax.sharding import Mesh, NamedSharding
+from jax.sharding import AbstractMesh, Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 
 _GPUS_PER_NODE = 8
@@ -81,6 +81,23 @@ def hsdp_mesh(tp: int = 1) -> Mesh:
         devices.reshape(n // in_node, in_node // tp, tp),
         axis_names=("replicate", "fsdp", "tp"),
     )
+
+
+def hsdp_abstract_mesh(dp: int | None, tp: int) -> AbstractMesh:
+    """The mesh SHAPE a run config implies, with no devices — what config-build placement
+    validation (`placement.from_config`) runs against, so a `dp: N` config refuses on the
+    login node before sbatch. `dp = N` pins the full topology (`N // 8` nodes × 8 GPUs:
+    replicate = N//8, fsdp = 8//tp). `dp = None` (inline) pins only what the config itself
+    decides — replicate = 1 and `tp` — leaving fsdp at 1: the ambient device count is
+    unknowable at config build, and a 1-sized axis can never over-reject; the run's own
+    construction against the concrete `hsdp_mesh` validates the real axis."""
+    if dp is None:
+        shape = (1, 1, tp)
+    else:
+        assert dp % _GPUS_PER_NODE == 0, f"dp={dp} must be a multiple of {_GPUS_PER_NODE}"
+        assert _GPUS_PER_NODE % tp == 0, f"tp={tp} must divide {_GPUS_PER_NODE}"
+        shape = (dp // _GPUS_PER_NODE, _GPUS_PER_NODE // tp, tp)
+    return AbstractMesh(shape, ("replicate", "fsdp", "tp"))
 
 
 def place_via_shardings[T](tree: T, shardings: T) -> T:

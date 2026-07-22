@@ -1,16 +1,35 @@
-# Layer-18-only decomposition of Llama-3.1-8B: JUST layer 18's 7 matrices
-# (q/k/v/o/gate/up/down), every per-matrix C DOUBLED vs the full-model config.
-# Trimmed from llama8b_full32L_HSDP_b128_dp32.yaml (224 sites -> 7); single chunk.
+# The full-32L production recipe (CONFIGS.md "llama8b full-model" seat): Llama-3.1-8B,
+# ALL 32 layers x 7 matrices (q/k/v/o/gate/up/down) = 224 sites, HSDP tp=1 at dp 64
+# (8 nodes), zero1 sharding — validated on and-btdr H100s.
+#
+# Derived from the l18-23 6L reference run p-2112148d ("jax-l18-23-6L-ablbase-200k"):
+# same algorithm (chunkwise subset recon + persistent-PGD + faith + imp-min), same CI
+# fn arch, same LRs/coeffs/eval set. How this differs from that reference:
+#   1. sites: 224 (all matrices, all 32 layers) vs the reference's 18 (MLP, layers
+#      18-23). Per-matrix C from the 2026-06-22 full-llama8b BOTEC, rounded UP to
+#      multiples of 128 (the V/U C-axis shards over the mesh; init asserts C % dp == 0):
+#      q/k 2048, v/o 4096, gate/up 8192, down 10240. ΣC=1,245,184; V/U=18.3B params
+#      (~1.1x the reference's 16.3B — params shard cheaply, not the binding constraint).
+#   2. batch 64 at dp 64: per-rank batch 1 (vs the reference's 2).
+#   3. ChunkwiseSubsetReconLoss sites_per_chunk 56 (8 layers/chunk -> 4 chunks): fewer,
+#      larger chunks minimise compile time and per-step compute (each chunk's suffix
+#      forward spans the full network). coeff 2.0 = 0.5 x n_chunks keeps per-site recon
+#      pressure chunk-count-invariant. THIS IS THE KNOB TO RE-TUNE (finer chunks =
+#      better signal).
+#   4. remat_recon_forwards: true (224 sites' full-network chunk forwards need it).
+#   5. remat_ci_fn: true (checkpoint the ~31B CI fn; without it the step is the GPU
+#      compile wall — ~80 min + near-OOM — since the whole CI forward materialises).
+#   6. data seq 512 (fineweb_llama_tok_512), matching the reference's seq.
 # out_dir / run_id are minted by pd-lm.
-run_name: jax-l18only-doubleC-b128-dp32
+run_name: jax-full32L-HSDP-b64-dp64-andbtdr
 cadence:
   keep_last_n_checkpoints: 2
-  save_every: 1000
+  save_every: 5000
   train_log_every: 25
 data:
   buffer_size: 1000
   column_name: input_ids
-  data_files: /mnt/data/artifacts/mechanisms/param-decomp/datasets/fineweb_llama_tok_512/*.parquet
+  data_files: /mnt/delicate-frog/home/pd-user/pd-out/datasets/fineweb_llama_tok_512/*.parquet
   dataset_name: parquet
   eval_split: train
   is_tokenized: true
@@ -21,7 +40,7 @@ data:
   tokenizer_name: meta-llama/Llama-3.1-8B
   train_split: train
 eval:
-  batch_size: 32
+  batch_size: 64
   every: 1000
   metrics:
   - n_batches_accum: 1
@@ -44,11 +63,22 @@ eval:
     step_size: 0.1
     type: PGDReconLoss
   n_steps: 1
-  slow_every: 100000
-  slow_on_first_step: false
-pd:
-  batch_size: 128
-  ci_config:
+  slow_every: 10000
+  slow_on_first_step: true
+decomposition:
+  sites:
+    kind: glu_transformer
+    layers:
+      kind: all
+    cs:
+      q: 2048
+      k: 2048
+      v: 4096
+      o: 4096
+      gate: 8192
+      up: 8192
+      down: 10240
+  ci:
     type: chunkwise_transformer
     blocks_per_chunk: 1
     d_model: 4096
@@ -59,6 +89,8 @@ pd:
     ffn:
       kind: gelu
       hidden: 16384
+pd:
+  batch_size: 64
   ci_fn_optimizer:
     betas:
     - 0.9
@@ -67,7 +99,7 @@ pd:
     lr_schedule:
       final_val_frac: 0.1
       fn_type: cosine
-      start_val: 2.83e-05
+      start_val: 2.0e-05
       warmup_pct: 0.0
     weight_decay: 0.0
   components_optimizer:
@@ -78,24 +110,9 @@ pd:
     lr_schedule:
       final_val_frac: 0.1
       fn_type: cosine
-      start_val: 2.83e-05
+      start_val: 2.0e-05
       warmup_pct: 0.0
     weight_decay: 0.0
-  decomposition_targets:
-  - C: 4096
-    module_pattern: model.layers.18.self_attn.q_proj
-  - C: 4096
-    module_pattern: model.layers.18.self_attn.k_proj
-  - C: 8192
-    module_pattern: model.layers.18.self_attn.v_proj
-  - C: 8192
-    module_pattern: model.layers.18.self_attn.o_proj
-  - C: 16384
-    module_pattern: model.layers.18.mlp.gate_proj
-  - C: 16384
-    module_pattern: model.layers.18.mlp.up_proj
-  - C: 20480
-    module_pattern: model.layers.18.mlp.down_proj
   faithfulness_warmup_lr: 0.001
   faithfulness_warmup_steps: 0
   faithfulness_warmup_weight_decay: 0.0
@@ -111,11 +128,11 @@ pd:
       fn_type: linear
       final_val_frac: 0.2
     type: ImportanceMinimalityLoss
-  - coeff: 0.5
+  - coeff: 2.0
     n_samples: 1
     routing:
       type: uniform_k_subset
-    sites_per_chunk: 7
+    sites_per_chunk: 56
     type: ChunkwiseSubsetReconLoss
   - coeff: 0.5
     n_warmup_steps: 2
@@ -134,9 +151,10 @@ pd:
   - coeff: 1000000.0
     type: FaithfulnessLoss
   seed: 0
-  steps: 50000
+  steps: 200000
 runtime:
-  dp: 32
+  sharding: zero1
+  dp: 64
   tp: 1
   remat_recon_forwards: true
   remat_ci_fn: true
@@ -150,9 +168,10 @@ target:
 wandb:
   entity: null
   project: param-decomp-llama
-  group: l18only
+  group: full32L
   tags:
-  - l18
-  - single-layer
-  - doubleC
-  - dp32
+  - full-model
+  - 32L
+  - allmat
+  - dp64
+  - seq512

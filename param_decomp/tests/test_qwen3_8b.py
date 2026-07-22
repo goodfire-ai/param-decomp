@@ -10,7 +10,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-from param_decomp.components import SiteC, SiteSpec, init_decomp_vu
+from param_decomp.components import SiteC, SiteSpec, init_component_stacks
 from param_decomp.targets.glu_transformer import (
     GLUConfig,
     GLUDecomposedModel,
@@ -86,7 +86,7 @@ def test_clean_path_and_masked_identity():
     cfg = _tiny_cfg()
     sites = glu_site_specs(cfg, _QVDOWN_SITE_CS)
     model = _tiny_decomposed_qwen(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
@@ -193,7 +193,7 @@ def test_step_trains():
     cfg = _tiny_cfg()
     sites = glu_site_specs(cfg, _QVDOWN_SITE_CS)
     model = _tiny_decomposed_qwen(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = _build_chunkwise_ci_fn(model, jax.random.PRNGKey(2), n_blocks=1)
     opt_vu = optax.adamw(1e-3, weight_decay=0.0)
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)

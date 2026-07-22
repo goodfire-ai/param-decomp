@@ -36,7 +36,7 @@ import numpy as np
 from jax import random
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
-from param_decomp.components import DecompVU
+from param_decomp.components import ComponentStacks
 from param_decomp.jit_util import filter_jit
 from param_decomp.model import DecomposedModel, all_false_routes
 from param_decomp.train import COMPUTE_DT, cast_floating
@@ -162,7 +162,7 @@ def make_ci_attn_patterns_step(
 
     def step(
         model: DecomposedModel,
-        components: DecompVU,
+        components: ComponentStacks,
         ci_fn: Any,
         tokens: Int[Array, "*leading"],
         _key: PRNGKeyArray,
@@ -204,7 +204,7 @@ def make_stochastic_attn_patterns_step(
 
     def step(
         model: DecomposedModel,
-        components: DecompVU,
+        components: ComponentStacks,
         ci_fn: Any,
         tokens: Int[Array, "*leading"],
         key: PRNGKeyArray,
@@ -248,7 +248,7 @@ def make_stochastic_attn_patterns_step(
 def accumulate_attn_patterns(
     step: AttnPatternsStep,
     model: DecomposedModel,
-    components: DecompVU,
+    components: ComponentStacks,
     ci_fn: Any,
     token_batches: list[Int[Array, "*leading"]],
     base_key: PRNGKeyArray,

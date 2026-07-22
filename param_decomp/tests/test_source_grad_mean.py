@@ -44,7 +44,7 @@ from param_decomp.ci_fn import (
     MHACIAttention,
     build_ci_fn,
 )
-from param_decomp.components import init_decomp_vu
+from param_decomp.components import init_component_stacks
 from param_decomp.losses import kl_per_position
 from param_decomp.sharding import hsdp_mesh, shard_batch
 from param_decomp.targets.glu_transformer import (
@@ -63,7 +63,7 @@ def _source_grad(sharded: bool) -> dict[str, jax.Array]:
     C, seq, gbatch = 8, 16, 8
     sites = glu_site_specs(cfg, mlp_family_site_cs(3, 6, C))
     model = _tiny_decomposed_lm(cfg, sites, random.PRNGKey(0))
-    vu = init_decomp_vu(sites, random.PRNGKey(1))
+    vu = init_component_stacks(sites, random.PRNGKey(1))
     first_block = min(int(name.split(".")[1]) for name in model.site_names)
     ci_arch = ChunkwiseTransformerCIArch(
         chunks=(Chunk(input_taps=(f"resid.{first_block}",), output_sites=model.site_names),),

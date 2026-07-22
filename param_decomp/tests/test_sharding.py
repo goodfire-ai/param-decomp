@@ -13,6 +13,7 @@ import jax.numpy as jnp
 import pytest
 
 from param_decomp.model import Positioned, Positionless
+from param_decomp.placement import from_config
 from param_decomp.sharding import hsdp_mesh, shard_batch
 
 # Needs >1 jax device; hangs at the default 1 device, so gated behind --runmultidevice.
@@ -62,11 +63,11 @@ def test_jitted_sharded_inits_match_eager_values():
         MHACIAttention,
         build_ci_fn,
     )
-    from param_decomp.components import SiteC, init_decomp_vu
+    from param_decomp.components import SiteC, init_component_stacks
     from param_decomp.targets.glu_transformer import canonical_site_cs, glu_site_specs
     from param_decomp.targets.glu_transformer_sharding import (
         init_ci_fn_placed,
-        init_decomp_vu_placed,
+        init_component_stacks_placed,
         init_sources_sharded,
     )
     from param_decomp.tests.test_llama8b import _tiny_cfg
@@ -96,54 +97,49 @@ def test_jitted_sharded_inits_match_eager_values():
     from param_decomp.components import vu_shape_groups
 
     assert max(len(g) for g in vu_shape_groups(sites).values()) >= 2
-    # Placement is MODEL-OWNED and true ÷N ZeRO-1, split across the data + TP axes: V shards
-    # d_in over the data axes and C over `tp` (`P(("replicate","fsdp"), "tp")`); U shards C
-    # over `tp` and d_out over the data axes (`P("tp", ("replicate","fsdp"))`). C now carries
-    # the Megatron-C `tp` factor, so master + Adam still shard ÷(replicate·fsdp·tp) = ÷N. At
-    # tp=1 the tp axis is size 1 (C effectively unsharded).
-    full = ("replicate", "fsdp")
-    vu_placed = init_decomp_vu_placed(sites, jax.random.PRNGKey(1), mesh)
-    vu_eager = init_decomp_vu(sites, jax.random.PRNGKey(1))
-    for spec in sites:
-        V, U = vu_placed.site(spec.name)
-        assert isinstance(V.sharding, NamedSharding) and isinstance(U.sharding, NamedSharding)
-        assert V.sharding.spec == P(full, "tp"), (spec.name, V.sharding.spec)
-        assert U.sharding.spec == P("tp", full), (spec.name, U.sharding.spec)
-    # The placed init runs vmap-stacked per shape group (compile-time optimization) and
-    # must be BIT-identical to the jitted per-site `init_decomp_vu` it replaced (vmap over
-    # the same per-site keys) — the trajectory anchor. The unjitted eager reference differs
-    # from EITHER jitted path by ~1 ULP (XLA fusion), so it only gets allclose.
+    # Placement is MODEL-OWNED, owner-partitioned ÷N (hybrid HSDP rule): the STACK axis
+    # shards over `replicate` (whole matrices owned per node-group), matrix d dims over
+    # `fsdp`, C over `tp` — total ÷(replicate·fsdp·tp) = ÷N. On the sim mesh replicate is 1
+    # (every stack length tiles it), so every group takes the stack rule.
+    vu_placed = init_component_stacks_placed(
+        sites, jax.random.PRNGKey(1), from_config("owner", mesh, sites)
+    )
+    vu_eager = init_component_stacks(sites, jax.random.PRNGKey(1))
+    for Vs, Us in vu_placed.stacks.values():
+        assert isinstance(Vs.sharding, NamedSharding) and isinstance(Us.sharding, NamedSharding)
+        assert Vs.sharding.spec == P("replicate", "fsdp", "tp"), Vs.sharding.spec
+        assert Us.sharding.spec == P("replicate", "tp", "fsdp"), Us.sharding.spec
+    # The placed init must be BIT-identical to the same init jitted WITHOUT placement
+    # (threefry is partitionable: `out_shardings` cannot perturb the stream) — the
+    # trajectory anchor. The unjitted eager reference differs from either jitted path by
+    # ~1 ULP (XLA fusion), so it only gets allclose.
     from functools import partial
 
-    import equinox as eqx
-
-    per_site_shardings = eqx.filter_eval_shape(
-        partial(init_decomp_vu, sites), jax.random.PRNGKey(1)
-    ).shardings(mesh)
-    vu_jitted_per_site = jax.jit(partial(init_decomp_vu, sites), out_shardings=per_site_shardings)(
-        jax.random.PRNGKey(1)
-    )
+    vu_jitted_unplaced = jax.jit(partial(init_component_stacks, sites))(jax.random.PRNGKey(1))
     for got, want in zip(
-        jax.tree.leaves(vu_placed), jax.tree.leaves(vu_jitted_per_site), strict=True
+        jax.tree.leaves(vu_placed), jax.tree.leaves(vu_jitted_unplaced), strict=True
     ):
         assert got.shape == want.shape and got.dtype == want.dtype
         assert jnp.array_equal(jnp.asarray(got), jnp.asarray(want))
     for got, want in zip(jax.tree.leaves(vu_placed), jax.tree.leaves(vu_eager), strict=True):
         assert jnp.allclose(jnp.asarray(got), want, rtol=1e-6, atol=0)
 
-    # A declared ÷N shard dim that does NOT tile the device count is a loud crash inside
-    # `.shardings` (fail-fast), not a silent replicate. (Only observable at n > 1.)
+    # A declared ÷N shard dim that does NOT tile the device count is a loud crash at
+    # `PlacementRules` construction (fail-fast), not a silent replicate. (Only observable
+    # at n > 1.)
     if n > 1:
         from param_decomp.components import SiteSpec
 
-        # d_in = n+1 (does not tile N=n) -> DecompVU.shardings must crash.
+        # d_in = n+1 (does not tile N=n) -> placement construction must crash.
         indivisible = (SiteSpec("layers.2.mlp.gate_proj", n + 1, 8 * n, 16),)
         try:
-            init_decomp_vu_placed(indivisible, jax.random.PRNGKey(1), mesh)
+            init_component_stacks_placed(
+                indivisible, jax.random.PRNGKey(1), from_config("owner", mesh, indivisible)
+            )
         except AssertionError:
             pass
         else:
-            raise AssertionError("expected a non-dividing d_in to fail in DecompVU.shardings")
+            raise AssertionError("expected a non-dividing d_in to fail at placement construction")
 
     first_block = min(int(s.name.split(".")[1]) for s in sites)
     arch = ChunkwiseTransformerCIArch(

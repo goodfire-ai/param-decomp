@@ -36,7 +36,7 @@ from param_decomp.ci_fn import (
     MHACIAttention,
     build_ci_fn,
 )
-from param_decomp.components import init_decomp_vu
+from param_decomp.components import init_component_stacks
 from param_decomp.configs import (
     AdamPGDConfig,
     ChunkwiseSubsetReconLossConfig,
@@ -53,6 +53,7 @@ from param_decomp.targets.glu_transformer import (
     glu_site_specs,
     mlp_family_site_cs,
 )
+from param_decomp.targets.transformer_taps import resid_tap_key
 from param_decomp.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
 from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
 
@@ -62,9 +63,9 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
     C, seq, gbatch = 8, 16, 8
     sites = glu_site_specs(cfg, mlp_family_site_cs(3, 6, C))
     model = _tiny_decomposed_lm(cfg, sites, random.PRNGKey(0))
-    vu = init_decomp_vu(sites, random.PRNGKey(1))
+    vu = init_component_stacks(sites, random.PRNGKey(1))
     arch = ChunkwiseTransformerCIArch(
-        chunks=(Chunk(input_taps=("resid.3",), output_sites=model.site_names),),
+        chunks=(Chunk(input_taps=(resid_tap_key(3),), output_sites=model.site_names),),
         input_dim=cfg.n_embd,
         d_model=16,
         n_blocks=2,
@@ -79,11 +80,11 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
     src = init_persistent_sources(
         model.site_names, tuple(s.C for s in model.sites), (1, seq), jnp.float32, random.PRNGKey(3)
     )
-    resid = random.normal(random.PRNGKey(4), (gbatch, seq, cfg.n_embd)) * 0.5
+    tokens = random.randint(random.PRNGKey(4), (gbatch, seq), 0, cfg.vocab_size)
 
     mesh = hsdp_mesh() if sharded else None
     if mesh is not None:
-        resid = shard_batch(resid, mesh, batch_axis=0)
+        tokens = shard_batch(tokens, mesh, batch_axis=0)
 
     ppgd_cfg = PersistentPGDReconLossConfig(
         coeff=0.5,
@@ -135,7 +136,7 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
 
     out = []
     for i in range(steps):
-        state, m = step(model, state, resid, random.PRNGKey(100 + i))
+        state, m = step(model, state, tokens, random.PRNGKey(100 + i))
         out.append({k: float(v) for k, v in m.items()})
     return out
 

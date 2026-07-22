@@ -12,7 +12,7 @@ step as a pytree arg; layers without sites run the plain frozen block.
 
 q/k/v sites are decomposed BEFORE `_prep_qk`/RoPE/SDPA (the masked site output feeds the
 attention math); the o site applies to the attention output. V/U masters are fp32
-keyed per site (`DecompVU`); frozen weights are stored bf16 (SPEC N1) — the trainer
+keyed per site (`ComponentStacks`); frozen weights are stored bf16 (SPEC N1) — the trainer
 casts for compute.
 
 Real HF weights load straight from the cached safetensors (no torch dep).
@@ -23,28 +23,33 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, get_args
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.ad_checkpoint import checkpoint_name
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jax.typing import DTypeLike
 from jaxtyping import Array, Float, Int
 from safetensors import safe_open
 
+from param_decomp import site_tree
 from param_decomp.components import (
-    DecompVU,
+    ComponentStacks,
     SiteC,
     SiteSpec,
     dequantize_fp8,
     quantize_fp8,
     site_out,
 )
+from param_decomp.configs import GluMatrix
 from param_decomp.losses import kl_per_position
 from param_decomp.sharding import assert_divisible
+from param_decomp.site_tree import ArchFamily
+from param_decomp.targets.transformer_taps import resid_tap_key
 from vendored_jax.llama import apply_rope, causal_sdpa, repeat_kv, rms_norm, rope_cos_sin
 
 
@@ -102,11 +107,13 @@ def default_inv_freq(head_dim: int, rope_theta: float) -> Float[Array, " hd2"]:
     return 1.0 / (rope_theta ** (jnp.arange(0, head_dim, 2, dtype=jnp.float32) / head_dim))
 
 
-KIND_ORDER = ("q", "k", "v", "o", "gate", "up", "down")
-"""Within-layer canonical site order = computation order. The canonical site order
-(`glu_site_specs`) is layer-ascending, then this."""
+KIND_ORDER: tuple[str, ...] = get_args(GluMatrix)
+"""Within-layer canonical site order = computation order, DERIVED from the config-side
+`GluMatrix` vocabulary (one source of truth — a c-spec key and a target matrix cannot
+drift). The canonical site order (`glu_site_specs`) is layer-ascending, then this."""
 ATTN_KINDS = ("q", "k", "v", "o")
 MLP_KINDS = ("gate", "up", "down")
+assert KIND_ORDER == ATTN_KINDS + MLP_KINDS, KIND_ORDER
 
 SITE_NAME_PATTERN = re.compile(
     r"^layers\.(\d+)\.(?:self_attn\.(q|k|v|o)|mlp\.(gate|up|down))_proj$"
@@ -123,9 +130,17 @@ def parse_site_name(name: str) -> tuple[int, str]:
     """`layers.{i}.{self_attn,mlp}.{kind}_proj` -> (layer, kind); rejects anything else
     (including kind/submodule mismatches like `self_attn.gate_proj`)."""
     match = SITE_NAME_PATTERN.match(name)
-    assert match is not None, f"unsupported site name {name!r}"
+    assert match is not None, (
+        f"not a glu_transformer site: {name!r} (sites are layers.{{i}}.self_attn.{{q|k|v|o}}_proj"
+        f" / layers.{{i}}.mlp.{{gate|up|down}}_proj)"
+    )
     layer, attn_kind, mlp_kind = match.groups()
     return int(layer), attn_kind if attn_kind is not None else mlp_kind
+
+
+FAMILY = ArchFamily("glu_transformer", KIND_ORDER, site_name, parse_site_name)
+"""This family's matrix grammar as data — the vocabulary + name renderer the tiled
+`glu_transformer` c-specs resolve against (`resolve_site_tree`)."""
 
 
 def site_dims(cfg: GLUArch, kind: str) -> tuple[int, int]:
@@ -149,16 +164,7 @@ def site_dims(cfg: GLUArch, kind: str) -> tuple[int, int]:
 
 
 def canonical_site_cs(site_cs: tuple[SiteC, ...]) -> tuple[SiteC, ...]:
-    """Canonical site order: layer-ascending, `KIND_ORDER` within a layer. Names must
-    parse and be unique."""
-    names = [site.name for site in site_cs]
-    assert len(set(names)) == len(names), f"duplicate sites in {names}"
-
-    def order_key(site: SiteC) -> tuple[int, int]:
-        layer, kind = parse_site_name(site.name)
-        return layer, KIND_ORDER.index(kind)
-
-    return tuple(sorted(site_cs, key=order_key))
+    return site_tree.canonical_site_cs(FAMILY, site_cs)
 
 
 def mlp_family_site_cs(first_layer: int, last_layer: int, C: int) -> tuple[SiteC, ...]:
@@ -173,15 +179,7 @@ def mlp_family_site_cs(first_layer: int, last_layer: int, C: int) -> tuple[SiteC
 
 
 def glu_site_specs(cfg: GLUArch, site_cs: tuple[SiteC, ...]) -> tuple[SiteSpec, ...]:
-    """Shape-resolved specs in canonical order (input must already be canonical)."""
-    assert site_cs == canonical_site_cs(site_cs), f"sites not in canonical order: {site_cs}"
-    specs = []
-    for site in site_cs:
-        layer, kind = parse_site_name(site.name)
-        assert 0 <= layer < cfg.n_layer, (site.name, cfg.n_layer)
-        assert site.C >= 1, site
-        specs.append(SiteSpec(site.name, *site_dims(cfg, kind), site.C))
-    return tuple(specs)
+    return site_tree.site_specs(FAMILY, site_cs, lambda kind: site_dims(cfg, kind), cfg.n_layer)
 
 
 # ----------------------------- frozen layers -----------------------------
@@ -358,22 +356,48 @@ def _stack_layers(layers: list[GLULayer]) -> GLULayer:
     return jax.tree.map(lambda *per_layer: jnp.stack(per_layer), *layers)
 
 
-def _tap_layer(key: str) -> int:
-    """Global block index a `read_activations` key reads at: the block a `resid.{L}` tap
-    enters, or the block a decomposed site lives in."""
-    if key.startswith("resid."):
-        return int(key.split(".")[1])
-    return parse_site_name(key)[0]
+_TAP_CLASS_BY_KIND = {
+    "q": "h1", "k": "h1", "v": "h1", "o": "attn_y",
+    "gate": "mlp_in", "up": "mlp_in", "down": "down_in",
+}  # fmt: skip
+"""The block intermediate a site kind's tap reads — the activation entering that site's
+weight on the frozen path (`_clean_forward`'s per-class scan-ys stacks are keyed by
+these)."""
+assert set(_TAP_CLASS_BY_KIND) == set(KIND_ORDER), (
+    "every GluMatrix kind needs a tap class",
+    _TAP_CLASS_BY_KIND.keys(),
+    KIND_ORDER,
+)
 
 
-def _per_kind_dims(components: DecompVU) -> dict[str, tuple[int, int, int]]:
+@dataclass(frozen=True)
+class _TapReader:
+    intermediate: str  # the `_clean_forward` scan-ys stack this tap indexes into
+    block: int
+
+
+def _tap_readers(n_layer: int) -> dict[str, _TapReader]:
+    """Every tap key an `n_layer` target serves -> where it reads: a residual tap reads the
+    `resid` intermediate of the block it enters; a site tap reads the activation entering
+    that site's weight. The vocabulary is ENUMERATED from the mints — a key outside it
+    (unknown form, out-of-range block) fails membership; nothing is parsed."""
+    resid = {resid_tap_key(block): _TapReader("resid", block) for block in range(n_layer)}
+    sites = {
+        site_name(block, kind): _TapReader(_TAP_CLASS_BY_KIND[kind], block)
+        for block in range(n_layer)
+        for kind in KIND_ORDER
+    }
+    return resid | sites
+
+
+def _per_kind_dims(components: ComponentStacks) -> dict[str, tuple[int, int, int]]:
     """Per decomposed KIND, the `(d_in, C, d_out)` shared across its layers — asserting
     uniformity, the precondition for the layer-`lax.scan` masked forward (it stacks each
     kind across layers, so every layer's matrix of that kind must be the same shape)."""
     kind_dims: dict[str, tuple[int, int, int]] = {}
-    for name, (V, U) in components.vu.items():
+    for name, (d_in, d_out, c), _slot in components.site_slots:
         kind = parse_site_name(name)[1]
-        dims = (V.shape[0], V.shape[1], U.shape[1])
+        dims = (d_in, c, d_out)
         assert kind_dims.setdefault(kind, dims) == dims, (
             f"per-kind dims must be uniform across layers for the scan masked forward: "
             f"{kind} {dims} != {kind_dims[kind]}"
@@ -381,7 +405,7 @@ def _per_kind_dims(components: DecompVU) -> dict[str, tuple[int, int, int]]:
     return kind_dims
 
 
-def _stack_per_kind_vu(components: DecompVU, n_layers: int) -> dict[str, dict[str, Array]]:
+def _stack_per_kind_vu(components: ComponentStacks, n_layers: int) -> dict[str, dict[str, Array]]:
     """Per decomposed KIND, the layer-stacked `(V, U)` arrays — the MASK-INDEPENDENT part of
     the scan inputs (a leading layer axis, one homogeneous body across layers). Mask/live/
     delta/route are attached per-forward by `_attach_per_kind_masks`; the V/U stack +
@@ -389,22 +413,45 @@ def _stack_per_kind_vu(components: DecompVU, n_layers: int) -> dict[str, dict[st
     forward in a step, so they are built ONCE via `prepare_compute_weights` and shared.
     Per-kind dims (d_in, C, d_out) must be uniform across layers (asserted in `_per_kind_dims`)."""
     kind_dims = _per_kind_dims(components)
-    vu_dt = next(iter(components.vu.values()))[0].dtype
+    slot_of = {name: (shape, slot) for name, shape, slot in components.site_slots}
+    vu_dt = next(iter(components.stacks.values()))[0].dtype
     per_kind: dict[str, dict[str, Array]] = {}
     for kind, (d_in, C, d_out) in kind_dims.items():
         names = [site_name(layer, kind) for layer in range(n_layers)]
-        Vs = jnp.stack(
-            [
-                components.vu[n][0] if n in components.vu else jnp.zeros((d_in, C), vu_dt)
-                for n in names
-            ]
+        present = [slot_of[n] for n in names if n in slot_of]
+        shapes = {shape for shape, _ in present}
+        slots = [slot for _, slot in present]
+        stride = slots[1] - slots[0] if len(slots) > 1 else 1
+        arithmetic = (
+            len(names) == len(present)
+            and len(shapes) == 1
+            and stride >= 1
+            and slots == list(range(slots[0], slots[0] + stride * len(slots), stride))
         )
-        Us = jnp.stack(
-            [
-                components.vu[n][1] if n in components.vu else jnp.zeros((C, d_out), vu_dt)
-                for n in names
-            ]
-        )
+        if arithmetic:
+            # Full-kind fast path: one shape group, slots an arithmetic progression — the
+            # per-kind scan stack is a STATIC (possibly strided) SLICE of the resting stack
+            # (no restack, no zero-fill; the owner->compute reshard downstream is the only
+            # data movement). Kinds sharing a shape group interleave layer-major (gate/up,
+            # and q/o when qd == d), so their slots stride by the kinds-per-group count.
+            (shape,) = shapes
+            Vs_all, Us_all = components.stacks[shape]
+            lo, hi = slots[0], slots[-1] + 1
+            Vs = jax.lax.slice(Vs_all, (lo, 0, 0), (hi, *Vs_all.shape[1:]), (stride, 1, 1))
+            Us = jax.lax.slice(Us_all, (lo, 0, 0), (hi, *Us_all.shape[1:]), (stride, 1, 1))
+        else:
+            Vs = jnp.stack(
+                [
+                    components.site(n)[0] if n in slot_of else jnp.zeros((d_in, C), vu_dt)
+                    for n in names
+                ]
+            )
+            Us = jnp.stack(
+                [
+                    components.site(n)[1] if n in slot_of else jnp.zeros((C, d_out), vu_dt)
+                    for n in names
+                ]
+            )
         per_kind[kind] = {"V": Vs, "U": Us}
     return per_kind
 
@@ -526,7 +573,8 @@ def _reconstruct_compute_weights(
 ) -> dict[str, dict[str, Array]]:
     """The ZeRO-1 weight reconstruction (pure-HSDP backup layout). The stacked
     `[n_layer, d_in, C]` / `[n_layer, C, d_out]` compute weights arrive with their FSDP dim
-    sharded ÷N over the FULL mesh (the master is `P(("replicate","fsdp"), ...)`). Reconstruct
+    in the persistence layout the run's placement rules chose (e.g. `owner`:
+    stack ÷replicate, d ÷fsdp — see `ComponentStacks.shardings`). Reconstruct
     them to the `fsdp`-sharded (÷fsdp) COMPUTE layout here — BEFORE the layer scan — so:
 
       * the cross-`replicate` gather runs ONCE per step in ENTRY (off the hot path),
@@ -569,6 +617,25 @@ def _reconstruct_compute_weights(
     return out
 
 
+GATHERED_WEIGHTS_CHECKPOINT_NAME = "gathered_compute_weights"
+"""`checkpoint_name` tag on every full-layout (÷fsdp→full gathered) weight formed inside
+the checkpointed scan body — the masked-forward remat policy excludes this name from the
+saved set, so the backward RE-GATHERS the weights (cheap NVLink collectives) instead of
+holding one full gathered copy per recon forward across the fwd→bwd liverange."""
+
+
+def _gather_full_weight(w: Array, spec: P) -> Array:
+    """Form the full-layout compute weight INSIDE the checkpointed scan body: the explicit
+    per-layer sharding constraint anchors the ÷fsdp→full all-gather in the loop body (without
+    it GSPMD is free to hoist the gather of the WHOLE per-chunk stack out of the `lax.scan`
+    while-loop, where it stays resident from each forward until its backward), and the
+    `checkpoint_name` tag keeps the gathered value out of every remat save set. Constraint is
+    a no-op off-mesh (CPU tests / single device); the tag is transparent everywhere."""
+    if not jax.sharding.get_abstract_mesh().empty:
+        w = jax.lax.with_sharding_constraint(w, spec)
+    return checkpoint_name(w, GATHERED_WEIGHTS_CHECKPOINT_NAME)
+
+
 class GLUDecomposedModel(eqx.Module):
     """The GLU-transformer `DecomposedModel` (the `model.py` contract; SPEC §1), shared
     across the HF GLU families — a family's identity lives in its `stacked.attn` module
@@ -576,7 +643,7 @@ class GLUDecomposedModel(eqx.Module):
 
     Carries the FROZEN full model (embedding, all blocks, final norm, lm_head) as array
     fields — so it threads into the jitted step as a pytree arg, its weights traced not
-    baked. The TRAINABLE V/U (`vu: DecompVU`) is passed to the forward methods explicitly:
+    baked. The TRAINABLE V/U (`vu: ComponentStacks`) is passed to the forward methods explicitly:
     separate lifecycle (own optimizer + checkpoint, C-sharded while these weights
     replicate), so it is NOT a field here.
 
@@ -653,15 +720,9 @@ class GLUDecomposedModel(eqx.Module):
         stack so XLA compiles one block body instead of unrolling all 32 layers (the compile
         fix for the full model; the scan reassociates float ops vs an unrolled loop, within
         fp32 tolerance)."""
-
-        def block(x: Array, layer: GLULayer) -> tuple[Array, None]:
-            x = x + layer.attn(rms_norm(x, layer.ln1, self.eps), self.inv_freq)
-            x = x + _clean_mlp_out(layer, rms_norm(x, layer.ln2, self.eps))
-            return x, None
-
-        x, _ = jax.lax.scan(block, self.embed_tokens(inputs), self.stacked)
-        x = rms_norm(x, self.norm, self.eps)
-        return x @ self.lm_head.T
+        logits, _ = self._clean_forward(inputs, (), to_logits=True)
+        assert logits is not None
+        return logits
 
     def read_activations(
         self, inputs: Int[Array, "b t"], wanted: tuple[str, ...]
@@ -674,34 +735,74 @@ class GLUDecomposedModel(eqx.Module):
         that site's weight on the frozen path: `q/k/v_proj` ← post-LN1 residual, `o_proj` ←
         the attention output, `gate/up_proj` ← post-LN2 residual, `down_proj` ←
         `silu(gate)·up`). The residual is threaded identically to `clean_output`; the
-        per-site intermediates come from the same RMSNorm/attn/MLP math. Stops once the last
-        requested key's block is fully covered (no wasted block compute past it)."""
-        wanted_set = frozenset(wanted)
-        last = max(_tap_layer(key) for key in wanted)
-        taps: dict[str, Array] = {}
-        x = self.embed_tokens(inputs)
-        for layer in range(self.n_layer):
-            block = jax.tree.map(lambda a, li=layer: a[li], self.stacked)
-            if f"resid.{layer}" in wanted_set:
-                taps[f"resid.{layer}"] = x
-            attn = block.attn
-            h1 = rms_norm(x, block.ln1, self.eps)
-            attn_y = attn.core(h1 @ attn.wq.T, h1 @ attn.wk.T, h1 @ attn.wv.T, self.inv_freq)
-            post_attn = x + attn_y @ attn.wo.T
-            mlp_in = rms_norm(post_attn, block.ln2, self.eps)
-            down_in = jax.nn.silu(mlp_in @ block.Wg.T) * (mlp_in @ block.Wu.T)
-            for kind, site_input in (
-                ("q", h1), ("k", h1), ("v", h1), ("o", attn_y),
-                ("gate", mlp_in), ("up", mlp_in), ("down", down_in),
-            ):  # fmt: skip
-                name = site_name(layer, kind)
-                if name in wanted_set:
-                    taps[name] = site_input
-            x = post_attn + down_in @ block.Wd.T
-            if layer == last:
-                break
-        assert set(taps) == wanted_set, (sorted(taps), sorted(wanted))
+        per-site intermediates come from the same RMSNorm/attn/MLP math. The scan covers
+        only the blocks up to the last requested key's (no wasted block compute past it)."""
+        assert wanted, "read_activations with no wanted taps"
+        _, taps = self._clean_forward(inputs, wanted, to_logits=False)
         return taps
+
+    def clean_output_and_activations(
+        self, inputs: Int[Array, "b t"], wanted: tuple[str, ...]
+    ) -> tuple[Array, dict[str, Array]]:
+        logits, taps = self._clean_forward(inputs, wanted, to_logits=True)
+        assert logits is not None
+        return logits, taps
+
+    def _clean_forward(
+        self, inputs: Int[Array, "b t"], wanted: tuple[str, ...], *, to_logits: bool
+    ) -> tuple[Array | None, dict[str, Array]]:
+        """The frozen-path `lax.scan` behind `clean_output` / `read_activations` /
+        `clean_output_and_activations`. Taps ride out as scan ys — one stacked
+        `[tapped_depth, b, t, d]` array per block INTERMEDIATE `wanted` reads (see
+        `_tap_class`) — and the flat tap dict is indexed out of the stacks after the scan
+        (the `_run_masked_forward` per-kind-ys pattern; no per-layer `lax.cond`). Only the
+        block prefix up to the last tapped layer emits ys; the remaining depth (run only
+        when `to_logits`) scans the same body emitting nothing — so an unread intermediate
+        or an untapped layer stacks nothing."""
+
+        def block_body(emit: frozenset[str]):
+            def block(x: Array, layer: GLULayer) -> tuple[Array, dict[str, Array]]:
+                # `FrozenAttn.__call__` / `_clean_mlp_out` expanded — identical math
+                # (family behavior rides in `attn.core`'s `_prep_qk`), with the tap
+                # intermediates in scope.
+                attn = layer.attn
+                h1 = rms_norm(x, layer.ln1, self.eps)
+                attn_y = attn.core(h1 @ attn.wq.T, h1 @ attn.wk.T, h1 @ attn.wv.T, self.inv_freq)
+                post_attn = x + attn_y @ attn.wo.T
+                mlp_in = rms_norm(post_attn, layer.ln2, self.eps)
+                down_in = jax.nn.silu(mlp_in @ layer.Wg.T) * (mlp_in @ layer.Wu.T)
+                intermediates = {
+                    "resid": x, "h1": h1, "attn_y": attn_y,
+                    "mlp_in": mlp_in, "down_in": down_in,
+                }  # fmt: skip
+                return post_attn + down_in @ layer.Wd.T, {c: intermediates[c] for c in emit}
+
+            return block
+
+        def slice_layers(lo: int, hi: int) -> GLULayer:
+            return jax.tree.map(lambda a: a[lo:hi], self.stacked)
+
+        readers = _tap_readers(self.n_layer)
+        unknown = tuple(key for key in wanted if key not in readers)
+        assert not unknown, (
+            f"unknown taps {unknown}: this target serves resid.{{block}} and family site "
+            f"names for blocks 0..{self.n_layer - 1}"
+        )
+        tapped_depth = 1 + max((readers[key].block for key in wanted), default=-1)
+        x = self.embed_tokens(inputs)
+        stacks: dict[str, Array] = {}
+        if tapped_depth:
+            emit = frozenset(readers[key].intermediate for key in wanted)
+            x, stacks = jax.lax.scan(block_body(emit), x, slice_layers(0, tapped_depth))
+        taps = {key: stacks[readers[key].intermediate][readers[key].block] for key in wanted}
+        if not to_logits:
+            return None, taps
+        if tapped_depth < self.n_layer:
+            x, _ = jax.lax.scan(
+                block_body(frozenset()), x, slice_layers(tapped_depth, self.n_layer)
+            )
+        x = rms_norm(x, self.norm, self.eps)
+        return x @ self.lm_head.T, taps
 
     def _run_masked_forward(
         self,
@@ -749,9 +850,9 @@ class GLUDecomposedModel(eqx.Module):
 
         # STATIC liveness. `live_set` is known at trace, so the live/frozen choice per site needs
         # NO runtime `lax.cond` — and removing it lets XLA pack + prefetch the V/U gathers (the
-        # cond was a scheduling/packing barrier). We assume LAYER-ALIGNED, CONTIGUOUS chunks
-        # (every production plan: `into_groups` with sites_per_chunk % n_decomposed_kinds == 0,
-        # and `one_chunk`); both are asserted below. The forward is then
+        # cond was a scheduling/packing barrier). We assume LAYER-ALIGNED, CONTIGUOUS live-sets
+        # (`live_groups` with sites_per_chunk % n_decomposed_kinds == 0, and `all_sites_live`
+        # satisfy this); both are asserted below. The forward is then
         # [frozen prefix] → [live block] → [frozen suffix], each a static sub-scan; only the live
         # block carries V/U and gathers them.
         def layer_is_live(layer: int) -> bool:
@@ -776,18 +877,30 @@ class GLUDecomposedModel(eqx.Module):
             if "V_scale" in e:  # fp8 QAG: gather the fp8 ÷fsdp weight to full d (½ bytes on the
                 # wire), THEN dequant to bf16 — the barrier keeps the convert after the gather so
                 # the collective moves fp8, not bf16.
-                v = dequantize_fp8(
-                    jax.lax.optimization_barrier(
-                        jax.lax.with_sharding_constraint(v, P(None, "tp"))
+                v = checkpoint_name(
+                    dequantize_fp8(
+                        jax.lax.optimization_barrier(
+                            jax.lax.with_sharding_constraint(v, P(None, "tp"))
+                        ),
+                        e["V_scale"],
                     ),
-                    e["V_scale"],
+                    GATHERED_WEIGHTS_CHECKPOINT_NAME,
                 )
-                u = dequantize_fp8(
-                    jax.lax.optimization_barrier(
-                        jax.lax.with_sharding_constraint(u, P("tp", None))
+                u = checkpoint_name(
+                    dequantize_fp8(
+                        jax.lax.optimization_barrier(
+                            jax.lax.with_sharding_constraint(u, P("tp", None))
+                        ),
+                        e["U_scale"],
                     ),
-                    e["U_scale"],
+                    GATHERED_WEIGHTS_CHECKPOINT_NAME,
                 )
+            else:
+                # bf16: the same in-body ÷fsdp→full gather anchor the fp8 path has (full on d,
+                # C stays ÷tp) — the per-layer gather lives INSIDE the checkpointed body, so it
+                # is transient in the forward and re-run in the remat'd backward.
+                v = _gather_full_weight(v, P(None, "tp"))
+                u = _gather_full_weight(u, P("tp", None))
             if "ci" in e:  # stochastic recompute: draw source from the per-layer key and build the
                 # mask INLINE (recomputed in the backward, not held — the shared `ci` stack + tiny
                 # key replace the per-forward mask stack).
@@ -862,21 +975,33 @@ class GLUDecomposedModel(eqx.Module):
             return x, None
 
         # Per-LAYER checkpoint of the scan BODY in BOTH modes — `remat` controls ONLY whether the
-        # layer ACTIVATIONS are recomputed; it NEVER controls the ÷fsdp→full V/U gather. That
-        # gather is a NON-dot collective, so it is never a saved residual under either policy — it
-        # re-gathers in the backward, transient one layer at a time (without checkpoint XLA keeps
-        # every layer's full gathered V/U live across the scan → OOM).
+        # layer ACTIVATIONS are recomputed; it NEVER controls the ÷fsdp→full V/U gather. The
+        # gather is anchored INSIDE this checkpointed body (`_gather_full_weight`) and its
+        # outputs carry the GATHERED_WEIGHTS_CHECKPOINT_NAME tag, which the policy excludes
+        # from the save set in BOTH modes — so the gathered full weights are transient one
+        # layer at a time in the forward and RE-gathered in the backward, never a per-forward
+        # fwd→bwd resident (without the in-body anchor GSPMD hoists the whole-chunk V/U gather
+        # out of the while-loop, where it is saved once per recon forward — the dominant temp
+        # class of the full32L step).
         #   remat=True  → nothing_saveable: recompute activations AND the gather (min memory).
         #   remat=False → dots_saveable: SAVE the activation matmuls (no batch dims here → they
         #     qualify) but still recompute the gather + cheap elementwise. Pure recompute either
         #     way; zero numerics change.
         # `scan_unroll` (native `lax.scan(unroll=k)`) emits k iterations straight-line so XLA can
         # prefetch gather(L+1) under matmul(L) — the overlap a 1-layer while-body denies.
-        policy = (
+        base_policy = (
             jax.checkpoint_policies.nothing_saveable
             if remat
             else jax.checkpoint_policies.dots_saveable
         )
+        never_save_gathered = jax.checkpoint_policies.save_anything_except_these_names(
+            GATHERED_WEIGHTS_CHECKPOINT_NAME
+        )
+
+        def policy(prim: Any, *args: Any, **params: Any) -> bool:
+            return bool(base_policy(prim, *args, **params)) and bool(
+                never_save_gathered(prim, *args, **params)
+            )
 
         def run_scan(body: Any, carry: Array, xs: Any) -> tuple[Array, Any]:
             return jax.lax.scan(
@@ -913,7 +1038,7 @@ class GLUDecomposedModel(eqx.Module):
                     sink[site] = stacked[kind][layer - first_live]
         return logits
 
-    def prepare_compute_weights(self, vu: DecompVU) -> dict[str, dict[str, Array]]:
+    def prepare_compute_weights(self, vu: ComponentStacks) -> dict[str, dict[str, Array]]:
         """Build the shared per-kind compute weights ONCE per step (SPEC unchanged): stack the
         per-site V/U into the layer-stacked `[n_layer, …]` form and run the ÷N→÷fsdp cross-node
         reconstruction + bf16 cast. The result is mask-independent and identical for every
@@ -1009,7 +1134,7 @@ class GLUDecomposedModel(eqx.Module):
         assert set(collect_activations) == set(live), (sorted(collect_activations), sorted(live))
         return collect_activations
 
-    def weight_deltas(self, vu: DecompVU) -> dict[str, Array]:
+    def weight_deltas(self, vu: ComponentStacks) -> dict[str, Array]:
         """fp32 `W − V@U` per site from fp32 masters (SPEC N2; faithfulness input)."""
         out: dict[str, Array] = {}
         for spec in self.sites:

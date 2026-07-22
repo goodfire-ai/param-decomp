@@ -17,9 +17,13 @@ from param_decomp_lab.experiments.lm.launch import (
 
 _MINIMAL_LM = {
     "run_name": "r",
-    "pd": {
-        "seed": 0,
-        "ci_config": {
+    "decomposition": {
+        "sites": {
+            "kind": "glu_transformer",
+            "layers": {"kind": "list", "indices": [0]},
+            "cs": {"gate": 4},
+        },
+        "ci": {
             "type": "chunkwise_transformer",
             "blocks_per_chunk": 1,
             "d_model": 16,
@@ -27,14 +31,16 @@ _MINIMAL_LM = {
             "attention": {"kind": "mha", "n_heads": 1},
             "ffn": {"kind": "gelu", "hidden": 16},
         },
-        "decomposition_targets": [{"module_pattern": "layers.0.mlp.gate_proj", "C": 4}],
+    },
+    "pd": {
+        "seed": 0,
         "components_optimizer": {"lr_schedule": {"start_val": 1e-4, "fn_type": "cosine"}},
         "ci_fn_optimizer": {"lr_schedule": {"start_val": 1e-4, "fn_type": "cosine"}},
         "steps": 10,
         "batch_size": 8,
         "loss_metrics": [{"type": "FaithfulnessLoss", "coeff": 1.0}],
     },
-    "runtime": {"device": "cuda:0"},
+    "runtime": {"device": "cuda:0", "sharding": "zero1"},
     "cadence": {"train_log_every": 1},
     "target": {
         "spec": {
@@ -94,6 +100,17 @@ def test_validate_config_rejects_pre_stamped_run_id(tmp_path: Path):
     config = tmp_path / "c.yaml"
     config.write_text(yaml.safe_dump(dict(_MINIMAL_LM, run_id="p-12345678")))
     with pytest.raises(AssertionError, match="run_id is minted at submit"):
+        _validate_config(config)
+
+
+def test_validate_config_fires_the_placement_claim_gate_pre_submit(tmp_path: Path):
+    """The build-time placement gate runs at submit validation, before any snapshot or
+    sbatch: an `owner+zero1` config whose declared topology makes every shape group tile
+    (here the single-site smoke at `dp: null`) refuses on the login node."""
+    raw = dict(_MINIMAL_LM, runtime={"sharding": "owner+zero1"})
+    config = tmp_path / "c.yaml"
+    config.write_text(yaml.safe_dump(raw))
+    with pytest.raises(AssertionError, match="single-device smoke cannot exercise"):
         _validate_config(config)
 
 

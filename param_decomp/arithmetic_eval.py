@@ -17,7 +17,7 @@ from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 
 from param_decomp.ci_fn import lower_leaky_hard_sigmoid
-from param_decomp.components import DecompVU
+from param_decomp.components import ComponentStacks
 from param_decomp.model import DecomposedModel
 from param_decomp.train import COMPUTE_DT, cast_floating
 
@@ -70,7 +70,7 @@ class ArithmeticGrid:
 
 
 ArithmeticGridStep = Callable[
-    [ComponentActivationModel, DecompVU, Any, Int[Array, "n_pad T"]],
+    [ComponentActivationModel, ComponentStacks, Any, Int[Array, "n_pad T"]],
     tuple[dict[str, Array], dict[str, Array], dict[str, Array]],
 ]
 """`(model, components, ci_fn, tokens) -> ({site: CI}, {site: x@V}, {site: max CI})`. CI and
@@ -96,7 +96,7 @@ def make_arithmetic_grid_step(
     @eqx.filter_jit
     def step(
         model: ComponentActivationModel,
-        components: DecompVU,
+        components: ComponentStacks,
         ci_fn: Any,
         tokens: Int[Array, "n_pad T"],
     ) -> tuple[dict[str, Array], dict[str, Array], dict[str, Array]]:
@@ -152,7 +152,7 @@ class ArithmeticSelection:
 def compute_arithmetic_selection(
     step: ArithmeticGridStep,
     model: ComponentActivationModel,
-    components: DecompVU,
+    components: ComponentStacks,
     ci_fn: Any,
     tokens: Int[Array, "n_pad T"],
     n_prompts: int,
@@ -160,7 +160,7 @@ def compute_arithmetic_selection(
     top_k: int,
 ) -> ArithmeticSelection:
     """Two-phase device->host pull, sized to what the figures actually need — NEVER the full
-    `(n_prompts, C)` grids (~GBs per site at production C). Phase 1: the step's replicated
+    `(n_prompts, C)` grids (they scale as n_prompts x C per site). Phase 1: the step's replicated
     per-component max CI comes to host (a `(C,)` vector per site) and drives the selection,
     identically on every rank. Phase 2: only the selected columns are host-gathered (the
     index padded to `top_k` so the gather compiles once; `n_prompts` trims the sharding pad

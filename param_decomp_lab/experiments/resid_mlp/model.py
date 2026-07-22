@@ -38,7 +38,7 @@ from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float
 
 from param_decomp.ci_fn import CI
-from param_decomp.components import DecompVU, SiteC, SiteSpec, site_out
+from param_decomp.components import ComponentStacks, SiteC, SiteSpec, site_out
 from param_decomp.model import run_stochastic_masked_output
 
 MLP_IN = "mlp_in"
@@ -245,7 +245,7 @@ def site_inputs(target: ResidMLPTarget, resid: Float[Array, "B d_embed"]) -> dic
 
 
 def _decomposed_or_frozen(
-    components: DecompVU,
+    components: ComponentStacks,
     site: str,
     W: Array,
     x_in: Array,
@@ -271,7 +271,7 @@ def _decomposed_or_frozen(
 
 def _run_masked(
     target: ResidMLPTarget,
-    components: DecompVU,
+    components: ComponentStacks,
     resid: Float[Array, "B d_embed"],
     masks: dict[str, Array],
     delta_masks: dict[str, Array],
@@ -304,7 +304,7 @@ def _run_masked(
 
 def masked_output(
     target: ResidMLPTarget,
-    components: DecompVU,
+    components: ComponentStacks,
     resid: Float[Array, "B d_embed"],
     masks: dict[str, Array],
     delta_masks: dict[str, Array],
@@ -317,7 +317,7 @@ def masked_output(
 
 def masked_site_outputs(
     target: ResidMLPTarget,
-    components: DecompVU,
+    components: ComponentStacks,
     resid: Float[Array, "B d_embed"],
     masks: dict[str, Array],
     delta_masks: dict[str, Array],
@@ -333,7 +333,7 @@ def masked_site_outputs(
 
 
 def weight_deltas_fp32(
-    target: ResidMLPTarget, components: DecompVU, sites: tuple[SiteSpec, ...]
+    target: ResidMLPTarget, components: ComponentStacks, sites: tuple[SiteSpec, ...]
 ) -> dict[str, Array]:
     """fp32 `W − (V@U)ᵀ` per site from fp32 masters (SPEC N2; faithfulness input)."""
     out: dict[str, Array] = {}
@@ -357,7 +357,7 @@ class ResidMLPDecomposedModel(eqx.Module):
     """The ResidualMLP `DecomposedModel` (the `model.py` contract; SPEC §1), positionless.
 
     Carries the FROZEN `ResidMLPTarget` weights as a field — threaded into the jitted step
-    as a pytree arg, weights traced not baked. The TRAINABLE V/U (`vu: DecompVU`) is an
+    as a pytree arg, weights traced not baked. The TRAINABLE V/U (`vu: ComponentStacks`) is an
     explicit method arg, NOT a field (separate lifecycle). `sites` / `has_position_axis` are
     static."""
 
@@ -389,13 +389,18 @@ class ResidMLPDecomposedModel(eqx.Module):
         inputs = site_inputs(self.target, resid)
         return {k: inputs[k] for k in wanted}
 
-    def prepare_compute_weights(self, vu: DecompVU) -> DecompVU:
+    def clean_output_and_activations(
+        self, resid: Float[Array, "B d_embed"], wanted: tuple[str, ...]
+    ) -> tuple[Array, dict[str, Array]]:
+        return self.clean_output(resid), self.read_activations(resid, wanted)
+
+    def prepare_compute_weights(self, vu: ComponentStacks) -> ComponentStacks:
         """Identity: ResidMLP weights are tiny + replicated, nothing to stack/gather/share."""
         return vu
 
     def masked_output(
         self,
-        prepared: DecompVU,
+        prepared: ComponentStacks,
         resid: Float[Array, "B d_embed"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -406,7 +411,7 @@ class ResidMLPDecomposedModel(eqx.Module):
         remat: bool,
     ) -> Array:
         def forward(
-            vu: DecompVU,
+            vu: ComponentStacks,
             resid: Array,
             masks: dict[str, Array],
             delta_masks: dict[str, Array],
@@ -424,7 +429,7 @@ class ResidMLPDecomposedModel(eqx.Module):
 
     def masked_output_stochastic(
         self,
-        prepared: DecompVU,
+        prepared: ComponentStacks,
         resid: Float[Array, "B d_embed"],
         ci_stacked: dict[str, Array],
         draw_key: Array,
@@ -440,7 +445,7 @@ class ResidMLPDecomposedModel(eqx.Module):
 
     def masked_site_outputs(
         self,
-        prepared: DecompVU,
+        prepared: ComponentStacks,
         resid: Float[Array, "B d_embed"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -452,7 +457,7 @@ class ResidMLPDecomposedModel(eqx.Module):
             self.target, prepared, resid, masks, delta_masks, routes, live, has_delta
         )
 
-    def weight_deltas(self, vu: DecompVU) -> dict[str, Array]:
+    def weight_deltas(self, vu: ComponentStacks) -> dict[str, Array]:
         return weight_deltas_fp32(self.target, vu, self.sites)
 
 

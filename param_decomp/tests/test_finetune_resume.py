@@ -113,8 +113,9 @@ def test_structural_compat_fires_on_changed_C(tmp_path: Path):
     parent_dir = _stamp(raw, tmp_path / "p-0123abcd")
 
     new_raw = dict(raw)
-    new_targets = [dict(t, C=t["C"] // 2) for t in raw["pd"]["decomposition_targets"]]
-    new_raw["pd"] = dict(raw["pd"], decomposition_targets=new_targets)
+    old_sites = raw["decomposition"]["sites"]
+    halved_cs = {matrix: c // 2 for matrix, c in old_sites["cs"].items()}
+    new_raw["decomposition"] = dict(raw["decomposition"], sites=dict(old_sites, cs=halved_cs))
     new_cfg = build_from_schema(new_raw, "p-aaaaaaaa")
     prov = ResumeProvenance(parent_run_dir=parent_dir, parent_step=10)
     with pytest.raises(AssertionError, match="fine-tune sites mismatch"):

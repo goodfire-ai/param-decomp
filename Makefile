@@ -68,6 +68,27 @@ test-all:
 	uv run pytest $(TEST_PATHS) --runslow --durations 10 --numprocesses $(NUM_PROCESSES) --dist worksteal
 	$(MAKE) test-multidevice
 
+# CI shards: an exact 3-way partition of `test-all`, one CI job each. One job running
+# everything no longer fits the runner: the suite is ~19 min warm (at the 20-min job
+# timeout), and a timed-out job is killed before its post steps, so it never saves the
+# JAX compile cache and every later run repeats the compile cost. The llama goldens
+# split off because they dominate one xdist worker for ~8 min and co-schedule the
+# heaviest memory peaks next to the recon end-to-end tests on a 16GB runner.
+LLAMA_GOLDEN_TEST_PATHS = param_decomp/tests/test_llama8b.py param_decomp/tests/test_llama_simple_mlp.py
+
+.PHONY: test-ci-llama-goldens
+test-ci-llama-goldens:
+	uv run pytest $(LLAMA_GOLDEN_TEST_PATHS) --runslow --durations 10 --numprocesses $(NUM_PROCESSES) --dist worksteal
+
+.PHONY: test-ci-core
+test-ci-core:
+	uv run pytest param_decomp/tests/ $(addprefix --ignore=,$(LLAMA_GOLDEN_TEST_PATHS)) --runslow --durations 10 --numprocesses $(NUM_PROCESSES) --dist worksteal
+
+.PHONY: test-ci-lab-multidevice
+test-ci-lab-multidevice:
+	uv run pytest param_decomp_lab/tests/ param_decomp_lab/experiments/ --runslow --durations 10 --numprocesses $(NUM_PROCESSES) --dist worksteal
+	$(MAKE) test-multidevice
+
 # Tests needing >1 device (sharding / checkpoint topology). They hang at the default 1
 # device, so they're skipped in the 1-device passes and run here under SIMULATED CPU
 # devices (XLA_FLAGS). `make test-all` runs this automatically as a second pass; invoke it

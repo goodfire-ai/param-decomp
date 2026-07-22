@@ -2,21 +2,24 @@
 # Inserts a frozen `hidden_layers.0` (n_hidden -> n_hidden, identity init) between linear1
 # and linear2, adding a third dense decomposition site. The dense site's ground-truth CI
 # is the dense pattern (all n_hidden directions live), not the per-feature identity.
-# CI fn: layerwise per-site MLP (type=layerwise_mlp, hidden_dims=[16]). Runs on 1 GPU.
+# CI fn: layerwise per-site MLP (type=layerwise_mlp, hidden_dims=[50]). Runs on 1 GPU.
 run_name: jax-tms-5-2-id
-pd:
-  seed: 0
-  ci_config:
+decomposition:
+  sites:
+    kind: explicit
+    sites:
+    - name: linear1
+      C: 20
+    - name: hidden_layers.0
+      C: 20
+    - name: linear2
+      C: 20
+  ci:
     type: layerwise_mlp
     hidden_dims:
     - 50
-  decomposition_targets:
-  - module_pattern: linear1
-    C: 20
-  - module_pattern: hidden_layers.0
-    C: 20
-  - module_pattern: linear2
-    C: 20
+pd:
+  seed: 0
   loss_metrics:
   - frequency:
       coeff: 4.0e-04
@@ -28,7 +31,7 @@ pd:
       fn_type: linear
       final_val_frac: 0.01
       warmup_pct: 0.0
-  - type: MergedStochasticPGDReconLoss
+  - type: MergedStochasticSubsetPPGDReconLoss
     coeff: 1.0
     adv_fraction:
       start_val: 0.5
@@ -81,6 +84,7 @@ pd:
 runtime:
   remat_recon_forwards: false
   dp: null
+  sharding: ddp
 cadence:
   train_log_every: 200
   save_every: 5000
@@ -101,8 +105,9 @@ data:
   data_generation_type: at_least_zero_active
 eval:
   # Toys validate via the ground-truth CI metric; the permuted-CI heatmap logs
-  # unconditionally. `eval.metrics` here adds the master `loss/PGDReconLoss` probe
-  # (fresh sign-PGD adversarial recon); the cadence fields below are inert for toys.
+  # unconditionally. Toys honor only the permutation/UV figure metrics, so the
+  # PGDReconLoss probe (authored by the sweep) and the cadence fields are inert
+  # until the toys grow the LM scalar eval pass.
   batch_size: 4096
   n_steps: 1
   every: 1000

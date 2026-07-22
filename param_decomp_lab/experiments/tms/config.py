@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import NonNegativeInt, PositiveInt
 
 from param_decomp.base_config import BaseConfig, Probability
-from param_decomp_lab.experiments.config import ExperimentConfig
+from param_decomp_lab.experiments.config import ExperimentConfig, ToyDecompositionConfig
 
 TMSDataGenerationType = Literal[
     "exactly_one_active",
@@ -39,7 +39,8 @@ class TMSTargetConfig(BaseConfig):
     """The TMS target architecture + its from-scratch pretraining.
 
     The target has tied weights (`linear2 = linear1ᵀ`); the *decomposition* is untied
-    (`pd.decomposition_targets = [linear1, linear2]` — each site gets its own components).
+    (`decomposition.sites` lists `linear1` and `linear2` — each site gets its own
+    components).
 
     `n_hidden_layers > 0` inserts that many FROZEN `n_hidden -> n_hidden` layers between
     `linear1` and `linear2` (`hidden_layer_init` = `identity` for the `-id` variant or
@@ -62,5 +63,7 @@ class TMSDataConfig(BaseConfig):
     data_generation_type: TMSDataGenerationType = "at_least_zero_active"
 
 
-class TMSExperimentConfig(ExperimentConfig[TMSTargetConfig, TMSDataConfig]):
-    pass
+class TMSExperimentConfig(ExperimentConfig):
+    target: TMSTargetConfig
+    decomposition: ToyDecompositionConfig
+    data: TMSDataConfig

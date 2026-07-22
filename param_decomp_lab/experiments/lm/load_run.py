@@ -33,10 +33,11 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Int
 
+from param_decomp import placement
 from param_decomp.built_run import BuiltRun
 from param_decomp.checkpoint import make_checkpoint_manager, restore_decomposition_to_host
-from param_decomp.ci_fn import CIFn
-from param_decomp.components import DecompVU
+from param_decomp.ci_fn import ChunkwiseTransformerCIFn
+from param_decomp.components import ComponentStacks
 from param_decomp.model import DecomposedModel
 from param_decomp.run_state import init_decomposition
 from param_decomp.sharding import hsdp_mesh, place_via_shardings
@@ -99,7 +100,9 @@ def build_target(cfg: BuiltRun, mesh: jax.sharding.Mesh) -> tuple[DecomposedMode
             raise AssertionError(f"build_target is LM-only; got target {type(cfg.target).__name__}")
 
 
-def _u_norms(components: DecompVU, site_names: tuple[str, ...]) -> dict[str, Float[Array, " C"]]:
+def _u_norms(
+    components: ComponentStacks, site_names: tuple[str, ...]
+) -> dict[str, Float[Array, " C"]]:
     """Per-component output-direction magnitude ‖U_c‖ — the harvest `component_activation`
     scale (torch `harvest_fn/param_decomp.py`: `component.U.norm(dim=1)`)."""
     return {
@@ -121,7 +124,7 @@ class LoadedJaxRun:
     vocab_size: int
     _decomposition: Decomposition
     _forward: Callable[
-        [DecomposedModel, DecompVU, CIFn, Int[Array, "B T"]],
+        [DecomposedModel, ComponentStacks, ChunkwiseTransformerCIFn, Int[Array, "B T"]],
         tuple[dict[str, Array], dict[str, Array], Array],
     ]
 
@@ -137,7 +140,9 @@ class LoadedJaxRun:
 
     def forward(self, token_ids: Int[Array, "B T"]) -> HarvestForward:
         ci_fn = self._decomposition.ci_fn
-        assert isinstance(ci_fn, CIFn), "harvest is the transformer-CI-fn (LM) path only"
+        assert isinstance(ci_fn, ChunkwiseTransformerCIFn), (
+            "harvest is the transformer-CI-fn (LM) path only"
+        )
         lower_leaky_ci, component_acts, output_probs = self._forward(
             self.model, self._decomposition.components, ci_fn, token_ids
         )
@@ -161,7 +166,11 @@ def _restore_decomposition(
     optimizers); leaves restore as host numpy, then `device_put` onto the consumer's
     single default device."""
     init_key, _ = jax.random.split(jax.random.PRNGKey(cfg.pd.seed))
-    abstract = jax.eval_shape(lambda: init_decomposition(model, cfg.ci_fn, init_key, mesh))
+    # Consumer construction: this mesh is the CONSUMER's topology (often one device), not
+    # the run's launch topology, so the launch claims don't bind — a zero1 row declared
+    # for dp=N is legitimately unreachable here.
+    rules = placement.from_config_for_consumer(cfg.runtime.sharding, mesh, model.sites)
+    abstract = jax.eval_shape(lambda: init_decomposition(model, cfg.ci_fn, init_key, mesh, rules))
 
     assert cfg.cadence.keep_last_n_checkpoints is not None, cfg.cadence
     manager = make_checkpoint_manager(run_dir / "ckpts", cfg.cadence.keep_last_n_checkpoints)
@@ -178,7 +187,7 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
     mesh = hsdp_mesh()
     target_model, vocab_size = build_target(cfg, mesh)
     decomposition, resolved_step = _restore_decomposition(cfg, target_model, mesh, run_dir, step)
-    assert isinstance(decomposition.components, DecompVU)
+    assert isinstance(decomposition.components, ComponentStacks)
 
     site_names = target_model.site_names
     u_norms = _u_norms(decomposition.components, site_names)
@@ -189,13 +198,15 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
     @eqx.filter_jit
     def forward(
         model: DecomposedModel,
-        components: DecompVU,
-        ci_fn: CIFn,
+        components: ComponentStacks,
+        ci_fn: ChunkwiseTransformerCIFn,
         token_ids: Int[Array, "B T"],
     ) -> tuple[dict[str, Array], dict[str, Array], Array]:
-        clean_output = model.clean_output(token_ids)
-        taps = model.read_activations(token_ids, ci_fn.input_names)
-        site_inputs = model.read_activations(token_ids, site_names)
+        clean_output, all_taps = model.clean_output_and_activations(
+            token_ids, ci_fn.input_names + site_names
+        )
+        taps = {k: all_taps[k] for k in ci_fn.input_names}
+        site_inputs = {k: all_taps[k] for k in site_names}
 
         components_bf16 = cast_floating(components, COMPUTE_DT)
         ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)

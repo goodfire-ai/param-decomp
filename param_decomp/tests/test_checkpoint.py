@@ -2,12 +2,14 @@
 trainer state (SPEC S22): a restored `TrainState` must continue the EXACT trajectory —
 including the persistent adversary's sources and Adam moments."""
 
+from collections.abc import Callable
 from pathlib import Path
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
+import pytest
 from jax.sharding import Mesh
 
 from param_decomp.adversary import (
@@ -30,7 +32,7 @@ from param_decomp.ci_fn import (
     MHACIAttention,
     build_ci_fn,
 )
-from param_decomp.components import init_decomp_vu
+from param_decomp.components import init_component_stacks
 from param_decomp.configs import (
     AdamPGDConfig,
     ChunkwiseSubsetReconLossConfig,
@@ -40,7 +42,10 @@ from param_decomp.configs import (
     UniformKSubsetRoutingConfig,
 )
 from param_decomp.model import DecomposedModel, Positioned
+from param_decomp.muon_stacked import stacked_muon
+from param_decomp.placement import from_config
 from param_decomp.recon import build_loss_terms
+from param_decomp.run_state import stacked_muon_dimension_numbers
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.sharding import hsdp_mesh
 from param_decomp.targets.glu_transformer import (
@@ -49,7 +54,7 @@ from param_decomp.targets.glu_transformer import (
 )
 from param_decomp.targets.glu_transformer_sharding import (
     init_ci_fn_placed,
-    init_decomp_vu_placed,
+    init_component_stacks_placed,
     init_sources_sharded,
 )
 from param_decomp.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
@@ -98,15 +103,44 @@ def _chunkwise_arch(model: DecomposedModel, cfg: LlamaConfig) -> ChunkwiseTransf
     )
 
 
-def _build(seed: int):
+def _build(
+    seed: int, muon_components: bool = False, muon_ci_fn: bool = False, stacked_impl: bool = False
+):
     cfg = _tiny_cfg()
     C, seq = 8, 16
     sites = glu_site_specs(cfg, mlp_family_site_cs(3, 4, C))
     model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(seed))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(seed))
     ci_fn = build_ci_fn(_chunkwise_arch(model, cfg), model.sites, jax.random.PRNGKey(seed + 1))
-    opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
-    opt_ci = optax.adamw(1e-3, weight_decay=0.0)
+
+    def muon_impl(dim_nums: "Callable[[optax.Params], optax.Params] | None"):
+        if stacked_impl:
+            return stacked_muon(
+                1e-3,
+                beta=0.95,
+                weight_decay=0.0,
+                consistent_rms=0.2,
+                muon_weight_dimension_numbers=dim_nums,
+                ns_steps=5,
+                ns_dtype=jnp.dtype(jnp.float32),
+                mesh=None,
+            )
+        return optax.contrib.muon(1e-3, consistent_rms=0.2, muon_weight_dimension_numbers=dim_nums)
+
+    # Production labeling (`run_state.build_optimizers`): the V/U tree is all-3D
+    # `ComponentStacks` stacks, so optax's default 2D rule (dim_nums=None) would label
+    # every leaf adam and leave the muon partition under test empty.
+    inner_vu = (
+        muon_impl(stacked_muon_dimension_numbers)
+        if muon_components
+        else optax.adamw(1e-3, weight_decay=0.0)
+    )
+    opt_vu = optax.chain(optax.clip_by_global_norm(0.01), inner_vu)
+    opt_ci = (
+        muon_impl(stacked_muon_dimension_numbers)
+        if muon_ci_fn
+        else optax.adamw(1e-3, weight_decay=0.0)
+    )
     src = init_persistent_sources(
         model.site_names,
         tuple(s.C for s in model.sites),
@@ -146,8 +180,12 @@ def _build(seed: int):
     return model, state, step, resid
 
 
-def test_roundtrip_and_exact_resume(tmp_path: Path):
-    model, state, step, resid = _build(seed=1)
+def _roundtrip_and_exact_resume(
+    tmp_path: Path, muon_components: bool, muon_ci_fn: bool = False, stacked_impl: bool = False
+) -> None:
+    model, state, step, resid = _build(
+        seed=1, muon_components=muon_components, muon_ci_fn=muon_ci_fn, stacked_impl=stacked_impl
+    )
     for i in range(2):
         state, _ = step(model, state, resid, jax.random.PRNGKey(i))
 
@@ -155,7 +193,9 @@ def test_roundtrip_and_exact_resume(tmp_path: Path):
     save_state(mgr, 2, state)
 
     # Restore onto a DIFFERENTLY-seeded reference: every leaf must come from disk.
-    _, fresh, _, _ = _build(seed=7)
+    _, fresh, _, _ = _build(
+        seed=7, muon_components=muon_components, muon_ci_fn=muon_ci_fn, stacked_impl=stacked_impl
+    )
     restored = restore_latest(mgr, fresh)
     assert restored is not None
     loaded, ckpt_step = restored
@@ -163,9 +203,98 @@ def test_roundtrip_and_exact_resume(tmp_path: Path):
     for a, b in zip(jax.tree.leaves(state), jax.tree.leaves(loaded), strict=True):
         assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
 
+    if muon_components:
+        # The muon partition under test is non-vacuous: the restored MuonState carries
+        # real (non-MaskedNode) momentum on the V/U stacks, moved by the two steps.
+        [muon_state] = [
+            x
+            for x in jax.tree.leaves(
+                loaded.training.components_opt_state,
+                is_leaf=lambda x: isinstance(x, optax.contrib.MuonState),
+            )
+            if isinstance(x, optax.contrib.MuonState)
+        ]
+        mu_leaves = jax.tree.leaves(muon_state.mu)
+        assert mu_leaves, "no V/U leaf labeled muon: the partition under test is empty"
+        assert all(bool(jnp.any(leaf != 0)) for leaf in mu_leaves)
+
     # SPEC S22: the restored state continues the exact trajectory.
     state_cont, m_cont = step(model, state, resid, jax.random.PRNGKey(100))
     loaded_cont, m_load = step(model, loaded, resid, jax.random.PRNGKey(100))
+    for k in m_cont:
+        assert float(m_cont[k]) == float(m_load[k]), k
+    for a, b in zip(jax.tree.leaves(state_cont), jax.tree.leaves(loaded_cont), strict=True):
+        assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
+
+
+def test_roundtrip_and_exact_resume(tmp_path: Path):
+    _roundtrip_and_exact_resume(tmp_path, muon_components=False)
+
+
+def test_muon_roundtrip_and_exact_resume(tmp_path: Path):
+    """SPEC S20 amendment: the muon components opt state (optax-partitioned muon/adam
+    masked trees) must ALSO restore onto a rebuilt reference and continue exactly —
+    this is what a scavenge preemption + requeue exercises."""
+    _roundtrip_and_exact_resume(tmp_path, muon_components=True)
+
+
+def test_muon_ci_fn_roundtrip_and_exact_resume(tmp_path: Path):
+    """SPEC S20 amendment (2026-07-11): same guarantee with muon on BOTH groups, the ci-fn
+    partitioned by `stacked_muon_dimension_numbers` (3D chunk stacks muon'd, 2D bias
+    stacks in the Adam-fallback mask)."""
+    _roundtrip_and_exact_resume(tmp_path, muon_components=True, muon_ci_fn=True)
+
+
+def test_stacked_muon_roundtrip_and_exact_resume(tmp_path: Path):
+    """SPEC S20 `impl: stacked`: the stacked-NS muon state is optax's `MuonState` pytree
+    verbatim, so the same roundtrip + exact-resume guarantee holds — and a checkpoint
+    written under either impl restores under the other (pinned by
+    `test_muon_cross_impl_checkpoint_roundtrip`)."""
+    _roundtrip_and_exact_resume(tmp_path, muon_components=True, muon_ci_fn=True, stacked_impl=True)
+
+
+@pytest.mark.parametrize(
+    ("save_impl", "restore_impl"), [("stacked", "optax"), ("optax", "stacked")]
+)
+def test_muon_cross_impl_checkpoint_roundtrip(tmp_path: Path, save_impl: str, restore_impl: str):
+    """SPEC S20: `impl: optax` and `impl: stacked` carry the SAME `MuonState` pytree, so a
+    checkpoint written under either impl restores bit-exact onto a reference built under
+    the other — and the other impl's train step consumes the restored state (continuing it
+    exactly as it continues the in-memory state). Muon on BOTH groups so the cross-impl
+    claim covers the V/U stacks and the ci-fn partition."""
+    model, state, save_step, resid = _build(
+        seed=1, muon_components=True, muon_ci_fn=True, stacked_impl=save_impl == "stacked"
+    )
+    for i in range(2):
+        state, _ = save_step(model, state, resid, jax.random.PRNGKey(i))
+    mgr = make_checkpoint_manager(tmp_path / "ckpts", keep_last=2)
+    save_state(mgr, 2, state)
+
+    # The reference — and the continuation step — are built under the OTHER impl.
+    _, fresh, restore_step_fn, _ = _build(
+        seed=7, muon_components=True, muon_ci_fn=True, stacked_impl=restore_impl == "stacked"
+    )
+    restored = restore_latest(mgr, fresh)
+    assert restored is not None
+    loaded, ckpt_step = restored
+    assert ckpt_step == 2
+    for a, b in zip(jax.tree.leaves(state), jax.tree.leaves(loaded), strict=True):
+        assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
+
+    # Non-vacuous: the cross-restored muon momentum is real, moved by the two save-side
+    # steps — not an untouched fresh-init tree.
+    [muon_state] = [
+        x
+        for x in jax.tree.leaves(
+            loaded.training.components_opt_state,
+            is_leaf=lambda x: isinstance(x, optax.contrib.MuonState),
+        )
+        if isinstance(x, optax.contrib.MuonState)
+    ]
+    assert all(bool(jnp.any(leaf != 0)) for leaf in jax.tree.leaves(muon_state.mu))
+
+    state_cont, m_cont = restore_step_fn(model, state, resid, jax.random.PRNGKey(100))
+    loaded_cont, m_load = restore_step_fn(model, loaded, resid, jax.random.PRNGKey(100))
     for k in m_cont:
         assert float(m_cont[k]) == float(m_load[k]), k
     for a, b in zip(jax.tree.leaves(state_cont), jax.tree.leaves(loaded_cont), strict=True):
@@ -317,7 +446,9 @@ def _build_sharded(seed: int, mesh: Mesh):
     C, seq = 8 * n, 16
     sites = glu_site_specs(cfg, mlp_family_site_cs(3, 4, C))
     model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu_placed(sites, jax.random.PRNGKey(seed), mesh)
+    vu = init_component_stacks_placed(
+        sites, jax.random.PRNGKey(seed), from_config("owner", mesh, sites)
+    )
     ci_fn = init_ci_fn_placed(
         _chunkwise_arch(model, cfg), model.sites, jax.random.PRNGKey(seed + 1), mesh
     )

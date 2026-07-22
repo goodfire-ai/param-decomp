@@ -12,7 +12,7 @@ from param_decomp.adversary import (
     init_persistent_sources,
     init_sources_adam_state,
 )
-from param_decomp.components import DecompVU, init_decomp_vu
+from param_decomp.components import ComponentStacks, init_component_stacks
 from param_decomp.configs import (
     AdamPGDConfig,
     FaithfulnessLossConfig,
@@ -93,7 +93,7 @@ def test_merged_train_step_end_to_end(source_shape: SourceShape, src_leading: tu
     n_warmup = 1
     sites = site_specs(cfg, _MIXED_SITE_CS)
     model = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = _build_chunkwise_ci_fn(model, jax.random.PRNGKey(2))
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
@@ -159,6 +159,6 @@ def test_merged_train_step_end_to_end(source_shape: SourceShape, src_leading: tu
     assert float(adv.opt_state.step_count) == n_steps * (n_warmup + 1)
     for v in adv.sources.values():
         assert float(v.min()) >= 0.0 and float(v.max()) <= 1.0
-    assert isinstance(state.decomposition.components, DecompVU)
-    for V, U in state.decomposition.components.vu.values():
+    assert isinstance(state.decomposition.components, ComponentStacks)
+    for _, (V, U) in state.decomposition.components.sites_items():
         assert V.dtype == jnp.float32 and U.dtype == jnp.float32

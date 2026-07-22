@@ -17,11 +17,14 @@ never silently diverge. Cite IDs (`S14`, `N1`, …) in commit messages and revie
 ## Architecture in one breath
 
 `model.py` defines `DecomposedModel` — a `@runtime_checkable Protocol`: ordered `sites` +
-`has_position_axis` + the methods `clean_output`, `read_activations`, `masked_output`,
-`masked_site_outputs`, `weight_deltas`, and a `recon_loss_fn` (LM: `kl_per_position`). The
+`has_position_axis` + the methods `clean_output`, `read_activations`,
+`clean_output_and_activations` (both from ONE frozen forward — the GLU target emits
+the taps as ys of its clean-forward `lax.scan`; what the train + fast-eval steps call),
+`masked_output`, `masked_site_outputs`, `weight_deltas`, and a `recon_loss_fn`
+(LM: `kl_per_position`). The
 concrete impl per target is an `eqx.Module` (`GLUDecomposedModel`,
 `SimpleMLPDecomposedModel`, `TMSDecomposedModel`, `ResidMLPDecomposedModel`) carrying its
-FROZEN target weights as ARRAY FIELDS; the TRAINABLE V/U (`vu: DecompVU`) stays an explicit
+FROZEN target weights as ARRAY FIELDS; the TRAINABLE V/U (`vu: ComponentStacks`) stays an explicit
 METHOD ARG (separate lifecycle — own optimizer + checkpoint, C-sharded while the frozen
 weights replicate). Flat site-name-keyed dicts at the boundary; the model threads into the
 jitted step as a pytree ARG (never a jit-closure constant — an 8B target becomes a multi-GB
@@ -62,8 +65,9 @@ tensors in one forward share one `*leading` prefix) is enforced at trace time by
 (fp32 masters / bf16 compute) over a flat tuple of self-describing loss TERMS
 (`recon.LossTerms` — faithfulness, importance-minimality, and the recon terms, iterated
 uniformly; S10′ — the recon loss-class cartesian product factored as chunking × routing ×
-mask-source strategy: a chunking helper (`one_chunk`/`per_site`/`into_groups`) feeds the
-single `make_plan` constructor, built from the shared configs by `recon.build_loss_terms`;
+mask-source strategy: a live-set helper (`all_sites_live`/`each_site_live`/`live_groups`)
+feeds the single `make_plan` constructor, built from the shared configs by
+`recon.build_loss_terms`;
 see LOSS_PARITY_DESIGN.md),
 consuming `losses.py` (pure loss terms + schedules) and `adversary.py` (persistent
 vs fresh source machinery — semantically distinct adversaries sharing only
@@ -74,8 +78,8 @@ recon semantics: masks thread through the full token-input forward, loss is KL o
 t-9d2b8f02; sites `h.{i}.attn.{q,k,v,o}_proj` / `h.{i}.mlp.{c_fc,down_proj}`) —
 config dispatch is `TargetConfig` (the HF GLU families) vs `LlamaSimpleMLPTargetConfig`, both LAB-side
 (`param_decomp_lab/experiments/lm/config.py`, which reads the canonical schema DIRECTLY —
-`build_experiment_config`/`load_config` — routing `kind: pretrained` specs + `h.*`
-wildcards), target build in the LM composition root
+`build_experiment_config`/`load_config` — resolving each target's tiled
+`decomposition.sites` via its `ArchFamily`), target build in the LM composition root
 `param_decomp_lab/experiments/lm/run.py::main`. The slow plot metrics are computed
 NATIVELY in JAX (`slow_eval.py`) — no torch export round-trip (the torch offline-eval
 bridge `jsp-export` / `pd-offline-eval` was retired). They run IN-LOOP ONLY on
@@ -159,9 +163,22 @@ site-slot). NOTE: this is the pure-HSDP backup branch — the mesh is `(replicat
 NO tensor-parallel / Megatron-C axis (`fsdp` = the 8 intra-node NVLink GPUs, `replicate` =
 across nodes). The CI output C axis is NEVER sharded, so the per-site heads are a layout
 convenience here (they were load-bearing under the prior TP layout, which sliced a tp-sharded
-glued-ΣC head mid-site). **ZeRO-1 ÷N**: the trainable V/U + CI-fn fp32 masters AND their Adam
-m/v shard ÷N over the FULL mesh (`("replicate","fsdp")` on V's d_in / U's d_out / the CI fn's
-d_model) — the dominant optimizer-state memory scales 1/N, not the fixed 1/fsdp. The bf16
+glued-ΣC head mid-site). **Persistence layouts (÷N)**: the trainable V/U masters AND their
+optimizer moments persist as same-shape STACKS (`ComponentStacks.stacks`, owner-partitioned: stack
+axis ÷`replicate` — whole matrices owned per node-group, zero cross-node weight collectives,
+muon NS node-local — matrix d dims ÷`fsdp`, C ÷`tp`; SPEC D4 amendments 2026-07-15 +
+2026-07-21; a stack that doesn't tile `replicate` is an ERROR under strict `owner` — the
+per-group fallback to intra-matrix data sharding is the config-opt-in `owner+zero1`
+preset / an explicit table's `params.zero1` row. The per-group assignment is resolved
+ONCE, at `placement.from_config(spec, mesh, sites)` during config build — bidirectional
+claim included: declaring `zero1` when every group tiles is equally an error, refused at
+`pd-lm` submit for `dp: N` — and flows down as data; the consumer boundary
+(`placement.component_stacks_shardings`) only validates the received assignment, never
+re-decides. See PLACEMENT_DESIGN.md "Decision at build time"). The CI-fn
+masters + moments keep intra-matrix ZeRO-1 (`("fsdp","replicate")` on d_model — fsdp-major,
+so the ÷N→÷fsdp reconstruct is a pure all-gather over `replicate`; replicate-major cost a
+~13 GiB/rank/step grid-transpose collective-permute, PR #927). Either way
+the dominant optimizer-state memory scales 1/N, not the fixed 1/fsdp. The bf16
 COMPUTE weights are reconstructed to the `fsdp`-sharded (÷fsdp) layout ONCE per step in ENTRY
 (the cross-`replicate` gather, off the hot path — `glu_transformer._reconstruct_compute_weights` /
 `ci_fn._reconstruct_ci_compute_weights` pin `P(None,"fsdp",...)` BEFORE the per-layer /
@@ -172,7 +189,7 @@ full-model `[n_layer, full_d_in, C]` weight stack resident.
 (`MLPCIArch` / `GlobalMLPCIArch` / `ChunkwiseTransformerCIArch`) and uses replicated (not
 C-sharded) V/U + CI for the tiny toys; the core `ci_fn.CIFnArch` admits all three and the
 lab `experiments.config.ci_arch` builds the layerwise / global arch from the toy
-ci_config (validated end-to-end on CPU via
+`decomposition.ci` (validated end-to-end on CPU via
 `pd-resid-mlp`). Harvest / slow-eval / export over the toys are NOT wired
 (`experiments.lm.load_run.build_target` / `run_metadata` are LM-only).
 
@@ -316,7 +333,7 @@ shared FS, which `$PARAM_DECOMP_OUT_DIR` already is.
 - **Keep seeded inits few-outputs-under-jit**: a jit returning n_sites (hundreds of)
   sharded outputs — or n_chunks unrolled RNG bodies — is a multi-minute SPMD/layout
   compile. vmap-stack over the same per-site/per-chunk keys (bit-identical values),
-  then fan out with a trivial slice jit. `init_decomp_vu_placed` is the template;
+  then fan out with a trivial slice jit. `init_component_stacks_placed` is the template;
   `init_ci_fn_placed` / `init_sources_sharded` follow it.
 - **The `jit_step` compile (~5 min at dp32) is FLAT across graph structure**: recon
   chunk count, C, CI-fn depth, and PPGD warmup all measured within noise (~83%

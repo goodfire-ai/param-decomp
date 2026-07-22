@@ -15,13 +15,22 @@ on:
 
 jobs:
   build:
+    # The test suite is sharded across parallel jobs (an exact partition — see the
+    # test-ci-* Makefile targets): one job running everything overruns the job timeout,
+    # and a timed-out job never saves its JAX compile cache, leaving every later run
+    # cold and slower still.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [llama-goldens, core, lab-multidevice]
+    name: build (${{ matrix.shard }})
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: read
     container:
       image: ghcr.io/${{ github.repository }}/ci-mpi:latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -51,20 +60,24 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.hf-cache
-          key: hf-${{ github.run_id }}
+          key: hf-${{ github.run_id }}-${{ matrix.shard }}
           restore-keys: |
             hf-
 
       # Compiled executables are content-addressed by HLO + backend + jax/xla version
       # (conftest.py pins the CPU ISA ceiling to AVX2 so a cache entry stays valid across
-      # any runner), so a stale or cross-lockfile hit is a safe no-op miss, not a wrong
-      # answer — restore-keys lets a uv.lock bump degrade to a partial hit instead of cold.
+      # any runner), so a stale, cross-lockfile, or cross-shard hit is a safe no-op miss,
+      # not a wrong answer — restore-keys lets a uv.lock bump or a fresh shard degrade to
+      # a partial hit instead of cold. The key is per-shard because a cache key is
+      # immutable once saved: on a shared key only the first shard to finish would ever
+      # persist its compiles.
       - name: Cache JAX compilation cache
         uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.jax_test_cache
-          key: jax-test-cache-${{ hashFiles('uv.lock') }}
+          key: jax-test-cache-${{ matrix.shard }}-${{ hashFiles('uv.lock') }}
           restore-keys: |
+            jax-test-cache-${{ matrix.shard }}-
             jax-test-cache-
 
       - name: Run basedpyright
@@ -77,8 +90,7 @@ jobs:
         run: uv run ruff format .
 
       - name: Run tests
-        # `make test-all` runs the 1-device suite then the multidevice subset (sim CPU devices).
-        run: make test-all
+        run: make test-ci-${{ matrix.shard }}
         env:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
           OMPI_ALLOW_RUN_AS_ROOT: 1

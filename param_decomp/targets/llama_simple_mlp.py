@@ -28,6 +28,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import get_args
 
 import equinox as eqx
 import jax
@@ -40,23 +41,26 @@ from jax.typing import DTypeLike
 from jaxtyping import Array, Float, Int
 from safetensors import safe_open
 
-from param_decomp.components import DecompVU, SiteC, SiteSpec, site_out
+from param_decomp import site_tree
+from param_decomp.components import ComponentStacks, SiteC, SiteSpec, site_out
+from param_decomp.configs import SimpleMlpMatrix
 from param_decomp.losses import kl_per_position
 from param_decomp.model import run_stochastic_masked_output
+from param_decomp.site_tree import ArchFamily
 from param_decomp.targets.glu_transformer import FrozenAttn
+from param_decomp.targets.transformer_taps import resid_tap_key
 from vendored_jax.llama import rms_norm
 
-KIND_ORDER = ("q_proj", "k_proj", "v_proj", "o_proj", "c_fc", "down_proj")
-"""Within-layer canonical site order = computation order. The canonical site order
-(`site_specs`) is layer-ascending, then this."""
+KIND_ORDER: tuple[str, ...] = get_args(SimpleMlpMatrix)
+"""Within-layer canonical site order = computation order, DERIVED from the config-side
+`SimpleMlpMatrix` vocabulary (one source of truth — a c-spec key and a target matrix
+cannot drift). The canonical site order (`site_specs`) is layer-ascending, then this."""
 ATTN_KINDS = ("q_proj", "k_proj", "v_proj", "o_proj")
 MLP_KINDS = ("c_fc", "down_proj")
+assert KIND_ORDER == ATTN_KINDS + MLP_KINDS, KIND_ORDER
 
 SITE_NAME_PATTERN = re.compile(
     r"^h\.(\d+)\.(?:attn\.(q_proj|k_proj|v_proj|o_proj)|mlp\.(c_fc|down_proj))$"
-)
-WILDCARD_NAME_PATTERN = re.compile(
-    r"^h\.\*\.(?:attn\.(q_proj|k_proj|v_proj|o_proj)|mlp\.(c_fc|down_proj))$"
 )
 
 
@@ -126,9 +130,17 @@ def parse_site_name(name: str) -> tuple[int, str]:
     """`h.{i}.{attn,mlp}.{kind}` -> (layer, kind); rejects anything else (including
     kind/submodule mismatches like `attn.c_fc`)."""
     match = SITE_NAME_PATTERN.match(name)
-    assert match is not None, f"unsupported site name {name!r}"
+    assert match is not None, (
+        f"not a simple_mlp site: {name!r} (sites are h.{{i}}.attn.{{q|k|v|o}}_proj"
+        f" / h.{{i}}.mlp.{{c_fc|down_proj}})"
+    )
     layer, attn_kind, mlp_kind = match.groups()
     return int(layer), attn_kind if attn_kind is not None else mlp_kind
+
+
+FAMILY = ArchFamily("simple_mlp", KIND_ORDER, site_name, parse_site_name)
+"""This target's matrix grammar as data — the vocabulary + name renderer the tiled
+`simple_mlp` c-specs resolve against (`resolve_site_tree`)."""
 
 
 def site_dims(cfg: LlamaSimpleMLPConfig, kind: str) -> tuple[int, int]:
@@ -152,45 +164,11 @@ def site_dims(cfg: LlamaSimpleMLPConfig, kind: str) -> tuple[int, int]:
 
 
 def canonical_site_cs(site_cs: tuple[SiteC, ...]) -> tuple[SiteC, ...]:
-    """Canonical site order: layer-ascending, `KIND_ORDER` within a layer. Names must
-    parse and be unique."""
-    names = [site.name for site in site_cs]
-    assert len(set(names)) == len(names), f"duplicate sites in {names}"
-
-    def order_key(site: SiteC) -> tuple[int, int]:
-        layer, kind = parse_site_name(site.name)
-        return layer, KIND_ORDER.index(kind)
-
-    return tuple(sorted(site_cs, key=order_key))
-
-
-def expand_wildcard_site_cs(entries: tuple[SiteC, ...], n_layer: int) -> tuple[SiteC, ...]:
-    """`h.*.<submodule>.<kind>` entries expand to every layer at that entry's C
-    (the torch `module_pattern` wildcard convention); explicit `h.{i}.` entries pass
-    through. Result is canonical-ordered; duplicates raise."""
-    expanded: list[SiteC] = []
-    for entry in entries:
-        wildcard = WILDCARD_NAME_PATTERN.match(entry.name)
-        if wildcard is None:
-            parse_site_name(entry.name)
-            expanded.append(entry)
-        else:
-            attn_kind, mlp_kind = wildcard.groups()
-            kind = attn_kind if attn_kind is not None else mlp_kind
-            expanded.extend(SiteC(site_name(layer, kind), entry.C) for layer in range(n_layer))
-    return canonical_site_cs(tuple(expanded))
+    return site_tree.canonical_site_cs(FAMILY, site_cs)
 
 
 def site_specs(cfg: LlamaSimpleMLPConfig, site_cs: tuple[SiteC, ...]) -> tuple[SiteSpec, ...]:
-    """Shape-resolved specs in canonical order (input must already be canonical)."""
-    assert site_cs == canonical_site_cs(site_cs), f"sites not in canonical order: {site_cs}"
-    specs = []
-    for site in site_cs:
-        layer, kind = parse_site_name(site.name)
-        assert 0 <= layer < cfg.n_layer, (site.name, cfg.n_layer)
-        assert site.C >= 1, site
-        specs.append(SiteSpec(site.name, *site_dims(cfg, kind), site.C))
-    return tuple(specs)
+    return site_tree.site_specs(FAMILY, site_cs, lambda kind: site_dims(cfg, kind), cfg.n_layer)
 
 
 # ----------------------------- frozen layers -----------------------------
@@ -246,16 +224,8 @@ def _clean_block(layer: SimpleMLPLayer, x: Array, inv_freq: Array, eps: float) -
     return x + _clean_mlp_out(layer, rms_norm(x, layer.ln2, eps))
 
 
-def _tap_layer(key: str) -> int:
-    """Global block index a `read_activations` key reads at: the block a `resid.{L}` tap
-    enters, or the block a decomposed site lives in."""
-    if key.startswith("resid."):
-        return int(key.split(".")[1])
-    return parse_site_name(key)[0]
-
-
 def _masked_site_out(
-    components: DecompVU,
+    components: ComponentStacks,
     site: str,
     W: Array,
     x_in: Array,
@@ -287,7 +257,7 @@ class SimpleMLPDecomposedModel(eqx.Module):
     Carries the FROZEN full model (tied embedding, all blocks, final norm, lm_head) as array
     fields — threaded into the jitted step as a pytree arg, weights traced not baked. Forward
     methods take token `inputs` and embed internally; blocks with no decomposed site run the
-    plain frozen block. The TRAINABLE V/U (`vu: DecompVU`) is an
+    plain frozen block. The TRAINABLE V/U (`vu: ComponentStacks`) is an
     explicit method arg, NOT a field (separate lifecycle). `sites` / `has_position_axis` / `n_ctx`
     / `eps` are static config."""
 
@@ -350,12 +320,22 @@ class SimpleMLPDecomposedModel(eqx.Module):
         the per-site intermediates come from the same RMSNorm/attn/MLP math."""
         assert inputs.shape[1] <= self.n_ctx, (inputs.shape, self.n_ctx)
         wanted_set = frozenset(wanted)
-        last = max(_tap_layer(key) for key in wanted)
-        taps: dict[str, Array] = {}
+        n_layer = len(self.layers)
+        block_of = {resid_tap_key(block): block for block in range(n_layer)} | {
+            site_name(block, kind): block for block in range(n_layer) for kind in KIND_ORDER
+        }
+        unknown = tuple(key for key in wanted if key not in block_of)
+        assert not unknown, (
+            f"unknown taps {unknown}: this target serves resid.{{block}} and family site "
+            f"names for blocks 0..{n_layer - 1}"
+        )
+        last = max(block_of[key] for key in wanted)
+        out: dict[str, Array] = {}
         x = self.embed_tokens(inputs)
         for layer_idx, layer in enumerate(self.layers):
-            if f"resid.{layer_idx}" in wanted_set:
-                taps[f"resid.{layer_idx}"] = x
+            resid_key = resid_tap_key(layer_idx)
+            if resid_key in wanted_set:
+                out[resid_key] = x
             attn = layer.attn
             h1 = rms_norm(x, layer.ln1, self.eps)
             attn_y = attn.core(h1 @ attn.wq.T, h1 @ attn.wk.T, h1 @ attn.wv.T, self.inv_freq)
@@ -368,16 +348,23 @@ class SimpleMLPDecomposedModel(eqx.Module):
             ):  # fmt: skip
                 name = site_name(layer_idx, kind)
                 if name in wanted_set:
-                    taps[name] = site_input
+                    out[name] = site_input
             x = post_attn + down_in @ layer.Wdown.T
             if layer_idx == last:
                 break
-        assert set(taps) == wanted_set, (sorted(taps), sorted(wanted))
-        return taps
+        assert set(out) == wanted_set, (sorted(out), sorted(wanted))
+        return out
+
+    def clean_output_and_activations(
+        self, inputs: Int[Array, "b t"], wanted: tuple[str, ...]
+    ) -> tuple[Array, dict[str, Array]]:
+        # Two frozen passes: the blocks are an unstacked Python loop over few layers, so
+        # there is no scan to emit the taps from and no compile pressure to fuse.
+        return self.clean_output(inputs), self.read_activations(inputs, wanted)
 
     def _run_masked_forward(
         self,
-        vu: DecompVU,
+        vu: ComponentStacks,
         inputs: Int[Array, "b t"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -427,7 +414,7 @@ class SimpleMLPDecomposedModel(eqx.Module):
         x = rms_norm(x, self.norm, self.eps)
         return x @ self.lm_head.T
 
-    def prepare_compute_weights(self, vu: DecompVU) -> DecompVU:
+    def prepare_compute_weights(self, vu: ComponentStacks) -> ComponentStacks:
         """Identity: this arch reads `vu` per-site in its unrolled forward (no layer-stacked
         ÷N→÷fsdp reconstruction to share), so there is nothing to hoist — the per-step
         compute weights ARE the (already bf16) `vu`."""
@@ -435,7 +422,7 @@ class SimpleMLPDecomposedModel(eqx.Module):
 
     def masked_output(
         self,
-        prepared: DecompVU,
+        prepared: ComponentStacks,
         inputs: Int[Array, "b t"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -450,7 +437,7 @@ class SimpleMLPDecomposedModel(eqx.Module):
         # the backward rather than store its activations. `live`/`has_delta` are closed over
         # (static); the checkpoint sees only array/pytree leaves.
         def forward(
-            vu: DecompVU,
+            vu: ComponentStacks,
             inputs: Array,
             masks: dict[str, Array],
             delta_masks: dict[str, Array],
@@ -468,7 +455,7 @@ class SimpleMLPDecomposedModel(eqx.Module):
 
     def masked_output_stochastic(
         self,
-        prepared: DecompVU,
+        prepared: ComponentStacks,
         inputs: Int[Array, "b t"],
         ci_stacked: dict[str, Array],
         draw_key: Array,
@@ -484,7 +471,7 @@ class SimpleMLPDecomposedModel(eqx.Module):
 
     def masked_site_outputs(
         self,
-        prepared: DecompVU,
+        prepared: ComponentStacks,
         inputs: Int[Array, "b t"],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -501,7 +488,7 @@ class SimpleMLPDecomposedModel(eqx.Module):
         assert set(collect) == set(live), (sorted(collect), sorted(live))
         return collect
 
-    def weight_deltas(self, vu: DecompVU) -> dict[str, Array]:
+    def weight_deltas(self, vu: ComponentStacks) -> dict[str, Array]:
         """fp32 `W − V@U` per site from fp32 masters (SPEC N2; faithfulness input)."""
         out: dict[str, Array] = {}
         for spec in self.sites:

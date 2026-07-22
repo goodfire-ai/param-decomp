@@ -22,7 +22,7 @@ from param_decomp.ci_fn import (
     init_global_mlp_ci_fn,
     init_layerwise_mlp_ci_fn,
 )
-from param_decomp.components import DecompVU, SiteC, SiteSpec, init_decomp_vu
+from param_decomp.components import ComponentStacks, SiteC, SiteSpec, init_component_stacks
 from param_decomp.configs import (
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
@@ -125,7 +125,7 @@ def test_clean_path_and_masked_identity():
     sites = site_specs(cfg, _site_cs(n_layers=2))
     target = init_resid_mlp_target(cfg, jax.random.PRNGKey(0))
     model = resid_mlp_decomposed_model(cfg, target, sites)
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     b = 7
     x = sample_sparse_features(
         jax.random.PRNGKey(2), b, cfg.n_features, 0.5, "at_least_zero_active"
@@ -166,7 +166,7 @@ def test_zero_masking_one_site_changes_output():
     sites = site_specs(cfg, _site_cs())
     target = init_resid_mlp_target(cfg, jax.random.PRNGKey(0))
     model = resid_mlp_decomposed_model(cfg, target, sites)
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     b = 7
     x = sample_sparse_features(
         jax.random.PRNGKey(2), b, cfg.n_features, 0.8, "at_least_zero_active"
@@ -247,7 +247,7 @@ def _make_state_and_step(
     cfg: ResidMLPConfig, target: ResidMLPTarget, sites: tuple[SiteSpec, ...], total_steps: int
 ) -> tuple[DecomposedModel, TrainState, Callable[..., tuple[TrainState, dict[str, jax.Array]]]]:
     model = resid_mlp_decomposed_model(cfg, target, sites)
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = init_layerwise_mlp_ci_fn(MLPCIArch(hidden_dims=(16,)), sites, jax.random.PRNGKey(2))
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
@@ -283,8 +283,8 @@ def test_step_trains_positionless_no_persistent_sources():
     assert all(jnp.isfinite(jnp.array(list(m.values()))).all() for m in losses)
     assert int(state.training.step) == 6
     assert state.training.adversaries == {}  # no persistent sources for the stochastic configs
-    assert isinstance(state.decomposition.components, DecompVU)
-    for V, U in state.decomposition.components.vu.values():
+    assert isinstance(state.decomposition.components, ComponentStacks)
+    for _, (V, U) in state.decomposition.components.sites_items():
         assert V.dtype == jnp.float32 and U.dtype == jnp.float32
 
 
@@ -293,7 +293,7 @@ def test_faith_warmup_decreases_faith():
     sites = site_specs(cfg, _site_cs())
     target = init_resid_mlp_target(cfg, jax.random.PRNGKey(0))
     model = resid_mlp_decomposed_model(cfg, target, sites)
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     opt = optax.adamw(1e-2, weight_decay=0.0)
     wstep = make_faith_warmup_step(opt)
     ostate = opt.init(eqx.filter(vu, eqx.is_array))
@@ -350,7 +350,7 @@ def _faith_warmed_state(
     total_steps: int,
     warmup_steps: int,
 ) -> tuple[TrainState, Callable[..., tuple[TrainState, dict[str, jax.Array]]]]:
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = init_layerwise_mlp_ci_fn(MLPCIArch(hidden_dims=(16,)), sites, jax.random.PRNGKey(2))
     warm_opt = optax.adamw(1e-2, weight_decay=0.0)
     wstep = make_faith_warmup_step(warm_opt)
@@ -477,7 +477,7 @@ def test_three_layer_clean_and_masked_forward():
     sites = site_specs(cfg, _site_cs(n_layers=3))
     target = init_resid_mlp_target(cfg, jax.random.PRNGKey(0))
     model = resid_mlp_decomposed_model(cfg, target, sites)
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     b = 6
     x = sample_sparse_features(
         jax.random.PRNGKey(2), b, cfg.n_features, 0.5, "at_least_zero_active"

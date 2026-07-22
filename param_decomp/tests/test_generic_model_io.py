@@ -5,7 +5,7 @@ model INPUT (the opaque batch `clean_output` / `read_activations` / `masked_outp
 consume), the model OUTPUT (`clean_output` / `masked_output` return `Any`), and the recon
 comparison (`DecomposedModel.recon_loss_fn`).
 The trainable components are NOT a generic edge: every target carries the universal
-`DecompVU` V/U pytree, so this synthetic target uses it too. This builds a tiny non-LM
+`ComponentStacks` V/U pytree, so this synthetic target uses it too. This builds a tiny non-LM
 target that bends the three real edges at once:
 
   * INPUT  — a dict `{"feat": [B,T,d], "gain": [B,T]}` rather than token ids.
@@ -33,7 +33,7 @@ from param_decomp.ci_fn import (
     MHACIAttention,
     build_ci_fn,
 )
-from param_decomp.components import DecompVU, SiteSpec
+from param_decomp.components import ComponentStacks, SiteSpec, component_stacks_from_sites
 from param_decomp.configs import (
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
@@ -52,7 +52,7 @@ SITE = "block.0.proj"
 class SyntheticDecomposedModel(eqx.Module):
     """A non-LM `DecomposedModel`: dict input, tuple `(coords, aux)` output, geometric-MSE
     recon. Carries its frozen target weights (`feat_proj` + `W` + two readout heads) as
-    array fields; the trainable V/U (the universal `DecompVU`) stays an explicit method arg."""
+    array fields; the trainable V/U (the universal `ComponentStacks`) stays an explicit method arg."""
 
     feat_proj: Float[Array, "D D"]
     W: Float[Array, "D D"]
@@ -96,12 +96,17 @@ class SyntheticDecomposedModel(eqx.Module):
         assert wanted == (SITE,), wanted
         return {SITE: self._residual(inputs)}
 
-    def prepare_compute_weights(self, vu: DecompVU) -> DecompVU:
+    def clean_output_and_activations(
+        self, inputs: dict[str, Array], wanted: tuple[str, ...]
+    ) -> tuple[tuple[Array, Array], dict[str, Array]]:
+        return self.clean_output(inputs), self.read_activations(inputs, wanted)
+
+    def prepare_compute_weights(self, vu: ComponentStacks) -> ComponentStacks:
         return vu
 
     def masked_output(
         self,
-        vu: DecompVU,
+        vu: ComponentStacks,
         inputs: dict[str, Array],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -127,7 +132,7 @@ class SyntheticDecomposedModel(eqx.Module):
 
     def masked_output_stochastic(
         self,
-        vu: DecompVU,
+        vu: ComponentStacks,
         inputs: dict[str, Array],
         ci_stacked: dict[str, Array],
         draw_key: Array,
@@ -143,7 +148,7 @@ class SyntheticDecomposedModel(eqx.Module):
 
     def masked_site_outputs(
         self,
-        vu: DecompVU,
+        vu: ComponentStacks,
         inputs: dict[str, Array],
         masks: dict[str, Array],
         delta_masks: dict[str, Array],
@@ -161,7 +166,7 @@ class SyntheticDecomposedModel(eqx.Module):
             hidden = hidden + delta_masks[SITE][..., None] * (resid @ delta.T)
         return {SITE: hidden}
 
-    def weight_deltas(self, vu: DecompVU) -> dict[str, Array]:
+    def weight_deltas(self, vu: ComponentStacks) -> dict[str, Array]:
         V, U = vu.site(SITE)
         return {
             SITE: self.W.astype(jnp.float32) - (V.astype(jnp.float32) @ U.astype(jnp.float32)).T
@@ -179,10 +184,10 @@ def _synthetic_lm(key: jax.Array) -> SyntheticDecomposedModel:
     )
 
 
-def _synthetic_vu(key: jax.Array) -> DecompVU:
+def _synthetic_vu(key: jax.Array) -> ComponentStacks:
     V = random.normal(random.fold_in(key, 3), (D, C)) * 0.1
     U = random.normal(random.fold_in(key, 4), (C, D)) * 0.1
-    return DecompVU(vu={SITE: (V, U)})
+    return component_stacks_from_sites({SITE: (V, U)})
 
 
 def _synthetic_inputs(key: jax.Array) -> dict[str, Array]:
@@ -218,7 +223,7 @@ def test_dict_input_tuple_output_and_geometric_loss_flow():
 
 
 def _initial_state(
-    model: DecomposedModel, components: DecompVU, ci_arch: ChunkwiseTransformerCIArch
+    model: DecomposedModel, components: ComponentStacks, ci_arch: ChunkwiseTransformerCIArch
 ):
     opt_vu = optax.adamw(1e-2, weight_decay=0.0)
     opt_ci = optax.adamw(1e-2, weight_decay=0.0)

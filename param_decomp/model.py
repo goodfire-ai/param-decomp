@@ -32,7 +32,7 @@ from jax import random as jax_random
 from jax.sharding import Mesh
 from jaxtyping import Array, Bool, Float
 
-from param_decomp.components import DecompVU, SiteSpec
+from param_decomp.components import ComponentStacks, SiteSpec
 
 
 @dataclass(frozen=True)
@@ -122,12 +122,22 @@ class DecomposedModel(Protocol):
         self, inputs: Any, /, wanted: tuple[str, ...]
     ) -> dict[str, Float[Array, "*leading d_tap"]]:
         """The CI fn's activation accessor. `wanted` is the CI fn's static `input_names` —
-        OPAQUE keys the target knows how to produce (an LM's `resid.{layer}` taps; a
+        OPAQUE keys the target knows how to produce (an LM's residual-stream taps; a
         positionless toy's per-site inputs). The target is the only key→activation
         interpreter; core just routes by key."""
         ...
 
-    def prepare_compute_weights(self, vu: DecompVU) -> Any:
+    def clean_output_and_activations(
+        self, inputs: Any, /, wanted: tuple[str, ...]
+    ) -> tuple[Any, dict[str, Float[Array, "*leading d_tap"]]]:
+        """`(clean_output(inputs), read_activations(inputs, wanted))` — SPEC S3+S4
+        unchanged, evaluated in ONE frozen forward where the target can (a scan target
+        emits the taps as ys of its clean-forward scan; XLA does not CSE the two passes
+        apart). Targets without that structure just call both. For the steps that need
+        both on the same batch (train, fast eval)."""
+        ...
+
+    def prepare_compute_weights(self, vu: ComponentStacks) -> Any:
         """Build the per-step COMPUTE weights from the fp32 ÷N master `vu`, ONCE per step
         (SPEC unchanged — a read-only compute view). Mask-INDEPENDENT, so the result is shared
         by every forward in the step: the engine calls this once and passes the result as the
@@ -208,7 +218,7 @@ class DecomposedModel(Protocol):
         the recon grid, which stays KL-on-final-logits."""
         ...
 
-    def weight_deltas(self, vu: DecompVU) -> dict[str, Float[Array, "d_out d_in"]]:
+    def weight_deltas(self, vu: ComponentStacks) -> dict[str, Float[Array, "d_out d_in"]]:
         """fp32 `W − V@U` per site from the fp32 master `vu` (SPEC N2)."""
         ...
 

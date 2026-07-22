@@ -39,6 +39,7 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import PRNGKeyArray
 
+from param_decomp import placement
 from param_decomp.arithmetic_eval import (
     ArithmeticGrid,
     ArithmeticGridStep,
@@ -344,6 +345,7 @@ def train(
         eval_fn=eval_fn,
         eval_every=eval_every,
         mesh=mesh,
+        placement_rules=placement.from_config(built.runtime.sharding, mesh, model.sites),
     )
 
 
@@ -490,14 +492,15 @@ def _make_lm_eval_fn(
                 )
                 eval_record |= {f"eval/slow/{k}": v for k, v in identity_ci_errors.items()}
             # `UVPlots` needs the C-sharded V/U gathered to host (collective `np.asarray`).
-            # This NAIVE gather is small-scale-only — it OOMs / breaks at production C BY
-            # DESIGN (per Oli); gated on the config naming UVPlots so it costs nothing
-            # otherwise. The component column order reuses the position-CI permutation.
+            # This NAIVE gather is small-scale-only BY DESIGN — it OOMs at large C rather
+            # than earning a sharded implementation; gated on the config naming UVPlots so
+            # it costs nothing otherwise. The component column order reuses the position-CI
+            # permutation.
             components: dict[str, tuple[np.ndarray, np.ndarray]] | None = None
             if perm_spec.want_uv_plots:
                 components = {
                     name: (np.asarray(V), np.asarray(U))
-                    for name, (V, U) in state.decomposition.components.vu.items()
+                    for name, (V, U) in state.decomposition.components.sites_items()
                 }
             slow_renderer.submit(
                 partial(

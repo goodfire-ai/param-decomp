@@ -33,6 +33,8 @@ if TYPE_CHECKING:
 
     LogRecord = Mapping[str, float | wandb.plot.CustomChart]
 
+from functools import partial as _partial
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -58,8 +60,10 @@ from param_decomp.checkpoint import (
     save_state,
 )
 from param_decomp.ci_fn import CIFnArch
+from param_decomp.components import init_component_stacks
 from param_decomp.configs import Cadence, PDConfig, ProfileConfig, flatten_typed_lists
 from param_decomp.model import DecomposedModel, PositionAxis
+from param_decomp.placement import PlacementRules, component_stacks_audit
 from param_decomp.recon import build_loss_terms
 from param_decomp.run_state import build_optimizers, init_train_state
 from param_decomp.slow_eval import (
@@ -318,8 +322,9 @@ def render_and_log_slow_eval(
     """Pure-host `BackgroundRenderer` target: render the slow figures off the materialized
     numpy reductions (the per-site `SiteReduction` plot inputs; when the config names a
     CI-heatmap/permutation metric, the batch-mean `(T, C)` position CI; and when the config
-    names `UVPlots`, the host-gathered V/U `components` — a NAIVE full gather that OOMs /
-    breaks at production C BY DESIGN, per Oli) and log them on the live `_step` axis at
+    names `UVPlots`, the host-gathered V/U `components` — a NAIVE full gather, small-scale
+    only BY DESIGN: it OOMs at large C rather than earning a sharded implementation) and
+    log them on the live `_step` axis at
     `now_step`. The `IdentityCIError` SCALARS ride the synchronous collective path instead
     (cheap, and `_step`-monotonic). No jax/device access — safe off the train loop."""
     import wandb
@@ -362,6 +367,7 @@ def _init_or_restore_state(
     init_key: PRNGKeyArray,
     src_key: PRNGKeyArray,
     mesh: Mesh,
+    rules: PlacementRules,
     checkpoint_manager: ocp.CheckpointManager,
     is_main: bool,
     no_checkpoint: bool,
@@ -372,7 +378,9 @@ def _init_or_restore_state(
     Returns `(state, start_step)`, or `None` when a SIGTERM landed mid-warmup (the caller
     must exit cleanly for requeue — no valid checkpoint exists pre-step-0)."""
     state = _ensure_global(
-        init_train_state(pd, model, ci_fn_arch, positions, opt_vu, opt_ci, init_key, src_key, mesh),
+        init_train_state(
+            pd, model, ci_fn_arch, positions, opt_vu, opt_ci, init_key, src_key, mesh, rules
+        ),
         mesh,
     )
 
@@ -459,6 +467,7 @@ def run_decomposition_training(
     eval_fn: "Callable[[TrainState, int], LogRecord] | None",
     eval_every: int,
     mesh: Mesh,
+    placement_rules: PlacementRules,
 ) -> None:
     """The generic VPD decomposition-training engine — the ONE train loop every target
     (LM, TMS, ResidMLP, …) runs through.
@@ -496,7 +505,7 @@ def run_decomposition_training(
     save_every = cadence.save_every
 
     run.run_dir.mkdir(parents=True, exist_ok=True)
-    opt_vu, opt_ci, (sched_vu, sched_ci) = build_optimizers(pd)
+    opt_vu, opt_ci, (sched_vu, sched_ci) = build_optimizers(pd, ci_fn, mesh)
 
     key = random.PRNGKey(pd.seed)
     init_key, src_key, run_key = random.split(key, 3)
@@ -504,8 +513,20 @@ def run_decomposition_training(
     checkpoint_manager = make_checkpoint_manager(
         run.run_dir / "ckpts", cadence.keep_last_n_checkpoints
     )
+    rules = placement_rules
+    if is_main:
+        audit = component_stacks_audit(
+            eqx.filter_eval_shape(_partial(init_component_stacks, model.sites), init_key), rules
+        )
+        print(
+            rules.describe(
+                tensors=audit,
+                not_audited=("ci_fn", "frozen target", "persistent sources", "opt state"),
+            ),
+            flush=True,
+        )
     init = _init_or_restore_state(
-        pd, ci_fn, positions, run, model, opt_vu, opt_ci, init_key, src_key, mesh,
+        pd, ci_fn, positions, run, model, opt_vu, opt_ci, init_key, src_key, mesh, rules,
         checkpoint_manager, is_main, profile.no_checkpoint, compiler_options,
     )  # fmt: skip
     if init is None:
@@ -551,7 +572,7 @@ def run_decomposition_training(
                 jax.block_until_ready(_ident(tree))
             return (time.perf_counter() - _b0) / n
 
-        _vu = state.decomposition.components.vu
+        _vu = dict(state.decomposition.components.sites_items())
         _by_kind: dict[str, list[tuple[jax.Array, jax.Array]]] = _collections.defaultdict(list)
         for _name, _VU in _vu.items():
             _by_kind[_name.split(".")[-1]].append(_VU)

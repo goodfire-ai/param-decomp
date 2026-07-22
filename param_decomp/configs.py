@@ -1,14 +1,17 @@
 """The torch-free pydantic config schema for the algorithm core.
 
 Every algorithm-level config class lives here (or in the sibling `base_config` /
-`schedule` modules): routing, decomposition targets, the CI-fn config tree,
-loss-metric configs, eval-metric configs, the top-level `PDConfig` / `RuntimeConfig` /
-`Cadence`, and the `wandb.config` shaping helpers. Depends only on pydantic / numpy /
-pyyaml / annotated-types (via `base_config`), so non-trainer consumers validate the same
+`schedule` modules): routing, the decomposition site (C) specs, loss-metric configs,
+eval-metric configs, the top-level `PDConfig` / `RuntimeConfig` / `Cadence`, and the
+`wandb.config` shaping helpers. Depends only on pydantic / numpy / pyyaml /
+annotated-types (via `base_config`), so non-trainer consumers validate the same
 YAML run configs without pulling jax/wandb.
 
-Experiment-level schema (the `ExperimentConfig[T, D]` generic and its LM / TMS / ResidMLP
-subclasses) lives lab-side under `param_decomp_lab/experiments/`.
+Experiment-level schema (the `ExperimentConfig` base and its LM / TMS / ResidMLP
+subclasses, each binding concrete `target`/`decomposition`/`data` sections) lives
+lab-side under `param_decomp_lab/experiments/` — including the authored
+`decomposition.ci` configs, which speak each domain's vocabulary. Core carries only
+the RESOLVED CI-fn arches (`ci_fn.py`).
 """
 
 import copy
@@ -16,6 +19,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
+    BeforeValidator,
     Discriminator,
     Field,
     NonNegativeFloat,
@@ -57,132 +61,76 @@ SubsetRoutingType = UniformKSubsetRoutingConfig | StaticProbabilityRoutingConfig
 
 
 # ---------------------------------------------------------------------------
-# Decomposition target
+# Decomposition site (C) specs
 # ---------------------------------------------------------------------------
 
 
-class DecompositionTargetConfig(BaseConfig):
-    module_pattern: str = Field(..., description="fnmatch-style pattern to match module names")
-    C: PositiveInt = Field(
-        ..., description="Number of components for modules matching this pattern"
-    )
+class AllLayers(BaseConfig):
+    kind: Literal["all"] = "all"
 
 
-# ---------------------------------------------------------------------------
-# Causal-importance function configs
-# ---------------------------------------------------------------------------
+class LayerRange(BaseConfig):
+    """Half-open `[start, end)` — matches `range()` / slice semantics."""
 
-
-class LayerwiseMlpCiConfig(BaseConfig):
-    """Per-site MLP CI fn (positionless toys): one independent MLP per site."""
-
-    type: Literal["layerwise_mlp"] = "layerwise_mlp"
-    hidden_dims: list[PositiveInt] = Field(
-        ..., min_length=1, description="Hidden dims of each per-site MLP"
-    )
-
-
-class GlobalMlpCiConfig(BaseConfig):
-    """Single shared MLP over all sites jointly (positionless toys)."""
-
-    type: Literal["global_mlp"] = "global_mlp"
-    hidden_dims: list[PositiveInt] = Field(
-        ..., min_length=1, description="Hidden dims of the shared global MLP"
-    )
-
-
-class MHACiAttentionConfig(BaseConfig):
-    """Every query head carries its own K/V head."""
-
-    kind: Literal["mha"] = "mha"
-    n_heads: PositiveInt
-
-
-class GQACiAttentionConfig(BaseConfig):
-    """Grouped-query attention: `n_heads // n_kv_heads` query heads share each K/V head, so
-    `wk`/`wv` narrow to `n_kv_heads * head_dim`. head_dim, the RoPE tables, `wq`/`wo` and
-    every sharding are identical to MHA — only the K/V projections change."""
-
-    kind: Literal["gqa"] = "gqa"
-    n_heads: PositiveInt
-    n_kv_heads: PositiveInt
+    kind: Literal["range"] = "range"
+    start: NonNegativeInt
+    end: PositiveInt
 
     @model_validator(mode="after")
-    def validate_grouping(self) -> Self:
-        assert self.n_heads % self.n_kv_heads == 0, (
-            "n_heads must be divisible by n_kv_heads (each K/V head serves an equal group "
-            f"of query heads): {self.n_heads} % {self.n_kv_heads}"
-        )
-        assert self.n_kv_heads < self.n_heads, (
-            f"n_kv_heads == n_heads ({self.n_heads}) is MHA — use `kind: mha` rather than "
-            "spelling it as a degenerate gqa"
-        )
+    def _nonempty(self) -> Self:
+        assert self.start < self.end, (self.start, self.end)
         return self
 
 
-class GeluCiFfnConfig(BaseConfig):
-    """`Linear+b -> GELU -> Linear+b` — two matrices."""
-
-    kind: Literal["gelu"] = "gelu"
-    hidden: PositiveInt
-
-
-class SwigluCiFfnConfig(BaseConfig):
-    """`silu(h@w_gate + b_gate) * (h@w1 + b1) -> Linear+b` — THREE matrices, so at a given
-    `hidden` this is ~1.5x the GELU FFN's params. Iso-param is `hidden` at 2/3 (Shazeer's GLU
-    variants: "decrease d_ff by a factor of 2/3"); nothing here rescales it, because a width
-    that silently differs from the one you wrote is worse than doing the arithmetic."""
-
-    kind: Literal["swiglu"] = "swiglu"
-    hidden: PositiveInt
-
-
-CiFfnConfig = Annotated[GeluCiFfnConfig | SwigluCiFfnConfig, Field(discriminator="kind")]
-"""The CI transformer's feed-forward sublayer. Named FFN, not MLP: `swiglu` is a gated
-linear unit, not a multi-layer perceptron — FFN is the name that stays honest across both
-arms. `hidden` belongs to the FFN, not to the transformer around it."""
-
-
-CiAttentionConfig = Annotated[
-    MHACiAttentionConfig | GQACiAttentionConfig, Field(discriminator="kind")
-]
-"""The CI transformer's attention, keyed by CLASS rather than an optional `n_kv_heads` —
-so a K/V head count cannot exist without meaning, and the grouping invariant lives on the
-arm that has both fields instead of being a runtime check on a shape that shouldn't parse.
-Mirrors how the target's attention variants are keyed (see the Qwen3 family split)."""
-
-
-class ChunkwiseTransformerCiConfig(BaseConfig):
-    """Chunkwise-transformer CI fn (LMs). Each chunk is `blocks_per_chunk` consecutive
-    transformer blocks; its input is the residual stream entering the chunk and its output
-    is CI for every matrix site in those blocks. `d_model`/`n_blocks`/`attention`/`ffn`
-    size the per-chunk CI transformer (`d_model % n_heads == 0`; head_dim even for RoPE)."""
-
-    type: Literal["chunkwise_transformer"] = "chunkwise_transformer"
-    blocks_per_chunk: PositiveInt
-    d_model: PositiveInt
-    n_blocks: PositiveInt
-    attention: CiAttentionConfig
-    ffn: CiFfnConfig
-    learned_norm_scale: bool = Field(
-        default=False,
-        description="Learned per-channel scale on the block RMSNorms (the per-tap input norms "
-        "stay weightless). Inits to ones, so step 0 is identical to weightless.",
-    )
+class LayerList(BaseConfig):
+    kind: Literal["list"] = "list"
+    indices: list[NonNegativeInt] = Field(..., min_length=1)
 
     @model_validator(mode="after")
-    def validate_head_dim(self) -> Self:
-        n_heads = self.attention.n_heads
-        assert self.d_model % n_heads == 0, (self.d_model, n_heads)
-        assert (self.d_model // n_heads) % 2 == 0, "head_dim must be even for RoPE"
+    def _unique_sorted(self) -> Self:
+        assert self.indices == sorted(set(self.indices)), self.indices
         return self
 
 
-# Flat discriminated union (by `type`): one self-contained config per CI fn.
-CiConfig = Annotated[
-    LayerwiseMlpCiConfig | GlobalMlpCiConfig | ChunkwiseTransformerCiConfig,
-    Field(discriminator="type"),
-]
+LayerSelection = Annotated[AllLayers | LayerRange | LayerList, Field(discriminator="kind")]
+
+
+# Per-family matrix vocabularies (the single source of truth; each target's `KIND_ORDER`
+# derives via `typing.get_args`). GLU = SwiGLU MLP (llama8b); simple-MLP = plain GELU.
+GluMatrix = Literal["q", "k", "v", "o", "gate", "up", "down"]
+SimpleMlpMatrix = Literal["q_proj", "k_proj", "v_proj", "o_proj", "c_fc", "down_proj"]
+
+
+class GluTransformerCSpec(BaseConfig):
+    """Per-matrix-type C tiled across the selected layers (GLU family, e.g. llama8b). Every
+    selected layer is decomposed at the same `cs` matrices and C; a matrix absent from `cs`
+    is not decomposed on any layer. Tiled ⇒ every block is structurally identical, so the
+    chunkwise CI fn's chunks are homogeneous by construction."""
+
+    kind: Literal["glu_transformer"] = "glu_transformer"
+    layers: LayerSelection
+    cs: dict[GluMatrix, PositiveInt] = Field(..., min_length=1)
+
+
+class SimpleMlpCSpec(BaseConfig):
+    """Per-matrix-type C tiled across the selected layers (plain-GELU family, LlamaSimpleMLP)."""
+
+    kind: Literal["simple_mlp"] = "simple_mlp"
+    layers: LayerSelection
+    cs: dict[SimpleMlpMatrix, PositiveInt] = Field(..., min_length=1)
+
+
+class ExplicitSite(BaseConfig):
+    name: str
+    C: PositiveInt
+
+
+class ExplicitCSpec(BaseConfig):
+    """Arbitrary named sites with per-site C — the positionless toys (no arch grid, and the
+    MLP CI fns have no chunk-homogeneity requirement)."""
+
+    kind: Literal["explicit"] = "explicit"
+    sites: list[ExplicitSite] = Field(..., min_length=1)
 
 
 # ---------------------------------------------------------------------------
@@ -447,8 +395,8 @@ class PersistentPGDLossConfig(LossMetricConfig):
     source_dtype: Literal["float32", "bfloat16"] = "float32"
     """Storage dtype for the persistent PPGD source tensors AND their Adam moments
     (`m`/`v`). `float32` (default) is SPEC N1 (fp32 SRC_STEP moments) and the only
-    oracle-parity path. `bfloat16` halves the resident source+moment footprint (~21 GiB
-    on the full-32L step, the dominant f32 transient there) at some numerical risk: the
+    oracle-parity path. `bfloat16` halves the resident source+moment footprint (it scales
+    with total source elements — dominant at large site counts) at some numerical risk: the
     second-moment `v` accumulates squared grads, which can underflow in bf16 for small
     grads — opt in only as an experiment."""
     n_warmup_steps: NonNegativeInt = Field(
@@ -675,7 +623,8 @@ AnyEvalMetricConfig = Annotated[
 # ---------------------------------------------------------------------------
 
 
-class OptimizerConfig(BaseConfig):
+class AdamWOptimizerConfig(BaseConfig):
+    type: Literal["adamw"] = "adamw"
     lr_schedule: ScheduleConfig = Field(..., description="Learning rate schedule")
     weight_decay: NonNegativeFloat = Field(default=0.0, description="AdamW weight decay")
     betas: tuple[Probability, Probability] = Field(
@@ -685,6 +634,69 @@ class OptimizerConfig(BaseConfig):
         default=None,
         description="If set, clip the grad norm of this group's parameters to this value",
     )
+
+
+class MuonOptimizerConfig(BaseConfig):
+    """Muon (`optax.contrib.muon`): Newton-Schulz-orthogonalized momentum for the group's
+    matrix leaves; the rest fall back to Adam(0.9, 0.999) at the same LR. Experimental
+    (non-canonical). Which leaves are matrices is per-group (`run_state.build_optimizers`):
+    the V/U components tree is all-2D (fallback never fires); the chunkwise CI fn is
+    per-chunk stacks, so its 3D leaves are muon'd over the trailing two axes (chunk axis
+    batched) and its 2D bias stacks take the fallback; the MLP CI fns use the plain 2D rule."""
+
+    type: Literal["muon"]
+    lr_schedule: ScheduleConfig = Field(..., description="Learning rate schedule")
+    beta: Probability = Field(
+        default=0.95, description="Momentum decay for the orthogonalized update"
+    )
+    consistent_rms: PositiveFloat | None = Field(
+        default=None,
+        description=(
+            "If set, scale updates by `sqrt(max(fan_in, fan_out)) * consistent_rms` so update"
+            " RMS is shape-independent (0.2 ~ AdamW's empirical RMS, making the AdamW LR"
+            " transferable). If None, optax's width scaling `sqrt(max(1, fan_out / fan_in))`."
+        ),
+    )
+    weight_decay: NonNegativeFloat = Field(default=0.0, description="Weight decay")
+    grad_clip_norm: PositiveFloat | None = Field(
+        default=None,
+        description="If set, clip the grad norm of this group's parameters to this value",
+    )
+    impl: Literal["optax", "stacked"] = Field(
+        default="optax",
+        description=(
+            "NS implementation. `optax` = per-leaf `optax.contrib.muon` (the reference"
+            " semantics, SPEC S20). `stacked` = same-shape leaves batched into"
+            " one NS with the stack axis sharded over (replicate, fsdp) — device-local"
+            " orthogonalization, no per-iteration collectives (`muon_stacked.py`); same"
+            " trajectory up to float reassociation (the SPEC D4 tolerance class)."
+        ),
+    )
+    ns_steps: PositiveInt = Field(
+        default=5, description="Newton-Schulz iterations (optax default 5; fewer = cheaper/looser)"
+    )
+    ns_dtype: Literal["float32", "bfloat16"] = Field(
+        default="float32",
+        description=(
+            "Dtype of the NS orthogonalization only (masters/momentum stay fp32 per N1);"
+            " bfloat16 halves NS compute+comm (the Kimi recipe). `stacked` impl only."
+        ),
+    )
+
+
+def _default_optimizer_type_adamw(data: object) -> object:
+    """AdamW is the canonical optimizer, so a config without `type` (every config predating
+    the muon gate, and the common case going forward) discriminates to it."""
+    if isinstance(data, dict) and "type" not in data:
+        return {**data, "type": "adamw"}
+    return data
+
+
+AnyOptimizerConfig = Annotated[
+    AdamWOptimizerConfig | MuonOptimizerConfig,
+    Discriminator("type"),
+    BeforeValidator(_default_optimizer_type_adamw),
+]
 
 
 AnyLossMetricConfig = Annotated[
@@ -807,6 +819,34 @@ class LaunchEnv(BaseConfig):
         return rendered
 
 
+RuleConfig = dict[str, str | list[str] | None]
+"""One placement row as configured: semantic axis name -> mesh axis, ordered mesh axes,
+or null (replicate). Axis-name keys are free-form — semantic names are declared by the
+code that owns each tensor, not enumerated here."""
+
+
+class ParamsPlacementConfig(BaseConfig):
+    """The trainable V/U placement rows of an explicit table (`placement.ParamsPlacement`)."""
+
+    persist: RuleConfig
+    zero1: RuleConfig | None = None
+    """The OPT-IN row for shape groups whose stack does not tile the persist stack
+    sharding. A bidirectional claim, checked at config build (`placement.from_config`):
+    absence is strictness (a non-tiling group is a loud error), and declaring it when
+    every group tiles is equally an error (a declared-but-unreachable arm)."""
+    forward: RuleConfig
+
+
+class PlacementTableConfig(BaseConfig):
+    """An explicit placement table (`runtime.sharding`), mirroring the typed
+    `placement.PlacementRules`. The row vocabulary is CLOSED (extra keys are a parse
+    error); rule values are free-form axis-name -> mesh-axes mappings, where YAML list
+    order is semantics (nested-axis linearization — PLACEMENT_DESIGN.md lesson 4)."""
+
+    params: ParamsPlacementConfig
+    activations: RuleConfig
+
+
 class RuntimeConfig(BaseConfig):
     """Compute substrate: data-parallelism degree, rematerialization, and the launch-time
     env/XLA-flag surface (`launch_env`).
@@ -852,6 +892,27 @@ class RuntimeConfig(BaseConfig):
             "(V/U, CI-fn output heads) and the CI-fn MLP hidden, halving the per-layer weight "
             "all-gather. `tp = 1` (default) is the pure-HSDP layout (degenerate tp axis, "
             "behaviour-preserving). Must divide both the device count and GPUS_PER_NODE."
+        ),
+    )
+    sharding: Literal["owner", "owner+zero1", "zero1", "ddp"] | PlacementTableConfig = Field(
+        description=(
+            "Placement policy for the trainable state (placement.py). REQUIRED, no "
+            "default — a layout this consequential is written down per config. Presets: "
+            "`zero1` = intra-matrix ZeRO-1 over the full data mesh "
+            "(~equivalent comms to `owner` under "
+            "elementwise optimizers); `owner` = whole-matrix ownership (stack ÷replicate, "
+            "d ÷fsdp, C ÷tp) — the muon-motivated layout (Newton-Schulz stays "
+            "node-local); STRICT — a shape group whose stack does "
+            "not tile ÷replicate is an error; `owner+zero1` = `owner` plus the "
+            "`params.zero1` opt-in row, ZeRO-1-ing exactly those non-tiling groups "
+            "intra-matrix; `ddp` = fully replicated. Each value is a BIDIRECTIONAL claim "
+            "checked at config build (placement.from_config, pre-sbatch for `dp: N`): "
+            "`owner` claims every group tiles; `owner+zero1` claims at least one does "
+            "not — all-tiling under it is equally an error. Or an explicit "
+            "`PlacementTableConfig` table (nested `params: {persist, zero1?, forward}` + "
+            "`activations`, each row a semantic-axis -> mesh-axes rule; list order is "
+            "semantics). Same math under every value — layouts differ only by float "
+            "reassociation (SPEC D4)."
         ),
     )
     remat_recon_forwards: bool = Field(
@@ -946,11 +1007,12 @@ class RuntimeConfig(BaseConfig):
 
 
 class PDConfig(BaseConfig):
-    """Algorithm specification: seed, CI function, losses, optimizers, target modules.
+    """Algorithm specification: seed, losses, optimizers, faithfulness warmup.
 
-    Flipping any field here changes what algorithm runs. Pair with `RuntimeConfig`
-    (substrate), `Cadence` (when to emit) and `RunSink` (where output goes) when
-    running the trainer (`param_decomp.run`).
+    Domain-agnostic — the target-coupled apparatus (which sites to decompose + the CI-fn
+    arch) lives in the per-domain `decomposition` section, not here. Flipping any field here
+    changes what algorithm runs. Pair with `RuntimeConfig` (substrate), `Cadence` (when to
+    emit) and `RunSink` (where output goes) when running the trainer (`param_decomp.run`).
     """
 
     @model_validator(mode="before")
@@ -1007,15 +1069,6 @@ class PDConfig(BaseConfig):
         default=0,
         description="Random seed for reproducibility, including LM dataset shuffling.",
     )
-    ci_config: CiConfig = Field(
-        ...,
-        discriminator="type",
-        description="Configuration for the causal importance function.",
-    )
-    decomposition_targets: list[DecompositionTargetConfig] = Field(
-        ...,
-        description="List of module patterns with C values specifying which modules to decompose.",
-    )
     loss_metrics: list[AnyLossMetricConfig] = Field(
         default_factory=list,
         description=(
@@ -1026,10 +1079,10 @@ class PDConfig(BaseConfig):
     )
 
     # --- Training ---
-    components_optimizer: OptimizerConfig = Field(
+    components_optimizer: AnyOptimizerConfig = Field(
         ..., description="Optimizer config for the component (LinearComponent etc.) parameters"
     )
-    ci_fn_optimizer: OptimizerConfig = Field(
+    ci_fn_optimizer: AnyOptimizerConfig = Field(
         ..., description="Optimizer config for the CI function parameters"
     )
     steps: PositiveInt = Field(..., description="Total number of optimisation steps")

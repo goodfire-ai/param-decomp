@@ -1,6 +1,6 @@
 """Production-topology orbax round-trip (SPEC S22, issue #617).
 
-The jsp SIGTERM lore (preemptions fall back to periodic checkpoints) makes it
+Preemptions can miss the SIGTERM save and fall back to periodic checkpoints, so it is
 load-bearing that the SHARDED orbax save at the production placement actually persists
 the persistent adversary's Adam moments — a missing moment tree would silently reset
 Adam after a real preemption. `test_checkpoint.py` covers the `mesh=None` single-term
@@ -51,6 +51,7 @@ from param_decomp.configs import (
     UniformKSubsetRoutingConfig,
 )
 from param_decomp.model import Positioned
+from param_decomp.placement import from_config
 from param_decomp.recon import build_loss_terms, persistent_configs
 from param_decomp.run import _ensure_global
 from param_decomp.schedule import ScheduleConfig
@@ -58,7 +59,7 @@ from param_decomp.targets.glu_transformer import glu_site_specs, mlp_family_site
 from param_decomp.targets.glu_transformer_sharding import (
     hsdp_mesh,
     init_ci_fn_placed,
-    init_decomp_vu_placed,
+    init_component_stacks_placed,
     init_sources_sharded,
 )
 from param_decomp.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
@@ -112,7 +113,9 @@ def _build_sharded(seed: int):
         ffn_kind="gelu",
         learned_norm_scale=False,
     )
-    vu = init_decomp_vu_placed(model.sites, jax.random.PRNGKey(seed), mesh)
+    vu = init_component_stacks_placed(
+        model.sites, jax.random.PRNGKey(seed), from_config("owner", mesh, model.sites)
+    )
     ci_fn = init_ci_fn_placed(ci_arch, model.sites, jax.random.PRNGKey(seed + 1), mesh)
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)

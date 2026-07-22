@@ -34,8 +34,8 @@ arise here, because no emitted key wraps the cross-batch axis in a nonlinearity:
   by total `n` (example-weighted mean of a per-batch mean KL); equals the uniform average
   under uniform `(B, T)`.
 
-Both production yamls run `eval.n_steps: 1`, so today the cross-batch average is a no-op;
-the parity argument above is what keeps it correct if `n_steps` is raised.
+At `eval.n_steps: 1` the cross-batch average is a no-op; the parity argument above is
+what keeps it correct when `n_steps` is raised.
 """
 
 import math
@@ -50,7 +50,7 @@ from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from param_decomp.built_run import EvalPGDConfig
-from param_decomp.components import DecompVU
+from param_decomp.components import ComponentStacks
 from param_decomp.jit_util import filter_jit
 from param_decomp.losses import kl_per_position
 from param_decomp.model import DecomposedModel
@@ -172,14 +172,14 @@ def make_eval_step(
 
     def eval_step(
         model: DecomposedModel,
-        components: DecompVU,
+        components: ComponentStacks,
         ci_fn: Any,
         token_ids: Int[Array, "B T"],
         key: PRNGKeyArray,
     ) -> dict[str, Array]:
         token_ids = batch_sharded(token_ids)
-        clean_output = batch_sharded(model.clean_output(token_ids))
-        taps = model.read_activations(token_ids, ci_fn.input_names)
+        clean_output, taps = model.clean_output_and_activations(token_ids, ci_fn.input_names)
+        clean_output = batch_sharded(clean_output)
 
         if n_valid_rows is None:
             row_mask = None

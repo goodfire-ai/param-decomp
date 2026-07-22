@@ -15,7 +15,7 @@ import jax
 import pytest
 
 from param_decomp.ci_fn import MLPCIArch, init_layerwise_mlp_ci_fn
-from param_decomp.components import SiteC, init_decomp_vu
+from param_decomp.components import SiteC, init_component_stacks
 from param_decomp_lab.experiments import toy_uv_eval
 from param_decomp_lab.experiments.tms.model import (
     TMSConfig,
@@ -32,7 +32,7 @@ def _toy_setup():
     target = init_tms_target(cfg, jax.random.PRNGKey(3))
     model = tms_decomposed_model(cfg, target, sites)
     ci_fn = init_layerwise_mlp_ci_fn(MLPCIArch(hidden_dims=(16,)), sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     probe = single_feature_probe(cfg.n_features)
     ci = ci_fn(model.read_activations(probe, ci_fn.input_names), remat=False)
     return model, vu, ci.lower, ci.upper
@@ -72,7 +72,9 @@ def test_log_uv_figure_renders_png_when_configured(monkeypatch: pytest.MonkeyPat
     fake = _FakeWandb()
     monkeypatch.setitem(sys.modules, "wandb", fake)
 
-    toy_uv_eval.log_uv_figure(spec, vu.vu, probe_upper, now_step=42, wandb_active=True)
+    toy_uv_eval.log_uv_figure(
+        spec, dict(vu.sites_items()), probe_upper, now_step=42, wandb_active=True
+    )
 
     assert len(fake.logged) == 1
     payload, step = fake.logged[0]
@@ -87,14 +89,18 @@ def test_log_uv_figure_noop_when_unconfigured_or_wandb_off(monkeypatch: pytest.M
 
     # config does not name UVPlots -> no-op
     no_uv = toy_uv_eval.toy_uv_spec(model, _raw([]))
-    toy_uv_eval.log_uv_figure(no_uv, vu.vu, probe_upper, now_step=42, wandb_active=True)
+    toy_uv_eval.log_uv_figure(
+        no_uv, dict(vu.sites_items()), probe_upper, now_step=42, wandb_active=True
+    )
     assert fake.logged == []
 
     # configured but wandb off -> no-op
     with_uv = toy_uv_eval.toy_uv_spec(
         model, _raw([{"type": "UVPlots", "identity_patterns": None, "dense_patterns": None}])
     )
-    toy_uv_eval.log_uv_figure(with_uv, vu.vu, probe_upper, now_step=42, wandb_active=False)
+    toy_uv_eval.log_uv_figure(
+        with_uv, dict(vu.sites_items()), probe_upper, now_step=42, wandb_active=False
+    )
     assert fake.logged == []
 
 

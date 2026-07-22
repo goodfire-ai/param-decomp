@@ -25,7 +25,7 @@ from param_decomp.ci_fn import (
     MHACIAttention,
     build_ci_fn,
 )
-from param_decomp.components import DecompVU, SiteC, SiteSpec, init_decomp_vu
+from param_decomp.components import ComponentStacks, SiteC, SiteSpec, init_component_stacks
 from param_decomp.configs import (
     AdamPGDConfig,
     ChunkwiseSubsetReconLossConfig,
@@ -44,7 +44,6 @@ from param_decomp.targets.llama_simple_mlp import (
     SimpleMLPLayer,
     build_decomposed_simple_mlp,
     canonical_site_cs,
-    expand_wildcard_site_cs,
     parse_site_name,
     site_name,
     site_specs,
@@ -171,24 +170,6 @@ def test_site_name_helpers():
         canonical_site_cs((SiteC("h.0.mlp.c_fc", 4), SiteC("h.0.mlp.c_fc", 8)))
 
 
-def test_expand_wildcard_site_cs():
-    expanded = expand_wildcard_site_cs(
-        (SiteC("h.*.mlp.c_fc", 8), SiteC("h.*.attn.q_proj", 4), SiteC("h.1.mlp.down_proj", 16)),
-        n_layer=2,
-    )
-    assert expanded == (
-        SiteC("h.0.attn.q_proj", 4),
-        SiteC("h.0.mlp.c_fc", 8),
-        SiteC("h.1.attn.q_proj", 4),
-        SiteC("h.1.mlp.c_fc", 8),
-        SiteC("h.1.mlp.down_proj", 16),
-    )
-    with pytest.raises(AssertionError, match="duplicate"):
-        expand_wildcard_site_cs((SiteC("h.*.mlp.c_fc", 8), SiteC("h.0.mlp.c_fc", 4)), n_layer=2)
-    with pytest.raises(AssertionError, match="unsupported site name"):
-        expand_wildcard_site_cs((SiteC("h.*.mlp.gate_proj", 8),), n_layer=2)
-
-
 def test_site_specs_dims():
     cfg = _tiny_cfg()
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
@@ -209,7 +190,7 @@ def test_clean_path_and_masked_identity():
     cfg = _tiny_cfg()
     sites = site_specs(cfg, _MIXED_SITE_CS)
     model = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
@@ -257,7 +238,7 @@ def test_zero_masking_one_site_changes_logits(ablated_site: str):
     cfg = _tiny_cfg()
     sites = site_specs(cfg, _MIXED_SITE_CS)
     model = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
@@ -279,7 +260,7 @@ def test_masked_site_outputs_frozen_when_routed_false_or_unmasked():
     sites_cs = (SiteC("h.2.attn.q_proj", 8), SiteC("h.2.mlp.c_fc", 12))
     sites = site_specs(cfg, sites_cs)
     model = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     names = model.site_names
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
@@ -311,7 +292,7 @@ def test_masked_site_outputs_match_hand_computed_masked_linear(site_name_str: st
     sites_cs = (SiteC(site_name_str, 8),)
     sites = site_specs(cfg, sites_cs)
     model = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     names = model.site_names
     s = site_name_str
     b, t = 2, 16
@@ -343,7 +324,7 @@ def test_o_site_masks_attention_output():
     o_site = "h.2.attn.o_proj"
     sites = site_specs(cfg, (SiteC(o_site, 8),))
     model = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
@@ -365,7 +346,7 @@ def test_step_trains_and_has_vpd_signature():
     n_warmup = 2
     sites = site_specs(cfg, site_cs)
     model = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = _build_chunkwise_ci_fn(model, jax.random.PRNGKey(2))
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
@@ -449,8 +430,8 @@ def test_step_trains_and_has_vpd_signature():
     # SPEC S9: p annealed below its 2.0 start by step 4 of 100.
     assert losses[-1]["p_imp"] < 2.0
     # fp32 masters preserved through updates (SPEC N1).
-    assert isinstance(state.decomposition.components, DecompVU)
-    for V, U in state.decomposition.components.vu.values():
+    assert isinstance(state.decomposition.components, ComponentStacks)
+    for _, (V, U) in state.decomposition.components.sites_items():
         assert V.dtype == jnp.float32 and U.dtype == jnp.float32
     assert isinstance(state.decomposition.ci_fn, ChunkwiseTransformerCIFn)
     assert state.decomposition.ci_fn.chunks.in_proj_w.dtype == jnp.float32
@@ -460,7 +441,7 @@ def test_faith_warmup_decreases_faith():
     cfg = _tiny_cfg()
     sites = site_specs(cfg, canonical_site_cs(_MIXED_SITE_CS))
     model = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     opt = optax.adamw(1e-2, weight_decay=0.0)
     wstep = make_faith_warmup_step(opt)
     ostate = opt.init(eqx.filter(vu, eqx.is_array))
@@ -473,10 +454,10 @@ def test_faith_warmup_decreases_faith():
     assert float(loss) < first_loss * 0.9, (first_loss, float(loss))
 
 
-def test_decomp_vu_shapes_fp32():
+def test_component_stacks_shapes_fp32():
     cfg = _tiny_cfg()
     sites = site_specs(cfg, _MIXED_SITE_CS)
-    vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     d, di = cfg.n_embd, cfg.n_intermediate
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
     V_q, U_q = vu.site("h.2.attn.q_proj")
@@ -487,25 +468,25 @@ def test_decomp_vu_shapes_fp32():
     assert V_v.shape == (d, 12) and U_v.shape == (12, kvd)
     assert V_fc.shape == (d, 8) and U_fc.shape == (8, di)
     assert V_dn.shape == (di, 16) and U_dn.shape == (16, d)
-    assert all(a.dtype == jnp.float32 for pair in vu.vu.values() for a in pair)
+    assert all(a.dtype == jnp.float32 for pair in vu.stacks.values() for a in pair)
 
 
 _REAL_CACHE_DIR = Path("/mnt/data/artifacts/mechanisms/param-decomp/pretrain_cache/spd-t-9d2b8f02")
-_PRODUCTION_PATTERN_CS = {
-    "h.*.mlp.c_fc": 3072,
-    "h.*.mlp.down_proj": 3584,
-    "h.*.attn.q_proj": 512,
-    "h.*.attn.k_proj": 512,
-    "h.*.attn.v_proj": 1024,
-    "h.*.attn.o_proj": 1024,
+_PRODUCTION_CS = {
+    "c_fc": 3072,
+    "down_proj": 3584,
+    "q_proj": 512,
+    "k_proj": 512,
+    "v_proj": 1024,
+    "o_proj": 1024,
 }
 """The pile production decomposition (torch `pile_llama_simple_mlp-4L.yaml`)."""
 
 
 @pytest.mark.skipif(not _REAL_CACHE_DIR.exists(), reason="t-9d2b8f02 pretrain cache not mounted")
-def test_pretrained_target_converts_with_wildcards():
-    """`kind: pretrained` LlamaSimpleMLP target specs convert, expanding `h.*`
-    wildcard decomposition patterns over the checkpoint's n_layer (4)."""
+def test_pretrained_target_converts_with_all_layers():
+    """`kind: pretrained` LlamaSimpleMLP target specs convert, tiling the simple_mlp
+    c-spec over the checkpoint's n_layer (4)."""
     import yaml
 
     from param_decomp.built_run import DataConfig
@@ -524,9 +505,11 @@ def test_pretrained_target_converts_with_wildcards():
         ),
         "run_path": "goodfire/spd/runs/t-9d2b8f02",
     }
-    raw["pd"]["decomposition_targets"] = [
-        {"module_pattern": pattern, "C": C} for pattern, C in _PRODUCTION_PATTERN_CS.items()
-    ]
+    raw["decomposition"]["sites"] = {
+        "kind": "simple_mlp",
+        "layers": {"kind": "all"},
+        "cs": dict(_PRODUCTION_CS),
+    }
     raw["data"]["max_seq_len"] = 512  # the model's n_ctx
 
     cfg = build_experiment_config(LMExperimentConfig(**raw), "p-00000000")
