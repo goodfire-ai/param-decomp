@@ -33,7 +33,7 @@ jobs:
     timeout-minutes: 35
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # Container runs as different user than repo owner, causing "dubious ownership" errors.
       # Tests that run subprocesses (e.g. test_distributed.py) need git commands to work.
@@ -57,7 +57,7 @@ jobs:
         run: uv pip list
 
       - name: Cache HuggingFace downloads
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.hf-cache
           key: hf-${{ github.run_id }}-${{ matrix.shard }}
@@ -72,7 +72,7 @@ jobs:
       # immutable once saved: on a shared key only the first shard to finish would ever
       # persist its compiles.
       - name: Cache JAX compilation cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.jax_test_cache
           key: jax-test-cache-${{ matrix.shard }}-${{ hashFiles('uv.lock') }}
