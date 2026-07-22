@@ -3,6 +3,8 @@
 # zero1 sharding, scaled to dp 32 (4 nodes) with batch 32 — the production per-rank
 # batch of 1 — and 250 steps with save_every 100, so a launch exercises save AND
 # resume at the production per-rank shape without a production-length job.
+# Memory: this shape's fused recon backward needs ~180GB-class devices (B200) or a
+# larger world size — 80GB cards at dp32 run out of memory.
 # out_dir / run_id are minted by pd-lm.
 run_name: jax-full32L-HSDP-savesmoke
 cadence:

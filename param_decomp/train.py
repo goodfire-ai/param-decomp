@@ -138,7 +138,6 @@ def make_train_step(
     remat_ci_fn: bool,
     mesh: Mesh | None,
     ascend_replicate: bool = False,
-    sequence_recon_entries: bool = False,
     compiler_options: dict[str, bool | int | str] | None = None,
 ):
     """Build the `eqx.filter_jit`'d `step(model, state, batch, key) -> (state, metrics)`.
@@ -528,101 +527,12 @@ def make_train_step(
                 total_loss = total_loss + term.coeff * term_loss
             return total_loss, (faith_loss, imp_lp, imp_freq, tuple(term_losses))
 
-        def sequenced_value_and_grad() -> tuple[
-            tuple[Array, tuple[Array, Array, Array, tuple[Array, ...]]],
-            tuple[Any, ComponentStacks, CI, dict[str, dict[str, Array]]],
-        ]:
-            """`loss_fn`'s backward, decomposed per recon forward and CHAINED: each forward's
-            `value_and_grad` is tied to its predecessor's grads through
-            `jax.lax.optimization_barrier`, so fwd_{i+1} cannot be scheduled before bwd_i and
-            XLA frees each forward's saved stack before the next begins. The fused backward
-            keeps every recon forward's saved residuals co-resident instead (peak scales
-            with the number of recon forwards per step). Σ per-forward grads = the fused grads up to float
-            reassociation in the shared-leaf accumulation; losses, forwards, and RNG are
-            identical. Recon touches only `(prepared, ci.lower, sources)`, so only those thread
-            through the chain — faith + imp-min get their own small backward."""
-
-            def faith_imp_loss(
-                components_and_upper: tuple[ComponentStacks, dict[str, Array]],
-            ) -> tuple[Array, tuple[Array, Array, Array]]:
-                components, ci_upper = components_and_upper
-                faith_loss = faithfulness_loss(model.weight_deltas(components))
-                imp_lp, imp_freq = imp_min_terms(ci_upper, imp_min, imp_min_param)
-                loss = faith_coeff * faith_loss + imp_coeff * imp_lp + freq_coeff * imp_freq
-                return loss, (faith_loss, imp_lp, imp_freq)
-
-            (_, (faith_loss, imp_lp, imp_freq)), (components_grad_faith, upper_grad) = (
-                eqx.filter_value_and_grad(faith_imp_loss, has_aux=True)(
-                    (decomposition.components, ci.upper)
-                )
-            )
-
-            # The initial barrier also ties the warmed persistent sources to the recon
-            # inputs, so the PPGD warmup ascents complete before the first recon forward
-            # (otherwise the ascent phase overlaps it and joins its memory peak).
-            recon_primals = jax.lax.optimization_barrier((prepared, ci.lower, warmed_sources))
-            acc: tuple[Any, dict[str, Array], dict[str, dict[str, Array]]] | None = None
-            term_losses: list[Array] = []
-            for term_idx, draws in enumerate(per_term_draws):
-                coeff_per_draw = recon_terms[term_idx].coeff / len(draws)
-                term_total = jnp.zeros((), jnp.float32)
-                for entry_idx, entry, draw_key, routes in draws:
-
-                    def scaled_draw_loss(
-                        primals: tuple[Any, dict[str, Array], dict[str, dict[str, Array]]],
-                        term_idx: int = term_idx,
-                        entry_idx: int = entry_idx,
-                        entry: ReconForward = entry,
-                        draw_key: PRNGKeyArray = draw_key,
-                        routes: Routes = routes,
-                        coeff_per_draw: float = coeff_per_draw,
-                    ) -> tuple[Array, Array]:
-                        prepared_, ci_lower_, persistent_sources_ = primals
-                        ci_stacked = (
-                            model.stack_ci(ci_lower_)
-                            if isinstance(entry.sources, StochasticSources)
-                            else None
-                        )
-                        draw_loss = draw_recon_loss(
-                            prepared_, ci_lower_, persistent_sources_, ci_stacked,
-                            term_idx, entry_idx, entry, draw_key, routes,
-                        )  # fmt: skip
-                        return coeff_per_draw * draw_loss, draw_loss
-
-                    (_, draw_loss), draw_grads = eqx.filter_value_and_grad(
-                        scaled_draw_loss, has_aux=True
-                    )(recon_primals)
-                    term_total = term_total + draw_loss
-                    acc = draw_grads if acc is None else jax.tree.map(jnp.add, acc, draw_grads)
-                    acc, recon_primals = jax.lax.optimization_barrier((acc, recon_primals))
-                term_losses.append(term_total / len(draws))
-            assert acc is not None
-            prepared_grad, lower_grad, persistent_grads_scaled = acc
-
-            total_loss = faith_coeff * faith_loss + imp_coeff * imp_lp + freq_coeff * imp_freq
-            for term, term_loss in zip(recon_terms, term_losses, strict=True):
-                total_loss = total_loss + term.coeff * term_loss
-            # `ci_vjp` wants the full CI cotangent; the logits view is unused in the step, so
-            # its cotangent is zero (as in the fused backward, where it falls out of AD).
-            ci_grad = CI(
-                logits=jax.tree.map(jnp.zeros_like, ci.logits),
-                lower=lower_grad,
-                upper=upper_grad,
-            )
-            grads = (prepared_grad, components_grad_faith, ci_grad, persistent_grads_scaled)
-            return (total_loss, (faith_loss, imp_lp, imp_freq, tuple(term_losses))), grads
-
         with jax.named_scope("pd_value_and_grad"):
-            if sequence_recon_entries:
-                (total_loss, (faith_loss, imp_lp, imp_freq, term_losses)), grads = (
-                    sequenced_value_and_grad()
+            (total_loss, (faith_loss, imp_lp, imp_freq, term_losses)), grads = (
+                eqx.filter_value_and_grad(loss_fn, has_aux=True)(
+                    (prepared, decomposition.components, ci, warmed_sources)
                 )
-            else:
-                (total_loss, (faith_loss, imp_lp, imp_freq, term_losses)), grads = (
-                    eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-                        (prepared, decomposition.components, ci, warmed_sources)
-                    )
-                )
+            )
         prepared_grad, components_grad_faith, ci_grad, persistent_grads_scaled = grads
         components_grad_recon = recon_vjp(prepared_grad)[0]
         ci_fn_grad = ci_vjp(ci_grad)[0]
