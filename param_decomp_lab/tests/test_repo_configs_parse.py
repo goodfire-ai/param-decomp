@@ -2,8 +2,8 @@
 LM seats against `LMExperimentConfig`, the toy seats against their domain schemas.
 
 A schema PR that breaks a config here migrates it in the same PR, with an
-executed in-repo migration — never a script attached to a PR comment (#939
-attached one; it never ran, and 97/104 stored runs became unopenable).
+executed in-repo migration — never a script attached to a PR comment (a migration
+that lives outside the repo never runs; see CONFIGS.md's migration registry).
 """
 
 from pathlib import Path

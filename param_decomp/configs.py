@@ -550,8 +550,8 @@ class PersistentPGDReconLossConfig(LossMetricConfig):
     source_dtype: Literal["float32", "bfloat16"] = "float32"
     """Storage dtype for the persistent PPGD source tensors AND their Adam moments
     (`m`/`v`). `float32` (default) is SPEC N1 (fp32 SRC_STEP moments) and the only
-    oracle-parity path. `bfloat16` halves the resident source+moment footprint (~21 GiB
-    on the full-32L step, the dominant f32 transient there) at some numerical risk: the
+    oracle-parity path. `bfloat16` halves the resident source+moment footprint (it scales
+    with total source elements — dominant at large site counts) at some numerical risk: the
     second-moment `v` accumulates squared grads, which can underflow in bf16 for small
     grads — opt in only as an experiment."""
     n_warmup_steps: NonNegativeInt = Field(
@@ -799,8 +799,8 @@ class MuonOptimizerConfig(BaseConfig):
     impl: Literal["optax", "stacked"] = Field(
         default="optax",
         description=(
-            "NS implementation. `optax` = per-leaf `optax.contrib.muon` (the 2026-07-02/11"
-            " experiment arms' exact semantics). `stacked` = same-shape leaves batched into"
+            "NS implementation. `optax` = per-leaf `optax.contrib.muon` (the reference"
+            " semantics, SPEC S20). `stacked` = same-shape leaves batched into"
             " one NS with the stack axis sharded over (replicate, fsdp) — device-local"
             " orthogonalization, no per-iteration collectives (`muon_stacked.py`); same"
             " trajectory up to float reassociation (the SPEC D4 tolerance class)."
@@ -975,7 +975,7 @@ class PlacementTableConfig(BaseConfig):
     """An explicit placement table (`runtime.sharding`), mirroring the typed
     `placement.PlacementRules`. The row vocabulary is CLOSED (extra keys are a parse
     error); rule values are free-form axis-name -> mesh-axes mappings, where YAML list
-    order is semantics (nested-axis linearization, PR #927)."""
+    order is semantics (nested-axis linearization — PLACEMENT_DESIGN.md lesson 4)."""
 
     params: ParamsPlacementConfig
     activations: RuleConfig
@@ -1032,12 +1032,11 @@ class RuntimeConfig(BaseConfig):
         description=(
             "Placement policy for the trainable state (placement.py). REQUIRED, no "
             "default — a layout this consequential is written down per config. Presets: "
-            "`zero1` = intra-matrix ZeRO-1 over the full data mesh — the proven layout "
-            "(all production mileage to date; ~equivalent comms to `owner` under "
+            "`zero1` = intra-matrix ZeRO-1 over the full data mesh "
+            "(~equivalent comms to `owner` under "
             "elementwise optimizers); `owner` = whole-matrix ownership (stack ÷replicate, "
             "d ÷fsdp, C ÷tp) — the muon-motivated layout (Newton-Schulz stays "
-            "node-local), validated (SPEC D4 harness byte-equivalence, 8B mem-fit probe) "
-            "but without production mileage yet; STRICT — a shape group whose stack does "
+            "node-local); STRICT — a shape group whose stack does "
             "not tile ÷replicate is an error; `owner+zero1` = `owner` plus the "
             "`params.zero1` opt-in row, ZeRO-1-ing exactly those non-tiling groups "
             "intra-matrix; `ddp` = fully replicated. Each value is a BIDIRECTIONAL claim "
@@ -1100,8 +1099,9 @@ class RuntimeConfig(BaseConfig):
             "Decompose the main backward into per-recon-forward backwards chained by "
             "`optimization_barrier`: forward i+1 data-depends on ALL of backward i, so XLA "
             "frees each recon forward's saved stack before the next begins instead of "
-            "keeping every forward's co-resident (~5x peak at the production 4-chunk + PPGD "
-            "plan). Trades cross-entry fwd/bwd overlap for peak activation memory. Same "
+            "keeping every forward's co-resident (peak co-residency scales with the number "
+            "of recon forwards per step). Trades cross-entry fwd/bwd overlap for peak "
+            "activation memory. Same "
             "losses, forwards, and RNG; grad accumulation reassociates. Compute substrate."
         ),
     )

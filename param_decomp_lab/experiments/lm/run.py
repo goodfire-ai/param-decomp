@@ -488,9 +488,10 @@ def _make_lm_eval_fn(
                 )
                 eval_record |= {f"eval/slow/{k}": v for k, v in identity_ci_errors.items()}
             # `UVPlots` needs the C-sharded V/U gathered to host (collective `np.asarray`).
-            # This NAIVE gather is small-scale-only — it OOMs / breaks at production C BY
-            # DESIGN (per Oli); gated on the config naming UVPlots so it costs nothing
-            # otherwise. The component column order reuses the position-CI permutation.
+            # This NAIVE gather is small-scale-only BY DESIGN — it OOMs at large C rather
+            # than earning a sharded implementation; gated on the config naming UVPlots so
+            # it costs nothing otherwise. The component column order reuses the position-CI
+            # permutation.
             components: dict[str, tuple[np.ndarray, np.ndarray]] | None = None
             if perm_spec.want_uv_plots:
                 components = {

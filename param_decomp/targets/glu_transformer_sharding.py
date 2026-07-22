@@ -12,10 +12,11 @@ Megatron-C. The memory consumers, and how each is placed:
     preset: the shape-group STACK axis ÷`replicate` (whole matrices owned per node-group),
     d dims ÷`fsdp`, C ÷`tp` — ÷N total, same memory as the intra-matrix `zero1`
     preset. The fp32 masters + fp32 Adam m/v are the dominant
-    non-activation footprint (÷N ≈5 GB/GPU at dp32, scaling). COMPUTE re-pins the bf16
+    non-activation footprint (÷N, so the per-GPU cost shrinks with device count).
+    COMPUTE re-pins the bf16
     weights to `fsdp`-only ONCE per step (in ENTRY, off the per-layer hot path; see
-    `glu_transformer._reconstruct_compute_weights` — hand-written until placement migration
-    stage 3 wires it through the `params.forward` row).
+    `glu_transformer._reconstruct_compute_weights` — hand-written until PLACEMENT_DESIGN.md
+    migration stage 3 wires it through the `params.forward` row).
   * CI fn + Adam states: sharded ÷N over the full mesh along d_model (in_proj / blocks /
     heads), same ZeRO-1 reconstruction to `fsdp`-only before the chunk scan.
   * PGD source (broadcast scope, `{site: (1,T,C+1)}`): REPLICATED. A single adversarial
@@ -39,8 +40,8 @@ resolved at config build). The helpers below only drive the apply: compute the
 shardings on the `eqx.filter_eval_shape`'d abstract model, then run the seeded init under
 `jax.jit(init, out_shardings=...)` so each device generates only its own shard and no
 host-side full tree exists — eager `device_put` of a host tree onto a multi-process
-non-replicated sharding triggers a `process_allgather` (a 168 GiB allocation for a
-12-layer chunk at C=24576). A non-dividing declared shard axis is a loud crash at
+non-replicated sharding triggers a `process_allgather` (a host allocation of the FULL
+unsharded tree per process). A non-dividing declared shard axis is a loud crash at
 placement construction / inside `.shardings` (fail-fast), never a silent replicate.
 """
 

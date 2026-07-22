@@ -835,8 +835,8 @@ class GLUDecomposedModel(eqx.Module):
         # STATIC liveness. `live_set` is known at trace, so the live/frozen choice per site needs
         # NO runtime `lax.cond` — and removing it lets XLA pack + prefetch the V/U gathers (the
         # cond was a scheduling/packing barrier). We assume LAYER-ALIGNED, CONTIGUOUS chunks
-        # (every production plan: `into_groups` with sites_per_chunk % n_decomposed_kinds == 0,
-        # and `one_chunk`); both are asserted below. The forward is then
+        # (`into_groups` with sites_per_chunk % n_decomposed_kinds == 0, and `one_chunk`
+        # satisfy this); both are asserted below. The forward is then
         # [frozen prefix] → [live block] → [frozen suffix], each a static sub-scan; only the live
         # block carries V/U and gathers them.
         def layer_is_live(layer: int) -> bool:

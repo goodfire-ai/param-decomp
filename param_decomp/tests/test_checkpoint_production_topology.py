@@ -1,6 +1,6 @@
 """Production-topology orbax round-trip (SPEC S22, issue #617).
 
-The jsp SIGTERM lore (preemptions fall back to periodic checkpoints) makes it
+Preemptions can miss the SIGTERM save and fall back to periodic checkpoints, so it is
 load-bearing that the SHARDED orbax save at the production placement actually persists
 the persistent adversary's Adam moments — a missing moment tree would silently reset
 Adam after a real preemption. `test_checkpoint.py` covers the `mesh=None` single-term

@@ -161,7 +161,7 @@ def test_simple_mlp_canonical_pattern_order_matches_torch():
     pattern-major order coincides with JAX canonical only up to the layer/kind nesting
     swap — torch is kind-major-across-layers, JAX is layer-major-across-kinds — so they
     still differ for >1 layer. Documents that pattern order alone couldn't make them
-    agree (the JAX side no longer has a pattern order at all: cs is an unordered map)."""
+    agree (the JAX side has no pattern order at all: cs is an unordered map)."""
     n_layer = 2
     spec = SimpleMlpCSpec(
         layers=AllLayers(),

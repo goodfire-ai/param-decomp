@@ -2,8 +2,8 @@
 batched across same-shape leaves and sharded on the stack axis (SPEC S20, `impl: stacked`).
 
 Why: GSPMD lowers per-leaf NS on ÷N-sharded fp32 masters into per-iteration full-Gram
-all-reduces with the largest matmul replicated on every device (~24.6 GB of serialized
-collectives per step for the 4L ci-fn group — the measured 3.3x muon-ci step-time hit).
+all-reduces with the largest matmul replicated on every device — serialized collectives
+that dominate the optimizer step.
 Stacking same-shape matrices and sharding the STACK axis makes each NS device-local:
 one reshard in, one out, zero per-iteration collectives (the Kimi "Muon is Scalable"
 parameter-partitioned recipe, expressed GSPMD-natively).

@@ -152,8 +152,8 @@ def init_stack_arrays(
     """Seeded stack init: `{(d_in, d_out, C): (V [g, d_in, C], U [g, C, d_out])}`, vmapped
     over per-site keys drawn in site order — each site's slice is BIT-IDENTICAL to the
     retired per-site init's draw (pinned by `test_sharding`). Under jit the graph has
-    2×n_shapes sharded outputs instead of 2×n_sites, which cuts the production init compile
-    ~10× (448 outputs → 14 at 32L)."""
+    2×n_shapes sharded outputs instead of 2×n_sites, which keeps the init compile from
+    scaling with site count."""
     keys = jax.random.split(key, 2 * len(sites))
     site_index = {spec.name: idx for idx, spec in enumerate(sites)}
     stacked: dict[VUShape, tuple[Array, Array]] = {}
@@ -230,7 +230,8 @@ def site_out(
     if on_mesh:
         # `acts @ U` contracts the tp-sharded C → reduce over `tp`; pin the output d-full /
         # batch-sharded so the tp-reduce + fsdp-gather are symmetric and the weight-grad
-        # backward reshards the same way (avoids the involuntary-remat OOM, 2026-06-26).
+        # backward reshards the same way (avoids the involuntary-remat OOM —
+        # PLACEMENT_DESIGN.md lesson 3).
         out = jax.lax.with_sharding_constraint(out, P(batch_axes, *(None,) * (out.ndim - 1)))
     if delta_mask is not None:
         # `(x @ Δ.T)` for `Δ = W − (V@U).T`, expanded to activation space as

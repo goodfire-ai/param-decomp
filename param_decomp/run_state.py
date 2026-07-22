@@ -170,7 +170,7 @@ def init_decomposition(
     without building (or knowing about) the optimizers/adversaries."""
     ci_key = random.fold_in(init_key, 1)
     # V/U placement derives from the rules table; the CI fn still declares its own
-    # per-leaf shardings (stage 3 of the placement migration).
+    # per-leaf shardings (PLACEMENT_DESIGN.md migration stage 3).
     components = init_component_stacks_placed(lm.sites, init_key, rules)
     ci_fn = init_ci_fn_placed(ci_fn_arch, lm.sites, ci_key, mesh)
     assert ci_fn.expects_axes == lm.leading_axes, (

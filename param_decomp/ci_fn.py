@@ -666,8 +666,8 @@ def init_chunkwise_transformer_ci_fn(
 
     # vmap over the per-chunk keys instead of unrolling n_chunks python-side inits and
     # stacking: bit-identical draws (same fold_in key per chunk), same stacked layout, but
-    # the init graph is ONE chunk's RNG body — at 32 chunks the unrolled form was a
-    # multi-minute XLA compile (jit_build_ci_fn, measured 167s at the production shape).
+    # the init graph is ONE chunk's RNG body — the unrolled form's XLA compile time grows
+    # with chunk count (multi-minute at tens of chunks).
     chunk_keys = jax.vmap(lambda i: jax.random.fold_in(key, i))(jnp.arange(len(arch.chunks)))
     stacked: ChunkTransformer = eqx.filter_vmap(
         lambda k: _init_chunk_transformer(arch, arch.input_dim, slot_cs, k)

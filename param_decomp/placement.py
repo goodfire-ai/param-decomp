@@ -229,7 +229,7 @@ class PlacementRules:
 
 
 # ── presets ──────────────────────────────────────────────────────────────────
-# Named rule tables for the layouts this trainer has actually run. `stack` is the V/U
+# Named rule tables, one per deliberately supported layout. `stack` is the V/U
 # shape-group stack axis (components.ComponentStacks); `d` covers both d_in and d_out via the
 # per-tensor axes tuples. All presets share the activation waist rule (batch over the
 # full data mesh) — that surface is layout-invariant (SPEC §4.1 pins).
@@ -239,9 +239,8 @@ class PlacementRules:
 # ÷N shards, so the persist→forward reconstruct (and its grad reverse) partitions as a
 # pure all-gather / reduce-scatter over `replicate`. Replicate-major scatters the ÷N
 # shards across the WRONG fsdp groups and GSPMD legalizes both directions as a full
-# (replicate, fsdp) grid-transpose collective-permute — measured at dp32: 117 permutes,
-# ~13 GiB/rank/step cross-node, −14% step time when fixed (PR #927). Nested-axis order
-# is semantics (PLACEMENT_DESIGN.md lesson 4); this constant is where the trainer says so.
+# (replicate, fsdp) grid-transpose collective-permute. Nested-axis order is semantics
+# (PLACEMENT_DESIGN.md lesson 4); this constant is where the trainer says so.
 _ZERO1_DATA = ("fsdp", "replicate")
 
 # The activation waist stays replicate-major: it matches the live batch pins (token /
@@ -335,9 +334,9 @@ def _build(
 def _preset(
     name: str, mesh: Mesh | AbstractMesh, sites: tuple[SiteSpec, ...], *, launch_claims: bool
 ) -> PlacementRules:
-    """The built-in tables: `zero1` (intra-matrix ÷N over the full data mesh — the proven
-    layout, all production mileage to date; ~equivalent comms to `owner` under elementwise
-    optimizers), `owner` (stack ÷replicate, d ÷fsdp — the muon-motivated D4-amended layout,
+    """The built-in tables: `zero1` (intra-matrix ÷N over the full data mesh; ~equivalent
+    comms to `owner` under elementwise optimizers),
+    `owner` (stack ÷replicate, d ÷fsdp — the muon-motivated D4-amended layout,
     node-local NS; STRICT: a stack that doesn't tile ÷replicate is an error), `owner+zero1`
     (`owner` plus the `params.zero1` opt-in: non-tiling groups take intra-matrix ZeRO-1
     behind the stack axis), `ddp` (everything replicated — single-node / small-model runs)."""
@@ -372,7 +371,8 @@ def _preset(
 
 
 def _rule(config: RuleConfig) -> Rule:
-    """YAML lists become ordered tuples — nested-axis ORDER is semantics (PR #927)."""
+    """YAML lists become ordered tuples — nested-axis ORDER is semantics
+    (PLACEMENT_DESIGN.md lesson 4)."""
     return {axis: tuple(v) if isinstance(v, list) else v for axis, v in config.items()}
 
 

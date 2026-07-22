@@ -34,8 +34,8 @@ arise here, because no emitted key wraps the cross-batch axis in a nonlinearity:
   by total `n` (example-weighted mean of a per-batch mean KL); equals the uniform average
   under uniform `(B, T)`.
 
-Both production yamls run `eval.n_steps: 1`, so today the cross-batch average is a no-op;
-the parity argument above is what keeps it correct if `n_steps` is raised.
+At `eval.n_steps: 1` the cross-batch average is a no-op; the parity argument above is
+what keeps it correct when `n_steps` is raised.
 """
 
 import math

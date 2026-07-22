@@ -536,8 +536,8 @@ def make_train_step(
             `value_and_grad` is tied to its predecessor's grads through
             `jax.lax.optimization_barrier`, so fwd_{i+1} cannot be scheduled before bwd_i and
             XLA frees each forward's saved stack before the next begins. The fused backward
-            keeps every recon forward's saved residuals co-resident instead (~5x peak at the
-            production 4-chunk + PPGD plan). Σ per-forward grads = the fused grads up to float
+            keeps every recon forward's saved residuals co-resident instead (peak scales
+            with the number of recon forwards per step). Σ per-forward grads = the fused grads up to float
             reassociation in the shared-leaf accumulation; losses, forwards, and RNG are
             identical. Recon touches only `(prepared, ci.lower, sources)`, so only those thread
             through the chain — faith + imp-min get their own small backward."""
@@ -559,7 +559,7 @@ def make_train_step(
 
             # The initial barrier also ties the warmed persistent sources to the recon
             # inputs, so the PPGD warmup ascents complete before the first recon forward
-            # (ascent-phase overlap is part of the measured co-residency).
+            # (otherwise the ascent phase overlaps it and joins its memory peak).
             recon_primals = jax.lax.optimization_barrier((prepared, ci.lower, warmed_sources))
             acc: tuple[Any, dict[str, Array], dict[str, dict[str, Array]]] | None = None
             term_losses: list[Array] = []

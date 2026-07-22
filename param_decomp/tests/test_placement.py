@@ -53,8 +53,9 @@ def test_owner_zero1_preset_is_owner_plus_the_optin_row():
     assert rules.params.persist == owner.params.persist
     assert rules.params.forward == owner.params.forward
     assert rules.activations == owner.activations
-    # the opt-in row = intra-matrix ZeRO-1 behind the stack axis; fsdp-major (PR #927:
-    # replicate-major turns the ÷N→÷fsdp reconstruct into a grid-transpose permute)
+    # the opt-in row = intra-matrix ZeRO-1 behind the stack axis; fsdp-major
+    # (replicate-major turns the ÷N→÷fsdp reconstruct into a grid-transpose permute —
+    # PLACEMENT_DESIGN.md lesson 4)
     assert rules.params.zero1 is not None
     assert rules.params.zero1.spec_for(V_AXES) == P(None, ("fsdp", "replicate"), "tp")
     assert rules.params.zero1.spec_for(U_AXES) == P(None, "tp", ("fsdp", "replicate"))
@@ -185,8 +186,8 @@ def test_strict_owner_refuses_a_non_tiling_group_at_build():
 def test_owner_zero1_with_every_group_tiling_is_a_misconfiguration():
     with pytest.raises(AssertionError, match="declared-but-unreachable"):
         from_config("owner+zero1", MESH, TILING)
-    # the flagship trigger: an owner+zero1 seat "smoked" at a single-device topology —
-    # the message must say the layout cannot be exercised there
+    # an owner+zero1 config built at a single-device topology: everything tiles ÷1, so
+    # the zero1 claim is unexercisable — the message must say so
     with pytest.raises(AssertionError, match="single-device smoke cannot exercise"):
         from_config("owner+zero1", SINGLE_DEVICE_MESH, MIXED)
 

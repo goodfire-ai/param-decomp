@@ -322,8 +322,9 @@ def render_and_log_slow_eval(
     """Pure-host `BackgroundRenderer` target: render the slow figures off the materialized
     numpy reductions (the per-site `SiteReduction` plot inputs; when the config names a
     CI-heatmap/permutation metric, the batch-mean `(T, C)` position CI; and when the config
-    names `UVPlots`, the host-gathered V/U `components` — a NAIVE full gather that OOMs /
-    breaks at production C BY DESIGN, per Oli) and log them on the live `_step` axis at
+    names `UVPlots`, the host-gathered V/U `components` — a NAIVE full gather, small-scale
+    only BY DESIGN: it OOMs at large C rather than earning a sharded implementation) and
+    log them on the live `_step` axis at
     `now_step`. The `IdentityCIError` SCALARS ride the synchronous collective path instead
     (cheap, and `_step`-monotonic). No jax/device access — safe off the train loop."""
     import wandb

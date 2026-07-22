@@ -191,8 +191,8 @@ def test_unsupported_settings_refuse():
             LMExperimentConfig(**with_ppgd_fields(**bad_field))
 
     # Non-matrix / cross-family site names are unrepresentable in the tiled spec: the cs
-    # keys are the family's Literal matrix vocabulary, so these are rejected at PARSE (the
-    # old module-pattern route deferred to a convert-time assert).
+    # keys are the family's Literal matrix vocabulary, so these are rejected at PARSE, not
+    # deferred to a convert-time assert.
     def _with_cs(cs: dict[str, int]):
         sites = dict(raw["decomposition"]["sites"], cs=cs)
         return dict(raw, decomposition=dict(raw["decomposition"], sites=sites))

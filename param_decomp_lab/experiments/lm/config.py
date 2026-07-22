@@ -120,7 +120,7 @@ class LMTargetConfig(BaseConfig):
     """dtype for the FROZEN target weights. `bfloat16` halves the target's resident footprint
     on every pool (the dominant resident term for an 8B target) — for natively-bf16 models the
     matmuls already run bf16 under autocast, so this only changes residual/norm accumulation
-    precision (measured ~5e-4 nats KL on Llama-3.1-8B clean logits, negligible vs recon KLs).
+    precision (a clean-logit KL shift negligible vs recon KLs).
     Only the frozen target is cast; trained V/U components stay fp32 (their AdamW master)."""
 
     @model_validator(mode="before")

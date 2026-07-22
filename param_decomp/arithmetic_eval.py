@@ -160,7 +160,7 @@ def compute_arithmetic_selection(
     top_k: int,
 ) -> ArithmeticSelection:
     """Two-phase device->host pull, sized to what the figures actually need — NEVER the full
-    `(n_prompts, C)` grids (~GBs per site at production C). Phase 1: the step's replicated
+    `(n_prompts, C)` grids (they scale as n_prompts x C per site). Phase 1: the step's replicated
     per-component max CI comes to host (a `(C,)` vector per site) and drives the selection,
     identically on every rank. Phase 2: only the selected columns are host-gathered (the
     index padded to `top_k` so the gather compiles once; `n_prompts` trims the sharding pad
