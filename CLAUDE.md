@@ -367,6 +367,14 @@ Comments describe what the code is, not what changed about it. No narrativizing:
 - `# changed to be faster` — bad
 - `# we now traverse in reverse` — bad
 
+**Comments point inwards, not outwards.** A comment carries a constraint, invariant, or
+gotcha the code itself can't show. It must not narrate transient outward state:
+campaign measurements tied to a particular config ("~5x at the production plan"),
+strategy attributions ("per Oli: no TP"), PR war stories, current-canon claims. That
+content lives in lore, the PR thread, or an in-repo design doc (which MAY carry
+history) — with at most a short pointer from the code. SPEC invariant-ID citations
+(`S14`, `D4`, …) are sanctioned and required as before.
+
 ## Docstrings
 
 Docstrings carry information the signature doesn't.
