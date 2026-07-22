@@ -56,15 +56,11 @@ from param_decomp.sharding import hsdp_abstract_mesh
 from param_decomp.site_tree import (
     ArchFamily,
     BlockSites,
-    ResidIn,
-    SiteInput,
     SiteTree,
-    TapAddress,
     resolve_site_tree,
-    tap_key,
-    tap_width,
 )
 from param_decomp.targets import glu_transformer, llama8b, llama_simple_mlp, qwen3_8b
+from param_decomp.targets.transformer_taps import TransformerTapGrammar, resid_tap_key
 from param_decomp_lab.experiments.config import (
     ExperimentConfig,
     assert_canonical_algorithm_config,
@@ -285,17 +281,26 @@ SLOW_TIER_EVAL_METRIC_TYPES = frozenset(
 @dataclass(frozen=True)
 class _ResolvedDecomposition:
     """Target config + its block-structured `SiteTree` + arch family, resolved once and shared
-    by the target's flat `.sites`, the chunkwise chunk generator, and validation. `dims_of`
-    is the target's per-matrix `(d_in, d_out)` shape table, closed over its arch config —
-    what site-input tap widths resolve against. `site_specs` are the shape-carrying specs
-    (built by the same per-family builder the composition root's target load uses), the
-    placement gate's input."""
+    by the target's flat `.sites`, the chunkwise chunk generator, and validation. `grammar`
+    is the family tap grammar bound to this target's shape (block range, residual width,
+    per-site d_in) — what chunk tap keys and widths resolve against. `site_specs` are the
+    shape-carrying specs (built by the same per-family builder the composition root's target
+    load uses), the placement gate's input."""
 
     target: AnyLMTargetConfig
     tree: SiteTree
-    family: ArchFamily
-    dims_of: Callable[[str], tuple[int, int]]
+    grammar: TransformerTapGrammar
     site_specs: tuple[SiteSpec, ...]
+
+
+def _bound_grammar(
+    family: ArchFamily, n_layer: int, d_resid: int, dims_of: Callable[[str], tuple[int, int]]
+) -> TransformerTapGrammar:
+    """The family tap grammar bound to a resolved target's shape; `dims_of(kind)` is the
+    target's per-matrix `(d_in, d_out)` shape table, closed over its arch config."""
+    return TransformerTapGrammar(
+        family, n_layer, d_resid, d_in_of=lambda name: dims_of(family.parse(name)[1])[0]
+    )
 
 
 def _resolve_decomposition(cfg: LMExperimentConfig) -> _ResolvedDecomposition:
@@ -325,9 +330,14 @@ def _resolve_decomposition(cfg: LMExperimentConfig) -> _ResolvedDecomposition:
             target = TargetConfig(
                 model_name=spec.model_name, sites=tree.site_cs(glu_transformer.FAMILY.name_of)
             )
-            dims_of = lambda kind: glu_transformer.site_dims(arch, kind)  # noqa: E731
+            grammar = _bound_grammar(
+                glu_transformer.FAMILY,
+                arch.n_layer,
+                arch.n_embd,
+                lambda kind: glu_transformer.site_dims(arch, kind),
+            )
             site_specs = glu_transformer.glu_site_specs(arch, target.sites)
-            return _ResolvedDecomposition(target, tree, glu_transformer.FAMILY, dims_of, site_specs)
+            return _ResolvedDecomposition(target, tree, grammar, site_specs)
         case PretrainedTarget():
             assert spec.model_class.rsplit(".", 1)[-1] == "LlamaSimpleMLP", spec.model_class
             cache_dir = llama_simple_mlp.pretrain_cache_dir(spec.run_path)
@@ -337,41 +347,31 @@ def _resolve_decomposition(cfg: LMExperimentConfig) -> _ResolvedDecomposition:
             target = LlamaSimpleMLPTargetConfig(
                 pretrain_run_path=spec.run_path, sites=tree.site_cs(llama_simple_mlp.FAMILY.name_of)
             )
-            dims_of = lambda kind: llama_simple_mlp.site_dims(arch, kind)  # noqa: E731
-            site_specs = llama_simple_mlp.site_specs(arch, target.sites)
-            return _ResolvedDecomposition(
-                target, tree, llama_simple_mlp.FAMILY, dims_of, site_specs
+            grammar = _bound_grammar(
+                llama_simple_mlp.FAMILY,
+                arch.n_layer,
+                arch.n_embd,
+                lambda kind: llama_simple_mlp.site_dims(arch, kind),
             )
+            site_specs = llama_simple_mlp.site_specs(arch, target.sites)
+            return _ResolvedDecomposition(target, tree, grammar, site_specs)
 
 
 def _resolve_target(cfg: LMExperimentConfig) -> AnyLMTargetConfig:
     return _resolve_decomposition(cfg).target
 
 
-def _resolve_d_resid(target: AnyLMTargetConfig) -> int:
-    """Residual-stream width of the target — the per-chunk CI-transformer input dim, since
-    each chunk reads one residual tap of this width."""
-    match target:
-        case TargetConfig():
-            return hf_model_family(target.model_name).arch_config().n_embd
-        case LlamaSimpleMLPTargetConfig():
-            cache_dir = llama_simple_mlp.pretrain_cache_dir(target.pretrain_run_path)
-            return llama_simple_mlp.load_model_config(cache_dir).n_embd
-
-
 def _chunk_input_taps(
     input_tap: ChunkInputTap, blocks: tuple[BlockSites, ...], family: ArchFamily
-) -> tuple[TapAddress, ...]:
-    """The tap addresses a chunk reads, from its config source + the blocks it spans."""
+) -> tuple[str, ...]:
+    """The tap keys a chunk reads, from its config source + the blocks it spans."""
     match input_tap:
         case "first_block_resid":
-            return (ResidIn(blocks[0].layer_idx),)
+            return (resid_tap_key(blocks[0].layer_idx),)
         case "all_block_resids":
-            return tuple(ResidIn(b.layer_idx) for b in blocks)
+            return tuple(resid_tap_key(b.layer_idx) for b in blocks)
         case "all_site_inputs":
-            return tuple(
-                SiteInput(family.name_of(b.layer_idx, kind)) for b in blocks for kind, _ in b.slots
-            )
+            return tuple(family.name_of(b.layer_idx, kind) for b in blocks for kind, _ in b.slots)
 
 
 def _resolved_chunks(
@@ -391,10 +391,9 @@ def _resolved_chunks(
         output_sites = tuple(
             family.name_of(block.layer_idx, kind) for block in group for kind, _ in block.slots
         )
-        chunk_taps = _chunk_input_taps(input_tap, group, family)
         chunks.append(
             Chunk(
-                input_taps=tuple(tap_key(tap) for tap in chunk_taps),
+                input_taps=_chunk_input_taps(input_tap, group, family),
                 output_sites=output_sites,
             )
         )
@@ -403,21 +402,19 @@ def _resolved_chunks(
 
 def _resolve_chunkwise_ci_arch(
     tree: SiteTree,
-    family: ArchFamily,
     ci: ChunkwiseTransformerCiConfig,
-    d_resid: int,
-    dims_of: Callable[[str], tuple[int, int]],
+    grammar: TransformerTapGrammar,
 ) -> ChunkwiseTransformerCIArch:
     """Resolve the chunkwise-transformer arch from the site tree: the chunk generator
     (`_resolved_chunks`) + the per-chunk input width (the sum of the chunk's tap widths —
-    `site_tree.tap_width`; site-input taps resolve d_in via `dims_of`). The tree is
-    homogeneous by construction, so the first chunk's width is every chunk's. The
-    `attention` union collapses here to two concrete head counts — MHA is
-    `n_kv_heads == n_heads` — so nothing downstream re-derives the grouping, and the
-    fine-tune `parent.ci_fn == built.ci_fn` compare sees concrete values on both sides."""
+    `grammar.width_of`). The tree is homogeneous by construction, so the first chunk's
+    width is every chunk's. The `attention` union collapses here to two concrete head
+    counts — MHA is `n_kv_heads == n_heads` — so nothing downstream re-derives the
+    grouping, and the fine-tune `parent.ci_fn == built.ci_fn` compare sees concrete
+    values on both sides."""
+    family = grammar.family
     first_chunk_taps = _chunk_input_taps(ci.input_tap, tree.blocks[: ci.blocks_per_chunk], family)
-    d_in_of = lambda name: dims_of(family.parse(name)[1])[0]  # noqa: E731
-    input_dim = sum(tap_width(tap, d_resid, d_in_of) for tap in first_chunk_taps)
+    input_dim = sum(grammar.width_of(key) for key in first_chunk_taps)
     match ci.attention:
         case MHACiAttentionConfig():
             attention = MHACIAttention(n_heads=ci.attention.n_heads)
@@ -588,13 +585,7 @@ def build_experiment_config(cfg: LMExperimentConfig, run_id: str) -> BuiltRun:
     _assert_losses_supported(cfg, tuple(sc.name for sc in target.sites))
     _assert_placement_claims(resolved, cfg)
     data = _data(cfg)
-    ci_fn = _resolve_chunkwise_ci_arch(
-        resolved.tree,
-        resolved.family,
-        cfg.decomposition.ci,
-        _resolve_d_resid(target),
-        resolved.dims_of,
-    )
+    ci_fn = _resolve_chunkwise_ci_arch(resolved.tree, cfg.decomposition.ci, resolved.grammar)
 
     return BuiltRun(
         pd=cfg.pd,

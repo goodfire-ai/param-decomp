@@ -156,8 +156,9 @@ class GlobalMlpCiConfig(BaseConfig):
 
 ChunkInputTap = Literal["first_block_resid", "all_block_resids", "all_site_inputs"]
 """Which activations each chunkwise-CI chunk reads. Extend here + add a match arm in the lab
-resolver (`experiments.lm.config._chunk_input_taps`); addresses and widths are the site-tree
-tap grammar's (`site_tree.TapAddress` / `tap_width`)."""
+resolver (`experiments.lm.config._chunk_input_taps`); the concrete tap keys and their widths
+are the family tap grammar's (`targets/transformer_taps.py`) — opaque strings everywhere
+generic."""
 
 
 class MHACiAttentionConfig(BaseConfig):

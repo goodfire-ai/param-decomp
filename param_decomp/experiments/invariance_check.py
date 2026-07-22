@@ -54,6 +54,7 @@ from param_decomp.targets.glu_transformer import (
     glu_site_specs,
     mlp_family_site_cs,
 )
+from param_decomp.targets.transformer_taps import resid_tap_key
 from param_decomp.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
 from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
 
@@ -65,7 +66,7 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
     lm = _tiny_decomposed_lm(cfg, sites, random.PRNGKey(0))
     vu = init_component_stacks(sites, random.PRNGKey(1))
     arch = ChunkwiseTransformerCIArch(
-        chunks=(Chunk(input_taps=("resid.3",), output_sites=lm.site_names),),
+        chunks=(Chunk(input_taps=(resid_tap_key(3),), output_sites=lm.site_names),),
         input_dim=cfg.n_embd,
         d_model=16,
         n_blocks=2,

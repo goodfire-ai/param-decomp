@@ -48,6 +48,7 @@ from param_decomp.lm import run_stochastic_masked_output
 from param_decomp.losses import kl_per_position
 from param_decomp.site_tree import ArchFamily
 from param_decomp.targets.glu_transformer import FrozenAttn
+from param_decomp.targets.transformer_taps import resid_tap_key
 from vendored_jax.llama import rms_norm
 
 KIND_ORDER: tuple[str, ...] = get_args(SimpleMlpMatrix)
@@ -129,7 +130,10 @@ def parse_site_name(name: str) -> tuple[int, str]:
     """`h.{i}.{attn,mlp}.{kind}` -> (layer, kind); rejects anything else (including
     kind/submodule mismatches like `attn.c_fc`)."""
     match = SITE_NAME_PATTERN.match(name)
-    assert match is not None, f"unsupported site name {name!r}"
+    assert match is not None, (
+        f"not a simple_mlp site: {name!r} (sites are h.{{i}}.attn.{{q|k|v|o}}_proj"
+        f" / h.{{i}}.mlp.{{c_fc|down_proj}})"
+    )
     layer, attn_kind, mlp_kind = match.groups()
     return int(layer), attn_kind if attn_kind is not None else mlp_kind
 
@@ -316,11 +320,20 @@ class SimpleMLPDecomposedModel(eqx.Module):
         the per-site intermediates come from the same RMSNorm/attn/MLP math."""
         assert inputs.shape[1] <= self.n_ctx, (inputs.shape, self.n_ctx)
         wanted_set = frozenset(wanted)
-        last = max(site_tree.tap_layer(FAMILY, key) for key in wanted)
+        n_layer = len(self.layers)
+        block_of = {resid_tap_key(block): block for block in range(n_layer)} | {
+            site_name(block, kind): block for block in range(n_layer) for kind in KIND_ORDER
+        }
+        unknown = tuple(key for key in wanted if key not in block_of)
+        assert not unknown, (
+            f"unknown taps {unknown}: this target serves resid.{{block}} and family site "
+            f"names for blocks 0..{n_layer - 1}"
+        )
+        last = max(block_of[key] for key in wanted)
         out: dict[str, Array] = {}
         x = self.embed_tokens(inputs)
         for layer_idx, layer in enumerate(self.layers):
-            resid_key = site_tree.tap_key(site_tree.ResidIn(layer_idx))
+            resid_key = resid_tap_key(layer_idx)
             if resid_key in wanted_set:
                 out[resid_key] = x
             attn = layer.attn

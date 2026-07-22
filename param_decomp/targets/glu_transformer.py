@@ -49,6 +49,7 @@ from param_decomp.configs import GluMatrix
 from param_decomp.losses import kl_per_position
 from param_decomp.sharding import assert_divisible
 from param_decomp.site_tree import ArchFamily
+from param_decomp.targets.transformer_taps import resid_tap_key
 from vendored_jax.llama import apply_rope, causal_sdpa, repeat_kv, rms_norm, rope_cos_sin
 
 
@@ -129,7 +130,10 @@ def parse_site_name(name: str) -> tuple[int, str]:
     """`layers.{i}.{self_attn,mlp}.{kind}_proj` -> (layer, kind); rejects anything else
     (including kind/submodule mismatches like `self_attn.gate_proj`)."""
     match = SITE_NAME_PATTERN.match(name)
-    assert match is not None, f"unsupported site name {name!r}"
+    assert match is not None, (
+        f"not a glu_transformer site: {name!r} (sites are layers.{{i}}.self_attn.{{q|k|v|o}}_proj"
+        f" / layers.{{i}}.mlp.{{gate|up|down}}_proj)"
+    )
     layer, attn_kind, mlp_kind = match.groups()
     return int(layer), attn_kind if attn_kind is not None else mlp_kind
 
@@ -352,12 +356,6 @@ def _stack_layers(layers: list[GLULayer]) -> GLULayer:
     return jax.tree.map(lambda *per_layer: jnp.stack(per_layer), *layers)
 
 
-def _tap_layer(key: str) -> int:
-    """Global block index a `read_activations` key reads at: the block a `resid.{L}` tap
-    enters, or the block a decomposed site lives in."""
-    return site_tree.tap_layer(FAMILY, key)
-
-
 _TAP_CLASS_BY_KIND = {
     "q": "h1", "k": "h1", "v": "h1", "o": "attn_y",
     "gate": "mlp_in", "up": "mlp_in", "down": "down_in",
@@ -372,12 +370,24 @@ assert set(_TAP_CLASS_BY_KIND) == set(KIND_ORDER), (
 )
 
 
-def _tap_class(key: str) -> str:
-    match site_tree.parse_tap(key):
-        case site_tree.ResidIn():
-            return "resid"
-        case site_tree.SiteInput(name):
-            return _TAP_CLASS_BY_KIND[parse_site_name(name)[1]]
+@dataclass(frozen=True)
+class _TapReader:
+    intermediate: str  # the `_clean_forward` scan-ys stack this tap indexes into
+    block: int
+
+
+def _tap_readers(n_layer: int) -> dict[str, _TapReader]:
+    """Every tap key an `n_layer` target serves -> where it reads: a residual tap reads the
+    `resid` intermediate of the block it enters; a site tap reads the activation entering
+    that site's weight. The vocabulary is ENUMERATED from the mints — a key outside it
+    (unknown form, out-of-range block) fails membership; nothing is parsed."""
+    resid = {resid_tap_key(block): _TapReader("resid", block) for block in range(n_layer)}
+    sites = {
+        site_name(block, kind): _TapReader(_TAP_CLASS_BY_KIND[kind], block)
+        for block in range(n_layer)
+        for kind in KIND_ORDER
+    }
+    return resid | sites
 
 
 def _per_kind_dims(components: ComponentStacks) -> dict[str, tuple[int, int, int]]:
@@ -772,13 +782,19 @@ class GLUDecomposedModel(eqx.Module):
         def slice_layers(lo: int, hi: int) -> GLULayer:
             return jax.tree.map(lambda a: a[lo:hi], self.stacked)
 
-        tapped_depth = 1 + max((_tap_layer(key) for key in wanted), default=-1)
+        readers = _tap_readers(self.n_layer)
+        unknown = tuple(key for key in wanted if key not in readers)
+        assert not unknown, (
+            f"unknown taps {unknown}: this target serves resid.{{block}} and family site "
+            f"names for blocks 0..{self.n_layer - 1}"
+        )
+        tapped_depth = 1 + max((readers[key].block for key in wanted), default=-1)
         x = self.embed_tokens(inputs)
         stacks: dict[str, Array] = {}
         if tapped_depth:
-            emit = frozenset(_tap_class(key) for key in wanted)
+            emit = frozenset(readers[key].intermediate for key in wanted)
             x, stacks = jax.lax.scan(block_body(emit), x, slice_layers(0, tapped_depth))
-        taps = {key: stacks[_tap_class(key)][_tap_layer(key)] for key in wanted}
+        taps = {key: stacks[readers[key].intermediate][readers[key].block] for key in wanted}
         if not to_logits:
             return None, taps
         if tapped_depth < self.n_layer:

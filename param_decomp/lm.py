@@ -100,7 +100,7 @@ class DecomposedModel(Protocol):
         self, inputs: Any, /, wanted: tuple[str, ...]
     ) -> dict[str, Float[Array, "*leading d_tap"]]:
         """The CI fn's activation accessor. `wanted` is the CI fn's static `input_names` —
-        OPAQUE keys the target knows how to produce (an LM's `resid.{layer}` taps; a
+        OPAQUE keys the target knows how to produce (an LM's residual-stream taps; a
         positionless toy's per-site inputs). The target is the only key→activation
         interpreter; core just routes by key."""
         ...
