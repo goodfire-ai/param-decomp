@@ -57,7 +57,7 @@ lab is composition / IO / CLI / experiment assembly**:
   (`param_decomp/`: run.py = `run_decomposition_training`, lm.py, train.py, ci_fn.py,
   targets/glu_transformer.py + its llama8b/qwen3_8b family files, …), the torch-free pydantic config SCHEMA it now carries directly
   (`base_config.py` = `BaseConfig`, `schedule.py`, `configs.py` = `PDConfig` /
-  `RuntimeConfig` / `Cadence` / loss + eval-metric configs / routing / ci-fn / wandb
+  `RuntimeConfig` / `Cadence` / loss + eval-metric configs / routing / wandb
   shaping), the built-run bundle (`built_run.py`: `BuiltRun` / `DataConfig` /
   `EvalConfig` / `RunInstance` / `TargetSites`), the
   `param_decomp.log` logger, the in-house target-LM pretrainer (`pretrain/`), and the
@@ -152,8 +152,9 @@ and returns JAX-native as the #10 torch->jax adapter.
 
 - `param_decomp/` — the JAX trainer core. The pydantic config SCHEMA (`base_config.py` =
   `BaseConfig` / `Probability`; `schedule.py`; `configs.py` = routing +
-  decomposition site-spec + ci-fn + loss + eval-metric configs + `PDConfig` / `RuntimeConfig`
-  / `Cadence` / `WandbConfig` / `ResumeProvenance` + the wandb-shaping helpers). The
+  decomposition site-spec + loss + eval-metric configs + `PDConfig` / `RuntimeConfig`
+  / `Cadence` / `WandbConfig` / `ResumeProvenance` + the wandb-shaping helpers; the
+  authored `decomposition.ci` configs live with their domain schemas, lab-side). The
   built-run bundle the engine consumes (`built_run.py`: `BuiltRun` /
   `DataConfig` / `EvalConfig` / … + the `TargetSites` protocol). The engine + numerics
   (`run.py` = `run_decomposition_training`, `lm.py` / `train.py` / `ci_fn.py` /

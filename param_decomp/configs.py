@@ -1,15 +1,17 @@
 """The torch-free pydantic config schema for the algorithm core.
 
 Every algorithm-level config class lives here (or in the sibling `base_config` /
-`schedule` modules): routing, the decomposition site (C) specs, the CI-fn config tree,
-loss-metric configs, eval-metric configs, the top-level `PDConfig` / `RuntimeConfig` /
-`Cadence`, and the `wandb.config` shaping helpers. Depends only on pydantic / numpy /
-pyyaml / annotated-types (via `base_config`), so non-trainer consumers validate the same
+`schedule` modules): routing, the decomposition site (C) specs, loss-metric configs,
+eval-metric configs, the top-level `PDConfig` / `RuntimeConfig` / `Cadence`, and the
+`wandb.config` shaping helpers. Depends only on pydantic / numpy / pyyaml /
+annotated-types (via `base_config`), so non-trainer consumers validate the same
 YAML run configs without pulling jax/wandb.
 
 Experiment-level schema (the `ExperimentConfig` base and its LM / TMS / ResidMLP
 subclasses, each binding concrete `target`/`decomposition`/`data` sections) lives
-lab-side under `param_decomp_lab/experiments/`.
+lab-side under `param_decomp_lab/experiments/` — including the authored
+`decomposition.ci` configs, which speak each domain's vocabulary. Core carries only
+the RESOLVED CI-fn arches (`ci_fn.py`).
 """
 
 import copy
@@ -129,138 +131,6 @@ class ExplicitCSpec(BaseConfig):
 
     kind: Literal["explicit"] = "explicit"
     sites: list[ExplicitSite] = Field(..., min_length=1)
-
-
-# ---------------------------------------------------------------------------
-# Causal-importance function configs
-# ---------------------------------------------------------------------------
-
-
-class LayerwiseMlpCiConfig(BaseConfig):
-    """Per-site MLP CI fn (positionless toys): one independent MLP per site."""
-
-    type: Literal["layerwise_mlp"] = "layerwise_mlp"
-    hidden_dims: list[PositiveInt] = Field(
-        ..., min_length=1, description="Hidden dims of each per-site MLP"
-    )
-
-
-class GlobalMlpCiConfig(BaseConfig):
-    """Single shared MLP over all sites jointly (positionless toys)."""
-
-    type: Literal["global_mlp"] = "global_mlp"
-    hidden_dims: list[PositiveInt] = Field(
-        ..., min_length=1, description="Hidden dims of the shared global MLP"
-    )
-
-
-ChunkInputTap = Literal["first_block_resid", "all_block_resids", "all_site_inputs"]
-"""Which activations each chunkwise-CI chunk reads. Extend here + add a match arm in the lab
-resolver (`experiments.lm.config._chunk_input_taps`); the concrete tap keys and their widths
-are the family tap grammar's (`targets/transformer_taps.py`) — opaque strings everywhere
-generic."""
-
-
-class MHACiAttentionConfig(BaseConfig):
-    """Every query head carries its own K/V head."""
-
-    kind: Literal["mha"] = "mha"
-    n_heads: PositiveInt
-
-
-class GQACiAttentionConfig(BaseConfig):
-    """Grouped-query attention: `n_heads // n_kv_heads` query heads share each K/V head, so
-    `wk`/`wv` narrow to `n_kv_heads * head_dim`. head_dim, the RoPE tables, `wq`/`wo` and
-    every sharding are identical to MHA — only the K/V projections change."""
-
-    kind: Literal["gqa"] = "gqa"
-    n_heads: PositiveInt
-    n_kv_heads: PositiveInt
-
-    @model_validator(mode="after")
-    def validate_grouping(self) -> Self:
-        assert self.n_heads % self.n_kv_heads == 0, (
-            "n_heads must be divisible by n_kv_heads (each K/V head serves an equal group "
-            f"of query heads): {self.n_heads} % {self.n_kv_heads}"
-        )
-        assert self.n_kv_heads < self.n_heads, (
-            f"n_kv_heads == n_heads ({self.n_heads}) is MHA — use `kind: mha` rather than "
-            "spelling it as a degenerate gqa"
-        )
-        return self
-
-
-class GeluCiFfnConfig(BaseConfig):
-    """`Linear+b -> GELU -> Linear+b` — two matrices."""
-
-    kind: Literal["gelu"] = "gelu"
-    hidden: PositiveInt
-
-
-class SwigluCiFfnConfig(BaseConfig):
-    """`silu(h@w_gate + b_gate) * (h@w1 + b1) -> Linear+b` — THREE matrices, so at a given
-    `hidden` this is ~1.5x the GELU FFN's params. Iso-param is `hidden` at 2/3 (Shazeer's GLU
-    variants: "decrease d_ff by a factor of 2/3"); nothing here rescales it, because a width
-    that silently differs from the one you wrote is worse than doing the arithmetic."""
-
-    kind: Literal["swiglu"] = "swiglu"
-    hidden: PositiveInt
-
-
-CiFfnConfig = Annotated[GeluCiFfnConfig | SwigluCiFfnConfig, Field(discriminator="kind")]
-"""The CI transformer's feed-forward sublayer. Named FFN, not MLP: `swiglu` is a gated
-linear unit, not a multi-layer perceptron — FFN is the name that stays honest across both
-arms. `hidden` belongs to the FFN, not to the transformer around it."""
-
-
-CiAttentionConfig = Annotated[
-    MHACiAttentionConfig | GQACiAttentionConfig, Field(discriminator="kind")
-]
-"""The CI transformer's attention, keyed by CLASS rather than an optional `n_kv_heads` —
-so a K/V head count cannot exist without meaning, and the grouping invariant lives on the
-arm that has both fields instead of being a runtime check on a shape that shouldn't parse.
-Mirrors how the target's attention variants are keyed (see the Qwen3 family split)."""
-
-
-class ChunkwiseTransformerCiConfig(BaseConfig):
-    """Chunkwise-transformer CI fn (LMs). Each chunk is `blocks_per_chunk` consecutive
-    transformer blocks; `input_tap` names which activations the chunk reads and its output
-    is CI for every matrix site in those blocks. `d_model`/`n_blocks`/`attention`/`ffn`
-    size the per-chunk CI transformer (`d_model % n_heads == 0`; head_dim even for RoPE)."""
-
-    type: Literal["chunkwise_transformer"] = "chunkwise_transformer"
-    blocks_per_chunk: PositiveInt
-    input_tap: ChunkInputTap = "first_block_resid"
-    """`first_block_resid`: the residual stream entering the chunk's first block — one tap.
-    `all_block_resids`: the residual entering EVERY block the chunk runs over, RMS-normed
-    per tap and concatenated (`ci_fn.Chunk.input_taps` is generic over tap count) —
-    `blocks_per_chunk`x the per-chunk CI transformer's input width.
-    `all_site_inputs`: the input activation of every decomposed site in the chunk (the
-    paper's D = Σd_l input set) — widths are per-site d_in, NOT d_resid (down/o
-    projections read intermediates), summed into `input_dim`."""
-    d_model: PositiveInt
-    n_blocks: PositiveInt
-    attention: CiAttentionConfig
-    ffn: CiFfnConfig
-    learned_norm_scale: bool = Field(
-        default=False,
-        description="Learned per-channel scale on the block RMSNorms (the per-tap input norms "
-        "stay weightless). Inits to ones, so step 0 is identical to weightless.",
-    )
-
-    @model_validator(mode="after")
-    def validate_head_dim(self) -> Self:
-        n_heads = self.attention.n_heads
-        assert self.d_model % n_heads == 0, (self.d_model, n_heads)
-        assert (self.d_model // n_heads) % 2 == 0, "head_dim must be even for RoPE"
-        return self
-
-
-# Flat discriminated union (by `type`): one self-contained config per CI fn.
-CiConfig = Annotated[
-    LayerwiseMlpCiConfig | GlobalMlpCiConfig | ChunkwiseTransformerCiConfig,
-    Field(discriminator="type"),
-]
 
 
 # ---------------------------------------------------------------------------

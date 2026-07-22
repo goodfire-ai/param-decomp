@@ -10,7 +10,7 @@ the CI-fn architecture; each experiment's `run.py` assembles the rest (target + 
 """
 
 import re
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 
 from pydantic import Field, PositiveInt, model_validator
 
@@ -22,8 +22,6 @@ from param_decomp.configs import (
     AnyEvalMetricConfig,
     Cadence,
     ExplicitCSpec,
-    GlobalMlpCiConfig,
-    LayerwiseMlpCiConfig,
     MuonOptimizerConfig,
     PDConfig,
     ResumeProvenance,
@@ -50,6 +48,24 @@ class EvalConfig(BaseConfig):
             f"slow_every ({self.slow_every}) must be a multiple of every ({self.every})"
         )
         return self
+
+
+class LayerwiseMlpCiConfig(BaseConfig):
+    """Per-site MLP CI fn (positionless toys): one independent MLP per site."""
+
+    type: Literal["layerwise_mlp"] = "layerwise_mlp"
+    hidden_dims: list[PositiveInt] = Field(
+        ..., min_length=1, description="Hidden dims of each per-site MLP"
+    )
+
+
+class GlobalMlpCiConfig(BaseConfig):
+    """Single shared MLP over all sites jointly (positionless toys)."""
+
+    type: Literal["global_mlp"] = "global_mlp"
+    hidden_dims: list[PositiveInt] = Field(
+        ..., min_length=1, description="Hidden dims of the shared global MLP"
+    )
 
 
 class ToyDecompositionConfig(BaseConfig):

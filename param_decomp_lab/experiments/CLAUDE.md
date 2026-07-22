@@ -55,12 +55,17 @@ remaining Phase-3 bucket.
 ## Layout
 
 The `ExperimentConfig` schema base (domain subclasses bind concrete
-`target`/`decomposition`/`data`) + `EvalConfig` + the shared validation /
+`target`/`decomposition`/`data`) + `EvalConfig` + the toy authored CI configs
+(`LayerwiseMlpCiConfig` / `GlobalMlpCiConfig`) + the shared validation /
 run-identity helpers live in `experiments/config.py` (`WandbConfig` / `ResumeProvenance` are
 core, in `param_decomp.configs`; the engine's `BuiltRun` bundle is core, in
 `param_decomp.built_run`); the LM schema + LM build (`LMExperimentConfig`, `LMTargetConfig`,
-`LMDataConfig`, the `target.spec` union, `build_from_schema` / `load_config`) in
-`experiments/lm/config.py`; the toy schemas in `experiments/{tms,resid_mlp}/config.py`.
+`LMDataConfig`, the `target.spec` union, the authored chunkwise CI config
+(`ChunkwiseTransformerCiConfig` + its `attention`/`ffn` unions and `ChunkInputTap` —
+target-anatomy vocabulary, so it lives in the domain that IS transformers),
+`build_from_schema` / `load_config`) in `experiments/lm/config.py`; the toy schemas in
+`experiments/{tms,resid_mlp}/config.py`. Core (`param_decomp.configs`) carries no authored
+`decomposition.ci` config — only the resolved CI-fn arches (`param_decomp.ci_fn`).
 
 ```
 experiments/
