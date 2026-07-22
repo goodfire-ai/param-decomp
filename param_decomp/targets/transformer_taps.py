@@ -8,7 +8,7 @@ must not mint or split them.
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from param_decomp.site_tree import ArchFamily
+from param_decomp.family import ArchFamily
 
 _RESID_PREFIX = "resid."
 

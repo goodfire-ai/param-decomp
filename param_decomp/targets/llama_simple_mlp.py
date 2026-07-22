@@ -28,7 +28,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import get_args
+from typing import Literal, get_args
 
 import equinox as eqx
 import jax
@@ -41,20 +41,22 @@ from jax.typing import DTypeLike
 from jaxtyping import Array, Float, Int
 from safetensors import safe_open
 
-from param_decomp import site_tree
+from param_decomp import family
 from param_decomp.components import ComponentStacks, SiteC, SiteSpec, site_out
-from param_decomp.configs import SimpleMlpMatrix
+from param_decomp.family import ArchFamily
 from param_decomp.losses import kl_per_position
 from param_decomp.model import run_stochastic_masked_output
-from param_decomp.site_tree import ArchFamily
 from param_decomp.targets.glu_transformer import FrozenAttn
 from param_decomp.targets.transformer_taps import resid_tap_key
 from vendored_jax.llama import rms_norm
 
+# Plain-GELU MLP (LlamaSimpleMLP). The family's matrix vocabulary — the authored c-spec
+# keys (lab-side) are typed by it, so a c-spec key and a target matrix cannot drift.
+SimpleMlpMatrix = Literal["q_proj", "k_proj", "v_proj", "o_proj", "c_fc", "down_proj"]
+
 KIND_ORDER: tuple[str, ...] = get_args(SimpleMlpMatrix)
-"""Within-layer canonical site order = computation order, DERIVED from the config-side
-`SimpleMlpMatrix` vocabulary (one source of truth — a c-spec key and a target matrix
-cannot drift). The canonical site order (`site_specs`) is layer-ascending, then this."""
+"""Within-layer canonical site order = computation order, DERIVED from the `SimpleMlpMatrix`
+vocabulary. The canonical site order (`site_specs`) is layer-ascending, then this."""
 ATTN_KINDS = ("q_proj", "k_proj", "v_proj", "o_proj")
 MLP_KINDS = ("c_fc", "down_proj")
 assert KIND_ORDER == ATTN_KINDS + MLP_KINDS, KIND_ORDER
@@ -140,7 +142,7 @@ def parse_site_name(name: str) -> tuple[int, str]:
 
 FAMILY = ArchFamily("simple_mlp", KIND_ORDER, site_name, parse_site_name)
 """This target's matrix grammar as data — the vocabulary + name renderer the tiled
-`simple_mlp` c-specs resolve against (`resolve_site_tree`)."""
+`simple_mlp` c-specs resolve against."""
 
 
 def site_dims(cfg: LlamaSimpleMLPConfig, kind: str) -> tuple[int, int]:
@@ -164,11 +166,11 @@ def site_dims(cfg: LlamaSimpleMLPConfig, kind: str) -> tuple[int, int]:
 
 
 def canonical_site_cs(site_cs: tuple[SiteC, ...]) -> tuple[SiteC, ...]:
-    return site_tree.canonical_site_cs(FAMILY, site_cs)
+    return family.canonical_site_cs(FAMILY, site_cs)
 
 
 def site_specs(cfg: LlamaSimpleMLPConfig, site_cs: tuple[SiteC, ...]) -> tuple[SiteSpec, ...]:
-    return site_tree.site_specs(FAMILY, site_cs, lambda kind: site_dims(cfg, kind), cfg.n_layer)
+    return family.site_specs(FAMILY, site_cs, lambda kind: site_dims(cfg, kind), cfg.n_layer)
 
 
 # ----------------------------- frozen layers -----------------------------

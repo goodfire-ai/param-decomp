@@ -61,11 +61,15 @@ run-identity helpers live in `experiments/config.py` (`WandbConfig` / `ResumePro
 core, in `param_decomp.configs`; the engine's `BuiltRun` bundle is core, in
 `param_decomp.built_run`); the LM schema + LM build (`LMExperimentConfig`, `LMTargetConfig`,
 `LMDataConfig`, the `target.spec` union, the authored chunkwise CI config
-(`ChunkwiseTransformerCiConfig` + its `attention`/`ffn` unions and `ChunkInputTap` —
-target-anatomy vocabulary, so it lives in the domain that IS transformers),
+(`ChunkwiseTransformerCiConfig` + its `attention`/`ffn` unions and `ChunkInputTap`) AND the
+tiled site specs + their resolution (`GluTransformerCSpec`/`SimpleMlpCSpec` over
+`LayerSelection`, keys typed by each target family's matrix vocabulary;
+`resolve_site_tree` → the block-structured `SiteTree` the chunkwise CI resolver consumes) —
+target-anatomy vocabulary, so it lives in the domain that IS transformers —
 `build_from_schema` / `load_config`) in `experiments/lm/config.py`; the toy schemas in
 `experiments/{tms,resid_mlp}/config.py`. Core (`param_decomp.configs`) carries no authored
-`decomposition.ci` config — only the resolved CI-fn arches (`param_decomp.ci_fn`).
+`decomposition.ci` config and no tiled site spec — only the resolved CI-fn arches
+(`param_decomp.ci_fn`) and the family grammar (`param_decomp.family`).
 
 ```
 experiments/

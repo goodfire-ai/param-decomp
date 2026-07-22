@@ -1,11 +1,16 @@
-"""LM experiment config schema (target spec, data settings, full YAML tree) PLUS the
-LM YAML→`BuiltRun` conversion.
+"""LM experiment config schema (target spec, data settings, tiled site specs, full YAML
+tree) PLUS the LM YAML→`BuiltRun` conversion.
 
 This module reads the canonical `LMExperimentConfig` schema directly and builds the engine's
 `BuiltRun` bundle (`param_decomp.built_run`) — the pydantic `pd` / `cadence` / `runtime`
 verbatim plus the resolved target / data / CI-fn arch / eval — asserting loudly on anything
 the JAX trainer doesn't implement. The composition entry (`run.py`) calls `load_config` /
 `build_from_schema`; consumers that read a finished run dir call `load_run_dir_config`.
+
+The authored `decomposition.sites` c-specs (`GluTransformerCSpec` / `SimpleMlpCSpec`, keys
+typed by each target family's own matrix vocabulary) resolve here into the block-structured
+`SiteTree` (`resolve_site_tree`) — the layer index carried as DATA, never parsed back out
+of a site name — which the chunkwise CI resolver consumes directly.
 """
 
 from collections.abc import Callable
@@ -14,7 +19,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
 import yaml
-from pydantic import Discriminator, Field, PositiveInt, model_validator
+from pydantic import Discriminator, Field, NonNegativeInt, PositiveInt, model_validator
 
 from param_decomp import placement
 from param_decomp.base_config import BaseConfig
@@ -42,20 +47,15 @@ from param_decomp.configs import (
     CIHistogramsConfig,
     CIMaskedAttnPatternsReconLossConfig,
     ComponentActivationDensityConfig,
-    GluTransformerCSpec,
     PGDReconLossConfig,
-    SimpleMlpCSpec,
     StochasticAttnPatternsReconLossConfig,
 )
+from param_decomp.family import ArchFamily
 from param_decomp.recon import build_loss_terms
 from param_decomp.sharding import hsdp_abstract_mesh
-from param_decomp.site_tree import (
-    ArchFamily,
-    BlockSites,
-    SiteTree,
-    resolve_site_tree,
-)
 from param_decomp.targets import glu_transformer, llama8b, llama_simple_mlp, qwen3_8b
+from param_decomp.targets.glu_transformer import GluMatrix
+from param_decomp.targets.llama_simple_mlp import SimpleMlpMatrix
 from param_decomp.targets.transformer_taps import TransformerTapGrammar, resid_tap_key
 from param_decomp_lab.experiments.config import (
     ExperimentConfig,
@@ -153,6 +153,109 @@ class LMDataConfig(BaseConfig):
     streaming: bool = Field(default=False)
     buffer_size: PositiveInt = Field(default=1000)
     shuffle_each_epoch: bool = Field(default=True)
+
+
+class AllLayers(BaseConfig):
+    kind: Literal["all"] = "all"
+
+
+class LayerRange(BaseConfig):
+    """Half-open `[start, end)` — matches `range()` / slice semantics."""
+
+    kind: Literal["range"] = "range"
+    start: NonNegativeInt
+    end: PositiveInt
+
+    @model_validator(mode="after")
+    def _nonempty(self) -> Self:
+        assert self.start < self.end, (self.start, self.end)
+        return self
+
+
+class LayerList(BaseConfig):
+    kind: Literal["list"] = "list"
+    indices: list[NonNegativeInt] = Field(..., min_length=1)
+
+    @model_validator(mode="after")
+    def _unique_sorted(self) -> Self:
+        assert self.indices == sorted(set(self.indices)), self.indices
+        return self
+
+
+LayerSelection = Annotated[AllLayers | LayerRange | LayerList, Field(discriminator="kind")]
+
+
+class GluTransformerCSpec(BaseConfig):
+    """Per-matrix-type C tiled across the selected layers (GLU family, e.g. llama8b). Every
+    selected layer is decomposed at the same `cs` matrices and C; a matrix absent from `cs`
+    is not decomposed on any layer. Tiled ⇒ every block is structurally identical, so the
+    chunkwise CI fn's chunks are homogeneous by construction."""
+
+    kind: Literal["glu_transformer"] = "glu_transformer"
+    layers: LayerSelection
+    cs: dict[GluMatrix, PositiveInt] = Field(..., min_length=1)
+
+
+class SimpleMlpCSpec(BaseConfig):
+    """Per-matrix-type C tiled across the selected layers (plain-GELU family, LlamaSimpleMLP)."""
+
+    kind: Literal["simple_mlp"] = "simple_mlp"
+    layers: LayerSelection
+    cs: dict[SimpleMlpMatrix, PositiveInt] = Field(..., min_length=1)
+
+
+@dataclass(frozen=True)
+class BlockSites:
+    """One transformer block's decomposed matrices, in canonical within-block (family) order.
+    `layer_idx` is a field — the whole point is that structure is never thrown into a string."""
+
+    layer_idx: int
+    slots: tuple[tuple[str, int], ...]  # (matrix_type, C)
+
+
+@dataclass(frozen=True)
+class SiteTree:
+    """A decomposition as blocks, strictly layer-ascending — the layer index is carried as
+    DATA, never parsed back out of a site name. The tiled site specs resolve INTO it, and
+    the chunkwise CI resolver consumes it directly (a chunk = a slice of consecutive
+    `BlockSites`), so nothing downstream recovers block structure by regex-ing site-name
+    strings. The flat `SiteC` view is DERIVED via the family's name grammar —
+    construction only, no inverse parse."""
+
+    blocks: tuple[BlockSites, ...]
+
+    def site_cs(self, name_of: Callable[[int, str], str]) -> tuple[SiteC, ...]:
+        return tuple(
+            SiteC(name_of(b.layer_idx, kind), c) for b in self.blocks for kind, c in b.slots
+        )
+
+
+def _select_layers(sel: LayerSelection, n_layer: int) -> tuple[int, ...]:
+    match sel:
+        case AllLayers():
+            return tuple(range(n_layer))
+        case LayerRange(start=start, end=end):
+            assert end <= n_layer, f"layer range end {end} exceeds n_layer {n_layer}"
+            return tuple(range(start, end))
+        case LayerList(indices=indices):
+            assert indices[-1] < n_layer, f"layer {indices[-1]} exceeds n_layer {n_layer}"
+            return tuple(indices)
+
+
+def resolve_site_tree(
+    sites: GluTransformerCSpec | SimpleMlpCSpec, family: ArchFamily, n_layer: int
+) -> SiteTree:
+    """Tile the per-matrix-type `cs` across the selected layers into a `SiteTree`. Every block
+    shares ONE `slots` tuple (canonical family order, only the requested matrices), so the tree
+    is homogeneous by construction — which is exactly what makes the chunkwise CI fn's chunks
+    homogeneous. Asserts the spec's declared family matches the target's."""
+    assert sites.kind == family.key, f"c-spec family {sites.kind!r} != target family {family.key!r}"
+    # cs keys are Literal-typed by the family vocabulary `matrices` derives from, so every
+    # key is a family matrix by construction — ordering is the only work left.
+    rank = {matrix: i for i, matrix in enumerate(family.matrices)}
+    slots = tuple(sorted(sites.cs.items(), key=lambda slot: rank[slot[0]]))
+    layers = _select_layers(sites.layers, n_layer)
+    return SiteTree(tuple(BlockSites(layer, slots) for layer in layers))
 
 
 ChunkInputTap = Literal["first_block_resid", "all_block_resids", "all_site_inputs"]

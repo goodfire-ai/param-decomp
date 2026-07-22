@@ -3,7 +3,7 @@ and fail-closed parsing on a bound grammar."""
 
 import pytest
 
-from param_decomp.site_tree import ArchFamily
+from param_decomp.family import ArchFamily
 from param_decomp.targets import glu_transformer, llama_simple_mlp
 from param_decomp.targets.transformer_taps import TransformerTapGrammar, resid_tap_key
 
