@@ -152,12 +152,14 @@ and returns JAX-native as the #10 torch->jax adapter.
 
 - `param_decomp/` — the JAX trainer core. The pydantic config SCHEMA (`base_config.py` =
   `BaseConfig` / `Probability`; `schedule.py`; `configs.py` = routing +
-  decomposition site-spec + loss + eval-metric configs + `PDConfig` / `RuntimeConfig`
+  the explicit (toy) site spec + loss + eval-metric configs + `PDConfig` / `RuntimeConfig`
   / `Cadence` / `WandbConfig` / `ResumeProvenance` + the wandb-shaping helpers; the
-  authored `decomposition.ci` configs live with their domain schemas, lab-side). The
+  authored `decomposition.ci` configs AND the tiled LM site specs live with their domain
+  schemas, lab-side). The
   built-run bundle the engine consumes (`built_run.py`: `BuiltRun` /
   `DataConfig` / `EvalConfig` / … + the `TargetSites` protocol). The engine + numerics
   (`run.py` = `run_decomposition_training`, `model.py` / `train.py` / `ci_fn.py` /
+  `family.py` /
   `targets/glu_transformer.py` (+ `targets/{llama8b,qwen3_8b}.py` family files) / `targets/llama_simple_mlp.py` / `adversary.py` / `recon.py` / `losses.py` /
   `checkpoint.py` / `sharding.py` / `eval.py` / `slow_eval.py` / `arithmetic_eval.py` +
   `log.py`) plus `configs/`

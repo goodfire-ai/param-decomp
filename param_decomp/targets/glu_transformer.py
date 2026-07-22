@@ -23,7 +23,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, get_args
+from typing import Any, Literal, Protocol, get_args
 
 import equinox as eqx
 import jax
@@ -36,7 +36,7 @@ from jax.typing import DTypeLike
 from jaxtyping import Array, Float, Int
 from safetensors import safe_open
 
-from param_decomp import site_tree
+from param_decomp import family
 from param_decomp.components import (
     ComponentStacks,
     SiteC,
@@ -45,10 +45,9 @@ from param_decomp.components import (
     quantize_fp8,
     site_out,
 )
-from param_decomp.configs import GluMatrix
+from param_decomp.family import ArchFamily
 from param_decomp.losses import kl_per_position
 from param_decomp.sharding import assert_divisible
-from param_decomp.site_tree import ArchFamily
 from param_decomp.targets.transformer_taps import resid_tap_key
 from vendored_jax.llama import apply_rope, causal_sdpa, repeat_kv, rms_norm, rope_cos_sin
 
@@ -107,10 +106,13 @@ def default_inv_freq(head_dim: int, rope_theta: float) -> Float[Array, " hd2"]:
     return 1.0 / (rope_theta ** (jnp.arange(0, head_dim, 2, dtype=jnp.float32) / head_dim))
 
 
+# GLU = SwiGLU MLP (llama8b, qwen3_8b). The family's matrix vocabulary — the authored
+# c-spec keys (lab-side) are typed by it, so a c-spec key and a target matrix cannot drift.
+GluMatrix = Literal["q", "k", "v", "o", "gate", "up", "down"]
+
 KIND_ORDER: tuple[str, ...] = get_args(GluMatrix)
-"""Within-layer canonical site order = computation order, DERIVED from the config-side
-`GluMatrix` vocabulary (one source of truth — a c-spec key and a target matrix cannot
-drift). The canonical site order (`glu_site_specs`) is layer-ascending, then this."""
+"""Within-layer canonical site order = computation order, DERIVED from the `GluMatrix`
+vocabulary. The canonical site order (`glu_site_specs`) is layer-ascending, then this."""
 ATTN_KINDS = ("q", "k", "v", "o")
 MLP_KINDS = ("gate", "up", "down")
 assert KIND_ORDER == ATTN_KINDS + MLP_KINDS, KIND_ORDER
@@ -140,7 +142,7 @@ def parse_site_name(name: str) -> tuple[int, str]:
 
 FAMILY = ArchFamily("glu_transformer", KIND_ORDER, site_name, parse_site_name)
 """This family's matrix grammar as data — the vocabulary + name renderer the tiled
-`glu_transformer` c-specs resolve against (`resolve_site_tree`)."""
+`glu_transformer` c-specs resolve against."""
 
 
 def site_dims(cfg: GLUArch, kind: str) -> tuple[int, int]:
@@ -164,7 +166,7 @@ def site_dims(cfg: GLUArch, kind: str) -> tuple[int, int]:
 
 
 def canonical_site_cs(site_cs: tuple[SiteC, ...]) -> tuple[SiteC, ...]:
-    return site_tree.canonical_site_cs(FAMILY, site_cs)
+    return family.canonical_site_cs(FAMILY, site_cs)
 
 
 def mlp_family_site_cs(first_layer: int, last_layer: int, C: int) -> tuple[SiteC, ...]:
@@ -179,7 +181,7 @@ def mlp_family_site_cs(first_layer: int, last_layer: int, C: int) -> tuple[SiteC
 
 
 def glu_site_specs(cfg: GLUArch, site_cs: tuple[SiteC, ...]) -> tuple[SiteSpec, ...]:
-    return site_tree.site_specs(FAMILY, site_cs, lambda kind: site_dims(cfg, kind), cfg.n_layer)
+    return family.site_specs(FAMILY, site_cs, lambda kind: site_dims(cfg, kind), cfg.n_layer)
 
 
 # ----------------------------- frozen layers -----------------------------

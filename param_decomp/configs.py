@@ -1,7 +1,7 @@
 """The torch-free pydantic config schema for the algorithm core.
 
 Every algorithm-level config class lives here (or in the sibling `base_config` /
-`schedule` modules): routing, the decomposition site (C) specs, loss-metric configs,
+`schedule` modules): routing, the explicit (toy) site spec, loss-metric configs,
 eval-metric configs, the top-level `PDConfig` / `RuntimeConfig` / `Cadence`, and the
 `wandb.config` shaping helpers. Depends only on pydantic / numpy / pyyaml /
 annotated-types (via `base_config`), so non-trainer consumers validate the same
@@ -10,8 +10,9 @@ YAML run configs without pulling jax/wandb.
 Experiment-level schema (the `ExperimentConfig` base and its LM / TMS / ResidMLP
 subclasses, each binding concrete `target`/`decomposition`/`data` sections) lives
 lab-side under `param_decomp_lab/experiments/` — including the authored
-`decomposition.ci` configs, which speak each domain's vocabulary. Core carries only
-the RESOLVED CI-fn arches (`ci_fn.py`).
+`decomposition.ci` configs AND the tiled LM site specs, which speak each domain's
+vocabulary. Core carries only the RESOLVED CI-fn arches (`ci_fn.py`) and the
+resolved flat sites.
 """
 
 import copy
@@ -63,61 +64,6 @@ SubsetRoutingType = UniformKSubsetRoutingConfig | StaticProbabilityRoutingConfig
 # ---------------------------------------------------------------------------
 # Decomposition site (C) specs
 # ---------------------------------------------------------------------------
-
-
-class AllLayers(BaseConfig):
-    kind: Literal["all"] = "all"
-
-
-class LayerRange(BaseConfig):
-    """Half-open `[start, end)` — matches `range()` / slice semantics."""
-
-    kind: Literal["range"] = "range"
-    start: NonNegativeInt
-    end: PositiveInt
-
-    @model_validator(mode="after")
-    def _nonempty(self) -> Self:
-        assert self.start < self.end, (self.start, self.end)
-        return self
-
-
-class LayerList(BaseConfig):
-    kind: Literal["list"] = "list"
-    indices: list[NonNegativeInt] = Field(..., min_length=1)
-
-    @model_validator(mode="after")
-    def _unique_sorted(self) -> Self:
-        assert self.indices == sorted(set(self.indices)), self.indices
-        return self
-
-
-LayerSelection = Annotated[AllLayers | LayerRange | LayerList, Field(discriminator="kind")]
-
-
-# Per-family matrix vocabularies (the single source of truth; each target's `KIND_ORDER`
-# derives via `typing.get_args`). GLU = SwiGLU MLP (llama8b); simple-MLP = plain GELU.
-GluMatrix = Literal["q", "k", "v", "o", "gate", "up", "down"]
-SimpleMlpMatrix = Literal["q_proj", "k_proj", "v_proj", "o_proj", "c_fc", "down_proj"]
-
-
-class GluTransformerCSpec(BaseConfig):
-    """Per-matrix-type C tiled across the selected layers (GLU family, e.g. llama8b). Every
-    selected layer is decomposed at the same `cs` matrices and C; a matrix absent from `cs`
-    is not decomposed on any layer. Tiled ⇒ every block is structurally identical, so the
-    chunkwise CI fn's chunks are homogeneous by construction."""
-
-    kind: Literal["glu_transformer"] = "glu_transformer"
-    layers: LayerSelection
-    cs: dict[GluMatrix, PositiveInt] = Field(..., min_length=1)
-
-
-class SimpleMlpCSpec(BaseConfig):
-    """Per-matrix-type C tiled across the selected layers (plain-GELU family, LlamaSimpleMLP)."""
-
-    kind: Literal["simple_mlp"] = "simple_mlp"
-    layers: LayerSelection
-    cs: dict[SimpleMlpMatrix, PositiveInt] = Field(..., min_length=1)
 
 
 class ExplicitSite(BaseConfig):
