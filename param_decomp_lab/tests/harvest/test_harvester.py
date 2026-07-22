@@ -1,15 +1,12 @@
 """Tests for the Harvester class and extract_padding_firing_windows."""
 
-import random
 from pathlib import Path
 
+import numpy as np
 import pytest
-import torch
 
 from param_decomp_lab.harvest.accumulator import Harvester, extract_padding_firing_windows
 from param_decomp_lab.harvest.reservoir import WINDOW_PAD_SENTINEL, ActivationWindows
-
-DEVICE = torch.device("cpu")
 
 LAYERS = [("layer_0", 4), ("layer_1", 4)]
 N_TOTAL = 8
@@ -21,39 +18,44 @@ WINDOW = 2 * CONTEXT_TOKENS_PER_SIDE + 1  # 3
 ACT_TYPES = ["ci", "inner"]
 
 
-def _make_harvester() -> Harvester:
+def _make_harvester(collect_component_cooccurrence: bool = True) -> Harvester:
     return Harvester(
         layers=LAYERS,
         vocab_size=VOCAB_SIZE,
         max_examples_per_component=MAX_EXAMPLES,
         context_tokens_per_side=CONTEXT_TOKENS_PER_SIDE,
         max_examples_per_batch_per_component=5,
-        device=DEVICE,
+        collect_component_cooccurrence=collect_component_cooccurrence,
     )
+
+
+def _cooc(h: Harvester) -> np.ndarray:
+    assert h.cooccurrence_counts is not None
+    return h.cooccurrence_counts
 
 
 def _make_activation_windows(
     comp_idx: list[int],
-    token_windows: torch.Tensor,
-    firings: torch.Tensor | None = None,
+    token_windows: np.ndarray,
+    firings: np.ndarray | None = None,
 ) -> ActivationWindows:
     n = len(comp_idx)
     w = token_windows.shape[1]
     if firings is None:
-        firings = torch.ones(n, w, dtype=torch.bool)
+        firings = np.ones((n, w), dtype=np.bool_)
     return ActivationWindows(
-        component_idx=torch.tensor(comp_idx),
+        component_idx=np.array(comp_idx),
         token_windows=token_windows,
         firing_windows=firings,
-        activation_windows={at: torch.ones(n, w) for at in ACT_TYPES},
+        activation_windows={at: np.ones((n, w)) for at in ACT_TYPES},
     )
 
 
 class TestInit:
-    def test_tensor_shapes(self):
+    def test_array_shapes(self):
         h = _make_harvester()
         assert h.firing_counts.shape == (N_TOTAL,)
-        assert h.cooccurrence_counts.shape == (N_TOTAL, N_TOTAL)
+        assert _cooc(h).shape == (N_TOTAL, N_TOTAL)
         assert h.input_cooccurrence.shape == (N_TOTAL, VOCAB_SIZE)
         assert h.input_marginals.shape == (VOCAB_SIZE,)
         assert h.output_cooccurrence.shape == (N_TOTAL, VOCAB_SIZE)
@@ -61,12 +63,6 @@ class TestInit:
         assert h.reservoir.tokens.shape == (N_TOTAL, MAX_EXAMPLES, WINDOW)
         assert h.reservoir.n_items.shape == (N_TOTAL,)
         assert h.reservoir.n_seen.shape == (N_TOTAL,)
-
-    def test_tensors_on_correct_device(self):
-        h = _make_harvester()
-        assert h.firing_counts.device == DEVICE
-        assert h.reservoir.tokens.device == DEVICE
-        assert h.cooccurrence_counts.device == DEVICE
 
     def test_layer_offsets(self):
         h = _make_harvester()
@@ -77,10 +73,10 @@ class TestInit:
         expected = [f"layer_0:{i}" for i in range(4)] + [f"layer_1:{i}" for i in range(4)]
         assert h.component_keys == expected
 
-    def test_tensors_initialized_to_zero(self):
+    def test_arrays_initialized_to_zero(self):
         h = _make_harvester()
         assert h.firing_counts.sum() == 0
-        assert h.cooccurrence_counts.sum() == 0
+        assert _cooc(h).sum() == 0
         assert h.reservoir.n_items.sum() == 0
         assert h.reservoir.n_seen.sum() == 0
         assert h.total_tokens_processed == 0
@@ -97,24 +93,23 @@ class TestReservoirAdd:
         comp = 2
 
         for i in range(k):
-            aw = _make_activation_windows([comp], torch.full((1, WINDOW), i, dtype=torch.long))
-            h.reservoir.add(aw)
+            aw = _make_activation_windows([comp], np.full((1, WINDOW), i, dtype=np.int64))
+            h.reservoir.add(aw, h.rng)
 
         assert h.reservoir.n_items[comp] == k
         assert h.reservoir.n_seen[comp] == k
         for i in range(k):
-            assert h.reservoir.tokens[comp, i, 0].item() == i
+            assert int(h.reservoir.tokens[comp, i, 0]) == i
 
     def test_replacement_after_k(self):
         h = _make_harvester()
         k = h.reservoir.k
         comp = 0
 
-        random.seed(42)
         n_extra = 100
         for i in range(k + n_extra):
-            aw = _make_activation_windows([comp], torch.full((1, WINDOW), i, dtype=torch.long))
-            h.reservoir.add(aw)
+            aw = _make_activation_windows([comp], np.full((1, WINDOW), i, dtype=np.int64))
+            h.reservoir.add(aw, h.rng)
 
         assert h.reservoir.n_items[comp] == k
         assert h.reservoir.n_seen[comp] == k + n_extra
@@ -124,20 +119,19 @@ class TestReservoirAdd:
         k = h.reservoir.k
         comp = 1
 
-        random.seed(0)
         for i in range(k * 10):
             aw = _make_activation_windows(
-                [comp], torch.full((1, WINDOW), i % VOCAB_SIZE, dtype=torch.long)
+                [comp], np.full((1, WINDOW), i % VOCAB_SIZE, dtype=np.int64)
             )
-            h.reservoir.add(aw)
+            h.reservoir.add(aw, h.rng)
 
         assert h.reservoir.n_items[comp] == k
         assert h.reservoir.n_seen[comp] == k * 10
 
     def test_multiple_components_in_one_call(self):
         h = _make_harvester()
-        aw = _make_activation_windows([0, 0, 3, 3, 3], torch.arange(5 * WINDOW).reshape(5, WINDOW))
-        h.reservoir.add(aw)
+        aw = _make_activation_windows([0, 0, 3, 3, 3], np.arange(5 * WINDOW).reshape(5, WINDOW))
+        h.reservoir.add(aw, h.rng)
 
         assert h.reservoir.n_items[0] == 2
         assert h.reservoir.n_seen[0] == 2
@@ -151,11 +145,11 @@ class TestReservoirAdd:
         k = h.reservoir.k
 
         for i in range(k):
-            aw = _make_activation_windows([0], torch.full((1, WINDOW), i, dtype=torch.long))
-            h.reservoir.add(aw)
+            aw = _make_activation_windows([0], np.full((1, WINDOW), i, dtype=np.int64))
+            h.reservoir.add(aw, h.rng)
 
-        aw = _make_activation_windows([1], torch.full((1, WINDOW), 99, dtype=torch.long))
-        h.reservoir.add(aw)
+        aw = _make_activation_windows([1], np.full((1, WINDOW), 99, dtype=np.int64))
+        h.reservoir.add(aw, h.rng)
 
         assert h.reservoir.n_items[0] == k
         assert h.reservoir.n_seen[0] == k
@@ -167,22 +161,22 @@ class TestSaveLoadRoundtrip:
     def test_roundtrip_preserves_all_fields(self, tmp_path: Path):
         h = _make_harvester()
 
-        h.firing_counts[0] = 10.0
-        h.firing_counts[3] = 5.0
+        h.firing_counts[0] = 10
+        h.firing_counts[3] = 5
         h.activation_sums["ci"][0] = 2.5
-        h.cooccurrence_counts[0, 3] = 7.0
+        _cooc(h)[0, 3] = 7
         h.input_cooccurrence[0, 2] = 15
         h.input_marginals[2] = 100
         h.output_cooccurrence[0, 5] = 0.3
         h.output_marginals[5] = 1.0
         h.total_tokens_processed = 500
 
-        aw = _make_activation_windows([0], torch.tensor([[1, 2, 3]]))
-        h.reservoir.add(aw)
+        aw = _make_activation_windows([0], np.array([[1, 2, 3]]))
+        h.reservoir.add(aw, h.rng)
 
-        path = tmp_path / "harvester.pt"
+        path = tmp_path / "harvester.npz"
         h.save(path)
-        loaded = Harvester.load(path, device=DEVICE)
+        loaded = Harvester.load(path)
 
         assert loaded.layer_names == h.layer_names
         assert loaded.c_per_layer == h.c_per_layer
@@ -200,22 +194,16 @@ class TestSaveLoadRoundtrip:
             "output_cooccurrence",
             "output_marginals",
         ]:
-            assert torch.equal(getattr(loaded, field), getattr(h, field).cpu()), field
+            np.testing.assert_array_equal(getattr(loaded, field), getattr(h, field))
 
         for act_type in h.activation_sums:
-            assert torch.equal(loaded.activation_sums[act_type], h.activation_sums[act_type].cpu())
+            np.testing.assert_array_equal(
+                loaded.activation_sums[act_type], h.activation_sums[act_type]
+            )
 
-        assert torch.equal(loaded.reservoir.tokens, h.reservoir.tokens.cpu())
-        assert torch.equal(loaded.reservoir.n_items, h.reservoir.n_items.cpu())
-        assert torch.equal(loaded.reservoir.n_seen, h.reservoir.n_seen.cpu())
-
-    def test_load_to_specific_device(self, tmp_path: Path):
-        h = _make_harvester()
-        path = tmp_path / "harvester.pt"
-        h.save(path)
-        loaded = Harvester.load(path, device=torch.device("cpu"))
-        assert loaded.device == torch.device("cpu")
-        assert loaded.firing_counts.device == torch.device("cpu")
+        np.testing.assert_array_equal(loaded.reservoir.tokens, h.reservoir.tokens)
+        np.testing.assert_array_equal(loaded.reservoir.n_items, h.reservoir.n_items)
+        np.testing.assert_array_equal(loaded.reservoir.n_seen, h.reservoir.n_seen)
 
 
 class TestMerge:
@@ -223,12 +211,12 @@ class TestMerge:
         h1 = _make_harvester()
         h2 = _make_harvester()
 
-        h1.firing_counts[0] = 10.0
-        h2.firing_counts[0] = 20.0
+        h1.firing_counts[0] = 10
+        h2.firing_counts[0] = 20
         h1.activation_sums["ci"][1] = 3.0
         h2.activation_sums["ci"][1] = 7.0
-        h1.cooccurrence_counts[0, 1] = 5.0
-        h2.cooccurrence_counts[0, 1] = 3.0
+        _cooc(h1)[0, 1] = 5
+        _cooc(h2)[0, 1] = 3
         h1.input_cooccurrence[0, 2] = 10
         h2.input_cooccurrence[0, 2] = 5
         h1.input_marginals[2] = 100
@@ -242,9 +230,9 @@ class TestMerge:
 
         h1.merge(h2)
 
-        assert h1.firing_counts[0] == 30.0
+        assert h1.firing_counts[0] == 30
         assert h1.activation_sums["ci"][1] == 10.0
-        assert h1.cooccurrence_counts[0, 1] == 8.0
+        assert _cooc(h1)[0, 1] == 8
         assert h1.input_cooccurrence[0, 2] == 15
         assert h1.input_marginals[2] == 300
         assert h1.output_cooccurrence[0, 0] == pytest.approx(0.8)
@@ -259,7 +247,7 @@ class TestMerge:
             max_examples_per_component=MAX_EXAMPLES,
             context_tokens_per_side=CONTEXT_TOKENS_PER_SIDE,
             max_examples_per_batch_per_component=5,
-            device=DEVICE,
+            collect_component_cooccurrence=True,
         )
         with pytest.raises(AssertionError):
             h1.merge(h_different)
@@ -269,11 +257,11 @@ class TestMerge:
         h2 = _make_harvester()
 
         for i in range(2):
-            aw = _make_activation_windows([0], torch.full((1, WINDOW), i, dtype=torch.long))
-            h1.reservoir.add(aw)
+            aw = _make_activation_windows([0], np.full((1, WINDOW), i, dtype=np.int64))
+            h1.reservoir.add(aw, h1.rng)
         for i in range(2):
-            aw = _make_activation_windows([0], torch.full((1, WINDOW), 10 + i, dtype=torch.long))
-            h2.reservoir.add(aw)
+            aw = _make_activation_windows([0], np.full((1, WINDOW), 10 + i, dtype=np.int64))
+            h2.reservoir.add(aw, h2.rng)
 
         h1.merge(h2)
         assert h1.reservoir.n_items[0] == 4
@@ -284,19 +272,14 @@ class TestMerge:
         h2 = _make_harvester()
         k = MAX_EXAMPLES
 
-        random.seed(42)
         for i in range(k + 10):
-            aw = _make_activation_windows(
-                [0], torch.full((1, WINDOW), i % VOCAB_SIZE, dtype=torch.long)
-            )
-            h1.reservoir.add(aw)
+            aw = _make_activation_windows([0], np.full((1, WINDOW), i % VOCAB_SIZE, dtype=np.int64))
+            h1.reservoir.add(aw, h1.rng)
         for i in range(k + 5):
-            aw = _make_activation_windows(
-                [0], torch.full((1, WINDOW), i % VOCAB_SIZE, dtype=torch.long)
-            )
-            h2.reservoir.add(aw)
+            aw = _make_activation_windows([0], np.full((1, WINDOW), i % VOCAB_SIZE, dtype=np.int64))
+            h2.reservoir.add(aw, h2.rng)
 
-        seen_before = h1.reservoir.n_seen[0].item() + h2.reservoir.n_seen[0].item()
+        seen_before = int(h1.reservoir.n_seen[0]) + int(h2.reservoir.n_seen[0])
         h1.merge(h2)
 
         assert h1.reservoir.n_items[0] == k
@@ -306,10 +289,10 @@ class TestMerge:
         h1 = _make_harvester()
         h2 = _make_harvester()
 
-        aw1 = _make_activation_windows([0], torch.full((1, WINDOW), 1, dtype=torch.long))
-        h1.reservoir.add(aw1)
-        aw2 = _make_activation_windows([3], torch.full((1, WINDOW), 2, dtype=torch.long))
-        h2.reservoir.add(aw2)
+        aw1 = _make_activation_windows([0], np.full((1, WINDOW), 1, dtype=np.int64))
+        h1.reservoir.add(aw1, h1.rng)
+        aw2 = _make_activation_windows([3], np.full((1, WINDOW), 2, dtype=np.int64))
+        h2.reservoir.add(aw2, h2.rng)
 
         h1.merge(h2)
         assert h1.reservoir.n_items[0] == 1
@@ -321,8 +304,8 @@ class TestBuildResults:
         h = _make_harvester()
 
         h.total_tokens_processed = 100
-        h.firing_counts[0] = 10.0
-        h.firing_counts[1] = 5.0
+        h.firing_counts[0] = 10
+        h.firing_counts[1] = 5
         h.activation_sums["ci"][0] = 2.0
         h.activation_sums["ci"][1] = 1.0
 
@@ -336,11 +319,11 @@ class TestBuildResults:
         h.output_marginals[1] = 15.0
 
         for i in range(3):
-            aw = _make_activation_windows([0], torch.tensor([[i, i + 1, i + 2]]))
-            h.reservoir.add(aw)
+            aw = _make_activation_windows([0], np.array([[i, i + 1, i + 2]]))
+            h.reservoir.add(aw, h.rng)
 
-        aw = _make_activation_windows([1], torch.tensor([[5, 6, 7]]))
-        h.reservoir.add(aw)
+        aw = _make_activation_windows([1], np.array([[5, 6, 7]]))
+        h.reservoir.add(aw, h.rng)
 
         return h
 
@@ -388,15 +371,15 @@ class TestBuildResults:
     def test_second_layer_component_keys(self):
         h = _make_harvester()
         h.total_tokens_processed = 100
-        h.firing_counts[5] = 8.0
+        h.firing_counts[5] = 8
         h.activation_sums["ci"][5] = 1.6
         h.input_marginals[0] = 50
         h.input_cooccurrence[5, 0] = 4
         h.output_marginals[0] = 10.0
         h.output_cooccurrence[5, 0] = 2.0
 
-        aw = _make_activation_windows([5], torch.tensor([[1, 2, 3]]))
-        h.reservoir.add(aw)
+        aw = _make_activation_windows([5], np.array([[1, 2, 3]]))
+        h.reservoir.add(aw, h.rng)
 
         results = list(h.build_results(pmi_top_k_tokens=3))
         assert len(results) == 1
@@ -413,17 +396,17 @@ class TestBuildResults:
     def test_sentinel_tokens_stripped_from_examples(self):
         h = _make_harvester()
         h.total_tokens_processed = 100
-        h.firing_counts[0] = 5.0
+        h.firing_counts[0] = 5
         h.activation_sums["ci"][0] = 1.0
         h.input_marginals[0] = 50
         h.input_cooccurrence[0, 0] = 3
         h.output_marginals[0] = 10.0
         h.output_cooccurrence[0, 0] = 1.0
 
-        h.reservoir.tokens[0, 0] = torch.tensor([WINDOW_PAD_SENTINEL, 5, 6])
-        h.reservoir.firings[0, 0] = torch.tensor([False, True, True])
+        h.reservoir.tokens[0, 0] = np.array([WINDOW_PAD_SENTINEL, 5, 6])
+        h.reservoir.firings[0, 0] = np.array([False, True, True])
         for at in h.reservoir.acts:
-            h.reservoir.acts[at][0, 0] = torch.tensor([0.0, 0.8, 0.9])
+            h.reservoir.acts[at][0, 0] = np.array([0.0, 0.8, 0.9])
         h.reservoir.n_items[0] = 1
         h.reservoir.n_seen[0] = 1
 
@@ -437,13 +420,12 @@ class TestBuildResults:
 class TestProcessBatch:
     def _make_batch_inputs(
         self, B: int = 2, S: int = 4
-    ) -> tuple[
-        torch.Tensor, dict[str, torch.Tensor], dict[str, dict[str, torch.Tensor]], torch.Tensor
-    ]:
-        batch = torch.randint(0, VOCAB_SIZE, (B, S))
-        firings = {layer: torch.zeros(B, S, c, dtype=torch.bool) for layer, c in LAYERS}
-        activations = {layer: {at: torch.zeros(B, S, c) for at in ACT_TYPES} for layer, c in LAYERS}
-        output_probs = torch.zeros(B, S, VOCAB_SIZE)
+    ) -> tuple[np.ndarray, dict[str, np.ndarray], dict[str, dict[str, np.ndarray]], np.ndarray]:
+        rng = np.random.default_rng(0)
+        batch = rng.integers(0, VOCAB_SIZE, (B, S))
+        firings = {layer: np.zeros((B, S, c), dtype=np.bool_) for layer, c in LAYERS}
+        activations = {layer: {at: np.zeros((B, S, c)) for at in ACT_TYPES} for layer, c in LAYERS}
+        output_probs = np.zeros((B, S, VOCAB_SIZE))
         return batch, firings, activations, output_probs
 
     def test_updates_total_tokens(self):
@@ -462,8 +444,8 @@ class TestProcessBatch:
         firings["layer_0"][0, 1, 0] = True
 
         h.process_batch(batch, firings, activations, output_probs)
-        assert h.firing_counts[0] == 2.0
-        assert h.firing_counts[1] == 0.0
+        assert h.firing_counts[0] == 2
+        assert h.firing_counts[1] == 0
 
     def test_activation_sums_accumulate(self):
         h = _make_harvester()
@@ -472,7 +454,7 @@ class TestProcessBatch:
         activations["layer_0"]["ci"][0, 0, 2] = 0.75
 
         h.process_batch(batch, firings, activations, output_probs)
-        assert h.activation_sums["ci"][2].item() == pytest.approx(0.75)
+        assert float(h.activation_sums["ci"][2]) == pytest.approx(0.75)
 
     def test_cooccurrence_counts(self):
         h = _make_harvester()
@@ -482,33 +464,52 @@ class TestProcessBatch:
         firings["layer_0"][0, 0, 2] = True
 
         h.process_batch(batch, firings, activations, output_probs)
-        assert h.cooccurrence_counts[0, 2] == 1.0
-        assert h.cooccurrence_counts[2, 0] == 1.0
-        assert h.cooccurrence_counts[0, 0] == 1.0
-        assert h.cooccurrence_counts[2, 2] == 1.0
+        assert _cooc(h)[0, 2] == 1
+        assert _cooc(h)[2, 0] == 1
+        assert _cooc(h)[0, 0] == 1
+        assert _cooc(h)[2, 2] == 1
+
+    def test_cooccurrence_disabled(self, tmp_path: Path):
+        h = _make_harvester(collect_component_cooccurrence=False)
+        assert h.cooccurrence_counts is None
+
+        B, S = 1, 1
+        batch, firings, activations, output_probs = self._make_batch_inputs(B, S)
+        firings["layer_0"][0, 0, 0] = True
+        firings["layer_0"][0, 0, 2] = True
+        h.process_batch(batch, firings, activations, output_probs)
+        assert h.cooccurrence_counts is None
+
+        path = tmp_path / "harvester.npz"
+        h.save(path)
+        loaded = Harvester.load(path)
+        assert loaded.cooccurrence_counts is None
+        assert loaded.collect_component_cooccurrence is False
 
 
 class TestExtractPaddingFiringWindows:
     def test_center_window(self):
-        batch = torch.tensor([[10, 11, 12, 13, 14]])
-        firings = torch.zeros(1, 5, 2, dtype=torch.bool)
+        rng = np.random.default_rng(0)
+        batch = np.array([[10, 11, 12, 13, 14]])
+        firings = np.zeros((1, 5, 2), dtype=np.bool_)
         firings[0, 2, 0] = True
-        activations = {"ci": torch.zeros(1, 5, 2)}
+        activations = {"ci": np.zeros((1, 5, 2))}
         activations["ci"][0, 2, 0] = 0.9
 
-        result = extract_padding_firing_windows(batch, firings, activations, 10, 1)
+        result = extract_padding_firing_windows(batch, firings, activations, 10, 1, rng)
         assert result is not None
         assert result.token_windows.shape == (1, 3)
         assert result.token_windows[0].tolist() == [11, 12, 13]
-        assert result.activation_windows["ci"][0, 1].item() == pytest.approx(0.9)
+        assert float(result.activation_windows["ci"][0, 1]) == pytest.approx(0.9)
 
     def test_left_boundary_padding(self):
-        batch = torch.tensor([[10, 11, 12]])
-        firings = torch.zeros(1, 3, 1, dtype=torch.bool)
+        rng = np.random.default_rng(0)
+        batch = np.array([[10, 11, 12]])
+        firings = np.zeros((1, 3, 1), dtype=np.bool_)
         firings[0, 0, 0] = True
-        activations = {"ci": torch.zeros(1, 3, 1)}
+        activations = {"ci": np.zeros((1, 3, 1))}
 
-        result = extract_padding_firing_windows(batch, firings, activations, 10, 2)
+        result = extract_padding_firing_windows(batch, firings, activations, 10, 2, rng)
         assert result is not None
         tok_w = result.token_windows
         assert tok_w.shape == (1, 5)
@@ -519,12 +520,13 @@ class TestExtractPaddingFiringWindows:
         assert tok_w[0, 4] == 12
 
     def test_right_boundary_padding(self):
-        batch = torch.tensor([[10, 11, 12]])
-        firings = torch.zeros(1, 3, 1, dtype=torch.bool)
+        rng = np.random.default_rng(0)
+        batch = np.array([[10, 11, 12]])
+        firings = np.zeros((1, 3, 1), dtype=np.bool_)
         firings[0, 2, 0] = True
-        activations = {"ci": torch.zeros(1, 3, 1)}
+        activations = {"ci": np.zeros((1, 3, 1))}
 
-        result = extract_padding_firing_windows(batch, firings, activations, 10, 2)
+        result = extract_padding_firing_windows(batch, firings, activations, 10, 2, rng)
         assert result is not None
         tok_w = result.token_windows
         assert tok_w[0, 0] == 10
@@ -534,22 +536,24 @@ class TestExtractPaddingFiringWindows:
         assert tok_w[0, 4] == WINDOW_PAD_SENTINEL
 
     def test_no_firings_returns_none(self):
-        batch = torch.tensor([[0, 1, 2]])
-        firings = torch.zeros(1, 3, 2, dtype=torch.bool)
-        activations = {"ci": torch.zeros(1, 3, 2)}
+        rng = np.random.default_rng(0)
+        batch = np.array([[0, 1, 2]])
+        firings = np.zeros((1, 3, 2), dtype=np.bool_)
+        activations = {"ci": np.zeros((1, 3, 2))}
 
-        result = extract_padding_firing_windows(batch, firings, activations, 10, 1)
+        result = extract_padding_firing_windows(batch, firings, activations, 10, 1, rng)
         assert result is None
 
     def test_multiple_firings(self):
-        batch = torch.tensor([[0, 1, 2, 3, 4]])
-        firings = torch.zeros(1, 5, 3, dtype=torch.bool)
+        rng = np.random.default_rng(0)
+        batch = np.array([[0, 1, 2, 3, 4]])
+        firings = np.zeros((1, 5, 3), dtype=np.bool_)
         firings[0, 1, 0] = True
         firings[0, 3, 2] = True
-        activations = {"ci": torch.zeros(1, 5, 3)}
+        activations = {"ci": np.zeros((1, 5, 3))}
 
-        result = extract_padding_firing_windows(batch, firings, activations, 10, 1)
+        result = extract_padding_firing_windows(batch, firings, activations, 10, 1, rng)
         assert result is not None
         assert result.token_windows.shape == (2, 3)
-        assert result.token_windows[0].tolist() == [0, 1, 2]
-        assert result.token_windows[1].tolist() == [2, 3, 4]
+        windows = sorted(result.token_windows.tolist())
+        assert windows == [[0, 1, 2], [2, 3, 4]]

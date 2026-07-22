@@ -12,14 +12,13 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass
 
 from param_decomp.log import logger
-from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
-from param_decomp_lab.app.backend.utils import delimit_tokens
 from param_decomp_lab.autointerp.config import DetectionEvalConfig
 from param_decomp_lab.autointerp.db import InterpDB
 from param_decomp_lab.autointerp.llm_api import LLMError, LLMJob, LLMResult, map_llm_calls
 from param_decomp_lab.autointerp.providers import LLMProvider
 from param_decomp_lab.autointerp.repo import InterpRepo
 from param_decomp_lab.harvest.schemas import ActivationExample, ComponentData
+from param_decomp_lab.tokenizer_display import AppTokenizer, delimit_tokens
 
 DETECTION_SCHEMA = {
     "type": "object",

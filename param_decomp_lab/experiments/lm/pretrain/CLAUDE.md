@@ -1,103 +1,78 @@
-# param_decomp_lab/experiments/lm/pretrain - Language Model Pretraining
+# experiments/lm/pretrain — in-house target-LM pretraining (JAX)
 
-This module provides infrastructure for pretraining language models that can
-later be decomposed using PD.
+Pretrains the FROZEN in-house target LMs that the decomposition trainer (`param_decomp_lab.experiments.lm.run`)
+then decomposes — e.g. the pile-pretrained `llama_simple_mlp` (target `t-9d2b8f02`). Small,
+simple ML: next-token CE, AdamW, cosine LR + warmup. JAX-native (equinox), torch-free.
 
-## Overview
+The torch original (`torch-oracle:param_decomp_lab/experiments/lm/pretrain/`) was a
+torchrun trainer; this is a capability reimplementation (NOT bit-exact), reusing the JAX
+single-pool trainer's data/sharding/checkpoint substrate.
 
-- **Purpose**: Train GPT-2 and Llama variants on SimpleStories or Pile datasets
-- **Output**: Models saved to `PARAM_DECOMP_OUT_DIR/target_models/`
-- **CLI**: `pd-pretrain`
+## Split (mirrors `pd-lm`)
 
-## CLI Usage
+The trainer lives in the core `param-decomp` distribution (repo-root sibling `pretrain/`);
+the submit wrapper is lab-side. One venv covers both:
 
-```bash
-# Submit to SLURM (default)
-pd-pretrain --config_path param_decomp_lab/experiments/lm/pretrain/configs/pile_llama_simple_mlp-4L-768.yaml
+- **`pretrain/`** (repo-root sibling of `param_decomp/`) — the trainer:
+  - `models.py` — trainable equinox defs for all three archs (`GPT2Simple`, `LlamaSimple`,
+    `LlamaSimpleMLP`). Weights are stored in torch `nn.Linear` orientation `(d_out, d_in)`
+    and `state_dict()` emits the EXACT keys the decomposition loader reads.
+  - `config.py` — `PretrainConfig` (the self-contained run yaml schema).
+  - `train.py` — `python -m pretrain.train <config.yaml>`: the composition root + only I/O layer. fp32
+    masters, AdamW (decay on 2D weights only), cosine+warmup, grad clip, orbax sharded
+    checkpoints, SIGTERM→save→requeue→resume. Reuses `param_decomp.data` (offline
+    pre-tokenized parquet, never streamed) + `param_decomp.sharding`.
+  - `cache.py` — writes the decomposition trainer's `pretrain_cache/<project>-<run_id>/`
+    layout (safetensors + `model_config.yaml`) at every save.
+  - `configs/` — the run yamls (`pile_llama_simple_mlp-*`, `gpt2_simple-2L`,
+    `pile_llama_simple-4L-768`, `*_SMOKE`).
+- **`param_decomp_lab/experiments/lm/pretrain/`** (here):
+  - `launch.py` — `pd-pretrain`: snapshot + immutable shared-FS workspace + sbatch
+    `python -m pretrain.train` (or `--local` to run in the current shell). Slim mirror of `pd-lm`.
+  - `run_info.py` — `find_pretrain_cache(project, run_id)`: the torch-free read-side index
+    into the cache (the torch `PretrainRunInfo`'s wandb-download path is gone — the cache
+    is written directly to shared FS).
 
-# Run locally
-pd-pretrain --config_path ... --local
+## Cache compatibility (load-bearing)
 
-# Multi-GPU DDP training
-pd-pretrain --config_path ... --n_gpus 4
-
-```
-
-## Available Models
-
-| Model Type | Description |
-|------------|-------------|
-| `GPT2` | Full GPT-2 implementation |
-| `GPT2Simple` | Simplified GPT-2 |
-| `Llama` | Full Llama implementation |
-| `LlamaSimple` | Simplified Llama (no QKV merging) |
-| `LlamaSimpleMLP` | Llama MLP-only (primary decomposition target) |
-
-## Tokenizers
-
-- **SimpleStories**: `SimpleStories/test-SimpleStories-gpt2-1.25M` (vocab size: 4019)
-- **Pile/OpenWebText**: `gpt2` (vocab size: 50257)
-
-## Dataset max_seq_len vs Model block_size
-
-The dataset `max_seq_len` must be **model.block_size + 1**. During training, sequences are
-split into input `[:, :-1]` and target `[:, 1:]` for next-token prediction, so the extra
-token provides room for label indexing. For example, if the model has `block_size: 512`,
-the data config should have `max_seq_len: 513`. This is enforced by an assertion in
-`train.py`.
-
-## Key Files
-
-- `train.py` - Main training loop with DDP support
-- `run_info.py` - Load trained models from W&B or local paths
-- `models/` - Model implementations
-- `configs/` - Training configuration YAML files
-- `cli.py` - CLI entry point + SLURM submission + local run logic
-
-## Loading Trained Models
-
-```python
-from param_decomp_lab.experiments.lm.pretrain.run_info import PretrainRunInfo
-from param_decomp_lab.experiments.lm.pretrain.models import MODEL_CLASSES
-
-# Load from W&B
-run_info = PretrainRunInfo.from_path("entity/project/runs/run_id")
-model_cls = MODEL_CLASSES[run_info.model_config_dict["model_type"]]
-model = model_cls.from_run_info(run_info)
-
-# Load from local path
-run_info = PretrainRunInfo.from_path("/path/to/checkpoints/model_step_10000.pt")
-```
-
-Downloaded W&B runs are cached in `PARAM_DECOMP_OUT_DIR/pretrain_cache/<project>-<run_id>/`.
-
-## Output Structure
-
-```
-PARAM_DECOMP_OUT_DIR/target_models/
-└── <timestamp>/
-    ├── final_config.yaml      # Full training config
-    ├── model_config.yaml      # Model architecture config
-    ├── tokenizer.json         # Tokenizer (uploaded to W&B)
-    ├── main.log               # Training log
-    └── checkpoints/
-        ├── model_step_0.pt
-        ├── model_step_1.pt
-        ├── model_step_2.pt
-        ├── model_step_4.pt    # Power-of-2 checkpoints
-        └── ...
-```
-
-## Integration with PD
-
-After training, models can be decomposed using PD:
+A freshly-pretrained target is decomposable with NO conversion. `pretrain.train` writes
+`PARAM_DECOMP_OUT_DIR/pretrain_cache/<project>-<run_id>/model_step_<N>.safetensors` keyed
+`h.{i}.attn.{q,k,v,o}_proj.weight`, `h.{i}.mlp.{c_fc,down_proj}.weight`,
+`h.{i}.rms_{1,2}.weight`, `wte.weight`, `ln_f.weight` (NO `lm_head.weight` — tied), every
+weight `(d_out, d_in)` — exactly what `param_decomp.targets.llama_simple_mlp` reads. A
+decomposition config points at it via `target.spec`:
 
 ```yaml
-# In param_decomp_lab/experiments/lm/*.yaml, under `target:`
 target:
   spec:
     kind: pretrained
     model_class: param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
-    run_path: goodfire/spd/runs/<run_id>
-  output_extract: 0
+    run_path: <entity>/<project>/runs/<run_id>
+```
+
+(`run_path` resolves to `pretrain_cache/<project>-<run_id>`.) The pretrain model's forward
+is bit-identical to the loader's `clean_suffix_logits` round-trip — pinned by
+`param_decomp/tests/test_pretrain.py`.
+
+## Data
+
+Offline pre-tokenized parquet ONLY (the prestage tool's output;
+`param_decomp.data.ShardServer`). Shards are `block_size + 1` wide; the trainer serves
+the full row and splits `x = tokens[:, :block]`, `y = tokens[:, 1:]` inside the step. The
+ported configs point at the staged `datasets/pile_neox_tok_512` (the torch configs'
+SimpleStories/streaming data is not staged — runtime tokenization is deliberately
+unsupported).
+
+## Usage
+
+The mode is CONFIG-DRIVEN via the config's `dp` (no `--nodes` / `--local` flags):
+`dp = N` (a multiple of 8) → SLURM across `N // 8` nodes; `dp = null` → run the trainer
+inline in the current venv (CPU / single GPU).
+
+```bash
+# SLURM: config sets `dp: 8` (1 node = 8 GPUs)
+pd-pretrain pretrain/configs/pile_llama_simple_mlp-4L-768.yaml
+
+# local: config leaves `dp` unset (null)
+pd-pretrain pretrain/configs/pile_llama_simple_mlp-2L-128_SMOKE.yaml
 ```

@@ -1,12 +1,84 @@
-"""Autointerp configuration."""
+"""Autointerp configuration: LLM-provider and prompt-strategy schema plus the
+execution (SLURM / eval) configs.
+
+Provider runtime classes (HTTP clients, dispatch) live in
+`param_decomp_lab.autointerp.providers`; strategy prompt impls live in
+`param_decomp_lab.autointerp.strategies`.
+"""
 
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, PositiveInt
 
 from param_decomp.base_config import BaseConfig
-from param_decomp_lab.autointerp.providers import LLMConfig, OpenRouterLLMConfig
 from param_decomp_lab.infra.settings import DEFAULT_PARTITION_NAME
+
+ReasoningEffort = Literal["none", "low", "medium", "high"]
+
+
+class OpenRouterLLMConfig(BaseConfig):
+    type: Literal["openrouter"] = "openrouter"
+    model: str = "google/gemini-3-flash-preview"
+    reasoning_effort: ReasoningEffort = "low"
+    max_concurrent: int = 50
+    max_requests_per_minute: int = 500
+
+
+EffortLevel = Literal["low", "medium", "high", "max"]
+
+
+class AnthropicSonnet46LLMConfig(BaseConfig):
+    type: Literal["anthropic"] = "anthropic"
+    model: Literal["claude-sonnet-4-6"] = "claude-sonnet-4-6"
+    effort: Literal["low", "medium", "high"] | None = None
+    max_concurrent: int = 40
+    max_requests_per_minute: int = 300
+
+
+class AnthropicOpus46LLMConfig(BaseConfig):
+    type: Literal["anthropic"] = "anthropic"
+    model: Literal["claude-opus-4-6"] = "claude-opus-4-6"
+    effort: EffortLevel | None = None
+    max_concurrent: int = 20
+    max_requests_per_minute: int = 100
+
+
+class AnthropicHaiku45LLMConfig(BaseConfig):
+    type: Literal["anthropic"] = "anthropic"
+    model: Literal["claude-haiku-4-5-20251001"] = "claude-haiku-4-5-20251001"
+    thinking_budget: int | None = Field(default=None, ge=1024)
+    max_concurrent: int = 40
+    max_requests_per_minute: int = 300
+
+
+AnthropicLLMConfig = Annotated[
+    AnthropicSonnet46LLMConfig | AnthropicOpus46LLMConfig | AnthropicHaiku45LLMConfig,
+    Field(discriminator="model"),
+]
+
+
+class OpenAILLMConfig(BaseConfig):
+    type: Literal["openai"] = "openai"
+    model: str
+    reasoning_effort: ReasoningEffort = "none"
+    max_concurrent: int = 50
+    max_requests_per_minute: int = 500
+
+
+class GoogleAILLMConfig(BaseConfig):
+    """Gemini Developer API (API key from Google AI Studio)."""
+
+    type: Literal["google_ai"] = "google_ai"
+    model: str = "gemini-3-flash-preview"
+    thinking_level: Literal["minimal", "low", "medium", "high"] | None = None
+    max_concurrent: int = 100
+    max_requests_per_minute: int = 1000
+
+
+LLMConfig = Annotated[
+    OpenRouterLLMConfig | AnthropicLLMConfig | OpenAILLMConfig | GoogleAILLMConfig,
+    Field(discriminator="type"),
+]
 
 
 class LegacyDelimitedExamplesConfig(BaseConfig):
@@ -58,10 +130,9 @@ class CompactSkepticalConfig(BaseConfig):
     """Current default strategy: compact prompt, skeptical tone, structured JSON output."""
 
     type: Literal["compact_skeptical"] = "compact_skeptical"
-    max_examples: int = 30
+    max_examples: PositiveInt = 30
     include_pmi: bool = True
-    include_dataset_description: bool = True
-    label_max_words: int = 8
+    label_max_words: PositiveInt = 8
     forbidden_words: list[str] | None = None
     example_rendering: ExampleRenderingConfig = Field(default_factory=default_example_rendering)
 
@@ -76,10 +147,9 @@ class DualViewConfig(BaseConfig):
     """
 
     type: Literal["dual_view"] = "dual_view"
-    max_examples: int = 30
+    max_examples: PositiveInt = 30
     include_pmi: bool = True
-    include_dataset_description: bool = True
-    label_max_words: int = 8
+    label_max_words: PositiveInt = 8
     forbidden_words: list[str] | None = None
     example_rendering: ExampleRenderingConfig = Field(default_factory=default_example_rendering)
 
@@ -92,9 +162,8 @@ class RichExamplesConfig(BaseConfig):
     """
 
     type: Literal["rich_examples"] = "rich_examples"
-    max_examples: int = 30
-    include_dataset_description: bool = True
-    label_max_words: int = 8
+    max_examples: PositiveInt = 30
+    label_max_words: PositiveInt = 8
     output_pmi_min_count: float = 2.0
     example_rendering: RichExampleRenderingConfig = Field(
         default_factory=default_rich_example_rendering
@@ -109,8 +178,8 @@ class CanonConfig(BaseConfig):
     """
 
     type: Literal["canon"] = "canon"
-    max_examples: int = 30
-    label_max_words: int = 8
+    max_examples: PositiveInt = 30
+    label_max_words: PositiveInt = 8
 
 
 StrategyConfig = CompactSkepticalConfig | DualViewConfig | RichExamplesConfig | CanonConfig

@@ -1,4 +1,8 @@
-"""Schedule config and value lookup used by `Trainer.run` and PGD metrics."""
+"""The one schedule surface: `ScheduleConfig` plus `get_scheduled_value`, its host-numpy
+evaluator (the torch-parity reference). Every scheduled quantity (main LRs, PPGD source
+LR, imp-min `p` / `gamma`) is configured by `ScheduleConfig` and evaluated in-step by the
+jnp twin `losses.scheduled_value_traced` (jax lives there so this module — imported by
+the config schema — stays jax-free); `test_schedule.py` pins the pair pointwise."""
 
 from typing import Literal, Self
 

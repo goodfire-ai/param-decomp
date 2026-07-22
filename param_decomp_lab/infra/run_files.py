@@ -1,6 +1,5 @@
 """Run directories, IDs, snapshots, and on-disk file resolution (incl. W&B cache)."""
 
-import json
 import os
 import secrets
 import subprocess
@@ -8,11 +7,9 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final, Literal, NamedTuple
+from typing import Final, Literal, NamedTuple
 
-import torch
 import wandb
-import yaml
 from wandb.apis.public import Run as WandbRun
 
 from param_decomp.log import logger
@@ -30,51 +27,6 @@ from param_decomp_lab.infra.wandb import (
     fetch_latest_wandb_checkpoint,
     parse_wandb_run_path,
 )
-
-
-def _save_json(data: Any, path: Path | str, **kwargs: Any) -> None:
-    with open(path, "w") as f:
-        json.dump(data, f, **kwargs)
-
-
-def _save_yaml(data: Any, path: Path | str, **kwargs: Any) -> None:
-    with open(path, "w") as f:
-        yaml.dump(data, f, sort_keys=False, **kwargs)
-
-
-def _save_torch(data: Any, path: Path | str, **kwargs: Any) -> None:
-    torch.save(data, path, **kwargs)
-
-
-def _save_text(data: str, path: Path | str, encoding: str = "utf-8") -> None:
-    with open(path, "w", encoding=encoding) as f:
-        f.write(data)
-
-
-def save_file(data: dict[str, Any] | Any, path: Path | str, **kwargs: Any) -> None:
-    """Write `data` to `path`, dispatching on extension. Creates parent dirs.
-
-    - `.json` → `json.dump`
-    - `.yaml` / `.yml` → `yaml.dump` (sort_keys=False)
-    - `.pth` / `.pt` → `torch.save`
-    - anything else → plain text (`data` must be a string)
-    """
-    path = Path(path)
-    suffix = path.suffix.lower()
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    if suffix == ".json":
-        _save_json(data, path, **kwargs)
-    elif suffix in [".yaml", ".yml"]:
-        _save_yaml(data, path, **kwargs)
-    elif suffix in [".pth", ".pt"]:
-        _save_torch(data, path, **kwargs)
-    else:
-        # Default to text file
-        assert isinstance(data, str), f"For {suffix} files, data must be a string, got {type(data)}"
-        _save_text(data, path, encoding=kwargs.get("encoding", "utf-8"))
-
 
 RunType = Literal[
     "param_decomp", "train", "clustering/runs", "clustering/ensembles", "clustering/harvests"

@@ -1,11 +1,11 @@
 """`BaseConfig` (pydantic `BaseModel` with `extra="forbid"`, `frozen=True`, YAML/JSON
-round-trip), `Probability` (annotated `float` in `[0, 1]`), and `runtime_cast`.
+round-trip) and `Probability` (annotated `float` in `[0, 1]`).
 """
 
 import json
 from functools import cached_property
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, Self
+from typing import Annotated, ClassVar, Self
 
 import yaml
 from annotated_types import Ge, Le
@@ -13,17 +13,6 @@ from pydantic import BaseModel, ConfigDict
 
 Probability = Annotated[float, Ge(0), Le(1)]
 """A float constrained to `[0, 1]` for pydantic validation."""
-
-
-def runtime_cast[T](type_: type[T], obj: Any) -> T:
-    """Cast `obj` to `type_`, raising `TypeError` if it is not actually an instance.
-
-    Use this when a wider static type needs to be narrowed for the type checker and the
-    narrowing should be enforced at runtime.
-    """
-    if not isinstance(obj, type_):
-        raise TypeError(f"Expected {type_}, got {type(obj)}")
-    return obj
 
 
 class BaseConfig(BaseModel):

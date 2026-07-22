@@ -1,52 +1,46 @@
-"""Submit clustering runs to SLURM as separate jobs in a SLURM array.
+"""Ensemble clustering pipeline (`pd-clustering`).
 
-This script submits independent clustering runs as a SLURM job array,
-where each run gets its own dataset (seeded), WandB run, and merge history output.
+Fans a single decomposition out into a seeded ensemble of independent clustering runs, then
+computes their cross-run consensus. Each member is a seeded JAX harvest
+(`run_worker`, 1 GPU) feeding a CPU merge (`run_merge` / `pd-cluster-merge`); a final
+consensus job (`calc_distances`) normalizes the members' labels and computes per-iteration
+pairwise distances + a stability plot.
 
-Also submits a job to calculate distances between the clustering runs, which will run after
-the clustering runs (the SLURM job depends on the previous array job).
+Three dependency tiers, submitted as SLURM jobs:
 
-Output structure (only pipeline_config.json is saved to directly in this script. The files under
-<runs> are saved by run_clustering.py which is called in SLURM jobs deployed by this script.):
-    <ExecutionStamp.out_dir>/                 # from execution stamp
-        |── pipeline_config.json              # Saved in this script
-        |── clustering_run_config.json        # make copy of the file pointed to by pipeline config
-        ├── ensemble_meta.json                # (Saved by calc_distances.py) Ensemble metadata
-        ├── ensemble_merge_array.npz          # (Saved by calc_distances.py) Normalized merge array
-        ├── distances_<distances_method>.npz  # (Saved by calc_distances.py) Distance array for each method
-        └── distances_<distances_method>.png  # (Saved by calc_distances.py) Distance distribution plot
+    harvest array (N × 1 GPU, seeded)
+        └─ merge array (N × CPU, seeded)            [afterok harvest array]
+              └─ consensus job per distance method  [afterok merge array]
+
+Output:
+    PARAM_DECOMP_OUT_DIR/clustering/ensembles/<ensemble_id>/
+        ├── ensemble_config.yaml
+        └── (consensus artifacts, written by calc_distances.py)
+    PARAM_DECOMP_OUT_DIR/clustering/harvests/<harvest_id>/   (per member)
+    PARAM_DECOMP_OUT_DIR/clustering/runs/<run_id>/           (per member)
 """
 
 import argparse
 import os
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
-import wandb_workspaces.workspaces as ws
-from pydantic import Field, PositiveInt, field_validator, model_validator
+from pydantic import Field, PositiveInt, model_validator
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.log import logger
-from param_decomp_lab.clustering.clustering_run_config import ClusteringRunConfig
+from param_decomp_lab.clustering.harvest_config import HarvestConfig
+from param_decomp_lab.clustering.merge_config import MergeConfig
 from param_decomp_lab.clustering.paths import (
     clustering_ensemble_dir,
-    new_ensemble_id,
+    clustering_harvest_dir,
+    new_harvest_id,
     new_run_id,
 )
-from param_decomp_lab.clustering.scripts.calc_distances import (
-    get_command as distances_command,
-)
-from param_decomp_lab.clustering.scripts.run_clustering import (
-    get_command as clustering_command,
-)
+from param_decomp_lab.clustering.scripts import calc_distances, run_merge, run_worker
 from param_decomp_lab.clustering.types import DistancesMethod
 from param_decomp_lab.infra.git import create_git_snapshot
-from param_decomp_lab.infra.pydantic import replace_pydantic_model
-from param_decomp_lab.infra.run_files import (
-    _NO_ARG_PARSSED_SENTINEL,
-    read_noneable_str,
-    run_locally,
-)
+from param_decomp_lab.infra.run_files import generate_run_id, run_locally
 from param_decomp_lab.infra.slurm import (
     SlurmArrayConfig,
     SlurmConfig,
@@ -58,346 +52,175 @@ from param_decomp_lab.infra.slurm import (
 os.environ["WANDB_QUIET"] = "true"
 
 
-class ClusteringPipelineConfig(BaseConfig):
-    """Configuration for submitting an ensemble of clustering runs to SLURM."""
+class ClusteringEnsembleConfig(BaseConfig):
+    """Seeded ensemble of harvest→merge clustering runs plus their consensus."""
 
-    clustering_run_config_path: Path = Field(
-        description="Path to ClusteringRunConfig file.",
-    )
-    n_runs: PositiveInt = Field(description="Number of clustering runs in the ensemble")
+    harvest: HarvestConfig
+    merge: MergeConfig = Field(default_factory=MergeConfig)
+    n_runs: PositiveInt
     distances_methods: list[DistancesMethod] = Field(
-        description="List of method(s) to use for calculating distances"
+        default_factory=lambda: ["perm_invariant_hamming"]
     )
-    slurm_job_name_prefix: str | None = Field(
-        default=None, description="Prefix for SLURM job names"
-    )
-    slurm_partition: str | None = Field(default=None, description="SLURM partition to use")
-    slurm_mem: str | None = Field(default=None, description="Memory limit per job (e.g. '300G')")
-    wandb_project: str | None = Field(
-        default=None,
-        description="Weights & Biases project name (set to None to disable WandB logging)",
-    )
-    wandb_entity: str = Field(default="goodfire", description="WandB entity (team/user) name")
-    calc_distances: bool = Field(
-        default=True, description="Whether to run distance calculations after clustering"
-    )
-    create_git_snapshot: bool = Field(
-        default=False, description="Create a git snapshot for the run"
-    )
+    base_seed: int = 0
+    step: int | None = Field(default=None, description="checkpoint step (default: latest)")
+    plot_members: bool = Field(default=False, description="emit per-member diagnostic plots")
+    partition: str | None = None
+    merge_mem: str | None = None
+    create_git_snapshot: bool = False
 
     @model_validator(mode="after")
-    def validate_crc(self) -> "ClusteringPipelineConfig":
-        """Validate `clustering_run_config_path` points to a valid `ClusteringRunConfig`."""
-        assert self.clustering_run_config_path.exists(), (
-            f"clustering_run_config_path does not exist: {self.clustering_run_config_path}"
+    def _validate_methods(self) -> "ClusteringEnsembleConfig":
+        assert self.distances_methods, "distances_methods must be non-empty"
+        assert all(m in DistancesMethod.__args__ for m in self.distances_methods), (
+            f"invalid distances_methods: {self.distances_methods}"
         )
-        # Try to load ClusteringRunConfig
-        assert ClusteringRunConfig.from_file(self.clustering_run_config_path)
-
         return self
 
-    @field_validator("distances_methods")
-    @classmethod
-    def validate_distances_methods(cls, v: list[DistancesMethod]) -> list[DistancesMethod]:
-        """Validate that distances_methods is non-empty and contains valid methods."""
-        assert all(method in DistancesMethod.__args__ for method in v), (
-            f"Invalid distances_methods: {v}"
+
+@dataclass(frozen=True)
+class EnsembleMember:
+    harvest_id: str
+    run_id: str
+    seed: int
+
+
+def _members(config: ClusteringEnsembleConfig) -> list[EnsembleMember]:
+    return [
+        EnsembleMember(
+            harvest_id=new_harvest_id(),
+            run_id=new_run_id(),
+            seed=config.base_seed + i,
         )
-
-        return v
-
-
-def create_clustering_workspace_view(ensemble_id: str, project: str, entity: str) -> str:
-    """Create WandB workspace view for clustering runs.
-
-    TODO: Use a template workspace which actually shows some panels
-    TODO: since the run_id here is the same as the wandb id, can we take advantage of that?
-
-    Args:
-        ensemble_id: Unique identifier for this ensemble
-        project: WandB project name
-        entity: WandB entity (team/user) name
-
-    Returns:
-        URL to workspace view
-    """
-    workspace = ws.Workspace(entity=entity, project=project)
-    workspace.name = f"Clustering - {ensemble_id}"
-
-    workspace.runset_settings.filters = [
-        ws.Tags("tags").isin([f"ensemble_id:{ensemble_id}"]),
+        for i in range(config.n_runs)
     ]
 
-    try:
-        workspace.save_as_new_view()
-        return workspace.url
-    except Exception as e:
-        logger.warning(
-            f"Failed to create WandB workspace view: {workspace=}, {workspace.name=}, {ensemble_id=}, {project=}, {entity=}, {e}"
+
+def submit(config: ClusteringEnsembleConfig, local: bool) -> str:
+    """Submit (or run locally) the full ensemble pipeline. Returns the ensemble id."""
+    ensemble_id = generate_run_id("clustering/ensembles")
+    ensemble_dir = clustering_ensemble_dir(ensemble_id)
+    ensemble_dir.mkdir(parents=True, exist_ok=True)
+    config.to_file(ensemble_dir / "ensemble_config.yaml")
+    logger.info(f"Ensemble {ensemble_id} → {ensemble_dir}")
+
+    harvest_config_path = ensemble_dir / "harvest_config.json"
+    merge_config_path = ensemble_dir / "merge_config.json"
+    config.harvest.to_file(harvest_config_path)
+    config.merge.to_file(merge_config_path)
+
+    members = _members(config)
+
+    harvest_commands = [
+        run_worker.get_command(harvest_config_path, m.harvest_id, m.seed) for m in members
+    ]
+    merge_commands = [
+        run_merge.get_command(
+            snapshot_path=clustering_harvest_dir(m.harvest_id),
+            merge_config_path=merge_config_path,
+            run_id=m.run_id,
+            seed=m.seed,
+            plot=config.plot_members,
         )
-        raise e
-
-
-def main(
-    pipeline_config: ClusteringPipelineConfig,
-    local: bool = False,
-    local_clustering_parallel: bool = False,
-    local_calc_distances_parallel: bool = False,
-    track_resources_calc_distances: bool = False,
-) -> None:
-    """Submit clustering runs to SLURM.
-
-    Args:
-        pipeline_config_path: Path to ClusteringPipelineConfig file
-        n_runs: Number of clustering runs in the ensemble. Will override value in the config file.
-    """
-    # setup
-    # ==========================================================================================
-
-    logger.set_format("console", "terse")
-
-    if local_clustering_parallel or local_calc_distances_parallel or track_resources_calc_distances:
-        assert local, (
-            "local_clustering_parallel, local_calc_distances_parallel, track_resources_calc_distances "
-            "can only be set when running locally\n"
-            f"{local_clustering_parallel=}, {local_calc_distances_parallel=}, {track_resources_calc_distances=}, {local=}"
-        )
-
-    pipeline_run_id = new_ensemble_id()
-    pipeline_dir = clustering_ensemble_dir(pipeline_run_id)
-    pipeline_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Pipeline {pipeline_run_id} → {pipeline_dir}")
-
-    # Git snapshot
-    snapshot_ref: str | None = None
-    if pipeline_config.create_git_snapshot:
-        snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=pipeline_run_id)
-        logger.info(f"Created git snapshot: {snapshot_ref} ({commit_hash[:8]})")
-
-    # Save pipeline config
-    pipeline_config.to_file(pipeline_dir / "pipeline_config.yaml")
-    logger.info(f"Pipeline config saved to {pipeline_dir / 'pipeline_config.yaml'}")
-
-    # Create WandB workspace if requested
-    if pipeline_config.wandb_project is not None:
-        workspace_url = create_clustering_workspace_view(
-            ensemble_id=pipeline_run_id,
-            project=pipeline_config.wandb_project,
-            entity=pipeline_config.wandb_entity,
-        )
-        logger.info(f"WandB workspace: {workspace_url}")
-
-    # Pre-generate run IDs for each clustering task
-    clustering_run_ids = [new_run_id() for _ in range(pipeline_config.n_runs)]
-
-    # Generate commands
-    clustering_commands = [
-        clustering_command(
-            config_path=pipeline_config.clustering_run_config_path,
-            run_id=run_id,
-            seed_offset=idx,
-            ensemble_id=pipeline_run_id,
-            wandb_project=pipeline_config.wandb_project,
-            wandb_entity=pipeline_config.wandb_entity
-            if pipeline_config.wandb_entity != "goodfire"
-            else None,
-        )
-        for idx, run_id in enumerate(clustering_run_ids)
+        for m in members
+    ]
+    consensus_commands = [
+        calc_distances.get_command(ensemble_id, [m.run_id for m in members], method)
+        for method in config.distances_methods
     ]
 
-    calc_distances_commands: list[str] = []
-    if pipeline_config.calc_distances:
-        calc_distances_commands = [
-            distances_command(pipeline_run_id, clustering_run_ids, method)
-            for method in pipeline_config.distances_methods
-        ]
-
-    # Submit to SLURM
     if local:
-        run_locally(
-            commands=clustering_commands,
-            parallel=local_clustering_parallel,
+        run_locally(harvest_commands)
+        run_locally(merge_commands)
+        run_locally(consensus_commands)
+        logger.section("ensemble complete (local)")
+        logger.values(
+            {
+                "Ensemble ID": ensemble_id,
+                "Ensemble dir": str(ensemble_dir),
+                "N members": config.n_runs,
+            }
         )
+        return ensemble_id
 
-        if pipeline_config.calc_distances:
-            logger.info("Calculating distances...")
-            run_locally(
-                commands=calc_distances_commands,
-                parallel=local_calc_distances_parallel,
-                track_resources=track_resources_calc_distances,
-            )
+    assert config.partition is not None, "partition required for SLURM submission"
+    snapshot_ref: str | None = None
+    if config.create_git_snapshot:
+        snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=ensemble_id)
+        logger.info(f"Snapshot: {snapshot_ref} ({commit_hash[:8]})")
 
-        logger.section("complete!")
+    harvest_array = SlurmArrayConfig(
+        job_name="pd-clustering-harvest",
+        partition=config.partition,
+        n_gpus=1,
+        snapshot_ref=snapshot_ref,
+        comment=ensemble_id,
+    )
+    harvest_result = submit_slurm_job(
+        generate_array_script(harvest_array, harvest_commands),
+        "clustering_harvest",
+        n_array_tasks=config.n_runs,
+    )
 
-        log_info: dict[str, str | int] = {
-            "Total clustering runs": len(clustering_commands),
-            "Pipeline run ID": pipeline_run_id,
-            "Pipeline output dir": str(pipeline_dir),
-        }
-        if pipeline_config.calc_distances:
-            for method in pipeline_config.distances_methods:
-                log_info[f"distances via {method}"] = str(
-                    pipeline_dir / "plots" / f"distances_{method}.png"
-                )
-        logger.values(log_info)
+    merge_array = SlurmArrayConfig(
+        job_name="pd-clustering-merge",
+        partition=config.partition,
+        n_gpus=0,
+        mem=config.merge_mem,
+        snapshot_ref=snapshot_ref,
+        dependency_job_id=harvest_result.job_id,
+        comment=ensemble_id,
+    )
+    merge_result = submit_slurm_job(
+        generate_array_script(merge_array, merge_commands),
+        "clustering_merge",
+        n_array_tasks=config.n_runs,
+    )
 
-    else:
-        assert pipeline_config.slurm_job_name_prefix is not None, (
-            "must specify slurm_job_name_prefix if not running locally"
-        )
-        assert pipeline_config.slurm_partition is not None, (
-            "must specify slurm_partition if not running locally"
-        )
-
-        # Submit clustering array job
-        clustering_config = SlurmArrayConfig(
-            job_name=f"{pipeline_config.slurm_job_name_prefix}_cluster",
-            partition=pipeline_config.slurm_partition,
-            n_gpus=1,  # Always 1 GPU per run
+    consensus_job_ids: list[str] = []
+    for method, cmd in zip(config.distances_methods, consensus_commands, strict=True):
+        consensus_config = SlurmConfig(
+            job_name=f"pd-clustering-consensus-{method}",
+            partition=config.partition,
+            n_gpus=0,
+            mem=config.merge_mem,
             snapshot_ref=snapshot_ref,
-            max_concurrent_tasks=pipeline_config.n_runs,  # Run all concurrently
-            mem=pipeline_config.slurm_mem,
+            dependency_job_id=merge_result.job_id,
+            comment=ensemble_id,
         )
-        clustering_script = generate_array_script(clustering_config, clustering_commands)
-        clustering_result = submit_slurm_job(
-            clustering_script,
-            "clustering",
-            n_array_tasks=len(clustering_commands),
+        consensus_result = submit_slurm_job(
+            generate_script(consensus_config, cmd), f"clustering_consensus_{method}"
         )
-        array_job_id = clustering_result.job_id
+        consensus_job_ids.append(consensus_result.job_id)
 
-        # Submit calc_distances jobs (one per method) with dependency on array job
-        calc_distances_job_ids: list[str] = []
-        calc_distances_logs: list[str] = []
-
-        if pipeline_config.calc_distances:
-            for method, cmd in zip(
-                pipeline_config.distances_methods, calc_distances_commands, strict=True
-            ):
-                dist_config = SlurmConfig(
-                    job_name=f"{pipeline_config.slurm_job_name_prefix}_dist_{method}",
-                    partition=pipeline_config.slurm_partition,
-                    n_gpus=1,
-                    snapshot_ref=snapshot_ref,
-                    dependency_job_id=array_job_id,
-                )
-                dist_script = generate_script(dist_config, cmd)
-                dist_result = submit_slurm_job(dist_script, f"calc_distances_{method}")
-                calc_distances_job_ids.append(dist_result.job_id)
-                calc_distances_logs.append(dist_result.log_pattern)
-
-        logger.section("Jobs submitted successfully!")
-
-        log_values: dict[str, str | int] = {
-            "Clustering Array Job ID": array_job_id,
-            "Total clustering runs": len(clustering_commands),
-            "Pipeline run ID": pipeline_run_id,
-            "Pipeline output dir": str(pipeline_dir),
-            "Clustering logs": clustering_result.log_pattern,
+    logger.section("ensemble submitted")
+    logger.values(
+        {
+            "Ensemble ID": ensemble_id,
+            "Ensemble dir": str(ensemble_dir),
+            "N members": config.n_runs,
+            "Harvest array job": harvest_result.job_id,
+            "Merge array job": merge_result.job_id,
+            "Consensus jobs": ", ".join(consensus_job_ids),
         }
-        if calc_distances_job_ids:
-            log_values["Calc Distances Job IDs"] = ", ".join(calc_distances_job_ids)
-            log_values["Calc Distances logs"] = ", ".join(calc_distances_logs)
-        logger.values(log_values)
-
-        if pipeline_config.calc_distances:
-            logger.info("Distances plots will be saved to:")
-            for method in pipeline_config.distances_methods:
-                logger.info(f"  {method}: {pipeline_dir / 'plots' / f'distances_{method}.png'}")
+    )
+    return ensemble_id
 
 
-def cli():
-    """CLI for pd-clustering command."""
-    parser = argparse.ArgumentParser(
-        prog="pd-clustering",
-        description="Submit clustering runs to SLURM. Arguments specified here will override the "
-        "corresponding value in the config file.",
-    )
-
-    parser.add_argument(
-        "--config",
-        required=True,
-        type=Path,
-        help="Path to pipeline config file",
-    )
-    parser.add_argument(
-        "--n-runs",
-        type=int,
-        help="Number of clustering runs in the ensemble (overrides value in config file)",
-    )
-    parser.add_argument(
-        "--wandb-project",
-        type=read_noneable_str,
-        default=_NO_ARG_PARSSED_SENTINEL,
-        help="WandB project name (if not provided, WandB logging is disabled)",
-    )
-    parser.add_argument(
-        "--wandb-entity",
-        type=str,
-        default=None,
-        help="WandB entity name (user or team)",
-    )
-    parser.add_argument(
-        "--distances-methods",
-        type=str,
-        default=None,
-        help="Comma-separated list of distance methods (e.g., 'perm_invariant_hamming,matching_dist')",
-    )
-    parser.add_argument(
-        "--calc-distances",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Whether to run distance calculations after clustering (overrides config value)",
-    )
+def cli() -> None:
+    parser = argparse.ArgumentParser(prog="pd-clustering", description=__doc__)
+    parser.add_argument("--config", type=Path, required=True, help="ClusteringEnsembleConfig file")
+    parser.add_argument("--n-runs", type=int, default=None, help="override n_runs")
     parser.add_argument(
         "--local",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Run locally instead of submitting to SLURM (required if slurm_job_name_prefix and slurm_partition are None in config)",
-    )
-    parser.add_argument(
-        "--local-clustering-parallel",
         action="store_true",
-        help="If running locally, whether to run clustering runs in parallel",
+        help="run sequentially in-process instead of submitting to SLURM",
     )
-    parser.add_argument(
-        "--local-calc-distances-parallel",
-        action="store_true",
-        help="If running locally, whether to run distance calculations in parallel",
-    )
-    parser.add_argument(
-        "--track-resources-calc-distances",
-        action="store_true",
-        help="If running locally, whether to track resource usage during distance calculations",
-    )
-
     args = parser.parse_args()
 
-    pipeline_config = ClusteringPipelineConfig.from_file(args.config)
-    overrides: dict[str, Any] = {}
-
+    config = ClusteringEnsembleConfig.from_file(args.config)
     if args.n_runs is not None:
-        overrides["n_runs"] = args.n_runs
-    if args.calc_distances is not None:
-        overrides["calc_distances"] = args.calc_distances
-    if args.wandb_project is not _NO_ARG_PARSSED_SENTINEL:
-        overrides["wandb_project"] = args.wandb_project
-    if args.wandb_entity is not None:
-        overrides["wandb_entity"] = args.wandb_entity
-    if args.distances_methods is not None:
-        # Parse comma-separated list of distance methods
-        methods = [method.strip() for method in args.distances_methods.split(",")]
-        overrides["distances_methods"] = methods
-
-    pipeline_config = replace_pydantic_model(pipeline_config, overrides)
-
-    main(
-        pipeline_config=pipeline_config,
-        local=args.local,
-        local_clustering_parallel=args.local_clustering_parallel,
-        local_calc_distances_parallel=args.local_calc_distances_parallel,
-        track_resources_calc_distances=args.track_resources_calc_distances,
-    )
+        config = config.model_copy(update={"n_runs": args.n_runs})
+    submit(config, local=args.local)
 
 
 if __name__ == "__main__":

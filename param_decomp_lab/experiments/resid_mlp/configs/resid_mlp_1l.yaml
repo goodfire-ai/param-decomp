@@ -1,0 +1,125 @@
+# ResidualMLP 1-layer wrapper — JAX counterpart of torch resid_mlp1_config.yaml.
+run_name: jax-resid-mlp-1l
+# ResidualMLP 1-layer PD decomposition — the JAX counterpart of the torch
+# resid_mlp1_config.yaml (n_features=100, d_embed=1000, d_mlp=50, fixed random embedding).
+# The torch target read from a wandb pretrain run; here the target is pretrained from
+# scratch in-process (the read-off `act_fn(x) + x` objective), so the run is reproducible
+# from this config alone.
+decomposition:
+  sites:
+    kind: explicit
+    sites:
+    - name: layers.0.mlp_in
+      C: 200
+    - name: layers.0.mlp_out
+      C: 200
+  ci:
+    type: layerwise_mlp
+    hidden_dims:
+    - 400
+pd:
+  seed: 0
+  loss_metrics:
+  - frequency:
+      coeff: 5e-07
+      reference_token_count: 32768
+    coeff: 1e-06
+    type: SmoothL0ImportanceMinimalityLoss
+    gamma:
+      start_val: 1.0
+      fn_type: linear
+      final_val_frac: 0.01
+      warmup_pct: 0.0
+  - type: MergedStochasticSubsetPPGDReconLoss
+    coeff: 1.0
+    adv_fraction:
+      start_val: 0.5
+      fn_type: constant
+      final_val_frac: 1.0
+      warmup_pct: 0.0
+    n_warmup_steps: 2
+    routing:
+      type: uniform_k_subset
+    optimizer:
+      beta1: 0.01
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        final_val_frac: 1.0
+        fn_type: constant
+        start_val: 0.01
+        warmup_pct: 0.025
+      type: adam
+    source_shape: bc
+  - type: FaithfulnessLoss
+    coeff: 1.0
+  batch_size: 2048
+  steps: 50000
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 1.0
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 2e-03
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 1.0
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 2e-03
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  faithfulness_warmup_steps: 200
+  faithfulness_warmup_lr: 0.01
+  faithfulness_warmup_weight_decay: 0.0
+runtime:
+  remat_recon_forwards: false
+  dp: null
+  sharding: ddp
+cadence:
+  train_log_every: 100
+  save_every: 5000
+  keep_last_n_checkpoints: 2
+target:
+  n_features: 100
+  d_embed: 1000
+  d_mlp: 50
+  n_layers: 1
+  act_fn_name: relu
+  in_bias: false
+  out_bias: false
+  pretrain:
+    steps: 2000
+    batch_size: 2048
+    lr: 3e-3
+    seed: 0
+data:
+  feature_probability: 0.01
+  data_generation_type: at_least_zero_active
+eval:
+  # Toys validate via the ground-truth CI metric; the permuted-CI heatmap logs
+  # unconditionally. Toys honor only the permutation/UV figure metrics, so the
+  # PGDReconLoss probe (authored by the sweep) and the cadence fields are inert
+  # until the toys grow the LM scalar eval pass.
+  batch_size: 2048
+  n_steps: 1
+  every: 1000
+  slow_every: 2000
+  metrics:
+  - type: PGDReconLoss
+    coeff: null
+    init: random
+    source_shape: c
+    n_steps: 20
+    step_size: 0.1
+wandb:
+  project: param-decomp-toys
+  entity: null

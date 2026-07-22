@@ -1,61 +1,54 @@
 """Sampling and statistics utilities for harvest pipeline."""
 
-import torch
+import numpy as np
 from jaxtyping import Bool, Float, Int
-from torch import Tensor
 
 
 def sample_at_most_n_per_group(
-    group_ids: Int[Tensor, " N"],
+    group_ids: Int[np.ndarray, " N"],
     max_per_group: int,
-    generator: torch.Generator | None = None,
-) -> Bool[Tensor, " N"]:
+    rng: np.random.Generator,
+) -> Bool[np.ndarray, " N"]:
     """Boolean keep-mask: randomly sample at most `max_per_group` elements per group.
 
     Vectorised: sort by `(group, random)`, compute within-group rank via the cummax
     trick, keep entries with rank `<= max_per_group`.
     """
     if len(group_ids) == 0:
-        return torch.zeros(0, dtype=torch.bool, device=group_ids.device)
-
-    device = group_ids.device
+        return np.zeros(0, dtype=np.bool_)
 
     # Assign a random number to each element, shuffle via sorting by random key, then stably sort
     # the shuffled indices by group id. This produces a random order within each group while
     # keeping all items of the same group contiguous. "sort_idx" is the final index mapping.
-    rand = torch.rand(len(group_ids), device=device, generator=generator)
-    rand_order = torch.argsort(rand)
-    sort_idx = rand_order[torch.argsort(group_ids[rand_order], stable=True)]
+    rand = rng.random(len(group_ids))
+    rand_order = np.argsort(rand)
+    sort_idx = rand_order[np.argsort(group_ids[rand_order], kind="stable")]
     sorted_groups = group_ids[sort_idx]
 
     # Compute rank within each group using cummax trick:
     # - Mark where groups change
     # - Use cummax to propagate group start positions forward
     # - Rank = current_position - group_start + 1
-    group_change = torch.cat(
-        [
-            torch.ones(1, device=device, dtype=torch.long),
-            (sorted_groups[1:] != sorted_groups[:-1]).long(),
-        ]
+    group_change = np.concatenate(
+        [np.ones(1, dtype=np.int64), (sorted_groups[1:] != sorted_groups[:-1]).astype(np.int64)]
     )
-    positions = torch.arange(1, len(sorted_groups) + 1, device=device)
-    group_starts = torch.where(group_change.bool(), positions, torch.zeros_like(positions))
-    group_starts_propagated = torch.cummax(group_starts, dim=0)[0]
+    positions = np.arange(1, len(sorted_groups) + 1)
+    group_starts = np.where(group_change.astype(np.bool_), positions, np.zeros_like(positions))
+    group_starts_propagated = np.maximum.accumulate(group_starts)
     rank_within_group = positions - group_starts_propagated + 1
 
-    # Map back to original indices
-    keep_mask = torch.zeros(len(group_ids), dtype=torch.bool, device=device)
+    keep_mask = np.zeros(len(group_ids), dtype=np.bool_)
     keep_mask[sort_idx[rank_within_group <= max_per_group]] = True
 
     return keep_mask
 
 
 def compute_pmi(
-    cooccurrence_counts: Float[Tensor, " V"],
-    marginal_counts: Float[Tensor, " V"],
+    cooccurrence_counts: Float[np.ndarray, " V"],
+    marginal_counts: Float[np.ndarray, " V"],
     target_count: float,
     total_count: int,
-) -> Float[Tensor, " V"]:
+) -> Float[np.ndarray, " V"]:
     """Pointwise mutual information per item.
 
     `PMI(x, y) = log(count(x, y) * total / (count(x) * count(y)))`. Items with zero
@@ -65,14 +58,15 @@ def compute_pmi(
 
     # PMI = log(P(co) / (P(target) * P(item)))
     #     = log(cooccurrence * total / (target_count * marginal))
-    pmi = torch.log(cooccurrence_counts * total_count / (target_count * marginal_counts + 1e-10))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pmi = np.log(cooccurrence_counts * total_count / (target_count * marginal_counts + 1e-10))
 
-    return torch.where(valid, pmi, torch.full_like(pmi, float("-inf")))
+    return np.where(valid, pmi, np.full_like(pmi, float("-inf")))
 
 
 def top_k_pmi(
-    cooccurrence_counts: Float[Tensor, " V"],
-    marginal_counts: Float[Tensor, " V"],
+    cooccurrence_counts: Float[np.ndarray, " V"],
+    marginal_counts: Float[np.ndarray, " V"],
     target_count: float,
     total_count: int,
     top_k: int,
@@ -86,18 +80,12 @@ def top_k_pmi(
     if k == 0:
         return [], []
 
-    top = torch.topk(pmi, k, largest=True)
-    bottom = torch.topk(pmi, k, largest=False)
+    top_indices = np.argsort(pmi)[::-1][:k]
+    bottom_indices = np.argsort(pmi)[:k]
 
-    top_items = [
-        (int(idx), float(val))
-        for idx, val in zip(top.indices.tolist(), top.values.tolist(), strict=True)
-        if val > float("-inf")
-    ]
+    top_items = [(int(idx), float(pmi[idx])) for idx in top_indices if pmi[idx] > float("-inf")]
     bottom_items = [
-        (int(idx), float(val))
-        for idx, val in zip(bottom.indices.tolist(), bottom.values.tolist(), strict=True)
-        if val > float("-inf")
+        (int(idx), float(pmi[idx])) for idx in bottom_indices if pmi[idx] > float("-inf")
     ]
 
     return top_items, bottom_items

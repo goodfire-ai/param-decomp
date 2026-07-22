@@ -4,45 +4,33 @@ Drops token statistics entirely. Shows per-token CI and activation values inline
 in the examples so the LLM can judge evidence quality directly.
 """
 
-from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.autointerp.config import RichExamplesConfig
 from param_decomp_lab.autointerp.prompt_helpers import (
-    DATASET_DESCRIPTIONS,
     build_annotated_examples,
+    dataset_description,
     describe_example_rendering,
     human_layer_desc,
 )
-from param_decomp_lab.autointerp.schemas import DecompositionMethod, ModelMetadata
+from param_decomp_lab.autointerp.schemas import ModelMetadata
 from param_decomp_lab.harvest.analysis import TokenPRLift
 from param_decomp_lab.harvest.schemas import ComponentData
 from param_decomp_lab.infra.markdown import Md
+from param_decomp_lab.tokenizer_display import AppTokenizer
 
-_DECOMPOSITION_DESCRIPTIONS: dict[DecompositionMethod, str] = {
-    "pd": (
-        "Each component is a rank-1 parameter matrix learned by PD. "
-        "A weight matrix W is decomposed as W ≈ Σ u_i v_i^T. "
-        "When the model processes a token, each component computes an activation: the inner "
-        "product of the residual stream with its read direction v_i. This value can be "
-        "positive or negative depending on how the input aligns with v_i — the sign is an "
-        "arbitrary consequence of how the vectors were initialised and does not by itself "
-        "mean suppression. CI and activation magnitude are the main indicators of whether "
-        "the component is active at a position, but within one component the sign can still "
-        "separate distinct patterns. "
-        "Each component also has a causal importance (CI) value per token position: CI near 1 "
-        "means the component is essential at that position, CI near 0 means it can be ablated "
-        "without affecting output. A component 'fires' when its CI is high."
-    ),
-    "clt": (
-        "Each component is a feature from a Cross-Layer Transcoder (CLT). CLTs learn sparse, "
-        "interpretable features that map activations at one layer to contributions at another. "
-        "A component 'fires' when its activation magnitude is high."
-    ),
-    "transcoder": (
-        "Each component is a feature from a Transcoder, which learns a sparse dictionary of "
-        "linear transformations mapping MLP inputs to MLP outputs. A component 'fires' when "
-        "its encoder activation is above threshold."
-    ),
-}
+_PD_DESCRIPTION = (
+    "Each component is a rank-1 parameter matrix learned by PD. "
+    "A weight matrix W is decomposed as W ≈ Σ u_i v_i^T. "
+    "When the model processes a token, each component computes an activation: the inner "
+    "product of the residual stream with its read direction v_i. This value can be "
+    "positive or negative depending on how the input aligns with v_i — the sign is an "
+    "arbitrary consequence of how the vectors were initialised and does not by itself "
+    "mean suppression. CI and activation magnitude are the main indicators of whether "
+    "the component is active at a position, but within one component the sign can still "
+    "separate distinct patterns. "
+    "Each component also has a causal importance (CI) value per token position: CI near 1 "
+    "means the component is essential at that position, CI near 0 means it can be ablated "
+    "without affecting output. A component 'fires' when its CI is high."
+)
 
 
 def format_prompt(
@@ -68,14 +56,6 @@ def format_prompt(
 
     canonical = model_metadata.layer_descriptions.get(component.layer, component.layer)
     layer_desc = human_layer_desc(canonical, model_metadata.n_blocks)
-    model_name = model_metadata.model_class.rsplit(".", 1)[-1]
-
-    dataset_line = ""
-    if config.include_dataset_description:
-        dataset_desc = DATASET_DESCRIPTIONS.get(
-            model_metadata.dataset_name, model_metadata.dataset_name
-        )
-        dataset_line = f", dataset: {dataset_desc}"
 
     md = Md()
     md.p("Describe what this neural network component does.")
@@ -94,18 +74,15 @@ def format_prompt(
     md.h(2, "Context")
     md.bullets(
         [
-            f"Model: {model_name} ({model_metadata.n_blocks} blocks){dataset_line}",
+            f"Model: {model_metadata.n_blocks}-block transformer, "
+            f"dataset: {dataset_description(model_metadata.dataset_name)}",
             f"Component location: {layer_desc}",
             f"Component firing rate: {component.firing_density * 100:.2f}% ({rate_str})",
         ]
     )
 
     md.h(2, "Data presentation")
-    md.extend(
-        _build_data_section(
-            model_metadata.seq_len, context_tokens_per_side, model_metadata.decomposition_method
-        )
-    )
+    md.extend(_build_data_section(model_metadata.seq_len, context_tokens_per_side))
 
     md.h(3, "Example annotation format")
     md.p(describe_example_rendering(config.example_rendering))
@@ -152,12 +129,11 @@ def format_prompt(
 def _build_data_section(
     seq_len: int,
     context_tokens_per_side: int,
-    decomposition_method: DecompositionMethod,
 ) -> Md:
     window_size = 2 * context_tokens_per_side + 1
     md = Md()
     md.h(3, "Decomposition method")
-    md.p(_DECOMPOSITION_DESCRIPTIONS[decomposition_method])
+    md.p(_PD_DESCRIPTION)
     md.h(3, "Data")
     md.p(
         f"The model processes sequences of {seq_len} tokens. "

@@ -8,8 +8,6 @@ Unified SLURM submission for the full post-decomposition pipeline. One YAML, one
 ```
 harvest                 (GPU array → merge, PD-only)
 ├── intruder eval       (CPU, label-free, depends on harvest merge)
-├── attributions        (GPU array → merge, PD-only, depends on harvest merge)
-│   └── graph interp    (CPU, LLM calls, depends on harvest merge + attribution merge)
 └── autointerp          (CPU, LLM calls, resumes via completed keys)
     ├── detection       (label-dependent)
     └── fuzzing         (label-dependent)
@@ -20,8 +18,6 @@ dependency chain. Per-stage detail:
 
 - [`../harvest/CLAUDE.md`](../harvest/CLAUDE.md)
 - [`../autointerp/CLAUDE.md`](../autointerp/CLAUDE.md)
-- [`../dataset_attributions/CLAUDE.md`](../dataset_attributions/CLAUDE.md)
-- [`../graph_interp/CLAUDE.md`](../graph_interp/CLAUDE.md)
 - Intruder eval lives inside `harvest/` (see `param_decomp_lab/harvest/intruder.py`)
   because it tests *decomposition* quality, not label quality. Scores go in
   `harvest.db`, not `interp.db`.
@@ -40,15 +36,7 @@ dependency chain. Per-stage detail:
 harvest:       { ... HarvestSlurmConfig ... }       # required
 autointerp:    { ... AutointerpSlurmConfig ... }    # optional — null skips
 intruder:      { ... IntruderSlurmConfig ... }      # optional — null skips
-attributions:  { ... AttributionsSlurmConfig ... }  # optional — null skips
-graph_interp:  { ... GraphInterpSlurmConfig ... }   # optional — null skips
 ```
-
-Cross-field invariants (validated in `PostprocessConfig.model_post_init`):
-
-- `attributions` requires `harvest.config.method_config` to be a `ParamDecompHarvestConfig`
-  (attributions are PD-specific).
-- `graph_interp` requires `attributions` (graph interp consumes attribution data).
 
 ## Usage
 
@@ -93,5 +81,4 @@ just the convenience wrapper for "do all of it, in order, with dependencies."
    wiring the right upstream `dependency_job_id`(s).
 4. Record the resulting job ID into the `jobs` dict written into `metadata.yaml`.
 5. If the new stage depends on existing stages in a non-obvious way, add the invariant
-   check in `PostprocessConfig.model_post_init` (e.g. the existing `graph_interp
-   requires attributions` rule).
+   check in a `PostprocessConfig.model_post_init` override.

@@ -1,7 +1,9 @@
 """Tests for merge pair sampling functionality."""
 
+import random
+
+import numpy as np
 import pytest
-import torch
 
 from param_decomp_lab.clustering.math.merge_pair_samplers import (
     MERGE_PAIR_SAMPLERS,
@@ -10,15 +12,20 @@ from param_decomp_lab.clustering.math.merge_pair_samplers import (
 )
 
 
+def _symmetric_costs(k: int) -> np.ndarray:
+    costs = np.random.randn(k, k).astype(np.float32)
+    costs = (costs + costs.T) / 2
+    np.fill_diagonal(costs, np.inf)
+    return costs
+
+
 class TestRangeSampler:
     """Test range-based merge pair sampling."""
 
     def test_range_sampler_basic(self):
         """Test basic functionality of range sampler."""
         k = 5
-        costs = torch.randn(k, k)
-        costs = (costs + costs.T) / 2  # Make symmetric
-        costs.fill_diagonal_(float("inf"))  # No self-merges
+        costs = _symmetric_costs(k)
 
         # Test with different thresholds
         pair_low = range_sampler(costs, threshold=0.0)
@@ -38,9 +45,7 @@ class TestRangeSampler:
     def test_range_sampler_threshold_zero(self):
         """Test that threshold=0 always selects minimum cost pair."""
         k = 5
-        costs = torch.randn(k, k)
-        costs = (costs + costs.T) / 2
-        costs.fill_diagonal_(float("inf"))
+        costs = _symmetric_costs(k)
 
         # Find the true minimum
         min_val = float("inf")
@@ -48,21 +53,22 @@ class TestRangeSampler:
         for i in range(k):
             for j in range(k):
                 if i != j and costs[i, j] < min_val:
-                    min_val = costs[i, j].item()
+                    min_val = float(costs[i, j])
                     _min_pair = (i, j)
 
         # Sample multiple times with threshold=0
         for _ in range(10):
             pair = range_sampler(costs, threshold=0.0)
             # Should always get the minimum (or its symmetric equivalent)
-            assert costs[pair[0], pair[1]] == min_val or costs[pair[1], pair[0]] == min_val
+            assert (
+                float(costs[pair[0], pair[1]]) == min_val
+                or float(costs[pair[1], pair[0]]) == min_val
+            )
 
     def test_range_sampler_threshold_one(self):
         """Test that threshold=1 can select any non-diagonal pair."""
         k = 4
-        costs = torch.randn(k, k)
-        costs = (costs + costs.T) / 2
-        costs.fill_diagonal_(float("inf"))
+        costs = _symmetric_costs(k)
 
         # Sample many times to check we get different pairs
         pairs_seen = set()
@@ -77,7 +83,7 @@ class TestRangeSampler:
 
     def test_range_sampler_small_matrix(self):
         """Test range sampler with 2x2 matrix."""
-        costs = torch.tensor([[float("inf"), 1.0], [1.0, float("inf")]])
+        costs = np.array([[np.inf, 1.0], [1.0, np.inf]], dtype=np.float32)
 
         pair = range_sampler(costs, threshold=0.5)
         # Only valid pair is (0, 1) or (1, 0)
@@ -90,9 +96,7 @@ class TestMCMCSampler:
     def test_mcmc_sampler_basic(self):
         """Test basic functionality of MCMC sampler."""
         k = 5
-        costs = torch.randn(k, k)
-        costs = (costs + costs.T) / 2
-        costs.fill_diagonal_(float("inf"))
+        costs = _symmetric_costs(k)
 
         # Test with different temperatures
         pair_low_temp = mcmc_sampler(costs, temperature=0.1)
@@ -108,23 +112,21 @@ class TestMCMCSampler:
     def test_mcmc_sampler_low_temperature(self):
         """Test that low temperature favors low-cost pairs."""
         k = 5
-        costs = torch.randn(k, k)
-        costs = (costs + costs.T) / 2
-        costs.fill_diagonal_(float("inf"))
+        costs = _symmetric_costs(k)
 
         # Find minimum cost
         min_val = float("inf")
         for i in range(k):
             for j in range(k):
                 if i != j:
-                    min_val = min(min_val, costs[i, j].item())
+                    min_val = min(min_val, float(costs[i, j]))
 
         # Sample many times with very low temperature
         low_cost_count = 0
         n_samples = 100
         for _ in range(n_samples):
             pair = mcmc_sampler(costs, temperature=0.01)
-            cost = costs[pair[0], pair[1]].item()
+            cost = float(costs[pair[0], pair[1]])
             # Check if it's close to minimum
             if abs(cost - min_val) < 0.5:  # Within 0.5 of minimum
                 low_cost_count += 1
@@ -135,9 +137,7 @@ class TestMCMCSampler:
     def test_mcmc_sampler_high_temperature(self):
         """Test that high temperature gives more uniform sampling."""
         k = 4
-        costs = torch.randn(k, k)
-        costs = (costs + costs.T) / 2
-        costs.fill_diagonal_(float("inf"))
+        costs = _symmetric_costs(k)
 
         # Sample many times with high temperature
         pairs_count = {}
@@ -157,7 +157,7 @@ class TestMCMCSampler:
 
     def test_mcmc_sampler_small_matrix(self):
         """Test MCMC sampler with 2x2 matrix."""
-        costs = torch.tensor([[float("inf"), 1.0], [1.0, float("inf")]])
+        costs = np.array([[np.inf, 1.0], [1.0, np.inf]], dtype=np.float32)
 
         pair = mcmc_sampler(costs, temperature=1.0)
         # Only valid pair is (0, 1) or (1, 0)
@@ -167,9 +167,9 @@ class TestMCMCSampler:
         """Test MCMC sampler with extreme cost differences."""
         k = 3
         # Create matrix with one very low cost and rest high
-        costs = torch.full((k, k), 1000.0)
+        costs = np.full((k, k), 1000.0, dtype=np.float32)
         costs[0, 1] = costs[1, 0] = 1.0  # One low-cost pair
-        costs.fill_diagonal_(float("inf"))
+        np.fill_diagonal(costs, np.inf)
 
         # With low temperature, should almost always select the low-cost pair
         low_cost_selected = 0
@@ -194,9 +194,7 @@ class TestSamplerRegistry:
     def test_registry_samplers_callable(self):
         """Test that all registry samplers are callable with correct signature."""
         k = 3
-        costs = torch.randn(k, k)
-        costs = (costs + costs.T) / 2
-        costs.fill_diagonal_(float("inf"))
+        costs = _symmetric_costs(k)
 
         for name, sampler in MERGE_PAIR_SAMPLERS.items():
             # Should be callable
@@ -226,14 +224,12 @@ class TestSamplerIntegration:
     def test_samplers_deterministic_with_seed(self):
         """Test that samplers are deterministic with fixed seed."""
         k = 5
-        costs = torch.randn(k, k)
-        costs = (costs + costs.T) / 2
-        costs.fill_diagonal_(float("inf"))
+        costs = _symmetric_costs(k)
 
         # Test range sampler
-        torch.manual_seed(42)
+        random.seed(42)
         pair1 = range_sampler(costs, threshold=0.5)
-        torch.manual_seed(42)
+        random.seed(42)
         pair2 = range_sampler(costs, threshold=0.5)
         # Can't guarantee exact match due to Python's random module
         # but both should be valid
@@ -241,16 +237,16 @@ class TestSamplerIntegration:
         assert pair2[0] != pair2[1]
 
         # Test MCMC sampler
-        torch.manual_seed(42)
+        random.seed(42)
         pair1 = mcmc_sampler(costs, temperature=1.0)
-        torch.manual_seed(42)
+        random.seed(42)
         pair2 = mcmc_sampler(costs, temperature=1.0)
         assert pair1 == pair2  # Should be deterministic with same seed
 
     def test_samplers_all_infinite_costs(self):
         """Test samplers handle all-infinite costs gracefully."""
         k = 3
-        costs = torch.full((k, k), float("inf"))
+        costs = np.full((k, k), np.inf, dtype=np.float32)
 
         # This is an edge case - no valid pairs exist
         # Samplers should handle this without crashing

@@ -53,7 +53,7 @@ Score types: `detection`, `fuzzing`.
 
 ### Config (`config.py`)
 
-`AutointerpConfig` is a discriminated union over interpretation strategy configs. Each variant specifies everything that affects interpretation output (model, prompt params, reasoning effort). Admin/execution params (cost limits, parallelism) are NOT part of the config.
+`AutointerpConfig` is a discriminated union over interpretation strategy configs (the strategy + LLM config classes now live alongside it in this `config.py`). Each variant specifies everything that affects interpretation output (model, prompt params, reasoning effort). Admin/execution params (cost limits, parallelism) are NOT part of the config.
 
 Current strategies:
 - `CompactSkepticalConfig` — compact prompt, skeptical tone, structured JSON output
@@ -75,11 +75,11 @@ Each strategy config type has a corresponding prompt implementation:
 
 ### Repository (`repo.py`)
 
-`InterpRepo` provides read/write access to autointerp data for a run. Lazily opens the SQLite database on first access. Used by the app backend.
+`InterpRepo` provides read/write access to autointerp data for a run. Lazily opens the SQLite database on first access.
 
 ### Interpret (`interpret.py`)
 
-- Uses OpenRouter, Anthropic, OpenAI, or Google AI (Gemini) with structured JSON outputs (`LLMConfig` in `providers.py`)
+- Uses OpenRouter, Anthropic, OpenAI, or Google AI (Gemini) with structured JSON outputs (`LLMConfig` in `param_decomp_lab.autointerp.config`; provider runtime in `providers.py`)
 - Maximum parallelism with exponential backoff on rate limits
 - Resume support: Skips already-completed components via `db.get_completed_keys()`
 - Progress logging via `param_decomp.log.logger`

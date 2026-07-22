@@ -3,9 +3,9 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 from jaxtyping import Bool, Float, Int
 from pydantic import BaseModel
-from torch import Tensor
 
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 
@@ -22,20 +22,19 @@ def get_harvest_subrun_dir(decomposition_id: str, subrun_id: str) -> Path:
 
 @dataclass
 class HarvestBatch:
-    """Output of a method-specific harvest function for a single batch.
+    """Per-batch component statistics fed to the `Harvester`.
 
-    The harvest loop calls the user-provided harvest_fn on each raw dataloader batch,
-    which returns one of these. The harvest loop then feeds it to the Harvester.
+    The JAX worker converts a frozen forward pass into one of these, then feeds it to
+    the Harvester.
 
     firings/activations are keyed by layer name. activations values are keyed by
-    activation type (e.g. "causal_importance", "component_activation" for PD;
-    just "activation" for SAEs).
+    activation type ("causal_importance", "component_activation").
     """
 
-    tokens: Int[Tensor, "batch seq"]
-    firings: dict[str, Bool[Tensor, "batch seq c"]]
-    activations: dict[str, dict[str, Float[Tensor, "batch seq c"]]]
-    output_probs: Float[Tensor, "batch seq vocab"]
+    tokens: Int[np.ndarray, "batch seq"]
+    firings: dict[str, Bool[np.ndarray, "batch seq c"]]
+    activations: dict[str, dict[str, Float[np.ndarray, "batch seq c"]]]
+    output_probs: Float[np.ndarray, "batch seq vocab"]
 
 
 class ActivationExample(BaseModel):

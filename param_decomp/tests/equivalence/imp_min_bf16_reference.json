@@ -1,0 +1,23 @@
+{
+  "description": "N3 bf16-input imp-min seam fixture. ci stored as raw bf16 bits (uint16) so JAX reconstructs byte-identical values. torch reduction = autocast trainer path: (ci_bf16+eps)**pnorm bf16 intermediate then fp32 sum over positions (importance_minimality.py per_component_lp_sums + lp_and_entropy_terms). Regenerate from the torch-oracle tag; seeds are torch.Generator per-site.",
+  "pnorm": 2.0,
+  "eps": 1e-12,
+  "shapes": {
+    "layers.0.mlp.gate_proj": [
+      8,
+      16,
+      12
+    ],
+    "layers.1.self_attn.q_proj": [
+      8,
+      16,
+      5
+    ]
+  },
+  "seeds": {
+    "layers.0.mlp.gate_proj": 0,
+    "layers.1.self_attn.q_proj": 1
+  },
+  "torch_lp": 5.68359375,
+  "torch_entropy": 31.013011932373047
+}

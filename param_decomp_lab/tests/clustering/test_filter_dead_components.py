@@ -1,8 +1,7 @@
 """Tests for filter_dead_components function in activations.py"""
 
+import numpy as np
 import pytest
-import torch
-from torch import Tensor
 
 from param_decomp_lab.clustering.activations import (
     FilteredActivations,
@@ -39,13 +38,13 @@ def test_filter_dead_components_thresholds(
     n_steps: int = 10
     n_components: int = len(max_values)
 
-    activations: Tensor
+    activations: np.ndarray
     labels: ComponentLabels
     if n_components == 0:
-        activations = torch.zeros(n_steps, 0)
+        activations = np.zeros((n_steps, 0), dtype=np.float32)
         labels = ComponentLabels([])
     else:
-        activations = torch.zeros(n_steps, n_components)
+        activations = np.zeros((n_steps, n_components), dtype=np.float32)
         # Set max values in first row
         for i, val in enumerate(max_values):
             activations[0, i] = val
@@ -92,7 +91,7 @@ def test_max_across_steps(step_locations: list[int], threshold: float) -> None:
     time steps, ensuring the function scans the entire temporal dimension."""
     n_steps: int = 10
     n_components: int = len(step_locations)
-    activations: Tensor = torch.zeros(n_steps, n_components)
+    activations: np.ndarray = np.zeros((n_steps, n_components), dtype=np.float32)
 
     # Set values above threshold at specified steps
     for i, step in enumerate(step_locations):
@@ -115,7 +114,7 @@ def test_linear_gradient_thresholds(threshold: float) -> None:
     """Test with linearly spaced activation values."""
     n_steps: int = 10
     n_components: int = 10
-    activations: Tensor = torch.zeros(n_steps, n_components)
+    activations: np.ndarray = np.zeros((n_steps, n_components), dtype=np.float32)
 
     # Create linearly spaced max values: 0, 0.1, 0.2, ..., 0.9
     for i in range(n_components):
@@ -136,13 +135,14 @@ def test_linear_gradient_thresholds(threshold: float) -> None:
 
 def test_filter_dead_components_mean_stat() -> None:
     """Mean-based filtering keeps components whose average activation clears the threshold."""
-    activations = torch.tensor(
+    activations = np.array(
         [
             [1e-5, 0.0, 1e-5],
             [0.0, 0.0, 1e-5],
             [0.0, 0.0, 1e-5],
             [0.0, 0.0, 1e-5],
-        ]
+        ],
+        dtype=np.float32,
     )
     labels = ComponentLabels(["spiky", "dead", "steady"])
 
@@ -159,13 +159,14 @@ def test_filter_dead_components_mean_stat() -> None:
 
 def test_filter_dead_components_max_stat_preserves_spikes() -> None:
     """Max-based filtering preserves components with a single large activation."""
-    activations = torch.tensor(
+    activations = np.array(
         [
             [1e-5, 0.0, 1e-5],
             [0.0, 0.0, 1e-5],
             [0.0, 0.0, 1e-5],
             [0.0, 0.0, 1e-5],
-        ]
+        ],
+        dtype=np.float32,
     )
     labels = ComponentLabels(["spiky", "dead", "steady"])
 

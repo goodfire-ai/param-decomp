@@ -9,11 +9,13 @@ It handles:
 - Job submission with script renaming and log file creation
 """
 
+import os
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from param_decomp_lab.infra.git import snapshot_source_repo
 from param_decomp_lab.infra.settings import REPO_ROOT, SBATCH_SCRIPTS_DIR, SLURM_LOGS_DIR
 
 # Bash expressions that uniquely identify a job invocation, used to name per-job /tmp
@@ -34,14 +36,23 @@ class SlurmConfig:
 
     job_name: str
     partition: str | None
+    qos: str | None = None
     n_gpus: int = 1
     n_nodes: int = 1
+    ntasks_per_node: int = 1
     time: str = "72:00:00"
+    signal: str | None = None
+    """`--signal=` spec, e.g. `TERM@300`. No `B:` prefix — that delivers to the batch
+    shell only, not the srun-launched ranks whose handlers need it."""
     mem: str | None = None  # Memory limit (e.g., "64G", "128G")
     cpus_per_task: int | None = None
     snapshot_ref: str | None = None
     dependency_job_id: str | None = None
     comment: str | None = None
+    requeue: bool = False
+    """Emit `#SBATCH --requeue` so SLURM re-runs this script on node failure /
+    opportunistic preemption (same job id). The worker self-resumes from its latest
+    consolidated checkpoint, so the requeue continues training rather than restarting."""
 
 
 @dataclass
@@ -60,13 +71,24 @@ class SubmitResult:
     log_pattern: str
 
 
-def generate_script(config: SlurmConfig, command: str, env: dict[str, str] | None = None) -> str:
-    """Generate a single SLURM job script. `env` is exported at the start of the script."""
+def generate_script(
+    config: SlurmConfig,
+    command: str,
+    env: dict[str, str] | None = None,
+    setup: str | None = None,
+) -> str:
+    """Generate a single SLURM job script. `env` is exported at the start of the script.
+
+    `setup` overrides the default workspace/venv section — for launches that manage
+    their own workspaces (e.g. `pd-lm`, whose nodes each build one inside the srun
+    command and whose `setup` is just the cleanup trap).
+    """
     header = _sbatch_header_singleton(config)
-    if config.n_nodes == 1:
-        setup = _setup_section_singleton(config)
-    else:
-        setup = "# Multi-node job: each node sets up its own workspace in the srun command"
+    if setup is None:
+        if config.n_nodes == 1:
+            setup = _setup_section_singleton(config)
+        else:
+            setup = "# Multi-node job: each node sets up its own workspace in the srun command"
     env_exports = _env_exports(env)
 
     return f"""\
@@ -75,6 +97,10 @@ def generate_script(config: SlurmConfig, command: str, env: dict[str, str] | Non
 
 set -euo pipefail
 umask 002  # Ensure files are group-writable
+# NCCL cross-node bootstrap sockets exhaust the default 1024-fd soft limit at 4+ nodes
+# ("ncclOsSocketTryAccept: Accept failed: Too many open files"); srun propagates this shell's
+# limits to the ranks.
+ulimit -n "$(ulimit -Hn)"
 {env_exports}
 {setup}
 
@@ -137,6 +163,10 @@ esac
 
 set -euo pipefail
 umask 002  # Ensure files are group-writable
+# NCCL cross-node bootstrap sockets exhaust the default 1024-fd soft limit at 4+ nodes
+# ("ncclOsSocketTryAccept: Accept failed: Too many open files"); srun propagates this shell's
+# limits to the ranks.
+ulimit -n "$(ulimit -Hn)"
 {env_exports}
 {comment_section}
 {setup}
@@ -210,19 +240,29 @@ def _common_sbatch_lines(config: SlurmConfig, log_pattern: str) -> list[str]:
     lines = [
         f"#SBATCH --job-name={config.job_name}",
         f"#SBATCH --nodes={config.n_nodes}",
-        "#SBATCH --ntasks-per-node=1",
+        f"#SBATCH --ntasks-per-node={config.ntasks_per_node}",
         f"#SBATCH --gpus-per-node={config.n_gpus}",
         f"#SBATCH --time={config.time}",
         f"#SBATCH --output={SLURM_LOGS_DIR}/slurm-{log_pattern}.out",
+        # Append across requeues instead of SLURM's default truncate — otherwise an
+        # auto-requeue (`--requeue`) reopens the same `slurm-<jobid>.out` and wipes the
+        # prior attempt's log, destroying the crash evidence that triggered the requeue.
+        "#SBATCH --open-mode=append",
     ]
+    if config.signal is not None:
+        lines.append(f"#SBATCH --signal={config.signal}")
     if config.partition is not None:
         lines.append(f"#SBATCH --partition={config.partition}")
+    if config.qos is not None:
+        lines.append(f"#SBATCH --qos={config.qos}")
     if config.cpus_per_task is not None:
         lines.append(f"#SBATCH --cpus-per-task={config.cpus_per_task}")
     if config.mem is not None:
         lines.append(f"#SBATCH --mem={config.mem}")
     if config.dependency_job_id:
         lines.append(f"#SBATCH --dependency=afterok:{config.dependency_job_id}")
+    if config.requeue:
+        lines.append("#SBATCH --requeue")
     if config.comment:
         lines.append(f'#SBATCH --comment="{config.comment}"')
     return lines
@@ -241,21 +281,33 @@ def _sbatch_header_array(config: SlurmArrayConfig, array_range: str) -> str:
 
 
 def generate_git_snapshot_setup(work_dir: str, snapshot_ref: str) -> str:
-    """Bash fragment to clone the repo, fetch `snapshot_ref`, check it out, and set up env.
+    """Bash fragment to fetch `snapshot_ref` into `work_dir`, check it out, set up env.
 
-    `git clone` only fetches `refs/heads/*` + tags, so custom namespaces like
-    `refs/runs/snapshot/*` need an explicit fetch. Also copies `.env` and activates the
-    venv. `work_dir` is a bash expression and can include `$SLURM_*` vars.
+    Shallow `git init` + `git fetch --depth 1` from the submitting checkout's common git
+    dir (shared FS, worktree-safe — see `git.snapshot_source_repo`), the same source the
+    pd-lm launcher fetches from. `file://` is required: git silently ignores `--depth` on
+    the bare-path local transport. `git clone` is avoided — it only fetches `refs/heads/*`
+    + tags, so custom namespaces like `refs/runs/snapshot/*` wouldn't come across anyway,
+    and a full clone of the worktree is needless when we want one commit.
+
+    `.env` (secrets, untracked, so no ref carries it) is copied from the durable main
+    checkout — the common git dir's parent worktree — NOT the possibly-ephemeral
+    submitting worktree (a node-local `/tmp` workspace when generated from inside another
+    SLURM job, e.g. async slow-eval submitted by training's `sink.on_save`).
+
+    `work_dir` is a bash expression and can include `$SLURM_*` vars.
     """
+    source_repo = snapshot_source_repo()
+    env_file = source_repo.parent / ".env"
     return f"""\
 WORK_DIR="{work_dir}"
 mkdir -p "$WORK_DIR"
 trap 'rm -rf "$WORK_DIR"' EXIT
-git clone "{REPO_ROOT}" "$WORK_DIR"
 cd "$WORK_DIR"
-[ -f "{REPO_ROOT}/.env" ] && cp "{REPO_ROOT}/.env" .env
-git fetch "{REPO_ROOT}" "{snapshot_ref}:{snapshot_ref}"
-git checkout "{snapshot_ref}"
+git init --quiet
+git fetch --quiet --depth 1 "file://{source_repo}" "{snapshot_ref}"
+git checkout --quiet FETCH_HEAD
+[ -f "{env_file}" ] && cp "{env_file}" .env
 deactivate 2>/dev/null || true
 unset VIRTUAL_ENV
 uv sync --all-packages --no-dev --link-mode copy -q
@@ -310,10 +362,22 @@ def _case_block(commands: list[str]) -> str:
 def _submit_script(script_path: Path) -> str:
     """Submit script via sbatch and return job ID.
 
+    Submitting from INSIDE a SLURM allocation (agent sessions, dev pods, tmux servers
+    created in an srun step) leaks the caller's step-scoped env into the new job —
+    sbatch propagates it, and the new job's srun reads it as directives. A mismatched
+    inherited `SLURM_CPUS_PER_TASK` kills the srun instantly ("cpus-per-task set by two
+    different environment variables"); an inherited `SLURM_CPU_BIND` silently pins every
+    rank to the ORIGINATING pod's few cores (the June 2026 fleet-wide ~3x slowdown).
+    Scrub `SLURM_*`/`SBATCH_*`/`PMIX_*` from the submission env so the new job's SLURM
+    state comes only from its own allocation.
+
     Raises RuntimeError if sbatch fails.
     """
+    clean_env = {
+        k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "SBATCH_", "PMIX_"))
+    }
     result = subprocess.run(
-        ["sbatch", str(script_path)], capture_output=True, text=True, check=False
+        ["sbatch", str(script_path)], capture_output=True, text=True, check=False, env=clean_env
     )
     if result.returncode != 0:
         raise RuntimeError(f"Failed to submit SLURM job: {result.stderr}")

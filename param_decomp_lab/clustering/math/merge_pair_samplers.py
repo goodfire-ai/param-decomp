@@ -2,9 +2,8 @@ import math
 import random
 from typing import Any, Literal, Protocol
 
-import torch
+import numpy as np
 from jaxtyping import Bool, Float, Int
-from torch import Tensor
 
 from param_decomp_lab.clustering.types import ClusterCoactivationShaped, MergePair
 
@@ -35,40 +34,27 @@ def range_sampler(
 
     Considers all pairs with costs below a threshold defined as a fraction
     of the range of non-diagonal costs, then randomly selects one.
-
-    Args:
-        costs: Cost matrix for all possible merges
-        k_groups: Number of current groups
-        threshold: Fraction of cost range to consider (0=min only, 1=all pairs)
-
-    Returns:
-        Tuple of (group_i, group_j) indices to merge
+    threshold=0 keeps only the minimum-cost pair; threshold=1 keeps all pairs.
     """
     assert not kwargs
     k_groups: int = costs.shape[0]
     assert costs.shape[1] == k_groups, "Cost matrix must be square"
 
-    # Find the range of non-diagonal costs
-    non_diag_costs: Float[Tensor, " k_groups_squared_minus_k"] = costs[
-        ~torch.eye(k_groups, dtype=torch.bool, device=costs.device)
-    ]
-    min_cost: float = float(non_diag_costs.min().item())
-    max_cost: float = float(non_diag_costs.max().item())
+    off_diagonal: Bool[np.ndarray, "k_groups k_groups"] = ~np.eye(k_groups, dtype=np.bool_)
+    non_diag_costs: Float[np.ndarray, " k_groups_squared_minus_k"] = costs[off_diagonal]
+    min_cost: float = float(non_diag_costs.min())
+    max_cost: float = float(non_diag_costs.max())
 
-    # Calculate threshold cost
     max_considered_cost: float = (max_cost - min_cost) * threshold + min_cost
 
-    # Find all pairs below threshold
-    considered_idxs: Int[Tensor, "n_considered 2"] = torch.stack(
-        torch.where(costs <= max_considered_cost), dim=1
+    considered_idxs: Int[np.ndarray, "n_considered 2"] = np.stack(
+        np.where(costs <= max_considered_cost), axis=1
     )
-    # Remove diagonal entries (i == j)
     considered_idxs = considered_idxs[considered_idxs[:, 0] != considered_idxs[:, 1]]
 
-    # Randomly select one of the considered pairs
     selected_idx: int = random.randint(0, considered_idxs.shape[0] - 1)
-    pair_tuple: tuple[int, int] = tuple(considered_idxs[selected_idx].tolist())  # type: ignore[assignment]
-    return MergePair(pair_tuple)
+    row, col = considered_idxs[selected_idx].tolist()
+    return MergePair((row, col))
 
 
 def mcmc_sampler(
@@ -76,40 +62,25 @@ def mcmc_sampler(
     temperature: float = 1.0,
     **kwargs: Any,
 ) -> MergePair:
-    """Sample a merge pair using MCMC with probability proportional to exp(-cost/temperature).
+    """Sample a merge pair with probability proportional to exp(-cost/temperature).
 
-    Args:
-        costs: Cost matrix for all possible merges
-        k_groups: Number of current groups
-        temperature: Temperature parameter for softmax (higher = more uniform sampling)
-
-    Returns:
-        Tuple of (group_i, group_j) indices to merge
+    Higher temperature gives more uniform sampling.
     """
     assert not kwargs
     k_groups: int = costs.shape[0]
     assert costs.shape[1] == k_groups, "Cost matrix must be square"
 
-    # Create mask for valid pairs (non-diagonal)
-    valid_mask: Bool[Tensor, "k_groups k_groups"] = ~torch.eye(
-        k_groups, dtype=torch.bool, device=costs.device
-    )
+    valid_mask: Bool[np.ndarray, "k_groups k_groups"] = ~np.eye(k_groups, dtype=np.bool_)
 
-    # Compute probabilities: exp(-cost/temperature)
-    # Use stable softmax computation to avoid overflow
-    costs_masked: ClusterCoactivationShaped = costs.clone()
-    costs_masked[~valid_mask] = float("inf")  # Set diagonal to inf so exp gives 0
+    costs_masked: ClusterCoactivationShaped = costs.copy()
+    costs_masked[~valid_mask] = np.inf  # diagonal -> exp gives 0
 
-    # Subtract min for numerical stability
     min_cost: float = float(costs_masked[valid_mask].min())
-    probs: ClusterCoactivationShaped = (
-        torch.exp((min_cost - costs_masked) / temperature) * valid_mask
-    )  # Zero out diagonal
-    probs_flatten: Float[Tensor, " k_groups_squared"] = probs.flatten()
+    probs: ClusterCoactivationShaped = np.exp((min_cost - costs_masked) / temperature) * valid_mask
+    probs_flatten: Float[np.ndarray, " k_groups_squared"] = probs.flatten()
     probs_flatten = probs_flatten / probs_flatten.sum()
 
-    # Sample from multinomial distribution
-    idx: int = int(torch.multinomial(probs_flatten, 1).item())
+    idx: int = random.choices(range(probs_flatten.size), weights=probs_flatten.tolist())[0]
     row: int = idx // k_groups
     col: int = idx % k_groups
 
@@ -125,26 +96,18 @@ def exp_rank_sampler(
 
     P(rank r) ∝ exp(-decay * r), where rank 0 is the lowest-cost pair.
     decay=0 is uniform, decay→∞ is greedy.
-
-    Args:
-        costs: Cost matrix for all possible merges
-        decay: Exponential decay rate in rank space. Controls exploration:
-            0.01 = broad (top ~100 ranks likely), 0.1 = focused (top ~10), 1.0 = nearly greedy
     """
     assert not kwargs
     k_groups = costs.shape[0]
 
-    valid_mask = ~torch.eye(k_groups, dtype=torch.bool, device=costs.device)
-    # Upper triangle only (symmetric costs)
-    upper_mask = torch.triu(valid_mask, diagonal=1)
-    upper_indices = torch.stack(torch.where(upper_mask), dim=1)
+    valid_mask = ~np.eye(k_groups, dtype=np.bool_)
+    upper_mask = np.triu(valid_mask, k=1)
+    upper_indices = np.stack(np.where(upper_mask), axis=1)
     upper_costs = costs[upper_mask]
 
-    # Sort by cost (ascending)
-    sorted_indices = torch.argsort(upper_costs)
+    sorted_indices = np.argsort(upper_costs)
 
-    # P(rank r) ∝ exp(-decay * r) → CDF = (1 - exp(-decay * r)) / (1 - exp(-decay * N))
-    # Sample via inverse CDF to avoid torch.multinomial's 2^24 limit
+    # P(rank r) ∝ exp(-decay * r) → sample via inverse CDF
     n = len(sorted_indices)
     u = random.random()
     exp_neg_decay_n = math.exp(-decay * n)
@@ -152,8 +115,8 @@ def exp_rank_sampler(
     rank = min(rank, n - 1)
 
     pair_idx = sorted_indices[rank]
-    row = int(upper_indices[pair_idx, 0].item())
-    col = int(upper_indices[pair_idx, 1].item())
+    row = int(upper_indices[pair_idx, 0])
+    col = int(upper_indices[pair_idx, 1])
 
     return MergePair((row, col))
 

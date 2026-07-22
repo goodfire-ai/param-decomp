@@ -51,7 +51,7 @@ def get_cluster_mapping(
     )
 
     merge = history.merges[iteration]
-    assignments = merge.group_idxs.numpy()
+    assignments = merge.group_idxs
     labels = list(history.labels)
 
     # Count members per cluster to identify singletons

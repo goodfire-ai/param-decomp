@@ -1,6 +1,8 @@
 """Harvester for collecting component statistics in a single pass.
 
-All accumulator state lives as tensors on `device` (GPU during harvesting, CPU during merge).
+All accumulator state lives as NumPy arrays on the host. Counts and co-occurrence use
+int64 (firings summed over a stream overflow narrower integer types); probability-mass
+accumulators use float64.
 """
 
 from collections import defaultdict
@@ -8,11 +10,10 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-import torch
+import numpy as np
 import tqdm
 from einops import einsum, rearrange, reduce, repeat
 from jaxtyping import Bool, Float, Int
-from torch import Tensor
 
 from param_decomp.log import logger
 from param_decomp_lab.harvest.reservoir import (
@@ -25,31 +26,30 @@ from param_decomp_lab.harvest.schemas import ComponentData, ComponentTokenPMI
 
 
 def extract_padding_firing_windows(
-    batch: Int[Tensor, "B S"],
-    firings: Bool[Tensor, "B S C"],
-    activations: dict[str, Float[Tensor, "B S C"]],
+    batch: Int[np.ndarray, "B S"],
+    firings: Bool[np.ndarray, "B S C"],
+    activations: dict[str, Float[np.ndarray, "B S C"]],
     max_examples_per_batch_per_component: int,
     context_tokens_per_side: int,
+    rng: np.random.Generator,
 ) -> ActivationWindows | None:
-    batch_idx, seq_idx, comp_idx = torch.where(firings)
+    batch_idx, seq_idx, comp_idx = np.nonzero(firings)
     if len(batch_idx) == 0:
         return None
 
-    keep = sample_at_most_n_per_group(comp_idx, max_examples_per_batch_per_component)
+    keep = sample_at_most_n_per_group(comp_idx, max_examples_per_batch_per_component, rng)
     batch_idx, seq_idx, comp_idx = batch_idx[keep], seq_idx[keep], comp_idx[keep]
 
     seq_len = batch.shape[1]
-    offsets = torch.arange(
-        -context_tokens_per_side, context_tokens_per_side + 1, device=batch.device
-    )
+    offsets = np.arange(-context_tokens_per_side, context_tokens_per_side + 1)
     window_size = offsets.shape[0]
     assert window_size == 2 * context_tokens_per_side + 1
 
-    window_positions: Int[Tensor, "n_firings window_size"]
-    window_positions = seq_idx.unsqueeze(1) + offsets.unsqueeze(0)
+    window_positions: Int[np.ndarray, "n_firings window_size"]
+    window_positions = seq_idx[:, None] + offsets[None, :]
 
     in_bounds = (window_positions >= 0) & (window_positions < seq_len)
-    clamped = window_positions.clamp(0, seq_len - 1)
+    clamped = np.clip(window_positions, 0, seq_len - 1)
 
     batch_idx_rep = repeat(batch_idx, "n_firings -> n_firings window_size", window_size=window_size)
     c_idx_rep = repeat(comp_idx, "n_firings -> n_firings window_size", window_size=window_size)
@@ -76,8 +76,8 @@ def extract_padding_firing_windows(
 class Harvester:
     """Accumulates component statistics in a single pass over data.
 
-    All mutable state is stored as tensors on `device`. Workers on GPU accumulate
-    into GPU tensors; the merge job reconstructs on CPU.
+    All mutable state is stored as NumPy arrays on the host. Workers accumulate into
+    their own arrays; the merge job sums them.
     """
 
     def __init__(
@@ -87,14 +87,16 @@ class Harvester:
         max_examples_per_component: int,
         context_tokens_per_side: int,
         max_examples_per_batch_per_component: int,
-        device: torch.device,
+        collect_component_cooccurrence: bool,
+        seed: int = 0,
     ):
         self.layers = layers
         self.vocab_size = vocab_size
         self.max_examples_per_component = max_examples_per_component
         self.context_tokens_per_side = context_tokens_per_side
         self.max_examples_per_batch_per_component = max_examples_per_batch_per_component
-        self.device = device
+        self.collect_component_cooccurrence = collect_component_cooccurrence
+        self.rng = np.random.default_rng(seed)
 
         self.layer_offsets: dict[str, int] = {}
         offset = 0
@@ -107,30 +109,30 @@ class Harvester:
         window_size = 2 * context_tokens_per_side + 1
 
         # Per-component firing stats
-        self.firing_counts = torch.zeros(n_components, device=device)
-        self.activation_sums = defaultdict[str, Tensor](
-            lambda: torch.zeros(n_components, device=device)
+        self.firing_counts = np.zeros(n_components, dtype=np.int64)
+        self.activation_sums = defaultdict[str, np.ndarray](
+            lambda: np.zeros(n_components, dtype=np.float64)
         )
-        self.cooccurrence_counts: Float[Tensor, "C C"] = torch.zeros(
-            n_components, n_components, device=device, dtype=torch.float32
+        self.cooccurrence_counts: Int[np.ndarray, "C C"] | None = (
+            np.zeros((n_components, n_components), dtype=np.int64)
+            if collect_component_cooccurrence
+            else None
         )
 
         # Per-(component, token) stats for PMI computation
         #   input: hard token counts at positions where component fires
         #   output: predicted probability mass at positions where component fires
-        self.input_cooccurrence: Int[Tensor, "C vocab"] = torch.zeros(
-            n_components, vocab_size, device=device, dtype=torch.long
+        self.input_cooccurrence: Int[np.ndarray, "C vocab"] = np.zeros(
+            (n_components, vocab_size), dtype=np.int64
         )
-        self.input_marginals: Int[Tensor, " vocab"] = torch.zeros(
-            vocab_size, device=device, dtype=torch.long
+        self.input_marginals: Int[np.ndarray, " vocab"] = np.zeros(vocab_size, dtype=np.int64)
+        self.output_cooccurrence: Float[np.ndarray, "C vocab"] = np.zeros(
+            (n_components, vocab_size), dtype=np.float64
         )
-        self.output_cooccurrence: Float[Tensor, "C vocab"] = torch.zeros(
-            n_components, vocab_size, device=device
-        )
-        self.output_marginals: Float[Tensor, " vocab"] = torch.zeros(vocab_size, device=device)
+        self.output_marginals: Float[np.ndarray, " vocab"] = np.zeros(vocab_size, dtype=np.float64)
 
         self.reservoir = ActivationExamplesReservoir.create(
-            n_components, max_examples_per_component, window_size, device
+            n_components, max_examples_per_component, window_size
         )
         self.total_tokens_processed = 0
 
@@ -150,64 +152,60 @@ class Harvester:
 
     def process_batch(
         self,
-        batch: Int[Tensor, "B S"],
-        firings: dict[str, Bool[Tensor, "B S C"]],
-        activations: dict[str, dict[str, Float[Tensor, "B S C"]]],
-        output_probs: Float[Tensor, "B S V"],
+        batch: Int[np.ndarray, "B S"],
+        firings: dict[str, Bool[np.ndarray, "B S C"]],
+        activations: dict[str, dict[str, Float[np.ndarray, "B S C"]]],
+        output_probs: Float[np.ndarray, "B S V"],
     ) -> None:
-        self.total_tokens_processed += batch.numel()
+        self.total_tokens_processed += batch.size
 
         tokens_flat = rearrange(batch, "b s -> (b s)")
-        probs_flat = rearrange(output_probs, "b s v -> (b s) v")
+        probs_flat = rearrange(output_probs, "b s v -> (b s) v").astype(np.float64)
 
-        firings_cat = torch.cat([firings[layer] for layer in self.layer_names], dim=-1)
+        firings_cat = np.concatenate([firings[layer] for layer in self.layer_names], axis=-1)
         firings_flat = rearrange(firings_cat, "b s lc -> (b s) lc")
 
         act_types = list(activations[self.layer_names[0]].keys())
-        activations_cat: dict[str, Float[Tensor, "B S LC"]] = {}
+        activations_cat: dict[str, Float[np.ndarray, "B S LC"]] = {}
         for act_type in act_types:
-            activations_cat[act_type] = torch.cat(
-                [activations[layer][act_type] for layer in self.layer_names], dim=-1
+            activations_cat[act_type] = np.concatenate(
+                [activations[layer][act_type] for layer in self.layer_names], axis=-1
             )
 
-        self.firing_counts += reduce(firings_cat, "b s lc -> lc", "sum")
+        self.firing_counts += reduce(firings_cat.astype(np.int64), "b s lc -> lc", "sum")
 
         for act_type, act in activations_cat.items():
-            self.activation_sums[act_type] += reduce(act, "b s lc -> lc", "sum")
+            self.activation_sums[act_type] += reduce(act.astype(np.float64), "b s lc -> lc", "sum")
 
-        firings_float = firings_flat.float()
-        self.cooccurrence_counts += einsum(firings_float, firings_float, "S c1, S c2 -> c1 c2")
-        self._accumulate_token_stats(tokens_flat, probs_flat, firings_float)
+        if self.cooccurrence_counts is not None:
+            firings_int = firings_flat.astype(np.int64)
+            self.cooccurrence_counts += einsum(firings_int, firings_int, "S c1, S c2 -> c1 c2")
+        self._accumulate_token_stats(tokens_flat, probs_flat, firings_flat)
         self._collect_activation_examples(batch, firings_cat, activations_cat)
 
     def _accumulate_token_stats(
         self,
-        tokens_flat: Int[Tensor, " S"],
-        probs_flat: Float[Tensor, "S vocab"],
-        firing_flat: Float[Tensor, "S LC"],
+        tokens_flat: Int[np.ndarray, " S"],
+        probs_flat: Float[np.ndarray, "S vocab"],
+        firing_flat: Bool[np.ndarray, "S LC"],
     ) -> None:
-        n_components = firing_flat.shape[1]
-        token_indices = repeat(tokens_flat, "S -> lc S", lc=n_components)
+        # inputs are hard token counts: add each firing into the (component, token) cell.
+        # Index with parallel (component, token) integer arrays over only the firing entries.
+        fire_pos, fire_comp = np.nonzero(firing_flat)
+        np.add.at(self.input_cooccurrence, (fire_comp, tokens_flat[fire_pos]), 1)
+        np.add.at(self.input_marginals, tokens_flat, 1)
 
-        # use scatter_add for inputs because inputs are one-hot / token indices
-        self.input_cooccurrence.scatter_add_(
-            dim=1, index=token_indices, src=rearrange(firing_flat, "S lc -> lc S").long()
+        # outputs accumulate predicted probability mass over vocab
+        self.output_cooccurrence += einsum(
+            firing_flat.astype(np.float64), probs_flat, "S lc, S v -> lc v"
         )
-        self.input_marginals.scatter_add_(
-            dim=0,
-            index=tokens_flat,
-            src=torch.ones(tokens_flat.shape[0], device=self.device, dtype=torch.long),
-        )
-
-        # however, for outputs we need to accumulate probability mass over vocab
-        self.output_cooccurrence += einsum(firing_flat, probs_flat, "S lc, S v -> lc v")
         self.output_marginals += reduce(probs_flat, "S v -> v", "sum")
 
     def _collect_activation_examples(
         self,
-        batch: Int[Tensor, "B S"],
-        firings: Bool[Tensor, "B S LC"],
-        activations: dict[str, Float[Tensor, "B S LC"]],
+        batch: Int[np.ndarray, "B S"],
+        firings: Bool[np.ndarray, "B S LC"],
+        activations: dict[str, Float[np.ndarray, "B S LC"]],
     ) -> None:
         res = extract_padding_firing_windows(
             batch,
@@ -215,9 +213,10 @@ class Harvester:
             activations,
             self.max_examples_per_batch_per_component,
             self.context_tokens_per_side,
+            self.rng,
         )
         if res is not None:
-            self.reservoir.add(res)
+            self.reservoir.add(res, self.rng)
 
     def save(self, path: Path) -> None:
         data: dict[str, object] = {
@@ -228,38 +227,39 @@ class Harvester:
             "max_examples_per_batch_per_component": self.max_examples_per_batch_per_component,
             "total_tokens_processed": self.total_tokens_processed,
             "reservoir": self.reservoir.state_dict(),
-            "firing_counts": self.firing_counts.cpu(),
-            "activation_sums": {
-                act_type: self.activation_sums[act_type].cpu() for act_type in self.activation_sums
-            },
-            "cooccurrence_counts": self.cooccurrence_counts.cpu(),
-            "input_cooccurrence": self.input_cooccurrence.cpu(),
-            "input_marginals": self.input_marginals.cpu(),
-            "output_cooccurrence": self.output_cooccurrence.cpu(),
-            "output_marginals": self.output_marginals.cpu(),
+            "firing_counts": self.firing_counts,
+            "activation_sums": dict(self.activation_sums),
+            "collect_component_cooccurrence": self.collect_component_cooccurrence,
+            "cooccurrence_counts": self.cooccurrence_counts,
+            "input_cooccurrence": self.input_cooccurrence,
+            "input_marginals": self.input_marginals,
+            "output_cooccurrence": self.output_cooccurrence,
+            "output_marginals": self.output_marginals,
         }
-        torch.save(data, path)
+        np.savez(path, harvester=np.array(data, dtype=object), allow_pickle=True)
 
     @staticmethod
-    def load(path: Path, device: torch.device) -> "Harvester":
-        d: dict[str, Any] = torch.load(path, weights_only=False)
+    def load(path: Path) -> "Harvester":
+        loaded = np.load(path, allow_pickle=True)
+        d: dict[str, Any] = loaded["harvester"].item()
         h = Harvester(
             layers=d["layers"],
             vocab_size=d["vocab_size"],
             max_examples_per_component=d["max_examples_per_component"],
             context_tokens_per_side=d["context_tokens_per_side"],
-            max_examples_per_batch_per_component=d.get("max_examples_per_batch_per_component", 5),
-            device=device,
+            max_examples_per_batch_per_component=d["max_examples_per_batch_per_component"],
+            collect_component_cooccurrence=d["collect_component_cooccurrence"],
         )
         h.total_tokens_processed = d["total_tokens_processed"]
-        h.firing_counts = d["firing_counts"].to(device)
-        h.activation_sums = {k: v.to(device) for k, v in d["activation_sums"].items()}
-        h.cooccurrence_counts = d["cooccurrence_counts"].to(device)
-        h.input_cooccurrence = d["input_cooccurrence"].to(device)
-        h.input_marginals = d["input_marginals"].to(device)
-        h.output_cooccurrence = d["output_cooccurrence"].to(device)
-        h.output_marginals = d["output_marginals"].to(device)
-        h.reservoir = ActivationExamplesReservoir.from_state_dict(d["reservoir"], device)
+        h.firing_counts = d["firing_counts"]
+        for act_type, sums in d["activation_sums"].items():
+            h.activation_sums[act_type] = sums
+        h.cooccurrence_counts = d["cooccurrence_counts"]
+        h.input_cooccurrence = d["input_cooccurrence"]
+        h.input_marginals = d["input_marginals"]
+        h.output_cooccurrence = d["output_cooccurrence"]
+        h.output_marginals = d["output_marginals"]
+        h.reservoir = ActivationExamplesReservoir.from_state_dict(d["reservoir"])
         return h
 
     def merge(self, other: "Harvester") -> None:
@@ -267,36 +267,34 @@ class Harvester:
         assert other.c_per_layer == self.c_per_layer
         assert other.vocab_size == self.vocab_size
 
+        assert (self.cooccurrence_counts is None) == (other.cooccurrence_counts is None), (
+            "Cannot merge harvesters with mismatched component-cooccurrence collection"
+        )
+
         self.firing_counts += other.firing_counts
         for act_type in self.activation_sums:
             self.activation_sums[act_type] += other.activation_sums[act_type]
-        self.cooccurrence_counts += other.cooccurrence_counts
+        if self.cooccurrence_counts is not None:
+            assert other.cooccurrence_counts is not None
+            self.cooccurrence_counts += other.cooccurrence_counts
         self.input_cooccurrence += other.input_cooccurrence
         self.input_marginals += other.input_marginals
         self.output_cooccurrence += other.output_cooccurrence
         self.output_marginals += other.output_marginals
         self.total_tokens_processed += other.total_tokens_processed
 
-        self.reservoir.merge(other.reservoir)
+        self.reservoir.merge(other.reservoir, self.rng)
 
     # -- Result building ---------------------------------------------------
 
     def build_results(self, pmi_top_k_tokens: int) -> Iterator[ComponentData]:
         """Yield ComponentData objects one at a time (constant memory)."""
-        logger.info("  Moving tensors to CPU...")
         mean_activations = {
-            act_type: (self.activation_sums[act_type] / self.total_tokens_processed).cpu()
+            act_type: self.activation_sums[act_type] / self.total_tokens_processed
             for act_type in self.activation_sums
         }
-        firing_counts = self.firing_counts.cpu()
-        input_cooccurrence = self.input_cooccurrence.cpu()
-        input_marginals = self.input_marginals.cpu()
-        output_cooccurrence = self.output_cooccurrence.cpu()
-        output_marginals = self.output_marginals.cpu()
 
-        reservoir_cpu = self.reservoir.to(torch.device("cpu"))
-
-        _log_base_rate_summary(firing_counts, input_marginals)
+        _log_base_rate_summary(self.firing_counts, self.input_marginals)
 
         for layer, layer_c in self.layers:
             offset = self.layer_offsets[layer]
@@ -304,7 +302,7 @@ class Harvester:
             for component_idx in tqdm.tqdm(range(layer_c), desc="Building components"):
                 flat_idx = offset + component_idx
 
-                n_firings = float(firing_counts[flat_idx])
+                n_firings = float(self.firing_counts[flat_idx])
                 if n_firings == 0:
                     continue
 
@@ -314,20 +312,20 @@ class Harvester:
                     component_idx=component_idx,  # as in, the index of the component within the layer
                     firing_density=n_firings / self.total_tokens_processed,
                     mean_activations={
-                        act_type: float(mean_activations[act_type][flat_idx].item())
+                        act_type: float(mean_activations[act_type][flat_idx])
                         for act_type in mean_activations
                     },
-                    activation_examples=list(reservoir_cpu.examples(flat_idx)),
+                    activation_examples=list(self.reservoir.examples(flat_idx)),
                     input_token_pmi=_compute_token_pmi(
-                        input_cooccurrence[flat_idx],
-                        input_marginals,
+                        self.input_cooccurrence[flat_idx].astype(np.float64),
+                        self.input_marginals.astype(np.float64),
                         n_firings,
                         self.total_tokens_processed,
                         pmi_top_k_tokens,
                     ),
                     output_token_pmi=_compute_token_pmi(
-                        output_cooccurrence[flat_idx],
-                        output_marginals,
+                        self.output_cooccurrence[flat_idx],
+                        self.output_marginals,
                         n_firings,
                         self.total_tokens_processed,
                         pmi_top_k_tokens,
@@ -340,13 +338,15 @@ class Harvester:
 # ---------------------------------------------------------------------------
 
 
-def _log_base_rate_summary(firing_counts: Tensor, input_marginals: Tensor) -> None:
+def _log_base_rate_summary(
+    firing_counts: Int[np.ndarray, " C"], input_marginals: Int[np.ndarray, " vocab"]
+) -> None:
     active_counts = firing_counts[firing_counts > 0]
     if len(active_counts) == 0:
         logger.info("  WARNING: No components fired above threshold!")
         return
 
-    sorted_counts = active_counts.sort().values
+    sorted_counts = np.sort(active_counts)
     n_active = len(active_counts)
     logger.info("\n  === Base Rate Summary ===")
     logger.info(f"  Components with firings: {n_active} / {len(firing_counts)}")
@@ -365,7 +365,7 @@ def _log_base_rate_summary(firing_counts: Tensor, input_marginals: Tensor) -> No
         )
 
     active_tokens = input_marginals[input_marginals > 0]
-    sorted_token_counts = active_tokens.sort().values
+    sorted_token_counts = np.sort(active_tokens)
     n_tokens = len(active_tokens)
     logger.info(
         f"  Tokens seen: {n_tokens} unique, "
@@ -385,8 +385,8 @@ def _log_base_rate_summary(firing_counts: Tensor, input_marginals: Tensor) -> No
 
 
 def _compute_token_pmi(
-    token_mass_for_component: Tensor,
-    token_mass_totals: Tensor,
+    token_mass_for_component: Float[np.ndarray, " vocab"],
+    token_mass_totals: Float[np.ndarray, " vocab"],
     component_firing_count: float,
     total_tokens: int,
     top_k: int,
