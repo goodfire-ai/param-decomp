@@ -18,7 +18,7 @@ from matplotlib.figure import Figure
 
 from param_decomp.ci_fn import lower_leaky_hard_sigmoid
 from param_decomp.components import DecompVU
-from param_decomp.lm import DecomposedModel
+from param_decomp.model import DecomposedModel
 from param_decomp.train import COMPUTE_DT, cast_floating
 
 
@@ -80,7 +80,7 @@ over the REAL (`< n_valid_rows`) rows only. `model` (frozen-weight-bearing) is t
 
 
 def make_arithmetic_grid_step(
-    lm: ComponentActivationModel, answer_position: int, n_valid_rows: int
+    model_static: ComponentActivationModel, answer_position: int, n_valid_rows: int
 ) -> ArithmeticGridStep:
     """Build the jit'd step returning, at `answer_position` with the batch axis KEPT as the
     grid, BOTH per-component lower-leaky CI (from the CI fn) and the pre-mask activation `x@V`
@@ -88,10 +88,10 @@ def make_arithmetic_grid_step(
     per-component max CI over the real rows (`n_valid_rows` masks the sharding-pad tail —
     garbage prompts must not decide liveness). One step so the grids come from one call; a
     site's own mask never enters its `x@V`."""
-    site_names = lm.site_names
-    site_component_counts = {s.name: s.C for s in lm.sites}
+    site_names = model_static.site_names
+    site_component_counts = {s.name: s.C for s in model_static.sites}
 
-    # HLO-baking rule: read STATIC config (site_names, Cs) off the closed-over `lm`; all array
+    # HLO-baking rule: read STATIC config (site_names, Cs) off the closed-over `model_static`; all array
     # access goes through the traced `model` arg.
     @eqx.filter_jit
     def step(

@@ -19,7 +19,7 @@ back to CPU); a single device is enough for a small harvest.
 
 `forward` mirrors the forward-only subset of `eval.make_eval_step`: clean logits +
 the CI fn's residual taps + lower-leaky CI, plus per-component acts (the harvest extra,
-from the frozen per-site matrix inputs `lm.read_activations` serves for site-name keys). bf16
+from the frozen per-site matrix inputs `model.read_activations` serves for site-name keys). bf16
 compute on the components / CI fn (training's `COMPUTE_DT`) so consumed CI matches the
 trained model's; output probs are fp32 from the fp32-upcast frozen forward.
 """
@@ -37,7 +37,7 @@ from param_decomp.built_run import BuiltRun
 from param_decomp.checkpoint import make_checkpoint_manager, restore_decomposition_to_host
 from param_decomp.ci_fn import CIFn
 from param_decomp.components import DecompVU
-from param_decomp.lm import DecomposedModel
+from param_decomp.model import DecomposedModel
 from param_decomp.run_state import init_decomposition
 from param_decomp.sharding import hsdp_mesh, place_via_shardings
 from param_decomp.targets import llama_simple_mlp
@@ -63,7 +63,7 @@ class HarvestForward:
 
 
 def build_target(cfg: BuiltRun, mesh: jax.sharding.Mesh) -> tuple[DecomposedModel, int]:
-    """`(lm, vocab_size)` for the run's target config. The `lm` (an `eqx.Module`) IS the
+    """`(model, vocab_size)` for the run's target config. The `model` (an `eqx.Module`) IS the
     frozen target — it carries the full model weights (embedding included) as fields and
     embeds its token input internally. SimpleMLP reads its local pretrain cache (no network);
     the HF families read the HF snapshot (frozen bf16 weights + fp32-compute, matching `run.py::main`).
@@ -75,16 +75,16 @@ def build_target(cfg: BuiltRun, mesh: jax.sharding.Mesh) -> tuple[DecomposedMode
             cache_dir = llama_simple_mlp.pretrain_cache_dir(cfg.target.pretrain_run_path)
             simple_cfg = llama_simple_mlp.load_model_config(cache_dir)
             sites = llama_simple_mlp.site_specs(simple_cfg, cfg.target.sites)
-            loaded_lm = llama_simple_mlp.load_decomposed_lm_from_pretrain_cache(
+            loaded_model = llama_simple_mlp.load_decomposed_lm_from_pretrain_cache(
                 cache_dir, simple_cfg, sites, jnp.bfloat16
             )
-            lm = place_via_shardings(loaded_lm, loaded_lm.shardings(mesh))
-            return lm, simple_cfg.vocab_size
+            model = place_via_shardings(loaded_model, loaded_model.shardings(mesh))
+            return model, simple_cfg.vocab_size
         case TargetConfig():
             family = hf_model_family(cfg.target.model_name)
             arch_cfg = family.arch_config()
             sites = glu_site_specs(arch_cfg, cfg.target.sites)
-            lm = place_target(
+            model = place_target(
                 family.load(
                     cfg.target.model_name,
                     arch_cfg,
@@ -94,7 +94,7 @@ def build_target(cfg: BuiltRun, mesh: jax.sharding.Mesh) -> tuple[DecomposedMode
                 ),
                 mesh,
             )
-            return lm, arch_cfg.vocab_size
+            return model, arch_cfg.vocab_size
         case _:
             raise AssertionError(f"build_target is LM-only; got target {type(cfg.target).__name__}")
 
@@ -116,7 +116,7 @@ class LoadedJaxRun:
 
     run_id: str
     step: int
-    lm: DecomposedModel
+    model: DecomposedModel
     config: BuiltRun
     vocab_size: int
     _decomposition: Decomposition
@@ -127,19 +127,19 @@ class LoadedJaxRun:
 
     @property
     def site_names(self) -> tuple[str, ...]:
-        return self.lm.site_names
+        return self.model.site_names
 
     @property
     def layer_activation_sizes(self) -> list[tuple[str, int]]:
         """`(site_name, C)` per decomposed site, in canonical order — the harvest
         accumulator's `layers` argument."""
-        return [(s.name, s.C) for s in self.lm.sites]
+        return [(s.name, s.C) for s in self.model.sites]
 
     def forward(self, token_ids: Int[Array, "B T"]) -> HarvestForward:
         ci_fn = self._decomposition.ci_fn
         assert isinstance(ci_fn, CIFn), "harvest is the transformer-CI-fn (LM) path only"
         lower_leaky_ci, component_acts, output_probs = self._forward(
-            self.lm, self._decomposition.components, ci_fn, token_ids
+            self.model, self._decomposition.components, ci_fn, token_ids
         )
         return HarvestForward(
             lower_leaky_ci=lower_leaky_ci,
@@ -149,7 +149,7 @@ class LoadedJaxRun:
 
 
 def _restore_decomposition(
-    cfg: BuiltRun, lm: DecomposedModel, mesh: jax.sharding.Mesh, run_dir: Path, step: int | None
+    cfg: BuiltRun, model: DecomposedModel, mesh: jax.sharding.Mesh, run_dir: Path, step: int | None
 ) -> tuple[Decomposition, int]:
     """Restore ONLY the trained decomposition from the run's checkpoint.
 
@@ -161,7 +161,7 @@ def _restore_decomposition(
     optimizers); leaves restore as host numpy, then `device_put` onto the consumer's
     single default device."""
     init_key, _ = jax.random.split(jax.random.PRNGKey(cfg.pd.seed))
-    abstract = jax.eval_shape(lambda: init_decomposition(lm, cfg.ci_fn, init_key, mesh))
+    abstract = jax.eval_shape(lambda: init_decomposition(model, cfg.ci_fn, init_key, mesh))
 
     assert cfg.cadence.keep_last_n_checkpoints is not None, cfg.cadence
     manager = make_checkpoint_manager(run_dir / "ckpts", cfg.cadence.keep_last_n_checkpoints)
@@ -176,15 +176,16 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
     only the trained decomposition (see `_restore_decomposition`)."""
     cfg = load_run_dir_config(run_dir)
     mesh = hsdp_mesh()
-    lm, vocab_size = build_target(cfg, mesh)
-    decomposition, resolved_step = _restore_decomposition(cfg, lm, mesh, run_dir, step)
+    target_model, vocab_size = build_target(cfg, mesh)
+    decomposition, resolved_step = _restore_decomposition(cfg, target_model, mesh, run_dir, step)
     assert isinstance(decomposition.components, DecompVU)
 
-    site_names = lm.site_names
+    site_names = target_model.site_names
     u_norms = _u_norms(decomposition.components, site_names)
 
-    # `model` is the filter_jit ARG (frozen weights traced, not baked). It embeds the token
-    # ids internally — the harvest forward feeds tokens straight in.
+    # `model` is the filter_jit ARG (frozen weights traced, not baked; distinct from the
+    # outer `target_model` so an accidental closure capture fails loudly). It embeds the
+    # token ids internally — the harvest forward feeds tokens straight in.
     @eqx.filter_jit
     def forward(
         model: DecomposedModel,
@@ -215,7 +216,7 @@ def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
     return LoadedJaxRun(
         run_id=run_dir.name,
         step=resolved_step,
-        lm=lm,
+        model=target_model,
         config=cfg,
         vocab_size=vocab_size,
         _decomposition=decomposition,

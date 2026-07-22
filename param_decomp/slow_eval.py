@@ -79,7 +79,7 @@ from param_decomp.hidden_acts_eval import (
     hidden_acts_log_entries,
 )
 from param_decomp.jit_util import filter_jit
-from param_decomp.lm import DecomposedModel
+from param_decomp.model import DecomposedModel
 from param_decomp.train import COMPUTE_DT, cast_floating
 
 IDENTITY_CI_ERROR_TOLERANCE = 0.1
@@ -147,7 +147,7 @@ def _per_component_ci_hist(lower: Array, n_bins: int) -> Array:
 
 
 def make_slow_eval_step(
-    lm: DecomposedModel,
+    model_static: DecomposedModel,
     ci_alive_threshold: float,
     density_heatmap_n_bins: int | None,
     compiler_options: dict[str, bool | int | str] | None = None,
@@ -158,7 +158,7 @@ def make_slow_eval_step(
     host caps the histogram sample); counts/sums are pre-reduced over positions.
     `density_heatmap_n_bins` opts into the per-component CI density histogram (empty dict
     when None); it shares this forward's `lower`, adding only an on-device bincount."""
-    site_names = lm.site_names
+    site_names = model_static.site_names
 
     def slow_eval_step(
         model: DecomposedModel, ci_fn: Any, residual: Float[Array, "*leading d"]
@@ -265,12 +265,12 @@ the per-batch CI summed over the batch leading axis, position axis kept. Pairs w
 
 
 def make_position_ci_step(
-    lm: DecomposedModel, compiler_options: dict[str, bool | int | str] | None = None
+    model_static: DecomposedModel, compiler_options: dict[str, bool | int | str] | None = None
 ) -> PositionCIStep:
     """Per-batch CI reduction that KEEPS the position axis (the `(T, C)` matrix the
     permutation/heatmap metrics plot), summing only over the batch leading axis. LM-only:
     the residual is `(B, T, d)` and CI is `(B, T, C)`."""
-    site_names = lm.site_names
+    site_names = model_static.site_names
 
     def position_ci_step(
         model: DecomposedModel, ci_fn: Any, residual: Float[Array, "*leading d"]

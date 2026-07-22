@@ -32,10 +32,9 @@ from param_decomp.configs import (
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
     PGDReconLossConfig,
-    SCScope,
     UniformKSubsetRoutingConfig,
 )
-from param_decomp.lm import DecomposedModel
+from param_decomp.model import DecomposedModel
 from param_decomp.recon import build_loss_terms
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.targets.glu_transformer import (
@@ -122,12 +121,12 @@ _QVDOWN_SITE_CS = (
 
 
 def _build_chunkwise_ci_fn(
-    lm: DecomposedModel, key: jax.Array, n_blocks: int
+    model: DecomposedModel, key: jax.Array, n_blocks: int
 ) -> ChunkwiseTransformerCIFn:
-    """Old `init_ci_fn(CIArch(16, n_blocks, 2, 32), lm.sites, key)` → the new chunkwise
+    """One chunk reading the residual entering the first decomposed block, emitting CI
     builder: a single chunk reading the residual entering the first decomposed block and
     emitting CI for every site. `input_dim` is the target residual width (`n_embd`)."""
-    site_names = lm.site_names
+    site_names = model.site_names
     first_block = min(parse_site_name(n)[0] for n in site_names)
     arch = ChunkwiseTransformerCIArch(
         chunks=(Chunk(input_taps=(f"resid.{first_block}",), output_sites=site_names),),
@@ -139,7 +138,7 @@ def _build_chunkwise_ci_fn(
         ffn_kind="gelu",
         learned_norm_scale=False,
     )
-    ci_fn = build_ci_fn(arch, lm.sites, key)
+    ci_fn = build_ci_fn(arch, model.sites, key)
     assert isinstance(ci_fn, ChunkwiseTransformerCIFn)
     return ci_fn
 
@@ -197,21 +196,23 @@ def test_masked_component_activations_pre_mask_and_matches_outputs():
     cfg = _tiny_cfg()
     C = 8
     sites = _mlp_sites(cfg, 4, 5, C)
-    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
-    names = lm.site_names
-    prepared = lm.prepare_compute_weights(vu)
+    names = model.site_names
+    prepared = model.prepare_compute_weights(vu)
     zeros_delta = {s: jnp.zeros((b, t)) for s in names}
     ones = {s: jnp.ones((b, t, C)) for s in names}
 
-    acts = lm.masked_component_activations(prepared, tokens, ones, zeros_delta, None, names, False)
+    acts = model.masked_component_activations(
+        prepared, tokens, ones, zeros_delta, None, names, False
+    )
     # `acts[s]` is `x@V` BEFORE the per-component `*mask` (shape (b, t, C)). With all-ones
     # masks and no delta the site OUTPUT is exactly `(x@V) @ U`, so projecting the collected
     # activation through U reproduces `masked_site_outputs` — pinning that we collected the
     # pre-mask coefficient, not the post-mask/post-U output.
-    outputs = lm.masked_site_outputs(prepared, tokens, ones, zeros_delta, None, names, False)
+    outputs = model.masked_site_outputs(prepared, tokens, ones, zeros_delta, None, names, False)
     for s in names:
         assert acts[s].shape == (b, t, C)
         assert jnp.all(jnp.isfinite(acts[s]))
@@ -225,28 +226,28 @@ def test_clean_path_and_masked_identity(first: int, last: int):
     cfg = _tiny_cfg()
     C = 8
     sites = _mlp_sites(cfg, first, last, C)
-    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
-    clean = lm.clean_output(tokens)
+    clean = model.clean_output(tokens)
     assert clean.shape == (b, t, cfg.vocab_size)
 
     # SPEC S2: a masked forward with NO live sites is the frozen path — bit-identical
     # to the clean target.
-    none_masked = lm.masked_output(
-        lm.prepare_compute_weights(vu), tokens, {}, {}, None, (), True, remat=False
+    none_masked = model.masked_output(
+        model.prepare_compute_weights(vu), tokens, {}, {}, None, (), True, remat=False
     )
     assert jnp.array_equal(clean, none_masked), "live=() must be the exact frozen path"
 
     # All-live, masks=1, delta=1, route-everywhere reconstructs the frozen path up to
     # decomposition rounding (the V@U + (W − V@U) identity; exact only in exact math).
-    names = lm.site_names
+    names = model.site_names
     ones_masks = {s: jnp.ones((b, t, C)) for s in names}
     ones_delta = {s: jnp.ones((b, t)) for s in names}
-    full = lm.masked_output(
-        lm.prepare_compute_weights(vu),
+    full = model.masked_output(
+        model.prepare_compute_weights(vu),
         tokens,
         ones_masks,
         ones_delta,
@@ -257,9 +258,9 @@ def test_clean_path_and_masked_identity(first: int, last: int):
     )
     assert jnp.allclose(clean, full, atol=1e-4), "mask=1 identity drifted"
 
-    site_in = lm.read_activations(tokens, lm.site_names)
+    site_in = model.read_activations(tokens, model.site_names)
     assert set(site_in) == set(names)
-    deltas = lm.weight_deltas(vu)
+    deltas = model.weight_deltas(vu)
     d, di = cfg.n_embd, cfg.n_intermediate
     assert deltas[names[0]].shape == (di, d)  # gate: (d_out, d_in)
     assert deltas[names[2]].shape == (d, di)  # down
@@ -269,28 +270,28 @@ def test_clean_path_and_masked_identity(first: int, last: int):
 def test_attention_sites_clean_and_masked_identity():
     cfg = _tiny_cfg()
     sites = glu_site_specs(cfg, _QVDOWN_SITE_CS)
-    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
     # per-site heterogeneous C is preserved end to end
-    assert {s.name: s.C for s in lm.sites} == {sc.name: sc.C for sc in _QVDOWN_SITE_CS}
-    for spec in lm.sites:
+    assert {s.name: s.C for s in model.sites} == {sc.name: sc.C for sc in _QVDOWN_SITE_CS}
+    for spec in model.sites:
         V, U = vu.site(spec.name)
         assert V.shape == (spec.d_in, spec.C) and U.shape == (spec.C, spec.d_out)
 
-    clean = lm.clean_output(tokens)
-    none_masked = lm.masked_output(
-        lm.prepare_compute_weights(vu), tokens, {}, {}, None, (), True, remat=False
+    clean = model.clean_output(tokens)
+    none_masked = model.masked_output(
+        model.prepare_compute_weights(vu), tokens, {}, {}, None, (), True, remat=False
     )
     assert jnp.array_equal(clean, none_masked), "live=() must be the exact frozen path"
 
-    names = lm.site_names
-    ones_masks = {s.name: jnp.ones((b, t, s.C)) for s in lm.sites}
+    names = model.site_names
+    ones_masks = {s.name: jnp.ones((b, t, s.C)) for s in model.sites}
     ones_delta = {s: jnp.ones((b, t)) for s in names}
-    full = lm.masked_output(
-        lm.prepare_compute_weights(vu),
+    full = model.masked_output(
+        model.prepare_compute_weights(vu),
         tokens,
         ones_masks,
         ones_delta,
@@ -305,13 +306,13 @@ def test_attention_sites_clean_and_masked_identity():
     # the attention path ahead of RoPE/SDPA). The segmented masked forward masks WHOLE layers, so
     # we ablate layer 4's full decomposed set rather than q alone.
     q_site = "layers.4.self_attn.q_proj"
-    site_c = {s.name: s.C for s in lm.sites}
+    site_c = {s.name: s.C for s in model.sites}
     layer4 = tuple(n for n in names if parse_site_name(n)[0] == 4)
     assert q_site in layer4
     zero_mask = {n: jnp.zeros((b, t, site_c[n])) for n in layer4}
     zero_delta = {n: jnp.zeros((b, t)) for n in layer4}
-    ablated = lm.masked_output(
-        lm.prepare_compute_weights(vu),
+    ablated = model.masked_output(
+        model.prepare_compute_weights(vu),
         tokens,
         zero_mask,
         zero_delta,
@@ -322,13 +323,13 @@ def test_attention_sites_clean_and_masked_identity():
     )
     assert not jnp.allclose(clean, ablated, atol=1e-4), "ablating layer 4 did nothing"
 
-    site_in = lm.read_activations(tokens, lm.site_names)
+    site_in = model.read_activations(tokens, model.site_names)
     assert set(site_in) == set(names)
     # q and v read the same post-LN1 residual; down reads the (di,) MLP inner acts
     assert jnp.array_equal(site_in[q_site], site_in["layers.4.self_attn.v_proj"])
     assert site_in["layers.4.mlp.down_proj"].shape == (b, t, cfg.n_intermediate)
 
-    deltas = lm.weight_deltas(vu)
+    deltas = model.weight_deltas(vu)
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
     assert deltas[q_site].shape == (qd, cfg.n_embd)
     assert deltas["layers.4.self_attn.v_proj"].shape == (kvd, cfg.n_embd)
@@ -338,14 +339,14 @@ def test_o_site_masks_attention_output():
     cfg = _tiny_cfg()
     o_site = "layers.4.self_attn.o_proj"
     sites = glu_site_specs(cfg, (SiteC(o_site, 8),))
-    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
-    clean = lm.clean_output(tokens)
-    ones = lm.masked_output(
-        lm.prepare_compute_weights(vu),
+    clean = model.clean_output(tokens)
+    ones = model.masked_output(
+        model.prepare_compute_weights(vu),
         tokens,
         {o_site: jnp.ones((b, t, 8))},
         {o_site: jnp.ones((b, t))},
@@ -356,7 +357,7 @@ def test_o_site_masks_attention_output():
     )
     assert jnp.allclose(clean, ones, atol=1e-4)
     # o's clean site input is the pre-o_proj attention output, shape (b, t, qd)
-    site_in = lm.read_activations(tokens, lm.site_names)
+    site_in = model.read_activations(tokens, model.site_names)
     assert site_in[o_site].shape == (b, t, cfg.n_head * cfg.head_dim)
 
 
@@ -370,18 +371,22 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
     seq = 16
     n_warmup = 2
     sites = glu_site_specs(cfg, site_cs)
-    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
-    ci_fn = _build_chunkwise_ci_fn(lm, jax.random.PRNGKey(2), n_blocks=2)
+    ci_fn = _build_chunkwise_ci_fn(model, jax.random.PRNGKey(2), n_blocks=2)
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
 
     src = init_persistent_sources(
-        lm.site_names, tuple(s.C for s in lm.sites), (1, seq), jnp.float32, jax.random.PRNGKey(3)
+        model.site_names,
+        tuple(s.C for s in model.sites),
+        (1, seq),
+        jnp.float32,
+        jax.random.PRNGKey(3),
     )
     ppgd_cfg = PersistentPGDReconLossConfig(
         coeff=0.5,
-        scope=SCScope(),
+        source_shape="sc",
         optimizer=AdamPGDConfig(
             beta1=0.5,
             beta2=0.99,
@@ -420,10 +425,10 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
             ),
             ppgd_cfg,
         ),
-        lm.site_names,
+        model.site_names,
     )
     step = make_train_step(
-        lm=lm,
+        model_static=model,
         losses=loss_terms,
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
@@ -437,7 +442,7 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
     n_steps = 4
     losses = []
     for i in range(n_steps):
-        state, m = step(lm, state, tokens, jax.random.PRNGKey(100 + i))
+        state, m = step(model, state, tokens, jax.random.PRNGKey(100 + i))
         losses.append({k: float(v) for k, v in m.items()})
 
     assert all(jnp.isfinite(jnp.array(list(m.values()))).all() for m in losses)
@@ -461,7 +466,7 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
 def test_faith_warmup_decreases_faith():
     cfg = _tiny_cfg()
     sites = _mlp_sites(cfg, 3, 4, 8)
-    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     opt = optax.adamw(1e-2, weight_decay=0.0)
     wstep = make_faith_warmup_step(opt)
@@ -469,7 +474,7 @@ def test_faith_warmup_decreases_faith():
     first_loss: float | None = None
     loss = None
     for _ in range(30):
-        vu, ostate, loss = wstep(lm, vu, ostate)
+        vu, ostate, loss = wstep(model, vu, ostate)
         first_loss = float(loss) if first_loss is None else first_loss
     assert first_loss is not None and loss is not None
     assert float(loss) < first_loss * 0.9, (first_loss, float(loss))
@@ -504,7 +509,7 @@ def test_fresh_pgd_adversary_step():
     )
     seq = 16
     sites = glu_site_specs(cfg, site_cs)
-    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
 
@@ -513,7 +518,7 @@ def test_fresh_pgd_adversary_step():
         # deleted after the first run_step and crash the second. Deterministic keys keep
         # the two states' inits bit-identical (the "same init" the comparison below needs).
         vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
-        ci_fn = _build_chunkwise_ci_fn(lm, jax.random.PRNGKey(2), n_blocks=1)
+        ci_fn = _build_chunkwise_ci_fn(model, jax.random.PRNGKey(2), n_blocks=1)
         return TrainState(
             decomposition=Decomposition(components=vu, ci_fn=ci_fn),
             training=TrainingItem(
@@ -540,13 +545,13 @@ def test_fresh_pgd_adversary_step():
                     init="random",
                     step_size=1.0,
                     n_steps=n_ascent_steps,
-                    mask_scope="bsc",
+                    source_shape="bsc",
                 ),
             ),
-            lm.site_names,
+            model.site_names,
         )
         step = make_train_step(
-            lm=lm,
+            model_static=model,
             losses=loss_terms,
             components_optimizer=opt_vu,
             ci_fn_optimizer=opt_ci,
@@ -556,7 +561,7 @@ def test_fresh_pgd_adversary_step():
             mesh=None,
         )
         tokens = jax.random.randint(jax.random.PRNGKey(4), (2, seq), 0, cfg.vocab_size)
-        return step(lm, make_state(), tokens, jax.random.PRNGKey(100))
+        return step(model, make_state(), tokens, jax.random.PRNGKey(100))
 
     state, metrics = run_step(n_ascent_steps=1)
     assert "loss/PGDReconLoss" in metrics

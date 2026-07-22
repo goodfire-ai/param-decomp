@@ -52,8 +52,8 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 from param_decomp.built_run import EvalPGDConfig
 from param_decomp.components import DecompVU
 from param_decomp.jit_util import filter_jit
-from param_decomp.lm import DecomposedModel
 from param_decomp.losses import kl_per_position
+from param_decomp.model import DecomposedModel
 from param_decomp.sharding import batch_shard_leading
 from param_decomp.train import COMPUTE_DT, cast_floating
 
@@ -103,7 +103,7 @@ def _row_masked_cross_entropy(
 
 
 def make_eval_step(
-    lm: DecomposedModel,
+    model_static: DecomposedModel,
     rounding_threshold: float,
     ci_alive_threshold: float,
     l0_group_patterns: dict[str, tuple[str, ...]] | None,
@@ -124,21 +124,20 @@ def make_eval_step(
     real (the corpus tier) and keeps the reductions bit-identical to the torch-parity path.
 
     `pgd` (an `EvalPGDConfig`) enables the fresh sign-PGD recon probe (torch
-    `PGDReconLoss` with `init: random, mask_scope: c`): per site one
+    `PGDReconLoss` with `init: random, source_shape: c`): per site one
     `(1, 1, C+1)` source shared across batch AND positions, `n_steps` ascents of
     `source += step_size * sign(∂KL/∂source)` clamped to `[0, 1]`, KL evaluated at the
     final source. The global-mean KL makes the source gradient the global-batch
     gradient under GSPMD (torch all-reduce-AVG parity).
 
     CEandKLLosses / CI_L0 read tokens + vocab logits (next-token CE, KL over the vocab
-    axis) and the fresh-PGD source is `(1, 1, C+1)` over a `(batch, sequence)` waist, so
-    this metric is LM-only — asserted on `leading_axes` at construction."""
-    assert lm.leading_axes == ("sequence",), (
-        f"CEandKLLosses/CI_L0 eval is LM-only (tokens + vocab logits over a sequence "
-        f"axis); model has leading_axes={lm.leading_axes}"
+    axis) and the fresh-PGD source is `(1, 1, C+1)` over a `[B, P]` waist, so
+    this metric is LM-only — asserted on `has_position_axis` at construction."""
+    assert model_static.has_position_axis, (
+        "CEandKLLosses/CI_L0 eval is LM-only (tokens + vocab logits over a position axis)"
     )
-    site_names = lm.site_names
-    site_component_counts = {s.name: s.C for s in lm.sites}
+    site_names = model_static.site_names
+    site_component_counts = {s.name: s.C for s in model_static.sites}
     l0_groups: dict[str, tuple[str, ...]] = {}
     if l0_group_patterns is not None:
         for group_name, patterns in l0_group_patterns.items():

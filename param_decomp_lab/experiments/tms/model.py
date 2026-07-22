@@ -1,5 +1,5 @@
 """Vendored JAX TMS (Toy Model of Superposition) target — the first non-LM
-`DecomposedModel`, with `leading_axes=()` (no position axes; the waist is `[B, n_features]`).
+`DecomposedModel`, positionless (`has_position_axis=False`; the waist is `[B, n_features]`).
 
 Torch reference (read-only ground truth): `param_decomp_lab/experiments/tms/models.py`.
 The target is `out = relu(linear2(hidden_layers(linear1(x))))`: `linear1`
@@ -33,7 +33,7 @@ from jaxtyping import Array, Float
 
 from param_decomp.ci_fn import CI
 from param_decomp.components import DecompVU, SiteC, SiteSpec, site_out
-from param_decomp.lm import run_stochastic_masked_output
+from param_decomp.model import run_stochastic_masked_output
 
 LINEAR1 = "linear1"
 LINEAR2 = "linear2"
@@ -287,16 +287,15 @@ def tms_mse(masked: Float[Array, "B n_features"], clean: Float[Array, "B n_featu
 
 
 class TMSDecomposedModel(eqx.Module):
-    """The TMS `DecomposedModel` (the `lm.py` contract; SPEC §1), positionless
-    (`leading_axes=()`).
+    """The TMS `DecomposedModel` (the `model.py` contract; SPEC §1), positionless.
 
     Carries the FROZEN `TMSTarget` weights as a field — threaded into the jitted step as a
     pytree arg, weights traced not baked. The TRAINABLE V/U (`vu: DecompVU`) is an explicit
-    method arg, NOT a field (separate lifecycle). `sites` / `leading_axes` are static."""
+    method arg, NOT a field (separate lifecycle). `sites` / `has_position_axis` are static."""
 
     target: TMSTarget
     sites: tuple[SiteSpec, ...] = eqx.field(static=True)
-    leading_axes: tuple[str, ...] = eqx.field(static=True)
+    has_position_axis: bool = eqx.field(static=True)
 
     @property
     def site_names(self) -> tuple[str, ...]:
@@ -394,7 +393,7 @@ def tms_decomposed_model(
 ) -> TMSDecomposedModel:
     """Wrap a pretrained `TMSTarget` + decomposition config into the `DecomposedModel`."""
     sites = site_specs(cfg, tuple(SiteC(s.name, s.C) for s in sites))
-    return TMSDecomposedModel(target=target, sites=sites, leading_axes=())
+    return TMSDecomposedModel(target=target, sites=sites, has_position_axis=False)
 
 
 def replicate_target[T: (TMSTarget, TMSDecomposedModel)](target: T, mesh: Mesh) -> T:
@@ -606,14 +605,14 @@ def single_feature_probe(n_features: int) -> Float[Array, "n_features n_features
 
 
 def single_feature_ci(
-    lm: TMSDecomposedModel,
+    model: TMSDecomposedModel,
     ci_fn: "CIFnCallable",
     n_features: int,
 ) -> dict[str, Array]:
     """Feed the single-feature probe and read the `lower_leaky` CI per site,
     `{site: [n_features, C]}`."""
     probe = single_feature_probe(n_features)
-    return ci_fn(lm.read_activations(probe, ci_fn.input_names), remat=False).lower
+    return ci_fn(model.read_activations(probe, ci_fn.input_names), remat=False).lower
 
 
 # ----------------------------- visualizations -----------------------------

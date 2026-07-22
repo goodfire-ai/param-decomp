@@ -63,7 +63,7 @@ eval:
   - type: CIHiddenActsReconLoss
   - coeff: null
     init: random
-    mask_scope: c
+    source_shape: c
     n_steps: 20
     name: PGDReconLoss_20step
     step_size: 0.1
@@ -139,7 +139,7 @@ pd:
     type: StochasticReconSubsetLoss
   - coeff: 0.5
     init: random
-    mask_scope: bsc
+    source_shape: bsc
     n_steps: 1
     step_size: 1.0
     type: PGDReconLoss

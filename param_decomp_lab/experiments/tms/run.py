@@ -25,6 +25,7 @@ from jax.sharding import PartitionSpec as P
 from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, BuiltRun
 from param_decomp.components import SiteC
 from param_decomp.log import setup_logger
+from param_decomp.model import Positionless
 from param_decomp.recon import build_loss_terms
 from param_decomp.run import run_decomposition_training
 from param_decomp.sharding import hsdp_mesh
@@ -107,7 +108,7 @@ def run_tms_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) 
     )
     # The model IS the frozen target: one `eqx.Module` carries the TMS weights as a field and
     # the decomposition contract as methods.
-    lm = tms.replicate_target(
+    model = tms.replicate_target(
         tms.tms_decomposed_model(tms_cfg, target, tms.site_specs(tms_cfg, target_cfg.sites)), mesh
     )
 
@@ -137,16 +138,17 @@ def run_tms_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) 
         ci = ci_fn(model.read_activations(probe, ci_fn.input_names), remat=False)
         return ci.lower, ci.upper
 
-    uv_spec = toy_uv_eval.toy_uv_spec(lm, raw_cfg)
+    uv_spec = toy_uv_eval.toy_uv_spec(model, raw_cfg)
     # The frozen `hidden_layers.*` sites (the `-id` variant) target DENSE recovery — every
     # direction stays live — not identity; canonical torch parity (`tms_40-10-id_config.yaml`
     # `dense_patterns: [hidden_layers.0]`). `linear1`/`linear2` target identity.
     ci_permutation: dict[str, Literal["identity", "dense"]] = {
-        site: "dense" if site.startswith("hidden_layers.") else "identity" for site in lm.site_names
+        site: "dense" if site.startswith("hidden_layers.") else "identity"
+        for site in model.site_names
     }
 
     def eval_fn(state: TrainState, now_step: int) -> dict[str, float]:
-        ci_lower, ci_upper = single_feature_ci(lm, state.decomposition.ci_fn)
+        ci_lower, ci_upper = single_feature_ci(model, state.decomposition.ci_fn)
         toy_uv_eval.log_uv_figure(
             uv_spec,
             state.decomposition.components.vu,
@@ -174,9 +176,9 @@ def run_tms_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) 
         pd=built.pd,
         cadence=built.cadence,
         run=built.run,
-        lm=lm,
+        model=model,
         ci_fn=built.ci_fn,
-        data=built.data,
+        positions=Positionless(),
         remat_recon_forwards=built.runtime.remat_recon_forwards,
         remat_ci_fn=built.runtime.remat_ci_fn,
         ascend_replicate=built.runtime.ascend_replicate,

@@ -38,7 +38,7 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from param_decomp.components import DecompVU
 from param_decomp.jit_util import filter_jit
-from param_decomp.lm import DecomposedModel, all_false_routes
+from param_decomp.model import DecomposedModel, all_false_routes
 from param_decomp.train import COMPUTE_DT, cast_floating
 
 
@@ -138,27 +138,26 @@ def _masked_patterns_kl(
     }
 
 
-def _assert_attention_sequence_axes(lm: DecomposedModel) -> None:
-    """Attention patterns are `(B, H, T_query, T_key)` causal maps over a sequence axis;
-    the metric only applies to a sequence-axis LM target (the `AttnPatternModel`
+def _assert_position_axis(model_static: DecomposedModel) -> None:
+    """Attention patterns are `(B, H, T_query, T_key)` causal maps over the position
+    axis; the metric only applies to a positioned LM target (the `AttnPatternModel`
     capability assert in the step factories rejects non-attention targets)."""
-    assert lm.leading_axes == ("sequence",), (
-        f"attn-patterns eval is LM-only (causal attention over a sequence axis); model "
-        f"has leading_axes={lm.leading_axes}"
+    assert model_static.has_position_axis, (
+        "attn-patterns eval is LM-only (causal attention over the position axis)"
     )
 
 
 def make_ci_attn_patterns_step(
-    lm: DecomposedModel,
+    model_static: DecomposedModel,
     compiler_options: dict[str, bool | int | str] | None = None,
 ) -> AttnPatternsStep:
     """Deterministic CI-mask attn-patterns step: `lower_leaky` CI, no delta, one masked
     forward + one clean (all-false) forward."""
-    _assert_attention_sequence_axes(lm)
-    assert isinstance(lm, AttnPatternModel), (
-        f"attn-patterns eval needs a target exposing attn_pattern; {type(lm).__name__} does not"
+    _assert_position_axis(model_static)
+    assert isinstance(model_static, AttnPatternModel), (
+        f"attn-patterns eval needs a target exposing attn_pattern; {type(model_static).__name__} does not"
     )
-    site_names = lm.site_names
+    site_names = model_static.site_names
     layer_pairs = _attn_layer_sites(site_names)
 
     def step(
@@ -188,19 +187,19 @@ def make_ci_attn_patterns_step(
 
 
 def make_stochastic_attn_patterns_step(
-    lm: DecomposedModel,
+    model_static: DecomposedModel,
     n_mask_samples: int,
     compiler_options: dict[str, bool | int | str] | None = None,
 ) -> AttnPatternsStep:
     """Stochastic-mask attn-patterns step: `n_mask_samples` draws of `mask = ci + (1−ci)·s`
     (with weight deltas), per-draw per-layer pattern KL summed. RNG via per-draw / per-site
     `fold_in` (the eval-step discipline, mirrors `hidden_acts_eval`)."""
-    _assert_attention_sequence_axes(lm)
-    assert isinstance(lm, AttnPatternModel), (
-        f"attn-patterns eval needs a target exposing attn_pattern; {type(lm).__name__} does not"
+    _assert_position_axis(model_static)
+    assert isinstance(model_static, AttnPatternModel), (
+        f"attn-patterns eval needs a target exposing attn_pattern; {type(model_static).__name__} does not"
     )
     assert n_mask_samples >= 1, n_mask_samples
-    site_names = lm.site_names
+    site_names = model_static.site_names
     layer_pairs = _attn_layer_sites(site_names)
 
     def step(

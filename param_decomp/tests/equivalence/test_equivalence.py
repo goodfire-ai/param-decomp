@@ -13,7 +13,7 @@ Two kinds of check:
   * **Structural.** `test_structure_*` pin SPEC invariants that aren't a single number:
     the stochastic recon runs ONE forward PER CHUNK (S10), recon is KL not MSE (§2.3),
     and the PPGD source carries the trailing raw weight-delta channel (S1).
-    `test_sc_source_broadcasts_over_batch_in_masked_forward` pins the sc-scope
+    `test_sc_source_broadcasts_over_batch_in_masked_forward` pins the `sc`
     broadcast (S1/S16): an `(1, T, C+1)` source broadcasts over `[B, T]` in the masked
     forward, and a B/T-transposed source must break it (the fixtures keep `B != T`).
 
@@ -189,7 +189,7 @@ def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
     from param_decomp.tests.equivalence.jax_equivalence import FP, _build
 
     f = _load_fixtures()
-    lm, vu, n_layers = _build(f)
+    model, vu, n_layers = _build(f)
     resid = jnp.asarray(f["resid"], dtype=FP)
     B, T = int(f["_scalar_B"]), int(f["_scalar_T"])
     vocab = int(f["_scalar_VOCAB"])
@@ -201,22 +201,22 @@ def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
 
     ci_lower = per_site_sc("ci_lower")  # (B, T, C)
     source = per_site_sc("ppgd_source")  # (1, T, C+1) per site
-    for s in lm.site_names:
+    for s in model.site_names:
         assert source[s].shape == (1, T, source[s].shape[-1]), source[s].shape
 
-    masks, delta_masks = source_masks(ci_lower, source, lm.site_names)
+    masks, delta_masks = source_masks(ci_lower, source, model.site_names)
     # `ci + (1-ci)*src` lifts the sc mask to the CI's batch dim; delta stays sc.
-    for s in lm.site_names:
+    for s in model.site_names:
         assert masks[s].shape[0] == B and masks[s].shape[1] == T, masks[s].shape
         assert delta_masks[s].shape == (1, T), delta_masks[s].shape
 
-    pred = lm.masked_output(
-        lm.prepare_compute_weights(vu),
+    pred = model.masked_output(
+        model.prepare_compute_weights(vu),
         resid,
         masks,
         delta_masks,
         None,
-        lm.site_names,
+        model.site_names,
         True,
         remat=False,
     )
@@ -224,18 +224,18 @@ def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
 
     # A source whose free axis is sized B (not T) — i.e. the B/T axes transposed — must NOT
     # broadcast against the `(B, T, C)` ci. The time axis is load-bearing, not interchangeable.
-    bt_transposed = {s: source[s][:, :B, :] for s in lm.site_names}
-    for s in lm.site_names:
+    bt_transposed = {s: source[s][:, :B, :] for s in model.site_names}
+    for s in model.site_names:
         assert bt_transposed[s].shape == (1, B, source[s].shape[-1]), bt_transposed[s].shape
     with pytest.raises(Exception):  # noqa: B017 — broadcast error, framework-specific type
-        bad_masks, bad_delta = source_masks(ci_lower, bt_transposed, lm.site_names)
-        lm.masked_output(
-            lm.prepare_compute_weights(vu),
+        bad_masks, bad_delta = source_masks(ci_lower, bt_transposed, model.site_names)
+        model.masked_output(
+            model.prepare_compute_weights(vu),
             resid,
             bad_masks,
             bad_delta,
             None,
-            lm.site_names,
+            model.site_names,
             True,
             remat=False,
         )

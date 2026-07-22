@@ -40,9 +40,9 @@ def _tiny_setup():
     cfg = _tiny_cfg()
     C = 8
     sites = glu_site_specs(cfg, mlp_family_site_cs(4, 5, C))
-    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    ci_fn = _build_ci_fn(lm, cfg.n_embd, jax.random.PRNGKey(2))
-    return cfg, lm, ci_fn, C
+    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    ci_fn = _build_ci_fn(model, cfg.n_embd, jax.random.PRNGKey(2))
+    return cfg, model, ci_fn, C
 
 
 def _grid() -> ArithmeticGrid:
@@ -50,28 +50,29 @@ def _grid() -> ArithmeticGrid:
 
 
 def test_grid_step_ci_xv_and_masked_max_match_hand_rolled():
-    cfg, lm, ci_fn, C = _tiny_setup()
-    assert isinstance(lm, ComponentActivationModel)
-    vu = init_decomp_vu(lm.sites, jax.random.PRNGKey(1))
+    cfg, model, ci_fn, C = _tiny_setup()
+    assert isinstance(model, ComponentActivationModel)
+    vu = init_decomp_vu(model.sites, jax.random.PRNGKey(1))
     n_pad = N_A * N_B + 2  # two garbage tail rows, as the sharding pad would append
     tokens = jax.random.randint(jax.random.PRNGKey(4), (n_pad, T), 0, cfg.vocab_size)
-    step = make_arithmetic_grid_step(lm, ANSWER_POSITION, n_valid_rows=N_A * N_B)
-    ci_grids, xv_grids, max_ci = step(lm, vu, ci_fn, tokens)
+    step = make_arithmetic_grid_step(model, ANSWER_POSITION, n_valid_rows=N_A * N_B)
+    ci_grids, xv_grids, max_ci = step(model, vu, ci_fn, tokens)
 
-    names = lm.site_names
+    names = model.site_names
     # CI hand-roll: bf16 readout, slice the answer position.
     ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
     taps = {
-        k: x.astype(COMPUTE_DT) for k, x in lm.read_activations(tokens, ci_fn.input_names).items()
+        k: x.astype(COMPUTE_DT)
+        for k, x in model.read_activations(tokens, ci_fn.input_names).items()
     }
     logits = {s: v.astype("float32") for s, v in ci_fn_bf16(taps, remat=False).logits.items()}
     # xV hand-roll: all-ones masks -> site output == (x@V) @ U, so x@V projected through U
     # reproduces masked_site_outputs at the answer position.
-    prepared = lm.prepare_compute_weights(cast_floating(vu, COMPUTE_DT))
+    prepared = model.prepare_compute_weights(cast_floating(vu, COMPUTE_DT))
     leading = tokens.shape
     ones = {s: jnp.ones((*leading, C), COMPUTE_DT) for s in names}
     zeros_delta = {s: jnp.zeros(leading, COMPUTE_DT) for s in names}
-    outputs = lm.masked_site_outputs(prepared, tokens, ones, zeros_delta, None, names, False)
+    outputs = model.masked_site_outputs(prepared, tokens, ones, zeros_delta, None, names, False)
     for site in names:
         ci = np.asarray(ci_grids[site])
         ci_exp = np.asarray(lower_leaky_hard_sigmoid(logits[site]))[:, ANSWER_POSITION, :]
@@ -88,17 +89,17 @@ def test_grid_step_ci_xv_and_masked_max_match_hand_rolled():
 
 
 def test_compute_arithmetic_selection_gathers_only_shown_columns():
-    cfg, lm, ci_fn, _ = _tiny_setup()
-    assert isinstance(lm, ComponentActivationModel)
-    vu = init_decomp_vu(lm.sites, jax.random.PRNGKey(1))
+    cfg, model, ci_fn, _ = _tiny_setup()
+    assert isinstance(model, ComponentActivationModel)
+    vu = init_decomp_vu(model.sites, jax.random.PRNGKey(1))
     tokens = jax.random.randint(jax.random.PRNGKey(4), (N_A * N_B, T), 0, cfg.vocab_size)
-    step = make_arithmetic_grid_step(lm, ANSWER_POSITION, n_valid_rows=N_A * N_B)
+    step = make_arithmetic_grid_step(model, ANSWER_POSITION, n_valid_rows=N_A * N_B)
     top_k = 3
     selection = compute_arithmetic_selection(
-        step, lm, vu, ci_fn, tokens, N_A * N_B, thresholds=(0.0,), top_k=top_k
+        step, model, vu, ci_fn, tokens, N_A * N_B, thresholds=(0.0,), top_k=top_k
     )
-    full_ci, full_xv, _ = step(lm, vu, ci_fn, tokens)
-    for site in lm.site_names:
+    full_ci, full_xv, _ = step(model, vu, ci_fn, tokens)
+    for site in model.site_names:
         shown = selection.shown[site]
         assert shown.size == min(top_k, selection.active[0.0][site].size)
         assert selection.ci_columns[site].shape == (N_A * N_B, shown.size)

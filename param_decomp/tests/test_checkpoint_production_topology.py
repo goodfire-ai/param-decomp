@@ -48,9 +48,9 @@ from param_decomp.configs import (
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
-    SCScope,
     UniformKSubsetRoutingConfig,
 )
+from param_decomp.model import Positioned
 from param_decomp.recon import build_loss_terms, persistent_configs
 from param_decomp.run import _ensure_global
 from param_decomp.schedule import ScheduleConfig
@@ -75,7 +75,7 @@ def _persistent_cfg(name: str | None) -> PersistentPGDReconLossConfig:
     return PersistentPGDReconLossConfig(
         name=name,
         coeff=0.5,
-        scope=SCScope(),
+        source_shape="sc",
         optimizer=AdamPGDConfig(
             beta1=0.5, beta2=0.99,
             lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
@@ -94,10 +94,10 @@ def _build_sharded(seed: int):
     cfg = _tiny_cfg()
     C, seq = 8, 16
     sites = glu_site_specs(cfg, mlp_family_site_cs(3, 4, C))
-    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
 
     by_layer: dict[int, list[str]] = {}
-    for name in lm.site_names:
+    for name in model.site_names:
         by_layer.setdefault(int(name.split(".")[1]), []).append(name)
     ci_arch = ChunkwiseTransformerCIArch(
         chunks=tuple(
@@ -112,20 +112,20 @@ def _build_sharded(seed: int):
         ffn_kind="gelu",
         learned_norm_scale=False,
     )
-    vu = init_decomp_vu_placed(lm.sites, jax.random.PRNGKey(seed), mesh)
-    ci_fn = init_ci_fn_placed(ci_arch, lm.sites, jax.random.PRNGKey(seed + 1), mesh)
+    vu = init_decomp_vu_placed(model.sites, jax.random.PRNGKey(seed), mesh)
+    ci_fn = init_ci_fn_placed(ci_arch, model.sites, jax.random.PRNGKey(seed + 1), mesh)
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
-    site_cs = tuple(s.C for s in lm.sites)
+    site_cs = tuple(s.C for s in model.sites)
     ppgd_cfgs = (_persistent_cfg(None), _persistent_cfg("ppgd_second"))
     adversaries: dict[str, PersistentAdversary] = {}
     for i, (state_key, ppgd_cfg) in enumerate(zip(PERSISTENT_TERMS, ppgd_cfgs, strict=True)):
         assert ppgd_cfg.coeff is not None
         src = init_sources_sharded(
-            lm.site_names,
+            model.site_names,
             site_cs,
-            seq,
-            SCScope(),
+            Positioned(seq),
+            "sc",
             mesh.devices.size,
             jnp.float32,
             jax.random.fold_in(jax.random.PRNGKey(seed + 2), i),
@@ -162,12 +162,12 @@ def _build_sharded(seed: int):
             ChunkwiseSubsetReconLossConfig(routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=3, n_samples=1),
             *ppgd_cfgs,
         ),
-        lm.site_names,
+        model.site_names,
     )  # fmt: skip
     assert tuple(persistent_configs(loss_terms.recon)) == PERSISTENT_TERMS, loss_terms
 
     step = make_train_step(
-        lm=lm,
+        model_static=model,
         losses=loss_terms,
         components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
         total_steps=100,
@@ -177,7 +177,7 @@ def _build_sharded(seed: int):
         jax.random.randint(jax.random.PRNGKey(9), (4, seq), 0, cfg.vocab_size),
         NamedSharding(mesh, jax.sharding.PartitionSpec(("replicate", "fsdp"))),
     )
-    return lm, state, step, tokens
+    return model, state, step, tokens
 
 
 def _assert_moments_present(adversaries: dict[str, PersistentAdversary]) -> None:
@@ -200,9 +200,9 @@ def test_sharded_roundtrip_persists_source_moments(tmp_path: Path):
     """Device-agnostic like the other invariance tests: at 1 device the round-trip is a
     trivial-mesh structural check; only `XLA_FLAGS=--xla_force_host_platform_device_count=4`
     actually shards C, where the `sharding` equality assertions bite."""
-    lm, state, step, resid = _build_sharded(seed=1)
+    model, state, step, resid = _build_sharded(seed=1)
     for i in range(2):
-        state, _ = step(lm, state, resid, jax.random.PRNGKey(i))
+        state, _ = step(model, state, resid, jax.random.PRNGKey(i))
     # The ascents must have advanced each term's Adam counter before we save.
     _assert_moments_present(state.training.adversaries)
 
@@ -236,8 +236,8 @@ def test_sharded_roundtrip_persists_source_moments(tmp_path: Path):
     # identically: `state` and `loaded` carry distinct-but-equivalent shardings, so the step
     # jits to distinct executables, and the FSDP V all-gather/reduce is not bit-reproducible
     # — both reassociate the same math (observed rel ~1e-7).
-    state_cont, m_cont = step(lm, state, resid, jax.random.PRNGKey(100))
-    loaded_cont, m_load = step(lm, loaded, resid, jax.random.PRNGKey(100))
+    state_cont, m_cont = step(model, state, resid, jax.random.PRNGKey(100))
+    loaded_cont, m_load = step(model, loaded, resid, jax.random.PRNGKey(100))
     for k in m_cont:
         assert np.allclose(float(m_cont[k]), float(m_load[k]), rtol=1e-5, atol=1e-6), (
             k,

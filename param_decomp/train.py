@@ -38,13 +38,13 @@ from param_decomp.ci_fn import CI, CIFn
 from param_decomp.components import DecompVU
 from param_decomp.configs import SmoothL0ImportanceMinimalityLossConfig
 from param_decomp.jit_util import filter_jit
-from param_decomp.lm import DecomposedModel
 from param_decomp.losses import (
     annealed_imp_min_param,
     faithfulness_loss,
     imp_min_terms,
     scheduled_value_traced,
 )
+from param_decomp.model import DecomposedModel
 from param_decomp.recon import (
     ConstantSources,
     FreshPGDSources,
@@ -127,7 +127,7 @@ def _grad_norm_metrics(components_grad: DecompVU, ci_fn_grad: Any) -> dict[str, 
 
 
 def make_train_step(
-    lm: DecomposedModel,
+    model_static: DecomposedModel,
     *,
     losses: LossSurface,
     components_optimizer: optax.GradientTransformation,
@@ -143,15 +143,17 @@ def make_train_step(
 
     `model` is the jit ARG (frozen 8B weights traced as array leaves, never baked); the
     factory closes over only static config (`site_names`, `recon_loss_fn`, term wiring) read
-    off `lm` here. `losses` (from `build_loss_terms`) is the `LossSurface` record — the
+    off `model_static` here — the distinct name keeps an accidental closure over the
+    array-bearing model (the HLO-baking hazard) a loud NameError, never silent.
+    `losses` (from `build_loss_terms`) is the `LossSurface` record — the
     faithfulness + importance-minimality singletons and the recon Σ, read by name. `mesh`
     (when given) pins every batch-leading activation over the full mesh
     (`P(('replicate', 'fsdp'), ...)`) so the masked re-forwards stay on per-rank sub-batches
     (activation memory 1/N)."""
-    site_names = lm.site_names
-    sites = lm.sites
+    site_names = model_static.site_names
+    sites = model_static.sites
     c_by_site = {spec.name: spec.C for spec in sites}
-    recon_loss_fn = lm.recon_loss_fn  # static method: pure, holds no arrays — safe to close
+    recon_loss_fn = model_static.recon_loss_fn  # static: pure, holds no arrays — safe to close
     recon_terms = losses.recon
     faith_term = losses.faith
     imp_term = losses.imp
@@ -257,7 +259,6 @@ def make_train_step(
         ci_lower: dict[str, Array],
         batch: Any,
         clean_output: Array,
-        forward_fn: Any,
     ) -> Array:
         """Mean KL over the entry's draws with FIXED source values — the adversarial
         ascent objective (shared by fresh and persistent ascents, SPEC S12'). `prepared` is
@@ -265,7 +266,7 @@ def make_train_step(
         masks, delta_masks = source_masks(ci_lower, sources, entry.live_sites)
         total = jnp.zeros((), jnp.float32)
         for routes in routes_per_draw:
-            masked = forward_fn(
+            masked = masked_forward(
                 model,
                 prepared,
                 batch,
@@ -352,7 +353,7 @@ def make_train_step(
                 fixed_routes[(term_idx, entry_idx)] = routes_per_draw
                 live_specs = tuple(s for s in sites if s.name in entry.live_sites)
                 init = init_fresh_pgd_sources(
-                    live_specs, fresh_cfg.init, fresh_cfg.scope, leading, init_key
+                    live_specs, fresh_cfg.init, fresh_cfg.source_shape, leading, init_key
                 )
 
                 def ascent_loss(
@@ -369,7 +370,6 @@ def make_train_step(
                         ci_lower_detached,
                         batch,
                         clean_output,
-                        masked_forward,
                     )
 
                 def sign_ascend_body(

@@ -4,17 +4,9 @@ Single-pool VPD trainer in JAX, **generic over vendored LM targets**. The semant
 source of truth is `SPEC.md` (normative pseudocode + numbered invariants, grounded in
 the stable torch `param_decomp` impl). See `README.md` for the file map.
 
-Open items: persistent-source scopes `c`/`nsc` and sigmoid parameterization are
-deliberately refused. The hidden-acts seam is now BUILT (SPEC S31 amended 2026-06-16):
-`CIHiddenActsReconLoss` / `StochasticHiddenActsReconLoss` are standalone eval metrics
-(`hidden_acts_eval.py`, computed in-loop on `eval.slow_every`) over
-a fifth model fn `masked_site_outputs` — NOT recon-grid training terms (the recon loss
-stays KL-on-final-logits). `sc` and `bsc` are supported (`bsc` is batch-sharded:
-an independent source per batch element and position, no cross-replica sync — SPEC
-S16/D1). SPEC S24's two torch-parity quirks (PPGD warmup route-all, fresh-PGD
-single routing draw) are pinned pending a team decision. CI-fn numerics are unified
-with the torch oracle (#624/#625/#730 resolved): GELU is exact-erf
-(`approximate=False`) and RMSNorm eps is `finfo(fp32).eps` (`CI_FN_RMS_EPS`).
+Open items: the persistent-source shape `nsc` and sigmoid parameterization are
+deliberately refused. SPEC S24's two torch-parity quirks (PPGD warmup route-all,
+fresh-PGD single routing draw) are pinned pending a team decision.
 
 ## The one rule
 
@@ -24,8 +16,8 @@ never silently diverge. Cite IDs (`S14`, `N1`, …) in commit messages and revie
 
 ## Architecture in one breath
 
-`lm.py` defines `DecomposedModel` — a `@runtime_checkable Protocol`: ordered `sites` +
-`leading_axes` + the methods `clean_output`, `read_activations`, `masked_output`,
+`model.py` defines `DecomposedModel` — a `@runtime_checkable Protocol`: ordered `sites` +
+`has_position_axis` + the methods `clean_output`, `read_activations`, `masked_output`,
 `masked_site_outputs`, `weight_deltas`, and a `recon_loss_fn` (LM: `kl_per_position`). The
 concrete impl per target is an `eqx.Module` (`GLUDecomposedModel`,
 `SimpleMLPDecomposedModel`, `TMSDecomposedModel`, `ResidMLPDecomposedModel`) carrying its
@@ -33,14 +25,31 @@ FROZEN target weights as ARRAY FIELDS; the TRAINABLE V/U (`vu: DecompVU`) stays 
 METHOD ARG (separate lifecycle — own optimizer + checkpoint, C-sharded while the frozen
 weights replicate). Flat site-name-keyed dicts at the boundary; the model threads into the
 jitted step as a pytree ARG (never a jit-closure constant — an 8B target becomes a multi-GB
-HLO constant; see "HLO-baking rule" below). The activation waist is GENERIC `[*leading, d]` (masks/CI
-`[*leading, C]`), `leading = (batch,) + named position axes`: masking / routing / sources
-/ imp-min all read an opaque `leading = residual.shape[:-1]`; reductions are
-`math.prod(shape[:-1])` / `axis=tuple(range(ndim-1))`. CI is independent over every leading
-axis (no per-axis CI semantics, only axis NAMES).
-`DecomposedModel.leading_axes` names the position axes (`("sequence",)` for LM, `()` for
-TMS); `CIFn.expects_axes` mirrors it, and `init_train_state` asserts they're equal (early
-fail) so the CI fn stays per-domain (RoPE over `sequence`) without the core adapting. The
+HLO constant; see "HLO-baking rule" below). The activation waist comes in EXACTLY TWO
+shapes — positionless `[B, d]` (masks/CI `[B, C]`; the toys) or one position axis
+`[B, P, d]` (masks/CI `[B, P, C]`; an LM, whose position axis is the token sequence).
+`DecomposedModel.has_position_axis` declares which; the run threads the extents as
+`positions: Positionless | Positioned(n_positions)` (matched exhaustively wherever
+shapes are built — never a rank branch). Inside the step, masking / routing / sources /
+imp-min read an opaque `leading = residual.shape[:-1]`; reductions are
+`math.prod(shape[:-1])` / `axis=tuple(range(ndim-1))`. CI is independent over every
+leading axis. `CIFn.has_position_axis` mirrors the model's, and `init_train_state`
+asserts they're equal (early fail) so the CI fn stays per-domain (RoPE over positions)
+without the core adapting.
+Adversarial sources (both adversaries) are configured by `source_shape: c | bc | sc | bsc`
+(`configs.SourceShape`): each letter names a waist axis the source keeps full, missing
+letters are stored size-1 broadcast axes, rank always matches the waist. Batch-B shapes
+(`bc`/`bsc`) are batch-sharded, no cross-replica sync; batch-1 shapes are shared across
+the batch (SPEC S16/D1). `sc`/`bsc` on a positionless target raise; per-step (fresh) PGD
+rejects `sc` at validation; legacy spellings (`scope: {type: ...}`, `mask_scope`, the
+verbose value names) load via config alias. Every (positions x source_shape) persistent
+shape is written out in `init_sources_sharded`, so persistent PGD runs on the toys too.
+Batch size is `pd.batch_size` uniformly — `DataConfig` carries no batch.
+`CIHiddenActsReconLoss` / `StochasticHiddenActsReconLoss` are standalone eval metrics
+(`hidden_acts_eval.py`, in-loop on `eval.slow_every`) over a fifth model fn
+`masked_site_outputs` — NOT recon-grid training terms (the recon loss stays
+KL-on-final-logits; SPEC S31). CI-fn numerics: GELU is exact-erf (`approximate=False`),
+RMSNorm eps is `finfo(fp32).eps` (`CI_FN_RMS_EPS`) — SPEC §4.6. The
 three EDGES are generic so non-LM (bio-style) targets fit (#828): the model INPUT
 (the opaque batch `clean_output` / `read_activations` / `masked_output` consume, typed
 `Any` — token ids for an LM, a dict for bio), the model OUTPUT (`clean_output`/`masked_output` return `Any` — logits, a tuple
@@ -116,14 +125,14 @@ toy-specific code — the toy *targets* (`DecomposedModel`s, pretrain, identity-
 all lab-side. CI-fn *architectures* are NOT toy-specific code: core owns every CI-fn arch
 regardless of which experiments use it. The positionless MLPs and the sequence transformer
 are peers in `ci_fn.py` (differing by domain, not status), not a toy carve-out. The
-generic engine is `run.py::run_decomposition_training(pd, cadence, run, raw_cfg, lm, frozen,
-ci_fn, data, remat_recon_forwards, sample_batch, eval_fn, eval_every, perf_tokens_per_step,
-mesh)` — the ONE train loop every target runs through (init/restore/finetune/faith-warmup
+generic engine is `run.py::run_decomposition_training(pd, cadence, run, model, ci_fn,
+positions, remat_recon_forwards, remat_ci_fn, ascend_replicate, compiler_options, profile,
+sample_batch, eval_fn, eval_every, mesh)` — the ONE train loop every target runs through (init/restore/finetune/faith-warmup
 via `_init_or_restore_state`, the recon-grid step factory, orbax checkpointing, schedules,
 SIGTERM-save). It reads the pydantic `PDConfig` / `Cadence` (`param_decomp.configs`)
 DIRECTLY — optimizers / loss metrics / faith warmup / seed / steps — so there is
-NO flattened mirror DC (the old `config.ExperimentConfig`); the run identity rides in
-`config.RunInstance`, and the lab-built objects (`ci_fn` arch, `data`, the decomposed target)
+NO flattened mirror dataclass; the run identity rides in
+`built_run.RunInstance`, and the lab-built objects (`ci_fn` arch, `data`, the decomposed target)
 pass alongside. A target injects exactly three seams: the data source
 (`sample_batch(step) -> residual`), the eval metric (`eval_fn(state, now_step) -> dict`, run
 every `eval_every`), and (for the LM) the perf token count.
@@ -132,7 +141,7 @@ every `eval_every`), and (for the LM) the perf token count.
 LM composition root is LM-ONLY (`experiments.lm.config.build_from_schema` validates
 `LMExperimentConfig` and returns a `config.BuiltRun`; `main`'s `match built.target` covers
 only `TargetConfig` / `LlamaSimpleMLPTargetConfig`). `BuiltRun.target` is typed by the core
-`config.TargetSites` protocol (just `.sites`), `BuiltRun.data` is `DataConfig | None` (None
+`built_run.TargetSites` protocol (just `.sites`), `BuiltRun.data` is `DataConfig | None` (None
 for a toy run). The shared schema validation + run-identity / CI-fn-arch helpers are public
 lab-side for the toys to reuse: `experiments.config.assert_canonical_algorithm_config` /
 `run_instance` / `ci_arch`.
@@ -140,12 +149,11 @@ lab-side for the toys to reuse: `experiments.config.assert_canonical_algorithm_c
 The TMS + ResidMLP targets now live under `param_decomp_lab/experiments/{tms,resid_mlp}/`
 (`model.py` = the JAX `DecomposedModel` + frozen target + in-process pretrain + identity-CI
 eval; `run.py` = the `pd-tms` / `pd-resid-mlp` CPU CLI that builds the `ExperimentConfig`
-from the canonical schema and calls `run_decomposition_training`). They are positionless
-(`leading_axes=()`) and use the MLP CI fns. All CI-fn architectures live together in
-`ci_fn.py`: `LayerwiseMLPCIFn` (`expects_axes=()`, one independent MLP per site mapping
-`site_input [B,d_in] -> [B,C]`), `GlobalMLPCIFn` (`expects_axes=()`, one shared MLP over all
+from the canonical schema and calls `run_decomposition_training`). They are positionless and use the MLP CI fns. All CI-fn architectures live together in
+`ci_fn.py`: `LayerwiseMLPCIFn` (positionless, one independent MLP per site mapping
+`site_input [B,d_in] -> [B,C]`), `GlobalMLPCIFn` (positionless, one shared MLP over all
 sites jointly, concat/split in canonical site order), and the LM `ChunkwiseTransformerCIFn`
-(`expects_axes=("sequence",)`, per-chunk transformers reading residual taps, stacked +
+(positioned, per-chunk transformers reading residual taps, stacked +
 `lax.scan`'d with per-chunk remat, and **N per-site output heads** (one `[d_model, C_j]` per
 site-slot). NOTE: this is the pure-HSDP backup branch — the mesh is `(replicate, fsdp)` with
 NO tensor-parallel / Megatron-C axis (`fsdp` = the 8 intra-node NVLink GPUs, `replicate` =
@@ -162,7 +170,7 @@ per-chunk scan), landing a SMALL ÷fsdp-resident stack; the scan body then gathe
 full-model `[n_layer, full_d_in, C]` weight stack resident.
 `run_state.init_train_state` dispatches CI-fn construction on `cfg.ci_fn`
 (`MLPCIArch` / `GlobalMLPCIArch` / `ChunkwiseTransformerCIArch`) and uses replicated (not
-C-sharded) V/U + CI for the tiny toys; the core `config.CIFnArch` admits all three and the
+C-sharded) V/U + CI for the tiny toys; the core `ci_fn.CIFnArch` admits all three and the
 lab `experiments.config.ci_arch` builds the layerwise / global arch from the toy
 ci_config (validated end-to-end on CPU via
 `pd-resid-mlp`). Harvest / slow-eval / export over the toys are NOT wired
@@ -177,9 +185,9 @@ Llama-8B target is multi-GB. Therefore:
   ARG** — never `@jax.jit` over a function that CLOSES OVER an array-bearing model. A closed-
   over model is a jit *constant*: its arrays bake into the HLO (multi-GB constant tensors,
   recompiled per concrete model). As a traced arg, the array leaves are dynamic inputs and
-  the static fields (`sites`, `eps`, `leading_axes`) bake harmlessly.
-- **Step factories read only STATIC config off the closed-over `lm` at trace-setup**
-  (`lm.site_names`, `lm.sites`, `lm.recon_loss_fn` — `recon_loss_fn` is a `@staticmethod`,
+  the static fields (`sites`, `eps`, `has_position_axis`) bake harmlessly.
+- **Step factories read only STATIC config off the closed-over `model_static` at trace-setup**
+  (`model_static.site_names`, `model_static.sites`, `model_static.recon_loss_fn` — `recon_loss_fn` is a `@staticmethod`,
   pure, holds no arrays, so closing over it is safe). All ARRAY access goes through the
   model ARG (named `model` inside the jitted fn). `make_train_step`, `make_eval_step`,
   `make_*_hidden_acts_step`, `make_slow_eval_step`, `make_position_ci_step`,

@@ -88,8 +88,7 @@ pd:
         warmup_pct: 0.025
         final_val_frac: 1.0
         fn_type: constant
-    scope:
-      type: sc
+    source_shape: sc
 cadence:
   train_log_every: 20
   save_every: 1000

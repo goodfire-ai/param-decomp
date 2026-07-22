@@ -62,11 +62,11 @@ def _source_grad(sharded: bool) -> dict[str, jax.Array]:
     cfg = _tiny_cfg()
     C, seq, gbatch = 8, 16, 8
     sites = glu_site_specs(cfg, mlp_family_site_cs(3, 6, C))
-    lm = _tiny_decomposed_lm(cfg, sites, random.PRNGKey(0))
+    model = _tiny_decomposed_lm(cfg, sites, random.PRNGKey(0))
     vu = init_decomp_vu(sites, random.PRNGKey(1))
-    first_block = min(int(name.split(".")[1]) for name in lm.site_names)
+    first_block = min(int(name.split(".")[1]) for name in model.site_names)
     ci_arch = ChunkwiseTransformerCIArch(
-        chunks=(Chunk(input_taps=(f"resid.{first_block}",), output_sites=lm.site_names),),
+        chunks=(Chunk(input_taps=(f"resid.{first_block}",), output_sites=model.site_names),),
         input_dim=cfg.n_embd,
         d_model=16,
         n_blocks=2,
@@ -75,9 +75,9 @@ def _source_grad(sharded: bool) -> dict[str, jax.Array]:
         ffn_kind="gelu",
         learned_norm_scale=False,
     )
-    ci_fn = build_ci_fn(ci_arch, lm.sites, random.PRNGKey(2))
+    ci_fn = build_ci_fn(ci_arch, model.sites, random.PRNGKey(2))
     src = init_persistent_sources(
-        lm.site_names, tuple(s.C for s in lm.sites), (1, seq), jnp.float32, random.PRNGKey(3)
+        model.site_names, tuple(s.C for s in model.sites), (1, seq), jnp.float32, random.PRNGKey(3)
     )
     resid = random.randint(random.PRNGKey(4), (gbatch, seq), 0, cfg.vocab_size)
 
@@ -90,19 +90,19 @@ def _source_grad(sharded: bool) -> dict[str, jax.Array]:
 
     components_bf16 = cast_floating(vu, COMPUTE_DT)
     ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
-    taps = lm.read_activations(resid, ci_fn.input_names)
+    taps = model.read_activations(resid, ci_fn.input_names)
     ci_lower = ci_fn_bf16(taps, remat=False).lower
-    clean_output = jax.lax.stop_gradient(lm.clean_output(resid))
+    clean_output = jax.lax.stop_gradient(model.clean_output(resid))
 
     def source_loss(sources: dict[str, jax.Array]) -> jax.Array:
-        masks, delta_masks = source_masks(ci_lower, sources, lm.site_names)
-        masked = lm.masked_output(
-            lm.prepare_compute_weights(components_bf16),
+        masks, delta_masks = source_masks(ci_lower, sources, model.site_names)
+        masked = model.masked_output(
+            model.prepare_compute_weights(components_bf16),
             resid,
             masks,
             delta_masks,
             None,
-            lm.site_names,
+            model.site_names,
             True,
             remat=False,
         )

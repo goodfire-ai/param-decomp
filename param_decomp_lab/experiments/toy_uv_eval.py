@@ -23,7 +23,7 @@ from typing import Any, Literal
 
 import numpy as np
 
-from param_decomp.lm import DecomposedModel
+from param_decomp.model import DecomposedModel
 from param_decomp.slow_eval import (
     PermutationMetricSpec,
     PositionCI,
@@ -33,7 +33,7 @@ from param_decomp.slow_eval import (
 )
 
 
-def toy_uv_spec(lm: DecomposedModel, raw_cfg: dict[str, Any]) -> PermutationMetricSpec:
+def toy_uv_spec(model: DecomposedModel, raw_cfg: dict[str, Any]) -> PermutationMetricSpec:
     """The permutation spec resolved over the toy's sites from the run config's
     `eval.metrics` (the raw schema dict — the toy's core `ExperimentConfig.eval` is `None`,
     so the metric list is re-validated here, as `slow_eval.eval_metrics_from_run_dir` does
@@ -46,7 +46,7 @@ def toy_uv_spec(lm: DecomposedModel, raw_cfg: dict[str, Any]) -> PermutationMetr
     raw_metrics = (raw_cfg.get("eval") or {}).get("metrics", [])
     adapter = TypeAdapter(AnyEvalMetricConfig)
     metrics = [adapter.validate_python(m) for m in raw_metrics]
-    return resolve_permutation_metrics(lm.site_names, metrics)
+    return resolve_permutation_metrics(model.site_names, metrics)
 
 
 def log_uv_figure(

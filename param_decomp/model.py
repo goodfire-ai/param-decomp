@@ -7,12 +7,13 @@ the forward methods explicitly (separate lifecycle). Everything at the boundary 
 by site name (flat dicts, torch-module-path style); how a target lays its parameters out
 internally (e.g. the Llama target's stacked layer axis) is its own business.
 
-The activation WAIST is generic: per decomposed site activations are `[*leading, d]`
-and masks/CI are `[*leading, C]`, where `leading = (batch,) + named position axes`
-(`leading_axes` names the position axes; `("sequence",)` for an LM, `()` for TMS). Batch
-is ever-present and semantics-free (the data/shard axis); CI is always independent over
-every leading axis. Masking, routing, source scopes, imp-min, and normalization all
-operate over the opaque `*leading` prefix. The three EDGES are generic too — the model's
+The activation WAIST comes in exactly TWO shapes: positionless `[B, d]` (masks/CI
+`[B, C]` — the toys) or with one position axis `[B, P, d]` (masks/CI `[B, P, C]` — an
+LM, whose position axis is the token sequence). `has_position_axis` declares which;
+`Positionless` / `Positioned` carry the run-scoped extents. Batch is ever-present and
+semantics-free (the data/shard axis); CI is always independent over every leading axis.
+Masking, routing, source scopes, imp-min, and normalization all operate over the opaque
+leading prefix. The three EDGES are generic too — the model's
 INPUT (whatever `read_activations`/`clean_output`/`masked_output` read upstream of the
 residual; tokens for an LM, a dict for a bio target), the model's OUTPUT
 (`clean_output`/`masked_output` return `Any` — logits, a tuple of heads, coords), and the
@@ -23,6 +24,7 @@ ARG (`eqx.filter_jit` traces the array leaves). Never close over the model in a 
 frozen 8B target captured as a constant bakes multi-GB weights into the HLO.
 """
 
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 import jax.numpy as jnp
@@ -31,6 +33,26 @@ from jax.sharding import Mesh
 from jaxtyping import Array, Bool, Float
 
 from param_decomp.components import DecompVU, SiteSpec
+
+
+@dataclass(frozen=True)
+class Positionless:
+    """Waist `[B, d]`; masks/CI `[B, C]`. The toys."""
+
+
+@dataclass(frozen=True)
+class Positioned:
+    """Waist `[B, P, d]`; masks/CI `[B, P, C]`. An LM: the position axis is the token
+    sequence, so `n_positions` is its training seq_len (run-scoped — from the data
+    config, not the model)."""
+
+    n_positions: int
+
+
+PositionAxis = Positionless | Positioned
+"""The run's waist geometry — exactly these two cases, matched exhaustively wherever
+shapes are built. Must agree with the model's `has_position_axis`."""
+
 
 SiteMasks = dict[str, Float[Array, "*leading C"]]
 SiteDeltaMasks = dict[str, Float[Array, "*leading"]]
@@ -61,10 +83,10 @@ class DecomposedModel(Protocol):
     `sites` fixes the canonical site order — chunking (SPEC S10) and the CI fn's
     input/output concatenation both follow it.
 
-    `leading_axes` names the position axes of the activation waist (batch is implicit and
-    always present): `("sequence",)` for an LM, `()` for a TMS-style target. At trainer
-    construction it must equal the CI fn's `expects_axes` (early fail) so the CI fn stays
-    per-domain without the generic loop adapting.
+    `has_position_axis` declares the waist geometry (batch is implicit and always
+    present): True for an LM (`[B, P, d]`), False for a TMS-style target (`[B, d]`). At
+    trainer construction it must equal the CI fn's `has_position_axis` (early fail) so
+    the CI fn stays per-domain without the generic loop adapting.
 
     `recon_loss_fn(masked_output, clean_output) -> scalar` is the recon comparison the step
     minimizes (SPEC §2.3): the LM uses `kl_per_position`; a non-LM target supplies its own
@@ -73,7 +95,7 @@ class DecomposedModel(Protocol):
     """
 
     sites: tuple[SiteSpec, ...]
-    leading_axes: tuple[str, ...]
+    has_position_axis: bool
 
     @property
     def site_names(self) -> tuple[str, ...]: ...

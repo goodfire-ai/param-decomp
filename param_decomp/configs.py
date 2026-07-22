@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
-    BeforeValidator,
     Discriminator,
     Field,
     NonNegativeFloat,
@@ -340,41 +339,55 @@ class ChunkwiseSubsetReconLossConfig(LossMetricConfig):
 
 
 PGDInitStrategy = Literal["random", "ones", "zeroes"]
-# Stored run configs predate the shape-literal scope names; alias exactly the literals
-# that exist in stored data (`unique_per_datapoint` occurs only in LM runs, hence `bsc`).
-# Delete once stored runs are migrated.
-_LEGACY_MASK_SCOPE_ALIASES = {
+
+SourceShape = Literal["c", "bc", "sc", "bsc"]
+"""The stored adversarial-source shape, spelled over the waist axes in tensor order —
+each letter names an axis the source keeps FULL; a missing letter is a size-1 broadcast
+axis (the rank always matches the waist, so the elementwise combine broadcasts):
+
+  positionless target:  `c (1, C+1)` · `bc (B, C+1)`   (`sc`/`bsc` are invalid — they
+                        name a position axis the target lacks)
+  positioned target:    `c (1, 1, C+1)` · `bc (B, 1, C+1)` — one source per batch
+                        element shared over positions — · `sc (1, P, C+1)` ·
+                        `bsc (B, P, C+1)`
+
+One vocabulary for BOTH adversaries: persistent PGD implements all four; per-step
+(fresh) PGD implements `c`/`bc`/`bsc` and rejects `sc` at validation."""
+
+
+# Stored run configs carry older generations of the per-step field: `mask_scope` (with
+# the original verbose value names before that). Alias exactly the forms that exist in
+# stored data so old runs keep loading (`unique_per_datapoint` occurs only in LM runs,
+# hence `bsc`). Delete once stored runs are migrated.
+_LEGACY_MASK_SCOPE_VALUES = {
     "shared_across_batch": "c",
     "unique_per_datapoint": "bsc",
 }
 
 
-def _alias_legacy_mask_scope(value: Any) -> Any:
-    if isinstance(value, str):
-        return _LEGACY_MASK_SCOPE_ALIASES.get(value, value)
-    return value
-
-
-# Scope literals spell the adversarial-source shape in tensor order (batch, seq, C).
-# `c` is one shared vector, rank-polymorphic and DP-synced; `bc` (no seq axis) and
-# `bsc` (LM) are independent per batch element, and must match the batch rank.
-#
-# Deliberately NOT unified with `PersistentPGDSourceScope` below: per-step PGD encodes
-# its scope as a bare YAML string (this `Literal`), while persistent PGD encodes it as a
-# nested config object (the `SCScope | BSCScope` discriminated union). The value spaces
-# also differ — `bc` is per-step-only; `sc` is persistent-only. Converging them would
-# change the stored YAML shape of one side and break old-run parsing.
-MaskScopeLiteral = Literal["c", "bc", "bsc"]
-MaskScope = Annotated[MaskScopeLiteral, BeforeValidator(_alias_legacy_mask_scope)]
+def _alias_legacy_mask_scope_field(data: Any) -> Any:
+    if isinstance(data, dict) and "mask_scope" in data and "source_shape" not in data:
+        data = dict(data)
+        value = data.pop("mask_scope")
+        data["source_shape"] = _LEGACY_MASK_SCOPE_VALUES.get(value, value)
+    return data
 
 
 class PGDConfig(LossMetricConfig):
     """Shared base for per-step PGD loss configs."""
 
+    _alias_legacy_mask_scope = model_validator(mode="before")(_alias_legacy_mask_scope_field)
+
     init: PGDInitStrategy
     step_size: PositiveFloat
     n_steps: NonNegativeInt
-    mask_scope: MaskScope
+    source_shape: SourceShape
+
+    @model_validator(mode="after")
+    def validate_source_shape_implemented(self) -> Self:
+        if self.source_shape == "sc":
+            raise ValueError("per-step PGD does not implement `sc` (persistent PGD does)")
+        return self
 
 
 class PGDReconLossConfig(PGDConfig):
@@ -402,53 +415,54 @@ class AdamPGDConfig(BaseConfig):
     lr_schedule: ScheduleConfig
 
 
-class SCScope(BaseConfig):
-    """PPGD source scope: `[seq, C]` sources shared across batch elements, free per position."""
-
-    type: Literal["sc"] = "sc"
-
-
-class BSCScope(BaseConfig):
-    """PPGD source scope: an independent source per batch element and position.
-
-    Skips cross-rank synchronization of source state.
-    """
-
-    type: Literal["bsc"] = "bsc"
-
-
-# Stored run configs (`runs/*/experiment_config.yaml`) predate the shape-literal scope
-# names; alias exactly the literals that exist in stored data so old runs keep loading.
-# Delete once stored runs are migrated.
-_LEGACY_SCOPE_TYPE_ALIASES = {
+# Stored run configs carry two older generations of the field: `scope` as a nested
+# `{type: ...}` object (`sc`/`bsc`) and before that verbose type names. Alias exactly
+# the forms that exist in stored data so old runs keep loading. Delete once stored runs
+# are migrated.
+_LEGACY_SCOPE_VALUES = {
     "broadcast_across_batch": "sc",
     "per_batch_per_position": "bsc",
 }
 
 
-def _alias_legacy_scope_type(value: Any) -> Any:
-    if isinstance(value, dict) and value.get("type") in _LEGACY_SCOPE_TYPE_ALIASES:
-        return {**value, "type": _LEGACY_SCOPE_TYPE_ALIASES[value["type"]]}
-    return value
+def _alias_legacy_scope_field(data: Any) -> Any:
+    if isinstance(data, dict) and "scope" in data and "source_shape" not in data:
+        data = dict(data)
+        scope = data.pop("scope")
+        if isinstance(scope, dict):
+            scope = scope["type"]
+        data["source_shape"] = _LEGACY_SCOPE_VALUES.get(scope, scope)
+    return data
 
 
-# Scope literals spell the stored source shape, read left-to-right in tensor order
-# (batch, seq, C). Only the two seq-bearing scopes are implemented for persistent PGD;
-# both require a sequence axis and are illegal off-LM.
-PersistentPGDSourceScope = Annotated[
-    SCScope | BSCScope,
-    Field(discriminator="type"),
-    BeforeValidator(_alias_legacy_scope_type),
-]
+class PersistentPGDLossConfig(LossMetricConfig):
+    """Shared adversary fields for the persistent-PGD loss terms (SPEC §4.4–4.5): the
+    Adam-ascended source bundle's optimizer, stored shape, dtype, and warmup. Sources are
+    clamped to `[0, 1]` after each step — the only implemented parameterization."""
+
+    _alias_legacy_scope = model_validator(mode="before")(_alias_legacy_scope_field)
+
+    optimizer: AdamPGDConfig
+    source_shape: SourceShape
+    source_dtype: Literal["float32", "bfloat16"] = "float32"
+    """Storage dtype for the persistent PPGD source tensors AND their Adam moments
+    (`m`/`v`). `float32` (default) is SPEC N1 (fp32 SRC_STEP moments) and the only
+    oracle-parity path. `bfloat16` halves the resident source+moment footprint (~21 GiB
+    on the full-32L step, the dominant f32 transient there) at some numerical risk: the
+    second-moment `v` accumulates squared grads, which can underflow in bf16 for small
+    grads — opt in only as an experiment."""
+    n_warmup_steps: NonNegativeInt = Field(
+        default=0,
+        description=(
+            "Extra inner PGD source-optimization steps on each train batch before the final loss"
+            " computation."
+        ),
+    )
 
 
-class PersistentPGDReconLossConfig(LossMetricConfig):
-    """Persistent-PGD recon loss: adversarial mask sources persist across train steps,
-    routed to all layers every forward.
-
-    Sources are clamped to `[0, 1]` after each step — the only implemented
-    parameterization. (A sigmoid parameterization was removed.)
-    """
+class PersistentPGDReconLossConfig(PersistentPGDLossConfig):
+    """Persistent-PGD recon loss: the adversary's masks routed to all sites every
+    forward."""
 
     @model_validator(mode="before")
     @classmethod
@@ -469,25 +483,9 @@ class PersistentPGDReconLossConfig(LossMetricConfig):
         return data
 
     type: Literal["PersistentPGDReconLoss"] = "PersistentPGDReconLoss"
-    optimizer: AdamPGDConfig
-    scope: PersistentPGDSourceScope
-    source_dtype: Literal["float32", "bfloat16"] = "float32"
-    """Storage dtype for the persistent PPGD source tensors AND their Adam moments
-    (`m`/`v`). `float32` (default) is SPEC N1 (fp32 SRC_STEP moments) and the only
-    oracle-parity path. `bfloat16` halves the resident source+moment footprint (~21 GiB
-    on the full-32L step, the dominant f32 transient there) at some numerical risk: the
-    second-moment `v` accumulates squared grads, which can underflow in bf16 for small
-    grads — opt in only as an experiment."""
-    n_warmup_steps: NonNegativeInt = Field(
-        default=0,
-        description=(
-            "Extra inner PGD source-optimization steps on each train batch before the final loss"
-            " computation."
-        ),
-    )
 
 
-class MergedStochasticPGDReconLossConfig(LossMetricConfig):
+class MergedStochasticPGDReconLossConfig(PersistentPGDLossConfig):
     """ONE masked forward serving both recon pressures (SPEC S10' variation): each batch
     element is assigned adversarial with probability `adv_fraction` (mask sources = the
     persistent-PGD adversary's, every site routed) or stochastic otherwise (fresh
@@ -501,10 +499,6 @@ class MergedStochasticPGDReconLossConfig(LossMetricConfig):
     backward — no extra forward."""
 
     type: Literal["MergedStochasticPGDReconLoss"] = "MergedStochasticPGDReconLoss"
-    optimizer: AdamPGDConfig
-    scope: PersistentPGDSourceScope
-    source_dtype: Literal["float32", "bfloat16"] = "float32"
-    n_warmup_steps: NonNegativeInt = 0
     adv_fraction: ScheduleConfig
     routing: SubsetRoutingType = Field(default_factory=UniformKSubsetRoutingConfig)
 

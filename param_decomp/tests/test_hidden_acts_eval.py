@@ -23,7 +23,7 @@ from param_decomp.hidden_acts_eval import (
     make_ci_hidden_acts_step,
     make_stochastic_hidden_acts_step,
 )
-from param_decomp.lm import DecomposedModel
+from param_decomp.model import DecomposedModel
 from param_decomp.targets.llama_simple_mlp import (
     canonical_site_cs,
     parse_site_name,
@@ -37,8 +37,8 @@ from param_decomp.tests.test_llama_simple_mlp import (
 _BATCH, _SEQ = 2, 12
 
 
-def _build_ci_fn(lm: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
-    site_names = lm.site_names
+def _build_ci_fn(model: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
+    site_names = model.site_names
     first_block = min(parse_site_name(n)[0] for n in site_names)
     arch = ChunkwiseTransformerCIArch(
         chunks=(Chunk(input_taps=(f"resid.{first_block}",), output_sites=site_names),),
@@ -50,7 +50,7 @@ def _build_ci_fn(lm: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
         ffn_kind="gelu",
         learned_norm_scale=False,
     )
-    return build_ci_fn(arch, lm.sites, key)
+    return build_ci_fn(arch, model.sites, key)
 
 
 def _setup():
@@ -63,9 +63,9 @@ def _setup():
             SiteC("h.3.mlp.down_proj", 16),
         )
     )
-    lm = _tiny_decomposed_model(cfg, site_specs(cfg, site_cs), jax.random.PRNGKey(0))
-    components = init_decomp_vu(lm.sites, jax.random.PRNGKey(1))
-    ci_fn = _build_ci_fn(lm, cfg.n_embd, jax.random.PRNGKey(2))
+    model = _tiny_decomposed_model(cfg, site_specs(cfg, site_cs), jax.random.PRNGKey(0))
+    components = init_decomp_vu(model.sites, jax.random.PRNGKey(1))
+    ci_fn = _build_ci_fn(model, cfg.n_embd, jax.random.PRNGKey(2))
     tokens = jax.random.randint(jax.random.PRNGKey(3), (_BATCH, _SEQ), 0, cfg.vocab_size)
     site_d_out = {
         "h.2.attn.q_proj": cfg.n_head * cfg.head_dim,
@@ -73,43 +73,43 @@ def _setup():
         "h.2.mlp.c_fc": cfg.n_intermediate,
         "h.3.mlp.down_proj": cfg.n_embd,
     }
-    return lm, components, ci_fn, tokens, site_d_out
+    return model, components, ci_fn, tokens, site_d_out
 
 
 def test_ci_step_per_site_sums_and_counts():
-    lm, components, ci_fn, tokens, site_d_out = _setup()
-    step = make_ci_hidden_acts_step(lm)
+    model, components, ci_fn, tokens, site_d_out = _setup()
+    step = make_ci_hidden_acts_step(model)
 
-    sum_mse, n_elements = step(lm, components, ci_fn, tokens, jax.random.PRNGKey(0))
+    sum_mse, n_elements = step(model, components, ci_fn, tokens, jax.random.PRNGKey(0))
 
-    assert set(sum_mse) == set(lm.site_names) == set(n_elements)
-    for site in lm.site_names:
+    assert set(sum_mse) == set(model.site_names) == set(n_elements)
+    for site in model.site_names:
         assert int(n_elements[site]) == _BATCH * _SEQ * site_d_out[site]
         assert np.isfinite(float(sum_mse[site]))
         assert float(sum_mse[site]) >= 0.0
 
 
 def test_stochastic_step_per_site_sums_and_counts():
-    lm, components, ci_fn, tokens, site_d_out = _setup()
+    model, components, ci_fn, tokens, site_d_out = _setup()
     n_mask_samples = 3
-    step = make_stochastic_hidden_acts_step(lm, n_mask_samples)
+    step = make_stochastic_hidden_acts_step(model, n_mask_samples)
 
-    sum_mse, n_elements = step(lm, components, ci_fn, tokens, jax.random.PRNGKey(0))
+    sum_mse, n_elements = step(model, components, ci_fn, tokens, jax.random.PRNGKey(0))
 
-    assert set(sum_mse) == set(lm.site_names) == set(n_elements)
-    for site in lm.site_names:
+    assert set(sum_mse) == set(model.site_names) == set(n_elements)
+    for site in model.site_names:
         assert int(n_elements[site]) == _BATCH * _SEQ * site_d_out[site] * n_mask_samples
         assert np.isfinite(float(sum_mse[site]))
         assert float(sum_mse[site]) >= 0.0
 
 
 def test_accumulate_and_log_entries_token_weighted():
-    lm, components, ci_fn, tokens, _ = _setup()
-    step = make_ci_hidden_acts_step(lm)
+    model, components, ci_fn, tokens, _ = _setup()
+    step = make_ci_hidden_acts_step(model)
 
-    one = accumulate_hidden_acts(step, lm, components, ci_fn, [tokens], jax.random.PRNGKey(0))
+    one = accumulate_hidden_acts(step, model, components, ci_fn, [tokens], jax.random.PRNGKey(0))
     two = accumulate_hidden_acts(
-        step, lm, components, ci_fn, [tokens, tokens], jax.random.PRNGKey(0)
+        step, model, components, ci_fn, [tokens, tokens], jax.random.PRNGKey(0)
     )
 
     for site, r in two.items():

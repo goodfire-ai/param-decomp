@@ -18,7 +18,7 @@ from param_decomp.configs import (
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     MergedStochasticPGDReconLossConfig,
-    SCScope,
+    SourceShape,
     UniformKSubsetRoutingConfig,
 )
 from param_decomp.recon import MixedPersistentStochasticSources, build_loss_terms
@@ -34,13 +34,15 @@ from param_decomp.train import Decomposition, TrainingItem, TrainState, make_tra
 
 
 def _merged_cfg(
-    n_warmup: int, adv_fraction: ScheduleConfig | None = None
+    n_warmup: int,
+    adv_fraction: ScheduleConfig | None = None,
+    source_shape: SourceShape = "sc",
 ) -> MergedStochasticPGDReconLossConfig:
     return MergedStochasticPGDReconLossConfig(
         coeff=1.0,
         adv_fraction=adv_fraction or ScheduleConfig(start_val=0.5),
         routing=UniformKSubsetRoutingConfig(),
-        scope=SCScope(),
+        source_shape=source_shape,
         optimizer=AdamPGDConfig(
             beta1=0.5, beta2=0.99, lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025)
         ),
@@ -78,23 +80,31 @@ def test_merged_term_builds_one_entry():
     assert entry.has_delta
 
 
-def test_merged_train_step_end_to_end():
-    """Full jitted step with ONE merged recon term: finite losses, the persistent
-    adversary updates (n_warmup + 1 per step through warmup + the S14' final ascent),
-    sources stay projected."""
+@pytest.mark.parametrize(
+    "source_shape,src_leading",
+    [("c", (1, 1)), ("bc", (2, 1)), ("sc", (1, 16)), ("bsc", (2, 16))],
+)
+def test_merged_train_step_end_to_end(source_shape: SourceShape, src_leading: tuple[int, int]):
+    """Full jitted step with ONE merged recon term, at every `source_shape`: finite
+    losses, the persistent adversary updates (n_warmup + 1 per step through warmup + the
+    S14' final ascent), sources stay projected."""
     cfg = _tiny_cfg()
     seq = 16
     n_warmup = 1
     sites = site_specs(cfg, _MIXED_SITE_CS)
-    lm = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
+    model = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
-    ci_fn = _build_chunkwise_ci_fn(lm, jax.random.PRNGKey(2))
+    ci_fn = _build_chunkwise_ci_fn(model, jax.random.PRNGKey(2))
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
 
-    merged = _merged_cfg(n_warmup)
+    merged = _merged_cfg(n_warmup, source_shape=source_shape)
     src = init_persistent_sources(
-        lm.site_names, tuple(s.C for s in lm.sites), (1, seq), jnp.float32, jax.random.PRNGKey(3)
+        model.site_names,
+        tuple(s.C for s in model.sites),
+        src_leading,
+        jnp.float32,
+        jax.random.PRNGKey(3),
     )
     assert merged.coeff is not None
     state = TrainState(
@@ -124,10 +134,10 @@ def test_merged_train_step_end_to_end():
             ),
             merged,
         ),
-        lm.site_names,
+        model.site_names,
     )
     step = make_train_step(
-        lm=lm,
+        model_static=model,
         losses=losses,
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
@@ -140,7 +150,7 @@ def test_merged_train_step_end_to_end():
     tokens = jax.random.randint(jax.random.PRNGKey(4), (2, seq), 0, cfg.vocab_size)
     n_steps = 3
     for i in range(n_steps):
-        state, metrics = step(lm, state, tokens, jax.random.PRNGKey(100 + i))
+        state, metrics = step(model, state, tokens, jax.random.PRNGKey(100 + i))
         assert all(bool(jnp.isfinite(v).all()) for v in metrics.values())
         assert "loss/MergedStochasticPGDReconLoss" in metrics
     assert int(state.training.step) == n_steps

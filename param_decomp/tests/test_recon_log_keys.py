@@ -27,7 +27,6 @@ from param_decomp.configs import (
     PGDReconLayerwiseLossConfig,
     PGDReconLossConfig,
     PGDReconSubsetLossConfig,
-    SCScope,
     StochasticReconLayerwiseLossConfig,
     StochasticReconLossConfig,
     StochasticReconSubsetLossConfig,
@@ -54,12 +53,14 @@ RECON_CONFIGS = (
     StochasticReconLossConfig(coeff=1.0),
     StochasticReconLayerwiseLossConfig(coeff=1.0),
     StochasticReconSubsetLossConfig(coeff=1.0),
-    PGDReconLossConfig(coeff=1.0, init="random", step_size=0.1, n_steps=1, mask_scope="bsc"),
+    PGDReconLossConfig(coeff=1.0, init="random", step_size=0.1, n_steps=1, source_shape="bsc"),
     PGDReconLayerwiseLossConfig(
-        coeff=1.0, init="random", step_size=0.1, n_steps=1, mask_scope="bsc"
+        coeff=1.0, init="random", step_size=0.1, n_steps=1, source_shape="bsc"
     ),
-    PGDReconSubsetLossConfig(coeff=1.0, init="random", step_size=0.1, n_steps=1, mask_scope="bsc"),
-    PersistentPGDReconLossConfig(coeff=1.0, optimizer=_persistent_optimizer(), scope=SCScope()),
+    PGDReconSubsetLossConfig(
+        coeff=1.0, init="random", step_size=0.1, n_steps=1, source_shape="bsc"
+    ),
+    PersistentPGDReconLossConfig(coeff=1.0, optimizer=_persistent_optimizer(), source_shape="sc"),
 )
 
 

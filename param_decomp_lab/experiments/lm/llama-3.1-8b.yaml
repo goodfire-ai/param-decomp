@@ -73,8 +73,7 @@ pd:
         warmup_pct: 0.025
         final_val_frac: 1.0
         fn_type: constant
-    scope:
-      type: bsc
+    source_shape: bsc
     n_warmup_steps: 2
   - type: FaithfulnessLoss
     coeff: 10000000.0
@@ -101,7 +100,7 @@ eval:
     init: random
     step_size: 0.1
     n_steps: 20
-    mask_scope: c
+    source_shape: c
 target:
   spec:
     kind: hf

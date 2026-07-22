@@ -29,7 +29,6 @@ from param_decomp.configs import (
     CIMaskedReconSubsetLossConfig,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
-    MaskScopeLiteral,
     MergedStochasticPGDReconLossConfig,
     PersistentPGDReconLossConfig,
     PGDInitStrategy,
@@ -37,6 +36,7 @@ from param_decomp.configs import (
     PGDReconLossConfig,
     PGDReconSubsetLossConfig,
     SmoothL0ImportanceMinimalityLossConfig,
+    SourceShape,
     StaticProbabilityRoutingConfig,
     StochasticReconLayerwiseLossConfig,
     StochasticReconLossConfig,
@@ -45,7 +45,7 @@ from param_decomp.configs import (
     UniformKSubsetRoutingConfig,
     UnmaskedReconLossConfig,
 )
-from param_decomp.lm import chunk_sites
+from param_decomp.model import chunk_sites
 
 Routes = dict[str, Array] | None
 RoutingSampler = Callable[[PRNGKeyArray, tuple[int, ...]], tuple[Routes, ...]]
@@ -86,7 +86,7 @@ class FreshPGDSources:
     init: PGDInitStrategy
     n_steps: int
     step_size: float
-    scope: MaskScopeLiteral
+    source_shape: SourceShape
 
 
 @dataclass(frozen=True)
@@ -430,14 +430,14 @@ def build_loss_terms(
                 )
                 recon_terms.append(recon(cfg, plan))
             case PGDReconLossConfig() | PGDReconSubsetLossConfig():
-                fresh = FreshPGDSources(cfg.init, cfg.n_steps, cfg.step_size, cfg.mask_scope)
+                fresh = FreshPGDSources(cfg.init, cfg.n_steps, cfg.step_size, cfg.source_shape)
                 routing = (
                     cfg.routing if isinstance(cfg, PGDReconSubsetLossConfig) else AllRoutingConfig()
                 )
                 plan = make_plan(one_chunk(site_names), routing, fresh, n_samples=1)
                 recon_terms.append(recon(cfg, plan))
             case PGDReconLayerwiseLossConfig():
-                fresh = FreshPGDSources(cfg.init, cfg.n_steps, cfg.step_size, cfg.mask_scope)
+                fresh = FreshPGDSources(cfg.init, cfg.n_steps, cfg.step_size, cfg.source_shape)
                 plan = make_plan(per_site(site_names), AllRoutingConfig(), fresh, n_samples=1)
                 recon_terms.append(recon(cfg, plan))
             case MergedStochasticPGDReconLossConfig():

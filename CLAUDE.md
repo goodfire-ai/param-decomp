@@ -54,7 +54,7 @@ lab is composition / IO / CLI / experiment assembly**:
 
 - **`param-decomp`** (root: `param_decomp/` + sibling `pretrain/` + sibling
   `vendored_jax/`) — the core: the generic JAX single-pool VPD trainer ENGINE
-  (`param_decomp/`: run.py = `run_decomposition_training`, lm.py, train.py, ci_fn.py,
+  (`param_decomp/`: run.py = `run_decomposition_training`, model.py, train.py, ci_fn.py,
   targets/glu_transformer.py + its llama8b/qwen3_8b family files, …), the torch-free pydantic config SCHEMA it now carries directly
   (`base_config.py` = `BaseConfig`, `schedule.py`, `configs.py` = `PDConfig` /
   `RuntimeConfig` / `Cadence` / loss + eval-metric configs / routing / ci-fn / wandb
@@ -91,7 +91,7 @@ the one venv). The semantics source of truth is its `SPEC.md` (normative pseudoc
 numbered invariants, grounded in the torch oracle — JAX **conforms** to it). For the real
 entry points, read `param_decomp/CLAUDE.md` and `SPEC.md`. In one breath:
 
-- **`DecomposedModel`** (`param_decomp/lm.py`) — THE model interface: ordered `sites` +
+- **`DecomposedModel`** (`param_decomp/model.py`) — THE model interface: ordered `sites` +
   pure fns (`clean_output` / `read_activations` / `masked_output` / `weight_deltas`) on an
   `eqx.Module` carrying the frozen target weights as fields (the trainable `vu` is an
   explicit method arg). Generic over vendored LM targets. There is one recon
@@ -156,7 +156,7 @@ and returns JAX-native as the #10 torch->jax adapter.
   / `Cadence` / `WandbConfig` / `ResumeProvenance` + the wandb-shaping helpers). The
   built-run bundle the engine consumes (`built_run.py`: `BuiltRun` /
   `DataConfig` / `EvalConfig` / … + the `TargetSites` protocol). The engine + numerics
-  (`run.py` = `run_decomposition_training`, `lm.py` / `train.py` / `ci_fn.py` /
+  (`run.py` = `run_decomposition_training`, `model.py` / `train.py` / `ci_fn.py` /
   `targets/glu_transformer.py` (+ `targets/{llama8b,qwen3_8b}.py` family files) / `targets/llama_simple_mlp.py` / `adversary.py` / `recon.py` / `losses.py` /
   `checkpoint.py` / `sharding.py` / `eval.py` / `slow_eval.py` / `arithmetic_eval.py` +
   `log.py`) plus `configs/`

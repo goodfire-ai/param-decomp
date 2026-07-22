@@ -24,6 +24,7 @@ from jax.sharding import PartitionSpec as P
 from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, BuiltRun
 from param_decomp.components import SiteC
 from param_decomp.log import setup_logger
+from param_decomp.model import Positionless
 from param_decomp.recon import build_loss_terms
 from param_decomp.run import run_decomposition_training
 from param_decomp.sharding import hsdp_mesh
@@ -119,7 +120,7 @@ def run_resid_mlp_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: 
     )
     # The model IS the frozen target: one `eqx.Module` carries the ResidMLP weights as a field
     # and the decomposition contract as methods.
-    lm = resid_mlp.replicate_target(
+    model = resid_mlp.replicate_target(
         resid_mlp.resid_mlp_decomposed_model(
             resid_cfg, target, resid_mlp.site_specs(resid_cfg, target_cfg.sites)
         ),
@@ -145,7 +146,7 @@ def run_resid_mlp_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: 
         )
 
     def sample_batch(step: int) -> jax.Array:
-        return sample_residual(lm.target, random.fold_in(data_key, step))
+        return sample_residual(model.target, random.fold_in(data_key, step))
 
     # `model` is the filter_jit ARG (frozen weights traced, not baked).
     @eqx.filter_jit
@@ -156,16 +157,17 @@ def run_resid_mlp_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: 
         ci = ci_fn(model.read_activations(resid, ci_fn.input_names), remat=False)
         return ci.lower, ci.upper
 
-    uv_spec = toy_uv_eval.toy_uv_spec(lm, raw_cfg)
+    uv_spec = toy_uv_eval.toy_uv_spec(model, raw_cfg)
     # `mlp_out` targets DENSE recovery (every d_mlp direction stays live), not identity —
     # torch parity (`resid_mlp{1,2,3}_config.yaml` `dense_patterns: [layers.*.mlp_out]`).
     # `mlp_in` targets identity.
     ci_permutation: dict[str, Literal["identity", "dense"]] = {
-        site: "dense" if site.endswith(resid_mlp.MLP_OUT) else "identity" for site in lm.site_names
+        site: "dense" if site.endswith(resid_mlp.MLP_OUT) else "identity"
+        for site in model.site_names
     }
 
     def eval_fn(state: TrainState, now_step: int) -> dict[str, float]:
-        ci_lower, ci_upper = single_feature_ci(lm, state.decomposition.ci_fn)
+        ci_lower, ci_upper = single_feature_ci(model, state.decomposition.ci_fn)
         toy_uv_eval.log_uv_figure(
             uv_spec,
             state.decomposition.components.vu,
@@ -203,9 +205,9 @@ def run_resid_mlp_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: 
         pd=built.pd,
         cadence=built.cadence,
         run=built.run,
-        lm=lm,
+        model=model,
         ci_fn=built.ci_fn,
-        data=built.data,
+        positions=Positionless(),
         remat_recon_forwards=built.runtime.remat_recon_forwards,
         remat_ci_fn=built.runtime.remat_ci_fn,
         ascend_replicate=built.runtime.ascend_replicate,

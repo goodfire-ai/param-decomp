@@ -78,7 +78,7 @@ eval:
     init: random
     step_size: 0.1
     n_steps: 20
-    mask_scope: c
+    source_shape: c
 target:
   spec:
     kind: hf

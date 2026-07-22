@@ -85,36 +85,36 @@ _QVDOWN_SITE_CS = (
 def test_clean_path_and_masked_identity():
     cfg = _tiny_cfg()
     sites = glu_site_specs(cfg, _QVDOWN_SITE_CS)
-    lm = _tiny_decomposed_qwen(cfg, sites, jax.random.PRNGKey(0))
+    model = _tiny_decomposed_qwen(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
-    clean = lm.clean_output(tokens)
+    clean = model.clean_output(tokens)
     assert clean.shape == (b, t, cfg.vocab_size)
 
     # SPEC S2: a masked forward with NO live sites is the frozen path — bit-identical.
-    none_masked = lm.masked_output(
-        lm.prepare_compute_weights(vu), tokens, {}, {}, None, (), True, remat=False
+    none_masked = model.masked_output(
+        model.prepare_compute_weights(vu), tokens, {}, {}, None, (), True, remat=False
     )
     assert jnp.array_equal(clean, none_masked), "live=() must be the exact frozen path"
 
     # mask=1 identity through the QK-norm (V@U + (W − V@U); exact only in exact math).
-    names = lm.site_names
-    ones_masks = {s.name: jnp.ones((b, t, s.C)) for s in lm.sites}
+    names = model.site_names
+    ones_masks = {s.name: jnp.ones((b, t, s.C)) for s in model.sites}
     ones_delta = {s: jnp.ones((b, t)) for s in names}
-    full = lm.masked_output(
-        lm.prepare_compute_weights(vu), tokens, ones_masks, ones_delta, None, names, True,
+    full = model.masked_output(
+        model.prepare_compute_weights(vu), tokens, ones_masks, ones_delta, None, names, True,
         remat=False,
     )  # fmt: skip
     assert jnp.allclose(clean, full, atol=1e-4), "mask=1 identity drifted"
 
     # zero-mask + zero-delta on layer 4's decomposed sites must CHANGE the logits (q is
     # live on the attention path ahead of QK-norm/RoPE/SDPA).
-    zero_mask = {s.name: jnp.zeros((b, t, s.C)) for s in lm.sites}
+    zero_mask = {s.name: jnp.zeros((b, t, s.C)) for s in model.sites}
     zero_delta = {s: jnp.zeros((b, t)) for s in names}
-    ablated = lm.masked_output(
-        lm.prepare_compute_weights(vu), tokens, zero_mask, zero_delta, None, names, True,
+    ablated = model.masked_output(
+        model.prepare_compute_weights(vu), tokens, zero_mask, zero_delta, None, names, True,
         remat=False,
     )  # fmt: skip
     assert not jnp.allclose(clean, ablated, atol=1e-4), "ablating layer 4 did nothing"
@@ -127,22 +127,22 @@ def test_qk_norm_is_load_bearing():
     (the attention output) responds."""
     cfg = _tiny_cfg()
     sites = glu_site_specs(cfg, _QVDOWN_SITE_CS)
-    lm = _tiny_decomposed_qwen(cfg, sites, jax.random.PRNGKey(0))
+    model = _tiny_decomposed_qwen(cfg, sites, jax.random.PRNGKey(0))
     tokens = jax.random.randint(jax.random.PRNGKey(2), (2, 16), 0, cfg.vocab_size)
 
-    attn = lm.stacked.attn
+    attn = model.stacked.attn
     assert isinstance(attn, Qwen3FrozenAttn)
     assert attn.q_norm.shape == (cfg.n_layer, cfg.head_dim)
     # scale ONLY layer 4's q_norm so the residual ENTERING layer 4 stays untouched
-    scaled = eqx.tree_at(lambda m: m.stacked.attn.q_norm, lm, attn.q_norm.at[4].mul(2.0))
-    assert not jnp.allclose(lm.clean_output(tokens), scaled.clean_output(tokens), atol=1e-4)
+    scaled = eqx.tree_at(lambda m: m.stacked.attn.q_norm, model, attn.q_norm.at[4].mul(2.0))
+    assert not jnp.allclose(model.clean_output(tokens), scaled.clean_output(tokens), atol=1e-4)
 
     q_site = "layers.4.self_attn.q_proj"
-    taps = lm.read_activations(tokens, lm.site_names)
-    scaled_taps = scaled.read_activations(tokens, lm.site_names)
+    taps = model.read_activations(tokens, model.site_names)
+    scaled_taps = scaled.read_activations(tokens, model.site_names)
     assert jnp.array_equal(taps[q_site], scaled_taps[q_site])
     o_site = "layers.4.self_attn.o_proj"
-    o_tap = lm.read_activations(tokens, (o_site,))[o_site]
+    o_tap = model.read_activations(tokens, (o_site,))[o_site]
     o_tap_scaled = scaled.read_activations(tokens, (o_site,))[o_site]
     assert not jnp.allclose(o_tap, o_tap_scaled)
 
@@ -158,17 +158,17 @@ def test_attn_pattern_applies_that_layers_qk_norm():
         SiteC("layers.5.self_attn.k_proj", 8),
     )
     sites = glu_site_specs(cfg, site_cs)
-    lm = _tiny_decomposed_qwen(cfg, sites, jax.random.PRNGKey(0))
-    attn = lm.stacked.attn
+    model = _tiny_decomposed_qwen(cfg, sites, jax.random.PRNGKey(0))
+    attn = model.stacked.attn
     assert isinstance(attn, Qwen3FrozenAttn)
-    lm = eqx.tree_at(lambda m: m.stacked.attn.q_norm, lm, attn.q_norm.at[5].mul(3.0))
+    model = eqx.tree_at(lambda m: m.stacked.attn.q_norm, model, attn.q_norm.at[5].mul(3.0))
 
     b, t = 2, 9
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
     q = jax.random.normal(jax.random.PRNGKey(1), (b, t, qd))
     k = jax.random.normal(jax.random.PRNGKey(2), (b, t, kvd))
-    p4 = lm.attn_pattern("layers.4.self_attn.q_proj", q, k)
-    p5 = lm.attn_pattern("layers.5.self_attn.q_proj", q, k)
+    p4 = model.attn_pattern("layers.4.self_attn.q_proj", q, k)
+    p5 = model.attn_pattern("layers.5.self_attn.q_proj", q, k)
     assert p4.shape == (b, cfg.n_head, t, t)
     assert not jnp.allclose(p4, p5)
     assert parse_site_name("layers.5.self_attn.q_proj") == (5, "q")
@@ -192,9 +192,9 @@ def test_step_trains():
 
     cfg = _tiny_cfg()
     sites = glu_site_specs(cfg, _QVDOWN_SITE_CS)
-    lm = _tiny_decomposed_qwen(cfg, sites, jax.random.PRNGKey(0))
+    model = _tiny_decomposed_qwen(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
-    ci_fn = _build_chunkwise_ci_fn(lm, jax.random.PRNGKey(2), n_blocks=1)
+    ci_fn = _build_chunkwise_ci_fn(model, jax.random.PRNGKey(2), n_blocks=1)
     opt_vu = optax.adamw(1e-3, weight_decay=0.0)
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
     state = TrainState(
@@ -217,10 +217,10 @@ def test_step_trains():
                 routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=3, n_samples=1
             ),
         ),
-        lm.site_names,
+        model.site_names,
     )
     step = make_train_step(
-        lm=lm,
+        model_static=model,
         losses=loss_terms,
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
@@ -230,6 +230,6 @@ def test_step_trains():
         mesh=None,
     )
     tokens = jax.random.randint(jax.random.PRNGKey(4), (2, 16), 0, cfg.vocab_size)
-    state, metrics = step(lm, state, tokens, jax.random.PRNGKey(100))
+    state, metrics = step(model, state, tokens, jax.random.PRNGKey(100))
     assert all(jnp.isfinite(jnp.asarray(v)).all() for v in metrics.values())
     assert int(state.training.step) == 1

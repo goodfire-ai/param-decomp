@@ -17,6 +17,7 @@ from param_decomp.configs import (
     ImportanceMinimalityLossConfig,
     PDConfig,
     PersistentPGDReconLossConfig,
+    PGDReconLossConfig,
 )
 from param_decomp.losses import scheduled_value_traced
 from param_decomp.recon import (
@@ -95,7 +96,7 @@ def test_b128_config_converts():
     converted, raw = load_config(CONFIGS / "llama8b_l18_b128_cmp32.yaml", RUN_ID)
     assert raw["pd"]["batch_size"] == 128
     assert converted.run.run_name == "jax-l18-b128-cmp32-from-torch"
-    assert converted.data is not None and converted.data.global_batch == 128
+    assert converted.pd.batch_size == 128 and converted.data is not None
     assert converted.target.sites == mlp_family_site_cs(18, 18, 24576)
     losses = build_loss_terms(
         converted.pd.loss_metrics, tuple(sc.name for sc in converted.target.sites)
@@ -111,6 +112,45 @@ def test_b128_config_converts():
         "StochasticReconSubsetLoss",
         "PersistentPGDReconLoss",
     ]
+
+
+def test_legacy_scope_field_aliases_to_source_shape():
+    """Stored persistent-loss configs carry the old nested `scope:` field (`{type: sc}`,
+    or the older verbose type names); the alias maps them onto `source_shape` so old runs
+    keep loading."""
+    optimizer = {"type": "adam", "lr_schedule": {"start_val": 0.01, "fn_type": "constant"}}
+    for stored, want in [
+        ({"type": "sc"}, "sc"),
+        ({"type": "bsc"}, "bsc"),
+        ({"type": "broadcast_across_batch"}, "sc"),
+        ({"type": "per_batch_per_position"}, "bsc"),
+    ]:
+        cfg = PersistentPGDReconLossConfig.model_validate(
+            {
+                "type": "PersistentPGDReconLoss",
+                "coeff": 1.0,
+                "optimizer": optimizer,
+                "scope": stored,
+            }
+        )
+        assert cfg.source_shape == want, (stored, cfg.source_shape)
+
+    for stored_scope, want in [
+        ("c", "c"),
+        ("shared_across_batch", "c"),
+        ("unique_per_datapoint", "bsc"),
+    ]:
+        pgd = PGDReconLossConfig.model_validate(
+            {
+                "type": "PGDReconLoss",
+                "coeff": 1.0,
+                "init": "random",
+                "step_size": 0.1,
+                "n_steps": 1,
+                "mask_scope": stored_scope,
+            }
+        )
+        assert pgd.source_shape == want, (stored_scope, pgd.source_shape)
 
 
 def test_eval_block_maps_slow_tier_and_defers_offline_only_metrics(
@@ -130,7 +170,7 @@ def test_eval_block_maps_slow_tier_and_defers_offline_only_metrics(
                 "type": "PGDReconLoss",
                 "coeff": None,
                 "init": "random",
-                "mask_scope": "c",
+                "source_shape": "c",
                 "n_steps": 20,
                 "step_size": 0.1,
             },
@@ -366,7 +406,7 @@ def test_c49k_config_converts():
     assert converted.target.sites == mlp_family_site_cs(18, 18, 49152)
     assert converted.pd.steps == 200000
     assert isinstance(converted.data, DataConfig)
-    assert converted.data.global_batch == 512 and converted.data.seq_len == 2048
+    assert converted.pd.batch_size == 512 and converted.data.seq_len == 2048
     assert converted.pd.components_optimizer.lr_schedule.start_val == 7e-05
     assert converted.pd.ci_fn_optimizer.lr_schedule.start_val == 7e-05
     assert converted.eval is not None and converted.eval.pgd is not None
@@ -380,7 +420,7 @@ def test_nine_layer_config_converts():
     assert converted.run.run_name == "jax-l18-26-9L-seq512-b128-40k"
     assert len(converted.target.sites) == 27
     assert isinstance(converted.data, DataConfig)
-    assert converted.data.seq_len == 512 and converted.data.global_batch == 128
+    assert converted.data.seq_len == 512 and converted.pd.batch_size == 128
     assert converted.pd.steps == 40000
     assert converted.pd.components_optimizer.lr_schedule.start_val == 1.5e-4
     assert converted.pd.ci_fn_optimizer.lr_schedule.start_val == 5e-5

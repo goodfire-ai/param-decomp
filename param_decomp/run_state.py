@@ -1,5 +1,5 @@
 """Construction of a run's optimizers + initial `TrainState` from the pydantic `PDConfig`
-plus the lab-built CI-fn arch and data source.
+plus the lab-built CI-fn arch and the target's position extents.
 
 Shared by the trainer (`run.py`) and the run-loading consumers (`load_run.py`): orbax
 restores ONTO a reference pytree, so anything that wants to read a checkpoint must
@@ -19,11 +19,10 @@ from jax.typing import ArrayLike
 from jaxtyping import Array, PRNGKeyArray
 
 from param_decomp.adversary import PersistentAdversary, init_sources_adam_state
-from param_decomp.built_run import DataConfig
 from param_decomp.ci_fn import CIFnArch
 from param_decomp.configs import AdamPGDConfig, OptimizerConfig, PDConfig
-from param_decomp.lm import DecomposedModel
 from param_decomp.losses import scheduled_value_traced
+from param_decomp.model import DecomposedModel, PositionAxis, Positioned
 from param_decomp.recon import (
     MixedPersistentStochasticSources,
     PersistentSources,
@@ -100,7 +99,7 @@ def build_optimizers(pd: PDConfig):
 
 
 def init_decomposition(
-    lm: DecomposedModel, ci_fn_arch: CIFnArch, init_key: PRNGKeyArray, mesh: Mesh
+    model: DecomposedModel, ci_fn_arch: CIFnArch, init_key: PRNGKeyArray, mesh: Mesh
 ) -> Decomposition:
     """The trained-product half of `init_train_state`, factored out so a consumer can
     `jax.eval_shape` it to recover the saved `decomposition` item's tree structure
@@ -108,28 +107,33 @@ def init_decomposition(
     ci_key = random.fold_in(init_key, 1)
     # Placement is MODEL-OWNED: V/U + CI declare their own per-leaf shardings (asserting
     # divisibility), uniformly across mesh sizes — no scale inference, no replicate fallback.
-    components = init_decomp_vu_placed(lm.sites, init_key, mesh)
-    ci_fn = init_ci_fn_placed(ci_fn_arch, lm.sites, ci_key, mesh)
-    assert ci_fn.expects_axes == lm.leading_axes, (
-        f"CI fn expects leading axes {ci_fn.expects_axes} but model has {lm.leading_axes}"
+    components = init_decomp_vu_placed(model.sites, init_key, mesh)
+    ci_fn = init_ci_fn_placed(ci_fn_arch, model.sites, ci_key, mesh)
+    assert ci_fn.has_position_axis == model.has_position_axis, (
+        f"CI fn has_position_axis={ci_fn.has_position_axis} but model declares "
+        f"{model.has_position_axis}"
     )
     return Decomposition(components=components, ci_fn=ci_fn)
 
 
 def init_train_state(
     pd: PDConfig,
-    lm: DecomposedModel,
+    model: DecomposedModel,
     ci_fn_arch: CIFnArch,
-    data: DataConfig | None,
+    positions: PositionAxis,
     opt_vu: optax.GradientTransformation,
     opt_ci: optax.GradientTransformation,
     init_key: PRNGKeyArray,
     src_key: PRNGKeyArray,
     mesh: Mesh,
 ) -> TrainState:
-    decomposition = init_decomposition(lm, ci_fn_arch, init_key, mesh)
+    """Persistent sources are shaped from `positions` (the run's waist geometry)."""
+    assert isinstance(positions, Positioned) == model.has_position_axis, (
+        f"{positions} does not match the model's has_position_axis={model.has_position_axis}"
+    )
+    decomposition = init_decomposition(model, ci_fn_arch, init_key, mesh)
     components, ci_fn = decomposition.components, decomposition.ci_fn
-    losses = build_loss_terms(pd.loss_metrics, lm.site_names)
+    losses = build_loss_terms(pd.loss_metrics, model.site_names)
     persistent = persistent_configs(losses.recon)
     term_coeff_by_state_key = {
         entry.sources.state_key: term.coeff
@@ -140,19 +144,15 @@ def init_train_state(
     assert set(term_coeff_by_state_key) == set(persistent)
     adversaries: dict[str, PersistentAdversary] = {}
     if persistent:
-        # Persistent sources live on a position axis; TMS (no position axis) carries none.
-        assert isinstance(data, DataConfig), (
-            "persistent PGD sources need a sequence axis; TMS (leading_axes=()) has none"
-        )
         for term_idx, state_key in enumerate(persistent):
             cfg = persistent[state_key]
             assert isinstance(cfg.optimizer, AdamPGDConfig)
             sources = init_sources_sharded(
-                lm.site_names,
-                tuple(s.C for s in lm.sites),
-                data.seq_len,
-                cfg.scope,
-                data.global_batch,
+                model.site_names,
+                tuple(s.C for s in model.sites),
+                positions,
+                cfg.source_shape,
+                pd.batch_size,
                 jnp.dtype(cfg.source_dtype),
                 random.fold_in(src_key, term_idx),
                 mesh,

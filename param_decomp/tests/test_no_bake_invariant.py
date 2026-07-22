@@ -1,4 +1,4 @@
-"""Guards the no-bake invariant (lm.py module docstring): the frozen target weights must
+"""Guards the no-bake invariant (model.py module docstring): the frozen target weights must
 reach the jitted train step as TRACED ARGS (`jaxpr.invars`), never closed over and baked
 into `jaxpr.consts` — for a real 8B target, baking would silently push multi-GB into the HLO.
 """
@@ -35,15 +35,15 @@ FROZEN_W_SIZE = D * D  # 1024 — comfortably above any legitimately-constant sc
 
 def _build_step_and_args():
     key = random.PRNGKey(0)
-    lm = SyntheticDecomposedModel(
+    model = SyntheticDecomposedModel(
         feat_proj=random.normal(random.fold_in(key, 7), (D, D)),
         W=random.normal(random.fold_in(key, 0), (D, D)),
         read_coords=random.normal(random.fold_in(key, 1), (K_COORDS, D)),
         read_aux=random.normal(random.fold_in(key, 2), (M_AUX, D)),
         sites=(SiteSpec(name=SITE, d_in=D, d_out=D, C=C),),
-        leading_axes=("sequence",),
+        has_position_axis=True,
     )
-    assert lm.W.size == FROZEN_W_SIZE
+    assert model.W.size == FROZEN_W_SIZE
     components = DecompVU(
         vu={
             SITE: (
@@ -66,7 +66,7 @@ def _build_step_and_args():
         ffn_kind="gelu",
         learned_norm_scale=False,
     )
-    ci_fn = build_ci_fn(ci_arch, lm.sites, random.PRNGKey(11))
+    ci_fn = build_ci_fn(ci_arch, model.sites, random.PRNGKey(11))
     opt_vu = optax.adamw(1e-2, weight_decay=0.0)
     opt_ci = optax.adamw(1e-2, weight_decay=0.0)
     state = TrainState(
@@ -87,10 +87,10 @@ def _build_step_and_args():
             ),
             StochasticReconLossConfig(coeff=1.0),
         ),
-        lm.site_names,
+        model.site_names,
     )
     step_fn = make_train_step(
-        lm=lm,
+        model_static=model,
         losses=loss_terms,
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
@@ -99,17 +99,17 @@ def _build_step_and_args():
         remat_ci_fn=False,
         mesh=None,
     )
-    return step_fn, lm, state, inputs
+    return step_fn, model, state, inputs
 
 
 def test_frozen_weights_are_jaxpr_args_not_baked_consts():
     """The real jitted step traces the model's array leaves as invars (not consts)."""
-    step_fn, lm, state, inputs = _build_step_and_args()
+    step_fn, model, state, inputs = _build_step_and_args()
     # `make_train_step` returns the `eqx.filter_jit`-wrapped step; unwrap to the undecorated
     # inner function. `filter_make_jaxpr` partitions it exactly as `filter_jit` does (arrays
     # traced, the rest static), so this is the same arg→trace boundary production runs through.
     inner_step = inspect.unwrap(step_fn)
-    closed_jaxpr = eqx.filter_make_jaxpr(inner_step)(lm, state, inputs, random.PRNGKey(3))[0]
+    closed_jaxpr = eqx.filter_make_jaxpr(inner_step)(model, state, inputs, random.PRNGKey(3))[0]
 
     invar_sizes = {v.aval.size for v in closed_jaxpr.jaxpr.invars}
     assert FROZEN_W_SIZE in invar_sizes, (
