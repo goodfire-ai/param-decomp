@@ -19,7 +19,7 @@ Megatron-C. The memory consumers, and how each is placed:
     migration stage 3 wires it through the `params.forward` row).
   * CI fn + Adam states: sharded ÷N over the full mesh along d_model (in_proj / blocks /
     heads), same ZeRO-1 reconstruction to `fsdp`-only before the chunk scan.
-  * PGD source (broadcast scope, `{site: (1,T,C+1)}`): REPLICATED. A single adversarial
+  * PGD source (`shared` scope, `{site: (1,P,C+1)}`): REPLICATED. A single adversarial
     source shared across the global batch; it combines elementwise with the batch-sharded
     CI and its grad reduction falls out of the global-mean loss (torch
     `reduce_source_grads` analog). Tiny vs activations, so replicating costs nothing;
@@ -65,7 +65,8 @@ from param_decomp.components import (
     SiteSpec,
     init_component_stacks,
 )
-from param_decomp.configs import BSCScope, SCScope
+from param_decomp.configs import SourceShape
+from param_decomp.model import PositionAxis, Positioned, Positionless
 from param_decomp.placement import PlacementRules, component_stacks_shardings
 from param_decomp.sharding import hsdp_mesh, place_via_shardings
 from param_decomp.sharding import shard_batch as _generic_shard_batch
@@ -113,35 +114,51 @@ def init_ci_fn_placed(
 def init_sources_sharded(
     site_names: tuple[str, ...],
     site_component_counts: tuple[int, ...],
-    seq_len: int,
-    scope: SCScope | BSCScope,
+    positions: PositionAxis,
+    source_shape: SourceShape,
     global_batch: int,
     source_dtype: DTypeLike,
     key: PRNGKeyArray,
     mesh: Mesh,
 ) -> dict[str, Array]:
-    """Seeded PPGD-source init -> placed per scope (jit + `out_shardings`; same
-    no-host-tree rationale as `init_component_stacks_placed`).
+    """Seeded PPGD-source init -> placed per `source_shape` (jit + `out_shardings`; same
+    no-host-tree rationale as `init_component_stacks_placed`). Every stored (positions x
+    source_shape) leading shape is written out in the match below; the rank always
+    matches the waist, with size-1 broadcast axes for the letters `source_shape` omits
+    (`configs.SourceShape`).
 
-    `sc`: `{site: (1, T, C+1)}` REPLICATED. One adversarial source shared across the whole
-    global batch (leading batch axis = 1, broadcast); it combines elementwise with the
-    batch-sharded CI (`mask = ci + (1-ci)*source[..., :-1]`) and its grad is AVG-reduced
-    across shards (torch `reduce_source_grads`).
+    Batch-1 shapes (`c`, `sc`) are REPLICATED: one source (per position for `sc`) shared
+    across the whole global batch; it combines elementwise with the batch-sharded CI
+    (`mask = ci + (1-ci)*source[..., :-1]`) and its grad is AVG-reduced across shards
+    (torch `reduce_source_grads`).
 
-    `bsc`: `{site: (B, T, C+1)}` BATCH-SHARDED over the FULL mesh (`('replicate', 'fsdp')`,
-    axis 0), aligning each batch element's source with that element's `shard_batch`-placed
-    residual/CI. The source is independent per element, so the per-element grad is already
-    shard-local — NO cross-rank reduction, matching torch's `_skip_all_reduce`. (Requires
-    `global_batch % n_dev == 0`, the same divisibility `shard_batch` needs.)
+    Batch-B shapes (`bc`, `bsc`) are BATCH-SHARDED over the FULL mesh
+    (`('replicate', 'fsdp')`, axis 0), aligning each batch element's source with that
+    element's `shard_batch`-placed residual/CI. The source is independent per element, so
+    the per-element grad is already shard-local — NO cross-rank reduction, matching
+    torch's `_skip_all_reduce`. (Requires `global_batch % n_dev == 0`, the same
+    divisibility `shard_batch` needs.)
 
-    Sharding the trailing C+1 axis is invalid for either scope: with the weight-delta
+    Sharding the trailing C+1 axis is invalid for every shape: with the weight-delta
     channel C+1 is odd and not divisible by the mesh size, and would also fight the
     batch-sharded elementwise combine."""
-    match scope:
-        case SCScope():
-            leading_shape, spec = (1, seq_len), P()
-        case BSCScope():
-            leading_shape = (global_batch, seq_len)
+    match positions, source_shape:
+        case Positionless(), "c":
+            leading_shape, spec = (1,), P()
+        case Positionless(), "bc":
+            leading_shape, spec = (global_batch,), P(("replicate", "fsdp"), None)
+        case Positionless(), "sc" | "bsc":
+            raise ValueError(
+                f"source_shape {source_shape!r} names a position axis; target is positionless"
+            )
+        case Positioned(), "c":
+            leading_shape, spec = (1, 1), P()
+        case Positioned(), "bc":
+            leading_shape, spec = (global_batch, 1), P(("replicate", "fsdp"), None, None)
+        case Positioned(n_positions=n), "sc":
+            leading_shape, spec = (1, n), P()
+        case Positioned(n_positions=n), "bsc":
+            leading_shape = (global_batch, n)
             spec = P(("replicate", "fsdp"), None, None)
     # Two cheap compiles instead of one n_sites-sharded-output graph (same shape as
     # `init_component_stacks_placed`, incl. the transient: the stacked copy can't donate into

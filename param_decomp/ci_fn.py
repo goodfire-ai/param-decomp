@@ -100,12 +100,12 @@ class CI:
 @runtime_checkable
 class CIFn(Protocol):
     """`dict[InputTap, Array] -> CI`. `output_names` partition the model sites (asserted at
-    construction); input taps are unconstrained. `expects_axes` must equal the paired
-    `DecomposedModel.leading_axes` (asserted at trainer construction)."""
+    construction); input taps are unconstrained. `has_position_axis` must equal the
+    paired `DecomposedModel.has_position_axis` (asserted at trainer construction)."""
 
     input_names: tuple[str, ...]
     output_names: tuple[str, ...]
-    expects_axes: tuple[str, ...]
+    has_position_axis: bool
 
     def __call__(self, taps: dict[str, Array], *, remat: bool) -> CI: ...
 
@@ -494,7 +494,7 @@ class ChunkwiseTransformerCIFn(eqx.Module):
     output_names: tuple[str, ...] = eqx.field(static=True)  # all sites, flat
     chunk_meta: tuple[_ChunkMeta, ...] = eqx.field(static=True)  # per-chunk routing
     eps: float = eqx.field(static=True)
-    expects_axes: tuple[str, ...] = eqx.field(static=True)
+    has_position_axis: bool = eqx.field(static=True)
 
     def shardings(self, mesh: Mesh) -> "ChunkwiseTransformerCIFn":
         """The stacked per-chunk transformer's HSDP layout (`ChunkTransformer.shardings`,
@@ -680,11 +680,11 @@ def init_chunkwise_transformer_ci_fn(
         output_names=tuple(name for ch in arch.chunks for name in ch.output_sites),
         chunk_meta=tuple(_ChunkMeta(ch.input_taps, ch.output_sites) for ch in arch.chunks),
         eps=CI_FN_RMS_EPS,
-        expects_axes=("sequence",),
+        has_position_axis=True,
     )
 
 
-# ------------------- per-site / global MLPs (positionless `expects_axes=()`) -------------------
+# ---------------- per-site / global MLPs (positionless, no position axis) ----------------
 
 
 # The MLP arches below mirror their pydantic configs (`LayerwiseMlpCiConfig` /
@@ -740,7 +740,7 @@ class LayerwiseMLPCIFn(eqx.Module):
     site_mlps: dict[str, SiteMLP]
     input_names: tuple[str, ...] = eqx.field(static=True)
     output_names: tuple[str, ...] = eqx.field(static=True)
-    expects_axes: tuple[str, ...] = eqx.field(static=True)
+    has_position_axis: bool = eqx.field(static=True)
 
     def shardings(self, mesh: Mesh) -> "LayerwiseMLPCIFn":
         return eqx.tree_at(
@@ -787,7 +787,7 @@ def init_layerwise_mlp_ci_fn(
     }
     names = tuple(s.name for s in sites)
     return LayerwiseMLPCIFn(
-        site_mlps=site_mlps, input_names=names, output_names=names, expects_axes=()
+        site_mlps=site_mlps, input_names=names, output_names=names, has_position_axis=False
     )
 
 
@@ -809,7 +809,7 @@ class GlobalMLPCIFn(eqx.Module):
     output_names: tuple[str, ...] = eqx.field(static=True)
     in_sizes: tuple[int, ...] = eqx.field(static=True)
     c_sizes: tuple[int, ...] = eqx.field(static=True)
-    expects_axes: tuple[str, ...] = eqx.field(static=True)
+    has_position_axis: bool = eqx.field(static=True)
 
     def shardings(self, mesh: Mesh) -> "GlobalMLPCIFn":
         return eqx.tree_at(lambda f: f.mlp, self, self.mlp.shardings(mesh))
@@ -853,7 +853,7 @@ def init_global_mlp_ci_fn(
         output_names=names,
         in_sizes=in_sizes,
         c_sizes=c_sizes,
-        expects_axes=(),
+        has_position_axis=False,
     )
 
 

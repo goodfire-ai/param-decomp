@@ -39,10 +39,9 @@ from param_decomp.configs import (
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
-    SCScope,
     UniformKSubsetRoutingConfig,
 )
-from param_decomp.lm import DecomposedModel
+from param_decomp.model import DecomposedModel, Positioned
 from param_decomp.muon_stacked import stacked_muon
 from param_decomp.placement import from_config
 from param_decomp.recon import build_loss_terms
@@ -66,7 +65,7 @@ from vendored_jax.llama import LlamaConfig
 def _ppgd_cfg(n_warmup: int) -> PersistentPGDReconLossConfig:
     return PersistentPGDReconLossConfig(
         coeff=0.5,
-        scope=SCScope(),
+        source_shape="sc",
         optimizer=AdamPGDConfig(
             beta1=0.5, beta2=0.99,
             lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
@@ -87,10 +86,10 @@ def _adversary(src: dict[str, jax.Array], cfg: PersistentPGDReconLossConfig) -> 
     )
 
 
-def _chunkwise_arch(lm: DecomposedModel, cfg: LlamaConfig) -> ChunkwiseTransformerCIArch:
+def _chunkwise_arch(model: DecomposedModel, cfg: LlamaConfig) -> ChunkwiseTransformerCIArch:
     """The old `CIArch(16, 2, 2, 32)` → one chunk reading the residual entering the first
     decomposed block and emitting CI for every site; `input_dim` is the residual width."""
-    site_names = lm.site_names
+    site_names = model.site_names
     first_block = min(int(n.split(".")[1]) for n in site_names)
     return ChunkwiseTransformerCIArch(
         chunks=(Chunk(input_taps=(f"resid.{first_block}",), output_sites=site_names),),
@@ -110,9 +109,9 @@ def _build(
     cfg = _tiny_cfg()
     C, seq = 8, 16
     sites = glu_site_specs(cfg, mlp_family_site_cs(3, 4, C))
-    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(seed))
-    ci_fn = build_ci_fn(_chunkwise_arch(lm, cfg), lm.sites, jax.random.PRNGKey(seed + 1))
+    ci_fn = build_ci_fn(_chunkwise_arch(model, cfg), model.sites, jax.random.PRNGKey(seed + 1))
 
     def muon_impl(dim_nums: "Callable[[optax.Params], optax.Params] | None"):
         if stacked_impl:
@@ -143,8 +142,8 @@ def _build(
         else optax.adamw(1e-3, weight_decay=0.0)
     )
     src = init_persistent_sources(
-        lm.site_names,
-        tuple(s.C for s in lm.sites),
+        model.site_names,
+        tuple(s.C for s in model.sites),
         (1, seq),
         jnp.float32,
         jax.random.PRNGKey(seed + 2),
@@ -168,27 +167,27 @@ def _build(
             ChunkwiseSubsetReconLossConfig(routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=3, n_samples=1),
             ppgd_cfg,
         ),
-        lm.site_names,
+        model.site_names,
     )  # fmt: skip
     step = make_train_step(
-        lm=lm,
+        model_static=model,
         losses=loss_terms,
         components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
         total_steps=100,
         remat_recon_forwards=True, remat_ci_fn=False, mesh=None,
     )  # fmt: skip
     resid = jax.random.randint(jax.random.PRNGKey(9), (2, seq), 0, cfg.vocab_size)
-    return lm, state, step, resid
+    return model, state, step, resid
 
 
 def _roundtrip_and_exact_resume(
     tmp_path: Path, muon_components: bool, muon_ci_fn: bool = False, stacked_impl: bool = False
 ) -> None:
-    lm, state, step, resid = _build(
+    model, state, step, resid = _build(
         seed=1, muon_components=muon_components, muon_ci_fn=muon_ci_fn, stacked_impl=stacked_impl
     )
     for i in range(2):
-        state, _ = step(lm, state, resid, jax.random.PRNGKey(i))
+        state, _ = step(model, state, resid, jax.random.PRNGKey(i))
 
     mgr = make_checkpoint_manager(tmp_path / "ckpts", keep_last=2)
     save_state(mgr, 2, state)
@@ -220,8 +219,8 @@ def _roundtrip_and_exact_resume(
         assert all(bool(jnp.any(leaf != 0)) for leaf in mu_leaves)
 
     # SPEC S22: the restored state continues the exact trajectory.
-    state_cont, m_cont = step(lm, state, resid, jax.random.PRNGKey(100))
-    loaded_cont, m_load = step(lm, loaded, resid, jax.random.PRNGKey(100))
+    state_cont, m_cont = step(model, state, resid, jax.random.PRNGKey(100))
+    loaded_cont, m_load = step(model, loaded, resid, jax.random.PRNGKey(100))
     for k in m_cont:
         assert float(m_cont[k]) == float(m_load[k]), k
     for a, b in zip(jax.tree.leaves(state_cont), jax.tree.leaves(loaded_cont), strict=True):
@@ -263,11 +262,11 @@ def test_muon_cross_impl_checkpoint_roundtrip(tmp_path: Path, save_impl: str, re
     the other — and the other impl's train step consumes the restored state (continuing it
     exactly as it continues the in-memory state). Muon on BOTH groups so the cross-impl
     claim covers the V/U stacks and the ci-fn partition."""
-    lm, state, save_step, resid = _build(
+    model, state, save_step, resid = _build(
         seed=1, muon_components=True, muon_ci_fn=True, stacked_impl=save_impl == "stacked"
     )
     for i in range(2):
-        state, _ = save_step(lm, state, resid, jax.random.PRNGKey(i))
+        state, _ = save_step(model, state, resid, jax.random.PRNGKey(i))
     mgr = make_checkpoint_manager(tmp_path / "ckpts", keep_last=2)
     save_state(mgr, 2, state)
 
@@ -294,8 +293,8 @@ def test_muon_cross_impl_checkpoint_roundtrip(tmp_path: Path, save_impl: str, re
     ]
     assert all(bool(jnp.any(leaf != 0)) for leaf in jax.tree.leaves(muon_state.mu))
 
-    state_cont, m_cont = restore_step_fn(lm, state, resid, jax.random.PRNGKey(100))
-    loaded_cont, m_load = restore_step_fn(lm, loaded, resid, jax.random.PRNGKey(100))
+    state_cont, m_cont = restore_step_fn(model, state, resid, jax.random.PRNGKey(100))
+    loaded_cont, m_load = restore_step_fn(model, loaded, resid, jax.random.PRNGKey(100))
     for k in m_cont:
         assert float(m_cont[k]) == float(m_load[k]), k
     for a, b in zip(jax.tree.leaves(state_cont), jax.tree.leaves(loaded_cont), strict=True):
@@ -310,9 +309,9 @@ def test_persistent_adam_step_count_roundtrip_and_post_resume_bias_correction(tm
     state_key = "PersistentPGDReconLoss"
     beta1, beta2 = 0.5, 0.99
 
-    lm, state, step, resid = _build(seed=1)
+    model, state, step, resid = _build(seed=1)
     for i in range(3):
-        state, _ = step(lm, state, resid, jax.random.PRNGKey(i))
+        state, _ = step(model, state, resid, jax.random.PRNGKey(i))
 
     pre_save = state.training.adversaries[state_key].opt_state
     n_ascents = int(pre_save.step_count)
@@ -382,9 +381,9 @@ def test_consumer_restores_decomposition_to_host(tmp_path: Path):
     """The consumer path (`open_jax_run`): an eval_shape'd `Decomposition` abstract —
     no optimizer/adversary knowledge — restores host-side, bit-equal to the saved
     components + ci_fn."""
-    lm, state, step, resid = _build(seed=1)
+    model, state, step, resid = _build(seed=1)
     for i in range(2):
-        state, _ = step(lm, state, resid, jax.random.PRNGKey(i))
+        state, _ = step(model, state, resid, jax.random.PRNGKey(i))
     mgr = make_checkpoint_manager(tmp_path / "ckpts", keep_last=2)
     save_state(mgr, 2, state)
 
@@ -406,9 +405,9 @@ def test_init_from_parent_restores_decomposition_only(tmp_path: Path):
     `decomposition` item (components + ci_fn) onto a fresh reference, keeping the fresh
     reference's optimizer states / adversaries / `step=0` — never reading the parent's
     `training` item, which may differ freely."""
-    lm, parent, step, resid = _build(seed=1)
+    model, parent, step, resid = _build(seed=1)
     for i in range(2):
-        parent, _ = step(lm, parent, resid, jax.random.PRNGKey(i))
+        parent, _ = step(model, parent, resid, jax.random.PRNGKey(i))
     mgr = make_checkpoint_manager(tmp_path / "ckpts", keep_last=2)
     save_state(mgr, 2, parent)
 
@@ -446,20 +445,20 @@ def _build_sharded(seed: int, mesh: Mesh):
     n = mesh.devices.size
     C, seq = 8 * n, 16
     sites = glu_site_specs(cfg, mlp_family_site_cs(3, 4, C))
-    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks_placed(
         sites, jax.random.PRNGKey(seed), from_config("owner", mesh, sites)
     )
     ci_fn = init_ci_fn_placed(
-        _chunkwise_arch(lm, cfg), lm.sites, jax.random.PRNGKey(seed + 1), mesh
+        _chunkwise_arch(model, cfg), model.sites, jax.random.PRNGKey(seed + 1), mesh
     )
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
     src = init_sources_sharded(
-        lm.site_names,
-        tuple(s.C for s in lm.sites),
-        seq,
-        SCScope(),
+        model.site_names,
+        tuple(s.C for s in model.sites),
+        Positioned(seq),
+        "sc",
         n,
         jnp.float32,
         jax.random.PRNGKey(seed + 2),

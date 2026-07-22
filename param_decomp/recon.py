@@ -29,14 +29,14 @@ from param_decomp.configs import (
     CIMaskedReconSubsetLossConfig,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
-    MaskScopeLiteral,
-    MergedStochasticPGDReconLossConfig,
+    MergedStochasticSubsetPPGDReconLossConfig,
     PersistentPGDReconLossConfig,
     PGDInitStrategy,
     PGDReconLayerwiseLossConfig,
     PGDReconLossConfig,
     PGDReconSubsetLossConfig,
     SmoothL0ImportanceMinimalityLossConfig,
+    SourceShape,
     StaticProbabilityRoutingConfig,
     StochasticReconLayerwiseLossConfig,
     StochasticReconLossConfig,
@@ -45,7 +45,7 @@ from param_decomp.configs import (
     UniformKSubsetRoutingConfig,
     UnmaskedReconLossConfig,
 )
-from param_decomp.lm import chunk_sites
+from param_decomp.model import chunk_sites
 
 Routes = dict[str, Array] | None
 RoutingSampler = Callable[[PRNGKeyArray, tuple[int, ...]], tuple[Routes, ...]]
@@ -86,7 +86,7 @@ class FreshPGDSources:
     init: PGDInitStrategy
     n_steps: int
     step_size: float
-    scope: MaskScopeLiteral
+    source_shape: SourceShape
 
 
 @dataclass(frozen=True)
@@ -108,7 +108,7 @@ class MixedPersistentStochasticSources:
     `PersistentSources`."""
 
     state_key: str
-    cfg: "MergedStochasticPGDReconLossConfig"
+    cfg: "MergedStochasticSubsetPPGDReconLossConfig"
 
 
 MaskSourceStrategy = (
@@ -323,12 +323,12 @@ def subset_chunk_plan(
 
 def persistent_configs(
     recon_terms: tuple[ReconLossTerm, ...],
-) -> "dict[str, PersistentPGDReconLossConfig | MergedStochasticPGDReconLossConfig]":
+) -> "dict[str, PersistentPGDReconLossConfig | MergedStochasticSubsetPPGDReconLossConfig]":
     """`state_key -> config` for every persistent-source-carrying recon term (SPEC S23:
     each key feeds exactly one term). Derived from the terms, not stored separately — the
     config rides each `PersistentSources` / `MixedPersistentStochasticSources` strategy;
     both carry the same adversary fields (optimizer/scope/source_dtype/n_warmup_steps)."""
-    out: dict[str, PersistentPGDReconLossConfig | MergedStochasticPGDReconLossConfig] = {}
+    out: dict[str, PersistentPGDReconLossConfig | MergedStochasticSubsetPPGDReconLossConfig] = {}
     for term in recon_terms:
         for entry in term.plan:
             if isinstance(entry.sources, (PersistentSources, MixedPersistentStochasticSources)):
@@ -436,17 +436,17 @@ def build_loss_terms(
                 )
                 recon_terms.append(recon(cfg, plan))
             case PGDReconLossConfig() | PGDReconSubsetLossConfig():
-                fresh = FreshPGDSources(cfg.init, cfg.n_steps, cfg.step_size, cfg.mask_scope)
+                fresh = FreshPGDSources(cfg.init, cfg.n_steps, cfg.step_size, cfg.source_shape)
                 routing = (
                     cfg.routing if isinstance(cfg, PGDReconSubsetLossConfig) else AllRoutingConfig()
                 )
                 plan = make_plan(all_sites_live(site_names), routing, fresh, n_samples=1)
                 recon_terms.append(recon(cfg, plan))
             case PGDReconLayerwiseLossConfig():
-                fresh = FreshPGDSources(cfg.init, cfg.n_steps, cfg.step_size, cfg.mask_scope)
+                fresh = FreshPGDSources(cfg.init, cfg.n_steps, cfg.step_size, cfg.source_shape)
                 plan = make_plan(each_site_live(site_names), AllRoutingConfig(), fresh, n_samples=1)
                 recon_terms.append(recon(cfg, plan))
-            case MergedStochasticPGDReconLossConfig():
+            case MergedStochasticSubsetPPGDReconLossConfig():
                 key = unique_name(cfg)
                 plan = make_plan(
                     all_sites_live(site_names),

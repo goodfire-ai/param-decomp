@@ -4,8 +4,8 @@ Two semantically distinct adversaries share the source/mask machinery but nothin
 else (SPEC §3):
 
 - **Persistent PGD (PPGD)** — `PersistentPGDReconLossConfig`. Per-site sources + their
-  Adam moments live in `TrainState` across steps; `sc` scope is `(1, T, C+1)` (shared
-  across batch), `bsc` is `(B, T, C+1)` (independent per batch element, batch-sharded).
+  Adam moments live in `TrainState` across steps, stored per `source_shape`
+  (`configs.SourceShape`).
   Each step runs `n_warmup_steps` supplemental Adam ascents plus one final ascent from
   the main backward (SPEC S13/S14), projecting to [0,1] after every update (S15).
 - **Fresh PGD** — `PGDReconLossConfig` (torch `PGDReconLoss` as a TRAINING loss).
@@ -25,7 +25,7 @@ from jax.typing import DTypeLike
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from param_decomp.components import SiteSpec
-from param_decomp.configs import AdamPGDConfig, MaskScopeLiteral, PGDInitStrategy
+from param_decomp.configs import AdamPGDConfig, PGDInitStrategy, SourceShape
 from param_decomp.losses import scheduled_value_traced
 
 
@@ -46,9 +46,10 @@ def init_persistent_sources(
 ) -> dict[str, Array]:
     """Per-site PPGD sources `(*leading_shape, C+1)`, init U[0,1] (SPEC S15; clamp
     parameterization); trailing channel = the weight-delta source. `leading_shape` spells
-    the scope over the model's leading axes (SPEC §1.6): for an LM `(1, T)` for `sc`
-    (batch axis collapsed -> shared across batch, free per position) and `(B, T)` for `bsc`
-    (independent per batch element and position).
+    the `source_shape` over the model's leading axes (SPEC §1.6), rank matching the
+    waist with size-1 broadcast axes — e.g. an LM's `(1, T)` for `sc` (shared across
+    batch, free per position), `(B, 1)` for `bc` (per batch element, shared over
+    positions).
 
     `source_dtype` is the resident storage dtype (SPEC N1 fp32 for oracle parity; bf16 to
     halve footprint). Drawing in fp32 then casting keeps the U[0,1] draw dtype-stable."""
@@ -109,23 +110,26 @@ def unstack_persistent_sources(
 def init_fresh_pgd_sources(
     sites: tuple[SiteSpec, ...],
     init: PGDInitStrategy,
-    scope: MaskScopeLiteral,
+    source_shape: SourceShape,
     leading: tuple[int, ...],
     key: PRNGKeyArray,
 ) -> dict[str, Array]:
     """Per-site fresh adversarial sources (torch `_init_adv_sources`): trailing channel
     is the weight-delta source; `leading = (B,) + position axes`. The source's leading
-    shape spells `scope` over those axes (LM `(B, T)`): `bsc` keeps the full leading,
-    `bc` collapses every position axis to 1 (`(B, 1)`), `c` collapses every axis to 1
-    (`(1, 1)`)."""
+    shape spells `source_shape` (`configs.SourceShape`) over those axes: `bsc` keeps the
+    full leading, `bc` collapses every position axis to 1 (`(B, 1)`), `c` collapses every
+    axis to 1 (`(1, 1)`). The persistent counterpart enumerates its config-time shapes in
+    `init_sources_sharded`."""
     batch, *positions = leading
-    match scope:
+    match source_shape:
         case "bsc":
             source_leading = leading
         case "bc":
             source_leading = (batch, *(1 for _ in positions))
         case "c":
             source_leading = tuple(1 for _ in leading)
+        case "sc":
+            raise AssertionError("unreachable: PGDConfig validation rejects `sc`")
     keys = random.split(key, len(sites))
     sources = {}
     for site, site_key in zip(sites, keys, strict=True):
@@ -186,7 +190,7 @@ def source_masks(
 ) -> tuple[dict[str, Array], dict[str, Array]]:
     """`mask = ci + (1−ci)·source[:, :C]`; delta mask = raw trailing channel (SPEC S1).
     Shared by both adversaries; sources broadcast over whatever leading dims their
-    scope left singleton. The fp32 source state is cast to the CI dtype here
+    `source_shape` left singleton. The fp32 source state is cast to the CI dtype here
     (torch-under-autocast behavior); the source gradient flows back through the cast."""
     masks = {}
     delta_masks = {}
@@ -257,7 +261,7 @@ class PersistentAdversary(eqx.Module):
     `final_ascend` (one more ascent from the SAME backward's source-grad, unscaled by the
     term's `coeff` — exact since one source bundle feeds exactly one term, SPEC S23)."""
 
-    sources: dict[str, Array]  # site -> source in [0,1], `(*scope_leading, C+1)`
+    sources: dict[str, Array]  # site -> source in [0,1], `(*source_leading, C+1)`
     opt_state: SourcesAdamState
     state_key: str = eqx.field(static=True)
     coeff: float = eqx.field(static=True)

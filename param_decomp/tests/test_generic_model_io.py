@@ -39,7 +39,7 @@ from param_decomp.configs import (
     ImportanceMinimalityLossConfig,
     StochasticReconLossConfig,
 )
-from param_decomp.lm import DecomposedModel, run_stochastic_masked_output
+from param_decomp.model import DecomposedModel, run_stochastic_masked_output
 from param_decomp.recon import build_loss_terms
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
@@ -59,7 +59,7 @@ class SyntheticDecomposedModel(eqx.Module):
     read_coords: Float[Array, "K D"]
     read_aux: Float[Array, "M D"]
     sites: tuple[SiteSpec, ...] = eqx.field(static=True)
-    leading_axes: tuple[str, ...] = eqx.field(static=True)
+    has_position_axis: bool = eqx.field(static=True)
 
     @property
     def site_names(self) -> tuple[str, ...]:
@@ -180,7 +180,7 @@ def _synthetic_lm(key: jax.Array) -> SyntheticDecomposedModel:
         read_coords=random.normal(random.fold_in(key, 1), (K_COORDS, D)),
         read_aux=random.normal(random.fold_in(key, 2), (M_AUX, D)),
         sites=(SiteSpec(name=SITE, d_in=D, d_out=D, C=C),),
-        leading_axes=("sequence",),
+        has_position_axis=True,
     )
 
 
@@ -201,33 +201,33 @@ def test_dict_input_tuple_output_and_geometric_loss_flow():
     """The model consumes the loader's native DICT batch (not token ids);
     `clean_output`/`masked_output` emit a tuple; `recon_loss_fn` (MSE) contracts it."""
     key = random.PRNGKey(1)
-    lm = _synthetic_lm(key)
+    model = _synthetic_lm(key)
     components = _synthetic_vu(key)
     inputs = _synthetic_inputs(key)
 
-    assert lm.read_activations(inputs, (SITE,))[SITE].shape == (B, T, D)
+    assert model.read_activations(inputs, (SITE,))[SITE].shape == (B, T, D)
 
-    clean = lm.clean_output(inputs)
+    clean = model.clean_output(inputs)
     assert isinstance(clean, tuple) and len(clean) == 2
     assert clean[0].shape == (B, T, K_COORDS) and clean[1].shape == (B, T, M_AUX)
 
     masks = {SITE: jnp.ones((B, T, C))}
     delta_masks = {SITE: jnp.zeros((B, T))}
-    masked = lm.masked_output(
+    masked = model.masked_output(
         components, inputs, masks, delta_masks, None, (SITE,), False, remat=False
     )
     assert isinstance(masked, tuple) and len(masked) == 2
 
-    loss = lm.recon_loss_fn(masked, clean)
+    loss = model.recon_loss_fn(masked, clean)
     assert loss.shape == () and jnp.isfinite(loss)
 
 
 def _initial_state(
-    lm: DecomposedModel, components: ComponentStacks, ci_arch: ChunkwiseTransformerCIArch
+    model: DecomposedModel, components: ComponentStacks, ci_arch: ChunkwiseTransformerCIArch
 ):
     opt_vu = optax.adamw(1e-2, weight_decay=0.0)
     opt_ci = optax.adamw(1e-2, weight_decay=0.0)
-    ci_fn = build_ci_fn(ci_arch, lm.sites, random.PRNGKey(11))
+    ci_fn = build_ci_fn(ci_arch, model.sites, random.PRNGKey(11))
     state = TrainState(
         decomposition=Decomposition(components=components, ci_fn=ci_fn),
         training=TrainingItem(
@@ -244,7 +244,7 @@ def test_train_step_runs_through_generic_target():
     """End-to-end: the real `make_train_step` drives the synthetic dict-in/tuple-out/MSE
     target for two steps; the loss stays finite and the trainable V/U actually move."""
     key = random.PRNGKey(2)
-    lm = _synthetic_lm(key)
+    model = _synthetic_lm(key)
     components = _synthetic_vu(key)
     inputs = _synthetic_inputs(key)
 
@@ -258,7 +258,7 @@ def test_train_step_runs_through_generic_target():
         ffn_kind="gelu",
         learned_norm_scale=False,
     )
-    state, opt_vu, opt_ci = _initial_state(lm, components, ci_arch)
+    state, opt_vu, opt_ci = _initial_state(model, components, ci_arch)
 
     loss_terms = build_loss_terms(
         (
@@ -269,10 +269,10 @@ def test_train_step_runs_through_generic_target():
             ),
             StochasticReconLossConfig(coeff=1.0),
         ),
-        lm.site_names,
+        model.site_names,
     )
     step_fn = make_train_step(
-        lm=lm,
+        model_static=model,
         losses=loss_terms,
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
@@ -287,7 +287,7 @@ def test_train_step_runs_through_generic_target():
     )  # host copy survives step donation
     run_key = random.PRNGKey(3)
     for step_idx in range(2):
-        state, metrics = step_fn(lm, state, inputs, random.fold_in(run_key, step_idx))
+        state, metrics = step_fn(model, state, inputs, random.fold_in(run_key, step_idx))
         assert jnp.isfinite(metrics["total"]), (step_idx, metrics["total"])
         assert "loss/StochasticReconLoss" in metrics
 

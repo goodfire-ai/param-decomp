@@ -44,8 +44,8 @@ from safetensors import safe_open
 from param_decomp import site_tree
 from param_decomp.components import ComponentStacks, SiteC, SiteSpec, site_out
 from param_decomp.configs import SimpleMlpMatrix
-from param_decomp.lm import run_stochastic_masked_output
 from param_decomp.losses import kl_per_position
+from param_decomp.model import run_stochastic_masked_output
 from param_decomp.site_tree import ArchFamily
 from param_decomp.targets.glu_transformer import FrozenAttn
 from param_decomp.targets.transformer_taps import resid_tap_key
@@ -252,13 +252,13 @@ def _masked_site_out(
 
 
 class SimpleMLPDecomposedModel(eqx.Module):
-    """The `LlamaSimpleMLP` `DecomposedModel` (the `lm.py` contract; SPEC §1).
+    """The `LlamaSimpleMLP` `DecomposedModel` (the `model.py` contract; SPEC §1).
 
     Carries the FROZEN full model (tied embedding, all blocks, final norm, lm_head) as array
     fields — threaded into the jitted step as a pytree arg, weights traced not baked. Forward
     methods take token `inputs` and embed internally; blocks with no decomposed site run the
     plain frozen block. The TRAINABLE V/U (`vu: ComponentStacks`) is an
-    explicit method arg, NOT a field (separate lifecycle). `sites` / `leading_axes` / `n_ctx`
+    explicit method arg, NOT a field (separate lifecycle). `sites` / `has_position_axis` / `n_ctx`
     / `eps` are static config."""
 
     embed: Float[Array, "vocab d"]
@@ -267,7 +267,7 @@ class SimpleMLPDecomposedModel(eqx.Module):
     lm_head: Float[Array, "vocab d"]
     inv_freq: Float[Array, " hd2"]
     sites: tuple[SiteSpec, ...] = eqx.field(static=True)
-    leading_axes: tuple[str, ...] = eqx.field(static=True)
+    has_position_axis: bool = eqx.field(static=True)
     eps: float = eqx.field(static=True)
     n_ctx: int = eqx.field(static=True)
 
@@ -596,7 +596,7 @@ def build_decomposed_simple_mlp(
         lm_head=lm_head,
         inv_freq=plain_rope_inv_freq(cfg),
         sites=sites,
-        leading_axes=("sequence",),
+        has_position_axis=True,
         eps=cfg.rms_norm_eps,
         n_ctx=cfg.n_ctx,
     )

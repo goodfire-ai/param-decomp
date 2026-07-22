@@ -12,6 +12,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+from param_decomp.model import Positioned, Positionless
 from param_decomp.placement import from_config
 from param_decomp.sharding import hsdp_mesh, shard_batch
 
@@ -63,7 +64,6 @@ def test_jitted_sharded_inits_match_eager_values():
         build_ci_fn,
     )
     from param_decomp.components import SiteC, init_component_stacks
-    from param_decomp.configs import BSCScope, SCScope
     from param_decomp.targets.glu_transformer import canonical_site_cs, glu_site_specs
     from param_decomp.targets.glu_transformer_sharding import (
         init_ci_fn_placed,
@@ -163,7 +163,14 @@ def test_jitted_sharded_inits_match_eager_values():
     site_names = tuple(s.name for s in sites)
     site_Cs = tuple(s.C for s in sites)
     src_sharded = init_sources_sharded(
-        site_names, site_Cs, 16, SCScope(), 1, jnp.float32, jax.random.PRNGKey(3), mesh
+        site_names,
+        site_Cs,
+        Positioned(16),
+        "sc",
+        1,
+        jnp.float32,
+        jax.random.PRNGKey(3),
+        mesh,
     )
     src_eager = init_persistent_sources(
         site_names, site_Cs, (1, 16), jnp.float32, jax.random.PRNGKey(3)
@@ -183,8 +190,8 @@ def test_jitted_sharded_inits_match_eager_values():
     src_bsc = init_sources_sharded(
         site_names,
         site_Cs,
-        16,
-        BSCScope(),
+        Positioned(16),
+        "bsc",
         bsc_global_batch,
         jnp.float32,
         jax.random.PRNGKey(3),
@@ -240,3 +247,42 @@ def test_fresh_pgd_c_bc_sources_are_replica_identical():
                     scope,
                     site.name,
                 )
+
+
+def test_init_sources_sharded_shape_and_placement_per_arm():
+    """Every (positions x source_shape) arm: the stored shape and `PartitionSpec` per
+    `configs.SourceShape`, and the positionless raise for `sc`/`bsc`."""
+    from jax.sharding import NamedSharding
+    from jax.sharding import PartitionSpec as P
+
+    from param_decomp.configs import SourceShape
+    from param_decomp.model import PositionAxis
+    from param_decomp.targets.glu_transformer_sharding import init_sources_sharded
+
+    mesh = hsdp_mesh()
+    site, C, B = "layers.2.mlp.gate_proj", 8 * jax.device_count(), 4 * jax.device_count()
+
+    def init(positions: PositionAxis, source_shape: SourceShape):
+        return init_sources_sharded(
+            (site,), (C,), positions, source_shape, B, jnp.float32, jax.random.PRNGKey(3), mesh
+        )
+
+    batch_sharded = ("replicate", "fsdp")
+    cases: list[tuple[PositionAxis, SourceShape, tuple[int, ...], P]] = [
+        (Positioned(16), "c", (1, 1, C + 1), P()),
+        (Positioned(16), "bc", (B, 1, C + 1), P(batch_sharded, None, None)),
+        (Positioned(16), "sc", (1, 16, C + 1), P()),
+        (Positioned(16), "bsc", (B, 16, C + 1), P(batch_sharded, None, None)),
+        (Positionless(), "c", (1, C + 1), P()),
+        (Positionless(), "bc", (B, C + 1), P(batch_sharded, None)),
+    ]
+    for positions, source_shape, want_shape, want_spec in cases:
+        src = init(positions, source_shape)[site]
+        assert src.shape == want_shape, (positions, source_shape, src.shape)
+        assert isinstance(src.sharding, NamedSharding) and src.sharding.spec == want_spec, (
+            positions,
+            source_shape,
+        )
+    for positioned_only in ("sc", "bsc"):
+        with pytest.raises(ValueError, match="positionless"):
+            init(Positionless(), positioned_only)

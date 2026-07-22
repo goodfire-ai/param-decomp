@@ -1,7 +1,7 @@
 """The generic VPD decomposition-training ENGINE — the one train loop every target
 (LM, TMS, ResidMLP, …) runs through.
 
-`run_decomposition_training(pd, cadence, run, lm, ci_fn, data,
+`run_decomposition_training(pd, cadence, run, model, ci_fn, positions,
 remat_recon_forwards, sample_batch, eval_fn, eval_every, mesh)` owns
 the generic machinery: init / restore / fine-tune init / faith warmup
 (`_init_or_restore_state`), the recon-grid step factory, orbax checkpointing, schedules,
@@ -52,7 +52,7 @@ from param_decomp.arithmetic_eval import (
     ArithmeticSelection,
     render_arithmetic_figures,
 )
-from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, DataConfig, RunInstance
+from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, RunInstance
 from param_decomp.checkpoint import (
     init_from_parent,
     make_checkpoint_manager,
@@ -62,7 +62,7 @@ from param_decomp.checkpoint import (
 from param_decomp.ci_fn import CIFnArch
 from param_decomp.components import init_component_stacks
 from param_decomp.configs import Cadence, PDConfig, ProfileConfig, flatten_typed_lists
-from param_decomp.lm import DecomposedModel
+from param_decomp.model import DecomposedModel, PositionAxis
 from param_decomp.placement import PlacementRules, component_stacks_audit
 from param_decomp.recon import build_loss_terms
 from param_decomp.run_state import build_optimizers, init_train_state
@@ -359,9 +359,9 @@ def render_and_log_arithmetic(
 def _init_or_restore_state(
     pd: PDConfig,
     ci_fn_arch: CIFnArch,
-    data: DataConfig | None,
+    positions: PositionAxis,
     run: RunInstance,
-    lm: DecomposedModel,
+    model: DecomposedModel,
     opt_vu: optax.GradientTransformation,
     opt_ci: optax.GradientTransformation,
     init_key: PRNGKeyArray,
@@ -378,7 +378,9 @@ def _init_or_restore_state(
     Returns `(state, start_step)`, or `None` when a SIGTERM landed mid-warmup (the caller
     must exit cleanly for requeue — no valid checkpoint exists pre-step-0)."""
     state = _ensure_global(
-        init_train_state(pd, lm, ci_fn_arch, data, opt_vu, opt_ci, init_key, src_key, mesh, rules),
+        init_train_state(
+            pd, model, ci_fn_arch, positions, opt_vu, opt_ci, init_key, src_key, mesh, rules
+        ),
         mesh,
     )
 
@@ -420,7 +422,7 @@ def _init_or_restore_state(
         faith_warmup_loss = None
         for _ in range(pd.faithfulness_warmup_steps):
             warmed_components, faith_warmup_opt_state, faith_warmup_loss = faith_warmup_step(
-                lm, warmed_components, faith_warmup_opt_state
+                model, warmed_components, faith_warmup_opt_state
             )
             if _sigterm_consensus():
                 # No valid checkpoint exists yet (the step-0 save happens only after warmup
@@ -453,9 +455,9 @@ def run_decomposition_training(
     pd: PDConfig,
     cadence: Cadence,
     run: RunInstance,
-    lm: DecomposedModel,
+    model: DecomposedModel,
     ci_fn: CIFnArch,
-    data: DataConfig | None,
+    positions: PositionAxis,
     remat_recon_forwards: bool,
     remat_ci_fn: bool,
     ascend_replicate: bool,
@@ -473,10 +475,10 @@ def run_decomposition_training(
     Reads the pydantic algorithm config DIRECTLY: `pd` (seed / steps / optimizers / loss
     metrics / faith warmup), `cadence` (log / save / checkpoint-retention
     rhythm), `run` (the run identity + wandb lineage). The lab-built objects ride alongside:
-    the decomposed model `lm` (an `eqx.Module` carrying the frozen target weights as
+    the decomposed `model` (an `eqx.Module` carrying the frozen target weights as
     fields — threaded into the jitted step as a pytree arg, never closed over), the CI-fn
-    arch `ci_fn`, the data source `data` (None for a toy), and the `remat_recon_forwards`
-    compute knob.
+    arch `ci_fn`, the run's waist geometry (`positions`: `Positioned(seq_len)` for an LM,
+    `Positionless()` for a toy), and the `remat_recon_forwards` compute knob.
 
     The target supplies only its three injectable seams:
 
@@ -514,7 +516,7 @@ def run_decomposition_training(
     rules = placement_rules
     if is_main:
         audit = component_stacks_audit(
-            eqx.filter_eval_shape(_partial(init_component_stacks, lm.sites), init_key), rules
+            eqx.filter_eval_shape(_partial(init_component_stacks, model.sites), init_key), rules
         )
         print(
             rules.describe(
@@ -524,7 +526,7 @@ def run_decomposition_training(
             flush=True,
         )
     init = _init_or_restore_state(
-        pd, ci_fn, data, run, lm, opt_vu, opt_ci, init_key, src_key, mesh, rules,
+        pd, ci_fn, positions, run, model, opt_vu, opt_ci, init_key, src_key, mesh, rules,
         checkpoint_manager, is_main, profile.no_checkpoint, compiler_options,
     )  # fmt: skip
     if init is None:
@@ -532,8 +534,8 @@ def run_decomposition_training(
     state, start_step = init
 
     step_fn = make_train_step(
-        lm=lm,
-        losses=build_loss_terms(pd.loss_metrics, lm.site_names),
+        model_static=model,
+        losses=build_loss_terms(pd.loss_metrics, model.site_names),
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=pd.steps,
@@ -593,11 +595,11 @@ def run_decomposition_training(
         _atk = random.fold_in(run_key, start_step)
         _ab = sample_batch(start_step)
         _aa0 = time.perf_counter()
-        _as1, _am1 = step_fn(lm, state, _ab, _atk)
+        _as1, _am1 = step_fn(model, state, _ab, _atk)
         _aa1 = time.perf_counter()
-        _as2, _am2 = step_fn(lm, _as1, _ab, _atk)
+        _as2, _am2 = step_fn(model, _as1, _ab, _atk)
         _aa2 = time.perf_counter()
-        _as3, _am3 = step_fn(lm, _as2, _ab, _atk)
+        _as3, _am3 = step_fn(model, _as2, _ab, _atk)
         _aa3 = time.perf_counter()
         jax.block_until_ready((_as3, _am3["total"]))
         _aa4 = time.perf_counter()
@@ -617,7 +619,7 @@ def run_decomposition_training(
         _step_jit: Any = (
             step_fn  # eqx.filter_jit object exposes .lower(); the Callable alias hides it
         )
-        _compiled = _step_jit.lower(lm, state, _mb, _mk).compile()
+        _compiled = _step_jit.lower(model, state, _mb, _mk).compile()
         _ma = getattr(_compiled, "compiled", _compiled).memory_analysis()
         if is_main:
             print(
@@ -630,8 +632,8 @@ def run_decomposition_training(
             )
         _dev = jax.local_devices()[0]
         _dev.memory_stats()  # reset peak baseline read
-        _ms_state, _ms_metrics = step_fn(lm, state, _mb, _mk)
-        _ms_state, _ms_metrics = step_fn(lm, _ms_state, _mb, _mk)
+        _ms_state, _ms_metrics = step_fn(model, state, _mb, _mk)
+        _ms_state, _ms_metrics = step_fn(model, _ms_state, _mb, _mk)
         jax.block_until_ready((_ms_state, _ms_metrics["total"]))
         _ms = _dev.memory_stats()
         if is_main and _ms is not None:
@@ -679,19 +681,19 @@ def run_decomposition_training(
                 import equinox as _eqx
 
                 _pp0 = time.perf_counter()
-                _arrs, _ = _eqx.partition((lm, state), _eqx.is_array)
+                _arrs, _ = _eqx.partition((model, state), _eqx.is_array)
                 _pp1 = time.perf_counter()
                 _nl_state = len(jax.tree_util.tree_leaves(state))
-                _nl_lm = len(jax.tree_util.tree_leaves(lm))
+                _nl_model = len(jax.tree_util.tree_leaves(model))
                 print(
-                    f"PD_LEAVES: state={_nl_state} lm={_nl_lm} "
-                    f"eqx.partition(lm,state)={_pp1 - _pp0:.3f}s",
+                    f"PD_LEAVES: state={_nl_state} model={_nl_model} "
+                    f"eqx.partition(model,state)={_pp1 - _pp0:.3f}s",
                     flush=True,
                 )
             _ts0 = time.perf_counter()
             batch = sample_batch(step)
             _ts1 = time.perf_counter()
-            state, metrics = step_fn(lm, state, batch, random.fold_in(run_key, step))
+            state, metrics = step_fn(model, state, batch, random.fold_in(run_key, step))
             _ts2 = time.perf_counter()
             jax.block_until_ready((state, metrics["total"]))
             _ts3 = time.perf_counter()
@@ -702,7 +704,7 @@ def run_decomposition_training(
             )
         else:
             batch = sample_batch(step)
-            state, metrics = step_fn(lm, state, batch, random.fold_in(run_key, step))
+            state, metrics = step_fn(model, state, batch, random.fold_in(run_key, step))
 
         grad_norm_summary_window.append(
             {k: v for k, v in metrics.items() if k.startswith("grad_norms/summary/")}

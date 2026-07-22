@@ -41,7 +41,6 @@ from param_decomp.configs import (  # noqa: E402
     FrequencyMinimalityConfig,
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
-    SCScope,
 )
 from param_decomp.recon import subset_chunk_plan  # noqa: E402
 from param_decomp.schedule import ScheduleConfig  # noqa: E402
@@ -99,11 +98,15 @@ def main() -> None:
     cfg = _tiny_cfg()
     layer_range = LayerRange(FIRST_LAYER, LAST_LAYER)
     tgt = _tiny_target(cfg, layer_range, random.PRNGKey(0))
-    lm = llama_decomposed_lm(cfg, layer_range, C)
+    model = llama_decomposed_lm(cfg, layer_range, C)
     vu = init_decomp_vu(cfg, C, layer_range.n_layers, random.PRNGKey(1))
-    ci_fn = init_ci_fn(CI_ARCH, lm.sites, random.PRNGKey(2))
+    ci_fn = init_ci_fn(CI_ARCH, model.sites, random.PRNGKey(2))
     sources = init_persistent_sources(
-        lm.site_names, tuple(s.C for s in lm.sites), (1, T), jax.numpy.float32, random.PRNGKey(3)
+        model.site_names,
+        tuple(s.C for s in model.sites),
+        (1, T),
+        jax.numpy.float32,
+        random.PRNGKey(3),
     )
     resid = random.normal(random.PRNGKey(4), (B, T, cfg.n_embd)) * 0.5
 
@@ -120,22 +123,22 @@ def main() -> None:
     arrays["resid"] = np.asarray(resid)
 
     # ── direct forward pins (fp32, eager) ──
-    arrays["out::clean"] = np.asarray(lm.clean_output(tgt, resid))
-    for name, site_input in lm.site_inputs(tgt, resid).items():
+    arrays["out::clean"] = np.asarray(model.clean_output(tgt, resid))
+    for name, site_input in model.site_inputs(tgt, resid).items():
         arrays[f"out::site_input::{name}"] = np.asarray(site_input)
-    for name, delta in lm.weight_deltas(tgt, vu).items():
+    for name, delta in model.weight_deltas(tgt, vu).items():
         arrays[f"out::wd::{name}"] = np.asarray(delta)
 
     mask_rng = np.random.default_rng(99)
     masks = {
-        name: mask_rng.uniform(0.0, 1.0, (B, T, C)).astype(np.float32) for name in lm.site_names
+        name: mask_rng.uniform(0.0, 1.0, (B, T, C)).astype(np.float32) for name in model.site_names
     }
     delta_masks = {
-        name: mask_rng.uniform(0.0, 1.0, (B, T)).astype(np.float32) for name in lm.site_names
+        name: mask_rng.uniform(0.0, 1.0, (B, T)).astype(np.float32) for name in model.site_names
     }
-    chunk0 = lm.site_names[:3]
+    chunk0 = model.site_names[:3]
     routes0 = {name: mask_rng.random((B, T)) < 0.6 for name in chunk0}
-    for name in lm.site_names:
+    for name in model.site_names:
         arrays[f"mask::{name}"] = masks[name]
         arrays[f"delta_mask::{name}"] = delta_masks[name]
     for name in chunk0:
@@ -144,10 +147,10 @@ def main() -> None:
     jm = {k: jax.numpy.asarray(v) for k, v in masks.items()}
     jdm = {k: jax.numpy.asarray(v) for k, v in delta_masks.items()}
     arrays["out::masked_all"] = np.asarray(
-        lm.masked_output(tgt, vu, resid, jm, jdm, None, lm.site_names, True)
+        model.masked_output(tgt, vu, resid, jm, jdm, None, model.site_names, True)
     )
     arrays["out::masked_subset"] = np.asarray(
-        lm.masked_output(
+        model.masked_output(
             tgt,
             vu,
             resid,
@@ -170,7 +173,7 @@ def main() -> None:
         step=jax.numpy.zeros((), jax.numpy.int32),
     )  # fmt: skip
     step_fn = make_train_step(
-        lm=lm,
+        model=model,
         faith_coeff=1e5,
         stoch_coeff=0.5,
         imp_min=ImportanceMinimalityLossConfig(
@@ -180,7 +183,7 @@ def main() -> None:
         ),
         adversary=PersistentPGDReconLossConfig(
             coeff=0.5,
-            scope=SCScope(),
+            source_shape="sc",
             optimizer=AdamPGDConfig(
                 beta1=0.5,
                 beta2=0.99,
@@ -191,7 +194,7 @@ def main() -> None:
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=100,
-        recon_plan=subset_chunk_plan(lm.site_names, 3, 1),
+        recon_plan=subset_chunk_plan(model.site_names, 3, 1),
         remat_recon_forwards=False,
         remat_ci_fn=False,
         mesh=None,

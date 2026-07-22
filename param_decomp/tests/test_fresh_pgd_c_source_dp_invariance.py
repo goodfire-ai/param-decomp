@@ -1,6 +1,6 @@
-"""Multi-device invariance of the fresh-PGD c-scope sign-ascent (SPEC S24, S12', S15, D1).
+"""Multi-device invariance of the fresh-PGD `c`-source sign-ascent (SPEC S24, S12', S15, D1).
 
-The fresh-PGD eval probe (`PGDReconLoss`, fresh sign-PGD, c-scope, 20 step;
+The fresh-PGD eval probe (`PGDReconLoss`, fresh sign-PGD, `c`-source, 20 step;
 `eval.py`) and the training-loss path (`train.py` `sign_ascend_body`) ascend a
 `c`-scope source — shape `(1, 1, C+1)`, shared across the whole batch and sequence —
 by `step_size * sign(grad)` with a clamp to [0,1], where the grad comes from a
@@ -12,15 +12,15 @@ under test is `sign(avg(g)) == sign(sum(g))`: both pick the same sign per source
 entry, so the ascended source — and therefore the materialized mask — is BIT-identical
 across device layouts. Sign is an exact decision, so no float tolerance is needed.
 
-This pins the missing multi-device invariance for fresh-PGD c-scope. It exercises
+This pins the missing multi-device invariance for fresh-PGD `c`-source. It exercises
 the SAME ascent body as production:
-a genuine batch-reduced `kl_per_position` loss whose source grad, for a c-scope
+a genuine batch-reduced `kl_per_position` loss whose source grad, for a `c`-source
 `(1, 1, C+1)` source, must be reduced across the sharded batch axis.
 
 Run at the default device count AND under simulated multi-device CPU:
 
   XLA_FLAGS="--xla_force_host_platform_device_count=4" \
-    python -m pytest param_decomp/tests/test_fresh_pgd_cscope_dp_invariance.py
+    python -m pytest param_decomp/tests/test_fresh_pgd_c_source_dp_invariance.py
 """
 
 import jax
@@ -38,21 +38,21 @@ from param_decomp.targets.glu_transformer import (
 from param_decomp.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
 
 
-def _ascend_cscope_source(
+def _ascend_c_source(
     sharded: bool, n_steps: int, step_size: float
 ) -> tuple[dict[str, jax.Array], dict[str, jax.Array]]:
-    """Run the fresh-PGD c-scope sign-ascent on a fixed batch+seed and return the
+    """Run the fresh-PGD `c`-source sign-ascent on a fixed batch+seed and return the
     ascended sources plus their materialized masks (`source_masks`).
 
     Mirrors `train.py` `sign_ascend_body`: a batch-reduced KL ascent loss, grad w.r.t.
-    a `(1, 1, C+1)` c-scope source, `step_size * sign(grad)`, clamp to [0,1]. When
-    `sharded`, the residual is GSPMD-sharded over all visible devices, so the c-scope
+    a `(1, 1, C+1)` `c` source, `step_size * sign(grad)`, clamp to [0,1]. When
+    `sharded`, the residual is GSPMD-sharded over all visible devices, so the `c`-source
     source grad is born from a cross-shard reduction."""
     cfg = _tiny_cfg()
     first_layer = 3
     C, seq, gbatch = 8, 16, 8
     sites = glu_site_specs(cfg, mlp_family_site_cs(first_layer, first_layer + 2, C))
-    lm = _tiny_decomposed_lm(cfg, sites, random.PRNGKey(0))
+    model = _tiny_decomposed_lm(cfg, sites, random.PRNGKey(0))
     components = jax.tree.map(
         lambda x: jax.lax.stop_gradient(x), init_component_stacks(sites, random.PRNGKey(1))
     )
@@ -62,22 +62,22 @@ def _ascend_cscope_source(
     if mesh is not None:
         residual = shard_batch(residual, mesh, batch_axis=0)
 
-    clean_output = jax.lax.stop_gradient(lm.clean_output(residual))
-    # ci_lower = 0 so the mask is just the c-scope source — the cleanest probe of the
+    clean_output = jax.lax.stop_gradient(model.clean_output(residual))
+    # ci_lower = 0 so the mask is just the `c` source — the cleanest probe of the
     # sign-ascent. Shapes match the masked forward's per-site (B, T, C) expectation.
     ci_lower = {s.name: jnp.zeros((gbatch, seq, s.C), jnp.float32) for s in sites}
 
     init = init_fresh_pgd_sources(sites, "random", "c", (gbatch, seq), random.PRNGKey(5))
 
     def ascent_loss(sources: dict[str, jax.Array]) -> jax.Array:
-        masks, delta_masks = source_masks(ci_lower, sources, lm.site_names)
-        masked = lm.masked_output(
-            lm.prepare_compute_weights(components),
+        masks, delta_masks = source_masks(ci_lower, sources, model.site_names)
+        masked = model.masked_output(
+            model.prepare_compute_weights(components),
             residual,
             masks,
             delta_masks,
             None,
-            lm.site_names,
+            model.site_names,
             True,
             remat=False,
         )
@@ -93,25 +93,25 @@ def _ascend_cscope_source(
         }, None
 
     ascended, _ = jax.lax.scan(sign_ascend_body, init, None, length=n_steps)
-    masks, _ = source_masks(ci_lower, ascended, lm.site_names)
+    masks, _ = source_masks(ci_lower, ascended, model.site_names)
     return ascended, masks
 
 
-def test_fresh_pgd_cscope_sign_ascent_is_device_count_invariant():
-    """The c-scope ascended source AND its mask are bit-identical at 1 layout vs N
+def test_fresh_pgd_c_source_sign_ascent_is_device_count_invariant():
+    """The `c`-source ascended source AND its mask are bit-identical at 1 layout vs N
     GSPMD shards. `sign(avg)==sign(sum)`, so the sign decision is exact — assert with
-    NO float tolerance. Guards fresh-PGD c-scope DP equivalence (SPEC S24, S12', S15, D1)."""
+    NO float tolerance. Guards fresh-PGD `c`-source DP equivalence (SPEC S24, S12', S15, D1)."""
     n_dev = len(jax.devices())
     n_steps, step_size = 20, 0.05
 
-    src_single, mask_single = _ascend_cscope_source(False, n_steps, step_size)
-    src_sharded, mask_sharded = _ascend_cscope_source(True, n_steps, step_size)
+    src_single, mask_single = _ascend_c_source(False, n_steps, step_size)
+    src_sharded, mask_sharded = _ascend_c_source(True, n_steps, step_size)
 
     for name in src_single:
         a, b = jnp.asarray(src_single[name]), jnp.asarray(src_sharded[name])
-        assert a.shape == (1, 1, 8 + 1), (name, a.shape)  # c-scope: (1, 1, C+1)
+        assert a.shape == (1, 1, 8 + 1), (name, a.shape)  # `c`-source: (1, 1, C+1)
         assert jnp.array_equal(a, b), (
-            f"fresh-PGD c-scope source diverged at {name} across 1 vs {n_dev} shards "
+            f"fresh-PGD `c`-source source diverged at {name} across 1 vs {n_dev} shards "
             f"— sign(avg)!=sign(sum)? (SPEC D1)"
         )
         assert jnp.array_equal(jnp.asarray(mask_single[name]), jnp.asarray(mask_sharded[name])), (

@@ -547,9 +547,7 @@ def _data(cfg: LMExperimentConfig) -> DataConfig:
     assert data.data_files is not None
     shard_glob = Path(data.data_files)
     assert shard_glob.name == "*.parquet", f"expected a *.parquet glob, got {data.data_files}"
-    return DataConfig(
-        dir=shard_glob.parent, seq_len=data.max_seq_len, global_batch=cfg.pd.batch_size
-    )
+    return DataConfig(dir=shard_glob.parent, seq_len=data.max_seq_len)
 
 
 def _assert_separate_qk_attn_paths(
@@ -588,7 +586,7 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
                     top_k=metric.top_k,
                 )
             case PGDReconLossConfig():
-                assert metric.init == "random" and metric.mask_scope == "c", metric
+                assert metric.init == "random" and metric.source_shape == "c", metric
                 pgd = EvalPGDConfig(n_steps=metric.n_steps, step_size=metric.step_size)
             case CIMaskedAttnPatternsReconLossConfig():
                 _assert_separate_qk_attn_paths(metric)

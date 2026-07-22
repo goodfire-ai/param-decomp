@@ -69,8 +69,8 @@ from param_decomp.hidden_acts_eval import (
     make_ci_hidden_acts_step,
     make_stochastic_hidden_acts_step,
 )
-from param_decomp.lm import DecomposedModel
 from param_decomp.log import setup_logger
+from param_decomp.model import DecomposedModel, Positioned
 from param_decomp.run import (
     BackgroundRenderer,
     install_sigterm_flag,
@@ -213,7 +213,7 @@ class _ArithmeticEval:
 def _make_arithmetic_eval(
     eval_cfg: EvalConfig,
     target: TargetSites,
-    lm: DecomposedModel,
+    model: DecomposedModel,
     mesh: Mesh,
     n_proc: int,
     is_main: bool,
@@ -224,9 +224,9 @@ def _make_arithmetic_eval(
     arith = eval_cfg.arithmetic
     if arith is None:
         return None
-    assert isinstance(lm, ComponentActivationModel), (
+    assert isinstance(model, ComponentActivationModel), (
         f"arithmetic eval needs a model exposing masked_component_activations; "
-        f"{type(lm).__name__} does not"
+        f"{type(model).__name__} does not"
     )
     assert isinstance(target, TargetConfig), (
         f"arithmetic eval reads the probe tokenizer off the HF target; {type(target).__name__} "
@@ -242,9 +242,9 @@ def _make_arithmetic_eval(
     probe = build_arithmetic_probe(arith.operation, arith.a_range, arith.b_range, tokenizer)
     n_prompts = probe.tokens.shape[0]
     return _ArithmeticEval(
-        step=make_arithmetic_grid_step(lm, probe.answer_position, n_prompts),
+        step=make_arithmetic_grid_step(model, probe.answer_position, n_prompts),
         probe_eval_step=make_eval_step(
-            lm,
+            model,
             eval_cfg.rounding_threshold,
             eval_cfg.l0_ci_alive_threshold,
             eval_cfg.l0_groups,
@@ -253,7 +253,7 @@ def _make_arithmetic_eval(
             n_valid_rows=n_prompts,
             compiler_options=compiler_options,
         ),
-        model=lm,
+        model=model,
         tokens=_arithmetic_probe_global(probe.tokens, mesh, n_proc),
         grid=probe.grid,
         n_prompts=n_prompts,
@@ -283,7 +283,7 @@ def assert_finetune_structural_compat(built: BuiltRun, prov: ResumeProvenance) -
 
 def train(
     built: BuiltRun,
-    lm: DecomposedModel,
+    model: DecomposedModel,
     mesh: Mesh,
 ) -> None:
     """The LM composition over the generic engine: a parquet `sample_batch` (the per-step
@@ -294,16 +294,17 @@ def train(
     # Pure HSDP: the batch shards over the FULL mesh (both axes), so it must tile the full
     # device count, and the per-rank batch is B/N. Constraint: B >= N (per-rank >= 1).
     n_dev = mesh.devices.size
-    assert data.global_batch % n_dev == 0, (data.global_batch, n_dev)
-    assert data.global_batch >= n_dev, (
-        f"global batch {data.global_batch} < device count {n_dev}: per-rank batch must be >= 1"
+    global_batch = built.pd.batch_size
+    assert global_batch % n_dev == 0, (global_batch, n_dev)
+    assert global_batch >= n_dev, (
+        f"global batch {global_batch} < device count {n_dev}: per-rank batch must be >= 1"
     )
     is_main = jax.process_index() == 0
 
     key = random.PRNGKey(built.pd.seed)
     _, _, run_key = random.split(key, 3)
 
-    schedule = BatchSchedule(scan_shards(data.dir), data.global_batch, built.pd.seed)
+    schedule = BatchSchedule(scan_shards(data.dir), global_batch, built.pd.seed)
     server = ShardServer(schedule, data.seq_len, jax.process_index(), n_proc)
     # Each process (node) owns all its local devices; its per-process batch splits across them.
     assert server.per_process % jax.local_device_count() == 0, (
@@ -312,7 +313,7 @@ def train(
     )
 
     def sample_batch(step: int) -> jax.Array:
-        return _global_token_batch(server.local_batch(step), mesh, data.global_batch)
+        return _global_token_batch(server.local_batch(step), mesh, global_batch)
 
     eval_fn = None
     eval_every = built.pd.steps + 1  # unreachable cadence when eval is disabled
@@ -326,15 +327,15 @@ def train(
             "pass's batches, so it can only fire on a fast-eval step"
         )
         eval_every = built.eval.every
-        eval_fn = _make_lm_eval_fn(built, lm, run_key, mesh, n_proc, is_main)
+        eval_fn = _make_lm_eval_fn(built, model, run_key, mesh, n_proc, is_main)
 
     run_decomposition_training(
         pd=built.pd,
         cadence=built.cadence,
         run=built.run,
-        lm=lm,
+        model=model,
         ci_fn=built.ci_fn,
-        data=data,
+        positions=Positioned(n_positions=data.seq_len),
         remat_recon_forwards=built.runtime.remat_recon_forwards,
         remat_ci_fn=built.runtime.remat_ci_fn,
         ascend_replicate=built.runtime.ascend_replicate,
@@ -344,13 +345,13 @@ def train(
         eval_fn=eval_fn,
         eval_every=eval_every,
         mesh=mesh,
-        placement_rules=placement.from_config(built.runtime.sharding, mesh, lm.sites),
+        placement_rules=placement.from_config(built.runtime.sharding, mesh, model.sites),
     )
 
 
 def _make_lm_eval_fn(
     built: BuiltRun,
-    lm: DecomposedModel,
+    model: DecomposedModel,
     run_key: PRNGKeyArray,
     mesh: Mesh,
     n_proc: int,
@@ -373,7 +374,7 @@ def _make_lm_eval_fn(
     )
     co = built.runtime.compiler_options
     eval_step_fn = make_eval_step(
-        lm,
+        model,
         eval.rounding_threshold,
         eval.l0_ci_alive_threshold,
         eval.l0_groups,
@@ -385,29 +386,29 @@ def _make_lm_eval_fn(
     attn_steps: dict[str, Any] = {}
     if eval.attn_patterns is not None:
         if eval.attn_patterns.ci_masked:
-            attn_steps["CIMaskedAttnPatternsReconLoss"] = make_ci_attn_patterns_step(lm, co)
+            attn_steps["CIMaskedAttnPatternsReconLoss"] = make_ci_attn_patterns_step(model, co)
         if eval.attn_patterns.stochastic:
             attn_steps["StochasticAttnPatternsReconLoss"] = make_stochastic_attn_patterns_step(
-                lm, eval.attn_patterns.stochastic_n_mask_samples, co
+                model, eval.attn_patterns.stochastic_n_mask_samples, co
             )
 
     slow_eval_step = make_slow_eval_step(
-        lm, eval.density_ci_alive_threshold, eval.density_heatmap_n_bins, co
+        model, eval.density_ci_alive_threshold, eval.density_heatmap_n_bins, co
     )
     slow_renderer = BackgroundRenderer(is_main)
     # The CI-heatmap / permutation / UV / identity-error metrics read off the run's typed
     # `eval.metrics` (re-validated from the pinned launch config: the trainer's `EvalConfig`
     # drops the raw metric list). The launch config is pinned before train().
     run_eval_metrics = eval_metrics_from_run_dir(built.run.run_dir)
-    perm_spec = resolve_permutation_metrics(lm.site_names, run_eval_metrics)
-    ci_hidden_acts_step = make_ci_hidden_acts_step(lm, co)
+    perm_spec = resolve_permutation_metrics(model.site_names, run_eval_metrics)
+    ci_hidden_acts_step = make_ci_hidden_acts_step(model, co)
     stoch_hidden_acts_step = make_stochastic_hidden_acts_step(
-        lm, stochastic_hidden_acts_n_mask_samples(run_eval_metrics), co
+        model, stochastic_hidden_acts_n_mask_samples(run_eval_metrics), co
     )
     want_position_ci = perm_spec.any_plots or perm_spec.any_identity_error
-    position_ci_step = make_position_ci_step(lm, co) if want_position_ci else None
+    position_ci_step = make_position_ci_step(model, co) if want_position_ci else None
 
-    arithmetic_eval = _make_arithmetic_eval(eval, built.target, lm, mesh, n_proc, is_main, co)
+    arithmetic_eval = _make_arithmetic_eval(eval, built.target, model, mesh, n_proc, is_main, co)
 
     def eval_fn(state: TrainState, now_step: int) -> "LogRecord":
         eval_pass_index = now_step // eval.every
@@ -429,7 +430,11 @@ def _make_lm_eval_fn(
             # fold values >= pd.steps never collide with the train step keys
             eval_key = random.fold_in(run_key, pd.steps + eval_pass_index * eval.n_steps + j)
             eval_metrics = eval_step_fn(
-                lm, state.decomposition.components, state.decomposition.ci_fn, eval_tokens, eval_key
+                model,
+                state.decomposition.components,
+                state.decomposition.ci_fn,
+                eval_tokens,
+                eval_key,
             )
             for k, v in eval_metrics.items():
                 metric_sums[k] = metric_sums.get(k, jnp.zeros(())) + v
@@ -442,7 +447,7 @@ def _make_lm_eval_fn(
             attn_key = random.fold_in(run_key, 2 * pd.steps + eval_pass_index)
             reductions = accumulate_attn_patterns(
                 attn_step,
-                lm,
+                model,
                 state.decomposition.components,
                 state.decomposition.ci_fn,
                 eval_batches,
@@ -462,14 +467,14 @@ def _make_lm_eval_fn(
             # figures' pure-host render + wandb.log happen OFF the loop on rank 0.
             site_reductions = accumulate_site_reductions(
                 slow_eval_step,
-                lm,
+                model,
                 state.decomposition.ci_fn,
                 eval_batches,
                 eval.slow_n_batches_accum,
             )
             hidden_acts_key = random.fold_in(run_key, 3 * pd.steps + eval_pass_index)
             hidden_acts = compute_hidden_acts_metrics(
-                ci_hidden_acts_step, stoch_hidden_acts_step, lm, state, eval_batches,
+                ci_hidden_acts_step, stoch_hidden_acts_step, model, state, eval_batches,
                 hidden_acts_key,
             )  # fmt: skip
             eval_record |= {f"eval/slow/loss/{k}": v for k, v in hidden_acts.items()}
@@ -480,7 +485,7 @@ def _make_lm_eval_fn(
             position_ci: dict[str, PositionCI] | None = None
             if position_ci_step is not None:
                 position_ci = accumulate_position_ci(
-                    position_ci_step, lm, state.decomposition.ci_fn, eval_batches
+                    position_ci_step, model, state.decomposition.ci_fn, eval_batches
                 )
                 identity_ci_errors = compute_identity_ci_errors(
                     perm_spec, position_ci, IDENTITY_CI_ERROR_TOLERANCE
@@ -587,16 +592,16 @@ def main(config: Path, run_id: str) -> None:
         assert isinstance(built.data, DataConfig)
         print(
             f"run {built.run.run_name} | {mesh.devices.size} GPU / {jax.process_count()} proc | "
-            f"B={built.data.global_batch} seq={built.data.seq_len} "
+            f"B={built.pd.batch_size} seq={built.data.seq_len} "
             f"sites={len(built.target.sites)} [{site_summary}] steps={built.pd.steps}",
             flush=True,
         )
 
     # The `lm` (an eqx model) IS the frozen target — it carries the frozen weights as fields,
     # so the function-table era's separate `frozen` object is gone.
-    lm, _vocab_size = build_target(built, mesh)
+    model, _vocab_size = build_target(built, mesh)
 
-    train(built, lm, mesh)
+    train(built, model, mesh)
 
     if jax.process_count() > 1:
         import jax.experimental.multihost_utils as mhu

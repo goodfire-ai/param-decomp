@@ -26,7 +26,7 @@ from param_decomp.ci_fn import (
     build_ci_fn,
 )
 from param_decomp.components import SiteC, SiteSpec, init_component_stacks
-from param_decomp.lm import DecomposedModel, run_stochastic_masked_output
+from param_decomp.model import DecomposedModel, run_stochastic_masked_output
 from param_decomp.targets.glu_transformer import glu_site_specs
 from param_decomp.targets.llama_simple_mlp import (
     canonical_site_cs as simple_canonical,
@@ -48,10 +48,10 @@ from param_decomp.tests.test_llama_simple_mlp import (
 )
 
 
-def _build_ci_fn(lm: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
+def _build_ci_fn(model: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
     """One transformer chunk over all sites, reading the residual entering the first
     decomposed block. The old `CIArch(16, 1, 2, 32)` dims map onto the chunk arch."""
-    site_names = lm.site_names
+    site_names = model.site_names
     first_block = min(int(name.split(".")[1]) for name in site_names)
     arch = ChunkwiseTransformerCIArch(
         chunks=(Chunk(input_taps=(f"resid.{first_block}",), output_sites=site_names),),
@@ -63,18 +63,18 @@ def _build_ci_fn(lm: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
         ffn_kind="gelu",
         learned_norm_scale=False,
     )
-    return build_ci_fn(arch, lm.sites, key)
+    return build_ci_fn(arch, model.sites, key)
 
 
 def test_attn_pattern_shape_and_causal_softmax_llama():
     cfg = _llama_cfg()
     sites = glu_site_specs(cfg, (SiteC("layers.0.self_attn.q_proj", 4),))
-    lm = _llama_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = _llama_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     b, t = 2, 9
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
     q = jax.random.normal(jax.random.PRNGKey(1), (b, t, qd))
     k = jax.random.normal(jax.random.PRNGKey(2), (b, t, kvd))
-    pattern = np.asarray(lm.attn_pattern("layers.0.self_attn.q_proj", q, k))
+    pattern = np.asarray(model.attn_pattern("layers.0.self_attn.q_proj", q, k))
 
     assert pattern.shape == (b, cfg.n_head, t, t)
     np.testing.assert_allclose(pattern.sum(-1), 1.0, rtol=1e-5, atol=1e-5)
@@ -86,12 +86,12 @@ def test_attn_pattern_shape_and_causal_softmax_llama():
 def test_attn_pattern_shape_and_causal_softmax_simple_mlp():
     cfg = _simple_cfg()
     sites = simple_site_specs(cfg, (SiteC("h.0.attn.q_proj", 4),))
-    lm = _simple_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
+    model = _simple_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
     b, t = 2, 7
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
     q = jax.random.normal(jax.random.PRNGKey(1), (b, t, qd))
     k = jax.random.normal(jax.random.PRNGKey(2), (b, t, kvd))
-    pattern = np.asarray(lm.attn_pattern("h.0.attn.q_proj", q, k))
+    pattern = np.asarray(model.attn_pattern("h.0.attn.q_proj", q, k))
 
     assert pattern.shape == (b, cfg.n_head, t, t)
     np.testing.assert_allclose(pattern.sum(-1), 1.0, rtol=1e-5, atol=1e-5)
@@ -110,21 +110,21 @@ def _llama_attn_setup():
     from param_decomp.targets.glu_transformer import canonical_site_cs
 
     sites = glu_site_specs(cfg, canonical_site_cs(site_cs))
-    lm = _llama_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = _llama_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     components = init_component_stacks(sites, jax.random.PRNGKey(1))
-    ci_fn = _build_ci_fn(lm, cfg.n_embd, jax.random.PRNGKey(2))
-    return cfg, lm, components, ci_fn
+    ci_fn = _build_ci_fn(model, cfg.n_embd, jax.random.PRNGKey(2))
+    return cfg, model, components, ci_fn
 
 
 def test_ci_step_clean_equals_masked_when_ci_all_one_gives_finite_kl():
-    cfg, lm, components, ci_fn = _llama_attn_setup()
-    step = make_ci_attn_patterns_step(lm)
+    cfg, model, components, ci_fn = _llama_attn_setup()
+    step = make_ci_attn_patterns_step(model)
     b, t = 2, 12
     residual = jax.random.randint(jax.random.PRNGKey(4), (b, t), 0, cfg.vocab_size)
 
-    sum_kl, n_dist = step(lm, components, ci_fn, residual, jax.random.PRNGKey(0))
+    sum_kl, n_dist = step(model, components, ci_fn, residual, jax.random.PRNGKey(0))
 
-    q_sites = [s for s in lm.site_names if s.endswith("q_proj")]
+    q_sites = [s for s in model.site_names if s.endswith("q_proj")]
     assert set(sum_kl) == set(q_sites) == set(n_dist)
     for q in q_sites:
         assert int(n_dist[q]) == b * cfg.n_head * t
@@ -133,15 +133,15 @@ def test_ci_step_clean_equals_masked_when_ci_all_one_gives_finite_kl():
 
 
 def test_accumulate_is_token_weighted_and_combines():
-    cfg, lm, components, ci_fn = _llama_attn_setup()
-    step = make_ci_attn_patterns_step(lm)
+    cfg, model, components, ci_fn = _llama_attn_setup()
+    step = make_ci_attn_patterns_step(model)
     res_a = jax.random.randint(jax.random.PRNGKey(4), (2, 10), 0, cfg.vocab_size)
     res_b = jax.random.randint(jax.random.PRNGKey(5), (2, 10), 0, cfg.vocab_size)
 
-    one = accumulate_attn_patterns(step, lm, components, ci_fn, [res_a], jax.random.PRNGKey(0))
-    other = accumulate_attn_patterns(step, lm, components, ci_fn, [res_b], jax.random.PRNGKey(0))
+    one = accumulate_attn_patterns(step, model, components, ci_fn, [res_a], jax.random.PRNGKey(0))
+    other = accumulate_attn_patterns(step, model, components, ci_fn, [res_b], jax.random.PRNGKey(0))
     two = accumulate_attn_patterns(
-        step, lm, components, ci_fn, [res_a, res_b], jax.random.PRNGKey(0)
+        step, model, components, ci_fn, [res_a, res_b], jax.random.PRNGKey(0)
     )
     for site in one:
         assert two[site].n_distributions == one[site].n_distributions + other[site].n_distributions
@@ -163,14 +163,14 @@ def test_accumulate_is_token_weighted_and_combines():
 
 
 def test_stochastic_step_runs_and_scales_n_by_draws():
-    cfg, lm, components, ci_fn = _llama_attn_setup()
+    cfg, model, components, ci_fn = _llama_attn_setup()
     n_draws = 3
-    step = make_stochastic_attn_patterns_step(lm, n_draws)
+    step = make_stochastic_attn_patterns_step(model, n_draws)
     b, t = 2, 8
     residual = jax.random.randint(jax.random.PRNGKey(4), (b, t), 0, cfg.vocab_size)
 
-    sum_kl, n_dist = step(lm, components, ci_fn, residual, jax.random.PRNGKey(0))
-    for q in (s for s in lm.site_names if s.endswith("q_proj")):
+    sum_kl, n_dist = step(model, components, ci_fn, residual, jax.random.PRNGKey(0))
+    for q in (s for s in model.site_names if s.endswith("q_proj")):
         assert int(n_dist[q]) == b * cfg.n_head * t * n_draws
         assert np.isfinite(float(sum_kl[q])) and float(sum_kl[q]) >= 0.0
 
@@ -179,25 +179,25 @@ def test_simple_mlp_step_runs_end_to_end():
     cfg = _simple_cfg()
     site_cs = simple_canonical((SiteC("h.0.attn.q_proj", 6), SiteC("h.0.attn.k_proj", 6)))
     sites = simple_site_specs(cfg, site_cs)
-    lm = _simple_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
+    model = _simple_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
     components = init_component_stacks(sites, jax.random.PRNGKey(1))
-    ci_fn = _build_ci_fn(lm, cfg.n_embd, jax.random.PRNGKey(2))
-    step = make_ci_attn_patterns_step(lm)
+    ci_fn = _build_ci_fn(model, cfg.n_embd, jax.random.PRNGKey(2))
+    step = make_ci_attn_patterns_step(model)
     b, t = 2, 10
     residual = jax.random.randint(jax.random.PRNGKey(4), (b, t), 0, cfg.vocab_size)
 
-    sum_kl, n_dist = step(lm, components, ci_fn, residual, jax.random.PRNGKey(0))
+    sum_kl, n_dist = step(model, components, ci_fn, residual, jax.random.PRNGKey(0))
     assert set(sum_kl) == {"h.0.attn.q_proj"}
     assert int(n_dist["h.0.attn.q_proj"]) == b * cfg.n_head * t
     assert np.isfinite(float(sum_kl["h.0.attn.q_proj"]))
 
 
 class _PositionlessStub(eqx.Module):
-    """A `leading_axes=()` model whose methods are never called — only exercises the
-    LM-only `leading_axes` guards (which fire at step construction)."""
+    """A positionless model whose methods are never called — only exercises the
+    LM-only `has_position_axis` guards (which fire at step construction)."""
 
     sites: tuple[SiteSpec, ...] = eqx.field(static=True)
-    leading_axes: tuple[str, ...] = eqx.field(static=True)
+    has_position_axis: bool = eqx.field(static=True)
 
     @property
     def site_names(self) -> tuple[str, ...]:
@@ -282,14 +282,14 @@ class _PositionlessStub(eqx.Module):
 
 def test_attn_patterns_steps_reject_positionless_target():
     """Attention patterns are causal maps over a sequence axis; both step constructors
-    must fail loud against a positionless (`leading_axes=()`) target. The leading-axes
+    must fail loud against a positionless target. The position-axis
     guard fires before site/pattern inspection, so a dummy pattern fn is fine."""
-    lm = _PositionlessStub(
+    model = _PositionlessStub(
         sites=(SiteSpec("linear1", 5, 2, 8), SiteSpec("linear2", 2, 5, 6)),
-        leading_axes=(),
+        has_position_axis=False,
     )
-    assert lm.leading_axes == ()
+    assert not model.has_position_axis
     with pytest.raises(AssertionError, match="LM-only"):
-        make_ci_attn_patterns_step(lm)
+        make_ci_attn_patterns_step(model)
     with pytest.raises(AssertionError, match="LM-only"):
-        make_stochastic_attn_patterns_step(lm, 1)
+        make_stochastic_attn_patterns_step(model, 1)

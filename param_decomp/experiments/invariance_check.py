@@ -44,7 +44,6 @@ from param_decomp.configs import (
     FrequencyMinimalityConfig,
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
-    SCScope,
     UniformKSubsetRoutingConfig,
 )
 from param_decomp.recon import build_loss_terms
@@ -63,10 +62,10 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
     cfg = _tiny_cfg()
     C, seq, gbatch = 8, 16, 8
     sites = glu_site_specs(cfg, mlp_family_site_cs(3, 6, C))
-    lm = _tiny_decomposed_lm(cfg, sites, random.PRNGKey(0))
+    model = _tiny_decomposed_lm(cfg, sites, random.PRNGKey(0))
     vu = init_component_stacks(sites, random.PRNGKey(1))
     arch = ChunkwiseTransformerCIArch(
-        chunks=(Chunk(input_taps=(resid_tap_key(3),), output_sites=lm.site_names),),
+        chunks=(Chunk(input_taps=(resid_tap_key(3),), output_sites=model.site_names),),
         input_dim=cfg.n_embd,
         d_model=16,
         n_blocks=2,
@@ -75,11 +74,11 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
         ffn_kind="gelu",
         learned_norm_scale=False,
     )
-    ci_fn = build_ci_fn(arch, lm.sites, random.PRNGKey(2))
+    ci_fn = build_ci_fn(arch, model.sites, random.PRNGKey(2))
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
     src = init_persistent_sources(
-        lm.site_names, tuple(s.C for s in lm.sites), (1, seq), jnp.float32, random.PRNGKey(3)
+        model.site_names, tuple(s.C for s in model.sites), (1, seq), jnp.float32, random.PRNGKey(3)
     )
     tokens = random.randint(random.PRNGKey(4), (gbatch, seq), 0, cfg.vocab_size)
 
@@ -89,7 +88,7 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
 
     ppgd_cfg = PersistentPGDReconLossConfig(
         coeff=0.5,
-        scope=SCScope(),
+        source_shape="sc",
         optimizer=AdamPGDConfig(
             beta1=0.5, beta2=0.99,
             lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
@@ -125,10 +124,10 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
             ChunkwiseSubsetReconLossConfig(routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=3, n_samples=1),
             ppgd_cfg,
         ),
-        lm.site_names,
+        model.site_names,
     )  # fmt: skip
     step = make_train_step(
-        lm=lm,
+        model_static=model,
         losses=loss_terms,
         components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
         total_steps=100,
@@ -137,7 +136,7 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
 
     out = []
     for i in range(steps):
-        state, m = step(lm, state, tokens, random.PRNGKey(100 + i))
+        state, m = step(model, state, tokens, random.PRNGKey(100 + i))
         out.append({k: float(v) for k, v in m.items()})
     return out
 

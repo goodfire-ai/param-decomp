@@ -19,7 +19,7 @@ root with sibling packages `pretrain/` (the in-house target-LM pretrainer) and
 
 | file | what |
 |---|---|
-| `lm.py` | `DecomposedModel` — the interface a vendored LM target implements (ordered sites, flat site-keyed dicts, frozen pytree as runtime arg) + generic chunking |
+| `model.py` | `DecomposedModel` — the interface a vendored LM target implements (ordered sites, flat site-keyed dicts, frozen pytree as runtime arg) + generic chunking |
 | `train.py` | the step factory: one fused jit step over faith + imp-min + the recon loss TERMS, per-persistent-term fused final ascents, fp32 masters + bf16 compute |
 | `losses.py` | the pure loss terms (KL/(B·T), faithfulness, imp-min lp+entropy split) + schedules (p-anneal, source-LR warmup) |
 | `adversary.py` | adversarial source machinery: persistent state + Adam ascents, fresh sign-PGD init, `source_masks` |
@@ -29,7 +29,7 @@ root with sibling packages `pretrain/` (the in-house target-LM pretrainer) and
 | `eval.py` | in-loop eval pass: the six CE/KL masking variants + per-site CI-L0 in one jitted step, logged under the torch `EvalLoop` keys (`eval/ce_kl/*`, `eval/l0/*`) — enabled by the optional `eval:` config block |
 | `slow_eval.py` | LIBRARY for the in-loop slow (plot) tier (SPEC S28, in-loop only — no offline CLI): the `CIHistograms` / `ComponentActivationDensity` / `CIMeanPerComponent` reductions + renders, the config-gated `PermutedCIPlots` / `IdentityCIError` (off the `(T, C)` position CI), the `UVPlots` figure (`render_uv_figure` / `plot_uv_matrices`, shared by the LM in-loop naive-gather path and the toy `toy_uv_eval` cheap path), and the hidden-acts recon scalars. Torch-free numpy/matplotlib; logged under `slow_eval/figures/*` |
 | `components.py` | the decomposition representation: `ComponentStacks` — V/U masters persisted as same-shape STACKS (owner-partitioned, SPEC D4 amendment 2026-07-15), `site(name)` per-site views, `site_out` the decomposed-linear primitive |
-| `run_state.py` | optimizer + initial-`TrainState` construction from an `ExperimentConfig` (orbax restores onto this reference) |
+| `run_state.py` | optimizer + initial-`TrainState` construction (`init_train_state(pd, model, ci_fn_arch, positions, …)`; orbax restores onto this reference) |
 | `tools/` | `convert_llama_simple_mlp_checkpoint.py` (torch venv) — one-off `.pt` → safetensors conversion of the pile pretrain checkpoint; `migrate_c49k_checkpoint.py` — one-off remap of the frozen C49k clone's orbax `TrainState` (legacy `components.{Vg..Ud}` `(1,*,*)` + flat `sources.<site>`) onto the current layout (site-keyed `components.vu`, `sources.<state_key>.<site>`) so a fine-tune can `restore_latest` it |
 | `sharding.py` | generic GSPMD helpers (`init_distributed`, `dp_mesh`, `replicate`, `shard_batch`) |
 | `site_tree.py` | block-structured decomposition sites (`SiteTree`/`BlockSites`) + `ArchFamily` (a target's matrix grammar: vocabulary + `name_of`/`parse`) + `resolve_site_tree` (tiled c-spec → tree) + the family-parameterized `canonical_site_cs`/`site_specs`/`tap_layer` the targets delegate to, and the activation-tap address grammar (`ResidIn | SiteInput`, `tap_key`/`parse_tap`/`tap_width`) |
@@ -39,12 +39,12 @@ root with sibling packages `pretrain/` (the in-house target-LM pretrainer) and
 | `run.py` | the generic ENGINE `run_decomposition_training` (pure library, no `main`/YAML): faith warmup, loop, metrics jsonl/wandb, in-loop slow renderer, orbax checkpoints, SIGTERM-save + requeue-resume. The LM composition root that reads YAML + builds the target lives lab-side (`param_decomp_lab/experiments/lm/run.py`) |
 | `data.py` | deterministic batch schedule over the pre-tokenized fineweb parquet shards; O(1) resume addressing, per-process slices |
 | `hf_http.py` | `configure_hf_http_retries` — idempotent retrying-adapter install on huggingface_hub (cold-cache 8N-rank startup burst); no-op without huggingface_hub; JAX-side analog of `param_decomp_lab/infra/hf_http.py` |
-| `config.py` | the trainer's internal runtime `ExperimentConfig` dataclasses (the typed config the engine + `run_state` consume): `DataConfig` / `EvalConfig` / `CadenceConfig` / optimizer structs + the `TargetSites` protocol + `CIFnArch`. Domain-agnostic — the YAML→dataclass CONVERSION lives lab-side (`experiments/config.py` shared + `experiments/lm/config.py` LM) |
-| `configs.py` | the torch-free pydantic config SCHEMA: routing + decomposition site-spec (tiled `glu_transformer`/`simple_mlp` + `explicit`, `LayerSelection`) + loss-metric + eval-metric configs, `PDConfig` / `RuntimeConfig` / `Cadence` / `WandbConfig` / `ResumeProvenance`, and the `wandb.config` shaping helpers (was the dissolved `param-decomp-config` distribution). The authored `decomposition.ci` configs speak each domain's vocabulary and live with the domain schemas, lab-side (`experiments/lm/config.py` chunkwise, `experiments/config.py` toy MLPs); core carries only the RESOLVED CI-fn arches (`ci_fn.py`) |
+| `built_run.py` | the built-run bundle the engine consumes: `BuiltRun` / `DataConfig` / `EvalConfig` / `RunInstance` + the `TargetSites` protocol. Domain-agnostic — the YAML→bundle CONVERSION lives lab-side (`experiments/config.py` shared + `experiments/lm/config.py` LM) |
+| `configs.py` | the torch-free pydantic config SCHEMA: routing + decomposition site-spec (tiled `glu_transformer`/`simple_mlp` + `explicit`, `LayerSelection`) + loss-metric + eval-metric configs, `PDConfig` / `RuntimeConfig` / `Cadence` / `WandbConfig` / `ResumeProvenance`, and the `wandb.config` shaping helpers. The authored `decomposition.ci` configs speak each domain's vocabulary and live with the domain schemas, lab-side (`experiments/lm/config.py` chunkwise, `experiments/config.py` toy MLPs); core carries only the RESOLVED CI-fn arches (`ci_fn.py`) |
 | `base_config.py` | `BaseConfig` (frozen `extra=forbid` pydantic `BaseModel` + YAML/JSON round-trip), `Probability` |
 | `schedule.py` | `ScheduleConfig` + its two evaluators, host `get_scheduled_value` / traced `scheduled_value_traced` (warmup → constant/linear/cosine decay; every scheduled quantity routes through here) |
 | `configs/` | the single self-contained run yamls (one file per run; no wrapper/schema split) |
-| `targets/glu_transformer_sharding.py` | the 8B placement plan (frozen replicated; per-site V/U + CI + Adam C-sharded; source replicated; batch sharded) |
+| `targets/glu_transformer_sharding.py` | the 8B placement plan (frozen FSDP-sharded; V/U + CI + Adam ÷N with C never sharded; sources per `source_shape`; batch sharded) |
 | `experiments/llama8b_real.py` | the runnable 8B step + tok/s/GPU bench |
 | `experiments/invariance_check.py` | device-count invariance harness (SPEC D4) |
 | `tests/` | tiny-target unit tests (incl. attention sites + heterogeneous per-site C), checkpoint resume, sharding, `tests/equivalence/` — the fixture-driven torch↔JAX loss-term equivalence harness — `tests/stacked_parity/` — fixtures pinning the pre-site-generality stacked implementation (clean logits bit-identical, train trajectory rel ≤ ~1e-5) — and `tests/simple_mlp_equivalence/` — torch-fixture logits parity for the LlamaSimpleMLP target (tiny random model max abs diff ~2e-7; real t-9d2b8f02 weights ~5e-5 fp32) |
@@ -73,7 +73,7 @@ python -m param_decomp.experiments.llama8b_real --real_weights --first_layer 20 
 ## Design
 
 - **Generic over vendored LMs.** The trainer sees only the `DecomposedModel` fn-table
-  (`lm.py`): ordered `sites`, `clean_output`, `read_activations`, `masked_output`,
+  (`model.py`): ordered `sites`, `clean_output`, `read_activations`, `masked_output`,
   `masked_site_outputs` (the hidden-acts eval seam, SPEC S31), `weight_deltas` — all
   pure, all taking the frozen pytree as a *runtime arg* (a frozen
   8B target closed over as a jit constant bakes multi-GB weights into the HLO). Adding

@@ -1,5 +1,5 @@
 """Vendored JAX ResidualMLP target — the fourth `DecomposedModel` and the second
-non-LM bundle, positionless (`leading_axes=()`; the waist is the residual stream
+non-LM bundle, positionless (`has_position_axis=False`; the waist is the residual stream
 `[B, d_embed]`).
 
 Torch reference (read-only ground truth): `param_decomp_lab/experiments/resid_mlp/`
@@ -39,7 +39,7 @@ from jaxtyping import Array, Float
 
 from param_decomp.ci_fn import CI
 from param_decomp.components import ComponentStacks, SiteC, SiteSpec, site_out
-from param_decomp.lm import run_stochastic_masked_output
+from param_decomp.model import run_stochastic_masked_output
 
 MLP_IN = "mlp_in"
 MLP_OUT = "mlp_out"
@@ -354,17 +354,16 @@ def resid_mlp_mse(
 
 
 class ResidMLPDecomposedModel(eqx.Module):
-    """The ResidualMLP `DecomposedModel` (the `lm.py` contract; SPEC §1), positionless
-    (`leading_axes=()`).
+    """The ResidualMLP `DecomposedModel` (the `model.py` contract; SPEC §1), positionless.
 
     Carries the FROZEN `ResidMLPTarget` weights as a field — threaded into the jitted step
     as a pytree arg, weights traced not baked. The TRAINABLE V/U (`vu: ComponentStacks`) is an
-    explicit method arg, NOT a field (separate lifecycle). `sites` / `leading_axes` are
+    explicit method arg, NOT a field (separate lifecycle). `sites` / `has_position_axis` are
     static."""
 
     target: ResidMLPTarget
     sites: tuple[SiteSpec, ...] = eqx.field(static=True)
-    leading_axes: tuple[str, ...] = eqx.field(static=True)
+    has_position_axis: bool = eqx.field(static=True)
 
     @property
     def site_names(self) -> tuple[str, ...]:
@@ -467,7 +466,7 @@ def resid_mlp_decomposed_model(
 ) -> ResidMLPDecomposedModel:
     """Wrap a pretrained `ResidMLPTarget` + decomposition config into the `DecomposedModel`."""
     sites = site_specs(cfg, tuple(SiteC(s.name, s.C) for s in sites))
-    return ResidMLPDecomposedModel(target=target, sites=sites, leading_axes=())
+    return ResidMLPDecomposedModel(target=target, sites=sites, has_position_axis=False)
 
 
 def replicate_target[T: (ResidMLPTarget, ResidMLPDecomposedModel)](target: T, mesh: Mesh) -> T:
@@ -745,11 +744,11 @@ def single_feature_probe(n_features: int) -> Float[Array, "n_features n_features
 
 
 def single_feature_ci(
-    lm: ResidMLPDecomposedModel,
+    model: ResidMLPDecomposedModel,
     ci_fn: "CIFnCallable",
     n_features: int,
 ) -> dict[str, Array]:
     """Feed the single-feature probe (embedded through `W_E`) and read the `lower_leaky`
     CI per site, `{site: [n_features, C]}`."""
-    resid = single_feature_probe(n_features) @ lm.target.W_E
-    return ci_fn(lm.read_activations(resid, ci_fn.input_names), remat=False).lower
+    resid = single_feature_probe(n_features) @ model.target.W_E
+    return ci_fn(model.read_activations(resid, ci_fn.input_names), remat=False).lower

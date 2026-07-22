@@ -94,8 +94,8 @@ def test_tiny_random_qwen3_matches_hf():
     f = np.load(HERE / "qwen3_tiny_hf_fixtures.npz")
     cfg = _tiny_cfg_from_golden(str(f["config_json"]))
     sd = {k.removeprefix("sd::"): f[k] for k in f.files if k.startswith("sd::")}
-    lm = _build_from_hf_state(cfg, sd)
-    logits = np.asarray(lm.clean_output(jnp.asarray(f["tokens"])))
+    model = _build_from_hf_state(cfg, sd)
+    logits = np.asarray(model.clean_output(jnp.asarray(f["tokens"])))
     np.testing.assert_allclose(logits, f["logits"], rtol=2e-4, atol=1e-5)
 
 
@@ -109,8 +109,8 @@ def test_real_qwen3_8b_matches_hf():
     except (AssertionError, FileNotFoundError, KeyError):
         pytest.skip("no local Qwen/Qwen3-8B-Base snapshot")
     f = np.load(HERE / "qwen3_8b_real_logits.npz")
-    lm = load_decomposed_qwen3_from_hf("Qwen/Qwen3-8B-Base", qwen3_8b_config(), ())
-    logits = np.asarray(lm.clean_output(jnp.asarray(f["tokens"]))[:, -1, :].astype(jnp.float32))
+    model = load_decomposed_qwen3_from_hf("Qwen/Qwen3-8B-Base", qwen3_8b_config(), ())
+    logits = np.asarray(model.clean_output(jnp.asarray(f["tokens"]))[:, -1, :].astype(jnp.float32))
     ref = f["final_logits"]
     # tie-aware argmax: the golden is bf16, so distinct plausible tokens often carry the
     # IDENTICAL quantized top logit (observed: a 3-way 32.25 tie) — require JAX's argmax

@@ -33,7 +33,7 @@ from jaxtyping import Array, PRNGKeyArray
 
 from param_decomp.components import ComponentStacks
 from param_decomp.jit_util import filter_jit
-from param_decomp.lm import DecomposedModel, all_false_routes
+from param_decomp.model import DecomposedModel, all_false_routes
 from param_decomp.train import COMPUTE_DT, cast_floating
 
 
@@ -75,10 +75,10 @@ def _waist_leading(ci_lower: dict[str, Array], site_names: tuple[str, ...]) -> t
 
 
 def make_ci_hidden_acts_step(
-    lm: DecomposedModel, compiler_options: dict[str, bool | int | str] | None = None
+    model_static: DecomposedModel, compiler_options: dict[str, bool | int | str] | None = None
 ) -> HiddenActsStep:
     """Deterministic CI-mask hidden-acts step: `lower_leaky` CI, no delta, one forward."""
-    site_names = lm.site_names
+    site_names = model_static.site_names
 
     def step(
         model: DecomposedModel,
@@ -111,7 +111,7 @@ def make_ci_hidden_acts_step(
 
 
 def make_stochastic_hidden_acts_step(
-    lm: DecomposedModel,
+    model_static: DecomposedModel,
     n_mask_samples: int,
     compiler_options: dict[str, bool | int | str] | None = None,
 ) -> HiddenActsStep:
@@ -119,7 +119,7 @@ def make_stochastic_hidden_acts_step(
     (with weight deltas), per-draw per-site MSE summed. RNG via per-draw / per-site
     `fold_in` (the eval-step discipline)."""
     assert n_mask_samples >= 1, n_mask_samples
-    site_names = lm.site_names
+    site_names = model_static.site_names
 
     def step(
         model: DecomposedModel,

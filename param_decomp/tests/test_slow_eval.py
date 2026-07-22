@@ -31,7 +31,7 @@ from param_decomp.configs import (
     PermutedCIPlotsConfig,
     UVPlotsConfig,
 )
-from param_decomp.lm import DecomposedModel
+from param_decomp.model import DecomposedModel
 from param_decomp.run import BackgroundRenderer, render_and_log_slow_eval, slow_eval_due
 from param_decomp.slow_eval import (
     PermutationMetricSpec,
@@ -59,10 +59,10 @@ from param_decomp.tests.test_llama8b import (
 from param_decomp.train import COMPUTE_DT, cast_floating
 
 
-def _build_ci_fn(lm: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
+def _build_ci_fn(model: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
     """One transformer chunk over all sites, reading the residual entering the first
     decomposed block. The old `CIArch(16, 1, 2, 32)` dims map onto the chunk arch."""
-    site_names = lm.site_names
+    site_names = model.site_names
     first_block = min(int(name.split(".")[1]) for name in site_names)
     arch = ChunkwiseTransformerCIArch(
         chunks=(Chunk(input_taps=(f"resid.{first_block}",), output_sites=site_names),),
@@ -74,34 +74,35 @@ def _build_ci_fn(lm: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
         ffn_kind="gelu",
         learned_norm_scale=False,
     )
-    return build_ci_fn(arch, lm.sites, key)
+    return build_ci_fn(arch, model.sites, key)
 
 
 def _tiny_setup(threshold: float, density_heatmap_n_bins: int | None = None):
     cfg = _tiny_cfg()
     C = 8
     sites = glu_site_specs(cfg, mlp_family_site_cs(4, 5, C))
-    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    ci_fn = _build_ci_fn(lm, cfg.n_embd, jax.random.PRNGKey(2))
-    step = make_slow_eval_step(lm, threshold, density_heatmap_n_bins)
-    return cfg, lm, ci_fn, step, C
+    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    ci_fn = _build_ci_fn(model, cfg.n_embd, jax.random.PRNGKey(2))
+    step = make_slow_eval_step(model, threshold, density_heatmap_n_bins)
+    return cfg, model, ci_fn, step, C
 
 
 def test_reductions_match_hand_rolled_per_component():
-    cfg, lm, ci_fn, step, C = _tiny_setup(threshold=0.0)
+    cfg, model, ci_fn, step, C = _tiny_setup(threshold=0.0)
     b, t = 3, 16
     residual = jax.random.randint(jax.random.PRNGKey(4), (b, t), 0, cfg.vocab_size)
 
-    reductions = accumulate_site_reductions(step, lm, ci_fn, [residual], n_batches_accum=None)
+    reductions = accumulate_site_reductions(step, model, ci_fn, [residual], n_batches_accum=None)
 
     # Mirror slow_eval_step's training-precision (bf16) readout.
     ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
     taps = {
-        k: x.astype(COMPUTE_DT) for k, x in lm.read_activations(residual, ci_fn.input_names).items()
+        k: x.astype(COMPUTE_DT)
+        for k, x in model.read_activations(residual, ci_fn.input_names).items()
     }
     logits = {s: v.astype("float32") for s, v in ci_fn_bf16(taps, remat=False).logits.items()}
-    lower = {s: lower_leaky_hard_sigmoid(logits[s]) for s in lm.site_names}
-    for site in lm.site_names:
+    lower = {s: lower_leaky_hard_sigmoid(logits[s]) for s in model.site_names}
+    for site in model.site_names:
         flat = np.asarray(lower[site]).reshape(-1, C).astype(np.float32)
         r = reductions[site]
         assert r.n_positions == b * t
@@ -110,22 +111,22 @@ def test_reductions_match_hand_rolled_per_component():
 
 
 def test_density_threshold_caps_counts_at_n_positions():
-    cfg, lm, ci_fn, step, _ = _tiny_setup(threshold=-1.0)  # everything "alive"
+    cfg, model, ci_fn, step, _ = _tiny_setup(threshold=-1.0)  # everything "alive"
     residual = jax.random.randint(jax.random.PRNGKey(7), (2, 16), 0, cfg.vocab_size)
-    reductions = accumulate_site_reductions(step, lm, ci_fn, [residual], n_batches_accum=None)
+    reductions = accumulate_site_reductions(step, model, ci_fn, [residual], n_batches_accum=None)
     for r in reductions.values():
         np.testing.assert_array_equal(r.density_counts, np.full_like(r.density_counts, 2 * 16))
 
 
 def test_cross_batch_sum_accumulates_linearly():
-    cfg, lm, ci_fn, step, _ = _tiny_setup(threshold=0.0)
+    cfg, model, ci_fn, step, _ = _tiny_setup(threshold=0.0)
     res_a = jax.random.randint(jax.random.PRNGKey(4), (2, 16), 0, cfg.vocab_size)
     res_b = jax.random.randint(jax.random.PRNGKey(5), (2, 16), 0, cfg.vocab_size)
 
-    one = accumulate_site_reductions(step, lm, ci_fn, [res_a], None)
-    two = accumulate_site_reductions(step, lm, ci_fn, [res_a, res_b], None)
-    other = accumulate_site_reductions(step, lm, ci_fn, [res_b], None)
-    for site in lm.site_names:
+    one = accumulate_site_reductions(step, model, ci_fn, [res_a], None)
+    two = accumulate_site_reductions(step, model, ci_fn, [res_a, res_b], None)
+    other = accumulate_site_reductions(step, model, ci_fn, [res_b], None)
+    for site in model.site_names:
         assert two[site].n_positions == one[site].n_positions + other[site].n_positions
         np.testing.assert_allclose(
             two[site].ci_sums, one[site].ci_sums + other[site].ci_sums, rtol=1e-4, atol=1e-4
@@ -133,14 +134,14 @@ def test_cross_batch_sum_accumulates_linearly():
 
 
 def test_n_batches_accum_caps_histogram_sample_only():
-    cfg, lm, ci_fn, step, _ = _tiny_setup(threshold=0.0)
+    cfg, model, ci_fn, step, _ = _tiny_setup(threshold=0.0)
     batches = [
         jax.random.randint(jax.random.fold_in(jax.random.PRNGKey(9), i), (2, 16), 0, cfg.vocab_size)
         for i in range(3)
     ]
-    capped = accumulate_site_reductions(step, lm, ci_fn, batches, n_batches_accum=1)
-    full = accumulate_site_reductions(step, lm, ci_fn, batches, n_batches_accum=None)
-    for site in lm.site_names:
+    capped = accumulate_site_reductions(step, model, ci_fn, batches, n_batches_accum=1)
+    full = accumulate_site_reductions(step, model, ci_fn, batches, n_batches_accum=None)
+    for site in model.site_names:
         # the cap only limits the histogram raw-value sample; counts/sums span all batches
         assert capped[site].n_positions == full[site].n_positions == 3 * 2 * 16
         assert capped[site].lower_sample.size == 2 * 16 * 8  # one batch
@@ -148,9 +149,9 @@ def test_n_batches_accum_caps_histogram_sample_only():
 
 
 def test_pre_sigmoid_differs_from_lower():
-    cfg, lm, ci_fn, step, _ = _tiny_setup(threshold=0.0)
+    cfg, model, ci_fn, step, _ = _tiny_setup(threshold=0.0)
     residual = jax.random.randint(jax.random.PRNGKey(4), (2, 16), 0, cfg.vocab_size)
-    reductions = accumulate_site_reductions(step, lm, ci_fn, [residual], None)
+    reductions = accumulate_site_reductions(step, model, ci_fn, [residual], None)
     for r in reductions.values():
         # lower is clamped to [0, 1]; logits are unbounded — they cannot be identical
         assert r.lower_sample.min() >= 0.0 and r.lower_sample.max() <= 1.0
@@ -158,9 +159,9 @@ def test_pre_sigmoid_differs_from_lower():
 
 
 def test_render_emits_torch_keyed_pngs():
-    cfg, lm, ci_fn, step, _ = _tiny_setup(threshold=0.0)
+    cfg, model, ci_fn, step, _ = _tiny_setup(threshold=0.0)
     residual = jax.random.randint(jax.random.PRNGKey(4), (2, 16), 0, cfg.vocab_size)
-    reductions = accumulate_site_reductions(step, lm, ci_fn, [residual], None)
+    reductions = accumulate_site_reductions(step, model, ci_fn, [residual], None)
     figures = render_slow_eval_figures(reductions)
     assert set(figures) == {
         "figures/causal_importance_values",
@@ -174,9 +175,9 @@ def test_render_emits_torch_keyed_pngs():
 
 
 def test_finite_reductions():
-    cfg, lm, ci_fn, step, _ = _tiny_setup(threshold=0.0)
+    cfg, model, ci_fn, step, _ = _tiny_setup(threshold=0.0)
     residual = jax.random.randint(jax.random.PRNGKey(4), (2, 16), 0, cfg.vocab_size)
-    reductions = accumulate_site_reductions(step, lm, ci_fn, [residual], None)
+    reductions = accumulate_site_reductions(step, model, ci_fn, [residual], None)
     for r in reductions.values():
         assert np.all(np.isfinite(r.density_counts))
         assert np.all(np.isfinite(r.ci_sums))
@@ -185,18 +186,18 @@ def test_finite_reductions():
 
 
 def test_density_hist_disabled_by_default():
-    cfg, lm, ci_fn, step, _ = _tiny_setup(threshold=0.0)
+    cfg, model, ci_fn, step, _ = _tiny_setup(threshold=0.0)
     residual = jax.random.randint(jax.random.PRNGKey(4), (2, 16), 0, cfg.vocab_size)
-    reductions = accumulate_site_reductions(step, lm, ci_fn, [residual], None)
+    reductions = accumulate_site_reductions(step, model, ci_fn, [residual], None)
     for r in reductions.values():
         assert r.density_hist is None
 
 
 def test_density_hist_shape_and_conservation():
     n_bins = 40
-    cfg, lm, ci_fn, step, C = _tiny_setup(threshold=0.0, density_heatmap_n_bins=n_bins)
+    cfg, model, ci_fn, step, C = _tiny_setup(threshold=0.0, density_heatmap_n_bins=n_bins)
     residual = jax.random.randint(jax.random.PRNGKey(4), (3, 16), 0, cfg.vocab_size)
-    reductions = accumulate_site_reductions(step, lm, ci_fn, [residual], None)
+    reductions = accumulate_site_reductions(step, model, ci_fn, [residual], None)
     for r in reductions.values():
         assert r.density_hist is not None
         assert r.density_hist.shape == (C, n_bins + 1)
@@ -208,13 +209,13 @@ def test_density_hist_shape_and_conservation():
 
 def test_density_hist_accumulates_over_all_batches_uncapped():
     n_bins = 40
-    cfg, lm, ci_fn, step, _ = _tiny_setup(threshold=0.0, density_heatmap_n_bins=n_bins)
+    cfg, model, ci_fn, step, _ = _tiny_setup(threshold=0.0, density_heatmap_n_bins=n_bins)
     batches = [
         jax.random.randint(jax.random.fold_in(jax.random.PRNGKey(9), i), (2, 16), 0, cfg.vocab_size)
         for i in range(3)
     ]
     # n_batches_accum caps only the raw sample; the density hist spans every batch regardless
-    capped = accumulate_site_reductions(step, lm, ci_fn, batches, n_batches_accum=1)
+    capped = accumulate_site_reductions(step, model, ci_fn, batches, n_batches_accum=1)
     for r in capped.values():
         assert r.lower_sample.size == 2 * 16 * 8  # one batch (capped)
         assert r.density_hist is not None
@@ -222,9 +223,9 @@ def test_density_hist_accumulates_over_all_batches_uncapped():
 
 
 def test_render_includes_density_heatmap_when_enabled():
-    cfg, lm, ci_fn, step, _ = _tiny_setup(threshold=0.0, density_heatmap_n_bins=40)
+    cfg, model, ci_fn, step, _ = _tiny_setup(threshold=0.0, density_heatmap_n_bins=40)
     residual = jax.random.randint(jax.random.PRNGKey(4), (2, 16), 0, cfg.vocab_size)
-    reductions = accumulate_site_reductions(step, lm, ci_fn, [residual], None)
+    reductions = accumulate_site_reductions(step, model, ci_fn, [residual], None)
     figures = render_slow_eval_figures(reductions)
     assert "figures/ci_density_heatmap" in figures
     assert figures["figures/ci_density_heatmap"][:4] == b"\x89PNG"
@@ -312,11 +313,11 @@ def test_resolve_permutation_metrics_empty_when_unconfigured():
 def _tiny_position_ci():
     cfg = _tiny_cfg()
     sites = glu_site_specs(cfg, mlp_family_site_cs(4, 5, 8))
-    lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    ci_fn = _build_ci_fn(lm, cfg.n_embd, jax.random.PRNGKey(2))
+    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    ci_fn = _build_ci_fn(model, cfg.n_embd, jax.random.PRNGKey(2))
     residual = jax.random.randint(jax.random.PRNGKey(4), (3, 12), 0, cfg.vocab_size)
-    position_ci = accumulate_position_ci(make_position_ci_step(lm), lm, ci_fn, [residual])
-    return lm, position_ci
+    position_ci = accumulate_position_ci(make_position_ci_step(model), model, ci_fn, [residual])
+    return model, position_ci
 
 
 def test_position_ci_keeps_position_axis_and_batch_means():
@@ -329,13 +330,13 @@ def test_position_ci_keeps_position_axis_and_batch_means():
 
 
 def test_render_permutation_figures_emits_pngs():
-    lm, position_ci = _tiny_position_ci()
+    model, position_ci = _tiny_position_ci()
     metrics = [
         PermutedCIPlotsConfig(identity_patterns=["*gate_proj"], dense_patterns=["*down_proj"]),
         UVPlotsConfig(identity_patterns=["*gate_proj"], dense_patterns=["*down_proj"]),
     ]
-    spec = resolve_permutation_metrics(lm.site_names, metrics)
-    components = {name: (np.zeros((4, 8)), np.zeros((8, 4))) for name in lm.site_names}
+    spec = resolve_permutation_metrics(model.site_names, metrics)
+    components = {name: (np.zeros((4, 8)), np.zeros((8, 4))) for name in model.site_names}
     figures = render_permutation_figures(spec, position_ci, components)
     assert set(figures) == {
         "figures/causal_importances",
@@ -347,15 +348,15 @@ def test_render_permutation_figures_emits_pngs():
 
 
 def test_render_permutation_figures_empty_without_plot_metrics():
-    lm, position_ci = _tiny_position_ci()
-    spec = resolve_permutation_metrics(lm.site_names, [])
+    model, position_ci = _tiny_position_ci()
+    spec = resolve_permutation_metrics(model.site_names, [])
     assert render_permutation_figures(spec, position_ci, {}) == {}
 
 
 def test_compute_identity_ci_errors_end_to_end():
-    lm, position_ci = _tiny_position_ci()
+    model, position_ci = _tiny_position_ci()
     spec = resolve_permutation_metrics(
-        lm.site_names,
+        model.site_names,
         [
             IdentityCIErrorConfig(
                 identity_ci=[IdentityCITargetSpec(layer_pattern="*gate_proj", n_features=2)],
@@ -408,15 +409,15 @@ class _FakeWandb(types.ModuleType):
 
 
 def test_renderer_logs_figures_on_live_step_axis(monkeypatch: pytest.MonkeyPatch):
-    cfg, lm, ci_fn, step, _ = _tiny_setup(threshold=0.0)
+    cfg, model, ci_fn, step, _ = _tiny_setup(threshold=0.0)
     residual = jax.random.randint(jax.random.PRNGKey(4), (2, 16), 0, cfg.vocab_size)
-    reductions = accumulate_site_reductions(step, lm, ci_fn, [residual], None)
+    reductions = accumulate_site_reductions(step, model, ci_fn, [residual], None)
 
     fake = _FakeWandb()
     monkeypatch.setitem(sys.modules, "wandb", fake)
     monkeypatch.setitem(sys.modules, "wandb.errors", fake.errors)
 
-    spec = resolve_permutation_metrics(lm.site_names, [])
+    spec = resolve_permutation_metrics(model.site_names, [])
     renderer = BackgroundRenderer(is_main=True)
     renderer.submit(partial(render_and_log_slow_eval, reductions, spec, None, None, 4242))
     renderer.join()  # flush the background render
@@ -440,10 +441,10 @@ def test_in_loop_renderer_includes_permutation_heatmaps_and_uv_when_gathered(
     when the config names UVPlots and the gathered V/U is passed, the UVPlots figure too
     (SPEC S28 amended: in-loop UVPlots is a naive gather, small-scale-only). IdentityCIError
     is computed synchronously on the collective path, not on the background thread."""
-    cfg, lm, ci_fn, step, C = _tiny_setup(threshold=0.0)
+    cfg, model, ci_fn, step, C = _tiny_setup(threshold=0.0)
     residual = jax.random.randint(jax.random.PRNGKey(4), (3, 12), 0, cfg.vocab_size)
-    reductions = accumulate_site_reductions(step, lm, ci_fn, [residual], None)
-    position_ci = accumulate_position_ci(make_position_ci_step(lm), lm, ci_fn, [residual])
+    reductions = accumulate_site_reductions(step, model, ci_fn, [residual], None)
+    position_ci = accumulate_position_ci(make_position_ci_step(model), model, ci_fn, [residual])
 
     metrics = [
         PermutedCIPlotsConfig(identity_patterns=["*gate_proj"], dense_patterns=["*down_proj"]),
@@ -453,7 +454,7 @@ def test_in_loop_renderer_includes_permutation_heatmaps_and_uv_when_gathered(
             dense_ci=None,
         ),
     ]
-    spec = resolve_permutation_metrics(lm.site_names, metrics)
+    spec = resolve_permutation_metrics(model.site_names, metrics)
     assert spec.want_uv_plots
 
     # the IdentityCIError SCALARS are computed synchronously (the in-loop collective path),
@@ -465,7 +466,7 @@ def test_in_loop_renderer_includes_permutation_heatmaps_and_uv_when_gathered(
     monkeypatch.setitem(sys.modules, "wandb", fake)
     monkeypatch.setitem(sys.modules, "wandb.errors", fake.errors)
 
-    components = {name: (np.zeros((4, C)), np.zeros((C, 5))) for name in lm.site_names}
+    components = {name: (np.zeros((4, C)), np.zeros((C, 5))) for name in model.site_names}
     renderer = BackgroundRenderer(is_main=True)
     renderer.submit(
         partial(render_and_log_slow_eval, reductions, spec, position_ci, components, 7000)
@@ -487,13 +488,13 @@ def test_in_loop_renderer_skips_uv_when_components_not_gathered(
 ):
     """When the config does NOT name UVPlots, the trainer gathers no V/U (`components=None`)
     and the UVPlots figure is skipped, while the CI heatmaps still render."""
-    cfg, lm, ci_fn, step, _ = _tiny_setup(threshold=0.0)
+    cfg, model, ci_fn, step, _ = _tiny_setup(threshold=0.0)
     residual = jax.random.randint(jax.random.PRNGKey(4), (3, 12), 0, cfg.vocab_size)
-    reductions = accumulate_site_reductions(step, lm, ci_fn, [residual], None)
-    position_ci = accumulate_position_ci(make_position_ci_step(lm), lm, ci_fn, [residual])
+    reductions = accumulate_site_reductions(step, model, ci_fn, [residual], None)
+    position_ci = accumulate_position_ci(make_position_ci_step(model), model, ci_fn, [residual])
 
     spec = resolve_permutation_metrics(
-        lm.site_names,
+        model.site_names,
         [PermutedCIPlotsConfig(identity_patterns=["*gate_proj"], dense_patterns=["*down_proj"])],
     )
     assert not spec.want_uv_plots
@@ -512,15 +513,15 @@ def test_in_loop_renderer_skips_uv_when_components_not_gathered(
 
 
 def test_renderer_noop_off_main_rank(monkeypatch: pytest.MonkeyPatch):
-    cfg, lm, ci_fn, step, _ = _tiny_setup(threshold=0.0)
+    cfg, model, ci_fn, step, _ = _tiny_setup(threshold=0.0)
     residual = jax.random.randint(jax.random.PRNGKey(4), (2, 16), 0, cfg.vocab_size)
-    reductions = accumulate_site_reductions(step, lm, ci_fn, [residual], None)
+    reductions = accumulate_site_reductions(step, model, ci_fn, [residual], None)
 
     fake = _FakeWandb()
     monkeypatch.setitem(sys.modules, "wandb", fake)
     monkeypatch.setitem(sys.modules, "wandb.errors", fake.errors)
 
-    spec = resolve_permutation_metrics(lm.site_names, [])
+    spec = resolve_permutation_metrics(model.site_names, [])
     renderer = BackgroundRenderer(is_main=False)
     renderer.submit(partial(render_and_log_slow_eval, reductions, spec, None, None, 4242))
     renderer.join()
@@ -533,14 +534,14 @@ def test_in_loop_slow_tier_fires_on_cadence_without_stalling(monkeypatch: pytest
     the live `_step` axis, and the main loop never blocks waiting on a render."""
     import time
 
-    cfg, lm, ci_fn, step, _ = _tiny_setup(threshold=0.0)
+    cfg, model, ci_fn, step, _ = _tiny_setup(threshold=0.0)
     residual = jax.random.randint(jax.random.PRNGKey(4), (2, 16), 0, cfg.vocab_size)
 
     fake = _FakeWandb()
     monkeypatch.setitem(sys.modules, "wandb", fake)
     monkeypatch.setitem(sys.modules, "wandb.errors", fake.errors)
 
-    spec = resolve_permutation_metrics(lm.site_names, [])
+    spec = resolve_permutation_metrics(model.site_names, [])
     every, slow_every = 1000, 3000
     renderer = BackgroundRenderer(is_main=True)
     # Time only the dispatch the loop pays (accumulate + submit), not the off-thread render.
@@ -551,7 +552,7 @@ def test_in_loop_slow_tier_fires_on_cadence_without_stalling(monkeypatch: pytest
     for now_step in range(every, 10 * every + 1, every):  # 1000, 2000, ..., 10000
         if slow_eval_due(now_step, every, slow_every, slow_on_first_step=True):
             t0 = time.time()
-            reductions = accumulate_site_reductions(step, lm, ci_fn, [residual], None)
+            reductions = accumulate_site_reductions(step, model, ci_fn, [residual], None)
             renderer.submit(
                 partial(render_and_log_slow_eval, reductions, spec, None, None, now_step)
             )

@@ -5,7 +5,7 @@ shape-carrying spec); `ComponentStacks` is the trainable master pytree, persiste
 STACKS (owner-partitioned layout); `init_component_stacks` seeds it; `site_out` is the one
 decomposed-linear primitive (SPEC §4.1, `((x@V)*m)@U + (x@Δ)*d`). These are domain-neutral
 — they depend only on the site shapes and the V/U/W arrays — so they live here rather than
-inside `lm.py` (whose `DecomposedModel` Protocol references `ComponentStacks`/`SiteSpec`) or any
+inside `model.py` (whose `DecomposedModel` Protocol references `ComponentStacks`/`SiteSpec`) or any
 one target.
 """
 

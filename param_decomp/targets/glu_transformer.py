@@ -637,7 +637,7 @@ def _gather_full_weight(w: Array, spec: P) -> Array:
 
 
 class GLUDecomposedModel(eqx.Module):
-    """The GLU-transformer `DecomposedModel` (the `lm.py` contract; SPEC §1), shared
+    """The GLU-transformer `DecomposedModel` (the `model.py` contract; SPEC §1), shared
     across the HF GLU families — a family's identity lives in its `stacked.attn` module
     (its `FrozenAttn` variant) and `inv_freq`, never in a switch here.
 
@@ -651,7 +651,7 @@ class GLUDecomposedModel(eqx.Module):
     site run the plain frozen path — so a subset decomposition just leaves the rest
     frozen.
 
-    `sites` / `leading_axes` are static config."""
+    `sites` / `has_position_axis` are static config."""
 
     embed: Float[Array, "vocab d"]
     stacked: GLULayer  # the per-layer weights stacked on a leading layer axis (the scan
@@ -661,7 +661,7 @@ class GLUDecomposedModel(eqx.Module):
     lm_head: Float[Array, "vocab d"]
     inv_freq: Float[Array, " hd2"]
     sites: tuple[SiteSpec, ...] = eqx.field(static=True)
-    leading_axes: tuple[str, ...] = eqx.field(static=True)
+    has_position_axis: bool = eqx.field(static=True)
     eps: float = eqx.field(static=True)
     scan_unroll: int = eqx.field(static=True, default=1)
     """`lax.scan(unroll=)` factor over the block stack (`RuntimeConfig.scan_unroll`); 1 =
@@ -1234,7 +1234,7 @@ def build_decomposed_lm(
         lm_head=lm_head,
         inv_freq=inv_freq,
         sites=sites,
-        leading_axes=("sequence",),
+        has_position_axis=True,
         eps=cfg.rms_norm_eps,
         scan_unroll=scan_unroll,
         gather_fp8=gather_fp8,
