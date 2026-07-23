@@ -151,4 +151,4 @@ def test_gqa_ci_fn_runs_end_to_end():
 
 
 # The authored-schema parse tests (`ChunkwiseTransformerCiConfig.attention` arms) live with
-# the schema, lab-side: `param_decomp_lab/tests/test_lm_ci_schema.py`.
+# the schema, lab-side: `param_decomp/tests/test_lm_ci_schema.py`.

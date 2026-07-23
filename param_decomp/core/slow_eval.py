@@ -1,5 +1,5 @@
 """JAX-native slow (plot-type) eval metrics — a LIBRARY for the in-loop slow tier (`run.py`)
-and the toy eval functions (`param_decomp_lab/experiments/{tms,resid_mlp}`). Slow eval is
+and the toy eval functions (`param_decomp/experiments/{tms,resid_mlp}`). Slow eval is
 IN-LOOP ONLY; there is no offline/retrospective CLI.
 
 `eval.py` runs the FAST scalar tier in-loop (CE/KL, CI-L0, the fresh-PGD probe). The
@@ -7,7 +7,7 @@ SLOW tier is the heavy plot metrics: `CIHistograms`, `ComponentActivationDensity
 `CIMeanPerComponent` (the torch eval-metric classes of the same names). Every one of them
 is a reduction over the per-site causal-importance arrays from a masked-free forward, then
 a numpy/matplotlib plot. The forward + reduction is JAX; the plotting is framework-agnostic
-(it mirrors the torch `param_decomp_lab/eval_metrics/plotting.py` reductions on numpy
+(it mirrors the torch `param_decomp/eval_metrics/plotting.py` reductions on numpy
 arrays, no torch). `accumulate_site_reductions` / `render_slow_eval_figures` /
 `compute_hidden_acts_metrics` are the LM in-loop tier's interface (`run.py`); the toys
 use only the UV figure helpers (`render_uv_figure` / `plot_uv_matrices`).

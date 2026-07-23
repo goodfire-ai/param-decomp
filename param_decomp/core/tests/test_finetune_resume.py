@@ -17,8 +17,8 @@ from param_decomp.core.built_run import LAUNCH_CONFIG_FILENAME
 from param_decomp.core.checkpoint import init_from_parent, make_checkpoint_manager, save_state
 from param_decomp.core.configs import ResumeProvenance
 from param_decomp.core.tests.test_checkpoint import _build
-from param_decomp_lab.experiments.lm.config import build_from_schema
-from param_decomp_lab.experiments.lm.run import assert_finetune_structural_compat
+from param_decomp.experiments.lm.config import build_from_schema
+from param_decomp.experiments.lm.run import assert_finetune_structural_compat
 
 CONFIGS = Path(__file__).parent.parent / "configs"
 

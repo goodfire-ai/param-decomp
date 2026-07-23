@@ -27,17 +27,33 @@ import pytest
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
 _NON_RUNTIME_DIRS = {"tests", "tools"}
 
+_ANY = ("param_decomp",)
+"""The composition layers (the merged lab): free to import anything in the library.
+Tightening these to real per-layer sets is deliberate follow-up work."""
+
 _LAYER_ALLOWED: dict[str, tuple[str, ...]] = {
     "vendored_jax": ("param_decomp.vendored_jax",),
     "core": ("param_decomp.core", "param_decomp.vendored_jax"),
     "pretrain": ("param_decomp.core", "param_decomp.pretrain", "param_decomp.vendored_jax"),
     "targets": ("param_decomp.core", "param_decomp.targets", "param_decomp.vendored_jax"),
+    "adapters": _ANY,
+    "autointerp": _ANY,
+    "clustering": _ANY,
+    "experiments": _ANY,
+    "harvest": _ANY,
+    "infra": _ANY,
+    "investigate": _ANY,
+    "migrations": _ANY,
+    "postprocess": _ANY,
+    "topology": _ANY,
 }
 
 
 def _subpackages() -> list[str]:
     subs = sorted(
-        p.name for p in _PACKAGE_ROOT.iterdir() if p.is_dir() and (p / "__init__.py").exists()
+        p.name
+        for p in _PACKAGE_ROOT.iterdir()
+        if p.is_dir() and (p / "__init__.py").exists() and p.name not in _NON_RUNTIME_DIRS
     )
     unlisted = [s for s in subs if s not in _LAYER_ALLOWED]
     assert not unlisted, (

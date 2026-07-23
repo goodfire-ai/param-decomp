@@ -26,14 +26,14 @@ import fnmatch
 import pytest
 
 from param_decomp.core.components import SiteC
-from param_decomp.targets import glu_transformer, llama_simple_mlp
-from param_decomp_lab.experiments.lm.config import (
+from param_decomp.experiments.lm.config import (
     AllLayers,
     GluTransformerCSpec,
     LayerList,
     SimpleMlpCSpec,
     resolve_site_tree,
 )
+from param_decomp.targets import glu_transformer, llama_simple_mlp
 
 
 def _named_modules_order(

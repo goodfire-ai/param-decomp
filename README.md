@@ -11,25 +11,28 @@ the core method, see [`nano_param_decomp/`](nano_param_decomp/).
 
 ## Install
 
-This repo contains two Python distributions:
+This repo contains the generic library and a thin private wrapper:
 
-- `param-decomp`: the core library, importing as `param_decomp`
-- `param-decomp-lab`: in-repo experiments, app, postprocessing, and CLI tooling, importing as
-  `param_decomp_lab`
+- `param-decomp`: the library, importing as `param_decomp` — enumerated layers as
+  subpackages (`core` = the engine, `targets`, `pretrain`, `vendored_jax`, plus the
+  composition/consumer layers: `experiments`, `harvest`, `autointerp`, `clustering`,
+  `postprocess`, `topology`, `adapters`, `infra`, …)
+- `param-decomp-goodfire`: Goodfire-internal cluster launchers (`pd-lm` / `pd-pretrain`)
+  wrapping the library
 
 ```bash
-make install-dev  # workspace dev install: core + lab + dev dependencies + pre-commit hooks
-make install      # core package only
-make install-lab  # core + lab packages, without dev dependencies
+make install-dev  # workspace dev install: library + wrapper + dev dependencies + pre-commit hooks
+make install      # library only
 ```
 
 ## Run Experiments
 
-The `pd-*` commands are installed by `param-decomp-lab`. Each in-repo experiment is a
+The library's `pd-*` commands are installed by `param-decomp` (only `pd-lm` /
+`pd-pretrain` come from the private wrapper). Each in-repo experiment is a
 self-contained script that reads a YAML and calls `optimize()`:
 
 ```bash
-pd-lm    param_decomp_lab/experiments/lm/<wrapper>.yaml --nodes N
+pd-lm    param_decomp/experiments/lm/<wrapper>.yaml --nodes N
 ```
 
 TMS and ResidualMLP now live only as JAX targets in `param_decomp/`
@@ -37,8 +40,8 @@ TMS and ResidualMLP now live only as JAX targets in `param_decomp/`
 
 Training is the JAX single-pool trainer: the generic engine
 (`param_decomp.core.run.run_decomposition_training`, a pure library) driven by the lab-side
-composition root (`python -m param_decomp_lab.experiments.lm.run`), launched via `pd-lm`. A
-run is one self-contained YAML (the `param_decomp_lab.experiments.config.ExperimentConfig`
+composition root (`python -m param_decomp.experiments.lm.run`), launched via `pd-lm`. A
+run is one self-contained YAML (the `param_decomp.experiments.config.ExperimentConfig`
 schema over the core `param_decomp.core.configs` pieces). The torch trainer (`optimize()`, the
 torch `Metric` impls, `RunSink`) was retired and is preserved at git tag `torch-oracle`. See
 `param_decomp/CLAUDE.md` and `SPEC.md` for the trainer.
@@ -53,7 +56,7 @@ schema in core (`param_decomp.core.configs`) and computed by the JAX trainer
 ## Packaging
 
 The root `pyproject.toml` builds only the core `param-decomp` distribution. Lab scripts
-and experiment tooling live in `param_decomp_lab/pyproject.toml` as the separate
+and experiment tooling live in `param_decomp/pyproject.toml` as the separate
 `param-decomp-lab` distribution. Local development uses the uv workspace, so absolute
 imports for both packages work after `make install-dev`.
 

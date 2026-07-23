@@ -7,7 +7,7 @@ Plot-type metrics (CI histograms, activation density, per-component means, the
 permutation/UV figures) ride the in-loop SLOW tier instead — natively in JAX
 (`slow_eval.py`, SPEC S28; in-loop only, no offline CLI).
 
-Variant semantics mirror `param_decomp_lab/eval_metrics/ce_and_kl_losses.py`: each
+Variant semantics mirror `param_decomp/eval_metrics/ce_and_kl_losses.py`: each
 variant is a masked forward with ALL sites live and no routing; only `stoch_masked`
 carries a weight-delta mask (torch `make_mask_infos` without weight deltas drops the
 delta term — delta mask 0 here). CE is next-token cross-entropy with the first label

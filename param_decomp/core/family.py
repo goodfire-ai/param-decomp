@@ -4,14 +4,14 @@
 `(layer, matrix) -> site name` renderer. Each target module builds its OWN family
 (`glu_transformer.FAMILY`, `llama_simple_mlp.FAMILY`), with `matrices` derived from the
 `Literal` matrix vocabulary the target module itself owns — the same vocabulary the
-authored c-spec keys (lab-side, `param_decomp_lab/experiments/lm/config.py`) are typed
+authored c-spec keys (lab-side, `param_decomp/experiments/lm/config.py`) are typed
 by, so a c-spec key outside the family's vocabulary is unrepresentable, not merely
 asserted.
 
 The activation-TAP grammar does NOT live here: tap keys are opaque strings to everything
 generic (`Chunk.input_taps` carries them as pytree-static keys), and their structure is the
-transformer families' own vocabulary (`param_decomp_targets/transformer_taps.py`). Deliberately separate,
-still: `param_decomp_lab/topology/` (the consumer-side canonical weight/component address
+transformer families' own vocabulary (`param_decomp/targets/transformer_taps.py`). Deliberately separate,
+still: `param_decomp/topology/` (the consumer-side canonical weight/component address
 space) — the third naming system, out of scope here.
 """
 
@@ -28,7 +28,7 @@ class ArchFamily:
     `parse(name)` inverts it (asserting on non-site names). The config→sites→chunks path
     only ever renders; `parse` serves the flat-site-name boundary the targets keep
     (`canonical_site_cs` / `site_specs` / the family tap grammar in
-    `param_decomp_targets/transformer_taps.py`)."""
+    `param_decomp/targets/transformer_taps.py`)."""
 
     key: str
     matrices: tuple[str, ...]

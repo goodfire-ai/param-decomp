@@ -1,7 +1,7 @@
 """JAX-native attention-pattern reconstruction eval metrics
 (`CIMaskedAttnPatternsReconLoss`, `StochasticAttnPatternsReconLoss`), the in-loop
 counterparts of the torch eval metrics of the same names
-(`param_decomp_lab/eval_metrics/attn_patterns_recon_loss.py`).
+(`param_decomp/eval_metrics/attn_patterns_recon_loss.py`).
 
 Per decomposed attention layer, both compute `KL(target_pattern ‖ masked_pattern)` over
 every attention distribution, where a *pattern* is the post-softmax `(B, H, T, T)` causal

@@ -1,7 +1,7 @@
 """Trainable JAX/equinox definitions for the three in-house target archs.
 
 These pretrain the FROZEN targets the decomposition trainer then decomposes. The torch
-reference is `torch-oracle:param_decomp_lab/experiments/lm/pretrain/models/`; this is a
+reference is `torch-oracle:param_decomp/experiments/lm/pretrain/models/`; this is a
 capability reimplementation (next-token CE, AdamW, cosine LR) — NOT a bit-exact port.
 
 The `LlamaSimpleMLP` checkpoint format is load-bearing: `param_decomp.targets.llama_simple_mlp`

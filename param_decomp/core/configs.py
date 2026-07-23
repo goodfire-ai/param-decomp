@@ -9,7 +9,7 @@ YAML run configs without pulling jax/wandb.
 
 Experiment-level schema (the `ExperimentConfig` base and its LM / TMS / ResidMLP
 subclasses, each binding concrete `target`/`decomposition`/`data` sections) lives
-lab-side under `param_decomp_lab/experiments/` — including the authored
+lab-side under `param_decomp/experiments/` — including the authored
 `decomposition.ci` configs AND the tiled LM site specs, which speak each domain's
 vocabulary. Core carries only the RESOLVED CI-fn arches (`ci_fn.py`) and the
 resolved flat sites.

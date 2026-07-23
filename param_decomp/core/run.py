@@ -11,8 +11,8 @@ target injects two seams: the data source (`sample_batch`) and the eval metric (
 
 This module is a pure library — it has NO `main()` and reads no YAML. The per-domain
 composition root (read the run YAML → build the target / data loader / `BuiltRun` → call
-this engine) lives lab-side: `param_decomp_lab/experiments/lm/run.py` for the LM,
-`param_decomp_lab/experiments/{tms,resid_mlp}/run.py` for the toys.
+this engine) lives lab-side: `param_decomp/experiments/lm/run.py` for the LM,
+`param_decomp/experiments/{tms,resid_mlp}/run.py` for the toys.
 """
 
 import atexit

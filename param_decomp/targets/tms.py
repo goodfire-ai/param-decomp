@@ -1,7 +1,7 @@
 """Vendored JAX TMS (Toy Model of Superposition) target — the first non-LM
 `DecomposedModel`, positionless (`has_position_axis=False`; the waist is `[B, n_features]`).
 
-Torch reference (read-only ground truth): `param_decomp_lab/experiments/tms/models.py`.
+Torch reference (read-only ground truth): `param_decomp/experiments/tms/models.py`.
 The target is `out = relu(linear2(hidden_layers(linear1(x))))`: `linear1`
 `(n_features -> n_hidden)` no bias, optional FROZEN `hidden_layers.{i}` `(n_hidden ->
 n_hidden)` no bias, `linear2` `(n_hidden -> n_features)` with bias, with `linear1`/`linear2`

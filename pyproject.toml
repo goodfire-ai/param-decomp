@@ -26,6 +26,27 @@ dependencies = [
     "wandb==0.21.0",
     "matplotlib==3.10.8",
     "pillow==12.0.0",
+    # Composition / consumer-layer deps (absorbed from the dissolved param-decomp-lab
+    # distribution when the lab merged into the library).
+    "fire",
+    "wandb-workspaces==0.1.12", # See https://github.com/wandb/wandb-workspaces/issues/65
+    "sympy",
+    "streamlit",
+    "streamlit-antd-components",
+    "scipy>=1.14.1",
+    "orjson",
+    "aiolimiter>=1.2",
+    "openrouter>=0.1.1",
+    "httpx>=0.28.0",
+    "zstandard", # For streaming datasets
+    "kaleido==0.2.1",
+    "numba>=0.64.0",
+    "requests",
+    "python-dotenv",
+    "tqdm",
+    "transformers",
+    # `datasets` less than 2.21.0 causes issues due to incompatibility with numpy>=2.0
+    "datasets>=2.21.0",
 ]
 
 [project.optional-dependencies]
@@ -68,13 +89,21 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 include-package-data = false
 
+[tool.setuptools.package-data]
+param_decomp = [
+    "experiments/**/*.yaml",
+    "postprocess/*.yaml",
+    "clustering/configs/**/*.yaml",
+    "clustering/configs/**/*.json",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["param_decomp", "param_decomp.*"]
 namespaces = false
 
 [tool.uv.workspace]
-members = ["param_decomp_lab"]
+members = ["param_decomp_goodfire"]
 
 [tool.uv.sources]
 param-decomp = { workspace = true }
@@ -118,7 +147,7 @@ known-third-party = ["wandb"]
 # in a torch env, not this JAX-only one.
 # `vendored_jax` is a verbatim numeric mirror of the torch vendored Llama — kept out of
 # type-checking (its correctness contract is the parity tests, not types).
-include = ["param_decomp", "param_decomp_lab"]
+include = ["param_decomp", "param_decomp_goodfire"]
 exclude = [
     "**/wandb/**",
     "**/_scratch/**",

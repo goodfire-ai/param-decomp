@@ -3,8 +3,8 @@
 Single-pool VPD trainer in JAX, **generic over vendored targets**: the engine sees a
 target only through the `DecomposedModel` protocol (`model.py`) and the `ArchFamily`
 grammar contract (`family.py`). The concrete targets — LM and toy alike — are the
-sibling `param-decomp-targets` distribution (`param_decomp_targets/`, one slice per
-architecture); the layering `lab → targets → engine` is pinned by
+sibling subpackage `param_decomp.targets` (one slice per architecture); the library's
+layering (core imports NO target, targets import core only) is pinned by
 `tests/test_runtime_standalone.py`. The semantics source of truth is `SPEC.md`
 (normative pseudocode + numbered invariants, grounded in the stable torch
 `param_decomp` impl). See `README.md` for the file map.
@@ -77,28 +77,28 @@ see LOSS_PARITY_DESIGN.md),
 consuming `losses.py` (pure loss terms + schedules) and `adversary.py` (persistent
 vs fresh source machinery — semantically distinct adversaries sharing only
 `source_masks`); `ci_fn.py` the shared CI transformer. The targets are the sibling
-distribution: `param_decomp_targets/glu_transformer.py` the SHARED HF GLU-transformer
+distribution: `param_decomp/targets/glu_transformer.py` the SHARED HF GLU-transformer
 target machinery (site grammar, `FrozenAttn`/`GLULayer`/`GLUDecomposedModel`, the
 scan/masked-forward engine, HF loading, and the target's own placement via
 `.shardings(mesh)`; the generic seeded-init-placed helpers are engine-side,
 `init_placed.py`), with the model FAMILIES in their own files:
-`param_decomp_targets/llama8b.py` (vendored `LlamaConfig`, llama3 rope) and
-`param_decomp_targets/qwen3_8b.py` (`Qwen3FrozenAttn` — REQUIRED `q_norm`/`k_norm`
+`param_decomp/targets/llama8b.py` (vendored `LlamaConfig`, llama3 rope) and
+`param_decomp/targets/qwen3_8b.py` (`Qwen3FrozenAttn` — REQUIRED `q_norm`/`k_norm`
 fields applied in the `_prep_qk` pre-RoPE hook; Qwen3's one structural delta). Nothing
 in the shared file switches on a family; the model-name → family registry is LAB-side
 (`experiments/lm/config.py::HF_MODEL_FAMILIES`). Qwen3 JAX↔HF parity is pinned DIRECTLY
-by `param_decomp_targets/tests/qwen3_hf_parity/` (a tiny-random `Qwen3ForCausalLM`
+by `param_decomp/targets/tests/qwen3_hf_parity/` (a tiny-random `Qwen3ForCausalLM`
 golden at fp32 tolerance + a slow real-weights logits check; goldens regenerate via its
 torch-env `gen_hf_fixtures.py`). There is ONE
 recon semantics: masks thread through the full token-input forward, loss is KL on final logits
 (SPEC §2.3–2.5). Site-local recon is a conceptual no-no, not a "simplification".
-`param_decomp_targets/llama_simple_mlp.py` is the second target (the pile-pretrained `LlamaSimpleMLP`,
+`param_decomp/targets/llama_simple_mlp.py` is the second target (the pile-pretrained `LlamaSimpleMLP`,
 t-9d2b8f02; sites `h.{i}.attn.{q,k,v,o}_proj` / `h.{i}.mlp.{c_fc,down_proj}`) —
 config dispatch is `TargetConfig` (the HF GLU families) vs `LlamaSimpleMLPTargetConfig`, both LAB-side
-(`param_decomp_lab/experiments/lm/config.py`, which reads the canonical schema DIRECTLY —
+(`param_decomp/experiments/lm/config.py`, which reads the canonical schema DIRECTLY —
 `build_experiment_config`/`load_config` — resolving each target's tiled
 `decomposition.sites` via its `ArchFamily`), target build in the LM composition root
-`param_decomp_lab/experiments/lm/run.py::main`. The slow plot metrics are computed
+`param_decomp/experiments/lm/run.py::main`. The slow plot metrics are computed
 NATIVELY in JAX (`slow_eval.py`) — no torch export round-trip (the torch offline-eval
 bridge `jsp-export` / `pd-offline-eval` was retired). They run IN-LOOP ONLY on
 `eval.slow_every` next to the fast pass (SPEC S28/S29; there is NO offline/retrospective
@@ -142,9 +142,9 @@ CE/KL/L0/PGD scalars come from a dedicated `make_eval_step` instance with
 `n_valid_rows=n_prompts`, so pad rows carry zero weight. Wired LM-side by
 `experiments/lm/run.py::_make_arithmetic_eval` (a `_ArithmeticEval` bundle).
 
-**Every target lives in `param_decomp_targets` — the toys (TMS, ResidMLP) included.**
+**Every target lives in `param_decomp.targets` — the toys (TMS, ResidMLP) included.**
 The core trainer carries ZERO target-specific code — the toy *targets*
-(`DecomposedModel`s, pretrain, identity-CI eval) are `param_decomp_targets/{tms,resid_mlp}.py`,
+(`DecomposedModel`s, pretrain, identity-CI eval) are `param_decomp/targets/{tms,resid_mlp}.py`,
 peers of the LM slices; their composition roots (`pd-tms` / `pd-resid-mlp`) stay
 lab-side. CI-fn *architectures* are NOT toy-specific code: core owns every CI-fn arch
 regardless of which experiments use it. The positionless MLPs and the sequence transformer
@@ -160,7 +160,7 @@ NO flattened mirror dataclass; the run identity rides in
 pass alongside. A target injects exactly three seams: the data source
 (`sample_batch(step) -> residual`), the eval metric (`eval_fn(state, now_step) -> dict`, run
 every `eval_every`), and (for the LM) the perf token count.
-`param_decomp_lab/experiments/lm/run.py::train` is the thin LM caller (parquet
+`param_decomp/experiments/lm/run.py::train` is the thin LM caller (parquet
 `sample_batch` + the CEandKL/CI-L0/PGD/attn-patterns `eval_fn` in `_make_lm_eval_fn`); that
 LM composition root is LM-ONLY (`experiments.lm.config.build_from_schema` validates
 `LMExperimentConfig` and returns a `config.BuiltRun`; `main`'s `match built.target` covers
@@ -170,9 +170,9 @@ for a toy run). The shared schema validation + run-identity / CI-fn-arch helpers
 lab-side for the toys to reuse: `experiments.config.assert_canonical_algorithm_config` /
 `run_instance` / `ci_arch`.
 
-The TMS + ResidMLP targets live at `param_decomp_targets/{tms,resid_mlp}.py` (the JAX
+The TMS + ResidMLP targets live at `param_decomp/targets/{tms,resid_mlp}.py` (the JAX
 `DecomposedModel` + frozen target + in-process pretrain + identity-CI eval); each
-`param_decomp_lab/experiments/{tms,resid_mlp}/run.py` is the `pd-tms` / `pd-resid-mlp`
+`param_decomp/experiments/{tms,resid_mlp}/run.py` is the `pd-tms` / `pd-resid-mlp`
 CPU CLI that builds the `ExperimentConfig` from the canonical schema and calls
 `run_decomposition_training`. They are positionless and use the MLP CI fns. All CI-fn architectures live together in
 `ci_fn.py`: `LayerwiseMLPCIFn` (positionless, one independent MLP per site mapping
@@ -252,9 +252,9 @@ Llama-8B target is multi-GB. Therefore:
 
 ## Validation stack (run all before claiming correctness)
 
-1. `pytest param_decomp/tests/ param_decomp_targets/tests/` — at the default device
+1. `pytest param_decomp/core/tests/ param_decomp/targets/tests/` — at the default device
    count AND `XLA_FLAGS="--xla_force_host_platform_device_count=4"`.
-2. `param_decomp_targets/tests/equivalence/` — fixture-driven JAX-vs-frozen-golden
+2. `param_decomp/targets/tests/equivalence/` — fixture-driven JAX-vs-frozen-golden
    per-term numeric equivalence (fp32, no RNG, zeroed attn). The torch references are
    FROZEN committed goldens (`torch_reference.json`, `simple_mlp_equivalence/*.npz`,
    `tools/export_fixtures/*`); the torch generators/verifier that produced them are
@@ -263,7 +263,7 @@ Llama-8B target is multi-GB. Therefore:
    `torch-oracle` git tag in a torch-venv worktree and run that revision's
    `torch_reference.py` / `gen_torch_fixtures.py` / `gen_export_fixture.py`, copying the
    emitted goldens back here.
-3. `param_decomp_targets/invariance_check.py` at 4 sim devices — trajectory invariant
+3. `param_decomp/targets/invariance_check.py` at 4 sim devices — trajectory invariant
    to device count up to float reassociation (SPEC D4).
 
 `basedpyright` over the whole workspace must be clean (run `make type`); `param_decomp`
@@ -274,7 +274,7 @@ alongside lab.
 
 The generic ENGINE `run.py::run_decomposition_training` is a pure library (no `main`, no
 YAML). The composition root + only I/O layer is LAB-side:
-`python -m param_decomp_lab.experiments.lm.run <config.yaml>` reads the YAML, builds the
+`python -m param_decomp.experiments.lm.run <config.yaml>` reads the YAML, builds the
 target + data loader + `ExperimentConfig`, and calls the engine; the step stays pure. Data
 is a pre-tokenized parquet artifact under
 `$DATA_MOUNT/artifacts/mechanisms/param-decomp/datasets/` (`fineweb_llama_tok_2048`
@@ -289,7 +289,7 @@ Resume with a changed config is refused (byte-compare). Smokes before a long run
 MUST exercise save AND resume at the production per-rank shape.
 
 A run config is ONE self-contained yaml: the experiment schema
-(`param_decomp_lab.experiments.config.ExperimentConfig` over the core
+(`param_decomp.experiments.config.ExperimentConfig` over the core
 `param_decomp.core.configs` pieces — `pd`/`data`/`eval`/`cadence`/`runtime`/`target`/`wandb`)
 plus the run-instance fields
 the schema now also carries — top-level `run_name`/`run_id`/`out_dir`, the
@@ -330,7 +330,7 @@ asserts matching sites (names + C) + ci-fn arch before the restore. Provenance f
   + `.env`, and sbatches. Each node builds its own workspace at job start (shallow-fetch
   the snapshot from the submitting checkout's shared-FS git dir into node-local `/tmp` +
   the driver-gated CUDA venv: >= r580 → `cuda13`, else `cuda`) and execs
-  `python -m param_decomp_lab.experiments.lm.run <launch_config> --run-id <id>` (no
+  `python -m param_decomp.experiments.lm.run <launch_config> --run-id <id>` (no
   rank/topology flags).
 
 Requeues rebuild the node workspaces and re-read the pinned launch config, never the live

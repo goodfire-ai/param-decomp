@@ -1,15 +1,15 @@
-# param-decomp-targets
+# param_decomp.targets
 
 The vendored decomposition targets: **every `DecomposedModel` implementation lives
-here**, one slice per architecture, between the generic engine (`param-decomp`) and the
-lab (`param-decomp-lab`).
+here**, one slice per architecture, between the generic engine (`param_decomp.core`)
+and the composition layers above.
 
 The dependency direction is `lab → targets → engine`, pinned by
 `param_decomp/tests/test_runtime_standalone.py`. The engine never imports a target — it
 sees only the `DecomposedModel` protocol (`param_decomp.core.model`) and the `ArchFamily`
 grammar contract (`param_decomp.core.family`). The lab composes: the model-name → family
 registry and all authoring vocabulary stay lab-side
-(`param_decomp_lab/experiments/lm/config.py`).
+(`param_decomp/experiments/lm/config.py`).
 
 This layer exists so that *what a target is* and *what we distribute* are independent
 decisions: a public release selects packages (engine + whichever slices are shareable);

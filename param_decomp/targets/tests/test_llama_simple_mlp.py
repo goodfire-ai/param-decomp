@@ -399,7 +399,7 @@ def test_pretrained_target_converts_with_all_layers():
     import yaml
 
     from param_decomp.core.built_run import DataConfig
-    from param_decomp_lab.experiments.lm.config import (
+    from param_decomp.experiments.lm.config import (
         LlamaSimpleMLPTargetConfig,
         LMExperimentConfig,
         build_experiment_config,
@@ -410,7 +410,7 @@ def test_pretrained_target_converts_with_all_layers():
     raw["target"]["spec"] = {
         "kind": "pretrained",
         "model_class": (
-            "param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp.LlamaSimpleMLP"
+            "param_decomp.experiments.lm.pretrain.models.llama_simple_mlp.LlamaSimpleMLP"
         ),
         "run_path": "goodfire/spd/runs/t-9d2b8f02",
     }

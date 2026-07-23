@@ -29,13 +29,13 @@ dirs carry the exact configs.
 | save-path smoke | `param_decomp/configs/llama8b_full32L_HSDP_b32_dp32_SAVESMOKE.yaml` | cheap end-to-end save/resume smoke launch |
 | config-suite fixture | `param_decomp/configs/llama8b_l18_b128_cmp32.yaml` | the representative full config the core config/resume tests load (`test_config.py`, `test_finetune_resume.py`, `test_llama_simple_mlp.py`) |
 | chunkwise fixture | `param_decomp/configs/llama8b_l18-26_9layer_chunkwise.yaml` | the 27-site chunkwise CI-fn config `test_config.py` converts |
-| jose-ish (4L pile flagship) | `param_decomp_lab/experiments/lm/jose-ish.yaml` | the flagship `jose` recipe migrated to the JAX schema — runnable at tip (#917) |
-| jose (gpt2-arch 4L) | `param_decomp_lab/experiments/lm/jose.yaml` | the original flagship reference — **unrunnable at tip**, see below |
-| ss 2L SimpleMLP | `param_decomp_lab/experiments/lm/ss_llama_simple_mlp-2L.yaml` | small-LM regression archetype — **unrunnable at tip**, see below |
-| pile 4L SimpleMLP | `param_decomp_lab/experiments/lm/pile_llama_simple_mlp-4L.yaml` | pretrained-target archetype — **unrunnable at tip**, see below |
+| jose-ish (4L pile flagship) | `param_decomp/experiments/lm/jose-ish.yaml` | the flagship `jose` recipe migrated to the JAX schema — runnable at tip (#917) |
+| jose (gpt2-arch 4L) | `param_decomp/experiments/lm/jose.yaml` | the original flagship reference — **unrunnable at tip**, see below |
+| ss 2L SimpleMLP | `param_decomp/experiments/lm/ss_llama_simple_mlp-2L.yaml` | small-LM regression archetype — **unrunnable at tip**, see below |
+| pile 4L SimpleMLP | `param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml` | pretrained-target archetype — **unrunnable at tip**, see below |
 
-The toy testbeds (`param_decomp_lab/experiments/tms/configs/`,
-`param_decomp_lab/experiments/resid_mlp/configs/`) and the pretrain configs
+The toy testbeds (`param_decomp/experiments/tms/configs/`,
+`param_decomp/experiments/resid_mlp/configs/`) and the pretrain configs
 (`pretrain/configs/`) are separate small schemas, maintained with their
 experiments; they are seats too, just not LM-schema ones.
 
@@ -58,13 +58,13 @@ reason `jose.yaml` is kept rather than deleted — it is the referent those
 deviations are stated against.
 
 They are quarantined in `KNOWN_BROKEN` in
-`param_decomp_lab/tests/test_repo_configs_parse.py`, which asserts they still
+`param_decomp/tests/test_repo_configs_parse.py`, which asserts they still
 fail (so the list can't silently rot) and must only ever shrink.
 
 ## Rules
 
 1. **Every LM config yaml in the tree parses at tip** — CI-enforced by
-   `param_decomp_lab/tests/test_repo_configs_parse.py` (schema parse +
+   `param_decomp/tests/test_repo_configs_parse.py` (schema parse +
    `assert_canonical_algorithm_config`). A schema PR that breaks one migrates
    it **in the same PR**, with an executed in-repo migration (the #966
    pattern) — never a script attached to a PR comment (#939 attached one; it

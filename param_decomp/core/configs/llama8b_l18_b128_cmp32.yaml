@@ -10,7 +10,7 @@ run_name: jax-l18-b128-cmp32-from-torch
 # pd-nano-jax param_decomp/configs/llama8b_l18_b128_cmp32.yaml — same constants,
 # same wandb keys (train/loss/*). At L18 (one 3-site chunk) StochasticReconSubsetLoss
 # is exactly the JAX chunkwise-subset recon.
-# Launch: pd-lm param_decomp_lab/experiments/lm/_llama8b/llama8b_l18_b128_cmp32_1pool.yaml --dp 32
+# Launch: pd-lm param_decomp/experiments/lm/_llama8b/llama8b_l18_b128_cmp32_1pool.yaml --dp 32
 decomposition:
   sites:
     kind: glu_transformer
@@ -100,7 +100,7 @@ cadence:
 target:
   spec:
     kind: hf_weights_in_vendored
-    model_class: param_decomp_lab.experiments.lm.vendored.llama_3_1.model.VendoredLlama
+    model_class: param_decomp.experiments.lm.vendored.llama_3_1.model.VendoredLlama
     model_name: meta-llama/Llama-3.1-8B
   output_extract: 0
   activation_checkpointing: true

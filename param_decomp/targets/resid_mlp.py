@@ -2,7 +2,7 @@
 non-LM bundle, positionless (`has_position_axis=False`; the waist is the residual stream
 `[B, d_embed]`).
 
-Torch reference (read-only ground truth): `param_decomp_lab/experiments/resid_mlp/`
+Torch reference (read-only ground truth): `param_decomp/experiments/resid_mlp/`
 (`models.py` the architecture, `train_resid_mlp.py` the read-off pretrain objective,
 `data.py` the synthetic sparse features). The target is the SPD/APD residual-stream toy:
 

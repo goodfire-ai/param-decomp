@@ -1,6 +1,6 @@
 """JAX/Equinox port of the vendored Llama-3.1 decomposition target.
 
-Faithful translation of `param_decomp_lab/experiments/lm/vendored/llama_3_1/{model,components}.py`
+Faithful translation of `param_decomp/experiments/lm/vendored/llama_3_1/{model,components}.py`
 (itself verbatim-from-HF-transformers numeric kernels). NOT written from memory: every
 computational line mirrors the torch vendored module, which cites transformers v4.57.3.
 

@@ -9,7 +9,7 @@ the run identity (`RunInstance`), the decomposed `target` (typed by the `TargetS
 protocol — just `.sites`), the resolved `data` source (`DataConfig | None`, None for a
 positionless toy), the built CI-fn architecture (`CIFnArch`), and the resolved scalar-tier
 `EvalConfig`. The YAML→bundle CONVERSION is COMPOSITION and lives lab-side
-(`param_decomp_lab/experiments/`).
+(`param_decomp/experiments/`).
 """
 
 from dataclasses import dataclass

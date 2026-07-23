@@ -51,11 +51,12 @@ check-pre-commit:
 
 # tests
 
-# `param_decomp/tests/` is the JAX trainer core suite; `param_decomp_targets/tests/` the
+# `param_decomp/core/tests/` is the engine suite; `param_decomp/targets/tests/` the
 # per-target parity/golden suites (incl. the LM equivalence goldens);
-# `param_decomp_lab/{tests,experiments}/` the lab suites (the toy TMS/ResidMLP experiment
-# tests live beside their composition roots under experiments/).
-TEST_PATHS = param_decomp/core/tests/ param_decomp/targets/tests/ param_decomp_lab/tests/ param_decomp_lab/experiments/
+# `param_decomp/{tests,experiments}/` the library-level + composition suites (the toy
+# TMS/ResidMLP experiment tests live beside their composition roots under experiments/);
+# `param_decomp_goodfire/tests/` the private launcher's.
+TEST_PATHS = param_decomp/core/tests/ param_decomp/targets/tests/ param_decomp/tests/ param_decomp/experiments/ param_decomp_goodfire/tests/
 
 .PHONY: test
 test:
@@ -87,7 +88,7 @@ test-ci-core:
 
 .PHONY: test-ci-lab-multidevice
 test-ci-lab-multidevice:
-	uv run pytest param_decomp_lab/tests/ param_decomp_lab/experiments/ --runslow --durations 10 --numprocesses $(NUM_PROCESSES) --dist worksteal
+	uv run pytest param_decomp/tests/ param_decomp/experiments/ param_decomp_goodfire/tests/ --runslow --durations 10 --numprocesses $(NUM_PROCESSES) --dist worksteal
 	$(MAKE) test-multidevice
 
 # Tests needing >1 device (sharding / checkpoint topology). They hang at the default 1

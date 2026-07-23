@@ -115,7 +115,7 @@ def test_every_combination_runs_end_to_end(ffn_kind: str, learned_norm_scale: bo
 
 
 # The authored-schema parse tests (`ChunkwiseTransformerCiConfig.ffn` arms) live with the
-# schema, lab-side: `param_decomp_lab/tests/test_lm_ci_schema.py`.
+# schema, lab-side: `param_decomp/tests/test_lm_ci_schema.py`.
 
 
 def test_iso_param_swiglu_width_at_production_shape():

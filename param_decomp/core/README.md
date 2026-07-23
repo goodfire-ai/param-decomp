@@ -4,21 +4,20 @@ A JAX implementation of the **single-pool** Parameter Decomposition (VPD) traini
 loop — the four-term loss (faithfulness + importance-minimality + chunkwise stochastic
 recon + persistent-PGD adversarial recon) as one `jax.jit` step, GSPMD-sharded,
 **generic over vendored targets**: the engine sees a target only through the
-`DecomposedModel` protocol; the concrete targets live in the sibling
-`param-decomp-targets` distribution ([`../param_decomp_targets/`](../param_decomp_targets/README.md)).
+`DecomposedModel` protocol; the concrete targets live in the sibling subpackage
+[`param_decomp.targets`](../targets/README.md).
 
 The semantics are pinned by [`SPEC.md`](SPEC.md) (normative: pseudocode + numbered
 invariants, grounded in the torch oracle at git tag `torch-oracle`). It realized the
 "single-pool SPMD collapse" hypothesis: XLA + whole-step `jit` + GSPMD sharding replaces
 the hand-written-NCCL multi-pool design with zero manual collectives.
 
-`param_decomp/` is the core of the root `param-decomp` distribution, living at the repo
-root with sibling packages `pretrain/` (the in-house target-LM pretrainer) and
-`vendored_jax/` (bit-parity JAX archs). The concrete targets are the separate
-`param-decomp-targets` distribution (`param_decomp_targets/`), and the composition
-roots/launchers/consumers the `param-decomp-lab` distribution — dependency direction
-`lab → targets → engine`, pinned by `tests/test_runtime_standalone.py`. Install the
-whole workspace into the one venv with `make install-dev`.
+`param_decomp/core/` is the engine layer of the one `param-decomp` library, beside its
+sibling subpackages `param_decomp.targets` (the concrete targets),
+`param_decomp.pretrain` (the in-house target-LM pretrainer), `param_decomp.vendored_jax`
+(bit-parity JAX archs), and the composition/consumer layers (`experiments`, `harvest`,
+…). Imports point only downward — pinned by `tests/test_runtime_standalone.py`. Install
+the whole workspace into the one venv with `make install-dev`.
 
 ## What's here
 
@@ -38,16 +37,16 @@ whole workspace into the one venv with `make install-dev`.
 | `tools/` | debug tools (`liverange_peak.py`, `memreport.py`) |
 | `sharding.py` | generic GSPMD helpers (`init_distributed`, `hsdp_mesh`, `place_via_shardings`, `place_target`, `shard_batch`) |
 | `init_placed.py` | seeded init → placed arrays with no host-side full tree (`init_component_stacks_placed` / `init_ci_fn_placed` / `init_sources_sharded`; the few-outputs-under-jit compile doctrine) |
-| `family.py` | `ArchFamily` (a target's matrix grammar as data: vocabulary + `name_of`/`parse`) + the family-parameterized `canonical_site_cs`/`site_specs` the targets delegate to. The block-structured `SiteTree` + `resolve_site_tree` (tiled c-spec → tree) live lab-side with the LM schema (`param_decomp_lab/experiments/lm/config.py`) |
-| `run.py` | the generic ENGINE `run_decomposition_training` (pure library, no `main`/YAML): faith warmup, loop, metrics jsonl/wandb, in-loop slow renderer, orbax checkpoints, SIGTERM-save + requeue-resume. The LM composition root that reads YAML + builds the target lives lab-side (`param_decomp_lab/experiments/lm/run.py`) |
+| `family.py` | `ArchFamily` (a target's matrix grammar as data: vocabulary + `name_of`/`parse`) + the family-parameterized `canonical_site_cs`/`site_specs` the targets delegate to. The block-structured `SiteTree` + `resolve_site_tree` (tiled c-spec → tree) live lab-side with the LM schema (`param_decomp/experiments/lm/config.py`) |
+| `run.py` | the generic ENGINE `run_decomposition_training` (pure library, no `main`/YAML): faith warmup, loop, metrics jsonl/wandb, in-loop slow renderer, orbax checkpoints, SIGTERM-save + requeue-resume. The LM composition root that reads YAML + builds the target lives lab-side (`param_decomp/experiments/lm/run.py`) |
 | `data.py` | deterministic batch schedule over the pre-tokenized fineweb parquet shards; O(1) resume addressing, per-process slices |
-| `hf_http.py` | `configure_hf_http_retries` — idempotent retrying-adapter install on huggingface_hub (cold-cache 8N-rank startup burst); no-op without huggingface_hub; JAX-side analog of `param_decomp_lab/infra/hf_http.py` |
+| `hf_http.py` | `configure_hf_http_retries` — idempotent retrying-adapter install on huggingface_hub (cold-cache 8N-rank startup burst); no-op without huggingface_hub; JAX-side analog of `param_decomp/infra/hf_http.py` |
 | `built_run.py` | the built-run bundle the engine consumes: `BuiltRun` / `DataConfig` / `EvalConfig` / `RunInstance` + the `TargetSites` protocol. Domain-agnostic — the YAML→bundle CONVERSION lives lab-side (`experiments/config.py` shared + `experiments/lm/config.py` LM) |
 | `configs.py` | the torch-free pydantic config SCHEMA: routing + the `explicit` (toy) site spec + loss-metric + eval-metric configs, `PDConfig` / `RuntimeConfig` / `Cadence` / `WandbConfig` / `ResumeProvenance`, and the `wandb.config` shaping helpers. The authored `decomposition.ci` configs AND the tiled LM site specs (`GluTransformerCSpec`/`SimpleMlpCSpec`, `LayerSelection`) speak each domain's vocabulary and live with the domain schemas, lab-side (`experiments/lm/config.py` chunkwise + tiled sites, `experiments/config.py` toy MLPs); core carries only the RESOLVED CI-fn arches (`ci_fn.py`) and resolved flat sites |
 | `base_config.py` | `BaseConfig` (frozen `extra=forbid` pydantic `BaseModel` + YAML/JSON round-trip), `Probability` |
 | `schedule.py` | `ScheduleConfig` + its two evaluators, host `get_scheduled_value` / traced `scheduled_value_traced` (warmup → constant/linear/cosine decay; every scheduled quantity routes through here) |
 | `configs/` | the single self-contained run yamls (one file per run; no wrapper/schema split) |
-| `tests/` | tiny-target unit tests (incl. attention sites + heterogeneous per-site C), checkpoint resume, sharding, and the layering test (`test_runtime_standalone.py`, pinning `lab → targets → engine`). The per-target parity/golden suites (torch↔JAX equivalence, stacked parity, Qwen3 HF parity, SimpleMLP torch fixtures) live with the targets: `param_decomp_targets/tests/` |
+| `tests/` | tiny-target unit tests (incl. attention sites + heterogeneous per-site C), checkpoint resume, sharding, and the layering test (`test_runtime_standalone.py`, pinning `lab → targets → engine`). The per-target parity/golden suites (torch↔JAX equivalence, stacked parity, Qwen3 HF parity, SimpleMLP torch fixtures) live with the targets: `param_decomp/targets/tests/` |
 
 ## Run
 
@@ -55,7 +54,7 @@ whole workspace into the one venv with `make install-dev`.
 # From the repo root — one venv for the whole workspace:
 make install-dev && source .venv/bin/activate
 
-pytest param_decomp/tests/ param_decomp_targets/tests/
+pytest param_decomp/tests/ param_decomp/targets/tests/
 
 # GSPMD device-count invariance (simulated devices on CPU), SPEC D4:
 XLA_FLAGS="--xla_force_host_platform_device_count=4" \

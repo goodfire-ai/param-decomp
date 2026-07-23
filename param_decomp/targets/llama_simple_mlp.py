@@ -1,7 +1,7 @@
 """`LlamaSimpleMLP` pile-pretrained target — the second `DecomposedModel` implementation.
 
 Torch reference (read-only, ground truth):
-`param_decomp_lab/experiments/lm/pretrain/models/llama_simple_mlp.py`, weights from
+`param_decomp/experiments/lm/pretrain/models/llama_simple_mlp.py`, weights from
 pretrain run `goodfire/spd/runs/t-9d2b8f02`. Llama-style pre-RMSNorm blocks under a
 GPT2-style module tree `h.{i}.`: rotary GQA attention (`rotary_dim == head_dim`,
 plain base-`rotary_base` rotate-half RoPE — NOT llama3-rescaled) and a GELU(tanh) MLP

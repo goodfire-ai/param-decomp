@@ -125,7 +125,7 @@ def test_source_leaf_grad_is_global_mean_not_sum():
         return  # SUM vs MEAN (N× the mean) is only observable with >1 device
 
     sharded = _source_grad(sharded=True)
-    # Combined abs+rel as in `param_decomp_targets/invariance_check.py`: the cross-shard
+    # Combined abs+rel as in `param_decomp/targets/invariance_check.py`: the cross-shard
     # reduction order differs (bf16 masked forward), so a few tiny grad entries with
     # cancellation graze a pure-relative 1e-4 while their ABSOLUTE error stays ~1e-10,
     # orders of magnitude below the ~1e-4 grad scale — reassociation noise, not a SUM.

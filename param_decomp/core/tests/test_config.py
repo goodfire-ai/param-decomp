@@ -25,14 +25,14 @@ from param_decomp.core.recon import (
     build_loss_terms,
     persistent_configs,
 )
-from param_decomp.targets.glu_transformer import mlp_family_site_cs
-from param_decomp_lab.experiments.lm.config import (
+from param_decomp.experiments.lm.config import (
     LMExperimentConfig,
     assert_supported_weights_dtype,
     build_experiment_config,
     load_config,
     load_run_dir_config,
 )
+from param_decomp.targets.glu_transformer import mlp_family_site_cs
 
 CONFIGS = Path(__file__).parent.parent / "configs"
 RUN_ID = "p-0123abcd"
@@ -267,7 +267,7 @@ def test_unsupported_model_family_refuses_and_supported_families_dispatch():
     time. The schema's `LMTargetSpec` discriminated union still validates a GPT-2 spec
     (it's a well-formed `kind`), so the refusal must come from `_resolve_target`'s
     per-family asserts, not pydantic."""
-    from param_decomp_lab.experiments.lm.config import LlamaSimpleMLPTargetConfig, TargetConfig
+    from param_decomp.experiments.lm.config import LlamaSimpleMLPTargetConfig, TargetConfig
 
     raw = _reference_lm_raw()
 
@@ -280,7 +280,7 @@ def test_unsupported_model_family_refuses_and_supported_families_dispatch():
     vendored_llama = _converted_target(
         {
             "kind": "hf_weights_in_vendored",
-            "model_class": "param_decomp_lab.experiments.lm.vendored.llama_3_1.model.VendoredLlama",
+            "model_class": "param_decomp.experiments.lm.vendored.llama_3_1.model.VendoredLlama",
             "model_name": "meta-llama/Llama-3.1-8B",
         }
     )
@@ -314,7 +314,7 @@ def test_unsupported_model_family_refuses_and_supported_families_dispatch():
 
     gpt2_vendored = {
         "kind": "hf_weights_in_vendored",
-        "model_class": "param_decomp_lab.experiments.lm.pretrain.models.gpt2.GPT2Simple",
+        "model_class": "param_decomp.experiments.lm.pretrain.models.gpt2.GPT2Simple",
         "model_name": "gpt2",
     }
     with pytest.raises(AssertionError, match="GPT2Simple"):
@@ -333,7 +333,7 @@ def test_unsupported_model_family_refuses_and_supported_families_dispatch():
     # before any disk access.
     non_simple_mlp_pretrained = {
         "kind": "pretrained",
-        "model_class": "param_decomp_lab.experiments.lm.pretrain.models.gpt2.GPT2Simple",
+        "model_class": "param_decomp.experiments.lm.pretrain.models.gpt2.GPT2Simple",
         "run_path": "goodfire/spd/runs/t-deadbeef",
     }
     with pytest.raises(AssertionError, match="GPT2Simple"):
