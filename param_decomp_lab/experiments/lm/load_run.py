@@ -40,10 +40,7 @@ from param_decomp.ci_fn import ChunkwiseTransformerCIFn
 from param_decomp.components import ComponentStacks
 from param_decomp.model import DecomposedModel
 from param_decomp.run_state import init_decomposition
-from param_decomp.sharding import hsdp_mesh, place_via_shardings
-from param_decomp.targets import llama_simple_mlp
-from param_decomp.targets.glu_transformer import glu_site_specs
-from param_decomp.targets.glu_transformer_sharding import place_target
+from param_decomp.sharding import hsdp_mesh, place_target, place_via_shardings
 from param_decomp.train import COMPUTE_DT, Decomposition, cast_floating
 from param_decomp_lab.experiments.lm.config import (
     LlamaSimpleMLPTargetConfig,
@@ -51,6 +48,8 @@ from param_decomp_lab.experiments.lm.config import (
     hf_model_family,
     load_run_dir_config,
 )
+from param_decomp_targets import llama_simple_mlp
+from param_decomp_targets.glu_transformer import glu_site_specs
 
 
 @dataclass(frozen=True)

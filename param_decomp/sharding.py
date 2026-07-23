@@ -12,17 +12,20 @@ weight gather on `fsdp`, the grad reduce-scatter on `fsdp` + the cross-node all-
 `replicate`, the source-grad reduction) automatically because the mean-losses reduce over
 the batch axis. No manual NCCL, no pool-coordination code.
 
-Placement is expressed as `NamedSharding`: target-specific plans (like
-`glu_transformer_sharding.py`) FSDP-shard params on `fsdp`; `shard_batch` shards the data axis over
-the full mesh.
+Placement is expressed as `NamedSharding`, and declared, never inferred: a target model
+declares its per-leaf placement via `.shardings(mesh)` and `place_target` applies it;
+`shard_batch` shards the data axis over the full mesh.
 """
 
 import os
+from typing import cast
 
 import jax
 import numpy as np
 from jax.sharding import AbstractMesh, Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
+
+from param_decomp.model import DecomposedModel
 
 _GPUS_PER_NODE = 8
 
@@ -121,6 +124,13 @@ def place_via_shardings[T](tree: T, shardings: T) -> T:
         shardings,
         is_leaf=lambda x: isinstance(x, NamedSharding),
     )
+
+
+def place_target[M: DecomposedModel](tgt: M, mesh: Mesh) -> M:
+    """Eager placement of an already-loaded frozen target onto its own declared per-leaf
+    shardings (`tgt.shardings(mesh)`). The apply path for loaded weights; freshly-seeded
+    params go through the jitted `out_shardings` init path (`init_placed`) instead."""
+    return place_via_shardings(tgt, cast(M, tgt.shardings(mesh)))
 
 
 def assert_divisible(dim: int, mesh: Mesh, axis: str, what: str) -> None:

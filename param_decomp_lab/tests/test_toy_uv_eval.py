@@ -17,7 +17,7 @@ import pytest
 from param_decomp.ci_fn import MLPCIArch, init_layerwise_mlp_ci_fn
 from param_decomp.components import SiteC, init_component_stacks
 from param_decomp_lab.experiments import toy_uv_eval
-from param_decomp_lab.experiments.tms.model import (
+from param_decomp_targets.tms import (
     TMSConfig,
     init_tms_target,
     single_feature_probe,

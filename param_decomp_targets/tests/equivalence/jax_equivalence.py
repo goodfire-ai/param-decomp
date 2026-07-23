@@ -38,7 +38,7 @@ from param_decomp.losses import (  # noqa: E402
     importance_minimality_terms,
     kl_per_position,
 )
-from param_decomp.targets.glu_transformer import (  # noqa: E402
+from param_decomp_targets.glu_transformer import (  # noqa: E402
     MLP_KINDS,
     FrozenAttn,
     GLUDecomposedModel,

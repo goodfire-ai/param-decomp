@@ -47,12 +47,12 @@ from param_decomp.ci_fn import (
 from param_decomp.components import init_component_stacks
 from param_decomp.losses import kl_per_position
 from param_decomp.sharding import hsdp_mesh, shard_batch
-from param_decomp.targets.glu_transformer import (
+from param_decomp.train import COMPUTE_DT, cast_floating
+from param_decomp_targets.glu_transformer import (
     glu_site_specs,
     mlp_family_site_cs,
 )
-from param_decomp.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
-from param_decomp.train import COMPUTE_DT, cast_floating
+from param_decomp_targets.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
 
 
 def _source_grad(sharded: bool) -> dict[str, jax.Array]:
@@ -125,7 +125,7 @@ def test_source_leaf_grad_is_global_mean_not_sum():
         return  # SUM vs MEAN (N× the mean) is only observable with >1 device
 
     sharded = _source_grad(sharded=True)
-    # Combined abs+rel as in `experiments/invariance_check.py`: the cross-shard
+    # Combined abs+rel as in `param_decomp_targets/invariance_check.py`: the cross-shard
     # reduction order differs (bf16 masked forward), so a few tiny grad entries with
     # cancellation graze a pure-relative 1e-4 while their ABSOLUTE error stays ~1e-10,
     # orders of magnitude below the ~1e-4 grad scale — reassociation noise, not a SUM.

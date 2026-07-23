@@ -54,8 +54,9 @@ lab is composition / IO / CLI / experiment assembly**:
 
 - **`param-decomp`** (root: `param_decomp/` + sibling `pretrain/` + sibling
   `vendored_jax/`) — the core: the generic JAX single-pool VPD trainer ENGINE
-  (`param_decomp/`: run.py = `run_decomposition_training`, model.py, train.py, ci_fn.py,
-  targets/glu_transformer.py + its llama8b/qwen3_8b family files, …), the torch-free pydantic config SCHEMA it now carries directly
+  (`param_decomp/`: run.py = `run_decomposition_training`, model.py = the
+  `DecomposedModel` protocol, train.py, ci_fn.py, …; ZERO concrete target code), the
+  torch-free pydantic config SCHEMA it now carries directly
   (`base_config.py` = `BaseConfig`, `schedule.py`, `configs.py` = `PDConfig` /
   `RuntimeConfig` / `Cadence` / loss + eval-metric configs / routing / wandb
   shaping), the built-run bundle (`built_run.py`: `BuiltRun` / `DataConfig` /
@@ -64,6 +65,14 @@ lab is composition / IO / CLI / experiment assembly**:
   bit-parity vendored JAX archs (`vendored_jax/`). Carries jax + pydantic as deps. NO
   CLI entrypoints, NO `main()`, NO YAML/experiment reading — the engine takes built
   objects. The repo root IS the uv workspace root.
+- **`param-decomp-targets`** (`param_decomp_targets/`) — every `DecomposedModel`
+  implementation, one slice per architecture: `glu_transformer.py` (+ its
+  `llama8b.py`/`qwen3_8b.py` family files), `llama_simple_mlp.py`,
+  `transformer_taps.py`, and the toys `tms.py`/`resid_mlp.py`; per-target parity/golden
+  suites in `tests/`. Depends on the core only. The layering is
+  `lab → targets → engine` (pinned by `param_decomp/tests/test_runtime_standalone.py`),
+  so what a target is and what we distribute are independent decisions: a public
+  release selects packages, internal-only slices simply aren't in the set.
 - **`param-decomp-lab`** (`param_decomp_lab/`) — team tooling AND the composition roots.
   The per-domain in-job entry (`experiments/lm/run.py` / `experiments/{tms,resid_mlp}/run.py`:
   read the run YAML → build the target / data loader / `ExperimentConfig` → call the core
@@ -159,12 +168,14 @@ and returns JAX-native as the #10 torch->jax adapter.
   built-run bundle the engine consumes (`built_run.py`: `BuiltRun` /
   `DataConfig` / `EvalConfig` / … + the `TargetSites` protocol). The engine + numerics
   (`run.py` = `run_decomposition_training`, `model.py` / `train.py` / `ci_fn.py` /
-  `family.py` /
-  `targets/glu_transformer.py` (+ `targets/{llama8b,qwen3_8b}.py` family files) / `targets/llama_simple_mlp.py` / `adversary.py` / `recon.py` / `losses.py` /
-  `checkpoint.py` / `sharding.py` / `eval.py` / `slow_eval.py` / `arithmetic_eval.py` +
-  `log.py`) plus `configs/`
-  (the self-contained run yamls) and `tests/` (incl. the `tests/equivalence/` frozen
-  torch↔JAX goldens). The torch oracle lives at git tag `torch-oracle`.
+  `family.py` / `adversary.py` / `recon.py` / `losses.py` /
+  `checkpoint.py` / `sharding.py` / `init_placed.py` / `eval.py` / `slow_eval.py` /
+  `arithmetic_eval.py` + `log.py`) plus `configs/`
+  (the self-contained run yamls) and `tests/`. The concrete targets live in the sibling
+  `param_decomp_targets/` distribution (`glu_transformer.py` +
+  `{llama8b,qwen3_8b}.py` family files, `llama_simple_mlp.py`, the toys
+  `{tms,resid_mlp}.py`; its `tests/` holds the frozen torch↔JAX equivalence goldens and
+  the other parity suites). The torch oracle lives at git tag `torch-oracle`.
 - `pretrain/` (repo-root sibling) — the in-house target-LM pretrainer (`pretrain.train`):
   trainable equinox archs whose `state_dict()` keys the decomposition loader reads.
 - `vendored_jax/` (repo-root sibling) — bit-parity JAX Llama / GPT-2 archs the trainer
@@ -179,8 +190,8 @@ and returns JAX-native as the #10 torch->jax adapter.
   (LM schema + LM build), `load_run.py` (open a finished JAX run), `data.py` /
   `prestage_tokenized.py` (offline tokenize → parquet shards), `jax_launch.py` (`pd-lm`).
   The TMS and ResidualMLP domains live under `experiments/{tms,resid_mlp}/`
-  (`run.py` + `config.py` + `model.py`; `pd-tms` / `pd-resid-mlp`), calling the core
-  engine as a library.
+  (`run.py` + `config.py`; `pd-tms` / `pd-resid-mlp`), calling the core engine as a
+  library over the toy targets (`param_decomp_targets/{tms,resid_mlp}.py`).
 - `param_decomp_lab/{harvest,autointerp,clustering,investigate}/`
   — post-pipeline stages, each with its own CLAUDE.md.
 - `param_decomp_lab/postprocess/` — orchestrates the post-pipeline stages.

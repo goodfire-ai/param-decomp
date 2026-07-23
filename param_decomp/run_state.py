@@ -26,6 +26,11 @@ from param_decomp.configs import (
     MuonOptimizerConfig,
     PDConfig,
 )
+from param_decomp.init_placed import (
+    init_ci_fn_placed,
+    init_component_stacks_placed,
+    init_sources_sharded,
+)
 from param_decomp.losses import scheduled_value_traced
 from param_decomp.model import DecomposedModel, PositionAxis, Positioned
 from param_decomp.muon_stacked import stacked_muon
@@ -37,11 +42,6 @@ from param_decomp.recon import (
     persistent_configs,
 )
 from param_decomp.schedule import ScheduleConfig
-from param_decomp.targets.glu_transformer_sharding import (
-    init_ci_fn_placed,
-    init_component_stacks_placed,
-    init_sources_sharded,
-)
 from param_decomp.train import Decomposition, TrainingItem, TrainState
 
 

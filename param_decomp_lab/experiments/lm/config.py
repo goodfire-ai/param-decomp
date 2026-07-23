@@ -53,15 +53,15 @@ from param_decomp.configs import (
 from param_decomp.family import ArchFamily
 from param_decomp.recon import build_loss_terms
 from param_decomp.sharding import hsdp_abstract_mesh
-from param_decomp.targets import glu_transformer, llama8b, llama_simple_mlp, qwen3_8b
-from param_decomp.targets.glu_transformer import GluMatrix
-from param_decomp.targets.llama_simple_mlp import SimpleMlpMatrix
-from param_decomp.targets.transformer_taps import TransformerTapGrammar, resid_tap_key
 from param_decomp_lab.experiments.config import (
     ExperimentConfig,
     assert_canonical_algorithm_config,
     run_instance,
 )
+from param_decomp_targets import glu_transformer, llama8b, llama_simple_mlp, qwen3_8b
+from param_decomp_targets.glu_transformer import GluMatrix
+from param_decomp_targets.llama_simple_mlp import SimpleMlpMatrix
+from param_decomp_targets.transformer_taps import TransformerTapGrammar, resid_tap_key
 
 
 class HFTarget(BaseConfig):
@@ -261,7 +261,7 @@ def resolve_site_tree(
 ChunkInputTap = Literal["first_block_resid", "all_block_resids", "all_site_inputs"]
 """Which activations each chunkwise-CI chunk reads. Extend here + add a match arm in
 `_chunk_input_taps` below; the concrete tap keys and their widths are the family tap
-grammar's (`param_decomp.targets.transformer_taps`) — opaque strings everywhere generic."""
+grammar's (`param_decomp_targets.transformer_taps`) — opaque strings everywhere generic."""
 
 
 class MHACiAttentionConfig(BaseConfig):
@@ -380,7 +380,7 @@ class LMExperimentConfig(ExperimentConfig):
 class HFModelFamily:
     """One vendored HF model family the LM composition can target: its arch config, its
     HF loader (the family file's `load_decomposed_*_from_hf`), and the path-schema model
-    type consumers key on. The families live in `param_decomp/targets/{llama8b,qwen3_8b}.py`
+    type consumers key on. The families live in `param_decomp_targets/{llama8b,qwen3_8b}.py`
     over the shared `glu_transformer` machinery; this registry is the ONLY place a model
     name selects a family."""
 

@@ -37,7 +37,14 @@ from param_decomp.configs import (
 from param_decomp.model import DecomposedModel
 from param_decomp.recon import build_loss_terms
 from param_decomp.schedule import ScheduleConfig
-from param_decomp.targets.glu_transformer import (
+from param_decomp.train import (
+    Decomposition,
+    TrainingItem,
+    TrainState,
+    make_faith_warmup_step,
+    make_train_step,
+)
+from param_decomp_targets.glu_transformer import (
     FrozenAttn,
     GLUDecomposedModel,
     GLULayer,
@@ -47,13 +54,6 @@ from param_decomp.targets.glu_transformer import (
     mlp_family_site_cs,
     parse_site_name,
     site_name,
-)
-from param_decomp.train import (
-    Decomposition,
-    TrainingItem,
-    TrainState,
-    make_faith_warmup_step,
-    make_train_step,
 )
 from vendored_jax.llama import LlamaConfig, llama3_inv_freq
 

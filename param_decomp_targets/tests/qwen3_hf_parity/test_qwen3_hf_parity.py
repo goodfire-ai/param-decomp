@@ -16,7 +16,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from param_decomp.targets.glu_transformer import (
+from param_decomp_targets.glu_transformer import (
     GLUConfig,
     GLUDecomposedModel,
     GLULayer,
@@ -24,7 +24,7 @@ from param_decomp.targets.glu_transformer import (
     default_inv_freq,
     hf_snapshot_dir,
 )
-from param_decomp.targets.qwen3_8b import (
+from param_decomp_targets.qwen3_8b import (
     Qwen3FrozenAttn,
     load_decomposed_qwen3_from_hf,
     qwen3_8b_config,

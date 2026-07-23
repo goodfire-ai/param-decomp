@@ -27,23 +27,23 @@ from param_decomp.ci_fn import (
 )
 from param_decomp.components import SiteC, SiteSpec, init_component_stacks
 from param_decomp.model import DecomposedModel, run_stochastic_masked_output
-from param_decomp.targets.glu_transformer import glu_site_specs
-from param_decomp.targets.llama_simple_mlp import (
+from param_decomp_targets.glu_transformer import glu_site_specs
+from param_decomp_targets.llama_simple_mlp import (
     canonical_site_cs as simple_canonical,
 )
-from param_decomp.targets.llama_simple_mlp import (
+from param_decomp_targets.llama_simple_mlp import (
     site_specs as simple_site_specs,
 )
-from param_decomp.tests.test_llama8b import (
+from param_decomp_targets.tests.test_llama8b import (
     _tiny_cfg as _llama_cfg,
 )
-from param_decomp.tests.test_llama8b import (
+from param_decomp_targets.tests.test_llama8b import (
     _tiny_decomposed_lm as _llama_decomposed_lm,
 )
-from param_decomp.tests.test_llama_simple_mlp import (
+from param_decomp_targets.tests.test_llama_simple_mlp import (
     _tiny_cfg as _simple_cfg,
 )
-from param_decomp.tests.test_llama_simple_mlp import (
+from param_decomp_targets.tests.test_llama_simple_mlp import (
     _tiny_decomposed_model as _simple_decomposed_model,
 )
 
@@ -107,7 +107,7 @@ def _llama_attn_setup():
         SiteC("layers.5.self_attn.q_proj", 8),
         SiteC("layers.5.self_attn.k_proj", 6),
     )
-    from param_decomp.targets.glu_transformer import canonical_site_cs
+    from param_decomp_targets.glu_transformer import canonical_site_cs
 
     sites = glu_site_specs(cfg, canonical_site_cs(site_cs))
     model = _llama_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))

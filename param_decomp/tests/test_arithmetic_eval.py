@@ -25,10 +25,10 @@ from param_decomp.arithmetic_eval import (
 )
 from param_decomp.ci_fn import lower_leaky_hard_sigmoid
 from param_decomp.components import init_component_stacks
-from param_decomp.targets.glu_transformer import glu_site_specs, mlp_family_site_cs
-from param_decomp.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
 from param_decomp.tests.test_slow_eval import _build_ci_fn
 from param_decomp.train import COMPUTE_DT, cast_floating
+from param_decomp_targets.glu_transformer import glu_site_specs, mlp_family_site_cs
+from param_decomp_targets.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
 
 N_A, N_B = 3, 4
 T = 5

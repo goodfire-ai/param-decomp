@@ -1,8 +1,13 @@
 # param_decomp — agent notes
 
-Single-pool VPD trainer in JAX, **generic over vendored LM targets**. The semantics
-source of truth is `SPEC.md` (normative pseudocode + numbered invariants, grounded in
-the stable torch `param_decomp` impl). See `README.md` for the file map.
+Single-pool VPD trainer in JAX, **generic over vendored targets**: the engine sees a
+target only through the `DecomposedModel` protocol (`model.py`) and the `ArchFamily`
+grammar contract (`family.py`). The concrete targets — LM and toy alike — are the
+sibling `param-decomp-targets` distribution (`param_decomp_targets/`, one slice per
+architecture); the layering `lab → targets → engine` is pinned by
+`tests/test_runtime_standalone.py`. The semantics source of truth is `SPEC.md`
+(normative pseudocode + numbered invariants, grounded in the stable torch
+`param_decomp` impl). See `README.md` for the file map.
 
 Open items: the persistent-source shape `nsc` and sigmoid parameterization are
 deliberately refused. SPEC S24's two torch-parity quirks (PPGD warmup route-all,
@@ -71,10 +76,23 @@ feeds the single `make_plan` constructor, built from the shared configs by
 see LOSS_PARITY_DESIGN.md),
 consuming `losses.py` (pure loss terms + schedules) and `adversary.py` (persistent
 vs fresh source machinery — semantically distinct adversaries sharing only
-`source_masks`); `ci_fn.py` the shared CI transformer; `targets/glu_transformer.py` + `targets/glu_transformer_sharding.py` the SHARED HF GLU-transformer target machinery (site grammar, `FrozenAttn`/`GLULayer`/`GLUDecomposedModel`, the scan/masked-forward engine, HF loading), with the model FAMILIES in their own files: `targets/llama8b.py` (vendored `LlamaConfig`, llama3 rope) and `targets/qwen3_8b.py` (`Qwen3FrozenAttn` — REQUIRED `q_norm`/`k_norm` fields applied in the `_prep_qk` pre-RoPE hook; Qwen3's one structural delta). Nothing in the shared file switches on a family; the model-name → family registry is LAB-side (`experiments/lm/config.py::HF_MODEL_FAMILIES`). Qwen3 JAX↔HF parity is pinned DIRECTLY by `tests/qwen3_hf_parity/` (a tiny-random `Qwen3ForCausalLM` golden at fp32 tolerance + a slow real-weights logits check; goldens regenerate via its torch-env `gen_hf_fixtures.py`). There is ONE
+`source_masks`); `ci_fn.py` the shared CI transformer. The targets are the sibling
+distribution: `param_decomp_targets/glu_transformer.py` the SHARED HF GLU-transformer
+target machinery (site grammar, `FrozenAttn`/`GLULayer`/`GLUDecomposedModel`, the
+scan/masked-forward engine, HF loading, and the target's own placement via
+`.shardings(mesh)`; the generic seeded-init-placed helpers are engine-side,
+`init_placed.py`), with the model FAMILIES in their own files:
+`param_decomp_targets/llama8b.py` (vendored `LlamaConfig`, llama3 rope) and
+`param_decomp_targets/qwen3_8b.py` (`Qwen3FrozenAttn` — REQUIRED `q_norm`/`k_norm`
+fields applied in the `_prep_qk` pre-RoPE hook; Qwen3's one structural delta). Nothing
+in the shared file switches on a family; the model-name → family registry is LAB-side
+(`experiments/lm/config.py::HF_MODEL_FAMILIES`). Qwen3 JAX↔HF parity is pinned DIRECTLY
+by `param_decomp_targets/tests/qwen3_hf_parity/` (a tiny-random `Qwen3ForCausalLM`
+golden at fp32 tolerance + a slow real-weights logits check; goldens regenerate via its
+torch-env `gen_hf_fixtures.py`). There is ONE
 recon semantics: masks thread through the full token-input forward, loss is KL on final logits
 (SPEC §2.3–2.5). Site-local recon is a conceptual no-no, not a "simplification".
-`targets/llama_simple_mlp.py` is the second target (the pile-pretrained `LlamaSimpleMLP`,
+`param_decomp_targets/llama_simple_mlp.py` is the second target (the pile-pretrained `LlamaSimpleMLP`,
 t-9d2b8f02; sites `h.{i}.attn.{q,k,v,o}_proj` / `h.{i}.mlp.{c_fc,down_proj}`) —
 config dispatch is `TargetConfig` (the HF GLU families) vs `LlamaSimpleMLPTargetConfig`, both LAB-side
 (`param_decomp_lab/experiments/lm/config.py`, which reads the canonical schema DIRECTLY —
@@ -124,9 +142,11 @@ CE/KL/L0/PGD scalars come from a dedicated `make_eval_step` instance with
 `n_valid_rows=n_prompts`, so pad rows carry zero weight. Wired LM-side by
 `experiments/lm/run.py::_make_arithmetic_eval` (a `_ArithmeticEval` bundle).
 
-**The toys (TMS, ResidMLP) live in the lab, not the core.** The core trainer carries ZERO
-toy-specific code — the toy *targets* (`DecomposedModel`s, pretrain, identity-CI eval) are
-all lab-side. CI-fn *architectures* are NOT toy-specific code: core owns every CI-fn arch
+**Every target lives in `param_decomp_targets` — the toys (TMS, ResidMLP) included.**
+The core trainer carries ZERO target-specific code — the toy *targets*
+(`DecomposedModel`s, pretrain, identity-CI eval) are `param_decomp_targets/{tms,resid_mlp}.py`,
+peers of the LM slices; their composition roots (`pd-tms` / `pd-resid-mlp`) stay
+lab-side. CI-fn *architectures* are NOT toy-specific code: core owns every CI-fn arch
 regardless of which experiments use it. The positionless MLPs and the sequence transformer
 are peers in `ci_fn.py` (differing by domain, not status), not a toy carve-out. The
 generic engine is `run.py::run_decomposition_training(pd, cadence, run, model, ci_fn,
@@ -150,10 +170,11 @@ for a toy run). The shared schema validation + run-identity / CI-fn-arch helpers
 lab-side for the toys to reuse: `experiments.config.assert_canonical_algorithm_config` /
 `run_instance` / `ci_arch`.
 
-The TMS + ResidMLP targets now live under `param_decomp_lab/experiments/{tms,resid_mlp}/`
-(`model.py` = the JAX `DecomposedModel` + frozen target + in-process pretrain + identity-CI
-eval; `run.py` = the `pd-tms` / `pd-resid-mlp` CPU CLI that builds the `ExperimentConfig`
-from the canonical schema and calls `run_decomposition_training`). They are positionless and use the MLP CI fns. All CI-fn architectures live together in
+The TMS + ResidMLP targets live at `param_decomp_targets/{tms,resid_mlp}.py` (the JAX
+`DecomposedModel` + frozen target + in-process pretrain + identity-CI eval); each
+`param_decomp_lab/experiments/{tms,resid_mlp}/run.py` is the `pd-tms` / `pd-resid-mlp`
+CPU CLI that builds the `ExperimentConfig` from the canonical schema and calls
+`run_decomposition_training`. They are positionless and use the MLP CI fns. All CI-fn architectures live together in
 `ci_fn.py`: `LayerwiseMLPCIFn` (positionless, one independent MLP per site mapping
 `site_input [B,d_in] -> [B,C]`), `GlobalMLPCIFn` (positionless, one shared MLP over all
 sites jointly, concat/split in canonical site order), and the LM `ChunkwiseTransformerCIFn`
@@ -231,19 +252,19 @@ Llama-8B target is multi-GB. Therefore:
 
 ## Validation stack (run all before claiming correctness)
 
-1. `pytest param_decomp/tests/` — at the default device count AND
-   `XLA_FLAGS="--xla_force_host_platform_device_count=4"`.
-2. `tests/equivalence/` — fixture-driven JAX-vs-frozen-golden per-term numeric
-   equivalence (fp32, no RNG, zeroed attn). The torch references are FROZEN committed
-   goldens (`torch_reference.json`, `simple_mlp_equivalence/*.npz`,
+1. `pytest param_decomp/tests/ param_decomp_targets/tests/` — at the default device
+   count AND `XLA_FLAGS="--xla_force_host_platform_device_count=4"`.
+2. `param_decomp_targets/tests/equivalence/` — fixture-driven JAX-vs-frozen-golden
+   per-term numeric equivalence (fp32, no RNG, zeroed attn). The torch references are
+   FROZEN committed goldens (`torch_reference.json`, `simple_mlp_equivalence/*.npz`,
    `tools/export_fixtures/*`); the torch generators/verifier that produced them are
-   deleted so `param_decomp` imports no torch (push-1). Regenerate goldens only when
+   deleted so the runtime imports no torch (push-1). Regenerate goldens only when
    the MATH changes: redraw fixtures JAX-side with `gen_fixtures.py`, then check out the
    `torch-oracle` git tag in a torch-venv worktree and run that revision's
    `torch_reference.py` / `gen_torch_fixtures.py` / `gen_export_fixture.py`, copying the
    emitted goldens back here.
-3. `experiments/invariance_check.py` at 4 sim devices — trajectory invariant to
-   device count up to float reassociation (SPEC D4).
+3. `param_decomp_targets/invariance_check.py` at 4 sim devices — trajectory invariant
+   to device count up to float reassociation (SPEC D4).
 
 `basedpyright` over the whole workspace must be clean (run `make type`); `param_decomp`
 is in the root `[tool.pyright]` include and is checked in the one venv, one pass,
@@ -356,5 +377,3 @@ shared FS, which `$PARAM_DECOMP_OUT_DIR` already is.
 - **`vendored_jax` is a repo-root sibling package in the same `param-decomp` distribution**;
   no `sys.path` hacks anywhere. If an import fails, the install is broken — fix the env
   (`make install-dev`), don't add a path shim.
-- **Bench schedules**: `llama8b_real.py` anneals over `--total_steps` (default 100k),
-  not the benched `--steps` — short benches measure start-of-training semantics.

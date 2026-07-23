@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 
 from param_decomp.components import SiteC, SiteSpec, init_component_stacks
-from param_decomp.targets.glu_transformer import (
+from param_decomp_targets.glu_transformer import (
     GLUConfig,
     GLUDecomposedModel,
     GLULayer,
@@ -20,7 +20,7 @@ from param_decomp.targets.glu_transformer import (
     glu_site_specs,
     parse_site_name,
 )
-from param_decomp.targets.qwen3_8b import Qwen3FrozenAttn
+from param_decomp_targets.qwen3_8b import Qwen3FrozenAttn
 
 
 def _tiny_cfg() -> GLUConfig:
@@ -187,8 +187,8 @@ def test_step_trains():
     )
     from param_decomp.recon import build_loss_terms
     from param_decomp.schedule import ScheduleConfig
-    from param_decomp.tests.test_llama8b import _build_chunkwise_ci_fn
     from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
+    from param_decomp_targets.tests.test_llama8b import _build_chunkwise_ci_fn
 
     cfg = _tiny_cfg()
     sites = glu_site_specs(cfg, _QVDOWN_SITE_CS)

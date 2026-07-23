@@ -46,15 +46,15 @@ from param_decomp.configs import (
 from param_decomp.model import DecomposedModel
 from param_decomp.recon import StochasticSources, build_loss_terms, subset_chunk_plan
 from param_decomp.schedule import ScheduleConfig
-from param_decomp.targets.glu_transformer import (
+from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
+from param_decomp_targets.glu_transformer import (
     FrozenAttn,
     GLULayer,
     build_decomposed_lm,
     glu_site_specs,
     mlp_family_site_cs,
 )
-from param_decomp.tests.test_llama8b import _tiny_cfg
-from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
+from param_decomp_targets.tests.test_llama8b import _tiny_cfg
 from vendored_jax.llama import llama3_inv_freq
 
 FIXTURES = Path(__file__).resolve().parent / "stacked_fixtures.npz"

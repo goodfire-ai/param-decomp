@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 from jaxtyping import Array
 
-from param_decomp.targets.llama_simple_mlp import (
+from param_decomp_targets.llama_simple_mlp import (
     config_from_model_config_dict,
     load_model_config,
     load_target_from_pretrain_cache,

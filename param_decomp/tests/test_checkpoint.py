@@ -41,6 +41,11 @@ from param_decomp.configs import (
     PersistentPGDReconLossConfig,
     UniformKSubsetRoutingConfig,
 )
+from param_decomp.init_placed import (
+    init_ci_fn_placed,
+    init_component_stacks_placed,
+    init_sources_sharded,
+)
 from param_decomp.model import DecomposedModel, Positioned
 from param_decomp.muon_stacked import stacked_muon
 from param_decomp.placement import from_config
@@ -48,17 +53,12 @@ from param_decomp.recon import build_loss_terms
 from param_decomp.run_state import stacked_muon_dimension_numbers
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.sharding import hsdp_mesh
-from param_decomp.targets.glu_transformer import (
+from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
+from param_decomp_targets.glu_transformer import (
     glu_site_specs,
     mlp_family_site_cs,
 )
-from param_decomp.targets.glu_transformer_sharding import (
-    init_ci_fn_placed,
-    init_component_stacks_placed,
-    init_sources_sharded,
-)
-from param_decomp.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
-from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
+from param_decomp_targets.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
 from vendored_jax.llama import LlamaConfig
 
 

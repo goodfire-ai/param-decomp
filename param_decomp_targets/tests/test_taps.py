@@ -4,8 +4,8 @@ and fail-closed parsing on a bound grammar."""
 import pytest
 
 from param_decomp.family import ArchFamily
-from param_decomp.targets import glu_transformer, llama_simple_mlp
-from param_decomp.targets.transformer_taps import TransformerTapGrammar, resid_tap_key
+from param_decomp_targets import glu_transformer, llama_simple_mlp
+from param_decomp_targets.transformer_taps import TransformerTapGrammar, resid_tap_key
 
 D_RESID = 64
 D_IN = {"layers.2.mlp.down_proj": 48, "h.3.attn.q_proj": 32}

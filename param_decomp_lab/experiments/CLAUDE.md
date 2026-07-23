@@ -17,13 +17,13 @@ see `param_decomp_lab/adapters/pd.py`.
 ## Toy domains (TMS, ResidMLP)
 
 The TMS and ResidualMLP toys are LAB experiments that call the core engine as a library
-(the core itself has zero toy-specific code). Each `experiments/{tms,resid_mlp}/` carries:
-
-- `model.py` — the JAX `DecomposedModel` (sites, pure fns, MSE `recon_loss_fn`), the frozen
-  target (`eqx.Module`), from-scratch in-process pretrain (`pretrain_*_target`), the
-  ground-truth identity-CI eval (`identity_ci_error` + the single-feature probe), and the
-  lab `*TargetConfig` dataclass carried on `config.BuiltRun.target` (satisfies the core
-  `config.TargetSites` protocol).
+(the core itself has zero target-specific code). The toy *targets* live in the targets
+distribution — `param_decomp_targets/{tms,resid_mlp}.py`: the JAX `DecomposedModel`
+(sites, pure fns, MSE `recon_loss_fn`), the frozen target (`eqx.Module`), from-scratch
+in-process pretrain (`pretrain_*_target`), the ground-truth identity-CI eval
+(`identity_ci_error` + the single-feature probe), and the `*TargetConfig` dataclass
+carried on `config.BuiltRun.target` (satisfies the core `config.TargetSites` protocol).
+Each `experiments/{tms,resid_mlp}/` carries:
 - `run.py` — the `pd-tms` / `pd-resid-mlp` CLI: builds the `config.BuiltRun` from the
   canonical schema via the public shared helpers
   (`config.assert_canonical_algorithm_config` / `run_instance` / `ci_arch`),
@@ -79,8 +79,8 @@ experiments/
 │   ├── data.py              # tokenize_and_concatenate (offline helper for prestage)
 │   ├── prestage_tokenized.py  # HF text -> int32 parquet shards for the JAX trainer
 │   └── arithmetic_probe.py    # a x b arithmetic grid spec -> in-memory eval probe (ArithmeticCIGrid)
-├── tms/                     # pd-tms (CPU): model.py + run.py + configs/ + test_tms.py
-└── resid_mlp/               # pd-resid-mlp (CPU): model.py + run.py + configs/ + test
+├── tms/                     # pd-tms (CPU): run.py + configs/ + test_tms.py (target: param_decomp_targets/tms.py)
+└── resid_mlp/               # pd-resid-mlp (CPU): run.py + configs/ + test (target: param_decomp_targets/resid_mlp.py)
 ```
 
 ## LM `target.spec`

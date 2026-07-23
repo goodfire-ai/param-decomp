@@ -37,8 +37,15 @@ from param_decomp.configs import (
 from param_decomp.model import DecomposedModel
 from param_decomp.recon import build_loss_terms
 from param_decomp.schedule import ScheduleConfig
-from param_decomp.targets.glu_transformer import FrozenAttn
-from param_decomp.targets.llama_simple_mlp import (
+from param_decomp.train import (
+    Decomposition,
+    TrainingItem,
+    TrainState,
+    make_faith_warmup_step,
+    make_train_step,
+)
+from param_decomp_targets.glu_transformer import FrozenAttn
+from param_decomp_targets.llama_simple_mlp import (
     LlamaSimpleMLPConfig,
     SimpleMLPDecomposedModel,
     SimpleMLPLayer,
@@ -47,13 +54,6 @@ from param_decomp.targets.llama_simple_mlp import (
     parse_site_name,
     site_name,
     site_specs,
-)
-from param_decomp.train import (
-    Decomposition,
-    TrainingItem,
-    TrainState,
-    make_faith_warmup_step,
-    make_train_step,
 )
 
 

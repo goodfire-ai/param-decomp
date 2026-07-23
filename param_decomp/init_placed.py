@@ -1,48 +1,17 @@
-"""GSPMD sharding plan for the GLU-transformer (Llama-8B / Qwen3-8B) single-pool step — the pure-HSDP memory story.
+"""Seeded init → placed arrays, with no host-side full tree.
 
-The 2-D `(replicate, fsdp)` mesh: `fsdp` is the 8 intra-node NVLink GPUs (the FSDP
-weight-gather / grad-reduce axis), `replicate` the across-node axis. There is NO TP /
-Megatron-C. The memory consumers, and how each is placed:
-
-  * frozen target: FSDP-sharded on `fsdp` (the `d`-dim of every per-layer weight); the
-    ~16 GB bulk shards `/fsdp` (8), gathered per layer in the scan on NVLink. embed /
-    lm_head / norm / inv_freq replicate.
-  * components (V/U) + their Adam states: placed by the run's `PlacementRules`
-    (`placement.component_stacks_shardings` — `runtime.sharding`). Under the `owner`
-    preset: the shape-group STACK axis ÷`replicate` (whole matrices owned per node-group),
-    d dims ÷`fsdp`, C ÷`tp` — ÷N total, same memory as the intra-matrix `zero1`
-    preset. The fp32 masters + fp32 Adam m/v are the dominant
-    non-activation footprint (÷N, so the per-GPU cost shrinks with device count).
-    COMPUTE re-pins the bf16
-    weights to `fsdp`-only ONCE per step (in ENTRY, off the per-layer hot path; see
-    `glu_transformer._reconstruct_compute_weights` — hand-written until PLACEMENT_DESIGN.md
-    migration stage 3 wires it through the `params.forward` row).
-  * CI fn + Adam states: sharded ÷N over the full mesh along d_model (in_proj / blocks /
-    heads), same ZeRO-1 reconstruction to `fsdp`-only before the chunk scan.
-  * PGD source (`shared` scope, `{site: (1,P,C+1)}`): REPLICATED. A single adversarial
-    source shared across the global batch; it combines elementwise with the batch-sharded
-    CI and its grad reduction falls out of the global-mean loss (torch
-    `reduce_source_grads` analog). Tiny vs activations, so replicating costs nothing;
-    the C+1 axis is odd and cannot tile the mesh anyway. `SrcAdamState` mirrors it.
-  * token input + all activations: BATCH-sharded over the FULL mesh
-    (`('replicate', 'fsdp')`). The masked re-forwards then run on per-rank sub-batches ->
-    activation memory scales 1/N. This is what unlocks a global batch that OOMs replicated.
-
-Sharding V/U keeps every einsum valid: the compute weights are reconstructed `fsdp`-only
-before the layer scan, so `x @ V` gathers the `fsdp`-sharded d_in on NVLink and contracts it;
-`(.) @ U` produces a `fsdp`-sharded d_out and `jax.jit` inserts the reduce-scatter /
-all-reduce. No manual collectives.
-
-Placement is declared, never inferred: the frozen target and the CI fn declare per-leaf
-`NamedSharding`s via `.shardings(mesh)` methods; the trainable V/U are placed by the run's
-`PlacementRules` (`placement.component_stacks_shardings` — the per-group row assignment
-resolved at config build). The helpers below only drive the apply: compute the
-shardings on the `eqx.filter_eval_shape`'d abstract model, then run the seeded init under
-`jax.jit(init, out_shardings=...)` so each device generates only its own shard and no
-host-side full tree exists — eager `device_put` of a host tree onto a multi-process
+Each helper computes the declared shardings on an `eqx.filter_eval_shape`'d abstract
+value, then runs the seeded init under `jax.jit(init, out_shardings=...)` so each device
+generates only its own shard — an eager `device_put` of a host tree onto a multi-process
 non-replicated sharding triggers a `process_allgather` (a host allocation of the FULL
 unsharded tree per process). A non-dividing declared shard axis is a loud crash at
 placement construction / inside `.shardings` (fail-fast), never a silent replicate.
+
+Compile-time doctrine: keep seeded inits FEW-OUTPUTS-under-jit — a jit returning n_sites
+(hundreds of) sharded outputs, or n_chunks unrolled RNG bodies, is a multi-minute
+SPMD/layout compile. vmap-stack over the same per-site/per-chunk keys (bit-identical
+values), then fan out with a trivial slice jit. `init_component_stacks_placed` is the
+template; `init_ci_fn_placed` / `init_sources_sharded` follow it.
 """
 
 from functools import partial
@@ -68,24 +37,6 @@ from param_decomp.components import (
 from param_decomp.configs import SourceShape
 from param_decomp.model import PositionAxis, Positioned, Positionless
 from param_decomp.placement import PlacementRules, component_stacks_shardings
-from param_decomp.sharding import hsdp_mesh, place_via_shardings
-from param_decomp.sharding import shard_batch as _generic_shard_batch
-from param_decomp.targets.glu_transformer import GLUDecomposedModel
-
-__all__ = [
-    "hsdp_mesh",
-    "place_target",
-    "init_component_stacks_placed",
-    "init_ci_fn_placed",
-    "init_sources_sharded",
-    "shard_batch",
-]
-
-
-def place_target(tgt: GLUDecomposedModel, mesh: Mesh) -> GLUDecomposedModel:
-    """Eager `device_put` of the already-loaded frozen target onto its own declared
-    placement (`tgt.shardings(mesh)` — FSDP-on-`fsdp`)."""
-    return place_via_shardings(tgt, tgt.shardings(mesh))
 
 
 def init_component_stacks_placed(
@@ -181,8 +132,3 @@ def init_sources_sharded(
         partial(unstack_persistent_sources, site_names, site_component_counts),
         out_shardings=NamedSharding(mesh, spec),
     )(stacked)
-
-
-def shard_batch(resid_global: jax.Array, mesh: Mesh) -> jax.Array:
-    """Batch-shard the residual input (b, t, d) over the full mesh (axis 0)."""
-    return _generic_shard_batch(resid_global, mesh, batch_axis=0)

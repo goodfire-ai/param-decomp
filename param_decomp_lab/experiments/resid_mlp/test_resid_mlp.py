@@ -39,7 +39,7 @@ from param_decomp.train import (
     make_faith_warmup_step,
     make_train_step,
 )
-from param_decomp_lab.experiments.resid_mlp.model import (
+from param_decomp_targets.resid_mlp import (
     ResidMLPConfig,
     ResidMLPTarget,
     abs_labels,

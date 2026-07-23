@@ -81,10 +81,11 @@ include = [
 namespaces = false
 
 [tool.uv.workspace]
-members = ["param_decomp_lab"]
+members = ["param_decomp_targets", "param_decomp_lab"]
 
 [tool.uv.sources]
 param-decomp = { workspace = true }
+param-decomp-targets = { workspace = true }
 
 [tool.ruff]
 line-length = 100
@@ -125,7 +126,7 @@ known-third-party = ["wandb"]
 # in a torch env, not this JAX-only one.
 # `vendored_jax` is a verbatim numeric mirror of the torch vendored Llama — kept out of
 # type-checking (its correctness contract is the parity tests, not types).
-include = ["param_decomp", "pretrain", "param_decomp_lab"]
+include = ["param_decomp", "pretrain", "param_decomp_targets", "param_decomp_lab"]
 exclude = [
     "**/wandb/**",
     "**/_scratch/**",
@@ -133,11 +134,8 @@ exclude = [
     "**/__pycache__",
     "nano_param_decomp",
     "vendored_jax",
-    "param_decomp/tests/equivalence/torch_reference.py",  # torch-env script
-    "param_decomp/tools/convert_llama_simple_mlp_checkpoint.py",  # torch-env script
-    "param_decomp/tests/simple_mlp_equivalence/gen_torch_fixtures.py",  # torch-env script
-    "param_decomp/tests/qwen3_hf_parity/gen_hf_fixtures.py",  # torch-env script
-    "param_decomp/tests/stacked_parity/gen_stacked_fixtures.py",  # base-branch-only script (pre-restructure API)
+    "param_decomp_targets/tests/qwen3_hf_parity/gen_hf_fixtures.py",  # torch-env script
+    "param_decomp_targets/tests/stacked_parity/gen_stacked_fixtures.py",  # base-branch-only script (pre-restructure API)
 ]
 stubPath = "typings" # Having type stubs for transformers shaves 10 seconds off basedpyright calls
 

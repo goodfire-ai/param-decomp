@@ -1,6 +1,6 @@
 """The SHARED machinery of the vendored HF GLU-transformer decomposition targets: site
 grammar, frozen modules, the scan/masked-forward engine, and HF safetensors loading. The
-model FAMILIES live in their own files — `targets/llama8b.py`, `targets/qwen3_8b.py` —
+model FAMILIES live in their own files — `llama8b.py`, `qwen3_8b.py` —
 each contributing its arch config, its `FrozenAttn` variant (via the `_prep_qk` pre-RoPE
 hook, e.g. Qwen3's QK-norm), and its HF attn loader; nothing here switches on a family.
 
@@ -16,6 +16,15 @@ keyed per site (`ComponentStacks`); frozen weights are stored bf16 (SPEC N1) —
 casts for compute.
 
 Real HF weights load straight from the cached safetensors (no torch dep).
+
+Sharding (the production HSDP memory story): the frozen target declares its own
+placement via `.shardings(mesh)` — FSDP-sharded on `fsdp` (the `d` dim of every
+per-layer weight; embed / lm_head / norm / inv_freq replicate), applied by the engine's
+`sharding.place_target`, gathered one layer at a time in the scan on NVLink. The bf16
+COMPUTE weights are re-pinned to `fsdp`-only ONCE per step in
+`_reconstruct_compute_weights` (the cross-`replicate` gather, off the per-layer hot
+path). V/U, CI-fn, and source placement are the engine's concern (`placement`,
+`init_placed`), not this module's.
 """
 
 import json
@@ -48,7 +57,7 @@ from param_decomp.components import (
 from param_decomp.family import ArchFamily
 from param_decomp.losses import kl_per_position
 from param_decomp.sharding import assert_divisible
-from param_decomp.targets.transformer_taps import resid_tap_key
+from param_decomp_targets.transformer_taps import resid_tap_key
 from vendored_jax.llama import apply_rope, causal_sdpa, repeat_kv, rms_norm, rope_cos_sin
 
 

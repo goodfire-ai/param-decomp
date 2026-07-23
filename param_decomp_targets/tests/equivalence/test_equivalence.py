@@ -44,7 +44,7 @@ import param_decomp.adversary as adversary_mod
 import param_decomp.losses as losses_mod
 import param_decomp.train as train_mod
 from param_decomp.adversary import source_masks
-from param_decomp.tests.equivalence.jax_equivalence import (
+from param_decomp_targets.tests.equivalence.jax_equivalence import (
     chunk_plan_static_gate_kl,
     compute_jax_terms,
 )
@@ -185,8 +185,8 @@ def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
     `delta_mask[..., None]` / mask broadcast (`components.site_out`) the way the PPGD path
     does, and pins the broadcast AXIS: transposing the source to `(1, B, C+1)` (B != T)
     must break the forward rather than silently re-interpret the time axis as batch."""
-    from param_decomp.targets.glu_transformer import MLP_KINDS, site_name
-    from param_decomp.tests.equivalence.jax_equivalence import FP, _build
+    from param_decomp_targets.glu_transformer import MLP_KINDS, site_name
+    from param_decomp_targets.tests.equivalence.jax_equivalence import FP, _build
 
     f = _load_fixtures()
     model, vu, n_layers = _build(f)

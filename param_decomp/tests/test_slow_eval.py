@@ -48,15 +48,15 @@ from param_decomp.slow_eval import (
     render_slow_eval_figures,
     resolve_permutation_metrics,
 )
-from param_decomp.targets.glu_transformer import (
+from param_decomp.train import COMPUTE_DT, cast_floating
+from param_decomp_targets.glu_transformer import (
     glu_site_specs,
     mlp_family_site_cs,
 )
-from param_decomp.tests.test_llama8b import (
+from param_decomp_targets.tests.test_llama8b import (
     _tiny_cfg,
     _tiny_decomposed_lm,
 )
-from param_decomp.train import COMPUTE_DT, cast_floating
 
 
 def _build_ci_fn(model: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:

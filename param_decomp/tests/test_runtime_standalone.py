@@ -1,17 +1,20 @@
-"""The GPU runtime core (`param_decomp/`) is self-contained: it imports the JAX stack
-(plus the torch-free pydantic config schema it now carries, `param_decomp.configs` /
-`base_config` / `schedule`) + its own siblings (`pretrain`, `vendored_jax`) ONLY — never
-the lab distribution (`param_decomp_lab`) and never `torch`. This pins the dependency
-boundary: `lab → param_decomp` is allowed; the reverse edge `param_decomp → lab` is
-forbidden for the runtime. Notably the composition root (the YAML→ExperimentConfig
-conversion, the `main()` entrypoints, run-loading) lives lab-side, so this scan also
-guards that none of it leaked back into core.
+"""The layering rule, as a test: `lab → targets → engine`, downward imports only.
 
-The runtime is every `.py` under `param_decomp/` that ships in the wheel — i.e. not
-the test suite, not the torch-env `tools/` scripts (export verifier / checkpoint
-converters that run in the torch venv by design), and not the torch-side config YAMLs.
-This static AST scan is the CI form of the `grep -rniE "param_decomp_lab\\.|import torch"`
-acceptance check, scoped to those runtime files.
+The ENGINE (`param_decomp/`) is generic: it sees targets only through the
+`DecomposedModel` protocol and the `ArchFamily` grammar contract, so it must never
+import the targets distribution (`param_decomp_targets`) — nor the lab
+(`param_decomp_lab`), which owns every composition root (YAML→ExperimentConfig, the
+`main()` entrypoints, run-loading) — nor `torch` (the engine is the GPU runtime; the
+JAX stack + its own siblings `pretrain`/`vendored_jax` only).
+
+The TARGETS layer (`param_decomp_targets/`) implements the engine's protocol per
+architecture; it depends downward on the engine (and `vendored_jax`) but never on the
+lab, and never on `torch`.
+
+The runtime is every `.py` that ships in a wheel — i.e. not the test suites and not
+`tools/` (torch-env scripts that run in the torch venv by design). Test suites are
+exempt on purpose: engine tests may use a concrete target as a fixture. This static AST
+scan is the CI form of the `grep -rniE` acceptance check, scoped to those runtime files.
 """
 
 import ast
@@ -19,47 +22,51 @@ from pathlib import Path
 
 import pytest
 
-_RUNTIME_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _NON_RUNTIME_DIRS = {"tests", "tools"}
-_FORBIDDEN_ROOTS = ("param_decomp_lab", "torch")
+_LAYERS = {
+    "param_decomp": ("param_decomp_targets", "param_decomp_lab", "torch"),
+    "param_decomp_targets": ("param_decomp_lab", "torch"),
+}
 
 
-def _is_forbidden(module: str) -> bool:
-    head = module.split(".", 1)[0]
-    return head in _FORBIDDEN_ROOTS
-
-
-def _runtime_python_files() -> list[Path]:
-    files: list[Path] = []
-    for path in _RUNTIME_ROOT.rglob("*.py"):
-        rel = path.relative_to(_RUNTIME_ROOT)
-        if rel.parts[0] in _NON_RUNTIME_DIRS:
-            continue
-        files.append(path)
-    return files
-
-
-def _forbidden_imports(path: Path) -> list[str]:
+def _forbidden_imports(path: Path, forbidden_roots: tuple[str, ...]) -> list[str]:
+    is_forbidden = lambda module: module.split(".", 1)[0] in forbidden_roots  # noqa: E731
     tree = ast.parse(path.read_text(), filename=str(path))
     found: list[str] = []
     for node in ast.walk(tree):
         match node:
             case ast.Import(names=names):
-                found += [alias.name for alias in names if _is_forbidden(alias.name)]
+                found += [alias.name for alias in names if is_forbidden(alias.name)]
             case ast.ImportFrom(module=module) if module is not None:
-                if _is_forbidden(module):
+                if is_forbidden(module):
                     found.append(module)
             case _:
                 pass
     return found
 
 
+def _runtime_python_files() -> list[tuple[Path, tuple[str, ...]]]:
+    cases: list[tuple[Path, tuple[str, ...]]] = []
+    for layer, forbidden in _LAYERS.items():
+        layer_root = _REPO_ROOT / layer
+        assert layer_root.is_dir(), layer_root
+        for path in sorted(layer_root.rglob("*.py")):
+            rel = path.relative_to(layer_root)
+            if rel.parts[0] in _NON_RUNTIME_DIRS:
+                continue
+            cases.append((path, forbidden))
+    return cases
+
+
 @pytest.mark.parametrize(
-    "path", _runtime_python_files(), ids=lambda p: str(p.relative_to(_RUNTIME_ROOT))
+    ("path", "forbidden_roots"),
+    _runtime_python_files(),
+    ids=lambda v: str(v.relative_to(_REPO_ROOT)) if isinstance(v, Path) else None,
 )
-def test_runtime_imports_nothing_adjacent(path: Path):
-    forbidden = _forbidden_imports(path)
+def test_runtime_imports_only_downward(path: Path, forbidden_roots: tuple[str, ...]):
+    forbidden = _forbidden_imports(path, forbidden_roots)
     assert not forbidden, (
-        f"{path.relative_to(_RUNTIME_ROOT)} imports adjacent/torch modules {forbidden}; "
-        "the GPU runtime must not depend on the lab distribution or torch"
+        f"{path.relative_to(_REPO_ROOT)} imports {forbidden}; the layering is "
+        "`lab -> targets -> engine` and runtime imports only point downward"
     )

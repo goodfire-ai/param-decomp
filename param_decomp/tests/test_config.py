@@ -25,7 +25,6 @@ from param_decomp.recon import (
     build_loss_terms,
     persistent_configs,
 )
-from param_decomp.targets.glu_transformer import mlp_family_site_cs
 from param_decomp_lab.experiments.lm.config import (
     LMExperimentConfig,
     assert_supported_weights_dtype,
@@ -33,6 +32,7 @@ from param_decomp_lab.experiments.lm.config import (
     load_config,
     load_run_dir_config,
 )
+from param_decomp_targets.glu_transformer import mlp_family_site_cs
 
 CONFIGS = Path(__file__).parent.parent / "configs"
 RUN_ID = "p-0123abcd"

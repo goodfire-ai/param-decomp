@@ -46,8 +46,8 @@ from param_decomp.components import ComponentStacks, SiteC, SiteSpec, site_out
 from param_decomp.family import ArchFamily
 from param_decomp.losses import kl_per_position
 from param_decomp.model import run_stochastic_masked_output
-from param_decomp.targets.glu_transformer import FrozenAttn
-from param_decomp.targets.transformer_taps import resid_tap_key
+from param_decomp_targets.glu_transformer import FrozenAttn
+from param_decomp_targets.transformer_taps import resid_tap_key
 from vendored_jax.llama import rms_norm
 
 # Plain-GELU MLP (LlamaSimpleMLP). The family's matrix vocabulary — the authored c-spec

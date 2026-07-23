@@ -93,7 +93,6 @@ from param_decomp.slow_eval import (
     resolve_permutation_metrics,
     stochastic_hidden_acts_n_mask_samples,
 )
-from param_decomp.targets.glu_transformer import hf_snapshot_dir
 from param_decomp.train import TrainState
 from param_decomp_lab.experiments.lm.arithmetic_probe import build_arithmetic_probe
 from param_decomp_lab.experiments.lm.config import (
@@ -102,6 +101,7 @@ from param_decomp_lab.experiments.lm.config import (
     load_run_dir_config,
 )
 from param_decomp_lab.experiments.lm.load_run import build_target
+from param_decomp_targets.glu_transformer import hf_snapshot_dir
 
 
 def _enable_persistent_compilation_cache(out_dir: Path) -> Path:

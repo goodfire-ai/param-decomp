@@ -4,7 +4,7 @@ These pretrain the FROZEN targets the decomposition trainer then decomposes. The
 reference is `torch-oracle:param_decomp_lab/experiments/lm/pretrain/models/`; this is a
 capability reimplementation (next-token CE, AdamW, cosine LR) — NOT a bit-exact port.
 
-The `LlamaSimpleMLP` checkpoint format is load-bearing: `param_decomp.llama_simple_mlp`
+The `LlamaSimpleMLP` checkpoint format is load-bearing: `param_decomp_targets.llama_simple_mlp`
 (`load_target_from_pretrain_cache`) reads safetensors keyed
 `h.{i}.attn.{q,k,v,o}_proj.weight`, `h.{i}.mlp.{c_fc,down_proj}.weight`,
 `h.{i}.rms_{1,2}.weight`, `wte.weight`, `ln_f.weight` (NO `lm_head.weight` — tied to
@@ -415,7 +415,7 @@ class LlamaSimpleMLP(eqx.Module):
         return x @ self.wte.T
 
     def state_dict(self) -> dict[str, Array]:
-        """The exact keys `param_decomp.llama_simple_mlp` loads — no `lm_head` (tied)."""
+        """The exact keys `param_decomp_targets.llama_simple_mlp` loads — no `lm_head` (tied)."""
         sd: dict[str, Array] = {"wte.weight": self.wte, "ln_f.weight": self.norm}
         for i, block in enumerate(self.blocks):
             sd[f"h.{i}.rms_1.weight"] = block.ln1

@@ -37,9 +37,9 @@ from param_decomp_lab.experiments.config import (
     ci_arch,
     run_instance,
 )
-from param_decomp_lab.experiments.tms import model as tms
 from param_decomp_lab.experiments.tms.config import TMSExperimentConfig
 from param_decomp_lab.infra.run_files import generate_run_id
+from param_decomp_targets import tms
 
 
 def build_tms_built_run(cfg: TMSExperimentConfig, run_id: str) -> BuiltRun:

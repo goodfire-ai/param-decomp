@@ -24,12 +24,12 @@ from param_decomp.hidden_acts_eval import (
     make_stochastic_hidden_acts_step,
 )
 from param_decomp.model import DecomposedModel
-from param_decomp.targets.llama_simple_mlp import (
+from param_decomp_targets.llama_simple_mlp import (
     canonical_site_cs,
     parse_site_name,
     site_specs,
 )
-from param_decomp.tests.test_llama_simple_mlp import (
+from param_decomp_targets.tests.test_llama_simple_mlp import (
     _tiny_cfg,
     _tiny_decomposed_model,
 )

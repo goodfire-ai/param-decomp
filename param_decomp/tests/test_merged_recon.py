@@ -23,14 +23,14 @@ from param_decomp.configs import (
 )
 from param_decomp.recon import MixedPersistentStochasticSources, build_loss_terms
 from param_decomp.schedule import ScheduleConfig
-from param_decomp.targets.llama_simple_mlp import site_specs
-from param_decomp.tests.test_llama_simple_mlp import (
+from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
+from param_decomp_targets.llama_simple_mlp import site_specs
+from param_decomp_targets.tests.test_llama_simple_mlp import (
     _MIXED_SITE_CS,
     _build_chunkwise_ci_fn,
     _tiny_cfg,
     _tiny_decomposed_model,
 )
-from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
 
 
 def _merged_cfg(

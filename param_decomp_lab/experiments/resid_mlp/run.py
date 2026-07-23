@@ -37,9 +37,9 @@ from param_decomp_lab.experiments.config import (
     ci_arch,
     run_instance,
 )
-from param_decomp_lab.experiments.resid_mlp import model as resid_mlp
 from param_decomp_lab.experiments.resid_mlp.config import ResidMLPExperimentConfig
 from param_decomp_lab.infra.run_files import generate_run_id
+from param_decomp_targets import resid_mlp
 
 
 def build_resid_mlp_built_run(cfg: ResidMLPExperimentConfig, run_id: str) -> BuiltRun:

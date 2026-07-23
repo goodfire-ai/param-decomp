@@ -11,7 +11,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-import param_decomp.targets.llama_simple_mlp as lsm
+import param_decomp_targets.llama_simple_mlp as lsm
 from pretrain.cache import torch_model_config_dict, write_pretrain_cache
 from pretrain.config import PretrainConfig, PretrainDataConfig
 from pretrain.models import (

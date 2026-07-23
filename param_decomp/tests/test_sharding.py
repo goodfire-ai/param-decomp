@@ -64,13 +64,13 @@ def test_jitted_sharded_inits_match_eager_values():
         build_ci_fn,
     )
     from param_decomp.components import SiteC, init_component_stacks
-    from param_decomp.targets.glu_transformer import canonical_site_cs, glu_site_specs
-    from param_decomp.targets.glu_transformer_sharding import (
+    from param_decomp.init_placed import (
         init_ci_fn_placed,
         init_component_stacks_placed,
         init_sources_sharded,
     )
-    from param_decomp.tests.test_llama8b import _tiny_cfg
+    from param_decomp_targets.glu_transformer import canonical_site_cs, glu_site_specs
+    from param_decomp_targets.tests.test_llama8b import _tiny_cfg
 
     # The HSDP mesh `(replicate, fsdp)`: on the n-device CPU sim with n not a multiple of 8,
     # `fsdp` takes the full count and `replicate` is 1. V FSDP-shards d_in on `fsdp`, U FSDP
@@ -256,8 +256,8 @@ def test_init_sources_sharded_shape_and_placement_per_arm():
     from jax.sharding import PartitionSpec as P
 
     from param_decomp.configs import SourceShape
+    from param_decomp.init_placed import init_sources_sharded
     from param_decomp.model import PositionAxis
-    from param_decomp.targets.glu_transformer_sharding import init_sources_sharded
 
     mesh = hsdp_mesh()
     site, C, B = "layers.2.mlp.gate_proj", 8 * jax.device_count(), 4 * jax.device_count()
