@@ -1,3 +1,5 @@
+# This is the same target model used in the paper https://www.goodfire.ai/research/interpreting-lm-parameters.
+# See https://wandb.ai/goodfire/spd/runs/s-55ea3f9b/files/final_config.yaml for the canonical Jose run in that paper.
 pd:
   seed: 0
   ci_config:
