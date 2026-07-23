@@ -243,7 +243,7 @@ init: biases zero; weights fan-in scaled (Kaiming: relu-gain √2 on in_proj / M
 ```
 
 `input_dim` is a generic linear-input width (a plain in_proj fan-in), NOT a residual-dim
-or transformer concept in core — the lab computes it from the taps it authored (their
+or transformer concept in core — the composition layer computes it from the taps it authored (their
 widths summed) and core stays agnostic to what the taps mean. Layerwise (one site per
 chunk) and global (all sites in one chunk) are degenerate chunkings of this same form.
 The positionless toys (`has_position_axis=False`) are the MLP siblings (`LayerwiseMLPCIFn` /

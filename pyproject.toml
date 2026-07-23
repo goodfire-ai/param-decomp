@@ -60,9 +60,20 @@ cuda = ["jax[cuda12]==0.10.1"]
 cuda13 = ["jax[cuda13]==0.10.1", "nvidia-cublas>=13.2.0.9"]
 
 [project.scripts]
-# No core console scripts: the trainers run as modules (`python -m param_decomp.run` /
-# `python -m pretrain.train`), which is what the lab launchers `pd-lm` / `pd-pretrain`
-# sbatch (and what you'd run for direct debug). Slow/plot eval is in-loop only (SPEC S28).
+# The library's own CLIs. The trainers still run as modules
+# (`python -m param_decomp.experiments.lm.run` / `-m param_decomp.pretrain.train`);
+# the Goodfire-cluster submission wrappers (`pd-lm` / `pd-pretrain`) live in the
+# private `param-decomp-goodfire` distribution.
+pd-tms = "param_decomp.experiments.tms.run:cli"
+pd-resid-mlp = "param_decomp.experiments.resid_mlp.run:cli"
+pd-clustering = "param_decomp.clustering.scripts.run_pipeline:cli"
+pd-cluster-merge = "param_decomp.clustering.scripts.run_merge:cli"
+pd-cluster-distances = "param_decomp.clustering.scripts.calc_distances:cli"
+pd-harvest = "param_decomp.harvest.scripts.run_slurm_cli:cli"
+pd-intruder = "param_decomp.harvest.scripts.run_intruder_slurm_cli:cli"
+pd-autointerp = "param_decomp.autointerp.scripts.run_slurm_cli:cli"
+pd-investigate = "param_decomp.investigate.scripts.run_slurm_cli:cli"
+pd-postprocess = "param_decomp.postprocess.cli:cli"
 
 [dependency-groups]
 dev = [

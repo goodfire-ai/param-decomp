@@ -110,7 +110,7 @@ entry points, read `param_decomp/CLAUDE.md` and `SPEC.md`. In one breath:
   (`param_decomp/experiments/lm/run.py`) — the LM composition root + only I/O layer:
   reads the canonical schema, builds the target / data loader / `ExperimentConfig`,
   then calls the engine. Orbax sharded checkpoints; SIGTERM → save → SLURM requeue → resume.
-- **Launch from the lab side** via `pd-lm <config.yaml>` (login-node submission wrapper;
+- **Launch via the private wrapper's `pd-lm <config.yaml>`** (`param-decomp-goodfire`, login-node submission wrapper;
   CONFIG-DRIVEN via `runtime.dp`, no `--nodes` / `--local` flags). `dp = N` (multiple of 8)
   → snapshots the tree to `refs/runs/snapshot/<id>` (pushed to origin best-effort, as a
   provenance backup), stages the run dir (`launch_config.yaml` + `.env`), and sbatches
@@ -145,7 +145,7 @@ from param_decomp.experiments.lm.load_run import open_jax_run, run_metadata
 - `param_decomp.core.log` — the logger every consumer uses (folded into the core trainer
   package).
 - `param_decomp.experiments.lm.load_run.{open_jax_run, run_metadata}` — the JAX
-  consumer entry (lab-side, since it builds the LM target): a run opened for a forward pass
+  consumer entry (composition-side, since it builds the LM target): a run opened for a forward pass
   (`open_jax_run`, restores orbax) or just its target topology (`run_metadata`:
   `n_blocks`/`vocab`/per-site `(name, C)` from config + cache, no restore). `JaxPDAdapter`
   keys autointerp/clustering metadata off `run_metadata`.
@@ -161,7 +161,7 @@ and returns JAX-native as the #10 torch->jax adapter.
   the explicit (toy) site spec + loss + eval-metric configs + `PDConfig` / `RuntimeConfig`
   / `Cadence` / `WandbConfig` / `ResumeProvenance` + the wandb-shaping helpers; the
   authored `decomposition.ci` configs AND the tiled LM site specs live with their domain
-  schemas, lab-side). The
+  schemas, composition-side). The
   built-run bundle the engine consumes (`built_run.py`: `BuiltRun` /
   `DataConfig` / `EvalConfig` / … + the `TargetSites` protocol). The engine + numerics
   (`run.py` = `run_decomposition_training`, `model.py` / `train.py` / `ci_fn.py` /
@@ -252,10 +252,10 @@ Run a single test: `python -m pytest path/to/test_file.py::test_name`.
 
 ## CLI entry points
 
-The root `pyproject.toml` declares no core console scripts; the launchers and
-post-pipeline scripts live in `param_decomp/pyproject.toml`. The composition roots are
-NOT console scripts — run them as modules (the lab launchers sbatch the same module-run
-command). LM training is `python -m param_decomp.experiments.lm.run` (JAX), launched
+The library's `pd-*` scripts (toys + post-pipeline) live in the root `pyproject.toml`;
+`pd-lm` / `pd-pretrain` in the private wrapper's. The composition roots are
+NOT console scripts — run them as modules (the goodfire launchers sbatch the same
+module-run command). LM training is `python -m param_decomp.experiments.lm.run` (JAX), launched
 via `pd-lm`. Slow/plot eval is in-loop only (no CLI).
 
 | Command | Entry point | Purpose |

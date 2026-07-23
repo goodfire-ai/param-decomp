@@ -11,7 +11,7 @@ single-pool trainer's data/sharding/checkpoint substrate.
 ## Split (mirrors `pd-lm`)
 
 The trainer lives in the core `param-decomp` distribution (repo-root sibling `pretrain/`);
-the submit wrapper is lab-side. One venv covers both:
+the submit wrapper is composition-side. One venv covers both:
 
 - **`pretrain/`** (repo-root sibling of `param_decomp/`) — the trainer:
   - `models.py` — trainable equinox defs for all three archs (`GPT2Simple`, `LlamaSimple`,

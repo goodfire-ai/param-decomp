@@ -39,7 +39,7 @@ TMS and ResidualMLP now live only as JAX targets in `param_decomp/`
 (`tms.py`, `resid_mlp.py`); the torch experiment dirs were deleted.
 
 Training is the JAX single-pool trainer: the generic engine
-(`param_decomp.core.run.run_decomposition_training`, a pure library) driven by the lab-side
+(`param_decomp.core.run.run_decomposition_training`, a pure library) driven by the composition-side
 composition root (`python -m param_decomp.experiments.lm.run`), launched via `pd-lm`. A
 run is one self-contained YAML (the `param_decomp.experiments.config.ExperimentConfig`
 schema over the core `param_decomp.core.configs` pieces). The torch trainer (`optimize()`, the
@@ -55,10 +55,10 @@ schema in core (`param_decomp.core.configs`) and computed by the JAX trainer
 
 ## Packaging
 
-The root `pyproject.toml` builds only the core `param-decomp` distribution. Lab scripts
-and experiment tooling live in `param_decomp/pyproject.toml` as the separate
-`param-decomp-lab` distribution. Local development uses the uv workspace, so absolute
-imports for both packages work after `make install-dev`.
+The root `pyproject.toml` builds the `param-decomp` library (the whole `param_decomp/`
+package); the private Goodfire launchers build separately from
+`param_decomp_goodfire/pyproject.toml`. Local development uses the uv workspace, so
+absolute imports for both work after `make install-dev`.
 
 Metric classes define a Pydantic config plus a class satisfying `__init__(cfg)`,
 `bind(*, model, device)`, `reset()`, `update(ctx)`, and `compute()`. Use `LossMetricConfig`

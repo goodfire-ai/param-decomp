@@ -62,7 +62,7 @@ exactly the JAX "mean over all forwards of `kl_per_position`" (§4e).
 | `PersistentPGDReconLoss` | KL | persistent sources + Adam/sign moments, cross-step | all sites, route-all, × `n_samples` | `c`/`sc`/`nsc`/`bsc` | warmup ascents, S14 fused final ascent, sigmoid param, `start_frac`, eval-time hidden-acts extras |
 | `PersistentPGDReconSubsetLoss` | KL | persistent | loss fwds routed per `cfg.routing` (fresh draw per sample); **warmup fwds route ALL** (quirk Q1) | same | |
 
-Not in `LOSS_METRIC_CLASSES` (eval-only, lab-side): `CIHiddenActsReconLoss`,
+Not in `LOSS_METRIC_CLASSES` (eval-only, composition-side): `CIHiddenActsReconLoss`,
 `CIMaskedAttnPatternsReconLoss`, `StochasticAttnPatternsReconLoss` — covered in
 §4c/§4d; they stay on the bridge.
 

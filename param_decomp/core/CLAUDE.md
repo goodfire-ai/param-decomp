@@ -85,7 +85,7 @@ scan/masked-forward engine, HF loading, and the target's own placement via
 `param_decomp/targets/llama8b.py` (vendored `LlamaConfig`, llama3 rope) and
 `param_decomp/targets/qwen3_8b.py` (`Qwen3FrozenAttn` — REQUIRED `q_norm`/`k_norm`
 fields applied in the `_prep_qk` pre-RoPE hook; Qwen3's one structural delta). Nothing
-in the shared file switches on a family; the model-name → family registry is LAB-side
+in the shared file switches on a family; the model-name → family registry is composition-side
 (`experiments/lm/config.py::HF_MODEL_FAMILIES`). Qwen3 JAX↔HF parity is pinned DIRECTLY
 by `param_decomp/targets/tests/qwen3_hf_parity/` (a tiny-random `Qwen3ForCausalLM`
 golden at fp32 tolerance + a slow real-weights logits check; goldens regenerate via its
@@ -94,7 +94,7 @@ recon semantics: masks thread through the full token-input forward, loss is KL o
 (SPEC §2.3–2.5). Site-local recon is a conceptual no-no, not a "simplification".
 `param_decomp/targets/llama_simple_mlp.py` is the second target (the pile-pretrained `LlamaSimpleMLP`,
 t-9d2b8f02; sites `h.{i}.attn.{q,k,v,o}_proj` / `h.{i}.mlp.{c_fc,down_proj}`) —
-config dispatch is `TargetConfig` (the HF GLU families) vs `LlamaSimpleMLPTargetConfig`, both LAB-side
+config dispatch is `TargetConfig` (the HF GLU families) vs `LlamaSimpleMLPTargetConfig`, both composition-side
 (`param_decomp/experiments/lm/config.py`, which reads the canonical schema DIRECTLY —
 `build_experiment_config`/`load_config` — resolving each target's tiled
 `decomposition.sites` via its `ArchFamily`), target build in the LM composition root
@@ -146,7 +146,7 @@ CE/KL/L0/PGD scalars come from a dedicated `make_eval_step` instance with
 The core trainer carries ZERO target-specific code — the toy *targets*
 (`DecomposedModel`s, pretrain, identity-CI eval) are `param_decomp/targets/{tms,resid_mlp}.py`,
 peers of the LM slices; their composition roots (`pd-tms` / `pd-resid-mlp`) stay
-lab-side. CI-fn *architectures* are NOT toy-specific code: core owns every CI-fn arch
+composition-side. CI-fn *architectures* are NOT toy-specific code: core owns every CI-fn arch
 regardless of which experiments use it. The positionless MLPs and the sequence transformer
 are peers in `ci_fn.py` (differing by domain, not status), not a toy carve-out. The
 generic engine is `run.py::run_decomposition_training(pd, cadence, run, model, ci_fn,
@@ -156,7 +156,7 @@ via `_init_or_restore_state`, the recon-grid step factory, orbax checkpointing, 
 SIGTERM-save). It reads the pydantic `PDConfig` / `Cadence` (`param_decomp.core.configs`)
 DIRECTLY — optimizers / loss metrics / faith warmup / seed / steps — so there is
 NO flattened mirror dataclass; the run identity rides in
-`built_run.RunInstance`, and the lab-built objects (`ci_fn` arch, `data`, the decomposed target)
+`built_run.RunInstance`, and the composition-built objects (`ci_fn` arch, `data`, the decomposed target)
 pass alongside. A target injects exactly three seams: the data source
 (`sample_batch(step) -> residual`), the eval metric (`eval_fn(state, now_step) -> dict`, run
 every `eval_every`), and (for the LM) the perf token count.
@@ -167,7 +167,7 @@ LM composition root is LM-ONLY (`experiments.lm.config.build_from_schema` valida
 only `TargetConfig` / `LlamaSimpleMLPTargetConfig`). `BuiltRun.target` is typed by the core
 `built_run.TargetSites` protocol (just `.sites`), `BuiltRun.data` is `DataConfig | None` (None
 for a toy run). The shared schema validation + run-identity / CI-fn-arch helpers are public
-lab-side for the toys to reuse: `experiments.config.assert_canonical_algorithm_config` /
+composition-side for the toys to reuse: `experiments.config.assert_canonical_algorithm_config` /
 `run_instance` / `ci_arch`.
 
 The TMS + ResidMLP targets live at `param_decomp/targets/{tms,resid_mlp}.py` (the JAX
@@ -273,7 +273,7 @@ alongside lab.
 ## The training pipeline
 
 The generic ENGINE `run.py::run_decomposition_training` is a pure library (no `main`, no
-YAML). The composition root + only I/O layer is LAB-side:
+YAML). The composition root + only I/O layer lives in `param_decomp.experiments`:
 `python -m param_decomp.experiments.lm.run <config.yaml>` reads the YAML, builds the
 target + data loader + `ExperimentConfig`, and calls the engine; the step stays pure. Data
 is a pre-tokenized parquet artifact under
@@ -318,7 +318,7 @@ p-anneal schedule recomputes over the new `cfg.steps` from 0. A subsequent SLURM
 asserts matching sites (names + C) + ci-fn arch before the restore. Provenance flows into
 `config.yaml` + `wandb.config`. Launch as usual via `pd-lm <config.yaml>`.
 
-**Launch is CONFIG-DRIVEN via `runtime.dp`** (lab-side `pd-lm <config.yaml>`): there are NO
+**Launch is CONFIG-DRIVEN via `runtime.dp`** (the private wrapper's `pd-lm <config.yaml>`): there are NO
 `--nodes` / `--local` / `--distributed` flags. The mode is a pure function of the config's
 `runtime.dp`:
 - `dp = null` → run the trainer INLINE in the current process (single device, no SLURM, no
