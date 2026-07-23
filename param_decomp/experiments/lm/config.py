@@ -58,6 +58,7 @@ from param_decomp.experiments.config import (
     assert_canonical_algorithm_config,
     run_instance,
 )
+from param_decomp.infra.settings import ENV
 from param_decomp.targets import glu_transformer, llama8b, llama_simple_mlp, qwen3_8b
 from param_decomp.targets.glu_transformer import GluMatrix
 from param_decomp.targets.llama_simple_mlp import SimpleMlpMatrix
@@ -540,7 +541,7 @@ def _resolve_decomposition(cfg: LMExperimentConfig) -> _ResolvedDecomposition:
             return _ResolvedDecomposition(target, tree, grammar, site_specs)
         case PretrainedTarget():
             assert spec.model_class.rsplit(".", 1)[-1] == "LlamaSimpleMLP", spec.model_class
-            cache_dir = llama_simple_mlp.pretrain_cache_dir(spec.run_path)
+            cache_dir = llama_simple_mlp.pretrain_cache_dir(ENV.output_root, spec.run_path)
             arch = llama_simple_mlp.load_model_config(cache_dir)
             assert cfg.data.max_seq_len <= arch.n_ctx, (cfg.data.max_seq_len, arch.n_ctx)
             tree = resolve_site_tree(sites, llama_simple_mlp.FAMILY, arch.n_layer)
@@ -765,7 +766,7 @@ def _assert_placement_claims(resolved: _ResolvedDecomposition, cfg: LMExperiment
     concrete mesh is the same construction; nothing decides later or deeper."""
     placement.from_config(
         cfg.runtime.sharding,
-        hsdp_abstract_mesh(cfg.runtime.dp, cfg.runtime.tp),
+        hsdp_abstract_mesh(cfg.runtime.dp, cfg.runtime.tp, cfg.runtime.gpus_per_node),
         resolved.site_specs,
     )
 

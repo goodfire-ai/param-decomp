@@ -21,11 +21,10 @@ import yaml
 from param_decomp.core.log import logger
 from param_decomp.infra.git import create_git_snapshot
 from param_decomp.infra.run_files import generate_run_id
-from param_decomp.infra.settings import PARAM_DECOMP_OUT_DIR, REPO_ROOT
+from param_decomp.infra.settings import ENV
 from param_decomp.infra.slurm import SlurmConfig, generate_script, submit_slurm_job
 
-GPUS_PER_NODE = 8
-WORKSPACES_DIR = PARAM_DECOMP_OUT_DIR / "workspaces"
+WORKSPACES_DIR = ENV.output_root / "workspaces"
 
 _SRUN_FLAGS = (
     "--kill-on-bad-exit=1 --ntasks-per-node=8 --cpus-per-task=8 --distribution=block:block"
@@ -61,14 +60,14 @@ def main(
         comment: SLURM `--comment`; defaults to the run id.
     """
     config_rel = _config_path_relative_to_repo(config_path)
-    run_name, dp = _read_run_name_and_dp(REPO_ROOT / config_rel)
+    run_name, dp, gpn = _read_run_name_and_topology(ENV.repo_root / config_rel)
     tag_list = [s.strip() for s in tags.split(",")] if tags is not None else []
 
     if dp is None:
-        _run_local(REPO_ROOT / config_rel)
+        _run_local(ENV.repo_root / config_rel)
         return
-    assert dp % GPUS_PER_NODE == 0, f"dp={dp} must be a multiple of {GPUS_PER_NODE}"
-    nodes = dp // GPUS_PER_NODE
+    assert dp % gpn == 0, f"dp={dp} must be a multiple of gpus_per_node={gpn}"
+    nodes = dp // gpn
 
     if run_id is None:
         run_id = generate_run_id("train")
@@ -86,9 +85,9 @@ def main(
         job_name=job_name,
         partition=None,
         qos=qos,
-        n_gpus=GPUS_PER_NODE,
+        n_gpus=gpn,
         n_nodes=nodes,
-        ntasks_per_node=GPUS_PER_NODE,
+        ntasks_per_node=gpn,
         cpus_per_task=8,
         time=time,
         signal="TERM@300",
@@ -120,26 +119,30 @@ def _run_local(config_path: Path) -> None:
     assert config_path.exists(), f"config not found: {config_path}"
     cmd = [sys.executable, "-m", "pretrain.train", str(config_path.resolve())]
     logger.info(f"Running locally: {' '.join(cmd)}")
-    subprocess.run(cmd, cwd=REPO_ROOT, check=True)
+    subprocess.run(cmd, cwd=ENV.repo_root, check=True)
 
 
 def _config_path_relative_to_repo(config_path: str) -> Path:
     path = Path(config_path).resolve()
     assert path.exists(), f"config not found: {path}"
-    assert path.is_relative_to(REPO_ROOT), (
+    assert path.is_relative_to(ENV.repo_root), (
         f"config must live inside the repo so the snapshot carries it: {path}"
     )
-    return path.relative_to(REPO_ROOT)
+    return path.relative_to(ENV.repo_root)
 
 
-def _read_run_name_and_dp(config_path: Path) -> tuple[str, int | None]:
+def _read_run_name_and_topology(config_path: Path) -> tuple[str, int | None, int]:
+    """`(run_name, dp, gpus_per_node)` off the raw YAML (schema defaults mirrored for
+    the absent-field case; full validation happens in-job via `load_pretrain_config`)."""
     raw = yaml.safe_load(config_path.read_text())
     assert "run_id" not in raw, f"{config_path}: run_id is minted at submit, omit it"
     run_name = raw.get("run_name")
     assert isinstance(run_name, str) and run_name, f"{config_path}: run_name required"
     dp = raw.get("dp")
     assert dp is None or (isinstance(dp, int) and dp > 0), f"{config_path}: bad dp {dp!r}"
-    return run_name, dp
+    gpn = raw.get("gpus_per_node", 8)
+    assert isinstance(gpn, int) and gpn > 0, f"{config_path}: bad gpus_per_node {gpn!r}"
+    return run_name, dp, gpn
 
 
 def _build_workspace(
@@ -157,12 +160,13 @@ def _build_workspace(
         subprocess.run(args, cwd=cwd, check=True)
 
     logger.info(f"Building workspace {workspace} ...")
-    run(["git", "clone", "--quiet", str(REPO_ROOT), str(workspace)], cwd=REPO_ROOT)
+    run(["git", "clone", "--quiet", str(ENV.repo_root), str(workspace)], cwd=ENV.repo_root)
     run(
-        ["git", "fetch", "--quiet", str(REPO_ROOT), f"{snapshot_ref}:{snapshot_ref}"], cwd=workspace
+        ["git", "fetch", "--quiet", str(ENV.repo_root), f"{snapshot_ref}:{snapshot_ref}"],
+        cwd=workspace,
     )
     run(["git", "checkout", "--quiet", snapshot_ref], cwd=workspace)
-    env_file = REPO_ROOT / ".env"
+    env_file = ENV.repo_root / ".env"
     assert env_file.exists(), f".env with wandb credentials required: {env_file}"
     (workspace / ".env").write_bytes(env_file.read_bytes())
 
@@ -190,7 +194,7 @@ def _stamp_config(config: Path, run_id: str, group: str | None, tags: list[str])
     assert "run_id" not in raw, "run_id already stamped"
     raw["run_id"] = run_id
     if raw.get("out_dir") is None:
-        raw["out_dir"] = str(PARAM_DECOMP_OUT_DIR / "runs")
+        raw["out_dir"] = str(ENV.output_root / "runs")
     if group is not None or tags:
         assert raw.get("wandb") is not None, "wandb group/tags need a wandb: block in the config"
         if group is not None:

@@ -15,7 +15,7 @@ from param_decomp.autointerp.schemas import ModelMetadata
 from param_decomp.harvest.analysis import TokenPRLift
 from param_decomp.harvest.schemas import ComponentData
 from param_decomp.infra.markdown import Md
-from param_decomp.tokenizer_display import AppTokenizer
+from param_decomp.infra.tokenizer_display import AppTokenizer
 
 _PD_DESCRIPTION = (
     "Each component is a rank-1 parameter matrix learned by PD. "

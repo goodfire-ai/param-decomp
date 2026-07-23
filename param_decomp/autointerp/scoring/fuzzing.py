@@ -19,7 +19,7 @@ from param_decomp.autointerp.providers import LLMProvider
 from param_decomp.autointerp.repo import InterpRepo
 from param_decomp.core.log import logger
 from param_decomp.harvest.schemas import ActivationExample, ComponentData
-from param_decomp.tokenizer_display import AppTokenizer, delimit_tokens
+from param_decomp.infra.tokenizer_display import AppTokenizer, delimit_tokens
 
 FUZZING_SCHEMA = {
     "type": "object",

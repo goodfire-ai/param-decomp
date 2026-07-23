@@ -22,7 +22,7 @@ from param_decomp.core.log import logger
 from param_decomp.harvest.config import IntruderEvalConfig
 from param_decomp.harvest.db import HarvestDB
 from param_decomp.harvest.schemas import ActivationExample
-from param_decomp.tokenizer_display import AppTokenizer
+from param_decomp.infra.tokenizer_display import AppTokenizer
 
 INTRUDER_SCHEMA = {
     "type": "object",

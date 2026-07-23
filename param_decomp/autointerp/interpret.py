@@ -25,7 +25,7 @@ from param_decomp.harvest.analysis import (
 )
 from param_decomp.harvest.repo import HarvestRepo
 from param_decomp.harvest.schemas import ComponentData, ComponentSummary
-from param_decomp.tokenizer_display import AppTokenizer
+from param_decomp.infra.tokenizer_display import AppTokenizer
 
 
 def resolve_target_component_keys(

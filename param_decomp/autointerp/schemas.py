@@ -3,12 +3,12 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from param_decomp.infra.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp.infra.settings import ENV
 
 
 def get_autointerp_dir(decomposition_id: str) -> Path:
     """Top-level autointerp directory for a decomposition."""
-    return PARAM_DECOMP_OUT_DIR / "runs" / decomposition_id / "autointerp"
+    return ENV.output_root / "runs" / decomposition_id / "autointerp"
 
 
 def get_autointerp_subrun_dir(decomposition_id: str, autointerp_run_id: str) -> Path:

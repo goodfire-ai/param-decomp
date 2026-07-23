@@ -8,7 +8,7 @@ from pathlib import Path
 
 from param_decomp.core.log import logger
 from param_decomp.infra.git import create_git_snapshot
-from param_decomp.infra.settings import DEFAULT_PARTITION_NAME, PARAM_DECOMP_OUT_DIR
+from param_decomp.infra.settings import ENV
 from param_decomp.infra.slurm import SlurmConfig, generate_script, submit_slurm_job
 from param_decomp.infra.wandb import parse_wandb_run_path
 
@@ -21,7 +21,7 @@ class InvestigationResult:
 
 
 def get_investigation_output_dir(inv_id: str) -> Path:
-    return PARAM_DECOMP_OUT_DIR / "investigations" / inv_id
+    return ENV.output_root / "investigations" / inv_id
 
 
 def launch_investigation(
@@ -65,7 +65,7 @@ def launch_investigation(
 
     slurm_config = SlurmConfig(
         job_name=job_name,
-        partition=DEFAULT_PARTITION_NAME,
+        partition=ENV.default_partition,
         n_gpus=1,
         time=time,
         snapshot_ref=snapshot_ref,

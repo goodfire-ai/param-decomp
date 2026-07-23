@@ -4,7 +4,7 @@ Reads harvest DBs for each model in `scripts/intruder_comparison.json` and write
 - `data.json`: per-component scores + densities, per-model summary stats, group/colour spec
 - `README.md`: description of the data, summary table, and intended bar chart
 
-Output goes to `PARAM_DECOMP_OUT_DIR/intruder_comparison/`.
+Output goes to `ENV.output_root/intruder_comparison/`.
 """
 
 import json
@@ -13,10 +13,10 @@ from pathlib import Path
 
 import numpy as np
 
-from param_decomp.infra.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp.infra.settings import ENV
 
-HARVEST_ROOT = PARAM_DECOMP_OUT_DIR / "harvest"
-OUT_DIR = PARAM_DECOMP_OUT_DIR / "intruder_comparison"
+HARVEST_ROOT = ENV.output_root / "harvest"
+OUT_DIR = ENV.output_root / "intruder_comparison"
 CONFIG_PATH = Path(__file__).resolve().parents[3] / "scripts" / "intruder_comparison.json"
 
 EMBER = "#B17039"

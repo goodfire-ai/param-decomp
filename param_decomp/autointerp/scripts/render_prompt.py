@@ -13,7 +13,7 @@ from param_decomp.harvest.schemas import (
     ComponentData,
     ComponentTokenPMI,
 )
-from param_decomp.tokenizer_display import AppTokenizer
+from param_decomp.infra.tokenizer_display import AppTokenizer
 
 TOKENIZER_NAME = "openai-community/gpt2"
 

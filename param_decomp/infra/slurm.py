@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from param_decomp.infra.git import snapshot_source_repo
-from param_decomp.infra.settings import REPO_ROOT, SBATCH_SCRIPTS_DIR, SLURM_LOGS_DIR
+from param_decomp.infra.settings import ENV
 
 # Bash expressions that uniquely identify a job invocation, used to name per-job /tmp
 # workspaces. Exposed so other modules building SLURM commands (e.g. multi-node DDP
@@ -31,7 +31,7 @@ class SlurmConfig:
 
     `n_gpus=0` is CPU-only. `snapshot_ref` is a fully-qualified git ref (e.g.
     `refs/runs/snapshot/<id>`) to fetch and checkout in the SLURM job; `None` means
-    just `cd` to `REPO_ROOT`. `dependency_job_id` adds an `afterok` dependency.
+    just `cd` to `ENV.repo_root`. `dependency_job_id` adds an `afterok` dependency.
     """
 
     job_name: str
@@ -185,17 +185,17 @@ def submit_slurm_job(
 ) -> SubmitResult:
     """Submit `script_content` via `sbatch` and prepare its logs.
 
-    Writes the script to `SBATCH_SCRIPTS_DIR`, submits via `sbatch`, renames the script
+    Writes the script to `ENV.sbatch_scripts_dir`, submits via `sbatch`, renames the script
     to include the job ID, and `touch`es empty log file(s) for tailing.
     `n_array_tasks=None` is a singleton job.
     """
-    SBATCH_SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
-    SLURM_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    ENV.sbatch_scripts_dir.mkdir(parents=True, exist_ok=True)
+    ENV.slurm_logs_dir.mkdir(parents=True, exist_ok=True)
 
     # Write script to a unique temporary file (safe for concurrent submissions)
     with tempfile.NamedTemporaryFile(
         mode="w",
-        dir=SBATCH_SCRIPTS_DIR,
+        dir=ENV.sbatch_scripts_dir,
         prefix=f"{script_name_prefix}_",
         suffix=".sh",
         delete=False,
@@ -208,17 +208,17 @@ def submit_slurm_job(
     job_id = _submit_script(temp_script_path)
 
     # Rename script to include job ID
-    final_script_path = SBATCH_SCRIPTS_DIR / f"{script_name_prefix}_{job_id}.sh"
+    final_script_path = ENV.sbatch_scripts_dir / f"{script_name_prefix}_{job_id}.sh"
     temp_script_path.rename(final_script_path)
 
     # Create empty log file(s) for tailing
     if n_array_tasks is not None:
         for i in range(1, n_array_tasks + 1):
-            (SLURM_LOGS_DIR / f"slurm-{job_id}_{i}.out").touch()
-        log_pattern = str(SLURM_LOGS_DIR / f"slurm-{job_id}_*.out")
+            (ENV.slurm_logs_dir / f"slurm-{job_id}_{i}.out").touch()
+        log_pattern = str(ENV.slurm_logs_dir / f"slurm-{job_id}_*.out")
     else:
-        (SLURM_LOGS_DIR / f"slurm-{job_id}.out").touch()
-        log_pattern = str(SLURM_LOGS_DIR / f"slurm-{job_id}.out")
+        (ENV.slurm_logs_dir / f"slurm-{job_id}.out").touch()
+        log_pattern = str(ENV.slurm_logs_dir / f"slurm-{job_id}.out")
 
     return SubmitResult(
         job_id=job_id,
@@ -243,7 +243,7 @@ def _common_sbatch_lines(config: SlurmConfig, log_pattern: str) -> list[str]:
         f"#SBATCH --ntasks-per-node={config.ntasks_per_node}",
         f"#SBATCH --gpus-per-node={config.n_gpus}",
         f"#SBATCH --time={config.time}",
-        f"#SBATCH --output={SLURM_LOGS_DIR}/slurm-{log_pattern}.out",
+        f"#SBATCH --output={ENV.slurm_logs_dir}/slurm-{log_pattern}.out",
         # Append across requeues instead of SLURM's default truncate — otherwise an
         # auto-requeue (`--requeue`) reopens the same `slurm-<jobid>.out` and wipes the
         # prior attempt's log, destroying the crash evidence that triggered the requeue.
@@ -322,7 +322,7 @@ def _workspace_setup(config: SlurmConfig, workspace_suffix: str) -> str:
         return generate_git_snapshot_setup(work_dir, config.snapshot_ref)
     else:
         return f"""\
-cd "{REPO_ROOT}"
+cd "{ENV.repo_root}"
 source .venv/bin/activate"""
 
 

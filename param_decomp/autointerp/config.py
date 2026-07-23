@@ -11,7 +11,7 @@ from typing import Annotated, Literal
 from pydantic import Field, PositiveInt
 
 from param_decomp.core.base_config import BaseConfig
-from param_decomp.infra.settings import DEFAULT_PARTITION_NAME
+from param_decomp.infra.settings import ENV
 
 ReasoningEffort = Literal["none", "low", "medium", "high"]
 
@@ -229,7 +229,7 @@ class AutointerpSlurmConfig(BaseConfig):
     """
 
     config: AutointerpConfig
-    partition: str | None = DEFAULT_PARTITION_NAME
+    partition: str | None = ENV.default_partition
     time: str = "12:00:00"
     evals: AutointerpEvalConfig | None
     evals_time: str = "12:00:00"

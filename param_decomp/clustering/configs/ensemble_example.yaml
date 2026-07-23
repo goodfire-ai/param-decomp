@@ -9,7 +9,7 @@
 
 harvest:
   # Full path to a JAX single-pool run dir (the one `open_jax_run` restores), or a W&B ref.
-  model_path: /mnt/data/artifacts/mechanisms/param-decomp/runs/p-bd3cd4d4
+  model_path: /path/to/your/runs/p-xxxxxxxx  # a run dir under your $PARAM_DECOMP_OUT_DIR/runs/
   batch_size: 16
   n_tokens: 50000
   n_tokens_per_seq: 8

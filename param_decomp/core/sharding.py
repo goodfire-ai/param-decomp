@@ -27,10 +27,8 @@ from jax.sharding import PartitionSpec as P
 
 from param_decomp.core.model import DecomposedModel
 
-_GPUS_PER_NODE = 8
 
-
-def init_distributed(dp: int | None) -> bool:
+def init_distributed(dp: int | None, gpus_per_node: int) -> bool:
     """Bring up `jax.distributed` iff `dp` is set. Distributedness is config-driven
     (`runtime.dp`), NEVER inferred from ambient SLURM env — `SLURM_PROCID` is present in
     every process on a SLURM box (incl. a pytest worker), so sniffing it would wrongly
@@ -48,15 +46,15 @@ def init_distributed(dp: int | None) -> bool:
     """
     if dp is None:
         return False
-    assert dp % _GPUS_PER_NODE == 0, f"dp={dp} must be a multiple of {_GPUS_PER_NODE} (GPUs/node)"
+    assert dp % gpus_per_node == 0, f"dp={dp} must be a multiple of {gpus_per_node} (GPUs/node)"
     cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
-    n_local = len([d for d in cuda_visible.split(",") if d]) or _GPUS_PER_NODE
+    n_local = len([d for d in cuda_visible.split(",") if d]) or gpus_per_node
     jax.distributed.initialize(local_device_ids=list(range(n_local)))
     assert jax.device_count() == dp, (
         f"runtime.dp={dp} != realized device count {jax.device_count()} "
         f"({jax.process_count()} procs × {jax.local_device_count()} local GPUs; "
         f"CUDA_VISIBLE_DEVICES={cuda_visible!r}) — the config's declared world size must "
-        f"match the launch topology (nodes × {_GPUS_PER_NODE})"
+        f"match the launch topology (nodes × {gpus_per_node})"
     )
     return True
 
@@ -65,7 +63,7 @@ BATCH_AXES = ("replicate", "fsdp")
 """The full-mesh batch sharding: data shards over BOTH axes (per-rank batch = B/N)."""
 
 
-def hsdp_mesh(tp: int = 1) -> Mesh:
+def hsdp_mesh(tp: int = 1, gpus_per_node: int = 8) -> Mesh:
     """The 3-D HSDP+TP device mesh `(replicate, fsdp, tp)`. Both `fsdp` and `tp` are
     intra-node NVLink axes carved from a node's GPUs (`fsdp * tp = GPUS_PER_NODE`); `tp` is
     the FAST-VARYING / minor axis so a tp group is adjacent GPUs, and a node's contiguous
@@ -78,7 +76,7 @@ def hsdp_mesh(tp: int = 1) -> Mesh:
     devices = np.array(jax.devices())
     n = devices.size
     assert n % tp == 0, f"device count {n} not divisible by tp={tp}"
-    in_node = _GPUS_PER_NODE if n % _GPUS_PER_NODE == 0 else n
+    in_node = gpus_per_node if n % gpus_per_node == 0 else n
     assert in_node % tp == 0, f"in-node block {in_node} not divisible by tp={tp}"
     return Mesh(
         devices.reshape(n // in_node, in_node // tp, tp),
@@ -86,20 +84,20 @@ def hsdp_mesh(tp: int = 1) -> Mesh:
     )
 
 
-def hsdp_abstract_mesh(dp: int | None, tp: int) -> AbstractMesh:
+def hsdp_abstract_mesh(dp: int | None, tp: int, gpus_per_node: int) -> AbstractMesh:
     """The mesh SHAPE a run config implies, with no devices — what config-build placement
     validation (`placement.from_config`) runs against, so a `dp: N` config refuses on the
-    login node before sbatch. `dp = N` pins the full topology (`N // 8` nodes × 8 GPUs:
-    replicate = N//8, fsdp = 8//tp). `dp = None` (inline) pins only what the config itself
+    login node before sbatch. `dp = N` pins the full topology (`N // gpus_per_node`
+    nodes: replicate = N//gpn, fsdp = gpn//tp). `dp = None` (inline) pins only what the config itself
     decides — replicate = 1 and `tp` — leaving fsdp at 1: the ambient device count is
     unknowable at config build, and a 1-sized axis can never over-reject; the run's own
     construction against the concrete `hsdp_mesh` validates the real axis."""
     if dp is None:
         shape = (1, 1, tp)
     else:
-        assert dp % _GPUS_PER_NODE == 0, f"dp={dp} must be a multiple of {_GPUS_PER_NODE}"
-        assert _GPUS_PER_NODE % tp == 0, f"tp={tp} must divide {_GPUS_PER_NODE}"
-        shape = (dp // _GPUS_PER_NODE, _GPUS_PER_NODE // tp, tp)
+        assert dp % gpus_per_node == 0, f"dp={dp} must be a multiple of {gpus_per_node}"
+        assert gpus_per_node % tp == 0, f"tp={tp} must divide {gpus_per_node}"
+        shape = (dp // gpus_per_node, gpus_per_node // tp, tp)
     return AbstractMesh(shape, ("replicate", "fsdp", "tp"))
 
 

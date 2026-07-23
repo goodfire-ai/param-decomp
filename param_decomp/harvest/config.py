@@ -10,7 +10,7 @@ from pydantic import PositiveInt
 
 from param_decomp.autointerp.config import LLMConfig, OpenRouterLLMConfig
 from param_decomp.core.base_config import BaseConfig
-from param_decomp.infra.settings import DEFAULT_PARTITION_NAME
+from param_decomp.infra.settings import ENV
 from param_decomp.infra.wandb import parse_wandb_run_path
 
 # -- Method-specific harvest configs ------------------------------------------
@@ -49,7 +49,7 @@ class IntruderSlurmConfig(BaseConfig):
     """Config for intruder eval SLURM submission."""
 
     config: IntruderEvalConfig = IntruderEvalConfig()
-    partition: str | None = DEFAULT_PARTITION_NAME
+    partition: str | None = ENV.default_partition
     time: str = "10:00:00"
 
 
@@ -72,7 +72,7 @@ class HarvestSlurmConfig(BaseConfig):
 
     config: HarvestConfig
     n_gpus: PositiveInt = 8
-    partition: str | None = DEFAULT_PARTITION_NAME
+    partition: str | None = ENV.default_partition
     time: str = "12:00:00"
     merge_time: str = "04:00:00"
     merge_mem: str = "200G"

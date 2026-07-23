@@ -22,7 +22,7 @@ from param_decomp.autointerp.strategies.rich_examples import (
 )
 from param_decomp.harvest.analysis import TokenPRLift
 from param_decomp.harvest.schemas import ComponentData
-from param_decomp.tokenizer_display import AppTokenizer
+from param_decomp.infra.tokenizer_display import AppTokenizer
 
 INTERPRETATION_SCHEMA = {
     "type": "object",

@@ -20,7 +20,7 @@ from param_decomp.infra.git import (
     repo_is_clean,
 )
 from param_decomp.infra.paths import ModelPath
-from param_decomp.infra.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp.infra.settings import ENV
 from param_decomp.infra.wandb import (
     download_wandb_file,
     fetch_latest_checkpoint_name,
@@ -91,7 +91,7 @@ class ExecutionStamp(NamedTuple):
     @property
     def out_dir(self) -> Path:
         """Get the output directory for this execution stamp."""
-        run_dir = PARAM_DECOMP_OUT_DIR / self.run_type / self.run_id
+        run_dir = ENV.output_root / self.run_type / self.run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         return run_dir
 
@@ -236,7 +236,7 @@ class RunFiles:
 
 
 def _wandb_cache_dir(run_id: str) -> Path:
-    return PARAM_DECOMP_OUT_DIR / "runs" / run_id
+    return ENV.output_root / "runs" / run_id
 
 
 def resolve_run_files(

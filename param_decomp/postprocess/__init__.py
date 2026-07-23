@@ -22,7 +22,7 @@ from param_decomp.core.log import logger
 from param_decomp.harvest.scripts import run_intruder
 from param_decomp.harvest.scripts.run_slurm import submit_harvest
 from param_decomp.infra.git import create_git_snapshot
-from param_decomp.infra.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp.infra.settings import ENV
 from param_decomp.infra.slurm import (
     SlurmConfig,
     SubmitResult,
@@ -98,7 +98,7 @@ def postprocess(config: PostprocessConfig, dependency_job_id: str | None = None)
 
     # === Write metadata ===
     metadata_id = "pp-" + datetime.now().strftime("%Y%m%d_%H%M%S")
-    metadata_dir = PARAM_DECOMP_OUT_DIR / "postprocess" / metadata_id
+    metadata_dir = ENV.output_root / "postprocess" / metadata_id
     metadata_dir.mkdir(parents=True, exist_ok=True)
     metadata_path = metadata_dir / "metadata.yaml"
 

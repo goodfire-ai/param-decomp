@@ -48,6 +48,7 @@ from param_decomp.experiments.lm.config import (
     hf_model_family,
     load_run_dir_config,
 )
+from param_decomp.infra.settings import ENV
 from param_decomp.targets import llama_simple_mlp
 from param_decomp.targets.glu_transformer import glu_site_specs
 
@@ -72,7 +73,9 @@ def build_target(cfg: BuiltRun, mesh: jax.sharding.Mesh) -> tuple[DecomposedMode
     validate via their in-loop target-CI metric in the lab provider, not this path."""
     match cfg.target:
         case LlamaSimpleMLPTargetConfig():
-            cache_dir = llama_simple_mlp.pretrain_cache_dir(cfg.target.pretrain_run_path)
+            cache_dir = llama_simple_mlp.pretrain_cache_dir(
+                ENV.output_root, cfg.target.pretrain_run_path
+            )
             simple_cfg = llama_simple_mlp.load_model_config(cache_dir)
             sites = llama_simple_mlp.site_specs(simple_cfg, cfg.target.sites)
             loaded_model = llama_simple_mlp.load_decomposed_lm_from_pretrain_cache(
@@ -253,7 +256,9 @@ def run_metadata(run_dir: Path) -> RunMetadata:
     cfg = load_run_dir_config(run_dir)
     match cfg.target:
         case LlamaSimpleMLPTargetConfig():
-            cache_dir = llama_simple_mlp.pretrain_cache_dir(cfg.target.pretrain_run_path)
+            cache_dir = llama_simple_mlp.pretrain_cache_dir(
+                ENV.output_root, cfg.target.pretrain_run_path
+            )
             simple_cfg = llama_simple_mlp.load_model_config(cache_dir)
             return RunMetadata(
                 model_type="LlamaSimpleMLP",

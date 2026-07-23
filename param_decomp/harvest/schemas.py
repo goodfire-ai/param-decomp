@@ -7,12 +7,12 @@ import numpy as np
 from jaxtyping import Bool, Float, Int
 from pydantic import BaseModel
 
-from param_decomp.infra.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp.infra.settings import ENV
 
 
 def get_harvest_dir(decomposition_id: str) -> Path:
     """Base harvest dir for a decomposition."""
-    return PARAM_DECOMP_OUT_DIR / "runs" / decomposition_id / "harvest"
+    return ENV.output_root / "runs" / decomposition_id / "harvest"
 
 
 def get_harvest_subrun_dir(decomposition_id: str, subrun_id: str) -> Path:

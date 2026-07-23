@@ -1,6 +1,6 @@
 """Locate a pretrained target's cache dir from its run id (torch-free).
 
-`pretrain.train` writes its weights to `PARAM_DECOMP_OUT_DIR/pretrain_cache/<project>-<run_id>/`
+`pretrain.train` writes its weights to `ENV.output_root/pretrain_cache/<project>-<run_id>/`
 (safetensors + `model_config.yaml`) — the layout the decomposition trainer's loader
 (`param_decomp.core.llama_simple_mlp.load_target_from_pretrain_cache`) reads, keyed by the
 wandb run path `<entity>/<project>/<run_id>` in a `kind: pretrained` decomposition target
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import yaml
 
-from param_decomp.infra.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp.infra.settings import ENV
 
 
 @dataclass(frozen=True)
@@ -32,7 +32,7 @@ class PretrainCache:
 
 
 def find_pretrain_cache(project: str, run_id: str) -> PretrainCache:
-    cache_dir = PARAM_DECOMP_OUT_DIR / "pretrain_cache" / f"{project}-{run_id}"
+    cache_dir = ENV.output_root / "pretrain_cache" / f"{project}-{run_id}"
     assert cache_dir.is_dir(), f"no pretrain cache at {cache_dir}"
     ckpts = sorted(cache_dir.glob("model_step_*.safetensors"))
     assert len(ckpts) == 1, f"expected one model_step_*.safetensors in {cache_dir}, found {ckpts}"

@@ -10,13 +10,14 @@ from dotenv import load_dotenv
 from wandb.apis.public import File, Run
 
 from param_decomp.core.log import logger
-from param_decomp.infra.settings import REPO_ROOT
+from param_decomp.infra.settings import ENV
 
 # Regex patterns for parsing W&B run references. PD run IDs are formatted as
 # `p-<8 hex chars>` (see `RUN_TYPE_ABBREVIATIONS`). Legacy `s-…` IDs predate the
 # Run refactor; they still resolve when given as a full `entity/project/runs/id` path.
-DEFAULT_WANDB_ENTITY = "goodfire"
 DEFAULT_WANDB_PROJECT = "param-decomp"
+"""The library's own project name — the bare-run-id default. The ENTITY has no baked
+default: it comes from `WANDB_ENTITY` / the authenticated login (`get_wandb_entity`)."""
 
 _RUN_ID_PATTERN = r"(?:[a-z0-9]-)?[a-z0-9]{8}"
 _BARE_RUN_ID_RE = re.compile(r"^(p-[a-z0-9]{8})$")
@@ -49,7 +50,7 @@ def parse_wandb_run_path(input_path: str) -> tuple[str, str, str]:
     """Parse various W&B run reference formats into `(entity, project, run_id)`.
 
     Accepts:
-    - `"p-xxxxxxxx"` (bare PD run ID, defaults to `goodfire/param-decomp`)
+    - `"p-xxxxxxxx"` (bare PD run ID → `get_wandb_entity()` / `$WANDB_PROJECT` or "param-decomp")
     - `"entity/project/runId"` (compact form)
     - `"entity/project/runs/runId"` (with `/runs/`)
     - `"https://wandb.ai/entity/project/runs/runId..."` (URL)
@@ -67,9 +68,10 @@ def parse_wandb_run_path(input_path: str) -> tuple[str, str, str]:
             f'Drop it from "{input_path}".'
         )
 
-    # Bare run ID (e.g. "p-17805b61") → default entity/project
+    # Bare run ID (e.g. "p-17805b61") → the environment's entity + default project
     if m := _BARE_RUN_ID_RE.match(s):
-        return DEFAULT_WANDB_ENTITY, DEFAULT_WANDB_PROJECT, m.group(1)
+        project = os.getenv("WANDB_PROJECT", DEFAULT_WANDB_PROJECT)
+        return get_wandb_entity(), project, m.group(1)
 
     # Try compact form: entity/project/runid
     if m := _WANDB_PATH_RE.match(s):
@@ -153,7 +155,7 @@ def init_wandb(
         resume="allow" if resume else None,
     )
     assert wandb.run is not None
-    wandb.run.log_code(root=str(REPO_ROOT / "param_decomp"))
+    wandb.run.log_code(root=str(ENV.repo_root / "param_decomp"))
 
     # Slow eval keys ride a dedicated `slow_eval/step` axis. The single-pool path
     # logs them in-train (monotonic); the 3-pool path logs them retroactively from

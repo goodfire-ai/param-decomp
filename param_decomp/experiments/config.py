@@ -29,7 +29,7 @@ from param_decomp.core.configs import (
     WandbConfig,
 )
 from param_decomp.core.schedule import ScheduleConfig
-from param_decomp.infra.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp.infra.settings import ENV
 
 
 class EvalConfig(BaseConfig):
@@ -91,7 +91,7 @@ class ExperimentConfig(BaseConfig):
 
     The run id is NOT a config field: it is minted by the launcher and passed to
     `run_instance` as an explicit argument. The run dir is a pure function of settings
-    + id (`PARAM_DECOMP_OUT_DIR/runs/<run_id>`).
+    + id (`ENV.output_root/runs/<run_id>`).
     """
 
     @model_validator(mode="before")
@@ -99,7 +99,7 @@ class ExperimentConfig(BaseConfig):
     def _strip_removed_run_identity_fields(cls, data: object) -> object:
         # Shared-storage shim: stored run config.yamls carry `run_id` (minted identity,
         # now passed to `run_instance` as an arg and derived from the run-dir name) and
-        # `out_dir` (vestigial; the run dir is `PARAM_DECOMP_OUT_DIR/runs/<run_id>`). Both
+        # `out_dir` (vestigial; the run dir is `ENV.output_root/runs/<run_id>`). Both
         # fields are removed; strip them so existing configs still load under extra=forbid.
         if not isinstance(data, dict):
             return data
@@ -177,12 +177,12 @@ def assert_canonical_algorithm_config(cfg: ExperimentConfig) -> None:
 
 def run_instance(cfg: ExperimentConfig, run_id: str) -> RunInstance:
     """The resolved run identity + logging lineage. `run_id` is minted by the launcher (a
-    toy mints its own); the run dir is `PARAM_DECOMP_OUT_DIR/runs/<run_id>`."""
+    toy mints its own); the run dir is `ENV.output_root/runs/<run_id>`."""
     assert _RUN_ID_PATTERN.match(run_id), f"run_id must be p-<8hex>, got {run_id!r}"
     return RunInstance(
         run_name=cfg.run_name,
         run_id=run_id,
-        out_dir=PARAM_DECOMP_OUT_DIR / "runs",
+        out_dir=ENV.output_root / "runs",
         wandb=cfg.wandb,
         resume_provenance=cfg.resume_provenance,
     )

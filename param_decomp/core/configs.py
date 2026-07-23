@@ -819,13 +819,22 @@ class RuntimeConfig(BaseConfig):
     dp: PositiveInt | None = Field(
         default=None,
         description=(
-            "Distributed world size — the number of data-parallel workers (= nodes × 8 on "
+            "Distributed world size — the number of data-parallel workers (= nodes × gpus_per_node on "
             "the cluster). The SINGLE source of truth for distributedness: the launcher "
-            "submits across `dp // 8` nodes and the trainer calls "
+            "submits across `dp // gpus_per_node` nodes and the trainer calls "
             "`init_distributed(dp)`, which asserts the realized `jax.process_count()` "
             "equals it. NEVER inferred from ambient SLURM env. None means a single device "
             "(the launcher runs the trainer inline, no jax.distributed). The batch is "
             "sharded data-parallel across the workers."
+        ),
+    )
+    gpus_per_node: PositiveInt = Field(
+        default=8,
+        description=(
+            "GPUs per node — the size of the intra-node NVLink group the mesh's `fsdp*tp` "
+            "plane is carved from, and the launcher's node math (`nodes = dp / gpus_per_node`). "
+            "A property of the cluster, carried in the config so the pinned launch_config "
+            "fully determines the topology. Default 8 (H100/H200/B200 nodes)."
         ),
     )
     tp: int = Field(

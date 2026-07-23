@@ -16,7 +16,7 @@ from param_decomp.autointerp.schemas import PD_DESCRIPTION
 from param_decomp.harvest.analysis import TokenPRLift
 from param_decomp.harvest.schemas import ComponentData
 from param_decomp.infra.markdown import Md
-from param_decomp.tokenizer_display import AppTokenizer, delimit_tokens
+from param_decomp.infra.tokenizer_display import AppTokenizer, delimit_tokens
 
 _PILE = (
     "The Pile (uncopyrighted subset): diverse text from books, academic papers, code, "

@@ -566,11 +566,11 @@ def main(config: Path, run_id: str) -> None:
 
     install_sigterm_flag()
     _enable_hlo_dump(built.run.run_dir)
-    init_distributed(built.runtime.dp)
+    init_distributed(built.runtime.dp, built.runtime.gpus_per_node)
     # Harden the cold-cache HF weight load against the 8N-rank startup burst before any
     # per-rank Hub call (no-op when huggingface_hub is absent / cache is pre-warmed).
     configure_hf_http_retries()
-    mesh = hsdp_mesh(built.runtime.tp)
+    mesh = hsdp_mesh(built.runtime.tp, built.runtime.gpus_per_node)
 
     if built.run.resume_provenance is not None:
         assert_finetune_structural_compat(built, built.run.resume_provenance)

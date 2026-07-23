@@ -1,35 +1,55 @@
-"""Lab-wide settings derived from environment variables."""
+"""The process environment, resolved once into one explicit object.
+
+`Environment.from_env` is the ONLY place the library reads ambient environment
+variables for paths / infra fit; everything else consumes the typed `ENV` singleton.
+The fields are enumerated — a new environment dependency is added here deliberately,
+never sniffed inline at a use site.
+"""
 
 import os
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
-REPO_ROOT = (
-    Path(os.environ["GITHUB_WORKSPACE"])
-    if ("CI" in os.environ and "GITHUB_WORKSPACE" in os.environ)
-    else Path(__file__).parent.parent.parent
-)
 
-_data_mount_env = os.environ.get("DATA_MOUNT")
-DATA_MOUNT: Path | None = Path(_data_mount_env) if _data_mount_env else None
-ON_CLUSTER = DATA_MOUNT is not None and DATA_MOUNT.exists()
-CLUSTER_BASE_PATH: Path | None = (
-    DATA_MOUNT / "artifacts/mechanisms/param-decomp"
-    if ON_CLUSTER and DATA_MOUNT is not None
-    else None
-)
+@dataclass(frozen=True)
+class Environment:
+    repo_root: Path
+    data_mount: Path | None
+    """Cluster shared-data mount (`DATA_MOUNT`); None off-cluster (or if the mount
+    doesn't exist — a set-but-dead `DATA_MOUNT` is treated as off-cluster)."""
+    output_root: Path
+    """Where runs / logs / scripts / caches land (`PARAM_DECOMP_OUT_DIR`; defaults
+    under the data mount on a cluster, `./out` elsewhere)."""
+    default_partition: str | None
+    """sbatch `--partition` (`PARTITION_RESERVED`); None → the cluster's default."""
 
-# Base directory for outputs (runs, logs, scripts, etc.).
-_default_out_dir = CLUSTER_BASE_PATH if CLUSTER_BASE_PATH is not None else "out"
-PARAM_DECOMP_OUT_DIR = Path(os.environ.get("PARAM_DECOMP_OUT_DIR", _default_out_dir))
+    @property
+    def slurm_logs_dir(self) -> Path:
+        return self.output_root / "slurm_logs"
 
-# SLURM directories
-SLURM_LOGS_DIR = PARAM_DECOMP_OUT_DIR / "slurm_logs"
-SBATCH_SCRIPTS_DIR = PARAM_DECOMP_OUT_DIR / "sbatch_scripts"
+    @property
+    def sbatch_scripts_dir(self) -> Path:
+        return self.output_root / "sbatch_scripts"
 
-# SLURM partition. Sourced from `PARTITION_RESERVED` (set on GF clusters); unset
-# elsewhere (CI, dev laptops, clusters without that env var), in which case we
-# omit `--partition` from sbatch and let SLURM use its configured default.
-DEFAULT_PARTITION_NAME: str | None = os.environ.get("PARTITION_RESERVED")
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] = os.environ) -> "Environment":
+        repo_root = (
+            Path(env["GITHUB_WORKSPACE"])
+            if ("CI" in env and "GITHUB_WORKSPACE" in env)
+            else Path(__file__).parent.parent.parent
+        )
+        raw_mount = env.get("DATA_MOUNT")
+        data_mount = Path(raw_mount) if raw_mount and Path(raw_mount).exists() else None
+        default_out = (
+            data_mount / "artifacts/mechanisms/param-decomp" if data_mount else Path("out")
+        )
+        return cls(
+            repo_root=repo_root,
+            data_mount=data_mount,
+            output_root=Path(env.get("PARAM_DECOMP_OUT_DIR", default_out)),
+            default_partition=env.get("PARTITION_RESERVED"),
+        )
 
-# Default run for the app to load on startup if set
-PARAM_DECOMP_APP_DEFAULT_RUN: str | None = os.environ.get("PARAM_DECOMP_APP_DEFAULT_RUN")
+
+ENV = Environment.from_env()

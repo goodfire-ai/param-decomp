@@ -40,6 +40,10 @@ class PretrainConfig(BaseConfig):
     model: Annotated[ModelConfig, Field(discriminator="model_type")]
     data: PretrainDataConfig
 
+    gpus_per_node: PositiveInt = Field(
+        default=8,
+        description="GPUs per node — the launcher's node math and the trainer's topology assert.",
+    )
     dp: PositiveInt | None = Field(
         default=None,
         description=(
