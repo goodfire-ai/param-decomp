@@ -154,6 +154,7 @@ pd:
   steps: 200000
 runtime:
   sharding: zero1
+  launch: slurm
   dp: 64
   tp: 1
   remat_recon_forwards: true

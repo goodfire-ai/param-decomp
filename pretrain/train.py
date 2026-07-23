@@ -239,7 +239,9 @@ class MetricsSink:
 
 def train(cfg: PretrainConfig) -> None:
     _install_sigterm_flag()
-    is_distributed = init_distributed(cfg.dp)
+    if cfg.dp is not None:
+        init_distributed(cfg.dp)
+    is_distributed = cfg.dp is not None
     mesh = hsdp_mesh()
     n_proc = jax.process_count()
     ndev = mesh.devices.size

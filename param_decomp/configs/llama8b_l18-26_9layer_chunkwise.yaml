@@ -166,6 +166,7 @@ pd:
   steps: 40000
 runtime:
   remat_recon_forwards: true
+  launch: slurm
   dp: 64
   # 9 layers: gate/up stack of 18 and down stack of 9 can't tile ÷replicate=8
   # (dp 64 = 8 nodes); ZeRO-1 those groups.

@@ -13,8 +13,10 @@ call the engine. Process setup (`init_distributed`, the SIGTERM flag, the persis
 compilation cache, HF http hardening), config pinning, and SLURM-requeue shutdown all live
 here. The toy domains mirror this file under `experiments/{tms,resid_mlp}/run.py`.
 
-Multi-process: launched one process per GPU under SLURM (`init_distributed`); every
-process computes the same global schedule and contributes its local batch slice.
+Process bring-up is enumerated on `runtime.launch`: `slurm` → one process per node under
+`jax.distributed` (`init_distributed`), every process computing the same global schedule
+and contributing its local batch slice; `inline` → this one process, over exactly the
+`runtime.dp` local devices it finds (`assert_inline_topology`).
 """
 
 import os
@@ -79,7 +81,7 @@ from param_decomp.run import (
     run_decomposition_training,
     slow_eval_due,
 )
-from param_decomp.sharding import hsdp_mesh, init_distributed
+from param_decomp.sharding import assert_inline_topology, hsdp_mesh, init_distributed
 from param_decomp.slow_eval import (
     IDENTITY_CI_ERROR_TOLERANCE,
     PositionCI,
@@ -127,7 +129,7 @@ def _enable_hlo_dump(run_dir: Path) -> None:
 
     Must run BEFORE `init_distributed` — XLA reads `XLA_FLAGS` when the backend initializes,
     so a later mutation is ignored. Rank-gated via `SLURM_PROCID` (read pre-jax-init, only to
-    pick the writer — NOT to decide distributedness, which stays `runtime.dp`-driven) so a
+    pick the writer — NOT to decide distributedness, which stays `runtime.launch`-driven) so a
     single rank writes; `xla_dump_hlo_module_re` filters to the big `*step*` modules to keep
     the dump to ~100s of MB. The buffer-assignment dump survives an exec-time OOM (compile
     completes first), so this is how we name the buffer that blows the allocator."""
@@ -566,7 +568,11 @@ def main(config: Path, run_id: str) -> None:
 
     install_sigterm_flag()
     _enable_hlo_dump(built.run.run_dir)
-    init_distributed(built.runtime.dp)
+    match built.runtime.launch:
+        case "slurm":
+            init_distributed(built.runtime.dp)
+        case "inline":
+            assert_inline_topology(built.runtime.dp)
     # Harden the cold-cache HF weight load against the 8N-rank startup burst before any
     # per-rank Hub call (no-op when huggingface_hub is absent / cache is pre-warmed).
     configure_hf_http_retries()
