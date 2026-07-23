@@ -14,6 +14,31 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Guard the requires-python floor: downstream consumers deploy on Python 3.12, so
+  # the package must stay importable there. The full suite
+  # runs on 3.13 in the build shards below.
+  python-312-compat:
+    name: python 3.12 compat (import smoke)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.8.19"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Set up Python
+        run: uv python install 3.12
+      - name: Install dependencies
+        run: uv sync --all-packages --python 3.12
+      - name: Import smoke
+        run: |
+          uv run python -c "import param_decomp.built_run; from param_decomp.components import SiteSpec"
+          uv run pd-lm --help > /dev/null
+
   build:
     # The test suite is sharded across parallel jobs (an exact partition — see the
     # test-ci-* Makefile targets): one job running everything overruns the job timeout,
