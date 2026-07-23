@@ -28,7 +28,6 @@ REPO = Path(__file__).resolve().parents[2]
 # CONFIGS.md registry). When you fix one, remove it here — the gate then
 # covers it; this list must only ever shrink.
 KNOWN_BROKEN = {
-    "param_decomp_lab/experiments/lm/jose.yaml",
     "param_decomp_lab/experiments/lm/pile_llama_simple_mlp-4L.yaml",
     "param_decomp_lab/experiments/lm/ss_llama_simple_mlp-2L.yaml",
 }
