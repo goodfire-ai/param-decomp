@@ -58,7 +58,7 @@ from param_decomp_targets.glu_transformer import (
     glu_site_specs,
     mlp_family_site_cs,
 )
-from param_decomp_targets.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
+from param_decomp_targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
 from vendored_jax.llama import LlamaConfig
 
 
@@ -106,10 +106,10 @@ def _chunkwise_arch(model: DecomposedModel, cfg: LlamaConfig) -> ChunkwiseTransf
 def _build(
     seed: int, muon_components: bool = False, muon_ci_fn: bool = False, stacked_impl: bool = False
 ):
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     C, seq = 8, 16
     sites = glu_site_specs(cfg, mlp_family_site_cs(3, 4, C))
-    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(seed))
     ci_fn = build_ci_fn(_chunkwise_arch(model, cfg), model.sites, jax.random.PRNGKey(seed + 1))
 
@@ -441,11 +441,11 @@ def _build_sharded(seed: int, mesh: Mesh):
     (`run_state.init_train_state`): C-sharded V/U + ci_fn, replicated sources, over the
     `dp` mesh. Built directly from the `*_sharded` init fns so the saved/restored
     leaves carry real `NamedSharding`s — the production checkpoint path, not `mesh=None`."""
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     n = mesh.devices.size
     C, seq = 8 * n, 16
     sites = glu_site_specs(cfg, mlp_family_site_cs(3, 4, C))
-    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks_placed(
         sites, jax.random.PRNGKey(seed), from_config("owner", mesh, sites)
     )

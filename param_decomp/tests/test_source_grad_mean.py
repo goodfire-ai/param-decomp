@@ -52,17 +52,17 @@ from param_decomp_targets.glu_transformer import (
     glu_site_specs,
     mlp_family_site_cs,
 )
-from param_decomp_targets.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
+from param_decomp_targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
 
 
 def _source_grad(sharded: bool) -> dict[str, jax.Array]:
     """Grad of the route-all adversarial KL objective w.r.t. the persistent `sc`-scope
     sources, with components/CI frozen (SPEC §4.5) — the leaf whose cross-device
     reduction we are pinning. Returns one fp32 grad array per site."""
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     C, seq, gbatch = 8, 16, 8
     sites = glu_site_specs(cfg, mlp_family_site_cs(3, 6, C))
-    model = _tiny_decomposed_lm(cfg, sites, random.PRNGKey(0))
+    model = tiny_glu_decomposed_lm(cfg, sites, random.PRNGKey(0))
     vu = init_component_stacks(sites, random.PRNGKey(1))
     first_block = min(int(name.split(".")[1]) for name in model.site_names)
     ci_arch = ChunkwiseTransformerCIArch(

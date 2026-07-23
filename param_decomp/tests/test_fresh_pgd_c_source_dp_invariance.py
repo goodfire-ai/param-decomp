@@ -35,7 +35,7 @@ from param_decomp_targets.glu_transformer import (
     glu_site_specs,
     mlp_family_site_cs,
 )
-from param_decomp_targets.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
+from param_decomp_targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
 
 
 def _ascend_c_source(
@@ -48,11 +48,11 @@ def _ascend_c_source(
     a `(1, 1, C+1)` `c` source, `step_size * sign(grad)`, clamp to [0,1]. When
     `sharded`, the residual is GSPMD-sharded over all visible devices, so the `c`-source
     source grad is born from a cross-shard reduction."""
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     first_layer = 3
     C, seq, gbatch = 8, 16, 8
     sites = glu_site_specs(cfg, mlp_family_site_cs(first_layer, first_layer + 2, C))
-    model = _tiny_decomposed_lm(cfg, sites, random.PRNGKey(0))
+    model = tiny_glu_decomposed_lm(cfg, sites, random.PRNGKey(0))
     components = jax.tree.map(
         lambda x: jax.lax.stop_gradient(x), init_component_stacks(sites, random.PRNGKey(1))
     )

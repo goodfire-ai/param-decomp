@@ -25,11 +25,11 @@ from param_decomp.recon import MixedPersistentStochasticSources, build_loss_term
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
 from param_decomp_targets.llama_simple_mlp import site_specs
-from param_decomp_targets.tests.test_llama_simple_mlp import (
-    _MIXED_SITE_CS,
-    _build_chunkwise_ci_fn,
-    _tiny_cfg,
-    _tiny_decomposed_model,
+from param_decomp_targets.testing import (
+    SIMPLE_MLP_MIXED_SITE_CS,
+    tiny_simple_mlp_cfg,
+    tiny_simple_mlp_chunkwise_ci_fn,
+    tiny_simple_mlp_decomposed_model,
 )
 
 
@@ -88,13 +88,13 @@ def test_merged_train_step_end_to_end(source_shape: SourceShape, src_leading: tu
     """Full jitted step with ONE merged recon term, at every `source_shape`: finite
     losses, the persistent adversary updates (n_warmup + 1 per step through warmup + the
     S14' final ascent), sources stay projected."""
-    cfg = _tiny_cfg()
+    cfg = tiny_simple_mlp_cfg()
     seq = 16
     n_warmup = 1
-    sites = site_specs(cfg, _MIXED_SITE_CS)
-    model = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
+    sites = site_specs(cfg, SIMPLE_MLP_MIXED_SITE_CS)
+    model = tiny_simple_mlp_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
-    ci_fn = _build_chunkwise_ci_fn(model, jax.random.PRNGKey(2))
+    ci_fn = tiny_simple_mlp_chunkwise_ci_fn(model, jax.random.PRNGKey(2))
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
 

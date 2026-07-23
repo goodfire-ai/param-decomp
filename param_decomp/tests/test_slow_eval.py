@@ -53,9 +53,9 @@ from param_decomp_targets.glu_transformer import (
     glu_site_specs,
     mlp_family_site_cs,
 )
-from param_decomp_targets.tests.test_llama8b import (
-    _tiny_cfg,
-    _tiny_decomposed_lm,
+from param_decomp_targets.testing import (
+    tiny_glu_cfg,
+    tiny_glu_decomposed_lm,
 )
 
 
@@ -78,10 +78,10 @@ def _build_ci_fn(model: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
 
 
 def _tiny_setup(threshold: float, density_heatmap_n_bins: int | None = None):
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     C = 8
     sites = glu_site_specs(cfg, mlp_family_site_cs(4, 5, C))
-    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     ci_fn = _build_ci_fn(model, cfg.n_embd, jax.random.PRNGKey(2))
     step = make_slow_eval_step(model, threshold, density_heatmap_n_bins)
     return cfg, model, ci_fn, step, C
@@ -311,9 +311,9 @@ def test_resolve_permutation_metrics_empty_when_unconfigured():
 
 
 def _tiny_position_ci():
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     sites = glu_site_specs(cfg, mlp_family_site_cs(4, 5, 8))
-    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     ci_fn = _build_ci_fn(model, cfg.n_embd, jax.random.PRNGKey(2))
     residual = jax.random.randint(jax.random.PRNGKey(4), (3, 12), 0, cfg.vocab_size)
     position_ci = accumulate_position_ci(make_position_ci_step(model), model, ci_fn, [residual])

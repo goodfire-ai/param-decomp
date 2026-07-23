@@ -54,7 +54,7 @@ from param_decomp_targets.glu_transformer import (
     glu_site_specs,
     mlp_family_site_cs,
 )
-from param_decomp_targets.tests.test_llama8b import _tiny_cfg
+from param_decomp_targets.testing import tiny_glu_cfg
 from vendored_jax.llama import llama3_inv_freq
 
 FIXTURES = Path(__file__).resolve().parent / "stacked_fixtures.npz"
@@ -85,7 +85,7 @@ the live metrics dict is remapped."""
 def _load() -> tuple[dict[str, np.ndarray], DecomposedModel, ComponentStacks, jnp.ndarray]:
     assert FIXTURES.exists(), "regenerate via gen_stacked_fixtures.py on the base branch"
     f = dict(np.load(FIXTURES))
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     first = int(f["_scalar_FIRST_LAYER"])
     last = int(f["_scalar_LAST_LAYER"])
     C = int(f["_scalar_C"])
@@ -142,7 +142,7 @@ def _build_trajectory_ci_fn(model: DecomposedModel, key: jnp.ndarray):
     first_block = min(int(n.split(".")[1]) for n in model.site_names)
     arch = ChunkwiseTransformerCIArch(
         chunks=(Chunk(input_taps=(f"resid.{first_block}",), output_sites=model.site_names),),
-        input_dim=_tiny_cfg().n_embd,
+        input_dim=tiny_glu_cfg().n_embd,
         d_model=16,
         n_blocks=2,
         attention=MHACIAttention(n_heads=2),

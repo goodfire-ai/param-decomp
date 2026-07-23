@@ -19,13 +19,9 @@ from param_decomp.adversary import (
     init_sources_adam_state,
 )
 from param_decomp.ci_fn import (
-    Chunk,
-    ChunkwiseTransformerCIArch,
     ChunkwiseTransformerCIFn,
-    MHACIAttention,
-    build_ci_fn,
 )
-from param_decomp.components import ComponentStacks, SiteC, SiteSpec, init_component_stacks
+from param_decomp.components import ComponentStacks, SiteC, init_component_stacks
 from param_decomp.configs import (
     AdamPGDConfig,
     ChunkwiseSubsetReconLossConfig,
@@ -34,7 +30,6 @@ from param_decomp.configs import (
     PersistentPGDReconLossConfig,
     UniformKSubsetRoutingConfig,
 )
-from param_decomp.model import DecomposedModel
 from param_decomp.recon import build_loss_terms
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.train import (
@@ -44,104 +39,18 @@ from param_decomp.train import (
     make_faith_warmup_step,
     make_train_step,
 )
-from param_decomp_targets.glu_transformer import FrozenAttn
 from param_decomp_targets.llama_simple_mlp import (
-    LlamaSimpleMLPConfig,
-    SimpleMLPDecomposedModel,
-    SimpleMLPLayer,
-    build_decomposed_simple_mlp,
     canonical_site_cs,
     parse_site_name,
     site_name,
     site_specs,
 )
-
-
-def _tiny_cfg() -> LlamaSimpleMLPConfig:
-    return LlamaSimpleMLPConfig(
-        vocab_size=64,
-        n_layer=6,
-        n_head=4,
-        n_kv_head=2,
-        n_embd=32,
-        n_intermediate=64,
-        rotary_base=10000.0,
-        rms_norm_eps=1e-6,
-        n_ctx=64,
-    )
-
-
-def _tiny_layers(cfg: LlamaSimpleMLPConfig, n: int, key: jax.Array) -> list[SimpleMLPLayer]:
-    ks = iter(jax.random.split(key, 1024))
-    d, di = cfg.n_embd, cfg.n_intermediate
-    qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
-
-    def rand(shape: tuple[int, ...]) -> jax.Array:
-        return jax.random.normal(next(ks), shape) * d**-0.5
-
-    return [
-        SimpleMLPLayer(
-            ln1=jnp.ones((d,)),
-            ln2=jnp.ones((d,)),
-            attn=FrozenAttn(
-                rand((qd, d)),
-                rand((kvd, d)),
-                rand((kvd, d)),
-                rand((d, qd)),
-                cfg.n_head,
-                cfg.n_kv_head,
-                cfg.head_dim,
-                cfg.n_rep,
-            ),  # fmt: skip
-            Wfc=rand((di, d)),
-            Wdown=rand((d, di)),
-        )
-        for _ in range(n)
-    ]
-
-
-def _tiny_decomposed_model(
-    cfg: LlamaSimpleMLPConfig, sites: tuple[SiteSpec, ...], key: jax.Array
-) -> SimpleMLPDecomposedModel:
-    """A tiny random `SimpleMLPDecomposedModel` carrying a random embedding + full frozen
-    layer stack plus the decomposition `sites`."""
-    layers_key, embed_key = jax.random.split(key)
-    layers = _tiny_layers(cfg, cfg.n_layer, layers_key)
-    embed = jax.random.normal(embed_key, (cfg.vocab_size, cfg.n_embd)) * 0.02
-    return build_decomposed_simple_mlp(
-        embed=embed, layers=layers, norm=jnp.ones((cfg.n_embd,)), lm_head=embed,
-        cfg=cfg, sites=sites,
-    )  # fmt: skip
-
-
-_MIXED_SITE_CS = (
-    SiteC("h.2.attn.q_proj", 8),
-    SiteC("h.2.attn.v_proj", 12),
-    SiteC("h.2.mlp.c_fc", 8),
-    SiteC("h.3.mlp.down_proj", 16),
+from param_decomp_targets.testing import (
+    SIMPLE_MLP_MIXED_SITE_CS,
+    tiny_simple_mlp_cfg,
+    tiny_simple_mlp_chunkwise_ci_fn,
+    tiny_simple_mlp_decomposed_model,
 )
-"""Attention + MLP sites across two layers with heterogeneous per-site C."""
-
-
-def _build_chunkwise_ci_fn(model: DecomposedModel, key: jax.Array) -> ChunkwiseTransformerCIFn:
-    """One chunk reading the residual entering the first decomposed block, emitting CI:
-    one chunk reading the residual entering the first decomposed block, emitting CI for every
-    site. `input_dim` is the target residual width (`n_embd`)."""
-    site_names = model.site_names
-    first_block = min(parse_site_name(n)[0] for n in site_names)
-    arch = ChunkwiseTransformerCIArch(
-        chunks=(Chunk(input_taps=(f"resid.{first_block}",), output_sites=site_names),),
-        input_dim=_tiny_cfg().n_embd,
-        d_model=16,
-        n_blocks=2,
-        attention=MHACIAttention(n_heads=2),
-        ffn_hidden=32,
-        ffn_kind="gelu",
-        learned_norm_scale=False,
-    )
-    ci_fn = build_ci_fn(arch, model.sites, key)
-    assert isinstance(ci_fn, ChunkwiseTransformerCIFn)
-    return ci_fn
 
 
 def test_site_name_helpers():
@@ -171,7 +80,7 @@ def test_site_name_helpers():
 
 
 def test_site_specs_dims():
-    cfg = _tiny_cfg()
+    cfg = tiny_simple_mlp_cfg()
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
     specs = site_specs(cfg, canonical_site_cs(tuple(SiteC(site_name(2, k), 4) for k in (
         "q_proj", "k_proj", "v_proj", "o_proj", "c_fc", "down_proj",
@@ -187,15 +96,15 @@ def test_site_specs_dims():
 
 
 def test_clean_path_and_masked_identity():
-    cfg = _tiny_cfg()
-    sites = site_specs(cfg, _MIXED_SITE_CS)
-    model = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
+    cfg = tiny_simple_mlp_cfg()
+    sites = site_specs(cfg, SIMPLE_MLP_MIXED_SITE_CS)
+    model = tiny_simple_mlp_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
     # per-site heterogeneous C is preserved end to end
-    assert {s.name: s.C for s in model.sites} == {s.name: s.C for s in _MIXED_SITE_CS}
+    assert {s.name: s.C for s in model.sites} == {s.name: s.C for s in SIMPLE_MLP_MIXED_SITE_CS}
     for spec in model.sites:
         V, U = vu.site(spec.name)
         assert V.shape == (spec.d_in, spec.C) and U.shape == (spec.C, spec.d_out)
@@ -235,15 +144,15 @@ def test_clean_path_and_masked_identity():
 def test_zero_masking_one_site_changes_logits(ablated_site: str):
     """q is live ahead of RoPE/SDPA; c_fc ahead of the GELU — zero-mask + zero-delta on
     either must change the logits."""
-    cfg = _tiny_cfg()
-    sites = site_specs(cfg, _MIXED_SITE_CS)
-    model = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
+    cfg = tiny_simple_mlp_cfg()
+    sites = site_specs(cfg, SIMPLE_MLP_MIXED_SITE_CS)
+    model = tiny_simple_mlp_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
     clean = model.clean_output(tokens)
-    C = {s.name: s.C for s in _MIXED_SITE_CS}[ablated_site]
+    C = {s.name: s.C for s in SIMPLE_MLP_MIXED_SITE_CS}[ablated_site]
     ablated = model.masked_output(
         vu, tokens,
         {ablated_site: jnp.zeros((b, t, C))}, {ablated_site: jnp.zeros((b, t))},
@@ -256,10 +165,10 @@ def test_masked_site_outputs_frozen_when_routed_false_or_unmasked():
     """Clean per-site output: routing FALSE everywhere falls onto `site_out`'s frozen
     `x @ W` branch — exactly the target site output. With a single-site decomposition the
     frozen W per site is `site_input @ W.T`, recovered from `weight_deltas` + `V@U`."""
-    cfg = _tiny_cfg()
+    cfg = tiny_simple_mlp_cfg()
     sites_cs = (SiteC("h.2.attn.q_proj", 8), SiteC("h.2.mlp.c_fc", 12))
     sites = site_specs(cfg, sites_cs)
-    model = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_simple_mlp_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     names = model.site_names
     b, t = 2, 16
@@ -288,10 +197,10 @@ def test_masked_site_outputs_match_hand_computed_masked_linear(site_name_str: st
     """Masked per-site output equals the hand-computed `((x@V)*m)@U` (+ delta path). One
     site at a time so the masked site input equals the clean `site_inputs` (no upstream
     masked site contaminating the threaded forward)."""
-    cfg = _tiny_cfg()
+    cfg = tiny_simple_mlp_cfg()
     sites_cs = (SiteC(site_name_str, 8),)
     sites = site_specs(cfg, sites_cs)
-    model = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_simple_mlp_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     names = model.site_names
     s = site_name_str
@@ -320,10 +229,10 @@ def test_masked_site_outputs_match_hand_computed_masked_linear(site_name_str: st
 
 
 def test_o_site_masks_attention_output():
-    cfg = _tiny_cfg()
+    cfg = tiny_simple_mlp_cfg()
     o_site = "h.2.attn.o_proj"
     sites = site_specs(cfg, (SiteC(o_site, 8),))
-    model = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_simple_mlp_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
@@ -340,14 +249,14 @@ def test_o_site_masks_attention_output():
 
 
 def test_step_trains_and_has_vpd_signature():
-    cfg = _tiny_cfg()
-    site_cs = _MIXED_SITE_CS
+    cfg = tiny_simple_mlp_cfg()
+    site_cs = SIMPLE_MLP_MIXED_SITE_CS
     seq = 16
     n_warmup = 2
     sites = site_specs(cfg, site_cs)
-    model = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_simple_mlp_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
-    ci_fn = _build_chunkwise_ci_fn(model, jax.random.PRNGKey(2))
+    ci_fn = tiny_simple_mlp_chunkwise_ci_fn(model, jax.random.PRNGKey(2))
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
 
@@ -438,9 +347,9 @@ def test_step_trains_and_has_vpd_signature():
 
 
 def test_faith_warmup_decreases_faith():
-    cfg = _tiny_cfg()
-    sites = site_specs(cfg, canonical_site_cs(_MIXED_SITE_CS))
-    model = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
+    cfg = tiny_simple_mlp_cfg()
+    sites = site_specs(cfg, canonical_site_cs(SIMPLE_MLP_MIXED_SITE_CS))
+    model = tiny_simple_mlp_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     opt = optax.adamw(1e-2, weight_decay=0.0)
     wstep = make_faith_warmup_step(opt)
@@ -455,8 +364,8 @@ def test_faith_warmup_decreases_faith():
 
 
 def test_component_stacks_shapes_fp32():
-    cfg = _tiny_cfg()
-    sites = site_specs(cfg, _MIXED_SITE_CS)
+    cfg = tiny_simple_mlp_cfg()
+    sites = site_specs(cfg, SIMPLE_MLP_MIXED_SITE_CS)
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     d, di = cfg.n_embd, cfg.n_intermediate
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim

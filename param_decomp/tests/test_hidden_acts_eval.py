@@ -29,9 +29,9 @@ from param_decomp_targets.llama_simple_mlp import (
     parse_site_name,
     site_specs,
 )
-from param_decomp_targets.tests.test_llama_simple_mlp import (
-    _tiny_cfg,
-    _tiny_decomposed_model,
+from param_decomp_targets.testing import (
+    tiny_simple_mlp_cfg,
+    tiny_simple_mlp_decomposed_model,
 )
 
 _BATCH, _SEQ = 2, 12
@@ -54,7 +54,7 @@ def _build_ci_fn(model: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
 
 
 def _setup():
-    cfg = _tiny_cfg()
+    cfg = tiny_simple_mlp_cfg()
     site_cs = canonical_site_cs(
         (
             SiteC("h.2.attn.q_proj", 8),
@@ -63,7 +63,7 @@ def _setup():
             SiteC("h.3.mlp.down_proj", 16),
         )
     )
-    model = _tiny_decomposed_model(cfg, site_specs(cfg, site_cs), jax.random.PRNGKey(0))
+    model = tiny_simple_mlp_decomposed_model(cfg, site_specs(cfg, site_cs), jax.random.PRNGKey(0))
     components = init_component_stacks(model.sites, jax.random.PRNGKey(1))
     ci_fn = _build_ci_fn(model, cfg.n_embd, jax.random.PRNGKey(2))
     tokens = jax.random.randint(jax.random.PRNGKey(3), (_BATCH, _SEQ), 0, cfg.vocab_size)

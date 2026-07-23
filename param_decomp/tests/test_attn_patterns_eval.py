@@ -34,17 +34,17 @@ from param_decomp_targets.llama_simple_mlp import (
 from param_decomp_targets.llama_simple_mlp import (
     site_specs as simple_site_specs,
 )
-from param_decomp_targets.tests.test_llama8b import (
-    _tiny_cfg as _llama_cfg,
+from param_decomp_targets.testing import (
+    tiny_glu_cfg as _llama_cfg,
 )
-from param_decomp_targets.tests.test_llama8b import (
-    _tiny_decomposed_lm as _llama_decomposed_lm,
+from param_decomp_targets.testing import (
+    tiny_glu_decomposed_lm as _llama_decomposed_lm,
 )
-from param_decomp_targets.tests.test_llama_simple_mlp import (
-    _tiny_cfg as _simple_cfg,
+from param_decomp_targets.testing import (
+    tiny_simple_mlp_cfg as _simple_cfg,
 )
-from param_decomp_targets.tests.test_llama_simple_mlp import (
-    _tiny_decomposed_model as _simple_decomposed_model,
+from param_decomp_targets.testing import (
+    tiny_simple_mlp_decomposed_model as _simple_decomposed_model,
 )
 
 

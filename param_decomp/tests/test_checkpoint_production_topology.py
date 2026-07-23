@@ -63,7 +63,7 @@ from param_decomp.schedule import ScheduleConfig
 from param_decomp.sharding import hsdp_mesh
 from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
 from param_decomp_targets.glu_transformer import glu_site_specs, mlp_family_site_cs
-from param_decomp_targets.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
+from param_decomp_targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
 
 # Needs >1 jax device (production topology); hangs at the default 1 device, so gated behind
 # --runmultidevice. Run via `make test-multidevice` (simulated CPU devices). See conftest.
@@ -92,10 +92,10 @@ def _build_sharded(seed: int):
     Adam moments replicated, with TWO persistent terms. On the 4-device sim: `replicate=1,
     fsdp=4` (N=4); `C=8` and the V d_in / U d_out tile N."""
     mesh = hsdp_mesh()
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     C, seq = 8, 16
     sites = glu_site_specs(cfg, mlp_family_site_cs(3, 4, C))
-    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
 
     by_layer: dict[int, list[str]] = {}
     for name in model.site_names:

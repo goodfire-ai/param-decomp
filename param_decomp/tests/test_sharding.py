@@ -70,7 +70,7 @@ def test_jitted_sharded_inits_match_eager_values():
         init_sources_sharded,
     )
     from param_decomp_targets.glu_transformer import canonical_site_cs, glu_site_specs
-    from param_decomp_targets.tests.test_llama8b import _tiny_cfg
+    from param_decomp_targets.testing import tiny_glu_cfg
 
     # The HSDP mesh `(replicate, fsdp)`: on the n-device CPU sim with n not a multiple of 8,
     # `fsdp` takes the full count and `replicate` is 1. V FSDP-shards d_in on `fsdp`, U FSDP
@@ -78,7 +78,7 @@ def test_jitted_sharded_inits_match_eager_values():
     # n_intermediate=64, qkv head dims) all tile the sim device counts (1/2/4).
     n = jax.device_count()
     mesh = hsdp_mesh()
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     # layers.{2,3}.mlp.gate_proj share (d_in, d_out, C), so the stacked init has a REAL
     # multi-site V/U shape group (stack + unstack across sites, not just groups of one);
     # they also make a 3-site C group for the stacked sources init below.

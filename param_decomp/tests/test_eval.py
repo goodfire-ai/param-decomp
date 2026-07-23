@@ -24,9 +24,9 @@ from param_decomp.components import SiteSpec
 from param_decomp.eval import make_eval_step, next_token_cross_entropy
 from param_decomp.model import DecomposedModel, run_stochastic_masked_output
 from param_decomp_targets.glu_transformer import glu_site_specs, mlp_family_site_cs
-from param_decomp_targets.tests.test_llama8b import (
-    _tiny_cfg,
-    _tiny_decomposed_lm,
+from param_decomp_targets.testing import (
+    tiny_glu_cfg,
+    tiny_glu_decomposed_lm,
 )
 
 
@@ -155,10 +155,10 @@ def test_next_token_cross_entropy_matches_manual():
 
 
 def test_eval_step_keys_identities_and_determinism():
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     C = 8
     sites = glu_site_specs(cfg, mlp_family_site_cs(4, 5, C))
-    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
 
     from param_decomp.components import init_component_stacks
 
@@ -226,10 +226,10 @@ def test_eval_step_keys_identities_and_determinism():
 def test_eval_step_fresh_pgd_probe():
     """The fresh-PGD probe must come out at least as adversarial as the unascended
     random source it starts from (ascent on a fixed objective), and be deterministic."""
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     C = 8
     sites = glu_site_specs(cfg, mlp_family_site_cs(4, 4, C))
-    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
 
     from param_decomp.components import init_component_stacks
 
@@ -289,9 +289,9 @@ def test_eval_step_fresh_pgd_probe_device_count_invariant():
     mesh = hsdp_mesh()
     n_dev = mesh.devices.size
 
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     sites = glu_site_specs(cfg, mlp_family_site_cs(4, 4, 8))
-    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = _build_ci_fn(model, cfg.n_embd, jax.random.PRNGKey(2))
 
@@ -325,9 +325,9 @@ def test_eval_step_fresh_pgd_probe_device_count_invariant():
 def test_eval_step_l0_groups_sum_member_sites():
     """torch CI_L0 `groups` parity: a group's L0 is the SUM of its fnmatch-member
     sites' L0s; an unmatched pattern refuses at build time."""
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     sites = glu_site_specs(cfg, mlp_family_site_cs(4, 5, 8))
-    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     from param_decomp.components import init_component_stacks
 
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
@@ -370,9 +370,9 @@ def test_eval_step_n_valid_rows_masks_pad_tail():
     every key-independent metric (pad rows carry zero weight, including inside the PGD
     objective). The stochastic variants draw shape-dependent randomness, so they only agree
     in expectation and are excluded."""
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     sites = glu_site_specs(cfg, mlp_family_site_cs(4, 5, 8))
-    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
 
     from param_decomp.components import init_component_stacks
 

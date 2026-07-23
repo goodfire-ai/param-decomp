@@ -23,7 +23,7 @@ from param_decomp_targets.glu_transformer import (
 from param_decomp_targets.qwen3_8b import Qwen3FrozenAttn
 
 
-def _tiny_cfg() -> GLUConfig:
+def _tiny_qwen_cfg() -> GLUConfig:
     """Qwen3-shaped tiny config: QK-norm attention, plain RoPE."""
     return GLUConfig(
         vocab_size=64,
@@ -42,7 +42,7 @@ def _tiny_decomposed_qwen(
     cfg: GLUConfig, sites: tuple[SiteSpec, ...], key: jax.Array
 ) -> GLUDecomposedModel:
     """A tiny random Qwen3-family model — the CPU-test analog of
-    `load_decomposed_qwen3_from_hf` (`test_llama8b._tiny_decomposed_lm`'s sibling)."""
+    `load_decomposed_qwen3_from_hf` (`testing.tiny_glu_decomposed_lm`'s sibling)."""
     ks = iter(jax.random.split(key, 1024))
     d, di = cfg.n_embd, cfg.n_intermediate
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
@@ -83,7 +83,7 @@ _QVDOWN_SITE_CS = (
 
 
 def test_clean_path_and_masked_identity():
-    cfg = _tiny_cfg()
+    cfg = _tiny_qwen_cfg()
     sites = glu_site_specs(cfg, _QVDOWN_SITE_CS)
     model = _tiny_decomposed_qwen(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
@@ -125,7 +125,7 @@ def test_qk_norm_is_load_bearing():
     logits; the pre-projection q/k/v site inputs stay untouched (q/k sites decompose
     BEFORE the norm — the masked site output feeds q_norm → RoPE → SDPA); o's site input
     (the attention output) responds."""
-    cfg = _tiny_cfg()
+    cfg = _tiny_qwen_cfg()
     sites = glu_site_specs(cfg, _QVDOWN_SITE_CS)
     model = _tiny_decomposed_qwen(cfg, sites, jax.random.PRNGKey(0))
     tokens = jax.random.randint(jax.random.PRNGKey(2), (2, 16), 0, cfg.vocab_size)
@@ -150,7 +150,7 @@ def test_qk_norm_is_load_bearing():
 def test_attn_pattern_applies_that_layers_qk_norm():
     """The target-owned attn-pattern recipe uses the site's LAYER norms: the same q/k
     flats produce different patterns for two layers whose q_norm weights differ."""
-    cfg = _tiny_cfg()
+    cfg = _tiny_qwen_cfg()
     site_cs = (
         SiteC("layers.4.self_attn.q_proj", 8),
         SiteC("layers.4.self_attn.k_proj", 8),
@@ -188,13 +188,13 @@ def test_step_trains():
     from param_decomp.recon import build_loss_terms
     from param_decomp.schedule import ScheduleConfig
     from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
-    from param_decomp_targets.tests.test_llama8b import _build_chunkwise_ci_fn
+    from param_decomp_targets.testing import tiny_glu_chunkwise_ci_fn
 
-    cfg = _tiny_cfg()
+    cfg = _tiny_qwen_cfg()
     sites = glu_site_specs(cfg, _QVDOWN_SITE_CS)
     model = _tiny_decomposed_qwen(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
-    ci_fn = _build_chunkwise_ci_fn(model, jax.random.PRNGKey(2), n_blocks=1)
+    ci_fn = tiny_glu_chunkwise_ci_fn(model, jax.random.PRNGKey(2), n_blocks=1)
     opt_vu = optax.adamw(1e-3, weight_decay=0.0)
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
     state = TrainState(

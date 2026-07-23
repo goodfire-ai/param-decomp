@@ -28,7 +28,7 @@ from param_decomp.components import init_component_stacks
 from param_decomp.tests.test_slow_eval import _build_ci_fn
 from param_decomp.train import COMPUTE_DT, cast_floating
 from param_decomp_targets.glu_transformer import glu_site_specs, mlp_family_site_cs
-from param_decomp_targets.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
+from param_decomp_targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
 
 N_A, N_B = 3, 4
 T = 5
@@ -37,10 +37,10 @@ SITE = "layers.4.mlp.gate_proj"
 
 
 def _tiny_setup():
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     C = 8
     sites = glu_site_specs(cfg, mlp_family_site_cs(4, 5, C))
-    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     ci_fn = _build_ci_fn(model, cfg.n_embd, jax.random.PRNGKey(2))
     return cfg, model, ci_fn, C
 

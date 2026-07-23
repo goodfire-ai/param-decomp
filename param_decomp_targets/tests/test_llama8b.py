@@ -22,7 +22,6 @@ from param_decomp.ci_fn import (
     ChunkwiseTransformerCIArch,
     ChunkwiseTransformerCIFn,
     MHACIAttention,
-    build_ci_fn,
 )
 from param_decomp.components import ComponentStacks, SiteC, SiteSpec, init_component_stacks
 from param_decomp.configs import (
@@ -34,7 +33,6 @@ from param_decomp.configs import (
     PGDReconLossConfig,
     UniformKSubsetRoutingConfig,
 )
-from param_decomp.model import DecomposedModel
 from param_decomp.recon import build_loss_terms
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.train import (
@@ -45,67 +43,18 @@ from param_decomp.train import (
     make_train_step,
 )
 from param_decomp_targets.glu_transformer import (
-    FrozenAttn,
-    GLUDecomposedModel,
-    GLULayer,
-    build_decomposed_lm,
     canonical_site_cs,
     glu_site_specs,
     mlp_family_site_cs,
     parse_site_name,
     site_name,
 )
-from vendored_jax.llama import LlamaConfig, llama3_inv_freq
-
-
-def _tiny_cfg() -> LlamaConfig:
-    return LlamaConfig(
-        vocab_size=64,
-        n_layer=8,
-        n_head=4,
-        n_kv_head=2,
-        n_embd=32,
-        n_intermediate=64,
-        rope_theta=500000.0,
-        rms_norm_eps=1e-5,
-        max_position_embeddings=512,
-        rope_factor=8.0,
-        rope_low_freq_factor=1.0,
-        rope_high_freq_factor=4.0,
-        rope_original_max_position_embeddings=128,
-    )
-
-
-def _tiny_decomposed_lm(
-    cfg: LlamaConfig, sites: tuple[SiteSpec, ...], key: jax.Array
-) -> GLUDecomposedModel:
-    """A tiny random `GLUDecomposedModel` (random embedding + full frozen layer stack
-    plus the decomposition `sites`) — the CPU-test analog of `load_decomposed_lm_from_hf`."""
-    ks = iter(jax.random.split(key, 1024))
-    d, di = cfg.n_embd, cfg.n_intermediate
-    qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
-
-    def n(shape: tuple[int, ...], s: float | None = None) -> jax.Array:
-        return jax.random.normal(next(ks), shape) * (s or d**-0.5)
-
-    def fattn():
-        return FrozenAttn(
-            n((qd, d)), n((kvd, d)), n((kvd, d)), n((d, qd)),
-            cfg.n_head, cfg.n_kv_head, cfg.head_dim, cfg.n_rep,
-        )  # fmt: skip
-
-    def layer():
-        return GLULayer(jnp.ones((d,)), jnp.ones((d,)), fattn(), n((di, d)), n((di, d)), n((d, di)))
-
-    return build_decomposed_lm(
-        embed=n((cfg.vocab_size, d), 0.02),
-        layers=[layer() for _ in range(cfg.n_layer)],
-        norm=jnp.ones((d,)),
-        lm_head=n((cfg.vocab_size, d), 0.02),
-        inv_freq=llama3_inv_freq(cfg),
-        cfg=cfg,
-        sites=sites,
-    )
+from param_decomp_targets.testing import (
+    tiny_glu_cfg,
+    tiny_glu_chunkwise_ci_fn,
+    tiny_glu_decomposed_lm,
+)
+from vendored_jax.llama import LlamaConfig
 
 
 def _mlp_sites(cfg: LlamaConfig, first: int, last: int, C: int) -> tuple[SiteSpec, ...]:
@@ -118,29 +67,6 @@ _QVDOWN_SITE_CS = (
     SiteC("layers.4.mlp.down_proj", 8),
 )
 """Attention + MLP sites on one layer with heterogeneous per-site C."""
-
-
-def _build_chunkwise_ci_fn(
-    model: DecomposedModel, key: jax.Array, n_blocks: int
-) -> ChunkwiseTransformerCIFn:
-    """One chunk reading the residual entering the first decomposed block, emitting CI
-    builder: a single chunk reading the residual entering the first decomposed block and
-    emitting CI for every site. `input_dim` is the target residual width (`n_embd`)."""
-    site_names = model.site_names
-    first_block = min(parse_site_name(n)[0] for n in site_names)
-    arch = ChunkwiseTransformerCIArch(
-        chunks=(Chunk(input_taps=(f"resid.{first_block}",), output_sites=site_names),),
-        input_dim=_tiny_cfg().n_embd,
-        d_model=16,
-        n_blocks=n_blocks,
-        attention=MHACIAttention(n_heads=2),
-        ffn_hidden=32,
-        ffn_kind="gelu",
-        learned_norm_scale=False,
-    )
-    ci_fn = build_ci_fn(arch, model.sites, key)
-    assert isinstance(ci_fn, ChunkwiseTransformerCIFn)
-    return ci_fn
 
 
 def test_site_name_helpers():
@@ -170,7 +96,7 @@ def test_site_name_helpers():
 
 
 def test_llama_site_specs_dims():
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
     specs = glu_site_specs(
         cfg,
@@ -193,10 +119,10 @@ def test_llama_site_specs_dims():
 
 
 def test_masked_component_activations_pre_mask_and_matches_outputs():
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     C = 8
     sites = _mlp_sites(cfg, 4, 5, C)
-    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
@@ -223,10 +149,10 @@ def test_masked_component_activations_pre_mask_and_matches_outputs():
 
 @pytest.mark.parametrize("first,last", [(4, 4), (3, 6)])
 def test_clean_path_and_masked_identity(first: int, last: int):
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     C = 8
     sites = _mlp_sites(cfg, first, last, C)
-    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
@@ -268,9 +194,9 @@ def test_clean_path_and_masked_identity(first: int, last: int):
 
 
 def test_attention_sites_clean_and_masked_identity():
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     sites = glu_site_specs(cfg, _QVDOWN_SITE_CS)
-    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
@@ -341,9 +267,9 @@ def test_clean_output_and_activations_shares_the_forward():
     production config — clean logits bit-equal to `clean_output` (one full-depth scan,
     no tail; a mid-stack tap cutoff may recompile the tail within fp32 tolerance).
     Also pins tap invariance to the `wanted` set (a tap can't depend on its neighbors)."""
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     sites = _mlp_sites(cfg, 3, 6, 8)
-    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     tokens = jax.random.randint(jax.random.PRNGKey(2), (2, 16), 0, cfg.vocab_size)
 
     resid_taps = tuple(f"resid.{i}" for i in range(cfg.n_layer))
@@ -361,10 +287,10 @@ def test_clean_output_and_activations_shares_the_forward():
 
 
 def test_o_site_masks_attention_output():
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     o_site = "layers.4.self_attn.o_proj"
     sites = glu_site_specs(cfg, (SiteC(o_site, 8),))
-    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
@@ -392,13 +318,13 @@ def test_o_site_masks_attention_output():
     ids=["mlp_l4", "mlp_l3_6", "qv_down_l4"],
 )
 def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     seq = 16
     n_warmup = 2
     sites = glu_site_specs(cfg, site_cs)
-    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
-    ci_fn = _build_chunkwise_ci_fn(model, jax.random.PRNGKey(2), n_blocks=2)
+    ci_fn = tiny_glu_chunkwise_ci_fn(model, jax.random.PRNGKey(2), n_blocks=2)
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
 
@@ -489,9 +415,9 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
 
 
 def test_faith_warmup_decreases_faith():
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     sites = _mlp_sites(cfg, 3, 4, 8)
-    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     opt = optax.adamw(1e-2, weight_decay=0.0)
     wstep = make_faith_warmup_step(opt)
@@ -506,7 +432,7 @@ def test_faith_warmup_decreases_faith():
 
 
 def test_component_stacks_shapes_fp32():
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     sites = glu_site_specs(cfg, _QVDOWN_SITE_CS)
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     d, di = cfg.n_embd, cfg.n_intermediate
@@ -525,7 +451,7 @@ def test_fresh_pgd_adversary_step():
     """Fresh per-batch sign-PGD (torch PGDReconLoss as the TRAINING adversary):
     no persistent source state, metrics keyed `loss/PGDReconLoss`, sources
     sampled+ascended inside the step, and the ascent strength responds to n_steps."""
-    cfg = _tiny_cfg()
+    cfg = tiny_glu_cfg()
     site_cs = (
         SiteC("layers.4.self_attn.q_proj", 8),
         SiteC("layers.4.mlp.gate_proj", 8),
@@ -534,7 +460,7 @@ def test_fresh_pgd_adversary_step():
     )
     seq = 16
     sites = glu_site_specs(cfg, site_cs)
-    model = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
 
@@ -543,7 +469,7 @@ def test_fresh_pgd_adversary_step():
         # deleted after the first run_step and crash the second. Deterministic keys keep
         # the two states' inits bit-identical (the "same init" the comparison below needs).
         vu = init_component_stacks(sites, jax.random.PRNGKey(1))
-        ci_fn = _build_chunkwise_ci_fn(model, jax.random.PRNGKey(2), n_blocks=1)
+        ci_fn = tiny_glu_chunkwise_ci_fn(model, jax.random.PRNGKey(2), n_blocks=1)
         return TrainState(
             decomposition=Decomposition(components=vu, ci_fn=ci_fn),
             training=TrainingItem(
