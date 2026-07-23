@@ -290,6 +290,14 @@ then as an explicit amendment to S31.** (Note: PPGD's eval-time hidden-acts extr
 in `_accum_hidden_acts` are eval-only decoration on the metric, not part of the
 training loss — they ride the same bridge.)
 
+**Update (SPEC S35):** a training-loss use case DID appear — a block-residual
+(not per-site) relative MSE, auxiliary to the e2e recon loss rather than replacing
+it. This is a genuinely different seam from the one this section refused: it
+reads block-boundary residual taps off the SAME forward the e2e loss already runs
+(no second forward, no new per-target `masked_site_outputs`-style method), so none
+of (i)/(ii)/(iii) above apply to it — see S35 for the full design. §4c's refusal
+of the PER-SITE hidden-acts seam as a training loss stands unchanged.
+
 **(d) Attn-pattern losses.** `CIMaskedAttnPatternsReconLoss` /
 `StochasticAttnPatternsReconLoss` are **eval-only** (lab `eval_metrics`, not in
 `LOSS_METRIC_CLASSES`) — no training-parity obligation exists. They need pre-RoPE

@@ -100,6 +100,21 @@ class LossMetricConfig(BaseConfig):
     name: str | None = None
 
 
+class ResidualMSELossMixin(BaseConfig):
+    """Adds an optional auxiliary block-residual relative-MSE term to an end-to-end recon
+    loss (SPEC S35): when set, the term's per-forward objective becomes `e2e_loss +
+    residual_mse_coeff * residual_mse_loss(masked_block_resids, clean_block_resids)` —
+    taken at the residual stream immediately after every transformer block, on the SAME
+    forward the e2e loss already runs (no extra forward pass) — before the whole sum is
+    scaled by the loss's own `coeff`. So `residual_mse_coeff` is RELATIVE to the e2e term,
+    not the trainer's total loss. For the adversarial recon losses (PGD /
+    PersistentPGDReconLoss / MergedStochasticSubsetPPGDReconLoss), the adversary ascends
+    on this SAME combined objective, not the bare e2e loss. `None` (default) disables it —
+    pure e2e, unchanged; transformer targets only (`model.ResidualStreamModel`)."""
+
+    residual_mse_coeff: float | None = None
+
+
 class FaithfulnessLossConfig(LossMetricConfig):
     type: Literal["FaithfulnessLoss"] = "FaithfulnessLoss"
 
@@ -181,17 +196,17 @@ class CIMaskedReconSubsetLossConfig(LossMetricConfig):
     )
 
 
-class StochasticReconLossConfig(LossMetricConfig):
+class StochasticReconLossConfig(LossMetricConfig, ResidualMSELossMixin):
     type: Literal["StochasticReconLoss"] = "StochasticReconLoss"
     n_mask_samples: PositiveInt = 1
 
 
-class StochasticReconLayerwiseLossConfig(LossMetricConfig):
+class StochasticReconLayerwiseLossConfig(LossMetricConfig, ResidualMSELossMixin):
     type: Literal["StochasticReconLayerwiseLoss"] = "StochasticReconLayerwiseLoss"
     n_mask_samples: PositiveInt = 1
 
 
-class StochasticReconSubsetLossConfig(LossMetricConfig):
+class StochasticReconSubsetLossConfig(LossMetricConfig, ResidualMSELossMixin):
     type: Literal["StochasticReconSubsetLoss"] = "StochasticReconSubsetLoss"
     routing: Annotated[SubsetRoutingType, Field(discriminator="type")] = (
         UniformKSubsetRoutingConfig()
@@ -208,7 +223,7 @@ class UnmaskedReconLossConfig(LossMetricConfig):
     type: Literal["UnmaskedReconLoss"] = "UnmaskedReconLoss"
 
 
-class ChunkwiseSubsetReconLossConfig(LossMetricConfig):
+class ChunkwiseSubsetReconLossConfig(LossMetricConfig, ResidualMSELossMixin):
     """Reconstruction loss that mirrors the 3-pool / 2-pool chunkwise subset recon.
 
     The decomposed sites (`model.target_module_paths`, in order) are grouped into
@@ -267,7 +282,7 @@ def _alias_legacy_mask_scope_field(data: Any) -> Any:
     return data
 
 
-class PGDConfig(LossMetricConfig):
+class PGDConfig(LossMetricConfig, ResidualMSELossMixin):
     """Shared base for per-step PGD loss configs."""
 
     _alias_legacy_mask_scope = model_validator(mode="before")(_alias_legacy_mask_scope_field)
@@ -329,7 +344,7 @@ def _alias_legacy_scope_field(data: Any) -> Any:
     return data
 
 
-class PersistentPGDLossConfig(LossMetricConfig):
+class PersistentPGDLossConfig(LossMetricConfig, ResidualMSELossMixin):
     """Shared adversary fields for the persistent-PGD loss terms (SPEC §4.4–4.5): the
     Adam-ascended source bundle's optimizer, stored shape, dtype, and warmup. Sources are
     clamped to `[0, 1]` after each step — the only implemented parameterization."""

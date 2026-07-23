@@ -223,6 +223,71 @@ class DecomposedModel(Protocol):
         ...
 
 
+@runtime_checkable
+class ResidualStreamModel(DecomposedModel, Protocol):
+    """A `DecomposedModel` that can also emit its per-transformer-block END residual
+    stream from the SAME forward the recon loss already runs (SPEC S35) — the seam
+    `residual_mse_coeff` (`train.py`) uses. Narrowed like `ComponentActivationModel` /
+    `AttnPatternModel` rather than folded into the universal protocol: TMS/ResidMLP have
+    no transformer-block structure to tap. Implemented by the GLU family
+    (`GLUDecomposedModel`) and `SimpleMLPDecomposedModel`. Orthogonal to
+    `clean_output_and_activations`'s `resid.{block}` tap grammar (which addresses the
+    residual ENTERING a block, for blocks `0..n_layer-1` only): this needs every
+    block's EXIT residual, including the last block's, which the entering-tap
+    vocabulary cannot express (there is no block `n_layer` to enter)."""
+
+    def clean_output_with_block_resids(self, inputs: Any, /) -> tuple[Any, Array]:
+        """`(clean_output, block_resids)` — `block_resids[layer]` is the residual stream
+        immediately after transformer block `layer`'s full attn+mlp update
+        (`[n_block, *leading, d]`), from the exact `clean_output` forward (no second
+        forward pass)."""
+        ...
+
+    def clean_output_and_activations_with_block_resids(
+        self, inputs: Any, /, wanted: tuple[str, ...]
+    ) -> tuple[Any, dict[str, Float[Array, "*leading d_tap"]], Array]:
+        """`(clean_output(inputs), read_activations(inputs, wanted), block_resids)` — the
+        step's ONE clean forward when a recon term needs BOTH the CI-fn's taps and the
+        residual-MSE block taps on the same batch, so the two seams don't cost two
+        forwards on a target that CAN fuse them (a scan target folds `wanted` and the
+        block-resid emission into the same scan; a target without that structure just
+        calls the pieces separately, same as `clean_output_and_activations`)."""
+        ...
+
+    def masked_output_with_block_resids(
+        self,
+        prepared: Any,
+        inputs: Any,
+        /,
+        masks: SiteMasks,
+        delta_masks: SiteDeltaMasks,
+        routes: SiteRoutes,
+        live: tuple[str, ...],
+        has_delta: bool,
+        *,
+        remat: bool,
+    ) -> tuple[Any, Array]:
+        """`(masked_output, block_resids)` from the exact `masked_output` forward."""
+        ...
+
+    def masked_output_stochastic_with_block_resids(
+        self,
+        prepared: Any,
+        inputs: Any,
+        /,
+        ci_stacked: Any,
+        draw_key: Array,
+        routes: SiteRoutes,
+        live: tuple[str, ...],
+        has_delta: bool,
+        *,
+        remat: bool,
+    ) -> tuple[Any, Array]:
+        """`(masked_output, block_resids)` from the exact `masked_output_stochastic`
+        forward."""
+        ...
+
+
 def stochastic_site_masks(
     ci_lower: dict[str, Array], live: tuple[str, ...], draw_key: Array, has_delta: bool
 ) -> tuple[dict[str, Array], dict[str, Array]]:

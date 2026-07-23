@@ -738,7 +738,7 @@ class GLUDecomposedModel(eqx.Module):
         stack so XLA compiles one block body instead of unrolling all 32 layers (the compile
         fix for the full model; the scan reassociates float ops vs an unrolled loop, within
         fp32 tolerance)."""
-        logits, _ = self._clean_forward(inputs, (), to_logits=True)
+        logits, _, _ = self._clean_forward(inputs, (), to_logits=True)
         assert logits is not None
         return logits
 
@@ -756,27 +756,61 @@ class GLUDecomposedModel(eqx.Module):
         per-site intermediates come from the same RMSNorm/attn/MLP math. The scan covers
         only the blocks up to the last requested key's (no wasted block compute past it)."""
         assert wanted, "read_activations with no wanted taps"
-        _, taps = self._clean_forward(inputs, wanted, to_logits=False)
+        _, taps, _ = self._clean_forward(inputs, wanted, to_logits=False)
         return taps
 
     def clean_output_and_activations(
         self, inputs: Int[Array, "b t"], wanted: tuple[str, ...]
     ) -> tuple[Array, dict[str, Array]]:
-        logits, taps = self._clean_forward(inputs, wanted, to_logits=True)
+        logits, taps, _ = self._clean_forward(inputs, wanted, to_logits=True)
         assert logits is not None
         return logits, taps
 
+    def clean_output_with_block_resids(self, inputs: Int[Array, "b t"]) -> tuple[Array, Array]:
+        """`(clean_output, block_resids)` (SPEC S35; `ResidualStreamModel`) — the residual-MSE
+        training-loss seam's clean side, from the exact `clean_output` forward.
+        `block_resids[layer]` is the residual immediately after block `layer`'s full
+        attn+mlp update, `[n_block, *leading, d]` — a DIFFERENT capability from the
+        `resid.{block}` tap grammar above (which addresses the residual ENTERING a block,
+        for blocks `0..n_layer-1`; there is no block `n_layer` to enter, so it cannot
+        express the last block's EXIT residual this needs)."""
+        logits, _, block_resids = self._clean_forward(
+            inputs, (), to_logits=True, collect_block_resids=True
+        )
+        assert logits is not None and block_resids is not None
+        return logits, block_resids
+
+    def clean_output_and_activations_with_block_resids(
+        self, inputs: Int[Array, "b t"], wanted: tuple[str, ...]
+    ) -> tuple[Array, dict[str, Array], Array]:
+        """`(clean_output, taps, block_resids)` in ONE fused scan (SPEC S35) — the step's
+        clean forward when a term needs both the CI-fn's taps and the residual-MSE block
+        taps, so they don't cost two forwards."""
+        logits, taps, block_resids = self._clean_forward(
+            inputs, wanted, to_logits=True, collect_block_resids=True
+        )
+        assert logits is not None and block_resids is not None
+        return logits, taps, block_resids
+
     def _clean_forward(
-        self, inputs: Int[Array, "b t"], wanted: tuple[str, ...], *, to_logits: bool
-    ) -> tuple[Array | None, dict[str, Array]]:
+        self,
+        inputs: Int[Array, "b t"],
+        wanted: tuple[str, ...],
+        *,
+        to_logits: bool,
+        collect_block_resids: bool = False,
+    ) -> tuple[Array | None, dict[str, Array], Array | None]:
         """The frozen-path `lax.scan` behind `clean_output` / `read_activations` /
-        `clean_output_and_activations`. Taps ride out as scan ys — one stacked
-        `[tapped_depth, b, t, d]` array per block INTERMEDIATE `wanted` reads (see
-        `_tap_class`) — and the flat tap dict is indexed out of the stacks after the scan
-        (the `_run_masked_forward` per-kind-ys pattern; no per-layer `lax.cond`). Only the
-        block prefix up to the last tapped layer emits ys; the remaining depth (run only
-        when `to_logits`) scans the same body emitting nothing — so an unread intermediate
-        or an untapped layer stacks nothing."""
+        `clean_output_and_activations` / `clean_output_with_block_resids`. Taps ride out as
+        scan ys — one stacked `[tapped_depth, b, t, d]` array per block INTERMEDIATE `wanted`
+        reads (see `_tap_class`) — and the flat tap dict is indexed out of the stacks after
+        the scan (the `_run_masked_forward` per-kind-ys pattern; no per-layer `lax.cond`).
+        Only the block prefix up to the last tapped layer emits ys; the remaining depth (run
+        only when `to_logits`) scans the same body emitting nothing — so an unread
+        intermediate or an untapped layer stacks nothing. `collect_block_resids` (static;
+        SPEC S35) is an ORTHOGONAL emission, independent of `wanted`: it stacks EVERY block's
+        output residual across BOTH scan segments (unlike a tap, which only needs the prefix
+        up to its own block)."""
 
         def block_body(emit: frozenset[str]):
             def block(x: Array, layer: GLULayer) -> tuple[Array, dict[str, Array]]:
@@ -793,7 +827,11 @@ class GLUDecomposedModel(eqx.Module):
                     "resid": x, "h1": h1, "attn_y": attn_y,
                     "mlp_in": mlp_in, "down_in": down_in,
                 }  # fmt: skip
-                return post_attn + down_in @ layer.Wd.T, {c: intermediates[c] for c in emit}
+                new_x = post_attn + down_in @ layer.Wd.T
+                out = {c: intermediates[c] for c in emit}
+                if collect_block_resids:
+                    out["_block_resid"] = new_x
+                return new_x, out
 
             return block
 
@@ -809,18 +847,25 @@ class GLUDecomposedModel(eqx.Module):
         tapped_depth = 1 + max((readers[key].block for key in wanted), default=-1)
         x = self.embed_tokens(inputs)
         stacks: dict[str, Array] = {}
+        resid_segments: list[Array] = []
         if tapped_depth:
             emit = frozenset(readers[key].intermediate for key in wanted)
             x, stacks = jax.lax.scan(block_body(emit), x, slice_layers(0, tapped_depth))
+            if collect_block_resids:
+                resid_segments.append(stacks["_block_resid"])
         taps = {key: stacks[readers[key].intermediate][readers[key].block] for key in wanted}
         if not to_logits:
-            return None, taps
+            block_resids = jnp.concatenate(resid_segments, axis=0) if collect_block_resids else None
+            return None, taps, block_resids
         if tapped_depth < self.n_layer:
-            x, _ = jax.lax.scan(
+            x, rest = jax.lax.scan(
                 block_body(frozenset()), x, slice_layers(tapped_depth, self.n_layer)
             )
+            if collect_block_resids:
+                resid_segments.append(rest["_block_resid"])
         x = rms_norm(x, self.norm, self.eps)
-        return x @ self.lm_head.T, taps
+        block_resids = jnp.concatenate(resid_segments, axis=0) if collect_block_resids else None
+        return x @ self.lm_head.T, taps, block_resids
 
     def _run_masked_forward(
         self,
@@ -835,7 +880,8 @@ class GLUDecomposedModel(eqx.Module):
         collect: dict[str, Array] | None,
         stochastic: tuple[dict[str, Array], Array] | None = None,
         collect_activations: dict[str, Array] | None = None,
-    ) -> Array:
+        collect_block_resids: bool = False,
+    ) -> tuple[Array, Array | None]:
         """The masked decomposed forward shared by `masked_output` / `masked_output_stochastic`
         / `masked_site_outputs` / `masked_component_activations` (SPEC §1.3, S2). `live_set` is
         static at trace, so the forward runs as `[frozen prefix] → [live block] → [frozen suffix]`
@@ -843,8 +889,13 @@ class GLUDecomposedModel(eqx.Module):
         `live`/`has_delta` are static; a non-None `collect` gathers per-live-site decomposed
         OUTPUTS (`(x@V)*m@U + …`, SPEC S31), and a non-None `collect_activations` gathers
         per-live-site component ACTIVATIONS `x@V` (`[*leading, C]`, mask-independent — the
-        pre-mask coefficient the arithmetic CI-grid eval visualizes). Assumes layer-aligned,
-        contiguous chunks (asserted below).
+        pre-mask coefficient the arithmetic CI-grid eval visualizes). `collect_block_resids`
+        (static) additionally emits the residual stream after EVERY block's full update —
+        frozen segments included, not just the live one (SPEC S35) — stacked
+        `[n_layer, *leading, d]` in layer order from the three sub-scans; the masked-forward
+        seam the residual-MSE training loss uses, from this SAME masked forward. Returns
+        `(logits, block_resids)`, the second `None` unless `collect_block_resids`. Assumes
+        layer-aligned, contiguous chunks (asserted below).
 
         `prepared` is the shared, stacked + ÷fsdp-reconstructed per-kind `(V, U)` from
         `prepare_compute_weights` (built ONCE per step) — this fn only ATTACHES the per-forward
@@ -949,7 +1000,7 @@ class GLUDecomposedModel(eqx.Module):
 
         def live_block(
             x: Array, layer_in: tuple[GLULayer, dict[str, dict[str, Array]]]
-        ) -> tuple[Array, tuple[dict[str, Array] | None, dict[str, Array] | None]]:
+        ) -> tuple[Array, tuple[dict[str, Array] | None, dict[str, Array] | None, Array | None]]:
             sl, pk = layer_in
             attn = sl.attn
             h1 = rms_norm(x, sl.ln1, self.eps)
@@ -983,14 +1034,17 @@ class GLUDecomposedModel(eqx.Module):
                 if want_collect_acts
                 else None
             )
-            return x, (collected, collected_acts)
+            block_resid = x if collect_block_resids else None
+            return x, (collected, collected_acts, block_resid)
 
-        def frozen_block(x: Array, sl: GLULayer) -> tuple[Array, None]:
+        def frozen_block(x: Array, sl: GLULayer) -> tuple[Array, Array | None]:
             # Bit-identical to a frozen `masked_site` branch (`x @ Wᵀ` per site), shared with
-            # `clean_output`. Carries NO V/U → a frozen segment gathers nothing.
+            # `clean_output`. Carries NO V/U → a frozen segment gathers nothing (except, when
+            # requested, its own block-end residual — SPEC S35 needs EVERY block's residual,
+            # frozen segments included, not just the live one).
             x = x + sl.attn(rms_norm(x, sl.ln1, self.eps), self.inv_freq)
             x = x + _clean_mlp_out(sl, rms_norm(x, sl.ln2, self.eps))
-            return x, None
+            return x, (x if collect_block_resids else None)
 
         # Per-LAYER checkpoint of the scan BODY in BOTH modes — `remat` controls ONLY whether the
         # layer ACTIVATIONS are recomputed; it NEVER controls the ÷fsdp→full V/U gather. The
@@ -1030,23 +1084,33 @@ class GLUDecomposedModel(eqx.Module):
             return jax.tree.map(lambda a: a[lo:hi], self.stacked)
 
         x = resid
-        ys: tuple[dict[str, Array] | None, dict[str, Array] | None] | None = None
+        ys: tuple[dict[str, Array] | None, dict[str, Array] | None, Array | None] | None = None
+        resid_segments: list[Array] = []
         if first_live > 0:
-            x, _ = run_scan(frozen_block, x, slice_layers(0, first_live))
+            x, prefix_resid = run_scan(frozen_block, x, slice_layers(0, first_live))
+            if collect_block_resids:
+                resid_segments.append(prefix_resid)
         if last_live > first_live:
             pk_live = {
                 kind: {k: v[first_live:last_live] for k, v in e.items()}
                 for kind, e in per_kind.items()
             }
             x, ys = run_scan(live_block, x, (slice_layers(first_live, last_live), pk_live))
+            if collect_block_resids:
+                assert ys is not None
+                live_resid = ys[2]
+                assert live_resid is not None
+                resid_segments.append(live_resid)
         if last_live < self.n_layer:
-            x, _ = run_scan(frozen_block, x, slice_layers(last_live, self.n_layer))
+            x, suffix_resid = run_scan(frozen_block, x, slice_layers(last_live, self.n_layer))
+            if collect_block_resids:
+                resid_segments.append(suffix_resid)
 
         x = rms_norm(x, self.norm, self.eps)
         logits = x @ self.lm_head.T
         if collect is not None or collect_activations is not None:
             assert ys is not None  # requested -> the live block emitted the per-kind stacks
-            ys_out, ys_acts = ys
+            ys_out, ys_acts, _ = ys
             for sink, stacked in ((collect, ys_out), (collect_activations, ys_acts)):
                 if sink is None:
                     continue
@@ -1054,7 +1118,10 @@ class GLUDecomposedModel(eqx.Module):
                 for site in live:
                     layer, kind = parse_site_name(site)
                     sink[site] = stacked[kind][layer - first_live]
-        return logits
+        # `resid_segments` covers [0, first_live) + [first_live, last_live) + [last_live, n_layer)
+        # in order — exactly the global layer order — from whichever sub-scans actually ran.
+        block_resids = jnp.concatenate(resid_segments, axis=0) if collect_block_resids else None
+        return logits, block_resids
 
     def prepare_compute_weights(self, vu: ComponentStacks) -> dict[str, dict[str, Array]]:
         """Build the shared per-kind compute weights ONCE per step (SPEC unchanged): stack the
@@ -1078,9 +1145,31 @@ class GLUDecomposedModel(eqx.Module):
         *,
         remat: bool,
     ) -> Array:
-        return self._run_masked_forward(
+        logits, _ = self._run_masked_forward(
             prepared, inputs, masks, delta_masks, routes, live, has_delta, remat, None, None
         )
+        return logits
+
+    def masked_output_with_block_resids(
+        self,
+        prepared: dict[str, dict[str, Array]],
+        inputs: Int[Array, "b t"],
+        masks: dict[str, Array],
+        delta_masks: dict[str, Array],
+        routes: dict[str, Array] | None,
+        live: tuple[str, ...],
+        has_delta: bool,
+        *,
+        remat: bool,
+    ) -> tuple[Array, Array]:
+        """`(masked_output, block_resids)` (SPEC S35; `ResidualStreamModel`) — the residual-MSE
+        training-loss seam's masked side, from the exact `masked_output` forward."""
+        logits, block_resids = self._run_masked_forward(
+            prepared, inputs, masks, delta_masks, routes, live, has_delta, remat, None, None,
+            collect_block_resids=True,
+        )  # fmt: skip
+        assert block_resids is not None
+        return logits, block_resids
 
     def stack_ci(self, ci_lower: dict[str, Array]) -> dict[str, Array]:
         """Per-kind `[n_layer, *leading, C]` stack of the CI envelope, built ONCE per step and
@@ -1105,9 +1194,31 @@ class GLUDecomposedModel(eqx.Module):
         live site draws `source = uniform(key)` and forms `mask = ci + (1−ci)·source` inside the
         checkpointed block (faithful by checkpoint determinism). Same forward semantics as
         `masked_output` with stochastic sources — only the masks' liverange changes."""
-        return self._run_masked_forward(
+        logits, _ = self._run_masked_forward(
             prepared, inputs, {}, {}, routes, live, has_delta, remat, None, (ci_stacked, draw_key)
         )
+        return logits
+
+    def masked_output_stochastic_with_block_resids(
+        self,
+        prepared: dict[str, dict[str, Array]],
+        inputs: Int[Array, "b t"],
+        ci_stacked: dict[str, Array],
+        draw_key: Array,
+        routes: dict[str, Array] | None,
+        live: tuple[str, ...],
+        has_delta: bool,
+        *,
+        remat: bool,
+    ) -> tuple[Array, Array]:
+        """`(masked_output, block_resids)` (SPEC S35) from the exact `masked_output_stochastic`
+        forward — the residual-MSE seam for stochastic-source recon entries."""
+        logits, block_resids = self._run_masked_forward(
+            prepared, inputs, {}, {}, routes, live, has_delta, remat, None, (ci_stacked, draw_key),
+            collect_block_resids=True,
+        )  # fmt: skip
+        assert block_resids is not None
+        return logits, block_resids
 
     def masked_site_outputs(
         self,

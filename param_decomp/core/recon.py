@@ -148,11 +148,15 @@ ReconPlan = tuple[ReconForward, ...]
 class ReconLossTerm:
     """One coefficiented recon loss: mean over ALL draws of ALL plan entries of
     `kl_per_position` (SPEC S10'). `name` is the torch `instance_key` (`cfg.name` or
-    the type literal) — the metric log key is `loss/<name>`."""
+    the type literal) — the metric log key is `loss/<name>`. `residual_mse_coeff`
+    (SPEC S35, `None` unless the config set it) turns each draw's objective into
+    `kl_per_position + residual_mse_coeff * residual_mse_loss(...)`, RELATIVE to (i.e.
+    inside) this term's own `coeff` — see `ResidualMSELossMixin`."""
 
     name: str
     coeff: float
     plan: ReconPlan
+    residual_mse_coeff: float | None = None
 
 
 @dataclass(frozen=True)
@@ -367,7 +371,10 @@ def build_loss_terms(
 
     def recon(cfg: AnyLossMetricConfig, plan: ReconPlan) -> ReconLossTerm:
         assert cfg.coeff is not None
-        return ReconLossTerm(unique_name(cfg), cfg.coeff, plan)
+        # Not every recon config carries `ResidualMSELossMixin` (SPEC S35) — the
+        # constant-source floor/ceiling probes (CIMasked*/Unmasked) deliberately don't.
+        residual_mse_coeff = getattr(cfg, "residual_mse_coeff", None)
+        return ReconLossTerm(unique_name(cfg), cfg.coeff, plan, residual_mse_coeff)
 
     for cfg in loss_metrics:
         assert cfg.coeff is not None, f"{cfg.type}: training losses need a coeff"

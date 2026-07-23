@@ -56,8 +56,12 @@ Batch size is `pd.batch_size` uniformly — `DataConfig` carries no batch.
 `CIHiddenActsReconLoss` / `StochasticHiddenActsReconLoss` are standalone eval metrics
 (`hidden_acts_eval.py`, in-loop on `eval.slow_every`) over a fifth model fn
 `masked_site_outputs` — NOT recon-grid training terms (the recon loss stays
-KL-on-final-logits; SPEC S31). CI-fn numerics: GELU is exact-erf (`approximate=False`),
-RMSNorm eps is `finfo(fp32).eps` (`CI_FN_RMS_EPS`) — SPEC §4.6. The
+KL-on-final-logits; SPEC S31). A DIFFERENT training-loss seam — block-boundary (not
+per-site) residual MSE, auxiliary to the e2e recon term — is BUILT (SPEC S35):
+`ResidualMSELossMixin.residual_mse_coeff` on the stochastic/PGD recon configs, reading
+block-residual taps off the SAME forward the e2e loss runs via the narrowed
+`ResidualStreamModel` protocol (`model.py`). CI-fn numerics: GELU is exact-erf
+(`approximate=False`), RMSNorm eps is `finfo(fp32).eps` (`CI_FN_RMS_EPS`) — SPEC §4.6. The
 three EDGES are generic so non-LM (bio-style) targets fit (#828): the model INPUT
 (the opaque batch `clean_output` / `read_activations` / `masked_output` consume, typed
 `Any` — token ids for an LM, a dict for bio), the model OUTPUT (`clean_output`/`masked_output` return `Any` — logits, a tuple

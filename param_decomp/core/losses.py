@@ -67,6 +67,38 @@ def kl_per_position(
 
 
 @jaxtyped(typechecker=beartype)
+def relative_mse_per_block(
+    masked_resids: Float[Array, "n_block *leading d"],
+    clean_resids: Float[Array, "n_block *leading d"],
+) -> Float[Array, " n_block"]:
+    """`Σ(masked−clean)² / Σ(clean²)` per block, in fp32 (SPEC S35): a RELATIVE mse —
+    normalized by the target's own squared-activation scale at that block, so
+    blocks/models at different activation scales aren't dominated by whichever runs
+    hottest. Reduced over every axis but the leading block axis; both stacks share that
+    axis 1:1 (block `L`'s entry is the residual immediately after transformer block
+    `L`'s full attn+mlp update, from `*_with_block_resids`). Exposed separately from
+    `residual_mse_loss` (which sums this) so callers can log the per-block breakdown."""
+    masked_resids = masked_resids.astype(jnp.float32)
+    clean_resids = clean_resids.astype(jnp.float32)
+    reduce_axes = tuple(range(1, masked_resids.ndim))
+    sq_diff = jnp.sum((masked_resids - clean_resids) ** 2, axis=reduce_axes)
+    sq_clean = jnp.sum(clean_resids**2, axis=reduce_axes)
+    return sq_diff / sq_clean
+
+
+@jaxtyped(typechecker=beartype)
+def residual_mse_loss(
+    masked_resids: Float[Array, "n_block *leading d"],
+    clean_resids: Float[Array, "n_block *leading d"],
+) -> Float[Array, ""]:
+    """`mean_block relative_mse_per_block` (SPEC S35) — averaged, not summed, across
+    blocks, so `residual_mse_coeff` means "weight on the per-block-averaged relative
+    MSE" regardless of how many blocks the target has (a deeper target's term
+    otherwise scales with block count for a fixed coeff, forcing per-depth re-tuning)."""
+    return jnp.mean(relative_mse_per_block(masked_resids, clean_resids))
+
+
+@jaxtyped(typechecker=beartype)
 def faithfulness_loss(weight_deltas: dict[str, Float[Array, "_ _"]]) -> Float[Array, ""]:
     """`Σ_s ‖Δ_s‖² / Σ_s numel` over fp32 deltas (SPEC S17). Each `Δ_s` is `(d_out, d_in)`;
     dims are per-site (anonymous, not bound across sites)."""

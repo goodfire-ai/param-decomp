@@ -42,9 +42,10 @@ from param_decomp.core.losses import (
     annealed_imp_min_param,
     faithfulness_loss,
     imp_min_terms,
+    relative_mse_per_block,
     scheduled_value_traced,
 )
-from param_decomp.core.model import DecomposedModel
+from param_decomp.core.model import DecomposedModel, ResidualStreamModel
 from param_decomp.core.recon import (
     ConstantSources,
     FreshPGDSources,
@@ -56,7 +57,7 @@ from param_decomp.core.recon import (
     Routes,
     StochasticSources,
 )
-from param_decomp.core.sharding import batch_shard_leading
+from param_decomp.core.sharding import BATCH_AXES, batch_shard_leading
 
 COMPUTE_DT = jnp.bfloat16
 
@@ -173,6 +174,23 @@ def make_train_step(
     c_by_site = {spec.name: spec.C for spec in sites}
     recon_loss_fn = model_static.recon_loss_fn  # static: pure, holds no arrays — safe to close
     recon_terms = losses.recon
+    any_residual_mse = any(t.residual_mse_coeff is not None for t in recon_terms)
+    if any_residual_mse:
+        # SPEC S35: a config asked for the block-residual MSE aux term, so the target must
+        # be able to emit block-boundary residual taps from its recon-loss forwards.
+        assert isinstance(model_static, ResidualStreamModel), (
+            f"{type(model_static).__name__} doesn't implement ResidualStreamModel (SPEC S35) — "
+            "residual_mse_coeff needs a transformer target (GLU family / SimpleMLP)"
+        )
+    # `state_key -> the one term its persistent bundle feeds` (SPEC S23), read for the
+    # per-adversary warmup-ascent objective (S24 warmup is shared machinery, but each
+    # adversary's own term may configure a different residual_mse_coeff).
+    persistent_residual_mse_by_key: dict[str, float | None] = {
+        entry.sources.state_key: term.residual_mse_coeff
+        for term in recon_terms
+        for entry in term.plan
+        if isinstance(entry.sources, (PersistentSources, MixedPersistentStochasticSources))
+    }
     faith_term = losses.faith
     imp_term = losses.imp
     faith_coeff = faith_term.coeff
@@ -187,6 +205,15 @@ def make_train_step(
 
     def batch_sharded(x: Array) -> Array:
         return batch_shard_leading(x, mesh)
+
+    def block_resid_sharded(x: Array) -> Array:
+        """`batch_shard_leading`, shifted one axis right — `block_resids` (SPEC S35)
+        carries an extra leading LAYER axis (`[n_layer, *leading, d]`) before the
+        batch/position axes `batch_shard_leading` assumes start at axis 0."""
+        if mesh is None:
+            return x
+        spec = [None, BATCH_AXES] + [None] * (x.ndim - 2)
+        return jax.lax.with_sharding_constraint(x, NamedSharding(mesh, P(*spec)))
 
     def ci_shard(x: Array) -> Array:
         """Pin a CI / mask tensor `[batch, *positions, C]` batch over the full mesh, C
@@ -240,11 +267,15 @@ def make_train_step(
         routes: dict[str, Bool[Array, "*leading"]] | None,
         live_sites: tuple[str, ...],
         has_delta: bool,
-    ) -> Any:
+        collect_resids: bool,
+    ) -> tuple[Any, Array | None]:
         # `prepared` = `model.prepare_compute_weights(components_bf16)`, built ONCE per step and
         # shared across all forwards (the ÷N→÷fsdp gather is not re-run per forward).
-        return batch_sharded(
-            model.masked_output(
+        # `collect_resids` (static; SPEC S35) additionally returns the block-boundary residual
+        # taps from this SAME forward — no extra forward pass.
+        if collect_resids:
+            assert isinstance(model, ResidualStreamModel)
+            masked, resids = model.masked_output_with_block_resids(
                 prepared,
                 batch,
                 masks,
@@ -254,7 +285,80 @@ def make_train_step(
                 has_delta,
                 remat=remat_recon_forwards,
             )
+            return batch_sharded(masked), block_resid_sharded(resids)
+        masked = model.masked_output(
+            prepared,
+            batch,
+            masks,
+            delta_masks,
+            routes,
+            live_sites,
+            has_delta,
+            remat=remat_recon_forwards,
         )
+        return batch_sharded(masked), None
+
+    def stochastic_forward(
+        model: DecomposedModel,
+        prepared: Any,
+        batch: Any,
+        ci_stacked: Any,
+        draw_key: Array,
+        routes: Routes,
+        live_sites: tuple[str, ...],
+        has_delta: bool,
+        collect_resids: bool,
+    ) -> tuple[Any, Array | None]:
+        """`model.masked_output_stochastic[_with_block_resids]`, mirroring `masked_forward`
+        for the in-block-recompute stochastic path (SPEC S35)."""
+        if collect_resids:
+            assert isinstance(model, ResidualStreamModel)
+            masked, resids = model.masked_output_stochastic_with_block_resids(
+                prepared, batch, ci_stacked, draw_key, routes, live_sites, has_delta,
+                remat=remat_recon_forwards,
+            )  # fmt: skip
+            return batch_sharded(masked), block_resid_sharded(resids)
+        masked = model.masked_output_stochastic(
+            prepared, batch, ci_stacked, draw_key, routes, live_sites, has_delta,
+            remat=remat_recon_forwards,
+        )  # fmt: skip
+        return batch_sharded(masked), None
+
+    def objective_with_breakdown(
+        masked: Any,
+        resids: Array | None,
+        clean_output: Any,
+        clean_resids: Array | None,
+        residual_mse_coeff: float | None,
+    ) -> tuple[Array, Array, Array | None]:
+        """`(combined, e2e, mse_per_block)` (SPEC S35): `combined` is the per-forward
+        recon objective — plain `recon_loss_fn` unless the term configured
+        `residual_mse_coeff`, in which case `e2e + coeff * mean(mse_per_block)`
+        (`residual_mse_loss`, block-count-normalized — SAME quantity the adversary
+        ascends on for adversarial terms). `e2e` and `mse_per_block` (`None` unless
+        `residual_mse_coeff` is set) are exposed alongside purely so callers can log the
+        components separately (`loss/<name>/e2e`, `loss/<name>/residual_mse/block_{i}`),
+        not just their combination."""
+        e2e = recon_loss_fn(masked, clean_output)
+        if residual_mse_coeff is None:
+            return e2e, e2e, None
+        assert resids is not None and clean_resids is not None
+        mse_per_block = relative_mse_per_block(resids, clean_resids)
+        return e2e + residual_mse_coeff * jnp.mean(mse_per_block), e2e, mse_per_block
+
+    def combined_objective(
+        masked: Any,
+        resids: Array | None,
+        clean_output: Any,
+        clean_resids: Array | None,
+        residual_mse_coeff: float | None,
+    ) -> Array:
+        """The scalar total from `objective_with_breakdown`, for callers (the adversary
+        ascent objectives) that don't need the logging breakdown."""
+        total, _, _ = objective_with_breakdown(
+            masked, resids, clean_output, clean_resids, residual_mse_coeff
+        )
+        return total
 
     def constant_entry_masks(
         strategy: ConstantSources,
@@ -277,14 +381,17 @@ def make_train_step(
         ci_lower: dict[str, Array],
         batch: Any,
         clean_output: Array,
+        clean_resids: Array | None,
+        residual_mse_coeff: float | None,
     ) -> Array:
-        """Mean KL over the entry's draws with FIXED source values — the adversarial
-        ascent objective (shared by fresh and persistent ascents, SPEC S12'). `prepared` is
-        the shared per-step compute weights (`prepare_compute_weights`)."""
+        """Mean combined objective over the entry's draws with FIXED source values — the
+        adversarial ascent objective (shared by fresh and persistent ascents, SPEC S12',
+        S35). `prepared` is the shared per-step compute weights (`prepare_compute_weights`)."""
         masks, delta_masks = source_masks(ci_lower, sources, entry.live_sites)
         total = jnp.zeros((), jnp.float32)
+        collect_resids = residual_mse_coeff is not None
         for routes in routes_per_draw:
-            masked = masked_forward(
+            masked, resids = masked_forward(
                 model,
                 prepared,
                 batch,
@@ -293,8 +400,11 @@ def make_train_step(
                 routes,
                 entry.live_sites,
                 entry.has_delta,
+                collect_resids,
             )
-            total = total + recon_loss_fn(masked, clean_output)
+            total = total + combined_objective(
+                masked, resids, clean_output, clean_resids, residual_mse_coeff
+            )
         return total / len(routes_per_draw)
 
     @jaxtyped(typechecker=beartype)
@@ -311,9 +421,22 @@ def make_train_step(
 
         batch = batch_sharded(batch)
         with jax.named_scope("pd_clean_fwd_and_taps"):
-            clean_output, taps = model.clean_output_and_activations(
-                batch, decomposition.ci_fn.input_names
-            )
+            if any_residual_mse:
+                # SPEC S35: the SAME clean forward every recon term already runs, with the
+                # CI-fn's taps AND the block-boundary residual taps both collected — no
+                # extra forward pass.
+                assert isinstance(model, ResidualStreamModel)
+                clean_output, taps, clean_resids_raw = (
+                    model.clean_output_and_activations_with_block_resids(
+                        batch, decomposition.ci_fn.input_names
+                    )
+                )
+                clean_resids = jax.lax.stop_gradient(block_resid_sharded(clean_resids_raw))
+            else:
+                clean_output, taps = model.clean_output_and_activations(
+                    batch, decomposition.ci_fn.input_names
+                )
+                clean_resids = None
             clean_output = jax.lax.stop_gradient(batch_sharded(clean_output))
         # `leading` (batch, *positions) — the shape masks/sources/routes live in. Sourced
         # from a tap (always `[*leading, d_tap]`), not the opaque batch, so the engine never
@@ -343,16 +466,30 @@ def make_train_step(
         # all-sites forward (SPEC S24 — torch warmup parity, NOT the term's loss plan),
         # params + CI detached. The warmed sources then enter the main backward as leaves;
         # the LR schedule (S13′) lives in `PersistentAdversary`. ──
-        def warmup_scoring_loss(sources: dict[str, Array]) -> Array:
-            masks, delta_masks = source_masks(ci_lower_detached, sources, site_names)
-            masked = masked_forward(
-                model, prepared_ascend, batch, masks, delta_masks, None, site_names, True
-            )
-            return recon_loss_fn(masked, clean_output)
+        def make_warmup_scoring_loss(
+            residual_mse_coeff: float | None,
+        ) -> Callable[[dict[str, Array]], Array]:
+            collect_resids = residual_mse_coeff is not None
+
+            def warmup_scoring_loss(sources: dict[str, Array]) -> Array:
+                masks, delta_masks = source_masks(ci_lower_detached, sources, site_names)
+                masked, resids = masked_forward(
+                    model, prepared_ascend, batch, masks, delta_masks, None, site_names, True,
+                    collect_resids,
+                )  # fmt: skip
+                return combined_objective(
+                    masked, resids, clean_output, clean_resids, residual_mse_coeff
+                )
+
+            return warmup_scoring_loss
 
         with jax.named_scope("pd_pgd_warmup_ascend"):
             warmed_advs = {
-                state_key: adv.warmup_ascend(warmup_scoring_loss, step_f32, total_steps)
+                state_key: adv.warmup_ascend(
+                    make_warmup_scoring_loss(persistent_residual_mse_by_key[state_key]),
+                    step_f32,
+                    total_steps,
+                )
                 for state_key, adv in training.adversaries.items()
             }
 
@@ -379,6 +516,7 @@ def make_train_step(
                     sources: dict[str, Array],
                     entry: ReconForward = entry,
                     routes: tuple[Routes, ...] = routes_per_draw,
+                    residual_mse_coeff: float | None = term.residual_mse_coeff,
                 ) -> Array:
                     return entry_loss_for_sources(
                         entry,
@@ -389,6 +527,8 @@ def make_train_step(
                         ci_lower_detached,
                         batch,
                         clean_output,
+                        clean_resids,
+                        residual_mse_coeff,
                     )
 
                 def sign_ascend_body(
@@ -429,9 +569,12 @@ def make_train_step(
             entry: ReconForward,
             draw_key: PRNGKeyArray,
             routes: Routes,
-        ) -> Array:
-            """One recon forward's KL: dispatch on the entry's mask-source strategy, run the
-            masked forward, compare against the clean output (SPEC S10')."""
+            residual_mse_coeff: float | None,
+        ) -> tuple[Array, Array, Array | None]:
+            """One recon forward's `(combined, e2e, mse_per_block)` (SPEC S10', S35):
+            dispatch on the entry's mask-source strategy, run the masked forward, compare
+            against the clean output."""
+            collect_resids = residual_mse_coeff is not None
             with jax.named_scope("pd_recon_masked_fwd"):
                 match entry.sources:
                     case StochasticSources():
@@ -441,41 +584,40 @@ def make_train_step(
                         # the memory win); others build masks then `masked_output`. Either way
                         # the engine holds no per-forward mask stacks.
                         assert ci_stacked is not None
-                        masked = batch_sharded(
-                            model.masked_output_stochastic(
-                                prepared,
-                                batch,
-                                ci_stacked,
-                                draw_key,
-                                routes,
-                                entry.live_sites,
-                                entry.has_delta,
-                                remat=remat_recon_forwards,
-                            )
+                        masked, resids = stochastic_forward(
+                            model,
+                            prepared,
+                            batch,
+                            ci_stacked,
+                            draw_key,
+                            routes,
+                            entry.live_sites,
+                            entry.has_delta,
+                            collect_resids,
                         )
                     case ConstantSources() as strategy:
                         masks, delta_masks = constant_entry_masks(
                             strategy, ci_lower, entry.live_sites
                         )
-                        masked = masked_forward(
+                        masked, resids = masked_forward(
                             model, prepared, batch, masks, delta_masks,
-                            routes, entry.live_sites, entry.has_delta,
+                            routes, entry.live_sites, entry.has_delta, collect_resids,
                         )  # fmt: skip
                     case FreshPGDSources():
                         masks, delta_masks = source_masks(
                             ci_lower, fresh_sources[(term_idx, entry_idx)], entry.live_sites
                         )
-                        masked = masked_forward(
+                        masked, resids = masked_forward(
                             model, prepared, batch, masks, delta_masks,
-                            routes, entry.live_sites, entry.has_delta,
+                            routes, entry.live_sites, entry.has_delta, collect_resids,
                         )  # fmt: skip
                     case PersistentSources(state_key=state_key):
                         masks, delta_masks = source_masks(
                             ci_lower, persistent_sources[state_key], entry.live_sites
                         )
-                        masked = masked_forward(
+                        masked, resids = masked_forward(
                             model, prepared, batch, masks, delta_masks,
-                            routes, entry.live_sites, entry.has_delta,
+                            routes, entry.live_sites, entry.has_delta, collect_resids,
                         )  # fmt: skip
                     case MixedPersistentStochasticSources(state_key=state_key):
                         adv_fraction = scheduled_value_traced(
@@ -491,11 +633,13 @@ def make_train_step(
                             adv_fraction,
                             routes,
                         )
-                        masked = masked_forward(
+                        masked, resids = masked_forward(
                             model, prepared, batch, mixed_masks, mixed_deltas,
-                            mixed_routes, entry.live_sites, entry.has_delta,
+                            mixed_routes, entry.live_sites, entry.has_delta, collect_resids,
                         )  # fmt: skip
-            return recon_loss_fn(masked, clean_output)
+            return objective_with_breakdown(
+                masked, resids, clean_output, clean_resids, residual_mse_coeff
+            )
 
         def term_draws(
             term_idx: int, term: ReconLossTerm
@@ -523,32 +667,77 @@ def make_train_step(
 
         def loss_fn(
             trainable: tuple[Any, ComponentStacks, CI, dict[str, dict[str, Array]]],
-        ) -> tuple[Array, tuple[Array, Array, Array, tuple[Array, ...]]]:
+        ) -> tuple[
+            Array,
+            tuple[
+                Array,
+                Array,
+                Array,
+                tuple[Array, ...],
+                tuple[Array, ...],
+                tuple[Array | None, ...],
+            ],
+        ]:
             prepared, components, ci, persistent_sources = trainable
             ci_stacked = model.stack_ci(ci.lower)
             faith_loss = faithfulness_loss(model.weight_deltas(components))
             imp_lp, imp_freq = imp_min_terms(ci.upper, imp_min, imp_min_param)
 
             term_losses: list[Array] = []
+            term_e2e_losses: list[Array] = []
+            term_mse_per_blocks: list[Array | None] = []
             for term_idx, draws in enumerate(per_term_draws):
+                residual_mse_coeff = recon_terms[term_idx].residual_mse_coeff
                 total = jnp.zeros((), jnp.float32)
+                total_e2e = jnp.zeros((), jnp.float32)
+                total_mse_per_block: Array | None = None
                 for entry_idx, entry, draw_key, routes in draws:
-                    total = total + draw_recon_loss(
+                    combined, e2e, mse_per_block = draw_recon_loss(
                         prepared, ci.lower, persistent_sources, ci_stacked,
-                        term_idx, entry_idx, entry, draw_key, routes,
+                        term_idx, entry_idx, entry, draw_key, routes, residual_mse_coeff,
                     )  # fmt: skip
+                    total = total + combined
+                    total_e2e = total_e2e + e2e
+                    if mse_per_block is not None:
+                        total_mse_per_block = (
+                            mse_per_block
+                            if total_mse_per_block is None
+                            else total_mse_per_block + mse_per_block
+                        )
                 term_losses.append(total / len(draws))
+                term_e2e_losses.append(total_e2e / len(draws))
+                term_mse_per_blocks.append(
+                    total_mse_per_block / len(draws) if total_mse_per_block is not None else None
+                )
 
             total_loss = faith_coeff * faith_loss + imp_coeff * imp_lp + freq_coeff * imp_freq
             for term, term_loss in zip(recon_terms, term_losses, strict=True):
                 total_loss = total_loss + term.coeff * term_loss
-            return total_loss, (faith_loss, imp_lp, imp_freq, tuple(term_losses))
+            return total_loss, (
+                faith_loss,
+                imp_lp,
+                imp_freq,
+                tuple(term_losses),
+                tuple(term_e2e_losses),
+                tuple(term_mse_per_blocks),
+            )
 
         with jax.named_scope("pd_value_and_grad"):
-            (total_loss, (faith_loss, imp_lp, imp_freq, term_losses)), grads = (
-                eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-                    (prepared, decomposition.components, ci, warmed_sources)
-                )
+            (
+                (
+                    total_loss,
+                    (
+                        faith_loss,
+                        imp_lp,
+                        imp_freq,
+                        term_losses,
+                        term_e2e_losses,
+                        term_mse_per_blocks,
+                    ),
+                ),
+                grads,
+            ) = eqx.filter_value_and_grad(loss_fn, has_aux=True)(
+                (prepared, decomposition.components, ci, warmed_sources)
             )
         prepared_grad, components_grad_faith, ci_grad, persistent_grads_scaled = grads
         components_grad_recon = recon_vjp(prepared_grad)[0]
@@ -597,6 +786,17 @@ def make_train_step(
             "freq": imp_freq,
             imp_min_param_key: imp_min_param,
             **{f"loss/{t.name}": v for t, v in zip(recon_terms, term_losses, strict=True)},
+            # SPEC S35 visibility: the e2e KL and the per-block relative-MSE breakdown,
+            # logged separately from the combined `loss/<name>` above so a residual_mse
+            # run shows what's actually driving the term (mse_per_block is None, so no
+            # block keys, for a term that didn't configure residual_mse_coeff).
+            **{f"loss/{t.name}/e2e": v for t, v in zip(recon_terms, term_e2e_losses, strict=True)},
+            **{
+                f"loss/{t.name}/residual_mse/block_{i}": mse_per_block[i]
+                for t, mse_per_block in zip(recon_terms, term_mse_per_blocks, strict=True)
+                if mse_per_block is not None
+                for i in range(mse_per_block.shape[0])
+            },
             **grad_norm_metrics,
         }
         source_lrs = {

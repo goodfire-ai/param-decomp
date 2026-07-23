@@ -44,7 +44,7 @@ from param_decomp.core import family
 from param_decomp.core.components import ComponentStacks, SiteC, SiteSpec, site_out
 from param_decomp.core.family import ArchFamily
 from param_decomp.core.losses import kl_per_position
-from param_decomp.core.model import run_stochastic_masked_output
+from param_decomp.core.model import run_stochastic_masked_output, stochastic_site_masks
 from param_decomp.targets.glu_transformer import FrozenAttn
 from param_decomp.targets.transformer_taps import resid_tap_key
 from param_decomp.vendored_jax.llama import rms_norm
@@ -300,12 +300,29 @@ class SimpleMLPDecomposedModel(eqx.Module):
 
     def clean_output(self, inputs: Int[Array, "b t"]) -> Array:
         """The all-frozen forward — the recon target (SPEC S3)."""
+        logits, _ = self._clean_forward(inputs, False)
+        return logits
+
+    def clean_output_with_block_resids(self, inputs: Int[Array, "b t"]) -> tuple[Array, Array]:
+        """`(clean_output, block_resids)` (SPEC S35; `ResidualStreamModel`) — the residual-MSE
+        training-loss seam's clean side, from the exact `clean_output` forward."""
+        logits, block_resids = self._clean_forward(inputs, True)
+        assert block_resids is not None
+        return logits, block_resids
+
+    def _clean_forward(
+        self, inputs: Int[Array, "b t"], collect_block_resids: bool
+    ) -> tuple[Array, Array | None]:
         assert inputs.shape[1] <= self.n_ctx, (inputs.shape, self.n_ctx)
         x = self.embed_tokens(inputs)
+        block_resids: list[Array] = []
         for layer in self.layers:
             x = _clean_block(layer, x, self.inv_freq, self.eps)
+            if collect_block_resids:
+                block_resids.append(x)
         x = rms_norm(x, self.norm, self.eps)
-        return x @ self.lm_head.T
+        logits = x @ self.lm_head.T
+        return logits, (jnp.stack(block_resids) if collect_block_resids else None)
 
     def read_activations(
         self, inputs: Int[Array, "b t"], wanted: tuple[str, ...]
@@ -363,6 +380,15 @@ class SimpleMLPDecomposedModel(eqx.Module):
         # there is no scan to emit the taps from and no compile pressure to fuse.
         return self.clean_output(inputs), self.read_activations(inputs, wanted)
 
+    def clean_output_and_activations_with_block_resids(
+        self, inputs: Int[Array, "b t"], wanted: tuple[str, ...]
+    ) -> tuple[Array, dict[str, Array], Array]:
+        """`(clean_output, taps, block_resids)` (SPEC S35). Same two-passes shrug as
+        `clean_output_and_activations`: the taps ride `read_activations`'s own pass; the
+        block resids ride `clean_output_with_block_resids`'s."""
+        logits, block_resids = self.clean_output_with_block_resids(inputs)
+        return logits, self.read_activations(inputs, wanted), block_resids
+
     def _run_masked_forward(
         self,
         vu: ComponentStacks,
@@ -373,17 +399,21 @@ class SimpleMLPDecomposedModel(eqx.Module):
         live: tuple[str, ...],
         has_delta: bool,
         collect: dict[str, Array] | None,
-    ) -> Array:
+        collect_block_resids: bool = False,
+    ) -> tuple[Array, Array | None]:
         """The masked decomposed forward shared by `masked_output` and
         `masked_site_outputs` (SPEC §4.1, S2): sites in `live` run their decomposed forward
         with `masks[s]` / `delta_masks[s]` / `routes[s]`; every other site — and every site
         absent from the decomposition entirely — runs the frozen `x @ W` path. `live` and
         `has_delta` are static under jit; `has_delta` False skips the `x @ Δ` matmul
         (LOSS_PARITY_DESIGN §4b). A non-None `collect` gathers per-site decomposed
-        outputs."""
+        outputs. `collect_block_resids` (static) additionally emits every block's
+        post-attn+mlp residual, `[n_layer, *leading, d]` (SPEC S35) — the residual-MSE
+        training loss's masked-side seam, from this SAME forward."""
         assert inputs.shape[1] <= self.n_ctx, (inputs.shape, self.n_ctx)
         live_set = frozenset(live)
         x = self.embed_tokens(inputs)
+        block_resids: list[Array] = []
         for layer_idx, layer in enumerate(self.layers):
             live_kinds = {kind for kind in KIND_ORDER if site_name(layer_idx, kind) in live_set}
             attn = layer.attn
@@ -412,8 +442,11 @@ class SimpleMLPDecomposedModel(eqx.Module):
                     *site_args,
                 )  # fmt: skip
             x = post_attn + mlp_out
+            if collect_block_resids:
+                block_resids.append(x)
         x = rms_norm(x, self.norm, self.eps)
-        return x @ self.lm_head.T
+        logits = x @ self.lm_head.T
+        return logits, (jnp.stack(block_resids) if collect_block_resids else None)
 
     def prepare_compute_weights(self, vu: ComponentStacks) -> ComponentStacks:
         """Identity: this arch reads `vu` per-site in its unrolled forward (no layer-stacked
@@ -444,9 +477,42 @@ class SimpleMLPDecomposedModel(eqx.Module):
             delta_masks: dict[str, Array],
             routes: dict[str, Array] | None,
         ) -> Array:
-            return self._run_masked_forward(
+            logits, _ = self._run_masked_forward(
                 vu, inputs, masks, delta_masks, routes, live, has_delta, None
             )
+            return logits
+
+        forward = jax.checkpoint(forward) if remat else forward
+        return forward(prepared, inputs, masks, delta_masks, routes)
+
+    def masked_output_with_block_resids(
+        self,
+        prepared: ComponentStacks,
+        inputs: Int[Array, "b t"],
+        masks: dict[str, Array],
+        delta_masks: dict[str, Array],
+        routes: dict[str, Array] | None,
+        live: tuple[str, ...],
+        has_delta: bool,
+        *,
+        remat: bool,
+    ) -> tuple[Array, Array]:
+        """`(masked_output, block_resids)` (SPEC S35; `ResidualStreamModel`) from the exact
+        `masked_output` forward."""
+
+        def forward(
+            vu: ComponentStacks,
+            inputs: Array,
+            masks: dict[str, Array],
+            delta_masks: dict[str, Array],
+            routes: dict[str, Array] | None,
+        ) -> tuple[Array, Array]:
+            logits, block_resids = self._run_masked_forward(
+                vu, inputs, masks, delta_masks, routes, live, has_delta, None,
+                collect_block_resids=True,
+            )  # fmt: skip
+            assert block_resids is not None
+            return logits, block_resids
 
         forward = jax.checkpoint(forward) if remat else forward
         return forward(prepared, inputs, masks, delta_masks, routes)
@@ -468,6 +534,27 @@ class SimpleMLPDecomposedModel(eqx.Module):
     ) -> Array:
         return run_stochastic_masked_output(
             self, prepared, inputs, ci_stacked, draw_key, routes, live, has_delta, remat=remat
+        )
+
+    def masked_output_stochastic_with_block_resids(
+        self,
+        prepared: ComponentStacks,
+        inputs: Int[Array, "b t"],
+        ci_stacked: dict[str, Array],
+        draw_key: Array,
+        routes: dict[str, Array] | None,
+        live: tuple[str, ...],
+        has_delta: bool,
+        *,
+        remat: bool,
+    ) -> tuple[Array, Array]:
+        """`(masked_output, block_resids)` (SPEC S35) — the stochastic-source residual-MSE
+        seam. No in-block recompute here (unrolled target, `stack_ci` is identity), so this
+        builds the stochastic masks then runs `masked_output_with_block_resids` exactly like
+        `run_stochastic_masked_output` does for the plain path."""
+        masks, delta_masks = stochastic_site_masks(ci_stacked, live, draw_key, has_delta)
+        return self.masked_output_with_block_resids(
+            prepared, inputs, masks, delta_masks, routes, live, has_delta, remat=remat
         )
 
     def masked_site_outputs(
