@@ -27,9 +27,9 @@ from pathlib import Path
 import jax.numpy as jnp
 import numpy as np
 
-from param_decomp.built_run import DataConfig
-from param_decomp.data import BatchSchedule, ShardServer, scan_shards
-from param_decomp.log import logger
+from param_decomp.core.built_run import DataConfig
+from param_decomp.core.data import BatchSchedule, ShardServer, scan_shards
+from param_decomp.core.log import logger
 from param_decomp_lab.experiments.lm.load_run import HarvestForward, LoadedJaxRun, open_jax_run
 from param_decomp_lab.harvest.accumulator import Harvester
 from param_decomp_lab.harvest.config import HarvestConfig, ParamDecompHarvestConfig

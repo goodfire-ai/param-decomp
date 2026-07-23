@@ -12,7 +12,7 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 from param_decomp_lab.harvest.config import HarvestSlurmConfig
 from param_decomp_lab.harvest.schemas import get_harvest_dir
 from param_decomp_lab.harvest.scripts import run_merge as harvest_merge

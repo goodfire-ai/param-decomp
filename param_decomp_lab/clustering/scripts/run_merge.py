@@ -22,7 +22,7 @@ import numpy as np
 from jaxtyping import Float
 from matplotlib import pyplot as plt
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 from param_decomp_lab.clustering.math.merge_matrix import GroupMerge
 from param_decomp_lab.clustering.memberships import ProcessedMemberships
 from param_decomp_lab.clustering.merge import LogCallback, merge_iteration_memberships

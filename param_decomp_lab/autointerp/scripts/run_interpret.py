@@ -11,7 +11,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 from param_decomp_lab.adapters import adapter_from_id
 from param_decomp_lab.autointerp.config import AutointerpConfig
 from param_decomp_lab.autointerp.interpret import (

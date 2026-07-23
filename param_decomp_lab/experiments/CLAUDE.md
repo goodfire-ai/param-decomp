@@ -1,7 +1,7 @@
 # `param_decomp_lab/experiments/`
 
 Experiment glue + the per-domain COMPOSITION ROOTS, torch-free. Training is JAX through the
-generic core engine (`param_decomp.run.run_decomposition_training`, a pure library that reads
+generic core engine (`param_decomp.core.run.run_decomposition_training`, a pure library that reads
 the pydantic `PDConfig` / `Cadence` directly). Each domain's `run.py` is its composition
 root: read the run YAML → build the target / data loader / `config.BuiltRun` → call the
 engine. LM runs go to SLURM via `pd-lm` (which sbatches
@@ -58,8 +58,8 @@ The `ExperimentConfig` schema base (domain subclasses bind concrete
 `target`/`decomposition`/`data`) + `EvalConfig` + the toy authored CI configs
 (`LayerwiseMlpCiConfig` / `GlobalMlpCiConfig`) + the shared validation /
 run-identity helpers live in `experiments/config.py` (`WandbConfig` / `ResumeProvenance` are
-core, in `param_decomp.configs`; the engine's `BuiltRun` bundle is core, in
-`param_decomp.built_run`); the LM schema + LM build (`LMExperimentConfig`, `LMTargetConfig`,
+core, in `param_decomp.core.configs`; the engine's `BuiltRun` bundle is core, in
+`param_decomp.core.built_run`); the LM schema + LM build (`LMExperimentConfig`, `LMTargetConfig`,
 `LMDataConfig`, the `target.spec` union, the authored chunkwise CI config
 (`ChunkwiseTransformerCiConfig` + its `attention`/`ffn` unions and `ChunkInputTap`) AND the
 tiled site specs + their resolution (`GluTransformerCSpec`/`SimpleMlpCSpec` over
@@ -67,9 +67,9 @@ tiled site specs + their resolution (`GluTransformerCSpec`/`SimpleMlpCSpec` over
 `resolve_site_tree` → the block-structured `SiteTree` the chunkwise CI resolver consumes) —
 target-anatomy vocabulary, so it lives in the domain that IS transformers —
 `build_from_schema` / `load_config`) in `experiments/lm/config.py`; the toy schemas in
-`experiments/{tms,resid_mlp}/config.py`. Core (`param_decomp.configs`) carries no authored
+`experiments/{tms,resid_mlp}/config.py`. Core (`param_decomp.core.configs`) carries no authored
 `decomposition.ci` config and no tiled site spec — only the resolved CI-fn arches
-(`param_decomp.ci_fn`) and the family grammar (`param_decomp.family`).
+(`param_decomp.core.ci_fn`) and the family grammar (`param_decomp.core.family`).
 
 ```
 experiments/
@@ -123,7 +123,7 @@ a Qwen3-tokenized prestaged dataset (`prestage_tokenized` with
 
 The JAX prediction tensor is always the final logits (there is no `output_extract` —
 it was a torch-era field, stripped on load for back-compat). The `model_class` strings
-are NOT imported by the JAX trainer — `param_decomp.built_run` only asserts the class-name
+are NOT imported by the JAX trainer — `param_decomp.core.built_run` only asserts the class-name
 suffix and routes to its own vendored JAX arch (`pretrained` LlamaSimpleMLP -> the
 pretrain-cache loader, `hf_weights_in_vendored` Llama -> `vendored_jax`). The dotted
 `model_class` is a stable identifier only, never imported.
@@ -135,7 +135,7 @@ pile `LlamaSimpleMLP` decompositions), the production target.
 ## `runtime.launch_env` (rank env / XLA flags)
 
 The SLURM rank env (XLA flags, NCCL/host-memory knobs, `PD_*` profiling toggles) is
-config-driven via `runtime.launch_env` (`param_decomp.configs.LaunchEnv`), so `config.yaml`
+config-driven via `runtime.launch_env` (`param_decomp.core.configs.LaunchEnv`), so `config.yaml`
 fully captures the environment a run executed with — A/B a flag in the YAML, not in
 `launch.py`. `launch.py::_render_rank_env` renders `LaunchEnv.as_env()` into the exported
 bash block; `LD_LIBRARY_PATH` is computed at submit time (machine-specific) and stays in the

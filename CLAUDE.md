@@ -61,7 +61,7 @@ lab is composition / IO / CLI / experiment assembly**:
   `RuntimeConfig` / `Cadence` / loss + eval-metric configs / routing / wandb
   shaping), the built-run bundle (`built_run.py`: `BuiltRun` / `DataConfig` /
   `EvalConfig` / `RunInstance` / `TargetSites`), the
-  `param_decomp.log` logger, the in-house target-LM pretrainer (`pretrain/`), and the
+  `param_decomp.core.log` logger, the in-house target-LM pretrainer (`pretrain/`), and the
   bit-parity vendored JAX archs (`vendored_jax/`). Carries jax + pydantic as deps. NO
   CLI entrypoints, NO `main()`, NO YAML/experiment reading — the engine takes built
   objects. The repo root IS the uv workspace root.
@@ -85,7 +85,7 @@ lab is composition / IO / CLI / experiment assembly**:
 `make install-dev` syncs both editably via the uv workspace in the root `pyproject.toml`
 into the one `.venv`. The root `pyproject.toml` declares NO core console scripts — the
 trainers run as modules (`python -m param_decomp_lab.experiments.lm.run` /
-`python -m pretrain.train`), not as `pd-*` scripts; the launcher and post-pipeline `pd-*`
+`python -m param_decomp.pretrain.train`), not as `pd-*` scripts; the launcher and post-pipeline `pd-*`
 scripts live in `param_decomp_lab/pyproject.toml`. (Slow/plot eval is in-loop only — there
 is no `pd-slow-eval` CLI.)
 
@@ -130,22 +130,22 @@ Alongside the trainer, `param_decomp/` exposes a thin substrate the **consumers*
 defined — no package-level re-exports, `__init__.py` files are bare:
 
 ```python
-from param_decomp.configs import Cadence, LossMetricConfig, PDConfig, RuntimeConfig
-from param_decomp.log import logger
+from param_decomp.core.configs import Cadence, LossMetricConfig, PDConfig, RuntimeConfig
+from param_decomp.core.log import logger
 from param_decomp_lab.experiments.lm.load_run import open_jax_run, run_metadata
 ```
 
 - `PDConfig` — algorithm config: seed, CI fn, loss metrics, optimizers, decomposition
   targets. The torch-free pydantic schema now lives in core
-  (`param_decomp.configs`, alongside `base_config` / `schedule`); the engine reads the
-  derived runtime `ExperimentConfig` (`param_decomp.built_run`). (The eval-metric *config*
-  classes likewise live in `param_decomp.configs`; only their torch `Metric` *impls* were
+  (`param_decomp.core.configs`, alongside `base_config` / `schedule`); the engine reads the
+  derived runtime `ExperimentConfig` (`param_decomp.core.built_run`). (The eval-metric *config*
+  classes likewise live in `param_decomp.core.configs`; only their torch `Metric` *impls* were
   dropped.)
 - `RuntimeConfig` — compute substrate: `dp`, `remat_recon_forwards` / `remat_ci_fn`, and
   `launch_env` (the XLA-flag / env-var / `PD_*`-profiling surface the SLURM launcher exports
   into each rank — single source of truth, so `config.yaml` captures the run's environment).
   Perturbs numerics without changing the algorithm.
-- `param_decomp.log` — the logger every consumer uses (folded into the core trainer
+- `param_decomp.core.log` — the logger every consumer uses (folded into the core trainer
   package).
 - `param_decomp_lab.experiments.lm.load_run.{open_jax_run, run_metadata}` — the JAX
   consumer entry (lab-side, since it builds the LM target): a run opened for a forward pass
@@ -264,7 +264,7 @@ via `pd-lm`. Slow/plot eval is in-loop only (no CLI).
 | Command | Entry point | Purpose |
 |---|---|---|
 | `python -m param_decomp_lab.experiments.lm.run` | `param_decomp_lab/experiments/lm/run.py` | The LM decomposition composition root (reads YAML, builds the target, calls the core engine; run inside a node workspace) |
-| `python -m pretrain.train` | `pretrain/train.py` | The core in-house target-LM pretrainer |
+| `python -m param_decomp.pretrain.train` | `pretrain/train.py` | The core in-house target-LM pretrainer |
 | `pd-lm` | `experiments/lm/launch.py` | Launch a decomposition trainer run; config-driven via `runtime.dp` (`dp=N` → snapshot + pinned launch config + sbatch across `N//8` nodes, per-node job-side venv; `dp=null` → inline) |
 | `pd-pretrain` | `experiments/lm/pretrain/launch.py` | Launch a pretrainer run; config-driven via `dp` (`dp=N` → sbatch; `dp=null` → inline) |
 | `pd-tms` / `pd-resid-mlp` | `experiments/{tms,resid_mlp}/run.py` | The CPU toy decomposition CLIs |

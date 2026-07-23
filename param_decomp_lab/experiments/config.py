@@ -14,10 +14,10 @@ from typing import Annotated, Literal, Self
 
 from pydantic import Field, PositiveInt, model_validator
 
-from param_decomp.base_config import BaseConfig
-from param_decomp.built_run import RunInstance
-from param_decomp.ci_fn import CIFnArch, GlobalMLPCIArch, MLPCIArch
-from param_decomp.configs import (
+from param_decomp.core.base_config import BaseConfig
+from param_decomp.core.built_run import RunInstance
+from param_decomp.core.ci_fn import CIFnArch, GlobalMLPCIArch, MLPCIArch
+from param_decomp.core.configs import (
     AdamWOptimizerConfig,
     AnyEvalMetricConfig,
     Cadence,
@@ -28,7 +28,7 @@ from param_decomp.configs import (
     RuntimeConfig,
     WandbConfig,
 )
-from param_decomp.schedule import ScheduleConfig
+from param_decomp.core.schedule import ScheduleConfig
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 
 

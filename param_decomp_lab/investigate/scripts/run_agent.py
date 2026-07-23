@@ -23,7 +23,7 @@ from typing import Any
 import fire
 import requests
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 from param_decomp_lab.investigate.agent_prompt import get_agent_prompt
 from param_decomp_lab.investigate.schemas import InvestigationEvent
 from param_decomp_lab.investigate.scripts.run_slurm import get_investigation_output_dir

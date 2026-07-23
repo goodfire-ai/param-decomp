@@ -33,23 +33,23 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Int
 
-from param_decomp import placement
-from param_decomp.built_run import BuiltRun
-from param_decomp.checkpoint import make_checkpoint_manager, restore_decomposition_to_host
-from param_decomp.ci_fn import ChunkwiseTransformerCIFn
-from param_decomp.components import ComponentStacks
-from param_decomp.model import DecomposedModel
-from param_decomp.run_state import init_decomposition
-from param_decomp.sharding import hsdp_mesh, place_target, place_via_shardings
-from param_decomp.train import COMPUTE_DT, Decomposition, cast_floating
+from param_decomp.core import placement
+from param_decomp.core.built_run import BuiltRun
+from param_decomp.core.checkpoint import make_checkpoint_manager, restore_decomposition_to_host
+from param_decomp.core.ci_fn import ChunkwiseTransformerCIFn
+from param_decomp.core.components import ComponentStacks
+from param_decomp.core.model import DecomposedModel
+from param_decomp.core.run_state import init_decomposition
+from param_decomp.core.sharding import hsdp_mesh, place_target, place_via_shardings
+from param_decomp.core.train import COMPUTE_DT, Decomposition, cast_floating
+from param_decomp.targets import llama_simple_mlp
+from param_decomp.targets.glu_transformer import glu_site_specs
 from param_decomp_lab.experiments.lm.config import (
     LlamaSimpleMLPTargetConfig,
     TargetConfig,
     hf_model_family,
     load_run_dir_config,
 )
-from param_decomp_targets import llama_simple_mlp
-from param_decomp_targets.glu_transformer import glu_site_specs
 
 
 @dataclass(frozen=True)
@@ -103,7 +103,7 @@ def _u_norms(
     components: ComponentStacks, site_names: tuple[str, ...]
 ) -> dict[str, Float[Array, " C"]]:
     """Per-component output-direction magnitude ‖U_c‖ — the harvest `component_activation`
-    scale (torch `harvest_fn/param_decomp.py`: `component.U.norm(dim=1)`)."""
+    scale (torch `harvest_fn/param_decomp.core.py`: `component.U.norm(dim=1)`)."""
     return {
         site: jnp.linalg.norm(components.site(site)[1].astype(jnp.float32), axis=1)
         for site in site_names

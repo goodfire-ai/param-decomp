@@ -36,10 +36,10 @@ TMS and ResidualMLP now live only as JAX targets in `param_decomp/`
 (`tms.py`, `resid_mlp.py`); the torch experiment dirs were deleted.
 
 Training is the JAX single-pool trainer: the generic engine
-(`param_decomp.run.run_decomposition_training`, a pure library) driven by the lab-side
+(`param_decomp.core.run.run_decomposition_training`, a pure library) driven by the lab-side
 composition root (`python -m param_decomp_lab.experiments.lm.run`), launched via `pd-lm`. A
 run is one self-contained YAML (the `param_decomp_lab.experiments.config.ExperimentConfig`
-schema over the core `param_decomp.configs` pieces). The torch trainer (`optimize()`, the
+schema over the core `param_decomp.core.configs` pieces). The torch trainer (`optimize()`, the
 torch `Metric` impls, `RunSink`) was retired and is preserved at git tag `torch-oracle`. See
 `param_decomp/CLAUDE.md` and `SPEC.md` for the trainer.
 
@@ -47,7 +47,7 @@ torch `Metric` impls, `RunSink`) was retired and is preserved at git tag `torch-
 
 Training losses are configured in `pd.loss_metrics` as a list of `{type: "<ClassName>",
 ...}` entries; eval metrics in `eval.metrics`. Both are validated by the torch-free pydantic
-schema in core (`param_decomp.configs`) and computed by the JAX trainer
+schema in core (`param_decomp.core.configs`) and computed by the JAX trainer
 (`param_decomp/losses.py`, `slow_eval.py`).
 
 ## Packaging

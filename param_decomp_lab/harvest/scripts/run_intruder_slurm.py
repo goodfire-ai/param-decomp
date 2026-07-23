@@ -1,6 +1,6 @@
 """SLURM submission for intruder eval jobs."""
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 from param_decomp_lab.harvest.config import IntruderSlurmConfig
 from param_decomp_lab.harvest.scripts.run_intruder import get_command
 from param_decomp_lab.infra.slurm import (

@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 from jaxtyping import Float, Int
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 
 
 @dataclass

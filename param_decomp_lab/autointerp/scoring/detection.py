@@ -11,7 +11,7 @@ import random
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 from param_decomp_lab.autointerp.config import DetectionEvalConfig
 from param_decomp_lab.autointerp.db import InterpDB
 from param_decomp_lab.autointerp.llm_api import LLMError, LLMJob, LLMResult, map_llm_calls

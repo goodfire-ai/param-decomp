@@ -18,7 +18,7 @@ from typing import Protocol
 
 import numpy as np
 
-from param_decomp.arithmetic_eval import ArithmeticGrid
+from param_decomp.core.arithmetic_eval import ArithmeticGrid
 
 # Operation -> (display symbol, result fn). Only addition is exercised today; subtraction
 # (negative results) and multiplication tokenize differently and must re-clear the

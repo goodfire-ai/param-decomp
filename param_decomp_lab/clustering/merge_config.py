@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import Field, PositiveInt
 
-from param_decomp.base_config import BaseConfig
+from param_decomp.core.base_config import BaseConfig
 from param_decomp_lab.clustering.math.merge_pair_samplers import (
     MERGE_PAIR_SAMPLERS,
     MergePairSampler,

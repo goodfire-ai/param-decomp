@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from param_decomp.built_run import LAUNCH_CONFIG_FILENAME
+from param_decomp.core.built_run import LAUNCH_CONFIG_FILENAME
 from param_decomp_lab.adapters import pd
 from param_decomp_lab.adapters.pd import is_jax_run
 

@@ -15,31 +15,31 @@ import jax.numpy as jnp
 import optax
 import pytest
 
-from param_decomp.ci_fn import (
+from param_decomp.core.ci_fn import (
     CI,
     GlobalMLPCIArch,
     MLPCIArch,
     init_global_mlp_ci_fn,
     init_layerwise_mlp_ci_fn,
 )
-from param_decomp.components import ComponentStacks, SiteC, SiteSpec, init_component_stacks
-from param_decomp.configs import (
+from param_decomp.core.components import ComponentStacks, SiteC, SiteSpec, init_component_stacks
+from param_decomp.core.configs import (
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     StochasticReconLayerwiseLossConfig,
     StochasticReconLossConfig,
 )
-from param_decomp.model import DecomposedModel
-from param_decomp.recon import build_loss_terms
-from param_decomp.schedule import ScheduleConfig
-from param_decomp.train import (
+from param_decomp.core.model import DecomposedModel
+from param_decomp.core.recon import build_loss_terms
+from param_decomp.core.schedule import ScheduleConfig
+from param_decomp.core.train import (
     Decomposition,
     TrainingItem,
     TrainState,
     make_faith_warmup_step,
     make_train_step,
 )
-from param_decomp_targets.resid_mlp import (
+from param_decomp.targets.resid_mlp import (
     ResidMLPConfig,
     ResidMLPTarget,
     abs_labels,

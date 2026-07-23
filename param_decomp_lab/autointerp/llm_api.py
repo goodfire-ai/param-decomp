@@ -11,7 +11,7 @@ from typing import Any
 
 from aiolimiter import AsyncLimiter
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 from param_decomp_lab.autointerp.providers import LLMProvider, RetryableAPIError
 
 _MAX_RETRIES = 8

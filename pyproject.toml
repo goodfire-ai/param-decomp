@@ -1,7 +1,7 @@
 [project]
 name = "param-decomp"
 version = "0.0.1"
-description = "The JAX VPD trainer (core) + target pretraining + vendored JAX archs"
+description = "Parameter decomposition: the generic VPD library (core engine, targets, pretraining, vendored archs)"
 requires-python = "==3.13.*"
 urls = { "Homepage" = "https://github.com/goodfire-ai/param-decomp" }
 license = { text = "MIT" }
@@ -70,22 +70,14 @@ include-package-data = false
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = [
-    "param_decomp",
-    "param_decomp.*",
-    "pretrain",
-    "pretrain.*",
-    "vendored_jax",
-    "vendored_jax.*",
-]
+include = ["param_decomp", "param_decomp.*"]
 namespaces = false
 
 [tool.uv.workspace]
-members = ["param_decomp_targets", "param_decomp_lab"]
+members = ["param_decomp_lab"]
 
 [tool.uv.sources]
 param-decomp = { workspace = true }
-param-decomp-targets = { workspace = true }
 
 [tool.ruff]
 line-length = 100
@@ -126,16 +118,16 @@ known-third-party = ["wandb"]
 # in a torch env, not this JAX-only one.
 # `vendored_jax` is a verbatim numeric mirror of the torch vendored Llama — kept out of
 # type-checking (its correctness contract is the parity tests, not types).
-include = ["param_decomp", "pretrain", "param_decomp_targets", "param_decomp_lab"]
+include = ["param_decomp", "param_decomp_lab"]
 exclude = [
     "**/wandb/**",
     "**/_scratch/**",
     "**/node_modules/**",
     "**/__pycache__",
     "nano_param_decomp",
-    "vendored_jax",
-    "param_decomp_targets/tests/qwen3_hf_parity/gen_hf_fixtures.py",  # torch-env script
-    "param_decomp_targets/tests/stacked_parity/gen_stacked_fixtures.py",  # base-branch-only script (pre-restructure API)
+    "param_decomp/vendored_jax",
+    "param_decomp/targets/tests/qwen3_hf_parity/gen_hf_fixtures.py",  # torch-env script
+    "param_decomp/targets/tests/stacked_parity/gen_stacked_fixtures.py",  # base-branch-only script (pre-restructure API)
 ]
 stubPath = "typings" # Having type stubs for transformers shaves 10 seconds off basedpyright calls
 

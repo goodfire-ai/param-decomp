@@ -10,7 +10,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, PositiveInt
 
-from param_decomp.base_config import BaseConfig
+from param_decomp.core.base_config import BaseConfig
 from param_decomp_lab.infra.settings import DEFAULT_PARTITION_NAME
 
 ReasoningEffort = Literal["none", "low", "medium", "high"]

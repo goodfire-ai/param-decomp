@@ -55,7 +55,7 @@ check-pre-commit:
 # per-target parity/golden suites (incl. the LM equivalence goldens);
 # `param_decomp_lab/{tests,experiments}/` the lab suites (the toy TMS/ResidMLP experiment
 # tests live beside their composition roots under experiments/).
-TEST_PATHS = param_decomp/tests/ param_decomp_targets/tests/ param_decomp_lab/tests/ param_decomp_lab/experiments/
+TEST_PATHS = param_decomp/core/tests/ param_decomp/targets/tests/ param_decomp_lab/tests/ param_decomp_lab/experiments/
 
 .PHONY: test
 test:
@@ -75,7 +75,7 @@ test-all:
 # JAX compile cache and every later run repeats the compile cost. The llama goldens
 # split off because they dominate one xdist worker for ~8 min and co-schedule the
 # heaviest memory peaks next to the recon end-to-end tests on a 16GB runner.
-LLAMA_GOLDEN_TEST_PATHS = param_decomp_targets/tests/test_llama8b.py param_decomp_targets/tests/test_llama_simple_mlp.py
+LLAMA_GOLDEN_TEST_PATHS = param_decomp/targets/tests/test_llama8b.py param_decomp/targets/tests/test_llama_simple_mlp.py
 
 .PHONY: test-ci-llama-goldens
 test-ci-llama-goldens:
@@ -83,7 +83,7 @@ test-ci-llama-goldens:
 
 .PHONY: test-ci-core
 test-ci-core:
-	uv run pytest param_decomp/tests/ param_decomp_targets/tests/ $(addprefix --ignore=,$(LLAMA_GOLDEN_TEST_PATHS)) --runslow --durations 10 --numprocesses $(NUM_PROCESSES) --dist worksteal
+	uv run pytest param_decomp/core/tests/ param_decomp/targets/tests/ $(addprefix --ignore=,$(LLAMA_GOLDEN_TEST_PATHS)) --runslow --durations 10 --numprocesses $(NUM_PROCESSES) --dist worksteal
 
 .PHONY: test-ci-lab-multidevice
 test-ci-lab-multidevice:

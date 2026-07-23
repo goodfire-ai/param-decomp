@@ -10,7 +10,6 @@ resolution-markers = [
 members = [
     "param-decomp",
     "param-decomp-lab",
-    "param-decomp-targets",
 ]
 
 [[package]]
@@ -1869,7 +1868,6 @@ dependencies = [
     { name = "openrouter" },
     { name = "orjson" },
     { name = "param-decomp" },
-    { name = "param-decomp-targets" },
     { name = "python-dotenv" },
     { name = "requests" },
     { name = "scipy" },
@@ -1895,7 +1893,6 @@ requires-dist = [
     { name = "openrouter", specifier = ">=0.1.1" },
     { name = "orjson" },
     { name = "param-decomp", editable = "." },
-    { name = "param-decomp-targets", editable = "param_decomp_targets" },
     { name = "python-dotenv" },
     { name = "requests" },
     { name = "scipy", specifier = ">=1.14.1" },
@@ -1907,33 +1904,6 @@ requires-dist = [
     { name = "wandb", specifier = ">=0.20.1" },
     { name = "wandb-workspaces", specifier = "==0.1.12" },
     { name = "zstandard" },
-]
-
-[[package]]
-name = "param-decomp-targets"
-version = "0.0.1"
-source = { editable = "param_decomp_targets" }
-dependencies = [
-    { name = "equinox" },
-    { name = "jax" },
-    { name = "jaxtyping" },
-    { name = "numpy" },
-    { name = "optax" },
-    { name = "param-decomp" },
-    { name = "pyyaml" },
-    { name = "safetensors" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "equinox" },
-    { name = "jax" },
-    { name = "jaxtyping" },
-    { name = "numpy" },
-    { name = "optax" },
-    { name = "param-decomp", editable = "." },
-    { name = "pyyaml" },
-    { name = "safetensors" },
 ]
 
 [[package]]

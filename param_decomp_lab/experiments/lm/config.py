@@ -2,7 +2,7 @@
 tree) PLUS the LM YAML→`BuiltRun` conversion.
 
 This module reads the canonical `LMExperimentConfig` schema directly and builds the engine's
-`BuiltRun` bundle (`param_decomp.built_run`) — the pydantic `pd` / `cadence` / `runtime`
+`BuiltRun` bundle (`param_decomp.core.built_run`) — the pydantic `pd` / `cadence` / `runtime`
 verbatim plus the resolved target / data / CI-fn arch / eval — asserting loudly on anything
 the JAX trainer doesn't implement. The composition entry (`run.py`) calls `load_config` /
 `build_from_schema`; consumers that read a finished run dir call `load_run_dir_config`.
@@ -21,9 +21,9 @@ from typing import Annotated, Any, Literal, Self
 import yaml
 from pydantic import Discriminator, Field, NonNegativeInt, PositiveInt, model_validator
 
-from param_decomp import placement
-from param_decomp.base_config import BaseConfig
-from param_decomp.built_run import (
+from param_decomp.core import placement
+from param_decomp.core.base_config import BaseConfig
+from param_decomp.core.built_run import (
     LAUNCH_CONFIG_FILENAME,
     ArithmeticEvalConfig,
     AttnPatternsEvalConfig,
@@ -33,14 +33,14 @@ from param_decomp.built_run import (
     EvalPGDConfig,
     WeightsDtype,
 )
-from param_decomp.ci_fn import (
+from param_decomp.core.ci_fn import (
     Chunk,
     ChunkwiseTransformerCIArch,
     GQACIAttention,
     MHACIAttention,
 )
-from param_decomp.components import SiteC, SiteSpec
-from param_decomp.configs import (
+from param_decomp.core.components import SiteC, SiteSpec
+from param_decomp.core.configs import (
     ArithmeticCIGridConfig,
     CEandKLLossesConfig,
     CI_L0Config,
@@ -50,18 +50,18 @@ from param_decomp.configs import (
     PGDReconLossConfig,
     StochasticAttnPatternsReconLossConfig,
 )
-from param_decomp.family import ArchFamily
-from param_decomp.recon import build_loss_terms
-from param_decomp.sharding import hsdp_abstract_mesh
+from param_decomp.core.family import ArchFamily
+from param_decomp.core.recon import build_loss_terms
+from param_decomp.core.sharding import hsdp_abstract_mesh
+from param_decomp.targets import glu_transformer, llama8b, llama_simple_mlp, qwen3_8b
+from param_decomp.targets.glu_transformer import GluMatrix
+from param_decomp.targets.llama_simple_mlp import SimpleMlpMatrix
+from param_decomp.targets.transformer_taps import TransformerTapGrammar, resid_tap_key
 from param_decomp_lab.experiments.config import (
     ExperimentConfig,
     assert_canonical_algorithm_config,
     run_instance,
 )
-from param_decomp_targets import glu_transformer, llama8b, llama_simple_mlp, qwen3_8b
-from param_decomp_targets.glu_transformer import GluMatrix
-from param_decomp_targets.llama_simple_mlp import SimpleMlpMatrix
-from param_decomp_targets.transformer_taps import TransformerTapGrammar, resid_tap_key
 
 
 class HFTarget(BaseConfig):
@@ -261,7 +261,7 @@ def resolve_site_tree(
 ChunkInputTap = Literal["first_block_resid", "all_block_resids", "all_site_inputs"]
 """Which activations each chunkwise-CI chunk reads. Extend here + add a match arm in
 `_chunk_input_taps` below; the concrete tap keys and their widths are the family tap
-grammar's (`param_decomp_targets.transformer_taps`) — opaque strings everywhere generic."""
+grammar's (`param_decomp.targets.transformer_taps`) — opaque strings everywhere generic."""
 
 
 class MHACiAttentionConfig(BaseConfig):
@@ -437,7 +437,7 @@ class TargetConfig:
 
 @dataclass(frozen=True)
 class LlamaSimpleMLPTargetConfig:
-    """The `LlamaSimpleMLP` lab-pretrained target (`param_decomp.llama_simple_mlp`);
+    """The `LlamaSimpleMLP` lab-pretrained target (`param_decomp.core.llama_simple_mlp`);
     weights from the pretrain cache resolved from `pretrain_run_path`."""
 
     pretrain_run_path: str
@@ -452,7 +452,7 @@ class LlamaSimpleMLPTargetConfig:
 
 AnyLMTargetConfig = TargetConfig | LlamaSimpleMLPTargetConfig
 """The LM target configs the LM composition builds. Non-LM targets (the toys) live in the
-lab and satisfy `param_decomp.built_run.TargetSites` — the core `BuiltRun.target` is typed by
+lab and satisfy `param_decomp.core.built_run.TargetSites` — the core `BuiltRun.target` is typed by
 that protocol, never by a closed union, so it accepts a lab target config too."""
 
 

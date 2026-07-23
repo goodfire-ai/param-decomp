@@ -1,6 +1,6 @@
 """TMS (Toy Model of Superposition) experiment config schema — torch-free.
 
-The JAX trainer reads this directly (`param_decomp.built_run`), the same way it reads
+The JAX trainer reads this directly (`param_decomp.core.built_run`), the same way it reads
 `LMExperimentConfig`. Unlike the LM target there is no HuggingFace/pretrain-cache weight
 source: the tiny TMS target is pretrained from scratch, deterministically from
 `target.pretrain` (the original Anthropic `mean((|x| - relu_out)^2)` objective on the
@@ -11,7 +11,7 @@ from typing import Literal
 
 from pydantic import NonNegativeInt, PositiveInt
 
-from param_decomp.base_config import BaseConfig, Probability
+from param_decomp.core.base_config import BaseConfig, Probability
 from param_decomp_lab.experiments.config import ExperimentConfig, ToyDecompositionConfig
 
 TMSDataGenerationType = Literal[

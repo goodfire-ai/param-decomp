@@ -26,7 +26,7 @@ from datasets import Dataset, Sequence, Value, load_dataset
 from huggingface_hub import HfApi, hf_hub_download
 from transformers import AutoTokenizer
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 from param_decomp_lab.experiments.lm.data import tokenize_and_concatenate
 
 

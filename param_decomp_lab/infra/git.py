@@ -4,7 +4,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 from param_decomp_lab.infra.settings import REPO_ROOT
 
 

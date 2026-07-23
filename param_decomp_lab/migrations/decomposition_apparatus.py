@@ -170,10 +170,10 @@ def _validate_lm(path: Path) -> str:
     """Parse under the new schema; for HF/vendored llama8b specs also prove the resolved
     site list is byte-identical to the old canonical expansion of the pre-migration spec
     (pretrained specs need the pretrain cache to resolve, so they get parse-only)."""
-    from param_decomp.components import SiteC
+    from param_decomp.core.components import SiteC
+    from param_decomp.targets import glu_transformer, llama8b
+    from param_decomp.targets.glu_transformer import canonical_site_cs
     from param_decomp_lab.experiments.lm.config import LMExperimentConfig, resolve_site_tree
-    from param_decomp_targets import glu_transformer, llama8b
-    from param_decomp_targets.glu_transformer import canonical_site_cs
 
     cfg = LMExperimentConfig.model_validate(yaml.safe_load(path.read_text()))
     if cfg.decomposition.sites.kind != "glu_transformer":

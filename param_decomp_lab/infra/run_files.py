@@ -12,7 +12,7 @@ from typing import Final, Literal, NamedTuple
 import wandb
 from wandb.apis.public import Run as WandbRun
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 from param_decomp_lab.infra.git import (
     create_git_snapshot,
     repo_current_branch,

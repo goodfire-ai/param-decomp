@@ -9,7 +9,7 @@ import wandb.errors
 from dotenv import load_dotenv
 from wandb.apis.public import File, Run
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 from param_decomp_lab.infra.settings import REPO_ROOT
 
 # Regex patterns for parsing W&B run references. PD run IDs are formatted as

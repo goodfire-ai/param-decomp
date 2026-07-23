@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 from param_decomp_lab.infra.git import create_git_snapshot
 from param_decomp_lab.infra.settings import DEFAULT_PARTITION_NAME, PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.infra.slurm import SlurmConfig, generate_script, submit_slurm_job

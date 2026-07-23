@@ -18,17 +18,17 @@ the submit wrapper is lab-side. One venv covers both:
     `LlamaSimpleMLP`). Weights are stored in torch `nn.Linear` orientation `(d_out, d_in)`
     and `state_dict()` emits the EXACT keys the decomposition loader reads.
   - `config.py` — `PretrainConfig` (the self-contained run yaml schema).
-  - `train.py` — `python -m pretrain.train <config.yaml>`: the composition root + only I/O layer. fp32
+  - `train.py` — `python -m param_decomp.pretrain.train <config.yaml>`: the composition root + only I/O layer. fp32
     masters, AdamW (decay on 2D weights only), cosine+warmup, grad clip, orbax sharded
-    checkpoints, SIGTERM→save→requeue→resume. Reuses `param_decomp.data` (offline
-    pre-tokenized parquet, never streamed) + `param_decomp.sharding`.
+    checkpoints, SIGTERM→save→requeue→resume. Reuses `param_decomp.core.data` (offline
+    pre-tokenized parquet, never streamed) + `param_decomp.core.sharding`.
   - `cache.py` — writes the decomposition trainer's `pretrain_cache/<project>-<run_id>/`
     layout (safetensors + `model_config.yaml`) at every save.
   - `configs/` — the run yamls (`pile_llama_simple_mlp-*`, `gpt2_simple-2L`,
     `pile_llama_simple-4L-768`, `*_SMOKE`).
 - **`param_decomp_lab/experiments/lm/pretrain/`** (here):
   - `launch.py` — `pd-pretrain`: snapshot + immutable shared-FS workspace + sbatch
-    `python -m pretrain.train` (or `--local` to run in the current shell). Slim mirror of `pd-lm`.
+    `python -m param_decomp.pretrain.train` (or `--local` to run in the current shell). Slim mirror of `pd-lm`.
   - `run_info.py` — `find_pretrain_cache(project, run_id)`: the torch-free read-side index
     into the cache (the torch `PretrainRunInfo`'s wandb-download path is gone — the cache
     is written directly to shared FS).
@@ -39,7 +39,7 @@ A freshly-pretrained target is decomposable with NO conversion. `pretrain.train`
 `PARAM_DECOMP_OUT_DIR/pretrain_cache/<project>-<run_id>/model_step_<N>.safetensors` keyed
 `h.{i}.attn.{q,k,v,o}_proj.weight`, `h.{i}.mlp.{c_fc,down_proj}.weight`,
 `h.{i}.rms_{1,2}.weight`, `wte.weight`, `ln_f.weight` (NO `lm_head.weight` — tied), every
-weight `(d_out, d_in)` — exactly what `param_decomp_targets.llama_simple_mlp` reads. A
+weight `(d_out, d_in)` — exactly what `param_decomp.targets.llama_simple_mlp` reads. A
 decomposition config points at it via `target.spec`:
 
 ```yaml
@@ -57,7 +57,7 @@ is bit-identical to the loader's `clean_suffix_logits` round-trip — pinned by
 ## Data
 
 Offline pre-tokenized parquet ONLY (the prestage tool's output;
-`param_decomp.data.ShardServer`). Shards are `block_size + 1` wide; the trainer serves
+`param_decomp.core.data.ShardServer`). Shards are `block_size + 1` wide; the trainer serves
 the full row and splits `x = tokens[:, :block]`, `y = tokens[:, 1:]` inside the step. The
 ported configs point at the staged `datasets/pile_neox_tok_512` (the torch configs'
 SimpleStories/streaming data is not staged — runtime tokenization is deliberately

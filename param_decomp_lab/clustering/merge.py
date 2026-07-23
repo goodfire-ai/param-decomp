@@ -7,7 +7,7 @@ import numpy as np
 from jaxtyping import Float
 from tqdm import tqdm
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 from param_decomp_lab.clustering.compute_costs import (
     compute_mdl_cost,
     compute_merge_costs,

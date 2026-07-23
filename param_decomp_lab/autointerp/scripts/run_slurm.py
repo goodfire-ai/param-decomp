@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 from param_decomp_lab.autointerp.config import AutointerpSlurmConfig
 from param_decomp_lab.autointerp.scoring.scripts import run_label_scoring
 from param_decomp_lab.autointerp.scripts import run_interpret

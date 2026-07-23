@@ -6,7 +6,7 @@ vendored target.
         # re-running resumes in place
 
 This is the LM I/O layer over the generic core engine
-(`param_decomp.run.run_decomposition_training`): read the run YAML, build the target, feed
+(`param_decomp.core.run.run_decomposition_training`): read the run YAML, build the target, feed
 the per-step parquet token batch (`sample_batch`; the model embeds it), build the CEandKL /
 CI-L0 / PGD / attn-patterns / slow `eval_fn`, then
 call the engine. Process setup (`init_distributed`, the SIGTERM flag, the persistent XLA
@@ -39,8 +39,8 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import PRNGKeyArray
 
-from param_decomp import placement
-from param_decomp.arithmetic_eval import (
+from param_decomp.core import placement
+from param_decomp.core.arithmetic_eval import (
     ArithmeticGrid,
     ArithmeticGridStep,
     ComponentActivationModel,
@@ -48,30 +48,30 @@ from param_decomp.arithmetic_eval import (
     make_arithmetic_grid_step,
     n_alive_scalars,
 )
-from param_decomp.attn_patterns_eval import (
+from param_decomp.core.attn_patterns_eval import (
     accumulate_attn_patterns,
     attn_patterns_log_entries,
     make_ci_attn_patterns_step,
     make_stochastic_attn_patterns_step,
 )
-from param_decomp.built_run import (
+from param_decomp.core.built_run import (
     LAUNCH_CONFIG_FILENAME,
     BuiltRun,
     DataConfig,
     EvalConfig,
     TargetSites,
 )
-from param_decomp.configs import ResumeProvenance
-from param_decomp.data import BatchSchedule, ShardServer, scan_shards
-from param_decomp.eval import make_eval_step
-from param_decomp.hf_http import configure_hf_http_retries
-from param_decomp.hidden_acts_eval import (
+from param_decomp.core.configs import ResumeProvenance
+from param_decomp.core.data import BatchSchedule, ShardServer, scan_shards
+from param_decomp.core.eval import make_eval_step
+from param_decomp.core.hf_http import configure_hf_http_retries
+from param_decomp.core.hidden_acts_eval import (
     make_ci_hidden_acts_step,
     make_stochastic_hidden_acts_step,
 )
-from param_decomp.log import setup_logger
-from param_decomp.model import DecomposedModel, Positioned
-from param_decomp.run import (
+from param_decomp.core.log import setup_logger
+from param_decomp.core.model import DecomposedModel, Positioned
+from param_decomp.core.run import (
     BackgroundRenderer,
     install_sigterm_flag,
     render_and_log_arithmetic,
@@ -79,8 +79,8 @@ from param_decomp.run import (
     run_decomposition_training,
     slow_eval_due,
 )
-from param_decomp.sharding import hsdp_mesh, init_distributed
-from param_decomp.slow_eval import (
+from param_decomp.core.sharding import hsdp_mesh, init_distributed
+from param_decomp.core.slow_eval import (
     IDENTITY_CI_ERROR_TOLERANCE,
     PositionCI,
     accumulate_position_ci,
@@ -93,7 +93,8 @@ from param_decomp.slow_eval import (
     resolve_permutation_metrics,
     stochastic_hidden_acts_n_mask_samples,
 )
-from param_decomp.train import TrainState
+from param_decomp.core.train import TrainState
+from param_decomp.targets.glu_transformer import hf_snapshot_dir
 from param_decomp_lab.experiments.lm.arithmetic_probe import build_arithmetic_probe
 from param_decomp_lab.experiments.lm.config import (
     TargetConfig,
@@ -101,7 +102,6 @@ from param_decomp_lab.experiments.lm.config import (
     load_run_dir_config,
 )
 from param_decomp_lab.experiments.lm.load_run import build_target
-from param_decomp_targets.glu_transformer import hf_snapshot_dir
 
 
 def _enable_persistent_compilation_cache(out_dir: Path) -> Path:

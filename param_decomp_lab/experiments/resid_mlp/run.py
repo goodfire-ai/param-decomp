@@ -1,12 +1,12 @@
 """`pd-resid-mlp`: run a ResidualMLP parameter decomposition on CPU.
 
 The SPD/APD residual-stream toy lives lab-side and calls the generic core engine
-(`param_decomp.run.run_decomposition_training`) as a library. The target pretrains from
+(`param_decomp.core.run.run_decomposition_training`) as a library. The target pretrains from
 scratch in-process (the `act_fn(coeffs·x) + x` read-off objective), then decomposes through
 the same engine the LM uses, validating via the ground-truth identity-CI metric.
 
 These toys train in seconds; `pd-resid-mlp` runs synchronously on CPU in the main venv
-(no SLURM / `param_decomp.run` / CUDA). It mints its own `p-<8hex>` run id.
+(no SLURM / `param_decomp.core.run` / CUDA). It mints its own `p-<8hex>` run id.
 """
 
 from pathlib import Path
@@ -21,16 +21,17 @@ from jax import random
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from param_decomp import placement
-from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, BuiltRun
-from param_decomp.components import SiteC
-from param_decomp.log import setup_logger
-from param_decomp.model import Positionless
-from param_decomp.recon import build_loss_terms
-from param_decomp.run import run_decomposition_training
-from param_decomp.sharding import hsdp_mesh
-from param_decomp.slow_eval import dense_ci_error
-from param_decomp.train import TrainState
+from param_decomp.core import placement
+from param_decomp.core.built_run import LAUNCH_CONFIG_FILENAME, BuiltRun
+from param_decomp.core.components import SiteC
+from param_decomp.core.log import setup_logger
+from param_decomp.core.model import Positionless
+from param_decomp.core.recon import build_loss_terms
+from param_decomp.core.run import run_decomposition_training
+from param_decomp.core.sharding import hsdp_mesh
+from param_decomp.core.slow_eval import dense_ci_error
+from param_decomp.core.train import TrainState
+from param_decomp.targets import resid_mlp
 from param_decomp_lab.experiments import toy_uv_eval
 from param_decomp_lab.experiments.config import (
     assert_canonical_algorithm_config,
@@ -39,7 +40,6 @@ from param_decomp_lab.experiments.config import (
 )
 from param_decomp_lab.experiments.resid_mlp.config import ResidMLPExperimentConfig
 from param_decomp_lab.infra.run_files import generate_run_id
-from param_decomp_targets import resid_mlp
 
 
 def build_resid_mlp_built_run(cfg: ResidMLPExperimentConfig, run_id: str) -> BuiltRun:

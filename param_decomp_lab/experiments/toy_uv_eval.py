@@ -23,8 +23,8 @@ from typing import Any, Literal
 
 import numpy as np
 
-from param_decomp.model import DecomposedModel
-from param_decomp.slow_eval import (
+from param_decomp.core.model import DecomposedModel
+from param_decomp.core.slow_eval import (
     PermutationMetricSpec,
     PositionCI,
     plot_permuted_ci_heatmaps,
@@ -41,7 +41,7 @@ def toy_uv_spec(model: DecomposedModel, raw_cfg: dict[str, Any]) -> PermutationM
     position-CI / identity metrics are ignored by the toy."""
     from pydantic import TypeAdapter
 
-    from param_decomp.configs import AnyEvalMetricConfig
+    from param_decomp.core.configs import AnyEvalMetricConfig
 
     raw_metrics = (raw_cfg.get("eval") or {}).get("metrics", [])
     adapter = TypeAdapter(AnyEvalMetricConfig)

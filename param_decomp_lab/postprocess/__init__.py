@@ -17,7 +17,7 @@ from pathlib import Path
 
 import yaml
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 from param_decomp_lab.autointerp.scripts.run_slurm import AutointerpSubmitResult, submit_autointerp
 from param_decomp_lab.harvest.scripts import run_intruder
 from param_decomp_lab.harvest.scripts.run_slurm import submit_harvest

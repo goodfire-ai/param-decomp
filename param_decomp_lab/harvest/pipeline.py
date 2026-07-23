@@ -4,7 +4,7 @@ from pathlib import Path
 
 import tqdm
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 from param_decomp_lab.harvest.accumulator import Harvester
 from param_decomp_lab.harvest.config import HarvestConfig
 from param_decomp_lab.harvest.repo import HarvestRepo

@@ -1,13 +1,13 @@
 """`pd-tms`: run a TMS (Toy Model of Superposition) parameter decomposition on CPU.
 
 The toy domains live lab-side and call the generic core engine
-(`param_decomp.run.run_decomposition_training`) as a library — the core itself carries
+(`param_decomp.core.run.run_decomposition_training`) as a library — the core itself carries
 zero toy-specific code. A TMS run pretrains its tiny target from scratch in-process (the
 Anthropic `mean((|x|-out)^2)` objective), then decomposes it through the same engine the
 LM uses, validating via the ground-truth identity-CI metric logged every train-log step.
 
 These toys train in seconds; `pd-tms` runs synchronously on CPU in the main venv (no
-SLURM / `param_decomp.run` / CUDA). It mints its own `p-<8hex>` run id (toys do not go through
+SLURM / `param_decomp.core.run` / CUDA). It mints its own `p-<8hex>` run id (toys do not go through
 `pd-lm`).
 """
 
@@ -22,15 +22,16 @@ from jax import random
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from param_decomp import placement
-from param_decomp.built_run import LAUNCH_CONFIG_FILENAME, BuiltRun
-from param_decomp.components import SiteC
-from param_decomp.log import setup_logger
-from param_decomp.model import Positionless
-from param_decomp.recon import build_loss_terms
-from param_decomp.run import run_decomposition_training
-from param_decomp.sharding import hsdp_mesh
-from param_decomp.train import TrainState
+from param_decomp.core import placement
+from param_decomp.core.built_run import LAUNCH_CONFIG_FILENAME, BuiltRun
+from param_decomp.core.components import SiteC
+from param_decomp.core.log import setup_logger
+from param_decomp.core.model import Positionless
+from param_decomp.core.recon import build_loss_terms
+from param_decomp.core.run import run_decomposition_training
+from param_decomp.core.sharding import hsdp_mesh
+from param_decomp.core.train import TrainState
+from param_decomp.targets import tms
 from param_decomp_lab.experiments import toy_uv_eval
 from param_decomp_lab.experiments.config import (
     assert_canonical_algorithm_config,
@@ -39,7 +40,6 @@ from param_decomp_lab.experiments.config import (
 )
 from param_decomp_lab.experiments.tms.config import TMSExperimentConfig
 from param_decomp_lab.infra.run_files import generate_run_id
-from param_decomp_targets import tms
 
 
 def build_tms_built_run(cfg: TMSExperimentConfig, run_id: str) -> BuiltRun:

@@ -8,7 +8,7 @@ from typing import Any
 
 import fire
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 from param_decomp_lab.harvest.config import HarvestConfig
 from param_decomp_lab.harvest.pipeline import merge_harvest
 from param_decomp_lab.harvest.schemas import get_harvest_subrun_dir

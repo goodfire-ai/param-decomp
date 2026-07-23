@@ -1,4 +1,4 @@
-"""Launch a JAX target-pretraining run (`python -m pretrain.train`) — `pd-pretrain`.
+"""Launch a JAX target-pretraining run (`python -m param_decomp.pretrain.train`) — `pd-pretrain`.
 
 The in-house target LMs (`gpt2_simple` / `llama_simple` / `llama_simple_mlp`) that the
 decomposition trainer then decomposes are pretrained by `pretrain.train`. CONFIG-DRIVEN, a
@@ -18,7 +18,7 @@ from pathlib import Path
 import fire
 import yaml
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 from param_decomp_lab.infra.git import create_git_snapshot
 from param_decomp_lab.infra.run_files import generate_run_id
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR, REPO_ROOT
@@ -97,7 +97,7 @@ def main(
     )
     rank_command = (
         f"source .venv/bin/activate\n{_RANK_ENV}\n"
-        f"exec python -m pretrain.train {shlex.quote(str(config_rel))}"
+        f"exec python -m param_decomp.pretrain.train {shlex.quote(str(config_rel))}"
     )
     command = f"srun {_SRUN_FLAGS} bash -c {shlex.quote(rank_command)}"
     script = generate_script(slurm_config, command, setup=f'cd "{workspace}"')

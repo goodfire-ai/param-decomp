@@ -82,7 +82,7 @@ Each strategy config type has a corresponding prompt implementation:
 - Uses OpenRouter, Anthropic, OpenAI, or Google AI (Gemini) with structured JSON outputs (`LLMConfig` in `param_decomp_lab.autointerp.config`; provider runtime in `providers.py`)
 - Maximum parallelism with exponential backoff on rate limits
 - Resume support: Skips already-completed components via `db.get_completed_keys()`
-- Progress logging via `param_decomp.log.logger`
+- Progress logging via `param_decomp.core.log.logger`
 - `interpret_component()` interprets a single component
 - `run_interpret()` orchestrates batch interpretation with resume support
 

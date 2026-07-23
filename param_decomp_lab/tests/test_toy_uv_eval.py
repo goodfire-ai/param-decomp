@@ -14,16 +14,16 @@ from typing import Any, Literal
 import jax
 import pytest
 
-from param_decomp.ci_fn import MLPCIArch, init_layerwise_mlp_ci_fn
-from param_decomp.components import SiteC, init_component_stacks
-from param_decomp_lab.experiments import toy_uv_eval
-from param_decomp_targets.tms import (
+from param_decomp.core.ci_fn import MLPCIArch, init_layerwise_mlp_ci_fn
+from param_decomp.core.components import SiteC, init_component_stacks
+from param_decomp.targets.tms import (
     TMSConfig,
     init_tms_target,
     single_feature_probe,
     site_specs,
     tms_decomposed_model,
 )
+from param_decomp_lab.experiments import toy_uv_eval
 
 
 def _toy_setup():

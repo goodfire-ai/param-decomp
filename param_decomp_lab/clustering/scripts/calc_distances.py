@@ -19,7 +19,7 @@ import shlex
 import numpy as np
 from matplotlib import pyplot as plt
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 from param_decomp_lab.clustering.math.merge_distances import compute_distances
 from param_decomp_lab.clustering.merge_history import MergeHistory, MergeHistoryEnsemble
 from param_decomp_lab.clustering.paths import clustering_ensemble_dir, clustering_run_dir

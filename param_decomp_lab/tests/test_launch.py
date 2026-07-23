@@ -1,5 +1,5 @@
 """The lab-side single-file config validator (`pd-lm`, torch venv). The runtime
-loader (`param_decomp.built_run`, jax venv) can't be imported here, so this exercises
+loader (`param_decomp.core.built_run`, jax venv) can't be imported here, so this exercises
 only the lab half: structural dispatch + the no-`run_id` precondition + stamping."""
 
 from pathlib import Path
@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from param_decomp.configs import LaunchEnv, ProfileConfig
+from param_decomp.core.configs import LaunchEnv, ProfileConfig
 from param_decomp_lab.experiments.lm.launch import (
     _rank_command,
     _render_rank_env,

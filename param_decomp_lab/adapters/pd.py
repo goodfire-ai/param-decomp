@@ -1,7 +1,7 @@
 from functools import cached_property
 from pathlib import Path
 
-from param_decomp.built_run import LAUNCH_CONFIG_FILENAME
+from param_decomp.core.built_run import LAUNCH_CONFIG_FILENAME
 from param_decomp_lab.autointerp.schemas import ModelMetadata
 from param_decomp_lab.experiments.lm.config import LMExperimentConfig
 from param_decomp_lab.experiments.lm.load_run import RunMetadata, run_metadata

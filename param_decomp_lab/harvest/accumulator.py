@@ -15,7 +15,7 @@ import tqdm
 from einops import einsum, rearrange, reduce, repeat
 from jaxtyping import Bool, Float, Int
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 from param_decomp_lab.harvest.reservoir import (
     WINDOW_PAD_SENTINEL,
     ActivationExamplesReservoir,

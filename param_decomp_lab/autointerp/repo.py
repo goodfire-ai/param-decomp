@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from param_decomp.log import logger
+from param_decomp.core.log import logger
 from param_decomp_lab.autointerp.db import DONE_MARKER, InterpDB
 from param_decomp_lab.autointerp.schemas import InterpretationResult, get_autointerp_dir
 

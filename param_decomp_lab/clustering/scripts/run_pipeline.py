@@ -27,8 +27,8 @@ from pathlib import Path
 
 from pydantic import Field, PositiveInt, model_validator
 
-from param_decomp.base_config import BaseConfig
-from param_decomp.log import logger
+from param_decomp.core.base_config import BaseConfig
+from param_decomp.core.log import logger
 from param_decomp_lab.clustering.harvest_config import HarvestConfig
 from param_decomp_lab.clustering.merge_config import MergeConfig
 from param_decomp_lab.clustering.paths import (

@@ -31,9 +31,9 @@ from pathlib import Path
 import fire
 import yaml
 
-from param_decomp.built_run import LAUNCH_CONFIG_FILENAME
-from param_decomp.configs import LaunchEnv
-from param_decomp.log import logger
+from param_decomp.core.built_run import LAUNCH_CONFIG_FILENAME
+from param_decomp.core.configs import LaunchEnv
+from param_decomp.core.log import logger
 from param_decomp_lab.experiments.lm.config import LMExperimentConfig, assert_placement_claims
 from param_decomp_lab.infra.git import create_git_snapshot, snapshot_source_repo
 from param_decomp_lab.infra.run_files import generate_run_id

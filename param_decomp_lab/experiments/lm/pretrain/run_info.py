@@ -2,7 +2,7 @@
 
 `pretrain.train` writes its weights to `PARAM_DECOMP_OUT_DIR/pretrain_cache/<project>-<run_id>/`
 (safetensors + `model_config.yaml`) — the layout the decomposition trainer's loader
-(`param_decomp.llama_simple_mlp.load_target_from_pretrain_cache`) reads, keyed by the
+(`param_decomp.core.llama_simple_mlp.load_target_from_pretrain_cache`) reads, keyed by the
 wandb run path `<entity>/<project>/<run_id>` in a `kind: pretrained` decomposition target
 spec. This is the read-side index: given a run id, find the cache and parse its config.
 

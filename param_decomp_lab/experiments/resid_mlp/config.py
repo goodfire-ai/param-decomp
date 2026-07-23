@@ -1,6 +1,6 @@
 """ResidualMLP experiment config schema — torch-free.
 
-The JAX trainer reads this directly (`param_decomp.built_run`), the same way it reads
+The JAX trainer reads this directly (`param_decomp.core.built_run`), the same way it reads
 `TMSExperimentConfig`. Like TMS there is no HuggingFace/pretrain-cache weight source:
 the toy ResidualMLP target is pretrained from scratch, deterministically from
 `target.pretrain` (the `act_fn(coeffs·x) + x` read-off objective on the synthetic
@@ -17,7 +17,7 @@ from typing import Literal
 
 from pydantic import PositiveInt, model_validator
 
-from param_decomp.base_config import BaseConfig, Probability
+from param_decomp.core.base_config import BaseConfig, Probability
 from param_decomp_lab.experiments.config import ExperimentConfig, ToyDecompositionConfig
 
 ResidMLPDataGenerationType = Literal["exactly_one_active", "at_least_zero_active"]

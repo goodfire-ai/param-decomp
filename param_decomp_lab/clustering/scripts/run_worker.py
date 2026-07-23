@@ -21,9 +21,9 @@ from pathlib import Path
 import jax.numpy as jnp
 import numpy as np
 
-from param_decomp.built_run import DataConfig
-from param_decomp.data import BatchSchedule, ShardServer, scan_shards
-from param_decomp.log import logger
+from param_decomp.core.built_run import DataConfig
+from param_decomp.core.data import BatchSchedule, ShardServer, scan_shards
+from param_decomp.core.log import logger
 from param_decomp_lab.clustering.harvest_config import HarvestConfig
 from param_decomp_lab.clustering.memberships import MembershipBuilder, flatten_lm_activations
 from param_decomp_lab.clustering.paths import clustering_harvest_dir, new_harvest_id

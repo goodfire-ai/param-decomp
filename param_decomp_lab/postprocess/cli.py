@@ -26,7 +26,7 @@ def main() -> None:
 
     import yaml
 
-    from param_decomp.log import logger
+    from param_decomp.core.log import logger
     from param_decomp_lab.postprocess import postprocess
     from param_decomp_lab.postprocess.config import PostprocessConfig
 
