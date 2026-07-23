@@ -40,7 +40,7 @@ _MINIMAL_LM = {
         "batch_size": 8,
         "loss_metrics": [{"type": "FaithfulnessLoss", "coeff": 1.0}],
     },
-    "runtime": {"device": "cuda:0", "sharding": "zero1"},
+    "runtime": {"device": "cuda:0", "launch": "inline", "dp": 1, "sharding": "zero1"},
     "cadence": {"train_log_every": 1},
     "target": {
         "spec": {
@@ -106,8 +106,8 @@ def test_validate_config_rejects_pre_stamped_run_id(tmp_path: Path):
 def test_validate_config_fires_the_placement_claim_gate_pre_submit(tmp_path: Path):
     """The build-time placement gate runs at submit validation, before any snapshot or
     sbatch: an `owner+zero1` config whose declared topology makes every shape group tile
-    (here the single-site smoke at `dp: null`) refuses on the login node."""
-    raw = dict(_MINIMAL_LM, runtime={"sharding": "owner+zero1"})
+    (here the single-site smoke at `launch: inline, dp: 1`) refuses on the login node."""
+    raw = dict(_MINIMAL_LM, runtime={"launch": "inline", "dp": 1, "sharding": "owner+zero1"})
     config = tmp_path / "c.yaml"
     config.write_text(yaml.safe_dump(raw))
     with pytest.raises(AssertionError, match="single-device smoke cannot exercise"):

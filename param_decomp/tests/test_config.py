@@ -549,6 +549,34 @@ def test_arithmetic_ci_grid_metric_builds_to_arithmetic_eval_config():
     )
 
 
+def test_launch_mode_and_dp_are_enumerated_and_fail_closed():
+    from param_decomp.configs import RuntimeConfig
+
+    def runtime(**overrides: Any) -> RuntimeConfig:
+        return RuntimeConfig.model_validate({"sharding": "zero1", **overrides})
+
+    # slurm allocates whole 8-GPU nodes
+    assert runtime(launch="slurm", dp=32).dp == 32
+    for bad_dp in (1, 4, 12):
+        with pytest.raises(ValidationError, match="multiple of 8"):
+            runtime(launch="slurm", dp=bad_dp)
+
+    # inline runs one process over exactly dp local devices — any dp >= 1
+    for dp in (1, 2, 8):
+        assert runtime(launch="inline", dp=dp).launch == "inline"
+
+    # both fields are REQUIRED authored decisions, and `dp: null` is not a mode
+    with pytest.raises(ValidationError):
+        runtime(dp=8)
+    with pytest.raises(ValidationError):
+        runtime(launch="inline")
+    with pytest.raises(ValidationError):
+        runtime(launch="inline", dp=None)
+    # the mode vocabulary is closed
+    with pytest.raises(ValidationError):
+        runtime(launch="local", dp=1)
+
+
 def test_placement_table_parses_typed_and_fails_closed():
     from param_decomp.configs import PlacementTableConfig, RuntimeConfig
 
@@ -560,7 +588,7 @@ def test_placement_table_parses_typed_and_fails_closed():
         },
         "activations": {"batch": ["replicate", "fsdp"], "C": "tp"},
     }
-    runtime = RuntimeConfig.model_validate({"sharding": table})
+    runtime = RuntimeConfig.model_validate({"launch": "inline", "dp": 1, "sharding": table})
     assert isinstance(runtime.sharding, PlacementTableConfig)
     assert runtime.sharding.params.zero1 is not None
 

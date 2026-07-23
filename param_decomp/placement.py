@@ -316,7 +316,7 @@ def _build(
             f"unreachable arm is a misconfiguration, not a no-op. If the run genuinely "
             f"has no non-tiling groups, declare that: `sharding: owner` (or drop the "
             f"zero1 row). If this was meant to exercise owner+zero1 and dp was lowered "
-            f"for a smoke (e.g. `dp: null`), smoke at a multi-device topology instead — "
+            f"for a smoke (e.g. `dp: 1`), smoke at a multi-device topology instead — "
             f"an inline single-device smoke cannot exercise the owner+zero1 layout."
         )
     return PlacementRules(

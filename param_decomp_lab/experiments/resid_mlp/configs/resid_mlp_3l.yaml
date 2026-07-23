@@ -91,7 +91,8 @@ pd:
   faithfulness_warmup_weight_decay: 0.0
 runtime:
   remat_recon_forwards: false
-  dp: null
+  launch: inline
+  dp: 1
   sharding: ddp
 cadence:
   train_log_every: 100

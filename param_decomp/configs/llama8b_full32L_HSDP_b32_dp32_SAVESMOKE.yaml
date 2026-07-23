@@ -138,6 +138,7 @@ pd:
   seed: 0
   steps: 250
 runtime:
+  launch: slurm
   dp: 32
   tp: 1
   # the layout production runs (the dp64 seat) — a save/resume smoke must exercise it
