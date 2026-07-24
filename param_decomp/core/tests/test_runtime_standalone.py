@@ -4,7 +4,8 @@
 infra-ish (schedulers, submission, cluster paths, code-shipping) lives in the private
 wrapper (`param_decomp_goodfire`), which imports the library and never vice versa
 (pinned by the head check below: `param_decomp_goodfire` is a forbidden import root
-everywhere in the library). Within it, the library is enumerated layers. Each subpackage declares the
+everywhere in the library). The full principle is codified in the root CLAUDE.md,
+"The library rule". Within it, the library is enumerated layers. Each subpackage declares the
 `param_decomp.*` prefixes it may import (`_LAYER_ALLOWED`); anything outside that set —
 including `torch`, banned everywhere (the runtime is JAX; the torch oracle lives at git
 tag `torch-oracle`) — fails this test. A subpackage that is not enumerated at all fails

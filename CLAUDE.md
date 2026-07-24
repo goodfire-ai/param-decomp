@@ -93,6 +93,21 @@ into the one `.venv`. The library's `pd-*` CLIs (toys + post-pipeline) live in t
 `pyproject.toml`; only `pd-lm` / `pd-pretrain` live in the private wrapper. (Slow/plot
 eval is in-loop only — there is no `pd-slow-eval` CLI.)
 
+## The library rule
+
+`param_decomp` is JUST a library: logic and mostly-pure functions over explicit inputs.
+It may do I/O that *is* the work — checkpoints, datasets, HF weights, wandb logging,
+LLM calls — but it must not know *where it runs*: no scheduler (SLURM/sbatch), no
+submission or code-shipping, no cluster paths, mounts, partitions, or team namespaces.
+All deployment fit lives in `param_decomp_goodfire`, a pure wrapper that composes
+library entrypoints and may never be imported by the library (enforced fail-closed by
+`param_decomp/core/tests/test_runtime_standalone.py`). Ambient environment is read in
+exactly one place per package (`Environment.from_env` / `GoodfireEnvironment.from_env`);
+everything else takes typed values. The wrapper is not privileged: if our launcher needs
+something the library doesn't publicly expose, that is a library bug — never a reason
+for a private hook. A SLURM *mention* in library prose is legitimate only when it
+documents a generic contract (e.g. SIGTERM→save semantics), never a dependency.
+
 ## Training (JAX) <a id="training-jax"></a>
 
 **Training is JAX now.** The torch `Trainer` was retired from HEAD (the JAX single-pool
