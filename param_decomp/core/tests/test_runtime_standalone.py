@@ -1,6 +1,10 @@
 """The layering rule, as a test: subpackages of `param_decomp` import only DOWNWARD.
 
-`param_decomp` is one library of enumerated layers. Each subpackage declares the
+`param_decomp` is JUST a library — mostly pure functions, mostly logic; everything
+infra-ish (schedulers, submission, cluster paths, code-shipping) lives in the private
+wrapper (`param_decomp_goodfire`), which imports the library and never vice versa
+(pinned by the head check below: `param_decomp_goodfire` is a forbidden import root
+everywhere in the library). Within it, the library is enumerated layers. Each subpackage declares the
 `param_decomp.*` prefixes it may import (`_LAYER_ALLOWED`); anything outside that set —
 including `torch`, banned everywhere (the runtime is JAX; the torch oracle lives at git
 tag `torch-oracle`) — fails this test. A subpackage that is not enumerated at all fails
@@ -44,7 +48,6 @@ _LAYER_ALLOWED: dict[str, tuple[str, ...]] = {
     "infra": _ANY,
     "investigate": _ANY,
     "migrations": _ANY,
-    "postprocess": _ANY,
     "topology": _ANY,
 }
 
@@ -66,7 +69,7 @@ def _subpackages() -> list[str]:
 def _bad_imports(path: Path, allowed: tuple[str, ...]) -> list[str]:
     def is_bad(module: str) -> bool:
         head = module.split(".", 1)[0]
-        if head == "torch":
+        if head in ("torch", "param_decomp_goodfire"):
             return True
         if head != "param_decomp":
             return False

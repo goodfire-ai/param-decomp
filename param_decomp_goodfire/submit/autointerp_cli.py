@@ -20,8 +20,7 @@ def main(
     `harvest_subrun_id` like `"h-20260306_120000"`. `snapshot_ref` defaults to the
     current REPO_ROOT checkout.
     """
-    from param_decomp.autointerp.config import AutointerpSlurmConfig
-    from param_decomp.autointerp.scripts.run_slurm import submit_autointerp
+    from param_decomp_goodfire.submit.autointerp import AutointerpSlurmConfig, submit_autointerp
 
     slurm_config = AutointerpSlurmConfig.from_file(config)
     submit_autointerp(

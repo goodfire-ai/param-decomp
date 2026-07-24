@@ -25,8 +25,8 @@ import requests
 
 from param_decomp.core.log import logger
 from param_decomp.investigate.agent_prompt import get_agent_prompt
+from param_decomp.investigate.paths import investigation_output_dir
 from param_decomp.investigate.schemas import InvestigationEvent
-from param_decomp.investigate.scripts.run_slurm import get_investigation_output_dir
 
 
 def write_mcp_config(inv_dir: Path, port: int) -> Path:
@@ -100,7 +100,7 @@ def log_event(events_path: Path, event: InvestigationEvent) -> None:
 
 def run_agent(inv_id: str) -> None:
     """Run a single investigation agent. All config read from metadata.json."""
-    inv_dir = get_investigation_output_dir(inv_id)
+    inv_dir = investigation_output_dir(inv_id)
     assert inv_dir.exists(), f"Investigation directory does not exist: {inv_dir}"
 
     metadata: dict[str, Any] = json.loads((inv_dir / "metadata.json").read_text())

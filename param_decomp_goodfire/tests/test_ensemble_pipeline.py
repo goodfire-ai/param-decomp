@@ -134,7 +134,7 @@ def test_pipeline_local_fans_out_three_tiers(
 ) -> None:
     """`submit(local=True)` builds the seeded harvest -> merge -> consensus command tiers
     with one harvest + one merge per member and one consensus job per distance method."""
-    from param_decomp.clustering.scripts import run_pipeline
+    from param_decomp_goodfire.submit import clustering as run_pipeline
 
     base = tmp_path / "clustering"
     monkeypatch.setattr(

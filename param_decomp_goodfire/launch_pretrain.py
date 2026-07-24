@@ -19,12 +19,12 @@ import fire
 import yaml
 
 from param_decomp.core.log import logger
-from param_decomp.infra.git import create_git_snapshot
 from param_decomp.infra.run_files import generate_run_id
-from param_decomp.infra.settings import ENV
-from param_decomp.infra.slurm import SlurmConfig, generate_script, submit_slurm_job
+from param_decomp_goodfire.env import GENV
+from param_decomp_goodfire.git import create_git_snapshot
+from param_decomp_goodfire.slurm import SlurmConfig, generate_script, submit_slurm_job
 
-WORKSPACES_DIR = ENV.output_root / "workspaces"
+WORKSPACES_DIR = GENV.output_root / "workspaces"
 
 _SRUN_FLAGS = (
     "--kill-on-bad-exit=1 --ntasks-per-node=8 --cpus-per-task=8 --distribution=block:block"
@@ -60,11 +60,11 @@ def main(
         comment: SLURM `--comment`; defaults to the run id.
     """
     config_rel = _config_path_relative_to_repo(config_path)
-    run_name, dp, gpn = _read_run_name_and_topology(ENV.repo_root / config_rel)
+    run_name, dp, gpn = _read_run_name_and_topology(GENV.repo_root / config_rel)
     tag_list = [s.strip() for s in tags.split(",")] if tags is not None else []
 
     if dp is None:
-        _run_local(ENV.repo_root / config_rel)
+        _run_local(GENV.repo_root / config_rel)
         return
     assert dp % gpn == 0, f"dp={dp} must be a multiple of gpus_per_node={gpn}"
     nodes = dp // gpn
@@ -119,16 +119,16 @@ def _run_local(config_path: Path) -> None:
     assert config_path.exists(), f"config not found: {config_path}"
     cmd = [sys.executable, "-m", "pretrain.train", str(config_path.resolve())]
     logger.info(f"Running locally: {' '.join(cmd)}")
-    subprocess.run(cmd, cwd=ENV.repo_root, check=True)
+    subprocess.run(cmd, cwd=GENV.repo_root, check=True)
 
 
 def _config_path_relative_to_repo(config_path: str) -> Path:
     path = Path(config_path).resolve()
     assert path.exists(), f"config not found: {path}"
-    assert path.is_relative_to(ENV.repo_root), (
+    assert path.is_relative_to(GENV.repo_root), (
         f"config must live inside the repo so the snapshot carries it: {path}"
     )
-    return path.relative_to(ENV.repo_root)
+    return path.relative_to(GENV.repo_root)
 
 
 def _read_run_name_and_topology(config_path: Path) -> tuple[str, int | None, int]:
@@ -160,13 +160,13 @@ def _build_workspace(
         subprocess.run(args, cwd=cwd, check=True)
 
     logger.info(f"Building workspace {workspace} ...")
-    run(["git", "clone", "--quiet", str(ENV.repo_root), str(workspace)], cwd=ENV.repo_root)
+    run(["git", "clone", "--quiet", str(GENV.repo_root), str(workspace)], cwd=GENV.repo_root)
     run(
-        ["git", "fetch", "--quiet", str(ENV.repo_root), f"{snapshot_ref}:{snapshot_ref}"],
+        ["git", "fetch", "--quiet", str(GENV.repo_root), f"{snapshot_ref}:{snapshot_ref}"],
         cwd=workspace,
     )
     run(["git", "checkout", "--quiet", snapshot_ref], cwd=workspace)
-    env_file = ENV.repo_root / ".env"
+    env_file = GENV.repo_root / ".env"
     assert env_file.exists(), f".env with wandb credentials required: {env_file}"
     (workspace / ".env").write_bytes(env_file.read_bytes())
 
@@ -194,7 +194,7 @@ def _stamp_config(config: Path, run_id: str, group: str | None, tags: list[str])
     assert "run_id" not in raw, "run_id already stamped"
     raw["run_id"] = run_id
     if raw.get("out_dir") is None:
-        raw["out_dir"] = str(ENV.output_root / "runs")
+        raw["out_dir"] = str(GENV.output_root / "runs")
     if group is not None or tags:
         assert raw.get("wandb") is not None, "wandb group/tags need a wandb: block in the config"
         if group is not None:

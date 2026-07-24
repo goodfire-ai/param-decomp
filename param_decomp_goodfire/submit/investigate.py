@@ -7,10 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from param_decomp.core.log import logger
-from param_decomp.infra.git import create_git_snapshot
-from param_decomp.infra.settings import ENV
-from param_decomp.infra.slurm import SlurmConfig, generate_script, submit_slurm_job
 from param_decomp.infra.wandb import parse_wandb_run_path
+from param_decomp.investigate.paths import investigation_output_dir
+from param_decomp_goodfire.env import GENV
+from param_decomp_goodfire.git import create_git_snapshot
+from param_decomp_goodfire.slurm import SlurmConfig, generate_script, submit_slurm_job
 
 
 @dataclass
@@ -18,10 +19,6 @@ class InvestigationResult:
     inv_id: str
     job_id: str
     output_dir: Path
-
-
-def get_investigation_output_dir(inv_id: str) -> Path:
-    return ENV.output_root / "investigations" / inv_id
 
 
 def launch_investigation(
@@ -42,7 +39,7 @@ def launch_investigation(
     canonical_wandb_path = f"{entity}/{project}/{run_id}"
 
     inv_id = f"inv-{secrets.token_hex(4)}"
-    output_dir = get_investigation_output_dir(inv_id)
+    output_dir = investigation_output_dir(inv_id)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     snapshot_ref, commit_hash = create_git_snapshot(inv_id)
@@ -65,7 +62,7 @@ def launch_investigation(
 
     slurm_config = SlurmConfig(
         job_name=job_name,
-        partition=ENV.default_partition,
+        partition=GENV.default_partition,
         n_gpus=1,
         time=time,
         snapshot_ref=snapshot_ref,

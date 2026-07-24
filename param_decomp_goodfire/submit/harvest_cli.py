@@ -18,8 +18,7 @@ def harvest(
 
     `job_suffix` is appended to SLURM job names (e.g. `"v2"` → `"pd-harvest-v2"`).
     """
-    from param_decomp.harvest.config import HarvestSlurmConfig
-    from param_decomp.harvest.scripts.run_slurm import submit_harvest
+    from param_decomp_goodfire.submit.harvest import HarvestSlurmConfig, submit_harvest
 
     slurm_config = HarvestSlurmConfig.from_file(config)
     submit_harvest(config=slurm_config, job_suffix=job_suffix)

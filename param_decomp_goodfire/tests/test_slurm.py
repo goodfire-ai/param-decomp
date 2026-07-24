@@ -1,4 +1,4 @@
-"""The SLURM job-script generator (`param_decomp.infra.slurm`). Exercises the
+"""The SLURM job-script generator (`param_decomp_goodfire.slurm`). Exercises the
 git-snapshot setup fragment: shallow worktree-safe fetch from the submitting checkout's
 common git dir, `.env` from the durable main checkout, no `git clone`."""
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from param_decomp.infra import slurm
+from param_decomp_goodfire import slurm
 
 
 def test_snapshot_setup_shallow_fetches_from_common_dir(monkeypatch: pytest.MonkeyPatch):

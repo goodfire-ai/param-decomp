@@ -7,18 +7,12 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final, Literal, NamedTuple
+from typing import Final, Literal
 
 import wandb
 from wandb.apis.public import Run as WandbRun
 
 from param_decomp.core.log import logger
-from param_decomp.infra.git import (
-    create_git_snapshot,
-    repo_current_branch,
-    repo_current_commit_hash,
-    repo_is_clean,
-)
 from param_decomp.infra.paths import ModelPath
 from param_decomp.infra.settings import ENV
 from param_decomp.infra.wandb import (
@@ -48,52 +42,6 @@ def generate_run_id(run_type: RunType) -> str:
     """
     type_abbr = RUN_TYPE_ABBREVIATIONS[run_type]
     return f"{type_abbr}-{secrets.token_hex(4)}"
-
-
-class ExecutionStamp(NamedTuple):
-    run_id: str
-    snapshot_ref: str
-    commit_hash: str
-    run_type: RunType
-
-    @classmethod
-    def create(
-        cls,
-        run_type: RunType,
-        create_snapshot: bool,
-    ) -> "ExecutionStamp":
-        """Create an execution stamp, possibly including a git snapshot ref."""
-        run_id = generate_run_id(run_type)
-        snapshot_ref: str
-        commit_hash: str
-
-        if create_snapshot:
-            snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=run_id)
-            logger.info(f"Created git snapshot ref: {snapshot_ref} ({commit_hash[:8]})")
-        else:
-            snapshot_ref = repo_current_branch()
-            if repo_is_clean():
-                commit_hash = repo_current_commit_hash()
-                logger.info(f"Using current branch: {snapshot_ref} ({commit_hash[:8]})")
-            else:
-                commit_hash = "none"
-                logger.info(
-                    f"Using current branch: {snapshot_ref} (uncommitted changes, no commit hash)"
-                )
-
-        return ExecutionStamp(
-            run_id=run_id,
-            snapshot_ref=snapshot_ref,
-            commit_hash=commit_hash,
-            run_type=run_type,
-        )
-
-    @property
-    def out_dir(self) -> Path:
-        """Get the output directory for this execution stamp."""
-        run_dir = ENV.output_root / self.run_type / self.run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
-        return run_dir
 
 
 _NO_ARG_PARSSED_SENTINEL = object()

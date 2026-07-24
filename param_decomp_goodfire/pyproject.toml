@@ -16,13 +16,27 @@ dependencies = [
 # lives in the generic library; only the infra fit is here.
 pd-lm = "param_decomp_goodfire.launch_lm:cli"
 pd-pretrain = "param_decomp_goodfire.launch_pretrain:cli"
+pd-harvest = "param_decomp_goodfire.submit.harvest_cli:cli"
+pd-intruder = "param_decomp_goodfire.submit.intruder_cli:cli"
+pd-autointerp = "param_decomp_goodfire.submit.autointerp_cli:cli"
+pd-clustering = "param_decomp_goodfire.submit.clustering:cli"
+pd-investigate = "param_decomp_goodfire.submit.investigate_cli:cli"
+pd-postprocess = "param_decomp_goodfire.postprocess.cli:cli"
 
 [build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["param_decomp_goodfire", "param_decomp_goodfire.tests"]
+packages = [
+    "param_decomp_goodfire",
+    "param_decomp_goodfire.postprocess",
+    "param_decomp_goodfire.submit",
+    "param_decomp_goodfire.tests",
+]
+
+[tool.setuptools.package-data]
+param_decomp_goodfire = ["postprocess/*.yaml"]
 
 [tool.setuptools.package-dir]
 param_decomp_goodfire = "."

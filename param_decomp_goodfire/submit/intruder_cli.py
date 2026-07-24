@@ -18,8 +18,7 @@ def main(
     `decomposition_id` looks like `"clt-1d4752ea"`; `harvest_subrun_id` like
     `"h-20260323_163726"`.
     """
-    from param_decomp.harvest.config import IntruderSlurmConfig
-    from param_decomp.harvest.scripts.run_intruder_slurm import submit_intruder
+    from param_decomp_goodfire.submit.intruder import IntruderSlurmConfig, submit_intruder
 
     slurm_config = IntruderSlurmConfig.from_file(config) if config else IntruderSlurmConfig()
     submit_intruder(decomposition_id, slurm_config, harvest_subrun_id)

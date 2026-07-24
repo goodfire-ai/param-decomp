@@ -17,19 +17,19 @@ from pathlib import Path
 
 import yaml
 
-from param_decomp.autointerp.scripts.run_slurm import AutointerpSubmitResult, submit_autointerp
 from param_decomp.core.log import logger
 from param_decomp.harvest.scripts import run_intruder
-from param_decomp.harvest.scripts.run_slurm import submit_harvest
-from param_decomp.infra.git import create_git_snapshot
-from param_decomp.infra.settings import ENV
-from param_decomp.infra.slurm import (
+from param_decomp_goodfire.env import GENV
+from param_decomp_goodfire.git import create_git_snapshot
+from param_decomp_goodfire.postprocess.config import PostprocessConfig
+from param_decomp_goodfire.slurm import (
     SlurmConfig,
     SubmitResult,
     generate_script,
     submit_slurm_job,
 )
-from param_decomp.postprocess.config import PostprocessConfig
+from param_decomp_goodfire.submit.autointerp import AutointerpSubmitResult, submit_autointerp
+from param_decomp_goodfire.submit.harvest import submit_harvest
 
 
 def postprocess(config: PostprocessConfig, dependency_job_id: str | None = None) -> Path:
@@ -98,7 +98,7 @@ def postprocess(config: PostprocessConfig, dependency_job_id: str | None = None)
 
     # === Write metadata ===
     metadata_id = "pp-" + datetime.now().strftime("%Y%m%d_%H%M%S")
-    metadata_dir = ENV.output_root / "postprocess" / metadata_id
+    metadata_dir = GENV.output_root / "postprocess" / metadata_id
     metadata_dir.mkdir(parents=True, exist_ok=True)
     metadata_path = metadata_dir / "metadata.yaml"
 

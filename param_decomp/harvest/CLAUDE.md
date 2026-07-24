@@ -1,5 +1,8 @@
 # Harvest Module
 
+
+> The `pd-*` submitter for this stage lives in the private wrapper (`param_decomp_goodfire/submit/`); this package carries the in-job compute (worker module mains), which is what those submitters sbatch.
+
 Offline pipeline that collects component statistics in a single pass over training data.
 Produces data consumed by the autointerp module (`param_decomp/autointerp/`). The
 whole module is **torch-free**: the only decomposition

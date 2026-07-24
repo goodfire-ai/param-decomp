@@ -15,16 +15,34 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 
-from param_decomp.autointerp.config import AutointerpSlurmConfig
+from param_decomp.autointerp.config import AutointerpConfig, AutointerpEvalConfig
 from param_decomp.autointerp.scoring.scripts import run_label_scoring
 from param_decomp.autointerp.scripts import run_interpret
+from param_decomp.core.base_config import BaseConfig
 from param_decomp.core.log import logger
-from param_decomp.infra.slurm import (
+from param_decomp_goodfire.env import GENV
+from param_decomp_goodfire.slurm import (
     SlurmConfig,
     SubmitResult,
     generate_script,
     submit_slurm_job,
 )
+
+
+class AutointerpSlurmConfig(BaseConfig):
+    """Config for the autointerp functional unit (interpret + evals).
+
+    Dependency graph within autointerp:
+        interpret         (depends on harvest merge)
+        ├── detection     (depends on interpret)
+        └── fuzzing       (depends on interpret)
+    """
+
+    config: AutointerpConfig
+    partition: str | None = GENV.default_partition
+    time: str = "12:00:00"
+    evals: AutointerpEvalConfig | None
+    evals_time: str = "12:00:00"
 
 
 @dataclass

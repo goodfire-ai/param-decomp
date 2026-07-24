@@ -1,5 +1,8 @@
 # Clustering Module
 
+
+> The `pd-*` submitter for this stage lives in the private wrapper (`param_decomp_goodfire/submit/`); this package carries the in-job compute (worker module mains), which is what those submitters sbatch.
+
 Hierarchical clustering of PD components based on coactivation patterns. Discovers stable
 groups of components that behave similarly.
 

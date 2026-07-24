@@ -12,13 +12,17 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime
 
+from pydantic import PositiveInt
+
+from param_decomp.core.base_config import BaseConfig
 from param_decomp.core.log import logger
-from param_decomp.harvest.config import HarvestSlurmConfig
+from param_decomp.harvest.config import HarvestConfig
 from param_decomp.harvest.schemas import get_harvest_dir
 from param_decomp.harvest.scripts import run_merge as harvest_merge
 from param_decomp.harvest.scripts import run_worker as harvest_worker
-from param_decomp.infra.git import create_git_snapshot
-from param_decomp.infra.slurm import (
+from param_decomp_goodfire.env import GENV
+from param_decomp_goodfire.git import create_git_snapshot
+from param_decomp_goodfire.slurm import (
     SlurmArrayConfig,
     SlurmConfig,
     SubmitResult,
@@ -26,6 +30,17 @@ from param_decomp.infra.slurm import (
     generate_script,
     submit_slurm_job,
 )
+
+
+class HarvestSlurmConfig(BaseConfig):
+    """Config for harvest SLURM submission."""
+
+    config: HarvestConfig
+    n_gpus: PositiveInt = 8
+    partition: str | None = GENV.default_partition
+    time: str = "12:00:00"
+    merge_time: str = "04:00:00"
+    merge_mem: str = "200G"
 
 
 @dataclass

@@ -1,14 +1,24 @@
 """SLURM submission for intruder eval jobs."""
 
+from param_decomp.core.base_config import BaseConfig
 from param_decomp.core.log import logger
-from param_decomp.harvest.config import IntruderSlurmConfig
+from param_decomp.harvest.config import IntruderEvalConfig
 from param_decomp.harvest.scripts.run_intruder import get_command
-from param_decomp.infra.slurm import (
+from param_decomp_goodfire.env import GENV
+from param_decomp_goodfire.slurm import (
     SlurmConfig,
     SubmitResult,
     generate_script,
     submit_slurm_job,
 )
+
+
+class IntruderSlurmConfig(BaseConfig):
+    """Config for intruder eval SLURM submission."""
+
+    config: IntruderEvalConfig = IntruderEvalConfig()
+    partition: str | None = GENV.default_partition
+    time: str = "10:00:00"
 
 
 def submit_intruder(

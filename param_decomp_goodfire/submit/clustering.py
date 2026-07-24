@@ -39,9 +39,9 @@ from param_decomp.clustering.scripts import calc_distances, run_merge, run_worke
 from param_decomp.clustering.types import DistancesMethod
 from param_decomp.core.base_config import BaseConfig
 from param_decomp.core.log import logger
-from param_decomp.infra.git import create_git_snapshot
 from param_decomp.infra.run_files import generate_run_id, run_locally
-from param_decomp.infra.slurm import (
+from param_decomp_goodfire.git import create_git_snapshot
+from param_decomp_goodfire.slurm import (
     SlurmArrayConfig,
     SlurmConfig,
     generate_array_script,

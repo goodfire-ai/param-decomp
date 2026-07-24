@@ -4,9 +4,10 @@ PostprocessConfig composes sub-configs for harvest, autointerp, and intruder eva
 Set any section to null to skip that pipeline stage.
 """
 
-from param_decomp.autointerp.config import AutointerpSlurmConfig
 from param_decomp.core.base_config import BaseConfig
-from param_decomp.harvest.config import HarvestSlurmConfig, IntruderSlurmConfig
+from param_decomp_goodfire.submit.autointerp import AutointerpSlurmConfig
+from param_decomp_goodfire.submit.harvest import HarvestSlurmConfig
+from param_decomp_goodfire.submit.intruder import IntruderSlurmConfig
 
 
 class PostprocessConfig(BaseConfig):

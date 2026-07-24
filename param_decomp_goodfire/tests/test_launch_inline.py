@@ -23,6 +23,7 @@ from safetensors.numpy import save_file
 import param_decomp.experiments.lm.config as lm_config
 import param_decomp_goodfire.launch_lm as launch
 from param_decomp.infra.settings import ENV
+from param_decomp_goodfire.env import GENV
 
 _VOCAB = 64
 _D = 8
@@ -159,9 +160,8 @@ def inline_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("PARAM_DECOMP_OUT_DIR", str(out_dir))
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("XLA_FLAGS", "--xla_force_host_platform_device_count=4")
-    patched = replace(ENV, output_root=out_dir)
-    monkeypatch.setattr(launch, "ENV", patched)
-    monkeypatch.setattr(lm_config, "ENV", patched)
+    monkeypatch.setattr(launch, "GENV", replace(GENV, output_root=out_dir))
+    monkeypatch.setattr(lm_config, "ENV", replace(ENV, output_root=out_dir))
     return tmp_path
 
 

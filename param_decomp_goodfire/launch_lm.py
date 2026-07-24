@@ -38,11 +38,11 @@ from param_decomp.core.built_run import LAUNCH_CONFIG_FILENAME
 from param_decomp.core.configs import LaunchEnv
 from param_decomp.core.log import logger
 from param_decomp.experiments.lm.config import LMExperimentConfig, assert_placement_claims
-from param_decomp.infra.git import create_git_snapshot, snapshot_source_repo
 from param_decomp.infra.run_files import generate_run_id
-from param_decomp.infra.settings import ENV
-from param_decomp.infra.slurm import SlurmConfig, generate_script, submit_slurm_job
 from param_decomp.infra.wandb import get_wandb_entity
+from param_decomp_goodfire.env import GENV
+from param_decomp_goodfire.git import create_git_snapshot, snapshot_source_repo
+from param_decomp_goodfire.slurm import SlurmConfig, generate_script, submit_slurm_job
 
 # Node-local. Trainer jobs hold whole nodes (8/8 GPUs), so no concurrent job shares a
 # node with one — the start-of-task sweep below cannot race another run's workspace.
@@ -75,9 +75,9 @@ def _render_rank_env(launch_env: LaunchEnv) -> str:
     # The library reads the STANDARD HF cache env (`hf_snapshot_dir`); on our clusters
     # weights live in the shared world-readable hub, so pin it for every rank (a home
     # `~/.cache` hub is silently mutable and strands requeues that reload weights).
-    if ENV.data_mount is not None and "HF_HUB_CACHE" not in launch_env.as_env():
+    if GENV.data_mount is not None and "HF_HUB_CACHE" not in launch_env.as_env():
         exports.append(
-            f"export HF_HUB_CACHE={shlex.quote(str(ENV.data_mount / 'artifacts/hf_cache/hub'))}"
+            f"export HF_HUB_CACHE={shlex.quote(str(GENV.data_mount / 'artifacts/hf_cache/hub'))}"
         )
     exports.append(_LD_LIBRARY_PATH_EXPORT)
     return "\n".join(exports)
@@ -154,7 +154,7 @@ def main(
             `run_name`). `runtime.launch` declares the mode and `runtime.dp` the world
             size: `inline` → run here over `dp` local devices; `slurm` → submit across
             `dp // gpus_per_node` nodes. The `run_id` is minted here; the config is pinned
-            as `ENV.output_root/runs/<run_id>/launch_config.yaml` and the job reads
+            as `GENV.output_root/runs/<run_id>/launch_config.yaml` and the job reads
             THAT copy, so this file is free to change after submit.
         time: SLURM time limit (`launch: slurm` only).
         qos: SLURM QoS (e.g. `opportunistic`); None is the normal QoS (`launch: slurm` only).
@@ -229,7 +229,7 @@ def _submit_slurm(
     else:
         snapshot_ref = f"refs/runs/snapshot/{run_id}"
         _assert_snapshot_ref_exists(source_repo, snapshot_ref)
-        run_dir = ENV.output_root / "runs" / run_id
+        run_dir = GENV.output_root / "runs" / run_id
         for staged in (LAUNCH_CONFIG_FILENAME, ".env"):
             assert (run_dir / staged).exists(), f"no {staged} to resubmit: {run_dir / staged}"
 
@@ -288,7 +288,7 @@ def _run_inline(config: Path, run_name: str, group: str | None, tags: list[str])
             "--run-id",
             run_id,
         ],
-        cwd=ENV.repo_root,
+        cwd=GENV.repo_root,
         check=True,
         env=os.environ.copy(),
     )
@@ -317,7 +317,7 @@ def _write_run_dir(config: Path, run_id: str, group: str | None, tags: list[str]
     """Mint the run dir and pin the config (wandb group/tags stamped in) as its
     `launch_config.yaml` — the one copy the job and every requeue read, and the same file
     the trainer pins (`run.py::_pin_config_copy` no-ops on it)."""
-    run_dir = ENV.output_root / "runs" / run_id
+    run_dir = GENV.output_root / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
     launch_config = run_dir / LAUNCH_CONFIG_FILENAME
     launch_config.write_text(config.read_text())
@@ -329,7 +329,7 @@ def _stage_env_file(run_dir: Path) -> None:
     """Stage `.env` (secrets, not in git — they can't ride the snapshot) into the run dir
     for the node setup to copy into its workspace. Mode-preserving copy (0o660 secrets
     stay group-only under the runs dir's group-writable umask)."""
-    env_file = ENV.repo_root / ".env"
+    env_file = GENV.repo_root / ".env"
     assert env_file.exists(), f".env with wandb credentials required: {env_file}"
     shutil.copy(env_file, run_dir / ".env")
 

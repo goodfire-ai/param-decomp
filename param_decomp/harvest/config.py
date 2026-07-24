@@ -1,16 +1,12 @@
 """Harvest configuration.
 
 HarvestConfig: tuning params for the harvest pipeline.
-HarvestSlurmConfig: HarvestConfig + SLURM submission params.
 """
 
 from typing import Any, Literal, override
 
-from pydantic import PositiveInt
-
 from param_decomp.autointerp.config import LLMConfig, OpenRouterLLMConfig
 from param_decomp.core.base_config import BaseConfig
-from param_decomp.infra.settings import ENV
 from param_decomp.infra.wandb import parse_wandb_run_path
 
 # -- Method-specific harvest configs ------------------------------------------
@@ -45,14 +41,6 @@ class IntruderEvalConfig(BaseConfig):
     cost_limit_usd: float | None = None
 
 
-class IntruderSlurmConfig(BaseConfig):
-    """Config for intruder eval SLURM submission."""
-
-    config: IntruderEvalConfig = IntruderEvalConfig()
-    partition: str | None = ENV.default_partition
-    time: str = "10:00:00"
-
-
 class HarvestConfig(BaseConfig):
     method_config: ParamDecompHarvestConfig
     n_batches: int | Literal["whole_dataset"] = 20_000
@@ -65,14 +53,3 @@ class HarvestConfig(BaseConfig):
     """Accumulate the dense component×component co-occurrence matrix (powers the app's
     component-correlation view). It is O(C²) in memory — at ~10⁵ components it needs tens
     of GB resident on the harvest GPU. Set false to skip it for large-C decompositions."""
-
-
-class HarvestSlurmConfig(BaseConfig):
-    """Config for harvest SLURM submission."""
-
-    config: HarvestConfig
-    n_gpus: PositiveInt = 8
-    partition: str | None = ENV.default_partition
-    time: str = "12:00:00"
-    merge_time: str = "04:00:00"
-    merge_mem: str = "200G"

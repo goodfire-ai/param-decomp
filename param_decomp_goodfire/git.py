@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 from param_decomp.core.log import logger
-from param_decomp.infra.settings import ENV
+from param_decomp_goodfire.env import GENV
 
 
 def repo_current_branch() -> str:
@@ -22,7 +22,7 @@ def repo_current_branch() -> str:
     """
     result = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        cwd=ENV.repo_root,
+        cwd=GENV.repo_root,
         capture_output=True,
         text=True,
     )
@@ -45,13 +45,13 @@ def snapshot_source_repo() -> Path:
     `create_git_snapshot` is a provenance backup, not the job's fetch source.
 
     Single source of truth for both launchers: the pd-lm trainer launch
-    (`param_decomp_goodfire.launch_lm`) and the shared SLURM job fragment (`infra.slurm`).
+    (`param_decomp_goodfire.launch_lm`) and the shared SLURM job fragment (`slurm.py`).
     """
     result = subprocess.run(
         [
             "git",
             "-C",
-            str(ENV.repo_root),
+            str(GENV.repo_root),
             "rev-parse",
             "--path-format=absolute",
             "--git-common-dir",
@@ -103,7 +103,7 @@ def create_git_snapshot(snapshot_id: str) -> tuple[str, str]:
             # rather than creating a branch.
             subprocess.run(
                 ["git", "worktree", "add", "--detach", str(worktree_path), "HEAD"],
-                cwd=ENV.repo_root,
+                cwd=GENV.repo_root,
                 check=True,
                 capture_output=True,
             )
@@ -116,7 +116,7 @@ def create_git_snapshot(snapshot_id: str) -> tuple[str, str]:
                     "--delete",
                     "--exclude=.git",
                     "--filter=:- .gitignore",
-                    f"{ENV.repo_root}/",
+                    f"{GENV.repo_root}/",
                     f"{worktree_path}/",
                 ],
                 check=True,
@@ -153,7 +153,7 @@ def create_git_snapshot(snapshot_id: str) -> tuple[str, str]:
             # Point the snapshot ref at the commit, in the main repo's ref db.
             subprocess.run(
                 ["git", "update-ref", snapshot_ref, commit_hash],
-                cwd=ENV.repo_root,
+                cwd=GENV.repo_root,
                 check=True,
                 capture_output=True,
             )
@@ -162,7 +162,7 @@ def create_git_snapshot(snapshot_id: str) -> tuple[str, str]:
             # git dir, so a failed push shouldn't block the submit.
             push = subprocess.run(
                 ["git", "push", "origin", f"{snapshot_ref}:{snapshot_ref}"],
-                cwd=ENV.repo_root,
+                cwd=GENV.repo_root,
                 capture_output=True,
                 text=True,
             )
@@ -179,7 +179,7 @@ def create_git_snapshot(snapshot_id: str) -> tuple[str, str]:
             # Clean up worktree (the snapshot ref in the main repo remains)
             subprocess.run(
                 ["git", "worktree", "remove", "--force", str(worktree_path)],
-                cwd=ENV.repo_root,
+                cwd=GENV.repo_root,
                 check=True,
                 capture_output=True,
             )

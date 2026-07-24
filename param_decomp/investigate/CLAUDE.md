@@ -1,5 +1,8 @@
 # Investigation Module
 
+
+> The `pd-*` submitter for this stage lives in the private wrapper (`param_decomp_goodfire/submit/`); this package carries the in-job compute (worker module mains), which is what those submitters sbatch.
+
 Launch a Claude Code agent to investigate a specific research question about a PD model decomposition.
 
 ## Usage
@@ -21,8 +24,6 @@ param_decomp/investigate/
 ├── agent_prompt.py       # System prompt template with model info injection
 └── scripts/
     ├── __init__.py
-    ├── run_slurm_cli.py  # CLI entry point (pd-investigate)
-    ├── run_slurm.py      # SLURM submission logic
     └── run_agent.py      # Worker script (runs in SLURM job)
 ```
 

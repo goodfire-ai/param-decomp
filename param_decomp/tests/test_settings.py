@@ -25,19 +25,14 @@ def test_settings_import_does_not_create_output_dirs(tmp_path: Path):
     assert not (data_mount / "artifacts").exists()
 
 
-def test_environment_from_env_is_explicit(tmp_path: Path):
+def test_environment_is_cluster_ignorant(tmp_path: Path):
     from param_decomp.infra.settings import Environment
 
     mount = tmp_path / "mnt"
     mount.mkdir()
+    # DATA_MOUNT means nothing to the library: no namespace default, no mode flip.
     env = Environment.from_env({"DATA_MOUNT": str(mount)})
-    assert env.data_mount == mount
-    assert env.output_root == mount / "artifacts/mechanisms/param-decomp"
+    assert env.output_root == Path("out")
 
-    dead = Environment.from_env({"DATA_MOUNT": str(tmp_path / "missing")})
-    assert dead.data_mount is None
-    assert dead.output_root == Path("out")
-
-    pinned = Environment.from_env({"PARAM_DECOMP_OUT_DIR": "/x/y", "PARTITION_RESERVED": "h100"})
+    pinned = Environment.from_env({"PARAM_DECOMP_OUT_DIR": "/x/y"})
     assert pinned.output_root == Path("/x/y")
-    assert pinned.default_partition == "h100"

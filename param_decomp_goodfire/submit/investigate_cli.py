@@ -33,7 +33,7 @@ def main(
     `prompt` is the research question literal or `@filepath` to read from a file.
     `max_turns` caps agentic turns to prevent runaway.
     """
-    from param_decomp.investigate.scripts.run_slurm import launch_investigation
+    from param_decomp_goodfire.submit.investigate import launch_investigation
 
     launch_investigation(
         wandb_path=wandb_path,

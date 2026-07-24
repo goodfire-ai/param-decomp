@@ -49,9 +49,10 @@ SPD is the predecessor VPD builds on.
 
 ## Package layout
 
-ONE generic library, `param_decomp/`, plus a thin private wrapper. The library is the
-deliverable — everything in it is written to be shippable; only the Goodfire infra fit
-lives outside it:
+ONE generic library, `param_decomp/`, plus a thin private wrapper. **The library is
+just a library — mostly pure functions, mostly just logic**; everything infra-ish
+(schedulers, submission, cluster paths, code-shipping) lives in the wrapper. The
+library is the deliverable — everything in it is written to be shippable:
 
 - **`param-decomp`** (the library, package `param_decomp/`) — enumerated layers, each a
   subpackage, importing only DOWNWARD (pinned by
@@ -76,10 +77,16 @@ lives outside it:
     `harvest/`, `autointerp/`, `clustering/`, `postprocess/`, `investigate/`,
     `topology/`, `adapters/`, `migrations/`, `infra/`. Library-level tests in
     `param_decomp/tests/`.
-- **`param-decomp-goodfire`** (`param_decomp_goodfire/`, private) — the Goodfire-cluster
-  launchers only: `pd-lm` (`launch_lm.py`) and `pd-pretrain` (`launch_pretrain.py`) —
-  snapshot + pinned launch config + sbatch across 8-GPU nodes with per-node job-side
-  venvs. Pure wrappers: everything they invoke is library code.
+- **`param-decomp-goodfire`** (`param_decomp_goodfire/`, private) — ALL the infra fit:
+  the SLURM layer (`slurm.py` sbatch rendering/submission, `git.py` snapshot
+  code-shipping), the training launchers (`pd-lm` = `launch_lm.py`, `pd-pretrain` =
+  `launch_pretrain.py` — snapshot + pinned launch config + sbatch across whole nodes
+  with per-node job-side venvs), the post-pipeline submitters (`submit/`: `pd-harvest`,
+  `pd-autointerp`, `pd-intruder`, `pd-clustering`, `pd-investigate`) and the
+  `postprocess/` dependency-chained pipeline (`pd-postprocess`), and the cluster
+  environment (`env.py`: data mount, team artifact namespace, partition — exported
+  into every job as `PARAM_DECOMP_OUT_DIR`, which is all the library reads). Pure
+  wrappers: everything they invoke is library code (worker module mains).
 
 `make install-dev` syncs both editably via the uv workspace in the root `pyproject.toml`
 into the one `.venv`. The library's `pd-*` CLIs (toys + post-pipeline) live in the root
@@ -194,7 +201,6 @@ and returns JAX-native as the #10 torch->jax adapter.
   library over the toy targets (`param_decomp/targets/{tms,resid_mlp}.py`).
 - `param_decomp/{harvest,autointerp,clustering,investigate}/`
   — post-pipeline stages, each with its own CLAUDE.md.
-- `param_decomp/postprocess/` — orchestrates the post-pipeline stages.
 - `param_decomp/infra/` — settings, paths, slurm, wandb, sqlite, git, run_files,
   markdown, pydantic helpers.
 
@@ -203,7 +209,7 @@ and returns JAX-native as the #10 torch->jax adapter.
 | Module | CLAUDE.md | What it covers |
 |---|---|---|
 | `param_decomp/experiments/` | `param_decomp/experiments/CLAUDE.md` | LM `target.spec` schema, the offline prestage tool, JAX launch |
-| `param_decomp/postprocess/` | `param_decomp/postprocess/CLAUDE.md` | Pipeline orchestration: harvest → autointerp / intruder |
+| `param_decomp_goodfire/postprocess/` | `param_decomp_goodfire/postprocess/CLAUDE.md` | Pipeline orchestration: harvest → autointerp / intruder (private wrapper) |
 | `param_decomp/harvest/` | `param_decomp/harvest/CLAUDE.md` | Component-statistics collection pipeline |
 | `param_decomp/autointerp/` | `param_decomp/autointerp/CLAUDE.md` | LLM-based component interpretation |
 | `param_decomp/clustering/` | `param_decomp/clustering/CLAUDE.md` | Hierarchical clustering of components |
@@ -268,12 +274,9 @@ via `pd-lm`. Slow/plot eval is in-loop only (no CLI).
 | `pd-lm` | `experiments/lm/launch.py` | Launch a decomposition trainer run; config-driven via `runtime.launch` (`slurm` → snapshot + pinned launch config + sbatch across `dp//gpus_per_node` nodes, per-node job-side venv; `inline` → run here over exactly `dp` local devices) |
 | `pd-pretrain` | `experiments/lm/pretrain/launch.py` | Launch a pretrainer run; config-driven via `dp` (`dp=N` → sbatch; `dp=null` → inline) |
 | `pd-tms` / `pd-resid-mlp` | `experiments/{tms,resid_mlp}/run.py` | The CPU toy decomposition CLIs |
-| `pd-harvest` | `harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
-| `pd-autointerp` | `autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
-| `pd-clustering` / `pd-cluster-merge` / `pd-cluster-distances` | `clustering/scripts/` | Clustering ensemble / merge / consensus distances |
-| `pd-postprocess` | `postprocess/cli.py` | Unified postprocessing pipeline |
-| `pd-intruder` | `harvest/scripts/run_intruder_slurm_cli.py` | Submit intruder eval job |
-| `pd-investigate` | `investigate/scripts/run_slurm_cli.py` | Submit agent-investigation job |
+| `pd-cluster-merge` / `pd-cluster-distances` | `clustering/scripts/` | Clustering merge / consensus distances (in-process) |
+| `pd-harvest` / `pd-autointerp` / `pd-intruder` / `pd-clustering` / `pd-investigate` | `param_decomp_goodfire/submit/` | SLURM submitters for the pipeline stages (private wrapper) |
+| `pd-postprocess` | `param_decomp_goodfire/postprocess/cli.py` | Unified postprocessing pipeline, SLURM dependency-chained (private wrapper) |
 
 All `pd-*` run commands accept `--group <id>` (wandb group field, used for UI
 collapsing) and `--tags a,b,c` (wandb tags). Both no-op when `wandb:` is omitted from

@@ -1,5 +1,8 @@
 # Autointerp Module
 
+
+> The `pd-*` submitter for this stage lives in the private wrapper (`param_decomp_goodfire/submit/`); this package carries the in-job compute (worker module mains), which is what those submitters sbatch.
+
 LLM-based automated interpretation of PD components. Consumes pre-harvested data from `param_decomp/harvest/` (see `param_decomp/harvest/CLAUDE.md`).
 
 ## Usage

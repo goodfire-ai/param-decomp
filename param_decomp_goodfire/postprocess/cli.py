@@ -27,8 +27,8 @@ def main() -> None:
     import yaml
 
     from param_decomp.core.log import logger
-    from param_decomp.postprocess import postprocess
-    from param_decomp.postprocess.config import PostprocessConfig
+    from param_decomp_goodfire.postprocess import postprocess
+    from param_decomp_goodfire.postprocess.config import PostprocessConfig
 
     cfg = PostprocessConfig.from_file(args.config)
 
