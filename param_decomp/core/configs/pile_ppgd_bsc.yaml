@@ -166,7 +166,6 @@ pd:
   steps: 400000
 runtime:
   remat_recon_forwards: false
-  launch: slurm
   dp: 16
   sharding: zero1
 target:

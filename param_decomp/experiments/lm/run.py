@@ -13,7 +13,7 @@ call the engine. Process setup (`init_distributed`, the SIGTERM flag, the persis
 compilation cache, HF http hardening), config pinning, and SLURM-requeue shutdown all live
 here. The toy domains mirror this file under `experiments/{tms,resid_mlp}/run.py`.
 
-Process bring-up is enumerated on `runtime.launch`: `slurm` → one process per node under
+Process bring-up derives from the config topology: `dp > gpus_per_node` → one process per node under
 `jax.distributed` (`init_distributed`), every process computing the same global schedule
 and contributing its local batch slice; `inline` → this one process, over exactly the
 `runtime.dp` local devices it finds (`assert_inline_topology`).
@@ -104,6 +104,7 @@ from param_decomp.experiments.lm.config import (
 )
 from param_decomp.experiments.lm.load_run import build_target
 from param_decomp.infra.paths import DEFAULT_OUT_ROOT
+from param_decomp.infra.run_files import generate_run_id
 from param_decomp.targets.glu_transformer import hf_snapshot_dir
 
 
@@ -131,7 +132,7 @@ def _enable_hlo_dump(run_dir: Path) -> None:
     Must run BEFORE `init_distributed` — XLA reads `XLA_FLAGS` when the backend initializes,
     so a later mutation is ignored. Rank-gated via the generic `PD_RANK`
     hint (read pre-jax-init, only to pick the writer — NOT to decide distributedness, which
-    stays `runtime.launch`-driven; the launcher exports it per rank, absent = single
+    stays config-derived (dp vs gpus_per_node); the launcher exports it per rank, absent = single
     process) so a single rank writes; `xla_dump_hlo_module_re` filters to the big `*step*` modules to keep
     the dump to ~100s of MB. The buffer-assignment dump survives an exec-time OOM (compile
     completes first), so this is how we name the buffer that blows the allocator."""
@@ -566,18 +567,22 @@ def _pin_config_copy(run_dir: Path, name: str, source: Path) -> None:
         copy.write_text(source.read_text())
 
 
-def main(config: Path, run_id: str, out_root: Path = DEFAULT_OUT_ROOT) -> None:
+def main(config: Path, run_id: str | None = None, out_root: Path = DEFAULT_OUT_ROOT) -> None:
     config = Path(config)
     out_root = Path(out_root)
+    if run_id is None:
+        # Ad-hoc run-here invocation (`python -m param_decomp.experiments.lm.run <config>`):
+        # mint a fresh identity; `_pin_config_copy` below stages the config into the run
+        # dir exactly as a launcher would (resume an existing run by passing --run-id).
+        run_id = generate_run_id("param_decomp")
     built, _raw_cfg = load_config(config, run_id, out_root)
 
     install_sigterm_flag()
     _enable_hlo_dump(built.run.run_dir)
-    match built.runtime.launch:
-        case "slurm":
-            init_distributed(built.runtime.dp, built.runtime.gpus_per_node)
-        case "inline":
-            assert_inline_topology(built.runtime.dp)
+    if built.runtime.distributed:
+        init_distributed(built.runtime.dp, built.runtime.gpus_per_node)
+    else:
+        assert_inline_topology(built.runtime.dp)
     # Harden the cold-cache HF weight load against the 8N-rank startup burst before any
     # per-rank Hub call (no-op when huggingface_hub is absent / cache is pre-warmed).
     configure_hf_http_retries()

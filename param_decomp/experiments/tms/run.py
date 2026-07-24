@@ -228,7 +228,7 @@ def main(
     (built.run.run_dir / LAUNCH_CONFIG_FILENAME).write_text(
         yaml.safe_dump(schema_raw, sort_keys=False)
     )
-    assert built.runtime.launch == "inline", "pd-tms is the in-process CPU toy CLI"
+    assert not built.runtime.distributed, "pd-tms is single-process"
     assert_inline_topology(built.runtime.dp)
     mesh = hsdp_mesh()
     run_tms_decomposition(built, schema_raw, mesh)

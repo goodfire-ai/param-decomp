@@ -253,7 +253,7 @@ def main(
     (built.run.run_dir / LAUNCH_CONFIG_FILENAME).write_text(
         yaml.safe_dump(schema_raw, sort_keys=False)
     )
-    assert built.runtime.launch == "inline", "pd-resid-mlp is the in-process CPU toy CLI"
+    assert not built.runtime.distributed, "pd-resid-mlp is single-process"
     assert_inline_topology(built.runtime.dp)
     mesh = hsdp_mesh()
     run_resid_mlp_decomposition(built, schema_raw, mesh)

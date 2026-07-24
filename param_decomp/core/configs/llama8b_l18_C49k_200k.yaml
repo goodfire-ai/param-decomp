@@ -152,7 +152,6 @@ pd:
   steps: 200000
 runtime:
   remat_recon_forwards: false
-  launch: slurm
   dp: 32
   # L18-only: gate/up stack of 2 and down stack of 1 can't tile ÷replicate=4
   # (dp 32 = 4 nodes); ZeRO-1 those groups.

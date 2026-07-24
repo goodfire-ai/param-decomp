@@ -139,17 +139,14 @@ and `param_decomp/core/SPEC.md`. In one breath:
   (`param_decomp/experiments/lm/run.py`) — the LM composition root + only I/O layer:
   reads the canonical schema, builds the target / data loader / `ExperimentConfig`,
   then calls the engine. Orbax sharded checkpoints; SIGTERM → save → SLURM requeue → resume.
-- **Launch via the private wrapper's `pd-lm <config.yaml>`** (`param-decomp-goodfire`, login-node submission wrapper;
-  CONFIG-DRIVEN via `runtime.launch` + `runtime.dp`, no `--nodes` / `--local` flags).
-  `launch: slurm` (`dp` a multiple of `gpus_per_node`) → snapshots the tree to
-  `refs/runs/snapshot/<id>` (pushed to origin best-effort, as a provenance backup),
-  stages the run dir (`launch_config.yaml` + `.env`), and sbatches
-  `python -m param_decomp.experiments.lm.run` across `dp // gpus_per_node` nodes — each
-  node shallow-fetches the snapshot from the submitting checkout's shared-FS git dir
-  into node-local `/tmp` and builds the driver-gated CUDA venv at job start.
-  `launch: inline` → runs the trainer in the current allocation over exactly `dp` local
-  devices (asserted at startup): `dp: 1` is the smoke/debug mode, `dp: 8` an external
-  scheduler's own 8-GPU job wrapping `pd-lm`.
+- **Topology derives from config; submission is a verb.** `dp <= gpus_per_node` → one
+  process over exactly `dp` local devices (asserted at startup); `dp > gpus_per_node` →
+  one process per node via `jax.distributed`. The private wrapper's
+  `pd-lm <config.yaml>` SUBMITS (snapshot → pinned launch config → sbatch across
+  `dp // gpus_per_node` nodes, per-node job-side venv);
+  `python -m param_decomp.experiments.lm.run <config>` runs HERE in the current
+  allocation (an external scheduler like Silico owns submission and invokes the module
+  inside its own job).
 
 ## Public API (consumer substrate)
 

@@ -1,34 +1,16 @@
-"""Launch a JAX decomposition run (`python -m param_decomp.experiments.lm.run`).
+"""Submit a JAX decomposition run to SLURM (`python -m param_decomp.experiments.lm.run`).
 
-CONFIG-DRIVEN: the launch mode is the config's `runtime.launch` — no `--nodes` /
-`--local` flags. `launch: inline` → run the trainer HERE, in this process's allocation
-(no SLURM submission; the trainer asserts it finds exactly `runtime.dp` local devices) —
-the mode for single-device smokes (`dp: 1`) and for an external scheduler that owns SLURM
-submission and wraps `pd-lm` inside its own job (`dp` = the job's GPUs). `launch: slurm`
-→ submit across `nodes = dp // 8` nodes (8 GPUs each, one srun task per node claiming
-all 8 GPUs).
-
-The SLURM path mints the `p-<8hex>` run id, snapshots the working tree to
-`refs/runs/snapshot/<id>` (pushed to origin best-effort, as a provenance backup), stages
-the run dir with the pinned (group/tags-stamped) `launch_config.yaml` + `.env` (the
-copies the job — and every requeue — reads), and sbatches. Each node then builds its own
-workspace at job start: shallow-fetch the snapshot from the submitting checkout's
-shared-FS git dir into node-local `/tmp`, `uv sync` with the driver-gated CUDA extra,
-exec the trainer. Nothing is built at submit time and no shared-FS workspace exists to
-leak or clean up; requeues depend only on shared FS, never on GitHub reachability.
-
-The rank env (XLA flags, NCCL/host-memory knobs, `PD_*` profiling toggles) is rendered from
-the config's `runtime.launch_env` (single source of truth, defaults in `LaunchEnv`), plus
-`LD_LIBRARY_PATH` computed in-job from the freshly-built venv. So a run's
-`launch_config.yaml` fully captures the environment it ran with, and A/B-ing a flag is a
-config edit, not a launcher edit.
+Submission is this command's whole job: mint the `p-` run id, snapshot the tree, stage
+the run dir (pinned launch config + `.env`), and sbatch `dp // gpus_per_node` whole
+nodes (topology comes from the config — no `--nodes` flags). To run a config HERE, in
+the current allocation (single-device smokes, or an external scheduler that owns
+submission), invoke the module directly:
+`python -m param_decomp.experiments.lm.run <config> [--out-root ...]`.
 """
 
-import os
 import shlex
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import fire
@@ -149,9 +131,10 @@ def main(
     tags: str | tuple[str, ...] | None = None,
     comment: str | None = None,
 ) -> None:
-    """Launch a decomposition trainer (`param_decomp.experiments.lm.run`) run. The mode
-    is the config's `runtime.launch`: `inline` runs the trainer in this process's
-    allocation; `slurm` self-submits.
+    """Submit a decomposition trainer (`param_decomp.experiments.lm.run`) run to SLURM.
+    Submission is this command's whole job — to run a config HERE, in the current
+    allocation, invoke the module directly:
+    `python -m param_decomp.experiments.lm.run <config> [--out-root ...]`.
 
     Args:
         config_path: Single self-contained run yaml (the canonical schema + top-level
@@ -184,25 +167,17 @@ def main(
     else:
         tag_list = [str(t).strip() for t in tags]
 
-    match cfg.runtime.launch:
-        case "inline":
-            assert run_id is None, (
-                "--run-id resubmission is a SLURM concept; an inline run is not staged "
-                "for requeue — re-run the same pinned launch config to resume in place"
-            )
-            _run_inline(config, run_name, group, tag_list)
-        case "slurm":
-            _submit_slurm(
-                cfg,
-                config,
-                run_name,
-                time=time,
-                qos=qos,
-                run_id=run_id,
-                group=group,
-                tags=tag_list,
-                comment=comment,
-            )
+    _submit_slurm(
+        cfg,
+        config,
+        run_name,
+        time=time,
+        qos=qos,
+        run_id=run_id,
+        group=group,
+        tags=tag_list,
+        comment=comment,
+    )
 
 
 def _submit_slurm(
@@ -273,31 +248,6 @@ def _submit_slurm(
     if wandb_url is not None:
         summary["WandB run URL"] = wandb_url
     logger.values(summary)
-
-
-def _run_inline(config: Path, run_name: str, group: str | None, tags: list[str]) -> None:
-    """The `launch: inline` arm: mint a run id, pin the launch config into the run dir, and
-    run the trainer synchronously in this allocation (a child of this CLI — fresh process
-    so the jax backend initializes in the trainer, same machine, inherited environment).
-    The trainer asserts the declared `runtime.dp` matches the local devices it finds."""
-    run_id = generate_run_id("param_decomp")
-    launch_config = _write_run_dir(config, run_id, group, tags) / LAUNCH_CONFIG_FILENAME
-    logger.section(f"pd-lm inline: {run_name} ({run_id})")
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "param_decomp.experiments.lm.run",
-            str(launch_config),
-            "--run-id",
-            run_id,
-            "--out-root",
-            str(GENV.output_root),
-        ],
-        cwd=GENV.repo_root,
-        check=True,
-        env=os.environ.copy(),
-    )
 
 
 def _validate_config(config_path: Path) -> tuple[LMExperimentConfig, str]:

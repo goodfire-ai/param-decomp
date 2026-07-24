@@ -141,11 +141,10 @@ the launcher. The wrapper's `param_decomp_goodfire/launch_lm.py::_render_rank_en
 renders `LaunchEnv.as_env()` into the exported bash block; `LD_LIBRARY_PATH` is computed
 in-job from the freshly-built venv (machine-specific) and stays in the launcher. A
 profiling run is a config (`runtime.launch_env.profile`), not an env hack. Applies to
-the SLURM path only; the `launch: inline` path inherits the caller's environment.
+the SLURM path only; a run-here module invocation inherits the caller's environment.
 
 ```yaml
 runtime:
-  launch: slurm
   dp: 32
   launch_env:
     xla_flags: { gpu_enable_command_buffer: "", gpu_autotune_level: "0" }

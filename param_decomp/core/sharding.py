@@ -29,8 +29,8 @@ from param_decomp.core.model import DecomposedModel
 
 
 def init_distributed(dp: int, gpus_per_node: int) -> None:
-    """The `launch: slurm` process bring-up: `jax.distributed` over `dp // gpus_per_node`
-    nodes. Distributedness is config-driven (`runtime.launch`), NEVER inferred from ambient
+    """The multi-node process bring-up: `jax.distributed` over `dp // gpus_per_node`
+    nodes. Distributedness is config-DERIVED (`dp > gpus_per_node`), NEVER inferred from ambient
     SLURM env — `SLURM_PROCID` is present in every process on a SLURM box (incl. a pytest
     worker), so sniffing it would wrongly fire `jax.distributed.initialize` mid-test.
 
@@ -40,7 +40,7 @@ def init_distributed(dp: int, gpus_per_node: int) -> None:
     cluster env claims only ONE device per process by default, so we pass the full local
     device list explicitly (`CUDA_VISIBLE_DEVICES`, set to all 8 by `--gpus-per-node=8`).
     The realized total device count must equal `dp`. This avoids the 8-tasks-per-node srun
-    placement that the cluster's `CR_Pack_Nodes` selection packs onto one node. `launch` /
+    placement that the cluster's `CR_Pack_Nodes` selection packs onto one node. `dp` /
     `dp` (config) decide distributedness and world size; SLURM env only supplies the rank.
     """
     assert dp % gpus_per_node == 0, f"dp={dp} must be a multiple of {gpus_per_node} (GPUs/node)"
@@ -56,15 +56,16 @@ def init_distributed(dp: int, gpus_per_node: int) -> None:
 
 
 def assert_inline_topology(dp: int) -> None:
-    """The `launch: inline` startup gate: one process (no `jax.distributed`) whose local
+    """The single-process startup gate (`dp <= gpus_per_node`): one process (no
+    `jax.distributed`) whose local
     devices ARE the whole declared world. Lives at the config-consuming entry, NOT in
     `hsdp_mesh` — the CPU-sim tests deliberately call `hsdp_mesh` bare under forced host
     device counts."""
     assert jax.process_count() == 1, (
-        f"launch: inline is a single-process mode, found {jax.process_count()} processes"
+        f"a sub-node world (dp <= gpus_per_node) is single-process, found {jax.process_count()} processes"
     )
     assert jax.device_count() == dp, (
-        f"runtime.dp={dp} != local device count {jax.device_count()} — `launch: inline` "
+        f"runtime.dp={dp} != local device count {jax.device_count()} — a sub-node world "
         f"runs one process over exactly the devices the config declares; an ambient "
         f"mismatch is a mis-sized allocation, never absorbed"
     )

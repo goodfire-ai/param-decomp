@@ -82,7 +82,6 @@ pd:
   faithfulness_warmup_weight_decay: 0.0
 runtime:
   remat_recon_forwards: false
-  launch: inline
   dp: 1
   sharding: ddp
 cadence:

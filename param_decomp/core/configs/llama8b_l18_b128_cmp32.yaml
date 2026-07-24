@@ -120,7 +120,6 @@ data:
   streaming: false
 runtime:
   remat_recon_forwards: true
-  launch: inline
   dp: 1
   sharding: zero1
 wandb:

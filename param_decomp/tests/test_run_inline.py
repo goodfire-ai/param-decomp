@@ -1,4 +1,5 @@
-"""End-to-end `launch: inline` coverage through the REAL `pd-lm` path.
+"""End-to-end run-here coverage through the REAL module entry
+(`python -m param_decomp.experiments.lm.run`).
 
 `launch.main` validates the config (placement claims at the declared topology), pins it
 into a fresh run dir, and runs the trainer as a child process of this allocation — which
@@ -9,7 +10,7 @@ shards, a real train step, and the final-step orbax checkpoint.
 """
 
 import subprocess
-from dataclasses import replace
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -19,9 +20,6 @@ import pyarrow.parquet as pq
 import pytest
 import yaml
 from safetensors.numpy import save_file
-
-import param_decomp_goodfire.launch_lm as launch
-from param_decomp_goodfire.env import GENV
 
 _VOCAB = 64
 _D = 8
@@ -122,7 +120,7 @@ def _write_run_config(path: Path, shards_dir: Path, dp: int) -> None:
                 {"type": "StochasticReconLoss", "coeff": 1.0},
             ],
         },
-        "runtime": {"launch": "inline", "dp": dp, "sharding": "zero1"},
+        "runtime": {"dp": dp, "sharding": "zero1"},
         "cadence": {"train_log_every": 1, "save_every": 2, "keep_last_n_checkpoints": 1},
         "target": {
             "weights_dtype": "bfloat16",
@@ -147,18 +145,29 @@ def _write_run_config(path: Path, shards_dir: Path, dp: int) -> None:
     path.write_text(yaml.safe_dump(config))
 
 
+def _run_module(config: Path, out_root: Path) -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "param_decomp.experiments.lm.run",
+            str(config),
+            "--out-root",
+            str(out_root),
+        ],
+        check=True,
+    )
+
+
 @pytest.fixture
 def inline_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Out dir + pretrain cache + shards. The launcher's patched `GENV.output_root` is the
-    single root: submit validation resolves the pretrain cache through it, and the trainer
-    child receives it as an explicit `--out-root` (the env carries only the forced
-    4-device CPU topology)."""
+    """Out dir + pretrain cache + shards; the trainer child gets the root as an explicit
+    `--out-root` (the env carries only the forced 4-device CPU topology)."""
     out_dir = tmp_path / "out"
     _write_pretrain_cache(out_dir)
     _write_token_shards(tmp_path / "shards")
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("XLA_FLAGS", "--xla_force_host_platform_device_count=4")
-    monkeypatch.setattr(launch, "GENV", replace(GENV, output_root=out_dir))
     return tmp_path
 
 
@@ -168,7 +177,7 @@ def test_inline_launch_trains_on_all_local_devices(inline_setup: Path) -> None:
     config = tmp_path / "config.yaml"
     _write_run_config(config, tmp_path / "shards", dp=4)
 
-    launch.main(str(config))
+    _run_module(config, tmp_path / "out")
 
     (run_dir,) = (tmp_path / "out" / "runs").iterdir()
     assert (run_dir / "launch_config.yaml").exists()
@@ -186,4 +195,4 @@ def test_inline_launch_refuses_a_mis_sized_allocation(inline_setup: Path) -> Non
     _write_run_config(config, tmp_path / "shards", dp=2)
 
     with pytest.raises(subprocess.CalledProcessError):
-        launch.main(str(config))
+        _run_module(config, tmp_path / "out")

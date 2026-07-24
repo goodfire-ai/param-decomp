@@ -552,31 +552,32 @@ def test_arithmetic_ci_grid_metric_builds_to_arithmetic_eval_config():
     )
 
 
-def test_launch_mode_and_dp_are_enumerated_and_fail_closed():
+def test_topology_is_derived_and_fails_closed():
     from param_decomp.core.configs import RuntimeConfig
 
     def runtime(**overrides: Any) -> RuntimeConfig:
         return RuntimeConfig.model_validate({"sharding": "zero1", **overrides})
 
-    # slurm allocates whole nodes; the node shape is itself config (default 8)
-    assert runtime(launch="slurm", dp=32).dp == 32
-    for bad_dp in (1, 4, 12):
-        with pytest.raises(ValidationError, match="multiple of gpus_per_node"):
-            runtime(launch="slurm", dp=bad_dp)
-    assert runtime(launch="slurm", dp=4, gpus_per_node=4).dp == 4
-
-    # inline runs one process over exactly dp local devices — any dp >= 1
+    # a sub-node world is one process over exactly dp local devices
     for dp in (1, 2, 8):
-        assert runtime(launch="inline", dp=dp).launch == "inline"
+        assert not runtime(dp=dp).distributed
 
-    # both fields are REQUIRED authored decisions, and `dp: null` is not a mode
+    # a multi-node world is one process per whole node; the node shape is itself config
+    assert runtime(dp=32).distributed
+    for bad_dp in (12, 20):
+        with pytest.raises(ValidationError, match="multiple of gpus_per_node"):
+            runtime(dp=bad_dp)
+    assert runtime(dp=8, gpus_per_node=4).distributed
+    assert not runtime(dp=4, gpus_per_node=4).distributed
+
+    # dp is REQUIRED, and `dp: null` is not a mode
     with pytest.raises(ValidationError):
-        runtime(dp=8)
+        runtime()
     with pytest.raises(ValidationError):
-        runtime(launch="inline")
-    with pytest.raises(ValidationError):
-        runtime(launch="inline", dp=None)
-    # the mode vocabulary is closed
+        runtime(dp=None)
+
+    # the deleted launch field: stored pins parse (shim strips it); junk refuses
+    assert runtime(launch="slurm", dp=32).dp == 32
     with pytest.raises(ValidationError):
         runtime(launch="local", dp=1)
 
@@ -592,7 +593,7 @@ def test_placement_table_parses_typed_and_fails_closed():
         },
         "activations": {"batch": ["replicate", "fsdp"], "C": "tp"},
     }
-    runtime = RuntimeConfig.model_validate({"launch": "inline", "dp": 1, "sharding": table})
+    runtime = RuntimeConfig.model_validate({"dp": 1, "sharding": table})
     assert isinstance(runtime.sharding, PlacementTableConfig)
     assert runtime.sharding.params.zero1 is not None
 
