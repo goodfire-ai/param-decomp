@@ -1,9 +1,12 @@
 """Launch a JAX decomposition run (`python -m param_decomp.experiments.lm.run`).
 
-CONFIG-DRIVEN: the launch mode is a pure function of `runtime.dp` in the run config — no
-`--nodes` / `--local` flags. `dp is None` → run the trainer INLINE in the current process
-(single device, no SLURM; smoke / debug). `dp is not None` → submit to SLURM across
-`nodes = dp // 8` nodes (8 GPUs each, one srun task per node claiming all 8 GPUs).
+CONFIG-DRIVEN: the launch mode is the config's `runtime.launch` — no `--nodes` /
+`--local` flags. `launch: inline` → run the trainer HERE, in this process's allocation
+(no SLURM submission; the trainer asserts it finds exactly `runtime.dp` local devices) —
+the mode for single-device smokes (`dp: 1`) and for an external scheduler that owns SLURM
+submission and wraps `pd-lm` inside its own job (`dp` = the job's GPUs). `launch: slurm`
+→ submit across `nodes = dp // 8` nodes (8 GPUs each, one srun task per node claiming
+all 8 GPUs).
 
 The SLURM path mints the `p-<8hex>` run id, snapshots the working tree to
 `refs/runs/snapshot/<id>` (pushed to origin best-effort, as a provenance backup), stages
@@ -143,20 +146,21 @@ def main(
     comment: str | None = None,
 ) -> None:
     """Launch a decomposition trainer (`param_decomp.experiments.lm.run`) run. The mode
-    (inline vs SLURM) is a pure function of the config's `runtime.dp`.
+    is the config's `runtime.launch`: `inline` runs the trainer in this process's
+    allocation; `slurm` self-submits.
 
     Args:
         config_path: Single self-contained run yaml (the canonical schema + top-level
-            `run_name`). `runtime.dp` declares the world size: `None` → run inline
-            (single device); `N` (a multiple of 8) → submit across `N // 8` nodes.
-            The `run_id` is minted here; the config is pinned as
-            `ENV.output_root/runs/<run_id>/launch_config.yaml` and the job reads
+            `run_name`). `runtime.launch` declares the mode and `runtime.dp` the world
+            size: `inline` → run here over `dp` local devices; `slurm` → submit across
+            `dp // gpus_per_node` nodes. The `run_id` is minted here; the config is pinned
+            as `ENV.output_root/runs/<run_id>/launch_config.yaml` and the job reads
             THAT copy, so this file is free to change after submit.
-        time: SLURM time limit.
-        qos: SLURM QoS (e.g. `opportunistic`); None is the normal QoS.
-        run_id: Resubmit an existing launch — reuses its pinned launch config (and
+        time: SLURM time limit (`launch: slurm` only).
+        qos: SLURM QoS (e.g. `opportunistic`); None is the normal QoS (`launch: slurm` only).
+        run_id: Resubmit an existing SLURM launch — reuses its pinned launch config (and
             identity). `group`/`tags` are ignored on resubmit (the pinned config
-            already carries them).
+            already carries them). Refused for `launch: inline`.
         group: wandb UI group (no-op when the config omits `wandb:`).
         tags: Comma-separated wandb tags (no-op when `wandb:` is omitted).
         comment: SLURM `--comment`; defaults to the wandb run URL (or run id).
@@ -176,20 +180,51 @@ def main(
     else:
         tag_list = [str(t).strip() for t in tags]
 
-    dp = cfg.runtime.dp
-    if dp is None:
-        _run_local(config, run_name, group, tag_list)
-        return
+    match cfg.runtime.launch:
+        case "inline":
+            assert run_id is None, (
+                "--run-id resubmission is a SLURM concept; an inline run is not staged "
+                "for requeue — re-run the same pinned launch config to resume in place"
+            )
+            _run_inline(config, run_name, group, tag_list)
+        case "slurm":
+            _submit_slurm(
+                cfg,
+                config,
+                run_name,
+                time=time,
+                qos=qos,
+                run_id=run_id,
+                group=group,
+                tags=tag_list,
+                comment=comment,
+            )
+
+
+def _submit_slurm(
+    cfg: LMExperimentConfig,
+    config: Path,
+    run_name: str,
+    *,
+    time: str,
+    qos: str | None,
+    run_id: str | None,
+    group: str | None,
+    tags: list[str],
+    comment: str | None,
+) -> None:
+    """The `launch: slurm` arm: mint the run id, snapshot the tree, stage the run dir
+    (pinned launch config + `.env`), and sbatch across `dp // gpus_per_node` whole nodes
+    (divisibility is the schema's `validate_launch_topology` claim)."""
     gpn = cfg.runtime.gpus_per_node
-    assert dp % gpn == 0, f"runtime.dp={dp} must be a multiple of runtime.gpus_per_node={gpn}"
-    nodes = dp // gpn
+    nodes = cfg.runtime.dp // gpn
 
     source_repo = snapshot_source_repo()
     if run_id is None:
         run_id = generate_run_id("param_decomp")
         snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=run_id)
         logger.info(f"Created git snapshot: {snapshot_ref} ({commit_hash[:8]})")
-        run_dir = _write_run_dir(config, run_id, group, tag_list)
+        run_dir = _write_run_dir(config, run_id, group, tags)
         _stage_env_file(run_dir)
     else:
         snapshot_ref = f"refs/runs/snapshot/{run_id}"
@@ -236,11 +271,14 @@ def main(
     logger.values(summary)
 
 
-def _run_local(config: Path, run_name: str, group: str | None, tags: list[str]) -> None:
-    """Mint a run id, pin the launch config into the run dir, and run the trainer inline."""
+def _run_inline(config: Path, run_name: str, group: str | None, tags: list[str]) -> None:
+    """The `launch: inline` arm: mint a run id, pin the launch config into the run dir, and
+    run the trainer synchronously in this allocation (a child of this CLI — fresh process
+    so the jax backend initializes in the trainer, same machine, inherited environment).
+    The trainer asserts the declared `runtime.dp` matches the local devices it finds."""
     run_id = generate_run_id("param_decomp")
     launch_config = _write_run_dir(config, run_id, group, tags) / LAUNCH_CONFIG_FILENAME
-    logger.section(f"pd-lm local: {run_name} ({run_id})")
+    logger.section(f"pd-lm inline: {run_name} ({run_id})")
     subprocess.run(
         [
             sys.executable,
@@ -258,9 +296,9 @@ def _run_local(config: Path, run_name: str, group: str | None, tags: list[str]) 
 
 def _validate_config(config_path: Path) -> tuple[LMExperimentConfig, str]:
     """Validate the not-yet-stamped single run config against the shared torch-free LM
-    schema, then fire the placement gate: for a `dp: N` config the sharding spec's
-    per-shape-group assignment and bidirectional claim are checked at that topology HERE,
-    on the login node, before any sbatch. `pd-lm` is LM-ONLY; the toy domains (TMS,
+    schema, then fire the placement gate: the sharding spec's per-shape-group assignment
+    and bidirectional claim are checked at the topology `runtime.{dp,tp}` declares HERE,
+    at submit validation, before any sbatch. `pd-lm` is LM-ONLY; the toy domains (TMS,
     ResidMLP) run on CPU in-process via `pd-tms` / `pd-resid-mlp`, never here. A
     hand-authored config must NOT carry `run_id` (minted at submit)."""
     raw = yaml.safe_load(config_path.read_text())

@@ -29,7 +29,7 @@ from param_decomp.core.log import setup_logger
 from param_decomp.core.model import Positionless
 from param_decomp.core.recon import build_loss_terms
 from param_decomp.core.run import run_decomposition_training
-from param_decomp.core.sharding import hsdp_mesh
+from param_decomp.core.sharding import assert_inline_topology, hsdp_mesh
 from param_decomp.core.train import TrainState
 from param_decomp.experiments import toy_uv_eval
 from param_decomp.experiments.config import (
@@ -95,7 +95,13 @@ def run_tms_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) 
     assert isinstance(target_cfg, tms.TMSTargetConfig)
     is_main = jax.process_index() == 0
 
-    tms_cfg = tms.TMSConfig(n_features=target_cfg.n_features, n_hidden=target_cfg.n_hidden)
+    tms_cfg = tms.TMSConfig(
+        n_features=target_cfg.n_features,
+        n_hidden=target_cfg.n_hidden,
+        n_hidden_layers=target_cfg.n_hidden_layers,
+        hidden_layer_init=target_cfg.hidden_layer_init,
+        init_bias_to_zero=target_cfg.init_bias_to_zero,
+    )
     if is_main:
         print(f"pretraining TMS target ({target_cfg.pretrain_steps} steps)...", flush=True)
     target = tms.pretrain_tms_target(
@@ -215,6 +221,8 @@ def main(config: str, group: str | None = None, tags: str | tuple[str, ...] | No
     (built.run.run_dir / LAUNCH_CONFIG_FILENAME).write_text(
         yaml.safe_dump(schema_raw, sort_keys=False)
     )
+    assert built.runtime.launch == "inline", "pd-tms is the in-process CPU toy CLI"
+    assert_inline_topology(built.runtime.dp)
     mesh = hsdp_mesh()
     run_tms_decomposition(built, schema_raw, mesh)
 

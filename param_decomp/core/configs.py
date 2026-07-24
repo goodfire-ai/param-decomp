@@ -667,6 +667,9 @@ AnyLossMetricConfig = Annotated[
 ]
 
 
+LaunchMode = Literal["slurm", "inline"]
+
+
 class ProfileConfig(BaseConfig):
     """Profiling/instrumentation toggles the trainer (`run.py`) reads DIRECTLY off the config.
 
@@ -794,7 +797,7 @@ class PlacementTableConfig(BaseConfig):
 
 
 class RuntimeConfig(BaseConfig):
-    """Compute substrate: data-parallelism degree, rematerialization, and the launch-time
+    """Compute substrate: launch mode, world size, rematerialization, and the launch-time
     env/XLA-flag surface (`launch_env`).
 
     Perturbs numerics but doesn't change the algorithm.
@@ -816,16 +819,28 @@ class RuntimeConfig(BaseConfig):
             )
         return data
 
-    dp: PositiveInt | None = Field(
-        default=None,
+    launch: LaunchMode = Field(
         description=(
-            "Distributed world size — the number of data-parallel workers (= nodes × gpus_per_node on "
-            "the cluster). The SINGLE source of truth for distributedness: the launcher "
-            "submits across `dp // gpus_per_node` nodes and the trainer calls "
-            "`init_distributed(dp)`, which asserts the realized `jax.process_count()` "
-            "equals it. NEVER inferred from ambient SLURM env. None means a single device "
-            "(the launcher runs the trainer inline, no jax.distributed). The batch is "
-            "sharded data-parallel across the workers."
+            "How the trainer process(es) come up — REQUIRED, no default: launching is an "
+            "authored decision, never inferred. `slurm`: `pd-lm` submits the run across "
+            "`dp // gpus_per_node` whole nodes (one trainer process per node) and each "
+            "process brings up `jax.distributed` (`init_distributed`). `inline`: the "
+            "trainer runs in the launching process's allocation — no submission, no "
+            "`jax.distributed` — over exactly the `dp` local devices it finds (asserted "
+            "at startup): `dp: 1` is the single-device smoke; `dp: 8` is a run wrapped in "
+            "an external scheduler's own job (an orchestrator that owns SLURM submission "
+            "running `pd-lm` inside its allocation)."
+        ),
+    )
+    dp: PositiveInt = Field(
+        description=(
+            "World size — the total device count, THE single source of truth for topology, "
+            "NEVER inferred from ambient env (`SLURM_PROCID` is present in every process on "
+            "a SLURM box). `launch: slurm`: nodes × gpus_per_node, asserted against the "
+            "realized `jax.device_count()` after `jax.distributed` comes up. "
+            "`launch: inline`: the one process's local device count, asserted at startup "
+            "(`sharding.assert_inline_topology`). The batch shards data-parallel across "
+            "all `dp` devices."
         ),
     )
     gpus_per_node: PositiveInt = Field(
@@ -861,7 +876,7 @@ class RuntimeConfig(BaseConfig):
             "not tile ÷replicate is an error; `owner+zero1` = `owner` plus the "
             "`params.zero1` opt-in row, ZeRO-1-ing exactly those non-tiling groups "
             "intra-matrix; `ddp` = fully replicated. Each value is a BIDIRECTIONAL claim "
-            "checked at config build (placement.from_config, pre-sbatch for `dp: N`): "
+            "checked at config build (placement.from_config, pre-sbatch for `launch: slurm`): "
             "`owner` claims every group tiles; `owner+zero1` claims at least one does "
             "not — all-tiling under it is equally an error. Or an explicit "
             "`PlacementTableConfig` table (nested `params: {persist, zero1?, forward}` + "
@@ -944,13 +959,20 @@ class RuntimeConfig(BaseConfig):
     launch_env: LaunchEnv = Field(default_factory=LaunchEnv)
     """The pre-process env the SLURM launcher exports into each rank (XLA *client* / NCCL /
     glibc knobs — the env that must exist before backend init; NOT compiler flags, which go
-    via `compiler_options`). Ignored on the inline `dp is None` path (inherits the caller's
-    environment)."""
+    via `compiler_options`). Ignored on the `launch: inline` path (the trainer inherits the
+    caller's environment — an external scheduler's job owns its own env)."""
 
     @model_validator(mode="after")
-    def validate_dp(self) -> Self:
-        if self.dp is not None:
-            assert self.dp >= 2, "if set, dp must be at least 2 (pass None for single device)."
+    def validate_launch_topology(self) -> Self:
+        match self.launch:
+            case "slurm":
+                assert self.dp % self.gpus_per_node == 0, (
+                    f"launch: slurm allocates whole {self.gpus_per_node}-GPU nodes — "
+                    f"dp={self.dp} must be a multiple of gpus_per_node={self.gpus_per_node}. "
+                    f"A sub-node world runs `launch: inline` inside an existing allocation."
+                )
+            case "inline":
+                pass  # any dp >= 1; the trainer asserts it equals the local device count
         return self
 
     @model_validator(mode="after")

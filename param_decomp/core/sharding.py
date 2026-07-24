@@ -28,24 +28,21 @@ from jax.sharding import PartitionSpec as P
 from param_decomp.core.model import DecomposedModel
 
 
-def init_distributed(dp: int | None, gpus_per_node: int) -> bool:
-    """Bring up `jax.distributed` iff `dp` is set. Distributedness is config-driven
-    (`runtime.dp`), NEVER inferred from ambient SLURM env — `SLURM_PROCID` is present in
-    every process on a SLURM box (incl. a pytest worker), so sniffing it would wrongly
-    fire `jax.distributed.initialize` mid-test.
+def init_distributed(dp: int, gpus_per_node: int) -> None:
+    """The `launch: slurm` process bring-up: `jax.distributed` over `dp // gpus_per_node`
+    nodes. Distributedness is config-driven (`runtime.launch`), NEVER inferred from ambient
+    SLURM env — `SLURM_PROCID` is present in every process on a SLURM box (incl. a pytest
+    worker), so sniffing it would wrongly fire `jax.distributed.initialize` mid-test.
 
-    `dp is None` → single device, no-op (return False). Otherwise the cluster recipe:
-    ONE process per node, each owning all its local GPUs (mirrors the torch torchrun
-    model — the launcher runs srun `--ntasks-per-node=1`). jax auto-detects the SLURM
-    topology (process_id = node rank, num_processes = node count) but its SLURM cluster
-    env claims only ONE device per process by default, so we pass the full local device
-    list explicitly (`CUDA_VISIBLE_DEVICES`, set to all 8 by `--gpus-per-node=8`). The
-    realized total device count must equal `dp`. This avoids the 8-tasks-per-node srun
-    placement that the cluster's `CR_Pack_Nodes` selection packs onto one node. `dp`
-    (config) decides distributedness; SLURM env only supplies the topology.
+    The cluster recipe: ONE process per node, each owning all its local GPUs (mirrors the
+    torch torchrun model — the launcher runs srun `--ntasks-per-node=1`). jax auto-detects
+    the SLURM topology (process_id = node rank, num_processes = node count) but its SLURM
+    cluster env claims only ONE device per process by default, so we pass the full local
+    device list explicitly (`CUDA_VISIBLE_DEVICES`, set to all 8 by `--gpus-per-node=8`).
+    The realized total device count must equal `dp`. This avoids the 8-tasks-per-node srun
+    placement that the cluster's `CR_Pack_Nodes` selection packs onto one node. `launch` /
+    `dp` (config) decide distributedness and world size; SLURM env only supplies the rank.
     """
-    if dp is None:
-        return False
     assert dp % gpus_per_node == 0, f"dp={dp} must be a multiple of {gpus_per_node} (GPUs/node)"
     cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
     n_local = len([d for d in cuda_visible.split(",") if d]) or gpus_per_node
@@ -56,11 +53,37 @@ def init_distributed(dp: int | None, gpus_per_node: int) -> bool:
         f"CUDA_VISIBLE_DEVICES={cuda_visible!r}) — the config's declared world size must "
         f"match the launch topology (nodes × {gpus_per_node})"
     )
-    return True
+
+
+def assert_inline_topology(dp: int) -> None:
+    """The `launch: inline` startup gate: one process (no `jax.distributed`) whose local
+    devices ARE the whole declared world. Lives at the config-consuming entry, NOT in
+    `hsdp_mesh` — the CPU-sim tests deliberately call `hsdp_mesh` bare under forced host
+    device counts."""
+    assert jax.process_count() == 1, (
+        f"launch: inline is a single-process mode, found {jax.process_count()} processes"
+    )
+    assert jax.device_count() == dp, (
+        f"runtime.dp={dp} != local device count {jax.device_count()} — `launch: inline` "
+        f"runs one process over exactly the devices the config declares; an ambient "
+        f"mismatch is a mis-sized allocation, never absorbed"
+    )
 
 
 BATCH_AXES = ("replicate", "fsdp")
 """The full-mesh batch sharding: data shards over BOTH axes (per-rank batch = B/N)."""
+
+
+def _hsdp_shape(n_devices: int, tp: int, gpus_per_node: int) -> tuple[int, int, int]:
+    """`(replicate, fsdp, tp)` for a world of `n_devices` — the ONE shape rule both the
+    concrete and abstract mesh constructors share. A multiple-of-`gpus_per_node` world
+    splits into in-node blocks; a smaller world (an inline sub-node run, or CPU sim at a
+    non-multiple count) IS one in-node block (so the divisibility asserts still bite on
+    the real shard dims)."""
+    assert n_devices % tp == 0, f"device count {n_devices} not divisible by tp={tp}"
+    in_node = gpus_per_node if n_devices % gpus_per_node == 0 else n_devices
+    assert in_node % tp == 0, f"in-node block {in_node} not divisible by tp={tp}"
+    return (n_devices // in_node, in_node // tp, tp)
 
 
 def hsdp_mesh(tp: int = 1, gpus_per_node: int = 8) -> Mesh:
@@ -70,35 +93,18 @@ def hsdp_mesh(tp: int = 1, gpus_per_node: int = 8) -> Mesh:
     block in `jax.devices()` becomes one `(fsdp, tp)` plane. `replicate` (= n_devices //
     GPUS_PER_NODE) is the across-node axis. `tp = 1` is a degenerate `(replicate, fsdp, 1)`
     mesh — identical to the old 2-D mesh for any `("replicate","fsdp")`-only sharding, so
-    behaviour-preserving. At a single node `replicate` is 1; on CPU sim with a
-    non-multiple-of-8 device count the in-node block takes the full count (so the
-    divisibility asserts still bite on the real shard dims)."""
+    behaviour-preserving."""
     devices = np.array(jax.devices())
-    n = devices.size
-    assert n % tp == 0, f"device count {n} not divisible by tp={tp}"
-    in_node = gpus_per_node if n % gpus_per_node == 0 else n
-    assert in_node % tp == 0, f"in-node block {in_node} not divisible by tp={tp}"
-    return Mesh(
-        devices.reshape(n // in_node, in_node // tp, tp),
-        axis_names=("replicate", "fsdp", "tp"),
-    )
+    replicate, fsdp, tp = _hsdp_shape(devices.size, tp, gpus_per_node)
+    return Mesh(devices.reshape(replicate, fsdp, tp), axis_names=("replicate", "fsdp", "tp"))
 
 
-def hsdp_abstract_mesh(dp: int | None, tp: int, gpus_per_node: int) -> AbstractMesh:
-    """The mesh SHAPE a run config implies, with no devices — what config-build placement
-    validation (`placement.from_config`) runs against, so a `dp: N` config refuses on the
-    login node before sbatch. `dp = N` pins the full topology (`N // gpus_per_node`
-    nodes: replicate = N//gpn, fsdp = gpn//tp). `dp = None` (inline) pins only what the config itself
-    decides — replicate = 1 and `tp` — leaving fsdp at 1: the ambient device count is
-    unknowable at config build, and a 1-sized axis can never over-reject; the run's own
-    construction against the concrete `hsdp_mesh` validates the real axis."""
-    if dp is None:
-        shape = (1, 1, tp)
-    else:
-        assert dp % gpus_per_node == 0, f"dp={dp} must be a multiple of {gpus_per_node}"
-        assert gpus_per_node % tp == 0, f"tp={tp} must divide {gpus_per_node}"
-        shape = (dp // gpus_per_node, gpus_per_node // tp, tp)
-    return AbstractMesh(shape, ("replicate", "fsdp", "tp"))
+def hsdp_abstract_mesh(dp: int, tp: int, gpus_per_node: int) -> AbstractMesh:
+    """The mesh SHAPE a run config implies, with no devices — exactly the `hsdp_mesh` a
+    run realizing `dp` devices builds, since `dp` declares the device count under BOTH
+    launch modes. What config-build placement validation (`placement.from_config`) runs
+    against, so a config refuses at submit validation, before any allocation."""
+    return AbstractMesh(_hsdp_shape(dp, tp, gpus_per_node), ("replicate", "fsdp", "tp"))
 
 
 def place_via_shardings[T](tree: T, shardings: T) -> T:

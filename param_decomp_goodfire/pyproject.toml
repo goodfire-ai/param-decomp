@@ -2,7 +2,7 @@
 name = "param-decomp-goodfire"
 version = "0.0.1"
 description = "Goodfire-internal launchers for param-decomp: cluster-shaped SLURM submission wrappers around the generic library"
-requires-python = "==3.13.*"
+requires-python = ">=3.12,<3.14"
 license = { text = "MIT" }
 dependencies = [
     "param-decomp==0.0.1",

@@ -28,7 +28,7 @@ from param_decomp.core.log import setup_logger
 from param_decomp.core.model import Positionless
 from param_decomp.core.recon import build_loss_terms
 from param_decomp.core.run import run_decomposition_training
-from param_decomp.core.sharding import hsdp_mesh
+from param_decomp.core.sharding import assert_inline_topology, hsdp_mesh
 from param_decomp.core.slow_eval import dense_ci_error
 from param_decomp.core.train import TrainState
 from param_decomp.experiments import toy_uv_eval
@@ -244,6 +244,8 @@ def main(config: str, group: str | None = None, tags: str | tuple[str, ...] | No
     (built.run.run_dir / LAUNCH_CONFIG_FILENAME).write_text(
         yaml.safe_dump(schema_raw, sort_keys=False)
     )
+    assert built.runtime.launch == "inline", "pd-resid-mlp is the in-process CPU toy CLI"
+    assert_inline_topology(built.runtime.dp)
     mesh = hsdp_mesh()
     run_resid_mlp_decomposition(built, schema_raw, mesh)
 

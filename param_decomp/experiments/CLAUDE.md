@@ -141,10 +141,11 @@ fully captures the environment a run executed with — A/B a flag in the YAML, n
 bash block; `LD_LIBRARY_PATH` is computed at submit time (machine-specific) and stays in the
 launcher. A profiling run is a config (`runtime.launch_env.profile`), not an env hack. The
 defaults mirror the values the launcher used to hardcode. Applies to the SLURM path only;
-the inline `dp is None` path inherits the caller's environment.
+the `launch: inline` path inherits the caller's environment.
 
 ```yaml
 runtime:
+  launch: slurm
   dp: 32
   launch_env:
     xla_flags: { gpu_enable_command_buffer: "", gpu_autotune_level: "0" }

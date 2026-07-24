@@ -318,23 +318,28 @@ p-anneal schedule recomputes over the new `cfg.steps` from 0. A subsequent SLURM
 asserts matching sites (names + C) + ci-fn arch before the restore. Provenance flows into
 `config.yaml` + `wandb.config`. Launch as usual via `pd-lm <config.yaml>`.
 
-**Launch is CONFIG-DRIVEN via `runtime.dp`** (the private wrapper's `pd-lm <config.yaml>`): there are NO
-`--nodes` / `--local` / `--distributed` flags. The mode is a pure function of the config's
-`runtime.dp`:
-- `dp = null` → run the trainer INLINE in the current process (single device, no SLURM, no
-  workspace). For smoke / debug.
-- `dp = N` (a multiple of 8) → submit to SLURM across `nodes = N // 8` nodes, one srun
-  task per node. Mints the `p-` run id, snapshots the tree to `refs/runs/snapshot/<id>`
-  (pushed to origin best-effort, as a provenance backup), stages
-  `$PARAM_DECOMP_OUT_DIR/runs/<id>/` with the pinned config (wandb group / tags stamped)
-  + `.env`, and sbatches. Each node builds its own workspace at job start (shallow-fetch
-  the snapshot from the submitting checkout's shared-FS git dir into node-local `/tmp` +
-  the driver-gated CUDA venv: >= r580 → `cuda13`, else `cuda`) and execs
-  `python -m param_decomp.experiments.lm.run <launch_config> --run-id <id>` (no
-  rank/topology flags).
+**Launch is CONFIG-DRIVEN via `runtime.launch`** (the private wrapper's `pd-lm <config.yaml>`):
+there are NO `--nodes` / `--local` / `--distributed` flags. The mode is the config's
+enumerated `runtime.launch`, and `runtime.dp` (required) declares the world size under
+BOTH modes:
+- `launch: inline` → run the trainer in the current process's allocation (no SLURM
+  submission, no node workspace, no `jax.distributed`) over exactly `dp` local devices —
+  asserted at startup (`sharding.assert_inline_topology`), never absorbed from the
+  ambient allocation. `dp: 1` is the smoke/debug mode; `dp: 8` is an external scheduler
+  that owns SLURM submission and wraps `pd-lm` inside its own 8-GPU job.
+- `launch: slurm` (`dp` a multiple of `runtime.gpus_per_node`) → submit to SLURM across
+  `nodes = dp // gpus_per_node` nodes, one srun task per node. Mints the `p-` run id,
+  snapshots the tree to `refs/runs/snapshot/<id>` (pushed to origin best-effort, as a
+  provenance backup), stages `$PARAM_DECOMP_OUT_DIR/runs/<id>/` with the pinned config
+  (wandb group / tags stamped) + `.env`, and sbatches. Each node builds its own workspace
+  at job start (shallow-fetch the snapshot from the submitting checkout's shared-FS git
+  dir into node-local `/tmp` + the driver-gated CUDA venv: >= r580 → `cuda13`, else
+  `cuda`) and execs `python -m param_decomp.experiments.lm.run <launch_config> --run-id
+  <id>` (no rank/topology flags).
 
 Requeues rebuild the node workspaces and re-read the pinned launch config, never the live
-checkout. `--run_id` resubmits an existing run. Don't hand-write sbatch files.
+checkout. `--run_id` resubmits an existing SLURM run (refused for inline). Don't
+hand-write sbatch files.
 
 `main` enables JAX's persistent compilation cache
 (`_enable_persistent_compilation_cache`) at `$PARAM_DECOMP_OUT_DIR/xla_compilation_cache`
@@ -363,13 +368,15 @@ shared FS, which `$PARAM_DECOMP_OUT_DIR` already is.
 
 ## Gotchas
 
-- **`init_distributed(dp)` is config-driven, NEVER SLURM-sniffing** (`sharding.py`):
-  distributedness comes from `runtime.dp` ONLY. `dp is None` → no-op (single device);
-  `dp = N` → `jax.distributed.initialize` + assert `process_count() == N`. SLURM env
-  (`SLURM_LOCALID`) is read only for the rank, once `dp` has decided we're distributed.
-  Do NOT revert to inferring it from ambient `SLURM_PROCID` — that env is present in EVERY
-  process on a SLURM box (incl. a pytest worker), so sniffing it wrongly fires
-  `jax.distributed.initialize` mid-suite (the `test_pretrain` smoke failure).
+- **Process bring-up is config-driven, NEVER SLURM-sniffing** (`sharding.py`): the LM
+  composition root matches on `runtime.launch` — `slurm` → `init_distributed(dp)`
+  (`jax.distributed.initialize` + assert the realized device count equals `dp`);
+  `inline` → `assert_inline_topology(dp)` (one process, exactly `dp` local devices).
+  SLURM env (`SLURM_LOCALID`) is read only for the rank, once the config has decided
+  we're distributed. Do NOT revert to inferring it from ambient `SLURM_PROCID` — that
+  env is present in EVERY process on a SLURM box (incl. a pytest worker), so sniffing it
+  wrongly fires `jax.distributed.initialize` mid-suite (the `test_pretrain` smoke
+  failure).
 - **`shard_batch` topology** (`sharding.py`): uses `make_array_from_process_local_data`
   so it's correct for BOTH single-process-many-devices and multi-process-1-device.
   Do NOT revert to the per-`process_index()`-slice idiom — it silently replicates one

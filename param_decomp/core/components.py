@@ -12,13 +12,14 @@ one target.
 from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import cache
-from typing import ClassVar, Generic, TypeVar
+from typing import ClassVar, Generic
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array
+from typing_extensions import TypeVar
 
 
 @dataclass(frozen=True)

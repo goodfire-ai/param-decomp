@@ -120,7 +120,8 @@ data:
   streaming: false
 runtime:
   remat_recon_forwards: true
-  dp: null
+  launch: inline
+  dp: 1
   sharding: zero1
 wandb:
   project: param-decomp-llama
