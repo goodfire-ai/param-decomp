@@ -1,4 +1,4 @@
-# `param_decomp/postprocess/`
+# `param_decomp_goodfire/postprocess/`
 
 Unified SLURM submission for the full post-decomposition pipeline. One YAML, one
 `pd-postprocess <config.yaml>`, all stages submitted with proper job dependencies.
@@ -16,8 +16,8 @@ harvest                 (GPU array → merge, PD-only)
 Each stage's actual logic lives in its own module — postprocess just builds the SLURM
 dependency chain. Per-stage detail:
 
-- [`../harvest/CLAUDE.md`](../harvest/CLAUDE.md)
-- [`../autointerp/CLAUDE.md`](../autointerp/CLAUDE.md)
+- [`param_decomp/harvest/CLAUDE.md`](../../param_decomp/harvest/CLAUDE.md)
+- [`param_decomp/autointerp/CLAUDE.md`](../../param_decomp/autointerp/CLAUDE.md)
 - Intruder eval lives inside `harvest/` (see `param_decomp/harvest/intruder.py`)
   because it tests *decomposition* quality, not label quality. Scores go in
   `harvest.db`, not `interp.db`.
@@ -59,7 +59,7 @@ parse `"311644_1"` as the integer `3116441` since `_` is a Python numeric separa
 1. Snapshot the current git state to a `postprocess-<hex>` branch for reproducibility.
 2. Submit `harvest` (with optional upstream `--dependency`).
 3. For each enabled downstream stage, submit with the right `dependency_job_id`(s)
-   from the harvest / attribution merge jobs.
+   from the harvest merge job.
 4. Write `metadata.yaml` recording the resolved config, snapshot ref, and every
    submitted SLURM job ID.
 
@@ -73,7 +73,7 @@ just the convenience wrapper for "do all of it, in order, with dependencies."
 
 ## Adding a new stage
 
-1. Build the stage's own `submit_<stage>` function in the stage's `scripts/run_slurm.py`.
+1. Build the stage's own `submit_<stage>` function in `param_decomp_goodfire/submit/<stage>.py`.
    It should accept `snapshot_ref`, `dependency_job_id(s)`, and the stage's slurm config,
    and return a `SubmitResult`-like object with `.job_id`.
 2. Add the slurm-config field to `PostprocessConfig` (typed `<Stage>SlurmConfig | None`).

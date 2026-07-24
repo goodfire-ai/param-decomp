@@ -26,7 +26,7 @@ excluded from `make type` and not imported by any package.
 dependency of the root `param-decomp` distribution (CPU jax base); the cluster CUDA
 wheels come from a `[cuda]` extra (`uv sync --extra cuda`), which the per-run launch
 workspace installs. Use `make install-dev`, never a bare `uv sync` (it would skip the
-lab dev deps).
+private wrapper).
 
 ## Project overview
 
@@ -74,7 +74,7 @@ library is the deliverable — everything in it is written to be shippable:
   - The composition/consumer layers (the former lab, merged in): `experiments/` (the
     per-domain composition roots + YAML authoring schemas — `python -m
     param_decomp.experiments.lm.run <config.yaml>` is the LM in-job entry),
-    `harvest/`, `autointerp/`, `clustering/`, `postprocess/`, `investigate/`,
+    `harvest/`, `autointerp/`, `clustering/`, `investigate/`,
     `topology/`, `adapters/`, `migrations/`, `infra/`. Library-level tests in
     `param_decomp/tests/`.
 - **`param-decomp-goodfire`** (`param_decomp_goodfire/`, private) — ALL the infra fit:
@@ -89,9 +89,12 @@ library is the deliverable — everything in it is written to be shippable:
   wrappers: everything they invoke is library code (worker module mains).
 
 `make install-dev` syncs both editably via the uv workspace in the root `pyproject.toml`
-into the one `.venv`. The library's `pd-*` CLIs (toys + post-pipeline) live in the root
-`pyproject.toml`; only `pd-lm` / `pd-pretrain` live in the private wrapper. (Slow/plot
-eval is in-loop only — there is no `pd-slow-eval` CLI.)
+into the one `.venv`. The library's `pd-*` CLIs are the in-process, scheduler-free ones
+(root `pyproject.toml`: `pd-tms` / `pd-resid-mlp` / `pd-cluster-merge` /
+`pd-cluster-distances`); every SLURM submitter (`pd-lm`, `pd-pretrain`, `pd-harvest`,
+`pd-autointerp`, `pd-intruder`, `pd-clustering`, `pd-investigate`, `pd-postprocess`)
+lives in the private wrapper's. (Slow/plot eval is in-loop only — there is no
+`pd-slow-eval` CLI.)
 
 ## The library rule
 
@@ -114,17 +117,17 @@ documents a generic contract (e.g. SIGTERM→save semantics), never a dependency
 trainer is faster and is what we run; the torch trainer is preserved as the *semantic
 oracle* at git tag `torch-oracle`).
 
-The trainer lives in `param_decomp/` (the core of the root `param-decomp` distribution,
-the one venv). The semantics source of truth is its `SPEC.md` (normative pseudocode +
-numbered invariants, grounded in the torch oracle — JAX **conforms** to it). For the real
-entry points, read `param_decomp/CLAUDE.md` and `SPEC.md`. In one breath:
+The trainer lives in `param_decomp/core/`. The semantics source of truth is its
+`SPEC.md` (normative pseudocode + numbered invariants, grounded in the torch oracle —
+JAX **conforms** to it). For the real entry points, read `param_decomp/core/CLAUDE.md`
+and `param_decomp/core/SPEC.md`. In one breath:
 
-- **`DecomposedModel`** (`param_decomp/model.py`) — THE model interface: ordered `sites` +
+- **`DecomposedModel`** (`param_decomp/core/model.py`) — THE model interface: ordered `sites` +
   pure fns (`clean_output` / `read_activations` / `masked_output` / `weight_deltas`) on an
   `eqx.Module` carrying the frozen target weights as fields (the trainable `vu` is an
   explicit method arg). Generic over vendored LM targets. There is one recon
   semantics: chunkwise masking through the full token-input forward, KL on final logits.
-- **`run_decomposition_training(...)`** (`param_decomp/run.py`) — the generic ENGINE: the
+- **`run_decomposition_training(...)`** (`param_decomp/core/run.py`) — the generic ENGINE: the
   one train loop every target runs through (init/restore/finetune/faith-warmup, the
   recon-grid step factory, orbax checkpointing, schedules, metrics, in-loop slow eval,
   SIGTERM-save). A pure library — no `main()`, reads no YAML; takes built objects.
@@ -143,13 +146,14 @@ entry points, read `param_decomp/CLAUDE.md` and `SPEC.md`. In one breath:
   `launch: inline` → runs the trainer in the current allocation over exactly `dp` local
   devices (asserted at startup): `dp: 1` is the smoke/debug mode, `dp: 8` an external
   scheduler's own 8-GPU job wrapping `pd-lm`.
-  `lab → param_decomp` is a fine dependency; only `param_decomp → lab` is forbidden.
 
 ## Public API (consumer substrate)
 
 Alongside the trainer, `param_decomp/` exposes a thin substrate the **consumers**
 (harvest / autointerp / clustering / intruder) lean on. Import names from where they're
-defined — no package-level re-exports, `__init__.py` files are bare:
+defined — no package-level re-exports; `__init__.py` files are bare except two
+deliberate exceptions (`topology/__init__.py` re-exports `path_schema_for_model_type`;
+`adapters/__init__.py` defines the adapter constructors):
 
 ```python
 from param_decomp.core.configs import Cadence, LossMetricConfig, PDConfig, RuntimeConfig
@@ -181,7 +185,7 @@ and returns JAX-native as the #10 torch->jax adapter.
 
 ## Where things live
 
-- `param_decomp/` — the JAX trainer core. The pydantic config SCHEMA (`base_config.py` =
+- `param_decomp/core/` — the JAX trainer engine. The pydantic config SCHEMA (`base_config.py` =
   `BaseConfig` / `Probability`; `schedule.py`; `configs.py` = routing +
   the explicit (toy) site spec + loss + eval-metric configs + `PDConfig` / `RuntimeConfig`
   / `Cadence` / `WandbConfig` / `ResumeProvenance` + the wandb-shaping helpers; the
@@ -194,13 +198,14 @@ and returns JAX-native as the #10 torch->jax adapter.
   `checkpoint.py` / `sharding.py` / `init_placed.py` / `eval.py` / `slow_eval.py` /
   `arithmetic_eval.py` + `log.py`) plus `configs/`
   (the self-contained run yamls) and `tests/`. The concrete targets live in the sibling
-  `param_decomp/targets/` distribution (`glu_transformer.py` +
+  subpackage `param_decomp/targets/` (`glu_transformer.py` +
   `{llama8b,qwen3_8b}.py` family files, `llama_simple_mlp.py`, the toys
   `{tms,resid_mlp}.py`; its `tests/` holds the frozen torch↔JAX equivalence goldens and
   the other parity suites). The torch oracle lives at git tag `torch-oracle`.
-- `pretrain/` (repo-root sibling) — the in-house target-LM pretrainer (`pretrain.train`):
-  trainable equinox archs whose `state_dict()` keys the decomposition loader reads.
-- `vendored_jax/` (repo-root sibling) — bit-parity JAX Llama / GPT-2 archs the trainer
+- `param_decomp/pretrain/` — the in-house target-LM pretrainer (`python -m
+  param_decomp.pretrain.train`): trainable equinox archs whose `state_dict()` keys the
+  decomposition loader reads.
+- `param_decomp/vendored_jax/` — bit-parity JAX Llama / GPT-2 archs the trainer
   decomposes.
 - `param_decomp/adapters/` — `JaxPDAdapter`: torch-free autointerp/clustering metadata
   for a JAX run, keyed off `experiments.lm.load_run.run_metadata` (config + cache, no
@@ -210,14 +215,16 @@ and returns JAX-native as the #10 torch->jax adapter.
   plus the shared YAML→`ExperimentConfig` conversion). `experiments/lm/`: `run.py`
   (the LM composition root — `python -m param_decomp.experiments.lm.run`), `config.py`
   (LM schema + LM build), `load_run.py` (open a finished JAX run), `data.py` /
-  `prestage_tokenized.py` (offline tokenize → parquet shards), `jax_launch.py` (`pd-lm`).
+  `prestage_tokenized.py` (offline tokenize → parquet shards); `pd-lm` lives in the
+  private wrapper (`param_decomp_goodfire/launch_lm.py`).
   The TMS and ResidualMLP domains live under `experiments/{tms,resid_mlp}/`
   (`run.py` + `config.py`; `pd-tms` / `pd-resid-mlp`), calling the core engine as a
   library over the toy targets (`param_decomp/targets/{tms,resid_mlp}.py`).
 - `param_decomp/{harvest,autointerp,clustering,investigate}/`
   — post-pipeline stages, each with its own CLAUDE.md.
-- `param_decomp/infra/` — settings, paths, slurm, wandb, sqlite, git, run_files,
-  markdown, pydantic helpers.
+- `param_decomp/infra/` — settings, paths, wandb, sqlite, run_files, markdown,
+  tokenizer_display, pydantic helpers. (SLURM and git-snapshot code live in the private
+  wrapper.)
 
 ## Module pointers
 
@@ -234,7 +241,7 @@ and returns JAX-native as the #10 torch->jax adapter.
 > migration** to shed torch surface for the JAX-primary merge. It is slated for re-add,
 > likely as a JAX-native viewer. The reusable tokenizer-display helpers it once owned
 > (`AppTokenizer`, `escape_for_display`, `delimit_tokens`) now live in
-> `param_decomp/tokenizer_display.py`. See the removal PR for the full re-add log.
+> `param_decomp/infra/tokenizer_display.py`. See the removal PR for the full re-add log.
 
 ## Saved-run layout
 
@@ -252,10 +259,12 @@ PARAM_DECOMP_OUT_DIR/runs/<run_id>/
 Both training output and the W&B download cache write here. Per-stage subdirs are
 populated by their respective pipelines.
 
-`PARAM_DECOMP_OUT_DIR` defaults to `$DATA_MOUNT/artifacts/mechanisms/param-decomp` on
-cluster (e.g. `/mnt/data/artifacts/mechanisms/param-decomp` when `DATA_MOUNT=/mnt/data`)
-and the relative `out/` off cluster (no `DATA_MOUNT`). Set the `PARAM_DECOMP_OUT_DIR` env
-var to override either. Defined in `param_decomp/infra/settings.py`. (A stale shell
+`PARAM_DECOMP_OUT_DIR` is the only path env var the library reads
+(`param_decomp/infra/settings.py`; default: the relative `out/`). On cluster the
+wrapper's `GoodfireEnvironment` (`param_decomp_goodfire/env.py`) resolves it to
+`$DATA_MOUNT/artifacts/mechanisms/param-decomp` (e.g.
+`/mnt/data/artifacts/mechanisms/param-decomp` when `DATA_MOUNT=/mnt/data`) and exports
+it into every job. Set the env var to override either. (A stale shell
 may export a wrong value — e.g. an old `/mnt/polished-lake/...` — which overrides the
 correct default; check `echo $PARAM_DECOMP_OUT_DIR` if outputs land somewhere unexpected.)
 
@@ -264,10 +273,10 @@ correct default; check `echo $PARAM_DECOMP_OUT_DIR` if outputs land somewhere un
 | Command | Purpose |
 |---|---|
 | `make install-dev` | All workspace packages + dev deps + pre-commit, into the one `.venv` (see [Environment](#environment)) |
-| `make install` | Core only |
-| `make install-lab` | Core + lab, no dev deps |
+| `make install` | Library only, no dev deps |
+| `make install-lab` | Library + wrapper, no dev deps |
 | `make check` | basedpyright + ruff lint + format |
-| `make type` | basedpyright over the whole workspace (core + config + lab) |
+| `make type` | basedpyright over the whole workspace (library + wrapper) |
 | `make format` | ruff lint + format |
 | `make test` | Tests excluding slow |
 | `make test-all` | All tests |
@@ -276,8 +285,9 @@ Run a single test: `python -m pytest path/to/test_file.py::test_name`.
 
 ## CLI entry points
 
-The library's `pd-*` scripts (toys + post-pipeline) live in the root `pyproject.toml`;
-`pd-lm` / `pd-pretrain` in the private wrapper's. The composition roots are
+The library's `pd-*` scripts are the in-process ones (root `pyproject.toml`: `pd-tms` /
+`pd-resid-mlp` / `pd-cluster-merge` / `pd-cluster-distances`); every SLURM submitter
+lives in the private wrapper's. The composition roots are
 NOT console scripts — run them as modules (the goodfire launchers sbatch the same
 module-run command). LM training is `python -m param_decomp.experiments.lm.run` (JAX), launched
 via `pd-lm`. Slow/plot eval is in-loop only (no CLI).
@@ -285,9 +295,9 @@ via `pd-lm`. Slow/plot eval is in-loop only (no CLI).
 | Command | Entry point | Purpose |
 |---|---|---|
 | `python -m param_decomp.experiments.lm.run` | `param_decomp/experiments/lm/run.py` | The LM decomposition composition root (reads YAML, builds the target, calls the core engine; run inside a node workspace) |
-| `python -m param_decomp.pretrain.train` | `pretrain/train.py` | The core in-house target-LM pretrainer |
-| `pd-lm` | `experiments/lm/launch.py` | Launch a decomposition trainer run; config-driven via `runtime.launch` (`slurm` → snapshot + pinned launch config + sbatch across `dp//gpus_per_node` nodes, per-node job-side venv; `inline` → run here over exactly `dp` local devices) |
-| `pd-pretrain` | `experiments/lm/pretrain/launch.py` | Launch a pretrainer run; config-driven via `dp` (`dp=N` → sbatch; `dp=null` → inline) |
+| `python -m param_decomp.pretrain.train` | `param_decomp/pretrain/train.py` | The core in-house target-LM pretrainer |
+| `pd-lm` | `param_decomp_goodfire/launch_lm.py` | Launch a decomposition trainer run; config-driven via `runtime.launch` (`slurm` → snapshot + pinned launch config + sbatch across `dp//gpus_per_node` nodes, per-node job-side venv; `inline` → run here over exactly `dp` local devices) |
+| `pd-pretrain` | `param_decomp_goodfire/launch_pretrain.py` | Launch a pretrainer run; config-driven via `dp` (`dp=N` → sbatch; `dp=null` → inline) |
 | `pd-tms` / `pd-resid-mlp` | `experiments/{tms,resid_mlp}/run.py` | The CPU toy decomposition CLIs |
 | `pd-cluster-merge` / `pd-cluster-distances` | `clustering/scripts/` | Clustering merge / consensus distances (in-process) |
 | `pd-harvest` / `pd-autointerp` / `pd-intruder` / `pd-clustering` / `pd-investigate` | `param_decomp_goodfire/submit/` | SLURM submitters for the pipeline stages (private wrapper) |
@@ -303,12 +313,13 @@ the YAML.
 
 ## Files to skip when searching
 
-Use `param_decomp/` or `param_decomp/` as the search root, not the repo root.
+Use `param_decomp/` or `param_decomp_goodfire/` as the search root, not the repo root.
 
 Always skip: `.venv/`, `__pycache__/`, `.pytest_cache/`, `.ruff_cache/`, `node_modules/`,
 `.git/`, `.data/`, `wandb/`, `notebooks/`.
 
-Usually skip unless relevant: `param_decomp/tests/`, `param_decomp/tests/`, `papers/`.
+Usually skip unless relevant: the `tests/` subtrees (`param_decomp/core/tests/`,
+`param_decomp/targets/tests/`, `param_decomp/tests/`), `papers/`.
 
 ---
 
@@ -427,9 +438,8 @@ Docstrings carry information the signature doesn't.
 
 **Load-bearing public entrypoints in `param_decomp/` are an exception** — there, a full
 Google-style `Args:` block is worth the bookkeeping, because IDE hover surfaces it and
-the callers are external. Concretely: `ComponentModel.__init__` / `forward` /
-`calc_causal_importances`, `RunSink` protocol methods, `Metric.bind` / `update` /
-`reset` / `compute`, `make_components`, `make_ci_fn_wrapper`. For everything else,
+the callers are external. Concretely: `run_decomposition_training`, the
+`DecomposedModel` protocol methods, `open_jax_run` / `run_metadata`. For everything else,
 *including internal helpers in `param_decomp/`*, prefer better parameter names and
 clearer parameterisation over docstrings — name parameters by their role inside the
 function, not just their type.

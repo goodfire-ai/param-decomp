@@ -1,6 +1,6 @@
 """CLI entry point for harvest SLURM launcher.
 
-Thin wrapper for fast --help. Heavy imports deferred to run_slurm.py.
+Thin wrapper for fast --help. Heavy imports deferred to `param_decomp_goodfire.submit.harvest`.
 
 Usage:
     pd-harvest <harvest_slurm_config.yaml>

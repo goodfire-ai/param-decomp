@@ -298,8 +298,7 @@ def generate_git_snapshot_setup(work_dir: str, snapshot_ref: str) -> str:
 
     `.env` (secrets, untracked, so no ref carries it) is copied from the durable main
     checkout — the common git dir's parent worktree — NOT the possibly-ephemeral
-    submitting worktree (a node-local `/tmp` workspace when generated from inside another
-    SLURM job, e.g. async slow-eval submitted by training's `sink.on_save`).
+    submitting worktree.
 
     `work_dir` is a bash expression and can include `$SLURM_*` vars.
     """

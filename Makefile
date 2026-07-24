@@ -1,7 +1,7 @@
 # setup
-# ONE venv for the whole workspace: the JAX trainer core (`param_decomp` + `pretrain` +
-# `vendored_jax`) is the root distribution and carries jax as a normal dependency, so a
-# single `uv sync --all-packages` installs core + config + lab into one `.venv`. The CPU
+# ONE venv for the whole workspace: the library (`param_decomp`) is the root distribution
+# and carries jax as a normal dependency, so a single `uv sync --all-packages` installs
+# the library + the private wrapper (`param_decomp_goodfire`) into one `.venv`. The CPU
 # jax wheel is the base; the CUDA wheel is the `[cuda]` extra the per-run launch workspace
 # installs.
 .PHONY: install
@@ -103,7 +103,7 @@ COVERAGE_DIR=docs/coverage
 
 .PHONY: coverage
 coverage:
-	uv run pytest $(TEST_PATHS) --cov=param_decomp --cov=param_decomp_lab --runslow
+	uv run pytest $(TEST_PATHS) --cov=param_decomp --cov=param_decomp_goodfire --runslow
 	mkdir -p $(COVERAGE_DIR)
 	uv run python -m coverage report -m > $(COVERAGE_DIR)/coverage.txt
 	uv run python -m coverage html --directory=$(COVERAGE_DIR)/html/

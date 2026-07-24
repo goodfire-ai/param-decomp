@@ -5,6 +5,13 @@
 
 Launch a Claude Code agent to investigate a specific research question about a PD model decomposition.
 
+> **Status: dormant pending the app re-add.** The worker (`scripts/run_agent.py`) starts
+> `param_decomp.app.backend.server` as its MCP backend, but the web app was removed from
+> the tree during the JAX migration (slated for re-add, likely JAX-native — see the root
+> CLAUDE.md). Until it returns, the flow, MCP tools, and outputs below document the
+> intended machinery, not a currently runnable path. `pd-investigate` submission is
+> wrapper code (`param_decomp_goodfire/submit/investigate.py` + `investigate_cli.py`).
+
 ## Usage
 
 ```bash
@@ -29,9 +36,9 @@ param_decomp/investigate/
 
 ## How It Works
 
-1. `pd-investigate` creates output dir, metadata, git snapshot, and submits a single SLURM job
+1. `pd-investigate` (wrapper) creates output dir, metadata, git snapshot, and submits a single SLURM job
 2. The SLURM job runs `run_agent.py` which:
-   - Starts an isolated FastAPI backend with MCP support
+   - Starts an isolated FastAPI backend with MCP support (`param_decomp.app.backend.server` — removed, see status note above)
    - Loads the PD run onto GPU
    - Fetches model architecture info
    - Generates the agent prompt (research question + model context + methodology)

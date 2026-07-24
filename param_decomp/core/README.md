@@ -46,7 +46,7 @@ the whole workspace into the one venv with `make install-dev`.
 | `base_config.py` | `BaseConfig` (frozen `extra=forbid` pydantic `BaseModel` + YAML/JSON round-trip), `Probability` |
 | `schedule.py` | `ScheduleConfig` + its two evaluators, host `get_scheduled_value` / traced `scheduled_value_traced` (warmup → constant/linear/cosine decay; every scheduled quantity routes through here) |
 | `configs/` | the single self-contained run yamls (one file per run; no wrapper/schema split) |
-| `tests/` | tiny-target unit tests (incl. attention sites + heterogeneous per-site C), checkpoint resume, sharding, and the layering test (`test_runtime_standalone.py`, pinning `lab → targets → engine`). The per-target parity/golden suites (torch↔JAX equivalence, stacked parity, Qwen3 HF parity, SimpleMLP torch fixtures) live with the targets: `param_decomp/targets/tests/` |
+| `tests/` | tiny-target unit tests (incl. attention sites + heterogeneous per-site C), checkpoint resume, sharding, and the layering test (`test_runtime_standalone.py`, pinning the downward-only subpackage layering — composition → targets → core — and the wrapper-never-imported rule). The per-target parity/golden suites (torch↔JAX equivalence, stacked parity, Qwen3 HF parity, SimpleMLP torch fixtures) live with the targets: `param_decomp/targets/tests/` |
 
 ## Run
 

@@ -53,8 +53,10 @@ pd-cluster-distances --ensemble-id e-<id> --clustering-run-ids c-a,c-b,c-c \
     --distances-method perm_invariant_hamming
 ```
 
-`ClusteringEnsembleConfig` (`scripts/run_pipeline.py`) is flat: `harvest` (`HarvestConfig`)
-+ `merge` (`MergeConfig`) + `n_runs` + `base_seed` (member i uses `base_seed + i` for both
+`ClusteringEnsembleConfig` (`param_decomp_goodfire/submit/clustering.py`, beside the
+`pd-clustering` submitter — the library keeps only the worker mains `run_worker` /
+`run_merge` / `calc_distances`) is flat: `harvest` (`HarvestConfig`) + `merge`
+(`MergeConfig`) + `n_runs` + `base_seed` (member i uses `base_seed + i` for both
 the harvest dataset and the merge sampler) + `distances_methods` + slurm fields. Output:
 
 ```

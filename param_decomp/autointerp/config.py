@@ -1,5 +1,5 @@
 """Autointerp configuration: LLM-provider and prompt-strategy schema plus the
-execution (SLURM / eval) configs.
+label-eval (detection / fuzzing) configs.
 
 Provider runtime classes (HTTP clients, dispatch) live in
 `param_decomp.autointerp.providers`; strategy prompt impls live in

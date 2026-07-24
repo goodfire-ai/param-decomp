@@ -75,7 +75,7 @@ target-anatomy vocabulary, so it lives in the domain that IS transformers —
 experiments/
 ├── utils.py                 # EXPERIMENT_CONFIG_FILENAME
 ├── lm/
-│   ├── launch.py        # pd-lm: snapshot + pinned launch config + sbatch (per-node job-side venv)
+│   ├── run.py               # python -m param_decomp.experiments.lm.run — the LM composition root (sbatched by the wrapper's pd-lm = param_decomp_goodfire/launch_lm.py)
 │   ├── data.py              # tokenize_and_concatenate (offline helper for prestage)
 │   ├── prestage_tokenized.py  # HF text -> int32 parquet shards for the JAX trainer
 │   └── arithmetic_probe.py    # a x b arithmetic grid spec -> in-memory eval probe (ArithmeticCIGrid)
@@ -137,11 +137,11 @@ pile `LlamaSimpleMLP` decompositions), the production target.
 The SLURM rank env (XLA flags, NCCL/host-memory knobs, `PD_*` profiling toggles) is
 config-driven via `runtime.launch_env` (`param_decomp.core.configs.LaunchEnv`), so `config.yaml`
 fully captures the environment a run executed with — A/B a flag in the YAML, not in
-`launch.py`. `launch.py::_render_rank_env` renders `LaunchEnv.as_env()` into the exported
-bash block; `LD_LIBRARY_PATH` is computed at submit time (machine-specific) and stays in the
-launcher. A profiling run is a config (`runtime.launch_env.profile`), not an env hack. The
-defaults mirror the values the launcher used to hardcode. Applies to the SLURM path only;
-the `launch: inline` path inherits the caller's environment.
+the launcher. The wrapper's `param_decomp_goodfire/launch_lm.py::_render_rank_env`
+renders `LaunchEnv.as_env()` into the exported bash block; `LD_LIBRARY_PATH` is computed
+in-job from the freshly-built venv (machine-specific) and stays in the launcher. A
+profiling run is a config (`runtime.launch_env.profile`), not an env hack. Applies to
+the SLURM path only; the `launch: inline` path inherits the caller's environment.
 
 ```yaml
 runtime:

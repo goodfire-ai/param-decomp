@@ -2,12 +2,12 @@
 
 The in-house target LMs (`gpt2_simple` / `llama_simple` / `llama_simple_mlp`) that the
 decomposition trainer then decomposes are pretrained by `pretrain.train`. CONFIG-DRIVEN, a
-slimmed mirror of `pd-lm` (`experiments/lm/launch.py`): the mode is a pure function of the
+slimmed mirror of `pd-lm` (`param_decomp_goodfire/launch_lm.py`): the mode is a pure function of the
 config's `dp`. `dp is None` → run the pretrainer INLINE in the current shell (single
 process, CPU / 1 GPU; smoke). `dp is not None` → mint a `t-<hex>` run id, snapshot the
 tree, materialize an immutable shared-FS workspace (clone + the one CUDA venv), stamp the
 id (+ out_dir / wandb group / tags) into the workspace's config, and sbatch across
-`dp // 8` nodes.
+`dp // gpus_per_node` nodes.
 """
 
 import shlex
@@ -51,7 +51,8 @@ def main(
     Args:
         config_path: Single self-contained run yaml inside the repo, with a `run_name` and
             NO `run_id` (minted here). `dp` declares the world size: `None` → run inline
-            (single process); `N` (a multiple of 8) → submit across `N // 8` nodes.
+            (single process); `N` (a multiple of `gpus_per_node`, default 8) → submit across
+            `N // gpus_per_node` nodes.
         time: SLURM time limit.
         qos: SLURM QoS (e.g. `opportunistic`); None is the normal QoS.
         run_id: Resubmit an existing launch — reuses its workspace and identity.

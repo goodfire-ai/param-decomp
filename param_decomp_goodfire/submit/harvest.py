@@ -4,8 +4,7 @@ Harvest is a functional unit: GPU workers -> merge. This module submits all
 jobs in the unit with proper dependency chaining.
 
 Usage:
-    pd-harvest <wandb_path> --n_gpus 24
-    pd-harvest <wandb_path> --n_batches 1000 --n_gpus 8  # Only process 1000 batches
+    pd-harvest path/to/harvest_slurm_config.yaml
 """
 
 import secrets

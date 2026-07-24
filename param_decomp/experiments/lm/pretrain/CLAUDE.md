@@ -10,10 +10,10 @@ single-pool trainer's data/sharding/checkpoint substrate.
 
 ## Split (mirrors `pd-lm`)
 
-The trainer lives in the core `param-decomp` distribution (repo-root sibling `pretrain/`);
-the submit wrapper is composition-side. One venv covers both:
+The trainer is a library subpackage (`param_decomp/pretrain/`); the launcher lives in the
+private wrapper. One venv covers both:
 
-- **`pretrain/`** (repo-root sibling of `param_decomp/`) — the trainer:
+- **`param_decomp/pretrain/`** — the trainer:
   - `models.py` — trainable equinox defs for all three archs (`GPT2Simple`, `LlamaSimple`,
     `LlamaSimpleMLP`). Weights are stored in torch `nn.Linear` orientation `(d_out, d_in)`
     and `state_dict()` emits the EXACT keys the decomposition loader reads.
@@ -26,9 +26,11 @@ the submit wrapper is composition-side. One venv covers both:
     layout (safetensors + `model_config.yaml`) at every save.
   - `configs/` — the run yamls (`pile_llama_simple_mlp-*`, `gpt2_simple-2L`,
     `pile_llama_simple-4L-768`, `*_SMOKE`).
+- **`param_decomp_goodfire/launch_pretrain.py`** (private wrapper) — `pd-pretrain`:
+  config-driven via the config's `dp` (see Usage below); `dp: N` → snapshot + staged
+  workspace + sbatch `python -m param_decomp.pretrain.train` across `N // gpus_per_node` nodes;
+  `dp: null` → run the trainer inline in the current shell. Slim mirror of `pd-lm`.
 - **`param_decomp/experiments/lm/pretrain/`** (here):
-  - `launch.py` — `pd-pretrain`: snapshot + immutable shared-FS workspace + sbatch
-    `python -m param_decomp.pretrain.train` (or `--local` to run in the current shell). Slim mirror of `pd-lm`.
   - `run_info.py` — `find_pretrain_cache(project, run_id)`: the torch-free read-side index
     into the cache (the torch `PretrainRunInfo`'s wandb-download path is gone — the cache
     is written directly to shared FS).
@@ -66,13 +68,13 @@ unsupported).
 ## Usage
 
 The mode is CONFIG-DRIVEN via the config's `dp` (no `--nodes` / `--local` flags):
-`dp = N` (a multiple of 8) → SLURM across `N // 8` nodes; `dp = null` → run the trainer
+`dp = N` (a multiple of 8) → SLURM across `N // gpus_per_node` nodes; `dp = null` → run the trainer
 inline in the current venv (CPU / single GPU).
 
 ```bash
 # SLURM: config sets `dp: 8` (1 node = 8 GPUs)
-pd-pretrain pretrain/configs/pile_llama_simple_mlp-4L-768.yaml
+pd-pretrain param_decomp/pretrain/configs/pile_llama_simple_mlp-4L-768.yaml
 
-# local: config leaves `dp` unset (null)
-pd-pretrain pretrain/configs/pile_llama_simple_mlp-2L-128_SMOKE.yaml
+# inline: config leaves `dp` unset (null)
+pd-pretrain param_decomp/pretrain/configs/pile_llama_simple_mlp-2L-128_SMOKE.yaml
 ```

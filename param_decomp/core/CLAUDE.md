@@ -209,7 +209,7 @@ full-model `[n_layer, full_d_in, C]` weight stack resident.
 `run_state.init_train_state` dispatches CI-fn construction on `cfg.ci_fn`
 (`MLPCIArch` / `GlobalMLPCIArch` / `ChunkwiseTransformerCIArch`) and uses replicated (not
 C-sharded) V/U + CI for the tiny toys; the core `ci_fn.CIFnArch` admits all three and the
-lab `experiments.config.ci_arch` builds the layerwise / global arch from the toy
+composition-side `experiments.config.ci_arch` builds the layerwise / global arch from the toy
 `decomposition.ci` (validated end-to-end on CPU via
 `pd-resid-mlp`). Harvest / slow-eval / export over the toys are NOT wired
 (`experiments.lm.load_run.build_target` / `run_metadata` are LM-only).
@@ -268,7 +268,7 @@ Llama-8B target is multi-GB. Therefore:
 
 `basedpyright` over the whole workspace must be clean (run `make type`); `param_decomp`
 is in the root `[tool.pyright]` include and is checked in the one venv, one pass,
-alongside lab.
+alongside the rest of the workspace.
 
 ## The training pipeline
 
@@ -276,9 +276,10 @@ The generic ENGINE `run.py::run_decomposition_training` is a pure library (no `m
 YAML). The composition root + only I/O layer lives in `param_decomp.experiments`:
 `python -m param_decomp.experiments.lm.run <config.yaml>` reads the YAML, builds the
 target + data loader + `ExperimentConfig`, and calls the engine; the step stays pure. Data
-is a pre-tokenized parquet artifact under
-`$DATA_MOUNT/artifacts/mechanisms/param-decomp/datasets/` (`fineweb_llama_tok_2048`
-for Llama-8B, `pile_neox_tok_512` for `LlamaSimpleMLP`) — NEVER stream/tokenize from
+is a pre-tokenized parquet artifact at a config-supplied path (`fineweb_llama_tok_2048`
+for Llama-8B, `pile_neox_tok_512` for `LlamaSimpleMLP`; where those live on a cluster is
+the deployment's business — the goodfire wrapper's `GoodfireEnvironment` keeps them on
+the shared mount) — NEVER stream/tokenize from
 HF at run time (the 80-rank thunderherd lesson). The batch schedule is a pure
 function of `(seed, step)` (O(1) resume, no replay); checkpoints are orbax sharded
 saves (no on-loop full-gather), TWO items per step — `decomposition` (V/U + ci_fn, the
@@ -305,7 +306,7 @@ NOT changed C / sites / ci-fn arch). Add to the config:
 resume_provenance:
   # ABSOLUTE path — the trainer runs with cwd = the node workspace (a repo checkout), so
   # a relative path would resolve under the workspace, not the output runs dir.
-  parent_run_dir: /mnt/data/artifacts/mechanisms/param-decomp/runs/p-bd3cd4d4
+  parent_run_dir: /abs/path/to/runs/p-xxxxxxxx
   parent_step: 175000
 ```
 
@@ -352,7 +353,8 @@ reads the distributed state) and before the first compile; threshold 60s
 safe on jax 0.10.1: jax gates the cache WRITE on `process_id == 0` (`compiler.py` — "Only
 write cache entries from the first process … contention for writes on some filesystems"),
 so all ranks read but only rank 0 writes — no shared-FS race. Requires the cache dir on a
-shared FS, which `$PARAM_DECOMP_OUT_DIR` already is.
+shared FS — a requirement on the deployment: a multi-node run must point
+`$PARAM_DECOMP_OUT_DIR` at one (the goodfire wrapper does).
 
 ### Compile time (measured 2026-07-06 probe grid; full data in PR #956)
 
@@ -372,8 +374,11 @@ shared FS, which `$PARAM_DECOMP_OUT_DIR` already is.
   composition root matches on `runtime.launch` — `slurm` → `init_distributed(dp)`
   (`jax.distributed.initialize` + assert the realized device count equals `dp`);
   `inline` → `assert_inline_topology(dp)` (one process, exactly `dp` local devices).
-  SLURM env (`SLURM_LOCALID`) is read only for the rank, once the config has decided
-  we're distributed. Do NOT revert to inferring it from ambient `SLURM_PROCID` — that
+  Once the config has decided we're distributed, the rank comes from jax's own SLURM
+  bring-up (`jax.distributed.initialize` auto-detects it); the library reads no SLURM
+  rank var itself — only the generic `PD_RANK` hint, and only to pick the HLO-dump
+  writer (`experiments/lm/run.py::_enable_hlo_dump`). Do NOT revert to inferring
+  distributedness from ambient `SLURM_PROCID` — that
   env is present in EVERY process on a SLURM box (incl. a pytest worker), so sniffing it
   wrongly fires `jax.distributed.initialize` mid-suite (the `test_pretrain` smoke
   failure).
@@ -381,6 +386,6 @@ shared FS, which `$PARAM_DECOMP_OUT_DIR` already is.
   so it's correct for BOTH single-process-many-devices and multi-process-1-device.
   Do NOT revert to the per-`process_index()`-slice idiom — it silently replicates one
   slice on single-process multi-device CPU.
-- **`vendored_jax` is a repo-root sibling package in the same `param-decomp` distribution**;
+- **`vendored_jax` is `param_decomp/vendored_jax` — a subpackage of the same `param-decomp` distribution**;
   no `sys.path` hacks anywhere. If an import fails, the install is broken — fix the env
   (`make install-dev`), don't add a path shim.

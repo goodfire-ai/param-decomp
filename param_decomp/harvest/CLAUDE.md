@@ -58,12 +58,13 @@ pd-harvest path/to/harvest_slurm_config.yaml
 pd-harvest path/to/harvest_slurm_config.yaml --job_suffix v2
 ```
 
-`HarvestSlurmConfig` (`config.py`) wraps a `HarvestConfig` plus SLURM knobs (`n_gpus`,
-`partition`, `time`, `merge_time`, `merge_mem`). The decomposition target is specified
-inside `config.method_config.wandb_path` — there is no separate positional
-`<wandb_path>` argument anymore.
+`HarvestSlurmConfig` (`param_decomp_goodfire/submit/harvest.py`, beside the submitter)
+wraps a `HarvestConfig` plus SLURM knobs (`n_gpus`, `partition`, `time`, `merge_time`,
+`merge_mem`). The decomposition target is specified inside
+`config.method_config.wandb_path` — there is no separate positional `<wandb_path>`
+argument anymore.
 
-The launcher:
+The submitter:
 1. Creates a git snapshot branch for reproducibility
 2. Submits a SLURM array (one task per GPU); each task runs `run_worker.py` as
    `--rank R --world_size N`, serving its `process_index=R` slice of every global batch
@@ -109,9 +110,10 @@ The tensor artefacts (`*.npz`, worker states) are NumPy `np.savez` archives.
 
 ## Architecture
 
-### SLURM Launcher (`scripts/run_slurm.py`, `scripts/run_slurm_cli.py`)
+### SLURM submitter (wrapper: `param_decomp_goodfire/submit/harvest.py` + `harvest_cli.py`)
 
-Entry point via `pd-harvest`. Submits array job + dependent merge job.
+`pd-harvest` lives in the private wrapper, not in this package. It submits the array job
+plus the dependent merge job; both run this package's worker mains.
 
 **Intruder evaluation** (`param_decomp/harvest/intruder.py`) evaluates the quality of the *decomposition itself* — whether component activation patterns are coherent — without relying on LLM-generated labels. Intruder scores are stored in `harvest.db`, not `interp.db`. Intruder eval is submitted as a top-level postprocess stage (via `pd-postprocess`), not as part of the harvest pipeline.
 
@@ -134,9 +136,10 @@ Combines `worker_states/*.npz` from each rank into the final harvest artefacts. 
 
 ### Config (`config.py`)
 
-`HarvestConfig` (tuning params, plus a `method_config` discriminated union that carries
-`wandb_path` and method-specific options) and `HarvestSlurmConfig` (HarvestConfig + SLURM
-params).
+`HarvestConfig` (tuning params, plus a `method_config` that carries `wandb_path` and
+method-specific options) and `IntruderEvalConfig`. `HarvestSlurmConfig`
+(HarvestConfig + SLURM knobs) lives beside its submitter in the wrapper
+(`param_decomp_goodfire/submit/harvest.py`).
 
 ### Pipeline (`pipeline.py`)
 
