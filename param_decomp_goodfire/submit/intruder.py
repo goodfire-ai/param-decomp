@@ -28,7 +28,7 @@ def submit_intruder(
     snapshot_ref: str | None = None,
     dependency_job_id: str | None = None,
 ) -> SubmitResult:
-    cmd = get_command(decomposition_id, slurm_config.config, harvest_subrun_id)
+    cmd = get_command(decomposition_id, slurm_config.config, harvest_subrun_id, GENV.output_root)
 
     slurm = SlurmConfig(
         job_name=f"pd-intruder-{decomposition_id}",

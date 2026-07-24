@@ -10,6 +10,7 @@ the CI-fn architecture; each experiment's `run.py` assembles the rest (target + 
 """
 
 import re
+from pathlib import Path
 from typing import Annotated, Literal, Self
 
 from pydantic import Field, PositiveInt, model_validator
@@ -29,7 +30,6 @@ from param_decomp.core.configs import (
     WandbConfig,
 )
 from param_decomp.core.schedule import ScheduleConfig
-from param_decomp.infra.settings import ENV
 
 
 class EvalConfig(BaseConfig):
@@ -90,8 +90,8 @@ class ExperimentConfig(BaseConfig):
     still writes `config.yaml` + checkpoints locally).
 
     The run id is NOT a config field: it is minted by the launcher and passed to
-    `run_instance` as an explicit argument. The run dir is a pure function of settings
-    + id (`ENV.output_root/runs/<run_id>`).
+    `run_instance` as an explicit argument. The run dir is a pure function of the
+    entry point's `out_root` + id (`<out_root>/runs/<run_id>`).
     """
 
     @model_validator(mode="before")
@@ -99,7 +99,7 @@ class ExperimentConfig(BaseConfig):
     def _strip_removed_run_identity_fields(cls, data: object) -> object:
         # Shared-storage shim: stored run config.yamls carry `run_id` (minted identity,
         # now passed to `run_instance` as an arg and derived from the run-dir name) and
-        # `out_dir` (vestigial; the run dir is `ENV.output_root/runs/<run_id>`). Both
+        # `out_dir` (vestigial; the run dir is `<out_root>/runs/<run_id>`). Both
         # fields are removed; strip them so existing configs still load under extra=forbid.
         if not isinstance(data, dict):
             return data
@@ -175,14 +175,14 @@ def assert_canonical_algorithm_config(cfg: ExperimentConfig) -> None:
     assert cadence.save_every is not None and cadence.keep_last_n_checkpoints is not None, cadence
 
 
-def run_instance(cfg: ExperimentConfig, run_id: str) -> RunInstance:
+def run_instance(cfg: ExperimentConfig, run_id: str, out_root: Path) -> RunInstance:
     """The resolved run identity + logging lineage. `run_id` is minted by the launcher (a
-    toy mints its own); the run dir is `ENV.output_root/runs/<run_id>`."""
+    toy mints its own); the run dir is `<out_root>/runs/<run_id>`."""
     assert _RUN_ID_PATTERN.match(run_id), f"run_id must be p-<8hex>, got {run_id!r}"
     return RunInstance(
         run_name=cfg.run_name,
         run_id=run_id,
-        out_dir=ENV.output_root / "runs",
+        out_dir=out_root / "runs",
         wandb=cfg.wandb,
         resume_provenance=cfg.resume_provenance,
     )

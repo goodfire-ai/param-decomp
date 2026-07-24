@@ -12,12 +12,12 @@ Three dependency tiers, submitted as SLURM jobs:
         └─ merge array (N × CPU, seeded)            [afterok harvest array]
               └─ consensus job per distance method  [afterok merge array]
 
-Output:
-    PARAM_DECOMP_OUT_DIR/clustering/ensembles/<ensemble_id>/
+Output (under `GENV.output_root`):
+    clustering/ensembles/<ensemble_id>/
         ├── ensemble_config.yaml
         └── (consensus artifacts, written by calc_distances.py)
-    PARAM_DECOMP_OUT_DIR/clustering/harvests/<harvest_id>/   (per member)
-    PARAM_DECOMP_OUT_DIR/clustering/runs/<run_id>/           (per member)
+    clustering/harvests/<harvest_id>/   (per member)
+    clustering/runs/<run_id>/           (per member)
 """
 
 import argparse
@@ -42,6 +42,7 @@ from param_decomp.clustering.types import DistancesMethod
 from param_decomp.core.base_config import BaseConfig
 from param_decomp.core.log import logger
 from param_decomp.infra.run_files import generate_run_id
+from param_decomp_goodfire.env import GENV
 from param_decomp_goodfire.git import create_git_snapshot
 from param_decomp_goodfire.slurm import (
     SlurmArrayConfig,
@@ -100,7 +101,7 @@ def _members(config: ClusteringEnsembleConfig) -> list[EnsembleMember]:
 def submit(config: ClusteringEnsembleConfig, local: bool) -> str:
     """Submit (or run locally) the full ensemble pipeline. Returns the ensemble id."""
     ensemble_id = generate_run_id("clustering/ensembles")
-    ensemble_dir = clustering_ensemble_dir(ensemble_id)
+    ensemble_dir = clustering_ensemble_dir(GENV.output_root, ensemble_id)
     ensemble_dir.mkdir(parents=True, exist_ok=True)
     config.to_file(ensemble_dir / "ensemble_config.yaml")
     logger.info(f"Ensemble {ensemble_id} → {ensemble_dir}")
@@ -113,20 +114,24 @@ def submit(config: ClusteringEnsembleConfig, local: bool) -> str:
     members = _members(config)
 
     harvest_commands = [
-        run_worker.get_command(harvest_config_path, m.harvest_id, m.seed) for m in members
+        run_worker.get_command(harvest_config_path, m.harvest_id, m.seed, GENV.output_root)
+        for m in members
     ]
     merge_commands = [
         run_merge.get_command(
-            snapshot_path=clustering_harvest_dir(m.harvest_id),
+            snapshot_path=clustering_harvest_dir(GENV.output_root, m.harvest_id),
             merge_config_path=merge_config_path,
             run_id=m.run_id,
             seed=m.seed,
             plot=config.plot_members,
+            out_root=GENV.output_root,
         )
         for m in members
     ]
     consensus_commands = [
-        calc_distances.get_command(ensemble_id, [m.run_id for m in members], method)
+        calc_distances.get_command(
+            ensemble_id, [m.run_id for m in members], method, GENV.output_root
+        )
         for method in config.distances_methods
     ]
 

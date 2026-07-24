@@ -134,7 +134,8 @@ def _rank_command(
     return (
         f"{_node_workspace_setup(run_id, snapshot_ref, source_repo, run_dir)}\n{rank_env}\n"
         f"exec python -m param_decomp.experiments.lm.run "
-        f"{shlex.quote(str(launch_config))} --run-id {shlex.quote(run_id)}"
+        f"{shlex.quote(str(launch_config))} --run-id {shlex.quote(run_id)} "
+        f"--out-root {shlex.quote(str(GENV.output_root))}"
     )
 
 
@@ -290,6 +291,8 @@ def _run_inline(config: Path, run_name: str, group: str | None, tags: list[str])
             str(launch_config),
             "--run-id",
             run_id,
+            "--out-root",
+            str(GENV.output_root),
         ],
         cwd=GENV.repo_root,
         check=True,
@@ -312,7 +315,7 @@ def _validate_config(config_path: Path) -> tuple[LMExperimentConfig, str]:
         f"{config_path}: pd-lm is LM-only; run TMS/ResidMLP toys on CPU via pd-tms / pd-resid-mlp"
     )
     cfg = LMExperimentConfig(**raw)
-    assert_placement_claims(cfg)
+    assert_placement_claims(cfg, GENV.output_root)
     return cfg, cfg.run_name
 
 

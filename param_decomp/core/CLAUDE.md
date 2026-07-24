@@ -331,19 +331,20 @@ BOTH modes:
 - `launch: slurm` (`dp` a multiple of `runtime.gpus_per_node`) → submit to SLURM across
   `nodes = dp // gpus_per_node` nodes, one srun task per node. Mints the `p-` run id,
   snapshots the tree to `refs/runs/snapshot/<id>` (pushed to origin best-effort, as a
-  provenance backup), stages `$PARAM_DECOMP_OUT_DIR/runs/<id>/` with the pinned config
+  provenance backup), stages `<output_root>/runs/<id>/` with the pinned config
   (wandb group / tags stamped) + `.env`, and sbatches. Each node builds its own workspace
   at job start (shallow-fetch the snapshot from the submitting checkout's shared-FS git
   dir into node-local `/tmp` + the driver-gated CUDA venv: >= r580 → `cuda13`, else
   `cuda`) and execs `python -m param_decomp.experiments.lm.run <launch_config> --run-id
-  <id>` (no rank/topology flags).
+  <id> --out-root <output_root>` (no rank/topology flags; the output root is an explicit
+  CLI arg, default `./out` — never an env var).
 
 Requeues rebuild the node workspaces and re-read the pinned launch config, never the live
 checkout. `--run_id` resubmits an existing SLURM run (refused for inline). Don't
 hand-write sbatch files.
 
 `main` enables JAX's persistent compilation cache
-(`_enable_persistent_compilation_cache`) at `$PARAM_DECOMP_OUT_DIR/xla_compilation_cache`
+(`_enable_persistent_compilation_cache`) at `<out_root>/xla_compilation_cache`
 — a SIBLING of `runs/` (derived from `out_dir.parent`), shared across all runs and all
 8N ranks, NOT per-run. The multi-minute chunkwise-step compile is keyed by HLO + backend +
 topology + jax/xla version, so a requeue/resume or a fresh run at the same config+topology
@@ -353,8 +354,8 @@ reads the distributed state) and before the first compile; threshold 60s
 safe on jax 0.10.1: jax gates the cache WRITE on `process_id == 0` (`compiler.py` — "Only
 write cache entries from the first process … contention for writes on some filesystems"),
 so all ranks read but only rank 0 writes — no shared-FS race. Requires the cache dir on a
-shared FS — a requirement on the deployment: a multi-node run must point
-`$PARAM_DECOMP_OUT_DIR` at one (the goodfire wrapper does).
+shared FS — a requirement on the deployment: a multi-node run must pass an `out_root`
+on one (the goodfire wrapper does).
 
 ### Compile time (measured 2026-07-06 probe grid; full data in PR #956)
 

@@ -31,14 +31,14 @@ private wrapper. One venv covers both:
   workspace + sbatch `python -m param_decomp.pretrain.train` across `N // gpus_per_node` nodes;
   `dp: null` → run the trainer inline in the current shell. Slim mirror of `pd-lm`.
 - **`param_decomp/experiments/lm/pretrain/`** (here):
-  - `run_info.py` — `find_pretrain_cache(project, run_id)`: the torch-free read-side index
+  - `run_info.py` — `find_pretrain_cache(out_root, project, run_id)`: the torch-free read-side index
     into the cache (the torch `PretrainRunInfo`'s wandb-download path is gone — the cache
     is written directly to shared FS).
 
 ## Cache compatibility (load-bearing)
 
 A freshly-pretrained target is decomposable with NO conversion. `pretrain.train` writes
-`PARAM_DECOMP_OUT_DIR/pretrain_cache/<project>-<run_id>/model_step_<N>.safetensors` keyed
+`<out_root>/pretrain_cache/<project>-<run_id>/model_step_<N>.safetensors` keyed
 `h.{i}.attn.{q,k,v,o}_proj.weight`, `h.{i}.mlp.{c_fc,down_proj}.weight`,
 `h.{i}.rms_{1,2}.weight`, `wte.weight`, `ln_f.weight` (NO `lm_head.weight` — tied), every
 weight `(d_out, d_in)` — exactly what `param_decomp.targets.llama_simple_mlp` reads. A

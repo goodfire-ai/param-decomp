@@ -421,7 +421,9 @@ def test_pretrained_target_converts_with_all_layers():
     }
     raw["data"]["max_seq_len"] = 512  # the model's n_ctx
 
-    cfg = build_experiment_config(LMExperimentConfig(**raw), "p-00000000")
+    cfg = build_experiment_config(
+        LMExperimentConfig(**raw), "p-00000000", _REAL_CACHE_DIR.parent.parent
+    )
     target = cfg.target
     assert isinstance(target, LlamaSimpleMLPTargetConfig)
     assert target.pretrain_run_path == "goodfire/spd/runs/t-9d2b8f02"

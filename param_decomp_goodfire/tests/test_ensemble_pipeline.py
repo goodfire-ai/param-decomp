@@ -2,6 +2,7 @@
 merges over a shared synthetic membership snapshot, then the consensus driver
 (normalization -> per-iteration distances -> stability plot)."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -36,30 +37,8 @@ def snapshot_dir(tmp_path: Path) -> Path:
     return snap
 
 
-def _patch_clustering_paths(monkeypatch: pytest.MonkeyPatch, base: Path) -> None:
-    """Redirect clustering run/ensemble dirs into a temp base across the modules that
-    resolve them, so the test never touches PARAM_DECOMP_OUT_DIR."""
-
-    def run_dir(run_id: str) -> Path:
-        d = base / "runs" / run_id
-        d.mkdir(parents=True, exist_ok=True)
-        return d
-
-    def ensemble_dir(ensemble_id: str) -> Path:
-        d = base / "ensembles" / ensemble_id
-        d.mkdir(parents=True, exist_ok=True)
-        return d
-
-    monkeypatch.setattr(run_merge, "clustering_run_dir", run_dir)
-    monkeypatch.setattr(calc_distances, "clustering_run_dir", run_dir)
-    monkeypatch.setattr(calc_distances, "clustering_ensemble_dir", ensemble_dir)
-
-
-def test_ensemble_merge_then_consensus(
-    snapshot_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    base = tmp_path / "clustering"
-    _patch_clustering_paths(monkeypatch, base)
+def test_ensemble_merge_then_consensus(snapshot_dir: Path, tmp_path: Path) -> None:
+    out_root = tmp_path / "out"
 
     merge_config = MergeConfig(
         alpha=1.0,
@@ -70,24 +49,27 @@ def test_ensemble_merge_then_consensus(
 
     run_ids = [f"c-test{i}" for i in range(3)]
     for i, run_id in enumerate(run_ids):
+        run_dir = out_root / "clustering" / "runs" / run_id
         history_path = run_merge.merge(
             snapshot_path=snapshot_dir,
             merge_config=merge_config,
             run_id=run_id,
             seed=i,
-            plot_dir=base / "runs" / run_id / "plots",
+            plot_dir=run_dir / "plots",
+            out_root=out_root,
         )
         assert history_path.exists()
-        assert (base / "runs" / run_id / "plots" / "cluster_sizes.png").exists()
+        assert (run_dir / "plots" / "cluster_sizes.png").exists()
 
     ensemble_id = "e-test"
     calc_distances.calc_distances(
         ensemble_id=ensemble_id,
         clustering_run_ids=run_ids,
         distances_method="perm_invariant_hamming",
+        out_root=out_root,
     )
 
-    ens_dir = base / "ensembles" / ensemble_id
+    ens_dir = out_root / "clustering" / "ensembles" / ensemble_id
     assert (ens_dir / "ensemble_meta.json").exists()
     assert (ens_dir / "ensemble_merge_array.npz").exists()
     assert (ens_dir / "distances_perm_invariant_hamming.npz").exists()
@@ -101,12 +83,9 @@ def test_ensemble_merge_then_consensus(
     assert np.all(np.isfinite(lower)) and np.all(lower >= 0.0)
 
 
-def test_seed_determinism(
-    snapshot_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_seed_determinism(snapshot_dir: Path, tmp_path: Path) -> None:
     """Same seed -> identical merge trajectory; different seed -> may differ."""
-    base = tmp_path / "clustering"
-    _patch_clustering_paths(monkeypatch, base)
+    out_root = tmp_path / "out"
     merge_config = MergeConfig(
         alpha=1.0,
         iters=8,
@@ -121,6 +100,7 @@ def test_seed_determinism(
             run_id=run_id,
             seed=seed,
             plot_dir=None,
+            out_root=out_root,
         )
         return MergeHistory.read(path).merges.group_idxs.copy()
 
@@ -134,19 +114,10 @@ def test_pipeline_local_fans_out_three_tiers(
 ) -> None:
     """`submit(local=True)` builds the seeded harvest -> merge -> consensus command tiers
     with one harvest + one merge per member and one consensus job per distance method."""
+    from param_decomp_goodfire.env import GENV
     from param_decomp_goodfire.submit import clustering as run_pipeline
 
-    base = tmp_path / "clustering"
-    monkeypatch.setattr(
-        run_pipeline,
-        "clustering_ensemble_dir",
-        lambda eid: (base / "ensembles" / eid),
-    )
-    monkeypatch.setattr(
-        run_pipeline,
-        "clustering_harvest_dir",
-        lambda hid: (base / "harvests" / hid),
-    )
+    monkeypatch.setattr(run_pipeline, "GENV", replace(GENV, output_root=tmp_path / "out"))
 
     tiers: list[list[str]] = []
     monkeypatch.setattr(run_pipeline, "run_locally", lambda commands: tiers.append(commands))
@@ -169,9 +140,11 @@ def test_pipeline_local_fans_out_three_tiers(
     assert len(harvest_cmds) == 3
     assert len(merge_cmds) == 3
     assert len(consensus_cmds) == 2
-    assert all("run_worker" in c and "--dataset_seed" in c for c in harvest_cmds)
-    assert all("run_merge" in c and "--seed" in c for c in merge_cmds)
-    assert {"--distances-method" in c for c in consensus_cmds} == {True}
+    assert all(
+        "run_worker" in c and "--dataset_seed" in c and "--out_root" in c for c in harvest_cmds
+    )
+    assert all("run_merge" in c and "--seed" in c and "--out-root" in c for c in merge_cmds)
+    assert {"--distances-method" in c and "--out-root" in c for c in consensus_cmds} == {True}
 
 
 def test_normalized_handles_differing_dead_components() -> None:

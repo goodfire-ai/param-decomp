@@ -14,8 +14,5 @@ def test_goodfire_env_resolves_cluster_defaults(tmp_path: Path):
     assert dead.data_mount is None
     assert dead.output_root == Path("out")
 
-    pinned = GoodfireEnvironment.from_env(
-        {"PARAM_DECOMP_OUT_DIR": "/x/y", "PARTITION_RESERVED": "h100"}
-    )
-    assert pinned.output_root == Path("/x/y")
-    assert pinned.default_partition == "h100"
+    partitioned = GoodfireEnvironment.from_env({"PARTITION_RESERVED": "h100"})
+    assert partitioned.default_partition == "h100"

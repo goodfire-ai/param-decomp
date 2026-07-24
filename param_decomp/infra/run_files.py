@@ -10,8 +10,7 @@ import wandb
 from wandb.apis.public import Run as WandbRun
 
 from param_decomp.core.log import logger
-from param_decomp.infra.paths import ModelPath
-from param_decomp.infra.settings import ENV
+from param_decomp.infra.paths import DEFAULT_OUT_ROOT, ModelPath
 from param_decomp.infra.wandb import (
     download_wandb_file,
     fetch_latest_checkpoint_name,
@@ -57,13 +56,14 @@ class RunFiles:
     extras: dict[str, Path] = field(default_factory=dict)
 
 
-def _wandb_cache_dir(run_id: str) -> Path:
-    return ENV.output_root / "runs" / run_id
+def _wandb_cache_dir(out_root: Path, run_id: str) -> Path:
+    return out_root / "runs" / run_id
 
 
 def resolve_run_files(
     path: ModelPath,
     *,
+    out_root: Path = DEFAULT_OUT_ROOT,
     config_filename: str,
     checkpoint_filename: str | None = None,
     checkpoint_prefix: str | None = None,
@@ -72,6 +72,7 @@ def resolve_run_files(
     """Locate a run's files locally, downloading from W&B if needed.
 
     Exactly one of `checkpoint_filename` or `checkpoint_prefix` must be given.
+    `out_root` locates the W&B download cache (`<out_root>/runs/<run_id>`).
     `extras_from_config_path` is called with the resolved config path to determine which
     additional files belong to the run (e.g. artifacts whose names live inside the config).
     """
@@ -91,7 +92,7 @@ def resolve_run_files(
         )
 
     wandb_path = f"{entity}/{project}/{run_id}"
-    run_dir = _wandb_cache_dir(run_id)
+    run_dir = _wandb_cache_dir(out_root, run_id)
 
     if run_dir.exists():
         logger.info(f"Loading run from {run_dir}")
@@ -115,6 +116,7 @@ def resolve_run_files(
 
     return _download_run_files_from_wandb(
         wandb_path,
+        out_root=out_root,
         config_filename=config_filename,
         checkpoint_filename=checkpoint_filename,
         checkpoint_prefix=checkpoint_prefix,
@@ -122,7 +124,9 @@ def resolve_run_files(
     )
 
 
-def resolve_config_path(path: ModelPath, *, config_filename: str) -> Path:
+def resolve_config_path(
+    path: ModelPath, *, out_root: Path = DEFAULT_OUT_ROOT, config_filename: str
+) -> Path:
     """Locate just a run's config file, without resolving or downloading checkpoints."""
     try:
         entity, project, run_id = parse_wandb_run_path(str(path))
@@ -130,7 +134,7 @@ def resolve_config_path(path: ModelPath, *, config_filename: str) -> Path:
         path_obj = Path(path)
         return (path_obj if path_obj.is_dir() else path_obj.parent) / config_filename
 
-    run_dir = _wandb_cache_dir(run_id)
+    run_dir = _wandb_cache_dir(out_root, run_id)
     config_path = run_dir / config_filename
     if config_path.exists():
         return config_path
@@ -167,6 +171,7 @@ def _resolve_local_run_files(
 def _download_run_files_from_wandb(
     wandb_path: str,
     *,
+    out_root: Path,
     config_filename: str,
     checkpoint_filename: str | None,
     checkpoint_prefix: str | None,
@@ -175,7 +180,7 @@ def _download_run_files_from_wandb(
     api = wandb.Api()
     run: WandbRun = api.run(wandb_path)
     _entity, _project, run_id = parse_wandb_run_path(wandb_path)
-    run_dir = _wandb_cache_dir(run_id)
+    run_dir = _wandb_cache_dir(out_root, run_id)
 
     config_path = download_wandb_file(run, run_dir, config_filename)
     if checkpoint_filename is not None:

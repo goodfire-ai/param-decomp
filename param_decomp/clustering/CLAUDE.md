@@ -19,11 +19,11 @@ many times with different configs.
 # 1. Harvest a JAX single-pool run (orbax checkpoint) into a membership snapshot.
 python -m param_decomp.clustering.scripts.run_worker \
     --run_dir runs/p-761bc061 --n_tokens 50000 --batch_size 16 --n_tokens_per_seq 16
-# → PARAM_DECOMP_OUT_DIR/clustering/harvests/ch-<id>/
+# → <out_root>/clustering/harvests/ch-<id>/
 
 # 2. Merge from the snapshot (CPU-only).
 pd-cluster-merge /path/to/ch-<id>/ merge_config.json --run-id c-<id> --seed 0 [--plot]
-# → PARAM_DECOMP_OUT_DIR/clustering/runs/c-<id>/
+# → <out_root>/clustering/runs/c-<id>/
 ```
 
 `pd-cluster-merge` seeds the stdlib `random` the stochastic merge-pair samplers draw from,
@@ -60,7 +60,7 @@ pd-cluster-distances --ensemble-id e-<id> --clustering-run-ids c-a,c-b,c-c \
 the harvest dataset and the merge sampler) + `distances_methods` + slurm fields. Output:
 
 ```
-PARAM_DECOMP_OUT_DIR/clustering/ensembles/<ensemble_id>/
+<out_root>/clustering/ensembles/<ensemble_id>/
 ├── ensemble_config.yaml / harvest_config.json / merge_config.json
 ├── ensemble_meta.json                # normalization metadata (calc_distances)
 ├── ensemble_merge_array.npz          # normalized merge array
@@ -86,10 +86,10 @@ snapshot. `pd-cluster-merge` reads it unchanged.
 
 ## Data Storage
 
-Stored under `PARAM_DECOMP_OUT_DIR/clustering/` (see `param_decomp/infra/settings.py`):
+Stored under `<out_root>/clustering/` (`param_decomp/clustering/paths.py`; `out_root` is the workers' explicit `--out_root` / `--out-root` arg, default `./out`):
 
 ```
-PARAM_DECOMP_OUT_DIR/clustering/
+<out_root>/clustering/
 ├── harvests/<harvest_id>/               # Membership snapshots (run_worker)
 │   ├── harvest_config.json
 │   ├── memberships.npz                  # Sparse CSC matrix (scipy)

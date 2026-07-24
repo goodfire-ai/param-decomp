@@ -58,7 +58,6 @@ from param_decomp.experiments.config import (
     assert_canonical_algorithm_config,
     run_instance,
 )
-from param_decomp.infra.settings import ENV
 from param_decomp.targets import glu_transformer, llama8b, llama_simple_mlp, qwen3_8b
 from param_decomp.targets.glu_transformer import GluMatrix
 from param_decomp.targets.llama_simple_mlp import SimpleMlpMatrix
@@ -504,7 +503,7 @@ def _bound_grammar(
     )
 
 
-def _resolve_decomposition(cfg: LMExperimentConfig) -> _ResolvedDecomposition:
+def _resolve_decomposition(cfg: LMExperimentConfig, out_root: Path) -> _ResolvedDecomposition:
     """Target spec + tiled `decomposition.sites` -> target config + `SiteTree`.
 
     HF specs resolve their family from `HF_MODEL_FAMILIES` (all GLU-transformer targets); `kind:
@@ -541,7 +540,7 @@ def _resolve_decomposition(cfg: LMExperimentConfig) -> _ResolvedDecomposition:
             return _ResolvedDecomposition(target, tree, grammar, site_specs)
         case PretrainedTarget():
             assert spec.model_class.rsplit(".", 1)[-1] == "LlamaSimpleMLP", spec.model_class
-            cache_dir = llama_simple_mlp.pretrain_cache_dir(ENV.output_root, spec.run_path)
+            cache_dir = llama_simple_mlp.pretrain_cache_dir(out_root, spec.run_path)
             arch = llama_simple_mlp.load_model_config(cache_dir)
             assert cfg.data.max_seq_len <= arch.n_ctx, (cfg.data.max_seq_len, arch.n_ctx)
             tree = resolve_site_tree(sites, llama_simple_mlp.FAMILY, arch.n_layer)
@@ -558,8 +557,8 @@ def _resolve_decomposition(cfg: LMExperimentConfig) -> _ResolvedDecomposition:
             return _ResolvedDecomposition(target, tree, grammar, site_specs)
 
 
-def _resolve_target(cfg: LMExperimentConfig) -> AnyLMTargetConfig:
-    return _resolve_decomposition(cfg).target
+def _resolve_target(cfg: LMExperimentConfig, out_root: Path) -> AnyLMTargetConfig:
+    return _resolve_decomposition(cfg, out_root).target
 
 
 def _chunk_input_taps(
@@ -741,13 +740,13 @@ def _eval(cfg: LMExperimentConfig) -> EvalConfig | None:
     )
 
 
-def assert_supported_weights_dtype(cfg: LMExperimentConfig) -> None:
+def assert_supported_weights_dtype(cfg: LMExperimentConfig, out_root: Path) -> None:
     """Refuse a frozen-target weights_dtype the loader can't honour (issue #727: no
     silent downgrade). Enforced at the train/submit boundary only — the bf16-only
     loaders ignore `weights_dtype` when *consuming* a finished run, so opening an
     already-trained bf16 run whose stored config predates the explicit-bf16
     convention must not be blocked here."""
-    target = _resolve_target(cfg)
+    target = _resolve_target(cfg, out_root)
     assert cfg.target.weights_dtype in target.supported_weights_dtypes, (
         f"target {type(target).__name__} supports frozen-target weights_dtype "
         f"{sorted(target.supported_weights_dtypes)}, config asks for "
@@ -771,14 +770,14 @@ def _assert_placement_claims(resolved: _ResolvedDecomposition, cfg: LMExperiment
     )
 
 
-def assert_placement_claims(cfg: LMExperimentConfig) -> None:
+def assert_placement_claims(cfg: LMExperimentConfig, out_root: Path) -> None:
     """Standalone spelling of the placement gate for pre-submit validation (`pd-lm`) and
     the repo-config parse gate; `build_experiment_config` runs it on every build."""
-    _assert_placement_claims(_resolve_decomposition(cfg), cfg)
+    _assert_placement_claims(_resolve_decomposition(cfg, out_root), cfg)
 
 
-def build_experiment_config(cfg: LMExperimentConfig, run_id: str) -> BuiltRun:
-    resolved = _resolve_decomposition(cfg)
+def build_experiment_config(cfg: LMExperimentConfig, run_id: str, out_root: Path) -> BuiltRun:
+    resolved = _resolve_decomposition(cfg, out_root)
     target = resolved.target
     assert_canonical_algorithm_config(cfg)
     _assert_losses_supported(cfg, tuple(sc.name for sc in target.sites))
@@ -790,7 +789,7 @@ def build_experiment_config(cfg: LMExperimentConfig, run_id: str) -> BuiltRun:
         pd=cfg.pd,
         runtime=cfg.runtime,
         cadence=cfg.cadence,
-        run=run_instance(cfg, run_id),
+        run=run_instance(cfg, run_id, out_root),
         target=target,
         data=data,
         ci_fn=ci_fn,
@@ -798,7 +797,7 @@ def build_experiment_config(cfg: LMExperimentConfig, run_id: str) -> BuiltRun:
     )
 
 
-def build_from_schema(schema_raw: dict[str, Any], run_id: str) -> BuiltRun:
+def build_from_schema(schema_raw: dict[str, Any], run_id: str, out_root: Path) -> BuiltRun:
     """Validate a single self-contained LM run config (the canonical `LMExperimentConfig`
     schema) and convert it to the engine's `BuiltRun` bundle. `run_id` is the minted run
     identity (the launcher's CLI arg, or the run-dir name when reloading a finished run).
@@ -807,21 +806,21 @@ def build_from_schema(schema_raw: dict[str, Any], run_id: str) -> BuiltRun:
     their `BuiltRun` in their own `run.py` via the public shared helpers
     (`assert_canonical_algorithm_config`, `run_instance`, `ci_arch`)."""
     cfg = LMExperimentConfig(**schema_raw)
-    assert_supported_weights_dtype(cfg)
-    return build_experiment_config(cfg, run_id)
+    assert_supported_weights_dtype(cfg, out_root)
+    return build_experiment_config(cfg, run_id, out_root)
 
 
-def load_config(config_path: Path, run_id: str) -> tuple[BuiltRun, dict[str, Any]]:
+def load_config(config_path: Path, run_id: str, out_root: Path) -> tuple[BuiltRun, dict[str, Any]]:
     """Parse a single self-contained LM run YAML (the canonical schema + top-level
     `run_name`, `runtime.remat_recon_forwards`, `wandb.group`/`tags`) -> (built run, raw
     dict for wandb logging). `run_id` is the minted run identity."""
     schema_raw = yaml.safe_load(config_path.read_text())
-    return build_from_schema(schema_raw, run_id), schema_raw
+    return build_from_schema(schema_raw, run_id, out_root), schema_raw
 
 
-def load_run_dir_config(run_dir: Path) -> BuiltRun:
+def load_run_dir_config(run_dir: Path, out_root: Path) -> BuiltRun:
     """Rebuild a run's `BuiltRun` bundle from its single pinned launch config
     (for tools that read finished/live run dirs, e.g. harvest / fine-tune compat). The
-    run id is the run-dir name."""
+    run id is the run-dir name; `out_root` resolves a `kind: pretrained` target's cache."""
     schema_raw = yaml.safe_load((run_dir / LAUNCH_CONFIG_FILENAME).read_text())
-    return build_from_schema(schema_raw, run_dir.name)
+    return build_from_schema(schema_raw, run_dir.name, out_root)

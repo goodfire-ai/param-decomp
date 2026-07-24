@@ -8,23 +8,28 @@ that fails to parse as a wandb reference is treated as a repo-relative local pat
 """
 
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Final
 
 from pydantic import BeforeValidator, PlainSerializer
 
-from param_decomp.infra.settings import ENV
+REPO_ROOT = Path(__file__).resolve().parents[2]
+"""The checkout this package runs from — a property of the install, not the environment."""
+
+DEFAULT_OUT_ROOT: Final[Path] = Path("out")
+"""The entry-edge default for `out_root` parameters (cwd-relative `./out`). The library
+reads no ambient environment for paths: every deployment passes its real root explicitly."""
 
 
 def to_root_path(path: str | Path) -> Path:
     """Converts relative paths to absolute ones, assuming they are relative to the repo root."""
-    return Path(path) if Path(path).is_absolute() else Path(ENV.repo_root / path)
+    return Path(path) if Path(path).is_absolute() else Path(REPO_ROOT / path)
 
 
 def from_root_path(path: str | Path) -> Path:
     """Converts absolute paths to relative ones, relative to the repo root."""
     path = Path(path)
     try:
-        return path.relative_to(ENV.repo_root)
+        return path.relative_to(REPO_ROOT)
     except ValueError:
         return path
 

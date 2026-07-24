@@ -63,7 +63,7 @@ parse `"311644_1"` as the integer `3116441` since `_` is a Python numeric separa
 4. Write `metadata.yaml` recording the resolved config, snapshot ref, and every
    submitted SLURM job ID.
 
-Output: `PARAM_DECOMP_OUT_DIR/postprocess/pp-<timestamp>/metadata.yaml`.
+Output: `<out_root>/postprocess/pp-<timestamp>/metadata.yaml`.
 
 ## Running stages individually
 

@@ -48,7 +48,7 @@ from param_decomp.experiments.lm.config import (
     hf_model_family,
     load_run_dir_config,
 )
-from param_decomp.infra.settings import ENV
+from param_decomp.infra.paths import DEFAULT_OUT_ROOT
 from param_decomp.targets import llama_simple_mlp
 from param_decomp.targets.glu_transformer import glu_site_specs
 
@@ -63,19 +63,20 @@ class HarvestForward:
     output_probs: Float[Array, "B T vocab"]
 
 
-def build_target(cfg: BuiltRun, mesh: jax.sharding.Mesh) -> tuple[DecomposedModel, int]:
+def build_target(
+    cfg: BuiltRun, mesh: jax.sharding.Mesh, out_root: Path
+) -> tuple[DecomposedModel, int]:
     """`(model, vocab_size)` for the run's target config. The `model` (an `eqx.Module`) IS the
     frozen target — it carries the full model weights (embedding included) as fields and
-    embeds its token input internally. SimpleMLP reads its local pretrain cache (no network);
-    the HF families read the HF snapshot (frozen bf16 weights + fp32-compute, matching `run.py::main`).
+    embeds its token input internally. SimpleMLP reads its pretrain cache under `out_root`
+    (no network); the HF families read the HF snapshot (frozen bf16 weights + fp32-compute,
+    matching `run.py::main`).
 
     LM-only: harvest/slow-eval over the toy (TMS/ResidMLP) targets is not wired — those
     validate via their in-loop target-CI metric in the lab provider, not this path."""
     match cfg.target:
         case LlamaSimpleMLPTargetConfig():
-            cache_dir = llama_simple_mlp.pretrain_cache_dir(
-                ENV.output_root, cfg.target.pretrain_run_path
-            )
+            cache_dir = llama_simple_mlp.pretrain_cache_dir(out_root, cfg.target.pretrain_run_path)
             simple_cfg = llama_simple_mlp.load_model_config(cache_dir)
             sites = llama_simple_mlp.site_specs(simple_cfg, cfg.target.sites)
             loaded_model = llama_simple_mlp.load_decomposed_lm_from_pretrain_cache(
@@ -182,12 +183,15 @@ def _restore_decomposition(
     return decomposition, resolved_step
 
 
-def open_jax_run(run_dir: Path, step: int | None = None) -> LoadedJaxRun:
+def open_jax_run(
+    run_dir: Path, step: int | None = None, *, out_root: Path = DEFAULT_OUT_ROOT
+) -> LoadedJaxRun:
     """Open the run at `run_dir`; restore checkpoint `step` (latest if None). Restores
-    only the trained decomposition (see `_restore_decomposition`)."""
-    cfg = load_run_dir_config(run_dir)
+    only the trained decomposition (see `_restore_decomposition`). `out_root` resolves a
+    `kind: pretrained` target's cache (`<out_root>/pretrain_cache/...`)."""
+    cfg = load_run_dir_config(run_dir, out_root)
     mesh = hsdp_mesh()
-    target_model, vocab_size = build_target(cfg, mesh)
+    target_model, vocab_size = build_target(cfg, mesh, out_root)
     decomposition, resolved_step = _restore_decomposition(cfg, target_model, mesh, run_dir, step)
     assert isinstance(decomposition.components, ComponentStacks)
 
@@ -250,15 +254,13 @@ class RunMetadata:
     layer_activation_sizes: list[tuple[str, int]]
 
 
-def run_metadata(run_dir: Path) -> RunMetadata:
+def run_metadata(run_dir: Path, *, out_root: Path = DEFAULT_OUT_ROOT) -> RunMetadata:
     """Target topology for `run_dir`, derived from the pinned config (+ the SimpleMLP
     pretrain cache's `model_config.yaml` for `n_layer`/`vocab_size`). No orbax restore."""
-    cfg = load_run_dir_config(run_dir)
+    cfg = load_run_dir_config(run_dir, out_root)
     match cfg.target:
         case LlamaSimpleMLPTargetConfig():
-            cache_dir = llama_simple_mlp.pretrain_cache_dir(
-                ENV.output_root, cfg.target.pretrain_run_path
-            )
+            cache_dir = llama_simple_mlp.pretrain_cache_dir(out_root, cfg.target.pretrain_run_path)
             simple_cfg = llama_simple_mlp.load_model_config(cache_dir)
             return RunMetadata(
                 model_type="LlamaSimpleMLP",

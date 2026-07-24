@@ -101,9 +101,6 @@ umask 002  # Ensure files are group-writable
 # ("ncclOsSocketTryAccept: Accept failed: Too many open files"); srun propagates this shell's
 # limits to the ranks.
 ulimit -n "$(ulimit -Hn)"
-# The generic library reads PARAM_DECOMP_OUT_DIR (its Environment knows no cluster
-# defaults); the wrapper resolves the team namespace at submit and pins it per job.
-export PARAM_DECOMP_OUT_DIR="{GENV.output_root}"
 {env_exports}
 {setup}
 
@@ -170,9 +167,6 @@ umask 002  # Ensure files are group-writable
 # ("ncclOsSocketTryAccept: Accept failed: Too many open files"); srun propagates this shell's
 # limits to the ranks.
 ulimit -n "$(ulimit -Hn)"
-# The generic library reads PARAM_DECOMP_OUT_DIR (its Environment knows no cluster
-# defaults); the wrapper resolves the team namespace at submit and pins it per job.
-export PARAM_DECOMP_OUT_DIR="{GENV.output_root}"
 {env_exports}
 {comment_section}
 {setup}

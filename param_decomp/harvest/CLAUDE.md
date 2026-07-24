@@ -95,7 +95,7 @@ python -m param_decomp.harvest.scripts.run_merge --subrun_id $SUBRUN --config_js
 Each harvest invocation creates a timestamped sub-run directory. `HarvestRepo` automatically loads from the latest sub-run.
 
 ```
-PARAM_DECOMP_OUT_DIR/runs/<run_id>/harvest/
+<out_root>/runs/<run_id>/harvest/
 ├── h-20260211_120000/          # sub-run 1
 │   ├── harvest.db              # SQLite DB: components table + config table (WAL mode)
 │   ├── component_correlations.npz
@@ -122,6 +122,8 @@ plus the dependent merge job; both run this package's worker mains.
 The only worker. Opens a JAX run, runs its frozen forward, accumulates into the NumPy
 `Harvester`. Args:
 - `--run_dir`: the JAX run dir (`runs/<run_id>`) (required)
+- `--out_root`: the output root the harvest writes under (default `./out`; the SLURM
+  submitter passes the cluster-resolved root)
 - `--n_batches`, `--batch_size`, `--activation_threshold`
 - `--rank R --world_size N`: serve `process_index=R`'s slice of every global batch; save
   to `worker_states/worker_<R>.npz`. Omit both for a single-process run that writes the

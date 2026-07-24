@@ -9,11 +9,11 @@ from param_decomp.harvest.schemas import get_harvest_dir
 from param_decomp.topology.path_schemas import path_schema_for_model_type
 
 
-def is_jax_run(decomposition_id: str) -> bool:
+def is_jax_run(out_root: Path, decomposition_id: str) -> bool:
     """A JAX single-pool run dir pins its single self-contained run config as
     `launch_config.yaml` and checkpoints with orbax under `ckpts/`; a torch run instead has
     `model_*.pth` and no orbax `ckpts/`. The orbax `ckpts/` dir is the explicit marker."""
-    run_dir = get_harvest_dir(decomposition_id).parent
+    run_dir = get_harvest_dir(out_root, decomposition_id).parent
     return (run_dir / LAUNCH_CONFIG_FILENAME).exists() and (run_dir / "ckpts").is_dir()
 
 
@@ -24,12 +24,13 @@ class PDAdapter:
     from `param_decomp.experiments.lm.load_run.run_metadata` (config + pretrain-cache `model_config`,
     no orbax restore); canonical layer descriptions render via the torch-free path schema."""
 
-    def __init__(self, decomposition_id: str):
+    def __init__(self, decomposition_id: str, out_root: Path):
         self._run_id = decomposition_id
+        self._out_root = out_root
 
     @cached_property
     def _run_dir(self) -> Path:
-        return get_harvest_dir(self._run_id).parent
+        return get_harvest_dir(self._out_root, self._run_id).parent
 
     @cached_property
     def cfg(self) -> LMExperimentConfig:
@@ -39,7 +40,7 @@ class PDAdapter:
 
     @cached_property
     def _metadata(self) -> RunMetadata:
-        return run_metadata(self._run_dir)
+        return run_metadata(self._run_dir, out_root=self._out_root)
 
     @property
     def decomposition_id(self) -> str:

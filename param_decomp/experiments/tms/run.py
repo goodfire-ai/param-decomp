@@ -38,11 +38,12 @@ from param_decomp.experiments.config import (
     run_instance,
 )
 from param_decomp.experiments.tms.config import TMSExperimentConfig
+from param_decomp.infra.paths import DEFAULT_OUT_ROOT
 from param_decomp.infra.run_files import generate_run_id
 from param_decomp.targets import tms
 
 
-def build_tms_built_run(cfg: TMSExperimentConfig, run_id: str) -> BuiltRun:
+def build_tms_built_run(cfg: TMSExperimentConfig, run_id: str, out_root: Path) -> BuiltRun:
     """Convert the canonical TMS schema to the engine's `BuiltRun` bundle via the shared
     helpers. TMS validates via the in-loop target-CI metric (not the LM CEandKLLosses scalar
     pass), so `eval` is `None`. The schema's `eval.metrics` list is still read at run time
@@ -74,7 +75,7 @@ def build_tms_built_run(cfg: TMSExperimentConfig, run_id: str) -> BuiltRun:
         pd=cfg.pd,
         runtime=cfg.runtime,
         cadence=cfg.cadence,
-        run=run_instance(cfg, run_id),
+        run=run_instance(cfg, run_id, out_root),
         target=target,
         data=None,
         ci_fn=ci_arch(cfg.decomposition.ci),
@@ -199,8 +200,14 @@ def run_tms_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) 
     )
 
 
-def main(config: str, group: str | None = None, tags: str | tuple[str, ...] | None = None) -> None:
+def main(
+    config: str,
+    group: str | None = None,
+    tags: str | tuple[str, ...] | None = None,
+    out_root: Path = DEFAULT_OUT_ROOT,
+) -> None:
     schema_raw = yaml.safe_load(Path(config).read_text())
+    out_root = Path(out_root)
     run_id = generate_run_id("param_decomp")
     if group is not None or tags is not None:
         wandb_cfg = dict(schema_raw.get("wandb") or {})
@@ -215,7 +222,7 @@ def main(config: str, group: str | None = None, tags: str | tuple[str, ...] | No
                 else [str(t).strip() for t in tags]
             )
         schema_raw["wandb"] = wandb_cfg
-    built = build_tms_built_run(TMSExperimentConfig(**schema_raw), run_id)
+    built = build_tms_built_run(TMSExperimentConfig(**schema_raw), run_id, out_root)
     built.run.run_dir.mkdir(parents=True, exist_ok=True)
     setup_logger(built.run.run_dir / "logs.log")
     (built.run.run_dir / LAUNCH_CONFIG_FILENAME).write_text(

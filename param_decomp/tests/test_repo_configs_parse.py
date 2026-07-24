@@ -68,7 +68,7 @@ def test_config_parses_and_is_canonical(path: Path) -> None:
     # `kind: pretrained` target is the enumerated gap: its resolution reads the pretrain
     # cache from the cluster FS, which this gate cannot assume.
     if not isinstance(cfg.target.spec, PretrainedTarget):
-        assert_placement_claims(cfg)
+        assert_placement_claims(cfg, Path("out"))
 
 
 def test_known_broken_entries_still_exist() -> None:

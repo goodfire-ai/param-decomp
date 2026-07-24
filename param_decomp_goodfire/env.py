@@ -1,10 +1,10 @@
 """The Goodfire deployment environment — the cluster facts the generic library refuses to know.
 
 `GoodfireEnvironment.from_env` is the wrapper's single ambient read: the shared data
-mount, the team's artifact namespace as the on-cluster output default, and the SLURM
-partition. The generic library's own `Environment` knows none of this — submitters
-export the resolved `PARAM_DECOMP_OUT_DIR` into every job so library code in the job
-sees the same root.
+mount, the team's artifact namespace as the on-cluster output root, and the SLURM
+partition. The generic library reads no ambient path environment at all — every
+submitter passes the resolved `output_root` as an explicit argument (`--out_root` /
+`out_dir` config stamp) in each command it renders.
 """
 
 import os
@@ -19,8 +19,8 @@ class GoodfireEnvironment:
     data_mount: Path | None
     """Cluster shared-data mount (`DATA_MOUNT`); None off-cluster (or set-but-dead)."""
     output_root: Path
-    """`PARAM_DECOMP_OUT_DIR`, else `DATA_MOUNT/artifacts/mechanisms/param-decomp` on a
-    cluster, else `./out` — the team convention the library deliberately doesn't know."""
+    """`DATA_MOUNT/artifacts/mechanisms/param-decomp` on a cluster, else `./out` — the
+    team convention the library deliberately doesn't know."""
     default_partition: str | None
     """sbatch `--partition` (`PARTITION_RESERVED`); None → the cluster's default."""
 
@@ -41,13 +41,12 @@ class GoodfireEnvironment:
         )
         raw_mount = env.get("DATA_MOUNT")
         data_mount = Path(raw_mount) if raw_mount and Path(raw_mount).exists() else None
-        default_out = (
-            data_mount / "artifacts/mechanisms/param-decomp" if data_mount else Path("out")
-        )
         return cls(
             repo_root=repo_root,
             data_mount=data_mount,
-            output_root=Path(env.get("PARAM_DECOMP_OUT_DIR", default_out)),
+            output_root=(
+                data_mount / "artifacts/mechanisms/param-decomp" if data_mount else Path("out")
+            ),
             default_partition=env.get("PARTITION_RESERVED"),
         )
 

@@ -21,6 +21,7 @@ from param_decomp.experiments.lm.config import build_from_schema
 from param_decomp.experiments.lm.run import assert_finetune_structural_compat
 
 CONFIGS = Path(__file__).parent.parent / "configs"
+OUT_ROOT = Path("out")
 
 
 def test_init_from_parent_loads_components_resets_schedule(tmp_path: Path):
@@ -103,9 +104,9 @@ def test_structural_compat_passes_on_matching_changes_only(tmp_path: Path):
         raw["pd"]["components_optimizer"],
         lr_schedule=dict(raw["pd"]["components_optimizer"]["lr_schedule"], start_val=1e-4),
     )
-    new_cfg = build_from_schema(new_raw, "p-aaaaaaaa")
+    new_cfg = build_from_schema(new_raw, "p-aaaaaaaa", OUT_ROOT)
     prov = ResumeProvenance(parent_run_dir=parent_dir, parent_step=10)
-    assert_finetune_structural_compat(new_cfg, prov)
+    assert_finetune_structural_compat(new_cfg, prov, OUT_ROOT)
 
 
 def test_structural_compat_fires_on_changed_C(tmp_path: Path):
@@ -116,7 +117,7 @@ def test_structural_compat_fires_on_changed_C(tmp_path: Path):
     old_sites = raw["decomposition"]["sites"]
     halved_cs = {matrix: c // 2 for matrix, c in old_sites["cs"].items()}
     new_raw["decomposition"] = dict(raw["decomposition"], sites=dict(old_sites, cs=halved_cs))
-    new_cfg = build_from_schema(new_raw, "p-aaaaaaaa")
+    new_cfg = build_from_schema(new_raw, "p-aaaaaaaa", OUT_ROOT)
     prov = ResumeProvenance(parent_run_dir=parent_dir, parent_step=10)
     with pytest.raises(AssertionError, match="fine-tune sites mismatch"):
-        assert_finetune_structural_compat(new_cfg, prov)
+        assert_finetune_structural_compat(new_cfg, prov, OUT_ROOT)

@@ -7,6 +7,7 @@ Usage:
 """
 
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
@@ -28,6 +29,7 @@ from param_decomp.autointerp.subsets import (
 )
 from param_decomp.core.log import logger
 from param_decomp.harvest.repo import HarvestRepo
+from param_decomp.infra.paths import DEFAULT_OUT_ROOT
 
 
 def main(
@@ -35,16 +37,20 @@ def main(
     config_json: dict[str, Any],
     harvest_subrun_id: str,
     autointerp_subrun_id: str | None = None,
+    out_root: Path = DEFAULT_OUT_ROOT,
 ) -> None:
     assert isinstance(config_json, dict), f"Expected dict from fire, got {type(config_json)}"
     interp_config = AutointerpConfig.model_validate(config_json)
+    out_root = Path(out_root)
 
     load_dotenv()
     from param_decomp.autointerp.providers import create_provider
 
     provider = create_provider(interp_config.llm)
 
-    harvest = HarvestRepo(decomposition_id, subrun_id=harvest_subrun_id, readonly=False)
+    harvest = HarvestRepo(
+        decomposition_id, subrun_id=harvest_subrun_id, readonly=False, out_root=out_root
+    )
     target_component_keys = (
         load_component_keys_file(interp_config.component_keys_path)
         if interp_config.component_keys_path is not None
@@ -52,7 +58,7 @@ def main(
     )
 
     if autointerp_subrun_id is not None:
-        subrun_dir = get_autointerp_dir(decomposition_id) / autointerp_subrun_id
+        subrun_dir = get_autointerp_dir(out_root, decomposition_id) / autointerp_subrun_id
         if subrun_dir.exists():
             logger.info(f"Resuming existing subrun: {autointerp_subrun_id}")
         else:
@@ -60,7 +66,7 @@ def main(
             logger.info(f"Starting new subrun: {autointerp_subrun_id}")
     else:
         autointerp_subrun_id = "a-" + datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        subrun_dir = get_autointerp_subrun_dir(decomposition_id, autointerp_subrun_id)
+        subrun_dir = get_autointerp_subrun_dir(out_root, decomposition_id, autointerp_subrun_id)
         subrun_dir.mkdir(parents=True, exist_ok=True)
 
     # Save config + provenance
@@ -84,7 +90,7 @@ def main(
 
     logger.info(f"Autointerp run: {subrun_dir}")
 
-    adapter = adapter_from_id(decomposition_id)
+    adapter = adapter_from_id(decomposition_id, out_root)
 
     run_interpret(
         provider=provider,
@@ -105,6 +111,7 @@ def get_command(
     decomposition_id: str,
     config: AutointerpConfig,
     harvest_subrun_id: str,
+    out_root: Path,
     autointerp_subrun_id: str | None = None,
 ) -> str:
     config_json = config.model_dump_json(exclude_none=True)
@@ -113,6 +120,7 @@ def get_command(
         f"--decomposition_id {decomposition_id} "
         f"--config_json '{config_json}' "
         f"--harvest_subrun_id {harvest_subrun_id} "
+        f"--out_root {out_root} "
     )
     if autointerp_subrun_id is not None:
         cmd += f"--autointerp_subrun_id {autointerp_subrun_id} "

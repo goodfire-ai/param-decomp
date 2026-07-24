@@ -20,9 +20,7 @@ import pytest
 import yaml
 from safetensors.numpy import save_file
 
-import param_decomp.experiments.lm.config as lm_config
 import param_decomp_goodfire.launch_lm as launch
-from param_decomp.infra.settings import ENV
 from param_decomp_goodfire.env import GENV
 
 _VOCAB = 64
@@ -151,17 +149,16 @@ def _write_run_config(path: Path, shards_dir: Path, dp: int) -> None:
 
 @pytest.fixture
 def inline_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Out dir + pretrain cache + shards, wired for both the launcher/schema (their
-    module-level `ENV` bindings, parent-process placement validation) and the trainer
-    child (inherited env: forced 4-device CPU topology, out dir)."""
+    """Out dir + pretrain cache + shards. The launcher's patched `GENV.output_root` is the
+    single root: submit validation resolves the pretrain cache through it, and the trainer
+    child receives it as an explicit `--out-root` (the env carries only the forced
+    4-device CPU topology)."""
     out_dir = tmp_path / "out"
     _write_pretrain_cache(out_dir)
     _write_token_shards(tmp_path / "shards")
-    monkeypatch.setenv("PARAM_DECOMP_OUT_DIR", str(out_dir))
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("XLA_FLAGS", "--xla_force_host_platform_device_count=4")
     monkeypatch.setattr(launch, "GENV", replace(GENV, output_root=out_dir))
-    monkeypatch.setattr(lm_config, "ENV", replace(ENV, output_root=out_dir))
     return tmp_path
 
 

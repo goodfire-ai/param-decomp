@@ -38,7 +38,6 @@ from orbax.checkpoint.type_handlers import ArrayHandler, register_type_handler
 
 from param_decomp.core.data import BatchSchedule, ShardServer, scan_shards
 from param_decomp.core.sharding import hsdp_mesh, init_distributed
-from param_decomp.infra.settings import ENV
 from param_decomp.pretrain.cache import (
     cache_dir_for,
     torch_model_config_dict,
@@ -369,9 +368,9 @@ def _lr_at(cfg: PretrainConfig, step: int) -> float:
 
 
 def _cache_dir(cfg: PretrainConfig) -> Path:
-    """`<PARAM_DECOMP_OUT_DIR>/pretrain_cache/<project>-<run_id>` — the exact dir
+    """`<out_root>/pretrain_cache/<project>-<run_id>` — the exact dir
     `param_decomp.core.llama_simple_mlp.pretrain_cache_dir` resolves. `out_dir` is the runs
-    dir (`<PARAM_DECOMP_OUT_DIR>/runs`), so the cache ROOT is its parent."""
+    dir (`<out_root>/runs`), so the cache ROOT is its parent."""
     assert cfg.out_dir is not None and cfg.run_id is not None
     project = cfg.wandb.project if cfg.wandb is not None else "pretrain"
     return cache_dir_for(cfg.out_dir.parent, project, cfg.run_id)
@@ -389,7 +388,7 @@ def main(config: Path) -> None:
 def _mint_local_identity(cfg: PretrainConfig) -> PretrainConfig:
     import secrets
 
-    out_dir = cfg.out_dir or (ENV.output_root / "runs")
+    out_dir = cfg.out_dir or Path("out/runs")
     run_id = cfg.run_id or f"t-{secrets.token_hex(4)}"
     return cfg.model_copy(update={"out_dir": out_dir, "run_id": run_id})
 

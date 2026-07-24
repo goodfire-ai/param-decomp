@@ -27,19 +27,22 @@ from param_decomp.harvest.storage import CorrelationStorage, TokenStatsStorage
 class HarvestRepo:
     """Access to harvest data for a single harvest subrun of a decomposition."""
 
-    def __init__(self, decomposition_id: str, subrun_id: str, readonly: bool) -> None:
+    def __init__(
+        self, decomposition_id: str, subrun_id: str, readonly: bool, out_root: Path
+    ) -> None:
         self.subrun_id = subrun_id
-        self._dir = get_harvest_subrun_dir(decomposition_id, subrun_id)
+        self._dir = get_harvest_subrun_dir(out_root, decomposition_id, subrun_id)
         self._db = HarvestDB(self._dir / "harvest.db", readonly=readonly)
 
     @classmethod
     def open_most_recent(
         cls,
         decomposition_id: str,
+        out_root: Path,
         readonly: bool = True,
     ) -> "HarvestRepo | None":
         """Open harvest data. Returns None if no harvest data exists."""
-        decomposition_subruns_dir = get_harvest_dir(decomposition_id)
+        decomposition_subruns_dir = get_harvest_dir(out_root, decomposition_id)
         if not decomposition_subruns_dir.exists():
             return None
 
@@ -62,7 +65,12 @@ class HarvestRepo:
             return None
 
         logger.info(f"Opening harvest data for {decomposition_id} from {subrun_dir}")
-        return cls(decomposition_id=decomposition_id, subrun_id=subrun_dir.name, readonly=readonly)
+        return cls(
+            decomposition_id=decomposition_id,
+            subrun_id=subrun_dir.name,
+            readonly=readonly,
+            out_root=out_root,
+        )
 
     @staticmethod
     def save_results(harvester: Harvester, config: HarvestConfig, output_dir: Path) -> None:

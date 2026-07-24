@@ -4,19 +4,18 @@ Reads harvest DBs for each model in `scripts/intruder_comparison.json` and write
 - `data.json`: per-component scores + densities, per-model summary stats, group/colour spec
 - `README.md`: description of the data, summary table, and intended bar chart
 
-Output goes to `ENV.output_root/intruder_comparison/`.
+Output goes to `<out_root>/intruder_comparison/`.
 """
 
+import argparse
 import json
 import sqlite3
 from pathlib import Path
 
 import numpy as np
 
-from param_decomp.infra.settings import ENV
+from param_decomp.infra.paths import DEFAULT_OUT_ROOT
 
-HARVEST_ROOT = ENV.output_root / "harvest"
-OUT_DIR = ENV.output_root / "intruder_comparison"
 CONFIG_PATH = Path(__file__).resolve().parents[3] / "scripts" / "intruder_comparison.json"
 
 EMBER = "#B17039"
@@ -24,8 +23,8 @@ GREY = "#B8B3A6"
 OBSIDIAN = "#2C2B2C"
 
 
-def load_scores(decomp_id: str, subrun: str) -> tuple[np.ndarray, np.ndarray]:
-    db_path = HARVEST_ROOT / decomp_id / subrun / "harvest.db"
+def load_scores(harvest_root: Path, decomp_id: str, subrun: str) -> tuple[np.ndarray, np.ndarray]:
+    db_path = harvest_root / decomp_id / subrun / "harvest.db"
     assert db_path.exists(), f"No harvest DB at {db_path}"
     conn = sqlite3.connect(str(db_path))
     rows = conn.execute(
@@ -134,7 +133,12 @@ def write_readme(
 
 
 def main() -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--out_root", type=Path, default=DEFAULT_OUT_ROOT)
+    args = ap.parse_args()
+    harvest_root = args.out_root / "harvest"
+    out_dir = args.out_root / "intruder_comparison"
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     with open(CONFIG_PATH) as f:
         cfg = json.load(f)
@@ -143,7 +147,7 @@ def main() -> None:
 
     raw: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     for label, (decomp_id, subrun) in models.items():
-        raw[label] = load_scores(decomp_id, subrun)
+        raw[label] = load_scores(harvest_root, decomp_id, subrun)
         print(f"{label:28s}: {len(raw[label][0]):6d} components")
 
     per_model: dict[str, dict[str, float]] = {
@@ -181,12 +185,12 @@ def main() -> None:
         "palette": {"ember": EMBER, "grey": GREY, "obsidian": OBSIDIAN},
     }
 
-    data_path = OUT_DIR / "data.json"
+    data_path = out_dir / "data.json"
     with open(data_path, "w") as f:
         json.dump(out, f, indent=2)
     print(f"Saved {data_path}")
 
-    readme_path = OUT_DIR / "README.md"
+    readme_path = out_dir / "README.md"
     write_readme(readme_path, models, per_model, group_means, group_colors)
     print(f"Saved {readme_path}")
 

@@ -4,18 +4,20 @@ The adapter loads the target model and reports its layer structure and vocab siz
 Construct via adapter_from_config(method_config).
 """
 
+from pathlib import Path
+
 from param_decomp.adapters.pd import PDAdapter, is_jax_run
 from param_decomp.harvest.config import ParamDecompHarvestConfig
 
 
-def adapter_from_config(method_config: ParamDecompHarvestConfig) -> PDAdapter:
-    assert is_jax_run(method_config.wandb_path), (
+def adapter_from_config(method_config: ParamDecompHarvestConfig, out_root: Path) -> PDAdapter:
+    assert is_jax_run(out_root, method_config.wandb_path), (
         f"{method_config.wandb_path}: not a loadable PD run (missing launch_config.yaml or orbax ckpts/)."
     )
-    return PDAdapter(method_config.wandb_path)
+    return PDAdapter(method_config.wandb_path, out_root)
 
 
-def adapter_from_id(decomposition_id: str) -> PDAdapter:
+def adapter_from_id(decomposition_id: str, out_root: Path) -> PDAdapter:
     """Construct an adapter from a decomposition ID (e.g. "s-abc123", "p-1a2b3c4d").
 
     Recovers the full method config from the harvest DB (which is always populated
@@ -25,11 +27,11 @@ def adapter_from_id(decomposition_id: str) -> PDAdapter:
 
     from param_decomp.harvest.repo import HarvestRepo
 
-    repo = HarvestRepo.open_most_recent(decomposition_id)
+    repo = HarvestRepo.open_most_recent(decomposition_id, out_root)
     assert repo is not None, (
         f"No harvest data found for {decomposition_id!r}. "
         f"Run pd-harvest first to populate the method config."
     )
     method_config_raw = repo.get_config()["method_config"]
     method_config = TypeAdapter(ParamDecompHarvestConfig).validate_python(method_config_raw)
-    return adapter_from_config(method_config)
+    return adapter_from_config(method_config, out_root)

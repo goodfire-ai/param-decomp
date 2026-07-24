@@ -1,6 +1,6 @@
 """Autointerp data repository.
 
-Owns PARAM_DECOMP_OUT_DIR/autointerp/<run_id>/ and provides read access to
+Owns `<out_root>/runs/<run_id>/autointerp/` and provides read access to
 interpretations and evaluation scores.
 
 Each autointerp subrun (a-YYYYMMDD_HHMMSS) has its own interp.db.
@@ -30,8 +30,8 @@ class InterpRepo:
         self.run_id = run_id
 
     @classmethod
-    def _find_latest_done_subrun_dir(cls, run_id: str) -> Path | None:
-        autointerp_dir = get_autointerp_dir(run_id)
+    def _find_latest_done_subrun_dir(cls, run_id: str, out_root: Path) -> Path | None:
+        autointerp_dir = get_autointerp_dir(out_root, run_id)
         if not autointerp_dir.exists():
             return None
         candidates = sorted(
@@ -45,9 +45,9 @@ class InterpRepo:
         return candidates[-1] if candidates else None
 
     @classmethod
-    def open(cls, run_id: str) -> "InterpRepo | None":
+    def open(cls, run_id: str, out_root: Path) -> "InterpRepo | None":
         """Open autointerp data for a run. Returns None if no completed autointerp data exists."""
-        subrun_dir = cls._find_latest_done_subrun_dir(run_id)
+        subrun_dir = cls._find_latest_done_subrun_dir(run_id, out_root)
         if subrun_dir is None:
             return None
         db_path = subrun_dir / "interp.db"
@@ -61,9 +61,9 @@ class InterpRepo:
         )
 
     @classmethod
-    def open_subrun(cls, run_id: str, subrun_id: str) -> "InterpRepo":
+    def open_subrun(cls, run_id: str, subrun_id: str, out_root: Path) -> "InterpRepo":
         """Open a specific autointerp subrun by ID."""
-        subrun_dir = get_autointerp_dir(run_id) / subrun_id
+        subrun_dir = get_autointerp_dir(out_root, run_id) / subrun_id
         db_path = subrun_dir / "interp.db"
         assert db_path.exists(), f"No interp.db at {subrun_dir}"
         return cls(

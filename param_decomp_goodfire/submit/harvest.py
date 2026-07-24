@@ -76,7 +76,7 @@ def submit_harvest(
     suffix = f"-{job_suffix}" if job_suffix else ""
     array_job_name = f"pd-harvest{suffix}"
 
-    run_dir = get_harvest_dir(config.config.method_config.id).parent
+    run_dir = get_harvest_dir(GENV.output_root, config.config.method_config.id).parent
 
     worker_commands = []
     for rank in range(n_gpus):
@@ -86,6 +86,7 @@ def submit_harvest(
             rank=rank,
             world_size=n_gpus,
             subrun_id=subrun_id,
+            out_root=GENV.output_root,
         )
         worker_commands.append(cmd)
 
@@ -105,10 +106,7 @@ def submit_harvest(
         n_array_tasks=n_gpus,
     )
 
-    merge_command = harvest_merge.get_command(
-        subrun_id,
-        config.config,
-    )
+    merge_command = harvest_merge.get_command(subrun_id, config.config, GENV.output_root)
     merge_config = SlurmConfig(
         job_name="pd-harvest-merge",
         partition=partition,

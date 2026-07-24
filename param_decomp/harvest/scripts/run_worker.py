@@ -35,6 +35,7 @@ from param_decomp.harvest.accumulator import Harvester
 from param_decomp.harvest.config import HarvestConfig, ParamDecompHarvestConfig
 from param_decomp.harvest.repo import HarvestRepo
 from param_decomp.harvest.schemas import HarvestBatch, get_harvest_subrun_dir
+from param_decomp.infra.paths import DEFAULT_OUT_ROOT
 
 
 def harvest_batch_from_forward(
@@ -105,11 +106,17 @@ def harvest_jax_run(
 
 
 def get_command(
-    config: HarvestConfig, run_dir: Path, rank: int, world_size: int, subrun_id: str
+    config: HarvestConfig,
+    run_dir: Path,
+    rank: int,
+    world_size: int,
+    subrun_id: str,
+    out_root: Path,
 ) -> str:
     return (
         f"python -m param_decomp.harvest.scripts.run_worker "
         f"--run_dir {run_dir} "
+        f"--out_root {out_root} "
         f"--n_batches {config.n_batches} "
         f"--batch_size {config.batch_size} "
         f"--activation_threshold {_activation_threshold(config)} "
@@ -131,6 +138,7 @@ def _activation_threshold(config: HarvestConfig) -> float:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--run_dir", type=Path, required=True)
+    ap.add_argument("--out_root", type=Path, default=DEFAULT_OUT_ROOT)
     ap.add_argument("--step", type=int, default=None, help="checkpoint step (default: latest)")
     ap.add_argument("--n_batches", type=int, required=True)
     ap.add_argument(
@@ -152,7 +160,7 @@ def main() -> None:
     args = ap.parse_args()
     assert (args.rank is None) == (args.world_size is None)
 
-    run = open_jax_run(args.run_dir, args.step)
+    run = open_jax_run(args.run_dir, args.step, out_root=args.out_root)
     subrun_id = args.subrun_id or "h-" + datetime.now().strftime("%Y%m%d_%H%M%S")
     config = HarvestConfig(
         method_config=ParamDecompHarvestConfig(
@@ -162,7 +170,7 @@ def main() -> None:
         batch_size=args.batch_size,
         collect_component_cooccurrence=not args.no_cooccurrence,
     )
-    output_dir = get_harvest_subrun_dir(run.run_id, subrun_id)
+    output_dir = get_harvest_subrun_dir(args.out_root, run.run_id, subrun_id)
     rank_world_size = (args.rank, args.world_size) if args.rank is not None else None
     if rank_world_size is not None:
         logger.info(

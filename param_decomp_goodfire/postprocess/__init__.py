@@ -74,6 +74,7 @@ def postprocess(config: PostprocessConfig, dependency_job_id: str | None = None)
             decomposition_id=decomp_cfg.id,
             config=config.intruder.config,
             harvest_subrun_id=harvest_result.subrun_id,
+            out_root=GENV.output_root,
         )
 
         intruder_slurm = SlurmConfig(

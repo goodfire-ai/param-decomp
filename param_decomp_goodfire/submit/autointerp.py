@@ -79,6 +79,7 @@ def submit_autointerp(
         decomposition_id=decomposition_id,
         config=config.config,
         harvest_subrun_id=harvest_subrun_id,
+        out_root=GENV.output_root,
         autointerp_subrun_id=autointerp_subrun_id,
     )
 
@@ -121,6 +122,7 @@ def submit_autointerp(
             scorer_type=scorer,
             config=config.evals,
             harvest_subrun_id=harvest_subrun_id,
+            out_root=GENV.output_root,
             autointerp_subrun_id=autointerp_subrun_id,
         )
         eval_slurm = SlurmConfig(

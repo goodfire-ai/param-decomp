@@ -103,6 +103,7 @@ from param_decomp.experiments.lm.config import (
     load_run_dir_config,
 )
 from param_decomp.experiments.lm.load_run import build_target
+from param_decomp.infra.paths import DEFAULT_OUT_ROOT
 from param_decomp.targets.glu_transformer import hf_snapshot_dir
 
 
@@ -266,14 +267,16 @@ def _make_arithmetic_eval(
     )
 
 
-def assert_finetune_structural_compat(built: BuiltRun, prov: ResumeProvenance) -> None:
+def assert_finetune_structural_compat(
+    built: BuiltRun, prov: ResumeProvenance, out_root: Path
+) -> None:
     """Fine-tune requires the parent's decomposition STRUCTURE to match the new config's:
     same sites (names + C) and same ci-fn arch. A changed C / layers / target / ci-fn is a
     different-shaped decomposition and is NOT a fine-tune (the parent's V/U + ci_fn would
     not load onto the new reference). Only LR / coeffs / eps / seq / batch / steps may
     change. Read from the parent's pinned launch config so the failure is a readable config
     diff, not an opaque orbax tree mismatch."""
-    parent = load_run_dir_config(prov.parent_run_dir)
+    parent = load_run_dir_config(prov.parent_run_dir, out_root)
     parent_sites = tuple((s.name, s.C) for s in parent.target.sites)
     new_sites = tuple((s.name, s.C) for s in built.target.sites)
     assert parent_sites == new_sites, (
@@ -563,9 +566,10 @@ def _pin_config_copy(run_dir: Path, name: str, source: Path) -> None:
         copy.write_text(source.read_text())
 
 
-def main(config: Path, run_id: str) -> None:
+def main(config: Path, run_id: str, out_root: Path = DEFAULT_OUT_ROOT) -> None:
     config = Path(config)
-    built, _raw_cfg = load_config(config, run_id)
+    out_root = Path(out_root)
+    built, _raw_cfg = load_config(config, run_id, out_root)
 
     install_sigterm_flag()
     _enable_hlo_dump(built.run.run_dir)
@@ -580,7 +584,7 @@ def main(config: Path, run_id: str) -> None:
     mesh = hsdp_mesh(built.runtime.tp, built.runtime.gpus_per_node)
 
     if built.run.resume_provenance is not None:
-        assert_finetune_structural_compat(built, built.run.resume_provenance)
+        assert_finetune_structural_compat(built, built.run.resume_provenance, out_root)
 
     cache_dir = _enable_persistent_compilation_cache(built.run.out_dir)
 
@@ -606,7 +610,7 @@ def main(config: Path, run_id: str) -> None:
 
     # The `lm` (an eqx model) IS the frozen target — it carries the frozen weights as fields,
     # so the function-table era's separate `frozen` object is gone.
-    model, _vocab_size = build_target(built, mesh)
+    model, _vocab_size = build_target(built, mesh, out_root)
 
     train(built, model, mesh)
 

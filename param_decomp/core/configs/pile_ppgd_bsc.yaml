@@ -2,7 +2,7 @@
 # shared-config route. Identical to pile_pgd1_from_torch.yaml except the adversary is
 # PersistentPGDReconLoss (scope per_batch_per_position -> bsc). Small target (4L d768):
 # no remat needed. Launch: pd-lm, 2 nodes (16 GPUs, dp=16). The run dir is
-# PARAM_DECOMP_OUT_DIR/runs/<run_id>; the run id is minted at submit.
+# <out_root>/runs/<run_id>; the run id is minted at submit.
 run_name: ai-jax-pile4l-ppgd-bsc
 # JAX leg of the persistent-PGD pile experiment — byte-derived from the stored config of
 # torch run p-20f9fc15 (the pile_llama_simple_mlp-4L baseline; snapshot

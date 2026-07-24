@@ -84,9 +84,9 @@ library is the deliverable — everything in it is written to be shippable:
   with per-node job-side venvs), the post-pipeline submitters (`submit/`: `pd-harvest`,
   `pd-autointerp`, `pd-intruder`, `pd-clustering`) and the
   `postprocess/` dependency-chained pipeline (`pd-postprocess`), and the cluster
-  environment (`env.py`: data mount, team artifact namespace, partition — exported
-  into every job as `PARAM_DECOMP_OUT_DIR`, which is all the library reads). Pure
-  wrappers: everything they invoke is library code (worker module mains).
+  environment (`env.py`: data mount, team artifact namespace, partition — the resolved
+  output root is passed as an explicit argument in every command the wrapper renders).
+  Pure wrappers: everything they invoke is library code (worker module mains).
 
 `make install-dev` syncs both editably via the uv workspace in the root `pyproject.toml`
 into the one `.venv`. The library's `pd-*` CLIs are the in-process, scheduler-free ones
@@ -104,11 +104,13 @@ LLM calls — but it must not know *where it runs*: no scheduler (SLURM/sbatch),
 submission or code-shipping, no cluster paths, mounts, partitions, or team namespaces.
 All deployment fit lives in `param_decomp_goodfire`, a pure wrapper that composes
 library entrypoints and may never be imported by the library (enforced fail-closed by
-`param_decomp/core/tests/test_runtime_standalone.py`). Ambient env vars carrying paths or
-deployment facts are read in exactly one place per package (`Environment.from_env` /
-`GoodfireEnvironment.from_env`); credentials and third-party-tool conventions
-(`WANDB_*`, `*_API_KEY`, `HF_*`, `CUDA_*`) may follow their ecosystem's own env
-contract, resolved at entry points. Everything else takes typed values. The wrapper is not privileged: if our launcher needs
+`param_decomp/core/tests/test_runtime_standalone.py`). The library reads NO ambient
+environment for paths: output roots are explicit parameters (default `./out`) threaded
+from entry points; the wrapper passes its cluster-resolved root as an argument in every
+command it renders. Credentials and third-party-tool conventions (`WANDB_*`,
+`*_API_KEY`, `HF_*`, `CUDA_*`) may follow their ecosystem's own env contract, resolved
+at entry points. Ambient deployment facts live only in the wrapper's
+`GoodfireEnvironment.from_env`. Everything else takes typed values. The wrapper is not privileged: if our launcher needs
 something the library doesn't publicly expose, that is a library bug — never a reason
 for a private hook. A SLURM *mention* in library prose is legitimate only when it
 documents a generic contract (e.g. SIGTERM→save semantics), never a dependency.
@@ -249,7 +251,7 @@ and returns JAX-native as the #10 torch->jax adapter.
 Every artifact for a decomposition lives under one dir per run:
 
 ```
-PARAM_DECOMP_OUT_DIR/runs/<run_id>/
+<out_root>/runs/<run_id>/
   launch_config.yaml         # the single self-contained run config (the trainer reads it; resume byte-compares). NOT config.yaml: that basename collides with wandb's reserved run-config file, which wandb.save would symlink onto and clobber
   ckpts/<step>/{decomposition,training}/  # orbax sharded checkpoints (JAX trainer): the trained product vs the trainer-only tail (pre-split default/-item runs need an ad-hoc migration, no in-code compat)
   metrics.jsonl              # local logs
@@ -260,14 +262,14 @@ PARAM_DECOMP_OUT_DIR/runs/<run_id>/
 Both training output and the W&B download cache write here. Per-stage subdirs are
 populated by their respective pipelines.
 
-`PARAM_DECOMP_OUT_DIR` is the only path env var the library reads
-(`param_decomp/infra/settings.py`; default: the relative `out/`). On cluster the
+`out_root` is an explicit parameter, never an env var: every entry edge (composition
+roots, worker mains, consumer functions like `open_jax_run`) takes it with the default
+`./out` (`param_decomp.infra.paths.DEFAULT_OUT_ROOT`, cwd-relative). On cluster the
 wrapper's `GoodfireEnvironment` (`param_decomp_goodfire/env.py`) resolves it to
 `$DATA_MOUNT/artifacts/mechanisms/param-decomp` (e.g.
-`/mnt/data/artifacts/mechanisms/param-decomp` when `DATA_MOUNT=/mnt/data`) and exports
-it into every job. Set the env var to override either. (A stale shell
-may export a wrong value — e.g. an old `/mnt/polished-lake/...` — which overrides the
-correct default; check `echo $PARAM_DECOMP_OUT_DIR` if outputs land somewhere unexpected.)
+`/mnt/data/artifacts/mechanisms/param-decomp` when `DATA_MOUNT=/mnt/data`) and passes it
+into every command it renders (`--out_root` / `--out-root` flag, or the pretrainer's
+stamped `out_dir`).
 
 ## Development commands
 

@@ -3,19 +3,18 @@
 from pathlib import Path
 
 from param_decomp.infra.run_files import generate_run_id
-from param_decomp.infra.settings import ENV
 
 
-def clustering_run_dir(run_id: str) -> Path:
-    return ENV.output_root / "clustering" / "runs" / run_id
+def clustering_run_dir(out_root: Path, run_id: str) -> Path:
+    return out_root / "clustering" / "runs" / run_id
 
 
-def clustering_harvest_dir(harvest_id: str) -> Path:
-    return ENV.output_root / "clustering" / "harvests" / harvest_id
+def clustering_harvest_dir(out_root: Path, harvest_id: str) -> Path:
+    return out_root / "clustering" / "harvests" / harvest_id
 
 
-def clustering_ensemble_dir(ensemble_id: str) -> Path:
-    return ENV.output_root / "clustering" / "ensembles" / ensemble_id
+def clustering_ensemble_dir(out_root: Path, ensemble_id: str) -> Path:
+    return out_root / "clustering" / "ensembles" / ensemble_id
 
 
 def new_run_id() -> str:

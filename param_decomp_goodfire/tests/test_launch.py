@@ -2,12 +2,14 @@
 loader (`param_decomp.core.built_run`, jax venv) can't be imported here, so this exercises
 only the lab half: structural dispatch + the no-`run_id` precondition + stamping."""
 
+import shlex
 from pathlib import Path
 
 import pytest
 import yaml
 
 from param_decomp.core.configs import LaunchEnv, ProfileConfig
+from param_decomp_goodfire.env import GENV
 from param_decomp_goodfire.launch_lm import (
     _rank_command,
     _render_rank_env,
@@ -85,7 +87,8 @@ def test_rank_command_builds_node_workspace_then_execs_trainer():
     assert command.index("source .venv/bin/activate") < command.index("export FOO=1")
     assert command.endswith(
         "exec python -m param_decomp.experiments.lm.run "
-        "/out/runs/p-abcd1234/launch_config.yaml --run-id p-abcd1234"
+        "/out/runs/p-abcd1234/launch_config.yaml --run-id p-abcd1234 "
+        f"--out-root {shlex.quote(str(GENV.output_root))}"
     )
 
 

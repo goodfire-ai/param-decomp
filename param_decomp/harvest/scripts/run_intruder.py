@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
@@ -8,15 +9,18 @@ from param_decomp.harvest.config import IntruderEvalConfig
 from param_decomp.harvest.db import HarvestDB
 from param_decomp.harvest.intruder import run_intruder_scoring
 from param_decomp.harvest.repo import HarvestRepo
+from param_decomp.infra.paths import DEFAULT_OUT_ROOT
 
 
 def main(
     decomposition_id: str,
     config_json: dict[str, Any],
     harvest_subrun_id: str,
+    out_root: Path = DEFAULT_OUT_ROOT,
 ) -> None:
     assert isinstance(config_json, dict), f"Expected dict from fire, got {type(config_json)}"
     load_dotenv()
+    out_root = Path(out_root)
 
     eval_config = IntruderEvalConfig.model_validate(config_json)
 
@@ -24,9 +28,11 @@ def main(
 
     provider = create_provider(eval_config.llm)
 
-    tokenizer_name = adapter_from_id(decomposition_id).tokenizer_name
+    tokenizer_name = adapter_from_id(decomposition_id, out_root).tokenizer_name
 
-    harvest = HarvestRepo(decomposition_id, subrun_id=harvest_subrun_id, readonly=True)
+    harvest = HarvestRepo(
+        decomposition_id, subrun_id=harvest_subrun_id, readonly=True, out_root=out_root
+    )
     db = HarvestDB(harvest._dir / "harvest.db")
 
     asyncio.run(
@@ -42,12 +48,15 @@ def main(
     db.close()
 
 
-def get_command(decomposition_id: str, config: IntruderEvalConfig, harvest_subrun_id: str) -> str:
+def get_command(
+    decomposition_id: str, config: IntruderEvalConfig, harvest_subrun_id: str, out_root: Path
+) -> str:
     config_json = config.model_dump_json(exclude_none=True)
     return (
         f"python -m param_decomp.harvest.scripts.run_intruder {decomposition_id} "
         f"--config_json '{config_json}' "
-        f"--harvest_subrun_id {harvest_subrun_id}"
+        f"--harvest_subrun_id {harvest_subrun_id} "
+        f"--out_root {out_root}"
     )
 
 

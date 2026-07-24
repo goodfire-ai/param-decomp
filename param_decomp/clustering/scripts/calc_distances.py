@@ -5,7 +5,7 @@ Loads an ensemble of merge histories (one per `pd-clustering` member), normalize
 component labels into a shared space (`MergeHistoryEnsemble.normalized`), computes
 pairwise distances per iteration (`math.compute_distances`), and writes:
 
-    PARAM_DECOMP_OUT_DIR/clustering/ensembles/<ensemble_id>/
+    <out_root>/clustering/ensembles/<ensemble_id>/
         ├── ensemble_meta.json                # normalization metadata
         ├── ensemble_merge_array.npz          # normalized merge array
         ├── distances_<method>.npz            # per-iteration distance tensor
@@ -15,6 +15,7 @@ pairwise distances per iteration (`math.compute_distances`), and writes:
 import argparse
 import json
 import shlex
+from pathlib import Path
 
 import numpy as np
 from matplotlib import pyplot as plt
@@ -25,19 +26,21 @@ from param_decomp.clustering.paths import clustering_ensemble_dir, clustering_ru
 from param_decomp.clustering.plotting.merge import plot_dists_distribution
 from param_decomp.clustering.types import DistancesArray, DistancesMethod
 from param_decomp.core.log import logger
+from param_decomp.infra.paths import DEFAULT_OUT_ROOT
 
 
 def calc_distances(
     ensemble_id: str,
     clustering_run_ids: list[str],
     distances_method: DistancesMethod,
+    out_root: Path,
 ) -> None:
     assert clustering_run_ids, "no clustering run ids provided"
     logger.info(f"Consensus for ensemble {ensemble_id}: {len(clustering_run_ids)} runs")
 
     histories: list[MergeHistory] = []
     for run_id in clustering_run_ids:
-        history_path = clustering_run_dir(run_id) / "history.zip"
+        history_path = clustering_run_dir(out_root, run_id) / "history.zip"
         assert history_path.exists(), f"history not found for run {run_id}: {history_path}"
         histories.append(MergeHistory.read(history_path))
         logger.info(f"Loaded history for run {run_id}")
@@ -45,7 +48,7 @@ def calc_distances(
     ensemble = MergeHistoryEnsemble(data=histories)
     merge_array, merge_meta = ensemble.normalized()
 
-    pipeline_dir = clustering_ensemble_dir(ensemble_id)
+    pipeline_dir = clustering_ensemble_dir(out_root, ensemble_id)
     pipeline_dir.mkdir(parents=True, exist_ok=True)
 
     (pipeline_dir / "ensemble_meta.json").write_text(json.dumps(merge_meta, indent=2))
@@ -76,6 +79,7 @@ def get_command(
     ensemble_id: str,
     clustering_run_ids: list[str],
     distances_method: DistancesMethod,
+    out_root: Path,
 ) -> str:
     return shlex.join(
         [
@@ -88,6 +92,8 @@ def get_command(
             ",".join(clustering_run_ids),
             "--distances-method",
             distances_method,
+            "--out-root",
+            out_root.as_posix(),
         ]
     )
 
@@ -106,11 +112,13 @@ def cli() -> None:
         choices=DistancesMethod.__args__,
         default="perm_invariant_hamming",
     )
+    parser.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)
     args = parser.parse_args()
     calc_distances(
         ensemble_id=args.ensemble_id,
         clustering_run_ids=args.clustering_run_ids.split(","),
         distances_method=args.distances_method,
+        out_root=args.out_root,
     )
 
 

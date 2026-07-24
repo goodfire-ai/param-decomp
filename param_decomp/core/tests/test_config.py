@@ -2,7 +2,7 @@
 
 The run id is NOT a config field: the launcher mints one and passes it to the build
 helpers as an explicit arg (`RUN_ID` here), and the run dir derives from it
-(`PARAM_DECOMP_OUT_DIR/runs/<run_id>`)."""
+(`<out_root>/runs/<run_id>`)."""
 
 from pathlib import Path
 from typing import Any
@@ -36,6 +36,7 @@ from param_decomp.targets.glu_transformer import mlp_family_site_cs
 
 CONFIGS = Path(__file__).parent.parent / "configs"
 RUN_ID = "p-0123abcd"
+OUT_ROOT = Path("out")
 
 
 def _reference_lm_raw():
@@ -94,7 +95,7 @@ def test_legacy_top_level_n_mask_samples_pushes_onto_stochastic_terms():
 
 
 def test_b128_config_converts():
-    converted, raw = load_config(CONFIGS / "llama8b_l18_b128_cmp32.yaml", RUN_ID)
+    converted, raw = load_config(CONFIGS / "llama8b_l18_b128_cmp32.yaml", RUN_ID, OUT_ROOT)
     assert raw["pd"]["batch_size"] == 128
     assert converted.run.run_name == "jax-l18-b128-cmp32-from-torch"
     assert converted.pd.batch_size == 128 and converted.data is not None
@@ -182,7 +183,7 @@ def test_eval_block_maps_slow_tier_and_defers_offline_only_metrics(
             {"type": "UVPlots", "identity_patterns": None, "dense_patterns": None},  # in-loop slow
         ],
     }
-    cfg = build_experiment_config(LMExperimentConfig(**raw), RUN_ID)
+    cfg = build_experiment_config(LMExperimentConfig(**raw), RUN_ID, OUT_ROOT)
     assert cfg.eval is not None
     assert (cfg.eval.batch_size, cfg.eval.every, cfg.eval.n_steps) == (128, 1000, 1)
     assert (cfg.eval.slow_every, cfg.eval.slow_on_first_step) == (10000, True)
@@ -208,7 +209,7 @@ def test_unsupported_settings_refuse():
         ),
     )
     with pytest.raises(AssertionError, match="unsupported training loss"):
-        build_experiment_config(LMExperimentConfig(**hidden_acts_training_loss), RUN_ID)
+        build_experiment_config(LMExperimentConfig(**hidden_acts_training_loss), RUN_ID, OUT_ROOT)
 
     def with_ppgd_fields(**fields: object):
         return dict(
@@ -257,7 +258,7 @@ def test_unsupported_settings_refuse():
         ),
     )
     with pytest.raises(AssertionError, match="c-spec family"):
-        build_experiment_config(LMExperimentConfig(**simple_mlp_sites), RUN_ID)
+        build_experiment_config(LMExperimentConfig(**simple_mlp_sites), RUN_ID, OUT_ROOT)
 
 
 def test_unsupported_model_family_refuses_and_supported_families_dispatch():
@@ -273,7 +274,7 @@ def test_unsupported_model_family_refuses_and_supported_families_dispatch():
 
     def _converted_target(spec: dict[str, str]):
         cfg = build_experiment_config(
-            LMExperimentConfig(**dict(raw, target=dict(raw["target"], spec=spec))), RUN_ID
+            LMExperimentConfig(**dict(raw, target=dict(raw["target"], spec=spec))), RUN_ID, OUT_ROOT
         )
         return cfg.target
 
@@ -372,7 +373,7 @@ def test_decaying_persistent_source_schedule_accepted_and_decays():
             ],
         ),
     )
-    built = build_experiment_config(LMExperimentConfig(**decaying_source), RUN_ID)
+    built = build_experiment_config(LMExperimentConfig(**decaying_source), RUN_ID, OUT_ROOT)
     losses = build_loss_terms(built.pd.loss_metrics, tuple(sc.name for sc in built.target.sites))
     (cfg,) = persistent_configs(losses.recon).values()
     schedule = cfg.optimizer.lr_schedule
@@ -404,7 +405,7 @@ def test_tiled_sites_with_per_matrix_c_convert():
             },
         ),
     )
-    cfg = build_experiment_config(LMExperimentConfig(**general), RUN_ID)
+    cfg = build_experiment_config(LMExperimentConfig(**general), RUN_ID, OUT_ROOT)
     assert cfg.target.sites == (
         SiteC("layers.18.self_attn.q_proj", 128),
         SiteC("layers.18.self_attn.v_proj", 32),
@@ -439,14 +440,14 @@ def test_all_block_resids_concatenates_one_tap_per_block():
     output_sites = ("layers.18.mlp.down_proj", "layers.19.mlp.down_proj")
 
     default_cfg = build_experiment_config(
-        LMExperimentConfig(**_two_block_cfg("first_block_resid")), RUN_ID
+        LMExperimentConfig(**_two_block_cfg("first_block_resid")), RUN_ID, OUT_ROOT
     )
     assert isinstance(default_cfg.ci_fn, ChunkwiseTransformerCIArch)
     assert default_cfg.ci_fn.chunks == (Chunk(input_taps=("resid.18",), output_sites=output_sites),)
     assert default_cfg.ci_fn.input_dim == 4096
 
     all_taps_cfg = build_experiment_config(
-        LMExperimentConfig(**_two_block_cfg("all_block_resids")), RUN_ID
+        LMExperimentConfig(**_two_block_cfg("all_block_resids")), RUN_ID, OUT_ROOT
     )
     assert isinstance(all_taps_cfg.ci_fn, ChunkwiseTransformerCIArch)
     assert all_taps_cfg.ci_fn.chunks == (
@@ -457,7 +458,7 @@ def test_all_block_resids_concatenates_one_tap_per_block():
     # `all_site_inputs`: tap widths are per-site d_in, not d_resid — a down_proj tap is the
     # MLP intermediate (14336 on llama8b), and the wire keys are the site names themselves.
     site_inputs_cfg = build_experiment_config(
-        LMExperimentConfig(**_two_block_cfg("all_site_inputs")), RUN_ID
+        LMExperimentConfig(**_two_block_cfg("all_site_inputs")), RUN_ID, OUT_ROOT
     )
     assert isinstance(site_inputs_cfg.ci_fn, ChunkwiseTransformerCIArch)
     assert site_inputs_cfg.ci_fn.chunks == (
@@ -469,7 +470,7 @@ def test_all_block_resids_concatenates_one_tap_per_block():
 def test_c49k_config_converts():
     """The C49k/200k config (raw-HF target spec, bf16 weights_dtype, `model.`-prefixed
     site patterns) must convert cleanly."""
-    converted, _raw = load_config(CONFIGS / "llama8b_l18_C49k_200k.yaml", RUN_ID)
+    converted, _raw = load_config(CONFIGS / "llama8b_l18_C49k_200k.yaml", RUN_ID, OUT_ROOT)
     assert converted.target.sites == mlp_family_site_cs(18, 18, 49152)
     assert converted.pd.steps == 200000
     assert isinstance(converted.data, DataConfig)
@@ -483,7 +484,9 @@ def test_c49k_config_converts():
 def test_nine_layer_config_converts():
     """The launch-critical 9-layer chunkwise config: 27 MLP sites (layers 18-26), seq
     512, B=128, 40k steps, eps 1e-6, comp 1.5e-4 / ci_fn 5e-5, remat on."""
-    converted, _raw = load_config(CONFIGS / "llama8b_l18-26_9layer_chunkwise.yaml", RUN_ID)
+    converted, _raw = load_config(
+        CONFIGS / "llama8b_l18-26_9layer_chunkwise.yaml", RUN_ID, OUT_ROOT
+    )
     assert converted.run.run_name == "jax-l18-26-9L-seq512-b128-40k"
     assert len(converted.target.sites) == 27
     assert isinstance(converted.data, DataConfig)
@@ -507,7 +510,7 @@ def test_fp32_frozen_target_is_refused():
         update={"target": cfg.target.model_copy(update={"weights_dtype": "float32"})}
     )
     with pytest.raises(AssertionError, match="weights_dtype"):
-        assert_supported_weights_dtype(cfg)
+        assert_supported_weights_dtype(cfg, OUT_ROOT)
 
 
 def test_load_run_dir_config_rebuilds_runs(tmp_path: Path):
@@ -515,11 +518,11 @@ def test_load_run_dir_config_rebuilds_runs(tmp_path: Path):
     config as `launch_config.yaml` (run.py's `_pin_config_copy`), and the rebuilt config must
     equal the launch-time conversion. The run id is the run-dir name."""
     config = CONFIGS / "llama8b_l18_C49k_200k.yaml"
-    expected, _ = load_config(config, RUN_ID)
+    expected, _ = load_config(config, RUN_ID, OUT_ROOT)
     run_dir = tmp_path / RUN_ID
     run_dir.mkdir()
     (run_dir / LAUNCH_CONFIG_FILENAME).write_text(config.read_text())
-    assert load_run_dir_config(run_dir) == expected
+    assert load_run_dir_config(run_dir, OUT_ROOT) == expected
 
 
 def test_run_id_drives_identity_and_rejects_malformed():
@@ -527,13 +530,13 @@ def test_run_id_drives_identity_and_rejects_malformed():
     stays the wandb display name. The run id is the build helper's arg; a malformed id
     refuses at build time."""
     config = CONFIGS / "llama8b_l18_C49k_200k.yaml"
-    cfg, _ = load_config(config, RUN_ID)
+    cfg, _ = load_config(config, RUN_ID, OUT_ROOT)
     assert cfg.run.run_id == RUN_ID
     assert cfg.run.run_dir.name == RUN_ID
     assert cfg.run.run_name == "jax-l18-C49k-200k"
 
     with pytest.raises(AssertionError, match="run_id must be"):
-        load_config(config, "run42")
+        load_config(config, "run42", OUT_ROOT)
 
 
 def test_arithmetic_ci_grid_metric_builds_to_arithmetic_eval_config():
@@ -542,7 +545,7 @@ def test_arithmetic_ci_grid_metric_builds_to_arithmetic_eval_config():
     raw = yaml.safe_load((CONFIGS / "llama8b_l18_C49k_200k.yaml").read_text())
     raw["eval"]["metrics"] = [m for m in raw["eval"]["metrics"] if m["type"] != "ArithmeticCIGrid"]
     raw["eval"]["metrics"].append({"type": "ArithmeticCIGrid", "a_range": [1, 50]})
-    built = build_experiment_config(LMExperimentConfig(**raw), RUN_ID)
+    built = build_experiment_config(LMExperimentConfig(**raw), RUN_ID, OUT_ROOT)
     assert built.eval is not None
     assert built.eval.arithmetic == ArithmeticEvalConfig(
         operation="add", a_range=(1, 50), b_range=(1, 100), thresholds=(0.1,), top_k=24

@@ -10,7 +10,10 @@ from dotenv import load_dotenv
 from wandb.apis.public import File, Run
 
 from param_decomp.core.log import logger
-from param_decomp.infra.settings import ENV
+
+_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+"""The `param_decomp` package dir (for `log_code`); derived here — importing it from
+`infra.paths` would close an import cycle (paths -> wandb for `parse_wandb_run_path`)."""
 
 # Regex patterns for parsing W&B run references. PD run IDs are formatted as
 # `p-<8 hex chars>` (see `RUN_TYPE_ABBREVIATIONS`). Legacy `s-…` IDs predate the
@@ -155,7 +158,7 @@ def init_wandb(
         resume="allow" if resume else None,
     )
     assert wandb.run is not None
-    wandb.run.log_code(root=str(ENV.repo_root / "param_decomp"))
+    wandb.run.log_code(root=str(_PACKAGE_ROOT))
 
     # Slow eval keys ride a dedicated `slow_eval/step` axis. The single-pool path
     # logs them in-train (monotonic); the 3-pool path logs them retroactively from

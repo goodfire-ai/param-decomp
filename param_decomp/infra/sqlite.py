@@ -1,7 +1,7 @@
 """SQLite connection helpers for NFS-mounted databases.
 
 NFS databases (harvest, autointerp):
-- Live at PARAM_DECOMP_OUT_DIR on shared NFS mount
+- Live under the run's output root on a shared NFS mount
 - WAL mode MUST NOT be used — it requires POSIX advisory locking which
   NFS doesn't support reliably, causing "database is locked" errors
 - Readonly uses ?immutable=1 (no lock files created at all)

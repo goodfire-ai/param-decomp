@@ -5,6 +5,7 @@ Usage:
 """
 
 import asyncio
+from pathlib import Path
 from typing import Any, Literal
 
 from dotenv import load_dotenv
@@ -20,6 +21,7 @@ from param_decomp.autointerp.subsets import (
     load_component_keys_file,
 )
 from param_decomp.harvest.repo import HarvestRepo
+from param_decomp.infra.paths import DEFAULT_OUT_ROOT
 
 LabelScorerType = Literal["detection", "fuzzing"]
 
@@ -30,9 +32,11 @@ def main(
     config_json: dict[str, Any],
     harvest_subrun_id: str,
     autointerp_subrun_id: str | None = None,
+    out_root: Path = DEFAULT_OUT_ROOT,
 ) -> None:
     assert isinstance(config_json, dict), f"Expected dict from fire, got {type(config_json)}"
     load_dotenv()
+    out_root = Path(out_root)
 
     config = AutointerpEvalConfig.model_validate(config_json)
 
@@ -40,12 +44,12 @@ def main(
 
     provider = create_provider(config.llm)
 
-    tokenizer_name = adapter_from_id(decomposition_id).tokenizer_name
+    tokenizer_name = adapter_from_id(decomposition_id, out_root).tokenizer_name
 
     if autointerp_subrun_id is not None:
-        interp_repo = InterpRepo.open_subrun(decomposition_id, autointerp_subrun_id)
+        interp_repo = InterpRepo.open_subrun(decomposition_id, autointerp_subrun_id, out_root)
     else:
-        interp_repo = InterpRepo.open(decomposition_id)
+        interp_repo = InterpRepo.open(decomposition_id, out_root)
         assert interp_repo is not None, (
             f"No autointerp data for {decomposition_id}. Run autointerp first."
         )
@@ -65,6 +69,7 @@ def main(
         decomposition_id=decomposition_id,
         subrun_id=harvest_subrun_id,
         readonly=True,
+        out_root=out_root,
     )
 
     components = sorted(harvest.get_all_components(), key=lambda c: c.component_key)
@@ -113,6 +118,7 @@ def get_command(
     scorer_type: LabelScorerType,
     config: AutointerpEvalConfig,
     harvest_subrun_id: str,
+    out_root: Path,
     autointerp_subrun_id: str | None = None,
 ) -> str:
     config_json = config.model_dump_json(exclude_none=True)
@@ -122,6 +128,7 @@ def get_command(
         f"--scorer_type {scorer_type} "
         f"--config_json '{config_json}' "
         f"--harvest_subrun_id {harvest_subrun_id} "
+        f"--out_root {out_root} "
     )
     if autointerp_subrun_id is not None:
         cmd += f"--autointerp_subrun_id {autointerp_subrun_id} "

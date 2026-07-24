@@ -3,7 +3,7 @@
 No GPU required — purely CPU work.
 
 Output:
-    <PARAM_DECOMP_OUT_DIR>/clustering/runs/<run_id>/
+    <out_root>/clustering/runs/<run_id>/
         ├── merge_config.json
         ├── history.zip
         └── plots/                  # only when --plot is passed
@@ -36,6 +36,7 @@ from param_decomp.clustering.types import (
     ComponentLabels,
 )
 from param_decomp.core.log import logger
+from param_decomp.infra.paths import DEFAULT_OUT_ROOT
 
 
 def _make_iteration_plot_callback(plot_dir: Path, plot_every: int) -> LogCallback:
@@ -71,6 +72,7 @@ def merge(
     run_id: str,
     seed: int,
     plot_dir: Path | None,
+    out_root: Path,
 ) -> Path:
     """Run merge iteration, return history path.
 
@@ -80,7 +82,7 @@ def merge(
     cluster-sizes plot.
     """
     random.seed(seed)
-    out = clustering_run_dir(run_id)
+    out = clustering_run_dir(out_root, run_id)
     out.mkdir(parents=True, exist_ok=True)
     logger.info(f"Merge run {run_id} → {out}")
 
@@ -130,6 +132,7 @@ def get_command(
     run_id: str,
     seed: int,
     plot: bool,
+    out_root: Path,
 ) -> str:
     """Shell command for one ensemble member's merge (depends on its harvest)."""
     parts = [
@@ -142,6 +145,8 @@ def get_command(
         run_id,
         "--seed",
         str(seed),
+        "--out-root",
+        out_root.as_posix(),
     ]
     if plot:
         parts.append("--plot")
@@ -154,16 +159,18 @@ def cli() -> None:
     parser.add_argument("merge_config", type=Path)
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)
     parser.add_argument("--plot", action="store_true", help="emit per-run diagnostic plots")
     args = parser.parse_args()
     run_id = args.run_id or new_run_id()
-    plot_dir = clustering_run_dir(run_id) / "plots" if args.plot else None
+    plot_dir = clustering_run_dir(args.out_root, run_id) / "plots" if args.plot else None
     merge(
         snapshot_path=args.snapshot,
         merge_config=MergeConfig.from_file(args.merge_config),
         run_id=run_id,
         seed=args.seed,
         plot_dir=plot_dir,
+        out_root=args.out_root,
     )
 
 

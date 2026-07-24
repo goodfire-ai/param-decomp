@@ -28,6 +28,7 @@ from param_decomp.core.built_run import DataConfig
 from param_decomp.core.data import BatchSchedule, ShardServer, scan_shards
 from param_decomp.core.log import logger
 from param_decomp.experiments.lm.load_run import LoadedJaxRun, open_jax_run
+from param_decomp.infra.paths import DEFAULT_OUT_ROOT
 
 
 def sampled_ci_from_forward(
@@ -101,13 +102,15 @@ def harvest_jax_run(run: LoadedJaxRun, config: HarvestConfig, output_dir: Path) 
     logger.info(f"Harvest complete: {output_dir}")
 
 
-def run_harvest_to_dir(config: HarvestConfig, harvest_id: str, step: int | None) -> Path:
+def run_harvest_to_dir(
+    config: HarvestConfig, harvest_id: str, step: int | None, out_root: Path
+) -> Path:
     """Open the run referenced by `config.model_path`, harvest into the canonical harvest
     dir for `harvest_id`, and return that dir. Used by the standalone CLI and the ensemble
     pipeline (which pre-assigns the harvest id so its dependent merge can find the snapshot).
     """
-    run = open_jax_run(Path(config.model_path), step)
-    output_dir = clustering_harvest_dir(harvest_id)
+    run = open_jax_run(Path(config.model_path), step, out_root=out_root)
+    output_dir = clustering_harvest_dir(out_root, harvest_id)
     output_dir.mkdir(parents=True, exist_ok=True)
     config.to_file(output_dir / "harvest_config.json")
     logger.info(f"JAX clustering harvest: run {run.run_id} step {run.step}, harvest {harvest_id}")
@@ -115,7 +118,7 @@ def run_harvest_to_dir(config: HarvestConfig, harvest_id: str, step: int | None)
     return output_dir
 
 
-def get_command(config_path: Path, harvest_id: str, dataset_seed: int) -> str:
+def get_command(config_path: Path, harvest_id: str, dataset_seed: int, out_root: Path) -> str:
     """Shell command for one ensemble member's harvest (config-file driven, seed-overridden)."""
     import shlex
 
@@ -130,6 +133,8 @@ def get_command(config_path: Path, harvest_id: str, dataset_seed: int) -> str:
             harvest_id,
             "--dataset_seed",
             str(dataset_seed),
+            "--out_root",
+            out_root.as_posix(),
         ]
     )
 
@@ -143,6 +148,7 @@ def main() -> None:
         help="HarvestConfig JSON. If given, --run_dir/--n_tokens/etc. are ignored.",
     )
     ap.add_argument("--harvest_id", type=str, default=None, help="pre-assigned harvest id")
+    ap.add_argument("--out_root", type=Path, default=DEFAULT_OUT_ROOT)
     ap.add_argument("--step", type=int, default=None, help="checkpoint step (default: latest)")
     ap.add_argument("--run_dir", type=Path, default=None)
     ap.add_argument("--n_tokens", type=int, default=None)
@@ -173,7 +179,7 @@ def main() -> None:
         )
 
     harvest_id = args.harvest_id or new_harvest_id()
-    run_harvest_to_dir(config, harvest_id=harvest_id, step=args.step)
+    run_harvest_to_dir(config, harvest_id=harvest_id, step=args.step, out_root=args.out_root)
 
 
 if __name__ == "__main__":

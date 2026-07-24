@@ -19,7 +19,7 @@ model is the full frozen network — embedding through every block to the (tied)
 blocks without a decomposed site run the plain frozen path.
 
 Weights load from the torch pretrain cache
-(`$PARAM_DECOMP_OUT_DIR/pretrain_cache/<project>-<run_id>/`), converted once to
+(`<out_root>/pretrain_cache/<project>-<run_id>/`), converted once to
 safetensors by `tools/convert_llama_simple_mlp_checkpoint.py` (torch venv).
 """
 
