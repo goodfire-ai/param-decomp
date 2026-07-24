@@ -13,7 +13,6 @@ Output:
 
 import argparse
 import json
-import os
 import random
 import shlex
 from pathlib import Path
@@ -37,8 +36,6 @@ from param_decomp.clustering.types import (
     ComponentLabels,
 )
 from param_decomp.core.log import logger
-
-os.environ["WANDB_QUIET"] = "true"
 
 
 def _make_iteration_plot_callback(plot_dir: Path, plot_every: int) -> LogCallback:

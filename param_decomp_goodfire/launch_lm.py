@@ -79,6 +79,9 @@ def _render_rank_env(launch_env: LaunchEnv) -> str:
         exports.append(
             f"export HF_HUB_CACHE={shlex.quote(str(GENV.data_mount / 'artifacts/hf_cache/hub'))}"
         )
+    # The library's generic per-rank hint (e.g. the HLO-dump writer gate) — the wrapper
+    # is what knows ranks come from SLURM.
+    exports.append('export PD_RANK="${SLURM_PROCID:-0}"')
     exports.append(_LD_LIBRARY_PATH_EXPORT)
     return "\n".join(exports)
 

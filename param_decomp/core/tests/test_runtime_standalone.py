@@ -39,7 +39,14 @@ Tightening these to real per-layer sets is deliberate follow-up work."""
 _LAYER_ALLOWED: dict[str, tuple[str, ...]] = {
     "vendored_jax": ("param_decomp.vendored_jax",),
     "core": ("param_decomp.core", "param_decomp.vendored_jax"),
-    "pretrain": ("param_decomp.core", "param_decomp.pretrain", "param_decomp.vendored_jax"),
+    "pretrain": (
+        "param_decomp.core",
+        "param_decomp.pretrain",
+        "param_decomp.vendored_jax",
+        # The ONE ambient-path seat (The library rule): pretrain resolves its default
+        # out_dir through it rather than re-reading PARAM_DECOMP_OUT_DIR inline.
+        "param_decomp.infra.settings",
+    ),
     "targets": ("param_decomp.core", "param_decomp.targets", "param_decomp.vendored_jax"),
     "adapters": _ANY,
     "autointerp": _ANY,

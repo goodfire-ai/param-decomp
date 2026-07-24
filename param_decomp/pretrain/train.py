@@ -15,7 +15,6 @@ written to the decomposition trainer's `pretrain_cache/<project>-<run_id>/` layo
 """
 
 import math
-import os
 import signal
 import time
 from collections.abc import Callable
@@ -39,6 +38,7 @@ from orbax.checkpoint.type_handlers import ArrayHandler, register_type_handler
 
 from param_decomp.core.data import BatchSchedule, ShardServer, scan_shards
 from param_decomp.core.sharding import hsdp_mesh, init_distributed
+from param_decomp.infra.settings import ENV
 from param_decomp.pretrain.cache import (
     cache_dir_for,
     torch_model_config_dict,
@@ -389,7 +389,7 @@ def main(config: Path) -> None:
 def _mint_local_identity(cfg: PretrainConfig) -> PretrainConfig:
     import secrets
 
-    out_dir = cfg.out_dir or (Path(os.environ.get("PARAM_DECOMP_OUT_DIR", "out")) / "runs")
+    out_dir = cfg.out_dir or (ENV.output_root / "runs")
     run_id = cfg.run_id or f"t-{secrets.token_hex(4)}"
     return cfg.model_copy(update={"out_dir": out_dir, "run_id": run_id})
 

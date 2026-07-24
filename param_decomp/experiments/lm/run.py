@@ -128,12 +128,13 @@ def _enable_hlo_dump(run_dir: Path) -> None:
     """Dump the step modules' optimized HLO + buffer assignment to `<run_dir>/hlo` (rank 0).
 
     Must run BEFORE `init_distributed` — XLA reads `XLA_FLAGS` when the backend initializes,
-    so a later mutation is ignored. Rank-gated via `SLURM_PROCID` (read pre-jax-init, only to
-    pick the writer — NOT to decide distributedness, which stays `runtime.launch`-driven) so a
-    single rank writes; `xla_dump_hlo_module_re` filters to the big `*step*` modules to keep
+    so a later mutation is ignored. Rank-gated via the generic `PD_RANK`
+    hint (read pre-jax-init, only to pick the writer — NOT to decide distributedness, which
+    stays `runtime.launch`-driven; the launcher exports it per rank, absent = single
+    process) so a single rank writes; `xla_dump_hlo_module_re` filters to the big `*step*` modules to keep
     the dump to ~100s of MB. The buffer-assignment dump survives an exec-time OOM (compile
     completes first), so this is how we name the buffer that blows the allocator."""
-    if os.environ.get("SLURM_PROCID", "0") != "0":
+    if os.environ.get("PD_RANK", "0") != "0":
         return
     hlo_dir = run_dir / "hlo"
     hlo_dir.mkdir(parents=True, exist_ok=True)

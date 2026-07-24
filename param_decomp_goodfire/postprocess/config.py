@@ -31,6 +31,7 @@ class PostprocessConfig(BaseConfig):
 
 if __name__ == "__main__":
     import json
+    import pathlib
 
-    with open("param_decomp/postprocess/postprocess.schema.json", "w") as f:
-        json.dump(PostprocessConfig.model_json_schema(), f, indent=2)
+    schema_path = pathlib.Path(__file__).parent / "postprocess.schema.json"
+    schema_path.write_text(json.dumps(PostprocessConfig.model_json_schema(), indent=2) + "\n")

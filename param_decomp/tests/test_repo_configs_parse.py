@@ -32,11 +32,8 @@ KNOWN_BROKEN = {
     "param_decomp/experiments/lm/ss_llama_simple_mlp-2L.yaml",
 }
 
-CONFIG_PATHS = sorted(
-    path
-    for pattern in ("param_decomp/configs/**/*.yaml", "param_decomp/experiments/lm/*.yaml")
-    for path in REPO.glob(pattern)
-)
+_CONFIG_GLOBS = ("param_decomp/core/configs/**/*.yaml", "param_decomp/experiments/lm/*.yaml")
+CONFIG_PATHS = sorted(path for pattern in _CONFIG_GLOBS for path in REPO.glob(pattern))
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -47,7 +44,10 @@ def test_gate_collects_the_seat_registry() -> None:
     """Anti-vacuity: a broken glob (moved roots, renamed dirs) collects zero files and
     every per-config test silently vanishes green. Pin the collected set to the
     CONFIGS.md seat policy: non-empty, and within the 10-LM-config registry cap."""
-    assert CONFIG_PATHS, "config glob collected nothing — did the config roots move?"
+    for pattern in _CONFIG_GLOBS:
+        assert list(REPO.glob(pattern)), (
+            f"config glob {pattern!r} collected nothing — did that config root move?"
+        )
     assert len(CONFIG_PATHS) <= 10, (
         f"{len(CONFIG_PATHS)} LM configs exceed the CONFIGS.md registry cap of 10 — "
         "adding a seat requires an eviction (or this is an uncommitted one-off, see rule 2)"
