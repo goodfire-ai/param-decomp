@@ -74,7 +74,7 @@ library is the deliverable — everything in it is written to be shippable:
   - The composition/consumer layers (the former lab, merged in): `experiments/` (the
     per-domain composition roots + YAML authoring schemas — `python -m
     param_decomp.experiments.lm.run <config.yaml>` is the LM in-job entry),
-    `harvest/`, `autointerp/`, `clustering/`, `investigate/`,
+    `harvest/`, `autointerp/`, `clustering/`,
     `topology/`, `adapters/`, `migrations/`, `infra/`. Library-level tests in
     `param_decomp/tests/`.
 - **`param-decomp-goodfire`** (`param_decomp_goodfire/`, private) — ALL the infra fit:
@@ -82,7 +82,7 @@ library is the deliverable — everything in it is written to be shippable:
   code-shipping), the training launchers (`pd-lm` = `launch_lm.py`, `pd-pretrain` =
   `launch_pretrain.py` — snapshot + pinned launch config + sbatch across whole nodes
   with per-node job-side venvs), the post-pipeline submitters (`submit/`: `pd-harvest`,
-  `pd-autointerp`, `pd-intruder`, `pd-clustering`, `pd-investigate`) and the
+  `pd-autointerp`, `pd-intruder`, `pd-clustering`) and the
   `postprocess/` dependency-chained pipeline (`pd-postprocess`), and the cluster
   environment (`env.py`: data mount, team artifact namespace, partition — exported
   into every job as `PARAM_DECOMP_OUT_DIR`, which is all the library reads). Pure
@@ -92,7 +92,7 @@ library is the deliverable — everything in it is written to be shippable:
 into the one `.venv`. The library's `pd-*` CLIs are the in-process, scheduler-free ones
 (root `pyproject.toml`: `pd-tms` / `pd-resid-mlp` / `pd-cluster-merge` /
 `pd-cluster-distances`); every SLURM submitter (`pd-lm`, `pd-pretrain`, `pd-harvest`,
-`pd-autointerp`, `pd-intruder`, `pd-clustering`, `pd-investigate`, `pd-postprocess`)
+`pd-autointerp`, `pd-intruder`, `pd-clustering`, `pd-postprocess`)
 lives in the private wrapper's. (Slow/plot eval is in-loop only — there is no
 `pd-slow-eval` CLI.)
 
@@ -104,9 +104,11 @@ LLM calls — but it must not know *where it runs*: no scheduler (SLURM/sbatch),
 submission or code-shipping, no cluster paths, mounts, partitions, or team namespaces.
 All deployment fit lives in `param_decomp_goodfire`, a pure wrapper that composes
 library entrypoints and may never be imported by the library (enforced fail-closed by
-`param_decomp/core/tests/test_runtime_standalone.py`). Ambient environment is read in
-exactly one place per package (`Environment.from_env` / `GoodfireEnvironment.from_env`);
-everything else takes typed values. The wrapper is not privileged: if our launcher needs
+`param_decomp/core/tests/test_runtime_standalone.py`). Ambient env vars carrying paths or
+deployment facts are read in exactly one place per package (`Environment.from_env` /
+`GoodfireEnvironment.from_env`); credentials and third-party-tool conventions
+(`WANDB_*`, `*_API_KEY`, `HF_*`, `CUDA_*`) may follow their ecosystem's own env
+contract, resolved at entry points. Everything else takes typed values. The wrapper is not privileged: if our launcher needs
 something the library doesn't publicly expose, that is a library bug — never a reason
 for a private hook. A SLURM *mention* in library prose is legitimate only when it
 documents a generic contract (e.g. SIGTERM→save semantics), never a dependency.
@@ -220,7 +222,7 @@ and returns JAX-native as the #10 torch->jax adapter.
   The TMS and ResidualMLP domains live under `experiments/{tms,resid_mlp}/`
   (`run.py` + `config.py`; `pd-tms` / `pd-resid-mlp`), calling the core engine as a
   library over the toy targets (`param_decomp/targets/{tms,resid_mlp}.py`).
-- `param_decomp/{harvest,autointerp,clustering,investigate}/`
+- `param_decomp/{harvest,autointerp,clustering}/`
   — post-pipeline stages, each with its own CLAUDE.md.
 - `param_decomp/infra/` — settings, paths, wandb, sqlite, run_files, markdown,
   tokenizer_display, pydantic helpers. (SLURM and git-snapshot code live in the private
@@ -235,7 +237,6 @@ and returns JAX-native as the #10 torch->jax adapter.
 | `param_decomp/harvest/` | `param_decomp/harvest/CLAUDE.md` | Component-statistics collection pipeline |
 | `param_decomp/autointerp/` | `param_decomp/autointerp/CLAUDE.md` | LLM-based component interpretation |
 | `param_decomp/clustering/` | `param_decomp/clustering/CLAUDE.md` | Hierarchical clustering of components |
-| `param_decomp/investigate/` | `param_decomp/investigate/CLAUDE.md` | Agent investigation of a research question |
 
 > **The torch web-app (`param_decomp/app/`) was temporarily removed during the JAX
 > migration** to shed torch surface for the JAX-primary merge. It is slated for re-add,
@@ -300,7 +301,6 @@ via `pd-lm`. Slow/plot eval is in-loop only (no CLI).
 | `pd-pretrain` | `param_decomp_goodfire/launch_pretrain.py` | Launch a pretrainer run; config-driven via `dp` (`dp=N` → sbatch; `dp=null` → inline) |
 | `pd-tms` / `pd-resid-mlp` | `experiments/{tms,resid_mlp}/run.py` | The CPU toy decomposition CLIs |
 | `pd-cluster-merge` / `pd-cluster-distances` | `clustering/scripts/` | Clustering merge / consensus distances (in-process) |
-| `pd-harvest` / `pd-autointerp` / `pd-intruder` / `pd-clustering` / `pd-investigate` | `param_decomp_goodfire/submit/` | SLURM submitters for the pipeline stages (private wrapper) |
 | `pd-postprocess` | `param_decomp_goodfire/postprocess/cli.py` | Unified postprocessing pipeline, SLURM dependency-chained (private wrapper) |
 
 All `pd-*` run commands accept `--group <id>` (wandb group field, used for UI

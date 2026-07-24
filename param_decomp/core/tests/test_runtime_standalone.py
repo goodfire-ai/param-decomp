@@ -54,7 +54,6 @@ _LAYER_ALLOWED: dict[str, tuple[str, ...]] = {
     "experiments": _ANY,
     "harvest": _ANY,
     "infra": _ANY,
-    "investigate": _ANY,
     "migrations": _ANY,
     "topology": _ANY,
 }

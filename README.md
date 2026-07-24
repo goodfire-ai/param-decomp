@@ -16,10 +16,10 @@ This repo contains the generic library and a thin private wrapper:
 - `param-decomp`: the library, importing as `param_decomp` — enumerated layers as
   subpackages (`core` = the engine, `targets`, `pretrain`, `vendored_jax`, plus the
   composition/consumer layers: `experiments`, `harvest`, `autointerp`, `clustering`,
-  `investigate`, `topology`, `adapters`, `infra`, …)
+  `topology`, `adapters`, `infra`, …)
 - `param-decomp-goodfire`: the Goodfire-internal cluster fit wrapping the library — the
   training launchers (`pd-lm` / `pd-pretrain`), the post-pipeline SLURM submitters
-  (`pd-harvest`, `pd-autointerp`, `pd-intruder`, `pd-clustering`, `pd-investigate`),
+  (`pd-harvest`, `pd-autointerp`, `pd-intruder`, `pd-clustering`),
   and the dependency-chained pipeline (`pd-postprocess`)
 
 ```bash
@@ -32,7 +32,7 @@ make install      # library only
 The library installs the in-process `pd-*` commands (`pd-tms`, `pd-resid-mlp`,
 `pd-cluster-merge`, `pd-cluster-distances`); every SLURM submitter (`pd-lm`,
 `pd-pretrain`, `pd-harvest`, `pd-autointerp`, `pd-intruder`, `pd-clustering`,
-`pd-investigate`, `pd-postprocess`) comes from the private wrapper. A run is one
+`pd-postprocess`) comes from the private wrapper. A run is one
 self-contained YAML; launch mode is config-driven (`runtime.launch: slurm | inline`),
 no CLI flags:
 

@@ -67,7 +67,7 @@ cuda13 = ["jax[cuda13]==0.10.1", "nvidia-cublas>=13.2.0.9"]
 # (`python -m param_decomp.experiments.lm.run` / `-m param_decomp.pretrain.train`), the
 # pipeline stages via their worker module mains; every SLURM submitter (`pd-lm`,
 # `pd-pretrain`, `pd-harvest`, `pd-autointerp`, `pd-intruder`, `pd-clustering`,
-# `pd-investigate`, `pd-postprocess`) lives in the private `param-decomp-goodfire`
+# `pd-postprocess`) lives in the private `param-decomp-goodfire`
 # distribution.
 pd-tms = "param_decomp.experiments.tms.run:cli"
 pd-resid-mlp = "param_decomp.experiments.resid_mlp.run:cli"

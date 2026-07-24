@@ -20,7 +20,6 @@ pd-harvest = "param_decomp_goodfire.submit.harvest_cli:cli"
 pd-intruder = "param_decomp_goodfire.submit.intruder_cli:cli"
 pd-autointerp = "param_decomp_goodfire.submit.autointerp_cli:cli"
 pd-clustering = "param_decomp_goodfire.submit.clustering:cli"
-pd-investigate = "param_decomp_goodfire.submit.investigate_cli:cli"
 pd-postprocess = "param_decomp_goodfire.postprocess.cli:cli"
 
 [build-system]
