@@ -54,13 +54,10 @@ def _render_rank_env(launch_env: LaunchEnv) -> str:
     (defaults in `LaunchEnv`); shell-quote each value so spaces (e.g. multi-flag `XLA_FLAGS`)
     survive."""
     exports = [f"export {k}={shlex.quote(v)}" for k, v in launch_env.as_env().items()]
-    # The library reads the STANDARD HF cache env (`hf_snapshot_dir`); on our clusters
-    # weights live in the shared world-readable hub, so pin it for every rank (a home
-    # `~/.cache` hub is silently mutable and strands requeues that reload weights).
-    if GENV.data_mount is not None and "HF_HUB_CACHE" not in launch_env.as_env():
-        exports.append(
-            f"export HF_HUB_CACHE={shlex.quote(str(GENV.data_mount / 'artifacts/hf_cache/hub'))}"
-        )
+    # HF cache: the library reads the STANDARD `HF_HUB_CACHE` env (`hf_snapshot_dir`),
+    # which every cluster's login profile sets to its shared world-readable hub and
+    # sbatch inherits into the ranks — the launcher deliberately does NOT re-export it
+    # (the hub's location differs per cluster; the profile is the source of truth).
     # The library's generic per-rank hint (e.g. the HLO-dump writer gate) — the wrapper
     # is what knows ranks come from SLURM.
     exports.append('export PD_RANK="${SLURM_PROCID:-0}"')
