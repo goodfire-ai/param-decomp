@@ -488,12 +488,16 @@ class SimpleMLPDecomposedModel(eqx.Module):
         assert set(collect) == set(live), (sorted(collect), sorted(live))
         return collect
 
+    def target_weight(self, name: str) -> Array:
+        """The frozen W for site `name`, in its stored dtype."""
+        layer_idx, kind = parse_site_name(name)
+        return _frozen_site_weight(self.layers[layer_idx], kind)
+
     def weight_deltas(self, vu: ComponentStacks) -> dict[str, Array]:
         """fp32 `W − V@U` per site from fp32 masters (faithfulness input)."""
         out: dict[str, Array] = {}
         for spec in self.sites:
-            layer_idx, kind = parse_site_name(spec.name)
-            W = _frozen_site_weight(self.layers[layer_idx], kind)
+            W = self.target_weight(spec.name)
             V, U = vu.site(spec.name)
             out[spec.name] = (
                 W.astype(jnp.float32) - (V.astype(jnp.float32) @ U.astype(jnp.float32)).T

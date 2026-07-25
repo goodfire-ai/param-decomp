@@ -63,6 +63,7 @@ from param_decomp.ci_fn import CIFn, CIFnArch, build_ci_fn
 from param_decomp.components import (
     ComponentStacks,
     SiteSpec,
+    WeightInit,
     init_component_stacks,
 )
 from param_decomp.configs import SourceShape
@@ -89,15 +90,23 @@ def place_target(tgt: GLUDecomposedModel, mesh: Mesh) -> GLUDecomposedModel:
 
 
 def init_component_stacks_placed(
-    sites: tuple[SiteSpec, ...], key: PRNGKeyArray, rules: PlacementRules
+    sites: tuple[SiteSpec, ...],
+    key: PRNGKeyArray,
+    rules: PlacementRules,
+    weight_init: WeightInit = "kaiming",
+    target_weights: dict[str, Array] | None = None,
 ) -> ComponentStacks:
-    """Seeded V/U init placed by `component_stacks_shardings(_, rules)` (the run's placement
-    policy), values bit-identical to the retired per-site init (pinned by `test_sharding`).
-    One jit, 2×n_shapes sharded outputs — the persistence layout IS the stacked layout, so
-    the old two-stage stack-then-unstack fan-out (and its transient extra copy) is gone."""
-    abstract = eqx.filter_eval_shape(partial(init_component_stacks, sites), key)
-    placement = component_stacks_shardings(abstract, rules)
-    return jax.jit(partial(init_component_stacks, sites), out_shardings=placement)(key)
+    """`init_component_stacks` placed by `component_stacks_shardings(_, rules)` (the run's
+    placement policy); kaiming values bit-identical to the retired per-site init (pinned
+    by `test_sharding`). One jit, 2×n_shapes sharded outputs — the persistence layout IS
+    the stacked layout, so no host-side full tree ever exists; `key`/`target_weights` ride
+    as jit ARGUMENTS (not closure constants) so the frozen W arrays are not baked into the
+    compiled init."""
+    init = partial(init_component_stacks, sites, weight_init=weight_init)
+    placement = component_stacks_shardings(
+        eqx.filter_eval_shape(init, key, target_weights=target_weights), rules
+    )
+    return jax.jit(init, out_shardings=placement)(key, target_weights=target_weights)
 
 
 def init_ci_fn_placed(

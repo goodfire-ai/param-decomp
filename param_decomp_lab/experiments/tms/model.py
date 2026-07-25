@@ -389,6 +389,9 @@ class TMSDecomposedModel(eqx.Module):
             self.target, prepared, resid, masks, delta_masks, routes, live, has_delta
         )
 
+    def target_weight(self, name: str) -> Array:
+        return _frozen_site_weight(self.target, name)
+
     def weight_deltas(self, vu: ComponentStacks) -> dict[str, Array]:
         return weight_deltas_fp32(self.target, vu, self.sites)
 

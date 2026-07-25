@@ -12,7 +12,7 @@ one target.
 from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import cache
-from typing import ClassVar, Generic
+from typing import ClassVar, Generic, Literal
 
 import equinox as eqx
 import jax
@@ -71,6 +71,9 @@ def dequantize_fp8(q: Array, scale: Array) -> Array:
 
 
 VUShape = tuple[int, int, int]  # (d_in, d_out, C)
+
+# How `init_component_stacks` seeds V/U; the config schema (`PDConfig.weight_init`) reuses it.
+WeightInit = Literal["kaiming", "coupled"]
 
 # site name -> (shape group, slot on the group's stack axis); static, canonical site order
 SiteSlots = tuple[tuple[str, VUShape, int], ...]
@@ -150,7 +153,7 @@ class ComponentStacks(eqx.Module, Generic[VULeaf]):
         return lengths
 
 
-def init_stack_arrays(
+def _kaiming_stack_arrays(
     sites: tuple[SiteSpec, ...], key: Array
 ) -> dict[VUShape, tuple[Array, Array]]:
     """Seeded stack init: `{(d_in, d_out, C): (V [g, d_in, C], U [g, C, d_out])}`, vmapped
@@ -166,6 +169,41 @@ def init_stack_arrays(
         Vs = jax.vmap(lambda k, s=(d_in, c): jax.random.normal(k, s))(keys[2 * idxs])
         Us = jax.vmap(lambda k, s=(c, d_out): jax.random.normal(k, s))(keys[2 * idxs + 1])
         stacked[(d_in, d_out, c)] = (Vs * d_in**-0.5, Us * c**-0.5)
+    return stacked
+
+
+def _coupled_stack_arrays(
+    sites: tuple[SiteSpec, ...], target_weights: dict[str, Array], key: Array
+) -> dict[VUShape, tuple[Array, Array]]:
+    """Coupled stack init: unit-norm seed on the narrow side, wide side its raw W-image.
+
+    `d_in <= d_out`: `v_c ~ unit norm`, `U_c <- (W v_c)^T`; else `u_c ~ unit norm`,
+    `V_c <- W^T u_c`. No C-dependent rescale — components sit at W's natural scale and
+    the component sum equals W restricted to the seed span (`W V V^T` when V is seeded),
+    the delta carrying the complement. One key per site, split in site order; vmapped
+    per shape group like `_kaiming_stack_arrays` so the compiled init doesn't scale with
+    site count."""
+    keys = jax.random.split(key, len(sites))
+    site_index = {spec.name: idx for idx, spec in enumerate(sites)}
+    stacked: dict[VUShape, tuple[Array, Array]] = {}
+    for (d_in, d_out, c), specs in vu_shape_groups(sites).items():
+        ws = jnp.stack([target_weights[spec.name] for spec in specs]).astype(jnp.float32)
+        assert ws.shape == (len(specs), d_out, d_in), (ws.shape, (d_in, d_out, c))
+        ks = keys[jnp.array([site_index[spec.name] for spec in specs])]
+        if d_in <= d_out:
+
+            def seed_v(k: Array, w: Array, s: tuple[int, int] = (d_in, c)) -> tuple[Array, Array]:
+                v = jax.random.normal(k, s)
+                v = v / jnp.linalg.norm(v, axis=0, keepdims=True)
+                return v, (w @ v).T
+        else:
+
+            def seed_v(k: Array, w: Array, s: tuple[int, int] = (c, d_out)) -> tuple[Array, Array]:
+                u = jax.random.normal(k, s)
+                u = u / jnp.linalg.norm(u, axis=1, keepdims=True)
+                return w.T @ u.T, u
+
+        stacked[(d_in, d_out, c)] = jax.vmap(seed_v)(ks, ws)
     return stacked
 
 
@@ -187,11 +225,25 @@ def component_stacks_from_sites(vu: dict[str, tuple[Array, Array]]) -> Component
     return ComponentStacks(stacks=stacks, site_slots=site_slots_for(sites))
 
 
-def init_component_stacks(sites: tuple[SiteSpec, ...], key: Array) -> ComponentStacks:
-    """Small random fp32 V ~ N(0, d_in^-0.5), U ~ N(0, C^-0.5) per site, built directly in
-    the stacked persistence layout; the weight-delta channel carries the faithfulness
-    residual at init (before faithfulness warmup)."""
-    return ComponentStacks(stacks=init_stack_arrays(sites, key), site_slots=site_slots_for(sites))
+def init_component_stacks(
+    sites: tuple[SiteSpec, ...],
+    key: Array,
+    weight_init: WeightInit = "kaiming",
+    target_weights: dict[str, Array] | None = None,
+) -> ComponentStacks:
+    """Seeded V/U masters in the stacked persistence layout, per `weight_init`:
+    'kaiming' — small random fp32 V ~ N(0, d_in^-0.5), U ~ N(0, C^-0.5), ignores W
+    (the weight-delta channel carries the faithfulness residual at init); 'coupled' —
+    `_coupled_stack_arrays`, seeded from `target_weights` (required there, refused
+    otherwise)."""
+    match weight_init:
+        case "kaiming":
+            assert target_weights is None, "kaiming init draws blind — no target_weights"
+            stacks = _kaiming_stack_arrays(sites, key)
+        case "coupled":
+            assert target_weights is not None, "coupled init seeds from W — pass target_weights"
+            stacks = _coupled_stack_arrays(sites, target_weights, key)
+    return ComponentStacks(stacks=stacks, site_slots=site_slots_for(sites))
 
 
 def site_out(

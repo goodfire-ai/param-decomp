@@ -131,6 +131,10 @@ class _PositionlessStub(eqx.Module):
         del vu, resid, masks, delta_masks, routes, live, has_delta
         raise AssertionError("positionless stub fn must not be called")
 
+    def target_weight(self, name: str) -> jax.Array:
+        del name
+        raise AssertionError("positionless stub fn must not be called")
+
     def weight_deltas(self, vu: Any) -> dict[str, jax.Array]:
         del vu
         raise AssertionError("positionless stub fn must not be called")

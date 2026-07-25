@@ -166,6 +166,10 @@ class SyntheticDecomposedModel(eqx.Module):
             hidden = hidden + delta_masks[SITE][..., None] * (resid @ delta.T)
         return {SITE: hidden}
 
+    def target_weight(self, name: str) -> Array:
+        assert name == SITE, name
+        return self.W
+
     def weight_deltas(self, vu: ComponentStacks) -> dict[str, Array]:
         V, U = vu.site(SITE)
         return {

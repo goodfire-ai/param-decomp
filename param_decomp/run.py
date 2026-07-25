@@ -516,7 +516,8 @@ def run_decomposition_training(
     rules = placement_rules
     if is_main:
         audit = component_stacks_audit(
-            eqx.filter_eval_shape(_partial(init_component_stacks, model.sites), init_key), rules
+            eqx.filter_eval_shape(_partial(init_component_stacks, model.sites), init_key),
+            rules,
         )
         print(
             rules.describe(

@@ -217,6 +217,10 @@ class DecomposedModel(Protocol):
         the recon grid, which stays KL-on-final-logits."""
         ...
 
+    def target_weight(self, name: str) -> Float[Array, "d_out d_in"]:
+        """The frozen target weight W for site `name`, in its stored dtype."""
+        ...
+
     def weight_deltas(self, vu: ComponentStacks) -> dict[str, Float[Array, "d_out d_in"]]:
         """fp32 `W − V@U` per site from the fp32 master `vu`."""
         ...
