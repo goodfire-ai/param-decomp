@@ -172,7 +172,7 @@ def assert_canonical_algorithm_config(cfg: ExperimentConfig) -> None:
     assert vu_opt.grad_clip_norm is not None, "components grad clip is part of the method"
 
     cadence = cfg.cadence
-    assert cadence.save_every is not None and cadence.keep_last_n_checkpoints is not None, cadence
+    assert cadence.save_every is not None, cadence
 
 
 def run_instance(cfg: ExperimentConfig, run_id: str) -> RunInstance:

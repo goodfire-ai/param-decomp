@@ -41,7 +41,7 @@ _MINIMAL_LM = {
         "loss_metrics": [{"type": "FaithfulnessLoss", "coeff": 1.0}],
     },
     "runtime": {"device": "cuda:0", "launch": "inline", "dp": 1, "sharding": "zero1"},
-    "cadence": {"train_log_every": 1},
+    "cadence": {"train_log_every": 1, "keep_last_n_checkpoints": 2},
     "target": {
         "spec": {
             "kind": "hf",

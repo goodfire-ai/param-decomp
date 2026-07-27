@@ -501,7 +501,7 @@ def run_decomposition_training(
     # flash attention under the scan+cond masked forward). Explicit NamedShardings elsewhere
     # are unaffected.
     jax.set_mesh(mesh)
-    assert cadence.save_every is not None and cadence.keep_last_n_checkpoints is not None, cadence
+    assert cadence.save_every is not None, cadence
     save_every = cadence.save_every
 
     run.run_dir.mkdir(parents=True, exist_ok=True)

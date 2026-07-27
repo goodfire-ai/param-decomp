@@ -172,7 +172,6 @@ def _restore_decomposition(
     rules = placement.from_config_for_consumer(cfg.runtime.sharding, mesh, model.sites)
     abstract = jax.eval_shape(lambda: init_decomposition(model, cfg.ci_fn, init_key, mesh, rules))
 
-    assert cfg.cadence.keep_last_n_checkpoints is not None, cfg.cadence
     manager = make_checkpoint_manager(run_dir / "ckpts", cfg.cadence.keep_last_n_checkpoints)
     resolved_step = manager.latest_step() if step is None else step
     assert resolved_step is not None, f"no checkpoints under {run_dir / 'ckpts'}"

@@ -1109,12 +1109,14 @@ class Cadence(BaseConfig):
     dense_log_phase: DenseLogPhase | None = None
     """Optional denser logging for early training; `None` means a flat `train_log_every`."""
     save_every: PositiveInt | None = None
-    keep_last_n_checkpoints: PositiveInt | None = None
+    keep_last_n_checkpoints: PositiveInt
     """How many of the most-recent orbax `ckpts/<step>/` checkpoints to keep on disk
-    after each checkpoint write. `None` (the default) keeps all checkpoints — the
-    conservative choice for research where prior steps may matter. Opt in to e.g. `3`
-    for long jobs where disk pressure outweighs the value of intermediate checkpoints;
-    the final-step checkpoint is always included in the retained set."""
+    after each checkpoint write; the final-step checkpoint is always in the retained
+    set. Required, and deliberately not defaulted: retention is the single biggest
+    lever a run has on shared storage, so every run states its own. An LM checkpoint
+    is 100-200 GB and ~85% of that is the `training` item nothing but resume reads, so
+    `40` is ~7 TB of trajectory tail. Keep it small; if you need old steps for their
+    decompositions, keep them and run `param_decomp_lab.tools.thin_training_state`."""
 
     def should_log_train(self, step: int) -> bool:
         if self.dense_log_phase is not None and step < self.dense_log_phase.until_step:
