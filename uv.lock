@@ -11,7 +11,7 @@ resolution-markers = [
 [manifest]
 members = [
     "param-decomp",
-    "param-decomp-lab",
+    "param-decomp-goodfire",
 ]
 
 [[package]]
@@ -1991,23 +1991,41 @@ name = "param-decomp"
 version = "0.0.1"
 source = { editable = "." }
 dependencies = [
+    { name = "aiolimiter" },
     { name = "annotated-types" },
     { name = "beartype" },
+    { name = "datasets" },
     { name = "einops" },
     { name = "equinox" },
+    { name = "fire" },
+    { name = "httpx" },
     { name = "jax" },
     { name = "jaxtyping" },
+    { name = "kaleido" },
     { name = "matplotlib" },
+    { name = "numba" },
     { name = "numpy" },
+    { name = "openrouter" },
     { name = "optax" },
     { name = "orbax-checkpoint" },
+    { name = "orjson" },
     { name = "pillow" },
     { name = "pyarrow" },
     { name = "pydantic" },
+    { name = "python-dotenv" },
     { name = "pyyaml" },
+    { name = "requests" },
     { name = "safetensors" },
+    { name = "scipy" },
+    { name = "streamlit" },
+    { name = "streamlit-antd-components" },
+    { name = "sympy" },
+    { name = "tqdm" },
+    { name = "transformers" },
     { name = "typing-extensions" },
     { name = "wandb" },
+    { name = "wandb-workspaces" },
+    { name = "zstandard" },
 ]
 
 [package.optional-dependencies]
@@ -2035,26 +2053,44 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiolimiter", specifier = ">=1.2" },
     { name = "annotated-types" },
     { name = "beartype", specifier = "==0.22.2" },
+    { name = "datasets", specifier = ">=2.21.0" },
     { name = "einops", specifier = "==0.8.2" },
     { name = "equinox", specifier = "==0.13.8" },
+    { name = "fire" },
+    { name = "httpx", specifier = ">=0.28.0" },
     { name = "jax", specifier = "==0.10.1" },
     { name = "jax", extras = ["cuda12"], marker = "extra == 'cuda'", specifier = "==0.10.1" },
     { name = "jax", extras = ["cuda13"], marker = "extra == 'cuda13'", specifier = "==0.10.1" },
     { name = "jaxtyping", specifier = "==0.3.10" },
+    { name = "kaleido", specifier = "==0.2.1" },
     { name = "matplotlib", specifier = "==3.10.8" },
+    { name = "numba", specifier = ">=0.64.0" },
     { name = "numpy", specifier = "==2.4.6" },
     { name = "nvidia-cublas", marker = "extra == 'cuda13'", specifier = ">=13.2.0.9" },
+    { name = "openrouter", specifier = ">=0.1.1" },
     { name = "optax", specifier = "==0.2.8" },
     { name = "orbax-checkpoint", specifier = "==0.12.0" },
+    { name = "orjson" },
     { name = "pillow", specifier = "==12.0.0" },
     { name = "pyarrow", specifier = "==19.0.1" },
     { name = "pydantic", specifier = "<2.12" },
+    { name = "python-dotenv" },
     { name = "pyyaml", specifier = "==6.0.2" },
+    { name = "requests" },
     { name = "safetensors", specifier = "==0.7.0" },
+    { name = "scipy", specifier = ">=1.14.1" },
+    { name = "streamlit" },
+    { name = "streamlit-antd-components" },
+    { name = "sympy" },
+    { name = "tqdm" },
+    { name = "transformers" },
     { name = "typing-extensions", specifier = "==4.15.0" },
     { name = "wandb", specifier = "==0.21.0" },
+    { name = "wandb-workspaces", specifier = "==0.1.12" },
+    { name = "zstandard" },
 ]
 provides-extras = ["cuda", "cuda13"]
 
@@ -2073,56 +2109,18 @@ dev = [
 ]
 
 [[package]]
-name = "param-decomp-lab"
+name = "param-decomp-goodfire"
 version = "0.0.1"
-source = { editable = "param_decomp_lab" }
+source = { editable = "param_decomp_goodfire" }
 dependencies = [
-    { name = "aiolimiter" },
-    { name = "datasets" },
-    { name = "einops" },
     { name = "fire" },
-    { name = "httpx" },
-    { name = "kaleido" },
-    { name = "numba" },
-    { name = "openrouter" },
-    { name = "orjson" },
     { name = "param-decomp" },
-    { name = "python-dotenv" },
-    { name = "requests" },
-    { name = "scipy" },
-    { name = "streamlit" },
-    { name = "streamlit-antd-components" },
-    { name = "sympy" },
-    { name = "tqdm" },
-    { name = "transformers" },
-    { name = "wandb" },
-    { name = "wandb-workspaces" },
-    { name = "zstandard" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "aiolimiter", specifier = ">=1.2" },
-    { name = "datasets", specifier = ">=2.21.0" },
-    { name = "einops" },
     { name = "fire" },
-    { name = "httpx", specifier = ">=0.28.0" },
-    { name = "kaleido", specifier = "==0.2.1" },
-    { name = "numba", specifier = ">=0.64.0" },
-    { name = "openrouter", specifier = ">=0.1.1" },
-    { name = "orjson" },
     { name = "param-decomp", editable = "." },
-    { name = "python-dotenv" },
-    { name = "requests" },
-    { name = "scipy", specifier = ">=1.14.1" },
-    { name = "streamlit" },
-    { name = "streamlit-antd-components" },
-    { name = "sympy" },
-    { name = "tqdm" },
-    { name = "transformers" },
-    { name = "wandb", specifier = ">=0.20.1" },
-    { name = "wandb-workspaces", specifier = "==0.1.12" },
-    { name = "zstandard" },
 ]
 
 [[package]]

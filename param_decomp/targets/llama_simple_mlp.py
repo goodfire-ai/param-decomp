@@ -1,7 +1,7 @@
 """`LlamaSimpleMLP` pile-pretrained target — the second `DecomposedModel` implementation.
 
 Torch reference (read-only, ground truth):
-`param_decomp_lab/experiments/lm/pretrain/models/llama_simple_mlp.py`, weights from
+`param_decomp/experiments/lm/pretrain/models/llama_simple_mlp.py`, weights from
 pretrain run `goodfire/spd/runs/t-9d2b8f02`. Llama-style pre-RMSNorm blocks under a
 GPT2-style module tree `h.{i}.`: rotary GQA attention (`rotary_dim == head_dim`,
 plain base-`rotary_base` rotate-half RoPE — NOT llama3-rescaled) and a GELU(tanh) MLP
@@ -9,7 +9,7 @@ plain base-`rotary_base` rotate-half RoPE — NOT llama3-rescaled) and a GELU(ta
 
 The torch RoPE construction (`freq = base**(i/(rd/2))` tiled `.repeat(2)`,
 `rotate_every_two` with `rotary_adjacent_pairs=False`) is exactly the rotate-half RoPE
-of `vendored_jax.llama.rope_cos_sin`/`apply_rope` with `inv_freq = base**(-2i/hd)` —
+of `param_decomp.vendored_jax.llama.rope_cos_sin`/`apply_rope` with `inv_freq = base**(-2i/hd)` —
 pinned by the torch-fixture equivalence test (`tests/simple_mlp_equivalence/`).
 
 Decomposed sites are torch-module-path named: `h.{i}.attn.{q,k,v,o}_proj`,
@@ -19,11 +19,10 @@ model is the full frozen network — embedding through every block to the (tied)
 blocks without a decomposed site run the plain frozen path.
 
 Weights load from the torch pretrain cache
-(`$PARAM_DECOMP_OUT_DIR/pretrain_cache/<project>-<run_id>/`), converted once to
+(`<out_root>/pretrain_cache/<project>-<run_id>/`), converted once to
 safetensors by `tools/convert_llama_simple_mlp_checkpoint.py` (torch venv).
 """
 
-import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -41,14 +40,14 @@ from jax.typing import DTypeLike
 from jaxtyping import Array, Float, Int
 from safetensors import safe_open
 
-from param_decomp import family
-from param_decomp.components import ComponentStacks, SiteC, SiteSpec, site_out
-from param_decomp.family import ArchFamily
-from param_decomp.losses import kl_per_position
-from param_decomp.model import run_stochastic_masked_output
+from param_decomp.core import family
+from param_decomp.core.components import ComponentStacks, SiteC, SiteSpec, site_out
+from param_decomp.core.family import ArchFamily
+from param_decomp.core.losses import kl_per_position
+from param_decomp.core.model import run_stochastic_masked_output
 from param_decomp.targets.glu_transformer import FrozenAttn
 from param_decomp.targets.transformer_taps import resid_tap_key
-from vendored_jax.llama import rms_norm
+from param_decomp.vendored_jax.llama import rms_norm
 
 # Plain-GELU MLP (LlamaSimpleMLP). The family's matrix vocabulary — the authored c-spec
 # keys (lab-side) are typed by it, so a c-spec key and a target matrix cannot drift.
@@ -506,26 +505,21 @@ class SimpleMLPDecomposedModel(eqx.Module):
 # ----------------------------- weight loading -----------------------------
 
 
-def pretrain_cache_dir(run_path: str) -> Path:
-    """Resolve a torch `PretrainRunInfo` wandb run path (`entity/project[/runs]/run_id`)
-    to its download cache dir. The cache must already exist (populated by the torch
-    repo's `PretrainRunInfo.from_path`); this trainer never talks to wandb."""
+def pretrain_cache_dir(out_root: Path, run_path: str) -> Path:
+    """Resolve a pretrain wandb run path (`entity/project[/runs]/run_id`) to its cache
+    dir under `out_root` (the caller's environment decides where that is — this target
+    never reads ambient env and never talks to wandb). The cache must already exist:
+    a `pd-pretrain` run's converted safetensors checkpoint + `model_config.yaml`."""
     match run_path.strip("/").split("/"):
         case [_entity, project, "runs", run_id] | [_entity, project, run_id]:
             pass
         case parts:
             raise AssertionError(f"unsupported pretrain run path {run_path!r} ({parts})")
-    out_root = os.environ.get("PARAM_DECOMP_OUT_DIR")
-    if out_root is None:
-        data_mount = os.environ.get("DATA_MOUNT")
-        assert data_mount is not None, (
-            "set PARAM_DECOMP_OUT_DIR (or DATA_MOUNT) to locate the pretrain cache"
-        )
-        out_root = f"{data_mount}/artifacts/mechanisms/param-decomp"
-    cache_dir = Path(out_root) / "pretrain_cache" / f"{project}-{run_id}"
+    cache_dir = out_root / "pretrain_cache" / f"{project}-{run_id}"
     assert cache_dir.exists(), (
-        f"pretrain cache missing: {cache_dir} — download it once via the torch repo "
-        f"(`PretrainRunInfo.from_path({run_path!r})`)"
+        f"pretrain cache missing: {cache_dir} — stage a pretrained checkpoint there "
+        f"(safetensors + model_config.yaml; torch-era checkpoints convert via the "
+        f"converter at git tag `torch-oracle`)"
     )
     return cache_dir
 
@@ -540,8 +534,8 @@ def checkpoint_safetensors_path(cache_dir: Path) -> Path:
     candidates = sorted(cache_dir.glob("model_step_*.safetensors"))
     assert len(candidates) == 1, (
         f"expected exactly one model_step_*.safetensors under {cache_dir}, found "
-        f"{candidates or 'none'} — convert the torch checkpoint once (torch venv): "
-        f"python param_decomp/tools/convert_llama_simple_mlp_checkpoint.py {cache_dir}"
+        f"{candidates or 'none'} — convert the torch checkpoint once (torch venv; "
+        f"converter at git tag `torch-oracle`): {cache_dir}"
     )
     return candidates[0]
 

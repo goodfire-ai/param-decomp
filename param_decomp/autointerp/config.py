@@ -1,0 +1,218 @@
+"""Autointerp configuration: LLM-provider and prompt-strategy schema plus the
+label-eval (detection / fuzzing) configs.
+
+Provider runtime classes (HTTP clients, dispatch) live in
+`param_decomp.autointerp.providers`; strategy prompt impls live in
+`param_decomp.autointerp.strategies`.
+"""
+
+from typing import Annotated, Literal
+
+from pydantic import Field, PositiveInt
+
+from param_decomp.core.base_config import BaseConfig
+
+ReasoningEffort = Literal["none", "low", "medium", "high"]
+
+
+class OpenRouterLLMConfig(BaseConfig):
+    type: Literal["openrouter"] = "openrouter"
+    model: str = "google/gemini-3-flash-preview"
+    reasoning_effort: ReasoningEffort = "low"
+    max_concurrent: int = 50
+    max_requests_per_minute: int = 500
+
+
+EffortLevel = Literal["low", "medium", "high", "max"]
+
+
+class AnthropicSonnet46LLMConfig(BaseConfig):
+    type: Literal["anthropic"] = "anthropic"
+    model: Literal["claude-sonnet-4-6"] = "claude-sonnet-4-6"
+    effort: Literal["low", "medium", "high"] | None = None
+    max_concurrent: int = 40
+    max_requests_per_minute: int = 300
+
+
+class AnthropicOpus46LLMConfig(BaseConfig):
+    type: Literal["anthropic"] = "anthropic"
+    model: Literal["claude-opus-4-6"] = "claude-opus-4-6"
+    effort: EffortLevel | None = None
+    max_concurrent: int = 20
+    max_requests_per_minute: int = 100
+
+
+class AnthropicHaiku45LLMConfig(BaseConfig):
+    type: Literal["anthropic"] = "anthropic"
+    model: Literal["claude-haiku-4-5-20251001"] = "claude-haiku-4-5-20251001"
+    thinking_budget: int | None = Field(default=None, ge=1024)
+    max_concurrent: int = 40
+    max_requests_per_minute: int = 300
+
+
+AnthropicLLMConfig = Annotated[
+    AnthropicSonnet46LLMConfig | AnthropicOpus46LLMConfig | AnthropicHaiku45LLMConfig,
+    Field(discriminator="model"),
+]
+
+
+class OpenAILLMConfig(BaseConfig):
+    type: Literal["openai"] = "openai"
+    model: str
+    reasoning_effort: ReasoningEffort = "none"
+    max_concurrent: int = 50
+    max_requests_per_minute: int = 500
+
+
+class GoogleAILLMConfig(BaseConfig):
+    """Gemini Developer API (API key from Google AI Studio)."""
+
+    type: Literal["google_ai"] = "google_ai"
+    model: str = "gemini-3-flash-preview"
+    thinking_level: Literal["minimal", "low", "medium", "high"] | None = None
+    max_concurrent: int = 100
+    max_requests_per_minute: int = 1000
+
+
+LLMConfig = Annotated[
+    OpenRouterLLMConfig | AnthropicLLMConfig | OpenAILLMConfig | GoogleAILLMConfig,
+    Field(discriminator="type"),
+]
+
+
+class LegacyDelimitedExamplesConfig(BaseConfig):
+    format: Literal["legacy_delimited"] = "legacy_delimited"
+
+
+class SingleLineExamplesConfig(BaseConfig):
+    format: Literal["single_line"] = "single_line"
+    annotation_style: Literal["none", "activation"] = "none"
+    highlight_delimiter: Literal["brackets", "angle"] = "brackets"
+
+
+class XmlExamplesConfig(BaseConfig):
+    format: Literal["xml"] = "xml"
+    annotation_style: Literal["none", "activation"] = "none"
+    highlight_delimiter: Literal["brackets", "angle"] = "brackets"
+    sanitize_raw: bool = False
+    sanitize_highlighted: bool = False
+
+
+ExampleRenderingConfig = Annotated[
+    LegacyDelimitedExamplesConfig | SingleLineExamplesConfig | XmlExamplesConfig,
+    Field(discriminator="format"),
+]
+RichExampleRenderingConfig = Annotated[
+    SingleLineExamplesConfig | XmlExamplesConfig,
+    Field(discriminator="format"),
+]
+
+
+def default_example_rendering() -> ExampleRenderingConfig:
+    return LegacyDelimitedExamplesConfig()
+
+
+def default_rich_example_rendering() -> RichExampleRenderingConfig:
+    return SingleLineExamplesConfig(annotation_style="activation")
+
+
+CANON_RENDERING = XmlExamplesConfig(
+    format="xml",
+    annotation_style="activation",
+    highlight_delimiter="brackets",
+    sanitize_raw=False,
+    sanitize_highlighted=False,
+)
+
+
+class CompactSkepticalConfig(BaseConfig):
+    """Current default strategy: compact prompt, skeptical tone, structured JSON output."""
+
+    type: Literal["compact_skeptical"] = "compact_skeptical"
+    max_examples: PositiveInt = 30
+    include_pmi: bool = True
+    label_max_words: PositiveInt = 8
+    forbidden_words: list[str] | None = None
+    example_rendering: ExampleRenderingConfig = Field(default_factory=default_example_rendering)
+
+
+class DualViewConfig(BaseConfig):
+    """Dual-view strategy: presents both input and output evidence with dual example views.
+
+    Key differences from compact_skeptical:
+    - Output data presented first
+    - Two example sections: "fires on" (current token) and "produces" (next token)
+    - Task asks for functional description, not detection label
+    """
+
+    type: Literal["dual_view"] = "dual_view"
+    max_examples: PositiveInt = 30
+    include_pmi: bool = True
+    label_max_words: PositiveInt = 8
+    forbidden_words: list[str] | None = None
+    example_rendering: ExampleRenderingConfig = Field(default_factory=default_example_rendering)
+
+
+class RichExamplesConfig(BaseConfig):
+    """Rich examples strategy: drops token statistics, shows per-token CI and activation values.
+
+    Supports both compact one-line rendering and an XML dual-block rendering
+    with separate raw and highlighted views.
+    """
+
+    type: Literal["rich_examples"] = "rich_examples"
+    max_examples: PositiveInt = 30
+    label_max_words: PositiveInt = 8
+    output_pmi_min_count: float = 2.0
+    example_rendering: RichExampleRenderingConfig = Field(
+        default_factory=default_rich_example_rendering
+    )
+
+
+class CanonConfig(BaseConfig):
+    """Canon strategy: detailed PD explanation, sign convention, CI-vs-act guidance,
+    output PMI, and XML dual-view examples.
+
+    Uses a fixed XML rendering (brackets, activation annotations, no sanitization).
+    """
+
+    type: Literal["canon"] = "canon"
+    max_examples: PositiveInt = 30
+    label_max_words: PositiveInt = 8
+
+
+StrategyConfig = CompactSkepticalConfig | DualViewConfig | RichExamplesConfig | CanonConfig
+
+
+class AutointerpConfig(BaseConfig):
+    llm: LLMConfig = OpenRouterLLMConfig()
+    limit: int | None = None
+    component_keys_path: str | None = None
+    cost_limit_usd: float | None = None
+    template_strategy: Annotated[StrategyConfig, Field(discriminator="type")]
+
+
+class DetectionEvalConfig(BaseConfig):
+    type: Literal["detection"] = "detection"
+    n_activating: int = 5
+    n_non_activating: int = 5
+    n_trials: int = 5
+
+
+class FuzzingEvalConfig(BaseConfig):
+    type: Literal["fuzzing"] = "fuzzing"
+    n_correct: int = 5
+    n_incorrect: int = 2
+    n_trials: int = 5
+
+
+class AutointerpEvalConfig(BaseConfig):
+    """Config for label-based autointerp evals (detection, fuzzing)."""
+
+    llm: LLMConfig = OpenRouterLLMConfig(reasoning_effort="none")
+    detection_config: DetectionEvalConfig
+    fuzzing_config: FuzzingEvalConfig
+    limit: int | None = None
+    component_keys_path: str | None = None
+    seed: int = 0
+    cost_limit_usd: float | None = None

@@ -36,7 +36,7 @@ jobs:
         run: uv sync --all-packages --python 3.12
       - name: Import smoke
         run: |
-          uv run python -c "import param_decomp.built_run; from param_decomp.components import SiteSpec"
+          uv run python -c "import param_decomp.core.built_run; from param_decomp.core.components import SiteSpec"
           uv run pd-lm --help > /dev/null
 
   build:

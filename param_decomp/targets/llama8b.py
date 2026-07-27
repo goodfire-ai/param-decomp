@@ -1,17 +1,17 @@
 """The Llama-3.1-8B family target: its arch config (the vendored `LlamaConfig`, llama3
 rope scaling) and its HF loader over the shared GLU-transformer machinery
-(`targets/glu_transformer.py` — plain `FrozenAttn`, no pre-RoPE extras)."""
+(`glu_transformer.py` — plain `FrozenAttn`, no pre-RoPE extras)."""
 
 import jax.numpy as jnp
 
-from param_decomp.components import SiteSpec
+from param_decomp.core.components import SiteSpec
 from param_decomp.targets.glu_transformer import (
     FrozenAttn,
     GLUDecomposedModel,
     HFWeights,
     load_decomposed_glu_from_hf,
 )
-from vendored_jax.llama import LlamaConfig, llama3_inv_freq
+from param_decomp.vendored_jax.llama import LlamaConfig, llama3_inv_freq
 
 
 def llama31_8b_config() -> LlamaConfig:

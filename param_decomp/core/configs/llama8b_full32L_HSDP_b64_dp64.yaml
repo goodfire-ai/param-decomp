@@ -1,0 +1,177 @@
+# The full-32L production recipe (CONFIGS.md "llama8b full-model" seat): Llama-3.1-8B,
+# ALL 32 layers x 7 matrices (q/k/v/o/gate/up/down) = 224 sites, HSDP tp=1 at dp 64
+# (8 nodes), zero1 sharding — validated on and-btdr H100s.
+#
+# Derived from the l18-23 6L reference run p-2112148d ("jax-l18-23-6L-ablbase-200k"):
+# same algorithm (chunkwise subset recon + persistent-PGD + faith + imp-min), same CI
+# fn arch, same LRs/coeffs/eval set. How this differs from that reference:
+#   1. sites: 224 (all matrices, all 32 layers) vs the reference's 18 (MLP, layers
+#      18-23). Per-matrix C from the 2026-06-22 full-llama8b BOTEC, rounded UP to
+#      multiples of 128 (the V/U C-axis shards over the mesh; init asserts C % dp == 0):
+#      q/k 2048, v/o 4096, gate/up 8192, down 10240. ΣC=1,245,184; V/U=18.3B params
+#      (~1.1x the reference's 16.3B — params shard cheaply, not the binding constraint).
+#   2. batch 64 at dp 64: per-rank batch 1 (vs the reference's 2).
+#   3. ChunkwiseSubsetReconLoss sites_per_chunk 56 (8 layers/chunk -> 4 chunks): fewer,
+#      larger chunks minimise compile time and per-step compute (each chunk's suffix
+#      forward spans the full network). coeff 2.0 = 0.5 x n_chunks keeps per-site recon
+#      pressure chunk-count-invariant. THIS IS THE KNOB TO RE-TUNE (finer chunks =
+#      better signal).
+#   4. remat_recon_forwards: true (224 sites' full-network chunk forwards need it).
+#   5. remat_ci_fn: true (checkpoint the ~31B CI fn; without it the step is the GPU
+#      compile wall — ~80 min + near-OOM — since the whole CI forward materialises).
+#   6. data seq 512 (fineweb_llama_tok_512), matching the reference's seq.
+# out_dir / run_id are minted by pd-lm.
+run_name: jax-full32L-HSDP-b64-dp64-andbtdr
+cadence:
+  keep_last_n_checkpoints: 2
+  save_every: 5000
+  train_log_every: 25
+data:
+  buffer_size: 1000
+  column_name: input_ids
+  data_files: /mnt/delicate-frog/home/pd-user/pd-out/datasets/fineweb_llama_tok_512/*.parquet
+  dataset_name: parquet
+  eval_split: train
+  is_tokenized: true
+  max_seq_len: 512
+  revision: null
+  shuffle_each_epoch: true
+  streaming: false
+  tokenizer_name: meta-llama/Llama-3.1-8B
+  train_split: train
+eval:
+  batch_size: 64
+  every: 1000
+  metrics:
+  - n_batches_accum: 1
+    type: CIHistograms
+  - ci_alive_threshold: 0.0
+    type: ComponentActivationDensity
+  - ci_alive_threshold: 0.0
+    groups: null
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  - type: CIMeanPerComponent
+  - coeff: null
+    type: StochasticHiddenActsReconLoss
+  - type: CIHiddenActsReconLoss
+  - coeff: null
+    init: random
+    source_shape: c
+    n_steps: 20
+    step_size: 0.1
+    type: PGDReconLoss
+  n_steps: 1
+  slow_every: 10000
+  slow_on_first_step: true
+decomposition:
+  sites:
+    kind: glu_transformer
+    layers:
+      kind: all
+    cs:
+      q: 2048
+      k: 2048
+      v: 4096
+      o: 4096
+      gate: 8192
+      up: 8192
+      down: 10240
+  ci:
+    type: chunkwise_transformer
+    blocks_per_chunk: 1
+    d_model: 4096
+    n_blocks: 4
+    attention:
+      kind: mha
+      n_heads: 64
+    ffn:
+      kind: gelu
+      hidden: 16384
+pd:
+  batch_size: 64
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: null
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 2.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 0.01
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 2.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 0
+  faithfulness_warmup_weight_decay: 0.0
+  identity_decomposition_targets: null
+  loss_metrics:
+  - frequency:
+      coeff: 1.0e-06
+      reference_token_count: 65536
+    coeff: 5.0e-06
+    eps: 1.0e-06
+    pnorm:
+      start_val: 2.0
+      fn_type: linear
+      final_val_frac: 0.2
+    type: ImportanceMinimalityLoss
+  - coeff: 2.0
+    n_samples: 1
+    routing:
+      type: uniform_k_subset
+    sites_per_chunk: 56
+    type: ChunkwiseSubsetReconLoss
+  - coeff: 0.5
+    n_warmup_steps: 2
+    optimizer:
+      beta1: 0.01
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        final_val_frac: 1.0
+        fn_type: constant
+        start_val: 0.01
+        warmup_pct: 0.025
+      type: adam
+    source_shape: bsc
+    type: PersistentPGDReconLoss
+  - coeff: 1000000.0
+    type: FaithfulnessLoss
+  seed: 0
+  steps: 200000
+runtime:
+  sharding: zero1
+  dp: 64
+  tp: 1
+  remat_recon_forwards: true
+  remat_ci_fn: true
+target:
+  output_extract: logits
+  weights_dtype: bfloat16
+  spec:
+    kind: hf
+    model_class: transformers.LlamaForCausalLM
+    model_name: meta-llama/Llama-3.1-8B
+wandb:
+  entity: null
+  project: param-decomp-llama
+  group: full32L
+  tags:
+  - full-model
+  - 32L
+  - allmat
+  - dp64
+  - seq512

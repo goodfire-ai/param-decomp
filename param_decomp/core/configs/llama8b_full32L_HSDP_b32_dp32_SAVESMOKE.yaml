@@ -1,0 +1,163 @@
+# Cheap end-to-end save/resume smoke for the full-32L production recipe (CONFIGS.md
+# "save-path smoke" seat): the dp64 seat's exact site set / algorithm / CI-fn arch /
+# zero1 sharding, scaled to dp 32 (4 nodes) with batch 32 — the production per-rank
+# batch of 1 — and 250 steps with save_every 100, so a launch exercises save AND
+# resume at the production per-rank shape without a production-length job.
+# Memory: this shape's fused recon backward needs ~180GB-class devices (B200) or a
+# larger world size — 80GB cards at dp32 run out of memory.
+# out_dir / run_id are minted by pd-lm.
+run_name: jax-full32L-HSDP-savesmoke
+cadence:
+  keep_last_n_checkpoints: 2
+  save_every: 100
+  train_log_every: 10
+data:
+  buffer_size: 1000
+  column_name: input_ids
+  data_files: /mnt/data/artifacts/mechanisms/param-decomp/datasets/fineweb_llama_tok_512/*.parquet
+  dataset_name: parquet
+  eval_split: train
+  is_tokenized: true
+  max_seq_len: 512
+  revision: null
+  shuffle_each_epoch: true
+  streaming: false
+  tokenizer_name: meta-llama/Llama-3.1-8B
+  train_split: train
+eval:
+  batch_size: 32
+  every: 1000
+  metrics:
+  - n_batches_accum: 1
+    type: CIHistograms
+  - ci_alive_threshold: 0.0
+    type: ComponentActivationDensity
+  - ci_alive_threshold: 0.0
+    groups: null
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  - type: CIMeanPerComponent
+  - coeff: null
+    type: StochasticHiddenActsReconLoss
+  - type: CIHiddenActsReconLoss
+  - coeff: null
+    init: random
+    source_shape: c
+    n_steps: 20
+    step_size: 0.1
+    type: PGDReconLoss
+  n_steps: 1
+  slow_every: 10000
+  slow_on_first_step: true
+decomposition:
+  sites:
+    kind: glu_transformer
+    layers:
+      kind: all
+    cs:
+      q: 2048
+      k: 2048
+      v: 4096
+      o: 4096
+      gate: 8192
+      up: 8192
+      down: 10240
+  ci:
+    type: chunkwise_transformer
+    blocks_per_chunk: 1
+    d_model: 4096
+    n_blocks: 4
+    attention:
+      kind: mha
+      n_heads: 64
+    ffn:
+      kind: gelu
+      hidden: 16384
+pd:
+  batch_size: 32
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: null
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 2.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 0.01
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 2.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 0
+  faithfulness_warmup_weight_decay: 0.0
+  identity_decomposition_targets: null
+  loss_metrics:
+  - frequency:
+      coeff: 1.0e-06
+      reference_token_count: 65536
+    coeff: 5.0e-06
+    eps: 1.0e-06
+    pnorm:
+      start_val: 2.0
+      fn_type: linear
+      final_val_frac: 0.2
+    type: ImportanceMinimalityLoss
+  - coeff: 2.0
+    n_samples: 1
+    routing:
+      type: uniform_k_subset
+    sites_per_chunk: 56
+    type: ChunkwiseSubsetReconLoss
+  - coeff: 0.5
+    n_warmup_steps: 2
+    optimizer:
+      beta1: 0.01
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        final_val_frac: 1.0
+        fn_type: constant
+        start_val: 0.01
+        warmup_pct: 0.025
+      type: adam
+    source_shape: bsc
+    type: PersistentPGDReconLoss
+  - coeff: 1000000.0
+    type: FaithfulnessLoss
+  seed: 0
+  steps: 250
+runtime:
+  dp: 32
+  tp: 1
+  # the layout production runs (the dp64 seat) — a save/resume smoke must exercise it
+  sharding: zero1
+  remat_recon_forwards: true
+  remat_ci_fn: true
+target:
+  output_extract: logits
+  weights_dtype: bfloat16
+  spec:
+    kind: hf
+    model_class: transformers.LlamaForCausalLM
+    model_name: meta-llama/Llama-3.1-8B
+wandb:
+  entity: null
+  project: param-decomp-llama
+  group: full32L
+  tags:
+  - full-model
+  - 32L
+  - allmat
+  - dp32
+  - seq512

@@ -1,7 +1,7 @@
 # setup
-# ONE venv for the whole workspace: the JAX trainer core (`param_decomp` + `pretrain` +
-# `vendored_jax`) is the root distribution and carries jax as a normal dependency, so a
-# single `uv sync --all-packages` installs core + config + lab into one `.venv`. The CPU
+# ONE venv for the whole workspace: the library (`param_decomp`) is the root distribution
+# and carries jax as a normal dependency, so a single `uv sync --all-packages` installs
+# the library + the private wrapper (`param_decomp_goodfire`) into one `.venv`. The CPU
 # jax wheel is the base; the CUDA wheel is the `[cuda]` extra the per-run launch workspace
 # installs.
 .PHONY: install
@@ -51,10 +51,12 @@ check-pre-commit:
 
 # tests
 
-# `param_decomp/tests/` is the JAX trainer core suite (incl. the LM equivalence goldens);
-# `param_decomp_lab/{tests,experiments}/` the lab suites (the toy TMS/ResidMLP tests live
-# beside their models under experiments/).
-TEST_PATHS = param_decomp/tests/ param_decomp_lab/tests/ param_decomp_lab/experiments/
+# `param_decomp/core/tests/` is the engine suite; `param_decomp/targets/tests/` the
+# per-target parity/golden suites (incl. the LM equivalence goldens);
+# `param_decomp/{tests,experiments}/` the library-level + composition suites (the toy
+# TMS/ResidMLP experiment tests live beside their composition roots under experiments/);
+# `param_decomp_goodfire/tests/` the private launcher's.
+TEST_PATHS = param_decomp/core/tests/ param_decomp/targets/tests/ param_decomp/tests/ param_decomp/experiments/ param_decomp_goodfire/tests/
 
 .PHONY: test
 test:
@@ -74,7 +76,7 @@ test-all:
 # JAX compile cache and every later run repeats the compile cost. The llama goldens
 # split off because they dominate one xdist worker for ~8 min and co-schedule the
 # heaviest memory peaks next to the recon end-to-end tests on a 16GB runner.
-LLAMA_GOLDEN_TEST_PATHS = param_decomp/tests/test_llama8b.py param_decomp/tests/test_llama_simple_mlp.py
+LLAMA_GOLDEN_TEST_PATHS = param_decomp/targets/tests/test_llama8b.py param_decomp/targets/tests/test_llama_simple_mlp.py
 
 .PHONY: test-ci-llama-goldens
 test-ci-llama-goldens:
@@ -82,11 +84,11 @@ test-ci-llama-goldens:
 
 .PHONY: test-ci-core
 test-ci-core:
-	uv run pytest param_decomp/tests/ $(addprefix --ignore=,$(LLAMA_GOLDEN_TEST_PATHS)) --runslow --durations 10 --numprocesses $(NUM_PROCESSES) --dist worksteal
+	uv run pytest param_decomp/core/tests/ param_decomp/targets/tests/ $(addprefix --ignore=,$(LLAMA_GOLDEN_TEST_PATHS)) --runslow --durations 10 --numprocesses $(NUM_PROCESSES) --dist worksteal
 
 .PHONY: test-ci-lab-multidevice
 test-ci-lab-multidevice:
-	uv run pytest param_decomp_lab/tests/ param_decomp_lab/experiments/ --runslow --durations 10 --numprocesses $(NUM_PROCESSES) --dist worksteal
+	uv run pytest param_decomp/tests/ param_decomp/experiments/ param_decomp_goodfire/tests/ --runslow --durations 10 --numprocesses $(NUM_PROCESSES) --dist worksteal
 	$(MAKE) test-multidevice
 
 # Tests needing >1 device (sharding / checkpoint topology). They hang at the default 1
@@ -101,7 +103,7 @@ COVERAGE_DIR=docs/coverage
 
 .PHONY: coverage
 coverage:
-	uv run pytest $(TEST_PATHS) --cov=param_decomp --cov=param_decomp_lab --runslow
+	uv run pytest $(TEST_PATHS) --cov=param_decomp --cov=param_decomp_goodfire --runslow
 	mkdir -p $(COVERAGE_DIR)
 	uv run python -m coverage report -m > $(COVERAGE_DIR)/coverage.txt
 	uv run python -m coverage html --directory=$(COVERAGE_DIR)/html/

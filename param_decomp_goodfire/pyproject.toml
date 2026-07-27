@@ -1,0 +1,41 @@
+[project]
+name = "param-decomp-goodfire"
+version = "0.0.1"
+description = "Goodfire-internal launchers for param-decomp: cluster-shaped SLURM submission wrappers around the generic library"
+requires-python = ">=3.12,<3.14"
+license = { text = "MIT" }
+dependencies = [
+    "param-decomp==0.0.1",
+    "fire",
+]
+
+[project.scripts]
+# The Goodfire-cluster launchers: snapshot + pinned launch config + sbatch across
+# 8-GPU nodes with per-node job-side venvs. Everything they wrap (the composition
+# roots, `python -m param_decomp.experiments.lm.run` / `-m param_decomp.pretrain.train`)
+# lives in the generic library; only the infra fit is here.
+pd-lm = "param_decomp_goodfire.launch_lm:cli"
+pd-pretrain = "param_decomp_goodfire.launch_pretrain:cli"
+pd-harvest = "param_decomp_goodfire.submit.harvest_cli:cli"
+pd-intruder = "param_decomp_goodfire.submit.intruder_cli:cli"
+pd-autointerp = "param_decomp_goodfire.submit.autointerp_cli:cli"
+pd-clustering = "param_decomp_goodfire.submit.clustering:cli"
+pd-postprocess = "param_decomp_goodfire.postprocess.cli:cli"
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = [
+    "param_decomp_goodfire",
+    "param_decomp_goodfire.postprocess",
+    "param_decomp_goodfire.submit",
+    "param_decomp_goodfire.tests",
+]
+
+[tool.setuptools.package-data]
+param_decomp_goodfire = ["postprocess/*.yaml"]
+
+[tool.setuptools.package-dir]
+param_decomp_goodfire = "."

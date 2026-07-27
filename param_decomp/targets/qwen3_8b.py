@@ -1,5 +1,5 @@
 """The Qwen3-8B-Base family target over the shared GLU-transformer machinery
-(`targets/glu_transformer.py`). Qwen3's one structural delta vs Llama is QK-norm:
+(`glu_transformer.py`). Qwen3's one structural delta vs Llama is QK-norm:
 per-head RMSNorm on q/k between the projection and RoPE (HF `Qwen3Attention.q_norm` /
 `k_norm`) — `Qwen3FrozenAttn` carries the norm weights as REQUIRED fields (never an
 optional flag) and applies them in the `_prep_qk` hook. Decomposition semantics are
@@ -15,7 +15,7 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float
 
-from param_decomp.components import SiteSpec
+from param_decomp.core.components import SiteSpec
 from param_decomp.targets.glu_transformer import (
     FrozenAttn,
     GLUConfig,
@@ -24,7 +24,7 @@ from param_decomp.targets.glu_transformer import (
     default_inv_freq,
     load_decomposed_glu_from_hf,
 )
-from vendored_jax.llama import rms_norm
+from param_decomp.vendored_jax.llama import rms_norm
 
 
 def qwen3_8b_config() -> GLUConfig:
