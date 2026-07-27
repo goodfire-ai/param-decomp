@@ -42,6 +42,7 @@ from param_decomp.core.ci_fn import (
     ChunkwiseTransformerCIArch,
     MHACIAttention,
 )
+from param_decomp.core.components import random_component_initializer
 from param_decomp.core.configs import (
     AdamPGDConfig,
     ChunkwiseSubsetReconLossConfig,
@@ -114,7 +115,10 @@ def _build_sharded(seed: int):
         learned_norm_scale=False,
     )
     vu = init_component_stacks_placed(
-        model.sites, jax.random.PRNGKey(seed), from_config("owner", mesh, model.sites)
+        model,
+        jax.random.PRNGKey(seed),
+        from_config("owner", mesh, model.sites),
+        random_component_initializer,
     )
     ci_fn = init_ci_fn_placed(ci_arch, model.sites, jax.random.PRNGKey(seed + 1), mesh)
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))

@@ -32,7 +32,7 @@ from param_decomp.core.ci_fn import (
     MHACIAttention,
     build_ci_fn,
 )
-from param_decomp.core.components import init_component_stacks
+from param_decomp.core.components import init_component_stacks, random_component_initializer
 from param_decomp.core.configs import (
     AdamPGDConfig,
     ChunkwiseSubsetReconLossConfig,
@@ -447,7 +447,10 @@ def _build_sharded(seed: int, mesh: Mesh):
     sites = glu_site_specs(cfg, mlp_family_site_cs(3, 4, C))
     model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks_placed(
-        sites, jax.random.PRNGKey(seed), from_config("owner", mesh, sites)
+        model,
+        jax.random.PRNGKey(seed),
+        from_config("owner", mesh, sites),
+        random_component_initializer,
     )
     ci_fn = init_ci_fn_placed(
         _chunkwise_arch(model, cfg), model.sites, jax.random.PRNGKey(seed + 1), mesh

@@ -63,14 +63,18 @@ def test_jitted_sharded_inits_match_eager_values():
         MHACIAttention,
         build_ci_fn,
     )
-    from param_decomp.core.components import SiteC, init_component_stacks
+    from param_decomp.core.components import (
+        SiteC,
+        init_component_stacks,
+        random_component_initializer,
+    )
     from param_decomp.core.init_placed import (
         init_ci_fn_placed,
         init_component_stacks_placed,
         init_sources_sharded,
     )
     from param_decomp.targets.glu_transformer import canonical_site_cs, glu_site_specs
-    from param_decomp.targets.testing import tiny_glu_cfg
+    from param_decomp.targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
 
     # The HSDP mesh `(replicate, fsdp)`: on the n-device CPU sim with n not a multiple of 8,
     # `fsdp` takes the full count and `replicate` is 1. V FSDP-shards d_in on `fsdp`, U FSDP
@@ -96,13 +100,17 @@ def test_jitted_sharded_inits_match_eager_values():
     )
     from param_decomp.core.components import vu_shape_groups
 
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     assert max(len(g) for g in vu_shape_groups(sites).values()) >= 2
     # Placement is MODEL-OWNED, owner-partitioned ÷N (hybrid HSDP rule): the STACK axis
     # shards over `replicate` (whole matrices owned per node-group), matrix d dims over
     # `fsdp`, C over `tp` — total ÷(replicate·fsdp·tp) = ÷N. On the sim mesh replicate is 1
     # (every stack length tiles it), so every group takes the stack rule.
     vu_placed = init_component_stacks_placed(
-        sites, jax.random.PRNGKey(1), from_config("owner", mesh, sites)
+        model,
+        jax.random.PRNGKey(1),
+        from_config("owner", mesh, sites),
+        random_component_initializer,
     )
     vu_eager = init_component_stacks(sites, jax.random.PRNGKey(1))
     for Vs, Us in vu_placed.stacks.values():
@@ -133,9 +141,7 @@ def test_jitted_sharded_inits_match_eager_values():
         # d_in = n+1 (does not tile N=n) -> placement construction must crash.
         indivisible = (SiteSpec("layers.2.mlp.gate_proj", n + 1, 8 * n, 16),)
         try:
-            init_component_stacks_placed(
-                indivisible, jax.random.PRNGKey(1), from_config("owner", mesh, indivisible)
-            )
+            from_config("owner", mesh, indivisible)
         except AssertionError:
             pass
         else:

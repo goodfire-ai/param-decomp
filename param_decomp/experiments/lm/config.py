@@ -39,7 +39,12 @@ from param_decomp.core.ci_fn import (
     GQACIAttention,
     MHACIAttention,
 )
-from param_decomp.core.components import SiteC, SiteSpec
+from param_decomp.core.components import (
+    ComponentInitializer,
+    SiteC,
+    SiteSpec,
+    random_component_initializer,
+)
 from param_decomp.core.configs import (
     ArithmeticCIGridConfig,
     CEandKLLossesConfig,
@@ -194,6 +199,7 @@ class GluTransformerCSpec(BaseConfig):
     kind: Literal["glu_transformer"] = "glu_transformer"
     layers: LayerSelection
     cs: dict[GluMatrix, PositiveInt] = Field(..., min_length=1)
+    initialization: Literal["random", "neuron_head_aligned"] = "random"
 
 
 class SimpleMlpCSpec(BaseConfig):
@@ -493,6 +499,19 @@ class _ResolvedDecomposition:
     site_specs: tuple[SiteSpec, ...]
 
 
+def _validate_component_initialization(
+    sites: GluTransformerCSpec | SimpleMlpCSpec, site_specs: tuple[SiteSpec, ...]
+) -> None:
+    match sites:
+        case GluTransformerCSpec(initialization="neuron_head_aligned"):
+            for spec in site_specs:
+                glu_transformer.validate_neuron_head_aligned_capacity(spec)
+        case GluTransformerCSpec(initialization="random") | SimpleMlpCSpec():
+            pass
+        case _:
+            raise AssertionError(sites)
+
+
 def _bound_grammar(
     family: ArchFamily, n_layer: int, d_resid: int, dims_of: Callable[[str], tuple[int, int]]
 ) -> TransformerTapGrammar:
@@ -537,6 +556,7 @@ def _resolve_decomposition(cfg: LMExperimentConfig, out_root: Path) -> _Resolved
                 lambda kind: glu_transformer.site_dims(arch, kind),
             )
             site_specs = glu_transformer.glu_site_specs(arch, target.sites)
+            _validate_component_initialization(sites, site_specs)
             return _ResolvedDecomposition(target, tree, grammar, site_specs)
         case PretrainedTarget():
             assert spec.model_class.rsplit(".", 1)[-1] == "LlamaSimpleMLP", spec.model_class
@@ -776,6 +796,16 @@ def assert_placement_claims(cfg: LMExperimentConfig, out_root: Path) -> None:
     _assert_placement_claims(_resolve_decomposition(cfg, out_root), cfg)
 
 
+def _component_initializer(sites: GluTransformerCSpec | SimpleMlpCSpec) -> ComponentInitializer:
+    match sites:
+        case GluTransformerCSpec(initialization="neuron_head_aligned"):
+            return glu_transformer.neuron_head_aligned_component_initializer
+        case GluTransformerCSpec(initialization="random") | SimpleMlpCSpec():
+            return random_component_initializer
+        case _:
+            raise AssertionError(sites)
+
+
 def build_experiment_config(cfg: LMExperimentConfig, run_id: str, out_root: Path) -> BuiltRun:
     resolved = _resolve_decomposition(cfg, out_root)
     target = resolved.target
@@ -791,6 +821,7 @@ def build_experiment_config(cfg: LMExperimentConfig, run_id: str, out_root: Path
         cadence=cfg.cadence,
         run=run_instance(cfg, run_id, out_root),
         target=target,
+        component_initializer=_component_initializer(cfg.decomposition.sites),
         data=data,
         ci_fn=ci_fn,
         eval=_eval(cfg),

@@ -50,6 +50,7 @@ from param_decomp.core.components import (
     ComponentStacks,
     SiteC,
     SiteSpec,
+    component_stacks_from_sites,
     dequantize_fp8,
     quantize_fp8,
     site_out,
@@ -1162,6 +1163,71 @@ class GLUDecomposedModel(eqx.Module):
                 W.astype(jnp.float32) - (V.astype(jnp.float32) @ U.astype(jnp.float32)).T
             )
         return out
+
+
+def neuron_head_aligned_component_count(spec: SiteSpec) -> int:
+    """Architectural coordinate count needed for an exact neuron/head-aligned site."""
+    kind = parse_site_name(spec.name)[1]
+    match kind:
+        case "q" | "k" | "v" | "gate" | "up":
+            return spec.d_out
+        case "o" | "down":
+            return spec.d_in
+        case _:
+            raise AssertionError(kind)
+
+
+def validate_neuron_head_aligned_capacity(spec: SiteSpec) -> None:
+    required = neuron_head_aligned_component_count(spec)
+    assert required <= spec.C, (
+        f"{spec.name}: neuron/head-aligned init needs C >= {required}, got {spec.C}"
+    )
+
+
+def _input_weight_aligned_vu(W: Array, spec: SiteSpec) -> tuple[Array, Array]:
+    """One component per output coordinate: V reads one row of W, U writes its coordinate."""
+    validate_neuron_head_aligned_capacity(spec)
+    W32 = W.astype(jnp.float32)
+    V = jnp.pad(W32.T, ((0, 0), (0, spec.C - spec.d_out)))
+    U = jnp.pad(jnp.eye(spec.d_out, dtype=jnp.float32), ((0, spec.C - spec.d_out), (0, 0)))
+    return V, U
+
+
+def _output_weight_aligned_vu(W: Array, spec: SiteSpec) -> tuple[Array, Array]:
+    """One component per input coordinate: V selects it, U carries its outgoing weights."""
+    validate_neuron_head_aligned_capacity(spec)
+    W32 = W.astype(jnp.float32)
+    V = jnp.pad(jnp.eye(spec.d_in, dtype=jnp.float32), ((0, 0), (0, spec.C - spec.d_in)))
+    U = jnp.pad(W32.T, ((0, spec.C - spec.d_in), (0, 0)))
+    return V, U
+
+
+def neuron_head_aligned_component_initializer(
+    model: GLUDecomposedModel, key: Array
+) -> ComponentStacks:
+    """Initialize an exact target-weight decomposition on architectural coordinates.
+
+    Gate/up and q/k/v projections get one component per output coordinate: the component's
+    V is the target row entering that neuron or head coordinate and U is one-hot. Down and
+    attention-output projections get one component per input coordinate: V is one-hot and U
+    is that neuron/head coordinate's outgoing target column. Attention coordinates are ordered
+    head-major by the target layout, so each nonzero attention component belongs to one head.
+    Capacity beyond the exact coordinate count is initialized to zero.
+    """
+    del key
+    vu: dict[str, tuple[Array, Array]] = {}
+    for spec in model.sites:
+        layer_idx, kind = parse_site_name(spec.name)
+        layer = jax.tree.map(lambda a, i=layer_idx: a[i], model.stacked)
+        W = _frozen_site_weight(layer, kind)
+        match kind:
+            case "q" | "k" | "v" | "gate" | "up":
+                vu[spec.name] = _input_weight_aligned_vu(W, spec)
+            case "o" | "down":
+                vu[spec.name] = _output_weight_aligned_vu(W, spec)
+            case _:
+                raise AssertionError(kind)
+    return component_stacks_from_sites(vu)
 
 
 # ----------------------------- HF weight loading -----------------------------

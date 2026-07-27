@@ -20,6 +20,7 @@ from jaxtyping import Array, PRNGKeyArray
 
 from param_decomp.core.adversary import PersistentAdversary, init_sources_adam_state
 from param_decomp.core.ci_fn import ChunkwiseTransformerCIArch, CIFnArch
+from param_decomp.core.components import ComponentInitializer
 from param_decomp.core.configs import (
     AdamPGDConfig,
     AdamWOptimizerConfig,
@@ -160,6 +161,7 @@ def build_optimizers(pd: PDConfig, ci_fn_arch: CIFnArch, mesh: Mesh | None):
 def init_decomposition(
     model: DecomposedModel,
     ci_fn_arch: CIFnArch,
+    component_initializer: ComponentInitializer,
     init_key: PRNGKeyArray,
     mesh: Mesh,
     rules: PlacementRules,
@@ -170,7 +172,7 @@ def init_decomposition(
     ci_key = random.fold_in(init_key, 1)
     # V/U placement derives from the rules table; the CI fn still declares its own
     # per-leaf shardings (PLACEMENT_DESIGN.md migration stage 3).
-    components = init_component_stacks_placed(model.sites, init_key, rules)
+    components = init_component_stacks_placed(model, init_key, rules, component_initializer)
     ci_fn = init_ci_fn_placed(ci_fn_arch, model.sites, ci_key, mesh)
     assert ci_fn.has_position_axis == model.has_position_axis, (
         f"CI fn has_position_axis={ci_fn.has_position_axis} but model declares "
@@ -183,6 +185,7 @@ def init_train_state(
     pd: PDConfig,
     model: DecomposedModel,
     ci_fn_arch: CIFnArch,
+    component_initializer: ComponentInitializer,
     positions: PositionAxis,
     opt_vu: optax.GradientTransformation,
     opt_ci: optax.GradientTransformation,
@@ -195,7 +198,9 @@ def init_train_state(
     assert isinstance(positions, Positioned) == model.has_position_axis, (
         f"{positions} does not match the model's has_position_axis={model.has_position_axis}"
     )
-    decomposition = init_decomposition(model, ci_fn_arch, init_key, mesh, rules)
+    decomposition = init_decomposition(
+        model, ci_fn_arch, component_initializer, init_key, mesh, rules
+    )
     components, ci_fn = decomposition.components, decomposition.ci_fn
     losses = build_loss_terms(pd.loss_metrics, model.site_names)
     persistent = persistent_configs(losses.recon)

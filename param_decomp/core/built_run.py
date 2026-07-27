@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 from param_decomp.core.ci_fn import CIFnArch
-from param_decomp.core.components import SiteC
+from param_decomp.core.components import ComponentInitializer, SiteC
 from param_decomp.core.configs import (
     Cadence,
     PDConfig,
@@ -156,8 +156,9 @@ class BuiltRun:
     `pd` / `runtime` / `cadence` are the verbatim pydantic config — the engine reads
     optimizers / loss metrics / faith warmup / seed / steps / cadence off them,
     so there is no flattened mirror to drift. The rest is what composition resolves: the
-    run identity, the decomposed target (only `.sites` is read), the data source (`None`
-    for a toy), the built CI-fn architecture, and the resolved scalar-tier eval config."""
+    run identity, the decomposed target (only `.sites` is read), the component initializer,
+    the data source (`None` for a toy), the built CI-fn architecture, and the resolved
+    scalar-tier eval config."""
 
     pd: PDConfig
     runtime: RuntimeConfig
@@ -166,6 +167,9 @@ class BuiltRun:
     target: TargetSites
     """The decomposed target config — only its `sites` are read by the generic engine. An
     LM target config (lab-side) or a lab toy target config (satisfying `TargetSites`)."""
+    component_initializer: ComponentInitializer
+    """The composition-selected V/U initializer. It receives the placed frozen model as an
+    explicit argument, allowing target-weight initialization without baking model weights."""
     data: DataConfig | None
     """The LM parquet data source; `None` for a toy run (its synthetic data lives in the
     lab provider's `sample_batch`)."""

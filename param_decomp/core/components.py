@@ -12,7 +12,7 @@ one target.
 from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import cache
-from typing import ClassVar, Generic
+from typing import Any, ClassVar, Generic, Protocol
 
 import equinox as eqx
 import jax
@@ -102,6 +102,16 @@ def _slot_index(site_slots: SiteSlots) -> dict[str, tuple[VUShape, int]]:
     return {name: (shape, slot) for name, shape, slot in site_slots}
 
 
+class ComponentInitializer(Protocol):
+    """Build a target model's initial fp32 V/U stacks from the model and a run seed.
+
+    The model is an explicit JAX argument so target-weight initializers trace its frozen
+    weights instead of baking them into the init executable.
+    """
+
+    def __call__(self, model: Any, key: Array) -> "ComponentStacks": ...
+
+
 class ComponentStacks(eqx.Module, Generic[VULeaf]):
     """The trainable V/U masters, persisted as same-shape STACKS — the owner-partitioned
     layout: one `(Vs [g, d_in, C], Us [g, C, d_out])` pair per `(d_in, d_out, C)` shape
@@ -189,6 +199,11 @@ def init_component_stacks(sites: tuple[SiteSpec, ...], key: Array) -> ComponentS
     the stacked persistence layout; the weight-delta channel carries the faithfulness
     residual at init (before faithfulness warmup)."""
     return ComponentStacks(stacks=init_stack_arrays(sites, key), site_slots=site_slots_for(sites))
+
+
+def random_component_initializer(model: Any, key: Array) -> ComponentStacks:
+    """The default target-independent small-random initializer."""
+    return init_component_stacks(model.sites, key)
 
 
 def site_out(

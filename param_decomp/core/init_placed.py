@@ -30,9 +30,9 @@ from param_decomp.core.adversary import (
 )
 from param_decomp.core.ci_fn import CIFn, CIFnArch, build_ci_fn
 from param_decomp.core.components import (
+    ComponentInitializer,
     ComponentStacks,
     SiteSpec,
-    init_component_stacks,
 )
 from param_decomp.core.configs import SourceShape
 from param_decomp.core.model import PositionAxis, Positioned, Positionless
@@ -40,15 +40,20 @@ from param_decomp.core.placement import PlacementRules, component_stacks_shardin
 
 
 def init_component_stacks_placed(
-    sites: tuple[SiteSpec, ...], key: PRNGKeyArray, rules: PlacementRules
+    model: object,
+    key: PRNGKeyArray,
+    rules: PlacementRules,
+    initializer: ComponentInitializer,
 ) -> ComponentStacks:
-    """Seeded V/U init placed by `component_stacks_shardings(_, rules)` (the run's placement
-    policy), values bit-identical to the retired per-site init (pinned by `test_sharding`).
-    One jit, 2×n_shapes sharded outputs — the persistence layout IS the stacked layout, so
-    the old two-stage stack-then-unstack fan-out (and its transient extra copy) is gone."""
-    abstract = eqx.filter_eval_shape(partial(init_component_stacks, sites), key)
+    """Initialize V/U from an explicit target model and place the resulting stacks.
+
+    The target is a traced argument, never a closed-over constant: weight-aligned initializers
+    can read frozen weights without baking the full model into the executable. The output tree
+    remains 2×n_shapes regardless of initialization strategy.
+    """
+    abstract = eqx.filter_eval_shape(initializer, model, key)
     placement = component_stacks_shardings(abstract, rules)
-    return jax.jit(partial(init_component_stacks, sites), out_shardings=placement)(key)
+    return jax.jit(initializer, out_shardings=placement)(model, key)
 
 
 def init_ci_fn_placed(

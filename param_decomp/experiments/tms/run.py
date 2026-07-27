@@ -24,7 +24,7 @@ from jax.sharding import PartitionSpec as P
 
 from param_decomp.core import placement
 from param_decomp.core.built_run import LAUNCH_CONFIG_FILENAME, BuiltRun
-from param_decomp.core.components import SiteC
+from param_decomp.core.components import SiteC, random_component_initializer
 from param_decomp.core.log import setup_logger
 from param_decomp.core.model import Positionless
 from param_decomp.core.recon import build_loss_terms
@@ -77,6 +77,7 @@ def build_tms_built_run(cfg: TMSExperimentConfig, run_id: str, out_root: Path) -
         cadence=cfg.cadence,
         run=run_instance(cfg, run_id, out_root),
         target=target,
+        component_initializer=random_component_initializer,
         data=None,
         ci_fn=ci_arch(cfg.decomposition.ci),
         eval=None,
@@ -186,6 +187,7 @@ def run_tms_decomposition(built: BuiltRun, raw_cfg: dict[str, Any], mesh: Mesh) 
         run=built.run,
         model=model,
         ci_fn=built.ci_fn,
+        component_initializer=built.component_initializer,
         positions=Positionless(),
         remat_recon_forwards=built.runtime.remat_recon_forwards,
         remat_ci_fn=built.runtime.remat_ci_fn,

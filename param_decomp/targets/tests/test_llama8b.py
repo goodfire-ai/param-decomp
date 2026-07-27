@@ -46,6 +46,7 @@ from param_decomp.targets.glu_transformer import (
     canonical_site_cs,
     glu_site_specs,
     mlp_family_site_cs,
+    neuron_head_aligned_component_initializer,
     parse_site_name,
     site_name,
 )
@@ -429,6 +430,47 @@ def test_faith_warmup_decreases_faith():
         first_loss = float(loss) if first_loss is None else first_loss
     assert first_loss is not None and loss is not None
     assert float(loss) < first_loss * 0.9, (first_loss, float(loss))
+
+
+def test_neuron_head_aligned_init_exactly_reconstructs_target():
+    cfg = tiny_glu_cfg()
+    capacities = {
+        "q": cfg.n_head * cfg.head_dim + 3,
+        "k": cfg.n_kv_head * cfg.head_dim + 2,
+        "v": cfg.n_kv_head * cfg.head_dim,
+        "o": cfg.n_head * cfg.head_dim + 2,
+        "gate": cfg.n_intermediate + 3,
+        "up": cfg.n_intermediate,
+        "down": cfg.n_intermediate + 6,
+    }
+    sites = glu_site_specs(
+        cfg, tuple(SiteC(site_name(4, kind), C) for kind, C in capacities.items())
+    )
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    vu = neuron_head_aligned_component_initializer(model, jax.random.PRNGKey(1))
+
+    for delta in model.weight_deltas(vu).values():
+        assert jnp.array_equal(delta, jnp.zeros_like(delta))
+
+    gate_V, gate_U = vu.site(site_name(4, "gate"))
+    gate_W = model.stacked.Wg[4].astype(jnp.float32)
+    assert jnp.array_equal(gate_V[:, : cfg.n_intermediate], gate_W.T)
+    assert jnp.array_equal(gate_U[: cfg.n_intermediate], jnp.eye(cfg.n_intermediate))
+    assert jnp.count_nonzero(gate_U[cfg.n_intermediate :]) == 0
+
+    down_V, down_U = vu.site(site_name(4, "down"))
+    down_W = model.stacked.Wd[4].astype(jnp.float32)
+    assert jnp.array_equal(down_V[:, : cfg.n_intermediate], jnp.eye(cfg.n_intermediate))
+    assert jnp.array_equal(down_U[: cfg.n_intermediate], down_W.T)
+    assert jnp.count_nonzero(down_V[:, cfg.n_intermediate :]) == 0
+
+
+def test_neuron_head_aligned_init_rejects_insufficient_capacity():
+    cfg = tiny_glu_cfg()
+    sites = glu_site_specs(cfg, (SiteC(site_name(4, "q"), cfg.n_embd - 1),))
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    with pytest.raises(AssertionError, match="needs C >= 32"):
+        neuron_head_aligned_component_initializer(model, jax.random.PRNGKey(1))
 
 
 def test_component_stacks_shapes_fp32():

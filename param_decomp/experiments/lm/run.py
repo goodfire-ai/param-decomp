@@ -342,6 +342,7 @@ def train(
         run=built.run,
         model=model,
         ci_fn=built.ci_fn,
+        component_initializer=built.component_initializer,
         positions=Positioned(n_positions=data.seq_len),
         remat_recon_forwards=built.runtime.remat_recon_forwards,
         remat_ci_fn=built.runtime.remat_ci_fn,

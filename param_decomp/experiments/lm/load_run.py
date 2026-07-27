@@ -173,7 +173,11 @@ def _restore_decomposition(
     # the run's launch topology, so the launch claims don't bind — a zero1 row declared
     # for dp=N is legitimately unreachable here.
     rules = placement.from_config_for_consumer(cfg.runtime.sharding, mesh, model.sites)
-    abstract = jax.eval_shape(lambda: init_decomposition(model, cfg.ci_fn, init_key, mesh, rules))
+    abstract = jax.eval_shape(
+        lambda: init_decomposition(
+            model, cfg.ci_fn, cfg.component_initializer, init_key, mesh, rules
+        )
+    )
 
     assert cfg.cadence.keep_last_n_checkpoints is not None, cfg.cadence
     manager = make_checkpoint_manager(run_dir / "ckpts", cfg.cadence.keep_last_n_checkpoints)

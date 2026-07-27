@@ -1,8 +1,8 @@
 """The generic VPD decomposition-training ENGINE — the one train loop every target
 (LM, TMS, ResidMLP, …) runs through.
 
-`run_decomposition_training(pd, cadence, run, model, ci_fn, positions,
-remat_recon_forwards, sample_batch, eval_fn, eval_every, mesh)` owns
+`run_decomposition_training(pd, cadence, run, model, ci_fn, component_initializer,
+positions, remat_recon_forwards, sample_batch, eval_fn, eval_every, mesh)` owns
 the generic machinery: init / restore / fine-tune init / faith warmup
 (`_init_or_restore_state`), the recon-grid step factory, orbax checkpointing, schedules,
 metrics fan-out (`MetricsSink`), the figure-tier background renderer (`BackgroundRenderer`), and
@@ -33,8 +33,6 @@ if TYPE_CHECKING:
 
     LogRecord = Mapping[str, float | wandb.plot.CustomChart]
 
-from functools import partial as _partial
-
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -60,7 +58,7 @@ from param_decomp.core.checkpoint import (
     save_state,
 )
 from param_decomp.core.ci_fn import CIFnArch
-from param_decomp.core.components import init_component_stacks
+from param_decomp.core.components import ComponentInitializer
 from param_decomp.core.configs import Cadence, PDConfig, ProfileConfig, flatten_typed_lists
 from param_decomp.core.model import DecomposedModel, PositionAxis
 from param_decomp.core.placement import PlacementRules, component_stacks_audit
@@ -359,6 +357,7 @@ def render_and_log_arithmetic(
 def _init_or_restore_state(
     pd: PDConfig,
     ci_fn_arch: CIFnArch,
+    component_initializer: ComponentInitializer,
     positions: PositionAxis,
     run: RunInstance,
     model: DecomposedModel,
@@ -379,7 +378,17 @@ def _init_or_restore_state(
     must exit cleanly for requeue — no valid checkpoint exists pre-step-0)."""
     state = _ensure_global(
         init_train_state(
-            pd, model, ci_fn_arch, positions, opt_vu, opt_ci, init_key, src_key, mesh, rules
+            pd,
+            model,
+            ci_fn_arch,
+            component_initializer,
+            positions,
+            opt_vu,
+            opt_ci,
+            init_key,
+            src_key,
+            mesh,
+            rules,
         ),
         mesh,
     )
@@ -457,6 +466,7 @@ def run_decomposition_training(
     run: RunInstance,
     model: DecomposedModel,
     ci_fn: CIFnArch,
+    component_initializer: ComponentInitializer,
     positions: PositionAxis,
     remat_recon_forwards: bool,
     remat_ci_fn: bool,
@@ -516,7 +526,7 @@ def run_decomposition_training(
     rules = placement_rules
     if is_main:
         audit = component_stacks_audit(
-            eqx.filter_eval_shape(_partial(init_component_stacks, model.sites), init_key), rules
+            eqx.filter_eval_shape(component_initializer, model, init_key), rules
         )
         print(
             rules.describe(
@@ -526,7 +536,8 @@ def run_decomposition_training(
             flush=True,
         )
     init = _init_or_restore_state(
-        pd, ci_fn, positions, run, model, opt_vu, opt_ci, init_key, src_key, mesh, rules,
+        pd, ci_fn, component_initializer, positions, run, model, opt_vu, opt_ci,
+        init_key, src_key, mesh, rules,
         checkpoint_manager, is_main, profile.no_checkpoint, compiler_options,
     )  # fmt: skip
     if init is None:
