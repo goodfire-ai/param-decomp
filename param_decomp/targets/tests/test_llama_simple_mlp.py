@@ -405,7 +405,7 @@ def test_pretrained_target_converts_with_all_layers():
         build_experiment_config,
     )
 
-    reference_yaml = Path(__file__).parent.parent / "configs" / "llama8b_l18_b128_cmp32.yaml"
+    reference_yaml = Path(__file__).parents[2] / "core/configs/llama8b_l18_b128_cmp32.yaml"
     raw = yaml.safe_load(reference_yaml.read_text())
     raw["target"]["spec"] = {
         "kind": "pretrained",
