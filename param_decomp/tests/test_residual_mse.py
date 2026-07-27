@@ -6,13 +6,13 @@ import jax.numpy as jnp
 import optax
 import pytest
 
-from param_decomp.adversary import (
+from param_decomp.core.adversary import (
     PersistentAdversary,
     init_persistent_sources,
     init_sources_adam_state,
 )
-from param_decomp.components import init_component_stacks
-from param_decomp.configs import (
+from param_decomp.core.components import init_component_stacks
+from param_decomp.core.configs import (
     AdamPGDConfig,
     ChunkwiseSubsetReconLossConfig,
     FaithfulnessLossConfig,
@@ -20,17 +20,17 @@ from param_decomp.configs import (
     PersistentPGDReconLossConfig,
     UniformKSubsetRoutingConfig,
 )
-from param_decomp.losses import residual_mse_loss
-from param_decomp.recon import build_loss_terms
-from param_decomp.schedule import ScheduleConfig
+from param_decomp.core.losses import residual_mse_loss
+from param_decomp.core.recon import build_loss_terms
+from param_decomp.core.schedule import ScheduleConfig
+from param_decomp.core.train import Decomposition, TrainingItem, TrainState, make_train_step
 from param_decomp.targets.llama_simple_mlp import site_specs
-from param_decomp.tests.test_llama_simple_mlp import (
-    _MIXED_SITE_CS,
-    _build_chunkwise_ci_fn,
-    _tiny_cfg,
-    _tiny_decomposed_model,
+from param_decomp.targets.testing import (
+    SIMPLE_MLP_MIXED_SITE_CS,
+    tiny_simple_mlp_cfg,
+    tiny_simple_mlp_chunkwise_ci_fn,
+    tiny_simple_mlp_decomposed_model,
 )
-from param_decomp.train import Decomposition, TrainingItem, TrainState, make_train_step
 
 
 def test_residual_mse_loss_hand_computed():
@@ -79,12 +79,12 @@ def test_build_loss_terms_threads_residual_mse_coeff():
 
 
 def _step_with_chunkwise_recon(residual_mse_coeff: float | None):
-    cfg = _tiny_cfg()
+    cfg = tiny_simple_mlp_cfg()
     seq = 16
-    sites = site_specs(cfg, _MIXED_SITE_CS)
-    model = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
+    sites = site_specs(cfg, SIMPLE_MLP_MIXED_SITE_CS)
+    model = tiny_simple_mlp_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
-    ci_fn = _build_chunkwise_ci_fn(model, jax.random.PRNGKey(2))
+    ci_fn = tiny_simple_mlp_chunkwise_ci_fn(model, jax.random.PRNGKey(2))
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
 
@@ -129,7 +129,7 @@ def test_residual_mse_coeff_trains_finite():
 
 
 def test_residual_mse_coeff_logs_e2e_and_per_block_breakdown_separately():
-    cfg = _tiny_cfg()
+    cfg = tiny_simple_mlp_cfg()
     _, metrics = _step_with_chunkwise_recon(residual_mse_coeff=0.3)
     name = "loss/ChunkwiseSubsetReconLoss"
     assert name in metrics
@@ -163,13 +163,13 @@ def test_residual_mse_coeff_zero_matches_disabled():
 def test_residual_mse_with_persistent_pgd_adversary():
     """The adversary's warmup + final ascent must run through the combined (e2e +
     residual-mse) objective without shape/finiteness errors (SPEC S35 x S13'/S14')."""
-    cfg = _tiny_cfg()
+    cfg = tiny_simple_mlp_cfg()
     seq = 16
     n_warmup = 1
-    sites = site_specs(cfg, _MIXED_SITE_CS)
-    model = _tiny_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
+    sites = site_specs(cfg, SIMPLE_MLP_MIXED_SITE_CS)
+    model = tiny_simple_mlp_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
-    ci_fn = _build_chunkwise_ci_fn(model, jax.random.PRNGKey(2))
+    ci_fn = tiny_simple_mlp_chunkwise_ci_fn(model, jax.random.PRNGKey(2))
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
 
