@@ -1,0 +1,160 @@
+run_name: task570-dp32-b32-advwarmup0
+cadence:
+  keep_last_n_checkpoints: 1
+  save_every: 1000000
+  train_log_every: 5
+data:
+  buffer_size: 1000
+  column_name: input_ids
+  data_files: /mnt/data/artifacts/mechanisms/param-decomp/datasets/fineweb_llama_tok_512/*.parquet
+  dataset_name: parquet
+  eval_split: train
+  is_tokenized: true
+  max_seq_len: 512
+  revision: null
+  shuffle_each_epoch: true
+  streaming: false
+  tokenizer_name: meta-llama/Llama-3.1-8B
+  train_split: train
+eval:
+  batch_size: 256
+  every: 1000000
+  metrics:
+  - n_batches_accum: 1
+    type: CIHistograms
+  - ci_alive_threshold: 0.0
+    type: ComponentActivationDensity
+  - ci_alive_threshold: 0.0
+    groups: null
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  - type: CIMeanPerComponent
+  - coeff: null
+    type: StochasticHiddenActsReconLoss
+  - type: CIHiddenActsReconLoss
+  - coeff: null
+    init: random
+    source_shape: c
+    n_steps: 20
+    step_size: 0.1
+    type: PGDReconLoss
+  n_steps: 1
+  slow_every: 1000000
+  slow_on_first_step: false
+decomposition:
+  sites:
+    kind: glu_transformer
+    layers:
+      kind: all
+    cs:
+      q: 4096
+      k: 4096
+      v: 4096
+      o: 4096
+      gate: 14336
+      up: 14336
+      down: 14336
+    initialization: neuron_head_aligned
+  ci:
+    type: chunkwise_transformer
+    blocks_per_chunk: 1
+    input_tap: all_block_resids
+    d_model: 4096
+    n_blocks: 4
+    attention:
+      kind: mha
+      n_heads: 64
+    ffn:
+      kind: gelu
+      hidden: 16384
+pd:
+  batch_size: 32
+  ci_fn_optimizer:
+    type: muon
+    consistent_rms: 0.2
+    grad_clip_norm: 1
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+    impl: stacked
+  components_optimizer:
+    type: muon
+    consistent_rms: 0.2
+    grad_clip_norm: 1
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+    impl: stacked
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 0
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - frequency:
+      coeff: 5.0e-06
+      reference_token_count: 32768
+    coeff: 1.0e-05
+    type: SmoothL0ImportanceMinimalityLoss
+    gamma:
+      start_val: 1.0
+      fn_type: linear
+      final_val_frac: 0.01
+      warmup_pct: 0.0
+  - coeff: 1.0
+    residual_mse_coeff: 5.0
+    adv_fraction:
+      start_val: 0.05
+      fn_type: constant
+      final_val_frac: 1.0
+      warmup_pct: 0.0
+    n_warmup_steps: 0
+    routing:
+      type: uniform_k_subset
+    optimizer:
+      beta1: 0.01
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        final_val_frac: 1.0
+        fn_type: constant
+        start_val: 0.01
+        warmup_pct: 0.1
+      type: adam
+    scope:
+      type: bsc
+    type: MergedStochasticSubsetPPGDReconLoss
+  - coeff: 100000000.0
+    type: FaithfulnessLoss
+  seed: 0
+  steps: 40
+runtime:
+  sharding: zero1
+  dp: 32
+  tp: 1
+  remat_recon_forwards: true
+  remat_ci_fn: true
+  gpus_per_node: 8
+  launch_env:
+    profile:
+      time_steps: true
+      no_checkpoint: true
+target:
+  weights_dtype: bfloat16
+  spec:
+    kind: hf
+    model_class: transformers.LlamaForCausalLM
+    model_name: meta-llama/Llama-3.1-8B
+wandb:
+  entity: null
+  project: param-decomp-llama
+  group: task570-batch-scaling
+  tags:
+  - task570
+  - adversary
+  - b32
+  - dp32
+  - nwarmup0
