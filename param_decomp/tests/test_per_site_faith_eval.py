@@ -11,13 +11,13 @@ import jax.numpy as jnp
 from param_decomp.components import init_decomp_vu
 from param_decomp.losses import faithfulness_loss
 from param_decomp.per_site_faith_eval import make_per_site_faith_step, per_site_faith_scalars
-from param_decomp.targets.llama8b import llama_site_specs, mlp_family_site_cs
+from param_decomp.targets.glu_transformer import glu_site_specs, mlp_family_site_cs
 from param_decomp.tests.test_llama8b import _tiny_cfg, _tiny_decomposed_lm
 
 
 def _tiny_lm_and_vu():
     cfg = _tiny_cfg()
-    sites = llama_site_specs(cfg, mlp_family_site_cs(4, 5, 8))
+    sites = glu_site_specs(cfg, mlp_family_site_cs(4, 5, 8))
     lm = _tiny_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_decomp_vu(sites, jax.random.PRNGKey(1))
     return lm, vu
