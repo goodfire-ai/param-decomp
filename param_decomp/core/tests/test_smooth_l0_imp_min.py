@@ -56,7 +56,7 @@ def test_terms_match_manual_per_site_structure():
     gamma = 0.1
     n_positions = 2  # both sites have 2 rows; a' = B·T reproduces the old `log2(1 + sum)`
     lp, freq = smooth_l0_importance_minimality_terms(
-        ci, jnp.asarray(gamma), reference_token_count=n_positions
+        ci, jnp.asarray(gamma), reference_token_count=n_positions, normalize_at_one=False
     )
 
     exp_lp = jnp.zeros(())
@@ -88,6 +88,23 @@ def test_anneal_and_dispatch():
     ci = {"a": jnp.array([[0.0, 0.5, 1.0], [0.2, 0.0, 0.9]])}
     param = annealed_imp_min_param(jnp.asarray(float(last)), total, cfg)
     via_dispatch = imp_min_terms(ci, cfg, param)
-    direct = smooth_l0_importance_minimality_terms(ci, param, reference_token_count=64)
+    direct = smooth_l0_importance_minimality_terms(
+        ci, param, reference_token_count=64, normalize_at_one=False
+    )
     assert jnp.allclose(via_dispatch[0], direct[0])
     assert jnp.allclose(via_dispatch[1], direct[1])
+
+
+def test_normalize_at_one_fixes_saturated_contribution():
+    """`normalize_at_one` makes a fully-on component contribute exactly 1 at any gamma, and
+    scales the whole `lp` by `(1 + gamma^2)` relative to the unnormalized penalty."""
+    ci = {"a": jnp.array([[1.0, 1.0]])}  # both components fully on
+    for gamma in (jnp.asarray(1.0), jnp.asarray(0.1)):
+        lp_norm, _ = smooth_l0_importance_minimality_terms(
+            ci, gamma, reference_token_count=None, normalize_at_one=True
+        )
+        lp_raw, _ = smooth_l0_importance_minimality_terms(
+            ci, gamma, reference_token_count=None, normalize_at_one=False
+        )
+        assert jnp.allclose(lp_norm, 2.0)  # two components, each exactly 1
+        assert jnp.allclose(lp_norm, lp_raw * (1.0 + gamma**2))

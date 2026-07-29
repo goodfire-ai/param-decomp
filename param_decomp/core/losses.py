@@ -128,12 +128,20 @@ def smooth_l0_importance_minimality_terms(
     ci_upper: dict[str, Float[Array, "*leading _"]],
     gamma: Float[Array, ""],
     reference_token_count: int | None,
+    normalize_at_one: bool,
 ) -> tuple[Float[Array, ""], Float[Array, ""]]:
     """Geman–McClure smooth-L0 imp-min terms: per-value penalty `c^2 / (c^2 + gamma^2)`.
     Flat at the origin (`phi'(0)=0`) and bounded (`|phi'| <= 0.65/gamma`) — no singularity,
-    no `eps` floor. Approaches the true `L_0` count as `gamma -> 0`."""
+    no `eps` floor. Approaches the true `L_0` count as `gamma -> 0`. `normalize_at_one`
+    switches to `(1 + gamma^2) c^2 / (c^2 + gamma^2)`, so a fully-on component (`c = 1`)
+    always contributes exactly 1."""
     gamma_sq = gamma * gamma
-    return _imp_min_terms(ci_upper, lambda ci: ci**2 / (ci**2 + gamma_sq), reference_token_count)
+    per_value_penalty = (
+        (lambda ci: (1.0 + gamma_sq) * ci**2 / (ci**2 + gamma_sq))
+        if normalize_at_one
+        else (lambda ci: ci**2 / (ci**2 + gamma_sq))
+    )
+    return _imp_min_terms(ci_upper, per_value_penalty, reference_token_count)
 
 
 def annealed_imp_min_param(
@@ -162,4 +170,6 @@ def imp_min_terms(
         case ImportanceMinimalityLossConfig():
             return importance_minimality_terms(ci_upper, annealed_param, cfg.eps, ref)
         case SmoothL0ImportanceMinimalityLossConfig():
-            return smooth_l0_importance_minimality_terms(ci_upper, annealed_param, ref)
+            return smooth_l0_importance_minimality_terms(
+                ci_upper, annealed_param, ref, cfg.normalize_at_one
+            )

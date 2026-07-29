@@ -151,11 +151,16 @@ class SmoothL0ImportanceMinimalityLossConfig(LossMetricConfig):
     `gamma` is the width's full schedule (SPEC S9′); annealing it down (e.g.
     `fn_type=linear, final_val_frac < 1`) sharpens the count. Warmup is refused where
     the term is built.
+
+    With `normalize_at_one`, `phi` is rescaled by `(1 + gamma^2)` so a fully-on component
+    (`c = 1`) contributes exactly 1 regardless of `gamma`. Otherwise `phi(1) = 1/(1+gamma^2)`
+    grows as `gamma` anneals, silently ramping the effective `coeff` on saturated components.
     """
 
     type: Literal["SmoothL0ImportanceMinimalityLoss"] = "SmoothL0ImportanceMinimalityLoss"
     gamma: ScheduleConfig
     frequency: FrequencyMinimalityConfig | None = None
+    normalize_at_one: bool = False
 
 
 # The two imp-min penalties share the `coeff` + optional `frequency` surface and the
