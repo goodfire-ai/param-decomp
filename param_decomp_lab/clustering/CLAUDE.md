@@ -99,41 +99,6 @@ Computes pairwise distances between clustering runs in an ensemble:
 - Supports multiple distance methods: `perm_invariant_hamming`, `matching_dist`
 - Runs in parallel using multiprocessing
 
-## Key Types
-
-### Configs
-
-```python
-ClusteringPipelineConfig  # Pipeline settings (n_runs, distances_methods, SLURM config)
-ClusteringRunConfig       # Single run settings (model_path, batch_size, n_tokens, merge_config)
-MergeConfig               # Merge algorithm params (alpha, iters, activation_threshold, filter_dead_stat)
-```
-
-### Data Structures
-
-```python
-MergeHistory              # Full merge history: group assignments at each iteration
-MergeHistoryEnsemble      # Collection of histories for distance analysis
-GroupMerge                # Current group assignments (component -> group mapping)
-```
-
-### Type Aliases (`types.py`)
-
-```python
-ActivationsTensor         # Float[Tensor, "samples n_components"]
-ClusterCoactivationShaped # Float[Tensor, "k_groups k_groups"]
-MergesArray               # Int[np.ndarray, "n_ens n_iters n_components"]
-DistancesArray            # Float[np.ndarray, "n_iters n_ens n_ens"]
-```
-
-## Math Submodule (`math/`)
-
-- `merge_matrix.py` - `GroupMerge` class for tracking group assignments
-- `merge_distances.py` - Distance computation between clustering results
-- `perm_invariant_hamming.py` - Permutation-invariant Hamming distance
-- `matching_dist.py` - Optimal matching distance via Hungarian algorithm
-- `merge_pair_samplers.py` - Strategies for selecting which pair to merge
-
 ## Utility Scripts
 
 **`get_cluster_mapping.py`**: Extracts cluster assignments at a specific iteration from a clustering run, outputs JSON mapping component labels to cluster indices (singletons mapped to `null`).

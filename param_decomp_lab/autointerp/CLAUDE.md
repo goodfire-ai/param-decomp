@@ -86,9 +86,3 @@ Each strategy config type has a corresponding prompt implementation:
 - `interpret_component()` interprets a single component
 - `run_interpret()` orchestrates batch interpretation with resume support
 
-## Key Types (`schemas.py`)
-
-```python
-InterpretationResult  # component_key + label + reasoning + raw_response + prompt
-ArchitectureInfo      # Model architecture context for prompts
-```

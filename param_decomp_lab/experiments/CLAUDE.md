@@ -7,21 +7,6 @@ There is no central registry — each `run.py` declares its own `<Name>Experimen
 + build functions + `Saved<Name>Run` reload class, and post-processing callers import
 the concrete reload class directly.
 
-## Layout
-
-```
-experiments/
-├── utils.py                 # ExperimentConfig[T,D] generic + EvalConfig + WandbConfig
-│                            # + init_pd_run + EXPERIMENT_CONFIG_FILENAME
-├── tms/run.py
-├── resid_mlp/run.py
-└── lm/
-    ├── run.py
-    ├── layerwise.py         # split LM YAML into per-matrix configs + SLURM-array submit
-    ├── data.py
-    └── pretrain/            # see lm/pretrain/CLAUDE.md
-```
-
 ## YAML schema
 
 One validated pydantic tree (extra keys raise):

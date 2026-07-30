@@ -85,22 +85,6 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
   `param_decomp_lab/eval_metrics/CLAUDE.md` for the eval-metric wiring
   (user-extensible).
 
-## Where things live
-
-- `param_decomp/` — core library (see [Public API](#public-api)). Module docstrings
-  describe each file.
-- `param_decomp/metrics/` — loss `Metric` classes and dispatch.
-- `param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py` — composition roots; each
-  parses a YAML, builds objects, runs a `Trainer`.
-- `param_decomp_lab/{harvest,autointerp,clustering,dataset_attributions,graph_interp,investigate,app}/`
-  — post-pipeline + app, each with its own CLAUDE.md.
-- `param_decomp_lab/postprocess/` — orchestrates the post-pipeline stages.
-- `param_decomp_lab/eval_metrics/` — batteries-included eval-metric set.
-- `param_decomp_lab/infra/` — settings, paths, slurm, ddp_launch (single-/multi-node
-  torchrun wrapper), wandb, sqlite, git, run_files, markdown, pydantic helpers.
-- `param_decomp_lab/{seed.py, distributed.py, batch_and_loss_fns.py, component_model_io.py, run_sink.py, run_artifacts.py}`
-  — lab-side helpers that aren't big enough to warrant their own subdir.
-
 ## Module pointers
 
 | Module | CLAUDE.md | What it covers |
@@ -156,45 +140,6 @@ populated by their respective pipelines.
 `PARAM_DECOMP_OUT_DIR` is `/mnt/polished-lake/artifacts/mechanisms/param-decomp/` on
 cluster, `~/param_decomp_out/` off cluster. Defined in
 `param_decomp_lab/infra/settings.py`.
-
-## Development commands
-
-| Command | Purpose |
-|---|---|
-| `make install-dev` | Install all workspace packages + dev deps + pre-commit |
-| `make install` | Core only |
-| `make install-lab` | Core + lab, no dev deps |
-| `make check` | basedpyright + ruff lint + format |
-| `make type` | basedpyright |
-| `make format` | ruff lint + format |
-| `make test` | Tests excluding slow |
-| `make test-all` | All tests |
-| `make app` | Launch the PD app (backend + frontend) |
-
-Run a single test: `python -m pytest path/to/test_file.py::test_name`.
-
-## CLI entry points
-
-All declared in `param_decomp_lab/pyproject.toml`.
-
-| Command | Entry point | Purpose |
-|---|---|---|
-| `pd-tms` | `experiments/tms/run.py` | Run TMS experiment from a YAML |
-| `pd-resid-mlp` | `experiments/resid_mlp/run.py` | Run ResidMLP from a YAML |
-| `pd-lm` | `experiments/lm/run.py` | Run LM from a YAML |
-| `pd-lm-layerwise` | `experiments/lm/layerwise.py` | Split an LM YAML into per-matrix configs, submit as a SLURM array |
-| `pd-pretrain` | `experiments/lm/pretrain/cli.py` | Pretrain target models |
-| `pd-harvest` | `harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
-| `pd-autointerp` | `autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
-| `pd-attributions` | `dataset_attributions/scripts/run_slurm_cli.py` | Submit dataset-attribution SLURM job |
-| `pd-graph-interp` | `graph_interp/scripts/run_slurm_cli.py` | Submit graph-interp SLURM job |
-| `pd-postprocess` | `postprocess/cli.py` | Unified postprocessing pipeline |
-| `pd-clustering` | `clustering/scripts/run_pipeline.py` | Clustering ensemble pipeline |
-| `pd-cluster-harvest` | `clustering/scripts/run_harvest.py` | Harvest activations → membership snapshot |
-| `pd-cluster-merge` | `clustering/scripts/run_merge.py` | Merge from snapshot (CPU only) |
-| `pd-intruder` | `harvest/scripts/run_intruder_slurm_cli.py` | Submit intruder eval job |
-| `pd-investigate` | `investigate/scripts/run_slurm_cli.py` | Submit agent-investigation job |
-| `pd-index` | `scripts/index_runs.py` | Scan the runs dir into a TSV index (groups by `label`) |
 
 All `pd-*` run commands accept `--group <id>` (wandb group field, used for UI
 collapsing) and `--tags a,b,c` (wandb tags). Both no-op when `wandb:` is omitted from

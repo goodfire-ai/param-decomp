@@ -23,16 +23,6 @@ pd-pretrain --config_path ... --n_gpus 4
 
 ```
 
-## Available Models
-
-| Model Type | Description |
-|------------|-------------|
-| `GPT2` | Full GPT-2 implementation |
-| `GPT2Simple` | Simplified GPT-2 |
-| `Llama` | Full Llama implementation |
-| `LlamaSimple` | Simplified Llama (no QKV merging) |
-| `LlamaSimpleMLP` | Llama MLP-only (primary decomposition target) |
-
 ## Tokenizers
 
 - **SimpleStories**: `SimpleStories/test-SimpleStories-gpt2-1.25M` (vocab size: 4019)
@@ -45,14 +35,6 @@ split into input `[:, :-1]` and target `[:, 1:]` for next-token prediction, so t
 token provides room for label indexing. For example, if the model has `block_size: 512`,
 the data config should have `max_seq_len: 513`. This is enforced by an assertion in
 `train.py`.
-
-## Key Files
-
-- `train.py` - Main training loop with DDP support
-- `run_info.py` - Load trained models from W&B or local paths
-- `models/` - Model implementations
-- `configs/` - Training configuration YAML files
-- `cli.py` - CLI entry point + SLURM submission + local run logic
 
 ## Loading Trained Models
 

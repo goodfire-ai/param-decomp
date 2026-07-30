@@ -11,21 +11,6 @@ pd-investigate <wandb_path> "What circuit handles verb agreement?" --max_turns 3
 
 For parallel investigations, run the command multiple times with different prompts.
 
-## Architecture
-
-```
-param_decomp_lab/investigate/
-├── __init__.py           # Public exports
-├── CLAUDE.md             # This file
-├── schemas.py            # Pydantic models for outputs (BehaviorExplanation, InvestigationEvent)
-├── agent_prompt.py       # System prompt template with model info injection
-└── scripts/
-    ├── __init__.py
-    ├── run_slurm_cli.py  # CLI entry point (pd-investigate)
-    ├── run_slurm.py      # SLURM submission logic
-    └── run_agent.py      # Worker script (runs in SLURM job)
-```
-
 ## How It Works
 
 1. `pd-investigate` creates output dir, metadata, git snapshot, and submits a single SLURM job
@@ -89,29 +74,3 @@ The backend runs with `PARAM_DECOMP_INVESTIGATION_DIR` set to the investigation 
 - Database location: `<dir>/app.db`
 - Events log: `<dir>/events.jsonl`
 - Research log: `<dir>/research_log.md`
-
-## Configuration
-
-CLI arguments:
-- `wandb_path` — Required. WandB run path for the PD decomposition.
-- `prompt` — Required. Research question or investigation directive.
-- `--context_length` — Token context length (default: 128)
-- `--max_turns` — Max Claude turns (default: 50, prevents runaway)
-- `--time` — Job time limit (default: 8:00:00)
-- `--job_suffix` — Optional suffix for job names
-
-## Monitoring
-
-```bash
-# Watch research log
-tail -f PARAM_DECOMP_OUT_DIR/investigations/<inv_id>/research_log.md
-
-# Watch events
-tail -f PARAM_DECOMP_OUT_DIR/investigations/<inv_id>/events.jsonl
-
-# View explanations
-cat PARAM_DECOMP_OUT_DIR/investigations/<inv_id>/explanations.jsonl | jq .
-
-# Check SLURM job status
-squeue --me
-```

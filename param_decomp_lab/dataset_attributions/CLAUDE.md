@@ -94,13 +94,6 @@ Accumulates attributions using gradient × activation. Uses **concrete module pa
 
 Orchestrates the run: loads model, builds gradient connectivity, runs batches, translates concrete→canonical at storage boundary via `topology.target_to_canon()`.
 
-### Scripts
-
-- `scripts/run_worker.py` — worker entrypoint (single GPU)
-- `scripts/run_merge.py` — merge entrypoint (CPU only, needs ~200G RAM)
-- `scripts/run_slurm.py` — SLURM launcher (array + merge jobs)
-- `scripts/run_slurm_cli.py` — CLI wrapper for `pd-attributions`
-
 ### Config (`config.py`)
 
 - `DatasetAttributionConfig`: n_batches, batch_size, ci_threshold

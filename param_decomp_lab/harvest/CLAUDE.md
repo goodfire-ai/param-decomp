@@ -115,14 +115,6 @@ Uses WAL mode for concurrent reads. Serialization via `orjson`.
 
 `HarvestRepo` provides read-only access to all harvest data for a run. Automatically resolves the latest sub-run directory (by lexicographic sort of `h-YYYYMMDD_HHMMSS` names). Falls back to legacy layout if no sub-runs exist. Used by the app backend.
 
-## Key Types (`schemas.py`)
-
-```python
-ActivationExample     # Token window + CI values around a firing
-ComponentData         # All harvested info for one component
-ComponentTokenPMI     # Top/bottom tokens by PMI
-```
-
 ## Analysis (`analysis.py`)
 
 Query functions for exploring harvested data:
