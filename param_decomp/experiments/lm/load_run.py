@@ -7,7 +7,7 @@ target + `DecomposedModel` from the pinned config, restores the checkpoint's
 `decomposition` item (the trained V/U + ci_fn — optimizer/adversary state is training's
 business and is never touched), and exposes the pure forward a consumer needs:
 
-    run = open_jax_run(run_dir)                 # latest checkpoint
+    run = open_jax_run(run_dir, data_root=data_root)   # latest checkpoint
     fwd = run.forward(token_ids)                # one frozen, forward-only pass
     fwd.lower_leaky_ci[site]                    # (B, T, C) leaky CI per site
     fwd.component_acts[site]                    # (B, T, C) ‖U_c‖ · (x @ V) per site
@@ -54,7 +54,6 @@ from param_decomp.experiments.lm.config import (
 )
 from param_decomp.experiments.lm.resolved import LMRun, weights_jnp_dtype
 from param_decomp.infra import pretrain_cache
-from param_decomp.infra.paths import DEFAULT_DATA_ROOT
 from param_decomp.targets import llama_simple_mlp
 from param_decomp.targets.glu_transformer import glu_site_specs
 
@@ -190,9 +189,7 @@ def _restore_decomposition(
     return decomposition, resolved_step
 
 
-def open_jax_run(
-    run_dir: Path, step: int | None = None, *, data_root: Path = DEFAULT_DATA_ROOT
-) -> LoadedJaxRun:
+def open_jax_run(run_dir: Path, step: int | None = None, *, data_root: Path) -> LoadedJaxRun:
     """Open the run at `run_dir`; restore checkpoint `step` (latest if None). Restores
     only the trained decomposition (see `_restore_decomposition`). `data_root` resolves a
     `kind: pretrained` target's cache (`<data_root>/pretrain_cache/...`)."""
@@ -263,7 +260,7 @@ class RunMetadata:
     layer_activation_sizes: list[tuple[str, int]]
 
 
-def run_metadata(run_dir: Path, *, data_root: Path = DEFAULT_DATA_ROOT) -> RunMetadata:
+def run_metadata(run_dir: Path, *, data_root: Path) -> RunMetadata:
     """Target topology for `run_dir`, derived from the pinned config (+ the SimpleMLP
     pretrain cache's `model_config.yaml` for `n_layer`/`vocab_size`). No orbax restore."""
     cfg, _ = load_config(run_dir / LAUNCH_CONFIG_FILENAME, run_dir.name, data_root)

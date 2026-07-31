@@ -46,7 +46,6 @@ from param_decomp.experiments.lm.load_run import build_target
 from param_decomp.experiments.lm.resolved import LMRun
 from param_decomp.experiments.lm.runtime import RuntimeConfig
 from param_decomp.infra.dataset_store import read_dataset_meta
-from param_decomp.infra.paths import DEFAULT_DATA_ROOT
 from param_decomp.infra.run_files import generate_run_id
 from param_decomp.pretrain.batch_data import BatchSchedule, ShardServer, scan_shards
 
@@ -198,7 +197,7 @@ def _pin_config_copy(run_dir: Path, name: str, source: Path) -> None:
         copy.write_text(source.read_text())
 
 
-def main(config: Path, run_id: str | None = None, data_root: Path = DEFAULT_DATA_ROOT) -> None:
+def main(config: Path, data_root: Path, run_id: str | None = None) -> None:
     config = Path(config)
     data_root = Path(data_root)
     if run_id is None:

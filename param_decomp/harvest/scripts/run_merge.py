@@ -13,10 +13,9 @@ from param_decomp.core.log import logger
 from param_decomp.harvest.config import HarvestConfig
 from param_decomp.harvest.pipeline import merge_harvest
 from param_decomp.harvest.schemas import get_harvest_subrun_dir
-from param_decomp.infra.paths import DEFAULT_DATA_ROOT
 
 
-def main(subrun_id: str, config_json: dict[str, Any], data_root: Path = DEFAULT_DATA_ROOT) -> None:
+def main(subrun_id: str, config_json: dict[str, Any], data_root: Path) -> None:
     assert isinstance(config_json, dict), f"Expected dict from fire, got {type(config_json)}"
     config = HarvestConfig.model_validate(config_json)
     output_dir = get_harvest_subrun_dir(Path(data_root), config.method_config.id, subrun_id)

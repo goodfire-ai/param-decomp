@@ -36,7 +36,6 @@ from param_decomp.clustering.types import (
     ComponentLabels,
 )
 from param_decomp.core.log import logger
-from param_decomp.infra.paths import DEFAULT_DATA_ROOT
 
 
 def _make_iteration_plot_callback(plot_dir: Path, plot_every: int) -> LogCallback:
@@ -159,7 +158,7 @@ def cli() -> None:
     parser.add_argument("merge_config", type=Path)
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
+    parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--plot", action="store_true", help="emit per-run diagnostic plots")
     args = parser.parse_args()
     run_id = args.run_id or new_run_id()

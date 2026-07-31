@@ -11,7 +11,8 @@ from param_decomp.experiments.lm.runtime import RuntimeConfig
 
 def main() -> None:
     assert len(sys.argv) >= 2 and not sys.argv[1].startswith("-"), (
-        "usage: python -m param_decomp.experiments.lm.run <config.yaml> [--run-id ...]"
+        "usage: python -m param_decomp.experiments.lm.run <config.yaml>"
+        " --data-root <path> [--run-id ...]"
     )
     raw = yaml.safe_load(Path(sys.argv[1]).read_text())
     runtime = RuntimeConfig.model_validate(raw["runtime"])

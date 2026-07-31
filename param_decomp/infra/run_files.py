@@ -10,7 +10,7 @@ import wandb
 from wandb.apis.public import Run as WandbRun
 
 from param_decomp.core.log import logger
-from param_decomp.infra.paths import DEFAULT_DATA_ROOT, ModelPath
+from param_decomp.infra.paths import ModelPath
 from param_decomp.infra.wandb import (
     download_wandb_file,
     fetch_latest_checkpoint_name,
@@ -63,7 +63,7 @@ def _wandb_cache_dir(data_root: Path, run_id: str) -> Path:
 def resolve_run_files(
     path: ModelPath,
     *,
-    data_root: Path = DEFAULT_DATA_ROOT,
+    data_root: Path,
     config_filename: str,
     checkpoint_filename: str | None = None,
     checkpoint_prefix: str | None = None,
@@ -124,9 +124,7 @@ def resolve_run_files(
     )
 
 
-def resolve_config_path(
-    path: ModelPath, *, data_root: Path = DEFAULT_DATA_ROOT, config_filename: str
-) -> Path:
+def resolve_config_path(path: ModelPath, *, data_root: Path, config_filename: str) -> Path:
     """Locate just a run's config file, without resolving or downloading checkpoints."""
     try:
         entity, project, run_id = parse_wandb_run_path(str(path))

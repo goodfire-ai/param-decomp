@@ -37,7 +37,6 @@ from typing import Any, Literal, Protocol, get_args
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax.ad_checkpoint import checkpoint_name
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
@@ -1151,8 +1150,15 @@ class HFWeights:
     def get(self, key: str) -> Array:
         fname = self._key_to_file[key]
         if fname not in self._open:
-            self._open[fname] = safe_open(str(self._snapshot / fname), framework="numpy")
-        return jnp.asarray(np.array(self._open[fname].get_tensor(key)), dtype=self._dtype)
+            # framework="flax", not "numpy": the numpy backend resolves dtypes by name
+            # through numpy, where bfloat16 exists only if ml_dtypes registration has
+            # run as an import side effect — flax requires jax, which guarantees it.
+            self._open[fname] = safe_open(str(self._snapshot / fname), framework="flax")
+        # Stage on host CPU: get_tensor materializes on the JAX default device, and a
+        # multi-GB checkpoint must not pass through a single accelerator before its
+        # placement onto the mesh (`place_via_shardings` serves shards from host).
+        with jax.default_device(jax.devices("cpu")[0]):
+            return jnp.asarray(self._open[fname].get_tensor(key), dtype=self._dtype)
 
 
 AttnLoader = Callable[[HFWeights, int], FrozenAttn]

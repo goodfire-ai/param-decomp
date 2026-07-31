@@ -112,7 +112,7 @@ python -m param_decomp.harvest.scripts.run_intruder <decomposition_id> \
 The only worker. Opens a JAX run, runs its frozen forward, accumulates into the NumPy
 `Harvester`. Args:
 - `--run_dir`: the JAX run dir (`runs/<run_id>`) (required)
-- `--data_root`: the output root the harvest writes under (default `./out`)
+- `--data_root`: the required output root the harvest writes under
 - `--n_batches`, `--batch_size`, `--activation_threshold`
 - `--rank R --world_size N`: serve `process_index=R`'s slice of every global batch; save
   to `worker_states/worker_<R>.npz`. Omit both for a single-process run that writes the

@@ -14,7 +14,8 @@ every CLI takes a `--harvest_subrun_id`.
 # One process, inline JSON config
 python -m param_decomp.autointerp.scripts.run_interpret <decomposition_id> \
     --config_json '{...AutointerpConfig...}' \
-    --harvest_subrun_id h-YYYYMMDD_HHMMSS
+    --harvest_subrun_id h-YYYYMMDD_HHMMSS \
+    --data_root <data-root>
 ```
 
 `<decomposition_id>` is the decomposition's identifier — for PD runs, the wandb path

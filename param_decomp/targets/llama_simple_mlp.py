@@ -32,7 +32,6 @@ from typing import Literal, get_args
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import numpy as np
 import yaml
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
@@ -527,8 +526,14 @@ key — the head is tied to `wte.weight`."""
 
 
 def _checkpoint_weight_getter(cache_dir: Path, dtype: DTypeLike) -> WeightGetter:
-    handle = safe_open(str(checkpoint_safetensors_path(cache_dir)), framework="numpy")
-    return lambda key: jnp.asarray(np.array(handle.get_tensor(key)), dtype=dtype)  # type: ignore[attr-defined]
+    # framework="flax" + host staging: see `glu_transformer.HFWeights.get`.
+    handle = safe_open(str(checkpoint_safetensors_path(cache_dir)), framework="flax")
+
+    def get(key: str) -> Array:
+        with jax.default_device(jax.devices("cpu")[0]):
+            return jnp.asarray(handle.get_tensor(key), dtype=dtype)
+
+    return get
 
 
 def _layer_from_weights(

@@ -95,11 +95,11 @@ submission or code-shipping, no cluster paths, mounts, partitions, or team names
 Deployment fit belongs to whatever launcher invokes the library. A launcher composes
 library entrypoints and may import the library; the library may never import a launcher
 (enforced fail-closed by `param_decomp/core/tests/test_runtime_standalone.py`). The
-library reads NO ambient environment for paths: output roots are explicit parameters
-(default `./out`) threaded from entry points, so a launcher passes its own resolved root
-as an argument. Credentials and third-party-tool conventions (`WANDB_*`, `*_API_KEY`,
-`HF_*`, `CUDA_*`) may follow their ecosystem's own env contract, resolved at entry
-points. Everything else takes typed values. A launcher is not privileged: if it needs
+library reads NO ambient environment for paths: output roots are explicit, required
+parameters threaded from entry points, so a launcher passes its own resolved root as an
+argument. Credentials and third-party-tool conventions (`WANDB_*`, `*_API_KEY`, `HF_*`,
+`CUDA_*`) may follow their ecosystem's own env contract, resolved at entry points.
+Everything else takes typed values. A launcher is not privileged: if it needs
 something the library doesn't publicly expose, that is a library bug — never a reason
 for a private hook. A SLURM *mention* in library prose is legitimate only when it
 documents a generic contract (e.g. SIGTERM→save semantics), never a dependency.
@@ -257,12 +257,12 @@ Both training output and the W&B download cache write here. Per-stage subdirs ar
 populated by their respective pipelines.
 
 `data_root` is the ONE root of the library's local world — runs (outputs), the dataset
-store, the pretrain and compilation caches all hang under it. It is an explicit
-parameter, never an env var: every entry edge (composition roots, worker mains, consumer
-functions like `open_jax_run`) takes it with the default `./out`
-(`param_decomp.infra.paths.DEFAULT_DATA_ROOT`, cwd-relative). A launcher with its own
-notion of shared storage passes that root in explicitly — the `--data_root` /
-`--data-root` flag, or the pretrainer's stamped `data_root`.
+store, the pretrain and compilation caches all hang under it. It is an explicit,
+required parameter, never an env var and never defaulted: every entry edge (composition
+roots, worker mains, consumer functions like `open_jax_run`) refuses to run without it,
+so a deployment cannot silently write into a cwd-relative directory. A launcher passes
+its resolved root explicitly — the `--data_root` / `--data-root` flag, or the
+pretrainer's stamped `data_root`.
 
 ## Development commands
 

@@ -27,6 +27,7 @@ nor the toy binder (positionless) covers.
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 import pytest
 from jax import random
@@ -49,7 +50,6 @@ from param_decomp.core.model import DecomposedModel, run_stochastic_masked_outpu
 from param_decomp.core.objective import build_objective
 from param_decomp.core.recon_eval import FreshPGDReconEval, make_fresh_pgd_eval_step
 from param_decomp.core.schedule import Knot, ScheduleConfig
-from param_decomp.core.sharding import hsdp_mesh
 from param_decomp.core.train import Decomposition, TrainingItem, TrainState, make_train_step
 
 B, T, D, C = 2, 3, 8, 5
@@ -218,6 +218,11 @@ def _synthetic_inputs(key: jax.Array) -> dict[str, Array]:
     }
 
 
+def _one_device_mesh() -> jax.sharding.Mesh:
+    devices = np.asarray(jax.devices()[:1]).reshape(1, 1, 1)
+    return jax.sharding.Mesh(devices, ("replicate", "fsdp", "tp"))
+
+
 def test_dict_input_tuple_output_and_geometric_loss_flow():
     """The model consumes the loader's native DICT batch (not token ids);
     `clean_output`/`masked_output` emit a tuple; `recon_loss_fn` (MSE) contracts it."""
@@ -266,9 +271,9 @@ def test_train_step_runs_through_generic_target(with_mesh: bool):
     """End-to-end: the real `make_train_step` drives the synthetic dict-in/tuple-out/MSE
     target for two steps; the loss stays finite and the trainable V/U actually move.
 
-    Run with AND without a mesh: the sharding constraints are no-ops off-mesh, so a
-    meshless run cannot see whether the batch/output edges survive being sharded — which
-    is how an array-only `batch_sharded` passed CI while dying on every real run."""
+    Run meshless and with an explicit one-device mesh: only the latter exercises
+    `NamedSharding`, while pinning one device keeps this generic-I/O contract independent
+    of the ambient device count. Multi-device partitioning is tested separately."""
     key = random.PRNGKey(2)
     model = _synthetic_lm(key)
     components = _synthetic_vu(key)
@@ -297,7 +302,7 @@ def test_train_step_runs_through_generic_target(with_mesh: bool):
         total_steps=10,
         remat_recon_forwards=False,
         remat_ci_fn=False,
-        mesh=hsdp_mesh(gpus_per_node=1) if with_mesh else None,
+        mesh=_one_device_mesh() if with_mesh else None,
         compiler_options={},
     )
 

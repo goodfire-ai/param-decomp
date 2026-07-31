@@ -9,14 +9,13 @@ from param_decomp.harvest.config import IntruderEvalConfig
 from param_decomp.harvest.db import HarvestDB
 from param_decomp.harvest.intruder import run_intruder_scoring
 from param_decomp.harvest.repo import HarvestRepo
-from param_decomp.infra.paths import DEFAULT_DATA_ROOT
 
 
 def main(
     decomposition_id: str,
     config_json: dict[str, Any],
     harvest_subrun_id: str,
-    data_root: Path = DEFAULT_DATA_ROOT,
+    data_root: Path,
 ) -> None:
     assert isinstance(config_json, dict), f"Expected dict from fire, got {type(config_json)}"
     load_dotenv()

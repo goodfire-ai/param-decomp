@@ -4,7 +4,8 @@ Taken from https://docs.pytest.org/en/latest/example/simple.html.
 """
 
 import os
-from collections.abc import Iterable
+import sys
+from collections.abc import Iterable, Iterator
 from netrc import netrc
 from pathlib import Path
 from urllib.parse import urlparse
@@ -36,6 +37,24 @@ _worker_cache_dir = _cache_root / os.environ.get("PYTEST_XDIST_WORKER", "master"
 jax.config.update("jax_compilation_cache_dir", str(_worker_cache_dir))
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
 jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
+
+# Each live XLA CPU executable consumes several non-mergeable VMAs. A serial suite can
+# exhaust Linux's `vm.max_map_count`, whereupon XLA aborts instead of raising. Clear at
+# module boundaries once half full, leaving room for `test_checkpoint.py`'s ~19k mappings.
+_MAPPING_CEILING = (
+    int(Path("/proc/sys/vm/max_map_count").read_text()) if sys.platform == "linux" else None
+)
+
+
+def _mapping_count() -> int:
+    return Path("/proc/self/maps").read_bytes().count(b"\n")
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _bounded_jax_executable_mappings() -> Iterator[None]:
+    yield
+    if _MAPPING_CEILING is not None and _mapping_count() > _MAPPING_CEILING // 2:
+        jax.clear_caches()
 
 
 def pytest_addoption(parser: Parser) -> None:

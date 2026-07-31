@@ -8,16 +8,16 @@ that fails to parse as a wandb reference is treated as a repo-relative local pat
 """
 
 from pathlib import Path
-from typing import Annotated, Final
+from typing import Annotated
 
 from pydantic import BeforeValidator, PlainSerializer
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-"""The checkout this package runs from — a property of the install, not the environment."""
+"""The checkout this package runs from — a property of the install, not the environment.
 
-DEFAULT_DATA_ROOT: Final[Path] = Path("out")
-"""The entry-edge default for `data_root` parameters (cwd-relative `./out`). The library
-reads no ambient environment for paths: every deployment passes its real root explicitly."""
+`data_root` — the one root of the library's local world — is deliberately NOT declared
+here: the library reads no ambient environment for paths and ships no default root, so
+every entry edge requires its deployment to pass the real root explicitly."""
 
 
 def to_root_path(path: str | Path) -> Path:

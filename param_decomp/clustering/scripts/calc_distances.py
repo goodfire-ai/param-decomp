@@ -26,7 +26,6 @@ from param_decomp.clustering.paths import clustering_ensemble_dir, clustering_ru
 from param_decomp.clustering.plotting.merge import plot_dists_distribution
 from param_decomp.clustering.types import DistancesArray, DistancesMethod
 from param_decomp.core.log import logger
-from param_decomp.infra.paths import DEFAULT_DATA_ROOT
 
 
 def calc_distances(
@@ -112,7 +111,7 @@ def cli() -> None:
         choices=DistancesMethod.__args__,
         default="perm_invariant_hamming",
     )
-    parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
+    parser.add_argument("--data-root", type=Path, required=True)
     args = parser.parse_args()
     calc_distances(
         ensemble_id=args.ensemble_id,

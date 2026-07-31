@@ -28,15 +28,14 @@ from param_decomp.autointerp.subsets import (
 )
 from param_decomp.core.log import logger
 from param_decomp.harvest.repo import HarvestRepo
-from param_decomp.infra.paths import DEFAULT_DATA_ROOT
 
 
 def main(
     decomposition_id: str,
     config_json: dict[str, Any],
     harvest_subrun_id: str,
+    data_root: Path,
     autointerp_subrun_id: str | None = None,
-    data_root: Path = DEFAULT_DATA_ROOT,
 ) -> None:
     assert isinstance(config_json, dict), f"Expected dict from fire, got {type(config_json)}"
     interp_config = AutointerpConfig.model_validate(config_json)

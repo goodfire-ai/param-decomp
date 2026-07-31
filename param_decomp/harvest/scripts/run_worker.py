@@ -34,7 +34,6 @@ from param_decomp.harvest.config import HarvestConfig, ParamDecompHarvestConfig
 from param_decomp.harvest.repo import HarvestRepo
 from param_decomp.harvest.schemas import HarvestBatch, get_harvest_subrun_dir
 from param_decomp.infra.dataset_store import read_dataset_meta
-from param_decomp.infra.paths import DEFAULT_DATA_ROOT
 from param_decomp.pretrain.batch_data import BatchSchedule, ShardServer, scan_shards
 
 
@@ -139,7 +138,7 @@ def _activation_threshold(config: HarvestConfig) -> float:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--run_dir", type=Path, required=True)
-    ap.add_argument("--data_root", type=Path, default=DEFAULT_DATA_ROOT)
+    ap.add_argument("--data_root", type=Path, required=True)
     ap.add_argument("--step", type=int, default=None, help="checkpoint step (default: latest)")
     ap.add_argument("--n_batches", type=int, required=True)
     ap.add_argument(

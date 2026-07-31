@@ -27,7 +27,6 @@ from param_decomp.clustering.paths import clustering_harvest_dir, new_harvest_id
 from param_decomp.core.log import logger
 from param_decomp.experiments.lm.load_run import LoadedJaxRun, open_jax_run
 from param_decomp.infra.dataset_store import read_dataset_meta
-from param_decomp.infra.paths import DEFAULT_DATA_ROOT
 from param_decomp.pretrain.batch_data import BatchSchedule, ShardServer, scan_shards
 
 
@@ -149,7 +148,7 @@ def main() -> None:
         help="HarvestConfig JSON. If given, --run_dir/--n_tokens/etc. are ignored.",
     )
     ap.add_argument("--harvest_id", type=str, default=None, help="pre-assigned harvest id")
-    ap.add_argument("--data_root", type=Path, default=DEFAULT_DATA_ROOT)
+    ap.add_argument("--data_root", type=Path, required=True)
     ap.add_argument("--step", type=int, default=None, help="checkpoint step (default: latest)")
     ap.add_argument("--run_dir", type=Path, default=None)
     ap.add_argument("--n_tokens", type=int, default=None)

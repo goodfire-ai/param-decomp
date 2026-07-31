@@ -85,13 +85,23 @@ test-ci-lab-multidevice:
 	uv run pytest param_decomp/tests/ param_decomp/experiments/ --runslow --durations 10 --numprocesses $(NUM_PROCESSES) --dist worksteal
 	$(MAKE) test-multidevice
 
-# Tests needing >1 device (sharding / checkpoint topology). They hang at the default 1
-# device, so they're skipped in the 1-device passes and run here under SIMULATED CPU
-# devices (XLA_FLAGS). `make test-all` runs this automatically as a second pass; invoke it
-# directly only to run the subset alone (e.g. iterating on sharding/checkpoint).
+# Tests needing >1 device hang at the default 1, so run them under four simulated CPU
+# devices. On small runners, the checkpoint round-trip can starve XLA's CPU worker pool;
+# isolate it and retry only its SIGABRT, while every other failure remains immediate.
+MULTIDEVICE_DEADLOCK_TEST = param_decomp/core/tests/test_checkpoint_production_topology.py::test_sharded_roundtrip_persists_source_moments
+MULTIDEVICE_PYTEST = XLA_FLAGS="--xla_force_host_platform_device_count=4" uv run pytest
+MULTIDEVICE_ARGS = -m multidevice --runmultidevice --durations 10 --capture=tee-sys
+
 .PHONY: test-multidevice
 test-multidevice:
-	XLA_FLAGS="--xla_force_host_platform_device_count=4" uv run pytest $(TEST_PATHS) -m multidevice --runmultidevice --durations 10
+	$(MULTIDEVICE_PYTEST) $(TEST_PATHS) $(MULTIDEVICE_ARGS) --deselect=$(MULTIDEVICE_DEADLOCK_TEST)
+	@run() { $(MULTIDEVICE_PYTEST) $(MULTIDEVICE_DEADLOCK_TEST) $(MULTIDEVICE_ARGS); }; \
+	for attempt in 1 2 3; do \
+		set -x; run; rc=$$?; set +x; \
+		[ $$rc -ne 134 ] && exit $$rc; \
+		[ $$attempt -lt 3 ] && echo "test-multidevice: SIGABRT rc=134 (XLA rendezvous deadlock) -- retry $$attempt/2"; \
+	done; \
+	exit 134
 
 COVERAGE_DIR=docs/coverage
 

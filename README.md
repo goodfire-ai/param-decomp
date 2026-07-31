@@ -76,8 +76,8 @@ network access. `python -m param_decomp.pretrain.train` writes the same layout d
 when training a target locally.
 
 TMS and ResidualMLP run the same way — in-process module mains, on CPU:
-`uv run python -m param_decomp.experiments.tms.run <config.yaml>` (likewise
-`...experiments.resid_mlp.run`). The torch
+`uv run python -m param_decomp.experiments.tms.run <config.yaml> --data-root <data-root>`
+(likewise `...experiments.resid_mlp.run`). The torch
 trainer is preserved only at git tag `torch-oracle`; current training uses the JAX
 single-pool engine. See `param_decomp/core/SPEC.md` for its numerical contract and
 `param_decomp/experiments/CLAUDE.md` for the complete LM config schema.

@@ -50,7 +50,6 @@ from param_decomp.experiments.eval_config import EvalConfig
 from param_decomp.experiments.resid_mlp.config import ResidMLPExperimentConfig
 from param_decomp.experiments.toy_config import build_toy_ci_arch
 from param_decomp.experiments.toy_eval import ToyRun, make_toy_evaluation_operations
-from param_decomp.infra.paths import DEFAULT_DATA_ROOT
 from param_decomp.infra.run_files import generate_run_id
 from param_decomp.targets import resid_mlp
 
@@ -271,10 +270,10 @@ def run_resid_mlp_decomposition(
 
 def main(
     config: str,
+    data_root: Path,
     run_id: str | None = None,
     group: str | None = None,
     tags: str | tuple[str, ...] | None = None,
-    data_root: Path = DEFAULT_DATA_ROOT,
 ) -> None:
     schema_raw = yaml.safe_load(Path(config).read_text())
     data_root = Path(data_root)

@@ -49,15 +49,16 @@ N seeded harvests (1 GPU each)      run_worker --dataset_seed i
 for i in 0 1 2 3; do
   python -m param_decomp.clustering.scripts.run_worker \
       --run_dir runs/p-xxxxxxxx --n_tokens 50000 --batch_size 16 --n_tokens_per_seq 16 \
-      --dataset_seed $i --harvest_id ch-member$i
+      --dataset_seed $i --harvest_id ch-member$i --data_root <data-root>
   python -m param_decomp.clustering.scripts.run_merge \
-      <data-root>/clustering/harvests/ch-member$i merge_config.json --run-id c-member$i --seed $i
+      <data-root>/clustering/harvests/ch-member$i merge_config.json --run-id c-member$i --seed $i \
+      --data-root <data-root>
 done
 
 # Consensus over the member runs:
 python -m param_decomp.clustering.scripts.calc_distances --ensemble-id e-<id> \
     --clustering-run-ids c-member0,c-member1,c-member2,c-member3 \
-    --distances-method perm_invariant_hamming
+    --distances-method perm_invariant_hamming --data-root <data-root>
 ```
 
 `calc_distances` creates the ensemble dir and writes:
@@ -88,7 +89,7 @@ snapshot. `run_merge` reads it unchanged.
 
 ## Data Storage
 
-Stored under `<data_root>/clustering/` (`param_decomp/clustering/paths.py`; `data_root` is the workers' explicit `--data_root` / `--data-root` arg, default `./out`):
+Stored under `<data_root>/clustering/` (`param_decomp/clustering/paths.py`; `data_root` is the workers' explicit `--data_root` / `--data-root` arg):
 
 ```
 <data_root>/clustering/

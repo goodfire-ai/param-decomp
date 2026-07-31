@@ -39,7 +39,6 @@ from orbax.checkpoint.type_handlers import ArrayHandler, register_type_handler
 
 from param_decomp.core.sharding import hsdp_mesh, init_distributed
 from param_decomp.infra.dataset_store import resolve_dataset_ref
-from param_decomp.infra.paths import DEFAULT_DATA_ROOT
 from param_decomp.pretrain.batch_data import BatchSchedule, ShardServer, scan_shards
 from param_decomp.pretrain.cache import (
     cache_dir_for,
@@ -391,16 +390,14 @@ def main(config: Path) -> None:
 
 
 def _stamp_local_identity(cfg: PretrainConfig) -> PretrainConfig:
-    """A hand-run carries no launcher stamp: mint an ephemeral identity under the default
-    data root."""
+    """A hand-run carries no launcher stamp: mint an ephemeral run id. `data_root` has no
+    such fallback — the config must carry it, authored or launcher-stamped."""
     import secrets
 
-    return cfg.model_copy(
-        update={
-            "data_root": cfg.data_root or DEFAULT_DATA_ROOT,
-            "run_id": cfg.run_id or f"t-{secrets.token_hex(4)}",
-        }
+    assert cfg.data_root is not None, (
+        "config carries no data_root: author it in the YAML or launch via a stamping launcher"
     )
+    return cfg.model_copy(update={"run_id": cfg.run_id or f"t-{secrets.token_hex(4)}"})
 
 
 def _enable_compilation_cache(paths: PretrainRunPaths) -> None:

@@ -339,7 +339,7 @@ fully determine process bring-up — there is no launch field:
   up via `jax.distributed`'s own cluster auto-detection (`init_distributed` — the jax
   ecosystem's contract). Multiple processes on one node is deliberately unrepresentable.
 
-`python -m param_decomp.experiments.lm.run <config> [--data-root …]` runs HERE, in the
+`python -m param_decomp.experiments.lm.run <config> --data-root …` runs HERE, in the
 current allocation, minting and pinning its own identity when `--run-id` is absent. A
 launcher that wants to own the identity mints the `p-` run id itself, stages
 `<data_root>/runs/<id>/` with the pinned config, and passes `--run-id <id>`.

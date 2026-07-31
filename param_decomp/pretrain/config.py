@@ -100,7 +100,8 @@ class PretrainConfig(BaseConfig):
     @property
     def paths(self) -> PretrainRunPaths:
         assert self.data_root is not None and self.run_id is not None, (
-            "data_root / run_id are minted by the launcher; absent in a hand-authored config"
+            "run identity incomplete: data_root is authored or launcher-stamped,"
+            " run_id is minted at entry"
         )
         return PretrainRunPaths(data_root=self.data_root, run_id=self.run_id)
 
