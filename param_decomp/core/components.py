@@ -139,6 +139,49 @@ def init_stack_arrays(
     return stacked
 
 
+def init_stack_arrays_svd_null_tail(
+    sites: tuple[SiteSpec, ...], site_weights: dict[str, Array], key: Array
+) -> dict[VUShape, tuple[Array, Array]]:
+    """C-nested init: slots `[:r]` (r = min(d_in, d_out), static) carry the exact SVD
+    factorization of the site's frozen weight (`V@U == W.T` up to fp error; a zero singular
+    value yields a zero slot, so numerical rank needs no data-dependent slicing), slots
+    `[r:]` are exact nulls — U rows zero, V columns random and PREFIX-STABLE (column j is
+    keyed by its absolute index, so every C shares the same tail draw). `site_weights` is
+    keyed by site name in `weight_deltas` orientation, `[d_out, d_in]`."""
+    per_site: dict[str, tuple[Array, Array]] = {}
+    for site_idx, spec in enumerate(sites):
+        W = site_weights[spec.name].astype(jnp.float32)
+        assert W.shape == (spec.d_out, spec.d_in), (spec.name, W.shape)
+        r = min(spec.d_in, spec.d_out)
+        assert spec.C >= r, (
+            f"svd_null_tail needs C >= min(d_in, d_out) at every site: "
+            f"{spec.name} has C={spec.C} < {r}"
+        )
+        A, s, Bt = jnp.linalg.svd(W.T, full_matrices=False)  # W.T = A @ diag(s) @ Bt
+        sqrt_s = jnp.sqrt(s)
+        site_key = jax.random.fold_in(key, site_idx)
+        tail_cols = jax.vmap(
+            lambda j, sk=site_key, d=spec.d_in: jax.random.normal(jax.random.fold_in(sk, j), (d,))
+        )(jnp.arange(r, spec.C))
+        V = jnp.concatenate([A * sqrt_s, tail_cols.T * spec.d_in**-0.5], axis=1)
+        U = jnp.concatenate([sqrt_s[:, None] * Bt, jnp.zeros((spec.C - r, spec.d_out))], axis=0)
+        per_site[spec.name] = (V, U)
+    stacks = {
+        shape: (
+            jnp.stack([per_site[s.name][0] for s in specs]),
+            jnp.stack([per_site[s.name][1] for s in specs]),
+        )
+        for shape, specs in vu_shape_groups(sites).items()
+    }
+    return stacks
+
+
+def site_rank(spec: SiteSpec) -> int:
+    """The static SVD-slot count of `svd_null_tail` init: slots `[:site_rank]` start alive
+    (CI pinned 1), the rest start null (CI pinned 0)."""
+    return min(spec.d_in, spec.d_out)
+
+
 def component_stacks_from_sites(vu: dict[str, tuple[Array, Array]]) -> ComponentStacks:
     """Build the stacked `ComponentStacks` from a per-site `{name: (V, U)}` dict (site order =
     dict order). The explicit-arrays constructor for toys and tests; the trainer inits

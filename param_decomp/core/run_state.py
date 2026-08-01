@@ -8,6 +8,8 @@ optimizer-state structure.
 """
 
 from collections.abc import Callable
+from functools import partial
+from typing import Literal
 
 import equinox as eqx
 import jax
@@ -19,8 +21,12 @@ from jax.typing import ArrayLike
 from jaxtyping import Array, PRNGKeyArray
 
 from param_decomp.core.adversary import PersistentAdversary, init_sources_adam_state
-from param_decomp.core.ci_fn import ChunkwiseTransformerCIArch, CIFnArch
-from param_decomp.core.components import ComponentStacks
+from param_decomp.core.ci_fn import (
+    ChunkwiseTransformerCIArch,
+    CIFnArch,
+    pin_ci_head_null_tail,
+)
+from param_decomp.core.components import ComponentStacks, init_component_stacks
 from param_decomp.core.configs import (
     AdamPGDConfig,
     AdamWOptimizerConfig,
@@ -30,6 +36,7 @@ from param_decomp.core.configs import (
 from param_decomp.core.init_placed import (
     init_ci_fn_placed,
     init_component_stacks_placed,
+    init_component_stacks_svd_null_tail_placed,
     init_sources_sharded,
 )
 from param_decomp.core.losses import scheduled_value_traced
@@ -197,21 +204,39 @@ def build_optimizers(pd: PDConfig, ci_fn_arch: CIFnArch, mesh: Mesh | None):
     return opt_vu, opt_ci, (sched_vu, sched_ci)
 
 
+def _frozen_site_weights(model: DecomposedModel) -> dict[str, Array]:
+    """The frozen weights in `weight_deltas` orientation (`[d_out, d_in]` per site),
+    recovered generically as `weight_deltas(vu=0) == W − 0`."""
+    abstract = eqx.filter_eval_shape(partial(init_component_stacks, model.sites), random.key(0))
+    zero_vu = jax.tree.map(lambda leaf: jnp.zeros(leaf.shape, leaf.dtype), abstract)
+    return model.weight_deltas(zero_vu)
+
+
 def init_decomposition(
     model: DecomposedModel,
     ci_fn_arch: CIFnArch,
     init_key: PRNGKeyArray,
     mesh: Mesh,
     rules: PlacementRules,
+    component_init: Literal["random", "svd_null_tail"] = "random",
 ) -> Decomposition:
     """The trained-product half of `init_train_state`, factored out so a consumer can
     `jax.eval_shape` it to recover the saved `decomposition` item's tree structure
-    without building (or knowing about) the optimizers/adversaries."""
+    without building (or knowing about) the optimizers/adversaries. `component_init`
+    changes values only, never the tree structure, so eval-shape consumers may leave it
+    defaulted."""
     ci_key = random.fold_in(init_key, 1)
     # V/U placement derives from the rules table; the CI fn still declares its own
     # per-leaf shardings (PLACEMENT_DESIGN.md migration stage 3).
-    components = init_component_stacks_placed(model.sites, init_key, rules)
     ci_fn = init_ci_fn_placed(ci_fn_arch, model.sites, ci_key, mesh)
+    match component_init:
+        case "random":
+            components = init_component_stacks_placed(model.sites, init_key, rules)
+        case "svd_null_tail":
+            components = init_component_stacks_svd_null_tail_placed(
+                model.sites, _frozen_site_weights(model), init_key, rules
+            )
+            ci_fn = pin_ci_head_null_tail(ci_fn, model.sites)
     assert ci_fn.has_position_axis == model.has_position_axis, (
         f"CI fn has_position_axis={ci_fn.has_position_axis} but model declares "
         f"{model.has_position_axis}"
@@ -235,7 +260,9 @@ def init_train_state(
     assert isinstance(positions, Positioned) == model.has_position_axis, (
         f"{positions} does not match the model's has_position_axis={model.has_position_axis}"
     )
-    decomposition = init_decomposition(model, ci_fn_arch, init_key, mesh, rules)
+    decomposition = init_decomposition(
+        model, ci_fn_arch, init_key, mesh, rules, pd.component_init
+    )
     components, ci_fn = decomposition.components, decomposition.ci_fn
     losses = build_objective(pd.loss_metrics, model.site_names)
     persistent = persistent_configs(losses.recon)
