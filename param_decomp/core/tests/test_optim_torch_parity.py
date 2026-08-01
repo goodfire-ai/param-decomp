@@ -14,11 +14,13 @@ from jax.typing import ArrayLike
 from jaxtyping import Array
 from pydantic import TypeAdapter
 
+from param_decomp.core.components import component_stacks_from_sites
 from param_decomp.core.configs import AdamWOptimizerConfig, AnyOptimizerConfig, MuonOptimizerConfig
 from param_decomp.core.run_state import (
     _optimizer_with_clip,
     clip_by_global_norm_with_eps,
     optax_schedule,
+    scale_component_updates_c_covariant,
     stacked_muon_dimension_numbers,
 )
 from param_decomp.core.schedule import Knot, ScheduleConfig
@@ -112,6 +114,25 @@ def test_grad_clip_noop_below_threshold():
     out = _clip(clip, grads)
     assert float(out["a"][0]) == pytest.approx(3.0)
     assert float(out["a"][1]) == pytest.approx(4.0)
+
+
+def test_c_covariant_component_scaling_is_post_optimizer_and_shape_aware():
+    updates = component_stacks_from_sites(
+        {
+            "wide": (jnp.ones((40, 200)), jnp.ones((200, 10))),
+            "tall": (jnp.ones((10, 40)), jnp.ones((40, 40))),
+        }
+    )
+    transform = scale_component_updates_c_covariant()
+    scaled, _ = transform.update(updates, transform.init(updates))
+
+    wide_v, wide_u = scaled.site("wide")
+    assert jnp.allclose(wide_v, (40 / 200) ** 0.5)
+    assert jnp.allclose(wide_u, 40 / 200)
+
+    tall_v, tall_u = scaled.site("tall")
+    assert jnp.allclose(tall_v, (10 / 40) ** 0.5)
+    assert jnp.allclose(tall_u, 10 / 40)
 
 
 def test_muon_orthogonalizes_2d_leaves_and_adam_falls_back_elsewhere():

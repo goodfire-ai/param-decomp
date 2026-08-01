@@ -20,6 +20,7 @@ from jaxtyping import Array, PRNGKeyArray
 
 from param_decomp.core.adversary import PersistentAdversary, init_sources_adam_state
 from param_decomp.core.ci_fn import ChunkwiseTransformerCIArch, CIFnArch
+from param_decomp.core.components import ComponentStacks
 from param_decomp.core.configs import (
     AdamPGDConfig,
     AdamWOptimizerConfig,
@@ -74,6 +75,38 @@ def clip_by_global_norm_with_eps(max_norm: float, eps: float) -> optax.GradientT
         scale = jnp.minimum(max_norm / (global_norm + eps), 1.0)
         updates = jax.tree.map(lambda g: g * scale, updates)
         return updates, state
+
+    return optax.GradientTransformation(init, update)
+
+
+def scale_component_updates_c_covariant() -> optax.GradientTransformation:
+    """Scale post-Adam V/U updates so the represented-matrix step transfers across C.
+
+    With the canonical init ``V~N(0, d_in^-1)``, ``U~N(0, C^-1)``, Adam's first
+    per-parameter step has approximately fixed magnitude. In function space, ``V dU``
+    therefore grows as C and ``dV U`` as sqrt(C). Multiplying the already-preconditioned
+    updates by ``d_in/C`` and ``sqrt(d_in/C)`` respectively makes both terms C-invariant,
+    anchored to the configured LR at C=d_in. The scaling must follow Adam: applying it to
+    raw gradients would be cancelled by Adam's second-moment normalization.
+    """
+
+    def init(params: optax.Params) -> optax.EmptyState:
+        assert isinstance(params, ComponentStacks)
+        return optax.EmptyState()
+
+    def update(
+        updates: optax.Updates, state: optax.OptState, params: optax.Params | None = None
+    ) -> tuple[optax.Updates, optax.OptState]:
+        del params
+        assert isinstance(updates, ComponentStacks)
+        stacks = {
+            shape: (
+                dV * (shape[0] / shape[2]) ** 0.5,
+                dU * (shape[0] / shape[2]),
+            )
+            for shape, (dV, dU) in updates.stacks.items()
+        }
+        return ComponentStacks(stacks=stacks, site_slots=updates.site_slots), state
 
     return optax.GradientTransformation(init, update)
 
@@ -147,6 +180,14 @@ def build_optimizers(pd: PDConfig, ci_fn_arch: CIFnArch, mesh: Mesh | None):
     opt_vu = _optimizer_with_clip(
         pd.components_optimizer, sched_vu, stacked_muon_dimension_numbers, mesh=mesh
     )
+    match pd.component_update_scaling:
+        case "none":
+            pass
+        case "c_covariant":
+            assert isinstance(pd.components_optimizer, AdamWOptimizerConfig), (
+                "c_covariant component scaling is derived for AdamW updates"
+            )
+            opt_vu = optax.chain(opt_vu, scale_component_updates_c_covariant())
     ci_muon_dim_nums = (
         stacked_muon_dimension_numbers
         if isinstance(ci_fn_arch, ChunkwiseTransformerCIArch)

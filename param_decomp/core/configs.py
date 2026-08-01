@@ -608,6 +608,14 @@ class PDConfig(BaseConfig):
     ci_fn_optimizer: AnyOptimizerConfig = Field(
         ..., description="Optimizer config for the CI function parameters"
     )
+    component_update_scaling: Literal["none", "c_covariant"] = Field(
+        default="none",
+        description=(
+            "Post-optimizer scaling for the bilinear V/U factors. `c_covariant` multiplies "
+            "V updates by sqrt(d_in/C) and U updates by d_in/C, so the first Adam step of "
+            "the represented matrix is approximately invariant to overcomplete C."
+        ),
+    )
     steps: PositiveInt = Field(..., description="Total number of optimisation steps")
     batch_size: PositiveInt = Field(
         ...,
