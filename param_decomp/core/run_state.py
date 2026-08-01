@@ -8,6 +8,7 @@ optimizer-state structure.
 """
 
 from collections.abc import Callable
+from typing import NamedTuple
 
 import equinox as eqx
 import jax
@@ -24,6 +25,7 @@ from param_decomp.core.components import ComponentStacks
 from param_decomp.core.configs import (
     AdamPGDConfig,
     AdamWOptimizerConfig,
+    ComponentUpdateScaling,
     MuonOptimizerConfig,
     PDConfig,
 )
@@ -111,6 +113,120 @@ def scale_component_updates_c_covariant() -> optax.GradientTransformation:
     return optax.GradientTransformation(init, update)
 
 
+class GaugeBalancedState(NamedTuple):
+    inner_state: optax.OptState
+
+
+def balance_component_stacks(
+    components: ComponentStacks,
+) -> tuple[ComponentStacks, dict[tuple[int, int, int], Array]]:
+    """Choose the minimum-factor-norm representative of every non-null rank-one term.
+
+    ``V_c U_c`` has the exact gauge ``(a V_c)(U_c / a)``. The unique positive scale that
+    makes both factor norms equal is ``a=sqrt(||U_c||/||V_c||)``. A component with either
+    factor exactly zero is already functionally null and has no finite balanced
+    representative, so it stays untouched.
+    """
+    scales: dict[tuple[int, int, int], Array] = {}
+    stacks: dict[tuple[int, int, int], tuple[Array, Array]] = {}
+    for shape, (V, U) in components.stacks.items():
+        v_norm = jnp.linalg.norm(V, axis=1)
+        u_norm = jnp.linalg.norm(U, axis=2)
+        non_null = (v_norm != 0) & (u_norm != 0)
+        ratio = jnp.where(non_null, u_norm, 1.0) / jnp.where(non_null, v_norm, 1.0)
+        scale = jnp.sqrt(ratio)
+        scales[shape] = scale
+        stacks[shape] = (V * scale[:, None, :], U / scale[:, :, None])
+    return ComponentStacks(stacks=stacks, site_slots=components.site_slots), scales
+
+
+def _transform_adam_moments_to_balanced_gauge(
+    state: optax.OptState, scales: dict[tuple[int, int, int], Array]
+) -> optax.OptState:
+    """Transform Adam covector moments under ``V'=aV, U'=U/a``.
+
+    Gradients transform inversely to parameters, so ``m_V'=m_V/a``,
+    ``nu_V'=nu_V/a²``, ``m_U'=a m_U``, and ``nu_U'=a² nu_U``.
+    """
+
+    def transform(x: object) -> object:
+        if not isinstance(x, optax.ScaleByAdamState):
+            return x
+        assert isinstance(x.mu, ComponentStacks) and isinstance(x.nu, ComponentStacks)
+        mu_stacks = {
+            shape: (mV / scales[shape][:, None, :], mU * scales[shape][:, :, None])
+            for shape, (mV, mU) in x.mu.stacks.items()
+        }
+        nu_stacks = {
+            shape: (
+                nV / scales[shape][:, None, :] ** 2,
+                nU * scales[shape][:, :, None] ** 2,
+            )
+            for shape, (nV, nU) in x.nu.stacks.items()
+        }
+        return optax.ScaleByAdamState(
+            count=x.count,
+            mu=ComponentStacks(stacks=mu_stacks, site_slots=x.mu.site_slots),
+            nu=ComponentStacks(stacks=nu_stacks, site_slots=x.nu.site_slots),
+        )
+
+    return jax.tree.map(transform, state, is_leaf=lambda x: isinstance(x, optax.ScaleByAdamState))
+
+
+def gauge_balance_component_optimizer(
+    inner: optax.GradientTransformation,
+) -> optax.GradientTransformation:
+    """Retract each Adam step to balanced V/U gauge and carry its moments with it."""
+
+    def init(params: optax.Params) -> GaugeBalancedState:
+        assert isinstance(params, ComponentStacks)
+        return GaugeBalancedState(inner.init(params))
+
+    def update(
+        updates: optax.Updates,
+        state: GaugeBalancedState,
+        params: optax.Params | None = None,
+    ) -> tuple[optax.Updates, GaugeBalancedState]:
+        assert isinstance(updates, ComponentStacks)
+        assert isinstance(params, ComponentStacks)
+        inner_updates, inner_state = inner.update(updates, state.inner_state, params)
+        assert isinstance(inner_updates, ComponentStacks)
+        proposed = optax.apply_updates(params, inner_updates)
+        assert isinstance(proposed, ComponentStacks)
+        balanced, scales = balance_component_stacks(proposed)
+        balanced_updates = jax.tree.map(lambda new, old: new - old, balanced, params)
+        inner_state = _transform_adam_moments_to_balanced_gauge(inner_state, scales)
+        return balanced_updates, GaugeBalancedState(inner_state)
+
+    return optax.GradientTransformation(init, update)
+
+
+def scale_component_updates_c_covariant_balanced() -> optax.GradientTransformation:
+    """C-covariant Adam scaling for balanced factors.
+
+    At canonical balanced initialization both factor entries scale as C^-1/4, so either
+    first-order product update grows as C^3/4. Scaling both post-Adam factor updates by
+    ``(d_in/C)^3/4`` removes that growth, anchored to the configured LR at C=d_in.
+    """
+
+    def init(params: optax.Params) -> optax.EmptyState:
+        assert isinstance(params, ComponentStacks)
+        return optax.EmptyState()
+
+    def update(
+        updates: optax.Updates, state: optax.OptState, params: optax.Params | None = None
+    ) -> tuple[optax.Updates, optax.OptState]:
+        del params
+        assert isinstance(updates, ComponentStacks)
+        stacks = {
+            shape: (dV * (shape[0] / shape[2]) ** 0.75, dU * (shape[0] / shape[2]) ** 0.75)
+            for shape, (dV, dU) in updates.stacks.items()
+        }
+        return ComponentStacks(stacks=stacks, site_slots=updates.site_slots), state
+
+    return optax.GradientTransformation(init, update)
+
+
 def stacked_muon_dimension_numbers(params: optax.Params) -> optax.Params:
     """Muon leaf labeling for matrix-STACK trees: every 3D leaf is a `[stack, a, b]` stack
     of matrices — orthogonalize the trailing two axes, stack axis batched — and everything
@@ -168,6 +284,35 @@ def _optimizer_with_clip(
     return optax.chain(clip_by_global_norm_with_eps(opt.grad_clip_norm, eps=1e-6), inner)
 
 
+def configure_component_optimizer(
+    optimizer: optax.GradientTransformation,
+    update_scaling: ComponentUpdateScaling,
+    config: AdamWOptimizerConfig | MuonOptimizerConfig,
+) -> optax.GradientTransformation:
+    """Apply the V/U post-optimizer rule to any component optimizer phase.
+
+    Main training and faithfulness warmup use separate Adam instances; routing both through
+    this boundary prevents warmup from silently reintroducing the C/gauge dependence that
+    the configured main update removes.
+    """
+    match update_scaling:
+        case "none":
+            return optimizer
+        case "c_covariant":
+            assert isinstance(config, AdamWOptimizerConfig), (
+                "c_covariant component scaling is derived for AdamW updates"
+            )
+            return optax.chain(optimizer, scale_component_updates_c_covariant())
+        case "c_covariant_balanced":
+            assert isinstance(config, AdamWOptimizerConfig), (
+                "c_covariant_balanced component scaling is derived for AdamW updates"
+            )
+            scaled = optax.chain(optimizer, scale_component_updates_c_covariant_balanced())
+            return gauge_balance_component_optimizer(scaled)
+        case _:
+            raise AssertionError(update_scaling)
+
+
 def build_optimizers(pd: PDConfig, ci_fn_arch: CIFnArch, mesh: Mesh | None):
     """Returns (opt_vu, opt_ci, schedules): the schedule fns are returned too so the
     log path reports the exact LR the optimizer applies (single source of truth).
@@ -180,14 +325,9 @@ def build_optimizers(pd: PDConfig, ci_fn_arch: CIFnArch, mesh: Mesh | None):
     opt_vu = _optimizer_with_clip(
         pd.components_optimizer, sched_vu, stacked_muon_dimension_numbers, mesh=mesh
     )
-    match pd.component_update_scaling:
-        case "none":
-            pass
-        case "c_covariant":
-            assert isinstance(pd.components_optimizer, AdamWOptimizerConfig), (
-                "c_covariant component scaling is derived for AdamW updates"
-            )
-            opt_vu = optax.chain(opt_vu, scale_component_updates_c_covariant())
+    opt_vu = configure_component_optimizer(
+        opt_vu, pd.component_update_scaling, pd.components_optimizer
+    )
     ci_muon_dim_nums = (
         stacked_muon_dimension_numbers
         if isinstance(ci_fn_arch, ChunkwiseTransformerCIArch)
@@ -237,6 +377,9 @@ def init_train_state(
     )
     decomposition = init_decomposition(model, ci_fn_arch, init_key, mesh, rules)
     components, ci_fn = decomposition.components, decomposition.ci_fn
+    if pd.component_update_scaling == "c_covariant_balanced":
+        components, _ = balance_component_stacks(components)
+        decomposition = Decomposition(components=components, ci_fn=ci_fn)
     losses = build_objective(pd.loss_metrics, model.site_names)
     persistent = persistent_configs(losses.recon)
     term_coeff_by_state_key = {

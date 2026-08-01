@@ -577,6 +577,9 @@ class PlacementTableConfig(BaseConfig):
     activations: RuleConfig
 
 
+ComponentUpdateScaling = Literal["none", "c_covariant", "c_covariant_balanced"]
+
+
 class PDConfig(BaseConfig):
     """Algorithm specification: seed, losses, optimizers, faithfulness warmup.
 
@@ -608,12 +611,14 @@ class PDConfig(BaseConfig):
     ci_fn_optimizer: AnyOptimizerConfig = Field(
         ..., description="Optimizer config for the CI function parameters"
     )
-    component_update_scaling: Literal["none", "c_covariant"] = Field(
+    component_update_scaling: ComponentUpdateScaling = Field(
         default="none",
         description=(
             "Post-optimizer scaling for the bilinear V/U factors. `c_covariant` multiplies "
             "V updates by sqrt(d_in/C) and U updates by d_in/C, so the first Adam step of "
-            "the represented matrix is approximately invariant to overcomplete C."
+            "the represented matrix is approximately invariant to overcomplete C. "
+            "`c_covariant_balanced` fixes the exact V/U scale gauge at equal factor norms "
+            "and scales both updates by (d_in/C)^(3/4)."
         ),
     )
     steps: PositiveInt = Field(..., description="Total number of optimisation steps")

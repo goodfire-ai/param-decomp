@@ -55,7 +55,12 @@ from param_decomp.core.metrics import BarChart, LogRecord, PNGImage
 from param_decomp.core.model import DecomposedModel, PositionAxis
 from param_decomp.core.objective import build_objective
 from param_decomp.core.placement import PlacementRules, component_stacks_audit
-from param_decomp.core.run_state import build_optimizers, init_train_state
+from param_decomp.core.run_state import (
+    balance_component_stacks,
+    build_optimizers,
+    configure_component_optimizer,
+    init_train_state,
+)
 from param_decomp.core.train import TrainState, make_faith_warmup_step, make_train_step
 
 
@@ -507,6 +512,11 @@ def _init_or_restore_state(
         # composition root before this engine is entered.
         prov = run.resume_provenance
         state = init_from_parent(prov.parent_run_dir / "ckpts", prov.parent_step, state)
+        if pd.component_update_scaling == "c_covariant_balanced":
+            balanced, _ = balance_component_stacks(state.decomposition.components)
+            state = dataclasses.replace(
+                state, decomposition=dataclasses.replace(state.decomposition, components=balanced)
+            )
         save_state(checkpoint_manager, 0, state)
         if is_main:
             print(
@@ -517,8 +527,12 @@ def _init_or_restore_state(
         return state, 0
 
     if pd.faithfulness_warmup_steps > 0:
-        faith_warmup_optimizer = optax.adamw(
-            pd.faithfulness_warmup_lr, weight_decay=pd.faithfulness_warmup_weight_decay
+        faith_warmup_optimizer = configure_component_optimizer(
+            optax.adamw(
+                pd.faithfulness_warmup_lr, weight_decay=pd.faithfulness_warmup_weight_decay
+            ),
+            pd.component_update_scaling,
+            pd.components_optimizer,
         )
         faith_warmup_opt_state = faith_warmup_optimizer.init(
             eqx.filter(state.decomposition.components, eqx.is_array)
