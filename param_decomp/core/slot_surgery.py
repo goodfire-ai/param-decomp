@@ -351,6 +351,85 @@ def truncate_active_prefix(state: TrainState, active_by_site: dict[str, int]) ->
     return state
 
 
+def split_active_prefix(
+    state: TrainState, active_by_site: dict[str, int], copies: int
+) -> tuple[TrainState, dict[str, int]]:
+    """Replace each active prefix slot with ``copies`` identical children.
+
+    Slot ``c`` with product ``v_c u_c^T`` becomes ``copies`` slots with factors
+    ``(v_c, u_c / copies)`` and an exactly copied CI output head. The local represented
+    matrix and every gate-controlled unmasked contribution are therefore unchanged at
+    the event. All source/child Adam moments are reset: this is a discovery transaction,
+    not an optimizer-coordinate equivalence claim.
+
+    This primitive is intentionally stricter than generic column birth. It requires an
+    exact-null suffix and a power-of-two copy count, so binary scaling preserves the
+    represented matrix bitwise in the float formats used by the component stacks. The
+    caller owns transaction snapshotting, active masks, protection, and verdicts.
+    """
+    assert copies >= 1 and copies & (copies - 1) == 0, copies
+    if copies == 1:
+        return state, dict(active_by_site)
+
+    expanded: dict[str, int] = {}
+    for site, active_count in active_by_site.items():
+        V, U = state.decomposition.components.site(site)
+        target_count = active_count * copies
+        assert 0 < active_count <= target_count <= U.shape[0], (
+            site,
+            active_count,
+            copies,
+            U.shape[0],
+        )
+        assert bool(jnp.all(U[active_count:, :] == 0.0)), (
+            site,
+            "split expansion requires an exact-null suffix",
+        )
+
+        ci_w, ci_b, offset = _ci_head_leaves(state.decomposition.ci_fn, site)
+        original_v = V[:, :active_count]
+        original_u = U[:active_count, :]
+        original_ci_w = ci_w[:, offset : offset + active_count]
+        original_ci_b = ci_b[offset : offset + active_count]
+
+        for source in range(active_count):
+            child_u = original_u[source] / copies
+            child_v = original_v[:, source]
+            child_ci_w = original_ci_w[:, source]
+            child_ci_b = original_ci_b[source]
+            zero_v = jnp.zeros_like(child_v)
+            zero_u = jnp.zeros_like(child_u)
+            zero_ci_w = jnp.zeros_like(child_ci_w)
+            zero = jnp.zeros(())
+
+            state = _edit_slot_everywhere(
+                state,
+                site,
+                source,
+                v_col=child_v,
+                u_row=child_u,
+                ci_w_col=child_ci_w,
+                ci_b_val=child_ci_b,
+                vu_moments=(zero_v, zero_u, zero_v, zero_u),
+                ci_moments=(zero_ci_w, zero, zero_ci_w, zero),
+            )
+            for child_index in range(1, copies):
+                target = active_count + source * (copies - 1) + child_index - 1
+                state = _edit_slot_everywhere(
+                    state,
+                    site,
+                    target,
+                    v_col=child_v,
+                    u_row=child_u,
+                    ci_w_col=child_ci_w,
+                    ci_b_val=child_ci_b,
+                    vu_moments=(zero_v, zero_u, zero_v, zero_u),
+                    ci_moments=(zero_ci_w, zero, zero_ci_w, zero),
+                )
+        expanded[site] = target_count
+    return state, expanded
+
+
 def set_null_probe_factors(
     state: TrainState, site: str, slot: int, v_col: Array, u_row: Array
 ) -> TrainState:

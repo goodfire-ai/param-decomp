@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import optax
 import pytest
 
-from param_decomp.core.ci_fn import LayerwiseMLPCIArch, build_ci_fn
+from param_decomp.core.ci_fn import LayerwiseMLPCIArch, LayerwiseMLPCIFn, build_ci_fn
 from param_decomp.core.components import SiteSpec, component_stacks_from_sites
 from param_decomp.core.slot_surgery import (
     birth_direction_from_grad,
@@ -18,6 +18,8 @@ from param_decomp.core.slot_surgery import (
     rollback_trial,
     select_birth_site,
     snapshot_trial,
+    split_active_prefix,
+    truncate_active_prefix,
 )
 from param_decomp.core.train import Decomposition, TrainingItem, TrainState
 
@@ -73,6 +75,52 @@ def test_birth_preserves_represented_matrix_exactly() -> None:
     V, U = born.decomposition.components.site("s1")
     assert jnp.allclose(jnp.linalg.norm(V[:, 4]), 1.0, atol=1e-6)
     assert jnp.all(U[4, :] == 0.0)
+
+
+def test_split_active_prefix_preserves_function_and_clones_ci_heads() -> None:
+    state = truncate_active_prefix(make_state(jax.random.key(31)), {"s1": 2})
+    before = represented(state, "s1")
+    V0, U0 = state.decomposition.components.site("s1")
+    source_v = V0[:, :2].copy()
+    source_u = U0[:2, :].copy()
+    ci_fn0 = state.decomposition.ci_fn
+    assert isinstance(ci_fn0, LayerwiseMLPCIFn)
+    ci0 = ci_fn0.site_mlps["s1"]
+    source_ci_w = ci0.weights[-1][:, :2].copy()
+    source_ci_b = ci0.biases[-1][:2].copy()
+
+    split, active = split_active_prefix(state, {"s1": 2}, copies=2)
+
+    assert active == {"s1": 4}
+    assert jnp.array_equal(represented(split, "s1"), before)
+    V, U = split.decomposition.components.site("s1")
+    # source 0 -> child 2, source 1 -> child 3
+    assert jnp.array_equal(V[:, :2], source_v)
+    assert jnp.array_equal(V[:, 2], source_v[:, 0])
+    assert jnp.array_equal(V[:, 3], source_v[:, 1])
+    assert jnp.array_equal(U[0], source_u[0] / 2)
+    assert jnp.array_equal(U[2], source_u[0] / 2)
+    assert jnp.array_equal(U[1], source_u[1] / 2)
+    assert jnp.array_equal(U[3], source_u[1] / 2)
+    assert jnp.all(U[4:] == 0.0)
+
+    ci_fn = split.decomposition.ci_fn
+    assert isinstance(ci_fn, LayerwiseMLPCIFn)
+    ci = ci_fn.site_mlps["s1"]
+    assert jnp.array_equal(ci.weights[-1][:, :2], source_ci_w)
+    assert jnp.array_equal(ci.weights[-1][:, 2], source_ci_w[:, 0])
+    assert jnp.array_equal(ci.weights[-1][:, 3], source_ci_w[:, 1])
+    assert jnp.array_equal(ci.biases[-1][:2], source_ci_b)
+    assert jnp.array_equal(ci.biases[-1][2], source_ci_b[0])
+    assert jnp.array_equal(ci.biases[-1][3], source_ci_b[1])
+
+
+def test_split_active_prefix_refuses_nonbinary_or_insufficient_expansion() -> None:
+    state = truncate_active_prefix(make_state(jax.random.key(32)), {"s1": 2})
+    with pytest.raises(AssertionError):
+        split_active_prefix(state, {"s1": 2}, copies=3)
+    with pytest.raises(AssertionError):
+        split_active_prefix(state, {"s1": 4}, copies=2)
 
 
 def test_first_gradient_aligns_with_leading_singular_mode() -> None:

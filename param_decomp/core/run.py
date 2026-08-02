@@ -91,6 +91,7 @@ from param_decomp.core.slot_surgery import (
     find_inactive_slot,
     rollback_trial,
     snapshot_trial,
+    split_active_prefix,
     truncate_active_prefix,
 )
 from param_decomp.core.train import (
@@ -855,13 +856,18 @@ def run_decomposition_training[EvalContextT](
         )
         controller_cfg, settlement_cfg = _controller_config(pd)
         controller_state = ControllerState.initial(math.log(control_spec.initial_complexity_scale))
+        state = truncate_active_prefix(state, control_spec.initial_active_slots)
+        state, active_counts = split_active_prefix(
+            state,
+            control_spec.initial_active_slots,
+            control_spec.initial_split_copies,
+        )
         active = _controller_active_masks(
             model,
-            control_spec.initial_active_slots,
+            active_counts,
             pd.component_init,
             pd.faithfulness_warmup_steps,
         )
-        state = truncate_active_prefix(state, control_spec.initial_active_slots)
     else:
         assert controller_component_grad is None, (
             "a controller component-gradient probe without recon_budget_control is dead config"

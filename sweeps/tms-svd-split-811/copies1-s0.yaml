@@ -1,0 +1,144 @@
+cadence:
+  checkpoint_retention:
+    kind: keep_last
+    n: 2
+  save_every: 10000
+  train_log_every: 500
+data:
+  data_generation_type: at_least_zero_active
+  feature_probability: 0.05
+decomposition:
+  ci:
+    hidden_dims:
+    - 200
+    type: layerwise_mlp
+  sites:
+    kind: explicit
+    sites:
+    - C: 100
+      name: linear1
+    - C: 100
+      name: linear2
+eval:
+  batch_size: 4096
+  every: 500
+  metrics:
+  - coeff: null
+    init: random
+    n_steps: 20
+    source_shape: c
+    step_size: 0.1
+    type: PGDReconLoss
+  n_steps: 2
+  slow_every: 2000
+  slow_on_first_step: true
+pd:
+  batch_size: 4096
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 1.0
+    lr_schedule:
+      max_val: 0.001
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 1.0
+        frac: 1.0
+    weight_decay: 0.0
+  component_init: svd_null_tail
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 1.0
+    lr_schedule:
+      max_val: 0.001
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 1.0
+        frac: 1.0
+    weight_decay: 0.0
+  faithfulness_warmup_lr: 0.01
+  faithfulness_warmup_steps: 0
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - coeff: 6.0e-05
+    frequency:
+      coeff: 3.0e-05
+      reference_token_count: 32768
+    gamma:
+      max_val: 0.1
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 1.0
+        frac: 1.0
+    type: SmoothL0ImportanceMinimalityLoss
+  - adv_fraction: 0.5
+    coeff: 1.0
+    n_warmup_steps: 2
+    optimizer:
+      beta1: 0.01
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        max_val: 0.01
+        points:
+        - at: 0.0
+          frac: 0.0
+        - at: 0.025
+          frac: 1.0
+        - at: 1.0
+          frac: 1.0
+      type: adam
+    routing:
+      type: uniform_k_subset
+    source_shape: bc
+    type: MergedStochasticSubsetPPGDReconLoss
+  - coeff: 1.0
+    type: FaithfulnessLoss
+  recon_budget_control:
+    birth_improvement_rtol: 0.01
+    dwell_windows: 1
+    expand_factor: 4.0
+    initial_active_slots:
+      linear1: 10
+      linear2: 10
+    initial_complexity_scale: 1.0
+    max_complexity_scale: 256.0
+    max_rejected_probes: 3
+    noise_margin: 0.0001
+    observable:
+      metric_key: eval/loss/PGDReconLoss
+      offset: 0.0
+      scale: 1.0
+    plateau_rtol: 0.05
+    probe_cooldown_windows: 4
+    probe_improvement_rtol: 0.02
+    protect_windows: 2
+    resolution_factor: 1.1
+    settle_atol: 1.0e-05
+    settle_points: 2
+    settle_rtol: 0.25
+    tau: 0.0005
+    initial_split_copies: 1
+    control_after_step: 39999
+  seed: 0
+  steps: 40000
+run_name: tms811-svd-split-copies1-s0
+target:
+  init_bias_to_zero: true
+  n_features: 40
+  n_hidden: 10
+  n_hidden_layers: 0
+  pretrain:
+    batch_size: 8192
+    lr: 5e-3
+    seed: 0
+    steps: 10000
+wandb:
+  entity: null
+  project: param-decomp-toys

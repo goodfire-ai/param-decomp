@@ -630,6 +630,12 @@ class ReconBudgetControlConfig(BaseConfig):
     settle_atol: NonNegativeFloat = 1e-8
     protect_windows: PositiveInt = 3
     initial_active_slots: dict[str, PositiveInt] | None = None
+    initial_split_copies: PositiveInt = 1
+    """Experimental discovery falsifier: replace every authored initial SVD slot by
+    this many identical rank-one children before the first train step. Their products
+    sum exactly to the original slot and their CI heads are copied. This isolates
+    whether function-preserving live-width expansion can escape the C-flat SVD basin;
+    it is not the eventual settle-gated split controller."""
     birth_block_cap: PositiveInt = 1
     """Maximum scratch/birth slots priced per site in one lifecycle transaction. One
     preserves serial v1; larger values are a systems work cap, not a selected rank."""

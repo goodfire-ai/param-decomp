@@ -1,0 +1,6 @@
+sweeps/tms-svd-split-811/copies1-s0.yaml
+sweeps/tms-svd-split-811/copies1-s1.yaml
+sweeps/tms-svd-split-811/copies1-s2.yaml
+sweeps/tms-svd-split-811/copies4-s0.yaml
+sweeps/tms-svd-split-811/copies4-s1.yaml
+sweeps/tms-svd-split-811/copies4-s2.yaml
