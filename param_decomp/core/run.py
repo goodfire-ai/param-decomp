@@ -669,6 +669,26 @@ def _restore_rejected_trial(snapshot: TrialSnapshot, current_step: jax.Array) ->
     )
 
 
+def _reject_lifecycle_trial(
+    trial: _LifecycleTrial,
+    state: TrainState,
+    active: dict[str, jax.Array],
+    controller_state: ControllerState,
+    controller_cfg: ControllerConfig,
+) -> tuple[TrainState, dict[str, jax.Array], ControllerState]:
+    """Abort one lifecycle transaction without disturbing its consumed schedule clock."""
+    restored = _restore_rejected_trial(trial.snapshot, state.training.step)
+    restored_active = _with_active_slot(active, trial.site, trial.slot, False)
+    match trial.event:
+        case Event.COLUMN_PROBE:
+            restored_controller = probe_rejected(controller_state, controller_cfg)
+        case Event.FEASIBILITY_BIRTH:
+            restored_controller = birth_rejected(controller_state)
+        case unexpected:
+            raise AssertionError(unexpected)
+    return restored, restored_active, restored_controller
+
+
 def run_decomposition_training[EvalContextT](
     pd: PDConfig,
     cadence: Cadence,
@@ -852,6 +872,25 @@ def run_decomposition_training[EvalContextT](
                 record["train/mem/peak_gb_per_rank"] = mem_stats["peak_bytes_in_use"] / 1e9
             train_record = record
 
+        terminal_rollback = False
+        if now_step == pd.steps and controller_state is not None:
+            # A finite training horizon is not permission to checkpoint half a lifecycle
+            # transaction. Stop opening trials and roll any pending one back before the
+            # final authored eval/checkpoint observes the trajectory.
+            controller_terminal = True
+            if trial is not None:
+                assert active is not None and controller_cfg is not None
+                baseline_complexity = trial.baseline_complexity
+                state, active, controller_state = _reject_lifecycle_trial(
+                    trial, state, active, controller_state, controller_cfg
+                )
+                protected = None
+                settlement_state = SettlementState.initial()
+                trial = None
+                control_complexity_window.clear()
+                control_complexity_window.append(jnp.asarray(baseline_complexity))
+                terminal_rollback = True
+
         eval_record = (
             _run_due_evaluation(evaluation, state, now_step)
             if evaluation is not None and not sigterm
@@ -878,7 +917,7 @@ def run_decomposition_training[EvalContextT](
             complexity = float(jnp.mean(jnp.stack(control_complexity_window)))
             control_complexity_window.clear()
             event = Event.NONE
-            verdict = 0.0
+            verdict = -1.0 if terminal_rollback else 0.0
 
             if trial is not None:
                 if trial.protected_reads_left > 0:
@@ -917,18 +956,8 @@ def run_decomposition_training[EvalContextT](
                             )
                             verdict = 1.0
                         else:
-                            state = _restore_rejected_trial(trial.snapshot, state.training.step)
-                            active = _active_masks(
-                                model,
-                                {
-                                    site: int(mask.sum()) - (1 if site == trial.site else 0)
-                                    for site, mask in active.items()
-                                },
-                            )
-                            controller_state = (
-                                probe_rejected(controller_state, controller_cfg)
-                                if trial.event is Event.COLUMN_PROBE
-                                else birth_rejected(controller_state)
+                            state, active, controller_state = _reject_lifecycle_trial(
+                                trial, state, active, controller_state, controller_cfg
                             )
                             verdict = -1.0
                         protected = None
@@ -1003,6 +1032,7 @@ def run_decomposition_training[EvalContextT](
                 "controller/event": float(list(Event).index(event)),
                 "controller/verdict": verdict,
                 "controller/trial_active": float(trial is not None),
+                "controller/terminal_rollback": float(terminal_rollback),
             }
 
         step_record = _combine_step_records(
