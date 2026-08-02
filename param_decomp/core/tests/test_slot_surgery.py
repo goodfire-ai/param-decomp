@@ -201,3 +201,16 @@ def test_truncate_active_prefix_nulls_tail_and_is_idempotent() -> None:
     ):
         if hasattr(a, "shape"):
             assert jnp.array_equal(a, c)
+
+
+def test_snapshot_owns_independent_buffers() -> None:
+    # the train step donates its state buffers; a snapshot holding references would be
+    # invalidated by the next step, so every array leaf must be an independent copy
+    state = make_state(jax.random.key(30))
+    snap = snapshot_trial(state, "s1", 4)
+    src_leaves = [x for x in jax.tree_util.tree_leaves(state) if hasattr(x, "unsafe_buffer_pointer")]
+    snap_leaves = [x for x in jax.tree_util.tree_leaves(snap.state) if hasattr(x, "unsafe_buffer_pointer")]
+    assert len(src_leaves) == len(snap_leaves) and src_leaves
+    for a, b in zip(src_leaves, snap_leaves, strict=True):
+        assert a.unsafe_buffer_pointer() != b.unsafe_buffer_pointer()
+        assert jnp.array_equal(a, b)

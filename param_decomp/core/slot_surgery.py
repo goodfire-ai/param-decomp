@@ -13,6 +13,7 @@ architectures and optimizer states raise, they never no-op.
 from dataclasses import dataclass
 from typing import Any, cast
 
+import jax
 import jax.numpy as jnp
 import optax
 from jaxtyping import Array, Float
@@ -138,11 +139,13 @@ def _with_ci_head(ci_fn: CIFn, site: str, weights: Array, bias: Array) -> CIFn:
 
 @dataclass(frozen=True)
 class TrialSnapshot:
-    """The ENTIRE immutable pre-trial `TrainState` plus the trial's identity. During a
-    COLUMN_PROBE every other parameter, both optimizers' moments, and the persistent
-    adversaries keep training — restoring only the trial slot would accept/reject on
-    contaminated state, so rollback returns to the full pre-probe frontier. JAX arrays
-    are immutable, so holding the state IS the snapshot (no copies)."""
+    """The ENTIRE pre-trial `TrainState` (independently-owned buffers) plus the trial's
+    identity. During a COLUMN_PROBE every other parameter, both optimizers' moments, and
+    the persistent adversaries keep training — restoring only the trial slot would
+    accept/reject on contaminated state, so rollback returns to the full pre-probe
+    frontier. The buffers are COPIES: immutability alone is not a snapshot under the
+    train step's buffer donation, which deletes the referenced buffers on the next
+    step (found live in the first acceptance run)."""
 
     state: TrainState
     site: str
@@ -150,7 +153,12 @@ class TrialSnapshot:
 
 
 def snapshot_trial(state: TrainState, site: str, slot: int) -> TrialSnapshot:
-    return TrialSnapshot(state=state, site=site, slot=slot)
+    import equinox as eqx
+
+    owned = jax.tree_util.tree_map(
+        lambda leaf: jnp.copy(leaf) if eqx.is_array(leaf) else leaf, state
+    )
+    return TrialSnapshot(state=owned, site=site, slot=slot)
 
 
 def rollback_trial(snapshot: TrialSnapshot) -> TrainState:
