@@ -1,0 +1,122 @@
+run_name: resid1-c200-complexity-2p0-s1
+decomposition:
+  sites:
+    kind: explicit
+    sites:
+    - name: layers.0.mlp_in
+      C: 200
+    - name: layers.0.mlp_out
+      C: 200
+  ci:
+    type: layerwise_mlp
+    hidden_dims:
+    - 400
+pd:
+  seed: 1
+  loss_metrics:
+  - frequency:
+      coeff: 1.0e-06
+      reference_token_count: 32768
+    coeff: 2.0e-06
+    type: SmoothL0ImportanceMinimalityLoss
+    gamma:
+      max_val: 1.0
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 1.0
+        frac: 0.01
+  - type: MergedStochasticSubsetPPGDReconLoss
+    coeff: 1.0
+    adv_fraction: 0.5
+    n_warmup_steps: 2
+    routing:
+      type: uniform_k_subset
+    optimizer:
+      beta1: 0.01
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        max_val: 0.01
+        points:
+        - at: 0.0
+          frac: 0.0
+        - at: 0.025
+          frac: 1.0
+        - at: 1.0
+          frac: 1.0
+      type: adam
+    source_shape: bc
+  - type: FaithfulnessLoss
+    coeff: 1.0
+  batch_size: 2048
+  steps: 50000
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 1.0
+    lr_schedule:
+      max_val: 2e-03
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 1.0
+        frac: 0.1
+        interp: cosine
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 1.0
+    lr_schedule:
+      max_val: 2e-03
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 1.0
+        frac: 0.1
+        interp: cosine
+    weight_decay: 0.0
+  faithfulness_warmup_steps: 200
+  faithfulness_warmup_lr: 0.01
+  faithfulness_warmup_weight_decay: 0.0
+cadence:
+  train_log_every: 500
+  save_every: 50000
+  checkpoint_retention:
+    kind: keep_last
+    n: 1
+target:
+  n_features: 100
+  d_embed: 1000
+  d_mlp: 50
+  n_layers: 1
+  act_fn_name: relu
+  in_bias: false
+  out_bias: false
+  pretrain:
+    steps: 2000
+    batch_size: 2048
+    lr: 3e-3
+    seed: 0
+data:
+  feature_probability: 0.01
+  data_generation_type: at_least_zero_active
+eval:
+  batch_size: 2048
+  n_steps: 1
+  every: 1000
+  slow_every: 5000
+  slow_on_first_step: true
+  metrics:
+  - type: PGDReconLoss
+    coeff: null
+    init: random
+    source_shape: c
+    n_steps: 20
+    step_size: 0.1
+wandb:
+  project: param-decomp-toys
+  entity: null
