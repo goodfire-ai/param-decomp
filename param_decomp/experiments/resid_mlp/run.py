@@ -23,7 +23,14 @@ from jax import random
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 
+from jaxtyping import Array, PRNGKeyArray
+
 from param_decomp.core import placement
+from param_decomp.core.components import ComponentStacks
+from param_decomp.core.configs import PGDReconLossConfig
+from param_decomp.core.controller_runtime import ComponentGradientProbe
+from param_decomp.core.recon_eval import FreshPGDReconEval, make_fresh_pgd_component_grad_step
+from param_decomp.core.train import TrainState
 from param_decomp.core.built_run import BuiltRun
 from param_decomp.core.ci_fn import CIFn
 from param_decomp.core.components import SiteC
@@ -246,6 +253,51 @@ def run_resid_mlp_decomposition(
         tuple(operations), lambda state, now_step: EvalInvocation(state, now_step)
     )
 
+    controller_component_grad: ComponentGradientProbe | None = None
+    if built.pd.recon_budget_control is not None:
+        assert eval_config is not None, "controller observable must be emitted by eval"
+        metric_key = built.pd.recon_budget_control.observable.metric_key
+        matching = [
+            metric
+            for metric in eval_config.metrics
+            if isinstance(metric, PGDReconLossConfig)
+            and f"eval/loss/{metric.name or metric.type}" == metric_key
+        ]
+        assert len(matching) == 1, (
+            f"controller observable {metric_key!r} must name exactly one fresh-PGD eval; "
+            f"got {matching}"
+        )
+        metric = matching[0]
+        grad_step = make_fresh_pgd_component_grad_step(
+            model,
+            FreshPGDReconEval(
+                name=metric.name or metric.type,
+                n_steps=metric.n_steps,
+                step_size=metric.step_size,
+            ),
+            mesh,
+            compiler_options={},
+        )
+
+        def controller_component_grad_fn(
+            state: TrainState,
+            batch: Array,
+            key: PRNGKeyArray,
+            active: dict[str, Array] | None,
+            protected: dict[str, Array] | None,
+        ) -> tuple[Array, ComponentStacks]:
+            return grad_step(
+                model,
+                state.decomposition.components,
+                state.decomposition.ci_fn,
+                batch,
+                key,
+                active,
+                protected,
+            )
+
+        controller_component_grad = controller_component_grad_fn
+
     sink = MetricsSink.for_run(built.run, jax.process_index() == 0)
     run_decomposition_training(
         pd=built.pd,
@@ -265,7 +317,7 @@ def run_resid_mlp_decomposition(
         sink=sink,
         mesh=mesh,
         placement_rules=placement.from_config("ddp", mesh, model.sites),
-        controller_component_grad=None,
+        controller_component_grad=controller_component_grad,
     )
 
 
