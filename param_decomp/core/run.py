@@ -50,6 +50,22 @@ from param_decomp.core.checkpoint import (
 from param_decomp.core.ci_fn import CIFnArch
 from param_decomp.core.components import init_component_stacks
 from param_decomp.core.configs import Cadence, PDConfig, flatten_typed_lists
+from param_decomp.core.controller import (
+    ControllerConfig,
+    ControllerObservation,
+    ControllerState,
+    Event,
+    SettlementConfig,
+    SettlementState,
+    authored_observable,
+    birth_accepted,
+    birth_rejected,
+    controller_update,
+    observe_settled_window,
+    probe_accepted,
+    probe_rejected,
+)
+from param_decomp.core.controller_runtime import ComponentGradientProbe, choose_birth_candidate
 from param_decomp.core.eval_schedule import EvalSchedule, eval_due
 from param_decomp.core.metrics import BarChart, LogRecord, PNGImage
 from param_decomp.core.model import DecomposedModel, PositionAxis
@@ -61,7 +77,18 @@ from param_decomp.core.run_state import (
     configure_component_optimizer,
     init_train_state,
 )
-from param_decomp.core.train import StepControls, TrainState, make_faith_warmup_step, make_train_step
+from param_decomp.core.slot_surgery import (
+    birth_slot,
+    find_inactive_slot,
+    protected_mask,
+    truncate_active_prefix,
+)
+from param_decomp.core.train import (
+    StepControls,
+    TrainState,
+    make_faith_warmup_step,
+    make_train_step,
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -571,6 +598,73 @@ def _init_or_restore_state(
     return state, 0
 
 
+@dataclasses.dataclass(frozen=True)
+class _LifecycleTrial:
+    event: Event
+    snapshot: TrainState
+    site: str
+    slot: int
+    baseline_r_adv: float
+    baseline_complexity: float
+    protected_reads_left: int
+    settlement: SettlementState
+
+
+def _controller_config(pd: PDConfig) -> tuple[ControllerConfig, SettlementConfig]:
+    spec = pd.recon_budget_control
+    assert spec is not None
+    return (
+        ControllerConfig(
+            tau=spec.tau,
+            noise_margin=spec.noise_margin,
+            max_log_c=math.log(spec.max_complexity_scale),
+            expand_log_step=math.log(spec.expand_factor),
+            resolution=math.log(spec.resolution_factor),
+            dwell_windows=spec.dwell_windows,
+            plateau_rtol=spec.plateau_rtol,
+            probe_cooldown_windows=spec.probe_cooldown_windows,
+            max_rejected_probes=spec.max_rejected_probes,
+        ),
+        SettlementConfig(spec.settle_points, spec.settle_rtol, spec.settle_atol),
+    )
+
+
+def _active_masks(model: DecomposedModel, active_by_site: dict[str, int]) -> dict[str, jax.Array]:
+    assert set(active_by_site) == set(model.site_names), (
+        sorted(active_by_site),
+        sorted(model.site_names),
+    )
+    return {site.name: jnp.arange(site.C) < active_by_site[site.name] for site in model.sites}
+
+
+def _spare_slot_exists(state: TrainState) -> bool:
+    return any(
+        find_inactive_slot(state.decomposition.components, site) is not None
+        for site in state.decomposition.components.site_names
+    )
+
+
+def _with_active_slot(
+    active: dict[str, jax.Array], site: str, slot: int, value: bool
+) -> dict[str, jax.Array]:
+    out = dict(active)
+    out[site] = out[site].at[slot].set(value)
+    return out
+
+
+def _restore_rejected_trial(snapshot: TrainState, current_step: jax.Array) -> TrainState:
+    """Restore the full pre-trial trajectory but keep the consumed schedule clock.
+
+    The toy v1 runs probes in-line rather than as nested uncounted work. Parameters,
+    optimizer moments, CI, and adversary are transactional; only the step counter advances.
+    The LM port must checkpoint and replay the full transaction instead (task #811 spec).
+    """
+    return dataclasses.replace(
+        snapshot,
+        training=dataclasses.replace(snapshot.training, step=current_step),
+    )
+
+
 def run_decomposition_training[EvalContextT](
     pd: PDConfig,
     cadence: Cadence,
@@ -587,6 +681,7 @@ def run_decomposition_training[EvalContextT](
     sink: MetricsSink,
     mesh: Mesh,
     placement_rules: PlacementRules,
+    controller_component_grad: ComponentGradientProbe | None,
 ) -> None:
     """The generic VPD decomposition-training engine — the ONE train loop every target
     (LM, TMS, ResidMLP, …) runs through.
@@ -650,6 +745,39 @@ def run_decomposition_training[EvalContextT](
         return  # SIGTERM mid-warmup: clean exit for requeue
     state, start_step = init
 
+    control_spec = pd.recon_budget_control
+    controller_cfg: ControllerConfig | None = None
+    settlement_cfg: SettlementConfig | None = None
+    controller_state: ControllerState | None = None
+    settlement_state = SettlementState.initial()
+    active: dict[str, jax.Array] | None = None
+    protected: dict[str, jax.Array] | None = None
+    trial: _LifecycleTrial | None = None
+    control_complexity_window: list[jax.Array] = []
+    controller_terminal = False
+    if control_spec is not None:
+        assert start_step == 0, (
+            "controller prototype refuses resume until its host state checkpoints"
+        )
+        assert pd.component_init == "svd_null_tail", (
+            "logical capacity control requires the exact nested SVD/null-tail initializer"
+        )
+        assert pd.faithfulness_warmup_steps == 0, (
+            "faithfulness warmup would fill deliberately inactive rank slots before birth"
+        )
+        assert control_spec.initial_active_slots is not None
+        assert controller_component_grad is not None, (
+            "controller config needs an authored fresh-referee component-gradient probe"
+        )
+        controller_cfg, settlement_cfg = _controller_config(pd)
+        controller_state = ControllerState.initial(math.log(control_spec.initial_complexity_scale))
+        active = _active_masks(model, control_spec.initial_active_slots)
+        state = truncate_active_prefix(state, control_spec.initial_active_slots)
+    else:
+        assert controller_component_grad is None, (
+            "a controller component-gradient probe without recon_budget_control is dead config"
+        )
+
     step_fn = make_train_step(
         model_static=model,
         losses=build_objective(pd.loss_metrics, model.site_names),
@@ -669,9 +797,18 @@ def run_decomposition_training[EvalContextT](
 
     for step in range(start_step, pd.steps):
         batch = sample_batch(step)
-        state, metrics = step_fn(
-            model, state, batch, random.fold_in(run_key, step), StepControls.constant()
+        controls = (
+            StepControls(
+                complexity_scale=jnp.asarray(controller_state.c, jnp.float32),
+                active=active,
+                protected=protected,
+            )
+            if controller_state is not None
+            else StepControls.constant()
         )
+        state, metrics = step_fn(model, state, batch, random.fold_in(run_key, step), controls)
+        if controller_state is not None:
+            control_complexity_window.append(metrics["controls/complexity_unscaled"])
 
         grad_norm_summary_window.append(
             {k: v for k, v in metrics.items() if k.startswith("grad_norms/summary/")}
@@ -716,7 +853,145 @@ def run_decomposition_training[EvalContextT](
             if evaluation is not None and not sigterm
             else None
         )
-        step_record = _combine_step_records(train_record, eval_record)
+        controller_record: LogRecord | None = None
+        if (
+            control_spec is not None
+            and eval_record is not None
+            and control_spec.observable.metric_key in eval_record
+        ):
+            assert controller_state is not None and controller_cfg is not None
+            assert settlement_cfg is not None and active is not None
+            assert control_complexity_window
+            scalar_eval = {
+                key: value for key, value in eval_record.items() if isinstance(value, float)
+            }
+            r_adv = authored_observable(
+                scalar_eval,
+                control_spec.observable.metric_key,
+                control_spec.observable.offset,
+                control_spec.observable.scale,
+            )
+            complexity = float(jnp.mean(jnp.stack(control_complexity_window)))
+            control_complexity_window.clear()
+            event = Event.NONE
+            verdict = 0.0
+
+            if trial is not None:
+                if trial.protected_reads_left > 0:
+                    left = trial.protected_reads_left - 1
+                    trial = dataclasses.replace(trial, protected_reads_left=left)
+                    if left == 0:
+                        protected = None
+                        trial = dataclasses.replace(trial, settlement=SettlementState.initial())
+                else:
+                    trial_settlement, settled = observe_settled_window(
+                        trial.settlement,
+                        ControllerObservation(r_adv, complexity, _spare_slot_exists(state)),
+                        settlement_cfg,
+                    )
+                    trial = dataclasses.replace(trial, settlement=trial_settlement)
+                    if settled is not None:
+                        if trial.event is Event.COLUMN_PROBE:
+                            accepted = (
+                                settled.r_adv <= controller_cfg.tau + controller_cfg.noise_margin
+                                and settled.complexity
+                                <= trial.baseline_complexity
+                                * (1.0 - control_spec.probe_improvement_rtol)
+                            )
+                        else:
+                            accepted = (
+                                settled.r_adv <= controller_cfg.tau
+                                or settled.r_adv
+                                <= trial.baseline_r_adv
+                                * (1.0 - control_spec.birth_improvement_rtol)
+                            )
+                        if accepted:
+                            controller_state = (
+                                probe_accepted(controller_state)
+                                if trial.event is Event.COLUMN_PROBE
+                                else birth_accepted(controller_state, controller_cfg)
+                            )
+                            verdict = 1.0
+                        else:
+                            state = _restore_rejected_trial(trial.snapshot, state.training.step)
+                            active = _active_masks(
+                                model,
+                                {
+                                    site: int(mask.sum()) - (1 if site == trial.site else 0)
+                                    for site, mask in active.items()
+                                },
+                            )
+                            controller_state = (
+                                probe_rejected(controller_state, controller_cfg)
+                                if trial.event is Event.COLUMN_PROBE
+                                else birth_rejected(controller_state)
+                            )
+                            verdict = -1.0
+                        protected = None
+                        settlement_state = SettlementState.initial()
+                        trial = None
+            elif not controller_terminal:
+                settlement_state, settled = observe_settled_window(
+                    settlement_state,
+                    ControllerObservation(r_adv, complexity, _spare_slot_exists(state)),
+                    settlement_cfg,
+                )
+                if settled is not None:
+                    action = controller_update(
+                        controller_state,
+                        settled,
+                        controller_cfg,
+                        control_spec.protect_windows,
+                    )
+                    controller_state = action.state
+                    event = action.event
+                    if event in (Event.FEASIBILITY_BIRTH, Event.COLUMN_PROBE):
+                        assert controller_component_grad is not None
+                        candidate = choose_birth_candidate(
+                            state,
+                            active,
+                            controller_component_grad,
+                            batch,
+                            random.fold_in(run_key, now_step + 0x811),
+                        )
+                        assert candidate is not None, "controller emitted birth with no spare slot"
+                        snapshot = state
+                        state = birth_slot(
+                            state, candidate.site, candidate.slot, candidate.direction
+                        )
+                        active = _with_active_slot(active, candidate.site, candidate.slot, True)
+                        protected = protected_mask(
+                            state.decomposition.components, candidate.site, candidate.slot
+                        )
+                        trial = _LifecycleTrial(
+                            event=event,
+                            snapshot=snapshot,
+                            site=candidate.site,
+                            slot=candidate.slot,
+                            baseline_r_adv=settled.r_adv,
+                            baseline_complexity=settled.complexity,
+                            protected_reads_left=control_spec.protect_windows,
+                            settlement=SettlementState.initial(),
+                        )
+                        settlement_state = SettlementState.initial()
+                    elif event in (Event.CAPACITY_EXHAUSTED, Event.NO_IMPROVING_COLUMN):
+                        controller_terminal = True
+
+            controller_record = {
+                "controller/r_adv": r_adv,
+                "controller/complexity_unscaled": complexity,
+                "controller/complexity_scale": controller_state.c,
+                "controller/logical_active": float(
+                    sum(int(mask.sum()) for mask in active.values())
+                ),
+                "controller/event": float(list(Event).index(event)),
+                "controller/verdict": verdict,
+                "controller/trial_active": float(trial is not None),
+            }
+
+        step_record = _combine_step_records(
+            _combine_step_records(train_record, eval_record), controller_record
+        )
         if step_record is not None:
             sink.log(now_step, step_record)
             window_t0 = time.time()

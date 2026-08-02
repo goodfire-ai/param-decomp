@@ -271,6 +271,7 @@ def test_fresh_pgd_component_grad_probe_runs_on_positionless_tms() -> None:
         state.decomposition.ci_fn,
         batch,
         jax.random.PRNGKey(4),
+        None,
         protected,
     )
     assert value.shape == () and jnp.isfinite(value)

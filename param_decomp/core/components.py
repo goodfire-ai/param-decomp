@@ -153,7 +153,7 @@ def init_stack_arrays_svd_null_tail(
         W = site_weights[spec.name].astype(jnp.float32)
         assert W.shape == (spec.d_out, spec.d_in), (spec.name, W.shape)
         r = min(spec.d_in, spec.d_out)
-        assert spec.C >= r, (
+        assert r <= spec.C, (
             f"svd_null_tail needs C >= min(d_in, d_out) at every site: "
             f"{spec.name} has C={spec.C} < {r}"
         )
@@ -205,6 +205,35 @@ def init_component_stacks(sites: tuple[SiteSpec, ...], key: Array) -> ComponentS
     the stacked persistence layout; the weight-delta channel carries the faithfulness
     residual at init (before faithfulness warmup)."""
     return ComponentStacks(stacks=init_stack_arrays(sites, key), site_slots=site_slots_for(sites))
+
+
+def mask_component_stacks(
+    stacks: ComponentStacks, active: dict[str, Array] | None
+) -> ComponentStacks:
+    """Zero every V/U leaf entry belonging to a logically inactive slot.
+
+    Apply this to gradients *and* post-optimizer updates: the former keeps Adam moments
+    exactly zero, while the latter also removes decoupled weight decay. ``None`` is the
+    ordinary dense/no-lifecycle identity.
+    """
+    if active is None:
+        return stacks
+    assert set(active) == set(stacks.site_names), (sorted(active), sorted(stacks.site_names))
+    masks: dict[VUShape, Array] = {
+        shape: jnp.zeros((length, shape[2]), bool)
+        for shape, length in stacks.group_lengths().items()
+    }
+    for site, shape, stack_idx in stacks.site_slots:
+        mask = active[site]
+        assert mask.shape == (shape[2],), (site, mask.shape, shape)
+        masks[shape] = masks[shape].at[stack_idx].set(mask)
+    return ComponentStacks(
+        stacks={
+            shape: (V * masks[shape][:, None, :], U * masks[shape][:, :, None])
+            for shape, (V, U) in stacks.stacks.items()
+        },
+        site_slots=stacks.site_slots,
+    )
 
 
 def site_out(

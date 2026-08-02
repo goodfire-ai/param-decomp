@@ -183,6 +183,7 @@ def train(
         sink=sink,
         mesh=mesh,
         placement_rules=placement.from_config(runtime.sharding, mesh, model.sites),
+        controller_component_grad=None,
     )
 
 

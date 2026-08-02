@@ -376,3 +376,22 @@ def truncate_active_prefix(state: TrainState, active_by_site: dict[str, int]) ->
                 ci_moments=(zeros_w, zero, zeros_w, zero),
             )  # fmt: skip
     return state
+
+
+def set_null_probe_factors(
+    state: TrainState, site: str, slot: int, v_col: Array, u_row: Array
+) -> TrainState:
+    """Set one scratch slot's factors without touching its CI head or optimizer state.
+
+    Exactly one factor must remain zero, so every alternating GradMax probe is function-
+    preserving. This is a read-only oracle operation: the returned ephemeral state is fed
+    to a component-gradient probe, never committed to training.
+    """
+    assert bool(jnp.all(v_col == 0.0)) or bool(jnp.all(u_row == 0.0)), (
+        "a scratch probe must keep one factor exactly zero"
+    )
+    components = _edited_stacks(state.decomposition.components, site, slot, v_col, u_row)
+    return TrainState(
+        decomposition=Decomposition(components=components, ci_fn=state.decomposition.ci_fn),
+        training=state.training,
+    )

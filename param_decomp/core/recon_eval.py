@@ -11,7 +11,7 @@ from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from param_decomp.core.adversary import init_fresh_pgd_sources, source_masks
-from param_decomp.core.ci_fn import CIFn, protect_ci
+from param_decomp.core.ci_fn import CIFn, control_ci
 from param_decomp.core.components import ComponentStacks, SiteSpec
 from param_decomp.core.jit_util import filter_jit
 from param_decomp.core.model import DecomposedModel
@@ -32,6 +32,7 @@ type FreshPGDComponentGradStep = Callable[
         CIFn,
         Any,
         PRNGKeyArray,
+        dict[str, Array] | None,
         dict[str, Array] | None,
     ],
     tuple[Float[Array, ""], ComponentStacks],
@@ -182,6 +183,7 @@ def make_fresh_pgd_component_grad_step(
         ci_fn: CIFn,
         inputs: Any,
         key: PRNGKeyArray,
+        active: dict[str, Array] | None,
         protected: dict[str, Array] | None,
     ) -> tuple[Array, ComponentStacks]:
         inputs = batch_sharded(inputs)
@@ -191,8 +193,10 @@ def make_fresh_pgd_component_grad_step(
         assert len(leading) == leading_rank, (leading, model_static.has_position_axis)
         ci_lower = {
             site: ci_shard(value)
-            for site, value in protect_ci(
-                cast_floating(ci_fn, COMPUTE_DT)(taps, remat=False), protected
+            for site, value in control_ci(
+                cast_floating(ci_fn, COMPUTE_DT)(taps, remat=False),
+                active=active,
+                protected=protected,
             ).lower.items()
         }
 

@@ -265,6 +265,7 @@ def run_resid_mlp_decomposition(
         sink=sink,
         mesh=mesh,
         placement_rules=placement.from_config("ddp", mesh, model.sites),
+        controller_component_grad=None,
     )
 
 

@@ -620,6 +620,7 @@ class ReconBudgetControlConfig(BaseConfig):
     settle_rtol: NonNegativeFloat = 0.02
     settle_atol: NonNegativeFloat = 1e-8
     protect_windows: PositiveInt = 3
+    initial_active_slots: dict[str, PositiveInt] | None = None
 
     @model_validator(mode="after")
     def validate_multiplicative_steps(self) -> Self:

@@ -34,8 +34,8 @@ from param_decomp.core.adversary import (
     mixed_persistent_stochastic_masks,
     source_masks,
 )
-from param_decomp.core.ci_fn import CI, CIFn, protect_ci
-from param_decomp.core.components import ComponentStacks
+from param_decomp.core.ci_fn import CI, CIFn, control_ci
+from param_decomp.core.components import ComponentStacks, mask_component_stacks
 from param_decomp.core.configs import SmoothL0ImportanceMinimalityLossConfig
 from param_decomp.core.jit_util import filter_jit
 from param_decomp.core.losses import (
@@ -108,15 +108,17 @@ class StepControls:
     """Host-controller inputs to one train step (the recon-budget / capacity-birth control
     laws, task #811): `complexity_scale` multiplies the COMBINED imp-min + frequency force
     (they are one local gate pressure — scaling only one leaves the other as an unrelaxable
-    pruning force at the controller floor), `protected` holds birth-protected slots at CI
-    exactly 1 (see `ci_fn.protect_ci`). `constant()` is the no-controller identity."""
+    pruning force at the controller floor); `active` freezes unused physical slots in both
+    factor and CI optimization; `protected` holds active newborn gates at CI exactly 1 while
+    they acquire signal. `constant()` is the no-controller identity."""
 
     complexity_scale: Array
+    active: dict[str, Array] | None
     protected: dict[str, Array] | None
 
     @staticmethod
     def constant() -> "StepControls":
-        return StepControls(complexity_scale=jnp.ones((), jnp.float32), protected=None)
+        return StepControls(complexity_scale=jnp.ones((), jnp.float32), active=None, protected=None)
 
 
 def _grad_norm_metrics(components_grad: ComponentStacks, ci_fn_grad: Any) -> dict[str, Array]:
@@ -361,8 +363,9 @@ def make_train_step(
             # protect_ci INSIDE the vjp'd fn: the `where` must sit between the CI fn and
             # every consumer so protected slots see zero gradient, not a post-hoc value edit.
             ci, ci_vjp = eqx.filter_vjp(
-                lambda cf: protect_ci(
+                lambda cf: control_ci(
                     ci_batch_sharded(cast_floating(cf, COMPUTE_DT)(taps, remat=remat_ci_fn)),
+                    controls.active,
                     controls.protected,
                 ),
                 decomposition.ci_fn,
@@ -585,10 +588,13 @@ def make_train_step(
         prepared_grad, components_grad_faith, ci_grad, persistent_grads_scaled = grads
         components_grad_recon = recon_vjp(prepared_grad)[0]
         ci_fn_grad = ci_vjp(ci_grad)[0]
-        components_grad = jax.tree.map(
-            lambda recon_g, faith_g: recon_g + faith_g,
-            components_grad_recon,
-            components_grad_faith,
+        components_grad = mask_component_stacks(
+            jax.tree.map(
+                lambda recon_g, faith_g: recon_g + faith_g,
+                components_grad_recon,
+                components_grad_faith,
+            ),
+            controls.active,
         )
         grad_norm_metrics = _grad_norm_metrics(components_grad, ci_fn_grad)
 
@@ -603,10 +609,12 @@ def make_train_step(
         }
 
         components_updates, new_components_opt_state = components_optimizer.update(
-            components_grad,
+            components_grad,  # pyright: ignore[reportArgumentType] -- optax's Updates omits pytrees
             training.components_opt_state,
             eqx.filter(decomposition.components, eqx.is_array),
         )
+        assert isinstance(components_updates, ComponentStacks)
+        components_updates = mask_component_stacks(components_updates, controls.active)
         ci_fn_updates, new_ci_fn_opt_state = ci_fn_optimizer.update(
             ci_fn_grad, training.ci_fn_opt_state, eqx.filter(decomposition.ci_fn, eqx.is_array)
         )

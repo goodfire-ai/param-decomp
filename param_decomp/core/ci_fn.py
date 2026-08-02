@@ -104,23 +104,45 @@ class CI:
         )
 
 
-def protect_ci(ci: CI, protected: dict[str, Array] | None) -> CI:
-    """Override protected slots to CI exactly 1 in BOTH squashings (the capacity-birth
-    lifecycle's protected-open gate): the mask pins to 1 (S1), neither adversary can touch
-    the slot, and the `where` zeroes the imp-min gradient into the underlying logit — the
-    slot is released to the minimality objective only when its protection mask drops.
-    `protected` maps a subset of sites to bool `[C]` masks; None is the no-op fast path."""
-    if protected is None:
+def control_ci(
+    ci: CI,
+    active: dict[str, Array] | None,
+    protected: dict[str, Array] | None,
+) -> CI:
+    """Apply logical-capacity state inside the CI VJP.
+
+    Inactive physical slots are pinned to exactly zero in both squashings, cutting every
+    gradient path from their output heads into the shared CI trunk. Protected newborns are
+    then pinned to one while they acquire signal. The masks map a subset (``protected``)
+    or all sites (``active``) to boolean ``[C]`` vectors; protection outside the active set
+    is an invalid lifecycle state.
+    """
+    if active is None and protected is None:
         return ci
-    assert set(protected) <= set(ci.lower), (sorted(protected), sorted(ci.lower))
+    if active is not None:
+        assert set(active) == set(ci.lower), (sorted(active), sorted(ci.lower))
+    if protected is not None:
+        assert set(protected) <= set(ci.lower), (sorted(protected), sorted(ci.lower))
 
-    def shielded(values: SiteDict) -> SiteDict:
-        return {
-            site: jnp.where(protected[site], 1.0, v) if site in protected else v
-            for site, v in values.items()
+    def controlled(values: SiteDict) -> SiteDict:
+        out = {
+            site: jnp.where(active[site], value, 0.0) if active is not None else value
+            for site, value in values.items()
         }
+        if protected is not None:
+            out = {
+                site: jnp.where(protected[site], 1.0, value) if site in protected else value
+                for site, value in out.items()
+            }
+        return out
 
-    return CI(logits=ci.logits, lower=shielded(ci.lower), upper=shielded(ci.upper))
+    return CI(logits=ci.logits, lower=controlled(ci.lower), upper=controlled(ci.upper))
+
+
+def protect_ci(ci: CI, protected: dict[str, Array] | None) -> CI:
+    """Backward-compatible protection-only spelling; controller code should use
+    :func:`control_ci` when it also carries an explicit logical active set."""
+    return control_ci(ci, active=None, protected=protected)
 
 
 @runtime_checkable
