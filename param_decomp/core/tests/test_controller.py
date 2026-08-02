@@ -72,7 +72,7 @@ def test_off_slack_reenters_below_hi() -> None:
     assert a1.state.phase is Phase.OFF and a1.state.hi == 2.0
     a2 = controller_update(a1.state, window(0.0), CFG, 3)  # OFF feasible -> re-enter
     assert a2.state.phase is Phase.CONTROL
-    assert a2.state.log_c < a1.state.hi
+    assert a1.state.hi is not None and a2.state.log_c < a1.state.hi
 
 
 def test_on_target_plateau_fires_column_probe_and_rejection_cools_down() -> None:
