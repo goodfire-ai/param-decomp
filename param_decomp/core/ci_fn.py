@@ -104,6 +104,25 @@ class CI:
         )
 
 
+def protect_ci(ci: CI, protected: dict[str, Array] | None) -> CI:
+    """Override protected slots to CI exactly 1 in BOTH squashings (the capacity-birth
+    lifecycle's protected-open gate): the mask pins to 1 (S1), neither adversary can touch
+    the slot, and the `where` zeroes the imp-min gradient into the underlying logit — the
+    slot is released to the minimality objective only when its protection mask drops.
+    `protected` maps a subset of sites to bool `[C]` masks; None is the no-op fast path."""
+    if protected is None:
+        return ci
+    assert set(protected) <= set(ci.lower), (sorted(protected), sorted(ci.lower))
+
+    def shielded(values: SiteDict) -> SiteDict:
+        return {
+            site: jnp.where(protected[site], 1.0, v) if site in protected else v
+            for site, v in values.items()
+        }
+
+    return CI(logits=ci.logits, lower=shielded(ci.lower), upper=shielded(ci.upper))
+
+
 @runtime_checkable
 class CIFn(Protocol):
     """`dict[InputTap, Array] -> CI`. `output_names` partition the model sites (asserted at

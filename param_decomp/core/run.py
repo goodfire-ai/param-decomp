@@ -61,7 +61,7 @@ from param_decomp.core.run_state import (
     configure_component_optimizer,
     init_train_state,
 )
-from param_decomp.core.train import TrainState, make_faith_warmup_step, make_train_step
+from param_decomp.core.train import StepControls, TrainState, make_faith_warmup_step, make_train_step
 
 
 @dataclasses.dataclass(frozen=True)
@@ -669,7 +669,9 @@ def run_decomposition_training[EvalContextT](
 
     for step in range(start_step, pd.steps):
         batch = sample_batch(step)
-        state, metrics = step_fn(model, state, batch, random.fold_in(run_key, step))
+        state, metrics = step_fn(
+            model, state, batch, random.fold_in(run_key, step), StepControls.constant()
+        )
 
         grad_norm_summary_window.append(
             {k: v for k, v in metrics.items() if k.startswith("grad_norms/summary/")}
