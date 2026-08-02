@@ -104,6 +104,25 @@ class CI:
         )
 
 
+def protect_ci(ci: CI, protected: dict[str, Array] | None) -> CI:
+    """Override protected slots to CI exactly 1 in BOTH squashings (the capacity-birth
+    lifecycle's protected-open gate): the mask pins to 1 (S1), neither adversary can touch
+    the slot, and the `where` zeroes the imp-min gradient into the underlying logit — the
+    slot is released to the minimality objective only when its protection mask drops.
+    `protected` maps a subset of sites to bool `[C]` masks; None is the no-op fast path."""
+    if protected is None:
+        return ci
+    assert set(protected) <= set(ci.lower), (sorted(protected), sorted(ci.lower))
+
+    def shielded(values: SiteDict) -> SiteDict:
+        return {
+            site: jnp.where(protected[site], 1.0, v) if site in protected else v
+            for site, v in values.items()
+        }
+
+    return CI(logits=ci.logits, lower=shielded(ci.lower), upper=shielded(ci.upper))
+
+
 @runtime_checkable
 class CIFn(Protocol):
     """`dict[InputTap, Array] -> CI`. `output_names` partition the model sites (asserted at
@@ -888,6 +907,53 @@ def init_global_mlp_ci_fn(
 
 
 # ----------------------------- construction (placement-agnostic) -----------------------------
+
+
+def pin_ci_head_null_tail(ci_fn: CIFn, sites: tuple[SiteSpec, ...]) -> CIFn:
+    """`svd_null_tail`'s CI half: zero the final head weights and set its bias to 1 for
+    the first min(d_in, d_out) slots of each site and 0 for the null tail, so CI starts
+    exactly 1 on the SVD slots and exactly 0 elsewhere regardless of C. Gradient reaches
+    the zeroed head weights through the hidden activations, so the head trains normally.
+    New leaves are placed onto the leaf they replace (`device_put` on its sharding)."""
+
+    def head_bias(spec: SiteSpec) -> Array:
+        r = min(spec.d_in, spec.d_out)
+        return jnp.where(jnp.arange(spec.C) < r, 1.0, 0.0)
+
+    def like(new: Array, old: Array) -> Array:
+        assert new.shape == old.shape, (new.shape, old.shape)
+        return jax.device_put(new.astype(old.dtype), old.sharding)
+
+    site_by_name = {spec.name: spec for spec in sites}
+    match ci_fn:
+        case LayerwiseMLPCIFn():
+            replaced = {
+                name: eqx.tree_at(
+                    lambda m: (m.weights[-1], m.biases[-1]),
+                    mlp,
+                    (
+                        like(jnp.zeros(mlp.weights[-1].shape), mlp.weights[-1]),
+                        like(head_bias(site_by_name[name]), mlp.biases[-1]),
+                    ),
+                )
+                for name, mlp in ci_fn.site_mlps.items()
+            }
+            return eqx.tree_at(lambda f: f.site_mlps, ci_fn, replaced)
+        case GlobalMLPCIFn():
+            bias = jnp.concatenate([head_bias(site_by_name[n]) for n in ci_fn.output_names])
+            return eqx.tree_at(
+                lambda f: (f.mlp.weights[-1], f.mlp.biases[-1]),
+                ci_fn,
+                (
+                    like(jnp.zeros(ci_fn.mlp.weights[-1].shape), ci_fn.mlp.weights[-1]),
+                    like(bias, ci_fn.mlp.biases[-1]),
+                ),
+            )
+        case _:
+            raise NotImplementedError(
+                f"svd_null_tail CI-head init is built for the MLP CI fns only, not "
+                f"{type(ci_fn).__name__} (the chunkwise per-site heads need their own surgery)"
+            )
 
 
 CIFnArch = ChunkwiseTransformerCIArch | LayerwiseMLPCIArch | GlobalMLPCIArch

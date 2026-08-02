@@ -33,6 +33,8 @@ from param_decomp.core.components import (
     ComponentStacks,
     SiteSpec,
     init_component_stacks,
+    init_stack_arrays_svd_null_tail,
+    site_slots_for,
 )
 from param_decomp.core.configs import SourceShape
 from param_decomp.core.model import PositionAxis, Positioned, Positionless
@@ -49,6 +51,28 @@ def init_component_stacks_placed(
     abstract = eqx.filter_eval_shape(partial(init_component_stacks, sites), key)
     placement = component_stacks_shardings(abstract, rules)
     return jax.jit(partial(init_component_stacks, sites), out_shardings=placement)(key)
+
+
+def init_component_stacks_svd_null_tail_placed(
+    sites: tuple[SiteSpec, ...],
+    site_weights: dict[str, Array],
+    key: PRNGKeyArray,
+    rules: PlacementRules,
+) -> ComponentStacks:
+    """`svd_null_tail` V/U init (see `PDConfig.component_init`), placed like
+    `init_component_stacks_placed`. `site_weights` are the frozen weights in
+    `weight_deltas` orientation (`[d_out, d_in]` per site), traced args so the SVD runs
+    device-side under the same jit+out_shardings pattern."""
+
+    def init(weights: dict[str, Array], k: PRNGKeyArray) -> ComponentStacks:
+        return ComponentStacks(
+            stacks=init_stack_arrays_svd_null_tail(sites, weights, k),
+            site_slots=site_slots_for(sites),
+        )
+
+    abstract = eqx.filter_eval_shape(init, site_weights, key)
+    placement = component_stacks_shardings(abstract, rules)
+    return jax.jit(init, out_shardings=placement)(site_weights, key)
 
 
 def init_ci_fn_placed(

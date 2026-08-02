@@ -577,6 +577,9 @@ class PlacementTableConfig(BaseConfig):
     activations: RuleConfig
 
 
+ComponentUpdateScaling = Literal["none", "c_covariant", "c_covariant_balanced"]
+
+
 class PDConfig(BaseConfig):
     """Algorithm specification: seed, losses, optimizers, faithfulness warmup.
 
@@ -607,6 +610,26 @@ class PDConfig(BaseConfig):
     )
     ci_fn_optimizer: AnyOptimizerConfig = Field(
         ..., description="Optimizer config for the CI function parameters"
+    )
+    component_update_scaling: ComponentUpdateScaling = Field(
+        default="none",
+        description=(
+            "Post-optimizer scaling for the bilinear V/U factors. `c_covariant` multiplies "
+            "V updates by sqrt(d_in/C) and U updates by d_in/C, so the first Adam step of "
+            "the represented matrix is approximately invariant to overcomplete C. "
+            "`c_covariant_balanced` fixes the exact V/U scale gauge at equal factor norms "
+            "and scales both updates by (d_in/C)^(3/4)."
+        ),
+    )
+    component_init: Literal["random", "svd_null_tail"] = Field(
+        default="random",
+        description=(
+            "V/U + CI-head initialization. `svd_null_tail` starts the first min(d_in, d_out) "
+            "slots at an exact SVD factorization of the target weight with CI pinned 1, and "
+            "every extra slot as an exact null (U row zero, prefix-stable random V column, CI "
+            "pinned 0) — so every C >= rank(W) starts from the same represented matrix, "
+            "reconstruction, and L0 (the C-nesting property the random init lacks)."
+        ),
     )
     steps: PositiveInt = Field(..., description="Total number of optimisation steps")
     batch_size: PositiveInt = Field(

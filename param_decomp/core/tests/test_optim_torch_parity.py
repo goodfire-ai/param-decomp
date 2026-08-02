@@ -6,6 +6,8 @@
   optax's eps-free `clip_by_global_norm`.
 """
 
+from typing import Any, cast
+
 import jax
 import jax.numpy as jnp
 import optax
@@ -14,11 +16,17 @@ from jax.typing import ArrayLike
 from jaxtyping import Array
 from pydantic import TypeAdapter
 
+from param_decomp.core.components import component_stacks_from_sites
 from param_decomp.core.configs import AdamWOptimizerConfig, AnyOptimizerConfig, MuonOptimizerConfig
 from param_decomp.core.run_state import (
     _optimizer_with_clip,
+    _transform_adam_moments_to_balanced_gauge,
+    balance_component_stacks,
     clip_by_global_norm_with_eps,
+    gauge_balance_component_optimizer,
     optax_schedule,
+    scale_component_updates_c_covariant,
+    scale_component_updates_c_covariant_balanced,
     stacked_muon_dimension_numbers,
 )
 from param_decomp.core.schedule import Knot, ScheduleConfig
@@ -112,6 +120,25 @@ def test_grad_clip_noop_below_threshold():
     out = _clip(clip, grads)
     assert float(out["a"][0]) == pytest.approx(3.0)
     assert float(out["a"][1]) == pytest.approx(4.0)
+
+
+def test_c_covariant_component_scaling_is_post_optimizer_and_shape_aware():
+    updates = component_stacks_from_sites(
+        {
+            "wide": (jnp.ones((40, 200)), jnp.ones((200, 10))),
+            "tall": (jnp.ones((10, 40)), jnp.ones((40, 40))),
+        }
+    )
+    transform = scale_component_updates_c_covariant()
+    scaled, _ = transform.update(cast(Any, updates), transform.init(cast(Any, updates)))
+
+    wide_v, wide_u = cast(Any, scaled).site("wide")
+    assert jnp.allclose(wide_v, (40 / 200) ** 0.5)
+    assert jnp.allclose(wide_u, 40 / 200)
+
+    tall_v, tall_u = cast(Any, scaled).site("tall")
+    assert jnp.allclose(tall_v, (10 / 40) ** 0.5)
+    assert jnp.allclose(tall_u, 10 / 40)
 
 
 def test_muon_orthogonalizes_2d_leaves_and_adam_falls_back_elsewhere():
@@ -230,7 +257,7 @@ def test_stacked_muon_update_matches_optax_muon():
         state = opt.init(params)
         p = params
         for _ in range(2):
-            updates, state = opt.update(grads, state, p)
+            updates, state = opt.update(cast(Any, grads), state, cast(Any, p))
             p = jax.tree.map(lambda x, u: x + u, p, updates)
         return p
 
@@ -327,11 +354,11 @@ def test_stacked_muon_bf16_ns_is_sane():
         state = opt.init(params)
         p = params
         for _ in range(2):
-            raw, state = opt.update(grads, state, p)
+            raw, state = opt.update(cast(Any, grads), state, cast(Any, p))
             p = jax.tree.map(
                 lambda x, u: x + u, p, jax.tree.unflatten(treedef, jax.tree.leaves(raw))
             )
-        raw, state = opt.update(grads, state, p)
+        raw, state = opt.update(cast(Any, grads), state, cast(Any, p))
         return jax.tree.unflatten(treedef, jax.tree.leaves(raw)), state
 
     bf16_updates, bf16_state = run("bfloat16")
@@ -393,6 +420,71 @@ def test_stacked_muon_dim_numbers_fail_closed():
             {"k": jnp.zeros((3, 3, 8, 16))},
             optax.contrib.MuonDimensionNumbers(reduction_axis=-2, output_axis=-1),
         )
+
+
+def test_component_gauge_balance_preserves_each_rank_one_term():
+    V = jnp.array([[[3.0, 0.0, 1.0], [4.0, 0.0, -2.0]]])
+    U = jnp.array([[[12.0, 0.0], [2.0, -1.0], [0.0, 5.0]]])
+    components = component_stacks_from_sites({"site": (V[0], U[0])})
+
+    balanced, _ = balance_component_stacks(components)
+    Vb, Ub = cast(Any, balanced).site("site")
+
+    original_terms = jnp.einsum("ic,co->cio", V[0], U[0])
+    balanced_terms = jnp.einsum("ic,co->cio", Vb, Ub)
+    assert jnp.allclose(original_terms, balanced_terms)
+    non_null = (jnp.linalg.norm(V[0], axis=0) != 0) & (jnp.linalg.norm(U[0], axis=1) != 0)
+    assert jnp.allclose(
+        jnp.linalg.norm(Vb, axis=0)[non_null], jnp.linalg.norm(Ub, axis=1)[non_null]
+    )
+    assert jnp.array_equal(Vb[:, 1], V[0, :, 1])
+    assert jnp.array_equal(Ub[1], U[0, 1])
+
+
+def test_gauge_balanced_adam_retracts_update_and_transforms_moments():
+    params = component_stacks_from_sites(
+        {
+            "site": (
+                jnp.array([[1.0, -2.0], [3.0, 0.5], [-1.0, 4.0]]),
+                jnp.array([[2.0, -1.0], [0.25, 3.0]]),
+            )
+        }
+    )
+    grads = jax.tree.map(lambda x: jnp.arange(x.size, dtype=x.dtype).reshape(x.shape) + 1, params)
+    inner = optax.adamw(1e-2, weight_decay=0.0)
+
+    raw_updates, raw_state = inner.update(grads, inner.init(cast(Any, params)), cast(Any, params))
+    raw_proposed = optax.apply_updates(cast(Any, params), raw_updates)
+    expected, scales = balance_component_stacks(cast(Any, raw_proposed))
+    expected_state = _transform_adam_moments_to_balanced_gauge(raw_state, scales)
+
+    wrapped = gauge_balance_component_optimizer(inner)
+    updates, state = wrapped.update(grads, wrapped.init(cast(Any, params)), cast(Any, params))
+    actual = cast(Any, optax.apply_updates(cast(Any, params), updates))
+    assert all(
+        bool(jnp.allclose(a, b))
+        for a, b in zip(jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True)
+    )
+    assert all(
+        bool(jnp.allclose(a, b))
+        for a, b in zip(
+            jax.tree.leaves(cast(Any, state).inner_state),
+            jax.tree.leaves(expected_state),
+            strict=True,
+        )
+    )
+    V, U = actual.site("site")
+    assert jnp.allclose(jnp.linalg.norm(V, axis=0), jnp.linalg.norm(U, axis=1))
+
+
+def test_balanced_c_covariant_update_scaling():
+    updates = component_stacks_from_sites({"site": (jnp.ones((12, 48)), jnp.ones((48, 7)))})
+    transform = scale_component_updates_c_covariant_balanced()
+    scaled, _ = transform.update(cast(Any, updates), transform.init(cast(Any, updates)))
+    V, U = cast(Any, scaled).site("site")
+    expected = (12 / 48) ** 0.75
+    assert jnp.all(expected == V)
+    assert jnp.all(expected == U)
 
 
 def test_optimizer_config_type_discriminator():

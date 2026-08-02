@@ -34,7 +34,7 @@ from param_decomp.core.adversary import (
     mixed_persistent_stochastic_masks,
     source_masks,
 )
-from param_decomp.core.ci_fn import CI, CIFn
+from param_decomp.core.ci_fn import CI, CIFn, protect_ci
 from param_decomp.core.components import ComponentStacks
 from param_decomp.core.configs import SmoothL0ImportanceMinimalityLossConfig
 from param_decomp.core.jit_util import filter_jit
@@ -100,6 +100,23 @@ class TrainState:
 
     decomposition: Decomposition
     training: TrainingItem
+
+
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class StepControls:
+    """Host-controller inputs to one train step (the recon-budget / capacity-birth control
+    laws, task #811): `complexity_scale` multiplies the COMBINED imp-min + frequency force
+    (they are one local gate pressure — scaling only one leaves the other as an unrelaxable
+    pruning force at the controller floor), `protected` holds birth-protected slots at CI
+    exactly 1 (see `ci_fn.protect_ci`). `constant()` is the no-controller identity."""
+
+    complexity_scale: Array
+    protected: dict[str, Array] | None
+
+    @staticmethod
+    def constant() -> "StepControls":
+        return StepControls(complexity_scale=jnp.ones((), jnp.float32), protected=None)
 
 
 def _grad_norm_metrics(components_grad: ComponentStacks, ci_fn_grad: Any) -> dict[str, Array]:
@@ -306,7 +323,12 @@ def make_train_step(
         state: TrainState,
         batch: Any,
         key: PRNGKeyArray,
+        controls: StepControls | None = None,
     ) -> tuple[TrainState, dict[str, Array]]:
+        # None resolves at TRACE time (static) to the no-controller identity — the default
+        # exists so the controller seam costs existing callers nothing.
+        if controls is None:
+            controls = StepControls.constant()
         decomposition = state.decomposition
         training = state.training
         step_f32 = training.step.astype(jnp.float32)
@@ -336,8 +358,13 @@ def make_train_step(
         # (≈10x-the-target) CI fn is forward-evaluated ONCE, not once detached for the ascend +
         # once inside the main backward.
         with jax.named_scope("pd_ci_fn_fwd"):
+            # protect_ci INSIDE the vjp'd fn: the `where` must sit between the CI fn and
+            # every consumer so protected slots see zero gradient, not a post-hoc value edit.
             ci, ci_vjp = eqx.filter_vjp(
-                lambda cf: ci_batch_sharded(cast_floating(cf, COMPUTE_DT)(taps, remat=remat_ci_fn)),
+                lambda cf: protect_ci(
+                    ci_batch_sharded(cast_floating(cf, COMPUTE_DT)(taps, remat=remat_ci_fn)),
+                    controls.protected,
+                ),
                 decomposition.ci_fn,
             )
         ci_lower_detached = jax.lax.stop_gradient(ci).lower
@@ -542,7 +569,9 @@ def make_train_step(
                     )  # fmt: skip
                 term_losses.append(total / len(draws))
 
-            total_loss = faith_coeff * faith_loss + imp_coeff * imp_lp + freq_coeff * imp_freq
+            total_loss = faith_coeff * faith_loss + controls.complexity_scale * (
+                imp_coeff * imp_lp + freq_coeff * imp_freq
+            )
             for term, term_loss in zip(recon_terms, term_losses, strict=True):
                 total_loss = total_loss + term.coeff * term_loss
             return total_loss, (faith_loss, imp_lp, imp_freq, tuple(term_losses))
@@ -599,6 +628,7 @@ def make_train_step(
             imp_loss_key: imp_lp,
             "freq": imp_freq,
             imp_min_param_key: imp_min_param,
+            "controls/complexity_scale": controls.complexity_scale,
             **{f"loss/{t.name}": v for t, v in zip(recon_terms, term_losses, strict=True)},
             **grad_norm_metrics,
         }
