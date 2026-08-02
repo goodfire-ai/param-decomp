@@ -352,3 +352,27 @@ def protected_mask(components: ComponentStacks, site: str, slot: int) -> dict[st
     _, U = components.site(site)
     C = U.shape[0]
     return {site: jnp.zeros((C,), bool).at[slot].set(True)}
+
+
+def truncate_active_prefix(state: TrainState, active_by_site: dict[str, int]) -> TrainState:
+    """Turn every slot at or beyond `active_by_site[site]` into an exact inactive null:
+    U row zero, CI-head column zero with bias 0 (closed, NOT protected-open — these are
+    dead capacity, not newborns), and the slot's Adam moments cleared in both
+    optimizers. V columns keep their values (null-ness is defined by the U row; see
+    `find_inactive_slot`). Idempotent. This is how an acceptance case authors
+    'physical Cmax with a smaller logical active width' without a second initializer."""
+    for site, k in active_by_site.items():
+        V, U = state.decomposition.components.site(site)
+        assert 0 < k <= U.shape[0], (site, k, U.shape)
+        zeros_w = jnp.zeros_like(_ci_head_leaves(state.decomposition.ci_fn, site)[0][:, 0])
+        zero = jnp.zeros(())
+        for slot in range(k, U.shape[0]):
+            state = _edit_slot_everywhere(
+                state, site, slot,
+                v_col=V[:, slot], u_row=jnp.zeros((U.shape[1],)),
+                ci_w_col=zeros_w, ci_b_val=zero,
+                vu_moments=(jnp.zeros((V.shape[0],)), jnp.zeros((U.shape[1],)),
+                            jnp.zeros((V.shape[0],)), jnp.zeros((U.shape[1],))),
+                ci_moments=(zeros_w, zero, zeros_w, zero),
+            )  # fmt: skip
+    return state
