@@ -115,23 +115,42 @@ def test_only_selected_slot_and_moments_change() -> None:
     assert born.decomposition.ci_fn.site_mlps["s1"].biases[-1][4] == 1.0
 
 
-def test_rollback_is_bitwise_exact() -> None:
+def test_rollback_restores_the_entire_pretrial_frontier() -> None:
+    import equinox as eqx
+
     state = make_state(jax.random.key(7))
     snap = snapshot_trial(state, "s1", 4)
     born = birth_slot(state, "s1", 4, jax.random.normal(jax.random.key(8), (8,)))
-    # simulate the trial training the slot: perturb its slices everywhere
-    poked = birth_slot(born, "s1", 4, jax.random.normal(jax.random.key(9), (8,)))
-    restored = rollback_trial(poked, snap)
-    for getter in (
-        lambda s: s.decomposition.components.site("s1")[0],
-        lambda s: s.decomposition.components.site("s1")[1],
-        lambda s: s.decomposition.ci_fn.site_mlps["s1"].weights[-1],
-        lambda s: s.decomposition.ci_fn.site_mlps["s1"].biases[-1],
+
+    # contaminate EVERYTHING an ongoing probe trains: an unrelated slot, a CI hidden
+    # layer, both optimizer states, and the step counter
+    contaminated = birth_slot(
+        # unrelated-slot edit via the public path (slot 5 is also null)
+        born, "s1", 5, jax.random.normal(jax.random.key(9), (8,))
+    )
+    hidden_w = contaminated.decomposition.ci_fn.site_mlps["s2"].weights[0]
+    contaminated = eqx.tree_at(
+        lambda s: s.decomposition.ci_fn.site_mlps["s2"].weights[0],
+        contaminated, hidden_w + 1.0,
+    )  # fmt: skip
+    contaminated = eqx.tree_at(
+        lambda s: s.training.step, contaminated, contaminated.training.step + 7
+    )
+    bumped_opts = jax.tree_util.tree_map(
+        lambda leaf: leaf + 1 if hasattr(leaf, "dtype") else leaf,
+        (contaminated.training.components_opt_state, contaminated.training.ci_fn_opt_state),
+    )
+    contaminated = eqx.tree_at(
+        lambda s: (s.training.components_opt_state, s.training.ci_fn_opt_state),
+        contaminated, bumped_opts,
+    )  # fmt: skip
+
+    restored = rollback_trial(snap)
+    for a, b in zip(
+        jax.tree_util.tree_leaves(eqx.filter(restored, eqx.is_array)),
+        jax.tree_util.tree_leaves(eqx.filter(state, eqx.is_array)),
+        strict=True,
     ):
-        assert jnp.array_equal(getter(restored), getter(state))
-    flat0 = jax.tree_util.tree_leaves(state.training.components_opt_state)
-    flat1 = jax.tree_util.tree_leaves(restored.training.components_opt_state)
-    for a, b in zip(flat0, flat1, strict=True):
         assert jnp.array_equal(a, b)
 
 
