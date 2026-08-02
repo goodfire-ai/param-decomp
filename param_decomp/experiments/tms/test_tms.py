@@ -25,7 +25,11 @@ from param_decomp.core.configs import (
 )
 from param_decomp.core.model import DecomposedModel
 from param_decomp.core.objective import build_objective
-from param_decomp.core.recon_eval import FreshPGDReconEval, make_fresh_pgd_eval_step
+from param_decomp.core.recon_eval import (
+    FreshPGDReconEval,
+    make_fresh_pgd_component_grad_step,
+    make_fresh_pgd_eval_step,
+)
 from param_decomp.core.schedule import ScheduleConfig
 from param_decomp.core.train import (
     Decomposition,
@@ -247,6 +251,31 @@ def test_fresh_pgd_eval_runs_on_positionless_tms() -> None:
     assert value.shape == ()
     assert jnp.isfinite(value)
     assert value >= 0.0
+
+
+def test_fresh_pgd_component_grad_probe_runs_on_positionless_tms() -> None:
+    cfg = _tiny_cfg()
+    sites = site_specs(cfg, _site_cs())
+    target = init_tms_target(cfg, jax.random.PRNGKey(0))
+    model, state, _ = _make_state_and_step(cfg, target, sites, total_steps=20)
+    batch = sample_sparse_features(
+        jax.random.PRNGKey(3), 16, cfg.n_features, 0.3, "at_least_zero_active"
+    )
+    grad_step = make_fresh_pgd_component_grad_step(
+        model, FreshPGDReconEval(n_steps=2, step_size=0.1), mesh=None, compiler_options={}
+    )
+    protected = {site.name: jnp.arange(site.C) == 0 for site in sites}
+    value, grad = grad_step(
+        model,
+        state.decomposition.components,
+        state.decomposition.ci_fn,
+        batch,
+        jax.random.PRNGKey(4),
+        protected,
+    )
+    assert value.shape == () and jnp.isfinite(value)
+    assert isinstance(grad, ComponentStacks)
+    assert all(jnp.isfinite(x).all() for pair in grad.stacks.values() for x in pair)
 
 
 def test_step_trains_positionless_no_persistent_sources():
