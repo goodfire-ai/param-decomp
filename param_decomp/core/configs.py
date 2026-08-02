@@ -580,6 +580,53 @@ class PlacementTableConfig(BaseConfig):
 ComponentUpdateScaling = Literal["none", "c_covariant", "c_covariant_balanced"]
 
 
+class ControllerObservableConfig(BaseConfig):
+    """Affine units for the authored reconstruction constraint observable.
+
+    ``metric_key`` names one scalar emitted by an authored eval operation. The controller
+    reads ``(metric - offset) / scale``; both constants are fixed for the run, so the model
+    cannot game a moving normalization. A TMS run may use a fixed zero-mask MSE ceiling as
+    ``scale``; an LM may instead author raw excess KL with ``offset`` equal to its unmasked
+    floor and ``scale=1``.
+    """
+
+    metric_key: str
+    offset: float = 0.0
+    scale: PositiveFloat
+
+
+class ReconBudgetControlConfig(BaseConfig):
+    """Slow host-side control of the combined minimality force.
+
+    The fast primal/CI/adversary dynamics remain inside the ordinary train step. This
+    config has no controller learning rate: settled windows bracket the largest feasible
+    complexity scale, so changing model scale does not introduce another tuned gain.
+    """
+
+    observable: ControllerObservableConfig
+    tau: float
+    noise_margin: NonNegativeFloat
+    initial_complexity_scale: PositiveFloat
+    max_complexity_scale: PositiveFloat
+    expand_factor: float = 4.0
+    resolution_factor: float = 1.05
+    dwell_windows: PositiveInt = 3
+    plateau_rtol: NonNegativeFloat = 0.02
+    probe_cooldown_windows: NonNegativeInt = 6
+    max_rejected_probes: PositiveInt = 3
+    settle_points: PositiveInt = 3
+    settle_rtol: NonNegativeFloat = 0.02
+    settle_atol: NonNegativeFloat = 1e-8
+    protect_windows: PositiveInt = 3
+
+    @model_validator(mode="after")
+    def validate_multiplicative_steps(self) -> Self:
+        assert self.expand_factor > 1.0, self.expand_factor
+        assert self.resolution_factor > 1.0, self.resolution_factor
+        assert self.settle_points >= 2, self.settle_points
+        return self
+
+
 class PDConfig(BaseConfig):
     """Algorithm specification: seed, losses, optimizers, faithfulness warmup.
 
@@ -619,6 +666,13 @@ class PDConfig(BaseConfig):
             "the represented matrix is approximately invariant to overcomplete C. "
             "`c_covariant_balanced` fixes the exact V/U scale gauge at equal factor norms "
             "and scales both updates by (d_in/C)^(3/4)."
+        ),
+    )
+    recon_budget_control: ReconBudgetControlConfig | None = Field(
+        default=None,
+        description=(
+            "Optional settled host controller over the combined importance+frequency "
+            "minimality force. Its constraint observable is an authored eval scalar."
         ),
     )
     component_init: Literal["random", "svd_null_tail"] = Field(

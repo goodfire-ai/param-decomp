@@ -194,9 +194,16 @@ def controller_update(
             # would re-test the value that already failed).
             return Action(
                 replace(
-                    state, phase=Phase.CONTROL, log_c=state.log_c - cfg.expand_log_step,
-                    lo=None, hi=None, dwell=0, prev_complexity=None,
-                    protect_windows_left=0, probe_cooldown=0, rejected_probes=0,
+                    state,
+                    phase=Phase.CONTROL,
+                    log_c=state.log_c - cfg.expand_log_step,
+                    lo=None,
+                    hi=None,
+                    dwell=0,
+                    prev_complexity=None,
+                    protect_windows_left=0,
+                    probe_cooldown=0,
+                    rejected_probes=0,
                 ),  # fmt: skip
                 Event.NONE,
             )
@@ -210,7 +217,9 @@ def controller_update(
                     return Action(replace(state, dwell=0), Event.CAPACITY_EXHAUSTED)
                 return Action(
                     replace(
-                        state, phase=Phase.BIRTH_PROTECTED, dwell=0,
+                        state,
+                        phase=Phase.BIRTH_PROTECTED,
+                        dwell=0,
                         protect_windows_left=protect_windows,
                     ),  # fmt: skip
                     Event.FEASIBILITY_BIRTH,
@@ -241,11 +250,9 @@ def controller_update(
             # plateau/column-probe logic must engage there too, or case-B probes
             # starve forever behind a permanent sign<0.
             if sign == 0 or (sign < 0 and converged_at_lo):
-                plateaued = (
-                    cooled.prev_complexity is not None
-                    and abs(window.complexity - cooled.prev_complexity)
-                    <= cfg.plateau_rtol * abs(cooled.prev_complexity)
-                )
+                plateaued = cooled.prev_complexity is not None and abs(
+                    window.complexity - cooled.prev_complexity
+                ) <= cfg.plateau_rtol * abs(cooled.prev_complexity)
                 dwell = cooled.dwell + 1 if plateaued else 0
                 next_state = replace(
                     cooled,
@@ -281,3 +288,93 @@ def controller_update(
             if target is None:
                 return Action(replace(updated, phase=Phase.OFF), Event.NONE)
             return Action(replace(updated, log_c=target), Event.NONE)
+
+
+@dataclass(frozen=True)
+class SettlementConfig:
+    points: int
+    rtol: float
+    atol: float
+
+    def __post_init__(self) -> None:
+        assert self.points >= 2, self.points
+        assert self.rtol >= 0.0, self.rtol
+        assert self.atol >= 0.0, self.atol
+
+
+@dataclass(frozen=True)
+class ControllerObservation:
+    """One authored-referee read paired with the primal window that preceded it.
+
+    ``qualified`` is the composition root's adversary-strength/validity gate. An
+    under-powered, failed, or stale referee read resets settling rather than being fed to
+    the outer controller as evidence of feasibility.
+    """
+
+    r_adv: float
+    complexity: float
+    spare_slot_exists: bool
+    qualified: bool = True
+
+
+@dataclass(frozen=True)
+class SettlementState:
+    observations: tuple[ControllerObservation, ...]
+
+    @staticmethod
+    def initial() -> "SettlementState":
+        return SettlementState(())
+
+
+def authored_observable(
+    record: dict[str, float], metric_key: str, offset: float, scale: float
+) -> float:
+    """Read an explicitly-authored scalar in fixed affine units.
+
+    Missing/non-finite values are bugs, not a reason to silently reuse the last referee
+    read. ``scale`` is fixed config state (never a moving model-produced denominator).
+    """
+    assert scale > 0.0, scale
+    assert metric_key in record, (metric_key, sorted(record))
+    value = float(record[metric_key])
+    assert math.isfinite(value), (metric_key, value)
+    return (value - offset) / scale
+
+
+def _settled(values: tuple[float, ...], cfg: SettlementConfig) -> bool:
+    mean = sum(values) / len(values)
+    return max(values) - min(values) <= cfg.atol + cfg.rtol * abs(mean)
+
+
+def observe_settled_window(
+    state: SettlementState,
+    observation: ControllerObservation,
+    cfg: SettlementConfig,
+) -> tuple[SettlementState, WindowSummary | None]:
+    """Accumulate independent referee/primal reads and emit only a settled window.
+
+    The buffer slides while either reconstruction or declared complexity is moving, then
+    clears after emission so controller dwell counts independent settled windows. Capacity
+    availability is lifecycle state, not a noisy metric; changing it mid-window is a caller
+    bug (the caller must reset settling after every birth/rollback).
+    """
+    for value in (observation.r_adv, observation.complexity):
+        assert math.isfinite(value), value
+    if not observation.qualified:
+        return SettlementState.initial(), None
+
+    observations = (*state.observations, observation)[-cfg.points :]
+    next_state = SettlementState(observations)
+    if len(observations) < cfg.points:
+        return next_state, None
+    spare_values = {o.spare_slot_exists for o in observations}
+    assert len(spare_values) == 1, "capacity changed without resetting the settlement buffer"
+    r_values = tuple(o.r_adv for o in observations)
+    complexity_values = tuple(o.complexity for o in observations)
+    if not (_settled(r_values, cfg) and _settled(complexity_values, cfg)):
+        return next_state, None
+    return SettlementState.initial(), WindowSummary(
+        r_adv=sum(r_values) / len(r_values),
+        complexity=sum(complexity_values) / len(complexity_values),
+        spare_slot_exists=observation.spare_slot_exists,
+    )

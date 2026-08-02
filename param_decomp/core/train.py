@@ -629,6 +629,7 @@ def make_train_step(
             "freq": imp_freq,
             imp_min_param_key: imp_min_param,
             "controls/complexity_scale": controls.complexity_scale,
+            "controls/complexity_unscaled": imp_coeff * imp_lp + freq_coeff * imp_freq,
             **{f"loss/{t.name}": v for t, v in zip(recon_terms, term_losses, strict=True)},
             **grad_norm_metrics,
         }

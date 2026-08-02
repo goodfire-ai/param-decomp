@@ -164,7 +164,65 @@ def test_complexity_stays_off_through_feasibility_birth_and_protection() -> None
         if a.state.phase is Phase.BIRTH_PROTECTED:
             assert a.state.c == 0.0
     # protection expiry re-enters control BELOW the last known-violating coefficient
-    expiry = next(
-        a.state for a in actions[birth_idx + 1 :] if a.state.phase is Phase.CONTROL
-    )
+    expiry = next(a.state for a in actions[birth_idx + 1 :] if a.state.phase is Phase.CONTROL)
     assert expiry.log_c < actions[birth_idx].state.log_c
+
+
+def test_authored_observable_uses_fixed_affine_units_and_fails_closed() -> None:
+    import pytest
+
+    from param_decomp.core.controller import authored_observable
+
+    assert authored_observable({"eval/recon": 0.5}, "eval/recon", 0.1, 0.2) == 2.0
+    with pytest.raises(AssertionError):
+        authored_observable({}, "eval/recon", 0.0, 1.0)
+    with pytest.raises(AssertionError):
+        authored_observable({"eval/recon": float("nan")}, "eval/recon", 0.0, 1.0)
+
+
+def test_settlement_gate_emits_independent_stable_windows_only() -> None:
+    from param_decomp.core.controller import (
+        ControllerObservation,
+        SettlementConfig,
+        SettlementState,
+        observe_settled_window,
+    )
+
+    cfg = SettlementConfig(points=3, rtol=0.02, atol=1e-8)
+    state = SettlementState.initial()
+    for r, c in [(0.20, 100.0), (0.15, 90.0), (0.10, 80.0)]:
+        state, settled = observe_settled_window(state, ControllerObservation(r, c, True), cfg)
+        assert settled is None
+    # Sliding reads become stationary; the first stable triple emits and clears.
+    emitted = []
+    for r, c in [(0.100, 80.0), (0.101, 80.5), (0.1005, 80.2)]:
+        state, settled = observe_settled_window(state, ControllerObservation(r, c, True), cfg)
+        if settled is not None:
+            emitted.append(settled)
+    assert len(emitted) == 1
+    assert len(state.observations) == 1  # the post-emission read starts the next independent window
+    assert abs(emitted[0].r_adv - (0.1 + 0.1 + 0.101) / 3) < 1e-12
+
+
+def test_unqualified_referee_resets_settlement_and_capacity_change_asserts() -> None:
+    import pytest
+
+    from param_decomp.core.controller import (
+        ControllerObservation,
+        SettlementConfig,
+        SettlementState,
+        observe_settled_window,
+    )
+
+    cfg = SettlementConfig(points=2, rtol=1.0, atol=0.0)
+    state, _ = observe_settled_window(
+        SettlementState.initial(), ControllerObservation(0.1, 10.0, True), cfg
+    )
+    state, settled = observe_settled_window(
+        state, ControllerObservation(0.1, 10.0, True, qualified=False), cfg
+    )
+    assert state == SettlementState.initial() and settled is None
+
+    state, _ = observe_settled_window(state, ControllerObservation(0.1, 10.0, True), cfg)
+    with pytest.raises(AssertionError, match="capacity changed"):
+        observe_settled_window(state, ControllerObservation(0.1, 10.0, False), cfg)
