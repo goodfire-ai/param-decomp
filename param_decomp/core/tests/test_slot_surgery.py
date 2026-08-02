@@ -150,3 +150,29 @@ def test_protected_mask_shape() -> None:
     mask = protected_mask(state.decomposition.components, "s1", 4)
     assert set(mask) == {"s1"} and mask["s1"].shape == (6,) and bool(mask["s1"][4])
     assert int(mask["s1"].sum()) == 1
+
+
+def test_truncate_active_prefix_nulls_tail_and_is_idempotent() -> None:
+    from param_decomp.core.slot_surgery import truncate_active_prefix
+
+    state = make_state(jax.random.key(20))
+    V, U = state.decomposition.components.site("s1")
+    truncated = truncate_active_prefix(state, {"s1": 2})
+    Vt, Ut = truncated.decomposition.components.site("s1")
+    assert jnp.array_equal(Ut[:2, :], U[:2, :])  # prefix untouched
+    assert jnp.all(Ut[2:, :] == 0.0)
+    assert jnp.array_equal(Vt, V)  # V columns preserved
+    assert find_inactive_slot(truncated.decomposition.components, "s1") == 2
+    # represented matrix is the prefix-only product (allclose: XLA reduction order
+    # differs between a 6-wide matmul with zero rows and a 2-wide matmul)
+    assert jnp.allclose(represented(truncated, "s1"), V[:, :2] @ U[:2, :], atol=1e-6)
+    b = truncated.decomposition.ci_fn.site_mlps["s1"].biases[-1]
+    assert jnp.all(b[2:] == 0.0)
+    again = truncate_active_prefix(truncated, {"s1": 2})
+    for a, c in zip(
+        jax.tree_util.tree_leaves((again.decomposition, again.training.components_opt_state)),
+        jax.tree_util.tree_leaves((truncated.decomposition, truncated.training.components_opt_state)),
+        strict=True,
+    ):
+        if hasattr(a, "shape"):
+            assert jnp.array_equal(a, c)
