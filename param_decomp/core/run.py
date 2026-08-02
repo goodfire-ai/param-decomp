@@ -60,6 +60,7 @@ from param_decomp.core.run_state import (
     build_optimizers,
     configure_component_optimizer,
     init_train_state,
+    uses_balanced_component_gauge,
 )
 from param_decomp.core.train import TrainState, make_faith_warmup_step, make_train_step
 
@@ -512,7 +513,7 @@ def _init_or_restore_state(
         # composition root before this engine is entered.
         prov = run.resume_provenance
         state = init_from_parent(prov.parent_run_dir / "ckpts", prov.parent_step, state)
-        if pd.component_update_scaling == "c_covariant_balanced":
+        if uses_balanced_component_gauge(pd.component_update_scaling):
             balanced, _ = balance_component_stacks(state.decomposition.components)
             state = dataclasses.replace(
                 state, decomposition=dataclasses.replace(state.decomposition, components=balanced)

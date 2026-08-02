@@ -577,7 +577,12 @@ class PlacementTableConfig(BaseConfig):
     activations: RuleConfig
 
 
-ComponentUpdateScaling = Literal["none", "c_covariant", "c_covariant_balanced"]
+ComponentUpdateScaling = Literal[
+    "none",
+    "c_covariant",
+    "c_covariant_balanced",
+    "function_covariant_balanced",
+]
 
 
 class PDConfig(BaseConfig):
@@ -618,7 +623,11 @@ class PDConfig(BaseConfig):
             "V updates by sqrt(d_in/C) and U updates by d_in/C, so the first Adam step of "
             "the represented matrix is approximately invariant to overcomplete C. "
             "`c_covariant_balanced` fixes the exact V/U scale gauge at equal factor norms "
-            "and scales both updates by (d_in/C)^(3/4)."
+            "and scales both updates by (d_in/C)^(3/4). "
+            "`function_covariant_balanced` uses a product-space LR: it balances the gauge "
+            "and divides both updates by C^(3/4) times the derived matrix-shape factor, "
+            "making the first represented-matrix Adam step covariant in C, width, and "
+            "aspect ratio under canonical initialization."
         ),
     )
     steps: PositiveInt = Field(..., description="Total number of optimisation steps")
