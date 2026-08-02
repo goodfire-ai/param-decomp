@@ -53,3 +53,13 @@ def test_choose_birth_candidate_power_iterates_implicit_matrix_gradient() -> Non
     assert jnp.abs(candidate.direction @ jnp.array([1.0, 0.0, 0.0, 0.0])) > 0.999
     # The input state is immutable: the scratch slot remains exact-null.
     assert jnp.all(state.decomposition.components.site("b")[1][2] == 0.0)
+
+
+def test_choose_birth_candidate_returns_none_for_zero_gradient() -> None:
+    state = _state()
+
+    def zero_probe(state, _batch, _key, _active, _protected):
+        return jnp.zeros(()), jax.tree.map(jnp.zeros_like, state.decomposition.components)
+
+    active = {site: jnp.array([True, True, False]) for site in ("a", "b")}
+    assert choose_birth_candidate(state, active, zero_probe, None, jax.random.key(4), 2) is None

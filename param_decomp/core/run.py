@@ -958,26 +958,38 @@ def run_decomposition_training[EvalContextT](
                             batch,
                             random.fold_in(run_key, now_step + 0x811),
                         )
-                        assert candidate is not None, "controller emitted birth with no spare slot"
-                        snapshot = snapshot_trial(state, candidate.site, candidate.slot)
-                        state = birth_slot(
-                            state, candidate.site, candidate.slot, candidate.direction
-                        )
-                        active = _with_active_slot(active, candidate.site, candidate.slot, True)
-                        protected = protected_mask(
-                            state.decomposition.components, candidate.site, candidate.slot
-                        )
-                        trial = _LifecycleTrial(
-                            event=event,
-                            snapshot=snapshot,
-                            site=candidate.site,
-                            slot=candidate.slot,
-                            baseline_r_adv=settled.r_adv,
-                            baseline_complexity=settled.complexity,
-                            protected_reads_left=control_spec.protect_windows,
-                            settlement=SettlementState.initial(),
-                        )
-                        settlement_state = SettlementState.initial()
+                        if candidate is None:
+                            # Capacity exists but the authored referee has no finite,
+                            # nonzero first-order column. This is a rejected direction,
+                            # not CAPACITY_EXHAUSTED and not a trainer crash.
+                            if event is Event.COLUMN_PROBE:
+                                controller_state = probe_rejected(controller_state, controller_cfg)
+                            else:
+                                controller_state = birth_rejected(controller_state)
+                                controller_terminal = True
+                                event = Event.NO_IMPROVING_COLUMN
+                            verdict = -1.0
+                            settlement_state = SettlementState.initial()
+                        else:
+                            snapshot = snapshot_trial(state, candidate.site, candidate.slot)
+                            state = birth_slot(
+                                state, candidate.site, candidate.slot, candidate.direction
+                            )
+                            active = _with_active_slot(active, candidate.site, candidate.slot, True)
+                            protected = protected_mask(
+                                state.decomposition.components, candidate.site, candidate.slot
+                            )
+                            trial = _LifecycleTrial(
+                                event=event,
+                                snapshot=snapshot,
+                                site=candidate.site,
+                                slot=candidate.slot,
+                                baseline_r_adv=settled.r_adv,
+                                baseline_complexity=settled.complexity,
+                                protected_reads_left=control_spec.protect_windows,
+                                settlement=SettlementState.initial(),
+                            )
+                            settlement_state = SettlementState.initial()
                     elif event in (Event.CAPACITY_EXHAUSTED, Event.NO_IMPROVING_COLUMN):
                         controller_terminal = True
 

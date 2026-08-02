@@ -126,7 +126,10 @@ def test_rollback_restores_the_entire_pretrial_frontier() -> None:
     # layer, both optimizer states, and the step counter
     contaminated = birth_slot(
         # unrelated-slot edit via the public path (slot 5 is also null)
-        born, "s1", 5, jax.random.normal(jax.random.key(9), (8,))
+        born,
+        "s1",
+        5,
+        jax.random.normal(jax.random.key(9), (8,)),
     )
     hidden_w = contaminated.decomposition.ci_fn.site_mlps["s2"].weights[0]
     contaminated = eqx.tree_at(
@@ -152,6 +155,24 @@ def test_rollback_restores_the_entire_pretrial_frontier() -> None:
         strict=True,
     ):
         assert jnp.array_equal(a, b)
+
+
+def test_snapshot_owns_buffers_across_donated_trial_steps() -> None:
+    import equinox as eqx
+
+    state = make_state(jax.random.key(71))
+    snap = snapshot_trial(state, "s1", 4)
+    trial = birth_slot(state, "s1", 4, jax.random.normal(jax.random.key(72), (8,)))
+
+    @eqx.filter_jit(donate="all")
+    def donated_step(state: TrainState) -> TrainState:
+        return jax.tree.map(lambda x: x + 1 if eqx.is_array(x) else x, state)
+
+    advanced = donated_step(trial)
+    jax.block_until_ready(advanced)
+    restored = rollback_trial(snap)
+    advanced_again = donated_step(restored)
+    jax.block_until_ready(advanced_again)
 
 
 def test_birth_refuses_non_null_slot_and_select_site_prefers_larger_signal() -> None:
@@ -190,7 +211,9 @@ def test_truncate_active_prefix_nulls_tail_and_is_idempotent() -> None:
     again = truncate_active_prefix(truncated, {"s1": 2})
     for a, c in zip(
         jax.tree_util.tree_leaves((again.decomposition, again.training.components_opt_state)),
-        jax.tree_util.tree_leaves((truncated.decomposition, truncated.training.components_opt_state)),
+        jax.tree_util.tree_leaves(
+            (truncated.decomposition, truncated.training.components_opt_state)
+        ),
         strict=True,
     ):
         if hasattr(a, "shape"):
