@@ -621,12 +621,22 @@ class ReconBudgetControlConfig(BaseConfig):
     settle_atol: NonNegativeFloat = 1e-8
     protect_windows: PositiveInt = 3
     initial_active_slots: dict[str, PositiveInt] | None = None
+    birth_block_cap: PositiveInt = 1
+    """Maximum scratch/birth slots priced per site in one lifecycle transaction. One
+    preserves serial v1; larger values are a systems work cap, not a selected rank."""
+    birth_validation_repeats: PositiveInt | None = None
+    """Independent fresh-referee signs required by block birth. Required exactly when
+    ``birth_block_cap > 1``; no raw singular-value floor enters the decision."""
 
     @model_validator(mode="after")
     def validate_multiplicative_steps(self) -> Self:
         assert self.expand_factor > 1.0, self.expand_factor
         assert self.resolution_factor > 1.0, self.resolution_factor
         assert self.settle_points >= 2, self.settle_points
+        assert (self.birth_block_cap == 1) == (self.birth_validation_repeats is None), (
+            self.birth_block_cap,
+            self.birth_validation_repeats,
+        )
         return self
 
 

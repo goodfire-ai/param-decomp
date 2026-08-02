@@ -65,7 +65,14 @@ from param_decomp.core.controller import (
     probe_accepted,
     probe_rejected,
 )
-from param_decomp.core.controller_runtime import ComponentGradientProbe, choose_birth_candidate
+from param_decomp.core.controller_runtime import (
+    BirthBatchCandidate,
+    BirthCandidate,
+    BirthSiteBatch,
+    ComponentGradientProbe,
+    choose_birth_batch,
+    choose_birth_candidate,
+)
 from param_decomp.core.eval_schedule import EvalSchedule, eval_due
 from param_decomp.core.metrics import BarChart, LogRecord, PNGImage
 from param_decomp.core.model import DecomposedModel, PositionAxis
@@ -79,9 +86,8 @@ from param_decomp.core.run_state import (
 )
 from param_decomp.core.slot_surgery import (
     TrialSnapshot,
-    birth_slot,
+    birth_slots,
     find_inactive_slot,
-    protected_mask,
     rollback_trial,
     snapshot_trial,
     truncate_active_prefix,
@@ -605,8 +611,7 @@ def _init_or_restore_state(
 class _LifecycleTrial:
     event: Event
     snapshot: TrialSnapshot
-    site: str
-    slot: int
+    slots_by_site: tuple[tuple[str, tuple[int, ...]], ...]
     baseline_r_adv: float
     baseline_complexity: float
     protected_reads_left: int
@@ -678,7 +683,10 @@ def _reject_lifecycle_trial(
 ) -> tuple[TrainState, dict[str, jax.Array], ControllerState]:
     """Abort one lifecycle transaction without disturbing its consumed schedule clock."""
     restored = _restore_rejected_trial(trial.snapshot, state.training.step)
-    restored_active = _with_active_slot(active, trial.site, trial.slot, False)
+    restored_active = active
+    for site, slots in trial.slots_by_site:
+        for slot in slots:
+            restored_active = _with_active_slot(restored_active, site, slot, False)
     match trial.event:
         case Event.COLUMN_PROBE:
             restored_controller = probe_rejected(controller_state, controller_cfg)
@@ -687,6 +695,20 @@ def _reject_lifecycle_trial(
         case unexpected:
             raise AssertionError(unexpected)
     return restored, restored_active, restored_controller
+
+
+def _serial_birth_batch(candidate: BirthCandidate) -> BirthBatchCandidate:
+    return BirthBatchCandidate(
+        (
+            BirthSiteBatch(
+                site=candidate.site,
+                slots=(candidate.slot,),
+                directions=candidate.direction[:, None],
+                sigmas=jnp.asarray([candidate.sigma]),
+                validation_scores=jnp.empty((0, 1)),
+            ),
+        )
+    )
 
 
 def run_decomposition_training[EvalContextT](
@@ -980,13 +1002,37 @@ def run_decomposition_training[EvalContextT](
                     event = action.event
                     if event in (Event.FEASIBILITY_BIRTH, Event.COLUMN_PROBE):
                         assert controller_component_grad is not None
-                        candidate = choose_birth_candidate(
-                            state,
-                            active,
-                            controller_component_grad,
-                            batch,
-                            random.fold_in(run_key, now_step + 0x811),
-                        )
+                        if control_spec.birth_block_cap == 1:
+                            serial_candidate = choose_birth_candidate(
+                                state,
+                                active,
+                                controller_component_grad,
+                                batch,
+                                random.fold_in(run_key, now_step + 0x811),
+                            )
+                            candidate = (
+                                _serial_birth_batch(serial_candidate)
+                                if serial_candidate is not None
+                                else None
+                            )
+                        else:
+                            assert control_spec.birth_validation_repeats is not None
+                            validation = tuple(
+                                (
+                                    sample_batch(now_step + pd.steps * (index + 1)),
+                                    random.fold_in(run_key, now_step + 0x8110 + index),
+                                )
+                                for index in range(control_spec.birth_validation_repeats)
+                            )
+                            candidate = choose_birth_batch(
+                                state,
+                                active,
+                                controller_component_grad,
+                                batch,
+                                random.fold_in(run_key, now_step + 0x811),
+                                validation,
+                                control_spec.birth_block_cap,
+                            )
                         if candidate is None:
                             # Capacity exists but the authored referee has no finite,
                             # nonzero first-order column. This is a rejected direction,
@@ -1000,19 +1046,27 @@ def run_decomposition_training[EvalContextT](
                             verdict = -1.0
                             settlement_state = SettlementState.initial()
                         else:
-                            snapshot = snapshot_trial(state, candidate.site, candidate.slot)
-                            state = birth_slot(
-                                state, candidate.site, candidate.slot, candidate.direction
-                            )
-                            active = _with_active_slot(active, candidate.site, candidate.slot, True)
-                            protected = protected_mask(
-                                state.decomposition.components, candidate.site, candidate.slot
-                            )
+                            first_site = candidate.sites[0]
+                            snapshot = snapshot_trial(state, first_site.site, first_site.slots[0])
+                            protected = {}
+                            for site_batch in candidate.sites:
+                                state = birth_slots(
+                                    state,
+                                    site_batch.site,
+                                    site_batch.slots,
+                                    site_batch.directions,
+                                )
+                                site_protected = jnp.zeros_like(active[site_batch.site])
+                                for slot in site_batch.slots:
+                                    active = _with_active_slot(active, site_batch.site, slot, True)
+                                    site_protected = site_protected.at[slot].set(True)
+                                protected[site_batch.site] = site_protected
                             trial = _LifecycleTrial(
                                 event=event,
                                 snapshot=snapshot,
-                                site=candidate.site,
-                                slot=candidate.slot,
+                                slots_by_site=tuple(
+                                    (site.site, site.slots) for site in candidate.sites
+                                ),
                                 baseline_r_adv=settled.r_adv,
                                 baseline_complexity=settled.complexity,
                                 protected_reads_left=control_spec.protect_windows,
@@ -1032,6 +1086,9 @@ def run_decomposition_training[EvalContextT](
                 "controller/event": float(list(Event).index(event)),
                 "controller/verdict": verdict,
                 "controller/trial_active": float(trial is not None),
+                "controller/trial_slots": float(
+                    sum(len(slots) for _, slots in trial.slots_by_site) if trial is not None else 0
+                ),
                 "controller/terminal_rollback": float(terminal_rollback),
             }
 

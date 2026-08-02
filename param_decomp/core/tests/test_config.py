@@ -20,6 +20,7 @@ from param_decomp.core.configs import (
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
     PGDReconLossConfig,
+    ReconBudgetControlConfig,
 )
 from param_decomp.core.losses import scheduled_value_traced
 from param_decomp.core.objective import build_objective
@@ -550,3 +551,21 @@ def test_attention_eval_geometry_is_target_owned_not_configurable() -> None:
 
     with pytest.raises(ValidationError, match="extra_forbidden"):
         LMExperimentConfig.model_validate(raw)
+
+
+def test_block_birth_requires_independent_referees_and_serial_forbids_dead_config() -> None:
+    raw = {
+        "observable": {"metric_key": "eval/loss/PGDReconLoss", "scale": 1.0},
+        "tau": 0.1,
+        "noise_margin": 0.01,
+        "initial_complexity_scale": 1.0,
+        "max_complexity_scale": 16.0,
+    }
+    serial = ReconBudgetControlConfig(**raw)
+    assert serial.birth_block_cap == 1 and serial.birth_validation_repeats is None
+    with pytest.raises(ValidationError):
+        ReconBudgetControlConfig(**raw, birth_block_cap=4)
+    with pytest.raises(ValidationError):
+        ReconBudgetControlConfig(**raw, birth_validation_repeats=2)
+    batch = ReconBudgetControlConfig(**raw, birth_block_cap=4, birth_validation_repeats=2)
+    assert (batch.birth_block_cap, batch.birth_validation_repeats) == (4, 2)
