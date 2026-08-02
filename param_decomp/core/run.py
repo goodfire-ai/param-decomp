@@ -638,6 +638,17 @@ def _controller_config(pd: PDConfig) -> tuple[ControllerConfig, SettlementConfig
     )
 
 
+def _controller_enabled_for_step(step: int, control_after_step: int) -> bool:
+    """Whether zero-based primal step ``step`` belongs to the controller trajectory.
+
+    ``control_after_step=N`` holds the initial force fixed for exactly the first N
+    completed steps. The first controller window therefore begins at zero-based step N,
+    after any schedule ending at the N-step boundary has finished.
+    """
+    assert step >= 0 and control_after_step >= 0, (step, control_after_step)
+    return step >= control_after_step
+
+
 def _controller_active_masks(
     model: DecomposedModel,
     active_by_site: dict[str, int],
@@ -830,6 +841,11 @@ def run_decomposition_training[EvalContextT](
     control_complexity_window: list[jax.Array] = []
     controller_terminal = False
     if control_spec is not None:
+        assert control_spec.control_after_step < pd.steps, (
+            "controller must start before the finite training horizon",
+            control_spec.control_after_step,
+            pd.steps,
+        )
         assert start_step == 0, (
             "controller prototype refuses resume until its host state checkpoints"
         )
@@ -880,7 +896,12 @@ def run_decomposition_training[EvalContextT](
             else StepControls.constant()
         )
         state, metrics = step_fn(model, state, batch, random.fold_in(run_key, step), controls)
-        if controller_state is not None:
+        controller_enabled = (
+            controller_state is not None
+            and control_spec is not None
+            and _controller_enabled_for_step(step, control_spec.control_after_step)
+        )
+        if controller_enabled:
             control_complexity_window.append(metrics["controls/complexity_unscaled"])
 
         grad_norm_summary_window.append(
@@ -947,7 +968,8 @@ def run_decomposition_training[EvalContextT](
         )
         controller_record: LogRecord | None = None
         if (
-            control_spec is not None
+            controller_enabled
+            and control_spec is not None
             and eval_record is not None
             and control_spec.observable.metric_key in eval_record
         ):

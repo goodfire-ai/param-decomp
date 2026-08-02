@@ -173,3 +173,16 @@ def test_controller_refuses_warmup_with_inactive_suffix() -> None:
     model = SimpleNamespace(sites=sites, site_names=("a",))
     with pytest.raises(AssertionError, match="warmup would fill"):
         _controller_active_masks(model, {"a": 4}, "svd_null_tail", 1)
+
+
+def test_controller_activation_starts_after_exact_completed_step_boundary() -> None:
+    from param_decomp.core.run import _controller_enabled_for_step
+
+    assert [_controller_enabled_for_step(step, control_after_step=3) for step in range(6)] == [
+        False,
+        False,
+        False,
+        True,
+        True,
+        True,
+    ]

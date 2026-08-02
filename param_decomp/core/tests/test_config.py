@@ -560,8 +560,10 @@ def test_block_birth_requires_independent_referees_and_serial_forbids_dead_confi
         "noise_margin": 0.01,
         "initial_complexity_scale": 1.0,
         "max_complexity_scale": 16.0,
+        "control_after_step": 20,
     }
     serial = ReconBudgetControlConfig(**raw)
+    assert serial.control_after_step == 20
     assert serial.birth_block_cap == 1 and serial.birth_validation_repeats is None
     with pytest.raises(ValidationError):
         ReconBudgetControlConfig(**raw, birth_block_cap=4)

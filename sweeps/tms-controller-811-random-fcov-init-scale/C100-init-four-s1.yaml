@@ -98,6 +98,7 @@ pd:
     noise_margin: 0.0001
     initial_complexity_scale: 4.0
     max_complexity_scale: 256.0
+    control_after_step: 20000
     expand_factor: 4.0
     resolution_factor: 1.1
     dwell_windows: 1

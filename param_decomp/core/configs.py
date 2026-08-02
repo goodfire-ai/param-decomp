@@ -613,6 +613,10 @@ class ReconBudgetControlConfig(BaseConfig):
     noise_margin: NonNegativeFloat
     initial_complexity_scale: PositiveFloat
     max_complexity_scale: PositiveFloat
+    control_after_step: NonNegativeInt = 0
+    """Number of completed primal-training steps before the controller may observe or
+    update. The initial complexity scale remains fixed through this boundary, allowing
+    authored schedules such as gamma/LR anneals to settle before the outer loop starts."""
     expand_factor: float = 4.0
     resolution_factor: float = 1.05
     dwell_windows: PositiveInt = 3
