@@ -219,3 +219,57 @@ def test_truncate_active_prefix_nulls_tail_and_is_idempotent() -> None:
     ):
         if hasattr(a, "shape"):
             assert jnp.array_equal(a, c)
+
+
+def test_snapshot_owns_independent_buffers() -> None:
+    # the train step donates its state buffers; a snapshot holding references would be
+    # invalidated by the next step, so every array leaf must be an independent copy
+    state = make_state(jax.random.key(30))
+    snap = snapshot_trial(state, "s1", 4)
+    src_leaves = [
+        x for x in jax.tree_util.tree_leaves(state) if hasattr(x, "unsafe_buffer_pointer")
+    ]
+    snap_leaves = [
+        x for x in jax.tree_util.tree_leaves(snap.state) if hasattr(x, "unsafe_buffer_pointer")
+    ]
+    assert len(src_leaves) == len(snap_leaves) and src_leaves
+    for a, b in zip(src_leaves, snap_leaves, strict=True):
+        assert a.unsafe_buffer_pointer() != b.unsafe_buffer_pointer()
+        assert jnp.array_equal(a, b)
+
+
+def test_batched_birth_is_function_preserving_and_per_slot_gradients_match_modes() -> None:
+    from param_decomp.core.slot_surgery import birth_directions_from_grad, birth_slots
+
+    state = make_state(jax.random.key(40))
+    target = jax.random.normal(jax.random.key(41), (8, 4))
+    before = represented(state, "s1")
+    G = jax.grad(lambda M: 0.5 * jnp.sum((M - target) ** 2))(before)
+    P, sigmas = birth_directions_from_grad(G, 2)
+    assert jnp.allclose(P.T @ P, jnp.eye(2), atol=1e-5)
+    assert bool(sigmas[0] >= sigmas[1])
+
+    born = birth_slots(state, "s1", (4, 5), P)
+    assert jnp.array_equal(represented(born, "s1"), before)  # exact, whole batch
+
+    def loss_from_components(components: Any) -> jax.Array:
+        V, U = components.site("s1")
+        return 0.5 * jnp.sum((V @ U - target) ** 2)
+
+    _, gU = jax.grad(loss_from_components)(born.decomposition.components).site("s1")
+    for i, slot in enumerate((4, 5)):
+        assert jnp.allclose(jnp.linalg.norm(gU[slot, :]), sigmas[i], rtol=1e-4)
+
+
+def test_batched_birth_refuses_non_orthonormal_and_duplicate_slots() -> None:
+    from param_decomp.core.slot_surgery import birth_slots
+
+    state = make_state(jax.random.key(42))
+    v = jax.random.normal(jax.random.key(43), (8,))
+    v = v / jnp.linalg.norm(v)
+    doubled = jnp.stack([v, v], axis=1)  # rank-1 "batch"
+    with pytest.raises(AssertionError):
+        birth_slots(state, "s1", (4, 5), doubled)
+    ortho = jnp.linalg.qr(jax.random.normal(jax.random.key(44), (8, 2)))[0]
+    with pytest.raises(AssertionError):
+        birth_slots(state, "s1", (4, 4), ortho)

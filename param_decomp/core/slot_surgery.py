@@ -230,8 +230,12 @@ def _edit_slot_everywhere(
     new_vu_opt = _replace_adam(
         state.training.components_opt_state,
         vu_adam._replace(
-            mu=_edited_stacks(cast(ComponentStacks, cast(object, vu_adam.mu)), site, slot, mu_v, mu_u),
-            nu=_edited_stacks(cast(ComponentStacks, cast(object, vu_adam.nu)), site, slot, nu_v, nu_u),
+            mu=_edited_stacks(
+                cast(ComponentStacks, cast(object, vu_adam.mu)), site, slot, mu_v, mu_u
+            ),
+            nu=_edited_stacks(
+                cast(ComponentStacks, cast(object, vu_adam.nu)), site, slot, nu_v, nu_u
+            ),
         ),
     )
 
@@ -364,3 +368,40 @@ def set_null_probe_factors(
         decomposition=Decomposition(components=components, ci_fn=state.decomposition.ci_fn),
         training=state.training,
     )
+
+
+def birth_directions_from_grad(
+    G: Float[Array, "d_in d_out"], k: int
+) -> tuple[Float[Array, "d_in k"], Float[Array, " k"]]:
+    """Top-k left singular directions of the represented-matrix gradient (columns
+    orthonormal, singular values descending). Selection policy — how many directions
+    deserve a slot — is deliberately the CALLER's: a noise floor here would be the next
+    scale-sensitive knob."""
+    assert 0 < k <= min(G.shape), (k, G.shape)
+    P, s, _ = jnp.linalg.svd(G.astype(jnp.float32), full_matrices=False)
+    return P[:, :k], s[:k]
+
+
+def birth_slots(
+    state: TrainState, site: str, slots: tuple[int, ...], directions: Float[Array, "d_in k"]
+) -> TrainState:
+    """Atomic k-slot GradMax birth: column i of `directions` becomes slot i's live V
+    factor (orthonormal columns asserted — the top-k singular directions qualify by
+    construction), every paired U row stays exactly zero (the represented matrix is
+    unchanged for the WHOLE batch), and only the selected slots' CI-head columns/biases
+    and Adam moments are edited. One `snapshot_trial` covers the batch — the snapshot is
+    the full pre-trial state, so a batched rollback needs nothing extra. Collapses the
+    serial-birth lifecycle horizon from (capacity deficit) x settle to ~deficit/k."""
+    assert len(slots) == len(set(slots)) > 0, slots
+    assert directions.shape[1] == len(slots), (directions.shape, slots)
+    gram = directions.astype(jnp.float32).T @ directions.astype(jnp.float32)
+    assert bool(jnp.allclose(gram, jnp.eye(len(slots)), atol=1e-5)), (
+        "birth directions must be orthonormal (a non-orthogonal batch double-spends "
+        "the same demand direction across slots)"
+    )
+    _, U = state.decomposition.components.site(site)
+    for slot in slots:
+        assert bool(jnp.all(U[slot, :] == 0.0)), f"slot {slot} of {site} is not an exact null"
+    for i, slot in enumerate(slots):
+        state = birth_slot(state, site, slot, directions[:, i])
+    return state
