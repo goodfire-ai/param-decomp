@@ -107,7 +107,13 @@ class ControllerState:
 
     @property
     def c(self) -> float:
-        return 0.0 if self.phase is Phase.OFF else math.exp(self.log_c)
+        """BIRTH_PROTECTED is reachable only via FEASIBILITY_BIRTH (probes have their own
+        phase), and that birth fired because complexity-OFF was still infeasible —
+        reapplying pressure mid-growth would kill the newborn, so complexity stays OFF
+        through protected settling."""
+        if self.phase in (Phase.OFF, Phase.BIRTH_PROTECTED):
+            return 0.0
+        return math.exp(self.log_c)
 
 
 @dataclass(frozen=True)
@@ -182,12 +188,15 @@ def controller_update(
             if left > 0:
                 return Action(replace(state, protect_windows_left=left), Event.NONE)
             # feasibility protection expiry: the newborn moved the landscape -> fresh
-            # bracket, stale plateau and rejection lineage cleared.
+            # bracket, stale plateau and rejection lineage cleared, and control re-enters
+            # from a deliberately GENTLER probe than the last known-violating coefficient
+            # (complexity was OFF throughout protection; snapping back to exp(log_c)
+            # would re-test the value that already failed).
             return Action(
                 replace(
-                    state, phase=Phase.CONTROL, lo=None, hi=None, dwell=0,
-                    prev_complexity=None, protect_windows_left=0, probe_cooldown=0,
-                    rejected_probes=0,
+                    state, phase=Phase.CONTROL, log_c=state.log_c - cfg.expand_log_step,
+                    lo=None, hi=None, dwell=0, prev_complexity=None,
+                    protect_windows_left=0, probe_cooldown=0, rejected_probes=0,
                 ),  # fmt: skip
                 Event.NONE,
             )
@@ -221,7 +230,17 @@ def controller_update(
 
         case Phase.CONTROL:
             cooled = replace(state, probe_cooldown=max(0, state.probe_cooldown - 1))
-            if sign == 0:
+            converged_at_lo = (
+                state.lo is not None
+                and state.hi is not None
+                and state.hi - state.lo < cfg.resolution
+                and state.log_c == state.lo
+            )
+            # A converged bracket holds at feasible `lo`, whose sampled point is
+            # typically slack by more than the deadband (finite resolution) — the
+            # plateau/column-probe logic must engage there too, or case-B probes
+            # starve forever behind a permanent sign<0.
+            if sign == 0 or (sign < 0 and converged_at_lo):
                 plateaued = (
                     cooled.prev_complexity is not None
                     and abs(window.complexity - cooled.prev_complexity)

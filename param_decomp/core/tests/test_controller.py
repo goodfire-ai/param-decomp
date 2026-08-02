@@ -141,3 +141,30 @@ def test_no_feasibility_birth_while_slack() -> None:
     state = ControllerState.initial(0.0)
     actions = drive(state, [window(0.0)] * 20)
     assert Event.FEASIBILITY_BIRTH not in [a.event for a in actions]
+
+
+def test_converged_slack_bracket_still_fires_column_probe() -> None:
+    # boundary between lo and hi with the sampled lo strictly slack (beyond the deadband):
+    # a converged bracket must route into plateau logic, not reset dwell forever
+    state = ControllerState(
+        phase=Phase.CONTROL, log_c=0.0, lo=0.0, hi=0.0 + CFG.resolution / 2, dwell=0,
+        prev_complexity=None, protect_windows_left=0, probe_cooldown=0, rejected_probes=0,
+    )  # fmt: skip
+    actions = drive(state, [window(0.0, complexity=50.0)] * 5)  # r_adv far below tau: slack
+    assert Event.COLUMN_PROBE in [a.event for a in actions]
+
+
+def test_complexity_stays_off_through_feasibility_birth_and_protection() -> None:
+    state = ControllerState.initial(math.log(1.0))
+    actions = drive(state, [window(0.5)] * 10)
+    events = [a.event for a in actions]
+    birth_idx = events.index(Event.FEASIBILITY_BIRTH)
+    assert actions[birth_idx].state.c == 0.0
+    for a in actions[birth_idx + 1 :]:
+        if a.state.phase is Phase.BIRTH_PROTECTED:
+            assert a.state.c == 0.0
+    # protection expiry re-enters control BELOW the last known-violating coefficient
+    expiry = next(
+        a.state for a in actions[birth_idx + 1 :] if a.state.phase is Phase.CONTROL
+    )
+    assert expiry.log_c < actions[birth_idx].state.log_c
