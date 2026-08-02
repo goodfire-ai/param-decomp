@@ -8,10 +8,13 @@ lore 2026-08-02--design--reconstruction-budget-control-and-demand-triggered-capa
 
 Coordinates: the controller moves `log c` where `c` multiplies the COMBINED imp+freq
 complexity force (the reciprocal of the reconstruction dual — violation drives `c`
-DOWN). Gain-free by construction: multiplicative bracketing halves the step on every
-violation/slack sign flip, and `c = 0` is an explicit OFF state rather than a tuned
-positive floor — feasibility birth requires violation with complexity fully off.
-"""
+DOWN, i.e. the feasibility boundary sits BELOW a violating `log_c` and ABOVE a slack
+one). The search is a true bracket, so one-sided sign sequences terminate: slack at
+`x` raises the feasible endpoint `lo`; violation at `x` lowers the infeasible endpoint
+`hi`; with both, bisect; with only `hi`, probe OFF (c = 0) — OFF-slack re-enters with
+a downward expansion toward `hi`, OFF-violation is the feasibility-birth condition;
+with only `lo`, expand upward under a hard guard. `c = 0` is an explicit phase, not a
+tuned positive floor. Gain-free: no controller learning rate exists to sweep."""
 
 import math
 from dataclasses import dataclass, replace
@@ -24,21 +27,28 @@ class ControllerConfig:
     """Dimensionless recon-damage tolerance: violation is `r_adv > tau`, with
     `r_adv = (R - R_unmasked) / (R_zero - R_unmasked)` computed by the caller."""
     noise_margin: float
-    """|EMA(g)| below this reads as on-target: neither violation nor slack."""
-    initial_log_step: float = math.log(2.0)
-    min_log_step: float = math.log(1.05)
-    """Bracketing resolution: at a smaller step, persistent violation transitions to OFF
-    and persistent slack holds (further complexity increase is noise-chasing)."""
+    """|r_adv - tau| below this reads as on-target: neither violation nor slack."""
+    max_log_c: float
+    """Hard guard on upward expansion (a sanity rail against unbounded growth under
+    permanent slack, not an operating point)."""
+    expand_log_step: float = math.log(4.0)
+    resolution: float = math.log(1.05)
+    """Bracket widths below this terminate the search: hold at `lo` (the largest
+    known-feasible complexity scale)."""
     dwell_windows: int = 3
     """Consecutive qualifying windows required for any lifecycle event."""
     plateau_rtol: float = 0.02
     """Relative settled-complexity change below which complexity counts as plateaued
     (the column-generation trigger, with recon on-budget)."""
+    probe_cooldown_windows: int = 6
+    """Windows to suppress plateau-triggered probes after a rejected COLUMN_PROBE."""
+    max_rejected_probes: int = 3
+    """Rejected probes before the plateau is declared terminal (NO_IMPROVING_COLUMN)."""
 
 
 class Phase(Enum):
     CONTROL = "control"
-    OFF = "off"  # complexity force fully off (c = 0); the only state feasibility birth can fire from
+    OFF = "off"  # complexity force fully off (c = 0); the only phase feasibility birth fires from
     BIRTH_PROTECTED = "birth_protected"  # a newborn slot is gate-protected; controller frozen
 
 
@@ -49,12 +59,14 @@ class Event(Enum):
     represent the target — open capacity (GradMax slot)."""
     COLUMN_PROBE = "column_probe"
     """Recon on-budget and settled complexity plateaued for `dwell_windows`: trial a
-    protected slot, to be ACCEPTED only if settled complexity falls at matched recon,
-    else rolled back (this event alone makes physical C a true upper bound; without it
-    the controller can oscillate dense-SVD <-> pruned-SVD and never use the tail)."""
+    protected slot, ACCEPTED by the caller only if settled complexity falls at matched
+    recon, else rolled back + reported via `probe_rejected` (this event alone makes
+    physical C a true upper bound)."""
     CAPACITY_EXHAUSTED = "capacity_exhausted"
-    """A birth was demanded but no inactive slot exists — a reportable terminal state,
-    never a silent clip."""
+    """A birth was demanded but no inactive slot exists — reportable, never a silent clip."""
+    NO_IMPROVING_COLUMN = "no_improving_column"
+    """`max_rejected_probes` consecutive probe rejections at the same plateau: stop
+    probing; the operating point stands."""
 
 
 @dataclass(frozen=True)
@@ -70,22 +82,26 @@ class WindowSummary:
 class ControllerState:
     phase: Phase
     log_c: float  # meaningful only outside OFF
-    log_step: float
-    last_sign: int  # sign of the previous window's g (0 before the first move)
-    dwell: int  # consecutive qualifying windows toward the phase's pending event
+    lo: float | None  # highest log_c OBSERVED slack/on-target (feasible endpoint)
+    hi: float | None  # lowest log_c OBSERVED violating (infeasible endpoint)
+    dwell: int
     prev_complexity: float | None
     protect_windows_left: int
+    probe_cooldown: int
+    rejected_probes: int
 
     @staticmethod
-    def initial(log_c: float, cfg: ControllerConfig) -> "ControllerState":
+    def initial(log_c: float) -> "ControllerState":
         return ControllerState(
             phase=Phase.CONTROL,
             log_c=log_c,
-            log_step=cfg.initial_log_step,
-            last_sign=0,
+            lo=None,
+            hi=None,
             dwell=0,
             prev_complexity=None,
             protect_windows_left=0,
+            probe_cooldown=0,
+            rejected_probes=0,
         )
 
     @property
@@ -99,12 +115,54 @@ class Action:
     event: Event
 
 
+def probe_rejected(state: ControllerState, cfg: ControllerConfig) -> ControllerState:
+    """Caller reports a rolled-back COLUMN_PROBE: start the cooldown and count it.
+    The trial slot is back to exact null, so control resumes where it left off."""
+    return replace(
+        state,
+        phase=Phase.CONTROL,
+        protect_windows_left=0,
+        probe_cooldown=cfg.probe_cooldown_windows,
+        rejected_probes=state.rejected_probes + 1,
+    )
+
+
+def probe_accepted(state: ControllerState) -> ControllerState:
+    """Caller reports an accepted COLUMN_PROBE: the landscape changed — fresh bracket,
+    rejection count cleared (a new plateau earns new probes)."""
+    return replace(
+        state,
+        phase=Phase.CONTROL,
+        lo=None,
+        hi=None,
+        dwell=0,
+        protect_windows_left=0,
+        probe_cooldown=0,
+        rejected_probes=0,
+    )
+
+
+def _next_log_c(state: ControllerState, cfg: ControllerConfig) -> float | None:
+    """The bracket search's next coefficient, or None to transition OFF. Requires the
+    endpoints already updated for the current window."""
+    match state.lo, state.hi:
+        case lo, hi if lo is not None and hi is not None:
+            if hi - lo < cfg.resolution:
+                return lo  # converged: hold at the largest known-feasible scale
+            return (lo + hi) / 2.0
+        case None, hi if hi is not None:
+            return None  # never seen feasible at c > 0: probe OFF
+        case lo, None if lo is not None:
+            return min(lo + cfg.expand_log_step, cfg.max_log_c)  # expand under the guard
+    raise AssertionError("unreachable: a window always sets one endpoint")
+
+
 def controller_update(
     state: ControllerState, window: WindowSummary, cfg: ControllerConfig, protect_windows: int
 ) -> Action:
     """One controller decision from one settled window. The caller applies `state.c` as
-    the next windows' complexity_scale, executes the event (birth surgery / probe /
-    report), and on birth re-enters via the returned BIRTH_PROTECTED state."""
+    the next windows' complexity_scale and executes the event (birth surgery / probe /
+    report); probe verdicts come back via `probe_accepted` / `probe_rejected`."""
     g = window.r_adv - cfg.tau
     sign = 0 if abs(g) <= cfg.noise_margin else (1 if g > 0 else -1)
 
@@ -113,22 +171,19 @@ def controller_update(
             left = state.protect_windows_left - 1
             if left > 0:
                 return Action(replace(state, protect_windows_left=left), Event.NONE)
-            # protection expires -> resume control; bracketing restarts (the newborn
-            # changed the landscape, the old bracket is stale)
+            # feasibility-birth protection expiry; probe verdicts arrive via
+            # probe_accepted/probe_rejected instead. Fresh bracket: the newborn moved
+            # the landscape.
             return Action(
                 replace(
-                    state,
-                    phase=Phase.CONTROL,
-                    log_step=cfg.initial_log_step,
-                    last_sign=0,
-                    dwell=0,
+                    state, phase=Phase.CONTROL, lo=None, hi=None, dwell=0,
                     protect_windows_left=0,
-                ),
+                ),  # fmt: skip
                 Event.NONE,
             )
 
         case Phase.OFF:
-            if sign > 0:  # still violating with complexity fully off -> demand capacity
+            if sign > 0:  # violating with complexity fully off -> demand capacity
                 dwell = state.dwell + 1
                 if dwell < cfg.dwell_windows:
                     return Action(replace(state, dwell=dwell), Event.NONE)
@@ -136,73 +191,67 @@ def controller_update(
                     return Action(replace(state, dwell=0), Event.CAPACITY_EXHAUSTED)
                 return Action(
                     replace(
-                        state,
-                        phase=Phase.BIRTH_PROTECTED,
-                        dwell=0,
+                        state, phase=Phase.BIRTH_PROTECTED, dwell=0,
                         protect_windows_left=protect_windows,
-                    ),
+                    ),  # fmt: skip
                     Event.FEASIBILITY_BIRTH,
                 )
-            if sign < 0:  # slack returned -> re-enter control at the last coefficient
-                return Action(
-                    replace(
-                        state,
-                        phase=Phase.CONTROL,
-                        log_step=cfg.initial_log_step,
-                        last_sign=0,
-                        dwell=0,
-                    ),
-                    Event.NONE,
-                )
-            return Action(replace(state, dwell=0), Event.NONE)
+            # OFF is feasible: re-enter control expanding DOWNWARD toward hi (feasibility
+            # exists somewhere below it; OFF itself is not a finite bracket endpoint)
+            assert state.hi is not None, "OFF is only reachable after a violation set hi"
+            return Action(
+                replace(
+                    state,
+                    phase=Phase.CONTROL,
+                    log_c=state.hi - cfg.expand_log_step,
+                    dwell=0,
+                ),
+                Event.NONE,
+            )
 
         case Phase.CONTROL:
+            cooled = replace(state, probe_cooldown=max(0, state.probe_cooldown - 1))
             if sign == 0:
-                # on-target: complexity-plateau check drives column generation
                 plateaued = (
-                    state.prev_complexity is not None
-                    and abs(window.complexity - state.prev_complexity)
-                    <= cfg.plateau_rtol * abs(state.prev_complexity)
+                    cooled.prev_complexity is not None
+                    and abs(window.complexity - cooled.prev_complexity)
+                    <= cfg.plateau_rtol * abs(cooled.prev_complexity)
                 )
-                dwell = state.dwell + 1 if plateaued else 0
-                next_state = replace(state, dwell=dwell, prev_complexity=window.complexity)
-                if dwell < cfg.dwell_windows:
+                dwell = cooled.dwell + 1 if plateaued else 0
+                next_state = replace(
+                    cooled,
+                    lo=max(cooled.lo, cooled.log_c) if cooled.lo is not None else cooled.log_c,
+                    dwell=dwell,
+                    prev_complexity=window.complexity,
+                )
+                if dwell < cfg.dwell_windows or state.probe_cooldown > 0:
                     return Action(next_state, Event.NONE)
+                if next_state.rejected_probes >= cfg.max_rejected_probes:
+                    return Action(replace(next_state, dwell=0), Event.NO_IMPROVING_COLUMN)
                 if not window.spare_slot_exists:
                     return Action(replace(next_state, dwell=0), Event.CAPACITY_EXHAUSTED)
                 return Action(
                     replace(
-                        next_state,
-                        phase=Phase.BIRTH_PROTECTED,
-                        dwell=0,
+                        next_state, phase=Phase.BIRTH_PROTECTED, dwell=0,
                         protect_windows_left=protect_windows,
-                    ),
+                    ),  # fmt: skip
                     Event.COLUMN_PROBE,
                 )
-            # bracketing move: violation -> c down, slack -> c up; halve on sign flip
-            log_step = (
-                state.log_step / 2.0
-                if state.last_sign != 0 and sign != state.last_sign
-                else state.log_step
-            )
-            if log_step < cfg.min_log_step and sign > 0:
-                # bracket exhausted while still violating: complexity force OFF
-                return Action(
-                    replace(state, phase=Phase.OFF, dwell=0, last_sign=0), Event.NONE
-                )
-            if log_step < cfg.min_log_step:
-                return Action(  # exhausted with slack: hold (chasing noise upward)
-                    replace(state, last_sign=sign, dwell=0, prev_complexity=window.complexity),
-                    Event.NONE,
-                )
-            return Action(
-                replace(
-                    state,
-                    log_c=state.log_c - sign * log_step,
-                    log_step=log_step,
-                    last_sign=sign,
+            if sign > 0:
+                updated = replace(
+                    cooled,
+                    hi=min(cooled.hi, cooled.log_c) if cooled.hi is not None else cooled.log_c,
                     dwell=0,
                     prev_complexity=window.complexity,
-                ),
-                Event.NONE,
-            )
+                )
+            else:
+                updated = replace(
+                    cooled,
+                    lo=max(cooled.lo, cooled.log_c) if cooled.lo is not None else cooled.log_c,
+                    dwell=0,
+                    prev_complexity=window.complexity,
+                )
+            target = _next_log_c(updated, cfg)
+            if target is None:
+                return Action(replace(updated, phase=Phase.OFF), Event.NONE)
+            return Action(replace(updated, log_c=target), Event.NONE)
