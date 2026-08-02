@@ -11,6 +11,6 @@ cd /mnt/home/pd-user/.bridge/crew-kernel/minds/agent-c5xs-e96df6e3/controller-re
 mapfile -t configs < sweeps/tms-controller-811/configs.txt
 config=${configs[$SLURM_ARRAY_TASK_ID]}
 uv run --no-sync python -m param_decomp.experiments.tms.run "$config" \
-  --data_root "$PARAM_DECOMP_OUT_DIR/runs" \
+  --data_root /mnt/data/artifacts/mechanisms/param-decomp/runs \
   --group tms-controller-811-abc \
   --tags task-811,controller,capacity-lifecycle
