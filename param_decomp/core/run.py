@@ -78,9 +78,12 @@ from param_decomp.core.run_state import (
     init_train_state,
 )
 from param_decomp.core.slot_surgery import (
+    TrialSnapshot,
     birth_slot,
     find_inactive_slot,
     protected_mask,
+    rollback_trial,
+    snapshot_trial,
     truncate_active_prefix,
 )
 from param_decomp.core.train import (
@@ -601,7 +604,7 @@ def _init_or_restore_state(
 @dataclasses.dataclass(frozen=True)
 class _LifecycleTrial:
     event: Event
-    snapshot: TrainState
+    snapshot: TrialSnapshot
     site: str
     slot: int
     baseline_r_adv: float
@@ -652,16 +655,17 @@ def _with_active_slot(
     return out
 
 
-def _restore_rejected_trial(snapshot: TrainState, current_step: jax.Array) -> TrainState:
+def _restore_rejected_trial(snapshot: TrialSnapshot, current_step: jax.Array) -> TrainState:
     """Restore the full pre-trial trajectory but keep the consumed schedule clock.
 
     The toy v1 runs probes in-line rather than as nested uncounted work. Parameters,
     optimizer moments, CI, and adversary are transactional; only the step counter advances.
     The LM port must checkpoint and replay the full transaction instead (task #811 spec).
     """
+    restored = rollback_trial(snapshot)
     return dataclasses.replace(
-        snapshot,
-        training=dataclasses.replace(snapshot.training, step=current_step),
+        restored,
+        training=dataclasses.replace(restored.training, step=current_step),
     )
 
 
@@ -955,7 +959,7 @@ def run_decomposition_training[EvalContextT](
                             random.fold_in(run_key, now_step + 0x811),
                         )
                         assert candidate is not None, "controller emitted birth with no spare slot"
-                        snapshot = state
+                        snapshot = snapshot_trial(state, candidate.site, candidate.slot)
                         state = birth_slot(
                             state, candidate.site, candidate.slot, candidate.direction
                         )
