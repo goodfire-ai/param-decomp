@@ -1,0 +1,150 @@
+run_name: tms811-acquire-g1-f0-x4-C100-K100-s1
+decomposition:
+  sites:
+    kind: explicit
+    sites:
+    - name: linear1
+      C: 100
+    - name: linear2
+      C: 100
+  ci:
+    type: layerwise_mlp
+    hidden_dims:
+    - 200
+pd:
+  seed: 1
+  loss_metrics:
+  - frequency:
+      coeff: 0.0
+      reference_token_count: 32768
+    coeff: 6.0e-05
+    type: SmoothL0ImportanceMinimalityLoss
+    gamma:
+      max_val: 1.0
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 1.0
+        frac: 1.0
+  - type: MergedStochasticSubsetPPGDReconLoss
+    coeff: 1.0
+    adv_fraction: 0.5
+    n_warmup_steps: 2
+    routing:
+      type: uniform_k_subset
+    optimizer:
+      beta1: 0.01
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        max_val: 0.01
+        points:
+        - at: 0.0
+          frac: 0.0
+        - at: 0.0125
+          frac: 1.0
+        - at: 1.0
+          frac: 1.0
+      type: adam
+    source_shape: bc
+  - type: FaithfulnessLoss
+    coeff: 1.0
+  batch_size: 4096
+  steps: 20000
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 1.0
+    lr_schedule:
+      max_val: 0.001
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 0.5
+        frac: 0.1
+        interp: cosine
+      - at: 1.0
+        frac: 0.1
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 1.0
+    lr_schedule:
+      max_val: 0.02236
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 0.5
+        frac: 0.1
+        interp: cosine
+      - at: 1.0
+        frac: 0.1
+    weight_decay: 0.0
+  faithfulness_warmup_steps: 0
+  faithfulness_warmup_lr: 0.2236
+  faithfulness_warmup_weight_decay: 0.0
+  component_init: random_prefix_null_tail
+  recon_budget_control:
+    observable:
+      metric_key: eval/loss/PGDReconLoss
+      offset: 0.0
+      scale: 1.0
+    tau: 0.0005
+    noise_margin: 0.0001
+    initial_complexity_scale: 4.0
+    max_complexity_scale: 256.0
+    control_after_step: 19999
+    expand_factor: 4.0
+    resolution_factor: 1.1
+    dwell_windows: 1
+    plateau_rtol: 0.05
+    probe_improvement_rtol: 0.02
+    birth_improvement_rtol: 0.01
+    probe_cooldown_windows: 4
+    max_rejected_probes: 3
+    settle_points: 2
+    settle_rtol: 0.25
+    settle_atol: 1.0e-05
+    protect_windows: 2
+    initial_active_slots:
+      linear1: 100
+      linear2: 100
+  component_update_scaling: function_covariant_balanced
+cadence:
+  train_log_every: 500
+  save_every: 10000
+  checkpoint_retention:
+    kind: keep_last
+    n: 2
+target:
+  n_features: 40
+  n_hidden: 10
+  n_hidden_layers: 0
+  init_bias_to_zero: true
+  pretrain:
+    steps: 10000
+    batch_size: 8192
+    lr: 5e-3
+    seed: 1
+data:
+  feature_probability: 0.05
+  data_generation_type: at_least_zero_active
+eval:
+  batch_size: 4096
+  n_steps: 2
+  every: 500
+  slow_every: 2000
+  slow_on_first_step: true
+  metrics:
+  - type: PGDReconLoss
+    coeff: null
+    init: random
+    source_shape: c
+    n_steps: 20
+    step_size: 0.1
+wandb:
+  project: param-decomp-toys
+  entity: null

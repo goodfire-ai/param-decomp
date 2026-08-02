@@ -1,0 +1,6 @@
+sweeps/tms-structure-acquisition-811/g1-f0-x1-s0.yaml
+sweeps/tms-structure-acquisition-811/g1-f0-x1-s1.yaml
+sweeps/tms-structure-acquisition-811/g1-f0-x1-s2.yaml
+sweeps/tms-structure-acquisition-811/g1-f0-x4-s0.yaml
+sweeps/tms-structure-acquisition-811/g1-f0-x4-s1.yaml
+sweeps/tms-structure-acquisition-811/g1-f0-x4-s2.yaml
