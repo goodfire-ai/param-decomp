@@ -9,7 +9,7 @@ optimizer-state structure.
 
 from collections.abc import Callable
 from functools import partial
-from typing import Literal, NamedTuple
+from typing import Literal, NamedTuple, cast
 
 import equinox as eqx
 import jax
@@ -114,7 +114,10 @@ def scale_component_updates_c_covariant() -> optax.GradientTransformation:
             )
             for shape, (dV, dU) in updates.stacks.items()
         }
-        return ComponentStacks(stacks=stacks, site_slots=updates.site_slots), state
+        return cast(
+            optax.Updates,
+            cast(object, ComponentStacks(stacks=stacks, site_slots=updates.site_slots)),
+        ), state
 
     return optax.GradientTransformation(init, update)
 
@@ -172,8 +175,14 @@ def _transform_adam_moments_to_balanced_gauge(
         }
         return optax.ScaleByAdamState(
             count=x.count,
-            mu=ComponentStacks(stacks=mu_stacks, site_slots=x.mu.site_slots),
-            nu=ComponentStacks(stacks=nu_stacks, site_slots=x.nu.site_slots),
+            mu=cast(
+                optax.Updates,
+                cast(object, ComponentStacks(stacks=mu_stacks, site_slots=x.mu.site_slots)),
+            ),
+            nu=cast(
+                optax.Updates,
+                cast(object, ComponentStacks(stacks=nu_stacks, site_slots=x.nu.site_slots)),
+            ),
         )
 
     return jax.tree.map(transform, state, is_leaf=lambda x: isinstance(x, optax.ScaleByAdamState))
@@ -190,9 +199,10 @@ def gauge_balance_component_optimizer(
 
     def update(
         updates: optax.Updates,
-        state: GaugeBalancedState,
+        state: optax.OptState,
         params: optax.Params | None = None,
-    ) -> tuple[optax.Updates, GaugeBalancedState]:
+    ) -> tuple[optax.Updates, optax.OptState]:
+        assert isinstance(state, GaugeBalancedState)
         assert isinstance(updates, ComponentStacks)
         assert isinstance(params, ComponentStacks)
         inner_updates, inner_state = inner.update(updates, state.inner_state, params)
@@ -202,7 +212,7 @@ def gauge_balance_component_optimizer(
         balanced, scales = balance_component_stacks(proposed)
         balanced_updates = jax.tree.map(lambda new, old: new - old, balanced, params)
         inner_state = _transform_adam_moments_to_balanced_gauge(inner_state, scales)
-        return balanced_updates, GaugeBalancedState(inner_state)
+        return cast(optax.Updates, balanced_updates), GaugeBalancedState(inner_state)
 
     return optax.GradientTransformation(init, update)
 
@@ -228,7 +238,10 @@ def scale_component_updates_c_covariant_balanced() -> optax.GradientTransformati
             shape: (dV * (shape[0] / shape[2]) ** 0.75, dU * (shape[0] / shape[2]) ** 0.75)
             for shape, (dV, dU) in updates.stacks.items()
         }
-        return ComponentStacks(stacks=stacks, site_slots=updates.site_slots), state
+        return cast(
+            optax.Updates,
+            cast(object, ComponentStacks(stacks=stacks, site_slots=updates.site_slots)),
+        ), state
 
     return optax.GradientTransformation(init, update)
 
@@ -270,7 +283,10 @@ def scale_component_updates_function_covariant_balanced() -> optax.GradientTrans
             )
             for shape, (dV, dU) in updates.stacks.items()
         }
-        return ComponentStacks(stacks=stacks, site_slots=updates.site_slots), state
+        return cast(
+            optax.Updates,
+            cast(object, ComponentStacks(stacks=stacks, site_slots=updates.site_slots)),
+        ), state
 
     return optax.GradientTransformation(init, update)
 
@@ -367,8 +383,8 @@ def configure_component_optimizer(
             )
             scaled = optax.chain(optimizer, scale_component_updates_function_covariant_balanced())
             return gauge_balance_component_optimizer(scaled)
-        case _:
-            raise AssertionError(update_scaling)
+        case _:  # fail-closed arm for unmigrated literals  # pyright: ignore[reportUnnecessaryComparison]
+            raise AssertionError(update_scaling)  # pyright: ignore[reportUnreachable]
 
 
 def build_optimizers(pd: PDConfig, ci_fn_arch: CIFnArch, mesh: Mesh | None):
@@ -451,9 +467,7 @@ def init_train_state(
     assert isinstance(positions, Positioned) == model.has_position_axis, (
         f"{positions} does not match the model's has_position_axis={model.has_position_axis}"
     )
-    decomposition = init_decomposition(
-        model, ci_fn_arch, init_key, mesh, rules, pd.component_init
-    )
+    decomposition = init_decomposition(model, ci_fn_arch, init_key, mesh, rules, pd.component_init)
     components, ci_fn = decomposition.components, decomposition.ci_fn
     if uses_balanced_component_gauge(pd.component_update_scaling):
         components, _ = balance_component_stacks(components)

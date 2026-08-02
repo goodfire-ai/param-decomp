@@ -135,3 +135,41 @@ def test_block_transfer_referee_is_invariant_to_internal_basis_rotation() -> Non
     )
     assert expected[0] > 0.0
     assert jnp.allclose(rotated, expected, atol=1e-6)
+
+
+def test_controller_allows_fully_active_random_dictionary() -> None:
+    from types import SimpleNamespace
+
+    from param_decomp.core.run import _controller_active_masks
+
+    sites = (SiteSpec("a", 4, 3, 5), SiteSpec("b", 3, 4, 7))
+    model = SimpleNamespace(sites=sites, site_names=("a", "b"))
+    masks = _controller_active_masks(model, {"a": 5, "b": 7}, "random", 200)
+    assert jnp.all(masks["a"])
+    assert jnp.all(masks["b"])
+
+
+def test_controller_refuses_random_inactive_suffix() -> None:
+    from types import SimpleNamespace
+
+    import pytest
+
+    from param_decomp.core.run import _controller_active_masks
+
+    sites = (SiteSpec("a", 4, 3, 5),)
+    model = SimpleNamespace(sites=sites, site_names=("a",))
+    with pytest.raises(AssertionError, match="exact SVD/null-tail"):
+        _controller_active_masks(model, {"a": 4}, "random", 0)
+
+
+def test_controller_refuses_warmup_with_inactive_suffix() -> None:
+    from types import SimpleNamespace
+
+    import pytest
+
+    from param_decomp.core.run import _controller_active_masks
+
+    sites = (SiteSpec("a", 4, 3, 5),)
+    model = SimpleNamespace(sites=sites, site_names=("a",))
+    with pytest.raises(AssertionError, match="warmup would fill"):
+        _controller_active_masks(model, {"a": 4}, "svd_null_tail", 1)

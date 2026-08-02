@@ -638,11 +638,38 @@ def _controller_config(pd: PDConfig) -> tuple[ControllerConfig, SettlementConfig
     )
 
 
-def _active_masks(model: DecomposedModel, active_by_site: dict[str, int]) -> dict[str, jax.Array]:
+def _controller_active_masks(
+    model: DecomposedModel,
+    active_by_site: dict[str, int],
+    component_init: str,
+    faithfulness_warmup_steps: int,
+) -> dict[str, jax.Array]:
+    """Author the logical capacity boundary without silently nulling random slots.
+
+    A smaller logical prefix is meaningful only when the initializer made the suffix an
+    exact null and no warmup was allowed to wake it. A fully-active random dictionary has
+    no suffix to null, so it is a legitimate coefficient-control-only configuration: this
+    is the random-overcomplete recipe whose C-transfer the controller must preserve.
+    """
     assert set(active_by_site) == set(model.site_names), (
         sorted(active_by_site),
         sorted(model.site_names),
     )
+    for site in model.sites:
+        assert 0 < active_by_site[site.name] <= site.C, (
+            site.name,
+            active_by_site[site.name],
+            site.C,
+        )
+    has_inactive_suffix = any(active_by_site[site.name] < site.C for site in model.sites)
+    if has_inactive_suffix:
+        assert component_init == "svd_null_tail", (
+            "an inactive controller suffix requires the exact SVD/null-tail initializer",
+            component_init,
+        )
+        assert faithfulness_warmup_steps == 0, (
+            "faithfulness warmup would fill deliberately inactive rank slots before birth"
+        )
     return {site.name: jnp.arange(site.C) < active_by_site[site.name] for site in model.sites}
 
 
@@ -806,19 +833,18 @@ def run_decomposition_training[EvalContextT](
         assert start_step == 0, (
             "controller prototype refuses resume until its host state checkpoints"
         )
-        assert pd.component_init == "svd_null_tail", (
-            "logical capacity control requires the exact nested SVD/null-tail initializer"
-        )
-        assert pd.faithfulness_warmup_steps == 0, (
-            "faithfulness warmup would fill deliberately inactive rank slots before birth"
-        )
         assert control_spec.initial_active_slots is not None
         assert controller_component_grad is not None, (
             "controller config needs an authored fresh-referee component-gradient probe"
         )
         controller_cfg, settlement_cfg = _controller_config(pd)
         controller_state = ControllerState.initial(math.log(control_spec.initial_complexity_scale))
-        active = _active_masks(model, control_spec.initial_active_slots)
+        active = _controller_active_masks(
+            model,
+            control_spec.initial_active_slots,
+            pd.component_init,
+            pd.faithfulness_warmup_steps,
+        )
         state = truncate_active_prefix(state, control_spec.initial_active_slots)
     else:
         assert controller_component_grad is None, (
