@@ -49,7 +49,8 @@ class ControllerConfig:
 class Phase(Enum):
     CONTROL = "control"
     OFF = "off"  # complexity force fully off (c = 0); the only phase feasibility birth fires from
-    BIRTH_PROTECTED = "birth_protected"  # a newborn slot is gate-protected; controller frozen
+    BIRTH_PROTECTED = "birth_protected"  # feasibility newborn gate-protected; expires by timer
+    PROBE_PENDING = "probe_pending"  # a COLUMN_PROBE trial is out; exits ONLY via a verdict
 
 
 class Event(Enum):
@@ -117,7 +118,9 @@ class Action:
 
 def probe_rejected(state: ControllerState, cfg: ControllerConfig) -> ControllerState:
     """Caller reports a rolled-back COLUMN_PROBE: start the cooldown and count it.
-    The trial slot is back to exact null, so control resumes where it left off."""
+    The trial slot is back to exact null, so control resumes where it left off (the
+    plateau is the SAME, so prev_complexity is retained)."""
+    assert state.phase is Phase.PROBE_PENDING, state.phase
     return replace(
         state,
         phase=Phase.CONTROL,
@@ -130,12 +133,14 @@ def probe_rejected(state: ControllerState, cfg: ControllerConfig) -> ControllerS
 def probe_accepted(state: ControllerState) -> ControllerState:
     """Caller reports an accepted COLUMN_PROBE: the landscape changed — fresh bracket,
     rejection count cleared (a new plateau earns new probes)."""
+    assert state.phase is Phase.PROBE_PENDING, state.phase
     return replace(
         state,
         phase=Phase.CONTROL,
         lo=None,
         hi=None,
         dwell=0,
+        prev_complexity=None,
         protect_windows_left=0,
         probe_cooldown=0,
         rejected_probes=0,
@@ -167,17 +172,22 @@ def controller_update(
     sign = 0 if abs(g) <= cfg.noise_margin else (1 if g > 0 else -1)
 
     match state.phase:
+        case Phase.PROBE_PENDING:
+            # a trial is out: the caller drives it and reports via probe_accepted /
+            # probe_rejected — time NEVER ages a probe back into control.
+            return Action(state, Event.NONE)
+
         case Phase.BIRTH_PROTECTED:
             left = state.protect_windows_left - 1
             if left > 0:
                 return Action(replace(state, protect_windows_left=left), Event.NONE)
-            # feasibility-birth protection expiry; probe verdicts arrive via
-            # probe_accepted/probe_rejected instead. Fresh bracket: the newborn moved
-            # the landscape.
+            # feasibility protection expiry: the newborn moved the landscape -> fresh
+            # bracket, stale plateau and rejection lineage cleared.
             return Action(
                 replace(
                     state, phase=Phase.CONTROL, lo=None, hi=None, dwell=0,
-                    protect_windows_left=0,
+                    prev_complexity=None, protect_windows_left=0, probe_cooldown=0,
+                    rejected_probes=0,
                 ),  # fmt: skip
                 Event.NONE,
             )
@@ -231,10 +241,7 @@ def controller_update(
                 if not window.spare_slot_exists:
                     return Action(replace(next_state, dwell=0), Event.CAPACITY_EXHAUSTED)
                 return Action(
-                    replace(
-                        next_state, phase=Phase.BIRTH_PROTECTED, dwell=0,
-                        protect_windows_left=protect_windows,
-                    ),  # fmt: skip
+                    replace(next_state, phase=Phase.PROBE_PENDING, dwell=0),
                     Event.COLUMN_PROBE,
                 )
             if sign > 0:

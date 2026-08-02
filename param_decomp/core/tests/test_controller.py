@@ -81,6 +81,10 @@ def test_on_target_plateau_fires_column_probe_and_rejection_cools_down() -> None
     events = [a.event for a in actions]
     assert Event.COLUMN_PROBE in events
     probed = actions[events.index(Event.COLUMN_PROBE)].state
+    assert probed.phase is Phase.PROBE_PENDING
+    # time never ages a pending probe back to control
+    aged = drive(probed, [window(CFG.tau, complexity=50.0)] * 10)
+    assert all(a.state.phase is Phase.PROBE_PENDING for a in aged)
     # rejection -> cooldown suppresses the immediate re-probe
     after = probe_rejected(probed, CFG)
     actions2 = drive(after, [window(CFG.tau, complexity=50.0)] * CFG.probe_cooldown_windows)
@@ -95,14 +99,35 @@ def test_on_target_plateau_fires_column_probe_and_rejection_cools_down() -> None
         assert Event.COLUMN_PROBE not in [a.event for a in actions4]
 
 
-def test_probe_accepted_resets_bracket_and_rejections() -> None:
+def test_probe_accepted_resets_bracket_plateau_and_rejections() -> None:
     state = ControllerState(
-        phase=Phase.BIRTH_PROTECTED, log_c=0.0, lo=-1.0, hi=1.0, dwell=0,
-        prev_complexity=50.0, protect_windows_left=2, probe_cooldown=0, rejected_probes=1,
+        phase=Phase.PROBE_PENDING, log_c=0.0, lo=-1.0, hi=1.0, dwell=0,
+        prev_complexity=50.0, protect_windows_left=0, probe_cooldown=0, rejected_probes=1,
     )  # fmt: skip
     accepted = probe_accepted(state)
     assert accepted.phase is Phase.CONTROL
     assert accepted.lo is None and accepted.hi is None and accepted.rejected_probes == 0
+    assert accepted.prev_complexity is None
+
+
+def test_verdicts_assert_phase_legality() -> None:
+    import pytest
+
+    control = ControllerState.initial(0.0)
+    with pytest.raises(AssertionError):
+        probe_accepted(control)
+    with pytest.raises(AssertionError):
+        probe_rejected(control, CFG)
+
+
+def test_feasibility_protection_expiry_clears_plateau_and_lineage() -> None:
+    state = ControllerState(
+        phase=Phase.BIRTH_PROTECTED, log_c=0.0, lo=-1.0, hi=1.0, dwell=0,
+        prev_complexity=50.0, protect_windows_left=1, probe_cooldown=2, rejected_probes=2,
+    )  # fmt: skip
+    out = controller_update(state, window(0.5), CFG, 3).state
+    assert out.phase is Phase.CONTROL
+    assert out.prev_complexity is None and out.rejected_probes == 0 and out.probe_cooldown == 0
 
 
 def test_capacity_exhausted_is_reported_not_clipped() -> None:
