@@ -49,8 +49,8 @@ def birth_direction_from_grad(
     `dL/dU_c` evaluated at the unperturbed function with `V_c = v` and the slot's mask
     forced 1 equals `v^T G`; symmetrically `dL/dV_c` at `V_c = 0, U_c = u` equals
     `G u` — so 2–3 alternating probe backwards on one scratch slot power-iterate the
-    same pair this function computes, when materializing `G` is too big. Here `G` is
-    per-site (`d_in x d_out`), small in every current target, so we take it directly."""
+    same pair this function computes, when materializing `G` is too big. Here At LM scale
+    use that alternating factor-gradient path rather than materializing dense `G`."""
     G = G.astype(jnp.float32)
     v = jnp.ones((G.shape[1],), jnp.float32) / jnp.sqrt(G.shape[1])
     for _ in range(n_iters):
@@ -135,29 +135,25 @@ def _with_ci_head(ci_fn: CIFn, site: str, weights: Array, bias: Array) -> CIFn:
 
 @dataclass(frozen=True)
 class TrialSnapshot:
-    """Everything a COLUMN_PROBE rollback needs to restore, captured before surgery:
-    the slot's factor slices, CI-head column/bias entry, and the corresponding Adam
-    moment slices in both optimizers. Restore is bitwise (`rollback_trial`)."""
+    """The ENTIRE immutable pre-trial `TrainState` plus the trial's identity. During a
+    COLUMN_PROBE every other parameter, both optimizers' moments, and the persistent
+    adversaries keep training — restoring only the trial slot would accept/reject on
+    contaminated state, so rollback returns to the full pre-probe frontier. JAX arrays
+    are immutable, so holding the state IS the snapshot (no copies)."""
 
+    state: TrainState
     site: str
     slot: int
-    v_col: Array
-    u_row: Array
-    ci_w_col: Array
-    ci_b: Array
-    vu_mu_v: Array
-    vu_mu_u: Array
-    vu_nu_v: Array
-    vu_nu_u: Array
-    ci_mu_w_col: Array
-    ci_mu_b: Array
-    ci_nu_w_col: Array
-    ci_nu_b: Array
 
 
-def _slot_slices(components_like: ComponentStacks, site: str, slot: int) -> tuple[Array, Array]:
-    V, U = components_like.site(site)
-    return V[:, slot], U[slot, :]
+def snapshot_trial(state: TrainState, site: str, slot: int) -> TrialSnapshot:
+    return TrialSnapshot(state=state, site=site, slot=slot)
+
+
+def rollback_trial(snapshot: TrialSnapshot) -> TrainState:
+    """Bitwise return to the pre-trial frontier: every leaf of the snapshot's state —
+    all V/U, the whole CI fn, both optimizer states, adversaries, and the step counter."""
+    return snapshot.state
 
 
 def _adam_state(opt_state) -> optax.ScaleByAdamState:
@@ -173,27 +169,6 @@ def _adam_state(opt_state) -> optax.ScaleByAdamState:
     visit(opt_state)
     assert len(holder) == 1, f"expected exactly one ScaleByAdamState, found {len(holder)}"
     return holder[0]
-
-
-def snapshot_trial(state: TrainState, site: str, slot: int) -> TrialSnapshot:
-    components = state.decomposition.components
-    ci_w, ci_b, offset = _ci_head_leaves(state.decomposition.ci_fn, site)
-    col = offset + slot
-    vu_adam = _adam_state(state.training.components_opt_state)
-    ci_adam = _adam_state(state.training.ci_fn_opt_state)
-    mu_v, mu_u = _slot_slices(vu_adam.mu, site, slot)
-    nu_v, nu_u = _slot_slices(vu_adam.nu, site, slot)
-    ci_mu_w, ci_mu_b, _ = _ci_head_leaves_like(ci_adam.mu, state.decomposition.ci_fn, site)
-    ci_nu_w, ci_nu_b, _ = _ci_head_leaves_like(ci_adam.nu, state.decomposition.ci_fn, site)
-    v_col, u_row = _slot_slices(components, site, slot)
-    return TrialSnapshot(
-        site=site, slot=slot,
-        v_col=v_col, u_row=u_row,
-        ci_w_col=ci_w[:, col], ci_b=ci_b[col],
-        vu_mu_v=mu_v, vu_mu_u=mu_u, vu_nu_v=nu_v, vu_nu_u=nu_u,
-        ci_mu_w_col=ci_mu_w[:, col], ci_mu_b=ci_mu_b[col],
-        ci_nu_w_col=ci_nu_w[:, col], ci_nu_b=ci_nu_b[col],
-    )  # fmt: skip
 
 
 def _ci_head_leaves_like(tree, ci_fn: CIFn, site: str) -> tuple[Array, Array, int]:
@@ -331,19 +306,6 @@ def birth_slot(state: TrainState, site: str, slot: int, direction: Array) -> Tra
         vu_moments=(jnp.zeros_like(unit), jnp.zeros((U.shape[1],)),
                     jnp.zeros_like(unit), jnp.zeros((U.shape[1],))),
         ci_moments=(zeros_w, zero, zeros_w, zero),
-    )  # fmt: skip
-
-
-def rollback_trial(state: TrainState, snapshot: TrialSnapshot) -> TrainState:
-    """Bitwise restore of everything `birth_slot` (and subsequent training of the slot)
-    touched: factor slices, CI-head column/bias, and both optimizers' moment slices."""
-    return _edit_slot_everywhere(
-        state, snapshot.site, snapshot.slot,
-        v_col=snapshot.v_col, u_row=snapshot.u_row,
-        ci_w_col=snapshot.ci_w_col, ci_b_val=snapshot.ci_b,
-        vu_moments=(snapshot.vu_mu_v, snapshot.vu_mu_u, snapshot.vu_nu_v, snapshot.vu_nu_u),
-        ci_moments=(snapshot.ci_mu_w_col, snapshot.ci_mu_b,
-                    snapshot.ci_nu_w_col, snapshot.ci_nu_b),
     )  # fmt: skip
 
 
