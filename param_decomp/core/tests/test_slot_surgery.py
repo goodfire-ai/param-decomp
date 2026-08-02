@@ -127,7 +127,10 @@ def test_rollback_restores_the_entire_pretrial_frontier() -> None:
     # layer, both optimizer states, and the step counter
     contaminated = birth_slot(
         # unrelated-slot edit via the public path (slot 5 is also null)
-        born, "s1", 5, jax.random.normal(jax.random.key(9), (8,))
+        born,
+        "s1",
+        5,
+        jax.random.normal(jax.random.key(9), (8,)),
     )
     hidden_w = cast(Any, contaminated.decomposition.ci_fn).site_mlps["s2"].weights[0]
     contaminated = eqx.tree_at(
@@ -191,7 +194,9 @@ def test_truncate_active_prefix_nulls_tail_and_is_idempotent() -> None:
     again = truncate_active_prefix(truncated, {"s1": 2})
     for a, c in zip(
         jax.tree_util.tree_leaves((again.decomposition, again.training.components_opt_state)),
-        jax.tree_util.tree_leaves((truncated.decomposition, truncated.training.components_opt_state)),
+        jax.tree_util.tree_leaves(
+            (truncated.decomposition, truncated.training.components_opt_state)
+        ),
         strict=True,
     ):
         if hasattr(a, "shape"):

@@ -164,7 +164,5 @@ def test_complexity_stays_off_through_feasibility_birth_and_protection() -> None
         if a.state.phase is Phase.BIRTH_PROTECTED:
             assert a.state.c == 0.0
     # protection expiry re-enters control BELOW the last known-violating coefficient
-    expiry = next(
-        a.state for a in actions[birth_idx + 1 :] if a.state.phase is Phase.CONTROL
-    )
+    expiry = next(a.state for a in actions[birth_idx + 1 :] if a.state.phase is Phase.CONTROL)
     assert expiry.log_c < actions[birth_idx].state.log_c

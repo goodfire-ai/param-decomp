@@ -226,8 +226,12 @@ def _edit_slot_everywhere(
     new_vu_opt = _replace_adam(
         state.training.components_opt_state,
         vu_adam._replace(
-            mu=_edited_stacks(cast(ComponentStacks, cast(object, vu_adam.mu)), site, slot, mu_v, mu_u),
-            nu=_edited_stacks(cast(ComponentStacks, cast(object, vu_adam.nu)), site, slot, nu_v, nu_u),
+            mu=_edited_stacks(
+                cast(ComponentStacks, cast(object, vu_adam.mu)), site, slot, mu_v, mu_u
+            ),
+            nu=_edited_stacks(
+                cast(ComponentStacks, cast(object, vu_adam.nu)), site, slot, nu_v, nu_u
+            ),
         ),
     )
 

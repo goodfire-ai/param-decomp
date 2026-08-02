@@ -153,7 +153,7 @@ def init_stack_arrays_svd_null_tail(
         W = site_weights[spec.name].astype(jnp.float32)
         assert W.shape == (spec.d_out, spec.d_in), (spec.name, W.shape)
         r = min(spec.d_in, spec.d_out)
-        assert spec.C >= r, (
+        assert r <= spec.C, (
             f"svd_null_tail needs C >= min(d_in, d_out) at every site: "
             f"{spec.name} has C={spec.C} < {r}"
         )

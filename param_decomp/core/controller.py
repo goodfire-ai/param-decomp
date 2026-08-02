@@ -193,9 +193,16 @@ def controller_update(
             # would re-test the value that already failed).
             return Action(
                 replace(
-                    state, phase=Phase.CONTROL, log_c=state.log_c - cfg.expand_log_step,
-                    lo=None, hi=None, dwell=0, prev_complexity=None,
-                    protect_windows_left=0, probe_cooldown=0, rejected_probes=0,
+                    state,
+                    phase=Phase.CONTROL,
+                    log_c=state.log_c - cfg.expand_log_step,
+                    lo=None,
+                    hi=None,
+                    dwell=0,
+                    prev_complexity=None,
+                    protect_windows_left=0,
+                    probe_cooldown=0,
+                    rejected_probes=0,
                 ),  # fmt: skip
                 Event.NONE,
             )
@@ -209,7 +216,9 @@ def controller_update(
                     return Action(replace(state, dwell=0), Event.CAPACITY_EXHAUSTED)
                 return Action(
                     replace(
-                        state, phase=Phase.BIRTH_PROTECTED, dwell=0,
+                        state,
+                        phase=Phase.BIRTH_PROTECTED,
+                        dwell=0,
                         protect_windows_left=protect_windows,
                     ),  # fmt: skip
                     Event.FEASIBILITY_BIRTH,
@@ -240,11 +249,9 @@ def controller_update(
             # plateau/column-probe logic must engage there too, or case-B probes
             # starve forever behind a permanent sign<0.
             if sign == 0 or (sign < 0 and converged_at_lo):
-                plateaued = (
-                    cooled.prev_complexity is not None
-                    and abs(window.complexity - cooled.prev_complexity)
-                    <= cfg.plateau_rtol * abs(cooled.prev_complexity)
-                )
+                plateaued = cooled.prev_complexity is not None and abs(
+                    window.complexity - cooled.prev_complexity
+                ) <= cfg.plateau_rtol * abs(cooled.prev_complexity)
                 dwell = cooled.dwell + 1 if plateaued else 0
                 next_state = replace(
                     cooled,

@@ -6,6 +6,8 @@
   optax's eps-free `clip_by_global_norm`.
 """
 
+from typing import Any, cast
+
 import jax
 import jax.numpy as jnp
 import optax
@@ -128,13 +130,13 @@ def test_c_covariant_component_scaling_is_post_optimizer_and_shape_aware():
         }
     )
     transform = scale_component_updates_c_covariant()
-    scaled, _ = transform.update(updates, transform.init(updates))
+    scaled, _ = transform.update(cast(Any, updates), transform.init(cast(Any, updates)))
 
-    wide_v, wide_u = scaled.site("wide")
+    wide_v, wide_u = cast(Any, scaled).site("wide")
     assert jnp.allclose(wide_v, (40 / 200) ** 0.5)
     assert jnp.allclose(wide_u, 40 / 200)
 
-    tall_v, tall_u = scaled.site("tall")
+    tall_v, tall_u = cast(Any, scaled).site("tall")
     assert jnp.allclose(tall_v, (10 / 40) ** 0.5)
     assert jnp.allclose(tall_u, 10 / 40)
 
@@ -255,7 +257,7 @@ def test_stacked_muon_update_matches_optax_muon():
         state = opt.init(params)
         p = params
         for _ in range(2):
-            updates, state = opt.update(grads, state, p)
+            updates, state = opt.update(cast(Any, grads), state, cast(Any, p))
             p = jax.tree.map(lambda x, u: x + u, p, updates)
         return p
 
@@ -352,11 +354,11 @@ def test_stacked_muon_bf16_ns_is_sane():
         state = opt.init(params)
         p = params
         for _ in range(2):
-            raw, state = opt.update(grads, state, p)
+            raw, state = opt.update(cast(Any, grads), state, cast(Any, p))
             p = jax.tree.map(
                 lambda x, u: x + u, p, jax.tree.unflatten(treedef, jax.tree.leaves(raw))
             )
-        raw, state = opt.update(grads, state, p)
+        raw, state = opt.update(cast(Any, grads), state, cast(Any, p))
         return jax.tree.unflatten(treedef, jax.tree.leaves(raw)), state
 
     bf16_updates, bf16_state = run("bfloat16")
@@ -426,7 +428,7 @@ def test_component_gauge_balance_preserves_each_rank_one_term():
     components = component_stacks_from_sites({"site": (V[0], U[0])})
 
     balanced, _ = balance_component_stacks(components)
-    Vb, Ub = balanced.site("site")
+    Vb, Ub = cast(Any, balanced).site("site")
 
     original_terms = jnp.einsum("ic,co->cio", V[0], U[0])
     balanced_terms = jnp.einsum("ic,co->cio", Vb, Ub)
@@ -451,14 +453,14 @@ def test_gauge_balanced_adam_retracts_update_and_transforms_moments():
     grads = jax.tree.map(lambda x: jnp.arange(x.size, dtype=x.dtype).reshape(x.shape) + 1, params)
     inner = optax.adamw(1e-2, weight_decay=0.0)
 
-    raw_updates, raw_state = inner.update(grads, inner.init(params), params)
-    raw_proposed = optax.apply_updates(params, raw_updates)
-    expected, scales = balance_component_stacks(raw_proposed)
+    raw_updates, raw_state = inner.update(grads, inner.init(cast(Any, params)), cast(Any, params))
+    raw_proposed = optax.apply_updates(cast(Any, params), raw_updates)
+    expected, scales = balance_component_stacks(cast(Any, raw_proposed))
     expected_state = _transform_adam_moments_to_balanced_gauge(raw_state, scales)
 
     wrapped = gauge_balance_component_optimizer(inner)
-    updates, state = wrapped.update(grads, wrapped.init(params), params)
-    actual = optax.apply_updates(params, updates)
+    updates, state = wrapped.update(grads, wrapped.init(cast(Any, params)), cast(Any, params))
+    actual = cast(Any, optax.apply_updates(cast(Any, params), updates))
     assert all(
         bool(jnp.allclose(a, b))
         for a, b in zip(jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True)
@@ -466,7 +468,9 @@ def test_gauge_balanced_adam_retracts_update_and_transforms_moments():
     assert all(
         bool(jnp.allclose(a, b))
         for a, b in zip(
-            jax.tree.leaves(state.inner_state), jax.tree.leaves(expected_state), strict=True
+            jax.tree.leaves(cast(Any, state).inner_state),
+            jax.tree.leaves(expected_state),
+            strict=True,
         )
     )
     V, U = actual.site("site")
@@ -476,8 +480,8 @@ def test_gauge_balanced_adam_retracts_update_and_transforms_moments():
 def test_balanced_c_covariant_update_scaling():
     updates = component_stacks_from_sites({"site": (jnp.ones((12, 48)), jnp.ones((48, 7)))})
     transform = scale_component_updates_c_covariant_balanced()
-    scaled, _ = transform.update(updates, transform.init(updates))
-    V, U = scaled.site("site")
+    scaled, _ = transform.update(cast(Any, updates), transform.init(cast(Any, updates)))
+    V, U = cast(Any, scaled).site("site")
     expected = (12 / 48) ** 0.75
     assert jnp.all(expected == V)
     assert jnp.all(expected == U)

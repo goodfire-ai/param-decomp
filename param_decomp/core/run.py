@@ -61,7 +61,12 @@ from param_decomp.core.run_state import (
     configure_component_optimizer,
     init_train_state,
 )
-from param_decomp.core.train import StepControls, TrainState, make_faith_warmup_step, make_train_step
+from param_decomp.core.train import (
+    StepControls,
+    TrainState,
+    make_faith_warmup_step,
+    make_train_step,
+)
 
 
 @dataclasses.dataclass(frozen=True)

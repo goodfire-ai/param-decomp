@@ -14,9 +14,10 @@ def test_protect_ci_pins_values_and_zeroes_gradient() -> None:
     def summed_lower(raw: dict[str, jax.Array]) -> jax.Array:
         ci = protect_ci(CI.from_logits(raw), protected)
         assert ci.lower["s1"][0, 0] == 1.0 and ci.upper["s1"][0, 0] == 1.0
-        return sum(v.sum() for v in ci.lower.values()) + sum(
-            v.sum() for v in ci.upper.values()
-        )
+        total = jnp.zeros(())
+        for v in list(ci.lower.values()) + list(ci.upper.values()):
+            total = total + v.sum()
+        return total
 
     grads = jax.grad(summed_lower)(logits)
     assert grads["s1"][0, 0] == 0.0  # protected: where() cuts the path to the logit
