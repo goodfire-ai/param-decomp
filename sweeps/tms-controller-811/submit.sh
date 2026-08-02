@@ -2,7 +2,7 @@
 #SBATCH --job-name=vpd811-ctrl
 #SBATCH --comment="Task 811 TMS recon-budget controller A/B/C acceptance"
 #SBATCH --array=0-14%15
-#SBATCH --time=02:00:00
+#SBATCH --time=04:00:00
 #SBATCH --qos=scavenge
 #SBATCH --output=sweeps/tms-controller-811/logs/%A_%a.log
 
