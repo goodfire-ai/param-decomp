@@ -20,11 +20,13 @@ from param_decomp.core.run_state import (
     _optimizer_with_clip,
     _transform_adam_moments_to_balanced_gauge,
     balance_component_stacks,
+    balanced_adam_product_step_geometry,
     clip_by_global_norm_with_eps,
     gauge_balance_component_optimizer,
     optax_schedule,
     scale_component_updates_c_covariant,
     scale_component_updates_c_covariant_balanced,
+    scale_component_updates_function_covariant_balanced,
     stacked_muon_dimension_numbers,
 )
 from param_decomp.core.schedule import Knot, ScheduleConfig
@@ -481,6 +483,30 @@ def test_balanced_c_covariant_update_scaling():
     expected = (12 / 48) ** 0.75
     assert jnp.all(expected == V)
     assert jnp.all(expected == U)
+
+
+def test_function_covariant_balanced_scaling_covers_width_and_aspect():
+    updates = component_stacks_from_sites(
+        {
+            "wide": (jnp.ones((40, 100)), jnp.ones((100, 10))),
+            "tall": (jnp.ones((10, 100)), jnp.ones((100, 40))),
+            "wide_2x": (jnp.ones((80, 200)), jnp.ones((200, 20))),
+        }
+    )
+    transform = scale_component_updates_function_covariant_balanced()
+    scaled, _ = transform.update(updates, transform.init(updates))
+
+    for site in updates.site_names:
+        V, U = updates.site(site)
+        scaled_V, scaled_U = scaled.site(site)
+        geometry = balanced_adam_product_step_geometry(V.shape[0], U.shape[1], V.shape[1])
+        assert jnp.allclose(scaled_V, 1 / geometry)
+        assert jnp.allclose(scaled_U, 1 / geometry)
+
+    base = balanced_adam_product_step_geometry(40, 10, 100)
+    twice_width = balanced_adam_product_step_geometry(80, 20, 200)
+    assert twice_width == pytest.approx(2**0.5 * base)
+    assert balanced_adam_product_step_geometry(40, 10, 800) == pytest.approx(8**0.75 * base)
 
 
 def test_optimizer_config_type_discriminator():

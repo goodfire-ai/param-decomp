@@ -233,6 +233,52 @@ def scale_component_updates_c_covariant_balanced() -> optax.GradientTransformati
     return optax.GradientTransformation(init, update)
 
 
+def balanced_adam_product_step_geometry(d_in: int, d_out: int, C: int) -> float:
+    """First-Adam-step geometry of a balanced ``V @ U`` factorization.
+
+    With canonical ``Var(W_ij)=1/d_in`` scaling, bias-corrected Adam behaves like a sign
+    step and its residual-aligned product motion is proportional to ``C**0.75 * A``, where
+    ``A`` is the sum of the ``dV @ U`` and ``V @ dU`` shape contributions below. Returning
+    that geometry separately makes the reciprocal update transform explicit and testable.
+    """
+    return C**0.75 * (d_in**0.5 * d_out**-0.75 + d_out**0.25 * d_in**-0.5)
+
+
+def scale_component_updates_function_covariant_balanced() -> optax.GradientTransformation:
+    """Map a product-space Adam LR to balanced factor updates.
+
+    The authored LR is ``eta_product``. Each site's post-Adam factor updates are multiplied
+    by ``1 / balanced_adam_product_step_geometry(d_in, d_out, C)`` so the leading relative
+    ``V @ U`` motion is invariant to C, a uniform width change, and transposing a rectangular
+    matrix. This is the shape-complete counterpart of ``c_covariant_balanced``; both still
+    require realized function-step telemetry beyond the first-step regime.
+    """
+
+    def init(params: optax.Params) -> optax.EmptyState:
+        assert isinstance(params, ComponentStacks)
+        return optax.EmptyState()
+
+    def update(
+        updates: optax.Updates, state: optax.OptState, params: optax.Params | None = None
+    ) -> tuple[optax.Updates, optax.OptState]:
+        del params
+        assert isinstance(updates, ComponentStacks)
+        stacks = {
+            shape: (
+                dV / balanced_adam_product_step_geometry(*shape),
+                dU / balanced_adam_product_step_geometry(*shape),
+            )
+            for shape, (dV, dU) in updates.stacks.items()
+        }
+        return ComponentStacks(stacks=stacks, site_slots=updates.site_slots), state
+
+    return optax.GradientTransformation(init, update)
+
+
+def uses_balanced_component_gauge(update_scaling: ComponentUpdateScaling) -> bool:
+    return update_scaling in {"c_covariant_balanced", "function_covariant_balanced"}
+
+
 def stacked_muon_dimension_numbers(params: optax.Params) -> optax.Params:
     """Muon leaf labeling for matrix-STACK trees: every 3D leaf is a `[stack, a, b]` stack
     of matrices — orthogonalize the trailing two axes, stack axis batched — and everything
@@ -314,6 +360,12 @@ def configure_component_optimizer(
                 "c_covariant_balanced component scaling is derived for AdamW updates"
             )
             scaled = optax.chain(optimizer, scale_component_updates_c_covariant_balanced())
+            return gauge_balance_component_optimizer(scaled)
+        case "function_covariant_balanced":
+            assert isinstance(config, AdamWOptimizerConfig), (
+                "function_covariant_balanced component scaling is derived for AdamW updates"
+            )
+            scaled = optax.chain(optimizer, scale_component_updates_function_covariant_balanced())
             return gauge_balance_component_optimizer(scaled)
         case _:
             raise AssertionError(update_scaling)
@@ -403,7 +455,7 @@ def init_train_state(
         model, ci_fn_arch, init_key, mesh, rules, pd.component_init
     )
     components, ci_fn = decomposition.components, decomposition.ci_fn
-    if pd.component_update_scaling == "c_covariant_balanced":
+    if uses_balanced_component_gauge(pd.component_update_scaling):
         components, _ = balance_component_stacks(components)
         decomposition = Decomposition(components=components, ci_fn=ci_fn)
     losses = build_objective(pd.loss_metrics, model.site_names)
