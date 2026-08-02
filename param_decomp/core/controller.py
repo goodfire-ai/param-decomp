@@ -186,16 +186,15 @@ def probe_accepted(state: ControllerState) -> ControllerState:
 def _next_log_c(state: ControllerState, cfg: ControllerConfig) -> float | None:
     """The bracket search's next coefficient, or None to transition OFF. Requires the
     endpoints already updated for the current window."""
-    match state.lo, state.hi:
-        case lo, hi if lo is not None and hi is not None:
-            if hi - lo < cfg.resolution:
-                return lo  # converged: hold at the largest known-feasible scale
-            return (lo + hi) / 2.0
-        case None, hi if hi is not None:
-            return None  # never seen feasible at c > 0: probe OFF
-        case lo, None if lo is not None:
-            return min(lo + cfg.expand_log_step, cfg.max_log_c)  # expand under the guard
-    raise AssertionError("unreachable: a window always sets one endpoint")
+    lo, hi = state.lo, state.hi
+    if lo is not None and hi is not None:
+        if hi - lo < cfg.resolution:
+            return lo  # converged: hold at the largest known-feasible scale
+        return (lo + hi) / 2.0
+    if hi is not None:
+        return None  # never seen feasible at c > 0: probe OFF
+    assert lo is not None, "a window always sets one endpoint"
+    return min(lo + cfg.expand_log_step, cfg.max_log_c)  # expand under the guard
 
 
 def controller_update(

@@ -11,6 +11,7 @@ architectures and optimizer states raise, they never no-op.
 """
 
 from dataclasses import dataclass
+from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
@@ -52,12 +53,14 @@ def birth_direction_from_grad(
     `G u` — so 2–3 alternating probe backwards on one scratch slot power-iterate the
     same pair this function computes, when materializing `G` is too big. Here At LM scale
     use that alternating factor-gradient path rather than materializing dense `G`."""
-    G = G.astype(jnp.float32)
-    v = jnp.ones((G.shape[1],), jnp.float32) / jnp.sqrt(G.shape[1])
+    g = G.astype(jnp.float32)
+    v = jnp.ones((g.shape[1],), jnp.float32) / jnp.sqrt(g.shape[1])
+    p = g @ v
+    sigma = jnp.linalg.norm(p)
     for _ in range(n_iters):
-        p = G @ v
+        p = g @ v
         p = p / (jnp.linalg.norm(p) + 1e-30)
-        v = G.T @ p
+        v = g.T @ p
         sigma = jnp.linalg.norm(v)
         v = v / (sigma + 1e-30)
     return p, sigma
@@ -160,10 +163,10 @@ def rollback_trial(snapshot: TrialSnapshot) -> TrainState:
     return snapshot.state
 
 
-def _adam_state(opt_state) -> optax.ScaleByAdamState:
+def _adam_state(opt_state: Any) -> optax.ScaleByAdamState:
     holder: list[optax.ScaleByAdamState] = []
 
-    def visit(node):
+    def visit(node: Any) -> None:
         if isinstance(node, optax.ScaleByAdamState):
             holder.append(node)
         elif type(node) is tuple:
@@ -175,7 +178,7 @@ def _adam_state(opt_state) -> optax.ScaleByAdamState:
     return holder[0]
 
 
-def _ci_head_leaves_like(tree, ci_fn: CIFn, site: str) -> tuple[Array, Array, int]:
+def _ci_head_leaves_like(tree: Any, ci_fn: CIFn, site: str) -> tuple[Array, Array, int]:
     """The final-layer leaves of a CI-fn-SHAPED tree (an Adam moment tree), located via
     the same structure as `_ci_head_leaves`."""
     match ci_fn:
@@ -227,12 +230,12 @@ def _edit_slot_everywhere(
     new_vu_opt = _replace_adam(
         state.training.components_opt_state,
         vu_adam._replace(
-            mu=_edited_stacks(vu_adam.mu, site, slot, mu_v, mu_u),
-            nu=_edited_stacks(vu_adam.nu, site, slot, nu_v, nu_u),
+            mu=_edited_stacks(cast(ComponentStacks, cast(object, vu_adam.mu)), site, slot, mu_v, mu_u),
+            nu=_edited_stacks(cast(ComponentStacks, cast(object, vu_adam.nu)), site, slot, nu_v, nu_u),
         ),
     )
 
-    def edit_ci_moment_tree(tree, w_col: Array, b_val: Array):
+    def edit_ci_moment_tree(tree: Any, w_col: Array, b_val: Array) -> Any:
         w, b, off = _ci_head_leaves_like(tree, ci_fn, site)
         new_w = w.at[:, off + slot].set(w_col.astype(w.dtype))
         new_b = b.at[off + slot].set(jnp.asarray(b_val, b.dtype))
@@ -269,10 +272,10 @@ def _edit_slot_everywhere(
     )
 
 
-def _replace_adam(opt_state, new_adam: optax.ScaleByAdamState):
+def _replace_adam(opt_state: Any, new_adam: optax.ScaleByAdamState) -> Any:
     replaced = 0
 
-    def rewrite(node):
+    def rewrite(node: Any) -> Any:
         nonlocal replaced
         if isinstance(node, optax.ScaleByAdamState):
             replaced += 1

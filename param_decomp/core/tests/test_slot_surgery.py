@@ -1,6 +1,8 @@
 """Slot surgery primitives (#820): function preservation at birth, GradMax first-gradient
 alignment, edit locality, bitwise rollback, fail-closed arms."""
 
+from typing import Any, cast
+
 import jax
 import jax.numpy as jnp
 import optax
@@ -27,15 +29,14 @@ def make_state(key: jax.Array) -> TrainState:
     vu = {}
     for i, spec in enumerate(SITES):
         V = jax.random.normal(jax.random.fold_in(k1, i), (spec.d_in, spec.C))
-        U = jax.random.normal(jax.random.fold_in(k2, i), (spec.C, spec.d_out))
-        U = U.at[4:, :].set(0.0)  # slots 4,5 exact null
-        vu[spec.name] = (V, U)
+        U_full = jax.random.normal(jax.random.fold_in(k2, i), (spec.C, spec.d_out))
+        vu[spec.name] = (V, U_full.at[4:, :].set(0.0))  # slots 4,5 exact null
     components = component_stacks_from_sites(vu)
     ci_fn = build_ci_fn(LayerwiseMLPCIArch(hidden_dims=(16,), has_position_axis=False), SITES, k3)
     opt = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(1e-3, weight_decay=0.0))
     import equinox as eqx
 
-    vu_opt = opt.init(components)
+    vu_opt = opt.init(cast(Any, components))  # ComponentStacks is a pytree
     ci_opt = opt.init(eqx.filter(ci_fn, eqx.is_inexact_array))
     return TrainState(
         decomposition=Decomposition(components=components, ci_fn=ci_fn),
@@ -78,7 +79,7 @@ def test_first_gradient_aligns_with_leading_singular_mode() -> None:
     state = make_state(jax.random.key(3))
     target = jax.random.normal(jax.random.key(4), (8, 4))
 
-    def loss_from_components(components) -> jax.Array:
+    def loss_from_components(components: Any) -> jax.Array:
         V, U = components.site("s1")
         return 0.5 * jnp.sum((V @ U - target) ** 2)
 
@@ -108,11 +109,11 @@ def test_only_selected_slot_and_moments_change() -> None:
     assert jnp.array_equal(V0[:, keep], V1[:, keep])
     assert jnp.array_equal(U0[keep, :], U1[keep, :])
     # CI head: only column 4 and bias 4 of s1 moved
-    w0 = state.decomposition.ci_fn.site_mlps["s1"].weights[-1]
-    w1 = born.decomposition.ci_fn.site_mlps["s1"].weights[-1]
+    w0 = cast(Any, state.decomposition.ci_fn).site_mlps["s1"].weights[-1]
+    w1 = cast(Any, born.decomposition.ci_fn).site_mlps["s1"].weights[-1]
     assert jnp.array_equal(w0[:, keep], w1[:, keep])
     assert jnp.all(w1[:, 4] == 0.0)
-    assert born.decomposition.ci_fn.site_mlps["s1"].biases[-1][4] == 1.0
+    assert cast(Any, born.decomposition.ci_fn).site_mlps["s1"].biases[-1][4] == 1.0
 
 
 def test_rollback_restores_the_entire_pretrial_frontier() -> None:
@@ -131,9 +132,9 @@ def test_rollback_restores_the_entire_pretrial_frontier() -> None:
         5,
         jax.random.normal(jax.random.key(9), (8,)),
     )
-    hidden_w = contaminated.decomposition.ci_fn.site_mlps["s2"].weights[0]
+    hidden_w = cast(Any, contaminated.decomposition.ci_fn).site_mlps["s2"].weights[0]
     contaminated = eqx.tree_at(
-        lambda s: s.decomposition.ci_fn.site_mlps["s2"].weights[0],
+        lambda s: cast(Any, s.decomposition.ci_fn).site_mlps["s2"].weights[0],
         contaminated, hidden_w + 1.0,
     )  # fmt: skip
     contaminated = eqx.tree_at(
@@ -206,7 +207,7 @@ def test_truncate_active_prefix_nulls_tail_and_is_idempotent() -> None:
     # represented matrix is the prefix-only product (allclose: XLA reduction order
     # differs between a 6-wide matmul with zero rows and a 2-wide matmul)
     assert jnp.allclose(represented(truncated, "s1"), V[:, :2] @ U[:2, :], atol=1e-6)
-    b = truncated.decomposition.ci_fn.site_mlps["s1"].biases[-1]
+    b = cast(Any, truncated.decomposition.ci_fn).site_mlps["s1"].biases[-1]
     assert jnp.all(b[2:] == 0.0)
     again = truncate_active_prefix(truncated, {"s1": 2})
     for a, c in zip(
