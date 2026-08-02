@@ -10,6 +10,8 @@ from param_decomp.core.controller import (
     Event,
     Phase,
     WindowSummary,
+    birth_accepted,
+    birth_rejected,
     controller_update,
     probe_accepted,
     probe_rejected,
@@ -120,14 +122,22 @@ def test_verdicts_assert_phase_legality() -> None:
         probe_rejected(control, CFG)
 
 
-def test_feasibility_protection_expiry_clears_plateau_and_lineage() -> None:
+def test_feasibility_birth_requires_explicit_verdict() -> None:
     state = ControllerState(
         phase=Phase.BIRTH_PROTECTED, log_c=0.0, lo=-1.0, hi=1.0, dwell=0,
         prev_complexity=50.0, protect_windows_left=1, probe_cooldown=2, rejected_probes=2,
     )  # fmt: skip
-    out = controller_update(state, window(0.5), CFG, 3).state
-    assert out.phase is Phase.CONTROL
-    assert out.prev_complexity is None and out.rejected_probes == 0 and out.probe_cooldown == 0
+    # Time never auto-accepts a birth.
+    aged = drive(state, [window(0.0)] * 10)
+    assert all(a.state == state for a in aged)
+
+    accepted = birth_accepted(state, CFG)
+    assert accepted.phase is Phase.CONTROL
+    assert accepted.log_c < state.log_c
+    assert accepted.prev_complexity is None and accepted.rejected_probes == 0
+
+    rejected = birth_rejected(state)
+    assert rejected.phase is Phase.OFF and rejected.dwell == 0 and rejected.c == 0.0
 
 
 def test_capacity_exhausted_is_reported_not_clipped() -> None:
@@ -163,9 +173,10 @@ def test_complexity_stays_off_through_feasibility_birth_and_protection() -> None
     for a in actions[birth_idx + 1 :]:
         if a.state.phase is Phase.BIRTH_PROTECTED:
             assert a.state.c == 0.0
-    # protection expiry re-enters control BELOW the last known-violating coefficient
-    expiry = next(a.state for a in actions[birth_idx + 1 :] if a.state.phase is Phase.CONTROL)
-    assert expiry.log_c < actions[birth_idx].state.log_c
+    # Only an explicit accepted verdict re-enters below the last known violation.
+    accepted = birth_accepted(actions[birth_idx].state, CFG)
+    assert accepted.phase is Phase.CONTROL
+    assert accepted.log_c < actions[birth_idx].state.log_c
 
 
 def test_authored_observable_uses_fixed_affine_units_and_fails_closed() -> None:

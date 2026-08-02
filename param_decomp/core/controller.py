@@ -49,7 +49,7 @@ class ControllerConfig:
 class Phase(Enum):
     CONTROL = "control"
     OFF = "off"  # complexity force fully off (c = 0); the only phase feasibility birth fires from
-    BIRTH_PROTECTED = "birth_protected"  # feasibility newborn gate-protected; expires by timer
+    BIRTH_PROTECTED = "birth_protected"  # feasibility trial; exits only via explicit verdict
     PROBE_PENDING = "probe_pending"  # a COLUMN_PROBE trial is out; exits ONLY via a verdict
 
 
@@ -122,6 +122,36 @@ class Action:
     event: Event
 
 
+def birth_accepted(state: ControllerState, cfg: ControllerConfig) -> ControllerState:
+    """Caller accepts a protected feasibility birth after it became load-bearing and
+    improved the violated reconstruction constraint. The landscape changed: clear the
+    stale bracket/plateau lineage and re-enter from a gentler coefficient than the last
+    known violation.
+    """
+    assert state.phase is Phase.BIRTH_PROTECTED, state.phase
+    return replace(
+        state,
+        phase=Phase.CONTROL,
+        log_c=state.log_c - cfg.expand_log_step,
+        lo=None,
+        hi=None,
+        dwell=0,
+        prev_complexity=None,
+        protect_windows_left=0,
+        probe_cooldown=0,
+        rejected_probes=0,
+    )
+
+
+def birth_rejected(state: ControllerState) -> ControllerState:
+    """Caller rolled a failed feasibility birth back to the pre-trial state. Complexity
+    remains OFF because the pre-birth active set is still known infeasible; a caller-side
+    direction/site cooldown must prevent immediately retrying the identical column.
+    """
+    assert state.phase is Phase.BIRTH_PROTECTED, state.phase
+    return replace(state, phase=Phase.OFF, dwell=0, protect_windows_left=0)
+
+
 def probe_rejected(state: ControllerState, cfg: ControllerConfig) -> ControllerState:
     """Caller reports a rolled-back COLUMN_PROBE: start the cooldown and count it.
     The trial slot is back to exact null, so control resumes where it left off (the
@@ -184,29 +214,10 @@ def controller_update(
             return Action(state, Event.NONE)
 
         case Phase.BIRTH_PROTECTED:
-            left = state.protect_windows_left - 1
-            if left > 0:
-                return Action(replace(state, protect_windows_left=left), Event.NONE)
-            # feasibility protection expiry: the newborn moved the landscape -> fresh
-            # bracket, stale plateau and rejection lineage cleared, and control re-enters
-            # from a deliberately GENTLER probe than the last known-violating coefficient
-            # (complexity was OFF throughout protection; snapping back to exp(log_c)
-            # would re-test the value that already failed).
-            return Action(
-                replace(
-                    state,
-                    phase=Phase.CONTROL,
-                    log_c=state.log_c - cfg.expand_log_step,
-                    lo=None,
-                    hi=None,
-                    dwell=0,
-                    prev_complexity=None,
-                    protect_windows_left=0,
-                    probe_cooldown=0,
-                    rejected_probes=0,
-                ),  # fmt: skip
-                Event.NONE,
-            )
+            # Time is not evidence that a feasibility column became useful. The caller
+            # holds its gate open, releases/resettles it, then reports an explicit verdict
+            # through birth_accepted / birth_rejected.
+            return Action(state, Event.NONE)
 
         case Phase.OFF:
             if sign > 0:  # violating with complexity fully off -> demand capacity

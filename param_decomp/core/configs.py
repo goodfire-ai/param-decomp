@@ -612,6 +612,8 @@ class ReconBudgetControlConfig(BaseConfig):
     resolution_factor: float = 1.05
     dwell_windows: PositiveInt = 3
     plateau_rtol: NonNegativeFloat = 0.02
+    probe_improvement_rtol: NonNegativeFloat = 0.02
+    birth_improvement_rtol: NonNegativeFloat = 0.02
     probe_cooldown_windows: NonNegativeInt = 6
     max_rejected_probes: PositiveInt = 3
     settle_points: PositiveInt = 3
