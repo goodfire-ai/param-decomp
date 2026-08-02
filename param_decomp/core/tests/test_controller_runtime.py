@@ -149,6 +149,17 @@ def test_controller_allows_fully_active_random_dictionary() -> None:
     assert jnp.all(masks["b"])
 
 
+def test_controller_accepts_random_prefix_null_tail() -> None:
+    from types import SimpleNamespace
+
+    from param_decomp.core.run import _controller_active_masks
+
+    sites = (SiteSpec("a", 4, 3, 5),)
+    model = SimpleNamespace(sites=sites, site_names=("a",))
+    masks = _controller_active_masks(model, {"a": 4}, "random_prefix_null_tail", 0)
+    assert jnp.array_equal(masks["a"], jnp.array([True, True, True, True, False]))
+
+
 def test_controller_refuses_random_inactive_suffix() -> None:
     from types import SimpleNamespace
 

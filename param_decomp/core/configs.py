@@ -701,10 +701,13 @@ class PDConfig(BaseConfig):
             "minimality force. Its constraint observable is an authored eval scalar."
         ),
     )
-    component_init: Literal["random", "svd_null_tail"] = Field(
+    component_init: Literal["random", "random_prefix_null_tail", "svd_null_tail"] = Field(
         default="random",
         description=(
-            "V/U + CI-head initialization. `svd_null_tail` starts the first min(d_in, d_out) "
+            "V/U + CI-head initialization. `random_prefix_null_tail` uses the controller's "
+            "initial_active_slots as a K-scaled, component-keyed random dictionary and makes "
+            "the remaining physical allocation exact-null. `svd_null_tail` starts the first "
+            "min(d_in, d_out) "
             "slots at an exact SVD factorization of the target weight with CI pinned 1, and "
             "every extra slot as an exact null (U row zero, prefix-stable random V column, CI "
             "pinned 0) — so every C >= rank(W) starts from the same represented matrix, "

@@ -931,6 +931,66 @@ def init_global_mlp_ci_fn(
 # ----------------------------- construction (placement-agnostic) -----------------------------
 
 
+def pin_ci_head_random_prefix_null_tail(
+    ci_fn: CIFn,
+    sites: tuple[SiteSpec, ...],
+    active_by_site: dict[str, int],
+    key: PRNGKeyArray,
+) -> CIFn:
+    """Component-keyed random MLP heads for a K-active / Cmax-physical dictionary.
+
+    Hidden trunks already have C-independent shapes. This rewrites only the final heads so
+    active columns are prefix-identical across physical C and inactive columns are exact
+    zero, cutting both their forward contribution and their gradient into the trunk.
+    """
+    assert set(active_by_site) == {site.name for site in sites}
+
+    def like(new: Array, old: Array) -> Array:
+        assert new.shape == old.shape, (new.shape, old.shape)
+        return jax.device_put(new.astype(old.dtype), old.sharding)
+
+    def site_head(spec: SiteSpec, fan_in: int, site_idx: int) -> tuple[Array, Array]:
+        active = active_by_site[spec.name]
+        assert 0 < active <= spec.C, (spec.name, active, spec.C)
+        site_key = jax.random.fold_in(key, site_idx)
+        columns = (
+            jax.vmap(lambda slot: jax.random.normal(jax.random.fold_in(site_key, slot), (fan_in,)))(
+                jnp.arange(spec.C)
+            ).T
+            * fan_in**-0.5
+        )
+        columns = jnp.where(jnp.arange(spec.C)[None, :] < active, columns, 0.0)
+        return columns, jnp.zeros((spec.C,))
+
+    site_by_name = {spec.name: (idx, spec) for idx, spec in enumerate(sites)}
+    match ci_fn:
+        case LayerwiseMLPCIFn():
+            replaced = {}
+            for name, mlp in ci_fn.site_mlps.items():
+                site_idx, spec = site_by_name[name]
+                w, b = site_head(spec, mlp.weights[-1].shape[0], site_idx)
+                replaced[name] = eqx.tree_at(
+                    lambda m: (m.weights[-1], m.biases[-1]),
+                    mlp,
+                    (like(w, mlp.weights[-1]), like(b, mlp.biases[-1])),
+                )
+            return eqx.tree_at(lambda f: f.site_mlps, ci_fn, replaced)
+        case GlobalMLPCIFn():
+            fan_in = ci_fn.mlp.weights[-1].shape[0]
+            heads = [site_head(spec, fan_in, idx) for idx, spec in enumerate(sites)]
+            w = jnp.concatenate([head[0] for head in heads], axis=1)
+            b = jnp.concatenate([head[1] for head in heads])
+            return eqx.tree_at(
+                lambda f: (f.mlp.weights[-1], f.mlp.biases[-1]),
+                ci_fn,
+                (like(w, ci_fn.mlp.weights[-1]), like(b, ci_fn.mlp.biases[-1])),
+            )
+        case _:
+            raise NotImplementedError(
+                "random_prefix_null_tail currently supports the toy MLP CI fns only"
+            )
+
+
 def pin_ci_head_null_tail(ci_fn: CIFn, sites: tuple[SiteSpec, ...]) -> CIFn:
     """`svd_null_tail`'s CI half: zero the final head weights and set its bias to 1 for
     the first min(d_in, d_out) slots of each site and 0 for the null tail, so CI starts

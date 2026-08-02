@@ -25,6 +25,7 @@ from param_decomp.core.ci_fn import (
     ChunkwiseTransformerCIArch,
     CIFnArch,
     pin_ci_head_null_tail,
+    pin_ci_head_random_prefix_null_tail,
 )
 from param_decomp.core.components import ComponentStacks, init_component_stacks
 from param_decomp.core.configs import (
@@ -37,6 +38,7 @@ from param_decomp.core.configs import (
 from param_decomp.core.init_placed import (
     init_ci_fn_placed,
     init_component_stacks_placed,
+    init_component_stacks_random_prefix_null_tail_placed,
     init_component_stacks_svd_null_tail_placed,
     init_sources_sharded,
 )
@@ -87,7 +89,27 @@ def clip_by_global_norm_with_eps(max_norm: float, eps: float) -> optax.GradientT
     return optax.GradientTransformation(init, update)
 
 
-def scale_component_updates_c_covariant() -> optax.GradientTransformation:
+def _site_scalars(
+    updates: ComponentStacks,
+    logical_c_by_site: dict[str, int] | None,
+    scalar: Callable[[int, int, int], tuple[float, float]],
+) -> dict[tuple[int, int, int], tuple[Array, Array]]:
+    values = {
+        shape: (jnp.ones((length,)), jnp.ones((length,)))
+        for shape, length in updates.group_lengths().items()
+    }
+    for site, shape, stack_idx in updates.site_slots:
+        c = shape[2] if logical_c_by_site is None else logical_c_by_site[site]
+        assert 0 < c <= shape[2], (site, c, shape)
+        v, u = scalar(shape[0], shape[1], c)
+        vs, us = values[shape]
+        values[shape] = vs.at[stack_idx].set(v), us.at[stack_idx].set(u)
+    return values
+
+
+def scale_component_updates_c_covariant(
+    logical_c_by_site: dict[str, int] | None = None,
+) -> optax.GradientTransformation:
     """Scale post-Adam V/U updates so the represented-matrix step transfers across C.
 
     With the canonical init ``V~N(0, d_in^-1)``, ``U~N(0, C^-1)``, Adam's first
@@ -107,11 +129,13 @@ def scale_component_updates_c_covariant() -> optax.GradientTransformation:
     ) -> tuple[optax.Updates, optax.OptState]:
         del params
         assert isinstance(updates, ComponentStacks)
+        scalars = _site_scalars(
+            updates,
+            logical_c_by_site,
+            lambda d_in, _d_out, c: ((d_in / c) ** 0.5, d_in / c),
+        )
         stacks = {
-            shape: (
-                dV * (shape[0] / shape[2]) ** 0.5,
-                dU * (shape[0] / shape[2]),
-            )
+            shape: (dV * scalars[shape][0][:, None, None], dU * scalars[shape][1][:, None, None])
             for shape, (dV, dU) in updates.stacks.items()
         }
         return cast(
@@ -217,7 +241,9 @@ def gauge_balance_component_optimizer(
     return optax.GradientTransformation(init, update)
 
 
-def scale_component_updates_c_covariant_balanced() -> optax.GradientTransformation:
+def scale_component_updates_c_covariant_balanced(
+    logical_c_by_site: dict[str, int] | None = None,
+) -> optax.GradientTransformation:
     """C-covariant Adam scaling for balanced factors.
 
     At canonical balanced initialization both factor entries scale as C^-1/4, so either
@@ -234,8 +260,13 @@ def scale_component_updates_c_covariant_balanced() -> optax.GradientTransformati
     ) -> tuple[optax.Updates, optax.OptState]:
         del params
         assert isinstance(updates, ComponentStacks)
+        scalars = _site_scalars(
+            updates,
+            logical_c_by_site,
+            lambda d_in, _d_out, c: ((d_in / c) ** 0.75, (d_in / c) ** 0.75),
+        )
         stacks = {
-            shape: (dV * (shape[0] / shape[2]) ** 0.75, dU * (shape[0] / shape[2]) ** 0.75)
+            shape: (dV * scalars[shape][0][:, None, None], dU * scalars[shape][1][:, None, None])
             for shape, (dV, dU) in updates.stacks.items()
         }
         return cast(
@@ -257,7 +288,9 @@ def balanced_adam_product_step_geometry(d_in: int, d_out: int, C: int) -> float:
     return C**0.75 * (d_in**0.5 * d_out**-0.75 + d_out**0.25 * d_in**-0.5)
 
 
-def scale_component_updates_function_covariant_balanced() -> optax.GradientTransformation:
+def scale_component_updates_function_covariant_balanced(
+    logical_c_by_site: dict[str, int] | None = None,
+) -> optax.GradientTransformation:
     """Map a product-space Adam LR to balanced factor updates.
 
     The authored LR is ``eta_product``. Each site's post-Adam factor updates are multiplied
@@ -276,11 +309,16 @@ def scale_component_updates_function_covariant_balanced() -> optax.GradientTrans
     ) -> tuple[optax.Updates, optax.OptState]:
         del params
         assert isinstance(updates, ComponentStacks)
+        scalars = _site_scalars(
+            updates,
+            logical_c_by_site,
+            lambda d_in, d_out, c: (
+                1.0 / balanced_adam_product_step_geometry(d_in, d_out, c),
+                1.0 / balanced_adam_product_step_geometry(d_in, d_out, c),
+            ),
+        )
         stacks = {
-            shape: (
-                dV / balanced_adam_product_step_geometry(*shape),
-                dU / balanced_adam_product_step_geometry(*shape),
-            )
+            shape: (dV * scalars[shape][0][:, None, None], dU * scalars[shape][1][:, None, None])
             for shape, (dV, dU) in updates.stacks.items()
         }
         return cast(
@@ -356,6 +394,7 @@ def configure_component_optimizer(
     optimizer: optax.GradientTransformation,
     update_scaling: ComponentUpdateScaling,
     config: AdamWOptimizerConfig | MuonOptimizerConfig,
+    logical_c_by_site: dict[str, int] | None = None,
 ) -> optax.GradientTransformation:
     """Apply the V/U post-optimizer rule to any component optimizer phase.
 
@@ -370,18 +409,22 @@ def configure_component_optimizer(
             assert isinstance(config, AdamWOptimizerConfig), (
                 "c_covariant component scaling is derived for AdamW updates"
             )
-            return optax.chain(optimizer, scale_component_updates_c_covariant())
+            return optax.chain(optimizer, scale_component_updates_c_covariant(logical_c_by_site))
         case "c_covariant_balanced":
             assert isinstance(config, AdamWOptimizerConfig), (
                 "c_covariant_balanced component scaling is derived for AdamW updates"
             )
-            scaled = optax.chain(optimizer, scale_component_updates_c_covariant_balanced())
+            scaled = optax.chain(
+                optimizer, scale_component_updates_c_covariant_balanced(logical_c_by_site)
+            )
             return gauge_balance_component_optimizer(scaled)
         case "function_covariant_balanced":
             assert isinstance(config, AdamWOptimizerConfig), (
                 "function_covariant_balanced component scaling is derived for AdamW updates"
             )
-            scaled = optax.chain(optimizer, scale_component_updates_function_covariant_balanced())
+            scaled = optax.chain(
+                optimizer, scale_component_updates_function_covariant_balanced(logical_c_by_site)
+            )
             return gauge_balance_component_optimizer(scaled)
         case _:  # fail-closed arm for unmigrated literals  # pyright: ignore[reportUnnecessaryComparison]
             raise AssertionError(update_scaling)  # pyright: ignore[reportUnreachable]
@@ -399,8 +442,13 @@ def build_optimizers(pd: PDConfig, ci_fn_arch: CIFnArch, mesh: Mesh | None):
     opt_vu = _optimizer_with_clip(
         pd.components_optimizer, sched_vu, stacked_muon_dimension_numbers, mesh=mesh
     )
+    logical_c_by_site = (
+        pd.recon_budget_control.initial_active_slots
+        if pd.component_init == "random_prefix_null_tail" and pd.recon_budget_control is not None
+        else None
+    )
     opt_vu = configure_component_optimizer(
-        opt_vu, pd.component_update_scaling, pd.components_optimizer
+        opt_vu, pd.component_update_scaling, pd.components_optimizer, logical_c_by_site
     )
     ci_muon_dim_nums = (
         stacked_muon_dimension_numbers
@@ -425,7 +473,8 @@ def init_decomposition(
     init_key: PRNGKeyArray,
     mesh: Mesh,
     rules: PlacementRules,
-    component_init: Literal["random", "svd_null_tail"] = "random",
+    component_init: Literal["random", "random_prefix_null_tail", "svd_null_tail"] = "random",
+    initial_active_slots: dict[str, int] | None = None,
 ) -> Decomposition:
     """The trained-product half of `init_train_state`, factored out so a consumer can
     `jax.eval_shape` it to recover the saved `decomposition` item's tree structure
@@ -438,7 +487,16 @@ def init_decomposition(
     ci_fn = init_ci_fn_placed(ci_fn_arch, model.sites, ci_key, mesh)
     match component_init:
         case "random":
+            assert initial_active_slots is None
             components = init_component_stacks_placed(model.sites, init_key, rules)
+        case "random_prefix_null_tail":
+            assert initial_active_slots is not None
+            components = init_component_stacks_random_prefix_null_tail_placed(
+                model.sites, initial_active_slots, init_key, rules
+            )
+            ci_fn = pin_ci_head_random_prefix_null_tail(
+                ci_fn, model.sites, initial_active_slots, ci_key
+            )
         case "svd_null_tail":
             components = init_component_stacks_svd_null_tail_placed(
                 model.sites, _frozen_site_weights(model), init_key, rules
@@ -467,7 +525,14 @@ def init_train_state(
     assert isinstance(positions, Positioned) == model.has_position_axis, (
         f"{positions} does not match the model's has_position_axis={model.has_position_axis}"
     )
-    decomposition = init_decomposition(model, ci_fn_arch, init_key, mesh, rules, pd.component_init)
+    initial_active_slots = (
+        pd.recon_budget_control.initial_active_slots
+        if pd.component_init == "random_prefix_null_tail" and pd.recon_budget_control is not None
+        else None
+    )
+    decomposition = init_decomposition(
+        model, ci_fn_arch, init_key, mesh, rules, pd.component_init, initial_active_slots
+    )
     components, ci_fn = decomposition.components, decomposition.ci_fn
     if uses_balanced_component_gauge(pd.component_update_scaling):
         components, _ = balance_component_stacks(components)

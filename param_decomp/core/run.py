@@ -570,6 +570,12 @@ def _init_or_restore_state(
             ),
             pd.component_update_scaling,
             pd.components_optimizer,
+            (
+                pd.recon_budget_control.initial_active_slots
+                if pd.component_init == "random_prefix_null_tail"
+                and pd.recon_budget_control is not None
+                else None
+            ),
         )
         faith_warmup_opt_state = faith_warmup_optimizer.init(
             eqx.filter(state.decomposition.components, eqx.is_array)
@@ -674,8 +680,8 @@ def _controller_active_masks(
         )
     has_inactive_suffix = any(active_by_site[site.name] < site.C for site in model.sites)
     if has_inactive_suffix:
-        assert component_init == "svd_null_tail", (
-            "an inactive controller suffix requires the exact SVD/null-tail initializer",
+        assert component_init in {"random_prefix_null_tail", "svd_null_tail"}, (
+            "an inactive controller suffix requires exact SVD/null-tail or random-prefix/null-tail init",
             component_init,
         )
         assert faithfulness_warmup_steps == 0, (

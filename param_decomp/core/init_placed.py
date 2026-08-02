@@ -33,6 +33,7 @@ from param_decomp.core.components import (
     ComponentStacks,
     SiteSpec,
     init_component_stacks,
+    init_stack_arrays_random_prefix_null_tail,
     init_stack_arrays_svd_null_tail,
     site_slots_for,
 )
@@ -51,6 +52,25 @@ def init_component_stacks_placed(
     abstract = eqx.filter_eval_shape(partial(init_component_stacks, sites), key)
     placement = component_stacks_shardings(abstract, rules)
     return jax.jit(partial(init_component_stacks, sites), out_shardings=placement)(key)
+
+
+def init_component_stacks_random_prefix_null_tail_placed(
+    sites: tuple[SiteSpec, ...],
+    active_by_site: dict[str, int],
+    key: PRNGKeyArray,
+    rules: PlacementRules,
+) -> ComponentStacks:
+    """K-scaled, component-keyed random prefix with an exact-null physical tail."""
+
+    def init(k: PRNGKeyArray) -> ComponentStacks:
+        return ComponentStacks(
+            stacks=init_stack_arrays_random_prefix_null_tail(sites, active_by_site, k),
+            site_slots=site_slots_for(sites),
+        )
+
+    abstract = eqx.filter_eval_shape(init, key)
+    placement = component_stacks_shardings(abstract, rules)
+    return jax.jit(init, out_shardings=placement)(key)
 
 
 def init_component_stacks_svd_null_tail_placed(

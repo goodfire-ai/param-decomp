@@ -34,6 +34,7 @@ from jax import random as jax_random
 from jax.sharding import Mesh
 from jaxtyping import Array, Bool, Float
 
+from param_decomp.core.adversary import componentwise_uniform
 from param_decomp.core.components import ComponentStacks, SiteSpec
 
 
@@ -249,8 +250,12 @@ def stochastic_site_masks(
     delta_masks: dict[str, Array] = {}
     for site_idx, site in enumerate(live):
         ci = ci_lower[site]
-        masks[site] = ci + (1.0 - ci) * jax_random.uniform(
-            jax_random.fold_in(mask_key, site_idx), ci.shape, ci.dtype
+        masks[site] = ci + (1.0 - ci) * componentwise_uniform(
+            jax_random.fold_in(mask_key, site_idx),
+            ci.shape[:-1],
+            ci.shape[-1],
+            ci.dtype,
+            with_delta=False,
         )
         if has_delta:
             delta_masks[site] = jax_random.uniform(

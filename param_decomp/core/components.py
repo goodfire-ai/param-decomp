@@ -139,6 +139,50 @@ def init_stack_arrays(
     return stacked
 
 
+def init_stack_arrays_random_prefix_null_tail(
+    sites: tuple[SiteSpec, ...], active_by_site: dict[str, int], key: Array
+) -> dict[VUShape, tuple[Array, Array]]:
+    """Random logical dictionary inside a larger physical allocation.
+
+    Slot keys are component-major, so the first K columns/rows are bit-identical when
+    physical C changes. Active U rows use K^-1/2 rather than C^-1/2; every suffix U row is
+    exact zero. V keeps prefix-stable random columns throughout so a later birth has a
+    deterministic scratch direction, but the inactive suffix is functionally null.
+    """
+    assert set(active_by_site) == {site.name for site in sites}, (
+        sorted(active_by_site),
+        sorted(site.name for site in sites),
+    )
+    per_site: dict[str, tuple[Array, Array]] = {}
+    for site_idx, spec in enumerate(sites):
+        active = active_by_site[spec.name]
+        assert 0 < active <= spec.C, (spec.name, active, spec.C)
+        site_key = jax.random.fold_in(key, site_idx)
+        v_key, u_key = jax.random.split(site_key)
+        slots = jnp.arange(spec.C)
+        V = (
+            jax.vmap(lambda slot: jax.random.normal(jax.random.fold_in(v_key, slot), (spec.d_in,)))(
+                slots
+            ).T
+            * spec.d_in**-0.5
+        )
+        u = (
+            jax.vmap(
+                lambda slot: jax.random.normal(jax.random.fold_in(u_key, slot), (spec.d_out,))
+            )(slots)
+            * active**-0.5
+        )
+        u = jnp.where(slots[:, None] < active, u, 0.0)
+        per_site[spec.name] = V, u
+    return {
+        shape: (
+            jnp.stack([per_site[spec.name][0] for spec in specs]),
+            jnp.stack([per_site[spec.name][1] for spec in specs]),
+        )
+        for shape, specs in vu_shape_groups(sites).items()
+    }
+
+
 def init_stack_arrays_svd_null_tail(
     sites: tuple[SiteSpec, ...], site_weights: dict[str, Array], key: Array
 ) -> dict[VUShape, tuple[Array, Array]]:

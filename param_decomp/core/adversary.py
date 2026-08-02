@@ -29,6 +29,30 @@ from param_decomp.core.configs import AdamPGDConfig, PGDInitStrategy, SourceShap
 from param_decomp.core.losses import scheduled_value_traced
 
 
+def componentwise_uniform(
+    key: PRNGKeyArray,
+    leading_shape: tuple[int, ...],
+    component_count: int,
+    dtype: DTypeLike = jnp.float32,
+    *,
+    with_delta: bool,
+) -> Array:
+    """Uniform sources whose first K component draws do not depend on allocated C.
+
+    The delta channel has its own key rather than occupying index C, so it too is invariant
+    when physical width changes. Components are stacked last to match every source/mask API.
+    """
+    component_key, delta_key = random.split(key)
+    components = jax.vmap(
+        lambda slot: random.uniform(random.fold_in(component_key, slot), leading_shape, dtype)
+    )(jnp.arange(component_count))
+    components = jnp.moveaxis(components, 0, -1)
+    if not with_delta:
+        return components
+    delta = random.uniform(delta_key, leading_shape, dtype)
+    return jnp.concatenate([components, delta[..., None]], axis=-1)
+
+
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class SourcesAdamState:
@@ -55,7 +79,9 @@ def init_persistent_sources(
     halve footprint). Drawing in fp32 then casting keeps the U[0,1] draw dtype-stable."""
     keys = random.split(key, len(site_names))
     return {
-        name: random.uniform(k, (*leading_shape, c + 1), jnp.float32).astype(source_dtype)
+        name: componentwise_uniform(k, leading_shape, c, jnp.float32, with_delta=True).astype(
+            source_dtype
+        )
         for name, c, k in zip(site_names, site_component_counts, keys, strict=True)
     }
 
@@ -86,9 +112,9 @@ def init_persistent_sources_stacked(
     stacked: dict[int, Array] = {}
     for c, names in sources_c_groups(site_names, site_component_counts).items():
         idxs = jnp.array([site_index[n] for n in names])
-        draws = jax.vmap(lambda k, s=(*leading_shape, c + 1): random.uniform(k, s, jnp.float32))(
-            keys[idxs]
-        )
+        draws = jax.vmap(
+            lambda k, c=c: componentwise_uniform(k, leading_shape, c, jnp.float32, with_delta=True)
+        )(keys[idxs])
         stacked[c] = draws.astype(source_dtype)
     return stacked
 
@@ -136,7 +162,9 @@ def init_fresh_pgd_sources(
         shape = (*source_leading, site.C + 1)
         match init:
             case "random":
-                sources[site.name] = random.uniform(site_key, shape, jnp.float32)
+                sources[site.name] = componentwise_uniform(
+                    site_key, source_leading, site.C, jnp.float32, with_delta=True
+                )
             case "ones":
                 sources[site.name] = jnp.ones(shape, jnp.float32)
             case "zeroes":
@@ -228,9 +256,11 @@ def mixed_persistent_stochastic_masks(
     assignment_key, uniform_key = random.split(key)
     adversarial = per_sample_adversarial_assignment(assignment_key, adv_fraction, leading)
     fresh_uniform_sources = {
-        site: random.uniform(
+        site: componentwise_uniform(
             random.fold_in(uniform_key, site_idx),
-            (*leading, components_per_site[site] + 1),
+            leading,
+            components_per_site[site],
+            with_delta=True,
         )
         for site_idx, site in enumerate(live_sites)
     }
