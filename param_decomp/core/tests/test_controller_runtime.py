@@ -5,7 +5,11 @@ import optax
 
 from param_decomp.core.ci_fn import LayerwiseMLPCIArch, build_ci_fn
 from param_decomp.core.components import SiteSpec, component_stacks_from_sites
-from param_decomp.core.controller_runtime import choose_birth_batch, choose_birth_candidate
+from param_decomp.core.controller_runtime import (
+    _block_transfer_cosines,
+    choose_birth_batch,
+    choose_birth_candidate,
+)
 from param_decomp.core.train import Decomposition, TrainingItem, TrainState
 
 
@@ -71,10 +75,10 @@ def test_choose_birth_batch_recovers_stable_rank_and_rejects_split_noise() -> No
         "a": jnp.diag(jnp.array([3.0, 2.0, 0.5]))[jnp.array([0, 1, 2, 2])],
         "b": jnp.diag(jnp.array([4.0, 1.0, 0.2]))[jnp.array([0, 1, 2, 2])],
     }
-    # Validation flips the second b-mode: only directions with reproducible descent
-    # across referee splits survive. Other modes retain the training sign.
+    # The whole b block points uphill on validation, while a transfers as descent.
+    # Rejection is blockwise: individual SVD coordinates are not identifiable.
     G_validation = dict(G_train)
-    G_validation["b"] = G_train["b"].at[1, 1].set(-1.0)
+    G_validation["b"] = -G_train["b"]
 
     def probe(state, batch, _key, _active, _protected):
         G = G_train if batch == "train" else G_validation
@@ -96,14 +100,38 @@ def test_choose_birth_batch_recovers_stable_rank_and_rejects_split_noise() -> No
     )
     assert candidate is not None
     by_site = {site.site: site for site in candidate.sites}
-    assert candidate.size == 5
+    assert candidate.size == 3
     assert len(by_site["a"].slots) == 3
-    assert len(by_site["b"].slots) == 2
+    assert "b" not in by_site
     for site in candidate.sites:
         assert jnp.allclose(
             site.directions.T @ site.directions, jnp.eye(len(site.slots)), atol=1e-5
         )
-        assert jnp.all(site.validation_scores > 0.0)
+        assert jnp.all(site.validation_cosines > 0.0)
     # Scratch probes never mutate the input state.
     for site in ("a", "b"):
         assert jnp.all(state.decomposition.components.site(site)[1][2:] == 0.0)
+
+
+def test_block_transfer_referee_is_invariant_to_internal_basis_rotation() -> None:
+    # A degenerate training block has no preferred coordinate frame. In one legal frame
+    # an individual-diagonal referee rejects the first coordinate; after a 45° rotation
+    # it accepts both. The actual whole-block transfer is positive and unchanged.
+    training = jnp.eye(2)
+    validation = jnp.array([[[-1.0, 0.0], [0.0, 2.0]]])
+    rotation = jnp.array([[1.0, -1.0], [1.0, 1.0]]) / jnp.sqrt(2.0)
+
+    coordinate_scores = jnp.diag(validation[0])
+    rotated_validation = jnp.einsum("ij,njk->nik", rotation.T, validation)
+    rotated_validation = jnp.einsum("nij,jk->nik", rotated_validation, rotation)
+    rotated_scores = jnp.diag(rotated_validation[0])
+    assert jnp.any(coordinate_scores < 0.0)
+    assert jnp.all(rotated_scores > 0.0)
+
+    expected = _block_transfer_cosines(training, validation)
+    rotated = _block_transfer_cosines(
+        rotation.T @ training @ rotation,
+        rotated_validation,
+    )
+    assert expected[0] > 0.0
+    assert jnp.allclose(rotated, expected, atol=1e-6)

@@ -705,7 +705,7 @@ def _serial_birth_batch(candidate: BirthCandidate) -> BirthBatchCandidate:
                 slots=(candidate.slot,),
                 directions=candidate.direction[:, None],
                 sigmas=jnp.asarray([candidate.sigma]),
-                validation_scores=jnp.empty((0, 1)),
+                validation_cosines=jnp.empty((0,)),
             ),
         )
     )

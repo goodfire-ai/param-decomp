@@ -118,7 +118,7 @@ class BirthSiteBatch:
     slots: tuple[int, ...]
     directions: Array  # [d_in, k], orthonormal columns
     sigmas: Array  # [k], training-referee singular values
-    validation_scores: Array  # [n_validation, k], directional derivatives
+    validation_cosines: Array  # [n_validation], basis-invariant block transfer
 
 
 @dataclass(frozen=True)
@@ -128,6 +128,22 @@ class BirthBatchCandidate:
     @property
     def size(self) -> int:
         return sum(len(site.slots) for site in self.sites)
+
+
+def _block_transfer_cosines(training: Array, validation: Array) -> Array:
+    """Cosine of one proposed block update with independent gradient blocks.
+
+    The row basis is arbitrary: applying the same orthogonal rotation to ``training``
+    and ``validation`` leaves every cosine unchanged.
+    """
+    assert training.ndim == 2, training.shape
+    assert validation.ndim == 3 and validation.shape[1:] == training.shape, (
+        training.shape,
+        validation.shape,
+    )
+    numerator = jnp.einsum("kd,nkd->n", training, validation)
+    denominator = jnp.linalg.norm(training) * jnp.linalg.norm(validation, axis=(1, 2))
+    return jnp.where(denominator > 0.0, numerator / denominator, jnp.nan)
 
 
 def _set_probe_blocks(
@@ -160,10 +176,12 @@ def choose_birth_batch(
 
     Scratch slots materialize neither represented-matrix gradients nor model changes:
     alternating factor-gradient probes compute ``P^T G`` and ``G Q``. A small Rayleigh-
-    Ritz SVD recovers orthonormal approximate singular directions inside the block
-    subspace. Selection has no raw singular-value floor: a direction survives only when
-    its descent derivative is positive on EVERY independent validation referee. The
-    block cap is a systems/work limit; a caller must report when it truncates demand.
+    Ritz SVD recovers an orthonormal approximate singular block. Selection has no raw
+    singular-value floor: the whole finite, nonzero block survives only when its predicted
+    first-step update is a descent direction on EVERY independent validation referee.
+    This blockwise Frobenius alignment is invariant to rotations inside degenerate singular
+    subspaces; validating individual SVD coordinates is not. The block cap is a
+    systems/work limit; a caller must report when it truncates demand.
     """
     assert max_slots_per_site > 0, max_slots_per_site
     assert n_power_iters > 0, n_power_iters
@@ -249,33 +267,35 @@ def choose_birth_batch(
         sigma_by_site[site] = sigmas
 
     probe_state = _set_probe_blocks(probe_state, slots_by_site, p_by_site, zeros_u)
-    validation_scores: dict[str, list[Array]] = {site: [] for site in slots_by_site}
+    validation_blocks: dict[str, list[Array]] = {site: [] for site in slots_by_site}
     for validation_batch, validation_key in validation:
         _, validation_grad = probe(
             probe_state, validation_batch, validation_key, probe_active, protected
         )
         for site, slots in slots_by_site.items():
             _, grad_u = validation_grad.site(site)
-            projected = grad_u[jnp.asarray(slots)].astype(jnp.float32)
-            validation_scores[site].append(jnp.sum(projected * q_by_site[site], axis=1))
+            validation_blocks[site].append(grad_u[jnp.asarray(slots)].astype(jnp.float32))
 
     site_batches = []
     for site, slots in slots_by_site.items():
-        scores = jnp.stack(validation_scores[site])
         sigmas = sigma_by_site[site]
-        stable = jnp.isfinite(sigmas) & (sigmas > 0.0)
-        stable &= jnp.all(jnp.isfinite(scores) & (scores > 0.0), axis=0)
-        keep = tuple(int(i) for i in jnp.flatnonzero(stable))
+        positive_rank = jnp.isfinite(sigmas) & (sigmas > 0.0)
+        keep = tuple(int(i) for i in jnp.flatnonzero(positive_rank))
         if not keep:
             continue
         index = jnp.asarray(keep)
+        training_block = sigmas[index, None] * q_by_site[site][index]
+        validation_stack = jnp.stack(validation_blocks[site])[:, index]
+        cosines = _block_transfer_cosines(training_block, validation_stack)
+        if not bool(jnp.all(jnp.isfinite(cosines) & (cosines > 0.0))):
+            continue
         site_batches.append(
             BirthSiteBatch(
                 site=site,
                 slots=tuple(slots[i] for i in keep),
                 directions=p_by_site[site][:, index],
                 sigmas=sigmas[index],
-                validation_scores=scores[:, index],
+                validation_cosines=cosines,
             )
         )
     candidate = BirthBatchCandidate(tuple(site_batches))
