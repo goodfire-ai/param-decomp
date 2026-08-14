@@ -3,6 +3,13 @@
 Training tools for parameter decomposition on neural networks. For a compact implementation of
 the core method, see [`nano_param_decomp/`](nano_param_decomp/).
 
+## Research guidance
+
+Read the [parameter-decomposition handbook](docs/handbook.md) for the
+science, evidence standards, and failure modes. The
+[parameter-decomposition skill](docs/skill.md) is the experiment-driving
+guide for target implementation, sweep design, convergence, selection, and analysis.
+
 ## References
 
 - **VPD paper (April 2026):** https://www.goodfire.ai/research/interpreting-lm-parameters. [VPD Code Release](https://github.com/goodfire-ai/param-decomp/releases/tag/vpd-paper)
