@@ -1,30 +1,18 @@
-"""SPIKE (not a collected test): derisk the compositional prefix/suffix split.
+"""SPIKE (not a collected test): the compositional prefix/suffix split, faithfully.
 
-Claim under test: a depth-suffix of a GLU transformer is expressible as a
-`DecomposedModel` whose batch is the prefix's residual activations, with the prefix run
-once in the data path — no engine change. Run directly:
+A depth-suffix of a GLU transformer is a first-class `ResidualGLUDecomposedModel` —
+a resid -> logits model with honest signatures — whose batch is the prefix's residual
+activations, the prefix running once in the data path. No engine change. Run directly:
 
     uv run python param_decomp/targets/tests/spike_prefix_suffix.py
-
-Known-accepted spike shortcuts (each becomes real work if we build this):
-- jaxtyping disabled process-wide: the GLU forwards annotate `inputs: Int[Array, "b t"]`;
-  the real build widens the target's input edge per the #828 opaque-batch contract.
-- `SuffixGLU.embed_tokens` is an identity override: the real build gives the suffix
-  target an explicit resid input arm instead of a subclass trick.
 """
 
-import os
-
-os.environ["JAXTYPING_DISABLE"] = "1"
-
 import dataclasses
-from typing import override
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
-from jaxtyping import Array
 
 from param_decomp.core.components import SiteC, init_component_stacks
 from param_decomp.core.configs import (
@@ -43,7 +31,7 @@ from param_decomp.core.train import (
 )
 from param_decomp.targets.glu_transformer import (
     KIND_ORDER,
-    GLUDecomposedModel,
+    ResidualGLUDecomposedModel,
     glu_site_specs,
     site_name,
 )
@@ -55,14 +43,6 @@ from param_decomp.targets.testing import (
 
 SPLIT = 5  # blocks [0..4] = prefix, [5..7] = suffix; decomposed sites live in block 6
 BATCH, SEQ = 4, 16
-
-
-class SuffixGLU(GLUDecomposedModel):
-    """The depth-suffix target: its 'embedding' is the identity on resid activations."""
-
-    @override
-    def embed_tokens(self, tokens: Array) -> Array:  # spike: real build widens the input edge
-        return tokens
 
 
 def main() -> None:
@@ -77,8 +57,7 @@ def main() -> None:
         suffix_cfg, tuple(SiteC(site_name(6 - SPLIT, k), 2) for k in KIND_ORDER)
     )
     full = tiny_glu_decomposed_lm(cfg, full_sites, jax.random.PRNGKey(0))
-    suffix = SuffixGLU(
-        embed=full.embed,  # unused: embed_tokens is identity
+    suffix = ResidualGLUDecomposedModel(
         stacked=jax.tree.map(lambda a: a[SPLIT:], full.stacked),
         n_layer=n_suffix,
         norm=full.norm,

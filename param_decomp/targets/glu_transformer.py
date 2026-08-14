@@ -33,7 +33,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, Protocol, cast, get_args
+import abc
+from typing import Any, Literal, Protocol, Self, cast, get_args, override
 
 import equinox as eqx
 import jax
@@ -891,24 +892,19 @@ def _gather_full_weight(w: Array, spec: P) -> Array:
     return checkpoint_name(w, GATHERED_WEIGHTS_CHECKPOINT_NAME)
 
 
-class GLUDecomposedModel(eqx.Module):
-    """The GLU-transformer `DecomposedModel` (the `model.py` contract; SPEC §1), shared
-    across the HF GLU families — a family's identity lives in its `stacked.attn` module
-    (its `FrozenAttn` variant) and `inv_freq`, never in a switch here.
+class _GLUTransformerCore(eqx.Module, abc.ABC):
+    """The input-agnostic GLU-transformer machinery: frozen blocks, norm, unembed, and
+    every forward entered at a residual (`*_from_residual`). Concrete models own the
+    input adapter: `GLUDecomposedModel` embeds tokens; `ResidualGLUDecomposedModel`
+    consumes residual activations directly (a depth-suffix run against a prefix mapper).
 
-    Carries the FROZEN full model (embedding, all blocks, final norm, lm_head) as array
-    fields — so it threads into the jitted step as a pytree arg, its weights traced not
-    baked. The TRAINABLE V/U (`vu: ComponentStacks`) is passed to the forward methods explicitly:
-    separate lifecycle (own optimizer + checkpoint, C-sharded while these weights
-    replicate), so it is NOT a field here.
-
-    Forward methods take token `inputs` and embed internally. Blocks with no decomposed
-    site run the plain frozen path — so a subset decomposition just leaves the rest
-    frozen.
+    The TRAINABLE V/U (`vu: ComponentStacks`) is passed to the forward methods
+    explicitly: separate lifecycle (own optimizer + checkpoint, C-sharded while these
+    weights replicate), so it is NOT a field here. Blocks with no decomposed site run
+    the plain frozen path — a subset decomposition just leaves the rest frozen.
 
     `sites` / `has_position_axis` are static config."""
 
-    embed: Float[Array, "vocab d"]
     stacked: GLULayer  # the per-layer weights stacked on a leading layer axis (the scan
     # `xs`), stored pre-stacked: a saved jit input, never re-stacked inside a forward.
     n_layer: int = eqx.field(static=True)
@@ -943,27 +939,31 @@ class GLUDecomposedModel(eqx.Module):
         attn = jax.tree.map(lambda a, idx=layer: a[idx], self.stacked.attn)
         return attn.pattern(q_flat, k_flat, self.inv_freq)
 
-    def shardings(self, mesh: Mesh) -> "GLUDecomposedModel":
+    def shardings(self, mesh: Mesh) -> Self:
         """FSDP-on-`fsdp` the per-layer weights (`stacked.shardings` — `d` on `fsdp`,
         head/intermediate replicated; the ~14 GB layer bulk shards `/fsdp`, gathered per layer
-        inside the scan, on NVLink). embed / lm_head / norm / inv_freq REPLICATE — the ~2 GB
-        embed+head is small and vocab-parallel logits/lookup aren't worth the complexity. (The
-        old all-replicate justification — "the target is small vs activations" — is stale: at
+        inside the scan, on NVLink). lm_head / norm / inv_freq REPLICATE — the head is
+        small and vocab-parallel logits aren't worth the complexity. (The old
+        all-replicate justification — "the target is small vs activations" — is stale: at
         the full 32-layer model the replicated target + its backward/remat copies dominate the
         step's peak, which is what this shards away.)"""
         repl = NamedSharding(mesh, P())
         return eqx.tree_at(
-            lambda m: (m.embed, m.norm, m.lm_head, m.inv_freq, m.stacked),
+            lambda m: (m.norm, m.lm_head, m.inv_freq, m.stacked),
             self,
-            (repl, repl, repl, repl, self.stacked.shardings(mesh)),
+            (repl, repl, repl, self.stacked.shardings(mesh)),
         )
 
     @staticmethod
     def recon_loss_fn(masked_output: Array, clean_output: Array) -> Array:
         return kl_per_position(masked_output, clean_output)
 
-    def embed_tokens(self, tokens: Int[Array, "b t"]) -> Float[Array, "b t d"]:
-        return self.embed[tokens]
+    @abc.abstractmethod
+    def clean_forward(
+        self, inputs: Any, capture_keys: CaptureKeys = EMPTY_CAPTURE_KEYS
+    ) -> ForwardResult:
+        """Each concrete model owns its input adapter (tokens vs residual activations);
+        the machinery here is entered at `forward_from_residual`."""
 
     def _capture_grammar(self) -> TransformerTapGrammar:
         def site_dimensions(name: str) -> tuple[int, int]:
@@ -990,7 +990,7 @@ class GLUDecomposedModel(eqx.Module):
         return TransformerTapGrammar(
             family=FAMILY,
             n_layer=self.n_layer,
-            d_resid=self.embed.shape[1],
+            d_resid=self.norm.shape[0],
             d_attention_output=site_dimensions(FAMILY.name_of(0, "o"))[0],
             d_mlp_hidden=site_dimensions(FAMILY.name_of(0, "down"))[0],
             d_out_of=lambda name: site_dimensions(name)[1],
@@ -1037,7 +1037,7 @@ class GLUDecomposedModel(eqx.Module):
         )
 
     def _value_width(self, value: _GLUTap) -> int:
-        d = self.embed.shape[1]
+        d = self.norm.shape[0]
         match value:
             case (
                 _GLUTap.RESIDUAL_IN
@@ -1064,30 +1064,30 @@ class GLUDecomposedModel(eqx.Module):
             case _GLUTap.DOWN_INPUT:
                 return self.stacked.Wd.shape[2]
 
-    def _clean_output(self, inputs: Int[Array, "b t"]) -> Array:
+    def _clean_output_from_residual(self, residual: Float[Array, "b t d"]) -> Array:
         """Untouched graph used when no captures are requested."""
 
         def block(residual: Array, layer: GLULayer) -> tuple[Array, None]:
             return _clean_block(layer, residual, self.inv_freq, self.eps), None
 
-        residual = self.embed_tokens(inputs)
         residual, _ = jax.lax.scan(block, residual, self.stacked)
         residual = rms_norm(residual, self.norm, self.eps)
         return residual @ self.lm_head.T
 
-    def clean_forward(
-        self, inputs: Int[Array, "b t"], capture_keys: CaptureKeys = EMPTY_CAPTURE_KEYS
+    def forward_from_residual(
+        self, residual: Float[Array, "b t d"], capture_keys: CaptureKeys = EMPTY_CAPTURE_KEYS
     ) -> ForwardResult:
         if not capture_keys:
             return ForwardResult.from_producer(
-                output=self._clean_output(inputs), capture_keys=(), capture_values=()
+                output=self._clean_output_from_residual(residual),
+                capture_keys=(),
+                capture_values=(),
             )
         ordered_capture_keys = tuple(sorted(capture_keys))
         capture_sources = self._capture_grammar().resolve(
             ordered_capture_keys, _capture_source_for_point
         )
 
-        residual = self.embed_tokens(inputs)
         captured_by_source: dict[_GLUCaptureSource, Array] = {}
         embedding_residual_source = _GLUCaptureSource(block=0, tap=_GLUTap.RESIDUAL_IN)
         if embedding_residual_source in capture_sources:
@@ -1123,7 +1123,7 @@ class GLUDecomposedModel(eqx.Module):
     def _run_masked_forward(
         self,
         prepared_weights: dict[str, dict[str, Array]],
-        inputs: Int[Array, "b t"],
+        residual: Float[Array, "b t d"],
         masking: Masking,
         remat: bool,
         capture_keys: tuple[str, ...],
@@ -1140,7 +1140,6 @@ class GLUDecomposedModel(eqx.Module):
             if capture_keys
             else ()
         )
-        residual = self.embed_tokens(inputs)
         leading = residual.shape[:-1]
         match masking:
             case StochasticMasking(
@@ -1435,7 +1434,7 @@ class GLUDecomposedModel(eqx.Module):
     def component_activation_forward(
         self,
         prepared_weights: dict[str, dict[str, Array]],
-        inputs: Int[Array, "b t"],
+        inputs: Array,
         /,
         *,
         capture_keys: CaptureKeys,
@@ -1475,10 +1474,10 @@ class GLUDecomposedModel(eqx.Module):
     def stack_ci(self, ci_lower: dict[str, Array]) -> dict[str, Array]:
         return _stack_ci_per_kind(ci_lower, self.n_layer)
 
-    def masked_forward(
+    def masked_forward_from_residual(
         self,
         prepared_weights: dict[str, dict[str, Array]],
-        inputs: Int[Array, "b t"],
+        residual: Float[Array, "b t d"],
         /,
         *,
         masking: Masking,
@@ -1487,7 +1486,7 @@ class GLUDecomposedModel(eqx.Module):
     ) -> ForwardResult:
         masked_forward_result, _component_activations = self._run_masked_forward(
             prepared_weights,
-            inputs,
+            residual,
             masking,
             remat,
             tuple(sorted(capture_keys)),
@@ -1495,15 +1494,15 @@ class GLUDecomposedModel(eqx.Module):
         )
         return masked_forward_result
 
-    def masked_component_activations(
+    def masked_component_activations_from_residual(
         self,
         prepared_weights: dict[str, dict[str, Array]],
-        inputs: Int[Array, "b t"],
+        residual: Float[Array, "b t d"],
         masking: MaterializedMasking,
     ) -> dict[str, Array]:
         _forward_result, activations = self._run_masked_forward(
             prepared_weights,
-            inputs,
+            residual,
             masking,
             False,
             (),
@@ -1529,6 +1528,95 @@ class GLUDecomposedModel(eqx.Module):
 
 
 # ----------------------------- HF weight loading -----------------------------
+
+
+class GLUDecomposedModel(_GLUTransformerCore):
+    """The token-input GLU transformer (`model.py` contract; SPEC §1): embeds internally,
+    then runs the shared core. A family's identity lives in its `stacked.attn` module
+    (its `FrozenAttn` variant) and `inv_freq`, never in a switch here."""
+
+    embed: Float[Array, "vocab d"]
+
+    def embed_tokens(self, tokens: Int[Array, "b t"]) -> Float[Array, "b t d"]:
+        return self.embed[tokens]
+
+    @override
+    def shardings(self, mesh: Mesh) -> Self:
+        """The core's shardings + a replicated embedding (~2 GB with the head: small, and
+        vocab-parallel lookup isn't worth the complexity)."""
+        core = super().shardings(mesh)
+        return eqx.tree_at(lambda m: m.embed, core, NamedSharding(mesh, P()))
+
+    @override
+    def clean_forward(
+        self, inputs: Int[Array, "b t"], capture_keys: CaptureKeys = EMPTY_CAPTURE_KEYS
+    ) -> ForwardResult:
+        return self.forward_from_residual(self.embed_tokens(inputs), capture_keys)
+
+    def masked_forward(
+        self,
+        prepared_weights: dict[str, dict[str, Array]],
+        inputs: Int[Array, "b t"],
+        /,
+        *,
+        masking: Masking,
+        capture_keys: CaptureKeys = EMPTY_CAPTURE_KEYS,
+        remat: bool,
+    ) -> ForwardResult:
+        return self.masked_forward_from_residual(
+            prepared_weights,
+            self.embed_tokens(inputs),
+            masking=masking,
+            capture_keys=capture_keys,
+            remat=remat,
+        )
+
+    def masked_component_activations(
+        self,
+        prepared_weights: dict[str, dict[str, Array]],
+        inputs: Int[Array, "b t"],
+        masking: MaterializedMasking,
+    ) -> dict[str, Array]:
+        return self.masked_component_activations_from_residual(
+            prepared_weights, self.embed_tokens(inputs), masking
+        )
+
+
+class ResidualGLUDecomposedModel(_GLUTransformerCore):
+    """A depth-suffix GLU transformer: consumes RESIDUAL activations as its input (the
+    prefix runs upstream, e.g. once per batch as a data mapper), runs the remaining
+    blocks, and unembeds. Same `model.py` contract — the batch edge is opaque to the
+    engine, so a residual batch is as legal as a token batch. Nothing below the split is
+    observable: its sites, taps, and captures live in ITS block coordinates
+    (original block `k + i` = this model's block `i`)."""
+
+    @override
+    def clean_forward(
+        self, inputs: Float[Array, "b t d"], capture_keys: CaptureKeys = EMPTY_CAPTURE_KEYS
+    ) -> ForwardResult:
+        return self.forward_from_residual(inputs, capture_keys)
+
+    def masked_forward(
+        self,
+        prepared_weights: dict[str, dict[str, Array]],
+        inputs: Float[Array, "b t d"],
+        /,
+        *,
+        masking: Masking,
+        capture_keys: CaptureKeys = EMPTY_CAPTURE_KEYS,
+        remat: bool,
+    ) -> ForwardResult:
+        return self.masked_forward_from_residual(
+            prepared_weights, inputs, masking=masking, capture_keys=capture_keys, remat=remat
+        )
+
+    def masked_component_activations(
+        self,
+        prepared_weights: dict[str, dict[str, Array]],
+        inputs: Float[Array, "b t d"],
+        masking: MaterializedMasking,
+    ) -> dict[str, Array]:
+        return self.masked_component_activations_from_residual(prepared_weights, inputs, masking)
 
 
 def hf_snapshot_dir(model_name: str) -> Path:
