@@ -1582,6 +1582,27 @@ class GLUDecomposedModel(_GLUTransformerCore):
         )
 
 
+class GLUPrefixModel(eqx.Module):
+    """The data-mapper half of a depth split: `tokens -> the residual entering block k`.
+
+    Holds ONLY the embedding and blocks `[0..k)` — no norm, no head, no sites: it is a
+    frozen input transform, not a `DecomposedModel`. Pairs with a
+    `ResidualGLUDecomposedModel` over blocks `[k..n)`; run it once per batch in the data
+    path (or once ever, for a fixed prompt pool)."""
+
+    embed: Float[Array, "vocab d"]
+    stacked: GLULayer  # blocks [0..k), stacked on a leading layer axis
+    inv_freq: Float[Array, " hd2"]
+    eps: float = eqx.field(static=True)
+
+    def __call__(self, tokens: Int[Array, "b t"]) -> Float[Array, "b t d"]:
+        def block(residual: Array, layer: GLULayer) -> tuple[Array, None]:
+            return _clean_block(layer, residual, self.inv_freq, self.eps), None
+
+        residual, _ = jax.lax.scan(block, self.embed[tokens], self.stacked)
+        return residual
+
+
 class ResidualGLUDecomposedModel(_GLUTransformerCore):
     """A depth-suffix GLU transformer: consumes RESIDUAL activations as its input (the
     prefix runs upstream, e.g. once per batch as a data mapper), runs the remaining

@@ -31,6 +31,7 @@ from param_decomp.core.train import (
 )
 from param_decomp.targets.glu_transformer import (
     KIND_ORDER,
+    GLUPrefixModel,
     ResidualGLUDecomposedModel,
     glu_site_specs,
     site_name,
@@ -68,10 +69,22 @@ def main() -> None:
         eps=full.eps,
     )
 
+    prefix = GLUPrefixModel(
+        embed=full.embed,
+        stacked=jax.tree.map(lambda a: a[:SPLIT], full.stacked),
+        inv_freq=full.inv_freq,
+        eps=full.eps,
+    )
+
     tokens = jax.random.randint(jax.random.PRNGKey(1), (BATCH, SEQ), 0, cfg.vocab_size)
 
-    # ── the prefix as a data mapper: one full-model forward capturing resid.SPLIT ──
-    resid = full.clean_forward(tokens, frozenset({f"resid.{SPLIT}"})).captures[f"resid.{SPLIT}"]
+    # ── the prefix as a data mapper: k blocks of compute, k blocks of weights ──
+    resid = prefix(tokens)
+
+    # ── 0. the prefix slice is faithful: bit-equal to the full model's own midpoint ──
+    captured = full.clean_forward(tokens, frozenset({f"resid.{SPLIT}"})).captures[f"resid.{SPLIT}"]
+    assert jnp.array_equal(resid, captured), "prefix model diverges from the target's midpoint"
+    print("0. prefix fidelity: BIT-EXACT vs the full model's resid capture")
 
     # ── 1. clean equivalence ──
     full_logits = full.clean_forward(tokens).output
