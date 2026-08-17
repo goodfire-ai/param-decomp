@@ -132,12 +132,14 @@ def test_lm_scalar_operation_averages_residual_batch_objectives():
         jnp.array([0, 0], dtype=jnp.uint32),
         train_steps=0,
         eval_steps=2,
+        stream="nontarget",
     )
     context = LMEvalContext(
         state=_state_stub(),  # pyright: ignore[reportArgumentType]
         now_step=0,
         pass_index=0,
         batches=(jnp.asarray(1.0), jnp.asarray(3.0)),
+        target_batches=None,
     )
     assert operation.run(context)["eval/loss/probe/hidden_acts_reconstruction"] == 2.0
 

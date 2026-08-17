@@ -130,8 +130,8 @@ def test_targeted_two_pass_step_trains():
     assert "faith" not in metrics
     # Both passes' losses are reported.
     assert "loss/StochasticReconLoss" in metrics
-    assert "loss/nontarget/StochasticReconLoss" in metrics
-    assert "loss/nontarget/total" in metrics
+    assert "nontarget_data/loss/StochasticReconLoss" in metrics
+    assert "nontarget_data/loss/total" in metrics
 
 
 def test_targeted_step_trains_with_persistent_adversary():
@@ -245,7 +245,7 @@ def test_targeted_step_unmasked_no_delta_scores_components_only():
     delta_on = all_ones_recon_at_delta(1.0)
 
     _, metrics = step(model, state, target_batch, nontarget_batch, jax.random.PRNGKey(300))
-    reported = metrics["loss/nontarget/UnmaskedNoDeltaReconLoss"]
+    reported = metrics["nontarget_data/loss/UnmaskedNoDeltaReconLoss"]
     assert jnp.allclose(reported, delta_off, rtol=1e-4, atol=1e-7)
     # Delta ON would make the same all-ones forward reproduce the frozen output, so its
     # loss collapses; a material gap pins that the reported arm really ran delta-off.
@@ -635,5 +635,5 @@ def test_targeted_engine_end_to_end(tmp_path: Path):
     lines = (run_dir / "metrics.jsonl").read_text().strip().splitlines()
     assert lines, "the targeted run logged no metrics"
     last = json.loads(lines[-1])
-    assert "train/loss/nontarget/total" in last
+    assert "train/nontarget_data/loss/total" in last
     assert not any("Faithfulness" in k for k in last)

@@ -6,6 +6,7 @@ import jax
 import numpy as np
 from jaxtyping import PRNGKeyArray
 
+from param_decomp.core.ci_fn import CIFn
 from param_decomp.core.configs import (
     CIHiddenActsReconLossConfig,
     CIHistogramsConfig,
@@ -40,9 +41,13 @@ from param_decomp.core.slow_eval import (
     compute_identity_ci_errors,
     make_position_ci_step,
     make_slow_eval_step,
+    mean_cis,
+    plot_mean_component_cis_two_streams,
+    plot_weight_magnitudes,
     render_permutation_figures,
     render_slow_eval_figures,
     resolve_permutation_metrics,
+    weight_magnitudes,
 )
 from param_decomp.experiments.lm.attn_patterns_eval import (
     accumulate_attn_patterns,
@@ -56,6 +61,11 @@ from param_decomp.experiments.lm.eval_config import (
 )
 from param_decomp.experiments.lm.eval_context import LMEvalContext
 from param_decomp.experiments.lm.eval_keys import EvalKeyStream
+from param_decomp.experiments.lm.scalar_eval_operations import (
+    Stream,
+    stream_batches,
+    stream_log_prefix,
+)
 
 
 def _render_selected_figures(
@@ -94,6 +104,7 @@ def make_attention_operation(
     run_key: PRNGKeyArray,
     train_steps: int,
     compiler_options: dict[str, bool | int | str],
+    stream: Stream,
 ) -> EvalOperation[LMEvalContext]:
     match metric:
         case CIMaskedAttnPatternsReconLossConfig():
@@ -109,13 +120,14 @@ def make_attention_operation(
             model,
             context.state.decomposition.components,
             context.state.decomposition.ci_fn,
-            list(context.batches),
+            list(stream_batches(stream, context)),
             jax.random.fold_in(
                 run_key, EvalKeyStream.ATTENTION_PATTERNS * train_steps + context.pass_index
             ),
         )
+        prefix = stream_log_prefix(stream, context)
         return {
-            f"eval/loss/{name}": value
+            f"{prefix}loss/{name}": value
             for name, value in attn_patterns_log_entries(metric.type, reductions).items()
         }
 
@@ -130,6 +142,7 @@ def make_hidden_acts_operation(
     run_key: PRNGKeyArray,
     train_steps: int,
     compiler_options: dict[str, bool | int | str],
+    stream: Stream,
 ) -> EvalOperation[LMEvalContext]:
     match metric:
         case CIHiddenActsReconLossConfig():
@@ -145,15 +158,85 @@ def make_hidden_acts_operation(
             model,
             context.state.decomposition.components,
             context.state.decomposition.ci_fn,
-            list(context.batches),
+            list(stream_batches(stream, context)),
             jax.random.fold_in(
                 run_key, EvalKeyStream.HIDDEN_ACTS * train_steps + context.pass_index
             ),
         )
+        prefix = stream_log_prefix(stream, context)
         return {
-            f"eval/slow/loss/{name}": value
+            f"{prefix}slow/loss/{name}": value
             for name, value in hidden_acts_log_entries(metric.type, reductions).items()
         }
+
+    return EvalOperation(schedule, run)
+
+
+def _render_weight_magnitudes(
+    magnitudes: dict[str, np.ndarray], now_step: int
+) -> DeferredMediaRecord:
+    return DeferredMediaRecord(
+        step_key="slow_eval/figure_step",
+        step=now_step,
+        media={"slow_eval/figures/weight_magnitude": plot_weight_magnitudes(magnitudes)},
+    )
+
+
+def make_weight_magnitude_operation(
+    schedule: EvalSchedule, renderer: BackgroundRenderer
+) -> EvalOperation[LMEvalContext]:
+    """`‖V_c‖·‖U_c‖` per site. Reads the trained V/U only — no model, no batch, no step."""
+
+    def run(context: LMEvalContext) -> LogRecord:
+        magnitudes = weight_magnitudes(context.state.decomposition.components)
+        renderer.submit(partial(_render_weight_magnitudes, magnitudes, context.now_step))
+        return {}
+
+    return EvalOperation(schedule, run)
+
+
+def _render_two_stream_ci_means(
+    target: dict[str, np.ndarray],
+    nontarget: dict[str, np.ndarray],
+    now_step: int,
+) -> DeferredMediaRecord:
+    linear, log = plot_mean_component_cis_two_streams(target, nontarget)
+    return DeferredMediaRecord(
+        step_key="slow_eval/figure_step",
+        step=now_step,
+        media={
+            "slow_eval/figures/ci_mean_per_component_two_streams": linear,
+            "slow_eval/figures/ci_mean_per_component_two_streams_log": log,
+        },
+    )
+
+
+def make_two_stream_ci_mean_operation(
+    schedule: EvalSchedule,
+    model: DecomposedModel,
+    ci_capture_keys: CaptureKeys,
+    compiler_options: dict[str, bool | int | str],
+    renderer: BackgroundRenderer,
+) -> EvalOperation[LMEvalContext]:
+    """Both streams' mean CI per component in one figure, ordered by the target mean."""
+    step = make_slow_eval_step(model, ci_capture_keys, 0.0, None, compiler_options)
+
+    def stream_mean_cis(ci_fn: CIFn, batches: tuple[jax.Array, ...]) -> dict[str, np.ndarray]:
+        return mean_cis(
+            accumulate_site_reductions(step, model, ci_fn, list(batches), n_batches_accum=0)
+        )
+
+    def run(context: LMEvalContext) -> LogRecord:
+        ci_fn = context.state.decomposition.ci_fn
+        renderer.submit(
+            partial(
+                _render_two_stream_ci_means,
+                stream_mean_cis(ci_fn, stream_batches("target", context)),
+                stream_mean_cis(ci_fn, stream_batches("nontarget", context)),
+                context.now_step,
+            )
+        )
+        return {}
 
     return EvalOperation(schedule, run)
 
@@ -165,6 +248,7 @@ def make_site_figures_operation(
     ci_capture_keys: CaptureKeys,
     compiler_options: dict[str, bool | int | str],
     renderer: BackgroundRenderer,
+    stream: Stream,
 ) -> EvalOperation[LMEvalContext]:
     match metric:
         case CIHistogramsConfig():
@@ -196,7 +280,7 @@ def make_site_figures_operation(
             step,
             model,
             context.state.decomposition.ci_fn,
-            list(context.batches),
+            list(stream_batches(stream, context)),
             limit,
         )
         renderer.submit(partial(_render_selected_figures, reductions, wanted, context.now_step))
@@ -212,6 +296,7 @@ def make_permutation_operation(
     ci_capture_keys: CaptureKeys,
     compiler_options: dict[str, bool | int | str],
     renderer: BackgroundRenderer,
+    stream: Stream,
 ) -> EvalOperation[LMEvalContext]:
     spec = resolve_permutation_metrics(model.site_names, [metric])
     position_step = make_position_ci_step(model, ci_capture_keys, compiler_options)
@@ -221,12 +306,13 @@ def make_permutation_operation(
             position_step,
             model,
             context.state.decomposition.ci_fn,
-            list(context.batches),
+            list(stream_batches(stream, context)),
         )
         match metric:
             case IdentityCIErrorConfig():
                 errors = compute_identity_ci_errors(spec, position_ci, IDENTITY_CI_ERROR_TOLERANCE)
-                return {f"eval/slow/{name}": value for name, value in errors.items()}
+                prefix = stream_log_prefix(stream, context)
+                return {f"{prefix}slow/{name}": value for name, value in errors.items()}
             case UVPlotsConfig():
                 include_ci_heatmaps = False
                 components = {

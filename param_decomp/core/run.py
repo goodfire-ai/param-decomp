@@ -333,7 +333,10 @@ class MetricsSink:
         self._last_committed_step = step
         record = {
             _METRIC_KEYS.get(
-                k, f"train/{k}" if k.startswith(("grad_norms/", "loss/", "schedules/")) else k
+                k,
+                f"train/{k}"
+                if k.startswith(("grad_norms/", "loss/", "schedules/", "nontarget_data/"))
+                else k,
             ): v
             for k, v in record.items()
         }  # keys already starting "train/" or "eval/" pass through verbatim

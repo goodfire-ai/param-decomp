@@ -1185,13 +1185,17 @@ def make_targeted_train_step[PreparedT](
             for term in objective.target.recon
             if term.hidden_acts_reconstruction is not None
         },
-        "nontarget/impmin": objective.nontarget.impmin_coeff,
-        **{f"nontarget/{term.name}": term.coeff for term in nt_terms},
     }
     if objective.target.imp.cfg.frequency is not None:
         coeff_schedules[f"{objective.target.imp.name}/frequency"] = (
             objective.target.imp.cfg.frequency.coeff
         )
+
+    imp_name = objective.target.imp.name
+    nontarget_coeff_schedules: dict[str, LossCoeff] = {
+        imp_name: objective.nontarget.impmin_coeff,
+        **{term.name: term.coeff for term in nt_terms},
+    }
 
     def nontarget_draw_loss(
         model: DecomposedModel[PreparedT],
@@ -1360,8 +1364,8 @@ def make_targeted_train_step[PreparedT](
             nt_imp_lp, nt_imp_freq = imp_min_terms(nt_ci.upper, atoms.imp_min, imp_min_param)
             nt_total = nt_imp_coeff * nt_imp_lp + freq_coeff * nt_imp_freq
             nt_aux = {
-                f"loss/nontarget/{atoms.imp_loss_key}": nt_imp_lp,
-                "loss/nontarget/freq": nt_imp_freq,
+                f"nontarget_data/loss/{imp_name}": nt_imp_lp,
+                "nontarget_data/loss/FrequencyMinimalityLoss": nt_imp_freq,
             }
             nt_breakdowns = atoms.grid_losses(
                 nt_terms,
@@ -1374,8 +1378,8 @@ def make_targeted_train_step[PreparedT](
                 nt_terms, nt_recon_coeffs, nt_breakdowns, strict=True
             ):
                 nt_total = nt_total + coeff * breakdown.total
-                nt_aux[f"loss/nontarget/{term.name}"] = breakdown.total
-            nt_aux["loss/nontarget/total"] = nt_total
+                nt_aux[f"nontarget_data/loss/{term.name}"] = breakdown.total
+            nt_aux["nontarget_data/loss/total"] = nt_total
             total_loss = total_loss + nt_total
             reported_total = reported_total + nt_total
             return total_loss, (reported_total, imp_lp, imp_freq, term_breakdowns, nt_aux)
@@ -1446,6 +1450,12 @@ def make_targeted_train_step[PreparedT](
             | nt_aux
             | wd_metrics
             | _scheduled_coeff_metrics(step_f32, atoms.total_steps, coeff_schedules)
+            | {
+                f"nontarget_data/{key}": value
+                for key, value in _scheduled_coeff_metrics(
+                    step_f32, atoms.total_steps, nontarget_coeff_schedules
+                ).items()
+            }
         )
         return new_state, metrics
 

@@ -42,6 +42,7 @@ what keeps it correct when `n_steps` is raised.
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -202,6 +203,49 @@ def _ce[PreparedT](batch: _PreparedLMBatch[PreparedT], logits: Array) -> Array:
     if batch.valid_row_mask is None:
         return next_token_cross_entropy(logits, batch.tokens)
     return _row_masked_cross_entropy(logits, batch.tokens, batch.valid_row_mask)
+
+
+type MaskingArm = Literal["ci_masked", "unmasked"]
+"""A masking arm authorable as an eval on its own. Both pin every weight-delta mask to
+zero."""
+
+
+def make_masked_kl_step[PreparedT](
+    model_static: DecomposedModel[PreparedT],
+    ci_capture_keys: CaptureKeys,
+    arm: MaskingArm,
+    mesh: Mesh | None = None,
+    compiler_options: dict[str, bool | int | str] | None = None,
+    *,
+    n_valid_rows: int | None = None,
+) -> ScalarStep:
+    """KL against the target output under ONE masking arm — one clean forward, one masked.
+
+    The key is the spelling `CEandKLLosses` reports this arm under, so the two are one
+    quantity under one name."""
+    assert model_static.has_position_axis, "masked KL is LM-only and requires a position axis"
+
+    def eval_step(
+        model: DecomposedModel[PreparedT],
+        components: ComponentStacks,
+        ci_fn: CIFn,
+        token_ids: Array,
+        key: PRNGKeyArray,
+    ) -> dict[str, Array]:
+        del key  # neither arm draws masks
+        batch = _prepare_lm_batch(
+            model, components, ci_fn, token_ids, mesh, n_valid_rows, ci_capture_keys
+        )
+        match arm:
+            case "ci_masked":
+                masks = batch.ci_lower
+            case "unmasked":
+                masks = {site: jnp.ones_like(batch.ci_lower[site]) for site in model.site_names}
+        zeros_delta = {site: jnp.zeros(batch.tokens.shape, COMPUTE_DT) for site in model.site_names}
+        logits = _compute_masked_output(model, batch, masks, zeros_delta, mesh, frozenset())
+        return {f"ce_kl/kl_{arm}": _kl(batch, logits)}
+
+    return filter_jit(eval_step, compiler_options=compiler_options)
 
 
 def make_ce_kl_step[PreparedT](

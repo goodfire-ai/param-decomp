@@ -233,6 +233,7 @@ AnyImportanceMinimalityLossConfig = (
 
 
 class CIMaskedReconLossConfig(LossMetricConfig, HiddenActsReconstructionMixin):
+    slow: ClassVar[bool] = False
     type: Literal["CIMaskedReconLoss"] = "CIMaskedReconLoss"
 
 
@@ -467,6 +468,15 @@ class ComponentActivationDensityConfig(BaseConfig):
     ci_alive_threshold: float = 0.0
 
 
+class WeightMagnitudeConfig(BaseConfig):
+    """Per-site `‖V_c‖·‖U_c‖` scatter in descending magnitude order, log y.
+
+    Reads the trained V/U alone — no forward pass and no eval batch."""
+
+    slow: ClassVar[bool] = True
+    type: Literal["WeightMagnitude"] = "WeightMagnitude"
+
+
 class IdentityCITargetSpec(BaseConfig):
     """A layer expected to produce an Identity CI pattern over `n_features` features."""
 
@@ -657,6 +667,7 @@ class UnmaskedNoDeltaReconLossConfig(LossMetricConfig):
     exists here, and it is non-target-only — the plain and target-pass unions have no
     member for it."""
 
+    slow: ClassVar[bool] = False
     type: Literal["UnmaskedNoDeltaReconLoss"] = "UnmaskedNoDeltaReconLoss"
 
 

@@ -68,6 +68,7 @@ from param_decomp.core.ci_fn import (
     lower_leaky_hard_sigmoid,
     upper_leaky_hard_sigmoid,
 )
+from param_decomp.core.components import ComponentStacks
 from param_decomp.core.configs import (
     DenseCITargetSpec,
     IdentityCIErrorConfig,
@@ -198,6 +199,11 @@ def make_slow_eval_step(
     return filter_jit(slow_eval_step, compiler_options=compiler_options)
 
 
+def _raw_sample(chunks: dict[str, list[np.ndarray]], site: str) -> np.ndarray:
+    """A site's kept raw values, or empty when `n_batches_accum` kept none."""
+    return np.concatenate(chunks[site]) if site in chunks else np.empty(0, np.float32)
+
+
 def accumulate_site_reductions(
     slow_eval_step: SlowEvalStep,
     model: DecomposedModel,
@@ -246,8 +252,8 @@ def accumulate_site_reductions(
             density_counts=density[site],
             ci_sums=sums[site],
             n_positions=total_positions,
-            lower_sample=np.concatenate(lower_chunks[site]),
-            preactivations_sample=np.concatenate(preactivations_chunks[site]),
+            lower_sample=_raw_sample(lower_chunks, site),
+            preactivations_sample=_raw_sample(preactivations_chunks, site),
             density_hist=hist.get(site),
         )
         for site in density
@@ -576,6 +582,89 @@ def _plot_ci_matrices(matrices: dict[str, np.ndarray], colormap: str, title_pref
     fig.colorbar(images[0], ax=axs.ravel().tolist())
     fig.suptitle(title_prefix)
     return _render_figure(fig)
+
+
+def _component_weight_magnitudes(components: ComponentStacks) -> dict[str, Array]:
+    return {
+        name: jnp.linalg.norm(sc.V.astype(jnp.float32), axis=0)
+        * jnp.linalg.norm(sc.U.astype(jnp.float32), axis=1)
+        for name, sc in components.sites_items()
+    }
+
+
+def weight_magnitudes(components: ComponentStacks) -> dict[str, np.ndarray]:
+    """Per-site `‖V_c‖·‖U_c‖` as host `(C,)` vectors. The norms reduce ON DEVICE, so only
+    C floats per site cross the boundary — never the V/U matrices themselves."""
+    return {
+        name: np.asarray(value) for name, value in _component_weight_magnitudes(components).items()
+    }
+
+
+def mean_cis(reductions: dict[str, SiteReduction]) -> dict[str, np.ndarray]:
+    """Per-site token-weighted mean CI."""
+    assert all(r.n_positions > 0 for r in reductions.values())
+    return {site: r.ci_sums / r.n_positions for site, r in reductions.items()}
+
+
+def plot_weight_magnitudes(magnitudes: dict[str, np.ndarray]) -> bytes:
+    """Per-site `‖V_c‖·‖U_c‖` in descending magnitude order, log y. x is a component's rank
+    within its site, NOT its component id."""
+    n_rows, n_cols = _grid_dims(len(magnitudes))
+    fig = Figure(figsize=(8 * n_cols, 3 * n_rows))
+    axs = fig.subplots(n_rows, n_cols, squeeze=False)
+    flat_axes = axs.T.ravel()
+    for ax in flat_axes[len(magnitudes) :]:
+        ax.set_visible(False)
+    for ax, (name, values) in zip(flat_axes, magnitudes.items(), strict=False):
+        ax.scatter(range(len(values)), np.sort(values)[::-1], marker="x", s=10)
+        ax.set_yscale("log")
+        ax.set_xlabel("Component (descending ‖V‖·‖U‖)")
+        ax.set_ylabel("‖V‖·‖U‖")
+        ax.set_title(name, fontsize=10)
+    fig.tight_layout()
+    return _render_figure(fig)
+
+
+def plot_mean_component_cis_two_streams(
+    target_mean_cis: dict[str, np.ndarray],
+    nontarget_mean_cis: dict[str, np.ndarray],
+) -> tuple[bytes, bytes]:
+    """Both streams' mean CI on one axis per site, ordered by descending TARGET mean.
+
+    The nontarget series takes the same permutation rather than its own, so a component's
+    two series line up vertically."""
+    assert target_mean_cis.keys() == nontarget_mean_cis.keys(), (
+        sorted(target_mean_cis),
+        sorted(nontarget_mean_cis),
+    )
+    n_rows, n_cols = _grid_dims(len(target_mean_cis))
+    ordered = {
+        name: (target[order], nontarget_mean_cis[name][order])
+        for name, target in target_mean_cis.items()
+        for order in [np.argsort(target)[::-1]]
+    }
+    images: list[bytes] = []
+    for log_y in (False, True):
+        fig = Figure(figsize=(8 * n_cols, 3 * n_rows))
+        axs = fig.subplots(n_rows, n_cols, squeeze=False)
+        flat_axes = axs.T.ravel()
+        for ax in flat_axes[len(ordered) :]:
+            ax.set_visible(False)
+        for ax, (name, (target, nontarget)) in zip(flat_axes, ordered.items(), strict=False):
+            x = np.arange(len(target))
+            if log_y:
+                ax.set_yscale("log")
+            ax.fill_between(x, target, step="mid", color="#1f77b4", label="target")
+            ax.fill_between(
+                x, nontarget, step="mid", color="#d62728", label="non-target", alpha=0.6
+            )
+            ax.set_xlabel("Component (sorted by target mean CI)")
+            ax.set_ylabel("mean CI")
+            ax.set_title(name, fontsize=10)
+            ax.legend(fontsize=7)
+        fig.tight_layout()
+        images.append(_render_figure(fig))
+    return images[0], images[1]
 
 
 def plot_permuted_ci_heatmaps(
