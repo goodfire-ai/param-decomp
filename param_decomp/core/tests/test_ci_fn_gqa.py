@@ -35,7 +35,10 @@ def _arch(attention: CIAttention, sites: tuple[SiteSpec, ...]) -> ChunkwiseTrans
     )
 
 
-SITES = (SiteSpec("layers.0.q_proj", 12, 12, 3), SiteSpec("layers.0.mlp", 12, 12, 5))
+SITES = (
+    SiteSpec("layers.0.q_proj", 12, 12, 3, "q_proj"),
+    SiteSpec("layers.0.mlp", 12, 12, 5, "mlp"),
+)
 
 
 def _block(n_head: int, n_kv_head: int, key: jax.Array) -> CIBlock:
@@ -96,7 +99,7 @@ def _attn_sublayer_via_block(block: CIBlock, x: jax.Array, inv_freq: jax.Array) 
     zeroed = eqx.tree_at(
         lambda b: (b.w1, b.w2), block, (jnp.zeros_like(block.w1), jnp.zeros_like(block.w2))
     )
-    return zeroed(x, inv_freq) - x
+    return zeroed(x, inv_freq, placement=None) - x
 
 
 @pytest.mark.parametrize("n_kv_head", [1, 2, 4])
@@ -143,7 +146,7 @@ def test_gqa_ci_fn_runs_end_to_end():
     arch = _arch(attention=GQACIAttention(n_heads=4, n_kv_heads=2), sites=SITES)
     ci_fn = build_ci_fn(arch, SITES, jax.random.PRNGKey(0))
     taps = {"resid.0": jax.random.normal(jax.random.PRNGKey(1), (2, 6, 12))}
-    ci = ci_fn(taps, remat=False)
+    ci = ci_fn(taps, remat=False, placement=None)
     for site in SITES:
         for squashed in (ci.preactivations[site.name], ci.lower[site.name], ci.upper[site.name]):
             assert squashed.shape == (2, 6, site.C), squashed.shape

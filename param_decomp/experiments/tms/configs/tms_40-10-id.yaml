@@ -80,10 +80,12 @@ pd:
   faithfulness_warmup_weight_decay: 0.0
 cadence:
   train_log_every: 200
-  save_every: 5000
-  checkpoint_retention:
-    kind: keep_last
-    n: 2
+  checkpointing:
+    kind: periodic
+    save_every: 5000
+    retention:
+      kind: keep_last
+      n: 2
 target:
   n_features: 40
   n_hidden: 10

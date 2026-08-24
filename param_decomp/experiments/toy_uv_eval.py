@@ -11,9 +11,14 @@ import numpy as np
 from jaxtyping import Array
 
 from param_decomp.core.components import SiteComponents
-from param_decomp.core.configs import UVPlotsConfig
+from param_decomp.core.configs import (
+    Checkpointing,
+    NoCheckpointing,
+    PeriodicCheckpointing,
+    UVPlotsConfig,
+)
 from param_decomp.core.metrics import LogRecord, PNGImage
-from param_decomp.core.model import DecomposedModel
+from param_decomp.core.model import PlacedModel
 from param_decomp.core.slow_eval import (
     PermutationMetricSpec,
     PositionCI,
@@ -23,7 +28,7 @@ from param_decomp.core.slow_eval import (
 )
 
 
-def toy_uv_spec(model: DecomposedModel, metric: UVPlotsConfig | None) -> PermutationMetricSpec:
+def toy_uv_spec(model: PlacedModel, metric: UVPlotsConfig | None) -> PermutationMetricSpec:
     """Resolve the optional typed UV-plot metric over the toy model's sites."""
     return resolve_permutation_metrics(model.site_names, [] if metric is None else [metric])
 
@@ -46,9 +51,14 @@ def render_uv_metric(
     }
 
 
-def permuted_ci_heatmap_due(now_step: int, total_steps: int, save_every: int) -> bool:
-    """Emit native recovery figures beside checkpoints and at the final step."""
-    return now_step == total_steps or now_step % save_every == 0
+def permuted_ci_heatmap_due(now_step: int, total_steps: int, checkpointing: Checkpointing) -> bool:
+    """Emit native recovery figures beside checkpoints and at the final step (final step
+    only when the run checkpoints nothing)."""
+    match checkpointing:
+        case PeriodicCheckpointing(save_every=save_every):
+            return now_step == total_steps or now_step % save_every == 0
+        case NoCheckpointing():
+            return now_step == total_steps
 
 
 def render_permuted_ci_heatmap(

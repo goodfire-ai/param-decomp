@@ -22,10 +22,18 @@ from param_decomp.core.configs import (
     ImportanceMinimalityLossConfig,
     StochasticReconLossConfig,
 )
+from param_decomp.core.faithfulness import faithfulness_loss_for
+from param_decomp.core.model import PlacedModel
 from param_decomp.core.objective import build_objective
 from param_decomp.core.schedule import Knot, ScheduleConfig
 from param_decomp.core.tests.test_generic_model_io import SyntheticDecomposedModel
-from param_decomp.core.train import Decomposition, TrainingItem, TrainState, make_train_step
+from param_decomp.core.train import (
+    Decomposition,
+    ForwardSubstrate,
+    TrainingItem,
+    TrainState,
+    make_train_step,
+)
 
 SITE = "block.0.proj"
 B, T, D, C = 2, 3, 32, 5
@@ -40,7 +48,7 @@ def _build_step_and_args():
         W=random.normal(random.fold_in(key, 0), (D, D)),
         read_coords=random.normal(random.fold_in(key, 1), (K_COORDS, D)),
         read_aux=random.normal(random.fold_in(key, 2), (M_AUX, D)),
-        sites=(SiteSpec(name=SITE, d_in=D, d_out=D, C=C),),
+        sites=(SiteSpec(name=SITE, d_in=D, d_out=D, C=C, group=SITE),),
         has_position_axis=True,
     )
     assert model.W.size == FROZEN_W_SIZE
@@ -75,33 +83,39 @@ def _build_step_and_args():
             components_opt_state=opt_vu.init(eqx.filter(components, eqx.is_array)),
             ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
             adversaries={},
+            freq_ema=None,
             step=jnp.zeros((), jnp.int32),
         ),
     )
-    loss_terms = build_objective(
-        (
-            FaithfulnessLossConfig(coeff=1.0),
-            ImportanceMinimalityLossConfig(
-                coeff=1e-4,
-                pnorm=ScheduleConfig(
-                    max_val=2.0, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.5))
-                ),
+    nonfaith_terms = (
+        ImportanceMinimalityLossConfig(
+            coeff=1e-4,
+            pnorm=ScheduleConfig(
+                max_val=2.0, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.5))
             ),
-            StochasticReconLossConfig(coeff=1.0),
         ),
-        model.site_names,
+        StochasticReconLossConfig(coeff=1.0),
     )
+    loss_terms = build_objective(
+        (FaithfulnessLossConfig(coeff=1.0), *nonfaith_terms), model.site_names
+    )
+    placed = PlacedModel(model=model, placement=None)
     step_fn = make_train_step(
-        model_static=model,
-        losses=loss_terms,
+        model_static=placed,
+        substrate=ForwardSubstrate.of(
+            placed,
+            remat_recon_forwards=False,
+            remat_ci_fn=False,
+            ci_capture_keys=ci_fn.capture_keys,
+            ci_placement=None,
+        ),
+        objective=loss_terms,
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=10,
-        remat_recon_forwards=False,
-        remat_ci_fn=False,
-        ci_capture_keys=ci_fn.capture_keys,
+        faithfulness=faithfulness_loss_for(model),
     )
-    return step_fn, model, state, inputs
+    return step_fn, placed, state, inputs
 
 
 def test_frozen_weights_are_jaxpr_args_not_baked_consts():

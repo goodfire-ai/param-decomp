@@ -1,6 +1,6 @@
 """Write a pretrained target to the decomposition trainer's pretrain-cache layout.
 
-`param_decomp.core.llama_simple_mlp.load_target_from_pretrain_cache` reads a cache dir
+`param_decomp.targets.llama_simple_mlp.load_target_from_pretrain_cache` reads a cache dir
 `pretrain_cache/<project>-<run_id>/` holding exactly one `model_step_<N>.safetensors`
 plus a `model_config.yaml` (the torch `LlamaSimpleMLPConfig` dump). This module emits
 that layout from a freshly-pretrained model so a target is decomposable with no
@@ -38,7 +38,7 @@ def write_pretrain_cache(
 
 
 def torch_model_config_dict(cfg: PretrainConfig) -> dict[str, object]:
-    """The `model_config.yaml` shape `param_decomp.core.llama_simple_mlp` parses — the torch
+    """The `model_config.yaml` shape `param_decomp.targets.llama_simple_mlp` parses — the torch
     `LlamaSimpleMLPConfig` field names, with the rotary/GQA fields the loader asserts on.
 
     The bias / merged-QKV / rotary-variant keys are literals, not config reads: this port only

@@ -1,7 +1,7 @@
 """The one schedule surface: `ScheduleConfig` — a knot-based piecewise curve — plus
 `get_scheduled_value`, its host-numpy evaluator (the parity reference). Every scheduled
-quantity (main LRs, PPGD source LR, imp-min `p`/`gamma`, merged-loss `adv_fraction`,
-every loss coefficient via `configs.LossCoeff`) is configured by `ScheduleConfig` and
+quantity (main LRs, PPGD source LR, imp-min `p`/`gamma`, nonlinearity threshold,
+merged-loss `adv_fraction`, every loss coefficient via `configs.LossCoeff`) is configured by `ScheduleConfig` and
 evaluated in-step by the jnp twin `losses.scheduled_value_traced` (jax lives there so
 this module — imported by the config schema — stays jax-free); `test_schedule.py` pins
 the pair pointwise."""

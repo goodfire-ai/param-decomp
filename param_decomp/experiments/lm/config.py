@@ -37,11 +37,22 @@ from param_decomp.core.ci_fn import (
     GQACIAttention,
     MHACIAttention,
     TapSpec,
+    resolve_ci_placement,
 )
 from param_decomp.core.components import SiteC, SiteDims, SiteSpec
-from param_decomp.core.configs import NontargetConfig, ResumeProvenance, TargetedPDConfig
+from param_decomp.core.configs import (
+    MuonOptimizerConfig,
+    NontargetConfig,
+    PDConfigBase,
+    PlacementTableConfig,
+    ResumeProvenance,
+    TargetedPDConfig,
+)
 from param_decomp.core.family import ArchFamily
-from param_decomp.core.objective import build_objective, build_targeted_objective
+from param_decomp.core.objective import (
+    build_objective,
+    build_targeted_objective,
+)
 from param_decomp.core.sharding import hsdp_abstract_mesh
 from param_decomp.experiments.config import (
     ExperimentConfig,
@@ -63,10 +74,11 @@ from param_decomp.experiments.lm.targeted_data import LMPromptPoolConfig
 from param_decomp.infra import pretrain_cache
 from param_decomp.infra.dataset_store import DatasetRef, resolve_dataset_ref
 from param_decomp.migrations.schedule_knots import migrate_raw as migrate_schedule_knots
-from param_decomp.targets import glu_transformer, llama8b, llama_simple_mlp, qwen3_8b
+from param_decomp.targets import glu_transformer, llama31, llama_simple_mlp, qwen3
 from param_decomp.targets.glu_transformer import GluMatrix
 from param_decomp.targets.llama_simple_mlp import SimpleMlpMatrix
 from param_decomp.targets.transformer_taps import TransformerTapGrammar, resid_tap_key
+from param_decomp.vendored_jax.llama import AttentionImplementation
 
 
 class HFTarget(BaseConfig):
@@ -111,6 +123,7 @@ class LMTargetConfig(BaseConfig):
     """Config for the LM target model."""
 
     spec: LMTargetSpec
+    attention_implementation: AttentionImplementation
     weights_dtype: WeightsDtype
     """dtype for the FROZEN target weights. Only the frozen target is cast; trained V/U
     components keep their fp32 AdamW master.
@@ -169,7 +182,7 @@ LayerSelection = Annotated[AllLayers | LayerRange | LayerList, Field(discriminat
 
 
 class GluTransformerCSpec(BaseConfig):
-    """Per-matrix-type C tiled across the selected layers (GLU family, e.g. llama8b). Every
+    """Per-matrix-type C tiled across the selected layers (GLU family, e.g. Llama-3.1). Every
     selected layer is decomposed at the same `cs` matrices and C; a matrix absent from `cs`
     is not decomposed on any layer. Tiled ⇒ every block is structurally identical, so the
     chunkwise CI fn's chunks are homogeneous by construction."""
@@ -408,47 +421,60 @@ class LMTargetedExperimentConfig(ExperimentConfigBase):
 
 
 @dataclass(frozen=True)
-class HFModelFamily:
-    """One vendored HF model family the LM composition can target: its arch config, its
-    HF loader (the family file's `load_decomposed_*_from_hf`), and the path-schema model
-    type consumers key on. The families live in `param_decomp/targets/{llama8b,qwen3_8b}.py`
-    over the shared `glu_transformer` machinery; this registry is the ONLY place a model
-    name selects a family."""
+class HFModelVariant:
+    """One concrete HF model the LM composition can target: its exact arch config, its
+    architecture loader, and the path-schema model type consumers key on. Architecture
+    modules live in `param_decomp/targets/{llama31,qwen3}.py` over the shared
+    `glu_transformer` machinery; this registry is the ONLY place a model name selects a
+    variant."""
 
     arch_config: Callable[[], glu_transformer.GLUArch]
     load: Callable[..., glu_transformer.GLUDecomposedModel]
-    """`(model_name, cfg, sites, weights_dtype)` — cfg is the family's own arch-config
+    """`(model_name, cfg, sites, weights_dtype)` — each architecture owns its config
     type, so the common signature is erased here."""
     model_type: str
     model_class: str
-    """The `target.spec.model_class` this family answers to (a stable identifier, never
+    """The `target.spec.model_class` this variant answers to (a stable identifier, never
     imported — see experiments/CLAUDE.md)."""
 
 
-HF_MODEL_FAMILIES: dict[str, HFModelFamily] = {
-    "meta-llama/Llama-3.1-8B": HFModelFamily(
-        llama8b.llama31_8b_config,
-        llama8b.load_decomposed_llama_from_hf,
-        "Llama",
-        "transformers.LlamaForCausalLM",
+def _qwen3_variant(arch_config: Callable[[], glu_transformer.GLUArch]) -> HFModelVariant:
+    return HFModelVariant(
+        arch_config=arch_config,
+        load=qwen3.load_decomposed_qwen3_from_hf,
+        model_type="Qwen3",
+        model_class="transformers.Qwen3ForCausalLM",
+    )
+
+
+HF_MODEL_VARIANTS: dict[str, HFModelVariant] = {
+    "meta-llama/Llama-3.1-8B": HFModelVariant(
+        arch_config=llama31.llama31_8b_config,
+        load=llama31.load_decomposed_llama31_from_hf,
+        model_type="Llama",
+        model_class="transformers.LlamaForCausalLM",
     ),
-    "Qwen/Qwen3-8B-Base": HFModelFamily(
-        qwen3_8b.qwen3_8b_config,
-        qwen3_8b.load_decomposed_qwen3_from_hf,
-        "Qwen3",
-        "transformers.Qwen3ForCausalLM",
-    ),
+    "Qwen/Qwen3-0.6B-Base": _qwen3_variant(qwen3.qwen3_0_6b_base_config),
+    "Qwen/Qwen3-0.6B": _qwen3_variant(qwen3.qwen3_0_6b_config),
+    "Qwen/Qwen3-1.7B-Base": _qwen3_variant(qwen3.qwen3_1_7b_base_config),
+    "Qwen/Qwen3-1.7B": _qwen3_variant(qwen3.qwen3_1_7b_config),
+    "Qwen/Qwen3-4B-Base": _qwen3_variant(qwen3.qwen3_4b_base_config),
+    "Qwen/Qwen3-4B": _qwen3_variant(qwen3.qwen3_4b_config),
+    "Qwen/Qwen3-8B-Base": _qwen3_variant(qwen3.qwen3_8b_base_config),
+    "Qwen/Qwen3-8B": _qwen3_variant(qwen3.qwen3_8b_config),
+    "Qwen/Qwen3-14B-Base": _qwen3_variant(qwen3.qwen3_14b_base_config),
+    "Qwen/Qwen3-14B": _qwen3_variant(qwen3.qwen3_14b_config),
 }
 """The HF model names the LM composition implements. Anything else refuses loudly at
-convert time — a new model gets an explicit family entry (config checked against its HF
+convert time — a new model gets an explicit variant entry (config checked against its HF
 config.json), never a silent guess."""
 
 
-def hf_model_family(model_name: str) -> HFModelFamily:
-    assert model_name in HF_MODEL_FAMILIES, (
-        f"no vendored model family for {model_name!r}; supported: {sorted(HF_MODEL_FAMILIES)}"
+def hf_model_variant(model_name: str) -> HFModelVariant:
+    assert model_name in HF_MODEL_VARIANTS, (
+        f"no vendored model variant for {model_name!r}; supported: {sorted(HF_MODEL_VARIANTS)}"
     )
-    return HF_MODEL_FAMILIES[model_name]
+    return HF_MODEL_VARIANTS[model_name]
 
 
 @dataclass(frozen=True)
@@ -491,7 +517,7 @@ def resolve_decomposition(
 ) -> _ResolvedDecomposition:
     """Target spec + tiled `decomposition.sites` -> target config + `SiteTree`.
 
-    HF specs resolve their family from `HF_MODEL_FAMILIES` (all GLU-transformer targets); `kind:
+    HF specs resolve their variant from `HF_MODEL_VARIANTS` (all GLU-transformer targets); `kind:
     pretrained` LlamaSimpleMLP specs map to the pretrain-cache loader (plain-MLP family). The
     tree is tiled from the per-matrix-type `cs` over the selected layers; `resolve_site_tree`
     asserts the c-spec's declared family matches the target's."""
@@ -504,18 +530,19 @@ def resolve_decomposition(
                     assert spec.model_class.rsplit(".", 1)[-1] == "VendoredLlama", spec.model_class
                     assert "Llama-3.1-8B" in spec.model_name, spec.model_name
                 case HFTarget():
-                    known_classes = {f.model_class for f in HF_MODEL_FAMILIES.values()}
+                    known_classes = {variant.model_class for variant in HF_MODEL_VARIANTS.values()}
                     assert spec.model_class in known_classes, spec.model_class
-                    assert spec.model_class == hf_model_family(spec.model_name).model_class, (
-                        f"{spec.model_class!r} is not {spec.model_name!r}'s family"
+                    assert spec.model_class == hf_model_variant(spec.model_name).model_class, (
+                        f"{spec.model_class!r} is not {spec.model_name!r}'s registered variant"
                     )
-            hf_family = hf_model_family(spec.model_name)  # refuses unknown model names
-            arch = hf_family.arch_config()
+            hf_variant = hf_model_variant(spec.model_name)  # refuses unknown model names
+            arch = hf_variant.arch_config()
             tree = resolve_site_tree(sites, glu_transformer.FAMILY, arch.n_layer)
             target = TargetConfig(
                 model_name=spec.model_name,
                 sites=tree.site_cs(glu_transformer.FAMILY.name_of),
                 weights_dtype=target_config.weights_dtype,
+                attention_implementation=target_config.attention_implementation,
             )
             grammar = _build_tap_grammar(
                 family=glu_transformer.FAMILY,
@@ -536,6 +563,7 @@ def resolve_decomposition(
                 pretrain_run_path=spec.run_path,
                 sites=tree.site_cs(llama_simple_mlp.FAMILY.name_of),
                 weights_dtype=target_config.weights_dtype,
+                attention_implementation=target_config.attention_implementation,
             )
             grammar = _build_tap_grammar(
                 family=llama_simple_mlp.FAMILY,
@@ -692,18 +720,58 @@ def _assert_supported_weights_dtype(target: AnyLMTargetConfig) -> None:
     )
 
 
-def _assert_placement_claims(resolved: _ResolvedDecomposition, runtime: RuntimeConfig) -> None:
+def _assert_placement_claims(
+    resolved: _ResolvedDecomposition,
+    runtime: RuntimeConfig,
+    ci_fn: LMCIFnArch,
+    pd: PDConfigBase,
+) -> None:
     """The config-build placement gate (SPEC D4 amendment 2026-07-21): construct the
     run's `PlacementRules` at the mesh shape `runtime.{dp,tp}` implies, firing the
-    per-shape-group persist-vs-zero1 assignment and the sharding spec's bidirectional
+    per-semantic-group persist-vs-zero1 assignment and the sharding spec's bidirectional
     claim where the resolved site set and the declared topology first coexist — at
     pre-submit validation and at every in-job /
     consumer config build. The composition root's `placement.from_config` at the
-    concrete mesh is the same construction; nothing decides later or deeper."""
-    placement.from_config(
+    concrete mesh is the same construction; nothing decides later or deeper.
+    `resolve_ci_placement` on the constructed rules fires the CI attention head-split
+    divisibility here too (a `kv_head` assignment the CI arch's K/V head count cannot
+    tile refuses pre-submit, not on the GPUs)."""
+    match ci_fn:
+        case ChunkwiseTransformerCIArch():
+            pass
+        case GlobalMLPCIArch():
+            assert not isinstance(runtime.sharding, PlacementTableConfig), (
+                "runtime.sharding is an explicit table, whose authored ci_fn rows only the "
+                "chunkwise transformer consumes — the MLP CI fns run unplaced "
+                "(ci_fn.resolve_ci_placement) and would silently ignore them. Use a preset "
+                "(its ci_fn rows are derived, not authored) or the chunkwise arch."
+            )
+    rules = placement.from_config(
         runtime.sharding,
-        hsdp_abstract_mesh(runtime.dp, runtime.tp, runtime.gpus_per_node),
+        hsdp_abstract_mesh(runtime.replicate, runtime.fsdp, runtime.tp),
         resolved.site_specs,
+    )
+    resolve_ci_placement(ci_fn, rules)
+    # The muon-stacked staging claims fire pre-submit ONLY for an optimizer that will
+    # consume the ns_compute rows — a non-muon run keeps any-stack-length placement
+    # (run_state.build_optimizers re-fires the same claims at the consumer boundary).
+    match pd.components_optimizer:
+        case MuonOptimizerConfig(impl="stacked"):
+            placement.assert_stacked_muon_component_staging(rules)
+        case _:
+            pass
+    match (pd.ci_fn_optimizer, ci_fn):
+        case (MuonOptimizerConfig(impl="stacked"), ChunkwiseTransformerCIArch()):
+            placement.assert_stacked_muon_ci_staging(rules, len(ci_fn.chunks))
+        case _:
+            pass
+
+
+def _assert_batch_size(name: str, batch_size: int, runtime: RuntimeConfig) -> None:
+    n_data = runtime.data_parallel_size
+    assert batch_size >= n_data and batch_size % n_data == 0, (
+        f"{name}={batch_size} must be a positive multiple of effective data-parallel size "
+        f"{n_data} (mesh={runtime.replicate}×{runtime.fsdp}×{runtime.tp})"
     )
 
 
@@ -712,8 +780,12 @@ def assert_placement_claims(
 ) -> None:
     """Standalone spelling of the placement gate for submitters' pre-submit validation and
     the repo-config parse gate; both build routes run it on every build."""
+    resolved = resolve_decomposition(cfg.target, cfg.decomposition, data_root)
     _assert_placement_claims(
-        resolve_decomposition(cfg.target, cfg.decomposition, data_root), cfg.runtime
+        resolved,
+        cfg.runtime,
+        resolve_lm_ci_arch(resolved.tree, cfg.decomposition.ci, resolved.grammar),
+        cfg.pd,
     )
 
 
@@ -722,9 +794,10 @@ def build_experiment_config(cfg: LMExperimentConfig, run_id: str, data_root: Pat
     target = resolved.target
     _assert_losses_supported(cfg, tuple(sc.name for sc in target.sites))
     _assert_supported_weights_dtype(target)
-    _assert_placement_claims(resolved, cfg.runtime)
-    data = _data(cfg.data, data_root)
     ci_fn = resolve_lm_ci_arch(resolved.tree, cfg.decomposition.ci, resolved.grammar)
+    _assert_placement_claims(resolved, cfg.runtime, ci_fn, cfg.pd)
+    _assert_batch_size("pd.batch_size", cfg.pd.batch_size, cfg.runtime)
+    data = _data(cfg.data, data_root)
 
     return BuiltRun(
         pd=cfg.pd,
@@ -750,9 +823,11 @@ def build_targeted_experiment_config(
         cfg.pd.loss_metrics, cfg.nontarget, tuple(sc.name for sc in target.sites)
     )
     _assert_supported_weights_dtype(target)
-    _assert_placement_claims(resolved, cfg.runtime)
-    data = _data(cfg.data, data_root)
     ci_fn = resolve_lm_ci_arch(resolved.tree, cfg.decomposition.ci, resolved.grammar)
+    _assert_placement_claims(resolved, cfg.runtime, ci_fn, cfg.pd)
+    _assert_batch_size("pd.batch_size", cfg.pd.batch_size, cfg.runtime)
+    _assert_batch_size("nontarget.batch_size", cfg.nontarget.batch_size, cfg.runtime)
+    data = _data(cfg.data, data_root)
 
     return BuiltRun(
         pd=cfg.pd,

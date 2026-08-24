@@ -126,15 +126,18 @@ nontarget:
       type: uniform_k_subset
 cadence:
   train_log_every: 20
-  save_every: 1000
-  checkpoint_retention:
-    kind: keep_last
-    n: 2
+  checkpointing:
+    kind: periodic
+    save_every: 1000
+    retention:
+      kind: keep_last
+      n: 2
 target:
   spec:
     kind: hf_weights_in_vendored
     model_class: param_decomp.experiments.lm.vendored.llama_3_1.model.VendoredLlama
     model_name: meta-llama/Llama-3.1-8B
+  attention_implementation: auto
   weights_dtype: bfloat16
 data:
   train:
@@ -144,9 +147,13 @@ data:
     kind: name
     name: fineweb_llama_tok_2048_eval
 runtime:
+  compilation_cache_dir: ~/.cache/param-decomp/xla
   remat_recon_forwards: true
-  dp: 8
+  replicate: 1
+  fsdp: 8
+  tp: 1
   sharding: zero1
+  compiler_options: tuned-v1
 wandb:
   project: param-decomp-llama
   entity: goodfire

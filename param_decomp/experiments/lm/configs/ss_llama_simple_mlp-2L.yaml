@@ -4,11 +4,13 @@
 # https://wandb.ai/goodfire/spd/runs/s-eab2ace8.
 run_name: jax-ss2l-ppgd-bsc
 cadence:
-  checkpoint_retention:
-    kind: keep_last
-    n: 2
-  save_every: 50000
   train_log_every: 200
+  checkpointing:
+    kind: periodic
+    save_every: 50000
+    retention:
+      kind: keep_last
+      n: 2
 data:
   train:
     kind: name
@@ -132,13 +134,17 @@ pd:
           - {at: 1.0, frac: 1.0}
     source_shape: bsc
   - type: FaithfulnessLoss
-    coeff: 10000000.0
+    coeff: 1.0e+03
 runtime:
-  dp: 1
-  gpus_per_node: 8
+  compilation_cache_dir: ~/.cache/param-decomp/xla
+  replicate: 1
+  fsdp: 1
+  tp: 1
   sharding: zero1
   remat_recon_forwards: false
+  compiler_options: tuned-v1
 target:
+  attention_implementation: auto
   weights_dtype: bfloat16
   spec:
     kind: pretrained

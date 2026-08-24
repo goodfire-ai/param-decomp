@@ -18,6 +18,8 @@ import jax
 import jax.numpy as jnp
 
 from param_decomp.core.adversary import (
+    SiteSource,
+    Sources,
     SourcesAdamState,
     init_sources_adam_state,
     sources_adam_ascend_project,
@@ -30,27 +32,26 @@ def _adam() -> AdamPGDConfig:
     return AdamPGDConfig(beta1=0.8, beta2=0.9, eps=1e-8, lr_schedule=ScheduleConfig.constant(0.05))
 
 
-def _grad_for_ascent(ascent_idx: int) -> dict[str, jax.Array]:
+def _grad_for_ascent(ascent_idx: int) -> Sources:
     # Distinct per ascent so the Adam moments are non-degenerate and the bias-correction
     # divisor genuinely matters (constant grads would converge m/v to the grad and shrink
     # the count-1-vs-count-N+1 gap).
-    return {"site": jnp.sin(jnp.arange(6.0).reshape(2, 3) + float(ascent_idx))}
+    values = jnp.sin(jnp.arange(6.0).reshape(2, 3) + float(ascent_idx))
+    return {"site": SiteSource(values[..., :-1], values[..., -1])}
 
 
 def _roundtrip(adam_state: SourcesAdamState) -> SourcesAdamState:
     """Mimic the checkpoint save/restore of the Adam state: every leaf (including the
     fp32 `step_count`) goes out to arrays and comes back, with no in-flight count reset."""
     return SourcesAdamState(
-        m={k: jnp.asarray(v) for k, v in adam_state.m.items()},
-        v={k: jnp.asarray(v) for k, v in adam_state.v.items()},
+        m=jax.tree.map(jnp.asarray, adam_state.m),
+        v=jax.tree.map(jnp.asarray, adam_state.v),
         step_count=jnp.asarray(adam_state.step_count),
     )
 
 
-def _ascend_n(
-    n: int, lr: jax.Array, adam: AdamPGDConfig
-) -> tuple[dict[str, jax.Array], SourcesAdamState]:
-    sources = {"site": jnp.full((2, 3), 0.5)}
+def _ascend_n(n: int, lr: jax.Array, adam: AdamPGDConfig) -> tuple[Sources, SourcesAdamState]:
+    sources = {"site": SiteSource(jnp.full((2, 2), 0.5), jnp.full((2,), 0.5))}
     adam_state = init_sources_adam_state(sources)
     for ascent_idx in range(n):
         sources, adam_state = sources_adam_ascend_project(
@@ -69,7 +70,9 @@ def test_first_post_resume_ascent_uses_count_n_plus_1():
     uninterrupted_next, adam_state_n1 = sources_adam_ascend_project(
         sources_n, _grad_for_ascent(n), adam_state_n, lr, adam
     )
-    uninterrupted_delta = uninterrupted_next["site"] - sources_n["site"]
+    uninterrupted_delta = jax.tree.map(
+        lambda after, before: after - before, uninterrupted_next["site"], sources_n["site"]
+    )
 
     # Resumed: round-trip the post-N Adam state through the checkpoint, then run the
     # (N+1)th ascent from the SAME sources/grad.
@@ -78,11 +81,25 @@ def test_first_post_resume_ascent_uses_count_n_plus_1():
     resumed_next, resumed_state_n1 = sources_adam_ascend_project(
         sources_n, _grad_for_ascent(n), resumed_state, lr, adam
     )
-    resumed_delta = resumed_next["site"] - sources_n["site"]
+    resumed_delta = jax.tree.map(
+        lambda after, before: after - before, resumed_next["site"], sources_n["site"]
+    )
 
-    assert jnp.allclose(resumed_delta, uninterrupted_delta, atol=0.0, rtol=0.0)
+    assert all(
+        jnp.allclose(a, b, atol=0.0, rtol=0.0)
+        for a, b in zip(
+            jax.tree.leaves(resumed_delta), jax.tree.leaves(uninterrupted_delta), strict=True
+        )
+    )
     assert float(resumed_state_n1.step_count) == float(n + 1)
-    assert jnp.array_equal(resumed_next["site"], uninterrupted_next["site"])
+    assert all(
+        jnp.array_equal(a, b)
+        for a, b in zip(
+            jax.tree.leaves(resumed_next["site"]),
+            jax.tree.leaves(uninterrupted_next["site"]),
+            strict=True,
+        )
+    )
     assert jnp.array_equal(adam_state_n1.step_count, resumed_state_n1.step_count)
 
 
@@ -105,4 +122,11 @@ def test_count_reset_would_mis_scale_first_post_resume_ascent():
     )
 
     assert float(reset_state_after.step_count) == 1.0
-    assert not jnp.allclose(reset_next["site"], correct_next["site"])
+    assert any(
+        not jnp.allclose(a, b)
+        for a, b in zip(
+            jax.tree.leaves(reset_next["site"]),
+            jax.tree.leaves(correct_next["site"]),
+            strict=True,
+        )
+    )

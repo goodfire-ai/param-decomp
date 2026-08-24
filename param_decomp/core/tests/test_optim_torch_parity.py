@@ -6,15 +6,23 @@
   optax's eps-free `clip_by_global_norm`.
 """
 
+from collections.abc import Callable
+
 import jax
 import jax.numpy as jnp
 import optax
 import pytest
+from jax.sharding import AxisType
 from jax.typing import ArrayLike
 from jaxtyping import Array
 from pydantic import TypeAdapter
 
-from param_decomp.core.configs import AdamWOptimizerConfig, AnyOptimizerConfig, MuonOptimizerConfig
+from param_decomp.core.configs import (
+    AdamWOptimizerConfig,
+    AnyOptimizerConfig,
+    MuonOptimizerConfig,
+    PlacementTableConfig,
+)
 from param_decomp.core.run_state import (
     _optimizer_with_clip,
     clip_by_global_norm_with_eps,
@@ -126,7 +134,7 @@ def test_muon_orthogonalizes_2d_leaves_and_adam_falls_back_elsewhere():
         grad_clip_norm=0.01,
     )
     lr = 1e-3
-    opt = _optimizer_with_clip(muon_cfg, lambda count: jnp.float32(lr), None, mesh=None)
+    opt = _optimizer_with_clip(muon_cfg, lambda count: jnp.float32(lr), None, waypoints=None)
     key = jax.random.key(0)
     params = {"V": jnp.zeros((16, 8)), "scale": jnp.zeros((8,))}
     grads = {
@@ -167,7 +175,10 @@ def test_muon_chunk_stacked_dimension_numbers_orthogonalize_3d_and_adam_2d_bias_
     )
     lr = 1e-3
     opt = _optimizer_with_clip(
-        muon_cfg, lambda count: jnp.float32(lr), stacked_muon_dimension_numbers, mesh=None
+        muon_cfg,
+        lambda count: jnp.float32(lr),
+        stacked_muon_dimension_numbers,
+        waypoints=None,
     )
     key = jax.random.key(0)
     n_chunks = 3
@@ -226,7 +237,7 @@ def test_stacked_muon_update_matches_optax_muon():
         )
 
     def two_steps(impl: Literal["optax", "stacked"]):
-        opt = _optimizer_with_clip(cfg(impl), lr, dim_nums, mesh=None)
+        opt = _optimizer_with_clip(cfg(impl), lr, dim_nums, waypoints=None)
         state = opt.init(params)
         p = params
         for _ in range(2):
@@ -243,12 +254,12 @@ def test_stacked_muon_update_matches_optax_muon():
 
 @pytest.mark.multidevice
 def test_stacked_muon_sharded_matches_unsharded():
-    """The stack-axis sharding constraint is layout-only: the sharded stacked NS
-    reproduces the mesh=None updates (and preserves finiteness). Needs >1 device to be
-    non-vacuous — at 4 sim devices the (16, 24) canonical group holds 5 matrices, so
-    `_pad_to_multiple` genuinely pads 5 -> 8 and each device owns a real sub-stack; at
-    1 device the constraint and the padding both collapse to no-ops."""
-    from jax.sharding import Mesh
+    """The staging reshards are layout-only: the placed stacked NS reproduces the
+    mesh=None updates (and preserves finiteness). The tree mixes a 4-stack, a 2D
+    matrix (canonical g=1), and an adam-fallback bias stack, so per-kind staging
+    covers every canonicalization arm."""
+    from jax.sharding import Mesh, NamedSharding
+    from jax.sharding import PartitionSpec as P
 
     assert jax.device_count() >= 4, "needs 4 sim devices; run via `make test-multidevice`"
 
@@ -267,6 +278,10 @@ def test_stacked_muon_sharded_matches_unsharded():
     }
     dim_nums = stacked_muon_dimension_numbers
 
+    def replicated_waypoints(mesh: "Mesh") -> Callable[[optax.Updates], optax.Updates]:
+        sharding = NamedSharding(mesh, P(None, None, None))
+        return lambda tree: jax.tree.map(lambda _: sharding, tree)
+
     def one_update(mesh: "Mesh | None"):
         opt = stacked_muon(
             lambda count: jnp.float32(1e-3),
@@ -276,13 +291,16 @@ def test_stacked_muon_sharded_matches_unsharded():
             muon_weight_dimension_numbers=dim_nums,
             ns_steps=5,
             ns_dtype=jnp.dtype(jnp.float32),
-            mesh=mesh,
+            waypoints=None if mesh is None else replicated_waypoints(mesh),
         )
-        updates, _ = jax.jit(opt.update)(grads, opt.init(params), params)
+        import contextlib
+
+        with jax.set_mesh(mesh) if mesh is not None else contextlib.nullcontext():
+            updates, _ = jax.jit(opt.update)(grads, opt.init(params), params)
         _, treedef = jax.tree.flatten(grads)
         return jax.tree.unflatten(treedef, jax.tree.leaves(updates))
 
-    unsharded, sharded = one_update(None), one_update(hsdp_mesh())
+    unsharded, sharded = one_update(None), one_update(hsdp_mesh(1, jax.device_count(), 1))
     for k in params:
         assert bool(jnp.all(jnp.isfinite(sharded[k]))), k
         assert jnp.allclose(unsharded[k], sharded[k], rtol=1e-5, atol=1e-7), (
@@ -322,7 +340,7 @@ def test_stacked_muon_bf16_ns_is_sane():
             muon_weight_dimension_numbers=stacked_muon_dimension_numbers,
             ns_steps=5,
             ns_dtype=jnp.dtype(ns_dtype),
-            mesh=None,
+            waypoints=None,
         )
         state = opt.init(params)
         p = params
@@ -368,7 +386,7 @@ def test_stacked_muon_dim_numbers_fail_closed():
             muon_weight_dimension_numbers=lambda p: jax.tree.map(lambda _: spec, p),
             ns_steps=5,
             ns_dtype=jnp.dtype(jnp.float32),
-            mesh=None,
+            waypoints=None,
         )
         return opt.init(params)
 
@@ -406,3 +424,429 @@ def test_optimizer_config_type_discriminator():
     muon = adapter.validate_python({"type": "muon", "lr_schedule": schedule})
     assert isinstance(muon, MuonOptimizerConfig)
     assert muon.beta == 0.95 and muon.consistent_rms is None
+
+
+@pytest.mark.multidevice
+@pytest.mark.parametrize("ns_dtype", [jnp.float32, jnp.bfloat16])
+def test_grouped_ns_owner_waypoint_matches_replicated_on_stack_owned_leaves(
+    ns_dtype: jnp.dtype, capfd: pytest.CaptureFixture[str]
+):
+    """The stack-owner `ns_compute` waypoint (`{stack: replicate}` staging) is the same
+    math as the replicated waypoint — the declared rows change only where the entry
+    reshards happen (SPEC D4 tolerance class) — and NEITHER staging may trigger the SPMD
+    partitioner's involuntary-full-rematerialization fallback. The check reads the
+    partitioner's warning off fd 2 (`capfd`) — the same signal the production log grep
+    uses. bf16 is a separate arm because an unpinned `convert_element_type` is its own
+    fallback trigger."""
+    import numpy as np
+    from jax.sharding import Mesh, NamedSharding
+    from jax.sharding import PartitionSpec as P
+
+    from param_decomp.core.muon_stacked import _staged_newton_schulz
+
+    assert jax.device_count() >= 4, "needs 4 sim devices; run via `make test-multidevice`"
+    mesh = Mesh(
+        np.array(jax.devices()[:4]).reshape(2, 2),
+        ("replicate", "fsdp"),
+        axis_types=(AxisType.Explicit,) * 2,
+    )
+    owner = NamedSharding(mesh, P("replicate", "fsdp", None))
+
+    key = jax.random.key(0)
+    k1, k2 = jax.random.split(key)
+    tree = {
+        "a": jax.device_put(jax.random.normal(k1, (4, 8, 16), jnp.float32), owner),
+        "b": jax.device_put(jax.random.normal(k2, (4, 16, 8), jnp.float32), owner),
+    }
+    coeffs = jnp.array([(3.4445, -4.7750, 2.0315)] * 5, jnp.float32)
+
+    def compiled(waypoint: NamedSharding):
+        waypoints = lambda t: jax.tree.map(lambda _: waypoint, t)
+        fn = jax.jit(lambda t: _staged_newton_schulz(t, coeffs, 5, jnp.dtype(ns_dtype), waypoints))
+        return fn.lower(tree).compile()
+
+    fallback_warning = "Involuntary full rematerialization"
+
+    capfd.readouterr()
+    replicated_exe = compiled(NamedSharding(mesh, P(None, None, None)))
+    assert fallback_warning not in capfd.readouterr().err, (
+        "replicated staging regressed to the fallback lowering"
+    )
+    owner_exe = compiled(NamedSharding(mesh, P("replicate", None, None)))
+    assert fallback_warning not in capfd.readouterr().err, (
+        "stack-owner staging regressed to the fallback lowering"
+    )
+
+    replicated, owner_staged = replicated_exe(tree), owner_exe(tree)
+    tol = 1e-5 if ns_dtype == jnp.float32 else 5e-2
+    for name in tree:
+        assert jnp.max(jnp.abs(replicated[name] - owner_staged[name])) < tol, name
+
+
+@pytest.mark.multidevice
+def test_stacked_ns_is_invariant_to_tensor_parallel_partition():
+    import numpy as np
+    from jax.sharding import Mesh, NamedSharding
+    from jax.sharding import PartitionSpec as P
+
+    from param_decomp.core.muon_stacked import _staged_newton_schulz
+
+    assert jax.device_count() >= 4
+    value = jax.random.normal(jax.random.key(0), (4, 8, 6))
+    coeffs = jnp.array([(3.4445, -4.7750, 2.0315)] * 5)
+
+    def run(tp: int) -> Array:
+        mesh = Mesh(
+            np.asarray(jax.devices()[:4]).reshape(1, 4 // tp, tp),
+            ("replicate", "fsdp", "tp"),
+            axis_types=(AxisType.Explicit,) * 3,
+        )
+        persistent = NamedSharding(mesh, P(None, "fsdp", ("tp", "replicate")))
+        replicated = NamedSharding(mesh, P(None, None, None))
+        waypoints = lambda t: jax.tree.map(lambda _: replicated, t)
+        tree = {"value": jax.device_put(value, persistent)}
+        with jax.set_mesh(mesh):
+            result = jax.jit(lambda x: _staged_newton_schulz(x, coeffs, 5, jnp.float32, waypoints))(
+                tree
+            )
+        return result["value"]
+
+    # Host-side: the two runs commit to different meshes; explicit-mode ops refuse
+    # cross-mesh operands.
+    assert np.allclose(np.asarray(run(1)), np.asarray(run(2)), rtol=2e-6, atol=1e-6)
+
+
+def _explicit_table(
+    components: dict[str, object], ci_ns: dict[str, object]
+) -> PlacementTableConfig:
+    """A minimal valid explicit table around parametrized components rows: replicated
+    CI/target rows, the shared activation waist."""
+    ci_family = {"optimizer_state": {}, "compute_weights": {}, "operands": {}, "ns_compute": ci_ns}
+    return PlacementTableConfig.model_validate(
+        {
+            "components": components,
+            "ci_fn": {
+                "attention": ci_family,
+                "ffn": ci_family,
+                "input": ci_family,
+                "output": ci_family,
+                "vectors": {},
+                "activations": {},
+            },
+            "activations": {
+                "external": {"batch": ["replicate", "fsdp"]},
+                "component": {"batch": ["replicate", "fsdp"]},
+            },
+            "target": {
+                "embedding": {"persist": {}, "operand": {}},
+                "normalization": {},
+                "position_encoding": {},
+                "column": {
+                    "persist": {},
+                    "operand": {},
+                    "input": "external",
+                    "output": "intermediate",
+                },
+                "row": {
+                    "persist": {},
+                    "operand": {},
+                    "input": "intermediate",
+                    "output": "external",
+                },
+                "output": {"persist": {}, "operand": {}},
+                "intermediate": {},
+                "component": {"input": "external", "output": "external"},
+            },
+        }
+    )
+
+
+def test_ns_compute_waypoints_are_declared_rows():
+    """The muon-NS staging is placement-table DATA, not derived geometry: every preset
+    declares the same node-axis stack split (`{stack: replicate}` — owner's ingress is
+    the identity on the stack axis, zero1/ddp hop to it), any stack-sharded persistence
+    is placeable once its waypoint is declared (no owner-geometry sniffing survives),
+    and the row language fails closed — a matrix-axis assignment refuses at table build
+    (the batched NS needs whole matrices per device), while a stack split some kind
+    cannot tile refuses at the stacked-muon consumer's claim (nothing hunts for an
+    alternative split, and non-muon runs never consume the row)."""
+    import jax.sharding
+    from pydantic import ValidationError
+
+    from param_decomp.core.components import SiteSpec
+    from param_decomp.core.placement import from_config
+
+    mesh = jax.sharding.AbstractMesh((4, 8, 1), ("replicate", "fsdp", "tp"))
+    tiling = tuple(SiteSpec(f"t.{i}", 64, 32, 8, "t") for i in range(4))
+    mixed = tiling + (SiteSpec("odd.0", 128, 64, 8, "odd"),)
+
+    for preset in ("owner", "zero1", "ddp"):
+        rules = from_config(preset, mesh, tiling)
+        assert dict(rules.components.ns_compute.rule) == {"stack": "replicate"}
+        assert dict(rules.ci_fn.ffn.ns_compute.rule) == {"stack": "replicate"}
+
+    # Only a stacked-muon optimizer consumes the ns_compute rows, so a non-tiling group
+    # builds fine (zero1 keeps its any-stack-length universality for adamw runs) and the
+    # refusal fires at the muon consumer's claim instead.
+    from param_decomp.core.placement import (
+        assert_stacked_muon_ci_staging,
+        assert_stacked_muon_component_staging,
+    )
+
+    mixed_rules = from_config("zero1", mesh, mixed)
+    with pytest.raises(AssertionError, match="stack lengths do not tile"):
+        assert_stacked_muon_component_staging(mixed_rules)
+    with pytest.raises(AssertionError, match="stack lengths do not tile"):
+        assert_stacked_muon_ci_staging(mixed_rules, n_chunks=1)
+    assert_stacked_muon_component_staging(from_config("zero1", mesh, tiling))
+    assert_stacked_muon_ci_staging(mixed_rules, n_chunks=8)
+
+    # A stack-sharded persistence that is NOT the owner geometry simply builds: its
+    # NS staging is whatever row it declares, not a derived hop path.
+    swapped = _explicit_table(
+        {
+            "optimizer_state": {"stack": "fsdp", "d_in": "replicate", "d_out": "replicate"},
+            "compute_weights": {"d_in": "fsdp", "d_out": "fsdp"},
+            "faithfulness_weights": {"stack": "fsdp", "d_in": "replicate", "d_out": "replicate"},
+            "faithfulness_deltas": {"stack": "fsdp", "d_out": "replicate"},
+            "operands": {},
+            "ns_compute": {},
+        },
+        {},
+    )
+    swapped_rules = from_config(
+        swapped, mesh, tuple(SiteSpec(f"sw.{i}", 64, 32, 8, "sw") for i in range(8))
+    )
+    assert dict(swapped_rules.components.ns_compute.rule) == {}
+
+    ddp_components = {
+        "optimizer_state": {},
+        "compute_weights": {},
+        "faithfulness_weights": {},
+        "faithfulness_deltas": {},
+        "operands": {},
+    }
+    with pytest.raises(AssertionError, match="may assign only `stack`"):
+        from_config(
+            _explicit_table({**ddp_components, "ns_compute": {"d_in": "fsdp"}}, {}), mesh, tiling
+        )
+    # `rows`/`cols` died with the canonical-shape grouping: not a semantic axis at all,
+    # so an explicit table naming one refuses at parse, before table build.
+    with pytest.raises(ValidationError):
+        _explicit_table({**ddp_components, "ns_compute": {}}, {"rows": "fsdp"})
+
+
+def test_ns_staging_sharding_is_the_row_verbatim():
+    """The waypoint is the `ns_compute` row's stack split verbatim — declared value,
+    no search; a non-stack key is refused (the batched NS needs whole matrices)."""
+    from jax.sharding import AbstractMesh
+    from jax.sharding import PartitionSpec as P
+
+    from param_decomp.core.placement import PlacedRule, ns_staging_sharding
+
+    mesh = AbstractMesh((2, 2, 1), ("replicate", "fsdp", "tp"))
+    row = PlacedRule(mesh=mesh, label="ns", rule={"stack": "replicate"})
+    assert ns_staging_sharding(row, mesh).spec == P("replicate", None, None)
+    replicated = PlacedRule(mesh=mesh, label="ns", rule={})
+    assert ns_staging_sharding(replicated, mesh).spec == P(None, None, None)
+    with pytest.raises(AssertionError):
+        ns_staging_sharding(PlacedRule(mesh=mesh, label="bad", rule={"d_in": "fsdp"}), mesh)
+
+
+def test_staging_hops_move_one_axis_per_reshard():
+    """`staging_hops` reaches the waypoint one mesh-axis move per reshard — the spelling
+    that avoids GSPMD's involuntary-full-rematerialization fallback — ending exactly at
+    the waypoint, with matrix-dim (and surplus-stack) drops in one trailing reshard."""
+    from jax.sharding import PartitionSpec as P
+
+    from param_decomp.core.muon_stacked import staging_hops
+
+    # owner: masters already stack-split — one trailing drop of the matrix axes.
+    assert staging_hops(P("replicate", "fsdp", "tp"), ("replicate",)) == [
+        P(("replicate",), None, None)
+    ]
+    # zero1 V: move replicate off the C dim, then drop the rest.
+    assert staging_hops(P(None, "fsdp", ("tp", "replicate")), ("replicate",)) == [
+        P(("replicate",), ("fsdp",), ("tp",)),
+        P(("replicate",), None, None),
+    ]
+    # CI ffn: the whole mesh on one matrix dim — the pair that remats as one reshard.
+    assert staging_hops(P(None, None, ("tp", "fsdp", "replicate")), ("replicate",)) == [
+        P(("replicate",), None, ("tp", "fsdp")),
+        P(("replicate",), None, None),
+    ]
+    # ddp: replicated masters — the split is comms-free, still one hop.
+    assert staging_hops(P(None, None, None), ("replicate",)) == [P(("replicate",), None, None)]
+    # replicated waypoint from replicated master: the identity hop.
+    assert staging_hops(P(None, None, None), ()) == [P(None, None, None)]
+
+
+def _hlo_computations(hlo: str) -> dict[str, str]:
+    """HLO text split into named computations (module-level `name (...) -> ... {` blocks)."""
+    import re
+
+    computations: dict[str, str] = {}
+    name, lines = None, []
+    for line in hlo.splitlines():
+        started = re.match(r"^(ENTRY )?%?([\w\.\-]+) \(.*\) -> .* \{$", line)
+        if started and name is None:
+            name, lines = started.group(2), [line]
+        elif name is not None:
+            lines.append(line)
+            if line.startswith("}"):
+                computations[name] = "\n".join(lines)
+                name, lines = None, []
+    return computations
+
+
+def _collective_count(hlo_text: str) -> int:
+    import re
+
+    return len(
+        re.findall(
+            r"=\s+\S+\s+(?:all-reduce|all-gather|all-to-all|collective-permute|"
+            r"reduce-scatter|collective-broadcast)(?:-start)?\(",
+            hlo_text,
+        )
+    )
+
+
+def _while_body_collective_count(hlo: str) -> int:
+    """Collectives reachable from any while-loop body, fusions/calls included."""
+    import re
+
+    computations = _hlo_computations(hlo)
+    reachable: set[str] = set()
+    frontier = list(set(re.findall(r"body=%?([\w\.\-]+)", hlo)))
+    assert frontier, "no while loop found — the NS iteration should lower as one"
+    while frontier:
+        name = frontier.pop()
+        if name in reachable or name not in computations:
+            continue
+        reachable.add(name)
+        body = computations[name]
+        frontier += re.findall(r"(?:calls=|to_apply=)%?([\w\.\-]+)", body)
+        frontier += re.findall(r"%([\w\.\-]+)\s*\}?\s*,?\s*kind=", body)
+    return sum(_collective_count(computations[name]) for name in reachable)
+
+
+def _collective_result_shapes(hlo_text: str) -> list[tuple[int, ...]]:
+    """Per-device result shapes of every collective in the partitioned module."""
+    import re
+
+    shapes: list[tuple[int, ...]] = []
+    for m in re.finditer(
+        r"=\s+\S*?\[([\d,]+)\]\S*\s+(?:all-reduce|all-gather|all-to-all|"
+        r"collective-permute|reduce-scatter|collective-broadcast)(?:-start)?\(",
+        hlo_text,
+    ):
+        shapes.append(tuple(int(d) for d in m.group(1).split(",")))
+    return shapes
+
+
+@pytest.mark.multidevice
+def test_per_kind_ns_census_zero_collectives_inside_the_ns_loop(
+    capfd: pytest.CaptureFixture[str],
+):
+    """The declared-waypoint choreography keeps every collective at entry/exit: each
+    kind's NS while-loop lowers with ZERO collectives inside its body — the staging
+    layout holds whole matrices per device, so the Gram matmuls are local — and the
+    lowering must not fall back to involuntary full rematerialization. Both preset
+    geometries are pinned: owner (stack-owned masters, `{stack: replicate}` staging)
+    and zero1 (intra-matrix masters hopping to the same split), the second with the
+    receipt-class guard — no collective may materialize a full fp32 kind-stack per
+    device; every transition stays shard-to-shard. The module-level collective count
+    is the positive control that the census is parsing real HLO."""
+    import math
+
+    import numpy as np
+    from jax.sharding import Mesh, NamedSharding
+    from jax.sharding import PartitionSpec as P
+
+    from param_decomp.core.muon_stacked import _staged_newton_schulz
+    from param_decomp.core.placement import PlacedRule, ns_staging_sharding
+
+    assert jax.device_count() >= 4, "needs 4 sim devices; run via `make test-multidevice`"
+    mesh = Mesh(
+        np.array(jax.devices()[:4]).reshape(2, 2),
+        ("replicate", "fsdp"),
+        axis_types=(AxisType.Explicit,) * 2,
+    )
+    coeffs = jnp.array([(3.4445, -4.7750, 2.0315)] * 5, jnp.float32)
+
+    def compiled_census(tree: dict[str, Array], row: PlacedRule) -> str:
+        waypoint = ns_staging_sharding(row, mesh)
+        waypoints = lambda t: jax.tree.map(lambda _: waypoint, t)
+        capfd.readouterr()
+        compiled = (
+            jax.jit(
+                lambda t: _staged_newton_schulz(t, coeffs, 5, jnp.dtype(jnp.float32), waypoints)
+            )
+            .lower(tree)
+            .compile()
+        )
+        assert "Involuntary full rematerialization" not in capfd.readouterr().err
+        hlo = compiled.as_text()
+        assert hlo is not None
+        assert _collective_count(hlo) > 0, "entry/exit transitions must exist on a real mesh"
+        assert _while_body_collective_count(hlo) == 0, (
+            "a collective lowered INSIDE the NS while-loop — the staging layout no"
+            " longer keeps the Gram matmuls device-local"
+        )
+        return hlo
+
+    k1, k2, k3 = jax.random.split(jax.random.key(0), 3)
+    owner = NamedSharding(mesh, P("replicate", "fsdp", None))
+    owner_tree = {
+        "a": jax.device_put(jax.random.normal(k1, (4, 8, 16), jnp.float32), owner),
+        "b": jax.device_put(jax.random.normal(k2, (2, 16, 8), jnp.float32), owner),
+    }
+    compiled_census(owner_tree, PlacedRule(mesh=mesh, label="ns", rule={"stack": "replicate"}))
+
+    # zero1 geometry: intra-matrix masters hopping to the same node-axis stack split.
+    # The receipt-class guard: replicated staging used to materialize whole fp32 stacks
+    # on every device — no collective may produce a full-kind-stack-sized (or larger)
+    # per-device buffer.
+    zero1 = NamedSharding(mesh, P(None, "fsdp", "replicate"))
+    zero1_tree = {
+        "a": jax.device_put(jax.random.normal(k1, (4, 8, 16), jnp.float32), zero1),
+        "b": jax.device_put(jax.random.normal(k3, (6, 8, 16), jnp.float32), zero1),
+    }
+    hlo = compiled_census(
+        zero1_tree, PlacedRule(mesh=mesh, label="ns", rule={"stack": "replicate"})
+    )
+    smallest_kind_elems = min(math.prod(v.shape) for v in zero1_tree.values())
+    for shape in _collective_result_shapes(hlo):
+        assert math.prod(shape) < smallest_kind_elems, (
+            f"a collective materializes a per-device buffer of shape {shape} — the"
+            " whole-stack replication the stack-split staging exists to prevent"
+        )
+
+    # The CI-ffn master layout (the whole mesh on ONE matrix dim, reversed axis order)
+    # is the pair that trips the SPMD fallback under any single direct reshard — the
+    # cell `staging_hops` exists for.
+    assert jax.device_count() >= 8, "needs 8 sim devices; run via `make test-multidevice`"
+    mesh3 = Mesh(
+        np.array(jax.devices()[:8]).reshape(2, 2, 2),
+        ("replicate", "fsdp", "tp"),
+        axis_types=(AxisType.Explicit,) * 3,
+    )
+    ffn_master = NamedSharding(mesh3, P(None, None, ("tp", "fsdp", "replicate")))
+    ffn_tree = {"w1": jax.device_put(jax.random.normal(k1, (4, 8, 16), jnp.float32), ffn_master)}
+    row = PlacedRule(mesh=mesh3, label="ns", rule={"stack": "replicate"})
+    waypoint3 = ns_staging_sharding(row, mesh3)
+    waypoints = lambda t: jax.tree.map(lambda _: waypoint3, t)
+    capfd.readouterr()
+    compiled = (
+        jax.jit(lambda t: _staged_newton_schulz(t, coeffs, 5, jnp.dtype(jnp.float32), waypoints))
+        .lower(ffn_tree)
+        .compile()
+    )
+    assert "Involuntary full rematerialization" not in capfd.readouterr().err, (
+        "the hop-chain staging regressed to the fallback lowering on the CI-ffn layout"
+    )
+    hlo = compiled.as_text()
+    assert hlo is not None
+    assert _while_body_collective_count(hlo) == 0
+    for shape in _collective_result_shapes(hlo):
+        assert math.prod(shape) < math.prod(ffn_tree["w1"].shape)

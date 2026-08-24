@@ -19,16 +19,17 @@ from param_decomp.core.adversary import (
 from param_decomp.core.components import init_component_stacks
 from param_decomp.core.configs import (
     AdamPGDConfig,
-    ChunkwiseSubsetReconLossConfig,
     FaithfulnessLossConfig,
     HiddenActsReconstruction,
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
     PGDReconLossConfig,
+    StochasticReconSubsetLossConfig,
     UniformKSubsetRoutingConfig,
 )
+from param_decomp.core.faithfulness import faithfulness_loss_for
 from param_decomp.core.losses import OutputOnlyReconstructionLoss, relative_squared_error
-from param_decomp.core.model import MaterializedMasking
+from param_decomp.core.model import MaterializedMasking, PlacedModel
 from param_decomp.core.objective import build_objective
 from param_decomp.core.recon import (
     ForwardObservations,
@@ -36,7 +37,13 @@ from param_decomp.core.recon import (
     ReconstructionSpec,
 )
 from param_decomp.core.schedule import Knot, ScheduleConfig
-from param_decomp.core.train import Decomposition, TrainingItem, TrainState, make_train_step
+from param_decomp.core.train import (
+    Decomposition,
+    ForwardSubstrate,
+    TrainingItem,
+    TrainState,
+    make_train_step,
+)
 from param_decomp.targets.glu_transformer import glu_site_specs, mlp_family_site_cs
 from param_decomp.targets.glu_transformer import parse_site_name as parse_glu_site_name
 from param_decomp.targets.llama_simple_mlp import site_specs
@@ -108,13 +115,15 @@ def test_target_resolves_explicit_points_and_refuses_unknown_ones():
 
     tokens = jax.random.randint(jax.random.PRNGKey(1), (1, 4), 0, cfg.vocab_size)
     assert (
-        tuple(model.clean_forward(tokens, frozenset(SIMPLE_MLP_POINTS)).captures)
+        tuple(model.clean_forward(tokens, frozenset(SIMPLE_MLP_POINTS), placement=None).captures)
         == SIMPLE_MLP_POINTS
     )
     model.assert_hidden_acts_reconstruction_points(SIMPLE_MLP_POINTS)
     # Capture may inspect an invariant point, but a mean loss refuses it: resid.2 enters the
     # first decomposed block and therefore cannot change under masking.
-    assert tuple(model.clean_forward(tokens, frozenset(("resid.2",))).captures) == ("resid.2",)
+    assert tuple(model.clean_forward(tokens, frozenset(("resid.2",)), placement=None).captures) == (
+        "resid.2",
+    )
     with pytest.raises(AssertionError, match="guaranteed zeros"):
         model.assert_hidden_acts_reconstruction_points(("resid.2",))
     model.assert_hidden_acts_reconstruction_points(("h.2.attn.q_proj.out", "post_attn.2"))
@@ -126,9 +135,9 @@ def test_target_resolves_explicit_points_and_refuses_unknown_ones():
         ("attn_out.2", "mlp_in.2", "mlp_hidden.2", "attn_in.3")
     )
     with pytest.raises(AssertionError, match="out of range"):
-        model.clean_forward(tokens, frozenset(("resid.7",)))
+        model.clean_forward(tokens, frozenset(("resid.7",)), placement=None)
     with pytest.raises(AssertionError, match="unknown transformer activation"):
-        model.clean_forward(tokens, frozenset(("python_local",)))
+        model.clean_forward(tokens, frozenset(("python_local",)), placement=None)
 
 
 def test_masked_residuals_reassemble_correctly_across_the_three_scan_segments():
@@ -138,7 +147,8 @@ def test_masked_residuals_reassemble_correctly_across_the_three_scan_segments():
     yield finite, plausible garbage (block k's residual reported as block k+1's).
 
     Pin it by exploiting a property the segmentation guarantees: with only a MIDDLE block
-    live, every boundary at or upstream of it runs the untouched frozen target, so it must
+    DECOMPOSED (the segmentation is structural, derived from the model's own site set),
+    every boundary at or upstream of it runs the untouched frozen target, so it must
     equal the clean forward EXACTLY — while boundaries downstream of it must differ. A
     misaligned stitch breaks one side or the other."""
     cfg = tiny_glu_cfg()
@@ -146,17 +156,17 @@ def test_masked_residuals_reassemble_correctly_across_the_three_scan_segments():
     live_block = n_layer // 2
     assert 0 < live_block < n_layer - 1, "need a genuine prefix AND suffix segment"
 
-    sites = glu_site_specs(cfg, mlp_family_site_cs(0, n_layer - 1, C))  # decompose everything
+    sites = glu_site_specs(cfg, mlp_family_site_cs(live_block, live_block, C))
     model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
-    prepared = model.prepare_compute_weights(vu)
+    prepared = model.prepare_compute_weights(vu, None)
     tokens = jax.random.randint(jax.random.PRNGKey(4), (2, 8), 0, cfg.vocab_size)
 
     taps = tuple(f"resid.{b}" for b in range(1, n_layer + 1))
-    live = tuple(n for n in model.site_names if parse_glu_site_name(n)[0] == live_block)
+    assert all(parse_glu_site_name(n)[0] == live_block for n in model.site_names)
     c_by_site = {s.name: s.C for s in model.sites}
-    masks = {n: jnp.full((2, 8, c_by_site[n]), 0.25) for n in live}
-    delta_masks = {n: jnp.full((2, 8), 0.25) for n in live}
+    masks = {n: jnp.full((2, 8, c_by_site[n]), 0.25) for n in model.site_names}
+    delta_masks = {n: jnp.full((2, 8), 0.25) for n in model.site_names}
 
     masked_result = model.masked_forward(
         prepared,
@@ -165,11 +175,12 @@ def test_masked_residuals_reassemble_correctly_across_the_three_scan_segments():
             component_masks=masks,
             weight_delta_masks=delta_masks,
         ),
+        placement=None,
         capture_keys=frozenset(taps),
         remat=False,
     )
     masked_taps = masked_result.captures
-    clean_taps = model.clean_forward(tokens, frozenset(taps)).captures
+    clean_taps = model.clean_forward(tokens, frozenset(taps), placement=None).captures
 
     for tap in taps:
         boundary = int(tap.split(".")[1])
@@ -181,10 +192,12 @@ def test_masked_residuals_reassemble_correctly_across_the_three_scan_segments():
 
 
 def test_build_loss_terms_threads_hidden_acts_reconstruction_coeff():
-    cfg = ChunkwiseSubsetReconLossConfig(
-        routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=2,
-        n_samples=1, hidden_acts_reconstruction=_hidden_acts_reconstruction(0.1),
-    )  # fmt: skip
+    cfg = StochasticReconSubsetLossConfig(
+        routing=UniformKSubsetRoutingConfig(),
+        coeff=0.5,
+        n_mask_samples=1,
+        hidden_acts_reconstruction=_hidden_acts_reconstruction(0.1),
+    )
     losses = build_objective(
         (
             FaithfulnessLossConfig(coeff=1e5),
@@ -193,7 +206,7 @@ def test_build_loss_terms_threads_hidden_acts_reconstruction_coeff():
                 pnorm=ScheduleConfig(
                     max_val=2.0, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.2))
                 ),
-            ),  # fmt: skip
+            ),
             cfg,
         ),
         ("a", "b"),
@@ -222,7 +235,7 @@ def test_hidden_acts_reconstruction_config_needs_both_halves_and_sane_points():
 
 
 def _one_step_with_recon(
-    recon: ChunkwiseSubsetReconLossConfig | PGDReconLossConfig,
+    recon: StochasticReconSubsetLossConfig | PGDReconLossConfig,
 ):
     cfg = tiny_simple_mlp_cfg()
     seq = 16
@@ -239,6 +252,7 @@ def _one_step_with_recon(
             components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
             ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
             adversaries={},
+            freq_ema=None,
             step=jnp.zeros((), jnp.int32),
         ),
     )
@@ -250,27 +264,37 @@ def _one_step_with_recon(
                 pnorm=ScheduleConfig(
                     max_val=2.0, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.2))
                 ),
-            ),  # fmt: skip
+            ),
             recon,
         ),
         model.site_names,
     )
+    placed = PlacedModel(model=model, placement=None)
     step = make_train_step(
-        model_static=model, losses=losses, components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
-        total_steps=100, remat_recon_forwards=True, remat_ci_fn=False,
-        ci_capture_keys=ci_fn.capture_keys,
-    )  # fmt: skip
+        model_static=placed,
+        substrate=ForwardSubstrate.of(
+            placed,
+            remat_recon_forwards=True,
+            remat_ci_fn=False,
+            ci_capture_keys=ci_fn.capture_keys,
+            ci_placement=None,
+        ),
+        objective=losses,
+        components_optimizer=opt_vu,
+        ci_fn_optimizer=opt_ci,
+        total_steps=100,
+        faithfulness=faithfulness_loss_for(model),
+    )
     tokens = jax.random.randint(jax.random.PRNGKey(4), (2, seq), 0, cfg.vocab_size)
-    return step(model, state, tokens, jax.random.PRNGKey(100))
+    return step(placed, state, tokens, jax.random.PRNGKey(100))
 
 
-def _step_with_chunkwise_recon(hidden_acts_reconstruction_coeff: float | None):
+def _step_with_stochastic_subset_recon(hidden_acts_reconstruction_coeff: float | None):
     return _one_step_with_recon(
-        ChunkwiseSubsetReconLossConfig(
+        StochasticReconSubsetLossConfig(
             routing=UniformKSubsetRoutingConfig(),
             coeff=0.5,
-            sites_per_chunk=2,
-            n_samples=1,
+            n_mask_samples=1,
             hidden_acts_reconstruction=_hidden_acts_reconstruction(
                 hidden_acts_reconstruction_coeff
             ),
@@ -299,14 +323,14 @@ def test_fresh_pgd_training_ascends_the_combined_objective():
 
 
 def test_hidden_acts_reconstruction_coeff_trains_finite():
-    _, metrics = _step_with_chunkwise_recon(hidden_acts_reconstruction_coeff=0.3)
+    _, metrics = _step_with_stochastic_subset_recon(hidden_acts_reconstruction_coeff=0.3)
     assert all(bool(jnp.isfinite(v).all()) for v in metrics.values())
-    assert metrics["loss/ChunkwiseSubsetReconLoss"] > 0
+    assert metrics["loss/StochasticReconSubsetLoss"] > 0
 
 
 def test_hidden_acts_reconstruction_coeff_logs_e2e_and_per_point_breakdown_separately():
-    _, metrics = _step_with_chunkwise_recon(hidden_acts_reconstruction_coeff=0.3)
-    name = "loss/ChunkwiseSubsetReconLoss"
+    _, metrics = _step_with_stochastic_subset_recon(hidden_acts_reconstruction_coeff=0.3)
+    name = "loss/StochasticReconSubsetLoss"
     assert name in metrics
     assert float(metrics[f"{name}/e2e"]) != float(metrics[name])  # combined != bare e2e
     # Keyed by point name, never a positional index.
@@ -323,8 +347,8 @@ def test_hidden_acts_reconstruction_combined_is_e2e_plus_coeff_times_point_MEAN(
     taps = SIMPLE_MLP_POINTS
     assert len(taps) > 1, "a single point cannot distinguish mean from sum"
 
-    _, metrics = _step_with_chunkwise_recon(hidden_acts_reconstruction_coeff=coeff)
-    name = "loss/ChunkwiseSubsetReconLoss"
+    _, metrics = _step_with_stochastic_subset_recon(hidden_acts_reconstruction_coeff=coeff)
+    name = "loss/StochasticReconSubsetLoss"
     per_tap = [float(metrics[f"{name}/hidden_acts_reconstruction/{tap}"]) for tap in taps]
     aggregate = float(metrics[f"{name}/hidden_acts_reconstruction"])
     assert aggregate == pytest.approx(sum(per_tap) / len(per_tap), rel=1e-6)
@@ -338,7 +362,7 @@ def test_hidden_acts_reconstruction_coeff_disabled_logs_no_breakdown_at_all(
 ):
     # With no aux part the combined value IS the e2e loss, so a separate `/e2e` series would
     # be a duplicate of `loss/<name>`.
-    state, metrics = _step_with_chunkwise_recon(hidden_acts_reconstruction_coeff=None)
+    state, metrics = _step_with_stochastic_subset_recon(hidden_acts_reconstruction_coeff=None)
 
     # Compare against the pre-auxiliary scalar objective in the same process. A fixed digest is
     # not a valid bit-identity oracle: XLA can produce different (but internally deterministic)
@@ -357,7 +381,7 @@ def test_hidden_acts_reconstruction_coeff_disabled_logs_no_breakdown_at_all(
         return OutputOnlyReconstructionLoss(recon_loss_fn(masked.output, clean.output))
 
     monkeypatch.setattr(train_module, "reconstruction_loss", legacy_objective)
-    legacy_state, _ = _step_with_chunkwise_recon(hidden_acts_reconstruction_coeff=None)
+    legacy_state, _ = _step_with_stochastic_subset_recon(hidden_acts_reconstruction_coeff=None)
     current_leaves = tuple(leaf for leaf in jax.tree.leaves(state) if eqx.is_array(leaf))
     legacy_leaves = tuple(leaf for leaf in jax.tree.leaves(legacy_state) if eqx.is_array(leaf))
     assert len(current_leaves) == len(legacy_leaves)
@@ -366,7 +390,7 @@ def test_hidden_acts_reconstruction_coeff_disabled_logs_no_breakdown_at_all(
         for current, legacy in zip(current_leaves, legacy_leaves, strict=True)
     )
 
-    name = "loss/ChunkwiseSubsetReconLoss"
+    name = "loss/StochasticReconSubsetLoss"
     assert name in metrics
     assert f"{name}/e2e" not in metrics
     assert not any(k.startswith(f"{name}/hidden_acts_reconstruction") for k in metrics)
@@ -399,6 +423,7 @@ def _ppgd_run(
     )
     ppgd_cfg = PersistentPGDReconLossConfig(
         coeff=0.5,
+        adversary_objective="term",
         source_shape="sc",
         optimizer=AdamPGDConfig(
             beta1=0.5,
@@ -434,6 +459,7 @@ def _ppgd_run(
                     n_warmup=ppgd_cfg.n_warmup_steps,
                 )
             },
+            freq_ema=None,
             step=jnp.zeros((), jnp.int32),
         ),
     )
@@ -445,20 +471,31 @@ def _ppgd_run(
                 pnorm=ScheduleConfig(
                     max_val=2.0, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.2))
                 ),
-            ),  # fmt: skip
+            ),
             ppgd_cfg,
         ),
         model.site_names,
     )
+    placed = PlacedModel(model=model, placement=None)
     step = make_train_step(
-        model_static=model, losses=losses, components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
-        total_steps=100, remat_recon_forwards=True, remat_ci_fn=False,
-        ci_capture_keys=ci_fn.capture_keys,
-    )  # fmt: skip
+        model_static=placed,
+        substrate=ForwardSubstrate.of(
+            placed,
+            remat_recon_forwards=True,
+            remat_ci_fn=False,
+            ci_capture_keys=ci_fn.capture_keys,
+            ci_placement=None,
+        ),
+        objective=losses,
+        components_optimizer=opt_vu,
+        ci_fn_optimizer=opt_ci,
+        total_steps=100,
+        faithfulness=faithfulness_loss_for(model),
+    )
     tokens = jax.random.randint(jax.random.PRNGKey(4), (2, seq), 0, cfg.vocab_size)
     per_step: list[dict[str, jnp.ndarray]] = []
     for i in range(n_steps):
-        state, metrics = step(model, state, tokens, jax.random.PRNGKey(100 + i))
+        state, metrics = step(placed, state, tokens, jax.random.PRNGKey(100 + i))
         per_step.append(metrics)
     return state, per_step
 
@@ -474,7 +511,7 @@ def test_hidden_acts_reconstruction_with_persistent_pgd_adversary():
     assert int(state.training.step) == n_steps
     adv = state.training.adversaries[ppgd_key]
     assert float(adv.opt_state.step_count) == n_steps * (n_warmup + 1)
-    for v in adv.sources.values():
+    for v in jax.tree.leaves(adv.sources):
         assert float(v.min()) >= 0.0 and float(v.max()) <= 1.0
 
 
@@ -509,7 +546,16 @@ def test_adversary_actually_ascends_the_combined_objective():
     base_m = baseline.training.adversaries[key].opt_state.m
     pulled_m = pulled.training.adversaries[key].opt_state.m
     assert set(base_m) == set(pulled_m)
-    changed = [site for site in base_m if not bool(jnp.array_equal(base_m[site], pulled_m[site]))]
+    changed = [
+        site
+        for site in base_m
+        if any(
+            not bool(jnp.array_equal(a, b))
+            for a, b in zip(
+                jax.tree.leaves(base_m[site]), jax.tree.leaves(pulled_m[site]), strict=True
+            )
+        )
+    ]
     assert changed, (
         "source moments are identical at hidden-activation reconstruction coeff 1 and 50, so the term "
         "is not reaching the final-ascent gradient"

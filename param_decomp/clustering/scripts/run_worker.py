@@ -1,33 +1,43 @@
-"""Harvest clustering memberships from a JAX single-pool run natively — no torch
-component model, no safetensors bridge.
+"""Build clustering memberships from one finished JAX VPD run.
 
-    python -m param_decomp.clustering.scripts.run_worker \
-        --run_dir runs/p-761bc061 --n_tokens 50000 --batch_size 16 --n_tokens_per_seq 8
-
-The run is opened with `param_decomp.experiments.lm.load_run.open_jax_run` (the reusable JAX
-"open a run for consumption" pattern); the lower-leaky CI from its frozen forward is
-sampled per token position and streamed — as a numpy-array dict — into the
-`MembershipBuilder`, producing the `ProcessedMemberships` snapshot the merge script
-consumes unchanged.
-
-The JAX forward runs in jax (CPU or one GPU); the `MembershipBuilder` accumulator is
-numpy. Pre-tokenized parquet is read with the trainer's own `ShardServer` (never streamed
-from HF).
-"""
+The worker restores the run with `open_jax_run`, evaluates lower-leaky CI for the selected
+corpus positions, and streams NumPy batches into `MembershipBuilder`. It writes the same
+membership files consumed by the existing clustering merge step."""
 
 import argparse
 from pathlib import Path
 
+import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy as np
 
 from param_decomp.clustering.harvest_config import HarvestConfig
 from param_decomp.clustering.memberships import MembershipBuilder, flatten_lm_activations
 from param_decomp.clustering.paths import clustering_harvest_dir, new_harvest_id
+from param_decomp.core.ci_fn import PlacedCIFn, evaluate_ci
 from param_decomp.core.log import logger
+from param_decomp.core.model import PlacedModel
 from param_decomp.experiments.lm.load_run import LoadedJaxRun, open_jax_run
 from param_decomp.infra.dataset_store import read_dataset_meta
 from param_decomp.pretrain.batch_data import BatchSchedule, ShardServer, scan_shards
+
+
+@eqx.filter_jit
+def _lower_leaky_ci_forward(
+    placed: PlacedModel, ci_fn: PlacedCIFn, token_ids: jax.Array
+) -> dict[str, jax.Array]:
+    clean = placed.model.clean_forward(
+        token_ids, capture_keys=ci_fn.fn.capture_keys, placement=placed.placement
+    )
+    ci = evaluate_ci(ci_fn, clean.captures, remat=False)
+    return {site: ci.lower[site].astype(jnp.float32) for site in placed.site_names}
+
+
+def lower_leaky_ci(run: LoadedJaxRun, token_ids: jax.Array) -> dict[str, jax.Array]:
+    """The clustering-only CI forward over one restored run."""
+    with jax.set_mesh(run.mesh):
+        return _lower_leaky_ci_forward(run.placed, run.ci_fn, token_ids)
 
 
 def sampled_ci_from_forward(
@@ -78,9 +88,8 @@ def harvest_jax_run(run: LoadedJaxRun, config: HarvestConfig, output_dir: Path) 
     while n_collected < config.n_tokens:
         tokens = server.local_batch(batch_idx)
         batch_size, n_ctx = tokens.shape
-        fwd = run.forward(jnp.asarray(tokens))
         sampled = sampled_ci_from_forward(
-            fwd.lower_leaky_ci_by_site,
+            lower_leaky_ci(run, jnp.asarray(tokens)),
             n_tokens_per_seq=config.n_tokens_per_seq,
             use_all_tokens_per_seq=config.use_all_tokens_per_seq,
             rng=rng,

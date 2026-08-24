@@ -6,8 +6,14 @@ import jax
 
 from param_decomp.core.ci_fn import LayerwiseMLPCIArch, init_layerwise_mlp_ci_fn
 from param_decomp.core.components import SiteC, init_component_stacks
-from param_decomp.core.configs import UVPlotsConfig
+from param_decomp.core.configs import (
+    KeepAllCheckpoints,
+    NoCheckpointing,
+    PeriodicCheckpointing,
+    UVPlotsConfig,
+)
 from param_decomp.core.metrics import PNGImage
+from param_decomp.core.model import PlacedModel
 from param_decomp.experiments import toy_uv_eval
 from param_decomp.targets.testing import capture_clean
 from param_decomp.targets.tms import (
@@ -36,8 +42,8 @@ def _toy_setup():
     )
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     probe = single_feature_probe(cfg.n_features)
-    ci = ci_fn(capture_clean(model, probe, ci_fn.capture_keys), remat=False)
-    return model, vu, ci.lower, ci.upper
+    ci = ci_fn(capture_clean(model, probe, ci_fn.capture_keys), remat=False, placement=None)
+    return PlacedModel(model=model, placement=None), vu, ci.lower, ci.upper
 
 
 def test_toy_uv_spec_gates_on_uvplots_in_config():
@@ -60,9 +66,15 @@ def test_render_uv_metric_returns_transport_independent_png():
 
 
 def test_permuted_ci_heatmap_due_fires_on_save_every_and_final_step():
-    assert toy_uv_eval.permuted_ci_heatmap_due(5000, 20000, save_every=5000) is True
-    assert toy_uv_eval.permuted_ci_heatmap_due(5001, 20000, save_every=5000) is False
-    assert toy_uv_eval.permuted_ci_heatmap_due(20000, 20000, save_every=5000) is True
+    periodic = PeriodicCheckpointing(save_every=5000, retention=KeepAllCheckpoints())
+    assert toy_uv_eval.permuted_ci_heatmap_due(5000, 20000, periodic) is True
+    assert toy_uv_eval.permuted_ci_heatmap_due(5001, 20000, periodic) is False
+    assert toy_uv_eval.permuted_ci_heatmap_due(20000, 20000, periodic) is True
+
+
+def test_permuted_ci_heatmap_due_fires_only_at_the_final_step_without_checkpointing():
+    assert toy_uv_eval.permuted_ci_heatmap_due(5000, 20000, NoCheckpointing()) is False
+    assert toy_uv_eval.permuted_ci_heatmap_due(20000, 20000, NoCheckpointing()) is True
 
 
 def test_render_permuted_ci_heatmap_returns_both_leaky_views():

@@ -1,9 +1,9 @@
 # From-scratch 9-layer R&D decomposition of Llama-3.1-8B MLP layers 18-26 (27 targets,
-# C=49152, seq 512, B=128, 40k steps, chunkwise recon 3 chunks of 9 sites). See the
-# referenced schema yaml's header for the documented edits vs the C49k single-layer base.
-# remat ON: 9 layers' chunkwise recon forwards need rematerialization.
+# C=49152, seq 512, B=128, 40k steps). See the referenced schema yaml's header for the
+# documented edits vs the C49k single-layer base.
+# remat ON: 9 layers' recon forwards need rematerialization.
 # AOT memory probe (param_decomp/experiments/mem_probe.py, 64 B200, remat on,
-# sites_per_chunk 9, no buffer donation) per-device peak HBM = temp + args + out, seq 512:
+# no buffer donation) per-device peak HBM = temp + args + out, seq 512:
 #   B=64  : 144.8 GiB   B=128 : 147.7 GiB   B=256 : 150.3 GiB   (all fit the 180 GiB cap)
 # (seq 2048 was 179 GiB at B=64 — over the cliff; seq 512 is what makes 27 sites fit.)
 # B=128 chosen: ~32 GiB headroom, lands on the B=128 LR precedent exactly. Probed live at
@@ -20,35 +20,35 @@ run_name: jax-l18-26-9L-seq512-b128-40k
 #      (seq 2048 was 179 GiB at B=64, over the cliff). The ~130 GiB floor is the
 #      seq-independent V/U + Adam state; batch barely moves it at seq 512.
 #   3. pd.batch_size + eval.batch_size: 512 -> 128 (2/device on the 1-D dp=64 mesh).
-#   4. recon term: StochasticReconSubsetLoss -> ChunkwiseSubsetReconLoss with
-#      sites_per_chunk: 9 (-> 3 chunks of 9 sites) and coeff 1.5 (= the base 0.5 x 3
-#      chunks, to undo the chunk-mean dilution and keep per-site recon pressure
-#      invariant to chunk count). uniform-k subset sparsity self-normalizes (~50%), so
-#      no extra sparsity factor.
-#   5. lrs: components 1.5e-4, ci_fn 5.0e-5 — the B=128 precedent exactly (components 3x
+#   4. lrs: components 1.5e-4, ci_fn 5.0e-5 — the B=128 precedent exactly (components 3x
 #      ci_fn). Both cosine to 0.1x with no warmup, recomputed over 40k.
-#   6. ImportanceMinimalityLoss eps 1e-12 -> 1e-6: at the annealed fractional pnorm the
+#   5. ImportanceMinimalityLoss eps 1e-12 -> 1e-6: at the annealed fractional pnorm the
 #      grad 0.4*(ci+eps)^-0.6 blows up as ci->0; eps bounds it (~4000x smaller worst
 #      case). coeff 5e-6 / beta 0.2 / pnorm 2.0->0.4 UNCHANGED (verified site-count- and
 #      batch-invariant vs the torch oracle).
-#   7. steps 200k -> 40k: short R&D horizon (won't converge; cosine + p-anneal recompute
+#   6. steps 200k -> 40k: short R&D horizon (won't converge; cosine + p-anneal recompute
 #      over 40k).
-# Everything else (PersistentPGDReconLoss one-chunk coeff 0.5 source_shape sc,
-# FaithfulnessLoss 1e5, faith warmup, eval metric set, target.weights_dtype bfloat16) is
-# identical to the C49k base. remat is on (runtime.remat_recon_forwards: true).
+# Everything else (StochasticReconSubsetLoss coeff 0.5, PersistentPGDReconLoss coeff 0.5
+# source_shape sc, FaithfulnessLoss 1e3, faith warmup, eval metric set,
+# target.weights_dtype bfloat16) is identical to the C49k base. remat is on
+# (runtime.remat_recon_forwards: true). NOTE: the AOT memory probe above predates the
+# all-sites recon term (it measured 3 chunked forwards of 9 live sites); re-probe before
+# launching at this shape.
 cadence:
-  checkpoint_retention:
-    kind: keep_last
-    n: 2
-  save_every: 5000
   train_log_every: 200
+  checkpointing:
+    kind: periodic
+    save_every: 5000
+    retention:
+      kind: keep_last
+      n: 2
 data:
   train:
     kind: name
     name: fineweb_llama_tok_512
   eval:
     kind: name
-    name: fineweb_llama_tok_512_eval
+    name: fineweb_llama_tok_512_eval1
 eval:
   batch_size: 128
   every: 1000
@@ -136,11 +136,10 @@ pd:
         - {at: 0.0, frac: 1.0}
         - {at: 1.0, frac: 0.2}
     type: ImportanceMinimalityLoss
-  - coeff: 1.5
+  - coeff: 0.5
     routing:
       type: uniform_k_subset
-    sites_per_chunk: 9
-    type: ChunkwiseSubsetReconLoss
+    type: StochasticReconSubsetLoss
   - coeff: 0.5
     n_warmup_steps: 2
     optimizer:
@@ -156,17 +155,22 @@ pd:
       type: adam
     source_shape: sc
     type: PersistentPGDReconLoss
-  - coeff: 100000.0
+  - coeff: 1.0e+03
     type: FaithfulnessLoss
   seed: 0
   steps: 40000
 runtime:
+  compilation_cache_dir: ~/.cache/param-decomp/xla
   remat_recon_forwards: true
-  dp: 64
-  # 9 layers: gate/up stack of 18 and down stack of 9 can't tile ÷replicate=8
-  # (dp 64 = 8 nodes); ZeRO-1 those groups.
-  sharding: owner+zero1
+  replicate: 8
+  fsdp: 8
+  tp: 1
+  # 9 layers: gate/up stack of 18 and down stack of 9 can't tile ÷replicate=8, so
+  # `owner` refuses; zero1 shards no stack axis (every master rests intra-matrix).
+  sharding: zero1
+  compiler_options: tuned-v1
 target:
+  attention_implementation: auto
   weights_dtype: bfloat16
   spec:
     kind: hf

@@ -8,18 +8,20 @@
 # out_dir / run_id are minted at launch, never authored here.
 run_name: jax-full32L-HSDP-savesmoke
 cadence:
-  checkpoint_retention:
-    kind: keep_last
-    n: 2
-  save_every: 100
   train_log_every: 10
+  checkpointing:
+    kind: periodic
+    save_every: 100
+    retention:
+      kind: keep_last
+      n: 2
 data:
   train:
     kind: name
     name: fineweb_llama_tok_512
   eval:
     kind: name
-    name: fineweb_llama_tok_512_eval
+    name: fineweb_llama_tok_512_eval1
 eval:
   batch_size: 32
   every: 1000
@@ -109,11 +111,10 @@ pd:
         - {at: 0.0, frac: 1.0}
         - {at: 1.0, frac: 0.2}
     type: ImportanceMinimalityLoss
-  - coeff: 2.0
+  - coeff: 0.5
     routing:
       type: uniform_k_subset
-    sites_per_chunk: 56
-    type: ChunkwiseSubsetReconLoss
+    type: StochasticReconSubsetLoss
   - coeff: 0.5
     n_warmup_steps: 2
     optimizer:
@@ -129,18 +130,22 @@ pd:
       type: adam
     source_shape: bsc
     type: PersistentPGDReconLoss
-  - coeff: 1000000.0
+  - coeff: 1.0e+03
     type: FaithfulnessLoss
   seed: 0
   steps: 250
 runtime:
-  dp: 32
+  compilation_cache_dir: ~/.cache/param-decomp/xla
+  replicate: 4
+  fsdp: 8
   tp: 1
   # the layout production runs (the dp64 seat) — a save/resume smoke must exercise it
   sharding: zero1
   remat_recon_forwards: true
   remat_ci_fn: true
+  compiler_options: tuned-v1
 target:
+  attention_implementation: auto
   weights_dtype: bfloat16
   spec:
     kind: hf

@@ -31,13 +31,14 @@ import numpy as np
 from jax import random
 from jaxtyping import Array, PRNGKeyArray
 
-from param_decomp.core.ci_fn import evaluate_ci
+from param_decomp.core.ci_fn import PlacedCIFn, evaluate_compute_ci, materialize_ci_compute_weights
 from param_decomp.core.components import ComponentStacks
 from param_decomp.core.jit_util import filter_jit
+from param_decomp.core.linear_plan import uniform_like
 from param_decomp.core.model import (
     CaptureKeys,
-    DecomposedModel,
     MaterializedMasking,
+    PlacedModel,
     prepare_compute_weights,
 )
 from param_decomp.core.precision import COMPUTE_DT
@@ -71,25 +72,18 @@ def _per_site_sum_mse(
 
 
 HiddenActsStep = Callable[
-    [DecomposedModel, Any, Any, Any, PRNGKeyArray],
+    [PlacedModel, Any, Any, Any, PRNGKeyArray],
     tuple[dict[str, Array], dict[str, int]],
 ]
-"""`(model, components, ci_fn, inputs, key) -> ({site: sum_mse}, {site: n_elements})`
+"""`(model, components, placed_ci_fn, inputs, key) -> ({site: sum_mse}, {site: n_elements})`
 — one batch's per-site summed MSE (fp32) and element counts (the host folds these into
 `SiteMSEReduction`s). `inputs` is the model's target-specific input (an LM's `[batch, seq]`
 token ids), exactly as the unified clean/masked forwards take it. `key` is unused
 by the deterministic CI step. `model` (frozen-weight-bearing) is the jit ARG."""
 
 
-def _waist_leading(ci_lower: dict[str, Array], site_names: tuple[str, ...]) -> tuple[int, ...]:
-    """The waist's `*leading` (batch + position axes), read off the CI output
-    `[*leading, C]` — the model `inputs` can't provide it (target-specific; an LM's token
-    ids carry no feature axis to strip)."""
-    return ci_lower[site_names[0]].shape[:-1]
-
-
 def make_ci_hidden_acts_step(
-    model_static: DecomposedModel,
+    model_static: PlacedModel,
     ci_capture_keys: CaptureKeys,
     compiler_options: dict[str, bool | int | str] | None = None,
 ) -> HiddenActsStep:
@@ -101,9 +95,9 @@ def make_ci_hidden_acts_step(
     output_key_by_site = dict(zip(site_names, site_output_keys, strict=True))
 
     def step(
-        model: DecomposedModel,
+        model: PlacedModel,
         components: ComponentStacks,
-        ci_fn: Any,
+        placed_ci_fn: PlacedCIFn,
         inputs: Any,
         _key: PRNGKeyArray,
     ) -> tuple[dict[str, Array], dict[str, int]]:
@@ -113,7 +107,9 @@ def make_ci_hidden_acts_step(
             site: clean_captures_by_key[key] for site, key in output_key_by_site.items()
         }
         prepared_weights = prepare_compute_weights(model, components)
-        ci_lower = evaluate_ci(ci_fn, clean_ci_inputs_by_key, remat=False).lower
+        ci_lower = evaluate_compute_ci(
+            materialize_ci_compute_weights(placed_ci_fn), clean_ci_inputs_by_key, remat=False
+        ).lower
 
         masked_captures_by_key = model.masked_forward(
             prepared_weights,
@@ -135,7 +131,7 @@ def make_ci_hidden_acts_step(
 
 
 def make_stochastic_hidden_acts_step(
-    model_static: DecomposedModel,
+    model_static: PlacedModel,
     ci_capture_keys: CaptureKeys,
     n_mask_samples: int,
     compiler_options: dict[str, bool | int | str] | None = None,
@@ -151,9 +147,9 @@ def make_stochastic_hidden_acts_step(
     output_key_by_site = dict(zip(site_names, site_output_keys, strict=True))
 
     def step(
-        model: DecomposedModel,
+        model: PlacedModel,
         components: ComponentStacks,
-        ci_fn: Any,
+        placed_ci_fn: PlacedCIFn,
         inputs: Any,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, Array], dict[str, int]]:
@@ -163,9 +159,9 @@ def make_stochastic_hidden_acts_step(
             site: clean_captures_by_key[key] for site, key in output_key_by_site.items()
         }
         prepared_weights = prepare_compute_weights(model, components)
-        ci_lower = evaluate_ci(ci_fn, clean_ci_inputs_by_key, remat=False).lower
-
-        leading = _waist_leading(ci_lower, site_names)
+        ci_lower = evaluate_compute_ci(
+            materialize_ci_compute_weights(placed_ci_fn), clean_ci_inputs_by_key, remat=False
+        ).lower
 
         sum_mse = {s: jnp.zeros((), jnp.float32) for s in site_names}
         for draw_idx in range(n_mask_samples):
@@ -175,10 +171,13 @@ def make_stochastic_hidden_acts_step(
             for site_idx, site in enumerate(site_names):
                 ci_site = ci_lower[site]
                 source_key = random.fold_in(mask_key, site_idx)
-                source = random.uniform(source_key, ci_site.shape, COMPUTE_DT)
+                source = uniform_like(source_key, ci_site, dtype=COMPUTE_DT)
                 masks[site] = ci_site + (1.0 - ci_site) * source
-                delta_masks[site] = random.uniform(
-                    random.fold_in(delta_key, site_idx), leading, COMPUTE_DT
+                delta_masks[site] = uniform_like(
+                    random.fold_in(delta_key, site_idx),
+                    ci_site,
+                    drop_last_axis=True,
+                    dtype=COMPUTE_DT,
                 )
             masked_captures_by_key = model.masked_forward(
                 prepared_weights,
@@ -205,9 +204,9 @@ def make_stochastic_hidden_acts_step(
 
 def accumulate_hidden_acts(
     step: HiddenActsStep,
-    model: DecomposedModel,
+    model: PlacedModel,
     components: ComponentStacks,
-    ci_fn: Any,
+    placed_ci_fn: PlacedCIFn,
     input_batches: list[Any],
     base_key: PRNGKeyArray,
 ) -> dict[str, SiteMSEReduction]:
@@ -219,7 +218,7 @@ def accumulate_hidden_acts(
     counts: dict[str, int] = {}
     for batch_idx, inputs in enumerate(input_batches):
         batch_sum, batch_n = step(
-            model, components, ci_fn, inputs, random.fold_in(base_key, batch_idx)
+            model, components, placed_ci_fn, inputs, random.fold_in(base_key, batch_idx)
         )
         for site in batch_sum:
             sums[site] = sums.get(site, 0.0) + float(np.asarray(batch_sum[site]))

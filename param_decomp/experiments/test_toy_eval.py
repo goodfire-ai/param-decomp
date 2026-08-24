@@ -75,7 +75,9 @@ def test_well_temperedness_uses_its_own_rng_domain_and_skips_untransported_figur
         probe_ci=cast(Any, None),
         wandb_configured=False,
     )
-    inputs, key = captured["inputs_for_context"](EvalInvocation(state=cast(Any, None), now_step=20))
+    inputs, key = captured["inputs_for_context"](
+        EvalInvocation(state=cast(Any, None), now_step=20, placed_ci_fn=cast(Any, None))
+    )
 
     assert len(operations) == 1
     assert captured["figure_rendering"] is None

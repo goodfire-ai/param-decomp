@@ -20,8 +20,7 @@ attention never materializes one.
 The attention-pattern reproduction is target-specific (RoPE base, GQA, head reshape,
 Qwen3's per-layer QK-norm), so it is TARGET-OWNED: the model exposes
 `attention_pattern_from_qk(q_site, q_flat, k_flat)` (the `AttnPatternModel` protocol below —
-`GLUDecomposedModel` / `SimpleMLPDecomposedModel` delegate to their own attention
-modules). This file only drives it; nothing here switches on a model family. A target
+`GLUDecomposedModel` delegates to the layer's own attention module). This file only drives it; nothing here switches on a model family. A target
 without the method refuses at step-build time.
 
 Masked and clean Q/K run in COMPUTE_DT (bf16, matching the trained model); the
@@ -37,16 +36,16 @@ import numpy as np
 from jax import random
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
-from param_decomp.core.ci_fn import evaluate_ci
+from param_decomp.core.ci_fn import PlacedCIFn, evaluate_compute_ci, materialize_ci_compute_weights
 from param_decomp.core.components import ComponentStacks
 from param_decomp.core.jit_util import filter_jit
+from param_decomp.core.linear_plan import uniform_like
 from param_decomp.core.model import (
     CaptureKeys,
-    DecomposedModel,
     MaterializedMasking,
+    PlacedModel,
     prepare_compute_weights,
 )
-from param_decomp.core.precision import COMPUTE_DT
 
 
 @runtime_checkable
@@ -100,44 +99,52 @@ def _pattern_kl(target_pattern: Array, masked_pattern: Array) -> Array:
 
 
 AttnPatternsStep = Callable[
-    [DecomposedModel, Any, Any, Int[Array, "*leading"], PRNGKeyArray],
+    [PlacedModel, Any, Any, Int[Array, "*leading"], PRNGKeyArray],
     tuple[dict[str, Array], dict[str, int]],
 ]
-"""`(model, components, ci_fn, tokens, key) -> ({q_site: sum_kl}, {q_site: n_dists})`
+"""`(model, components, placed_ci_fn, tokens, key) -> ({q_site: sum_kl}, {q_site: n_dists})`
 — one batch's per-layer summed KL (fp32) and distribution counts. `key` is unused by the
 deterministic CI step. `model` (frozen-weight-bearing) is the jit ARG."""
 
 
+def _attn_pattern_model(model: PlacedModel) -> AttnPatternModel:
+    """Narrow the bundle's target to the pattern-capable surface — re-derived from the
+    traced model arg each call, never closed over (the HLO-baking rule)."""
+    inner = model.model
+    assert isinstance(inner, AttnPatternModel)
+    return inner
+
+
 def _attention_patterns(
-    model: DecomposedModel,
+    model: PlacedModel,
     layer_pairs: tuple[tuple[str, str], ...],
     site_outputs: dict[str, Array],
 ) -> dict[str, Array]:
     """Per-layer target-owned attention pattern derived from captured Q/K outputs."""
-    assert isinstance(model, AttnPatternModel)
+    pattern_model = _attn_pattern_model(model)
     return {
-        q: model.attention_pattern_from_qk(q, site_outputs[q], site_outputs[k])
+        q: pattern_model.attention_pattern_from_qk(q, site_outputs[q], site_outputs[k])
         for q, k in layer_pairs
     }
 
 
 def _attention_pattern_kl_by_layer(
-    model: DecomposedModel,
+    model: PlacedModel,
     layer_pairs: tuple[tuple[str, str], ...],
     masked_outputs: dict[str, Array],
     target_patterns: dict[str, Array],
 ) -> dict[str, Array]:
-    assert isinstance(model, AttnPatternModel)
+    pattern_model = _attn_pattern_model(model)
     return {
         q: _pattern_kl(
             target_patterns[q],
-            model.attention_pattern_from_qk(q, masked_outputs[q], masked_outputs[k]),
+            pattern_model.attention_pattern_from_qk(q, masked_outputs[q], masked_outputs[k]),
         )
         for q, k in layer_pairs
     }
 
 
-def _assert_position_axis(model_static: DecomposedModel) -> None:
+def _assert_position_axis(model_static: PlacedModel) -> None:
     """Attention patterns are `(B, H, T_query, T_key)` causal maps over the position
     axis; the metric only applies to a positioned LM target (the `AttnPatternModel`
     capability assert in the step factories rejects non-attention targets)."""
@@ -147,14 +154,14 @@ def _assert_position_axis(model_static: DecomposedModel) -> None:
 
 
 def make_ci_attn_patterns_step(
-    model_static: DecomposedModel,
+    model_static: PlacedModel,
     ci_capture_keys: CaptureKeys,
     compiler_options: dict[str, bool | int | str] | None = None,
 ) -> AttnPatternsStep:
     """Deterministic CI-mask attention-pattern step: one clean union and one masked forward."""
     _assert_position_axis(model_static)
-    assert isinstance(model_static, AttnPatternModel), (
-        f"attn-patterns eval needs a target exposing attention_pattern_from_qk; {type(model_static).__name__} does not"
+    assert isinstance(model_static.model, AttnPatternModel), (
+        f"attn-patterns eval needs a target exposing attention_pattern_from_qk; {type(model_static.model).__name__} does not"
     )
     site_names = model_static.site_names
     layer_pairs = _attn_layer_sites(site_names)
@@ -164,9 +171,9 @@ def make_ci_attn_patterns_step(
     output_key_by_site = dict(zip(requested_sites, site_output_keys, strict=True))
 
     def step(
-        model: DecomposedModel,
+        model: PlacedModel,
         components: ComponentStacks,
-        ci_fn: Any,
+        placed_ci_fn: PlacedCIFn,
         tokens: Int[Array, "*leading"],
         _key: PRNGKeyArray,
     ) -> tuple[dict[str, Array], dict[str, int]]:
@@ -177,7 +184,9 @@ def make_ci_attn_patterns_step(
         }
         target_patterns = _attention_patterns(model, layer_pairs, clean_site_outputs_by_site)
         prepared_weights = prepare_compute_weights(model, components)
-        ci_lower = evaluate_ci(ci_fn, clean_ci_inputs_by_key, remat=False).lower
+        ci_lower = evaluate_compute_ci(
+            materialize_ci_compute_weights(placed_ci_fn), clean_ci_inputs_by_key, remat=False
+        ).lower
 
         masked_captures_by_key = model.masked_forward(
             prepared_weights,
@@ -199,7 +208,7 @@ def make_ci_attn_patterns_step(
 
 
 def make_stochastic_attn_patterns_step(
-    model_static: DecomposedModel,
+    model_static: PlacedModel,
     ci_capture_keys: CaptureKeys,
     n_mask_samples: int,
     compiler_options: dict[str, bool | int | str] | None = None,
@@ -208,8 +217,8 @@ def make_stochastic_attn_patterns_step(
     (with weight deltas), per-draw per-layer pattern KL summed. RNG via per-draw / per-site
     `fold_in` (the eval-step discipline, mirrors `hidden_acts_eval`)."""
     _assert_position_axis(model_static)
-    assert isinstance(model_static, AttnPatternModel), (
-        f"attn-patterns eval needs a target exposing attention_pattern_from_qk; {type(model_static).__name__} does not"
+    assert isinstance(model_static.model, AttnPatternModel), (
+        f"attn-patterns eval needs a target exposing attention_pattern_from_qk; {type(model_static.model).__name__} does not"
     )
     assert n_mask_samples >= 1, n_mask_samples
     site_names = model_static.site_names
@@ -220,9 +229,9 @@ def make_stochastic_attn_patterns_step(
     output_key_by_site = dict(zip(requested_sites, site_output_keys, strict=True))
 
     def step(
-        model: DecomposedModel,
+        model: PlacedModel,
         components: ComponentStacks,
-        ci_fn: Any,
+        placed_ci_fn: PlacedCIFn,
         tokens: Int[Array, "*leading"],
         key: PRNGKeyArray,
     ) -> tuple[dict[str, Array], dict[str, int]]:
@@ -233,22 +242,25 @@ def make_stochastic_attn_patterns_step(
         }
         target_patterns = _attention_patterns(model, layer_pairs, clean_site_outputs_by_site)
         prepared_weights = prepare_compute_weights(model, components)
-        ci_lower = evaluate_ci(ci_fn, clean_ci_inputs_by_key, remat=False).lower
-
-        leading = tokens.shape
+        ci_lower = evaluate_compute_ci(
+            materialize_ci_compute_weights(placed_ci_fn), clean_ci_inputs_by_key, remat=False
+        ).lower
 
         sum_kl = {q: jnp.zeros((), jnp.float32) for q, _ in layer_pairs}
         for draw_idx in range(n_mask_samples):
             mask_key, delta_key = random.split(random.fold_in(key, draw_idx))
             masks = {}
             delta_masks = {}
+            # `uniform_like`, never a bare draw: a bare `random.uniform` lowers REPLICATED
+            # under the Explicit mesh and the per-kind mask stacks then hold the full
+            # eval batch on every rank (value-identical either way — threefry, SPEC D4).
             for site_idx, site in enumerate(site_names):
                 ci_site = ci_lower[site]
                 source_key = random.fold_in(mask_key, site_idx)
-                source = random.uniform(source_key, ci_site.shape, COMPUTE_DT)
+                source = uniform_like(source_key, ci_site)
                 masks[site] = ci_site + (1.0 - ci_site) * source
-                delta_masks[site] = random.uniform(
-                    random.fold_in(delta_key, site_idx), leading, COMPUTE_DT
+                delta_masks[site] = uniform_like(
+                    random.fold_in(delta_key, site_idx), ci_site, drop_last_axis=True
                 )
             masked_captures_by_key = model.masked_forward(
                 prepared_weights,
@@ -275,9 +287,9 @@ def make_stochastic_attn_patterns_step(
 
 def accumulate_attn_patterns(
     step: AttnPatternsStep,
-    model: DecomposedModel,
+    model: PlacedModel,
     components: ComponentStacks,
-    ci_fn: Any,
+    placed_ci_fn: PlacedCIFn,
     token_batches: list[Int[Array, "*leading"]],
     base_key: PRNGKeyArray,
 ) -> dict[str, LayerKLReduction]:
@@ -289,7 +301,7 @@ def accumulate_attn_patterns(
     counts: dict[str, int] = {}
     for batch_idx, tokens in enumerate(token_batches):
         batch_sum, batch_n = step(
-            model, components, ci_fn, tokens, random.fold_in(base_key, batch_idx)
+            model, components, placed_ci_fn, tokens, random.fold_in(base_key, batch_idx)
         )
         for site in batch_sum:
             sums[site] = sums.get(site, 0.0) + float(np.asarray(batch_sum[site]))

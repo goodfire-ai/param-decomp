@@ -32,6 +32,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from param_decomp.core.components import SiteC, SiteDims, SiteSpec
+from param_decomp.core.nonlinearity import NonlinearityPartition
 
 
 @dataclass(frozen=True)
@@ -67,10 +68,12 @@ def site_specs(
     family: ArchFamily,
     site_cs: tuple[SiteC, ...],
     dims_of: Callable[[str], SiteDims],
+    nonlinearity_partition_of: Callable[[str], NonlinearityPartition | None],
     n_layer: int,
 ) -> tuple[SiteSpec, ...]:
     """Shape-resolved specs in canonical order (input must already be canonical);
-    `dims_of(matrix)` is the target's shape table, closed over its config."""
+    `dims_of(matrix)` / `nonlinearity_partition_of(matrix)` are the target's shape and
+    nonlinearity-unit tables, closed over its config."""
     assert site_cs == canonical_site_cs(family, site_cs), f"sites not in canonical order: {site_cs}"
     specs = []
     for site in site_cs:
@@ -78,5 +81,14 @@ def site_specs(
         assert 0 <= layer < n_layer, (site.name, n_layer)
         assert site.C >= 1, site
         dims = dims_of(kind)
-        specs.append(SiteSpec(name=site.name, d_in=dims.d_in, d_out=dims.d_out, C=site.C))
+        specs.append(
+            SiteSpec(
+                name=site.name,
+                d_in=dims.d_in,
+                d_out=dims.d_out,
+                C=site.C,
+                group=kind,
+                nonlinearity_partition=nonlinearity_partition_of(kind),
+            )
+        )
     return tuple(specs)

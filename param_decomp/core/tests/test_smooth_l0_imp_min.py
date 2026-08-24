@@ -78,7 +78,7 @@ def test_anneal_and_dispatch():
     )
     total = 100
     for step in (0, 50, total - 1):
-        param = annealed_imp_min_param(jnp.asarray(float(step)), total, cfg)
+        param = annealed_imp_min_param(jnp.asarray(step / (total - 1), jnp.float32), cfg)
         expected = get_scheduled_value(step, total, cfg.gamma)
         assert abs(float(param) - expected) < 1e-6
     assert abs(get_scheduled_value(0, total, cfg.gamma) - 1.0) < 1e-6
@@ -86,7 +86,7 @@ def test_anneal_and_dispatch():
 
     last = total - 1
     ci = {"a": jnp.array([[0.0, 0.5, 1.0], [0.2, 0.0, 0.9]])}
-    param = annealed_imp_min_param(jnp.asarray(float(last)), total, cfg)
+    param = annealed_imp_min_param(jnp.asarray(last / (total - 1), jnp.float32), cfg)
     via_dispatch = imp_min_terms(ci, cfg, param)
     direct = smooth_l0_importance_minimality_terms(ci, param, reference_datapoint_count=64)
     assert jnp.allclose(via_dispatch[0], direct[0])

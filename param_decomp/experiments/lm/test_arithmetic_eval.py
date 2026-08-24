@@ -16,7 +16,7 @@ import pytest
 
 from param_decomp.core.ci_fn import ci_preactivations, lower_leaky_hard_sigmoid
 from param_decomp.core.components import init_component_stacks
-from param_decomp.core.model import MaterializedMasking, prepare_compute_weights
+from param_decomp.core.model import MaterializedMasking, PlacedModel, prepare_compute_weights
 from param_decomp.core.precision import COMPUTE_DT
 from param_decomp.core.tests.test_slow_eval import _build_ci_fn
 from param_decomp.experiments.lm.arithmetic_eval import (
@@ -49,8 +49,10 @@ def _tiny_setup():
     cfg = tiny_glu_cfg()
     C = 8
     sites = glu_site_specs(cfg, mlp_family_site_cs(4, 5, C))
-    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    ci_fn = _build_ci_fn(model, cfg.n_embd, jax.random.PRNGKey(2))
+    model = PlacedModel(
+        model=tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0)), placement=None
+    )
+    ci_fn = _build_ci_fn(model.model, cfg.n_embd, jax.random.PRNGKey(2))
     return cfg, model, ci_fn, C
 
 
@@ -60,7 +62,7 @@ def _grid_step():
     the answer position, and the row count, all of which are fixed for this file."""
     _, model, ci_fn, _ = _tiny_setup()
     return make_arithmetic_grid_step(
-        model, ci_fn.capture_keys, ANSWER_POSITION, n_valid_rows=N_A * N_B
+        model, ci_fn.fn.capture_keys, ANSWER_POSITION, n_valid_rows=N_A * N_B
     )
 
 
@@ -70,7 +72,7 @@ def _grid() -> ArithmeticGrid:
 
 def test_grid_step_ci_xv_and_masked_max_match_hand_rolled():
     cfg, model, ci_fn, C = _tiny_setup()
-    assert isinstance(model, ComponentActivationModel)
+    assert isinstance(model.model, ComponentActivationModel)
     vu = init_component_stacks(model.sites, jax.random.PRNGKey(1))
     n_pad = N_A * N_B + 2  # two garbage tail rows, as the sharding pad would append
     tokens = jax.random.randint(jax.random.PRNGKey(4), (n_pad, T), 0, cfg.vocab_size)
@@ -80,14 +82,14 @@ def test_grid_step_ci_xv_and_masked_max_match_hand_rolled():
     names = model.site_names
     # CI hand-roll: bf16 readout, slice the answer position.
     preactivations = ci_preactivations(
-        ci_fn, capture_clean(model, tokens, ci_fn.capture_keys), remat=False
+        ci_fn, capture_clean(model.model, tokens, ci_fn.fn.capture_keys), remat=False
     )
     # xV hand-roll: all-ones masks -> site output == (x@V) @ U, so x@V projected through U
     # reproduces the captured masked site output at the answer position.
     prepared_weights = prepare_compute_weights(model, vu)
     component_masks = {site: jnp.ones((*tokens.shape, C), COMPUTE_DT) for site in names}
     outputs = capture_site_outputs(
-        model,
+        model.model,
         prepared_weights,
         tokens,
         MaterializedMasking(component_masks=component_masks),
@@ -109,7 +111,7 @@ def test_grid_step_ci_xv_and_masked_max_match_hand_rolled():
 
 def test_compute_arithmetic_selection_gathers_only_shown_columns():
     cfg, model, ci_fn, _ = _tiny_setup()
-    assert isinstance(model, ComponentActivationModel)
+    assert isinstance(model.model, ComponentActivationModel)
     vu = init_component_stacks(model.sites, jax.random.PRNGKey(1))
     tokens = jax.random.randint(jax.random.PRNGKey(4), (N_A * N_B, T), 0, cfg.vocab_size)
     step = _grid_step()

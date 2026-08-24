@@ -3,10 +3,8 @@ reuses the run dir and resumes from its checkpoints instead of minting a fresh i
 Mid-training that is the requeue path; at the configured horizon there is nothing left to
 run, and the rerun must say so instead of exiting 0 having done nothing.
 
-Runs the REAL module entry in a child process (as `test_run_inline` does): the runner owns
-process-global state — `setup_logger`'s dictConfig shuts down every existing logging
-handler, including absl's, whose close() closes the pytest capture stream it was bound to
-at import — so an in-process call poisons the test session.
+Runs the real module entry in a child process (as `test_run_inline` does), so each rerun
+starts with fresh process state just as a requeued job does.
 """
 
 import os
@@ -35,8 +33,11 @@ def _tiny_tms_config(path: Path, name: str, seed: int) -> Path:
     # checkpoint below the horizon) is one directory deletion away.
     raw["cadence"] = {
         "train_log_every": 1,
-        "save_every": 1,
-        "checkpoint_retention": {"kind": "keep_last", "n": 2},
+        "checkpointing": {
+            "kind": "periodic",
+            "save_every": 1,
+            "retention": {"kind": "keep_last", "n": 2},
+        },
     }
     raw["eval"] = None
     raw["wandb"] = None

@@ -10,9 +10,10 @@ from jax.sharding import PartitionSpec as P
 from jaxtyping import PRNGKeyArray
 
 from param_decomp.core.built_run import TargetSites
+from param_decomp.core.ci_fn import PlacedCIFn
 from param_decomp.core.eval_schedule import EvalSchedule
 from param_decomp.core.metrics import LogRecord
-from param_decomp.core.model import CaptureKeys, DecomposedModel
+from param_decomp.core.model import BATCH_AXES, CaptureKeys, PlacedModel
 from param_decomp.core.recon import resolve_reconstruction_spec
 from param_decomp.core.recon_eval import FreshPGDReconEval
 from param_decomp.core.run import (
@@ -21,12 +22,13 @@ from param_decomp.core.run import (
     EvalOperation,
     MetricsSink,
 )
+from param_decomp.core.sharding import data_parallel_size, local_data_parallel_size
 from param_decomp.core.train import TrainState
 from param_decomp.experiments.lm.arithmetic_eval import (
     ArithmeticGrid,
     ArithmeticGridStep,
     ArithmeticSelection,
-    ComponentActivationModel,
+    component_activation_model,
     compute_arithmetic_selection,
     make_arithmetic_grid_step,
     n_alive_scalars,
@@ -43,16 +45,17 @@ from param_decomp.targets.glu_transformer import hf_snapshot_dir
 
 def global_arithmetic_probe(tokens: np.ndarray, mesh: Mesh, n_proc: int) -> jax.Array:
     n, t = tokens.shape
-    n_dev = mesh.devices.size
-    pad = (-n) % n_dev
+    n_data = data_parallel_size(mesh)
+    pad = (-n) % n_data
     if pad:
         tokens = np.concatenate([tokens, np.zeros((pad, t), tokens.dtype)], axis=0)
     n_pad = tokens.shape[0]
     per_process = n_pad // n_proc
-    assert per_process % jax.local_device_count() == 0, (per_process, jax.local_device_count())
+    local_data = local_data_parallel_size(mesh)
+    assert per_process % local_data == 0, (per_process, local_data)
     proc = jax.process_index()
     local = tokens[proc * per_process : (proc + 1) * per_process]
-    sharding = NamedSharding(mesh, P(("replicate", "fsdp")))
+    sharding = NamedSharding(mesh, P(BATCH_AXES))
     return jax.make_array_from_process_local_data(sharding, local, (n_pad, t))
 
 
@@ -73,7 +76,7 @@ def _render(
 class ArithmeticOperation:
     step: ArithmeticGridStep
     probe_eval_step: ScalarStep
-    model: ComponentActivationModel
+    model: PlacedModel
     tokens: jax.Array
     grid: ArithmeticGrid
     n_prompts: int
@@ -81,12 +84,14 @@ class ArithmeticOperation:
     top_k: int
     renderer: BackgroundRenderer
 
-    def run(self, state: TrainState, key: PRNGKeyArray, now_step: int) -> LogRecord:
+    def run(
+        self, state: TrainState, placed_ci_fn: PlacedCIFn, key: PRNGKeyArray, now_step: int
+    ) -> LogRecord:
         selection = compute_arithmetic_selection(
             self.step,
             self.model,
             state.decomposition.components,
-            state.decomposition.ci_fn,
+            placed_ci_fn,
             self.tokens,
             self.n_prompts,
             self.thresholds,
@@ -95,7 +100,7 @@ class ArithmeticOperation:
         scalars = self.probe_eval_step(
             self.model,
             state.decomposition.components,
-            state.decomposition.ci_fn,
+            placed_ci_fn,
             self.tokens,
             key,
         )
@@ -113,7 +118,7 @@ def make_arithmetic_operation(
     config: ArithmeticCIGridConfig,
     schedule: EvalSchedule,
     target: TargetSites,
-    model: DecomposedModel,
+    model: PlacedModel,
     ci_capture_keys: CaptureKeys,
     mesh: Mesh,
     n_proc: int,
@@ -122,9 +127,7 @@ def make_arithmetic_operation(
     train_steps: int,
     compiler_options: dict[str, bool | int | str],
 ) -> EvalOperation[LMEvalContext]:
-    assert isinstance(model, ComponentActivationModel), (
-        f"arithmetic eval needs masked_component_activations; {type(model).__name__} does not"
-    )
+    component_activation_model(model)
     assert isinstance(target, TargetConfig), (
         f"arithmetic eval needs an HF tokenizer; {type(target).__name__} has no model_name"
     )
@@ -179,6 +182,6 @@ def make_arithmetic_operation(
         key = jax.random.fold_in(
             run_key, EvalKeyStream.ARITHMETIC * train_steps + context.pass_index
         )
-        return operation.run(context.state, key, context.now_step)
+        return operation.run(context.state, context.placed_ci_fn, key, context.now_step)
 
     return EvalOperation(schedule, run)

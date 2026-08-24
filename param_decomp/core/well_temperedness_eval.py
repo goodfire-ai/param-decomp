@@ -16,7 +16,7 @@ from param_decomp.core.ci_l0_eval import resolve_site_groups
 from param_decomp.core.configs import WellTemperednessConfig
 from param_decomp.core.eval_schedule import EvalSchedule
 from param_decomp.core.metrics import LogRecord, PNGImage
-from param_decomp.core.model import CaptureKeys, DecomposedModel
+from param_decomp.core.model import CaptureKeys, PlacedModel
 from param_decomp.core.run import (
     BackgroundRenderer,
     DeferredMediaRecord,
@@ -109,7 +109,7 @@ def _render_deferred(ablations: Ablations, now_step: int) -> DeferredMediaRecord
 def make_well_temperedness_operation[ContextT: EvalInvocation](
     metric: WellTemperednessConfig,
     schedule: EvalSchedule,
-    model: DecomposedModel,
+    model: PlacedModel,
     ci_capture_keys: CaptureKeys,
     mesh: Mesh | None,
     compiler_options: dict[str, bool | int | str],
@@ -131,7 +131,7 @@ def make_well_temperedness_operation[ContextT: EvalInvocation](
         device_ablations = measure_ablations(
             model,
             context.state.decomposition.components,
-            context.state.decomposition.ci_fn,
+            context.placed_ci_fn,
             inputs,
             sampling_key,
         )

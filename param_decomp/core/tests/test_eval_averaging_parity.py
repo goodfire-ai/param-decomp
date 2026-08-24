@@ -31,21 +31,26 @@ checks the averaging math directly (the per-batch step itself is covered by
 
 import math
 from types import SimpleNamespace
+from typing import NoReturn
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, PRNGKeyArray
 
-from param_decomp.core.ci_fn import CIFn
+from param_decomp.core.ci_fn import PlacedCIFn
 from param_decomp.core.components import ComponentStacks
 from param_decomp.core.eval_schedule import Every
-from param_decomp.core.model import DecomposedModel
+from param_decomp.core.model import PlacedModel
 from param_decomp.core.run import EvalInvocation
 from param_decomp.experiments.eval_config import EvalConfig
 from param_decomp.experiments.fast_eval_operations import _averaged_over_eval_batches
 from param_decomp.experiments.lm.eval_context import LMEvalContext
 from param_decomp.experiments.lm.scalar_eval_operations import _make_scalar_operation
+
+
+def _unused_shared_ci_reductions() -> NoReturn:
+    raise AssertionError("the operation under test must not read the shared CI reductions")
 
 
 def _jax_average(per_batch_values: list[float], n_steps: int) -> float:
@@ -116,9 +121,9 @@ def _state_stub() -> SimpleNamespace:
 
 def test_lm_scalar_operation_averages_residual_batch_objectives():
     def step(
-        _model: DecomposedModel,
+        _model: PlacedModel,
         _components: ComponentStacks,
-        _ci_fn: CIFn,
+        _placed_ci_fn: PlacedCIFn,
         value: jax.Array,
         _key: PRNGKeyArray,
     ) -> dict[str, Array]:
@@ -136,17 +141,19 @@ def test_lm_scalar_operation_averages_residual_batch_objectives():
     context = LMEvalContext(
         state=_state_stub(),  # pyright: ignore[reportArgumentType]
         now_step=0,
+        placed_ci_fn=PlacedCIFn(fn=None, placement=None),  # pyright: ignore[reportArgumentType]
         pass_index=0,
         batches=(jnp.asarray(1.0), jnp.asarray(3.0)),
+        shared_ci_reductions=_unused_shared_ci_reductions,
     )
     assert operation.run(context)["eval/loss/probe/hidden_acts_reconstruction"] == 2.0
 
 
 def test_generic_scalar_operation_averages_residual_batch_objectives():
     def step(
-        _model: DecomposedModel,
+        _model: PlacedModel,
         _components: ComponentStacks,
-        _ci_fn: CIFn,
+        _placed_ci_fn: PlacedCIFn,
         value: jax.Array,
         _key: PRNGKeyArray,
     ) -> dict[str, Array]:
@@ -164,5 +171,6 @@ def test_generic_scalar_operation_averages_residual_batch_objectives():
     context = EvalInvocation(
         state=_state_stub(),  # pyright: ignore[reportArgumentType]
         now_step=0,
+        placed_ci_fn=PlacedCIFn(fn=None, placement=None),  # pyright: ignore[reportArgumentType]
     )
     assert operation.run(context)["eval/loss/probe/hidden_acts_reconstruction"] == 2.0

@@ -23,6 +23,7 @@ because four is the minimum required by the multidevice suite as a whole:
 `XLA_FLAGS="--xla_force_host_platform_device_count=4" pytest <this file>`.
 """
 
+from functools import partial
 from pathlib import Path
 
 import equinox as eqx
@@ -76,11 +77,15 @@ def _persistent_cfg(name: str | None) -> PersistentPGDReconLossConfig:
         coeff=0.5,
         source_shape="sc",
         optimizer=AdamPGDConfig(
-            beta1=0.5, beta2=0.99,
-            lr_schedule=ScheduleConfig(max_val=0.01, points=(Knot(at=0.0, frac=0.0), Knot(at=0.025, frac=1.0), Knot(at=1.0, frac=1.0))),
+            beta1=0.5,
+            beta2=0.99,
+            lr_schedule=ScheduleConfig(
+                max_val=0.01,
+                points=(Knot(at=0.0, frac=0.0), Knot(at=0.025, frac=1.0), Knot(at=1.0, frac=1.0)),
+            ),
         ),
         n_warmup_steps=1,
-    )  # fmt: skip
+    )
 
 
 def _build_sharded(seed: int):
@@ -90,7 +95,7 @@ def _build_sharded(seed: int):
     sources + their Adam moments replicated, with TWO persistent terms. On the four-device
     CPU simulation: `replicate=1, fsdp=4, tp=1` (N=4); `C=8` and the V d_in / U d_out
     dimensions tile N."""
-    mesh = hsdp_mesh()
+    mesh = hsdp_mesh(1, jax.device_count(), 1)
     cfg = tiny_glu_cfg()
     C, seq = 8, 16
     sites = glu_site_specs(cfg, mlp_family_site_cs(3, 4, C))
@@ -115,7 +120,13 @@ def _build_sharded(seed: int):
     vu = init_component_stacks_placed(
         model.sites, jax.random.PRNGKey(seed), from_config("owner", mesh, model.sites)
     )
-    ci_fn = init_ci_fn_placed(ci_arch, model.sites, jax.random.PRNGKey(seed + 1), mesh)
+    ci_fn = init_ci_fn_placed(
+        ci_arch,
+        model.sites,
+        jax.random.PRNGKey(seed + 1),
+        mesh,
+        from_config("zero1", mesh, model.sites),
+    )
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
     site_cs = tuple(s.C for s in model.sites)
@@ -139,7 +150,7 @@ def _build_sharded(seed: int):
         opt_state = init_sources_adam_state(src)
         sources, opt_state = sources_adam_ascend_project(
             src,
-            {site: jnp.full_like(value, seed + i + 1) for site, value in src.items()},
+            jax.tree.map(partial(jnp.full_like, fill_value=seed + i + 1), src),
             opt_state,
             jnp.asarray(0.01),
             ppgd_cfg.optimizer,
@@ -157,9 +168,10 @@ def _build_sharded(seed: int):
             components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
             ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
             adversaries=adversaries,
+            freq_ema=None,
             step=jnp.zeros((), jnp.int32),
         ),
-    )  # fmt: skip
+    )
     # run.py:185 — normalize eager scalar stragglers (Adam `count`, `step`) onto the mesh
     # so the whole state is global-array placed, exactly as a production run / restore.
     state = _ensure_global(state, mesh)
@@ -179,8 +191,12 @@ def _assert_moments_present(adversaries: dict[str, PersistentAdversary]) -> None
         assert set(adam.m) == set(adv.sources), (term, adam.m.keys())
         assert set(adam.v) == set(adv.sources), (term, adam.v.keys())
         for site, src in adv.sources.items():
-            assert adam.m[site].shape == src.shape, (term, site)
-            assert adam.v[site].shape == src.shape, (term, site)
+            assert jax.tree.map(lambda x: x.shape, adam.m[site]) == jax.tree.map(
+                lambda x: x.shape, src
+            ), (term, site)
+            assert jax.tree.map(lambda x: x.shape, adam.v[site]) == jax.tree.map(
+                lambda x: x.shape, src
+            ), (term, site)
         assert float(adam.step_count) > 0.0, (term, float(adam.step_count))
 
 
@@ -201,8 +217,12 @@ def test_sharded_roundtrip_persists_source_moments(tmp_path: Path):
         saved_adam = state.training.adversaries[term].opt_state
         reference_adam = fresh.training.adversaries[term].opt_state
         assert any(
-            not np.array_equal(np.asarray(saved_adam.m[site]), np.asarray(reference_adam.m[site]))
-            for site in saved_adam.m
+            not np.array_equal(np.asarray(saved), np.asarray(reference))
+            for saved, reference in zip(
+                jax.tree.leaves(saved_adam.m),
+                jax.tree.leaves(reference_adam.m),
+                strict=True,
+            )
         ), f"{term}: saved and reference moments must differ for the restore check to bite"
     restored = restore_latest(mgr, fresh)
     assert restored is not None

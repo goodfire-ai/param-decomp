@@ -21,7 +21,7 @@ from param_decomp.core.configs import (
 )
 from param_decomp.core.eval_schedule import EvalSchedule
 from param_decomp.core.metrics import LogRecord
-from param_decomp.core.model import CaptureKeys, DecomposedModel
+from param_decomp.core.model import CaptureKeys, PlacedModel
 from param_decomp.core.run import EvalInvocation, EvalOperation
 from param_decomp.core.train import TrainState
 from param_decomp.core.well_temperedness_eval import make_well_temperedness_operation
@@ -40,7 +40,7 @@ type ProbeCI = Callable[[TrainState], dict[str, Array]]
 def _make_uv_plots_operation(
     metric: UVPlotsConfig,
     schedule: EvalSchedule,
-    model: DecomposedModel,
+    model: PlacedModel,
     probe_ci: ProbeCI,
     wandb_configured: bool,
 ) -> EvalOperation[EvalInvocation]:
@@ -61,7 +61,7 @@ def make_toy_evaluation_operations(
     eval_config: EvalConfig,
     seed: int,
     compiler_options: dict[str, bool | int | str],
-    model: DecomposedModel,
+    model: PlacedModel,
     ci_capture_keys: CaptureKeys,
     mesh: Mesh,
     sample_eval_batch: Callable[[int], Array],

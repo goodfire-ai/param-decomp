@@ -15,18 +15,19 @@ import pytest
 from param_decomp.core.ci_fn import (
     Chunk,
     ChunkwiseTransformerCIArch,
-    CIFn,
     MHACIAttention,
+    PlacedCIFn,
     build_ci_fn,
 )
 from param_decomp.core.components import SiteC, SiteSpec, init_component_stacks
 from param_decomp.core.model import (
     EMPTY_CAPTURE_KEYS,
     CaptureKeys,
-    DecomposedModel,
     ForwardResult,
     Masking,
+    PlacedModel,
 )
+from param_decomp.core.placement import PlacementRules
 from param_decomp.experiments.lm.attn_patterns_eval import (
     accumulate_attn_patterns,
     attn_patterns_log_entries,
@@ -54,7 +55,7 @@ from param_decomp.targets.testing import (
 )
 
 
-def _build_ci_fn(model: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
+def _build_ci_fn(model: PlacedModel, n_embd: int, key: jax.Array) -> PlacedCIFn:
     """One transformer chunk over all sites, reading the residual entering the first
     decomposed block. The old `CIArch(16, 1, 2, 32)` dims map onto the chunk arch."""
     site_names = model.site_names
@@ -69,7 +70,7 @@ def _build_ci_fn(model: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
         ffn_kind="gelu",
         learned_norm_scale=False,
     )
-    return build_ci_fn(arch, model.sites, key)
+    return PlacedCIFn(fn=build_ci_fn(arch, model.sites, key), placement=None)
 
 
 def test_attention_pattern_from_qk_shape_and_causal_softmax_llama():
@@ -116,7 +117,9 @@ def _llama_attn_setup():
     from param_decomp.targets.glu_transformer import canonical_site_cs
 
     sites = glu_site_specs(cfg, canonical_site_cs(site_cs))
-    model = _llama_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = PlacedModel(
+        model=_llama_decomposed_lm(cfg, sites, jax.random.PRNGKey(0)), placement=None
+    )
     components = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = _build_ci_fn(model, cfg.n_embd, jax.random.PRNGKey(2))
     return cfg, model, components, ci_fn
@@ -124,7 +127,7 @@ def _llama_attn_setup():
 
 def test_ci_step_clean_equals_masked_when_ci_all_one_gives_finite_kl():
     cfg, model, components, ci_fn = _llama_attn_setup()
-    step = make_ci_attn_patterns_step(model, ci_fn.capture_keys)
+    step = make_ci_attn_patterns_step(model, ci_fn.fn.capture_keys)
     b, t = 2, 12
     residual = jax.random.randint(jax.random.PRNGKey(4), (b, t), 0, cfg.vocab_size)
 
@@ -140,7 +143,7 @@ def test_ci_step_clean_equals_masked_when_ci_all_one_gives_finite_kl():
 
 def test_accumulate_is_token_weighted_and_combines():
     cfg, model, components, ci_fn = _llama_attn_setup()
-    step = make_ci_attn_patterns_step(model, ci_fn.capture_keys)
+    step = make_ci_attn_patterns_step(model, ci_fn.fn.capture_keys)
     res_a = jax.random.randint(jax.random.PRNGKey(4), (2, 10), 0, cfg.vocab_size)
     res_b = jax.random.randint(jax.random.PRNGKey(5), (2, 10), 0, cfg.vocab_size)
 
@@ -171,7 +174,7 @@ def test_accumulate_is_token_weighted_and_combines():
 def test_stochastic_step_runs_and_scales_n_by_draws():
     cfg, model, components, ci_fn = _llama_attn_setup()
     n_draws = 3
-    step = make_stochastic_attn_patterns_step(model, ci_fn.capture_keys, n_draws)
+    step = make_stochastic_attn_patterns_step(model, ci_fn.fn.capture_keys, n_draws)
     b, t = 2, 8
     residual = jax.random.randint(jax.random.PRNGKey(4), (b, t), 0, cfg.vocab_size)
 
@@ -185,10 +188,12 @@ def test_simple_mlp_step_runs_end_to_end():
     cfg = _simple_cfg()
     site_cs = simple_canonical((SiteC("h.0.attn.q_proj", 6), SiteC("h.0.attn.k_proj", 6)))
     sites = simple_site_specs(cfg, site_cs)
-    model = _simple_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
+    model = PlacedModel(
+        model=_simple_decomposed_model(cfg, sites, jax.random.PRNGKey(0)), placement=None
+    )
     components = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = _build_ci_fn(model, cfg.n_embd, jax.random.PRNGKey(2))
-    step = make_ci_attn_patterns_step(model, ci_fn.capture_keys)
+    step = make_ci_attn_patterns_step(model, ci_fn.fn.capture_keys)
     b, t = 2, 10
     residual = jax.random.randint(jax.random.PRNGKey(4), (b, t), 0, cfg.vocab_size)
 
@@ -209,8 +214,8 @@ class _PositionlessStub(eqx.Module):
     def site_names(self) -> tuple[str, ...]:
         return tuple(s.name for s in self.sites)
 
-    def shardings(self, mesh: Any) -> "_PositionlessStub":
-        del mesh
+    def shardings(self, placement: PlacementRules) -> "_PositionlessStub":
+        del placement
         raise AssertionError("positionless stub fn must not be called")
 
     def recon_loss_fn(self, masked_output: Any, clean_output: Any) -> jax.Array:
@@ -226,12 +231,17 @@ class _PositionlessStub(eqx.Module):
         raise AssertionError("positionless stub fn must not be called")
 
     def clean_forward(
-        self, resid: Any, capture_keys: CaptureKeys = EMPTY_CAPTURE_KEYS
+        self,
+        resid: Any,
+        capture_keys: CaptureKeys = EMPTY_CAPTURE_KEYS,
+        *,
+        placement: PlacementRules | None,
     ) -> ForwardResult:
-        del resid, capture_keys
+        del resid, capture_keys, placement
         raise AssertionError("positionless stub fn must not be called")
 
-    def prepare_compute_weights(self, vu: Any) -> Any:
+    def prepare_compute_weights(self, vu: Any, placement: object | None) -> Any:
+        del placement
         return vu
 
     def component_activation_forward(
@@ -241,8 +251,9 @@ class _PositionlessStub(eqx.Module):
         /,
         *,
         capture_keys: CaptureKeys,
+        placement: PlacementRules | None,
     ) -> tuple[ForwardResult, dict[str, jax.Array]]:
-        del prepared_weights, inputs, capture_keys
+        del prepared_weights, inputs, capture_keys, placement
         raise NotImplementedError
 
     def stack_ci(self, ci_lower: dict[str, Any]) -> dict[str, Any]:
@@ -255,10 +266,14 @@ class _PositionlessStub(eqx.Module):
         /,
         *,
         masking: Masking,
+        placement: PlacementRules | None,
         capture_keys: CaptureKeys = EMPTY_CAPTURE_KEYS,
         remat: bool,
     ) -> ForwardResult:
-        del prepared_weights, inputs, masking, capture_keys, remat
+        del prepared_weights, inputs, masking, placement, capture_keys, remat
+        raise AssertionError("positionless stub fn must not be called")
+
+    def target_weight_sq_norms(self) -> dict[str, jax.Array]:
         raise AssertionError("positionless stub fn must not be called")
 
     def weight_deltas(self, vu: Any) -> dict[str, jax.Array]:
@@ -270,9 +285,15 @@ def test_attn_patterns_steps_reject_positionless_target():
     """Attention patterns are causal maps over a sequence axis; both step constructors
     must fail loud against a positionless target. The position-axis
     guard fires before site/pattern inspection, so a dummy pattern fn is fine."""
-    model = _PositionlessStub(
-        sites=(SiteSpec("linear1", 5, 2, 8), SiteSpec("linear2", 2, 5, 6)),
-        has_position_axis=False,
+    model = PlacedModel(
+        model=_PositionlessStub(
+            sites=(
+                SiteSpec("linear1", 5, 2, 8, "linear1"),
+                SiteSpec("linear2", 2, 5, 6, "linear2"),
+            ),
+            has_position_axis=False,
+        ),
+        placement=None,
     )
     assert not model.has_position_axis
     with pytest.raises(AssertionError, match="LM-only"):

@@ -18,8 +18,12 @@ def test_bootstrap_applies_launch_env_before_loading_training(
         yaml.safe_dump(
             {
                 "runtime": {
-                    "dp": 1,
+                    "replicate": 1,
+                    "fsdp": 1,
+                    "tp": 1,
                     "sharding": "ddp",
+                    "compilation_cache_dir": "~/.cache/param-decomp/xla",
+                    "compiler_options": "tuned-v1",
                     "launch_env": {
                         "xla_python_client_mem_fraction": 0.5,
                         "env": {"PD_BOOTSTRAP_SENTINEL": "present"},
@@ -31,8 +35,13 @@ def test_bootstrap_applies_launch_env_before_loading_training(
     observed: list[tuple[str, str]] = []
     training = ModuleType("param_decomp.experiments.lm.training")
 
-    def train_main(config: object, data_root: object, run_id: object = None) -> None:
-        del config, data_root, run_id
+    def train_main(
+        config: object,
+        data_root: object,
+        local_device_count: int,
+        run_id: object = None,
+    ) -> None:
+        del config, data_root, local_device_count, run_id
         observed.append(
             (
                 os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"],
@@ -43,7 +52,7 @@ def test_bootstrap_applies_launch_env_before_loading_training(
     training.__dict__["main"] = train_main
     monkeypatch.setitem(sys.modules, training.__name__, training)
 
-    run.main(config, Path("/tmp/unused-data-root"), "p-00000000")
+    run.main(config, Path("/tmp/unused-data-root"), 1, "p-00000000")
 
     assert observed == [("0.5", "present")]
 

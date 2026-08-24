@@ -35,9 +35,9 @@ def _grammar(cfg: LlamaConfig) -> TransformerTapGrammar:
         d_resid=cfg.n_embd,
         d_attention_output=glu_transformer.site_dims(cfg, "o").d_in,
         d_mlp_hidden=glu_transformer.site_dims(cfg, "down").d_in,
-        d_out_of=lambda name: glu_transformer.site_dims(
-            cfg, glu_transformer.FAMILY.parse(name)[1]
-        ).d_out,
+        d_out_of=lambda name: (
+            glu_transformer.site_dims(cfg, glu_transformer.FAMILY.parse(name)[1]).d_out
+        ),
     )
 
 
@@ -124,7 +124,7 @@ def test_built_ci_fn_gives_per_site_ci_per_position():
         tap.key: jax.random.normal(jax.random.fold_in(jax.random.PRNGKey(1), i), (b, t, tap.width))
         for i, tap in enumerate(arch.input_taps)
     }
-    ci = ci_fn(taps, remat=False)
+    ci = ci_fn(taps, remat=False, placement=None)
     assert set(ci.lower) == {s.name for s in sites}
     for site in sites:
         assert ci.lower[site.name].shape == (b, t, site.C), site.name
@@ -133,7 +133,7 @@ def test_built_ci_fn_gives_per_site_ci_per_position():
     perturbed = dict(taps)
     first_key = arch.input_taps[0].key
     perturbed[first_key] = taps[first_key].at[:, 3, :].add(1.0)
-    moved = ci_fn(perturbed, remat=False)
+    moved = ci_fn(perturbed, remat=False, placement=None)
     for site in sites:
         base, new = ci.preactivations[site.name], moved.preactivations[site.name]
         others = jnp.delete(new - base, 3, axis=1)

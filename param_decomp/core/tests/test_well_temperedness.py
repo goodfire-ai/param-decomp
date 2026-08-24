@@ -9,17 +9,23 @@ import pytest
 from param_decomp.core.ci_fn import (
     Chunk,
     ChunkwiseTransformerCIArch,
-    CIFn,
     LayerwiseMLPCIArch,
     MHACIAttention,
+    PlacedCIFn,
     build_ci_fn,
     evaluate_ci,
 )
 from param_decomp.core.components import ComponentStacks, SiteC, init_component_stacks
 from param_decomp.core.configs import WellTemperednessConfig
-from param_decomp.core.model import DecomposedModel, MaterializedMasking, prepare_compute_weights
+from param_decomp.core.model import (
+    DecomposedModel,
+    MaterializedMasking,
+    PlacedModel,
+    prepare_compute_weights,
+)
+from param_decomp.core.placement import from_config
 from param_decomp.core.precision import COMPUTE_DT
-from param_decomp.core.sharding import hsdp_mesh
+from param_decomp.core.sharding import hsdp_mesh, place_target
 from param_decomp.core.well_temperedness import (
     REGIONS,
     Ablations,
@@ -72,7 +78,7 @@ def _assert_damage_close(actual: np.ndarray, expected: np.ndarray, message: str)
     )
 
 
-def _build_ci_fn(model: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
+def _build_ci_fn(model: DecomposedModel, n_embd: int, key: jax.Array) -> PlacedCIFn:
     first_block = min(int(name.split(".")[1]) for name in model.site_names)
     architecture = ChunkwiseTransformerCIArch(
         chunks=(Chunk(input_taps=(f"resid.{first_block}",), output_sites=model.site_names),),
@@ -84,27 +90,27 @@ def _build_ci_fn(model: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
         ffn_kind="gelu",
         learned_norm_scale=False,
     )
-    return build_ci_fn(architecture, model.sites, key)
+    return PlacedCIFn(fn=build_ci_fn(architecture, model.sites, key), placement=None)
 
 
-def _setup_glu_transformer() -> tuple[DecomposedModel, ComponentStacks, CIFn, jax.Array]:
+def _setup_glu_transformer() -> tuple[PlacedModel, ComponentStacks, PlacedCIFn, jax.Array]:
     target_config = _tiny_cfg()
     site_specs = glu_site_specs(target_config, mlp_family_site_cs(4, 5, _C))
     model = _tiny_decomposed_lm(target_config, site_specs, jax.random.PRNGKey(0))
     components = init_component_stacks(site_specs, jax.random.PRNGKey(1))
     ci_fn = _build_ci_fn(model, target_config.n_embd, jax.random.PRNGKey(2))
     tokens = jax.random.randint(jax.random.PRNGKey(3), (_BATCH, _SEQ), 0, target_config.vocab_size)
-    return model, components, ci_fn, tokens
+    return PlacedModel(model=model, placement=None), components, ci_fn, tokens
 
 
-def _setup_simple_mlp() -> tuple[DecomposedModel, ComponentStacks, CIFn, jax.Array]:
+def _setup_simple_mlp() -> tuple[PlacedModel, ComponentStacks, PlacedCIFn, jax.Array]:
     target_config = _simple_mlp_cfg()
     site_specs = simple_mlp_site_specs(target_config, canonical_site_cs(_MIXED_SITE_CS))
     model = _tiny_decomposed_simple_mlp(target_config, site_specs, jax.random.PRNGKey(0))
     components = init_component_stacks(site_specs, jax.random.PRNGKey(1))
     ci_fn = _build_ci_fn(model, target_config.n_embd, jax.random.PRNGKey(2))
     tokens = jax.random.randint(jax.random.PRNGKey(3), (_BATCH, _SEQ), 0, target_config.vocab_size)
-    return model, components, ci_fn, tokens
+    return PlacedModel(model=model, placement=None), components, ci_fn, tokens
 
 
 TARGET_SETUPS = {"glu_transformer": _setup_glu_transformer, "llama_simple_mlp": _setup_simple_mlp}
@@ -126,9 +132,9 @@ def _well_temperedness_config(
 
 
 def _measure_ablations(
-    model: DecomposedModel,
+    model: PlacedModel,
     components: ComponentStacks,
-    ci_fn: CIFn,
+    ci_fn: PlacedCIFn,
     tokens: jax.Array,
     config: WellTemperednessConfig,
 ) -> tuple[Ablations, jax.Array, jax.Array]:
@@ -137,7 +143,7 @@ def _measure_ablations(
     batch_indices, position_indices = _choose_locations(
         location_key, (_BATCH, _SEQ), config.n_locations
     )
-    ablations = make_well_temperedness_step(model, ci_fn.capture_keys, config)(
+    ablations = make_well_temperedness_step(model, ci_fn.fn.capture_keys, config)(
         model,
         components,
         ci_fn,
@@ -184,8 +190,8 @@ def _synthetic_ablations(site_names: tuple[str, ...]) -> Ablations:
 
 
 def _expected_component_selection(
-    model: DecomposedModel,
-    ci_fn: CIFn,
+    model: PlacedModel,
+    ci_fn: PlacedCIFn,
     tokens: jax.Array,
     config: WellTemperednessConfig,
     batch_indices: jax.Array,
@@ -193,7 +199,7 @@ def _expected_component_selection(
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     preactivations_by_site = evaluate_ci(
         ci_fn,
-        model.clean_forward(tokens, ci_fn.capture_keys).captures,
+        model.clean_forward(tokens, ci_fn.fn.capture_keys).captures,
         remat=False,
     ).preactivations
     preactivations_at_locations = jnp.concatenate(
@@ -256,7 +262,7 @@ def test_swept_damage_matches_hand_built_single_ablation(target: str):
 
     @eqx.filter_jit
     def hand_built_at_location(
-        model: DecomposedModel,
+        model: PlacedModel,
         masks: dict[str, jax.Array],
         batch_index: int,
         position_index: int,
@@ -330,8 +336,9 @@ def test_positionless_target_runs_the_complete_ablation_step():
         n_locations=3, n_components_per_region=4, ablations_per_forward=4
     )
 
-    ablations = make_well_temperedness_step(model, ci_fn.capture_keys, config)(
-        model, components, ci_fn, inputs, jax.random.PRNGKey(4)
+    placed = PlacedModel(model=model, placement=None)
+    ablations = make_well_temperedness_step(placed, ci_fn.capture_keys, config)(
+        placed, components, PlacedCIFn(fn=ci_fn, placement=None), inputs, jax.random.PRNGKey(4)
     )
 
     assert ablations.damage.shape == (len(REGIONS), 3, 4)
@@ -341,7 +348,13 @@ def test_positionless_target_runs_the_complete_ablation_step():
 @pytest.mark.multidevice
 def test_mesh_outputs_are_replicated_and_chunk_batch_must_tile_mesh():
     model, components, ci_fn, tokens = _setup_glu_transformer()
-    mesh = hsdp_mesh()
+    mesh = hsdp_mesh(1, jax.device_count(), 1)
+    rules = from_config("ddp", mesh, model.sites)
+    # A placed forward's batch must tile the data axes (the Explicit reshard refuses a
+    # ragged split the constraint-based lowering used to pad-shard).
+    n_data = mesh.shape["replicate"] * mesh.shape["fsdp"]
+    reps = -(-n_data // tokens.shape[0])
+    tokens = jnp.tile(tokens, (reps, 1))[:n_data]
     batch_mesh_extent = mesh.shape["replicate"] * mesh.shape["fsdp"]
     invalid_chunk = _well_temperedness_config(
         n_locations=2,
@@ -349,16 +362,21 @@ def test_mesh_outputs_are_replicated_and_chunk_batch_must_tile_mesh():
         ablations_per_forward=3 * batch_mesh_extent // 2,
     )
     with pytest.raises(AssertionError, match="batch mesh extent"):
-        make_well_temperedness_step(model, ci_fn.capture_keys, invalid_chunk, mesh)
+        make_well_temperedness_step(model, ci_fn.fn.capture_keys, invalid_chunk, mesh)
 
     config = _well_temperedness_config(
         n_locations=1,
         n_components_per_region=batch_mesh_extent,
         ablations_per_forward=batch_mesh_extent,
     )
-    with mesh:
-        ablations = make_well_temperedness_step(model, ci_fn.capture_keys, config, mesh)(
-            model, components, ci_fn, tokens, jax.random.PRNGKey(5)
+    model = place_target(model.model, rules)
+    with jax.set_mesh(mesh):
+        ablations = make_well_temperedness_step(model, ci_fn.fn.capture_keys, config, mesh)(
+            model,
+            components,
+            PlacedCIFn(fn=ci_fn.fn, placement=rules.ci_fn),
+            tokens,
+            jax.random.PRNGKey(5),
         )
     assert all(value.sharding.is_fully_replicated for value in jax.tree.leaves(ablations))
 

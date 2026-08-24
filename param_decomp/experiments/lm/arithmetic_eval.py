@@ -16,15 +16,17 @@ from jaxtyping import Array, Float, Int
 from matplotlib.figure import Figure
 from typing_extensions import TypeVar
 
-from param_decomp.core.ci_fn import ci_preactivations, lower_leaky_hard_sigmoid
+from param_decomp.core.ci_fn import PlacedCIFn, ci_preactivations, lower_leaky_hard_sigmoid
 from param_decomp.core.components import ComponentStacks
 from param_decomp.core.masking import all_live_masking_no_delta
 from param_decomp.core.model import (
     CaptureKeys,
     DecomposedModel,
     MaterializedMasking,
+    PlacedModel,
     prepare_compute_weights,
 )
+from param_decomp.core.placement import PlacementRules
 from param_decomp.core.precision import COMPUTE_DT
 
 PreparedT = TypeVar("PreparedT", default=Any)
@@ -42,6 +44,8 @@ class ComponentActivationModel(DecomposedModel[PreparedT], Protocol[PreparedT]):
         prepared_weights: PreparedT,
         inputs: Any,
         masking: MaterializedMasking,
+        *,
+        placement: PlacementRules | None,
     ) -> dict[str, Array]: ...
 
 
@@ -74,17 +78,29 @@ class ArithmeticGrid:
 
 
 ArithmeticGridStep = Callable[
-    [ComponentActivationModel, ComponentStacks, Any, Int[Array, "n_pad T"]],
+    [PlacedModel, ComponentStacks, PlacedCIFn, Int[Array, "n_pad T"]],
     tuple[dict[str, Array], dict[str, Array], dict[str, Array]],
 ]
-"""`(model, components, ci_fn, tokens) -> ({site: CI}, {site: x@V}, {site: max CI})`. CI and
+"""`(model, components, placed_ci_fn, tokens) -> ({site: CI}, {site: x@V}, {site: max CI})`. CI and
 `x@V` are `(n_pad, C)` at the answer position, batch-sharded ON DEVICE (never fully
 host-gathered — see `compute_arithmetic_selection`); max CI is `(C,)` replicated, the max
 over the REAL (`< n_valid_rows`) rows only. `model` (frozen-weight-bearing) is the jit ARG."""
 
 
+def component_activation_model[PreparedT](
+    placed: PlacedModel[PreparedT],
+) -> ComponentActivationModel[PreparedT]:
+    """Narrow the bundle's target to the `x@V` seam — re-derived from the traced model arg
+    each call, never closed over (the HLO-baking rule)."""
+    model = placed.model
+    assert isinstance(model, ComponentActivationModel), (
+        f"arithmetic eval needs masked_component_activations; {type(model).__name__} does not"
+    )
+    return model
+
+
 def make_arithmetic_grid_step[PreparedT](
-    model_static: ComponentActivationModel[PreparedT],
+    model_static: PlacedModel[PreparedT],
     ci_capture_keys: CaptureKeys,
     answer_position: int,
     n_valid_rows: int,
@@ -95,19 +111,20 @@ def make_arithmetic_grid_step[PreparedT](
     per-component max CI over the real rows (`n_valid_rows` masks the sharding-pad tail —
     garbage prompts must not decide liveness). One step so the grids come from one call; a
     site's own mask never enters its `x@V`."""
+    component_activation_model(model_static)
     site_names = model_static.site_names
 
     # HLO-baking rule: read STATIC config (site_names, Cs) off the closed-over `model_static`; all array
     # access goes through the traced `model` arg.
     @eqx.filter_jit
     def step(
-        model: ComponentActivationModel[PreparedT],
+        model: PlacedModel[PreparedT],
         components: ComponentStacks,
-        ci_fn: Any,
+        placed_ci_fn: PlacedCIFn,
         tokens: Int[Array, "n_pad T"],
     ) -> tuple[dict[str, Array], dict[str, Array], dict[str, Array]]:
         preactivations = ci_preactivations(
-            ci_fn,
+            placed_ci_fn,
             model.clean_forward(tokens, ci_capture_keys).captures,
             remat=False,
         )
@@ -120,12 +137,13 @@ def make_arithmetic_grid_step[PreparedT](
         }
 
         prepared_weights = prepare_compute_weights(model, components)
-        component_activations = model.masked_component_activations(
+        component_activations = component_activation_model(model).masked_component_activations(
             prepared_weights,
             tokens,
             all_live_masking_no_delta(
                 model_static.sites, leading_shape=tokens.shape, dtype=COMPUTE_DT
             ),
+            placement=model.placement,
         )
         answer_position_component_activations = {
             site: component_activations[site][:, answer_position, :].astype(jnp.float32)
@@ -170,9 +188,9 @@ class ArithmeticSelection:
 
 def compute_arithmetic_selection(
     step: ArithmeticGridStep,
-    model: ComponentActivationModel,
+    model: PlacedModel,
     components: ComponentStacks,
-    ci_fn: Any,
+    placed_ci_fn: PlacedCIFn,
     tokens: Int[Array, "n_pad T"],
     n_prompts: int,
     thresholds: tuple[float, ...],
@@ -184,7 +202,7 @@ def compute_arithmetic_selection(
     identically on every rank. Phase 2: only the selected columns are host-gathered (the
     index padded to `top_k` so the gather compiles once; `n_prompts` trims the sharding pad
     rows off the END). Both the step and the column gather are COLLECTIVE — all ranks join."""
-    ci, xv, max_ci_replicated = step(model, components, ci_fn, tokens)
+    ci, xv, max_ci_replicated = step(model, components, placed_ci_fn, tokens)
     max_ci = {s: np.asarray(v) for s, v in max_ci_replicated.items()}
     active = select_active(max_ci, thresholds)
     shown = {s: active[min(thresholds)][s][:top_k] for s in max_ci}

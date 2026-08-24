@@ -8,11 +8,13 @@ catches RoPE / GELU-flavor / GQA / norm-eps mismatches:
 
   * tiny (hermetic): the JAX target is rebuilt from the fixture's state dict; the
     fixture's GQA repeat=2 exercises the kv-head repeat path.
-  * real: the actual t-9d2b8f02 weights via the converted safetensors cache (skipped
-    where the cluster cache is absent).
+  * real: the actual t-9d2b8f02 weights via the converted safetensors cache — opt-in:
+    export PD_TEST_DATA_ROOT pointing at a data_root whose pretrain cache holds the entry
+    (skipped when unset).
 """
 
 import json
+import os
 from pathlib import Path
 
 import jax.numpy as jnp
@@ -29,7 +31,8 @@ from param_decomp.targets.llama_simple_mlp import (
 from param_decomp.targets.testing import run_clean
 
 FIXTURE_DIR = Path(__file__).parent
-REAL_CACHE_DIR = Path("/mnt/data/artifacts/mechanisms/param-decomp/pretrain_cache/spd-t-9d2b8f02")
+_DATA_ROOT = Path(env) if (env := os.environ.get("PD_TEST_DATA_ROOT")) else None
+REAL_CACHE_DIR = _DATA_ROOT / "pretrain_cache" / "spd-t-9d2b8f02" if _DATA_ROOT else None
 
 
 def _max_abs_diff(a: Array, b: np.ndarray) -> float:
@@ -52,8 +55,9 @@ def test_tiny_random_model_matches_torch_logits():
     assert _max_abs_diff(logits, fixture["logits"]) < 1e-5
 
 
-@pytest.mark.skipif(not REAL_CACHE_DIR.exists(), reason="t-9d2b8f02 pretrain cache not mounted")
+@pytest.mark.skipif(REAL_CACHE_DIR is None, reason="PD_TEST_DATA_ROOT not set")
 def test_real_t9d2b8f02_weights_match_torch_logits():
+    assert REAL_CACHE_DIR is not None
     fixture = np.load(FIXTURE_DIR / "real_t-9d2b8f02_fixture.npz")
     cfg = load_model_config(REAL_CACHE_DIR)
     target = load_target_from_pretrain_cache(REAL_CACHE_DIR, cfg, jnp.float32)

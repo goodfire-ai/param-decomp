@@ -113,7 +113,7 @@ def _bitset_to_sample_indices(bits: np.ndarray, n_samples: int) -> np.ndarray:
     return sample_indices.astype(_index_dtype_for(n_samples), copy=False)
 
 
-@njit(cache=True)  # pyright: ignore[reportUntypedFunctionDecorator]
+@njit(cache=True)
 def _count_group_overlaps_rows_numba(
     merged_rows: np.ndarray,
     indptr: np.ndarray,

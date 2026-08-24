@@ -12,10 +12,10 @@ To use the logger, import it in any module and use it as follows:
 
 import logging
 import shutil
+import sys
 from collections.abc import Mapping
-from logging.config import dictConfig
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 DIV_CHAR: str = "="
 LogFormat = Literal["default", "terse"]
@@ -66,50 +66,58 @@ class _ParamDecompLogger(logging.Logger):
         self.info("\n" + DIV_CHAR * term_width + "\n" + msg + "\n" + DIV_CHAR * term_width)
 
 
+def _configure_handler(
+    handler: logging.Handler, *, log_format: LogFormat, level: int
+) -> logging.Handler:
+    formatter_config = _FORMATTERS[log_format]
+    handler.setFormatter(
+        logging.Formatter(
+            fmt=formatter_config["fmt"],
+            datefmt=formatter_config.get("datefmt"),
+        )
+    )
+    handler.setLevel(level)
+    return handler
+
+
+def _configure_logger(handlers: list[logging.Handler], *, propagate: bool) -> _ParamDecompLogger:
+    for existing_handler in tuple(logger.handlers):
+        logger.removeHandler(existing_handler)
+        existing_handler.close()
+    for handler in handlers:
+        logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.disabled = False
+    logger.propagate = propagate
+    return logger
+
+
 def setup_logger(logfile: Path) -> _ParamDecompLogger:
-    """Attach a console (INFO) + file (WARNING) handler to the `param_decomp` logger.
+    """Attach a console (INFO) + file (WARNING) handler to the application logger."""
+    logfile.parent.mkdir(parents=True, exist_ok=True)
+    return _configure_logger(
+        [
+            _configure_handler(logging.StreamHandler(), log_format="default", level=logging.INFO),
+            _configure_handler(
+                logging.FileHandler(logfile), log_format="default", level=logging.WARNING
+            ),
+        ],
+        propagate=True,
+    )
 
-    Called once by the run entry point with the run's logfile; until then `logger` only
-    carries a `NullHandler` (library-safe — no output unless the application opts in).
-    """
-    logging.setLoggerClass(_ParamDecompLogger)
 
-    if not logfile.parent.exists():
-        logfile.parent.mkdir(parents=True, exist_ok=True)
-
-    logging_config = {
-        "version": 1,
-        # dictConfig defaults this to True, which DISABLES every already-created logger —
-        # including jax's, silencing JAX_LOG_COMPILES / persistent-cache diagnostics.
-        "disable_existing_loggers": False,
-        "formatters": _FORMATTERS,
-        "handlers": {
-            "console": {
-                "class": "logging.StreamHandler",
-                "formatter": "default",
-                "level": "INFO",
-            },
-            "file": {
-                "class": "logging.FileHandler",
-                "filename": str(logfile),
-                "formatter": "default",
-                "level": "WARNING",
-            },
-        },
-        "loggers": {
-            _PARAM_DECOMP_LOGGER_NAME: {
-                "handlers": ["console", "file"],
-                "level": "INFO",
-            },
-        },
-    }
-
-    dictConfig(logging_config)
-    # we have to pass the name, or we always get the root logger
-    _logger: _ParamDecompLogger = logging.getLogger(_PARAM_DECOMP_LOGGER_NAME)  # pyright:ignore[reportAssignmentType]
-    return _logger
+def setup_console_logger() -> _ParamDecompLogger:
+    """Write the application logger's INFO output to stdout."""
+    return _configure_logger(
+        [
+            _configure_handler(
+                logging.StreamHandler(sys.stdout), log_format="terse", level=logging.INFO
+            )
+        ],
+        propagate=False,
+    )
 
 
 logging.setLoggerClass(_ParamDecompLogger)
-logger: _ParamDecompLogger = logging.getLogger(_PARAM_DECOMP_LOGGER_NAME)  # pyright:ignore[reportAssignmentType]
+logger = cast(_ParamDecompLogger, logging.getLogger(_PARAM_DECOMP_LOGGER_NAME))
 logger.addHandler(logging.NullHandler())

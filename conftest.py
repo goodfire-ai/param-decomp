@@ -57,6 +57,17 @@ def _bounded_jax_executable_mappings() -> Iterator[None]:
         jax.clear_caches()
 
 
+# The engine activates the run's mesh process-globally (`run.py::_prepare_run`,
+# production semantics: one process, one run). Tests share a worker process, so an
+# engine test would otherwise leave its mesh ambient for every later test on that
+# worker — unplaced (`placement=None`) tests must never see a leaked mesh.
+@pytest.fixture(autouse=True)
+def _no_leaked_ambient_mesh() -> Iterator[None]:
+    yield
+    if not jax.sharding.get_abstract_mesh().empty:
+        jax.set_mesh(None)
+
+
 def pytest_addoption(parser: Parser) -> None:
     parser.addoption("--runslow", action="store_true", default=False, help="run slow tests")
     parser.addoption(

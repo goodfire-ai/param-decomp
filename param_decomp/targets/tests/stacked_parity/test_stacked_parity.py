@@ -36,20 +36,27 @@ from param_decomp.core.adversary import (
 from param_decomp.core.components import ComponentStacks, component_stacks_from_sites
 from param_decomp.core.configs import (
     AdamPGDConfig,
-    ChunkwiseSubsetReconLossConfig,
     FaithfulnessLossConfig,
     FrequencyMinimalityConfig,
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
+    StochasticReconSubsetLossConfig,
     UniformKSubsetRoutingConfig,
 )
-from param_decomp.core.model import DecomposedModel
+from param_decomp.core.faithfulness import faithfulness_loss_for
+from param_decomp.core.model import DecomposedModel, PlacedModel, site_weight_delta
 from param_decomp.core.objective import build_objective
-from param_decomp.core.recon import StochasticSources, subset_chunk_plan
 from param_decomp.core.schedule import Knot, ScheduleConfig
-from param_decomp.core.train import Decomposition, TrainingItem, TrainState, make_train_step
+from param_decomp.core.train import (
+    Decomposition,
+    ForwardSubstrate,
+    TrainingItem,
+    TrainState,
+    make_train_step,
+)
 from param_decomp.targets.glu_transformer import (
     FrozenAttn,
+    GatedMLP,
     GLUDecomposedModel,
     GLULayer,
     build_decomposed_lm,
@@ -79,11 +86,19 @@ _PENDING_REGEN = pytest.mark.xfail(
     strict=False,
 )
 STABLE_FIXTURE_METRIC_KEYS = (
-    "total", "faith", "imp", "stoch", "ppgd", "p_imp", "src_lr",
-    "grad_norms/summary/components", "grad_norms/summary/ci_fns", "grad_norms/summary/total",
-)  # fmt: skip
+    "total",
+    "faith",
+    "imp",
+    "stoch",
+    "ppgd",
+    "p_imp",
+    "src_lr",
+    "grad_norms/summary/components",
+    "grad_norms/summary/ci_fns",
+    "grad_norms/summary/total",
+)
 METRIC_KEY_BY_FIXTURE_KEY = {
-    "stoch": "loss/ChunkwiseSubsetReconLoss",
+    "stoch": "loss/StochasticReconSubsetLoss",
     "ppgd": "loss/PersistentPGDReconLoss",
 }
 """The fixtures predate the recon-loss-terms unification; their metric keys are the
@@ -115,19 +130,26 @@ def _load() -> tuple[dict[str, np.ndarray], GLUDecomposedModel, ComponentStacks,
                 cfg.n_kv_head,
                 cfg.head_dim,
                 cfg.n_rep,
+                "auto",
             ),  # fmt: skip
-            Wg=a(f"tgt::layers.{i}.Wg"),
-            Wu=a(f"tgt::layers.{i}.Wu"),
-            Wd=a(f"tgt::layers.{i}.Wd"),
+            mlp=GatedMLP(
+                Wg=a(f"tgt::layers.{i}.Wg"),
+                Wu=a(f"tgt::layers.{i}.Wu"),
+                Wd=a(f"tgt::layers.{i}.Wd"),
+            ),
         )
         for i in range(first, cfg.n_layer)
     ]
     sites = glu_site_specs(cfg, mlp_family_site_cs(first, last, C))
     model = build_decomposed_lm(
         embed=jnp.zeros((cfg.vocab_size, cfg.n_embd), jnp.float32),
-        layers=layers, norm=a("tgt::norm"), lm_head=a("tgt::lm_head"),
-        inv_freq=llama3_inv_freq(cfg), cfg=cfg, sites=sites,
-    )  # fmt: skip
+        layers=layers,
+        norm=a("tgt::norm"),
+        lm_head=a("tgt::lm_head"),
+        inv_freq=llama3_inv_freq(cfg),
+        cfg=cfg,
+        sites=sites,
+    )
     vu = component_stacks_from_sites(
         {s.name: (a(f"vu::V::{s.name}"), a(f"vu::U::{s.name}")) for s in sites}
     )
@@ -193,7 +215,9 @@ def test_site_inputs_and_weight_deltas_match():
         _assert_close(captures[input_key], f[f"out::site_input::{name}"], f"site_input {name}")
     deltas = model.weight_deltas(vu)
     for name in model.site_names:
-        _assert_close(deltas[name], f[f"out::wd::{name}"], f"weight_delta {name}")
+        _assert_close(
+            site_weight_delta(deltas, vu, name), f[f"out::wd::{name}"], f"weight_delta {name}"
+        )
 
 
 @_PENDING_REGEN
@@ -201,7 +225,7 @@ def test_masked_output_match():
     f, model, vu, resid = _load()
     masks = {s: jnp.asarray(f[f"mask::{s}"]) for s in model.site_names}
     delta_masks = {s: jnp.asarray(f[f"delta_mask::{s}"]) for s in model.site_names}
-    prepared_weights = model.prepare_compute_weights(vu)
+    prepared_weights = model.prepare_compute_weights(vu, None)
     masked_all = run_masked(
         model,
         prepared_weights,
@@ -209,56 +233,10 @@ def test_masked_output_match():
         masks,
         delta_masks,
         None,
-        model.site_names,
         True,
         remat=False,
     )
     _assert_close(masked_all, f["out::masked_all"], "masked_output (all live)")
-
-    chunk0 = model.site_names[:3]
-    routes0 = {s: jnp.asarray(f[f"route0::{s}"]) for s in chunk0}
-    masked_subset = run_masked(model,
-        prepared_weights, resid,
-        {s: masks[s] for s in chunk0}, {s: delta_masks[s] for s in chunk0}, routes0, chunk0, True,
-        remat=False,
-    )  # fmt: skip
-    _assert_close(masked_subset, f["out::masked_subset"], "masked_output (subset live)")
-
-
-@_PENDING_REGEN
-def test_chunk_plan_static_live_set_matches():
-    """The production `subset_chunk_plan` (`ChunkwiseSubsetReconLoss`) is what reaches the
-    static live-set realization of SPEC S2: each plan entry holds a STATIC `live_sites`
-    tuple, and `masked_output` runs every absent site on the frozen `x @ W` path (no
-    `(B,T,C)` acts) — distinct from the per-position routing fallback. This drives that
-    plan directly and asserts its first chunk's frozen-site forward matches the torch
-    golden (`out::masked_subset`), so the chunk-plan path is verified against the oracle.
-    """
-    f, model, vu, resid = _load()
-
-    plan = subset_chunk_plan(
-        model.site_names, sites_per_chunk=3, n_samples=1, sources=StochasticSources()
-    )
-    chunk0 = model.site_names[:3]
-    assert plan[0].live_sites == chunk0, (plan[0].live_sites, chunk0)
-    assert all(len(entry.live_sites) == 3 for entry in plan), [e.live_sites for e in plan]
-
-    masks = {s: jnp.asarray(f[f"mask::{s}"]) for s in chunk0}
-    delta_masks = {s: jnp.asarray(f[f"delta_mask::{s}"]) for s in chunk0}
-    routes = {s: jnp.asarray(f[f"route0::{s}"]) for s in chunk0}
-    prepared_weights = model.prepare_compute_weights(vu)
-    masked = run_masked(
-        model,
-        prepared_weights,
-        resid,
-        masks,
-        delta_masks,
-        routes,
-        plan[0].live_sites,
-        plan[0].uses_weight_deltas,
-        remat=False,
-    )
-    _assert_close(masked, f["out::masked_subset"], "chunk-plan static-live-set forward")
 
 
 @pytest.mark.xfail(
@@ -315,9 +293,10 @@ def test_train_trajectory_matches():
                     n_warmup=ppgd_cfg.n_warmup_steps,
                 )
             },
+            freq_ema=None,
             step=jnp.zeros((), jnp.int32),
         ),
-    )  # fmt: skip
+    )
     loss_terms = build_objective(
         (
             FaithfulnessLossConfig(coeff=1e5),
@@ -328,29 +307,34 @@ def test_train_trajectory_matches():
                 ),
                 frequency=FrequencyMinimalityConfig(coeff=1e-6, reference_datapoint_count=32),
             ),
-            ChunkwiseSubsetReconLossConfig(
+            StochasticReconSubsetLossConfig(
                 routing=UniformKSubsetRoutingConfig(),
                 coeff=0.5,
-                sites_per_chunk=3,
-                n_samples=1,
+                n_mask_samples=1,
             ),
             ppgd_cfg,
         ),
         model.site_names,
     )
+    placed = PlacedModel(model=model, placement=None)
     step_fn = make_train_step(
-        model_static=model,
-        losses=loss_terms,
+        model_static=placed,
+        substrate=ForwardSubstrate.of(
+            placed,
+            remat_recon_forwards=False,
+            remat_ci_fn=False,
+            ci_capture_keys=ci_fn.capture_keys,
+            ci_placement=None,
+        ),
+        objective=loss_terms,
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=100,
-        remat_recon_forwards=False,
-        remat_ci_fn=False,
-        ci_capture_keys=ci_fn.capture_keys,
+        faithfulness=faithfulness_loss_for(model),
     )
     run_key = random.PRNGKey(7)
     for step_idx in range(n_train_steps):
-        state, metrics = step_fn(model, state, resid, random.fold_in(run_key, step_idx))
+        state, metrics = step_fn(placed, state, resid, random.fold_in(run_key, step_idx))
         for fixture_key in STABLE_FIXTURE_METRIC_KEYS:
             metric_key = METRIC_KEY_BY_FIXTURE_KEY.get(fixture_key, fixture_key)
             got = float(metrics[metric_key])
@@ -366,4 +350,7 @@ def test_train_trajectory_matches():
         _assert_close(site_components.U, f[f"out::final_U::{name}"], f"final U {name}")
     final_sources = state.training.adversaries["PersistentPGDReconLoss"].sources
     for name in model.site_names:
-        _assert_close(final_sources[name], f[f"out::final_src::{name}"], f"final src {name}")
+        packed_source = jnp.concatenate(
+            [final_sources[name].components, final_sources[name].delta[..., None]], axis=-1
+        )
+        _assert_close(packed_source, f[f"out::final_src::{name}"], f"final src {name}")

@@ -23,11 +23,13 @@ run_name: jax-l18-C49k-200k
 #   8. target.weights_dtype: upstream's fp32 -> bfloat16, halving the frozen target's
 #      resident footprint (the dominant resident term at 8B).
 cadence:
-  checkpoint_retention:
-    kind: keep_last
-    n: 2
-  save_every: 5000
   train_log_every: 200
+  checkpointing:
+    kind: periodic
+    save_every: 5000
+    retention:
+      kind: keep_last
+      n: 2
 data:
   train:
     kind: name
@@ -152,17 +154,22 @@ pd:
       type: adam
     source_shape: sc
     type: PersistentPGDReconLoss
-  - coeff: 100000.0
+  - coeff: 1.0e+03
     type: FaithfulnessLoss
   seed: 0
   steps: 200000
 runtime:
+  compilation_cache_dir: ~/.cache/param-decomp/xla
   remat_recon_forwards: false
-  dp: 32
+  replicate: 4
+  fsdp: 8
+  tp: 1
   # L18-only: gate/up stack of 2 and down stack of 1 can't tile ÷replicate=4
-  # (dp 32 = 4 nodes); ZeRO-1 those groups.
-  sharding: owner+zero1
+  # (dp 32 = 4 nodes), so `owner` refuses; zero1 shards no stack axis.
+  sharding: zero1
+  compiler_options: tuned-v1
 target:
+  attention_implementation: auto
   weights_dtype: bfloat16
   spec:
     kind: hf

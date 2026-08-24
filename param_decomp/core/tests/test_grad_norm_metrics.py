@@ -1,12 +1,12 @@
 """`_grad_norm_metrics` reports components grad norms per SITE (the semantic unit),
-not per shape-group stack (the storage unit), under the historical per-site key format
+not per semantic-group stack (the storage unit), under the historical per-site key format
 `grad_norms/components.vu['<site>'][0|1]`."""
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from param_decomp.core.components import component_stacks_from_sites
+from param_decomp.core.components import SiteSpec, component_stacks_from_site_arrays
 from param_decomp.core.train import _grad_norm_metrics
 
 SITE_VU_SHAPES = {
@@ -25,11 +25,15 @@ def test_components_grad_norms_are_per_site() -> None:
         )
         for name, (d_in, d_out, c) in SITE_VU_SHAPES.items()
     }
-    components_grad = component_stacks_from_sites(vu)
-    assert len(components_grad.stacks) == 2  # two shape groups, three sites
+    sites = tuple(
+        SiteSpec(name, d_in, d_out, c, name.rsplit(".", 1)[1])
+        for name, (d_in, d_out, c) in SITE_VU_SHAPES.items()
+    )
+    components_grad = component_stacks_from_site_arrays(sites, vu)
+    assert len(components_grad.stacks) == 2
     ci_fn_grad = {"w": jax.random.normal(next(keys), (5,))}
 
-    metrics = _grad_norm_metrics(components_grad, ci_fn_grad)
+    metrics = _grad_norm_metrics(components_grad, ci_fn_grad, mesh=None)
 
     for name, (v, u) in vu.items():
         for factor, grad in enumerate((v, u)):

@@ -18,16 +18,13 @@ before push-1 severed the torch import — it now holds by the frozen `type` lit
 
 from param_decomp.core.configs import (
     AdamPGDConfig,
-    CIMaskedReconLayerwiseLossConfig,
     CIMaskedReconLossConfig,
     CIMaskedReconSubsetLossConfig,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
-    PGDReconLayerwiseLossConfig,
     PGDReconLossConfig,
     PGDReconSubsetLossConfig,
-    StochasticReconLayerwiseLossConfig,
     StochasticReconLossConfig,
     StochasticReconSubsetLossConfig,
     UnmaskedReconLossConfig,
@@ -48,20 +45,11 @@ def _persistent_optimizer() -> AdamPGDConfig:
 # irrelevant here (each becomes its own term); coeffs are arbitrary-positive.
 RECON_CONFIGS = (
     CIMaskedReconLossConfig(coeff=1.0),
-    CIMaskedReconLayerwiseLossConfig(coeff=1.0),
     CIMaskedReconSubsetLossConfig(coeff=1.0),
     UnmaskedReconLossConfig(coeff=1.0),
     StochasticReconLossConfig(coeff=1.0),
-    StochasticReconLayerwiseLossConfig(coeff=1.0),
     StochasticReconSubsetLossConfig(coeff=1.0),
     PGDReconLossConfig(
-        coeff=1.0,
-        init="random",
-        step_size=0.1,
-        n_steps=1,
-        source_shape="bsc",
-    ),
-    PGDReconLayerwiseLossConfig(
         coeff=1.0,
         init="random",
         step_size=0.1,

@@ -11,6 +11,7 @@ import pytest
 
 from param_decomp.core.configs import (
     FaithfulnessLossConfig,
+    FrequencyMinimalityConfig,
     ImportanceMinimalityLossConfig,
     NontargetConfig,
     PDConfig,
@@ -54,8 +55,7 @@ def test_targeted_objective_shape_and_shared_imp_config():
     assert objective.nontarget.impmin_coeff == 6e-3
     # T5: the non-target surface is stochastic/constant-source only, output-only scored.
     for term in objective.nontarget.recon:
-        for entry in term.plan:
-            assert isinstance(entry.sources, StochasticSources | ConstantSources)
+        assert isinstance(term.sources, StochasticSources | ConstantSources)
 
 
 def test_targeted_pd_config_cannot_spell_faithfulness():
@@ -85,6 +85,34 @@ def test_targeted_pd_config_cannot_spell_faithfulness():
                 "steps": 10,
                 "batch_size": 8,
                 "faithfulness_warmup_steps": 0,
+            }
+        )
+
+
+def test_targeted_pd_config_refuses_frequency_ema():
+    # The EMA carries one frequency stream per site, while the tPD step takes the penalty
+    # on two independent streams — tPD EMA is not implemented (S8''), so an authored
+    # config with the knob fails loudly at parse rather than half-applying it.
+    with pytest.raises(Exception, match="not implemented for the targeted"):
+        TargetedPDConfig.model_validate(
+            {
+                "loss_metrics": [
+                    {
+                        "type": "ImportanceMinimalityLoss",
+                        "coeff": 1e-4,
+                        "pnorm": 2.0,
+                        "frequency": {
+                            "coeff": 1e-4,
+                            "reference_datapoint_count": 128,
+                            "ema_halflife_steps": 500,
+                        },
+                    },
+                    {"type": "StochasticReconLoss", "coeff": 1.0},
+                ],
+                "components_optimizer": {"lr_schedule": 1e-3},
+                "ci_fn_optimizer": {"lr_schedule": 1e-3},
+                "steps": 10,
+                "batch_size": 8,
             }
         )
 
@@ -141,9 +169,30 @@ def test_targeted_objective_boundary_refuses_programmatic_faithfulness():
         build_targeted_objective(forged, _nontarget(), ("a", "b"))
 
 
+def test_targeted_objective_boundary_refuses_programmatic_frequency_ema():
+    # The library boundary behind the schema: a loss list built outside pydantic cannot
+    # smuggle the plain-PD-only EMA into the two-pass objective (S8'').
+    with_ema = ImportanceMinimalityLossConfig(
+        coeff=1e-4,
+        pnorm=ScheduleConfig.constant(2.0),
+        frequency=FrequencyMinimalityConfig(
+            coeff=1e-4, reference_datapoint_count=128, ema_halflife_steps=500
+        ),
+    )
+    forged = cast(
+        "list[TargetedLossMetricConfig]",
+        [
+            with_ema,
+            *[m for m in _target_metrics() if not isinstance(m, ImportanceMinimalityLossConfig)],
+        ],
+    )
+    with pytest.raises(AssertionError, match="not implemented for the targeted"):
+        build_targeted_objective(forged, _nontarget(), ("a", "b"))
+
+
 def test_nontarget_schema_refuses_hidden_acts_at_parse():
-    # T5: the S35 rider is target-pass-only vocabulary — refused when the seat parses,
-    # not at objective build on the GPUs.
+    # T5: S35 hidden-activation reconstruction is target-pass-only — refused when the
+    # seat parses, not at objective build on the GPUs.
     with pytest.raises(Exception, match="hidden_acts_reconstruction"):
         NontargetConfig.model_validate(
             {
@@ -182,8 +231,8 @@ def test_nontarget_schema_rejects_adversarial_sources():
 
 
 def test_unmasked_no_delta_config_is_fully_determined():
-    # The term is fully determined by its type: routing / sampling / rider vocabulary is
-    # structurally absent, refused at parse (`extra="forbid"`), not validated away.
+    # The term is fully determined by its type: routing, sampling, and optional
+    # hidden-activation reconstruction fields are structurally absent, refused at parse (`extra="forbid"`), not validated away.
     cfg = UnmaskedNoDeltaReconLossConfig.model_validate(
         {"type": "UnmaskedNoDeltaReconLoss", "coeff": 1.0}
     )
@@ -205,7 +254,7 @@ def test_unmasked_no_delta_masks_are_ones_and_zeros():
         "a": jax.random.uniform(jax.random.PRNGKey(0), (4, 6)),
         "b": jax.random.uniform(jax.random.PRNGKey(1), (4, 3)),
     }
-    masks, deltas = unmasked_no_delta_masks(ci_lower, ("a", "b"))
+    masks, deltas = unmasked_no_delta_masks(ci_lower)
     for site in ("a", "b"):
         assert jnp.array_equal(masks[site], jnp.ones_like(ci_lower[site]))
         assert jnp.array_equal(deltas[site], jnp.zeros((4,)))
@@ -224,11 +273,9 @@ def test_targeted_objective_admits_unmasked_no_delta_for_nontarget():
     unmasked_term = next(
         t for t in objective.nontarget.recon if t.name == "UnmaskedNoDeltaReconLoss"
     )
-    # One all-live entry with a single all-routed draw — the term is fully determined.
-    (entry,) = unmasked_term.plan
-    assert isinstance(entry.sources, UnmaskedNoDeltaSources)
-    assert entry.live_sites == ("a", "b")
-    assert entry.sample_routing(jax.random.PRNGKey(0), (4,)) == (None,)
+    # A single all-routed draw — the term is fully determined.
+    assert isinstance(unmasked_term.sources, UnmaskedNoDeltaSources)
+    assert unmasked_term.sample_routing(jax.random.PRNGKey(0), (4,)) == (None,)
 
 
 def test_target_pass_and_plain_unions_refuse_unmasked_no_delta():
@@ -254,15 +301,13 @@ def test_target_pass_and_plain_unions_refuse_unmasked_no_delta():
 
 
 def test_delta_pinned_masks_pin_every_delta_to_one():
-    # T4: both non-target mask constructions carry an all-ones delta mask per live site.
+    # T4: both non-target mask constructions carry an all-ones delta mask per site.
     ci_lower = {
         "a": jax.random.uniform(jax.random.PRNGKey(0), (4, 6)),
         "b": jax.random.uniform(jax.random.PRNGKey(1), (4, 3)),
     }
-    stoch_masks, stoch_deltas = stochastic_delta_pinned_masks(
-        ci_lower, ("a", "b"), jax.random.PRNGKey(2)
-    )
-    const_masks, const_deltas = constant_delta_pinned_masks(0.0, ci_lower, ("a", "b"))
+    stoch_masks, stoch_deltas = stochastic_delta_pinned_masks(ci_lower, jax.random.PRNGKey(2))
+    const_masks, const_deltas = constant_delta_pinned_masks(0.0, ci_lower)
     for site in ("a", "b"):
         assert jnp.array_equal(stoch_deltas[site], jnp.ones((4,)))
         assert jnp.array_equal(const_deltas[site], jnp.ones((4,)))

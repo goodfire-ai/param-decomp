@@ -26,4 +26,13 @@ from param_decomp.vendored_jax.llama import attn_implementation
 def test_attn_implementation_dispatch(
     backend: str, dtype: jnp.dtype, seq_len: int, expected: str
 ) -> None:
-    assert attn_implementation(backend, jnp.dtype(dtype), seq_len) == expected
+    assert attn_implementation("auto", backend, jnp.dtype(dtype), seq_len) == expected
+
+
+def test_explicit_xla_ignores_cudnn_compatibility() -> None:
+    assert attn_implementation("xla", "gpu", jnp.dtype(jnp.bfloat16), 512) == "xla"
+
+
+def test_explicit_cudnn_fails_closed_when_incompatible() -> None:
+    with pytest.raises(AssertionError):
+        attn_implementation("cudnn", "cpu", jnp.dtype(jnp.bfloat16), 512)

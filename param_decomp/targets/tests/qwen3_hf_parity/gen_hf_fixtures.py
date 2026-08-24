@@ -4,13 +4,14 @@ torch-free; run it in a throwaway venv, like the `tests/equivalence` torch gener
     uv venv /tmp/qwen3-golden --python 3.12
     VIRTUAL_ENV=/tmp/qwen3-golden uv pip install torch --index-url https://download.pytorch.org/whl/cpu
     VIRTUAL_ENV=/tmp/qwen3-golden uv pip install transformers numpy
-    /tmp/qwen3-golden/bin/python param_decomp/tests/qwen3_hf_parity/gen_hf_fixtures.py         # tiny
-    /tmp/qwen3-golden/bin/python param_decomp/tests/qwen3_hf_parity/gen_hf_fixtures.py --real  # 8B
+    /tmp/qwen3-golden/bin/python param_decomp/targets/tests/qwen3_hf_parity/gen_hf_fixtures.py         # tiny
+    /tmp/qwen3-golden/bin/python param_decomp/targets/tests/qwen3_hf_parity/gen_hf_fixtures.py --real  # 8B
 
 Tiny golden (`qwen3_tiny_hf_fixtures.npz`): a seeded random `Qwen3ForCausalLM` at a
-4-layer toy config, fp32, eager attention — the exact-architecture check (QK-norm, GQA,
-RoPE base) `test_qwen3_hf_parity.py` compares against at fp32 tolerance. The full state
-dict rides in the npz under `sd::`-prefixed keys.
+4-layer toy config, fp32, eager attention — the exact-architecture check (rectangular
+query projections, QK-norm, GQA, RoPE, and tied embeddings). The test compares every
+residual boundary and the logits at fp32 tolerance. The full state dict rides in the npz
+under `sd::`-prefixed keys.
 
 Real golden (`qwen3_8b_real_logits.npz`): `Qwen/Qwen3-8B-Base` bf16 from the HF cache,
 a few fixed prompts, final-position fp32 logits — the weight-loading end-to-end check
@@ -30,8 +31,8 @@ HERE = Path(__file__).resolve().parent
 
 TINY_CONFIG = dict(
     vocab_size=64,
-    hidden_size=32,
-    intermediate_size=64,
+    hidden_size=16,
+    intermediate_size=48,
     num_hidden_layers=4,
     num_attention_heads=4,
     num_key_value_heads=2,
@@ -39,7 +40,7 @@ TINY_CONFIG = dict(
     rope_theta=1000000.0,
     rms_norm_eps=1e-6,
     max_position_embeddings=512,
-    tie_word_embeddings=False,
+    tie_word_embeddings=True,
     attention_bias=False,
     use_cache=False,
 )
@@ -59,9 +60,23 @@ def gen_tiny() -> None:
     cfg = Qwen3Config(**TINY_CONFIG)
     model = Qwen3ForCausalLM._from_config(cfg, attn_implementation="eager").eval()
     tokens = torch.randint(0, cfg.vocab_size, (2, 16), generator=torch.Generator().manual_seed(1))
+    residuals = []
+    handles = [
+        layer.register_forward_pre_hook(lambda _module, args: residuals.append(args[0].detach()))
+        for layer in model.model.layers
+    ]
+    handles.append(
+        model.model.norm.register_forward_pre_hook(
+            lambda _module, args: residuals.append(args[0].detach())
+        )
+    )
     with torch.no_grad():
         logits = model(tokens).logits
+    for handle in handles:
+        handle.remove()
+    assert len(residuals) == cfg.num_hidden_layers + 1
     arrays = {f"sd::{k}": v.numpy() for k, v in model.state_dict().items()}
+    arrays.update({f"resid::{i}": x.numpy() for i, x in enumerate(residuals)})
     import transformers
 
     np.savez_compressed(

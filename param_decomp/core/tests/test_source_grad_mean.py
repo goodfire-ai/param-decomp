@@ -37,11 +37,12 @@ from jax import random
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from param_decomp.core.adversary import init_persistent_sources
+from param_decomp.core.adversary import Sources, init_persistent_sources
 from param_decomp.core.ci_fn import (
     Chunk,
     ChunkwiseTransformerCIArch,
     MHACIAttention,
+    PlacedCIFn,
     build_ci_fn,
     evaluate_ci,
 )
@@ -63,7 +64,7 @@ from param_decomp.targets.testing import (
 )
 
 
-def _source_grad(sharded: bool) -> dict[str, jax.Array]:
+def _source_grad(sharded: bool) -> Sources:
     """Grad of the route-all adversarial KL objective w.r.t. the persistent `sc`-scope
     sources, with components/CI frozen (SPEC §4.5) — the leaf whose cross-device
     reduction we are pinning. Returns one fp32 grad array per site."""
@@ -89,28 +90,27 @@ def _source_grad(sharded: bool) -> dict[str, jax.Array]:
     )
     resid = random.randint(random.PRNGKey(4), (gbatch, seq), 0, cfg.vocab_size)
 
-    mesh = hsdp_mesh() if sharded else None
+    mesh = hsdp_mesh(1, jax.device_count(), 1) if sharded else None
     if mesh is not None:
         resid = shard_batch(resid, mesh, batch_axis=0)
         # The source leaf is REPLICATED across `dp` — exactly `init_sources_sharded`'s
         # placement (`P()`); this is where the SUM-vs-MEAN reduction lands.
-        src = {name: jax.device_put(v, NamedSharding(mesh, P())) for name, v in src.items()}
+        src = jax.tree.map(lambda value: jax.device_put(value, NamedSharding(mesh, P())), src)
 
     components_bf16 = cast_floating(vu, COMPUTE_DT)
     taps = capture_clean(model, resid, ci_fn.capture_keys)
-    ci_lower = evaluate_ci(ci_fn, taps, remat=False).lower
+    ci_lower = evaluate_ci(PlacedCIFn(fn=ci_fn, placement=None), taps, remat=False).lower
     clean_output = jax.lax.stop_gradient(run_clean(model, resid))
 
-    def source_loss(sources: dict[str, jax.Array]) -> jax.Array:
-        masks, delta_masks = masks_from_sources(ci_lower, sources, model.site_names)
+    def source_loss(sources: Sources) -> jax.Array:
+        masks, delta_masks = masks_from_sources(ci_lower, sources)
         masked = run_masked(
             model,
-            model.prepare_compute_weights(components_bf16),
+            model.prepare_compute_weights(components_bf16, None),
             resid,
             masks,
             delta_masks,
             None,
-            model.site_names,
             True,
             remat=False,
         )
@@ -126,8 +126,8 @@ def _source_grad(sharded: bool) -> dict[str, jax.Array]:
 def test_source_leaf_grad_is_global_mean_not_sum():
     n_dev = len(jax.devices())
     single = _source_grad(sharded=False)
-    for name, g in single.items():
-        assert jnp.all(jnp.isfinite(g)), name
+    for path, g in jax.tree.flatten_with_path(single)[0]:
+        assert jnp.all(jnp.isfinite(g)), jax.tree_util.keystr(path)
 
     if n_dev == 1:
         return  # SUM vs MEAN (N× the mean) is only observable with >1 device
@@ -138,9 +138,10 @@ def test_source_leaf_grad_is_global_mean_not_sum():
     # cancellation graze a pure-relative 1e-4 while their ABSOLUTE error stays ~1e-10,
     # orders of magnitude below the ~1e-4 grad scale — reassociation noise, not a SUM.
     REL, ABS = 1e-4, 1e-6
-    for name in single:
-        a = single[name]
-        b = sharded[name]
+    single_paths, single_leaves = jax.tree.flatten_with_path(single)[0], jax.tree.leaves(single)
+    sharded_leaves = jax.tree.leaves(sharded)
+    for (path, _), a, b in zip(single_paths, single_leaves, sharded_leaves, strict=True):
+        name = jax.tree_util.keystr(path)
         max_abs_err = float(jnp.max(jnp.abs(a - b)))
         max_allowed = REL * float(jnp.max(jnp.abs(a))) + ABS
         assert max_abs_err <= max_allowed, (

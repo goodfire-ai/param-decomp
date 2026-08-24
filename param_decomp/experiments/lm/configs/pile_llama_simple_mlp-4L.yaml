@@ -13,11 +13,13 @@
 #   python -m param_decomp.experiments.lm.run param_decomp/experiments/lm/configs/pile_llama_simple_mlp-4L.yaml
 run_name: ai-jax-pile4l-ppgd-bsc
 cadence:
-  checkpoint_retention:
-    kind: keep_last
-    n: 2
-  save_every: 5000
   train_log_every: 200
+  checkpointing:
+    kind: periodic
+    save_every: 5000
+    retention:
+      kind: keep_last
+      n: 2
 data:
   train:
     kind: name
@@ -143,13 +145,18 @@ pd:
           - {at: 1.0, frac: 1.0}
       type: adam
     source_shape: bsc
-  - coeff: 10000000.0
+  - coeff: 1.0e+03
     type: FaithfulnessLoss
 runtime:
+  compilation_cache_dir: ~/.cache/param-decomp/xla
   remat_recon_forwards: false
-  dp: 8
+  replicate: 1
+  fsdp: 8
+  tp: 1
   sharding: zero1
+  compiler_options: tuned-v1
 target:
+  attention_implementation: auto
   weights_dtype: bfloat16
   spec:
     kind: pretrained

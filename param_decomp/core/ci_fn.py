@@ -27,6 +27,7 @@ that cannot afford attention over its positions runs the same chunkwise impl at 
 which is position-local by construction (see `ChunkwiseTransformerCIArch`).
 """
 
+import math
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
 
@@ -38,8 +39,19 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from param_decomp.core.components import SiteSpec
+from param_decomp.core.axes import Axes, MeshAxis, SemanticAxis
+from param_decomp.core.components import SiteSpec, activation_axes
+from param_decomp.core.linear_plan import placed_linear, value_mesh
 from param_decomp.core.model import CaptureKeys
+from param_decomp.core.placement import (
+    CIFnPlacement,
+    CIWeightFamily,
+    CIWeightPlacement,
+    PlacedRule,
+    PlacementRules,
+    materialize_reduced_weights,
+    ns_staging_sharding,
+)
 from param_decomp.core.precision import COMPUTE_DT, cast_floating
 from param_decomp.vendored_jax.llama import (
     apply_rope,
@@ -54,6 +66,25 @@ fp32 internally, so this is the dtype that governs (SPEC S4)."""
 
 SiteDict = dict[str, Float[Array, "*leading C"]]
 """Per-output-site tensor keyed by OUTPUT site name."""
+
+_StoredCIAxes = tuple[SemanticAxis, SemanticAxis, SemanticAxis]
+# Attention keeps per-projection axes: q/o carry the query head axis, k/v the K/V head
+# axis (narrower under GQA). Each name covers both spellings of that dimension — the
+# flat `n * head_dim` projection width and the head COUNT of its split view.
+CI_ATTN_Q_AXES: _StoredCIAxes = ("stack", "q_head", "d_model")
+CI_ATTN_KV_AXES: _StoredCIAxes = ("stack", "kv_head", "d_model")
+CI_ATTN_OUT_AXES: _StoredCIAxes = ("stack", "d_model", "q_head")
+CI_FFN_IN_AXES: _StoredCIAxes = ("stack", "d_model", "ffn_hidden")
+CI_FFN_OUT_AXES: _StoredCIAxes = ("stack", "ffn_hidden", "d_model")
+CI_INPUT_AXES: _StoredCIAxes = ("stack", "input", "d_model")
+CI_OUTPUT_AXES: _StoredCIAxes = ("stack", "d_model", "C")
+
+
+def _vector_sharding(
+    row: PlacedRule, axes: tuple[SemanticAxis, SemanticAxis], shape: tuple[int, ...]
+) -> NamedSharding:
+    row.validate_shape(axes, shape)
+    return row.sharding_for(axes)
 
 
 # ----------------------------- squashings (SPEC S5/S6) -----------------------------
@@ -118,25 +149,57 @@ class CIFn(Protocol):
     output_names: tuple[str, ...]
     has_position_axis: bool
 
-    def __call__(self, taps: dict[str, Array], *, remat: bool) -> CI: ...
-
-    def shardings(self, mesh: Mesh) -> "CIFn":
-        """Per-leaf `dp` placement matching this CI fn's pytree structure (each array leaf
-        → a `NamedSharding`; `P()` to replicate). Asserts every declared shard axis tiles
-        the mesh. Applied via `jax.jit(init, out_shardings=...)`."""
-        ...
+    def __call__(
+        self, taps: dict[str, Array], *, remat: bool, placement: CIFnPlacement | None
+    ) -> CI: ...
 
 
-def evaluate_ci(ci_fn: CIFn, taps: dict[str, Array], *, remat: bool) -> CI:
+class PlacedCIFn(eqx.Module):
+    """A CI fn paired with ITS placement — resolved exactly once, at run assembly
+    (`resolve_ci_placement`), so no downstream code ever holds an unresolved
+    (fn, placement rows) combination. `placement is None` means this fn runs unplaced —
+    a decided state, not an omission. The fn's arrays are pytree children (traced,
+    differentiated, cast); the placement is static and rides the treedef, so the pair
+    threads through jit/vjp as one value and cannot desync."""
+
+    fn: CIFn
+    placement: CIFnPlacement | None = eqx.field(static=True)
+
+
+def evaluate_ci(placed_ci_fn: PlacedCIFn, taps: dict[str, Array], *, remat: bool) -> CI:
     """Run fp32-master CI parameters and their captured inputs in compute precision."""
-    compute_ci_fn = cast_floating(ci_fn, COMPUTE_DT)
-    compute_taps = cast_floating(taps, COMPUTE_DT)
-    return compute_ci_fn(compute_taps, remat=remat)
+    return evaluate_compute_ci(materialize_ci_compute_weights(placed_ci_fn), taps, remat=remat)
 
 
-def ci_preactivations(ci_fn: CIFn, taps: dict[str, Array], *, remat: bool) -> SiteDict:
-    """Evaluate CI in compute precision and expose fp32 preactivations for metric reductions."""
-    return cast_floating(evaluate_ci(ci_fn, taps, remat=remat).preactivations, jnp.float32)
+def evaluate_compute_ci(compute_ci_fn: PlacedCIFn, taps: dict[str, Array], *, remat: bool) -> CI:
+    return compute_ci_fn.fn(
+        cast_floating(taps, COMPUTE_DT), remat=remat, placement=compute_ci_fn.placement
+    )
+
+
+def materialize_ci_compute_weights(placed_ci_fn: PlacedCIFn) -> PlacedCIFn:
+    compute_ci_fn = cast_floating(placed_ci_fn.fn, COMPUTE_DT)
+    if isinstance(compute_ci_fn, ChunkwiseTransformerCIFn):
+        chunks = _reconstruct_ci_compute_weights(compute_ci_fn.chunks, placed_ci_fn.placement)
+        return PlacedCIFn(
+            fn=eqx.tree_at(lambda f: f.chunks, compute_ci_fn, chunks),
+            placement=placed_ci_fn.placement,
+        )
+    # Bypass protection: `resolve_ci_placement` never pairs an MLP fn with rows, so a
+    # placed non-chunkwise bundle can only be a hand-built mispairing.
+    assert placed_ci_fn.placement is None, (
+        f"CI placement rows require a chunkwise transformer, got {type(placed_ci_fn.fn)}"
+    )
+    return PlacedCIFn(fn=compute_ci_fn, placement=None)
+
+
+def ci_preactivations(placed_ci_fn: PlacedCIFn, taps: dict[str, Array], *, remat: bool) -> SiteDict:
+    """Evaluate CI in compute precision and expose fp32 preactivations for metric
+    reductions — through the compute lifecycle (materialized residents), which a
+    placed run's persistence-layout weights require."""
+    compute_ci_fn = materialize_ci_compute_weights(placed_ci_fn)
+    preactivations = evaluate_compute_ci(compute_ci_fn, taps, remat=remat).preactivations
+    return cast_floating(preactivations, jnp.float32)
 
 
 # ----------------------------- transformer building blocks -----------------------------
@@ -146,12 +209,39 @@ def _weightless_rms_norm(x: Array, eps: float) -> Array:
     return rms_norm(x, jnp.ones((x.shape[-1],), x.dtype), eps)
 
 
+def _constrain_ci_activation(
+    x: Array, placement: CIFnPlacement | None, feature_axis: SemanticAxis
+) -> Array:
+    if placement is None:
+        return x
+    axes = activation_axes(x.ndim, feature_axis)
+    placement.activations.validate_shape(axes, x.shape)
+    return jax.sharding.reshard(x, placement.activations.sharding_for(axes))
+
+
 def _rms_norm_maybe_scaled(x: Array, scale: Array | None, eps: float) -> Array:
     """`scale is None` is the weightless norm — `ones` in x's dtype, i.e. today's numerics
     exactly (and no bf16→fp32 promotion, which an fp32 scale leaf would cause)."""
     if scale is None:
         return _weightless_rms_norm(x, eps)
     return rms_norm(x, scale, eps)
+
+
+def _ci_linear(
+    x: Array,
+    weight: Array,
+    placement: CIFnPlacement | None,
+    family: CIWeightFamily,
+    stored_axes: tuple[SemanticAxis, SemanticAxis],
+    *,
+    transposed: bool,
+) -> Array:
+    assert weight.ndim == 2, weight.shape
+    operand = jnp.swapaxes(weight, -1, -2) if transposed else weight
+    if placement is None:
+        return x @ operand
+    plan = placement.linear_plan(family, stored_axes, x.ndim, transposed=transposed)
+    return placed_linear(x, operand, plan)
 
 
 @dataclass(frozen=True)
@@ -227,93 +317,124 @@ class CIBlock(eqx.Module):
     attention: CIAttention = eqx.field(static=True)
     eps: float = eqx.field(static=True)
 
-    def shardings(self, mesh: Mesh) -> "CIBlock":
-        """ZeRO-1 PERSISTENCE layout (master + Adam m/v); leading `n_chunks` axis (axis 0)
-        UNSHARDED. Attention is FSDP-on-d_model (tp-replicated — v1 skips attn Megatron); the
-        MLP is Megatron-on-ffn_hidden including the `tp` axis (so it shards ÷N, not ÷(rep·fsdp)):
+    def shardings(self, mesh: Mesh, placement: CIFnPlacement) -> "CIBlock":
+        """Place stacked attention and FFN parameters at their persistence rows.
 
-        - qkv (`[nc, head_out, d_model_in]`): d_model (axis2) ÷(rep·fsdp), head + tp replicated.
-          `head_out` is `n_kv_head * head_dim` for k/v under GQA — the sharded axis is the
-          d_model INPUT, so a narrower K/V head_out changes no sharding.
-        - out-proj (`[nc, d_model_out, head_in]`): d_model (axis1) ÷(rep·fsdp), head + tp replicated.
-        - w1 up-proj (`[nc, d_model_in, ffn_hidden_out]`): **ffn_hidden (axis2) ÷N** (incl tp),
-          d_model replicated (column-parallel).
-        - w2 down-proj (`[nc, ffn_hidden_in, d_model_out]`): **ffn_hidden (axis1) ÷N** (incl tp),
-          d_model replicated (row-parallel → in-node reduce over fsdp·tp).
-
-        Biases replicate. COMPUTE re-pins to `fsdp` (attn d_model) / `fsdp·tp` (MLP ffn_hidden)
-        before the chunk scan (`ChunkwiseTransformerCIFn.__call__`), all intra-node NVLink.
-
-        Fsdp-major linearization (compute axes first, `replicate` last) so the ÷N→compute
-        reconstruct is a pure all-gather over `replicate` — see `placement._ZERO1_DATA`."""
-        data = ("fsdp", "replicate")
-        full = ("fsdp", "tp", "replicate")
-        attn_in = NamedSharding(mesh, P(None, None, data))  # qkv: d_model (axis2) ÷(rep·fsdp)
-        attn_out = NamedSharding(mesh, P(None, data, None))  # wo: d_model (axis1) ÷(rep·fsdp)
-        ffn_in = NamedSharding(mesh, P(None, None, full))  # w1: ffn_hidden (axis2) ÷N
-        ffn_out = NamedSharding(mesh, P(None, full, None))  # w2: ffn_hidden (axis1) ÷N
-        repl = NamedSharding(mesh, P())
-        n_data = mesh.shape["replicate"] * mesh.shape["fsdp"]
-        n_full = mesh.devices.size
-        for w in (self.wq, self.wk, self.wv):
-            assert w.shape[2] % n_data == 0, f"CIBlock qkv d_model {w.shape[2]} not ÷ {n_data}"
-        assert self.wo.shape[1] % n_data == 0, (
-            f"CIBlock wo d_model {self.wo.shape[1]} not ÷ {n_data}"
-        )
-        assert self.w1.shape[2] % n_full == 0, (
-            f"CIBlock w1 ffn_hidden {self.w1.shape[2]} not ÷ N={n_full}"
-        )
-        assert self.w2.shape[1] % n_full == 0, (
-            f"CIBlock w2 ffn_hidden {self.w2.shape[1]} not ÷ N={n_full}"
-        )
+        Every large weight's sharding derives from its semantic axes and the placement
+        table."""
+        attention = placement.attention.optimizer_state
+        ffn = placement.ffn.optimizer_state
+        attention.validate_shape(CI_ATTN_Q_AXES, self.wq.shape)
+        attention.validate_shape(CI_ATTN_KV_AXES, self.wk.shape)
+        attention.validate_shape(CI_ATTN_KV_AXES, self.wv.shape)
+        attention.validate_shape(CI_ATTN_OUT_AXES, self.wo.shape)
+        ffn.validate_shape(CI_FFN_IN_AXES, self.w1.shape)
+        ffn.validate_shape(CI_FFN_OUT_AXES, self.w2.shape)
+        attn_q = NamedSharding(mesh, attention.spec_for(CI_ATTN_Q_AXES))
+        attn_kv = NamedSharding(mesh, attention.spec_for(CI_ATTN_KV_AXES))
+        attn_out = NamedSharding(mesh, attention.spec_for(CI_ATTN_OUT_AXES))
+        ffn_in = NamedSharding(mesh, ffn.spec_for(CI_FFN_IN_AXES))
+        ffn_out = NamedSharding(mesh, ffn.spec_for(CI_FFN_OUT_AXES))
+        vectors = placement.vectors
+        b1 = _vector_sharding(vectors, ("stack", "ffn_hidden"), self.b1.shape)
+        b2 = _vector_sharding(vectors, ("stack", "d_model"), self.b2.shape)
         placed = eqx.tree_at(
             lambda b: (b.wq, b.wk, b.wv, b.wo, b.w1, b.b1, b.w2, b.b2),
             self,
-            (attn_in, attn_in, attn_in, attn_out, ffn_in, repl, ffn_out, repl),
+            (attn_q, attn_kv, attn_kv, attn_out, ffn_in, b1, ffn_out, b2),
         )
         if self.gate is not None:
             # The swiglu gate is a second `[nc, d_model, ffn_hidden]` up-proj: same
             # Megatron-on-ffn_hidden placement as w1, same ÷N divisibility requirement.
-            assert self.gate[0].shape[2] % n_full == 0, (
-                f"CIBlock swiglu gate ffn_hidden {self.gate[0].shape[2]} not ÷ N={n_full}"
-            )
-            placed = eqx.tree_at(lambda b: b.gate, placed, (ffn_in, repl))
+            placement.ffn.optimizer_state.validate_shape(CI_FFN_IN_AXES, self.gate[0].shape)
+            gate_bias = _vector_sharding(vectors, ("stack", "ffn_hidden"), self.gate[1].shape)
+            placed = eqx.tree_at(lambda b: b.gate, placed, (ffn_in, gate_bias))
         if self.norm_scales is not None:
-            placed = eqx.tree_at(lambda b: b.norm_scales, placed, (repl, repl))
+            norm = _vector_sharding(vectors, ("stack", "d_model"), self.norm_scales[0].shape)
+            placed = eqx.tree_at(lambda b: b.norm_scales, placed, (norm, norm))
         return placed
 
-    def __call__(self, x: Float[Array, "b t d"], inv_freq: Array) -> Array:
+    def __call__(
+        self,
+        x: Float[Array, "b t d"],
+        inv_freq: Array,
+        *,
+        placement: CIFnPlacement | None,
+    ) -> Array:
         t = x.shape[1]
         attn_scale, mlp_scale = (None, None) if self.norm_scales is None else self.norm_scales
         h = _rms_norm_maybe_scaled(x, attn_scale, self.eps)
 
-        def heads(w: Array, n_head: int) -> Array:  # [b, t, d] -> [b, nh, t, hd]  (RoPE layout)
-            proj = einops.einsum(h, w, "b t i, o i -> b t o")
+        def heads(  # [b, t, d] -> [b, nh, t, hd]  (RoPE layout)
+            w: Array, n_head: int, stored_axes: _StoredCIAxes
+        ) -> Array:
+            proj = _ci_linear(
+                h,
+                w,
+                placement,
+                "attention",
+                stored_axes[1:],
+                transposed=True,
+            )
+            if not value_mesh(proj).empty:
+                # Type the head split: the flat head dim's assignment (tp) lands on the
+                # HEAD axis — an untyped reshape may park it on head_dim, which the
+                # attention contraction then cannot resolve. Both head counts tile their
+                # assignments by construction (`resolve_ci_placement` refuses otherwise),
+                # so the assignment carries through unconditionally.
+                mesh = value_mesh(proj)
+                proj_spec = jax.typeof(proj).sharding.spec
+                return jax.lax.reshape(
+                    proj,
+                    (*proj.shape[:2], n_head, proj.shape[2] // n_head),
+                    out_sharding=NamedSharding(mesh, P(*proj_spec[:2], proj_spec[2], None)),
+                ).transpose(0, 2, 1, 3)
             return einops.rearrange(proj, "b t (nh hd) -> b nh t hd", nh=n_head)
 
-        q = heads(self.wq, self.attention.n_heads)
+        q = heads(self.wq, self.attention.n_heads, CI_ATTN_Q_AXES)
         kv = self.attention.n_kv_heads
-        k, v = heads(self.wk, kv), heads(self.wv, kv)
+        k, v = heads(self.wk, kv, CI_ATTN_KV_AXES), heads(self.wv, kv, CI_ATTN_KV_AXES)
         cos, sin = rope_cos_sin(inv_freq, t, x.dtype)
         q, k = apply_rope(q, k, cos, sin)  # cos/sin broadcast over the head axis: any count
         qt, kt, vt = (einops.rearrange(a, "b nh t hd -> b t nh hd") for a in (q, k, v))
         # cuDNN flash on GPU (its partitioner requires device-local heads — true here, no
         # head-sharding); XLA elsewhere (CPU tests have no cuDNN). Bidirectional. Fewer K/V
         # heads than query heads is GQA, grouped natively by dot_product_attention.
-        impl = attn_implementation(jax.default_backend(), qt.dtype, t)
+        impl = attn_implementation("auto", jax.default_backend(), qt.dtype, t)
         y = jax.nn.dot_product_attention(qt, kt, vt, is_causal=False, implementation=impl)
-        x = x + einops.einsum(
-            einops.rearrange(y, "b t nh hd -> b t (nh hd)"), self.wo, "b t i, o i -> b t o"
+        x = x + _ci_linear(
+            einops.rearrange(y, "b t nh hd -> b t (nh hd)"),
+            self.wo,
+            placement,
+            "attention",
+            CI_ATTN_OUT_AXES[1:],
+            transposed=True,
         )
         h = _rms_norm_maybe_scaled(x, mlp_scale, self.eps)
-        up = einops.einsum(h, self.w1, "b t i, i o -> b t o") + self.b1
+        up = (
+            _ci_linear(h, self.w1, placement, "ffn", CI_FFN_IN_AXES[1:], transposed=False) + self.b1
+        )
         if self.gate is None:
             hidden = jax.nn.gelu(up, approximate=False)
         else:
             w_gate, b_gate = self.gate
-            gate = einops.einsum(h, w_gate, "b t i, i o -> b t o") + b_gate
+            gate = (
+                _ci_linear(h, w_gate, placement, "ffn", CI_FFN_IN_AXES[1:], transposed=False)
+                + b_gate
+            )
             hidden = jax.nn.silu(gate) * up
-        return x + einops.einsum(hidden, self.w2, "b t i, i o -> b t o") + self.b2
+        return (
+            x
+            + _ci_linear(
+                hidden,
+                self.w2,
+                placement,
+                "ffn",
+                CI_FFN_OUT_AXES[1:],
+                transposed=False,
+            )
+            + self.b2
+        )
 
 
 # ----------------------------- chunkwise transformer -----------------------------
@@ -394,49 +515,29 @@ class ChunkTransformer(eqx.Module):
     out_ws: tuple[Float[Array, "d_model _C"], ...]
     out_bs: tuple[Float[Array, " _C"], ...]
 
-    def shardings(self, mesh: Mesh) -> "ChunkTransformer":
-        """True ÷N ZeRO-1 PERSISTENCE layout (master + Adam shard over the FULL mesh); leading
-        `n_chunks` axis (axis 0) UNSHARDED. `in_proj_w [nc, total_d_in, d_model]`: d_model over
-        the data axes, total_d_in replicated (column-parallel output — no weight gather). Each
-        `out_ws[j] [nc, d_model, C_j]`: d_model over the data axes, **C_j over `tp`** (Megatron-C)
-        → ÷N total, and the CI output C is `tp`-sharded so it dovetails with V/U's C-on-tp (the
-        `mask · xV` multiply stays local). Blocks delegate to `CIBlock.shardings`; biases
-        replicate. COMPUTE re-pins to `fsdp` (d) × `tp` (C) before the chunk scan
-        (`ChunkwiseTransformerCIFn.__call__`). Fsdp-major linearization (`replicate` last)
-        so the reconstruct is a pure all-gather over `replicate` — see
-        `placement._ZERO1_DATA`."""
-        data = ("fsdp", "replicate")
-        in_proj_sh = NamedSharding(
-            mesh, P(None, "tp", data)
-        )  # in_proj: total_d_in ÷tp, d_model ÷(rep·fsdp) → ÷N (row-parallel)
-        out_ws_sh = NamedSharding(
-            mesh, P(None, data, "tp")
-        )  # out_ws: d_model ÷(rep·fsdp), C ÷tp → ÷N
-        repl = NamedSharding(mesh, P())
-        n_data = mesh.shape["replicate"] * mesh.shape["fsdp"]
-        n_tp = mesh.shape["tp"]
-        assert self.in_proj_w.shape[1] % n_tp == 0, (
-            f"ChunkTransformer in_proj_w total_d_in {self.in_proj_w.shape[1]} not ÷ tp={n_tp}"
+    def shardings(self, mesh: Mesh, placement: CIFnPlacement) -> "ChunkTransformer":
+        """Place the complete stacked CI transformer from its semantic placement rows."""
+        input_row = placement.input.optimizer_state
+        output_row = placement.output.optimizer_state
+        input_row.validate_shape(CI_INPUT_AXES, self.in_proj_w.shape)
+        for w in self.out_ws:
+            output_row.validate_shape(CI_OUTPUT_AXES, w.shape)
+        in_proj_sh = NamedSharding(mesh, input_row.spec_for(CI_INPUT_AXES))
+        out_ws_sh = NamedSharding(mesh, output_row.spec_for(CI_OUTPUT_AXES))
+        vectors = placement.vectors
+        in_proj_b = _vector_sharding(vectors, ("stack", "d_model"), self.in_proj_b.shape)
+        out_bs = tuple(
+            _vector_sharding(vectors, ("stack", "C"), bias.shape) for bias in self.out_bs
         )
-        assert self.in_proj_w.shape[2] % n_data == 0, (
-            f"ChunkTransformer in_proj_w d_model {self.in_proj_w.shape[2]} not ÷ {n_data}"
-        )
-        for slot, w in enumerate(self.out_ws):
-            assert w.shape[1] % n_data == 0, (
-                f"ChunkTransformer out_ws[{slot}] d_model {w.shape[1]} not ÷ {n_data}"
-            )
-            assert w.shape[2] % n_tp == 0, (
-                f"ChunkTransformer out_ws[{slot}] C {w.shape[2]} not ÷ tp={n_tp}"
-            )
         return eqx.tree_at(
             lambda ct: (ct.in_proj_w, ct.in_proj_b, ct.blocks, ct.out_ws, ct.out_bs),
             self,
             (
                 in_proj_sh,
-                repl,
-                [b.shardings(mesh) for b in self.blocks],
+                in_proj_b,
+                [b.shardings(mesh, placement) for b in self.blocks],
                 tuple(out_ws_sh for _ in self.out_ws),
-                tuple(repl for _ in self.out_bs),
+                out_bs,
             ),
         )
 
@@ -444,66 +545,113 @@ class ChunkTransformer(eqx.Module):
         self,
         x: Float[Array, "*leading total_d_in"],
         inv_freq: Array,
+        *,
+        placement: CIFnPlacement | None,
     ) -> tuple[Float[Array, "*leading _C"], ...]:
-        x = einops.einsum(x, self.in_proj_w, "... i, i o -> ... o") + self.in_proj_b
+        x = (
+            _ci_linear(
+                x,
+                self.in_proj_w,
+                placement,
+                "input",
+                CI_INPUT_AXES[1:],
+                transposed=False,
+            )
+            + self.in_proj_b
+        )
         for block in self.blocks:
-            x = block(x, inv_freq)
+            x = block(x, inv_freq, placement=placement)
         return tuple(
-            einops.einsum(x, w, "... i, i o -> ... o") + b
+            _ci_linear(
+                x,
+                w,
+                placement,
+                "output",
+                CI_OUTPUT_AXES[1:],
+                transposed=False,
+            )
+            + b
             for w, b in zip(self.out_ws, self.out_bs, strict=True)
         )
 
 
-def _reconstruct_ci_compute_weights(chunks: "ChunkTransformer") -> "ChunkTransformer":
-    """The ZeRO-1 reconstruction for the CI fn: the stacked per-chunk weights arrive with
-    their `d_model` dim sharded ÷N over the FULL mesh (the master is `P(..., ("replicate",
-    "fsdp"), ...)`); reconstruct them to the `fsdp`-sharded (÷fsdp) COMPUTE layout here,
-    BEFORE the chunk scan, so the cross-`replicate` gather runs ONCE per step in ENTRY
-    (landing a SMALL ÷fsdp-resident weight stack, NOT the full CI fn) and the per-chunk scan
-    body gathers only on `fsdp` (intra-node NVLink), transiently. Cast to bf16 here so the
-    ÷fsdp-resident stack is half-size (no f32 full copy). Mirrors the `.shardings` axis
-    positions (leading `n_chunks` axis unsharded) with `"fsdp"` in place of the full-mesh
-    tuple. No-op off-mesh."""
+def ns_compute_shardings(
+    ci_fn: "ChunkwiseTransformerCIFn", mesh: Mesh, placement: CIFnPlacement
+) -> "ChunkwiseTransformerCIFn":
+    """Per-leaf muon-NS staging shardings for the chunkwise stack: every muon-labeled
+    (3D) weight position carries its family's `ns_compute` waypoint row verbatim
+    (`ns_staging_sharding`); every other position rides through untouched (the muon
+    partition masks them out). Shaped for the stacked-muon `waypoints` callable, so
+    `ci_fn` may be the muon-MASKED update tree — only positions selected below are
+    read."""
+
+    def staging(weights: CIWeightPlacement) -> NamedSharding:
+        return ns_staging_sharding(weights.ns_compute, mesh)
+
+    attention, ffn = staging(placement.attention), staging(placement.ffn)
+
+    def where(f: "ChunkwiseTransformerCIFn") -> tuple[Array, ...]:
+        locations: list[Array] = [f.chunks.in_proj_w, *f.chunks.out_ws]
+        for block in f.chunks.blocks:
+            locations += [block.wq, block.wk, block.wv, block.wo, block.w1, block.w2]
+            if block.gate is not None:
+                locations.append(block.gate[0])
+        return tuple(locations)
+
+    values: list[NamedSharding] = [staging(placement.input)]
+    values += [staging(placement.output)] * len(ci_fn.chunks.out_ws)
+    for block in ci_fn.chunks.blocks:
+        values += [attention, attention, attention, attention, ffn, ffn]
+        if block.gate is not None:
+            values.append(ffn)
+    return eqx.tree_at(where, ci_fn, tuple(values))
+
+
+def _reconstruct_ci_compute_weights(
+    chunks: "ChunkTransformer", placement: CIFnPlacement | None
+) -> "ChunkTransformer":
+    """Transition persistent CI weights to their declared resident-compute rows.
+
+    Equal rows are communication-free. Staged weights may remain FSDP-sharded so operand
+    materialization occurs per block inside the scan. No-op off-mesh."""
     if jax.sharding.get_abstract_mesh().empty:
         return chunks
-    d_axis2 = P(None, None, "fsdp")  # attn d_model axis2 (gathered), tp-replicated
-    d_axis1 = P(None, "fsdp", None)  # attn d_model axis1 (gathered), tp-replicated
-    out_ws_axis = P(None, "fsdp", "tp")  # out_ws [nc, d_model÷fsdp, C÷tp] — d gathered, C Megatron
-    ffn_in_c = P(None, None, ("fsdp", "tp"))  # w1 [nc, d_model, ffn_hidden÷(fsdp·tp)] — Megatron
-    ffn_out_c = P(None, ("fsdp", "tp"), None)  # w2 [nc, ffn_hidden÷(fsdp·tp), d_model] — Megatron
-    in_proj_c = P(None, "tp", "fsdp")  # in_proj [nc, total_d_in÷tp, d_model÷fsdp] — row-parallel
-    repl_c = P()  # the swiglu gate bias / norm scales: [nc, d]-shaped, replicated like b1/b2
+    assert placement is not None, "on-mesh CI compute-weight materialization requires placement"
+    attention, ffn, in_proj, output = (
+        placement.attention,
+        placement.ffn,
+        placement.input,
+        placement.output,
+    )
 
-    def pin(x: Array, spec: "P") -> Array:
-        # optimization_barrier: cast bf16 BEFORE the gather (else XLA sinks the convert past
-        # the all-gather and moves the f32 master — 2x the comm).
-        return jax.lax.with_sharding_constraint(
-            jax.lax.optimization_barrier(x.astype(jnp.bfloat16)), spec
+    def pin(x: Array, weights: CIWeightPlacement, axes: Axes) -> Array:
+        # x arrives already compute-dtype (the whole fn is cast before reconstruction), so
+        # the gather's collective moves bf16 bytes, not the f32 master's —
+        # materialize_reduced_weights barriers the cast ahead of the collective.
+        return materialize_reduced_weights(
+            x,
+            source=weights.optimizer_state,
+            destination=weights.compute_weights,
+            axes=axes,
         )
 
     def pin_block(blk: CIBlock) -> CIBlock:
+        # The vector leaves (biases, the swiglu gate bias, norm scales) have no separate
+        # compute row: they stay at their persistence layout (the ci_fn/vectors row).
         pinned = eqx.tree_at(
             lambda b: (b.wq, b.wk, b.wv, b.wo, b.w1, b.w2),
             blk,
-            (pin(blk.wq, d_axis2), pin(blk.wk, d_axis2), pin(blk.wv, d_axis2),
-             pin(blk.wo, d_axis1), pin(blk.w1, ffn_in_c), pin(blk.w2, ffn_out_c)),
-        )  # fmt: skip
+            (
+                pin(blk.wq, attention, CI_ATTN_Q_AXES),
+                pin(blk.wk, attention, CI_ATTN_KV_AXES),
+                pin(blk.wv, attention, CI_ATTN_KV_AXES),
+                pin(blk.wo, attention, CI_ATTN_OUT_AXES),
+                pin(blk.w1, ffn, CI_FFN_IN_AXES),
+                pin(blk.w2, ffn, CI_FFN_OUT_AXES),
+            ),
+        )
         if blk.gate is not None:
-            # The swiglu gate MUST be cast with the rest: left as an fp32 master it would
-            # promote the whole `silu(gate) * up` product (and everything after it) back to
-            # fp32 — a silent numerics + memory regression that still trains.
-            pinned = eqx.tree_at(
-                lambda b: b.gate, pinned, (pin(blk.gate[0], ffn_in_c), pin(blk.gate[1], repl_c))
-            )
-        if blk.norm_scales is not None:
-            # Same trap, sharper: `rms_norm` returns `weight * x`, so an fp32 scale promotes
-            # the block's bf16 residual stream to fp32. The weightless path dodges it only
-            # because it builds its `ones` in x's own dtype.
-            pinned = eqx.tree_at(
-                lambda b: b.norm_scales,
-                pinned,
-                tuple(pin(s, repl_c) for s in blk.norm_scales),
-            )
+            pinned = eqx.tree_at(lambda b: b.gate[0], pinned, pin(blk.gate[0], ffn, CI_FFN_IN_AXES))
         return pinned
 
     pinned_blocks = [pin_block(blk) for blk in chunks.blocks]
@@ -511,9 +659,9 @@ def _reconstruct_ci_compute_weights(chunks: "ChunkTransformer") -> "ChunkTransfo
         lambda ct: (ct.in_proj_w, ct.blocks, ct.out_ws),
         chunks,
         (
-            pin(chunks.in_proj_w, in_proj_c),  # [nc, total_d_in÷tp, d_model÷fsdp] — row-parallel
+            pin(chunks.in_proj_w, in_proj, CI_INPUT_AXES),
             pinned_blocks,
-            tuple(pin(w, out_ws_axis) for w in chunks.out_ws),  # [nc, d_model÷fsdp, C÷tp]
+            tuple(pin(w, output, CI_OUTPUT_AXES) for w in chunks.out_ws),
         ),
     )
 
@@ -535,43 +683,57 @@ class ChunkwiseTransformerCIFn(eqx.Module):
     eps: float = eqx.field(static=True)
     has_position_axis: bool = eqx.field(static=True)
 
-    def shardings(self, mesh: Mesh) -> "ChunkwiseTransformerCIFn":
+    def shardings(self, mesh: Mesh, placement: CIFnPlacement) -> "ChunkwiseTransformerCIFn":
         """The stacked per-chunk transformer's HSDP layout (`ChunkTransformer.shardings`,
         leading `n_chunks` axis un-sharded); `inv_freq` (a 1-D RoPE buffer) replicates."""
         return eqx.tree_at(
             lambda f: (f.chunks, f.inv_freq),
             self,
-            (self.chunks.shardings(mesh), NamedSharding(mesh, P())),
+            (self.chunks.shardings(mesh, placement), NamedSharding(mesh, P())),
         )
 
-    def __call__(self, taps: dict[str, Array], *, remat: bool) -> CI:
+    def __call__(
+        self,
+        taps: dict[str, Array],
+        *,
+        remat: bool,
+        placement: CIFnPlacement | None,
+    ) -> CI:
         per_chunk_in = [
             jnp.concatenate(
-                [_weightless_rms_norm(taps[k], self.eps) for k in m.input_taps], axis=-1
+                [
+                    # Both boundaries matter: the first keeps the cached tap TP-replicated
+                    # through RMS reduction; the second prevents the input-projection slice
+                    # from being sunk backward through that reduction.
+                    _constrain_ci_activation(
+                        _weightless_rms_norm(
+                            _constrain_ci_activation(taps[k], placement, "feature"), self.eps
+                        ),
+                        placement,
+                        "feature",
+                    )
+                    for k in m.input_taps
+                ],
+                axis=-1,
             )
             for m in self.chunk_meta
         ]
         stacked_in = jnp.stack(per_chunk_in, axis=0)  # [n_chunks, *leading, total_d_in]
         inv_freq = jax.lax.stop_gradient(self.inv_freq)
-        # ZeRO-1 reconstruction: the master shards d_model ÷N over the FULL mesh; pin the
-        # compute weights `fsdp`-ONLY here, BEFORE the chunk scan, so GSPMD gathers the
-        # `replicate` shard ONCE per step in ENTRY (off the hot path) and the per-chunk scan
-        # body gathers only on `fsdp` (intra-node NVLink). No-op off-mesh.
-        chunks = _reconstruct_ci_compute_weights(self.chunks)
         # `lax.scan` (not `filter_vmap`) over the leading `n_chunks` axis so XLA lowers the
         # chunk iteration as a loop: one chunk's FSDP weight all-gather (∝ ΣC/tp) is live at
         # a time, then freed, instead of every chunk's gathered weights materialized at once
         # (the vmap unrolls, hoisting all n_chunks gathers into the flat entry computation).
         # Same math as the vmap — scan stacks per-iteration outputs exactly as vmap maps
         # them; results match up to fp32 reassociation (XLA picks different matmul layouts).
-        chunk_arrays, chunk_static = eqx.partition(chunks, eqx.is_array)
+        chunk_arrays, chunk_static = eqx.partition(self.chunks, eqx.is_array)
 
         def run_chunk(
             _: None, scanned: tuple[ChunkTransformer, Array]
         ) -> tuple[None, tuple[Array, ...]]:
             chunk_array, chunk_input = scanned
             chunk = eqx.combine(chunk_array, chunk_static)
-            return None, chunk(chunk_input, inv_freq)
+            return None, chunk(chunk_input, inv_freq, placement=placement)
 
         # Per-CHUNK remat: checkpoint the scan BODY so the backward recomputes one chunk at a
         # time, keeping only the carry — NOT all `n_chunks` chunks' attention scores + MLP
@@ -648,13 +810,19 @@ def _init_chunk_transformer(
                 gate = (kaiming(kg, (d, ffn), d, relu_gain), jnp.zeros((ffn,)))
         norm_scales = (jnp.ones((d,)), jnp.ones((d,))) if arch.learned_norm_scale else None
         return CIBlock(
-            wq=attn_default(kq, (d, d), d), wk=attn_default(kk, (d_kv, d), d),
-            wv=attn_default(kv, (d_kv, d), d), wo=attn_default(ko, (d, d), d),
-            w1=kaiming(k1, (d, ffn), d, relu_gain), b1=jnp.zeros((ffn,)),
-            w2=kaiming(k2, (ffn, d), ffn, 1.0), b2=jnp.zeros((d,)),
-            gate=gate, norm_scales=norm_scales,
-            attention=arch.attention, eps=CI_FN_RMS_EPS,
-        )  # fmt: skip
+            wq=attn_default(kq, (d, d), d),
+            wk=attn_default(kk, (d_kv, d), d),
+            wv=attn_default(kv, (d_kv, d), d),
+            wo=attn_default(ko, (d, d), d),
+            w1=kaiming(k1, (d, ffn), d, relu_gain),
+            b1=jnp.zeros((ffn,)),
+            w2=kaiming(k2, (ffn, d), ffn, 1.0),
+            b2=jnp.zeros((d,)),
+            gate=gate,
+            norm_scales=norm_scales,
+            attention=arch.attention,
+            eps=CI_FN_RMS_EPS,
+        )
 
     in_key, out_key, *block_keys = jax.random.split(key, arch.n_blocks + 2)
     c_chunk = sum(slot_cs)
@@ -760,14 +928,16 @@ class SiteMLP(eqx.Module):
     biases: list[Float[Array, " d_out"]]
 
     def shardings(self, mesh: Mesh) -> "SiteMLP":
-        """Each `[d_in, d_out]` weight shards its OUTPUT axis (axis 1) ÷N over the FULL mesh
-        (`("replicate","fsdp")`) — the master + Adam state shard ÷N. 1-D biases replicate.
-        The toy MLP is single-shot (no scan), so there is no compute reconstruction; GSPMD
-        gathers as needed (trivial at the toy's small device count). Asserts every output dim
-        tiles the device count."""
-        shard_out = NamedSharding(mesh, P(None, ("replicate", "fsdp")))
+        """Each `[d_in, d_out]` weight shards its OUTPUT axis (axis 1) over the data axes
+        (`("replicate","fsdp")`) — the master + Adam state shard ÷(replicate·fsdp). 1-D
+        biases replicate. The MLP is single-shot (no scan), so there is no compute
+        reconstruction; GSPMD gathers as needed (trivial at the toy's small device count).
+        Asserts every output dim tiles its actual shard count — not the total device count,
+        which over-counts by ×tp."""
+        shard_axes: tuple[MeshAxis, ...] = ("replicate", "fsdp")
+        shard_out = NamedSharding(mesh, P(None, shard_axes))
         repl = NamedSharding(mesh, P())
-        n = mesh.devices.size
+        n = math.prod(mesh.shape[a] for a in shard_axes)
         for layer_idx, w in enumerate(self.weights):
             assert w.shape[1] % n == 0, (
                 f"SiteMLP.weights[{layer_idx}].d_out {w.shape[1]} not ÷ N={n}"
@@ -780,8 +950,18 @@ class SiteMLP(eqx.Module):
 
     def __call__(self, x: Float[Array, "*leading d_in"]) -> Float[Array, "*leading C"]:
         n_hidden = len(self.weights) - 1
+        on_mesh = not value_mesh(x).empty
         for layer_idx, (w, b) in enumerate(zip(self.weights, self.biases, strict=True)):
-            x = einops.einsum(x, w, "... i, i o -> ... o") + b
+            if on_mesh:
+                # The ZeRO-stored d_out shard uses the same axes as the batch, so the
+                # operand must materialize replicated, and the output must be typed
+                # for the weight-grad transpose to resolve against the axis-typed
+                # batch.
+                w = jax.sharding.reshard(w, P(None, None))
+                leading_spec = jax.typeof(x).sharding.spec[:-1]
+                x = jnp.einsum("...i,io->...o", x, w, out_sharding=P(*leading_spec, None)) + b
+            else:
+                x = einops.einsum(x, w, "... i, i o -> ... o") + b
             if layer_idx < n_hidden:
                 x = jax.nn.gelu(x, approximate=False)
         return x
@@ -815,8 +995,11 @@ class LayerwiseMLPCIFn(eqx.Module):
             for input_name, output_name in zip(self.input_names, self.output_names, strict=True)
         }
 
-    def __call__(self, taps: dict[str, Array], *, remat: bool) -> CI:
+    def __call__(
+        self, taps: dict[str, Array], *, remat: bool, placement: CIFnPlacement | None
+    ) -> CI:
         del remat  # single-shot (no scan to bound) -> remat is a no-op for the MLP CI fns
+        assert placement is None, f"{type(self).__name__} is unplaced (no CI placement rows)"
         return CI.from_preactivations(self.site_preactivations(taps))
 
 
@@ -920,8 +1103,11 @@ class GlobalMLPCIFn(eqx.Module):
             for i, name in enumerate(self.output_names)
         }
 
-    def __call__(self, taps: dict[str, Array], *, remat: bool) -> CI:
+    def __call__(
+        self, taps: dict[str, Array], *, remat: bool, placement: CIFnPlacement | None
+    ) -> CI:
         del remat  # single-shot (no scan to bound) -> remat is a no-op for the MLP CI fns
+        assert placement is None, f"{type(self).__name__} is unplaced (no CI placement rows)"
         return CI.from_preactivations(self.site_preactivations(taps))
 
 
@@ -950,6 +1136,29 @@ def init_global_mlp_ci_fn(
 CIFnArch = ChunkwiseTransformerCIArch | LayerwiseMLPCIArch | GlobalMLPCIArch
 """Every CI-fn architecture. Construction goes through `build_ci_fn`; sharding/placement is
 a separate, scale-driven concern (see `init_placed`), never coupled to arch type."""
+
+
+def resolve_ci_placement(arch: CIFnArch, rules: PlacementRules | None) -> CIFnPlacement | None:
+    """THE one CI-placement resolution, at run assembly: the chunkwise transformer
+    consumes the run's CI rows; the MLP archs run unplaced. Downstream code receives
+    the already-paired `PlacedCIFn` (or, on the muon path, this resolved value) —
+    never the raw rules next to a fn.
+
+    Resolution is also where the attention head split's divisibility is refused: the
+    split parks each projection's flat assignment on its head-COUNT axis
+    (`CIBlock.__call__`'s `heads`), so both counts must tile — under GQA `kv_head` is
+    the narrow one. There is no replication fallback; a user who WANTS replicated K/V
+    heads authors an explicit table with `kv_head` unmapped."""
+    match arch:
+        case ChunkwiseTransformerCIArch():
+            if rules is None:
+                return None
+            activations = rules.ci_fn.activations
+            activations.validate_shape(("q_head",), (arch.attention.n_heads,))
+            activations.validate_shape(("kv_head",), (arch.attention.n_kv_heads,))
+            return rules.ci_fn
+        case LayerwiseMLPCIArch() | GlobalMLPCIArch():
+            return None
 
 
 def build_ci_fn(arch: CIFnArch, sites: tuple[SiteSpec, ...], key: PRNGKeyArray) -> CIFn:

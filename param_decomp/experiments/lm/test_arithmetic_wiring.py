@@ -8,7 +8,7 @@ import re
 import jax
 import numpy as np
 import pytest
-from jax.sharding import Mesh
+from jax.sharding import AxisType, Mesh
 
 from param_decomp.experiments.lm.arithmetic_eval_operation import global_arithmetic_probe
 from param_decomp.experiments.lm.arithmetic_probe import build_arithmetic_probe
@@ -72,7 +72,7 @@ def test_build_arithmetic_probe_rejects_multi_token_answer():
 def test_arithmetic_probe_global_preserves_grid():
     probe = build_arithmetic_probe("add", (1, 3), (1, 4), _StubTokenizer())
     devices = np.asarray(jax.devices()[:1]).reshape(1, 1)
-    mesh = Mesh(devices, ("replicate", "fsdp"))
+    mesh = Mesh(devices, ("replicate", "fsdp"), axis_types=(AxisType.Explicit,) * 2)
     sharded = global_arithmetic_probe(probe.tokens, mesh, n_proc=1)
     # one device: no padding, rows preserved verbatim (the eval trims pad via n_prompts anyway)
     assert sharded.shape == probe.tokens.shape

@@ -37,13 +37,10 @@ dependencies = [
     "streamlit",
     "streamlit-antd-components",
     "scipy>=1.14.1",
-    "orjson",
-    "aiolimiter>=1.2",
-    "openrouter>=0.1.1",
-    "httpx>=0.28.0",
     "zstandard", # For streaming datasets
     "kaleido==0.2.1",
     "numba>=0.64.0",
+    "nvtx==0.2.15",
     "requests",
     "python-dotenv",
     "tqdm",
@@ -76,7 +73,7 @@ cuda13 = ["jax[cuda13]==0.10.1", "nvidia-cublas>=13.2.0.9"]
 
 # No [project.scripts]: this library ships no console commands. Every runnable surface is
 # a module main (`python -m param_decomp.experiments.<family>.run`,
-# `-m param_decomp.pretrain.train`, the harvest / clustering / autointerp worker modules).
+# `-m param_decomp.pretrain.train`, and the clustering worker modules).
 
 [dependency-groups]
 dev = [
@@ -89,11 +86,6 @@ dev = [
     "pre-commit",
     "scikit-learn",
     "ipykernel",
-    # huggingface-hub is a typecheck-/dev-time dep only: `hf_http.configure_hf_http_retries`
-    # imports it behind a runtime `find_spec` guard (no-op when absent), so it is never a
-    # runtime dependency — but the type-checker needs its (`py.typed`) stubs to resolve those
-    # guarded imports.
-    "huggingface-hub==0.36.0",
 ]
 
 [build-system]
@@ -118,7 +110,7 @@ namespaces = false
 [tool.ruff]
 line-length = 100
 fix = true
-extend-exclude = ["**/_scratch"]
+extend-exclude = ["**/_scratch", "**/*_pb2.py", "**/*_pb2.pyi"]
 
 [tool.ruff.lint]
 ignore = [
@@ -160,6 +152,8 @@ exclude = [
     "**/_scratch/**",
     "**/node_modules/**",
     "**/__pycache__",
+    "**/*_pb2.py",
+    "**/*_pb2.pyi",
     "nano_param_decomp",
     "param_decomp/vendored_jax",
     "param_decomp/targets/tests/qwen3_hf_parity/gen_hf_fixtures.py",  # torch-env script

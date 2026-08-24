@@ -3,7 +3,7 @@
 Each checkpoint step holds TWO orbax items, splitting the product from the process:
 
 - `decomposition` — `train.Decomposition` (V/U components + ci_fn), the trained product.
-  Every consumer (harvest/autointerp/clustering/app/fine-tune init) restores ONLY this
+  Every consumer (clustering, fine-tune initialization, and others) restores ONLY this
   item, with zero knowledge of how training initializes its optimizers or adversaries.
 - `training` — `train.TrainingItem` (both optimizer states, the persistent adversaries,
   the step counter), the trainer-only trajectory tail. Only trainer resume touches it.
@@ -14,6 +14,13 @@ own `.decomposition` / `.training` fields with no regrouping.
 Both items save **sharded** (every process writes its own shards, no full-gather on the
 training loop) and restore onto the reference state's shardings. The frozen target is
 NOT saved (SPEC §3): resume rebuilds it from HF and loads only the trajectory.
+
+Checkpoints are therefore topology-free: orbax saves the LOGICAL array, and restore
+places values by the abstract reference's shardings — a reference rebuilt from config
+on the restoring side's OWN mesh. Any checkpoint restores onto any mesh whose placement
+constructs, train mesh to train mesh included; consumers re-place finished runs the
+same way (`zero1` on `hsdp_mesh(1, device_count, 1)` — every stack length tiles).
+Pinned by the cross-topology restore tests in `tests/test_checkpoint.py`.
 
 Synchronous saves (no async): a SIGTERM-triggered save must be on disk before the
 process exits for SLURM requeue-resume.
@@ -29,7 +36,6 @@ from pathlib import Path
 from typing import cast
 
 import jax
-import numpy as np
 import orbax.checkpoint as ocp
 from orbax.checkpoint.checkpoint_managers import PreservationPolicy, preservation_policy
 from orbax.checkpoint.type_handlers import ArrayHandler, register_type_handler
@@ -72,7 +78,7 @@ def make_checkpoint_manager(
 
 def make_read_only_checkpoint_manager(ckpt_dir: Path) -> ocp.CheckpointManager:
     """A manager for consumers that only restore (fine-tune parent init, `open_jax_run`,
-    harvest/autointerp/...). `read_only` makes orbax refuse both saves and deletes, so no
+    clustering, and others). `read_only` makes orbax refuse both saves and deletes, so no
     retention question arises: a reader of someone else's run has no say in what that run
     keeps on disk."""
     return ocp.CheckpointManager(
@@ -130,24 +136,6 @@ def restore_decomposition(
     shapes/dtypes/shardings (`to_shape_dtype_struct` of a correctly-placed reference)."""
     composite = mgr.restore(
         step, args=ocp.args.Composite(decomposition=ocp.args.StandardRestore(abstract))
-    )
-    return cast(Decomposition, composite["decomposition"])
-
-
-def restore_decomposition_to_host(
-    mgr: ocp.CheckpointManager, step: int, abstract: Decomposition
-) -> Decomposition:
-    """`restore_decomposition` for a consumer without the run's device topology: leaves
-    restore as HOST numpy (`abstract` needs no shardings — `jax.eval_shape` over
-    `run_state.init_decomposition` yields it with zero allocation), and the caller
-    `jax.device_put`s the result wherever it computes."""
-    host_args_for_leaf = lambda _: ocp.RestoreArgs(restore_type=np.ndarray)  # noqa: E731
-    restore_args = jax.tree.map(host_args_for_leaf, abstract)
-    composite = mgr.restore(
-        step,
-        args=ocp.args.Composite(
-            decomposition=ocp.args.PyTreeRestore(item=abstract, restore_args=restore_args)
-        ),
     )
     return cast(Decomposition, composite["decomposition"])
 

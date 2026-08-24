@@ -185,7 +185,11 @@ cython_debug/
 **/*.db*
 *.schema.json
 
+# `.claude/` is project config and is tracked — skills, agents, commands, settings.
+# Only the ephemeral and per-person parts are ignored. (The public scrub deletes
+# `.claude/` and `.agents/`; a tracked skill would otherwise ship in the release.)
 .claude/worktrees
+.claude/settings.local.json
 
 .venv-cuda/
 **/.venv-cuda/

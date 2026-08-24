@@ -1,7 +1,7 @@
 import multiprocessing
 import os
+import sys
 from collections.abc import Callable, Sequence
-from typing import TypeVar
 
 import numpy as np
 
@@ -15,9 +15,6 @@ from param_decomp.clustering.types import (
     MergesArray,
 )
 
-_T = TypeVar("_T")
-_R = TypeVar("_R")
-
 _WORKER_CONTEXT = multiprocessing.get_context("forkserver")
 """NOT the platform default (`fork` on Linux). Every caller reaches here with JAX
 imported, and JAX runs ~100 threads: `fork(2)` hands the child a copy of a mutex whose
@@ -25,11 +22,17 @@ owning thread does not exist on the other side, so the child blocks in futex for
 the parent blocks in `wait(2)`. `forkserver` forks from a thread-free server process."""
 
 
-def _run_parallel(func: Callable[[_T], _R], items: Sequence[_T]) -> list[_R]:
+def _run_parallel[T, R](func: Callable[[T], R], items: Sequence[T]) -> list[R]:
     assert items, "nothing to distribute"
-    # sched_getaffinity, not cpu_count: under a SLURM/cgroup allocation the machine's core
-    # count is not ours to spend.
-    with _WORKER_CONTEXT.Pool(min(len(items), len(os.sched_getaffinity(0)))) as pool:
+    match sys.platform:
+        case "linux":
+            worker_count = len(os.sched_getaffinity(0))
+        case "darwin":
+            worker_count = os.cpu_count()
+            assert worker_count is not None, "macOS did not report a CPU count"
+        case platform:
+            raise RuntimeError(f"unsupported multiprocessing platform: {platform}")
+    with _WORKER_CONTEXT.Pool(min(len(items), worker_count)) as pool:
         return pool.map(func, items)
 
 

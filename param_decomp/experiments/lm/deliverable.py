@@ -1,21 +1,12 @@
-"""The PRODUCT description of a finished run — the config-side twin of the checkpoint's
-`decomposition` item (SPEC S22).
+"""Read the stable training facts needed by offline consumers of an LM run.
 
-A run dir holds one pinned document, `launch_config.yaml`: the PROCESS record, whose
-shape varies by algorithm (plain VPD vs tPD) and whose sections mostly describe how the
-run trained. Consumers (harvest, autointerp, clustering, `run_metadata`) need none of
-that — only what was decomposed and with what apparatus. `DecompositionDeliverable` is
-exactly those sections, so every run shape and any future algorithm yields the same
-deliverable, and the consumer path never learns run shapes exist.
-
-Today the deliverable's document is a PROJECTION of the pin (read out of
-`launch_config.yaml`, tolerating the process sections it doesn't consume — the pin was
-validated strictly by the root that authored it; this is not that boundary). Materializing
-it as its own run-dir artifact later changes only `load_deliverable`'s document source.
-"""
+`load_deliverable` resolves target structure, CI definition, datasets, and seed from the
+finished run without restoring its checkpoint. It accepts the normalized deliverable file
+and the current launch config used by older runs."""
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import yaml
 from pydantic import ConfigDict
@@ -33,44 +24,18 @@ from param_decomp.experiments.lm.config import (
 from param_decomp.experiments.lm.resolved import AnyLMTargetConfig, ResolvedLMData
 from param_decomp.infra.dataset_store import resolve_dataset_ref
 
+DELIVERABLE_FILENAME = "deliverable.yaml"
+
 
 class _ScheduleSeed(BaseConfig):
-    """The one `pd` fact consumers use: the seed that makes the training batch schedule
-    a pure function of step, so harvest can walk the stream the run saw."""
-
     model_config = ConfigDict(extra="ignore")
 
     seed: int
 
 
-class DecompositionDeliverable(BaseConfig):
-    """What a decomposition IS: the frozen target, the apparatus decomposing it, and the
-    identity of the stream it trained on (names, portable — harvest walks the same
-    shards deterministically via `pd.seed`).
-
-    Deliberately absent: everything the objective decided (losses, targeted streams,
-    warmup — the algorithm), and everything about where the run executed (`runtime`:
-    dp, placement, remat, XLA flags). Every field here is shared by ALL run shapes. The
-    checkpoint pins shapes/dtypes/tree structure, never placement — a consumer restores
-    to host (or lays out for its OWN mesh) with no knowledge of the launch topology."""
-
-    target: LMTargetConfig
-    decomposition: LMDecompositionConfig
-    data: LMDataConfig
-    pd: _ScheduleSeed
-
-
-class _DeliverableProjection(DecompositionDeliverable):
-    """The pin-reading arm: the same fields, tolerating the process sections around them."""
-
-    model_config = ConfigDict(extra="ignore")
-
-
 @dataclass(frozen=True)
 class ResolvedDeliverable:
-    """The deliverable's sections resolved into consumable objects: the concrete target
-    config (weights source + flat sites), the built CI-fn architecture, and the resolved
-    shard dirs + schedule seed of the training stream."""
+    """Target, CI definition, datasets, and seed fixed by a finished training run."""
 
     target: AnyLMTargetConfig
     ci_fn: LMCIFnArch
@@ -78,16 +43,34 @@ class ResolvedDeliverable:
     seed: int
 
 
+def _mapping(raw: object, field: str) -> dict[str, Any]:
+    assert isinstance(raw, dict), f"stored run {field} must be a mapping"
+    return raw
+
+
+def product_document(run_dir: Path) -> Path:
+    normalized = run_dir / DELIVERABLE_FILENAME
+    return normalized if normalized.is_file() else run_dir / LAUNCH_CONFIG_FILENAME
+
+
 def load_deliverable(run_dir: Path, data_root: Path) -> ResolvedDeliverable:
-    """Read a finished run's product description. No placement input, no run-shape
-    knowledge: the restore reference is placement- and key-invariant (leaves restore as
-    host numpy), so the deliverable needs nothing from the process record."""
-    raw = yaml.safe_load((run_dir / LAUNCH_CONFIG_FILENAME).read_text())
-    doc = _DeliverableProjection.model_validate(raw)
-    resolved = resolve_decomposition(doc.target, doc.decomposition, data_root)
-    ci_fn = resolve_lm_ci_arch(resolved.tree, doc.decomposition.ci, resolved.grammar)
-    data = ResolvedLMData(
-        dir=resolve_dataset_ref(doc.data.train, data_root),
-        eval_dir=resolve_dataset_ref(doc.data.eval, data_root),
+    """Resolve the current product schema from a normalized product or current run pin."""
+    raw = _mapping(yaml.safe_load(product_document(run_dir).read_text()), "config")
+    target_config = LMTargetConfig.model_validate(_mapping(raw.get("target"), "target"))
+    decomposition = LMDecompositionConfig.model_validate(
+        _mapping(raw.get("decomposition"), "decomposition")
     )
-    return ResolvedDeliverable(target=resolved.target, ci_fn=ci_fn, data=data, seed=doc.pd.seed)
+    data = LMDataConfig.model_validate(_mapping(raw.get("data"), "data"))
+    schedule = _ScheduleSeed.model_validate(_mapping(raw.get("pd"), "pd"))
+
+    resolved = resolve_decomposition(target_config, decomposition, data_root)
+    ci_fn = resolve_lm_ci_arch(resolved.tree, decomposition.ci, resolved.grammar)
+    return ResolvedDeliverable(
+        target=resolved.target,
+        ci_fn=ci_fn,
+        data=ResolvedLMData(
+            dir=resolve_dataset_ref(data.train, data_root),
+            eval_dir=resolve_dataset_ref(data.eval, data_root),
+        ),
+        seed=schedule.seed,
+    )

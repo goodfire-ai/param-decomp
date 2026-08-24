@@ -3,7 +3,7 @@
 
 `launch.main` validates the config (placement claims at the declared topology), pins it
 into a fresh run dir, and runs the trainer as a child process of this allocation — which
-must claim exactly the `runtime.dp` local devices (simulated CPU devices via
+must claim exactly the explicit mesh's local devices (simulated CPU devices via
 `XLA_FLAGS=--xla_force_host_platform_device_count`) and train end-to-end: a tiny
 LlamaSimpleMLP target fabricated into the pretrain cache, tokens from tiny parquet
 shards, a real train step, and the final-step orbax checkpoint.
@@ -87,7 +87,7 @@ def _write_token_shards(shards_dir: Path) -> None:
     )
 
 
-def _write_run_config(path: Path, shards_dir: Path, dp: int, weights_dtype: str) -> None:
+def _write_run_config(path: Path, shards_dir: Path, dp: int, tp: int, weights_dtype: str) -> None:
     config = {
         "run_name": "inline-multidevice-smoke",
         "decomposition": {
@@ -101,7 +101,10 @@ def _write_run_config(path: Path, shards_dir: Path, dp: int, weights_dtype: str)
                 "blocks_per_chunk": 1,
                 "d_model": _D,
                 "n_blocks": 1,
-                "attention": {"kind": "mha", "n_heads": 1},
+                # 2 heads so the tp=2 case tiles the q/kv head axes: a head count the
+                # assignment cannot tile refuses at the config gate (no replication
+                # fallback), which the tp=2 variant would otherwise hit.
+                "attention": {"kind": "mha", "n_heads": 2},
                 "ffn": {"kind": "gelu", "hidden": _D},
             },
         },
@@ -138,13 +141,26 @@ def _write_run_config(path: Path, shards_dir: Path, dp: int, weights_dtype: str)
                 {"type": "StochasticReconLoss", "coeff": 1.0},
             ],
         },
-        "runtime": {"dp": dp, "sharding": "zero1"},
+        "runtime": {
+            "replicate": 1,
+            "fsdp": dp // tp,
+            "tp": tp,
+            "sharding": "zero1",
+            "compilation_cache_dir": str(shards_dir.parent / "xla_compilation_cache"),
+            # The production preset, resolved by the trainer; its GPU flags are ignored
+            # on this suite's CPU backend.
+            "compiler_options": "tuned-v1",
+        },
         "cadence": {
             "train_log_every": 1,
-            "save_every": 2,
-            "checkpoint_retention": {"kind": "keep_last", "n": 1},
+            "checkpointing": {
+                "kind": "periodic",
+                "save_every": 2,
+                "retention": {"kind": "keep_last", "n": 1},
+            },
         },
         "target": {
+            "attention_implementation": "auto",
             "weights_dtype": weights_dtype,
             "spec": {
                 "kind": "pretrained",
@@ -163,6 +179,8 @@ def _write_run_config(path: Path, shards_dir: Path, dp: int, weights_dtype: str)
 
 
 def _run_module(config: Path, data_root: Path) -> None:
+    runtime = yaml.safe_load(config.read_text())["runtime"]
+    local_device_count = runtime["replicate"] * runtime["fsdp"] * runtime["tp"]
     subprocess.run(
         [
             sys.executable,
@@ -171,6 +189,8 @@ def _run_module(config: Path, data_root: Path) -> None:
             str(config),
             "--data-root",
             str(data_root),
+            "--local-device-count",
+            str(local_device_count),
         ],
         check=True,
     )
@@ -209,7 +229,7 @@ def _assert_trained(out_dir: Path, final_step: int) -> None:
 def test_inline_launch_trains_on_all_local_devices(inline_setup: Path) -> None:
     tmp_path = inline_setup
     config = tmp_path / "config.yaml"
-    _write_run_config(config, tmp_path / "shards", dp=4, weights_dtype="bfloat16")
+    _write_run_config(config, tmp_path / "shards", dp=4, tp=1, weights_dtype="bfloat16")
 
     _run_module(config, tmp_path / "out")
 
@@ -222,7 +242,7 @@ def test_an_fp32_frozen_target_trains(single_device_setup: Path) -> None:
     forward; that seam promotes rather than refusing, and this run is what says so."""
     tmp_path = single_device_setup
     config = tmp_path / "config.yaml"
-    _write_run_config(config, tmp_path / "shards", dp=1, weights_dtype="float32")
+    _write_run_config(config, tmp_path / "shards", dp=1, tp=1, weights_dtype="float32")
 
     _run_module(config, tmp_path / "out")
 
@@ -232,10 +252,22 @@ def test_an_fp32_frozen_target_trains(single_device_setup: Path) -> None:
 @pytest.mark.multidevice
 def test_inline_launch_refuses_a_mis_sized_allocation(inline_setup: Path) -> None:
     """`dp: 2` inside a 4-device allocation must die at trainer startup
-    (`assert_inline_topology`), never silently shard over the ambient devices."""
+    (`initialize_topology` refuses a world the allocation doesn't tile), never silently
+    shard over the ambient devices."""
     tmp_path = inline_setup
     config = tmp_path / "config.yaml"
-    _write_run_config(config, tmp_path / "shards", dp=2, weights_dtype="bfloat16")
+    _write_run_config(config, tmp_path / "shards", dp=2, tp=1, weights_dtype="bfloat16")
 
     with pytest.raises(subprocess.CalledProcessError):
         _run_module(config, tmp_path / "out")
+
+
+@pytest.mark.multidevice
+def test_inline_launch_trains_with_tensor_parallel_ci(inline_setup: Path) -> None:
+    tmp_path = inline_setup
+    config = tmp_path / "config.yaml"
+    _write_run_config(config, tmp_path / "shards", dp=4, tp=2, weights_dtype="bfloat16")
+
+    _run_module(config, tmp_path / "out")
+
+    _assert_trained(tmp_path / "out", final_step=2)

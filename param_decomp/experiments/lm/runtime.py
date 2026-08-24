@@ -12,12 +12,46 @@ Deliberately free of jax and of the rest of the LM schema: `run.py` validates th
 cheap to import.
 """
 
-from typing import Literal, Self
+from collections.abc import Mapping
+from pathlib import Path
+from types import MappingProxyType
+from typing import Annotated, Literal
 
-from pydantic import Field, PositiveFloat, PositiveInt, model_validator
+from pydantic import (
+    Discriminator,
+    Field,
+    NonNegativeInt,
+    PositiveFloat,
+    PositiveInt,
+    field_validator,
+)
 
 from param_decomp.core.base_config import BaseConfig
 from param_decomp.core.configs import PlacementTableConfig
+
+TUNED_V1_COMPILER_OPTIONS: Mapping[str, bool | int | str] = MappingProxyType(
+    {
+        "xla_gpu_enable_latency_hiding_scheduler": True,
+        "xla_gpu_enable_triton_gemm": False,
+        "xla_gpu_enable_command_buffer": "",
+        "xla_gpu_enable_highest_priority_async_stream": True,
+        "xla_gpu_all_reduce_combine_threshold_bytes": 1073741824,
+        "xla_gpu_all_gather_combine_threshold_bytes": 1073741824,
+        "xla_gpu_reduce_scatter_combine_threshold_bytes": 134217728,
+        "xla_gpu_enable_pipelined_all_gather": True,
+        "xla_gpu_enable_pipelined_reduce_scatter": True,
+        "xla_gpu_enable_pipelined_all_reduce": True,
+        "xla_gpu_enable_while_loop_double_buffering": True,
+        "xla_gpu_enable_all_gather_combine_by_dim": False,
+        "xla_gpu_enable_reduce_scatter_combine_by_dim": False,
+    }
+)
+"""What `compiler_options: tuned-v1` resolves to — the ONE copy of the tuned set, frozen.
+It is MaxText's H100 recipe: latency-hiding scheduler + 1 GiB collective-combine
+thresholds + pipelined collectives + while-loop double-buffering;
+`xla_gpu_enable_command_buffer: ''` disables CUDA-graph capture, a correctness guard.
+A change to the tuned set is a NEW preset name (`tuned-v2`), never an edit here — pinned
+configs authoring `tuned-v1` must keep meaning these exact flags."""
 
 
 class LaunchEnv(BaseConfig):
@@ -78,66 +112,65 @@ class LaunchEnv(BaseConfig):
         return rendered
 
 
+class ProfilingDisabled(BaseConfig):
+    kind: Literal["disabled"] = "disabled"
+
+
+class AdHocProfiling(BaseConfig):
+    """An in-process `jax.profiler` run: after a fixed warmup the trainer traces `steps`
+    steps into `<run_dir>/profile` and exits — no step-0 checkpoint, no training past the
+    trace. The run is a measurement, not a trajectory."""
+
+    kind: Literal["ad_hoc"] = "ad_hoc"
+    steps: PositiveInt
+
+
+class NsightSystemsProfiling(BaseConfig):
+    kind: Literal["nsight_systems"] = "nsight_systems"
+    version: Literal["2026.4.1"]
+    warmup_steps: NonNegativeInt
+    capture_steps: PositiveInt
+
+
+ProfilingConfig = Annotated[
+    ProfilingDisabled | AdHocProfiling | NsightSystemsProfiling,
+    Discriminator("kind"),
+]
+
+
 class RuntimeConfig(BaseConfig):
-    """Compute substrate: world size, placement, rematerialization, XLA compiler flags, and
-    the pre-process env surface (`launch_env`).
+    """Compute substrate: explicit logical mesh, placement, rematerialization, XLA compiler
+    flags, and the pre-process env surface (`launch_env`).
 
     Perturbs numerics but doesn't change the algorithm.
     """
 
-    dp: PositiveInt = Field(
-        description=(
-            "World size — the total device count, THE single source of truth for topology, "
-            "NEVER inferred from ambient env (`SLURM_PROCID` is present in every process on "
-            "a SLURM box). Process bring-up DERIVES from it: `dp <= gpus_per_node` → ONE "
-            "process over exactly `dp` local devices, asserted at startup "
-            "(`sharding.assert_inline_topology`) — `dp: 1` is the single-device smoke, "
-            "`dp: 8` a run inside an external scheduler's own whole-node job. "
-            "`dp > gpus_per_node` → one process per node, brought up via `jax.distributed`'s "
-            "own cluster auto-detection (`init_distributed` — the jax ecosystem's contract; "
-            "SLURM/MPI/TPU), asserted against the realized `jax.device_count()`. Multiple "
-            "processes on one node is deliberately unrepresentable. The batch shards "
-            "data-parallel across all `dp` devices."
-        ),
+    replicate: PositiveInt = Field(
+        description="Logical model-replication and cross-replica ownership axis.",
     )
-    gpus_per_node: PositiveInt = Field(
-        default=8,
-        description=(
-            "GPUs per node — the size of the intra-node NVLink group the mesh's `fsdp*tp` "
-            "plane is carved from, and the launcher's node math (`nodes = dp / gpus_per_node`). "
-            "A property of the cluster, carried in the config so the pinned launch_config "
-            "fully determines the topology. Default 8 (H100/H200/B200 nodes)."
-        ),
+    fsdp: PositiveInt = Field(
+        description="Logical parameter-sharding axis; also shards the data batch.",
     )
-    tp: int = Field(
-        default=1,
-        ge=1,
-        le=8,
-        description=(
-            "Tensor-parallel (Megatron) degree, carved from the intra-node GPUs so "
-            "`fsdp * tp = GPUS_PER_NODE` — both stay on NVLink. Shards the component C axis "
-            "(V/U, CI-fn output heads) and the CI-fn MLP hidden, halving the per-layer weight "
-            "all-gather. `tp = 1` (default) is the pure-HSDP layout (degenerate tp axis, "
-            "behaviour-preserving). Must divide both the device count and GPUS_PER_NODE."
-        ),
+    tp: PositiveInt = Field(
+        description="Logical Megatron tensor-parallel axis; batch activations replicate over it.",
     )
-    sharding: Literal["owner", "owner+zero1", "zero1", "ddp"] | PlacementTableConfig = Field(
+    sharding: Literal["owner", "zero1", "ddp"] | PlacementTableConfig = Field(
         description=(
             "Placement policy for the trainable state (placement.py). REQUIRED, no "
             "default — a layout this consequential is written down per config. Presets: "
-            "`zero1` = intra-matrix ZeRO-1 over the full data mesh "
-            "(~equivalent comms to `owner` under "
-            "elementwise optimizers); `owner` = whole-matrix ownership (stack ÷replicate, "
-            "d ÷fsdp, C ÷tp) — the muon-motivated layout (Newton-Schulz stays "
-            "node-local); STRICT — a shape group whose stack does "
-            "not tile ÷replicate is an error; `owner+zero1` = `owner` plus the "
-            "`params.zero1` opt-in row, ZeRO-1-ing exactly those non-tiling groups "
-            "intra-matrix; `ddp` = fully replicated. Each value is a BIDIRECTIONAL claim "
-            "checked at config build (placement.from_config, pre-submission for a submitted run): "
-            "`owner` claims every group tiles; `owner+zero1` claims at least one does "
-            "not — all-tiling under it is equally an error. Or an explicit "
-            "`PlacementTableConfig` table (nested `params: {persist, zero1?, forward}` + "
-            "`activations`, each row a semantic-axis -> mesh-axes rule; list order is "
+            "`zero1` = intra-matrix ZeRO-1 over the full data mesh (no row shards the "
+            "component stack axis, so every semantic group is placeable; ~equivalent "
+            "comms to `owner` under elementwise optimizers); `owner` = whole-matrix "
+            "ownership (stack ÷replicate, d ÷fsdp, C ÷tp) — the muon-motivated layout "
+            "(Newton-Schulz stays node-local); a semantic group whose stack does not "
+            "tile ÷replicate refuses at config build (placement.from_config, "
+            "pre-submission for a submitted run) — there is no fallback; `ddp` = fully "
+            "replicated. Or an explicit `PlacementTableConfig` table (`components: "
+            "{optimizer_state, compute_weights, faithfulness_weights, "
+            "faithfulness_deltas, operands}`, per-CI-weight-family "
+            "`{optimizer_state, compute_weights, operands}` rows, `activations: "
+            "{external, component}`, and the frozen-`target` role rows, each row a "
+            "semantic-axis -> mesh-axes rule; list order is "
             "semantics). Same math under every value — layouts differ only by float "
             "reassociation (SPEC D4)."
         ),
@@ -145,9 +178,12 @@ class RuntimeConfig(BaseConfig):
     remat_recon_forwards: bool = Field(
         default=False,
         description=(
-            "JAX trainer memory/compute trade: rematerialize the recon-loss masked "
-            "forwards under the full model (deep targets need it to fit). Compute "
-            "substrate knob, no algorithm effect."
+            "JAX trainer memory/compute trade for the recon-loss masked forwards: the "
+            "checkpoint policy of the target's per-block scan. True = recompute each "
+            "block in the backward (`nothing_saveable`; deep targets need it to fit), "
+            "False = store batch-scaled activation dots and re-forward nothing "
+            "(`dots_saveable`; faster when memory allows). Compute substrate knob, no "
+            "algorithm effect."
         ),
     )
     remat_ci_fn: bool = Field(
@@ -159,40 +195,60 @@ class RuntimeConfig(BaseConfig):
             "batch on big targets. Compute substrate knob, no algorithm effect."
         ),
     )
-    ascend_replicate: bool = Field(
-        default=False,
-        description=(
-            "Replicate the ÷fsdp compute weights once before the adversary ascents so the "
-            "n_warmup ascend forwards skip the per-layer ÷fsdp→full gather (mask-independent "
-            "and detached, so the re-gather is pure redundancy). Numerics-identical. Trades "
-            "the full V/U resident during the ascend phase for the eliminated re-gathers."
-        ),
-    )
-    compiler_options: dict[str, bool | int | str] = Field(
-        default_factory=lambda: {
-            "xla_gpu_enable_latency_hiding_scheduler": True,
-            "xla_gpu_enable_triton_gemm": False,
-            "xla_gpu_enable_command_buffer": "",
-            "xla_gpu_enable_highest_priority_async_stream": True,
-            "xla_gpu_all_reduce_combine_threshold_bytes": 1073741824,
-            "xla_gpu_all_gather_combine_threshold_bytes": 1073741824,
-            "xla_gpu_reduce_scatter_combine_threshold_bytes": 134217728,
-            "xla_gpu_enable_pipelined_all_gather": True,
-            "xla_gpu_enable_pipelined_reduce_scatter": True,
-            "xla_gpu_enable_pipelined_all_reduce": True,
-            "xla_gpu_enable_while_loop_double_buffering": True,
-            "xla_gpu_enable_all_gather_combine_by_dim": False,
-            "xla_gpu_enable_reduce_scatter_combine_by_dim": False,
-        },
+    compiler_options: Literal["tuned-v1", "bare"] | dict[str, bool | int | str] = Field(
         description=(
             "XLA compiler flags passed NATIVELY to every jit's `compiler_options` — no "
             "`XLA_FLAGS` env round-trip, and (unlike env) they ARE in the compile-cache key, "
-            "so changing one actually recompiles. Full `xla_*` flag names, typed values "
-            "(True/int/str, not 'true'). Default = the tuned MaxText set (latency-hiding "
-            "scheduler + 1 GiB combine thresholds + pipelined collectives + double-buffering; "
-            "`command_buffer:''` disables CUDA-graph capture, a correctness guard). Add "
-            "`xla_disable_hlo_passes: rematerialization` to opt into the disable-XLA-remat win "
-            "(validate save/resume first). On CPU (toys/tests) the GPU flags are ignored."
+            "so changing one actually recompiles. REQUIRED, no default and no merge: every "
+            "run's flags trace to a visible authored token. `tuned-v1` = the frozen "
+            "production set (`TUNED_V1_COMPILER_OPTIONS`); `bare` = {} (true XLA defaults — "
+            "the debugging baseline); or an explicit dict, used VERBATIM as the complete "
+            "flag set the run compiles with. Explicit dicts: full `xla_*` flag names, typed "
+            "values (True/int/str, not 'true'); keys outside `xla_*` refuse. "
+            "`xla_disable_hlo_passes: rematerialization` opts into the disable-XLA-remat "
+            "win (validate save/resume first). `xla_gpu_memory_limit_slop_factor` is the "
+            "memory-vs-wall dial of the latency-hiding scheduler (which deliberately "
+            "spends memory for overlap): a percent scaling of the scheduler's memory "
+            "budget, so it moves the COMPILED arena — the fit check's DEMANDED — not the "
+            "runtime BFC pool. Memory-tight cells author it per cell in an explicit "
+            "dict; measured per-cell tradeoffs live in PERF_NOTES.md. On CPU "
+            "(toys/tests) the GPU flags are ignored."
+        ),
+    )
+
+    @field_validator("compiler_options")
+    @classmethod
+    def _explicit_flags_are_xla_namespaced(
+        cls, options: str | dict[str, bool | int | str]
+    ) -> str | dict[str, bool | int | str]:
+        if isinstance(options, dict):
+            foreign = sorted(key for key in options if not key.startswith("xla_"))
+            if foreign:
+                raise ValueError(
+                    f"compiler_options keys must be full `xla_*` flag names: {foreign}"
+                )
+        return options
+
+    @property
+    def resolved_compiler_options(self) -> dict[str, bool | int | str]:
+        """The concrete flag map every jit receives — the presets resolve here, nowhere else."""
+        match self.compiler_options:
+            case "tuned-v1":
+                return dict(TUNED_V1_COMPILER_OPTIONS)
+            case "bare":
+                return {}
+            case explicit:
+                return explicit
+
+    compilation_cache_dir: Path = Field(
+        description=(
+            "Persistent XLA compilation-cache directory; `~` expands to the running user's "
+            "home. REQUIRED, no default: where the multi-minute step compile is reused "
+            "across runs/requeues is an authored decision. Author a PER-USER path — the "
+            "seats set `~/.cache/param-decomp/xla` — never a shared artifact root: XLA's "
+            "cache keeps a temporary autotune directory whose writer-created descendants "
+            "need not stay group-writable, so a cache shared by unrelated Unix users "
+            "fails their autotune lookups."
         ),
     )
     launch_env: LaunchEnv = Field(default_factory=LaunchEnv)
@@ -201,19 +257,17 @@ class RuntimeConfig(BaseConfig):
     `compiler_options`). Applied by the bootstrap in the process it starts, and rendered into
     the rank environment by whoever spawns the ranks; everything else about that environment
     is inherited from the caller."""
+    profiling: ProfilingConfig = Field(default_factory=ProfilingDisabled)
+    """The run's profiler, authored — the trainer receives it as typed data, never via env.
+    `ad_hoc` is the in-process `jax.profiler` trace; `nsight_systems` attaches an external
+    `nsys` (machine-specific executable resolution stays in the launcher; the profiler and
+    its version remain pinned here)."""
 
     @property
-    def distributed(self) -> bool:
-        """Derived, never authored: a world larger than one node is multi-process (one per
-        node); anything else is one process over `dp` local devices."""
-        return self.dp > self.gpus_per_node
+    def world_size(self) -> int:
+        return self.replicate * self.fsdp * self.tp
 
-    @model_validator(mode="after")
-    def validate_topology(self) -> Self:
-        if self.dp > self.gpus_per_node:
-            assert self.dp % self.gpus_per_node == 0, (
-                f"a multi-node world allocates whole {self.gpus_per_node}-GPU nodes — "
-                f"dp={self.dp} must be a multiple of gpus_per_node={self.gpus_per_node} "
-                f"(a sub-node world runs as one process inside an existing allocation)"
-            )
-        return self
+    @property
+    def data_parallel_size(self) -> int:
+        """Effective data-parallel degree after carving TP groups from the device world."""
+        return self.replicate * self.fsdp

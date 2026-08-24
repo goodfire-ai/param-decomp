@@ -12,8 +12,8 @@ import numpy as np
 from param_decomp.core.ci_fn import (
     Chunk,
     ChunkwiseTransformerCIArch,
-    CIFn,
     MHACIAttention,
+    PlacedCIFn,
     build_ci_fn,
 )
 from param_decomp.core.components import SiteC, init_component_stacks
@@ -23,10 +23,11 @@ from param_decomp.core.hidden_acts_eval import (
     make_ci_hidden_acts_step,
     make_stochastic_hidden_acts_step,
 )
-from param_decomp.core.model import DecomposedModel
+from param_decomp.core.model import DecomposedModel, PlacedModel
 from param_decomp.targets.llama_simple_mlp import (
     canonical_site_cs,
     parse_site_name,
+    site_name,
     site_specs,
 )
 from param_decomp.targets.testing import (
@@ -37,7 +38,7 @@ from param_decomp.targets.testing import (
 _BATCH, _SEQ = 2, 12
 
 
-def _build_ci_fn(model: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
+def _build_ci_fn(model: DecomposedModel, n_embd: int, key: jax.Array) -> PlacedCIFn:
     site_names = model.site_names
     first_block = min(parse_site_name(n)[0] for n in site_names)
     arch = ChunkwiseTransformerCIArch(
@@ -50,7 +51,7 @@ def _build_ci_fn(model: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
         ffn_kind="gelu",
         learned_norm_scale=False,
     )
-    return build_ci_fn(arch, model.sites, key)
+    return PlacedCIFn(fn=build_ci_fn(arch, model.sites, key), placement=None)
 
 
 def _setup():
@@ -60,25 +61,34 @@ def _setup():
             SiteC("h.2.attn.q_proj", 8),
             SiteC("h.2.attn.v_proj", 12),
             SiteC("h.2.mlp.c_fc", 8),
+            SiteC("h.2.mlp.down_proj", 16),
+            SiteC("h.3.attn.q_proj", 8),
+            SiteC("h.3.attn.v_proj", 12),
+            SiteC("h.3.mlp.c_fc", 8),
             SiteC("h.3.mlp.down_proj", 16),
         )
     )
     model = tiny_simple_mlp_decomposed_model(cfg, site_specs(cfg, site_cs), jax.random.PRNGKey(0))
     components = init_component_stacks(model.sites, jax.random.PRNGKey(1))
     ci_fn = _build_ci_fn(model, cfg.n_embd, jax.random.PRNGKey(2))
+    placed = PlacedModel(model=model, placement=None)
     tokens = jax.random.randint(jax.random.PRNGKey(3), (_BATCH, _SEQ), 0, cfg.vocab_size)
     site_d_out = {
-        "h.2.attn.q_proj": cfg.n_head * cfg.head_dim,
-        "h.2.attn.v_proj": cfg.n_kv_head * cfg.head_dim,
-        "h.2.mlp.c_fc": cfg.n_intermediate,
-        "h.3.mlp.down_proj": cfg.n_embd,
+        site_name(layer, kind): d_out
+        for layer in (2, 3)
+        for kind, d_out in {
+            "q_proj": cfg.n_head * cfg.head_dim,
+            "v_proj": cfg.n_kv_head * cfg.head_dim,
+            "c_fc": cfg.n_intermediate,
+            "down_proj": cfg.n_embd,
+        }.items()
     }
-    return model, components, ci_fn, tokens, site_d_out
+    return placed, components, ci_fn, tokens, site_d_out
 
 
 def test_ci_step_per_site_sums_and_counts():
     model, components, ci_fn, tokens, site_d_out = _setup()
-    step = make_ci_hidden_acts_step(model, ci_fn.capture_keys)
+    step = make_ci_hidden_acts_step(model, ci_fn.fn.capture_keys)
 
     sum_mse, n_elements = step(model, components, ci_fn, tokens, jax.random.PRNGKey(0))
 
@@ -92,7 +102,7 @@ def test_ci_step_per_site_sums_and_counts():
 def test_stochastic_step_per_site_sums_and_counts():
     model, components, ci_fn, tokens, site_d_out = _setup()
     n_mask_samples = 3
-    step = make_stochastic_hidden_acts_step(model, ci_fn.capture_keys, n_mask_samples)
+    step = make_stochastic_hidden_acts_step(model, ci_fn.fn.capture_keys, n_mask_samples)
 
     sum_mse, n_elements = step(model, components, ci_fn, tokens, jax.random.PRNGKey(0))
 
@@ -105,7 +115,7 @@ def test_stochastic_step_per_site_sums_and_counts():
 
 def test_accumulate_and_log_entries_token_weighted():
     model, components, ci_fn, tokens, _ = _setup()
-    step = make_ci_hidden_acts_step(model, ci_fn.capture_keys)
+    step = make_ci_hidden_acts_step(model, ci_fn.fn.capture_keys)
 
     one = accumulate_hidden_acts(step, model, components, ci_fn, [tokens], jax.random.PRNGKey(0))
     two = accumulate_hidden_acts(

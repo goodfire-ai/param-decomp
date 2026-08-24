@@ -41,14 +41,15 @@ A run is one self-contained YAML configuration. Start from a shipped config, mak
 for the experiment, and run it inside the GPU allocation supplied by your compute system:
 
 ```bash
-uv run python -m param_decomp.experiments.lm.run <config.yaml> --data-root <data-root>
+uv run python -m param_decomp.experiments.lm.run <config.yaml> \
+  --data-root <data-root> --local-device-count <devices-per-process>
 ```
 
-`runtime.dp` in the config must equal the allocation's total GPU count;
-`runtime.gpus_per_node` describes its node shape. The command does not submit a job or
-choose a cluster. For example, the current JAX reference config
+`runtime.replicate * runtime.fsdp * runtime.tp` must equal the allocation's total GPU
+count. Process-local allocation size is a launch argument, not a logical mesh axis. The
+command does not submit a job or choose a cluster. For example, the current JAX reference config
 [`param_decomp/experiments/lm/configs/pile_llama_simple_mlp-4L.yaml`](param_decomp/experiments/lm/configs/pile_llama_simple_mlp-4L.yaml)
-sets `dp: 8` and therefore needs 8 GPUs.
+sets `replicate: 1`, `fsdp: 8`, and `tp: 1`, and therefore needs 8 GPUs.
 
 ### Datasets
 
@@ -84,7 +85,10 @@ when training a target locally.
 
 TMS and ResidualMLP run the same way — in-process module mains, on CPU:
 `uv run python -m param_decomp.experiments.tms.run <config.yaml> --data-root <data-root>`
-(likewise `...experiments.resid_mlp.run`). The torch
+(likewise `...experiments.resid_mlp.run`). The shipped toy configs log to W&B by default,
+so authenticate with `wandb login` or set `WANDB_API_KEY` before running them. For local-only
+tests, copy the config and set `wandb: null`; the run still writes `metrics.jsonl` under
+`<data-root>/runs/<run-id>/`. The torch
 trainer is preserved only at git tag `torch-oracle`; current training uses the JAX
 single-pool engine. See `param_decomp/core/SPEC.md` for its numerical contract and
 `param_decomp/experiments/CLAUDE.md` for the complete LM config schema.
@@ -108,6 +112,6 @@ the library never submits a job or chooses a machine for you.
 make check     # ruff format/lint + basedpyright
 make type      # basedpyright only
 make format    # ruff lint + format
-make test      # tests not marked slow
+make test      # testmon-selected tests, excluding slow
 make test-all  # all tests
 ```

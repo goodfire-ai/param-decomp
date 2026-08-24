@@ -19,14 +19,14 @@ import jax.numpy as jnp
 from jax.sharding import Mesh
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from param_decomp.core.ci_fn import CIFn, evaluate_ci
+from param_decomp.core.ci_fn import PlacedCIFn, evaluate_ci
 from param_decomp.core.components import ComponentStacks
 from param_decomp.core.jit_util import filter_jit
-from param_decomp.core.model import CaptureKeys, DecomposedModel
+from param_decomp.core.model import CaptureKeys, PlacedModel
 from param_decomp.core.sharding import batch_shard_leading
 
 type CI_L0Step = Callable[
-    [DecomposedModel, ComponentStacks, CIFn, Any, PRNGKeyArray], dict[str, Array]
+    [PlacedModel, ComponentStacks, PlacedCIFn, Any, PRNGKeyArray], dict[str, Array]
 ]
 
 
@@ -71,7 +71,7 @@ def ci_l0_scalars(
 
 
 def make_ci_l0_eval_step(
-    model_static: DecomposedModel,
+    model_static: PlacedModel,
     ci_capture_keys: CaptureKeys,
     ci_alive_threshold: float,
     groups: dict[str, tuple[str, ...]] | None,
@@ -85,16 +85,16 @@ def make_ci_l0_eval_step(
     leading_rank = 2 if model_static.has_position_axis else 1
 
     def eval_step(
-        model: DecomposedModel,
+        model: PlacedModel,
         components: ComponentStacks,
-        ci_fn: CIFn,
+        placed_ci_fn: PlacedCIFn,
         inputs: Any,
         key: PRNGKeyArray,
     ) -> dict[str, Array]:
         del components, key  # L0 reads the CI envelope alone
         sharded_inputs = jax.tree.map(lambda x: batch_shard_leading(x, mesh), inputs)
         ci_input_activations = model.clean_forward(sharded_inputs, ci_capture_keys).captures
-        ci_lower = evaluate_ci(ci_fn, ci_input_activations, remat=False).lower
+        ci_lower = evaluate_ci(placed_ci_fn, ci_input_activations, remat=False).lower
         leading = next(iter(ci_lower.values())).shape[:-1]
         assert len(leading) == leading_rank, (leading, model_static.has_position_axis)
         return ci_l0_scalars(ci_lower, site_names, ci_alive_threshold, resolved_groups, jnp.mean)

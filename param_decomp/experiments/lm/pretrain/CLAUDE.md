@@ -8,10 +8,9 @@ The torch original (`torch-oracle:param_decomp/experiments/lm/pretrain/`) was a
 torchrun trainer; this is a capability reimplementation (NOT bit-exact), reusing the JAX
 single-pool trainer's data/sharding/checkpoint substrate.
 
-## Split
+## Process boundary
 
-The trainer is a library subpackage (`param_decomp/pretrain/`); this package holds only
-the read side of the cache it writes.
+The trainer is a library subpackage under `param_decomp/pretrain/`:
 
 - **`param_decomp/pretrain/`** — the trainer:
   - `models.py` — trainable equinox defs for all three archs (`GPT2Simple`, `LlamaSimple`,
@@ -27,9 +26,9 @@ the read side of the cache it writes.
   - `configs/` — the run yamls (`pile_llama_simple_mlp-*`, `gpt2_simple-2L`,
     `pile_llama_simple-4L-768`, `*_SMOKE`).
 - **`param_decomp/experiments/lm/pretrain/`** (here):
-  - `run_info.py` — `find_pretrain_cache(data_root, project, run_id)`: the torch-free read-side index
-    into the cache (the torch `PretrainRunInfo`'s wandb-download path is gone — the cache
-    is written directly to shared FS).
+  - `run_info.py` — `find_pretrain_cache(data_root, project, run_id)`: an unused legacy
+    read-side index. The cache resolver consumers actually use is
+    `param_decomp/infra/pretrain_cache.py::resolved_cache_dir`.
 
 ## Cache compatibility (load-bearing)
 
@@ -49,8 +48,8 @@ target:
 ```
 
 (`run_path` resolves to `pretrain_cache/<project>-<run_id>`.) The pretrain model's forward
-is bit-identical to the loader's `clean_suffix_logits` round-trip — pinned by
-`param_decomp/tests/test_pretrain.py`.
+is bit-identical to the decomposition loader's clean-forward round-trip — pinned by
+`param_decomp/core/tests/test_pretrain.py`.
 
 ## Data
 
@@ -63,15 +62,12 @@ unsupported).
 
 ## Usage
 
-The mode is CONFIG-DRIVEN via the config's `dp` (there are no `--nodes` / `--local`
-flags): `dp = N` → `jax.distributed` over `N // gpus_per_node` nodes, so launch ONE
-process per node inside an allocation of that shape; `dp = null` → a single device, run
-it anywhere (CPU / one GPU).
+The mode is config-driven via `dp`; there are no `--nodes` or `--local` flags. `dp = N`
+declares a distributed world of `N` devices and requires the caller to start the matching
+process topology. `dp = null` runs on the devices visible to one process.
 
 ```bash
-# Distributed: config sets `dp: 8` (1 node = 8 GPUs), one process on that node
-python -m param_decomp.pretrain.train param_decomp/pretrain/configs/pile_llama_simple_mlp-4L-768.yaml
-
-# Single device: config leaves `dp` unset (null)
-python -m param_decomp.pretrain.train param_decomp/pretrain/configs/pile_llama_simple_mlp-2L-128_SMOKE.yaml
+# Single process; the config leaves `dp` unset.
+python -m param_decomp.pretrain.train \
+  param_decomp/pretrain/configs/pile_llama_simple_mlp-2L-128_SMOKE.yaml
 ```

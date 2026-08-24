@@ -1,11 +1,14 @@
 """LM evaluation operation binding and execution."""
 
+from functools import cache
+
 import jax
 import numpy as np
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import PRNGKeyArray
 
+from param_decomp.core.components import nonlinearity_partitions
 from param_decomp.core.configs import (
     CI_L0Config,
     CIHiddenActsReconLossConfig,
@@ -19,20 +22,28 @@ from param_decomp.core.configs import (
     UVPlotsConfig,
     WellTemperednessConfig,
 )
-from param_decomp.core.model import DecomposedModel
+from param_decomp.core.model import BATCH_AXES, PlacedModel
 from param_decomp.core.run import (
     BackgroundRenderer,
+    EvalInvocation,
     EvalOperation,
     Evaluation,
     MetricsSink,
 )
-from param_decomp.core.train import TrainState
+from param_decomp.core.sharding import local_data_parallel_size
+from param_decomp.core.slow_eval import accumulate_site_reductions, make_slow_eval_step
 from param_decomp.core.well_temperedness_eval import make_well_temperedness_operation
-from param_decomp.experiments.eval_config import AnyEvalMetricConfig, EvalConfig, schedule_for
+from param_decomp.experiments.eval_config import (
+    AnyEvalMetricConfig,
+    EvalConfig,
+    schedule_for,
+    slow_schedule,
+)
 from param_decomp.experiments.lm.arithmetic_eval_operation import make_arithmetic_operation
 from param_decomp.experiments.lm.diagnostic_eval_operations import (
     make_attention_operation,
     make_hidden_acts_operation,
+    make_nonlinearity_operation,
     make_permutation_operation,
     make_site_figures_operation,
 )
@@ -55,14 +66,14 @@ from param_decomp.pretrain.batch_data import BatchSchedule, ShardServer, scan_sh
 
 
 def global_token_batch(local: np.ndarray, mesh: Mesh, global_batch: int) -> jax.Array:
-    sharding = NamedSharding(mesh, P(("replicate", "fsdp")))
+    sharding = NamedSharding(mesh, P(BATCH_AXES))
     return jax.make_array_from_process_local_data(sharding, local, (global_batch, local.shape[1]))
 
 
 def make_lm_evaluation(
     built: LMAnyRun,
     eval: EvalConfig,
-    model: DecomposedModel,
+    model: PlacedModel,
     run_key: PRNGKeyArray,
     mesh: Mesh,
     n_proc: int,
@@ -76,7 +87,7 @@ def make_lm_evaluation(
     schedule = BatchSchedule(scan_shards(data.eval_dir), eval.batch_size, pd.seed + 1)
     seq_len = read_dataset_meta(data.eval_dir).seq_len
     server = ShardServer(schedule, seq_len, jax.process_index(), n_proc)
-    assert server.per_process % jax.local_device_count() == 0
+    assert server.per_process % local_data_parallel_size(mesh) == 0
     renderer = BackgroundRenderer(sink)
 
     def batches(pass_index: int) -> list[jax.Array]:
@@ -136,11 +147,23 @@ def make_lm_evaluation(
 
             case CIMaskedAttnPatternsReconLossConfig() | StochasticAttnPatternsReconLossConfig():
                 return make_attention_operation(
-                    metric, schedule, model, capture_inputs, run_key, pd.steps, compiler_options
+                    metric,
+                    schedule,
+                    model,
+                    capture_inputs,
+                    run_key,
+                    pd.steps,
+                    compiler_options,
                 )
             case CIHiddenActsReconLossConfig() | StochasticHiddenActsReconLossConfig():
                 return make_hidden_acts_operation(
-                    metric, schedule, model, capture_inputs, run_key, pd.steps, compiler_options
+                    metric,
+                    schedule,
+                    model,
+                    capture_inputs,
+                    run_key,
+                    pd.steps,
+                    compiler_options,
                 )
             case (
                 CIHistogramsConfig()
@@ -148,11 +171,21 @@ def make_lm_evaluation(
                 | CIMeanPerComponentConfig()
             ):
                 return make_site_figures_operation(
-                    metric, schedule, model, capture_inputs, compiler_options, renderer
+                    metric,
+                    schedule,
+                    model,
+                    capture_inputs,
+                    compiler_options,
+                    renderer,
                 )
             case PermutedCIPlotsConfig() | UVPlotsConfig() | IdentityCIErrorConfig():
                 return make_permutation_operation(
-                    metric, schedule, model, capture_inputs, compiler_options, renderer
+                    metric,
+                    schedule,
+                    model,
+                    capture_inputs,
+                    compiler_options,
+                    renderer,
                 )
 
             case WellTemperednessConfig():
@@ -182,15 +215,37 @@ def make_lm_evaluation(
                     compiler_options,
                 )
 
-    operations = tuple(make_operation(metric) for metric in eval.metrics)
+    partitions = nonlinearity_partitions(model.sites)
+    standing_operations = (
+        (make_nonlinearity_operation(slow_schedule(eval), partitions, compiler_options),)
+        if partitions
+        else ()
+    )
+    operations = tuple(make_operation(metric) for metric in eval.metrics) + standing_operations
 
-    def make_context(state: TrainState, now_step: int) -> LMEvalContext:
-        pass_index = now_step // eval.every
+    ci_reduction_step = make_slow_eval_step(
+        model,
+        capture_inputs,
+        ci_alive_threshold=0.0,
+        density_heatmap_n_bins=None,
+        value_histogram_n_bins=None,
+        compiler_options=compiler_options,
+    )
+
+    def make_context(invocation: EvalInvocation) -> LMEvalContext:
+        pass_index = invocation.now_step // eval.every
+        pass_batches = tuple(batches(pass_index))
         return LMEvalContext(
-            state=state,
-            now_step=now_step,
+            state=invocation.state,
+            now_step=invocation.now_step,
+            placed_ci_fn=invocation.placed_ci_fn,
             pass_index=pass_index,
-            batches=tuple(batches(pass_index)),
+            batches=pass_batches,
+            shared_ci_reductions=cache(
+                lambda: accumulate_site_reductions(
+                    ci_reduction_step, model, invocation.placed_ci_fn, list(pass_batches)
+                )
+            ),
         )
 
     return Evaluation(operations, make_context)

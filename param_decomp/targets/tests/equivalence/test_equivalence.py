@@ -3,26 +3,24 @@
 Two kinds of check:
 
   * **Numeric (cross-framework).** `test_jax_matches_torch_reference` runs the JAX side of
-    the harness on the committed fixtures and asserts every loss term matches the committed
+    the harness on the committed fixtures and asserts each retained oracle-backed term matches
     `torch_reference.json` (produced by `torch_reference.py` in the torch env) to fp32
     tolerance. This is the watertight numeric verification: identical fixtures into both
     frameworks, the torch values from the REAL reference functions
-    (`faithfulness_loss` / `importance_minimality_terms` / `recon_loss_kl` /
+    (`importance_minimality_terms` / `recon_loss_kl` /
     `get_ppgd_mask_infos` / `LinearComponents.forward`), compared at ~1e-4.
 
   * **Structural.** `test_structure_*` pin SPEC invariants that aren't a single number:
-    the stochastic recon runs ONE forward PER CHUNK (S10), recon is KL not MSE (§2.3),
+    each recon term loops its routing draws (S10'), recon is KL not MSE (§2.3),
     and the PPGD source carries the trailing raw weight-delta channel (S1).
     `test_sc_source_broadcasts_over_batch_in_masked_forward` pins the `sc`
     broadcast (S1/S16): an `(1, T, C+1)` source broadcasts over `[B, T]` in the masked
     forward, and a B/T-transposed source must break it (the fixtures keep `B != T`).
 
-  * **Chunk-plan static-live gate (S2).** `test_chunk_plan_static_live_gate` drives
-    `masked_output` with a live set that splits a layer's MLP (`live = (l0.gate, l0.up)`,
-    `l0.down` frozen) — the realization the production `subset_chunk_plan` hits when a
-    chunk boundary cuts across a layer, which `stoch` (whole-layer chunks) and `ppgd`
-    (all sites live) never exercise — and asserts it equals an explicit reference that
-    hard-codes the frozen site to `x @ W`.
+Faithfulness is no longer compared because the target-relative formula intentionally differs
+from the per-parameter torch oracle. The golden's `stoch` term drove partial per-chunk masked
+forwards, which the all-sites masked forward no longer supports. The retained comparisons are
+`imp` and `ppgd`.
 
 `torch_reference.json` is a FROZEN committed golden. The torch generator that produced
 it (`torch_reference.py`) is deleted — `param_decomp` imports no torch. To regen
@@ -44,12 +42,10 @@ import param_decomp.core.losses as core_losses_mod
 import param_decomp.core.masking as masking_mod
 import param_decomp.core.train as train_mod
 import param_decomp.targets.losses as losses_mod
+from param_decomp.core.adversary import SiteSource, split_source_channels
 from param_decomp.core.masking import masks_from_sources
 from param_decomp.targets.testing import run_masked
-from param_decomp.targets.tests.equivalence.jax_equivalence import (
-    chunk_plan_static_gate_kl,
-    compute_jax_terms,
-)
+from param_decomp.targets.tests.equivalence.jax_equivalence import compute_jax_terms
 
 HERE = Path(__file__).resolve().parent
 RTOL = 2e-4
@@ -69,7 +65,7 @@ def _load_fixtures() -> dict[str, np.ndarray]:
     return dict(np.load(HERE / "fixtures.npz"))
 
 
-@pytest.mark.parametrize("term", ["faith", "imp", "stoch", "ppgd"])
+@pytest.mark.parametrize("term", ["imp", "ppgd"])
 @_PENDING_REGEN
 def test_jax_matches_torch_reference(term: str) -> None:
     ref_path = HERE / "torch_reference.json"
@@ -82,30 +78,11 @@ def test_jax_matches_torch_reference(term: str) -> None:
     )
 
 
-@_PENDING_REGEN
-def test_chunk_plan_static_live_gate() -> None:
-    """SPEC S2 under a layer-SPLITTING chunk plan (issue #640). The production
-    `subset_chunk_plan` partitions sites into sequential groups that can cut across a
-    layer's MLP, leaving whole sites frozen (`x @ W`) inside an otherwise-decomposed
-    layer. The `stoch` term here uses whole-layer live chunks and `ppgd` decomposes
-    every site, so neither pins this static-live gate. Drive `masked_output` with
-    `live = (l0.gate, l0.up)` (so `l0.down` is the frozen sibling) and assert it equals
-    an explicit reference forward that hard-codes `l0.down` to `x @ W`."""
-    f = dict(np.load(HERE / "fixtures.npz"))
-    gate_kl, ref_kl = chunk_plan_static_gate_kl(f)
-    assert abs(gate_kl - ref_kl) <= ATOL + RTOL * abs(ref_kl), (
-        f"static-live gate {gate_kl:.8e} vs explicit-frozen reference {ref_kl:.8e} "
-        f"(rel {abs(gate_kl - ref_kl) / (abs(ref_kl) + 1e-30):.2e})"
-    )
-
-
-def test_structure_stoch_is_per_chunk() -> None:
-    """SPEC S10: one forward per (chunk, sample), normalized by `n_chunks · n_samples`
-    — matching the torch chunkwise pool, not one fused forward over all sites."""
-    src = inspect.getsource(train_mod._StepAtoms)
-    assert "for entry_idx, entry in enumerate(term.plan)" in src, (
-        "each recon term must loop its plan's entries"
-    )
+def test_structure_stoch_is_mean_over_draws() -> None:
+    """SPEC S10': one forward per routing draw, and the term's loss is the mean over
+    its draws — not one fused forward over all draws."""
+    src = inspect.getsource(train_mod.ReconGrid)
+    assert "for draw_key, routes in draws" in src, "each recon term must loop its sampled draws"
     assert "mean_reconstruction_losses" in src
     reducer_src = inspect.getsource(core_losses_mod.mean_reconstruction_losses)
     assert "jax.tree.map(scalar_mean, *values)" in reducer_src, (
@@ -124,11 +101,10 @@ def test_structure_recon_is_kl_not_mse() -> None:
 
 
 def test_structure_ppgd_has_delta_channel() -> None:
-    """SPEC S1: PPGD masks interpolate `ci + (1-ci)*src[:, :C]`; the trailing channel
-    is the raw weight-delta mask (no ci interpolation)."""
+    """SPEC S1: component sources are interpolated; delta sources are raw masks."""
     src = inspect.getsource(masking_mod.masks_from_sources)
-    assert "[..., :-1]" in src and "[..., -1]" in src, "ppgd source needs the delta channel"
-    assert "ci_lower[site] + (1.0 - ci_lower[site]) * source[..., :-1]" in src, (
+    assert "source.components" in src and "source.delta" in src
+    assert "ci + (1.0 - ci) * source.components" in src, (
         "ppgd must interpolate mask=ci+(1-ci)*source"
     )
 
@@ -149,7 +125,13 @@ def test_sc_scope_broadcast_axis_matches_torch() -> None:
     source_np = rng.uniform(0.0, 1.0, (1, T, C + 1)).astype(np.float32)
 
     masks, delta_masks = masks_from_sources(
-        {site: jnp.asarray(ci_lower_np)}, {site: jnp.asarray(source_np)}, (site,)
+        {site: jnp.asarray(ci_lower_np)},
+        {
+            site: SiteSource(
+                components=jnp.asarray(source_np[..., :-1]),
+                delta=jnp.asarray(source_np[..., -1]),
+            )
+        },
     )
     mask = np.asarray(masks[site])
     delta_mask = np.asarray(delta_masks[site])
@@ -209,11 +191,12 @@ def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
         return {site_name(i, k): by_kind[k][:, :, i] for i in range(n_layers) for k in MLP_KINDS}
 
     ci_lower = per_site_sc("ci_lower")  # (B, T, C)
-    source = per_site_sc("ppgd_source")  # (1, T, C+1) per site
+    packed_source = per_site_sc("ppgd_source")  # (1, T, C+1) per site
     for s in model.site_names:
-        assert source[s].shape == (1, T, source[s].shape[-1]), source[s].shape
+        assert packed_source[s].shape == (1, T, packed_source[s].shape[-1])
+    source = {site: split_source_channels(value) for site, value in packed_source.items()}
 
-    masks, delta_masks = masks_from_sources(ci_lower, source, model.site_names)
+    masks, delta_masks = masks_from_sources(ci_lower, source)
     # `ci + (1-ci)*src` lifts the sc mask to the CI's batch dim; delta stays sc.
     for s in model.site_names:
         assert masks[s].shape[0] == B and masks[s].shape[1] == T, masks[s].shape
@@ -221,12 +204,11 @@ def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
 
     pred = run_masked(
         model,
-        model.prepare_compute_weights(vu),
+        model.prepare_compute_weights(vu, None),
         resid,
         masks,
         delta_masks,
         None,
-        model.site_names,
         True,
         remat=False,
     )
@@ -234,19 +216,21 @@ def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
 
     # A source whose free axis is sized B (not T) — i.e. the B/T axes transposed — must NOT
     # broadcast against the `(B, T, C)` ci. The time axis is load-bearing, not interchangeable.
-    bt_transposed = {s: source[s][:, :B, :] for s in model.site_names}
+    bt_transposed_packed = {s: packed_source[s][:, :B, :] for s in model.site_names}
+    bt_transposed = {
+        site: split_source_channels(value) for site, value in bt_transposed_packed.items()
+    }
     for s in model.site_names:
-        assert bt_transposed[s].shape == (1, B, source[s].shape[-1]), bt_transposed[s].shape
+        assert bt_transposed[s].components.shape[:2] == (1, B)
     with pytest.raises(Exception):  # noqa: B017 — broadcast error, framework-specific type
-        bad_masks, bad_delta = masks_from_sources(ci_lower, bt_transposed, model.site_names)
+        bad_masks, bad_delta = masks_from_sources(ci_lower, bt_transposed)
         run_masked(
             model,
-            model.prepare_compute_weights(vu),
+            model.prepare_compute_weights(vu, None),
             resid,
             bad_masks,
             bad_delta,
             None,
-            model.site_names,
             True,
             remat=False,
         )

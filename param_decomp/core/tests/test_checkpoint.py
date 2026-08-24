@@ -9,12 +9,14 @@ from pathlib import Path
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 import pytest
-from jax.sharding import Mesh
+from jax.sharding import AxisType, Mesh
 
 from param_decomp.core.adversary import (
     PersistentAdversary,
+    Sources,
     init_persistent_sources,
     init_sources_adam_state,
     sources_adam_ascend_project,
@@ -23,7 +25,7 @@ from param_decomp.core.checkpoint import (
     init_from_parent,
     make_checkpoint_manager,
     make_read_only_checkpoint_manager,
-    restore_decomposition_to_host,
+    restore_decomposition,
     restore_latest,
     restore_step,
     save_state,
@@ -34,30 +36,38 @@ from param_decomp.core.ci_fn import (
     MHACIAttention,
     build_ci_fn,
 )
-from param_decomp.core.components import init_component_stacks
+from param_decomp.core.components import ComponentStacks, SiteSpec, init_component_stacks
 from param_decomp.core.configs import (
     AdamPGDConfig,
-    ChunkwiseSubsetReconLossConfig,
     FaithfulnessLossConfig,
+    FrequencyMinimalityConfig,
     ImportanceMinimalityLossConfig,
     KeepAllCheckpoints,
     KeepLastNCheckpoints,
     PersistentPGDReconLossConfig,
+    StochasticReconSubsetLossConfig,
     UniformKSubsetRoutingConfig,
 )
+from param_decomp.core.faithfulness import faithfulness_loss_for
 from param_decomp.core.init_placed import (
     init_ci_fn_placed,
     init_component_stacks_placed,
     init_sources_sharded,
 )
-from param_decomp.core.model import DecomposedModel, Positioned
+from param_decomp.core.model import DecomposedModel, PlacedModel, Positioned
 from param_decomp.core.muon_stacked import stacked_muon
 from param_decomp.core.objective import build_objective
 from param_decomp.core.placement import from_config
 from param_decomp.core.run_state import stacked_muon_dimension_numbers
 from param_decomp.core.schedule import Knot, ScheduleConfig
 from param_decomp.core.sharding import hsdp_mesh
-from param_decomp.core.train import Decomposition, TrainingItem, TrainState, make_train_step
+from param_decomp.core.train import (
+    Decomposition,
+    ForwardSubstrate,
+    TrainingItem,
+    TrainState,
+    make_train_step,
+)
 from param_decomp.targets.glu_transformer import (
     glu_site_specs,
     mlp_family_site_cs,
@@ -71,14 +81,18 @@ def _ppgd_cfg(n_warmup: int) -> PersistentPGDReconLossConfig:
         coeff=0.5,
         source_shape="sc",
         optimizer=AdamPGDConfig(
-            beta1=0.5, beta2=0.99,
-            lr_schedule=ScheduleConfig(max_val=0.01, points=(Knot(at=0.0, frac=0.0), Knot(at=0.025, frac=1.0), Knot(at=1.0, frac=1.0))),
+            beta1=0.5,
+            beta2=0.99,
+            lr_schedule=ScheduleConfig(
+                max_val=0.01,
+                points=(Knot(at=0.0, frac=0.0), Knot(at=0.025, frac=1.0), Knot(at=1.0, frac=1.0)),
+            ),
         ),
         n_warmup_steps=n_warmup,
-    )  # fmt: skip
+    )
 
 
-def _adversary(src: dict[str, jax.Array], cfg: PersistentPGDReconLossConfig) -> PersistentAdversary:
+def _adversary(src: Sources, cfg: PersistentPGDReconLossConfig) -> PersistentAdversary:
     assert cfg.coeff is not None
     return PersistentAdversary(
         sources=src,
@@ -110,7 +124,9 @@ _C, _SEQ = 8, 16
 
 
 @cache
-def _optimizers_and_step(muon_components: bool, muon_ci_fn: bool, stacked_impl: bool):
+def _optimizers_and_step(
+    muon_components: bool, muon_ci_fn: bool, stacked_impl: bool, freq_ema: bool = False
+):
     """Everything in `_build` that the seed cannot reach.
 
     The step is built from statics only — the model, the loss terms, and the two
@@ -132,7 +148,7 @@ def _optimizers_and_step(muon_components: bool, muon_ci_fn: bool, stacked_impl: 
                 muon_weight_dimension_numbers=dim_nums,
                 ns_steps=5,
                 ns_dtype=jnp.dtype(jnp.float32),
-                mesh=None,
+                waypoints=None,
             )
         return optax.contrib.muon(1e-3, consistent_rms=0.2, muon_weight_dimension_numbers=dim_nums)
 
@@ -155,33 +171,57 @@ def _optimizers_and_step(muon_components: bool, muon_ci_fn: bool, stacked_impl: 
         (
             FaithfulnessLossConfig(coeff=1e5),
             ImportanceMinimalityLossConfig(
-                coeff=5e-6, pnorm=ScheduleConfig(max_val=2.0, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.2))),
+                coeff=5e-6,
+                pnorm=ScheduleConfig(
+                    max_val=2.0, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.2))
+                ),
+                frequency=FrequencyMinimalityConfig(
+                    coeff=1e-6, reference_datapoint_count=128, ema_halflife_steps=8.0
+                )
+                if freq_ema
+                else None,
             ),
-            ChunkwiseSubsetReconLossConfig(routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=3, n_samples=1),
+            StochasticReconSubsetLossConfig(
+                routing=UniformKSubsetRoutingConfig(), coeff=0.5, n_mask_samples=1
+            ),
             ppgd_cfg,
         ),
         model.site_names,
-    )  # fmt: skip
+    )
+    placed = PlacedModel(model=model, placement=None)
     step = make_train_step(
-        model_static=model,
-        losses=loss_terms,
-        components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
+        model_static=placed,
+        substrate=ForwardSubstrate.of(
+            placed,
+            remat_recon_forwards=True,
+            remat_ci_fn=False,
+            ci_capture_keys=_chunkwise_arch(model, cfg).capture_keys,
+            ci_placement=None,
+        ),
+        objective=loss_terms,
+        components_optimizer=opt_vu,
+        ci_fn_optimizer=opt_ci,
         total_steps=100,
-        remat_recon_forwards=True, remat_ci_fn=False,
-        ci_capture_keys=_chunkwise_arch(model, cfg).capture_keys,
-    )  # fmt: skip
+        faithfulness=faithfulness_loss_for(model),
+    )
     resid = jax.random.randint(jax.random.PRNGKey(9), (2, _SEQ), 0, cfg.vocab_size)
-    return cfg, sites, model, opt_vu, opt_ci, ppgd_cfg, step, resid
+    return cfg, sites, placed, opt_vu, opt_ci, ppgd_cfg, step, resid
 
 
 def _build(
-    seed: int, muon_components: bool = False, muon_ci_fn: bool = False, stacked_impl: bool = False
+    seed: int,
+    muon_components: bool = False,
+    muon_ci_fn: bool = False,
+    stacked_impl: bool = False,
+    freq_ema: bool = False,
 ):
     cfg, sites, model, opt_vu, opt_ci, ppgd_cfg, step, resid = _optimizers_and_step(
-        muon_components, muon_ci_fn, stacked_impl
+        muon_components, muon_ci_fn, stacked_impl, freq_ema
     )
     vu = init_component_stacks(sites, jax.random.PRNGKey(seed))
-    ci_fn = build_ci_fn(_chunkwise_arch(model, cfg), model.sites, jax.random.PRNGKey(seed + 1))
+    ci_fn = build_ci_fn(
+        _chunkwise_arch(model.model, cfg), model.sites, jax.random.PRNGKey(seed + 1)
+    )
     src = init_persistent_sources(
         model.site_names,
         tuple(s.C for s in model.sites),
@@ -195,17 +235,26 @@ def _build(
             components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
             ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
             adversaries={ppgd_cfg.type: _adversary(src, ppgd_cfg)},
+            freq_ema={s.name: jnp.zeros((s.C,), jnp.float32) for s in sites} if freq_ema else None,
             step=jnp.zeros((), jnp.int32),
         ),
-    )  # fmt: skip
+    )
     return model, state, step, resid
 
 
 def _roundtrip_and_exact_resume(
-    tmp_path: Path, muon_components: bool, muon_ci_fn: bool = False, stacked_impl: bool = False
+    tmp_path: Path,
+    muon_components: bool,
+    muon_ci_fn: bool = False,
+    stacked_impl: bool = False,
+    freq_ema: bool = False,
 ) -> None:
     model, state, step, resid = _build(
-        seed=1, muon_components=muon_components, muon_ci_fn=muon_ci_fn, stacked_impl=stacked_impl
+        seed=1,
+        muon_components=muon_components,
+        muon_ci_fn=muon_ci_fn,
+        stacked_impl=stacked_impl,
+        freq_ema=freq_ema,
     )
     for i in range(2):
         state, _ = step(model, state, resid, jax.random.PRNGKey(i))
@@ -215,7 +264,11 @@ def _roundtrip_and_exact_resume(
 
     # Restore onto a DIFFERENTLY-seeded reference: every leaf must come from disk.
     _, fresh, _, _ = _build(
-        seed=7, muon_components=muon_components, muon_ci_fn=muon_ci_fn, stacked_impl=stacked_impl
+        seed=7,
+        muon_components=muon_components,
+        muon_ci_fn=muon_ci_fn,
+        stacked_impl=stacked_impl,
+        freq_ema=freq_ema,
     )
     restored = restore_latest(mgr, fresh)
     assert restored is not None
@@ -254,6 +307,12 @@ def test_roundtrip_and_exact_resume(tmp_path: Path):
 
 
 @pytest.mark.slow
+def test_freq_ema_roundtrip_and_exact_resume(tmp_path: Path):
+    """The S8'' EMA buffers are checkpointed trajectory state: two live steps fill them,
+    the roundtrip restores every leaf bit-exactly onto a differently-seeded reference."""
+    _roundtrip_and_exact_resume(tmp_path, muon_components=False, freq_ema=True)
+
+
 def test_muon_roundtrip_and_exact_resume(tmp_path: Path):
     """SPEC S20 amendment: the muon components opt state (optax-partitioned muon/adam
     masked trees) must ALSO restore onto a rebuilt reference and continue exactly —
@@ -360,8 +419,22 @@ def test_persistent_adam_step_count_roundtrip_and_post_resume_bias_correction(tm
 
     # (c) the restored Adam moments are bit-equal to pre-save (per site, m and v).
     for site in pre_save.m:
-        assert jnp.array_equal(loaded_adam.m[site], pre_save.m[site])
-        assert jnp.array_equal(loaded_adam.v[site], pre_save.v[site])
+        assert all(
+            jnp.array_equal(a, b)
+            for a, b in zip(
+                jax.tree.leaves(loaded_adam.m[site]),
+                jax.tree.leaves(pre_save.m[site]),
+                strict=True,
+            )
+        )
+        assert all(
+            jnp.array_equal(a, b)
+            for a, b in zip(
+                jax.tree.leaves(loaded_adam.v[site]),
+                jax.tree.leaves(pre_save.v[site]),
+                strict=True,
+            )
+        )
 
     # (b) the first post-resume ascent applies bias-correction for count N+1.
     adam_cfg = AdamPGDConfig(
@@ -373,7 +446,7 @@ def test_persistent_adam_step_count_roundtrip_and_post_resume_bias_correction(tm
         ),
     )
     loaded_sources = loaded.training.adversaries[state_key].sources
-    grads = {site: jnp.ones_like(v) for site, v in loaded_sources.items()}
+    grads = jax.tree.map(jnp.ones_like, loaded_sources)
     _, post_resume = sources_adam_ascend_project(
         loaded_sources, grads, loaded_adam, jnp.asarray(0.01), adam_cfg
     )
@@ -414,7 +487,7 @@ def test_saved_layout_is_two_items(tmp_path: Path):
 def test_retention_decides_what_survives_on_disk(
     tmp_path: Path, retention: KeepLastNCheckpoints | KeepAllCheckpoints, surviving_steps: list[int]
 ):
-    """`Cadence.checkpoint_retention` is a claim about the FILESYSTEM, so assert the
+    """`PeriodicCheckpointing.retention` is a claim about the FILESYSTEM, so assert the
     filesystem: after five saves, exactly these `ckpts/<step>/` directories remain (and
     orbax agrees via `all_steps`). Deletion is synchronous — no post-save settling."""
     _, state, _, _ = _build(seed=1)
@@ -439,31 +512,8 @@ def test_read_only_manager_never_prunes(tmp_path: Path):
 
     reader = make_read_only_checkpoint_manager(ckpt_dir)
     abstract = jax.eval_shape(lambda: state.decomposition)
-    restore_decomposition_to_host(reader, 0, abstract)
+    restore_decomposition(reader, 0, abstract)
     assert sorted(int(p.name) for p in ckpt_dir.iterdir() if p.is_dir()) == [0, 1, 2]
-
-
-def test_consumer_restores_decomposition_to_host(tmp_path: Path):
-    """The consumer path (`open_jax_run`): an eval_shape'd `Decomposition` abstract —
-    no optimizer/adversary knowledge — restores host-side, bit-equal to the saved
-    components + ci_fn."""
-    model, state, step, resid = _build(seed=1)
-    for i in range(2):
-        state, _ = step(model, state, resid, jax.random.PRNGKey(i))
-    mgr = make_checkpoint_manager(tmp_path / "ckpts", KeepLastNCheckpoints(n=2))
-    save_state(mgr, 2, state)
-
-    # A FRESH manager, as every real consumer opens: orbax pins an item's handler per
-    # manager instance, so the saving manager can't PyTreeRestore what it StandardSave'd.
-    consumer_mgr = make_read_only_checkpoint_manager(tmp_path / "ckpts")
-    abstract = jax.eval_shape(lambda: state.decomposition)
-    restored = restore_decomposition_to_host(consumer_mgr, 2, abstract)
-    for a, b in zip(
-        jax.tree.leaves(state.decomposition),
-        jax.tree.leaves(restored),
-        strict=True,
-    ):
-        assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
 
 
 def test_init_from_parent_restores_decomposition_only(tmp_path: Path):
@@ -502,21 +552,31 @@ def test_init_from_parent_restores_decomposition_only(tmp_path: Path):
     assert int(finetuned.training.step) == 0
 
 
-def _build_sharded(seed: int, mesh: Mesh):
+def _build_sharded(
+    seed: int,
+    mesh: Mesh,
+    place_vu: "Callable[[tuple[SiteSpec, ...], jax.Array], ComponentStacks]",
+    C: int,
+):
     """A `TrainState` placed exactly as the production trainer places it
     (`run_state.init_train_state`): C-sharded V/U + ci_fn, replicated sources, over the
     `dp` mesh. Built directly from the `*_sharded` init fns so the saved/restored
-    leaves carry real `NamedSharding`s — the production checkpoint path, not `mesh=None`."""
+    leaves carry real `NamedSharding`s — the production checkpoint path, not `mesh=None`.
+    `place_vu` seeds AND places the V/U masters (their moments inherit the placement via
+    `opt.init`), so a test can pin any master layout, current or historical. `C` is
+    explicit so two builds on differently-sized meshes can share one logical shape."""
     cfg = tiny_glu_cfg()
     n = mesh.devices.size
-    C, seq = 8 * n, 16
+    seq = 16
     sites = glu_site_specs(cfg, mlp_family_site_cs(3, 4, C))
     model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-    vu = init_component_stacks_placed(
-        sites, jax.random.PRNGKey(seed), from_config("owner", mesh, sites)
-    )
+    vu = place_vu(sites, jax.random.PRNGKey(seed))
     ci_fn = init_ci_fn_placed(
-        _chunkwise_arch(model, cfg), model.sites, jax.random.PRNGKey(seed + 1), mesh
+        _chunkwise_arch(model, cfg),
+        model.sites,
+        jax.random.PRNGKey(seed + 1),
+        mesh,
+        from_config("zero1", mesh, model.sites),
     )
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
@@ -537,9 +597,10 @@ def _build_sharded(seed: int, mesh: Mesh):
             components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
             ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
             adversaries={ppgd_cfg.type: _adversary(src, ppgd_cfg)},
+            freq_ema=None,
             step=jnp.asarray(7, jnp.int32),
         ),
-    )  # fmt: skip
+    )
     return state
 
 
@@ -553,8 +614,12 @@ def test_sharded_roundtrip_bit_equal(tmp_path: Path):
     case (still a real save->restore, just one shard)."""
     from jax.sharding import NamedSharding
 
-    mesh = hsdp_mesh()
-    state = _build_sharded(seed=1, mesh=mesh)
+    mesh = hsdp_mesh(1, jax.device_count(), 1)
+
+    def place_vu(sites: tuple[SiteSpec, ...], key: jax.Array) -> ComponentStacks:
+        return init_component_stacks_placed(sites, key, from_config("owner", mesh, sites))
+
+    state = _build_sharded(seed=1, mesh=mesh, place_vu=place_vu, C=8 * mesh.devices.size)
 
     # The big V/U + ci_fn + sources leaves must be genuinely C-sharded over the mesh
     # (the multi-shard write path); only the small scalars (step) stay single-device.
@@ -566,7 +631,7 @@ def test_sharded_roundtrip_bit_equal(tmp_path: Path):
 
     # Restore onto a DIFFERENTLY-seeded sharded reference: every leaf comes from disk,
     # but its placement comes from the (correctly-placed) reference.
-    reference = _build_sharded(seed=7, mesh=mesh)
+    reference = _build_sharded(seed=7, mesh=mesh, place_vu=place_vu, C=8 * mesh.devices.size)
     loaded = restore_step(mgr, reference, 3)
 
     state_leaves = jax.tree.leaves(state)
@@ -574,4 +639,118 @@ def test_sharded_roundtrip_bit_equal(tmp_path: Path):
     ref_leaves = jax.tree.leaves(reference)
     for saved, got, ref in zip(state_leaves, loaded_leaves, ref_leaves, strict=True):
         assert jnp.array_equal(jnp.asarray(saved), jnp.asarray(got))
+        assert got.sharding == ref.sharding
+
+
+@pytest.mark.multidevice
+@pytest.mark.skipif(len(jax.devices()) < 4, reason="requires four local devices")
+def test_restore_reshards_a_checkpoint_saved_in_another_master_layout(tmp_path: Path):
+    """Layout-migration compat: orbax saves the LOGICAL array and `restore_step` places
+    it by the reference's shardings, so a checkpoint whose V/U masters (and their Adam
+    moments) persist d_in-major — the pre-C-minor matrix layout — restores onto today's
+    zero1 reference with no migration pass. Values bit-equal, placement the reference's."""
+    from jax.sharding import NamedSharding
+    from jax.sharding import PartitionSpec as P
+
+    mesh = Mesh(
+        np.asarray(jax.devices()[:4]).reshape(2, 2, 1),
+        ("replicate", "fsdp", "tp"),
+        axis_types=(AxisType.Explicit,) * 3,
+    )
+    old_v = NamedSharding(mesh, P(None, ("fsdp", "replicate"), "tp"))
+    old_u = NamedSharding(mesh, P(None, "tp", ("fsdp", "replicate")))
+
+    def place_vu_old(sites: tuple[SiteSpec, ...], key: jax.Array) -> ComponentStacks:
+        vu = init_component_stacks(sites, key)
+        return jax.device_put(
+            vu,
+            ComponentStacks(
+                stacks={group: (old_v, old_u) for group in vu.stacks},
+                site_slots=vu.site_slots,
+            ),
+        )
+
+    def place_vu_new(sites: tuple[SiteSpec, ...], key: jax.Array) -> ComponentStacks:
+        return init_component_stacks_placed(sites, key, from_config("zero1", mesh, sites))
+
+    saved = _build_sharded(seed=1, mesh=mesh, place_vu=place_vu_old, C=8 * mesh.devices.size)
+    mgr = make_checkpoint_manager(tmp_path / "ckpts", KeepLastNCheckpoints(n=2))
+    save_state(mgr, 3, saved)
+
+    reference = _build_sharded(seed=7, mesh=mesh, place_vu=place_vu_new, C=8 * mesh.devices.size)
+    loaded = restore_step(mgr, reference, 3)
+
+    for was, got, ref in zip(
+        jax.tree.leaves(saved), jax.tree.leaves(loaded), jax.tree.leaves(reference), strict=True
+    ):
+        # Host-side value compare: the two layouts commit to different specs, and
+        # explicit-mode ops refuse mixed-sharding operands.
+        assert np.array_equal(np.asarray(was), np.asarray(got))
+        assert got.sharding == ref.sharding
+
+
+def _filled_with_asymmetric_content(state: TrainState, seed: int) -> TrainState:
+    """Every array leaf refilled with distinct nonzero position-asymmetric values
+    (a per-leaf-offset ramp plus noise), placement preserved. Seeded inits leave CI
+    biases (and other leaves) at zero — symmetric content a value-dropping or
+    value-permuting reshard bug survives — so parity tests compare against this."""
+    leaves, treedef = jax.tree.flatten(state)
+    rng = np.random.default_rng(seed)
+    filled = []
+    for index, leaf in enumerate(leaves):
+        ramp = np.arange(1, leaf.size + 1).reshape(leaf.shape)
+        if jnp.issubdtype(leaf.dtype, jnp.floating):
+            values = (ramp / leaf.size + rng.standard_normal(leaf.shape) + index).astype(leaf.dtype)
+        else:
+            values = (ramp + index).astype(leaf.dtype)
+        filled.append(jax.device_put(values, leaf.sharding))
+    return jax.tree.unflatten(treedef, filled)
+
+
+@pytest.mark.multidevice
+@pytest.mark.skipif(len(jax.devices()) < 8, reason="requires eight local devices")
+@pytest.mark.parametrize(("replicate", "fsdp", "tp"), [(1, 2, 2), (2, 2, 1), (2, 2, 2)])
+def test_restore_reshards_a_train_topology_checkpoint_onto_a_single_device(
+    tmp_path: Path, replicate: int, fsdp: int, tp: int
+):
+    """Cross-topology restore parity: a checkpoint saved at a placed train mesh restores
+    onto the (1, 1, 1) single-device reference — the consumer/debug topology — with
+    every leaf value-equal to the semantic original. The state carries randomized
+    asymmetric content (`_filled_with_asymmetric_content`), so a reshard that drops,
+    permutes, or zero-fills values fails even on the leaves seeded init leaves at zero."""
+    n = replicate * fsdp * tp
+    C = 8 * n
+    train_mesh = Mesh(
+        np.asarray(jax.devices()[:n]).reshape(replicate, fsdp, tp),
+        ("replicate", "fsdp", "tp"),
+        axis_types=(AxisType.Explicit,) * 3,
+    )
+    single_mesh = Mesh(
+        np.asarray(jax.devices()[:1]).reshape(1, 1, 1),
+        ("replicate", "fsdp", "tp"),
+        axis_types=(AxisType.Explicit,) * 3,
+    )
+
+    def place_vu(mesh: Mesh) -> "Callable[[tuple[SiteSpec, ...], jax.Array], ComponentStacks]":
+        def place(sites: tuple[SiteSpec, ...], key: jax.Array) -> ComponentStacks:
+            return init_component_stacks_placed(sites, key, from_config("owner", mesh, sites))
+
+        return place
+
+    saved = _filled_with_asymmetric_content(
+        _build_sharded(seed=1, mesh=train_mesh, place_vu=place_vu(train_mesh), C=C), seed=11
+    )
+    assert any(len(leaf.sharding.device_set) > 1 for leaf in jax.tree.leaves(saved))
+    mgr = make_checkpoint_manager(tmp_path / "ckpts", KeepLastNCheckpoints(n=2))
+    save_state(mgr, 3, saved)
+
+    reference = _build_sharded(seed=7, mesh=single_mesh, place_vu=place_vu(single_mesh), C=C)
+    loaded = restore_step(mgr, reference, 3)
+
+    for was, got, ref in zip(
+        jax.tree.leaves(saved), jax.tree.leaves(loaded), jax.tree.leaves(reference), strict=True
+    ):
+        # Host-side comparison: the two sides are committed to different device sets, so
+        # a device-side equal would refuse the mixed placement.
+        assert np.array_equal(np.asarray(was), np.asarray(got))
         assert got.sharding == ref.sharding

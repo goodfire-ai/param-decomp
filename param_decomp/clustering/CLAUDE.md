@@ -138,20 +138,20 @@ pairwise distances via `perm_invariant_hamming` (numpy + scipy.optimize) or `mat
 ## Key Types
 
 ```python
-MergeConfig               # Merge algorithm params (alpha, iters, sampling method, ...)
-MergeHistory              # Group assignments at each iteration (BatchedGroupMerge, int32)
-MergeHistoryEnsemble      # Collection of histories for distance analysis
-GroupMerge                # Current group assignments (component -> group mapping)
+MergeConfig  # Merge algorithm params (alpha, iters, sampling method, ...)
+MergeHistory  # Group assignments at each iteration (BatchedGroupMerge, int32)
+MergeHistoryEnsemble  # Collection of histories for distance analysis
+GroupMerge  # Current group assignments (component -> group mapping)
 ```
 
 ### Type Aliases (`types.py`) — all numpy
 
 ```python
-ActivationsArray          # Float[np.ndarray, "samples n_components"]
-ClusterCoactivationShaped # Float[np.ndarray, "k_groups k_groups"]
-GroupIdxsArray            # Int[np.ndarray, " n_components"]
-MergesArray               # Int[np.ndarray, "n_ens n_iters n_components"]
-DistancesArray            # Float[np.ndarray, "n_iters n_ens n_ens"]
+ActivationsArray  # Float[np.ndarray, "samples n_components"]
+ClusterCoactivationShaped  # Float[np.ndarray, "k_groups k_groups"]
+GroupIdxsArray  # Int[np.ndarray, " n_components"]
+MergesArray  # Int[np.ndarray, "n_ens n_iters n_components"]
+DistancesArray  # Float[np.ndarray, "n_iters n_ens n_ens"]
 ```
 
 `MergeHistory` stores group/pair indices as **int32** — int16 overflows above 32767

@@ -8,6 +8,7 @@ import pytest
 
 from param_decomp.core.adversary import (
     PersistentAdversary,
+    SiteSource,
     init_persistent_sources,
     init_sources_adam_state,
 )
@@ -49,6 +50,10 @@ GATED = ScheduleConfig(
 TOTAL = 1001  # t = step / 1000, so 20% of the run lands exactly on step 200
 
 
+def _frac(step: float) -> jax.Array:
+    return jnp.asarray(step / (TOTAL - 1), jnp.float32)
+
+
 def _traced(step: int, config: ScheduleConfig) -> float:
     return float(scheduled_value_traced(jnp.asarray(float(step)), TOTAL, config))
 
@@ -78,8 +83,8 @@ class TestActivationGate:
 
     def test_coeff_at_evaluates_the_gate(self):
         # `total = coeff·loss` per term, so coeff == 0.0 IS zero contribution before X.
-        assert float(jnp.asarray(coeff_at(jnp.asarray(0.0), TOTAL, GATED))) == 0.0
-        assert float(jnp.asarray(coeff_at(jnp.asarray(600.0), TOTAL, GATED))) == pytest.approx(0.5)
+        assert float(jnp.asarray(coeff_at(_frac(0.0), GATED))) == 0.0
+        assert float(jnp.asarray(coeff_at(_frac(600.0), GATED))) == pytest.approx(0.5)
 
 
 class TestCoeffParsing:
@@ -89,7 +94,7 @@ class TestCoeffParsing:
                 {"type": "StochasticReconLoss", "coeff": raw}
             )
             assert isinstance(cfg.coeff, float) and cfg.coeff == raw
-            assert coeff_at(jnp.asarray(123.0), TOTAL, cfg.coeff) == raw
+            assert coeff_at(_frac(123.0), cfg.coeff) == raw
 
     def test_eval_only_none_coeff_is_preserved(self):
         cfg = StochasticReconLossConfig.model_validate({"type": "StochasticReconLoss"})
@@ -122,31 +127,31 @@ class TestCoeffParsing:
         assert nt.impmin_coeff == WARMUP_THEN_DECAY
 
 
-class TestScheduledRider:
-    def test_rider_coeff_resolves_per_step(self):
-        rider = HiddenActsReconstruction.model_validate(
+class TestScheduledHiddenActsReconstruction:
+    def test_coeff_resolves_per_step(self):
+        hidden_acts_reconstruction = HiddenActsReconstruction.model_validate(
             {"coeff": GATED.model_dump(), "points": ["resid.1"]}
         )
-        assert isinstance(rider.coeff, ScheduleConfig)
-        before = reconstruction_spec_at(rider, jnp.asarray(0.0), TOTAL)
-        after = reconstruction_spec_at(rider, jnp.asarray(1000.0), TOTAL)
+        assert isinstance(hidden_acts_reconstruction.coeff, ScheduleConfig)
+        before = reconstruction_spec_at(hidden_acts_reconstruction, _frac(0.0))
+        after = reconstruction_spec_at(hidden_acts_reconstruction, _frac(1000.0))
         assert isinstance(before, OutputAndHiddenActsReconstruction)
         assert isinstance(after, OutputAndHiddenActsReconstruction)
         assert float(jnp.asarray(before.coeff)) == 0.0
         assert float(jnp.asarray(after.coeff)) == pytest.approx(0.5, rel=1e-5)
 
-    def test_eval_probe_refuses_a_scheduled_rider(self):
-        rider = HiddenActsReconstruction.model_validate(
+    def test_eval_probe_refuses_a_scheduled_coeff(self):
+        hidden_acts_reconstruction = HiddenActsReconstruction.model_validate(
             {"coeff": GATED.model_dump(), "points": ["resid.1"]}
         )
         with pytest.raises(AssertionError, match="constant float"):
-            resolve_reconstruction_spec(rider)
+            resolve_reconstruction_spec(hidden_acts_reconstruction)
 
 
 class TestModelCotangentsScaled:
-    """S14′ post-refactor: a persistent term's coeff rides its model-side cotangents
-    (`model_cotangents_scaled`); the source path is never scaled, so the final ascent
-    consumes `dL/ds` directly and stays live through an activation gate."""
+    """S14′ post-refactor: `model_cotangents_scaled` applies a persistent term's
+    coefficient only to its model-side cotangents. The source path is never scaled, so
+    the final ascent consumes `dL/ds` directly and stays live through an activation gate."""
 
     def test_forward_is_bit_identical(self):
         x = jax.random.normal(jax.random.PRNGKey(0), (4, 3), jnp.bfloat16)
@@ -176,8 +181,23 @@ class TestModelCotangentsScaled:
             adam=AdamPGDConfig(lr_schedule=ScheduleConfig.constant(0.1)),
             n_warmup=0,
         )
-        grad = {"a": jax.random.normal(jax.random.PRNGKey(2), (1, 1, 5))}
-        out = adv.final_ascend(grad, jnp.asarray(0.0), TOTAL)
-        via_helper = adv.after_one_adam_ascent(grad, jnp.asarray(0.0), TOTAL)
-        assert jnp.array_equal(out.sources["a"], via_helper.sources["a"])
-        assert not jnp.array_equal(out.sources["a"], adv.sources["a"])
+        grad_array = jax.random.normal(jax.random.PRNGKey(2), (1, 1, 5))
+        grad = {"a": SiteSource(grad_array[..., :-1], grad_array[..., -1])}
+        out = adv.final_ascend(grad, _frac(0.0))
+        via_helper = adv.after_one_adam_ascent(grad, _frac(0.0))
+        assert all(
+            jnp.array_equal(a, b)
+            for a, b in zip(
+                jax.tree.leaves(out.sources["a"]),
+                jax.tree.leaves(via_helper.sources["a"]),
+                strict=True,
+            )
+        )
+        assert any(
+            not jnp.array_equal(a, b)
+            for a, b in zip(
+                jax.tree.leaves(out.sources["a"]),
+                jax.tree.leaves(adv.sources["a"]),
+                strict=True,
+            )
+        )

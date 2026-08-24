@@ -26,17 +26,22 @@ from jax.sharding import PartitionSpec as P
 from param_decomp.core import placement
 from param_decomp.core.built_run import BuiltRun
 from param_decomp.core.ci_fn import CIFn
-from param_decomp.core.components import SiteC
+from param_decomp.core.components import SiteC, nonlinearity_partitions
 from param_decomp.core.eval_schedule import Every
 from param_decomp.core.log import setup_logger
 from param_decomp.core.metrics import LogRecord, MetricValue
-from param_decomp.core.model import Positionless
+from param_decomp.core.model import BATCH_AXES, PlacedModel, Positionless
+from param_decomp.core.nonlinearity_eval import (
+    make_nonlinearity_eval_step,
+    nonlinearity_log_entries,
+)
 from param_decomp.core.objective import build_objective
 from param_decomp.core.run import (
     EvalInvocation,
     EvalOperation,
     Evaluation,
     MetricsSink,
+    install_sigterm_flag,
     run_decomposition_training,
 )
 from param_decomp.core.sharding import single_device_mesh
@@ -162,6 +167,9 @@ def run_resid_mlp_decomposition(
         ),
         mesh,
     )
+    placed_model = PlacedModel(
+        model=model, placement=placement.from_config("ddp", mesh, model.sites)
+    )
 
     data_key = random.fold_in(random.PRNGKey(built.pd.seed), 17)
 
@@ -178,9 +186,7 @@ def run_resid_mlp_decomposition(
                 target_cfg.data_generation_type,
             )
             residual = resid_mlp.resid_mlp_input_residual(tgt, x)
-            return jax.lax.with_sharding_constraint(
-                residual, NamedSharding(mesh, P(("replicate", "fsdp")))
-            )
+            return jax.sharding.reshard(residual, NamedSharding(mesh, P(BATCH_AXES)))
 
         return sample
 
@@ -195,7 +201,11 @@ def run_resid_mlp_decomposition(
         model: resid_mlp.ResidMLPDecomposedModel, ci_fn: CIFn
     ) -> tuple[dict[str, jax.Array], dict[str, jax.Array]]:
         resid = resid_mlp.single_feature_probe(target_cfg.n_features) @ model.target.W_E
-        ci = ci_fn(model.clean_forward(resid, ci_fn.capture_keys).captures, remat=False)
+        ci = ci_fn(
+            model.clean_forward(resid, ci_fn.capture_keys, placement=None).captures,
+            remat=False,
+            placement=None,
+        )
         return ci.lower, ci.upper
 
     # `mlp_out` targets DENSE recovery (every d_mlp direction stays live), not identity —
@@ -206,11 +216,16 @@ def run_resid_mlp_decomposition(
         for site in model.site_names
     }
 
+    partitions = nonlinearity_partitions(model.sites)
+    nonlinearity_eval_step = make_nonlinearity_eval_step(partitions, {})
+
     def ground_truth_eval(context: EvalInvocation) -> LogRecord:
         state, now_step = context.state, context.now_step
         ci_lower, ci_upper = single_feature_ci(model, state.decomposition.ci_fn)
         figures: LogRecord = {}
-        if toy_uv_eval.permuted_ci_heatmap_due(now_step, built.pd.steps, built.cadence.save_every):
+        if toy_uv_eval.permuted_ci_heatmap_due(
+            now_step, built.pd.steps, built.cadence.checkpointing
+        ):
             figures = toy_uv_eval.render_permuted_ci_heatmap(
                 ci_lower,
                 ci_upper,
@@ -235,6 +250,12 @@ def run_resid_mlp_decomposition(
                 if ci_permutation[site] == "dense"
             }
         )
+        ci_means = {name: np.asarray(value).mean(0) for name, value in ci_lower.items()}
+        metrics.update(
+            nonlinearity_log_entries(
+                nonlinearity_eval_step(state.decomposition.components), ci_means, partitions
+            )
+        )
         return metrics
 
     operations = [
@@ -247,7 +268,7 @@ def run_resid_mlp_decomposition(
                 eval_config,
                 built.pd.seed,
                 compiler_options={},
-                model=model,
+                model=placed_model,
                 ci_capture_keys=built.ci_fn.capture_keys,
                 mesh=mesh,
                 sample_eval_batch=lambda index: eval_sampler(
@@ -257,29 +278,25 @@ def run_resid_mlp_decomposition(
                 wandb_configured=built.run.wandb is not None,
             )
         )
-    evaluation = Evaluation(
-        tuple(operations), lambda state, now_step: EvalInvocation(state, now_step)
-    )
+    evaluation = Evaluation(tuple(operations), lambda invocation: invocation)
 
     sink = MetricsSink.for_run(built.run, jax.process_index() == 0)
     run_decomposition_training(
         pd=built.pd,
         cadence=built.cadence,
         run=built.run,
-        model=model,
+        model=placed_model,
         ci_fn=built.ci_fn,
         positions=Positionless(),
         # A toy trains in seconds on one CPU device: nothing to trade memory for, and no
         # GPU collectives for an XLA flag to tune.
         remat_recon_forwards=False,
         remat_ci_fn=False,
-        ascend_replicate=False,
         compiler_options={},
         sample_batch=sample_batch,
         evaluation=evaluation,
         sink=sink,
-        mesh=mesh,
-        placement_rules=placement.from_config("ddp", mesh, model.sites),
+        profiling=None,
     )
 
 
@@ -314,6 +331,7 @@ def main(
     built.run.run_dir.mkdir(parents=True, exist_ok=True)
     setup_logger(built.run.run_dir / "logs.log")
     pin_launch_config(built.run.run_dir, yaml.safe_dump(schema_raw, sort_keys=False))
+    install_sigterm_flag()
     mesh = single_device_mesh()
     run_resid_mlp_decomposition(built, cfg.eval, mesh)
 

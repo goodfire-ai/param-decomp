@@ -1,16 +1,8 @@
-"""The targeted (tPD, SPEC §11) LM composition root: run YAML -> two-pass run on a
-vendored target.
+"""Run targeted language-model parameter decomposition from one config.
 
-    python -m param_decomp.experiments.lm.run_targeted <config.yaml> --data-root <path>
-        # a launcher that owns the run identity pins the config and passes --run-id
-
-`training.py`'s twin over the targeted engine entry: the TARGET stream is a fixed prompt
-pool (`prompts:`, tokenized once at startup on every rank, sampled at `pd.batch_size`
-per step, run unpadded at the pool's own prompt length), the broad `data:` stream
-becomes the NON-TARGET pass at `nontarget.batch_size` and its own seq_len. Process
-setup, config pinning, and SLURM-requeue shutdown are the shared helpers from
-`training.py`.
-"""
+Each step trains once on the fixed target-prompt pool and once on the broader corpus. This
+module prepares both streams and reuses the process setup, checkpoint, and shutdown
+behavior from ordinary LM training."""
 
 from pathlib import Path
 from typing import cast
@@ -20,15 +12,19 @@ import yaml
 from jax import random
 from jax.sharding import Mesh
 
-from param_decomp.core import placement
 from param_decomp.core.built_run import LAUNCH_CONFIG_FILENAME
-from param_decomp.core.model import DecomposedModel, Positioned
+from param_decomp.core.model import PlacedModel, Positioned
 from param_decomp.core.run import (
     MetricsSink,
     install_sigterm_flag,
     run_targeted_decomposition_training,
 )
-from param_decomp.core.sharding import assert_inline_topology, hsdp_mesh, init_distributed
+from param_decomp.core.sharding import (
+    data_parallel_size,
+    hsdp_mesh,
+    initialize_topology,
+    local_data_parallel_size,
+)
 from param_decomp.experiments.eval_config import EvalConfig
 from param_decomp.experiments.lm.arithmetic_probe import PromptEncoder
 from param_decomp.experiments.lm.config import (
@@ -36,7 +32,6 @@ from param_decomp.experiments.lm.config import (
     build_targeted_experiment_config,
 )
 from param_decomp.experiments.lm.eval_operations import global_token_batch, make_lm_evaluation
-from param_decomp.experiments.lm.hf_http import configure_hf_http_retries
 from param_decomp.experiments.lm.load_run import build_target
 from param_decomp.experiments.lm.resolved import (
     AnyLMTargetConfig,
@@ -48,6 +43,7 @@ from param_decomp.experiments.lm.targeted_data import build_prompt_pool, pool_ba
 from param_decomp.experiments.lm.training import (
     enable_hlo_dump,
     enable_persistent_compilation_cache,
+    engine_profiling,
     pin_config_copy,
 )
 from param_decomp.infra.dataset_store import read_dataset_meta
@@ -77,7 +73,7 @@ def train_targeted(
     built: LMTargetedRun,
     cfg: LMTargetedExperimentConfig,
     eval_config: EvalConfig | None,
-    model: DecomposedModel,
+    model: PlacedModel,
     mesh: Mesh,
 ) -> None:
     """The targeted LM composition over the engine: the prompt-pool TARGET seam, the
@@ -93,15 +89,15 @@ def train_targeted(
     )
     seq_len = train_meta.seq_len
     n_proc = jax.process_count()
-    n_dev = mesh.devices.size
+    n_data = data_parallel_size(mesh)
     is_main = jax.process_index() == 0
 
-    # Both streams shard over the full mesh; each global batch must tile it (T2).
+    # Both streams shard over the data axes and replicate each shard over TP.
     target_batch = built.pd.batch_size
     nontarget_batch = cfg.nontarget.batch_size
     for name, batch in (("pd.batch_size", target_batch), ("nontarget.batch_size", nontarget_batch)):
-        assert batch % n_dev == 0 and batch >= n_dev, (
-            f"{name} {batch} must be a positive multiple of the device count {n_dev}"
+        assert batch % n_data == 0 and batch >= n_data, (
+            f"{name} {batch} must be a positive multiple of data-parallel size {n_data}"
         )
 
     tokenizer = _pool_tokenizer(built.target, train_meta.tokenizer_name)
@@ -115,9 +111,10 @@ def train_targeted(
 
     schedule = BatchSchedule(scan_shards(data.dir), nontarget_batch, built.pd.seed)
     server = ShardServer(schedule, seq_len, jax.process_index(), n_proc)
-    assert server.per_process % jax.local_device_count() == 0, (
+    local_data = local_data_parallel_size(mesh)
+    assert server.per_process % local_data == 0, (
         server.per_process,
-        jax.local_device_count(),
+        local_data,
     )
     per_process_target = target_batch // n_proc
 
@@ -137,7 +134,14 @@ def train_targeted(
             "mid-window eval would corrupt the next step-time estimate"
         )
         evaluation = make_lm_evaluation(
-            built, eval_config, model, run_key, mesh, n_proc, sink, cfg.runtime.compiler_options
+            built,
+            eval_config,
+            model,
+            run_key,
+            mesh,
+            n_proc,
+            sink,
+            cfg.runtime.resolved_compiler_options,
         )
 
     run_targeted_decomposition_training(
@@ -150,18 +154,21 @@ def train_targeted(
         positions=Positioned(n_positions=prompt_len),
         remat_recon_forwards=cfg.runtime.remat_recon_forwards,
         remat_ci_fn=cfg.runtime.remat_ci_fn,
-        ascend_replicate=cfg.runtime.ascend_replicate,
-        compiler_options=cfg.runtime.compiler_options,
+        compiler_options=cfg.runtime.resolved_compiler_options,
         sample_target_batch=sample_target_batch,
         sample_nontarget_batch=sample_nontarget_batch,
         evaluation=evaluation,
         sink=sink,
-        mesh=mesh,
-        placement_rules=placement.from_config(cfg.runtime.sharding, mesh, model.sites),
+        profiling=engine_profiling(cfg.runtime.profiling),
     )
 
 
-def main(config: Path, data_root: Path, run_id: str | None = None) -> None:
+def main(
+    config: Path,
+    data_root: Path,
+    local_device_count: int,
+    run_id: str | None = None,
+) -> None:
     config = Path(config)
     data_root = Path(data_root)
     if run_id is None:
@@ -175,14 +182,10 @@ def main(config: Path, data_root: Path, run_id: str | None = None) -> None:
 
     install_sigterm_flag()
     enable_hlo_dump(built.run.run_dir)
-    if runtime.distributed:
-        init_distributed(runtime.dp, runtime.gpus_per_node)
-    else:
-        assert_inline_topology(runtime.dp)
-    configure_hf_http_retries()
-    mesh = hsdp_mesh(runtime.tp, runtime.gpus_per_node)
+    initialize_topology(runtime.world_size, local_device_count)
+    mesh = hsdp_mesh(runtime.replicate, runtime.fsdp, runtime.tp)
 
-    cache_dir = enable_persistent_compilation_cache(built.run.out_dir)
+    cache_dir = enable_persistent_compilation_cache(runtime.compilation_cache_dir)
 
     is_main = jax.process_index() == 0
     if is_main:
@@ -199,7 +202,7 @@ def main(config: Path, data_root: Path, run_id: str | None = None) -> None:
             flush=True,
         )
 
-    model, _vocab_size = build_target(built.target, mesh, data_root)
+    model = build_target(built.target, mesh, data_root, runtime.sharding)
 
     train_targeted(built, cfg, cfg.eval, model, mesh)
 

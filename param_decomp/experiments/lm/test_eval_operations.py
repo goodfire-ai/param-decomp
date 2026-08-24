@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 import jax
 import jax.numpy as jnp
@@ -16,6 +16,10 @@ from param_decomp.experiments.eval_config import EvalConfig
 from param_decomp.experiments.lm import eval_operations
 from param_decomp.experiments.lm.eval_context import LMEvalContext
 from param_decomp.experiments.lm.eval_keys import EvalKeyStream
+
+
+def _unused_shared_ci_reductions() -> NoReturn:
+    raise AssertionError("the operation under test must not read the shared CI reductions")
 
 
 def _eval_config() -> EvalConfig:
@@ -87,7 +91,7 @@ def test_well_temperedness_uses_named_rng_stream(monkeypatch: pytest.MonkeyPatch
     evaluation = eval_operations.make_lm_evaluation(
         cast(Any, built),
         _eval_config(),
-        cast(Any, SimpleNamespace(site_names=("site",))),
+        cast(Any, SimpleNamespace(site_names=("site",), sites=())),
         run_key,
         cast(Any, None),
         n_proc=1,
@@ -99,8 +103,10 @@ def test_well_temperedness_uses_named_rng_stream(monkeypatch: pytest.MonkeyPatch
         LMEvalContext(
             state=cast(Any, None),
             now_step=30,
+            placed_ci_fn=cast(Any, None),
             pass_index=3,
             batches=(batch,),
+            shared_ci_reductions=_unused_shared_ci_reductions,
         )
     )
 

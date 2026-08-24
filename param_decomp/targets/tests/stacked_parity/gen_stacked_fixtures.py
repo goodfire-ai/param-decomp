@@ -42,17 +42,16 @@ from param_decomp.core.configs import (  # noqa: E402
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
 )
-from param_decomp.core.recon import subset_chunk_plan  # noqa: E402
 from param_decomp.core.schedule import Knot, ScheduleConfig  # noqa: E402
 from param_decomp.core.train import TrainState, make_train_step  # noqa: E402
-from param_decomp.targets.llama8b import (  # noqa: E402
+from param_decomp.targets.llama31 import (  # noqa: E402
     KINDS,
     LayerRange,
     init_decomp_vu,
     llama_decomposed_lm,
     site_name,
 )
-from param_decomp.targets.tests.test_llama8b import _tiny_cfg, _tiny_target  # noqa: E402
+from param_decomp.targets.tests.test_llama31 import _tiny_cfg, _tiny_target  # noqa: E402
 from param_decomp.vendored_jax.llama import LlamaConfig  # noqa: E402
 
 OUT = Path(__file__).resolve().parent / "stacked_fixtures.npz"
@@ -64,9 +63,17 @@ N_TRAIN_STEPS = 2
 N_WARMUP = 2
 CI_ARCH = CIArch(d_model=16, n_blocks=2, n_heads=2, ffn_hidden=32)
 STABLE_METRIC_KEYS = (
-    "total", "faith", "imp", "stoch", "ppgd", "p_imp", "src_lr",
-    "grad_norms/summary/components", "grad_norms/summary/ci_fns", "grad_norms/summary/total",
-)  # fmt: skip
+    "total",
+    "faith",
+    "imp",
+    "stoch",
+    "ppgd",
+    "p_imp",
+    "src_lr",
+    "grad_norms/summary/components",
+    "grad_norms/summary/ci_fns",
+    "grad_norms/summary/total",
+)
 
 
 def _save_target_arrays(cfg: LlamaConfig, tgt, layer_range: LayerRange) -> dict[str, np.ndarray]:
@@ -76,18 +83,30 @@ def _save_target_arrays(cfg: LlamaConfig, tgt, layer_range: LayerRange) -> dict[
         layer = layer_range.layers[layer_idx]
         attn = frozen_layer.attn
         for field, value in (
-            ("ln1", frozen_layer.ln1), ("ln2", frozen_layer.ln2),
-            ("wq", attn.wq), ("wk", attn.wk), ("wv", attn.wv), ("wo", attn.wo),
-            ("Wg", frozen_layer.Wg), ("Wu", frozen_layer.Wu), ("Wd", frozen_layer.Wd),
-        ):  # fmt: skip
+            ("ln1", frozen_layer.ln1),
+            ("ln2", frozen_layer.ln2),
+            ("wq", attn.wq),
+            ("wk", attn.wk),
+            ("wv", attn.wv),
+            ("wo", attn.wo),
+            ("Wg", frozen_layer.mlp.Wg),
+            ("Wu", frozen_layer.mlp.Wu),
+            ("Wd", frozen_layer.mlp.Wd),
+        ):
             arrays[f"tgt::layers.{layer}.{field}"] = np.asarray(value)
     for tail_idx, blk in enumerate(tgt.tail):
         layer = layer_range.last + 1 + tail_idx
         for field, value in (
-            ("ln1", blk.ln1), ("ln2", blk.ln2),
-            ("wq", blk.attn.wq), ("wk", blk.attn.wk), ("wv", blk.attn.wv), ("wo", blk.attn.wo),
-            ("Wg", blk.mlp.wg), ("Wu", blk.mlp.wu), ("Wd", blk.mlp.wd),
-        ):  # fmt: skip
+            ("ln1", blk.ln1),
+            ("ln2", blk.ln2),
+            ("wq", blk.attn.wq),
+            ("wk", blk.attn.wk),
+            ("wv", blk.attn.wv),
+            ("wo", blk.attn.wo),
+            ("Wg", blk.mlp.wg),
+            ("Wu", blk.mlp.wu),
+            ("Wd", blk.mlp.wd),
+        ):
             arrays[f"tgt::layers.{layer}.{field}"] = np.asarray(value)
     arrays["tgt::norm"] = np.asarray(tgt.norm)
     arrays["tgt::lm_head"] = np.asarray(tgt.lm_head)
@@ -159,19 +178,21 @@ def main() -> None:
             {s: jax.numpy.asarray(routes0[s]) for s in chunk0},
             chunk0,
             True,
-        )  # fmt: skip
+        )
     )
 
     # ── 2-step training trajectory ──
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
     state = TrainState(
-        components=vu, ci_fn=ci_fn,
+        components=vu,
+        ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        sources=sources, sources_adam_state=init_sources_adam_state(sources),
+        sources=sources,
+        sources_adam_state=init_sources_adam_state(sources),
         step=jax.numpy.zeros((), jax.numpy.int32),
-    )  # fmt: skip
+    )
     step_fn = make_train_step(
         model=model,
         faith_coeff=1e5,
@@ -203,7 +224,8 @@ def main() -> None:
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=100,
-        recon_plan=subset_chunk_plan(model.site_names, 3, 1),
+        # this generator predates the all-sites recon collapse (chunk plans no longer
+        # exist); it needs updating at the next golden regen.
         remat_recon_forwards=False,
         remat_ci_fn=False,
         mesh=None,
@@ -223,9 +245,14 @@ def main() -> None:
         arrays[f"out::final_src::{name}"] = np.asarray(source)
 
     scalars = dict(
-        FIRST_LAYER=FIRST_LAYER, LAST_LAYER=LAST_LAYER, C=C, B=B, T=T,
-        N_TRAIN_STEPS=N_TRAIN_STEPS, N_WARMUP=N_WARMUP,
-    )  # fmt: skip
+        FIRST_LAYER=FIRST_LAYER,
+        LAST_LAYER=LAST_LAYER,
+        C=C,
+        B=B,
+        T=T,
+        N_TRAIN_STEPS=N_TRAIN_STEPS,
+        N_WARMUP=N_WARMUP,
+    )
     for name, value in scalars.items():
         arrays[f"_scalar_{name}"] = np.array(value)
 

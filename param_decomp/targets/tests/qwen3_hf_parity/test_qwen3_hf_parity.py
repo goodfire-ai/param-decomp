@@ -1,9 +1,10 @@
 """Direct JAX-vs-HuggingFace parity for the Qwen3 target.
 
 The tiny test rebuilds `gen_hf_fixtures.py`'s seeded random `Qwen3ForCausalLM` as a
-`GLUDecomposedModel` (Qwen3 family) from the golden's own state dict, fp32, and matches HF's
-logits at fp32 tolerance — the exact-architecture check (QK-norm, GQA, plain RoPE at
-theta 1e6). The slow test loads the REAL `Qwen/Qwen3-8B-Base` snapshot through the
+`GLUDecomposedModel` (Qwen3 family) from the golden's own state dict, fp32, and matches
+HF's residual boundary after every layer plus its logits — the exact-architecture check
+(rectangular query projection, QK-norm, GQA, plain RoPE, and tied embeddings). The slow
+test loads the REAL `Qwen/Qwen3-8B-Base` snapshot through the
 production loader (`load_decomposed_lm_from_hf`, bf16) and matches HF's bf16
 final-position logits in distribution (KL + argmax) — the weight-loading check.
 """
@@ -17,27 +18,30 @@ import numpy as np
 import pytest
 
 from param_decomp.targets.glu_transformer import (
+    GatedMLP,
     GLUConfig,
     GLUDecomposedModel,
     GLULayer,
+    TiedHead,
     build_decomposed_lm,
     default_inv_freq,
     hf_snapshot_dir,
 )
-from param_decomp.targets.qwen3_8b import (
+from param_decomp.targets.qwen3 import (
     Qwen3FrozenAttn,
     load_decomposed_qwen3_from_hf,
-    qwen3_8b_config,
+    qwen3_8b_base_config,
 )
-from param_decomp.targets.testing import run_clean
+from param_decomp.targets.testing import capture_clean, run_clean
+from param_decomp.targets.transformer_taps import resid_tap_key
 
 HERE = Path(__file__).resolve().parent
 
 
 def _tiny_cfg_from_golden(config_json: str) -> GLUConfig:
     hf = json.loads(config_json)
-    assert hf["head_dim"] * hf["num_attention_heads"] == hf["hidden_size"], hf
-    assert not hf["tie_word_embeddings"] and not hf["attention_bias"], hf
+    assert hf["head_dim"] * hf["num_attention_heads"] > hf["hidden_size"], hf
+    assert hf["tie_word_embeddings"] and not hf["attention_bias"], hf
     return GLUConfig(
         vocab_size=hf["vocab_size"],
         n_layer=hf["num_hidden_layers"],
@@ -45,9 +49,11 @@ def _tiny_cfg_from_golden(config_json: str) -> GLUConfig:
         n_kv_head=hf["num_key_value_heads"],
         n_embd=hf["hidden_size"],
         n_intermediate=hf["intermediate_size"],
+        head_dim=hf["head_dim"],
         rope_theta=hf["rope_theta"],
         rms_norm_eps=hf["rms_norm_eps"],
         max_position_embeddings=hf["max_position_embeddings"],
+        tie_word_embeddings=hf["tie_word_embeddings"],
     )
 
 
@@ -70,13 +76,16 @@ def _build_from_hf_state(cfg: GLUConfig, sd: dict[str, np.ndarray]) -> GLUDecomp
                 n_kv_head=cfg.n_kv_head,
                 head_dim=cfg.head_dim,
                 n_rep=cfg.n_rep,
+                implementation="auto",
                 q_norm=a(f"{pre}.{i}.self_attn.q_norm.weight"),
                 k_norm=a(f"{pre}.{i}.self_attn.k_norm.weight"),
                 eps=cfg.rms_norm_eps,
             ),
-            Wg=a(f"{pre}.{i}.mlp.gate_proj.weight"),
-            Wu=a(f"{pre}.{i}.mlp.up_proj.weight"),
-            Wd=a(f"{pre}.{i}.mlp.down_proj.weight"),
+            mlp=GatedMLP(
+                Wg=a(f"{pre}.{i}.mlp.gate_proj.weight"),
+                Wu=a(f"{pre}.{i}.mlp.up_proj.weight"),
+                Wd=a(f"{pre}.{i}.mlp.down_proj.weight"),
+            ),
         )
         for i in range(cfg.n_layer)
     ]
@@ -84,7 +93,7 @@ def _build_from_hf_state(cfg: GLUConfig, sd: dict[str, np.ndarray]) -> GLUDecomp
         embed=a("model.embed_tokens.weight"),
         layers=layers,
         norm=a("model.norm.weight"),
-        lm_head=a("lm_head.weight"),
+        lm_head=TiedHead() if cfg.tie_word_embeddings else a("lm_head.weight"),
         inv_freq=default_inv_freq(cfg.head_dim, cfg.rope_theta),
         cfg=cfg,
         sites=(),
@@ -96,8 +105,12 @@ def test_tiny_random_qwen3_matches_hf():
     cfg = _tiny_cfg_from_golden(str(f["config_json"]))
     sd = {k.removeprefix("sd::"): f[k] for k in f.files if k.startswith("sd::")}
     model = _build_from_hf_state(cfg, sd)
-    logits = np.asarray(run_clean(model, jnp.asarray(f["tokens"])))
-    np.testing.assert_allclose(logits, f["logits"], rtol=2e-4, atol=1e-5)
+    tokens = jnp.asarray(f["tokens"])
+    residual_keys = tuple(resid_tap_key(i) for i in range(cfg.n_layer + 1))
+    residuals = capture_clean(model, tokens, residual_keys)
+    for i, key in enumerate(residual_keys):
+        np.testing.assert_allclose(residuals[key], f[f"resid::{i}"], rtol=2e-4, atol=1e-5)
+    np.testing.assert_allclose(run_clean(model, tokens), f["logits"], rtol=2e-4, atol=1e-5)
 
 
 @pytest.mark.slow
@@ -110,7 +123,9 @@ def test_real_qwen3_8b_matches_hf():
     except (AssertionError, FileNotFoundError, KeyError):
         pytest.skip("no local Qwen/Qwen3-8B-Base snapshot")
     f = np.load(HERE / "qwen3_8b_real_logits.npz")
-    model = load_decomposed_qwen3_from_hf("Qwen/Qwen3-8B-Base", qwen3_8b_config(), (), jnp.bfloat16)
+    model = load_decomposed_qwen3_from_hf(
+        "Qwen/Qwen3-8B-Base", qwen3_8b_base_config(), (), jnp.bfloat16
+    )
     logits = np.asarray(run_clean(model, jnp.asarray(f["tokens"]))[:, -1, :].astype(jnp.float32))
     ref = f["final_logits"]
     # tie-aware argmax: the golden is bf16, so distinct plausible tokens often carry the

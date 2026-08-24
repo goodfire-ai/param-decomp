@@ -50,7 +50,7 @@ def _reference_lm_raw():
 def test_b128_config_converts():
     converted, authored = load_config(CONFIGS / "llama8b_l18_b128_cmp32.yaml", RUN_ID, DATA_ROOT)
     # The substrate rides on the authored config, not the engine's bundle.
-    assert authored.runtime.dp == 1 and authored.runtime.sharding == "zero1"
+    assert authored.runtime.world_size == 1 and authored.runtime.sharding == "zero1"
     assert converted.run.run_name == "jax-l18-b128-cmp32-from-torch"
     assert converted.pd.batch_size == 128 and converted.data is not None
     assert converted.target.sites == mlp_family_site_cs(18, 18, 24576)
@@ -59,7 +59,7 @@ def test_b128_config_converts():
     )
     faith, imp = losses.faith, losses.imp
     assert isinstance(imp.cfg, ImportanceMinimalityLossConfig)
-    assert faith.coeff == 1e5 and imp.cfg.pnorm.max_val == 2.0
+    assert faith.coeff == 1.0e3 and imp.cfg.pnorm.max_val == 2.0
     (ppgd,) = persistent_configs(losses.recon).values()
     assert isinstance(ppgd, PersistentPGDReconLossConfig)
     assert ppgd.n_warmup_steps == 2
@@ -68,6 +68,15 @@ def test_b128_config_converts():
         "StochasticReconSubsetLoss",
         "PersistentPGDReconLoss",
     ]
+
+
+def test_implicit_faithful_config_still_requires_exactly_one_faithfulness_term():
+    raw = _reference_lm_raw()
+    raw["pd"]["loss_metrics"] = [
+        metric for metric in raw["pd"]["loss_metrics"] if metric["type"] != "FaithfulnessLoss"
+    ]
+    with pytest.raises(ValidationError, match="need exactly one FaithfulnessLoss"):
+        LMExperimentConfig.model_validate(raw)
 
 
 def test_eval_block_maps_slow_tier_and_defers_offline_only_metrics(
@@ -196,7 +205,7 @@ def test_unsupported_settings_refuse():
         LMExperimentConfig(**_with_cs({"c_fc": 512}))
 
     # family <-> target mismatch survives parse (both are well-formed) but is refused at
-    # resolve: a simple_mlp c-spec against the GLU llama8b target.
+    # resolve: a simple_mlp c-spec against the GLU Llama-3.1 target.
     simple_mlp_sites = dict(
         raw,
         decomposition=dict(
@@ -208,12 +217,13 @@ def test_unsupported_settings_refuse():
         build_experiment_config(LMExperimentConfig(**simple_mlp_sites), RUN_ID, DATA_ROOT)
 
 
-def test_unsupported_model_family_refuses_and_supported_families_dispatch():
-    """E23: only the `HF_MODEL_FAMILIES` models (`hf`/`hf_weights_in_vendored`
-    → `TargetConfig`; Llama-3.1-8B and Qwen3-8B-Base) and `LlamaSimpleMLP` (`pretrained` →
-    `LlamaSimpleMLPTargetConfig`) convert; every other family is refused at convert
-    time. The schema's `LMTargetSpec` discriminated union still validates a GPT-2 spec
-    (it's a well-formed `kind`), so the refusal must come from `_resolve_target`'s
+def test_unsupported_model_variant_refuses_and_supported_variants_dispatch():
+    """E23: only the `HF_MODEL_VARIANTS` models (`hf`/`hf_weights_in_vendored`
+    → `TargetConfig`; Llama-3.1-8B and the registered Qwen3 checkpoints) and
+    `LlamaSimpleMLP` (`pretrained` → `LlamaSimpleMLPTargetConfig`) convert; every other
+    variant is refused at convert time. The schema's `LMTargetSpec` discriminated union
+    still validates a GPT-2 spec (it's a well-formed `kind`), so the refusal must come
+    from `_resolve_target`'s
     per-family asserts, not pydantic."""
     from param_decomp.experiments.lm.resolved import LlamaSimpleMLPTargetConfig, TargetConfig
 
@@ -245,14 +255,26 @@ def test_unsupported_model_family_refuses_and_supported_families_dispatch():
     )
     assert isinstance(raw_hf_llama, TargetConfig)
 
-    raw_hf_qwen3 = _converted_target(
-        {
-            "kind": "hf",
-            "model_class": "transformers.Qwen3ForCausalLM",
-            "model_name": "Qwen/Qwen3-8B-Base",
-        }
-    )
-    assert isinstance(raw_hf_qwen3, TargetConfig)
+    for model_name in (
+        "Qwen/Qwen3-0.6B-Base",
+        "Qwen/Qwen3-0.6B",
+        "Qwen/Qwen3-1.7B-Base",
+        "Qwen/Qwen3-1.7B",
+        "Qwen/Qwen3-4B-Base",
+        "Qwen/Qwen3-4B",
+        "Qwen/Qwen3-8B-Base",
+        "Qwen/Qwen3-8B",
+        "Qwen/Qwen3-14B-Base",
+        "Qwen/Qwen3-14B",
+    ):
+        raw_hf_qwen3 = _converted_target(
+            {
+                "kind": "hf",
+                "model_class": "transformers.Qwen3ForCausalLM",
+                "model_name": model_name,
+            }
+        )
+        assert isinstance(raw_hf_qwen3, TargetConfig)
 
     gpt2_hf = {
         "kind": "hf",
@@ -532,36 +554,215 @@ def test_placement_table_parses_typed_and_fails_closed():
     from param_decomp.core.configs import PlacementTableConfig
 
     table: dict[str, Any] = {
-        "params": {
-            "persist": {"stack": "replicate", "d_in": "fsdp", "d_out": "fsdp", "C": "tp"},
-            "zero1": {"d_in": ["fsdp", "replicate"], "d_out": ["fsdp", "replicate"], "C": "tp"},
-            "forward": {"d_in": "fsdp", "d_out": "fsdp", "C": "tp"},
+        "components": {
+            "optimizer_state": {"stack": "replicate", "d_in": "fsdp", "d_out": "fsdp", "C": "tp"},
+            "compute_weights": {"d_in": "fsdp", "d_out": "fsdp", "C": "tp"},
+            "faithfulness_weights": {
+                "stack": "replicate",
+                "d_in": "fsdp",
+                "d_out": "fsdp",
+                "C": "tp",
+            },
+            "faithfulness_deltas": {"stack": "replicate", "d_out": "fsdp"},
+            "operands": {"C": "tp"},
+            "ns_compute": {"stack": "replicate"},
         },
-        "activations": {"batch": ["replicate", "fsdp"], "C": "tp"},
+        "ci_fn": {
+            "attention": {
+                "optimizer_state": {},
+                "compute_weights": {},
+                "operands": {},
+                "ns_compute": {},
+            },
+            "ffn": {
+                "optimizer_state": {},
+                "compute_weights": {},
+                "operands": {},
+                "ns_compute": {},
+            },
+            "input": {
+                "optimizer_state": {},
+                "compute_weights": {},
+                "operands": {},
+                "ns_compute": {},
+            },
+            "output": {
+                "optimizer_state": {},
+                "compute_weights": {},
+                "operands": {},
+                "ns_compute": {},
+            },
+            "vectors": {},
+            "activations": {},
+        },
+        "activations": {
+            "external": {"batch": ["replicate", "fsdp"]},
+            "component": {"batch": ["replicate", "fsdp"], "C": "tp"},
+        },
+        "target": {
+            "embedding": {"persist": {"d_model": "fsdp"}, "operand": {}},
+            "normalization": {},
+            "position_encoding": {},
+            "column": {
+                "persist": {"d_in": "fsdp", "d_out": "tp"},
+                "operand": {"d_out": "tp"},
+                "input": "external",
+                "output": "intermediate",
+            },
+            "row": {
+                "persist": {"d_out": "fsdp", "d_in": "tp"},
+                "operand": {"d_in": "tp"},
+                "input": "intermediate",
+                "output": "external",
+            },
+            "output": {"persist": {"d_model": "fsdp"}, "operand": {}},
+            "intermediate": {
+                "batch": ["replicate", "fsdp"],
+                "feature": "tp",
+                "q_head": "tp",
+                "kv_head": "tp",
+            },
+            "component": {"input": "external", "output": "external"},
+        },
     }
     full = PlacementTableConfig.model_validate(table)
-    assert full.params.zero1 is not None
+    assert full.components.optimizer_state == {
+        "stack": "replicate",
+        "d_in": "fsdp",
+        "d_out": "fsdp",
+        "C": "tp",
+    }
 
-    # zero1 is the opt-in arm: omitting it parses, as the strict layout
+    # per-group fallback rows are unrepresentable: the closed schema refuses them at parse
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        PlacementTableConfig.model_validate(
+            {
+                **table,
+                "components": {
+                    **table["components"],
+                    "optimizer_state_fallback": {"d_in": "fsdp", "C": ["tp", "replicate"]},
+                },
+            }
+        )
+
     strict = PlacementTableConfig.model_validate(
-        {"params": {"persist": {}, "forward": {}}, "activations": {}}
+        {
+            "components": {
+                "optimizer_state": {},
+                "compute_weights": {},
+                "faithfulness_weights": {},
+                "faithfulness_deltas": {},
+                "operands": {},
+                "ns_compute": {},
+            },
+            "ci_fn": {
+                "attention": {
+                    "optimizer_state": {},
+                    "compute_weights": {},
+                    "operands": {},
+                    "ns_compute": {},
+                },
+                "ffn": {
+                    "optimizer_state": {},
+                    "compute_weights": {},
+                    "operands": {},
+                    "ns_compute": {},
+                },
+                "input": {
+                    "optimizer_state": {},
+                    "compute_weights": {},
+                    "operands": {},
+                    "ns_compute": {},
+                },
+                "output": {
+                    "optimizer_state": {},
+                    "compute_weights": {},
+                    "operands": {},
+                    "ns_compute": {},
+                },
+                "vectors": {},
+                "activations": {},
+            },
+            "activations": {"external": {}, "component": {}},
+            "target": {
+                "embedding": {"persist": {}, "operand": {}},
+                "normalization": {},
+                "position_encoding": {},
+                "column": {
+                    "persist": {},
+                    "operand": {},
+                    "input": "external",
+                    "output": "intermediate",
+                },
+                "row": {
+                    "persist": {},
+                    "operand": {},
+                    "input": "intermediate",
+                    "output": "external",
+                },
+                "output": {"persist": {}, "operand": {}},
+                "intermediate": {},
+                "component": {"input": "external", "output": "external"},
+            },
+        }
     )
-    assert strict.params.zero1 is None
+    assert strict.components.optimizer_state == {}
 
     # the row vocabulary is CLOSED: unknown rows die at parse, at either level
     with pytest.raises(ValidationError):
         PlacementTableConfig.model_validate({**table, "optim/muon.ns": {}})
     with pytest.raises(ValidationError):
         PlacementTableConfig.model_validate(
-            {"params": {**table["params"], "persist.zero1": {}}, "activations": {}}
+            {
+                "components": {**table["components"], "persist.zero1": {}},
+                "ci_fn": table["ci_fn"],
+                "activations": table["activations"],
+                "target": table["target"],
+            }
         )
     # required rows are required fields, not a runtime manifest check
     with pytest.raises(ValidationError):
-        PlacementTableConfig.model_validate({"params": {"persist": {}}, "activations": {}})
+        PlacementTableConfig.model_validate(
+            {
+                "components": {"optimizer_state": {}},
+                "activations": {"external": {}, "component": {}},
+            }
+        )
     # a malformed rule value (axis -> non-mesh-axes) dies at parse too
     with pytest.raises(ValidationError):
         PlacementTableConfig.model_validate(
-            {"params": {"persist": {"d_in": 3}, "forward": {}}, "activations": {}}
+            {
+                "components": {
+                    "optimizer_state": {"d_in": 3},
+                    "compute_weights": {},
+                    "faithfulness_weights": {},
+                    "faithfulness_deltas": {},
+                    "operands": {},
+                    "ns_compute": {},
+                },
+                "ci_fn": table["ci_fn"],
+                "activations": {"external": {}, "component": {}},
+                "target": {
+                    "embedding": {"persist": {}, "operand": {}},
+                    "normalization": {},
+                    "position_encoding": {},
+                    "column": {
+                        "persist": {},
+                        "operand": {},
+                        "input": "external",
+                        "output": "intermediate",
+                    },
+                    "row": {
+                        "persist": {},
+                        "operand": {},
+                        "input": "intermediate",
+                        "output": "external",
+                    },
+                    "output": {"persist": {}, "operand": {}},
+                    "intermediate": {},
+                    "component": {"input": "external", "output": "external"},
+                },
+            }
         )
 
 

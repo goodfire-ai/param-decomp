@@ -15,7 +15,7 @@ conversion. The other two archs follow the same key convention for symmetry.
 All three are pre-norm decoder blocks under a flat `h.{i}.` module tree, `wte` tied to
 `lm_head`, no biases on the Llama variants. RoPE is plain rotate-half
 (`param_decomp.vendored_jax.llama.{rope_cos_sin,apply_rope}`); the GELU is the tanh approximation
-(torch `NewGELU`), matching `llama_simple_mlp._gelu_tanh`.
+(torch `NewGELU`), matching the JAX port pinned by `tests/simple_mlp_equivalence/`.
 
 The torch configs additionally carried knobs for variants this port does not have —
 merged-QKV attention, q/k/v/mlp biases, adjacent-pair rotary, partial rotary
@@ -156,7 +156,11 @@ class GPT2SimpleAttention(eqx.Module):
         q = (x @ self.wq.T).reshape(b, t, self.n_head, self.head_dim).transpose(0, 2, 1, 3)
         k = (x @ self.wk.T).reshape(b, t, self.n_head, self.head_dim).transpose(0, 2, 1, 3)
         v = (x @ self.wv.T).reshape(b, t, self.n_head, self.head_dim).transpose(0, 2, 1, 3)
-        y = causal_sdpa(q, k, v).transpose(0, 2, 1, 3).reshape(b, t, self.n_head * self.head_dim)
+        y = (
+            causal_sdpa(q, k, v, None, "auto")
+            .transpose(0, 2, 1, 3)
+            .reshape(b, t, self.n_head * self.head_dim)
+        )
         return y @ self.wo.T
 
 
@@ -275,7 +279,11 @@ class LlamaAttention(eqx.Module):
         q, k = apply_rope(q, k, cos, sin)
         k = repeat_kv(k, self.n_rep)
         v = repeat_kv(v, self.n_rep)
-        y = causal_sdpa(q, k, v).transpose(0, 2, 1, 3).reshape(b, t, self.n_head * self.head_dim)
+        y = (
+            causal_sdpa(q, k, v, None, "auto")
+            .transpose(0, 2, 1, 3)
+            .reshape(b, t, self.n_head * self.head_dim)
+        )
         return y @ self.wo.T
 
 

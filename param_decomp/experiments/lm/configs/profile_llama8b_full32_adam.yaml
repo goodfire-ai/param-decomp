@@ -1,0 +1,163 @@
+run_name: profile-h100-32l-b128-r16-f4-t2-semantic-zero1-adam-faith
+cadence:
+  checkpointing:
+    kind: periodic
+    save_every: 100
+    retention:
+      kind: keep_last
+      n: 1
+  train_log_every: 1
+data:
+  train:
+    kind: name
+    name: fineweb_llama_tok_512
+  eval:
+    kind: name
+    name: fineweb_llama_tok_512_eval1
+eval: null
+decomposition:
+  sites:
+    kind: glu_transformer
+    layers:
+      kind: range
+      start: 0
+      end: 32
+    cs:
+      q: 4096
+      k: 4096
+      v: 4096
+      o: 4096
+      gate: 14336
+      up: 14336
+      down: 14336
+  ci:
+    type: chunkwise_transformer
+    blocks_per_chunk: 1
+    input_tap: all_block_resids
+    d_model: 4096
+    n_blocks: 4
+    attention:
+      kind: mha
+      n_heads: 64
+    ffn:
+      kind: gelu
+      hidden: 16384
+pd:
+  batch_size: 128
+  faithfulness_warmup_steps: 0
+  faithfulness_warmup_lr: 1.0e-03
+  faithfulness_warmup_weight_decay: 0.0
+  ci_fn_optimizer:
+    type: adamw
+    grad_clip_norm: 1.0
+    lr_schedule:
+      max_val: 5.0e-05
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 1.0
+        frac: 0.1
+        interp: cosine
+  components_optimizer:
+    type: adamw
+    grad_clip_norm: 1.0
+    lr_schedule:
+      max_val: 5.0e-05
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 1.0
+        frac: 0.1
+        interp: cosine
+  loss_metrics:
+  - type: FaithfulnessLoss
+    coeff: 1.0e+03
+  - frequency:
+      coeff: 5.0e-06
+      reference_datapoint_count: 32768
+    coeff: 1.0e-05
+    type: SmoothL0ImportanceMinimalityLoss
+    gamma:
+      max_val: 1.0
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 1.0
+        frac: 0.01
+  - type: MergedStochasticSubsetPPGDReconLoss
+    coeff: 1.0
+    adv_fraction: 0.5
+    hidden_acts_reconstruction:
+      coeff: 10.0
+      points:
+      - resid.1
+      - resid.2
+      - resid.3
+      - resid.4
+      - resid.5
+      - resid.6
+      - resid.7
+      - resid.8
+      - resid.9
+      - resid.10
+      - resid.11
+      - resid.12
+      - resid.13
+      - resid.14
+      - resid.15
+      - resid.16
+      - resid.17
+      - resid.18
+      - resid.19
+      - resid.20
+      - resid.21
+      - resid.22
+      - resid.23
+      - resid.24
+      - resid.25
+      - resid.26
+      - resid.27
+      - resid.28
+      - resid.29
+      - resid.30
+      - resid.31
+      - resid.32
+    n_warmup_steps: 2
+    routing:
+      type: uniform_k_subset
+    optimizer:
+      beta1: 0.01
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        max_val: 0.01
+        points:
+        - at: 0.0
+          frac: 0.0
+        - at: 0.1
+          frac: 1.0
+        - at: 1.0
+          frac: 1.0
+      type: adam
+    source_shape: bsc
+  seed: 0
+  steps: 6
+runtime:
+  compilation_cache_dir: ~/.cache/param-decomp/xla
+  sharding: zero1
+  replicate: 16
+  fsdp: 4
+  tp: 2
+  remat_recon_forwards: true
+  remat_ci_fn: true
+  profiling:
+    kind: ad_hoc
+    steps: 3
+  compiler_options: tuned-v1
+target:
+  attention_implementation: xla
+  weights_dtype: bfloat16
+  spec:
+    kind: hf
+    model_class: transformers.LlamaForCausalLM
+    model_name: meta-llama/Llama-3.1-8B

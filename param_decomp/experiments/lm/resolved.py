@@ -10,6 +10,7 @@ from jax.typing import DTypeLike
 from param_decomp.core.built_run import BuiltRun
 from param_decomp.core.components import SiteC
 from param_decomp.core.configs import PDConfig, TargetedPDConfig
+from param_decomp.vendored_jax.llama import AttentionImplementation
 
 WeightsDtype = Literal["float32", "bfloat16"]
 
@@ -34,14 +35,15 @@ class ResolvedLMData:
 
 @dataclass(frozen=True)
 class TargetConfig:
-    """An HF GLU-transformer target (`model_name` must be in `HF_MODEL_FAMILIES` —
-    Llama-3.1-8B or Qwen3-8B-Base)."""
+    """An HF GLU-transformer target (`model_name` must be in `HF_MODEL_VARIANTS` —
+    Llama-3.1-8B or a registered Qwen3 checkpoint)."""
 
     model_name: str
     sites: tuple[SiteC, ...]
     """Decomposed sites with per-site C, in canonical order (`canonical_site_cs`)."""
     weights_dtype: WeightsDtype
     """The authored `target.weights_dtype`, carried to the composition root's target load."""
+    attention_implementation: AttentionImplementation
 
     supported_weights_dtypes: ClassVar[frozenset[WeightsDtype]] = frozenset({"bfloat16", "float32"})
     """Frozen-target weight dtypes the loader supports. `HFWeights` casts every tensor on
@@ -52,7 +54,7 @@ class TargetConfig:
 
 @dataclass(frozen=True)
 class LlamaSimpleMLPTargetConfig:
-    """The `LlamaSimpleMLP` lab-pretrained target (`param_decomp.core.llama_simple_mlp`);
+    """The `LlamaSimpleMLP` lab-pretrained target (`param_decomp.targets.llama_simple_mlp`);
     weights from the store entry `pretrain_run_path` resolves to
     (`infra.pretrain_cache.resolved_cache_dir`)."""
 
@@ -62,6 +64,7 @@ class LlamaSimpleMLPTargetConfig:
     (`llama_simple_mlp.canonical_site_cs`)."""
     weights_dtype: WeightsDtype
     """The authored `target.weights_dtype`, carried to the composition root's target load."""
+    attention_implementation: AttentionImplementation
 
     supported_weights_dtypes: ClassVar[frozenset[WeightsDtype]] = frozenset({"bfloat16", "float32"})
     """Frozen-target weight dtypes the loader supports — `_checkpoint_weight_getter` casts

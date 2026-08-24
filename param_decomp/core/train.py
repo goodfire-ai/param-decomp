@@ -1,14 +1,15 @@
 """The generic single-pool VPD training step over a `DecomposedModel` (SPEC §4).
 
 One `jax.jit` step: clean target forward → CI envelope → per-persistent-term supplemental
-ascents + per-fresh-entry sign-PGD ascents (`adversary.py`) → faith + imp-min +
+ascents + per-fresh-term sign-PGD ascents (`adversary.py`) → faith + imp-min +
 the recon loss TERMS (`recon.py`; each term = plan × mask-source strategy, SPEC
-S10') → one fused backward over (components, ci_fn, all persistent sources) →
-optimizer updates → each persistent term's final ascent from the same graph
-(SPEC S13'/S14'/S23: the source path is never coeff-scaled — a persistent term's
-coeff rides its model-side cotangents via `model_cotangents_scaled` — so the
-backward hands each adversary `dL/ds` directly). All trainable state is fp32
-masters (SPEC N1); forwards run in bf16 via explicit casts.
+S10') + optional nonlinearity-locality term (S36) → one fused backward over
+(components, ci_fn, all persistent sources) → optimizer updates → each persistent
+term's final ascent. The default `e2e` adversary retakes only its output-reconstruction
+source gradient when the outer term also includes hidden-activation reconstruction; an
+explicit `term` adversary reuses the fused graph and ascends the complete term (SPEC
+S13'/S14'/S23). All trainable state is fp32 masters (SPEC N1); forwards run in bf16
+via explicit casts.
 
 Schedules (imp-min p anneal, source-LR warmup, every scheduled loss coefficient) are
 computed inside the step from `state.step`, so the jit signature is stable across the
@@ -18,14 +19,13 @@ Per-term RNG: term i draws from `fold_in(step_key, offset + i)` in config-list o
 (SPEC R1) — offset 1 for the main grid reproduces the pre-unification production key
 derivation exactly.
 
-The step machinery lives on `_StepAtoms` — the vocabulary a step factory composes its
-body from — so a second factory (a tPD two-pass step) shares the machinery without a
-mirrored body.
+The factories bind explicit ``ForwardSubstrate`` and ``ReconGrid`` values while keeping
+the plain and targeted step bodies separate and readable.
 """
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 import equinox as eqx
 import jax
@@ -37,22 +37,38 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, PRNGKeyArray, jaxtyped
 
-from param_decomp.core.adversary import PersistentAdversary, init_fresh_pgd_sources
-from param_decomp.core.ci_fn import CI, CIFn, evaluate_ci
-from param_decomp.core.components import ComponentStacks, VUShape
-from param_decomp.core.configs import LossCoeff, SmoothL0ImportanceMinimalityLossConfig
+from param_decomp.core.adversary import PersistentAdversary, Sources, init_fresh_pgd_sources
+from param_decomp.core.ci_fn import (
+    CI,
+    CIFn,
+    PlacedCIFn,
+    evaluate_compute_ci,
+    materialize_ci_compute_weights,
+)
+from param_decomp.core.components import ComponentStacks
+from param_decomp.core.configs import LossCoeff
+from param_decomp.core.decomposed_linear import constrain_component_activation
+from param_decomp.core.faithfulness import FaithfulnessLossFn
 from param_decomp.core.jit_util import filter_jit
 from param_decomp.core.losses import (
+    BatchFrequency,
+    BatchFrequencyTerm,
+    EmaFrequency,
+    EmaFrequencyTerm,
+    FrequencyTerm,
     ReconstructionLoss,
     annealed_imp_min_param,
     coeff_at,
-    faithfulness_loss,
     imp_min_terms,
+    lp_term,
     mean_reconstruction_losses,
+    per_component_frequencies,
     reconstruction_loss,
     reconstruction_loss_metrics,
     reconstruction_spec_at,
-    scheduled_value_traced,
+    resolve_frequency,
+    scheduled_value_at,
+    train_frac_at,
 )
 from param_decomp.core.masking import (
     constant_delta_pinned_masks,
@@ -63,14 +79,21 @@ from param_decomp.core.masking import (
 )
 from param_decomp.core.model import (
     CaptureKeys,
-    DecomposedModel,
     Masking,
     MaterializedMasking,
+    PlacedModel,
     StochasticMasking,
+    faithfulness_weight_deltas,
     prepare_compute_weights,
     select_captures,
 )
-from param_decomp.core.objective import ImportanceMinimalityTerm, LossSurface, TargetedObjective
+from param_decomp.core.objective import (
+    ImportanceMinimalityTerm,
+    LossSurface,
+    ResolvedNonlinearity,
+    TargetedObjective,
+)
+from param_decomp.core.placement import CIFnPlacement, PlacementRules
 from param_decomp.core.recon import (
     AnyReconLossTerm,
     ConstantSources,
@@ -78,15 +101,15 @@ from param_decomp.core.recon import (
     FreshPGDSources,
     MaskSourceStrategy,
     MixedPersistentStochasticSources,
+    OutputOnlyReconstruction,
     PersistentSources,
-    ReconForward,
     ReconLossTerm,
     ReconstructionSpec,
     Routes,
     StochasticSources,
     UnmaskedNoDeltaSources,
+    hidden_acts_capture_keys,
     reconstruction_observations,
-    resolve_reconstruction_terms,
 )
 from param_decomp.core.schedule import ScheduleConfig
 from param_decomp.core.sharding import batch_shard_leading
@@ -96,7 +119,7 @@ from param_decomp.core.sharding import batch_shard_leading
 @dataclass(frozen=True)
 class Decomposition:
     """The trained PRODUCT: V/U components + the CI fn (fp32 masters). Checkpointed as
-    its own orbax item so consumers (harvest/autointerp/clustering/app) restore it with
+    its own orbax item so consumers such as clustering restore it with
     zero knowledge of the training process (optimizer states, adversaries, step)."""
 
     components: ComponentStacks  # the universal trainable V/U pytree, fp32 masters
@@ -107,7 +130,8 @@ class Decomposition:
 @dataclass(frozen=True)
 class TrainingItem:
     """The trainer-only trajectory tail: both optimizer states, the persistent adversaries,
-    the step counter. Checkpointed as its own orbax item — no consumer restores it."""
+    the frequency-EMA buffers, the step counter. Checkpointed as its own orbax item — no
+    consumer restores it."""
 
     components_opt_state: optax.OptState
     ci_fn_opt_state: optax.OptState
@@ -115,6 +139,10 @@ class TrainingItem:
     """Persistent-PGD adversaries, `state_key -> adversary` (each owns its sources + Adam
     state + static config). One state_key per persistent loss term (SPEC S23); empty when
     no persistent term."""
+    freq_ema: dict[str, Array] | None
+    """Per-site `(C,)` fp32 EMA of the per-component firing frequencies `f_c`, feeding the
+    smoothed frequency penalty (SPEC S8''); present iff the run's resolved frequency mode
+    is `EmaFrequency`, so configs without the EMA keep their checkpoint tree byte-identical."""
     step: Array
 
 
@@ -129,12 +157,14 @@ class TrainState:
     training: TrainingItem
 
 
-def _grad_norm_metrics(components_grad: ComponentStacks, ci_fn_grad: Any) -> dict[str, Array]:
+def _grad_norm_metrics(
+    components_grad: ComponentStacks, ci_fn_grad: Any, mesh: Mesh | None
+) -> dict[str, Array]:
     """Pre-clip gradient L2 norms, matching the torch `component_grad_norms` families.
 
     Components norms are per SITE per factor — `grad_norms/components.vu['<site>'][0|1]`
     (0=V, 1=U), e.g. `grad_norms/components.vu['layers.18.mlp.gate_proj'][0]`. Sites are
-    the semantic unit; the shape-group stacks they're stored in are not. The key spells
+    the semantic unit; the grouped stacks they're stored in are not. The key spells
     the retired per-site pytree path so wandb histories overlay across the stacking
     refactor. Ci-fn norms are per LEAF of whatever pytree the CI fn is
     (`grad_norms/ci_fns<path>`), plus the overlay-critical
@@ -142,7 +172,13 @@ def _grad_norm_metrics(components_grad: ComponentStacks, ci_fn_grad: Any) -> dic
     out: dict[str, Array] = {}
 
     def per_slice_sq(stack: Float[Array, "g a b"]) -> Float[Array, " g"]:
-        return jnp.sum(stack.astype(jnp.float32) ** 2, axis=(1, 2))
+        sq = jnp.sum(stack.astype(jnp.float32) ** 2, axis=(1, 2))
+        # Replicate the [g] vector ONCE; the per-site scalar reads below are then local
+        # slices instead of one tiny cross-mesh broadcast per site per factor (2·n_sites
+        # collectives per step under a stack-sharded persist layout).
+        if mesh is not None:
+            sq = jax.sharding.reshard(sq, NamedSharding(mesh, P()))
+        return sq
 
     factor_sq = {
         shape: (per_slice_sq(Vs), per_slice_sq(Us))
@@ -173,7 +209,14 @@ def uv_norm_ratio_metrics(components: ComponentStacks) -> dict[str, Array]:
     """Return each site's Frobenius-norm ratio ``||U|| / ||V||`` and summaries."""
 
     def per_slice_sq(stack: Float[Array, "g a b"]) -> Float[Array, " g"]:
-        return jnp.sum(stack.astype(jnp.float32) ** 2, axis=(1, 2))
+        sq = jnp.sum(stack.astype(jnp.float32) ** 2, axis=(1, 2))
+        # Replicate the tiny [g] vector ONCE before the per-site reads: under a
+        # stack-owned persist layout (`sharding: owner`) the stack axis is sharded, and
+        # a static per-slot slice of a sharded dim is unimplemented. Ambient-mesh guard
+        # (the `site_forward` pattern): a no-op off-mesh (toys / CPU tests).
+        if not jax.sharding.get_abstract_mesh().empty:
+            sq = jax.sharding.reshard(sq, P())
+        return sq
 
     factor_sq = {
         shape: (per_slice_sq(Vs), per_slice_sq(Us)) for shape, (Vs, Us) in components.stacks.items()
@@ -192,13 +235,10 @@ def uv_norm_ratio_metrics(components: ComponentStacks) -> dict[str, Array]:
     return metrics
 
 
-def _scheduled_coeff_metrics(
-    step_f32: Array, total_steps: int, coeffs: dict[str, LossCoeff]
-) -> dict[str, Array]:
-    """Per-step values of the SCHEDULED coefficients only — a constant would be log
-    noise, and a moving coefficient invisible in wandb is a debugging trap."""
+def _scheduled_coeff_metrics(train_frac: Array, coeffs: dict[str, LossCoeff]) -> dict[str, Array]:
+    """Only scheduled coefficients: constants would add log noise."""
     return {
-        f"schedules/coeff/{name}": scheduled_value_traced(step_f32, total_steps, coeff)
+        f"schedules/coeff/{name}": scheduled_value_at(train_frac, coeff)
         for name, coeff in coeffs.items()
         if isinstance(coeff, ScheduleConfig)
     }
@@ -215,7 +255,13 @@ def _cotangent_scaled_fwd(x: Array, by: Array) -> tuple[Array, Array]:
 
 
 def _cotangent_scaled_bwd(by: Array, g: Array) -> tuple[Array, Array]:
-    return g * by.astype(g.dtype), jnp.zeros_like(by)
+    # An UNREDUCED cotangent (the chained-reduced weights') may only multiply a scalar
+    # typed `reduced` over the same axes: (Σᵢ aᵢ)·c = Σᵢ(aᵢ·c), a pure retag.
+    scale = by.astype(g.dtype)
+    unreduced = frozenset(jax.typeof(g).sharding.spec.unreduced)
+    if unreduced:
+        scale = jax.sharding.reshard(scale, P(reduced=unreduced))
+    return g * scale, jnp.zeros_like(by)
 
 
 _cotangent_scaled.defvjp(_cotangent_scaled_fwd, _cotangent_scaled_bwd)
@@ -238,14 +284,13 @@ type CoeffApplication = Literal["scales_loss", "scales_model_cotangents"]
 def coeff_application(term: AnyReconLossTerm) -> CoeffApplication:
     """WHERE this term's coeff applies — static structure, decided at trace time.
 
-    A term that trains its sources FROM the shared backward (a persistent bundle in its
-    plan) must keep the source path unscaled so the backward hands the adversary `dL/ds`
+    A term that trains its sources FROM the shared backward (a persistent bundle as its
+    sources) must keep the source path unscaled so the backward hands the adversary `dL/ds`
     (SPEC S14'): its coeff rides the model-side cotangents (`model_cotangents_scaled`)
     and the term enters the differentiated total at weight 1. Every other term's coeff
     scales its loss scalar in the total."""
-    trains_sources_from_backward = any(
-        isinstance(entry.sources, PersistentSources | MixedPersistentStochasticSources)
-        for entry in term.plan
+    trains_sources_from_backward = isinstance(
+        term.sources, PersistentSources | MixedPersistentStochasticSources
     )
     return "scales_model_cotangents" if trains_sources_from_backward else "scales_loss"
 
@@ -268,89 +313,209 @@ class StreamInputs:
 @dataclass(frozen=True)
 class AscendedAdversaries:
     """The ascent phase's outputs: warmed persistent adversaries (SPEC S24), each
-    fresh-PGD entry's ascended sources, and the per-entry routing draws those ascents
+    fresh-PGD term's ascended sources, and the per-term routing draws those ascents
     fixed for the main grid to reuse (SPEC S24, torch parity)."""
 
     warmed: dict[str, PersistentAdversary]
-    fresh_sources: dict[tuple[int, int], dict[str, Array]]
-    fixed_routes: dict[tuple[int, int], tuple[Routes, ...]]
+    fresh_sources: dict[int, Sources]
+    fixed_routes: dict[int, tuple[Routes, ...]]
 
 
 type DrawLoss[S: MaskSourceStrategy] = Callable[
-    [int, int, ReconLossTerm[S], ReconForward[S], PRNGKeyArray, Routes], ReconstructionLoss
+    [int, ReconLossTerm[S], PRNGKeyArray, Routes], ReconstructionLoss
 ]
-"""`(term_idx, entry_idx, term, entry, draw_key, routes) -> the draw's scored recon` —
-one grid's per-draw dispatcher, built by the factory that owns the grid's trainables.
-`S` is the grid's source-strategy width: the non-target grid's dispatcher takes only the
-delta-pinnable strategies, so its match is exhaustive over two arms (SPEC T5)."""
+"""`(term_idx, term, draw_key, routes) -> the draw's scored recon` — one grid's
+per-draw dispatcher, built by the factory that owns the grid's trainables. `S` is the
+grid's source-strategy width: the non-target grid's dispatcher takes only the enumerated
+non-target strategies, so its match is exhaustive over those arms (SPEC T5)."""
 
-type TermDraws[S: MaskSourceStrategy] = list[tuple[int, ReconForward[S], PRNGKeyArray, Routes]]
-"""One term's flat `(entry_idx, entry, draw_key, routes)` forwards."""
+type TermDraws = list[tuple[PRNGKeyArray, Routes]]
+"""One term's flat `(draw_key, routes)` forwards."""
 
 
 def constant_source_masks(
-    strategy: ConstantSources, ci_lower: dict[str, Array], live_sites: tuple[str, ...]
+    strategy: ConstantSources, ci_lower: dict[str, Array]
 ) -> dict[str, Array]:
     """Build constant component masks; no weight-delta path exists for this source."""
-    return {site: ci_lower[site] + (1.0 - ci_lower[site]) * strategy.value for site in live_sites}
+    return {site: ci + (1.0 - ci) * strategy.value for site, ci in ci_lower.items()}
 
 
-class _StepAtoms[PreparedT]:
-    """The step vocabulary a step factory composes its body from — the run's statics as
-    fields, the shared machinery (sharding pins, stream prep, the component/CI vjp
-    scaffolding, adversary ascents, the recon-grid walk, the optimizer tail) as methods.
-    Instantiated once per factory at trace-setup time.
+@dataclass(frozen=True)
+class ReconGrid[S: MaskSourceStrategy]:
+    """One reconstruction grid and its first reserved per-term RNG index (SPEC R1)."""
 
-    Holds NO arrays: `model_static` supplies static config in `__init__` and is NOT
-    stored — every method takes the array-bearing model as an explicit argument (the
-    HLO-baking rule)."""
+    terms: tuple[ReconLossTerm[S], ...]
+    key_offset: int
 
-    def __init__(
+    def __post_init__(self) -> None:
+        assert self.terms, "a reconstruction grid must be non-empty"
+        assert self.key_offset >= 1, self.key_offset
+        assert len(self.capture_keys_by_term) == len(self.terms), (
+            "duplicate reconstruction term names"
+        )
+        self._persistent_by_key()
+
+    @classmethod
+    def of(cls, terms: tuple[ReconLossTerm[S], ...], *, key_offset: int) -> "ReconGrid[S]":
+        return cls(terms, key_offset)
+
+    @property
+    def capture_keys_by_term(self) -> dict[str, CaptureKeys]:
+        return {term.name: term.hidden_acts_capture_keys for term in self.terms}
+
+    def _persistent_by_key(self) -> dict[str, ReconLossTerm[S]]:
+        persistent: dict[str, ReconLossTerm[S]] = {}
+        for term in self.terms:
+            match term.sources:
+                case (
+                    PersistentSources(state_key=state_key)
+                    | MixedPersistentStochasticSources(state_key=state_key)
+                ):
+                    assert state_key not in persistent, (
+                        f"persistent source {state_key!r} feeds multiple terms"
+                    )
+                    persistent[state_key] = term
+                case (
+                    StochasticSources()
+                    | ConstantSources()
+                    | UnmaskedNoDeltaSources()
+                    | FreshPGDSources()
+                ):
+                    pass
+        return persistent
+
+    @property
+    def persistent_by_key(self) -> dict[str, ReconLossTerm[S]]:
+        return self._persistent_by_key()
+
+    @property
+    def capture_keys(self) -> CaptureKeys:
+        return frozenset(
+            key for term_keys in self.capture_keys_by_term.values() for key in term_keys
+        )
+
+    def reconstruction_specs_at(self, train_frac: Array) -> dict[str, ReconstructionSpec]:
+        return {
+            term.name: reconstruction_spec_at(term.hidden_acts_reconstruction, train_frac)
+            for term in self.terms
+        }
+
+    def adversary_reconstruction_specs(
+        self, reconstruction_specs: dict[str, ReconstructionSpec]
+    ) -> dict[str, ReconstructionSpec]:
+        """Choose each adversary's source-ascent objective independently of the outer loss."""
+        return {
+            term.name: (
+                OutputOnlyReconstruction()
+                if isinstance(term.sources, PersistentSources | MixedPersistentStochasticSources)
+                and term.sources.cfg.adversary_objective == "e2e"
+                else reconstruction_specs[term.name]
+            )
+            for term in self.terms
+        }
+
+    @property
+    def e2e_terms_requiring_source_grad_retake_by_key(
         self,
-        model_static: DecomposedModel[PreparedT],
+    ) -> dict[str, ReconLossTerm[S]]:
+        """Persistent e2e terms whose outer loss includes hidden-activation reconstruction."""
+        return {
+            state_key: term
+            for state_key, term in self.persistent_by_key.items()
+            if isinstance(term.sources, PersistentSources | MixedPersistentStochasticSources)
+            and term.sources.cfg.adversary_objective == "e2e"
+            and term.hidden_acts_reconstruction is not None
+        }
+
+    def coeffs_at(self, train_frac: Array) -> tuple[Float[Array, ""] | float, ...]:
+        return tuple(coeff_at(train_frac, term.coeff) for term in self.terms)
+
+    def draws(
+        self,
+        key: PRNGKeyArray,
+        fixed_routes: dict[int, tuple[Routes, ...]],
+        leading: tuple[int, ...],
+    ) -> list[TermDraws]:
+        """Materialize every term/draw key chain (SPEC R1)."""
+        draws_per_term: list[TermDraws] = []
+        for term_idx, term in enumerate(self.terms):
+            draw_key, routing_key = random.split(random.fold_in(key, self.key_offset + term_idx))
+            match term.sources:
+                case FreshPGDSources():
+                    routes_per_draw = fixed_routes[term_idx]
+                case _:
+                    routes_per_draw = term.sample_routing(routing_key, leading)
+            assert routes_per_draw, f"term {term.name!r} produced no forwards"
+            draws_per_term.append(
+                [
+                    (random.fold_in(draw_key, draw_idx), routes)
+                    for draw_idx, routes in enumerate(routes_per_draw)
+                ]
+            )
+        return draws_per_term
+
+    def losses(
+        self,
+        draws_per_term: list[TermDraws],
+        draw_loss: DrawLoss[S],
+    ) -> tuple[ReconstructionLoss, ...]:
+        """Mean reconstruction over each term's draws (SPEC S10')."""
+        return tuple(
+            mean_reconstruction_losses(
+                tuple(draw_loss(term_idx, term, draw_key, routes) for draw_key, routes in draws)
+            )
+            for term_idx, (term, draws) in enumerate(zip(self.terms, draws_per_term, strict=True))
+        )
+
+
+@dataclass(frozen=True)
+class ForwardSubstrate[PreparedT]:
+    """Array-free run statics owning forward preparation and VJP scaffolding.
+
+    The model is never stored: every method keeps it as a traced argument, preserving
+    the HLO-baking rule. `placement_rules` is the model bundle's own rules, pulled off
+    it at `of` — the CI/batch constraints below share the model's placement by
+    construction.
+    """
+
+    remat_recon_forwards: bool
+    remat_ci_fn: bool
+    placement_rules: PlacementRules | None
+    ci_placement: CIFnPlacement | None
+    """The run's CI-fn placement, resolved at assembly (`resolve_ci_placement`) — never
+    re-derived from `placement_rules` here. `placed` pairs it with the live masters."""
+    ci_capture_keys: CaptureKeys
+    recon_loss_fn: Callable[[Any, Any], Array]
+
+    @property
+    def mesh(self) -> Mesh | None:
+        """The rules' own mesh — a substrate never carries a second copy to desync. A
+        substrate that executes forwards needs a concrete mesh, so the abstract
+        (spec-check) arm of `PlacementRules.mesh` is refused here."""
+        if self.placement_rules is None:
+            return None
+        mesh = self.placement_rules.mesh
+        assert isinstance(mesh, Mesh), type(mesh)
+        return mesh
+
+    @classmethod
+    def of(
+        cls,
+        model_static: PlacedModel[PreparedT],
         *,
-        recon_terms: tuple[AnyReconLossTerm, ...],
-        imp: ImportanceMinimalityTerm,
-        components_optimizer: optax.GradientTransformation,
-        ci_fn_optimizer: optax.GradientTransformation,
-        total_steps: int,
         remat_recon_forwards: bool,
         remat_ci_fn: bool,
         ci_capture_keys: CaptureKeys,
-        mesh: Mesh | None,
-        ascend_replicate: bool,
-    ) -> None:
-        self.components_optimizer = components_optimizer
-        self.ci_fn_optimizer = ci_fn_optimizer
-        self.total_steps = total_steps
-        self.remat_recon_forwards = remat_recon_forwards
-        self.remat_ci_fn = remat_ci_fn
-        self.ci_capture_keys = ci_capture_keys
-        self.mesh = mesh
-        self.ascend_replicate = ascend_replicate
-
-        self.site_names = model_static.site_names
-        self.sites = model_static.sites
-        self.c_by_site = {spec.name: spec.C for spec in self.sites}
-        self.recon_loss_fn = (
-            model_static.recon_loss_fn
-        )  # static: pure, holds no arrays — safe to close
-        resolved_recon = resolve_reconstruction_terms(model_static, recon_terms)
-        self.recon_terms = resolved_recon.terms
-        self.hidden_acts_capture_keys_by_term = resolved_recon.hidden_acts_capture_keys_by_term
-        self.hidden_acts_capture_keys = resolved_recon.hidden_acts_capture_keys
-        self.persistent_term_by_key = resolved_recon.persistent_term_by_key
-
-        self.imp_min = imp.cfg
-        self.imp_coeff: LossCoeff = imp.coeff
-        self.freq_coeff: LossCoeff = (
-            self.imp_min.frequency.coeff if self.imp_min.frequency is not None else 0.0
+        ci_placement: CIFnPlacement | None,
+    ) -> "ForwardSubstrate[PreparedT]":
+        return cls(
+            remat_recon_forwards=remat_recon_forwards,
+            remat_ci_fn=remat_ci_fn,
+            placement_rules=model_static.placement,
+            ci_placement=ci_placement,
+            ci_capture_keys=ci_capture_keys,
+            recon_loss_fn=model_static.recon_loss_fn,
         )
-        # Log the imp-min loss + its annealed param under penalty-kind-specific keys: the param
-        # is `p` for L_p / `gamma` for smooth-L0, and the loss carries the penalty's class name.
-        is_smooth_l0 = isinstance(self.imp_min, SmoothL0ImportanceMinimalityLossConfig)
-        self.imp_loss_key = "imp_smooth_l0" if is_smooth_l0 else "imp"
-        self.imp_min_param_key = "gamma_imp" if is_smooth_l0 else "p_imp"
 
     def shard_batch_tree[T](self, x: T) -> T:
         """Pin the leading (batch) axis of every array in the pytree. The batch and the
@@ -359,47 +524,18 @@ class _StepAtoms[PreparedT]:
         return jax.tree.map(lambda leaf: batch_shard_leading(leaf, self.mesh), x)
 
     def _shard_ci_array(self, x: Array) -> Array:
-        """Pin a CI / mask tensor `[batch, *positions, C]` batch over the full mesh, C
-        REPLICATED. No-op off-mesh (single device / toys)."""
-        if self.mesh is None:
-            return x
-        spec = (("replicate", "fsdp"), *((None,) * (x.ndim - 1)))
-        return jax.lax.with_sharding_constraint(x, NamedSharding(self.mesh, P(*spec)))
+        return constrain_component_activation(x, self.placement_rules)
 
     def shard_ci(self, ci: CI) -> CI:
-        """Pin the CI-fn output batch over the full mesh, C REPLICATED — the layout `site_out`
-        pins `x@V` to (SPEC §4.1), so the downstream mask multiply `xV * mask` needs no
-        reshard. The explicit constraint stops GSPMD re-deciding it in the backward (same
-        rationale as `site_out`'s activation pin, bf072ef01). `preactivations` is passed through
-        (unused in the step — only the squashings are; DCE drops it)."""
+        """Keep CI squashings aligned with `site_out`'s batch × component layout."""
         return CI(
-            preactivations=ci.preactivations,
+            preactivations={site: self._shard_ci_array(v) for site, v in ci.preactivations.items()},
             lower={site: self._shard_ci_array(v) for site, v in ci.lower.items()},
             upper={site: self._shard_ci_array(v) for site, v in ci.upper.items()},
         )
 
-    def replicate_for_ascend(self, prepared_weights: PreparedT) -> PreparedT:
-        """Lever #5 (`runtime.ascend_replicate`): gather the ÷fsdp compute weights to
-        FULL/replicated ONCE before the adversary ascents, so the `n_warmup` ascend forwards run
-        plain matmuls with NO per-layer ÷fsdp→full NVLink gather. The gather is
-        mask-INDEPENDENT and the V/U are detached (constant) across ascend steps, so the
-        re-gather is pure redundancy — `n_warmup × n_layer × (fwd+bwd)` collectives collapse to
-        one full gather. Trades the full V/U resident (≈ `fsdp`× the ÷fsdp stack) during the
-        ascend phase for the eliminated re-gathers. Pure data movement (bf16 values unchanged) →
-        numerics bit-identical. No-op off-flag / off-mesh."""
-        if (
-            not self.ascend_replicate
-            or self.mesh is None
-            or (jax.sharding.get_abstract_mesh().empty)
-        ):
-            return prepared_weights
-        replicated = NamedSharding(self.mesh, P())
-        return jax.tree.map(
-            lambda a: jax.lax.with_sharding_constraint(a, replicated), prepared_weights
-        )
-
     def prep_stream(
-        self, model: DecomposedModel[PreparedT], batch: Any, hidden_acts_keys: CaptureKeys
+        self, model: PlacedModel[PreparedT], batch: Any, hidden_acts_keys: CaptureKeys
     ) -> StreamInputs:
         """Shard one stream's batch, run its detached clean forward, and pull the CI taps +
         recon observations. `hidden_acts_keys` is the stream's own union — a stream whose
@@ -423,35 +559,45 @@ class _StepAtoms[PreparedT]:
         return StreamInputs(batch=batch, clean=clean, taps=taps, leading=leading)
 
     def component_weights_vjp(
-        self, model: DecomposedModel[PreparedT], components: ComponentStacks
+        self, model: PlacedModel[PreparedT], components: ComponentStacks
     ) -> tuple[PreparedT, Callable[[PreparedT], tuple[ComponentStacks]]]:
         """The compute-weights value + vjp — the recon gradient's pullback onto V/U."""
         return jax.vjp(lambda c: prepare_compute_weights(model, c), components)
 
+    def placed(self, ci_fn: CIFn) -> PlacedCIFn:
+        """The live masters paired with the run's already-resolved placement."""
+        return PlacedCIFn(fn=ci_fn, placement=self.ci_placement)
+
+    def ci_weights_vjp(self, ci_fn: CIFn) -> tuple[PlacedCIFn, Callable[[PlacedCIFn], tuple[Any]]]:
+        """The resident BF16 CI weights and their pullback onto the FP32 masters."""
+        return eqx.filter_vjp(lambda cf: materialize_ci_compute_weights(self.placed(cf)), ci_fn)
+
     def ci_forward_vjp(
-        self, ci_fn: CIFn, taps: dict[str, Array]
+        self, compute_ci_fn: PlacedCIFn, taps: dict[str, Array]
     ) -> tuple[CI, Callable[[CI], tuple[Any]]]:
         """The CI envelope's value + vjp. The CI envelope is a pure fn of the taps, so it is
         forward-evaluated ONCE per stream — the ascents use the stop_gradient'd value; the
         loss takes the live value and its ci-fn grad is pulled back through the vjp."""
         with jax.named_scope("pd_ci_fn_fwd"):
             return eqx.filter_vjp(
-                lambda cf: self.shard_ci(evaluate_ci(cf, taps, remat=self.remat_ci_fn)),
-                ci_fn,
+                lambda cf: self.shard_ci(evaluate_compute_ci(cf, taps, remat=self.remat_ci_fn)),
+                compute_ci_fn,
             )
 
-    # ONE masked-forward re-forward for recon AND the adversary ascents, sharing the same remat
-    # policy. `remat_recon_forwards` gates gradient-checkpointing inside the target's
-    # `masked_forward` at the target's natural granularity (a deep target recomputes one layer
-    # at a time in the backward instead of storing every layer's activations). This is
-    # load-bearing for the ASCENTS too: though they backprop only to the SOURCES (params + CI
-    # detached), the source gradient still flows through the per-layer activations (the masks
-    # MULTIPLY them), so an un-rematted ascent forward stacks `[n_layer, *leading, d_ff]` MLP
-    # intermediates. Remat off stores all activations: faster when memory allows.
+    # ONE masked-forward remat policy for recon AND the adversary ascents.
+    # `remat_recon_forwards` picks the checkpoint policy of the target's per-block scan:
+    # True = `nothing_saveable` — the backward re-forwards one block at a time instead of
+    # holding its activations (deep targets need this to fit); False = `dots_saveable` — the
+    # backward reads stored batch-scaled activation dots and re-forwards nothing (faster when
+    # memory allows; gathered weight operands are never residuals either way — the scanned
+    # linear re-derives them in its transpose). This is load-bearing for the ASCENTS too:
+    # though they backprop only to the SOURCES (params + CI detached), the source gradient
+    # still flows through the per-layer activations (the masks MULTIPLY them), so an
+    # un-rematted ascent forward stores `[n_layer, *leading, d_ff]`-scale intermediates.
     @jaxtyped(typechecker=beartype)
     def masked_recon(
         self,
-        model: DecomposedModel[PreparedT],
+        model: PlacedModel[PreparedT],
         *,
         prepared_weights: PreparedT,
         batch: Any,
@@ -481,514 +627,456 @@ class _StepAtoms[PreparedT]:
             reconstruction=reconstruction,
         )
 
-    def reconstruction_specs_at[S: MaskSourceStrategy](
-        self, terms: tuple[ReconLossTerm[S], ...], step_f32: Array
-    ) -> dict[str, ReconstructionSpec]:
-        """Each term's value-level reconstruction spec at this step: the S35 rider's
-        possibly-scheduled coeff resolved ONCE, high in the step (the pnorm pattern), so
-        schedule objects never enter the draw dispatchers."""
-        return {
-            term.name: reconstruction_spec_at(
-                term.hidden_acts_reconstruction, step_f32, self.total_steps
-            )
-            for term in terms
-        }
 
-    def recon_for_sources(
-        self,
-        *,
-        term: AnyReconLossTerm,
-        entry: ReconForward[MaskSourceStrategy],
-        sources: dict[str, Array],
-        routes_per_draw: tuple[Routes, ...],
-        model: DecomposedModel[PreparedT],
-        prepared_weights: PreparedT,
-        ci_lower: dict[str, Array],
-        stream: StreamInputs,
-        reconstruction: ReconstructionSpec,
-    ) -> Array:
-        """Mean of one adversarial entry's fixed-source objective across its draws."""
-        masks, delta_masks = masks_from_sources(ci_lower, sources, entry.live_sites)
-        total = jnp.zeros((), jnp.float32)
-        for routes in routes_per_draw:
-            breakdown = self.masked_recon(
+def ascend_adversaries[PreparedT](
+    substrate: ForwardSubstrate[PreparedT],
+    grid: ReconGrid[MaskSourceStrategy],
+    model: PlacedModel[PreparedT],
+    stream: StreamInputs,
+    detached_prepared_weights: PreparedT,
+    ci_lower_detached: dict[str, Array],
+    adversaries: dict[str, PersistentAdversary],
+    key: PRNGKeyArray,
+    train_frac: Array,
+    reconstruction_specs: dict[str, ReconstructionSpec],
+) -> AscendedAdversaries:
+    """Detached adversary ascents for the full-width target/main grid."""
+
+    def warmup_scoring_loss(term: AnyReconLossTerm) -> Callable[[Sources], Array]:
+        def objective(sources: Sources) -> Array:
+            masks, delta_masks = masks_from_sources(ci_lower_detached, sources)
+            return substrate.masked_recon(
                 model,
-                prepared_weights=prepared_weights,
+                prepared_weights=detached_prepared_weights,
                 batch=stream.batch,
                 masking=MaterializedMasking(
-                    component_masks=masks, weight_delta_masks=delta_masks, routes=routes
+                    component_masks=masks, weight_delta_masks=delta_masks, routes=None
                 ),
-                capture_keys=self.hidden_acts_capture_keys_by_term[term.name],
-                reconstruction=reconstruction,
+                capture_keys=hidden_acts_capture_keys(reconstruction_specs[term.name]),
+                reconstruction=reconstruction_specs[term.name],
                 clean=stream.clean,
+            ).total
+
+        return objective
+
+    with jax.named_scope("pd_pgd_warmup_ascend"):
+        warmed = {
+            state_key: adv.warmup_ascend(
+                warmup_scoring_loss(grid.persistent_by_key[state_key]), train_frac
             )
-            total = total + breakdown.total
-        return total / len(routes_per_draw)
+            for state_key, adv in adversaries.items()
+        }
 
-    def ascend_adversaries(
-        self,
-        model: DecomposedModel[PreparedT],
-        stream: StreamInputs,
-        ascend_prepared_weights: PreparedT,
-        ci_lower_detached: dict[str, Array],
-        adversaries: dict[str, PersistentAdversary],
-        key: PRNGKeyArray,
-        step_f32: Array,
-        reconstruction_specs: dict[str, ReconstructionSpec],
-    ) -> AscendedAdversaries:
-        """The step's whole ascent phase, params + CI detached (SPEC §4.5).
+    fresh_sources: dict[int, Sources] = {}
+    fixed_routes: dict[int, tuple[Routes, ...]] = {}
+    for term_idx, term in enumerate(grid.terms):
+        if not isinstance(term.sources, FreshPGDSources):
+            continue
+        fresh_cfg = term.sources
+        routing_key, init_key = random.split(random.fold_in(key, grid.key_offset + term_idx))
+        routes_per_draw = term.sample_routing(routing_key, stream.leading)
+        fixed_routes[term_idx] = routes_per_draw
+        init = init_fresh_pgd_sources(
+            sites=model.sites,
+            init=fresh_cfg.init,
+            source_shape=fresh_cfg.source_shape,
+            leading=stream.leading,
+            key=init_key,
+        )
 
-        Persistent adversaries each run their supplemental ascents vs the route-ALL
-        all-sites forward (SPEC S24 — torch warmup parity, NOT the term's loss plan); the
-        warmed sources then enter the main backward as leaves; the LR schedule (S13′)
-        lives in `PersistentAdversary`. Fresh-PGD entries draw routing ONCE per step,
-        shared by all ascents and the main loss forward (SPEC S24); sign-ascend `n_steps`,
-        then the sources are constants in the main backward (torch parity)."""
-
-        def warmup_scoring_loss(term: AnyReconLossTerm) -> Callable[[dict[str, Array]], Array]:
-            def objective(sources: dict[str, Array]) -> Array:
-                masks, delta_masks = masks_from_sources(ci_lower_detached, sources, self.site_names)
-                return self.masked_recon(
+        def ascent_loss(
+            sources: Sources,
+            term: AnyReconLossTerm = term,
+            routes: tuple[Routes, ...] = routes_per_draw,
+        ) -> Array:
+            masks, delta_masks = masks_from_sources(ci_lower_detached, sources)
+            total = jnp.zeros((), jnp.float32)
+            for routes_for_draw in routes:
+                breakdown = substrate.masked_recon(
                     model,
-                    prepared_weights=ascend_prepared_weights,
+                    prepared_weights=detached_prepared_weights,
                     batch=stream.batch,
                     masking=MaterializedMasking(
-                        component_masks=masks, weight_delta_masks=delta_masks, routes=None
+                        component_masks=masks,
+                        weight_delta_masks=delta_masks,
+                        routes=routes_for_draw,
                     ),
-                    capture_keys=self.hidden_acts_capture_keys_by_term[term.name],
+                    capture_keys=hidden_acts_capture_keys(reconstruction_specs[term.name]),
                     reconstruction=reconstruction_specs[term.name],
                     clean=stream.clean,
-                ).total
-
-            return objective
-
-        with jax.named_scope("pd_pgd_warmup_ascend"):
-            warmed = {
-                state_key: adv.warmup_ascend(
-                    warmup_scoring_loss(self.persistent_term_by_key[state_key]),
-                    step_f32,
-                    self.total_steps,
                 )
-                for state_key, adv in adversaries.items()
-            }
+                total = total + breakdown.total
+            return total / len(routes)
 
-        fresh_sources: dict[tuple[int, int], dict[str, Array]] = {}
-        fixed_routes: dict[tuple[int, int], tuple[Routes, ...]] = {}
-        for term_idx, term in enumerate(self.recon_terms):
-            term_key = random.fold_in(key, 1 + term_idx)
-            for entry_idx, entry in enumerate(term.plan):
-                if not isinstance(entry.sources, FreshPGDSources):
-                    continue
-                fresh_cfg = entry.sources
-                routing_key, init_key = random.split(random.fold_in(term_key, entry_idx))
-                routes_per_draw = entry.sample_routing(routing_key, stream.leading)
-                fixed_routes[(term_idx, entry_idx)] = routes_per_draw
-                live_specs = tuple(s for s in self.sites if s.name in entry.live_sites)
-                init = init_fresh_pgd_sources(
-                    sites=live_specs,
-                    init=fresh_cfg.init,
-                    source_shape=fresh_cfg.source_shape,
-                    leading=stream.leading,
-                    key=init_key,
-                )
+        def sign_ascend_body(
+            sources: Sources,
+            _: None,
+            ascent_loss: Callable[[Sources], Array] = ascent_loss,
+            step_size: float = fresh_cfg.step_size,
+        ) -> tuple[Sources, None]:
+            sources_grad = jax.grad(ascent_loss)(sources)
+            return jax.tree.map(
+                lambda source, gradient: jnp.clip(
+                    source + step_size * jnp.sign(gradient), 0.0, 1.0
+                ),
+                sources,
+                sources_grad,
+            ), None
 
-                def ascent_loss(
-                    sources: dict[str, Array],
-                    term: AnyReconLossTerm = term,
-                    entry: ReconForward[MaskSourceStrategy] = entry,
-                    routes: tuple[Routes, ...] = routes_per_draw,
-                ) -> Array:
-                    return self.recon_for_sources(
-                        term=term,
-                        entry=entry,
-                        sources=sources,
-                        routes_per_draw=routes,
-                        model=model,
-                        prepared_weights=ascend_prepared_weights,
-                        ci_lower=ci_lower_detached,
-                        stream=stream,
-                        reconstruction=reconstruction_specs[term.name],
-                    )
+        with jax.named_scope("pd_fresh_pgd_ascend"):
+            ascended, _ = jax.lax.scan(sign_ascend_body, init, None, length=fresh_cfg.n_steps)
+        fresh_sources[term_idx] = jax.lax.stop_gradient(ascended)
 
-                def sign_ascend_body(
-                    sources: dict[str, Array],
-                    _: None,
-                    ascent_loss: Callable[[dict[str, Array]], Array] = ascent_loss,
-                    step_size: float = fresh_cfg.step_size,
-                ) -> tuple[dict[str, Array], None]:
-                    sources_grad = jax.grad(ascent_loss)(sources)
-                    return {
-                        site: jnp.clip(
-                            sources[site] + step_size * jnp.sign(sources_grad[site]),
-                            0.0,
-                            1.0,
-                        )
-                        for site in sources
-                    }, None
+    return AscendedAdversaries(
+        warmed=warmed, fresh_sources=fresh_sources, fixed_routes=fixed_routes
+    )
 
-                with jax.named_scope("pd_fresh_pgd_ascend"):
-                    ascended, _ = jax.lax.scan(
-                        sign_ascend_body, init, None, length=fresh_cfg.n_steps
-                    )
-                fresh_sources[(term_idx, entry_idx)] = jax.lax.stop_gradient(ascended)
 
-        return AscendedAdversaries(
-            warmed=warmed, fresh_sources=fresh_sources, fixed_routes=fixed_routes
-        )
+def main_draw_loss[PreparedT](
+    substrate: ForwardSubstrate[PreparedT],
+    model: PlacedModel[PreparedT],
+    *,
+    prepared_weights: PreparedT,
+    ci: CI,
+    ci_stacked: Any,
+    persistent_sources: dict[str, Sources],
+    ascended: AscendedAdversaries,
+    stream: StreamInputs,
+    train_frac: Array,
+    reconstruction_specs: dict[str, ReconstructionSpec],
+    term_coeffs: dict[str, Array | float],
+) -> DrawLoss[MaskSourceStrategy]:
+    """The main grid's per-draw dispatcher over the trainables: match the term's
+    mask-source strategy, run the masked forward, score against the stream's clean
+    observations. Built INSIDE the loss fn — it closes over the live trainables.
 
-    def term_draws[S: MaskSourceStrategy](
-        self,
-        key: PRNGKeyArray,
-        key_offset: int,
+    Persistent(-carrying) draws take the coeff on their MODEL-SIDE inputs
+    (`model_cotangents_scaled`) and enter the total at weight 1, so the fused
+    backward hands each adversary `dL/ds` unscaled (SPEC S14')."""
+
+    def draw_loss(
         term_idx: int,
-        term: ReconLossTerm[S],
-        fixed_routes: dict[tuple[int, int], tuple[Routes, ...]],
-        leading: tuple[int, ...],
-    ) -> TermDraws[S]:
-        """The term's flat `(entry_idx, entry, draw_key, routes)` forwards. Key derivation
-        reproduces the pre-unification production trace exactly (SPEC R1 — the main grid's
-        `key_offset` is 1; a second grid keeps its per-term RNG disjoint by offsetting past
-        the first); fresh-PGD entries reuse the ascent phase's fixed routes (SPEC S24)."""
-        term_key = random.fold_in(key, key_offset + term_idx)
-        draws: TermDraws[S] = []
-        for entry_idx, entry in enumerate(term.plan):
-            entry_key, routing_key = random.split(random.fold_in(term_key, entry_idx))
-            match entry.sources:
-                case FreshPGDSources():
-                    routes_per_draw = fixed_routes[(term_idx, entry_idx)]
-                case _:
-                    routes_per_draw = entry.sample_routing(routing_key, leading)
-            draws.extend(
-                (entry_idx, entry, random.fold_in(entry_key, draw_idx), routes)
-                for draw_idx, routes in enumerate(routes_per_draw)
-            )
-        assert draws, f"term {term.name!r} produced no forwards"
-        return draws
-
-    def grid_losses[S: MaskSourceStrategy](
-        self,
-        terms: tuple[ReconLossTerm[S], ...],
-        draws_per_term: list[TermDraws[S]],
-        draw_loss: DrawLoss[S],
-    ) -> tuple[ReconstructionLoss, ...]:
-        """Mean recon over each term's draws (SPEC S10'); the grid's owner supplies its
-        per-draw dispatcher."""
-        return tuple(
-            mean_reconstruction_losses(
-                tuple(
-                    draw_loss(term_idx, entry_idx, term, entry, draw_key, routes)
-                    for entry_idx, entry, draw_key, routes in draws
-                )
-            )
-            for term_idx, (term, draws) in enumerate(zip(terms, draws_per_term, strict=True))
-        )
-
-    def main_draw_loss(
-        self,
-        model: DecomposedModel[PreparedT],
-        *,
-        prepared_weights: PreparedT,
-        ci: CI,
-        ci_stacked: Any,
-        persistent_sources: dict[str, dict[str, Array]],
-        ascended: AscendedAdversaries,
-        stream: StreamInputs,
-        step_f32: Array,
-        reconstruction_specs: dict[str, ReconstructionSpec],
-        term_coeffs: dict[str, Array | float],
-    ) -> DrawLoss[MaskSourceStrategy]:
-        """The main grid's per-draw dispatcher over the trainables: match the entry's
-        mask-source strategy, run the masked forward, score against the stream's clean
-        observations. Built INSIDE the loss fn — it closes over the live trainables.
-
-        Persistent(-carrying) draws take the coeff on their MODEL-SIDE inputs
-        (`model_cotangents_scaled`) and enter the total at weight 1, so the fused
-        backward hands each adversary `dL/ds` unscaled (SPEC S14')."""
-
-        def draw_loss(
-            term_idx: int,
-            entry_idx: int,
-            term: ReconLossTerm[MaskSourceStrategy],
-            entry: ReconForward[MaskSourceStrategy],
-            draw_key: PRNGKeyArray,
-            routes: Routes,
-        ) -> ReconstructionLoss:
-            match coeff_application(term):
-                case "scales_model_cotangents":
-                    draw_prepared = model_cotangents_scaled(
-                        prepared_weights, term_coeffs[term.name]
+        term: ReconLossTerm[MaskSourceStrategy],
+        draw_key: PRNGKeyArray,
+        routes: Routes,
+    ) -> ReconstructionLoss:
+        match coeff_application(term):
+            case "scales_model_cotangents":
+                draw_prepared = model_cotangents_scaled(prepared_weights, term_coeffs[term.name])
+                draw_ci_lower = model_cotangents_scaled(ci.lower, term_coeffs[term.name])
+            case "scales_loss":
+                draw_prepared, draw_ci_lower = prepared_weights, ci.lower
+        with jax.named_scope("pd_recon_masked_fwd"):
+            match term.sources:
+                case StochasticSources():
+                    # Stochastic recon passes `StochasticMasking` to `masked_forward`, so a scan
+                    # target rebuilds masks from shared `ci_stacked` inside each checkpointed
+                    # block (the full mask stack is never held). Explicit strategies pass
+                    # `MaterializedMasking`; the engine holds no per-forward mask stacks.
+                    assert ci_stacked is not None
+                    masking: Masking = StochasticMasking(
+                        ci_stacked=ci_stacked, draw_key=draw_key, routes=routes
                     )
-                    draw_ci_lower = model_cotangents_scaled(ci.lower, term_coeffs[term.name])
-                case "scales_loss":
-                    draw_prepared, draw_ci_lower = prepared_weights, ci.lower
-            with jax.named_scope("pd_recon_masked_fwd"):
-                match entry.sources:
-                    case StochasticSources():
-                        # Stochastic recon passes `StochasticMasking` to `masked_forward`, so a scan
-                        # target rebuilds masks from shared `ci_stacked` inside each checkpointed
-                        # block (the full mask stack is never held). Explicit strategies pass
-                        # `MaterializedMasking`; the engine holds no per-forward mask stacks.
-                        assert ci_stacked is not None
-                        masking: Masking = StochasticMasking(
-                            ci_stacked=ci_stacked,
-                            draw_key=draw_key,
-                            live_sites=entry.live_sites,
-                            routes=routes,
-                        )
-                    case ConstantSources() as strategy:
-                        masking = MaterializedMasking(
-                            component_masks=constant_source_masks(
-                                strategy, ci.lower, entry.live_sites
-                            ),
-                            weight_delta_masks=None,
-                            routes=routes,
-                        )
-                    case UnmaskedNoDeltaSources():
-                        raise AssertionError(
-                            "UnmaskedNoDeltaSources is non-target-pass vocabulary "
-                            "(SPEC T4/T5); the main grid never carries it"
-                        )
-                    case FreshPGDSources():
-                        component_masks, weight_delta_masks = masks_from_sources(
-                            ci.lower,
-                            ascended.fresh_sources[(term_idx, entry_idx)],
-                            entry.live_sites,
-                        )
-                        masking = MaterializedMasking(
-                            component_masks=component_masks,
-                            weight_delta_masks=weight_delta_masks,
-                            routes=routes,
-                        )
-                    case PersistentSources(state_key=state_key):
-                        component_masks, weight_delta_masks = masks_from_sources(
-                            draw_ci_lower, persistent_sources[state_key], entry.live_sites
-                        )
-                        masking = MaterializedMasking(
-                            component_masks=component_masks,
-                            weight_delta_masks=weight_delta_masks,
-                            routes=routes,
-                        )
-                    case MixedPersistentStochasticSources(state_key=state_key):
-                        adv_fraction = scheduled_value_traced(
-                            step_f32, self.total_steps, entry.sources.cfg.adv_fraction
-                        )
-                        component_masks, weight_delta_masks, routes = (
-                            mixed_persistent_stochastic_masks(
-                                key=draw_key,
-                                ci_lower=model_cotangents_scaled(ci.lower, term_coeffs[term.name]),
-                                persistent_sources=persistent_sources[state_key],
-                                live_sites=entry.live_sites,
-                                components_per_site=self.c_by_site,
-                                leading=stream.leading,
-                                adv_fraction=adv_fraction,
-                                stochastic_routes=routes,
-                            )
-                        )
-                        masking = MaterializedMasking(
-                            component_masks=component_masks,
-                            weight_delta_masks=weight_delta_masks,
-                            routes=routes,
-                        )
-                return self.masked_recon(
-                    model,
-                    prepared_weights=draw_prepared,
-                    batch=stream.batch,
-                    masking=masking,
-                    capture_keys=self.hidden_acts_capture_keys_by_term[term.name],
-                    reconstruction=reconstruction_specs[term.name],
-                    clean=stream.clean,
-                )
-
-        return draw_loss
-
-    def apply_gradients(
-        self,
-        decomposition: Decomposition,
-        training: TrainingItem,
-        warmed_advs: dict[str, PersistentAdversary],
-        components_grad: Any,
-        ci_fn_grad: Any,
-        persistent_source_grads: dict[str, dict[str, Array]],
-        step_f32: Array,
-    ) -> tuple[TrainState, dict[str, Array]]:
-        """The optimizer tail: grad-norm metrics, each adversary's final ascent from the
-        fused graph (SPEC S13'/S14': the source path is never coeff-scaled, so the
-        backward's grad IS dL_term/d(sources) — exact since one source bundle feeds one
-        term, S23), then both optimizer updates into the next `TrainState`."""
-        grad_norm_metrics = _grad_norm_metrics(components_grad, ci_fn_grad)
-
-        new_adversaries = {
-            state_key: warmed_advs[state_key].final_ascend(
-                persistent_source_grads[state_key], step_f32, self.total_steps
+                case ConstantSources() as strategy:
+                    masking = MaterializedMasking(
+                        component_masks=constant_source_masks(strategy, ci.lower),
+                        weight_delta_masks=None,
+                        routes=routes,
+                    )
+                case UnmaskedNoDeltaSources():
+                    raise AssertionError(
+                        "UnmaskedNoDeltaSources is non-target-pass vocabulary "
+                        "(SPEC T4/T5); the main grid never carries it"
+                    )
+                case FreshPGDSources():
+                    component_masks, weight_delta_masks = masks_from_sources(
+                        ci.lower, ascended.fresh_sources[term_idx]
+                    )
+                    masking = MaterializedMasking(
+                        component_masks=component_masks,
+                        weight_delta_masks=weight_delta_masks,
+                        routes=routes,
+                    )
+                case PersistentSources(state_key=state_key):
+                    component_masks, weight_delta_masks = masks_from_sources(
+                        draw_ci_lower, persistent_sources[state_key]
+                    )
+                    masking = MaterializedMasking(
+                        component_masks=component_masks,
+                        weight_delta_masks=weight_delta_masks,
+                        routes=routes,
+                    )
+                case MixedPersistentStochasticSources(state_key=state_key):
+                    adv_fraction = scheduled_value_at(train_frac, term.sources.cfg.adv_fraction)
+                    component_masks, weight_delta_masks, routes = mixed_persistent_stochastic_masks(
+                        key=draw_key,
+                        ci_lower=model_cotangents_scaled(ci.lower, term_coeffs[term.name]),
+                        persistent_sources=persistent_sources[state_key],
+                        leading=stream.leading,
+                        adv_fraction=adv_fraction,
+                        stochastic_routes=routes,
+                    )
+                    masking = MaterializedMasking(
+                        component_masks=component_masks,
+                        weight_delta_masks=weight_delta_masks,
+                        routes=routes,
+                    )
+            return substrate.masked_recon(
+                model,
+                prepared_weights=draw_prepared,
+                batch=stream.batch,
+                masking=masking,
+                capture_keys=hidden_acts_capture_keys(reconstruction_specs[term.name]),
+                reconstruction=reconstruction_specs[term.name],
+                clean=stream.clean,
             )
-            for state_key in warmed_advs
-        }
 
-        components_updates, new_components_opt_state = self.components_optimizer.update(
-            components_grad,
-            training.components_opt_state,
-            eqx.filter(decomposition.components, eqx.is_array),
-        )
-        ci_fn_updates, new_ci_fn_opt_state = self.ci_fn_optimizer.update(
-            ci_fn_grad,
-            training.ci_fn_opt_state,
-            eqx.filter(decomposition.ci_fn, eqx.is_array),
-        )
-        new_components = eqx.apply_updates(decomposition.components, components_updates)
-        new_ci_fn = eqx.apply_updates(decomposition.ci_fn, ci_fn_updates)
+    return draw_loss
 
-        new_state = TrainState(
-            decomposition=Decomposition(components=new_components, ci_fn=new_ci_fn),
-            training=TrainingItem(
-                components_opt_state=new_components_opt_state,
-                ci_fn_opt_state=new_ci_fn_opt_state,
-                adversaries=new_adversaries,
-                step=training.step + 1,
-            ),
-        )
-        return new_state, grad_norm_metrics
 
-    def train_metrics(
-        self,
-        *,
-        total_loss: Array,
-        imp_lp: Array,
-        imp_freq: Array,
-        imp_min_param: Array,
-        term_breakdowns: tuple[ReconstructionLoss, ...],
-        grad_norm_metrics: dict[str, Array],
-        adversaries: dict[str, PersistentAdversary],
-        step_f32: Array,
-    ) -> dict[str, Array]:
-        """The step's scalar record over THIS atoms' terms: totals, the imp-min pair under
-        their penalty-kind keys, per-term losses + breakdowns, grad norms, source LRs."""
-        term_losses = tuple(breakdown.total for breakdown in term_breakdowns)
-        metrics = {
-            "total": total_loss,
-            self.imp_loss_key: imp_lp,
-            "freq": imp_freq,
-            self.imp_min_param_key: imp_min_param,
-            **{f"loss/{t.name}": v for t, v in zip(self.recon_terms, term_losses, strict=True)},
-            **grad_norm_metrics,
+def retake_e2e_source_grads[PreparedT](
+    substrate: ForwardSubstrate[PreparedT],
+    grid: ReconGrid[MaskSourceStrategy],
+    model: PlacedModel[PreparedT],
+    *,
+    prepared_weights: PreparedT,
+    ci: CI,
+    ascended: AscendedAdversaries,
+    stream: StreamInputs,
+    draws_per_term: list[TermDraws],
+    train_frac: Array,
+    warmed_sources: dict[str, Sources],
+    term_coeffs: dict[str, Array | float],
+) -> dict[str, Sources]:
+    """Recompute final persistent-source gradients using output reconstruction only."""
+    e2e_terms = grid.e2e_terms_requiring_source_grad_retake_by_key
+    if not e2e_terms:
+        return {}
+
+    detached_ci = jax.lax.stop_gradient(ci)
+    term_indices = {term.name: idx for idx, term in enumerate(grid.terms)}
+    grads: dict[str, Sources] = {}
+    for state_key, term in e2e_terms.items():
+        term_idx = term_indices[term.name]
+
+        def e2e_loss(
+            sources: Sources,
+            state_key: str = state_key,
+            term: ReconLossTerm[MaskSourceStrategy] = term,
+            term_idx: int = term_idx,
+        ) -> Array:
+            draw_loss = main_draw_loss(
+                substrate,
+                model,
+                prepared_weights=prepared_weights,
+                ci=detached_ci,
+                ci_stacked=None,
+                persistent_sources=warmed_sources | {state_key: sources},
+                ascended=ascended,
+                stream=stream,
+                train_frac=train_frac,
+                reconstruction_specs={term.name: OutputOnlyReconstruction()},
+                term_coeffs=term_coeffs,
+            )
+            return mean_reconstruction_losses(
+                tuple(
+                    draw_loss(term_idx, term, draw_key, routes)
+                    for draw_key, routes in draws_per_term[term_idx]
+                )
+            ).total
+
+        with jax.named_scope("pd_pgd_e2e_final_grad"):
+            grads[state_key] = jax.grad(e2e_loss)(warmed_sources[state_key])
+    return grads
+
+
+def apply_gradients(
+    components_optimizer: optax.GradientTransformation,
+    ci_fn_optimizer: optax.GradientTransformation,
+    decomposition: Decomposition,
+    training: TrainingItem,
+    warmed_advs: dict[str, PersistentAdversary],
+    components_grad: Any,
+    ci_fn_grad: Any,
+    persistent_source_grads: dict[str, Sources],
+    train_frac: Array,
+    freq_ema: dict[str, Array] | None,
+    mesh: Mesh | None,
+) -> tuple[TrainState, dict[str, Array]]:
+    """The optimizer tail: grad-norm metrics, each adversary's final ascent from the
+    fused graph (SPEC S13'/S14': the source path is never coeff-scaled, so the
+    backward's grad IS dL_term/d(sources) — exact since one source bundle feeds one
+    term, S23), then both optimizer updates into the next `TrainState`."""
+    grad_norm_metrics = _grad_norm_metrics(components_grad, ci_fn_grad, mesh)
+
+    new_adversaries = {
+        state_key: warmed_advs[state_key].final_ascend(
+            persistent_source_grads[state_key], train_frac
+        )
+        for state_key in warmed_advs
+    }
+
+    components_updates, new_components_opt_state = components_optimizer.update(
+        components_grad,
+        training.components_opt_state,
+        eqx.filter(decomposition.components, eqx.is_array),
+    )
+    ci_fn_updates, new_ci_fn_opt_state = ci_fn_optimizer.update(
+        ci_fn_grad,
+        training.ci_fn_opt_state,
+        eqx.filter(decomposition.ci_fn, eqx.is_array),
+    )
+    new_components = eqx.apply_updates(decomposition.components, components_updates)
+    new_ci_fn = eqx.apply_updates(decomposition.ci_fn, ci_fn_updates)
+
+    new_state = TrainState(
+        decomposition=Decomposition(components=new_components, ci_fn=new_ci_fn),
+        training=TrainingItem(
+            components_opt_state=new_components_opt_state,
+            ci_fn_opt_state=new_ci_fn_opt_state,
+            adversaries=new_adversaries,
+            freq_ema=freq_ema,
+            step=training.step + 1,
+        ),
+    )
+    return new_state, grad_norm_metrics
+
+
+def shared_step_metrics(
+    terms: tuple[ReconLossTerm[MaskSourceStrategy], ...],
+    imp: ImportanceMinimalityTerm,
+    *,
+    total_loss: Array,
+    imp_lp: Array,
+    imp_freq: Array,
+    freq_batch: Array | None,
+    imp_min_param: Array,
+    term_breakdowns: tuple[ReconstructionLoss, ...],
+    grad_norm_metrics: dict[str, Array],
+    adversaries: dict[str, PersistentAdversary],
+    train_frac: Array,
+) -> dict[str, Array]:
+    """Metrics shared by plain and targeted steps; each caller adds its own pass metrics."""
+    term_losses = tuple(breakdown.total for breakdown in term_breakdowns)
+    metrics = {
+        "total": total_loss,
+        imp.imp_loss_key: imp_lp,
+        "freq": imp_freq,
+        **({"freq_batch": freq_batch} if freq_batch is not None else {}),
+        imp.imp_min_param_key: imp_min_param,
+        **{f"loss/{t.name}": v for t, v in zip(terms, term_losses, strict=True)},
+        **grad_norm_metrics,
+    }
+    for term, breakdown in zip(terms, term_breakdowns, strict=True):
+        prefix = f"loss/{term.name}"
+        metrics |= {
+            f"{prefix}/{suffix}": value
+            for suffix, value in reconstruction_loss_metrics(breakdown).items()
         }
-        for term, breakdown in zip(self.recon_terms, term_breakdowns, strict=True):
-            prefix = f"loss/{term.name}"
-            metrics |= {
-                f"{prefix}/{suffix}": value
-                for suffix, value in reconstruction_loss_metrics(breakdown).items()
-            }
-        source_lrs = {
-            k: adv.source_lr(step_f32, self.total_steps) for k, adv in adversaries.items()
-        }
-        if len(source_lrs) == 1:
-            metrics["src_lr"] = next(iter(source_lrs.values()))
-        else:
-            metrics |= {f"schedules/lr/src/{k}": v for k, v in source_lrs.items()}
-        return metrics
+    source_lrs = {k: adv.source_lr(train_frac) for k, adv in adversaries.items()}
+    if len(source_lrs) == 1:
+        metrics["src_lr"] = next(iter(source_lrs.values()))
+    else:
+        metrics |= {f"schedules/lr/src/{k}": v for k, v in source_lrs.items()}
+    return metrics
 
 
 # ───────────────────────────── the step factory ─────────────────────────────
 
 
+class MainLossAux(NamedTuple):
+    """The plain step's `has_aux` payload: `reported_total` is the objective Σ coeff·L
+    (the differentiated total differs only in persistent-source plumbing, SPEC S14')."""
+
+    reported_total: Array
+    faith_loss: Array
+    imp_lp: Array
+    freq: FrequencyTerm | None
+    nonlinearity_metrics: dict[str, Array]
+    term_breakdowns: tuple[ReconstructionLoss, ...]
+
+
 def make_train_step[PreparedT](
-    model_static: DecomposedModel[PreparedT],
+    model_static: PlacedModel[PreparedT],
     *,
-    losses: LossSurface,
+    substrate: ForwardSubstrate[PreparedT],
+    objective: LossSurface,
     components_optimizer: optax.GradientTransformation,
     ci_fn_optimizer: optax.GradientTransformation,
     total_steps: int,
-    remat_recon_forwards: bool,
-    remat_ci_fn: bool,
-    ci_capture_keys: CaptureKeys,
-    mesh: Mesh | None = None,
-    ascend_replicate: bool = False,
+    faithfulness: FaithfulnessLossFn,
     compiler_options: dict[str, bool | int | str] | None = None,
 ):
-    """Build the `eqx.filter_jit`'d `step(model, state, batch, key) -> (state, metrics)`.
-
-    `model` is the jit ARG (frozen 8B weights traced as array leaves, never baked); the
-    factory closes over only static config (`site_names`, `recon_loss_fn`, term wiring) read
-    off `model_static` here — the distinct name keeps an accidental closure over the
-    array-bearing model (the HLO-baking hazard) a loud NameError, never silent.
-    `losses` (from `build_objective`) is the `LossSurface` record — the
-    faithfulness + importance-minimality singletons and the recon Σ, read by name. `mesh`
-    (when given) pins every batch-leading activation over the full mesh
-    (`P(('replicate', 'fsdp'), ...)`) so masked forwards stay on per-rank sub-batches
-    (activation memory 1/N). The body is a straight-line composition of the `_StepAtoms`
-    vocabulary."""
-    atoms = _StepAtoms(
-        model_static,
-        recon_terms=losses.recon,
-        imp=losses.imp,
-        components_optimizer=components_optimizer,
-        ci_fn_optimizer=ci_fn_optimizer,
-        total_steps=total_steps,
-        remat_recon_forwards=remat_recon_forwards,
-        remat_ci_fn=remat_ci_fn,
-        ci_capture_keys=ci_capture_keys,
-        mesh=mesh,
-        ascend_replicate=ascend_replicate,
-    )
+    """Build the plain VPD step from its forward substrate and objective."""
+    grid = ReconGrid.of(objective.recon, key_offset=1)
+    imp = objective.imp
+    nonlinearity = ResolvedNonlinearity.resolve(objective.nonlinearity, model_static.sites)
+    assert total_steps > 0, total_steps
+    model_static.assert_hidden_acts_reconstruction_points(tuple(sorted(grid.capture_keys)))
+    freq_role = resolve_frequency(imp.cfg.frequency)
     coeff_schedules: dict[str, LossCoeff] = {
-        losses.faith.name: losses.faith.coeff,
-        losses.imp.name: losses.imp.coeff,
-        **{term.name: term.coeff for term in losses.recon},
+        imp.name: imp.coeff,
+        **{term.name: term.coeff for term in grid.terms},
         **{
             f"{term.name}/hidden_acts_reconstruction": term.hidden_acts_reconstruction.coeff
-            for term in losses.recon
+            for term in grid.terms
             if term.hidden_acts_reconstruction is not None
         },
     }
-    if losses.imp.cfg.frequency is not None:
-        coeff_schedules[f"{losses.imp.name}/frequency"] = losses.imp.cfg.frequency.coeff
+    coeff_schedules[objective.faith.name] = objective.faith.coeff
+    if freq_role is not None:
+        coeff_schedules[f"{imp.name}/frequency"] = freq_role.coeff
+    if nonlinearity is not None:
+        coeff_schedules[nonlinearity.term.name] = nonlinearity.term.coeff
 
     @jaxtyped(typechecker=beartype)
     def step(
-        model: DecomposedModel[PreparedT],
+        model: PlacedModel[PreparedT],
         state: TrainState,
         batch: Any,
         key: PRNGKeyArray,
     ) -> tuple[TrainState, dict[str, Array]]:
         decomposition = state.decomposition
         training = state.training
-        step_f32 = training.step.astype(jnp.float32)
-        imp_min_param = annealed_imp_min_param(step_f32, atoms.total_steps, atoms.imp_min)
+        train_frac = train_frac_at(training.step, total_steps)
+        imp_min_param = annealed_imp_min_param(train_frac, imp.cfg)
         # Every coefficient's per-step value, resolved once at the top of the step: the
         # loss math below sees only scalars, never schedule objects.
-        faith_coeff = coeff_at(step_f32, atoms.total_steps, losses.faith.coeff)
-        imp_coeff = coeff_at(step_f32, atoms.total_steps, atoms.imp_coeff)
-        freq_coeff = coeff_at(step_f32, atoms.total_steps, atoms.freq_coeff)
-        recon_coeffs = tuple(
-            coeff_at(step_f32, atoms.total_steps, term.coeff) for term in atoms.recon_terms
-        )
+        imp_coeff = coeff_at(train_frac, imp.coeff)
+        freq_coeff = 0.0 if freq_role is None else coeff_at(train_frac, freq_role.coeff)
+        recon_coeffs = tuple(grid.coeffs_at(train_frac))
         term_coeffs: dict[str, Array | float] = {
-            term.name: coeff for term, coeff in zip(atoms.recon_terms, recon_coeffs, strict=True)
+            term.name: coeff for term, coeff in zip(grid.terms, recon_coeffs, strict=True)
         }
-        reconstruction_specs = atoms.reconstruction_specs_at(atoms.recon_terms, step_f32)
+        reconstruction_specs = grid.reconstruction_specs_at(train_frac)
 
-        stream = atoms.prep_stream(model, batch, atoms.hidden_acts_capture_keys)
+        stream = substrate.prep_stream(model, batch, grid.capture_keys)
 
         # ── adversary ascents: params + CI detached (SPEC §4.5) ──
-        prepared_weights, recon_vjp = atoms.component_weights_vjp(model, decomposition.components)
+        prepared_weights, recon_vjp = substrate.component_weights_vjp(
+            model, decomposition.components
+        )
         detached_prepared_weights = jax.lax.stop_gradient(prepared_weights)
-        ascend_prepared_weights = atoms.replicate_for_ascend(detached_prepared_weights)
         # The CI envelope is a pure fn of the batch, so compute it ONCE per step — the value +
         # its vjp, mirroring `prepared_weights`/`recon_vjp`. The ascend uses the stop_gradient'd
-        # value; `loss_fn` takes the live value and its ci-fn grad is pulled back through
-        # `ci_vjp`. So the (≈10x-the-target) CI fn is forward-evaluated ONCE, not once detached
-        # for the ascend + once inside the main backward.
-        ci, ci_vjp = atoms.ci_forward_vjp(decomposition.ci_fn, stream.taps)
+        # value; `loss_fn` takes the live value and its gradient crosses the forward and
+        # resident-weight pullbacks. So the (≈10x-the-target) CI fn is forward-evaluated ONCE,
+        # not once detached for the ascend + once inside the main backward.
+        compute_ci_fn, ci_weights_vjp = substrate.ci_weights_vjp(decomposition.ci_fn)
+        ci, ci_vjp = substrate.ci_forward_vjp(compute_ci_fn, stream.taps)
         ci_lower_detached = jax.lax.stop_gradient(ci).lower
 
-        ascended = atoms.ascend_adversaries(
+        ascended = ascend_adversaries(
+            substrate,
+            grid,
             model,
             stream,
-            ascend_prepared_weights,
+            detached_prepared_weights,
             ci_lower_detached,
             training.adversaries,
             key,
-            step_f32,
-            reconstruction_specs,
+            train_frac,
+            grid.adversary_reconstruction_specs(reconstruction_specs),
         )
 
         # ── main losses: live components/ci; the PERSISTENT sources participate in
@@ -996,37 +1084,55 @@ def make_train_step[PreparedT](
         # are NOT detached here, but components/ci grads through them are what torch
         # gets too (sources are leaves). ──
         warmed_sources = {k: a.sources for k, a in ascended.warmed.items()}
-        draws_per_term = [
-            atoms.term_draws(key, 1, term_idx, term, ascended.fixed_routes, stream.leading)
-            for term_idx, term in enumerate(atoms.recon_terms)
-        ]
+        draws_per_term = grid.draws(key, ascended.fixed_routes, stream.leading)
 
         def loss_fn(
-            trainable: tuple[PreparedT, ComponentStacks, CI, dict[str, dict[str, Array]]],
-        ) -> tuple[Array, tuple[Array, Array, Array, Array, tuple[ReconstructionLoss, ...]]]:
+            trainable: tuple[PreparedT, ComponentStacks, CI, dict[str, Sources]],
+        ) -> tuple[Array, MainLossAux]:
             prepared_weights, components, ci, persistent_sources = trainable
             ci_stacked = model.stack_ci(ci.lower)
-            faith_loss = faithfulness_loss(model.weight_deltas(components))
-            imp_lp, imp_freq = imp_min_terms(ci.upper, atoms.imp_min, imp_min_param)
+            faith_loss = faithfulness(faithfulness_weight_deltas(model, components))
+            faith_term = coeff_at(train_frac, objective.faith.coeff) * faith_loss
+            frequencies = per_component_frequencies(ci.upper, imp.cfg, imp_min_param)
+            imp_lp = lp_term(frequencies)
 
-            term_breakdowns = atoms.grid_losses(
-                atoms.recon_terms,
-                draws_per_term,
-                atoms.main_draw_loss(
-                    model,
-                    prepared_weights=prepared_weights,
-                    ci=ci,
-                    ci_stacked=ci_stacked,
-                    persistent_sources=persistent_sources,
-                    ascended=ascended,
-                    stream=stream,
-                    step_f32=step_f32,
-                    reconstruction_specs=reconstruction_specs,
-                    term_coeffs=term_coeffs,
-                ),
+            draw_loss = main_draw_loss(
+                substrate,
+                model,
+                prepared_weights=prepared_weights,
+                ci=ci,
+                ci_stacked=ci_stacked,
+                persistent_sources=persistent_sources,
+                ascended=ascended,
+                stream=stream,
+                train_frac=train_frac,
+                reconstruction_specs=reconstruction_specs,
+                term_coeffs=term_coeffs,
             )
+            term_breakdowns = grid.losses(draws_per_term, draw_loss)
             term_losses = tuple(breakdown.total for breakdown in term_breakdowns)
-            base = faith_coeff * faith_loss + imp_coeff * imp_lp + freq_coeff * imp_freq
+            match freq_role:
+                case None:
+                    assert training.freq_ema is None, (
+                        "freq_ema state without a frequency config (S8'')"
+                    )
+                    freq = None
+                case BatchFrequency():
+                    assert training.freq_ema is None, "freq_ema state without the EMA mode (S8'')"
+                    freq = freq_role.term(frequencies)
+                case EmaFrequency():
+                    freq = freq_role.term(
+                        frequencies, training.freq_ema, jnp.asarray(training.step, jnp.float32)
+                    )
+            base = faith_term + imp_coeff * imp_lp
+            if freq is not None:
+                base = base + freq_coeff * freq.freq
+            nonlinearity_metrics: dict[str, Array] = {}
+            if nonlinearity is not None:
+                weighted, nonlinearity_metrics = nonlinearity.weighted_loss_and_metrics(
+                    train_frac, components
+                )
+                base = base + weighted
             # The differentiated total: persistent-carrying terms enter at weight 1 —
             # their coeff already rides their model-side cotangents — so the backward
             # hands each adversary dL/ds unscaled (SPEC S14'). The OBJECTIVE (the
@@ -1034,54 +1140,89 @@ def make_train_step[PreparedT](
             # and the identical value for every non-persistent term.
             total_loss = base
             reported_total = base
-            for term, coeff, term_loss in zip(
-                atoms.recon_terms, recon_coeffs, term_losses, strict=True
-            ):
+            for term, coeff, term_loss in zip(grid.terms, recon_coeffs, term_losses, strict=True):
                 match coeff_application(term):
                     case "scales_loss":
                         total_loss = total_loss + coeff * term_loss
                     case "scales_model_cotangents":
                         total_loss = total_loss + term_loss
                 reported_total = reported_total + coeff * term_loss
-            return total_loss, (reported_total, faith_loss, imp_lp, imp_freq, term_breakdowns)
+            return total_loss, MainLossAux(
+                reported_total=reported_total,
+                faith_loss=faith_loss,
+                imp_lp=imp_lp,
+                freq=freq,
+                nonlinearity_metrics=nonlinearity_metrics,
+                term_breakdowns=term_breakdowns,
+            )
 
         with jax.named_scope("pd_value_and_grad"):
-            (_, (reported_total, faith_loss, imp_lp, imp_freq, term_breakdowns)), grads = (
-                eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-                    (prepared_weights, decomposition.components, ci, warmed_sources)
-                )
+            (_, aux), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(
+                (prepared_weights, decomposition.components, ci, warmed_sources)
             )
-        prepared_grad, components_grad_faith, ci_grad, persistent_source_grads = grads
+        prepared_grad, components_grad_direct, ci_grad, persistent_source_grads = grads
+        components_grad_recon = recon_vjp(prepared_grad)[0]
+        # faith and nonlinearity read the components DIRECTLY (weight-space terms, not
+        # through the prepared-weights vjp), so the direct grads join the recon-path grads.
         components_grad = jax.tree.map(
-            lambda recon_g, faith_g: recon_g + faith_g,
-            recon_vjp(prepared_grad)[0],
-            components_grad_faith,
+            lambda recon_g, direct_g: recon_g + direct_g,
+            components_grad_recon,
+            components_grad_direct,
         )
-        ci_fn_grad = ci_vjp(ci_grad)[0]
+        ci_fn_grad = ci_weights_vjp(ci_vjp(ci_grad)[0])[0]
+        persistent_source_grads = persistent_source_grads | retake_e2e_source_grads(
+            substrate,
+            grid,
+            model,
+            prepared_weights=detached_prepared_weights,
+            ci=ci,
+            ascended=ascended,
+            stream=stream,
+            draws_per_term=draws_per_term,
+            train_frac=train_frac,
+            warmed_sources=warmed_sources,
+            term_coeffs=term_coeffs,
+        )
 
-        new_state, grad_norm_metrics = atoms.apply_gradients(
+        match aux.freq:
+            case None:
+                imp_freq, freq_batch, new_freq_ema = jnp.zeros((), jnp.float32), None, None
+            case BatchFrequencyTerm(freq_value):
+                imp_freq, freq_batch, new_freq_ema = freq_value, None, None
+            case EmaFrequencyTerm(freq_value, freq_batch_value, new_ema):
+                imp_freq, freq_batch, new_freq_ema = freq_value, freq_batch_value, new_ema
+
+        new_state, grad_norm_metrics = apply_gradients(
+            components_optimizer,
+            ci_fn_optimizer,
             decomposition,
             training,
             ascended.warmed,
             components_grad,
             ci_fn_grad,
             persistent_source_grads,
-            step_f32,
+            train_frac,
+            freq_ema=new_freq_ema,
+            mesh=substrate.mesh,
         )
         metrics = (
-            atoms.train_metrics(
-                total_loss=reported_total,
-                imp_lp=imp_lp,
+            shared_step_metrics(
+                grid.terms,
+                imp,
+                total_loss=aux.reported_total,
+                imp_lp=aux.imp_lp,
                 imp_freq=imp_freq,
+                freq_batch=freq_batch,
                 imp_min_param=imp_min_param,
-                term_breakdowns=term_breakdowns,
+                term_breakdowns=aux.term_breakdowns,
                 grad_norm_metrics=grad_norm_metrics,
                 adversaries=training.adversaries,
-                step_f32=step_f32,
+                train_frac=train_frac,
             )
-            | {"faith": faith_loss}
-            | _scheduled_coeff_metrics(step_f32, atoms.total_steps, coeff_schedules)
+            | aux.nonlinearity_metrics
+            | _scheduled_coeff_metrics(train_frac, coeff_schedules)
         )
+        metrics["faith"] = aux.faith_loss
         return new_state, metrics
 
     return filter_jit(step, donate="all-except-first", compiler_options=compiler_options)
@@ -1092,14 +1233,40 @@ def make_train_step[PreparedT](
 
 @dataclass(frozen=True)
 class CIScaledWeightDecay:
-    """The tPD CI-scaled weight decay (SPEC T11) as the targeted step consumes it: the
-    authored coefficient joined with the components optimizer's LR schedule — the
-    per-step decay rate is `components_lr(step) * coeff`, AdamW's decoupled-decay
-    convention, so the decay tracks the LR schedule like AdamW's own `weight_decay`
-    would."""
+    """The tPD CI-scaled weight decay (SPEC T11): its coefficient joined with the
+    components optimizer's LR schedule, applied after the optimizer update."""
 
     coeff: float
-    components_lr: Callable[[Array], Array]
+    components_lr: ScheduleConfig
+
+    def apply(
+        self,
+        state: TrainState,
+        target_ci: CI,
+        nontarget_ci: CI,
+        train_frac: Array,
+        site_names: tuple[str, ...],
+    ) -> tuple[TrainState, dict[str, Array]]:
+        """Apply T11 after the optimizer update, using this step's pre-update CIs."""
+        target_max = _per_component_batch_max(target_ci.lower)
+        nontarget_max = _per_component_batch_max(nontarget_ci.lower)
+        rate = scheduled_value_at(train_frac, self.components_lr) * self.coeff
+        decay = {
+            site: rate * (1.0 - jnp.maximum(target_max[site], nontarget_max[site]))
+            for site in site_names
+        }
+        decayed = _scale_subcomponents(
+            state.decomposition.components, {site: 1.0 - value for site, value in decay.items()}
+        )
+        new_state = TrainState(
+            decomposition=Decomposition(components=decayed, ci_fn=state.decomposition.ci_fn),
+            training=state.training,
+        )
+        decay_all = jnp.concatenate(list(decay.values()))
+        return new_state, {
+            "ci_scaled_weight_decay/mean": jnp.mean(decay_all),
+            "ci_scaled_weight_decay/max": jnp.max(decay_all),
+        }
 
 
 def _per_component_batch_max(ci_lower: dict[str, Array]) -> dict[str, Array]:
@@ -1116,85 +1283,63 @@ def _scale_subcomponents(
     components: ComponentStacks, scale: dict[str, Float[Array, " C"]]
 ) -> ComponentStacks:
     """Scale each site's V columns and U rows by that site's per-subcomponent factor,
-    stacked per shape group so the multiply stays in the owner-partitioned layout."""
-    rows_by_shape: dict[VUShape, list[Array]] = {}
-    for name, shape, slot in components.site_slots:
-        rows = rows_by_shape.setdefault(shape, [])
-        assert slot == len(rows), (name, shape, slot)
+    stacked per semantic group so the multiply stays in the declared layout."""
+    rows_by_group: dict[str, list[Array]] = {}
+    for name, group, slot in components.site_slots:
+        rows = rows_by_group.setdefault(group, [])
+        assert slot == len(rows), (name, group, slot)
         rows.append(scale[name])
     stacks = {}
-    for shape, (vs, us) in components.stacks.items():
-        keep = jnp.stack(rows_by_shape[shape])  # [g, C]
-        stacks[shape] = (vs * keep[:, None, :], us * keep[:, :, None])
+    for group, (vs, us) in components.stacks.items():
+        keep = jnp.stack(rows_by_group[group])  # [g, C]
+        stacks[group] = (vs * keep[:, None, :], us * keep[:, :, None])
     return ComponentStacks(stacks=stacks, site_slots=components.site_slots)
 
 
 def make_targeted_train_step[PreparedT](
-    model_static: DecomposedModel[PreparedT],
+    model_static: PlacedModel[PreparedT],
     *,
+    substrate: ForwardSubstrate[PreparedT],
     objective: TargetedObjective,
     ci_scaled_weight_decay: CIScaledWeightDecay | None,
     components_optimizer: optax.GradientTransformation,
     ci_fn_optimizer: optax.GradientTransformation,
     total_steps: int,
-    remat_recon_forwards: bool,
-    remat_ci_fn: bool,
-    ci_capture_keys: CaptureKeys,
-    mesh: Mesh | None = None,
-    ascend_replicate: bool = False,
     compiler_options: dict[str, bool | int | str] | None = None,
 ):
-    """Build the tPD `step(model, state, batch, nontarget_batch, key)` (SPEC §11).
-
-    Two passes over one shared `_StepAtoms` vocabulary, summed into ONE `value_and_grad`:
-    the TARGET pass runs the full decomposition objective (recon grid + adversary
-    ascents) on the narrow stream, and the NON-TARGET pass runs its delta-pinned grid +
-    importance-minimality on the broad stream. Each stream runs at its own natural
-    geometry (SPEC T8) and every position is scored. There is no faithfulness role
-    anywhere in it — `objective` cannot carry one.
-
-    The batch args are the streams in pass order: `batch` the target stream (whose global
-    batch is `pd.batch_size` — persistent sources size from it), `nontarget_batch` the
-    broad stream."""
-    # The library boundary behind `NontargetPass.recon`'s narrow type, for objectives
-    # built outside it (SPEC T5).
-    for term in objective.nontarget.recon:
-        for entry in term.plan:
-            assert isinstance(
-                entry.sources, StochasticSources | ConstantSources | UnmaskedNoDeltaSources
-            ), term.name
-    atoms = _StepAtoms(
-        model_static,
-        recon_terms=objective.target.recon,
-        imp=objective.target.imp,
-        components_optimizer=components_optimizer,
-        ci_fn_optimizer=ci_fn_optimizer,
-        total_steps=total_steps,
-        remat_recon_forwards=remat_recon_forwards,
-        remat_ci_fn=remat_ci_fn,
-        ci_capture_keys=ci_capture_keys,
-        mesh=mesh,
-        ascend_replicate=ascend_replicate,
+    """Build the hand-written tPD two-stream step from its substrate and objective."""
+    target = ReconGrid.of(objective.target.recon, key_offset=1)
+    nontarget = ReconGrid.of(objective.nontarget.recon, key_offset=1 + len(objective.target.recon))
+    imp = objective.target.imp
+    nontarget_impmin_coeff = objective.nontarget.impmin_coeff
+    assert total_steps > 0, total_steps
+    assert not nontarget.capture_keys, nontarget.capture_keys
+    assert not nontarget.persistent_by_key, nontarget.persistent_by_key
+    for term in nontarget.terms:
+        assert isinstance(
+            term.sources, StochasticSources | ConstantSources | UnmaskedNoDeltaSources
+        ), term.name
+    model_static.assert_hidden_acts_reconstruction_points(
+        tuple(sorted(target.capture_keys | nontarget.capture_keys))
     )
-    nt_terms = objective.nontarget.recon
+    freq_role = resolve_frequency(imp.cfg.frequency)
+    nt_terms = nontarget.terms
     coeff_schedules: dict[str, LossCoeff] = {
-        objective.target.imp.name: objective.target.imp.coeff,
-        **{term.name: term.coeff for term in objective.target.recon},
+        imp.name: imp.coeff,
+        **{term.name: term.coeff for term in target.terms},
         **{
             f"{term.name}/hidden_acts_reconstruction": term.hidden_acts_reconstruction.coeff
-            for term in objective.target.recon
+            for term in target.terms
             if term.hidden_acts_reconstruction is not None
         },
-        "nontarget/impmin": objective.nontarget.impmin_coeff,
+        "nontarget/impmin": nontarget_impmin_coeff,
         **{f"nontarget/{term.name}": term.coeff for term in nt_terms},
     }
-    if objective.target.imp.cfg.frequency is not None:
-        coeff_schedules[f"{objective.target.imp.name}/frequency"] = (
-            objective.target.imp.cfg.frequency.coeff
-        )
+    if freq_role is not None:
+        coeff_schedules[f"{imp.name}/frequency"] = freq_role.coeff
 
     def nontarget_draw_loss(
-        model: DecomposedModel[PreparedT],
+        model: PlacedModel[PreparedT],
         prepared_weights: PreparedT,
         nt_ci: CI,
         nt_stream: StreamInputs,
@@ -1206,28 +1351,24 @@ def make_targeted_train_step[PreparedT](
 
         def draw_loss(
             term_idx: int,
-            entry_idx: int,
             term: ReconLossTerm[StochasticSources | ConstantSources | UnmaskedNoDeltaSources],
-            entry: ReconForward[StochasticSources | ConstantSources | UnmaskedNoDeltaSources],
             draw_key: PRNGKeyArray,
             routes: Routes,
         ) -> ReconstructionLoss:
-            del term_idx, entry_idx
+            del term_idx
             with jax.named_scope("pd_nontarget_masked_fwd"):
-                match entry.sources:
+                match term.sources:
                     case StochasticSources():
                         component_masks, delta_masks = stochastic_delta_pinned_masks(
-                            nt_ci.lower, entry.live_sites, draw_key
+                            nt_ci.lower, draw_key
                         )
                     case ConstantSources(value=value):
                         component_masks, delta_masks = constant_delta_pinned_masks(
-                            value, nt_ci.lower, entry.live_sites
+                            value, nt_ci.lower
                         )
                     case UnmaskedNoDeltaSources():
-                        component_masks, delta_masks = unmasked_no_delta_masks(
-                            nt_ci.lower, entry.live_sites
-                        )
-                return atoms.masked_recon(
+                        component_masks, delta_masks = unmasked_no_delta_masks(nt_ci.lower)
+                return substrate.masked_recon(
                     model,
                     prepared_weights=prepared_weights,
                     batch=nt_stream.batch,
@@ -1245,7 +1386,7 @@ def make_targeted_train_step[PreparedT](
 
     @jaxtyped(typechecker=beartype)
     def targeted_step(
-        model: DecomposedModel[PreparedT],
+        model: PlacedModel[PreparedT],
         state: TrainState,
         batch: Any,
         nontarget_batch: Any,
@@ -1253,61 +1394,55 @@ def make_targeted_train_step[PreparedT](
     ) -> tuple[TrainState, dict[str, Array]]:
         decomposition = state.decomposition
         training = state.training
-        step_f32 = training.step.astype(jnp.float32)
-        imp_min_param = annealed_imp_min_param(step_f32, atoms.total_steps, atoms.imp_min)
+        train_frac = train_frac_at(training.step, total_steps)
+        imp_min_param = annealed_imp_min_param(train_frac, imp.cfg)
         # Every coefficient's per-step value, resolved once at the top of the step: the
         # loss math below sees only scalars, never schedule objects.
-        imp_coeff = coeff_at(step_f32, atoms.total_steps, atoms.imp_coeff)
-        freq_coeff = coeff_at(step_f32, atoms.total_steps, atoms.freq_coeff)
-        recon_coeffs = tuple(
-            coeff_at(step_f32, atoms.total_steps, term.coeff) for term in atoms.recon_terms
-        )
+        imp_coeff = coeff_at(train_frac, imp.coeff)
+        freq_coeff = 0.0 if freq_role is None else coeff_at(train_frac, freq_role.coeff)
+        recon_coeffs = tuple(target.coeffs_at(train_frac))
         term_coeffs: dict[str, Array | float] = {
-            term.name: coeff for term, coeff in zip(atoms.recon_terms, recon_coeffs, strict=True)
+            term.name: coeff for term, coeff in zip(target.terms, recon_coeffs, strict=True)
         }
-        nt_imp_coeff = coeff_at(step_f32, atoms.total_steps, objective.nontarget.impmin_coeff)
-        nt_recon_coeffs = tuple(
-            coeff_at(step_f32, atoms.total_steps, term.coeff) for term in nt_terms
-        )
-        reconstruction_specs = atoms.reconstruction_specs_at(atoms.recon_terms, step_f32)
-        nt_reconstruction_specs = atoms.reconstruction_specs_at(nt_terms, step_f32)
+        nt_imp_coeff = coeff_at(train_frac, nontarget_impmin_coeff)
+        nt_recon_coeffs = tuple(nontarget.coeffs_at(train_frac))
+        reconstruction_specs = target.reconstruction_specs_at(train_frac)
+        nt_reconstruction_specs = nontarget.reconstruction_specs_at(train_frac)
 
-        stream = atoms.prep_stream(model, batch, atoms.hidden_acts_capture_keys)
-        nt_stream = atoms.prep_stream(model, nontarget_batch, frozenset())
+        stream = substrate.prep_stream(model, batch, target.capture_keys)
+        nt_stream = substrate.prep_stream(model, nontarget_batch, nontarget.capture_keys)
 
         # ── adversary ascents: TARGET pass only, params + CI detached (SPEC §4.5/§11) ──
-        prepared_weights, recon_vjp = atoms.component_weights_vjp(model, decomposition.components)
+        prepared_weights, recon_vjp = substrate.component_weights_vjp(
+            model, decomposition.components
+        )
         detached_prepared_weights = jax.lax.stop_gradient(prepared_weights)
-        ascend_prepared_weights = atoms.replicate_for_ascend(detached_prepared_weights)
-        ci, ci_vjp = atoms.ci_forward_vjp(decomposition.ci_fn, stream.taps)
-        nt_ci, nt_ci_vjp = atoms.ci_forward_vjp(decomposition.ci_fn, nt_stream.taps)
+        compute_ci_fn, ci_weights_vjp = substrate.ci_weights_vjp(decomposition.ci_fn)
+        ci, ci_vjp = substrate.ci_forward_vjp(compute_ci_fn, stream.taps)
+        nt_ci, nt_ci_vjp = substrate.ci_forward_vjp(compute_ci_fn, nt_stream.taps)
         ci_lower_detached = jax.lax.stop_gradient(ci).lower
 
-        ascended = atoms.ascend_adversaries(
+        ascended = ascend_adversaries(
+            substrate,
+            target,
             model,
             stream,
-            ascend_prepared_weights,
+            detached_prepared_weights,
             ci_lower_detached,
             training.adversaries,
             key,
-            step_f32,
-            reconstruction_specs,
+            train_frac,
+            target.adversary_reconstruction_specs(reconstruction_specs),
         )
 
         warmed_sources = {k: a.sources for k, a in ascended.warmed.items()}
-        draws_per_term = [
-            atoms.term_draws(key, 1, term_idx, term, ascended.fixed_routes, stream.leading)
-            for term_idx, term in enumerate(atoms.recon_terms)
-        ]
+        draws_per_term = target.draws(key, ascended.fixed_routes, stream.leading)
         # The non-target grid's per-term RNG offsets past the target grid's, so the two
         # grids' draws stay disjoint under the one step key (SPEC R1).
-        nt_draws_per_term = [
-            atoms.term_draws(key, 1 + len(atoms.recon_terms), term_idx, term, {}, nt_stream.leading)
-            for term_idx, term in enumerate(nt_terms)
-        ]
+        nt_draws_per_term = nontarget.draws(key, {}, nt_stream.leading)
 
         def loss_fn(
-            trainable: tuple[PreparedT, CI, CI, dict[str, dict[str, Array]]],
+            trainable: tuple[PreparedT, CI, CI, dict[str, Sources]],
         ) -> tuple[
             Array,
             tuple[
@@ -1320,24 +1455,22 @@ def make_targeted_train_step[PreparedT](
         ]:
             prepared_weights, ci, nt_ci, persistent_sources = trainable
             ci_stacked = model.stack_ci(ci.lower)
-            imp_lp, imp_freq = imp_min_terms(ci.upper, atoms.imp_min, imp_min_param)
+            imp_lp, imp_freq = imp_min_terms(ci.upper, imp.cfg, imp_min_param)
 
-            term_breakdowns = atoms.grid_losses(
-                atoms.recon_terms,
-                draws_per_term,
-                atoms.main_draw_loss(
-                    model,
-                    prepared_weights=prepared_weights,
-                    ci=ci,
-                    ci_stacked=ci_stacked,
-                    persistent_sources=persistent_sources,
-                    ascended=ascended,
-                    stream=stream,
-                    step_f32=step_f32,
-                    reconstruction_specs=reconstruction_specs,
-                    term_coeffs=term_coeffs,
-                ),
+            draw_loss = main_draw_loss(
+                substrate,
+                model,
+                prepared_weights=prepared_weights,
+                ci=ci,
+                ci_stacked=ci_stacked,
+                persistent_sources=persistent_sources,
+                ascended=ascended,
+                stream=stream,
+                train_frac=train_frac,
+                reconstruction_specs=reconstruction_specs,
+                term_coeffs=term_coeffs,
             )
+            term_breakdowns = target.losses(draws_per_term, draw_loss)
             base = imp_coeff * imp_lp + freq_coeff * imp_freq
             # Differentiated total vs reported total: see the plain factory — a
             # persistent-carrying term's coeff rides its model-side cotangents, so it
@@ -1345,7 +1478,7 @@ def make_targeted_train_step[PreparedT](
             total_loss = base
             reported_total = base
             for term, coeff, breakdown in zip(
-                atoms.recon_terms, recon_coeffs, term_breakdowns, strict=True
+                target.terms, recon_coeffs, term_breakdowns, strict=True
             ):
                 match coeff_application(term):
                     case "scales_loss":
@@ -1357,14 +1490,13 @@ def make_targeted_train_step[PreparedT](
             # ── the non-target pass: its imp-min (the shared annealed param, its own
             # coeff) + its delta-pinned grid, added to the SAME total so one backward
             # grads both passes (SPEC T1). ──
-            nt_imp_lp, nt_imp_freq = imp_min_terms(nt_ci.upper, atoms.imp_min, imp_min_param)
+            nt_imp_lp, nt_imp_freq = imp_min_terms(nt_ci.upper, imp.cfg, imp_min_param)
             nt_total = nt_imp_coeff * nt_imp_lp + freq_coeff * nt_imp_freq
             nt_aux = {
-                f"loss/nontarget/{atoms.imp_loss_key}": nt_imp_lp,
+                f"loss/nontarget/{imp.imp_loss_key}": nt_imp_lp,
                 "loss/nontarget/freq": nt_imp_freq,
             }
-            nt_breakdowns = atoms.grid_losses(
-                nt_terms,
+            nt_breakdowns = nontarget.losses(
                 nt_draws_per_term,
                 nontarget_draw_loss(
                     model, prepared_weights, nt_ci, nt_stream, nt_reconstruction_specs
@@ -1391,61 +1523,62 @@ def make_targeted_train_step[PreparedT](
         # compute-weights pullback.
         components_grad = recon_vjp(prepared_grad)[0]
         # The CI fn saw both streams; its total gradient is the sum of the two pullbacks.
-        ci_fn_grad = jax.tree.map(
+        compute_ci_fn_grad = jax.tree.map(
             lambda target_g, nt_g: target_g + nt_g,
             ci_vjp(ci_grad)[0],
             nt_ci_vjp(nt_ci_grad)[0],
         )
+        ci_fn_grad = ci_weights_vjp(compute_ci_fn_grad)[0]
+        persistent_source_grads = persistent_source_grads | retake_e2e_source_grads(
+            substrate,
+            target,
+            model,
+            prepared_weights=detached_prepared_weights,
+            ci=ci,
+            ascended=ascended,
+            stream=stream,
+            draws_per_term=draws_per_term,
+            train_frac=train_frac,
+            warmed_sources=warmed_sources,
+            term_coeffs=term_coeffs,
+        )
 
-        new_state, grad_norm_metrics = atoms.apply_gradients(
+        assert training.freq_ema is None, "the targeted objective refuses the EMA (S8'')"
+        new_state, grad_norm_metrics = apply_gradients(
+            components_optimizer,
+            ci_fn_optimizer,
             decomposition,
             training,
             ascended.warmed,
             components_grad,
             ci_fn_grad,
             persistent_source_grads,
-            step_f32,
+            train_frac,
+            freq_ema=None,
+            mesh=substrate.mesh,
         )
         wd_metrics: dict[str, Array] = {}
         if ci_scaled_weight_decay is not None:
-            # T11: an update rule on the post-step component masters, not a loss term —
-            # nothing differentiates through it. Off the step's own pre-update forward
-            # CIs, maxed over BOTH streams: a component important on either is not dead.
-            batch_max_ci = _per_component_batch_max(ci.lower)
-            nt_batch_max_ci = _per_component_batch_max(nt_ci.lower)
-            rate = ci_scaled_weight_decay.components_lr(step_f32) * ci_scaled_weight_decay.coeff
-            decay = {
-                site: rate * (1.0 - jnp.maximum(batch_max_ci[site], nt_batch_max_ci[site]))
-                for site in atoms.site_names
-            }
-            decayed = _scale_subcomponents(
-                new_state.decomposition.components, {site: 1.0 - d for site, d in decay.items()}
+            new_state, wd_metrics = ci_scaled_weight_decay.apply(
+                new_state, ci, nt_ci, train_frac, model.site_names
             )
-            new_state = TrainState(
-                decomposition=Decomposition(
-                    components=decayed, ci_fn=new_state.decomposition.ci_fn
-                ),
-                training=new_state.training,
-            )
-            decay_all = jnp.concatenate(list(decay.values()))
-            wd_metrics = {
-                "ci_scaled_weight_decay/mean": jnp.mean(decay_all),
-                "ci_scaled_weight_decay/max": jnp.max(decay_all),
-            }
         metrics = (
-            atoms.train_metrics(
+            shared_step_metrics(
+                target.terms,
+                imp,
                 total_loss=reported_total,
                 imp_lp=imp_lp,
                 imp_freq=imp_freq,
+                freq_batch=None,
                 imp_min_param=imp_min_param,
                 term_breakdowns=term_breakdowns,
                 grad_norm_metrics=grad_norm_metrics,
                 adversaries=training.adversaries,
-                step_f32=step_f32,
+                train_frac=train_frac,
             )
             | nt_aux
             | wd_metrics
-            | _scheduled_coeff_metrics(step_f32, atoms.total_steps, coeff_schedules)
+            | _scheduled_coeff_metrics(train_frac, coeff_schedules)
         )
         return new_state, metrics
 
@@ -1457,19 +1590,20 @@ def make_targeted_train_step[PreparedT](
 
 def make_faith_warmup_step(
     opt: optax.GradientTransformation,
+    faithfulness: FaithfulnessLossFn,
     compiler_options: dict[str, bool | int | str] | None = None,
 ) -> Callable[
-    [DecomposedModel, ComponentStacks, optax.OptState],
+    [PlacedModel, ComponentStacks, optax.OptState],
     tuple[ComponentStacks, optax.OptState, Array],
 ]:
     """`model` is the jit ARG (frozen weights traced, not baked) — `weight_deltas` reads its
     per-site W slices, so closing over the model would bake them into the HLO."""
 
     def warmup_step(
-        model: DecomposedModel, components: ComponentStacks, opt_state: optax.OptState
+        model: PlacedModel, components: ComponentStacks, opt_state: optax.OptState
     ) -> tuple[ComponentStacks, optax.OptState, Array]:
         def loss_fn(components_: ComponentStacks) -> Array:
-            return faithfulness_loss(model.weight_deltas(components_))
+            return faithfulness(faithfulness_weight_deltas(model, components_))
 
         loss, grad = eqx.filter_value_and_grad(loss_fn)(components)
         updates, opt_state = opt.update(grad, opt_state, eqx.filter(components, eqx.is_array))

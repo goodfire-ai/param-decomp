@@ -1,9 +1,21 @@
 # Loss parity: every torch loss Metric in the JAX trainer — design
 
-Status: IMPLEMENTED (stages 1-3; 2026-06-11. `start_frac>0` step-gating: stage 4, 2026-06-16, SPEC S32) — `recon.py` holds the strategies/terms/`build_recon_terms`, `train.py` the multi-term step, SPEC amended (S10′/S12′/S13′/S14′, S23/S24, S32). Deferred per §6 stage 4: `nsc` scope, sigmoid parameterization, the hidden-acts seam. Scope: the 15 `LOSS_METRIC_CLASSES` entries +
+Status: IMPLEMENTED (stages 1-3; 2026-06-11. `start_frac>0` step-gating: stage 4, 2026-06-16, SPEC S32) — `recon.py` holds the strategies/terms, `objective.py` the builder (`build_recon_terms`), `train.py` the multi-term step, SPEC amended (S10′/S12′/S13′/S14′, S23/S24, S32). Deferred per §6 stage 4: `nsc` scope, sigmoid parameterization, the hidden-acts seam. Scope: the 15 `LOSS_METRIC_CLASSES` entries +
 `ChunkwiseSubsetReconLoss` (lab) as the torch surface; `recon.py` / `adversary.py` /
 `train.py` / `SPEC.md` as the JAX surface. Every torch `update()` /
 `before_backward` / `after_backward` path was read, not just class names.
+
+> **2026-08-05:** recon chunking (`ChunkwiseSubsetReconLoss` / `subset_chunk_plan` /
+> `sites_per_chunk`) and the Layerwise plan shape were later removed from the JAX
+> trainer: one term = one all-sites forward family (routing sampler × mask-source
+> strategy), and the production stochastic term is `StochasticReconSubsetLoss`
+> (uniform-k over all sites, matching the published VPD paper). The chunk / layerwise
+> rows below are historical record.
+
+> **Note:** `start_frac` step-gating (stage 4, cited here as SPEC S32) was later
+> retired: schedulable per-term coefficients (SPEC S14′) over knot schedules with
+> `hold` (SPEC S20) subsume it. No `start_frac` field, no `term_active` gating, and no
+> S32 row exist at tip; those references below are historical record too.
 
 ## Verdict on the hypothesis
 
@@ -59,7 +71,7 @@ exactly the JAX "mean over all forwards of `kl_per_position`" (§4e).
 | `PGDReconLoss` | KL | fresh sign-PGD: `init`∈{random,ones,zeroes}, `n_steps`, `step_size` | all sites, route-all | `c`/`bc`/`bsc` | already JAX twice (training adversary + eval probe); `c`-scope grads AVG-reduced cross-rank |
 | `PGDReconSubsetLoss` | KL | fresh sign-PGD | routed subset; **routing drawn ONCE per batch**, fixed for all `n_steps` + final eval | `c`/`bc`/`bsc` | see §4 quirk Q2 |
 | `PGDReconLayerwiseLoss` | KL | fresh sign-PGD, **independent PGD per site** | loop over sites: `LayerRouter` (route only that site) per inner PGD | `c`/`bc`/`bsc` | n_sites separate inner ascent loops |
-| `PersistentPGDReconLoss` | KL | persistent sources + Adam/sign moments, cross-step | all sites, route-all, × `n_samples` | `c`/`sc`/`nsc`/`bsc` | warmup ascents, S14 fused final ascent, sigmoid param, `start_frac`, eval-time hidden-acts extras |
+| `PersistentPGDReconLoss` | KL | persistent sources + Adam/sign moments, cross-step | all sites, route-all, × `n_samples` | `c`/`sc`/`nsc`/`bsc` | warmup ascents; S14 default `e2e` source-only retake / explicit `term` fused final ascent; sigmoid param, `start_frac`, eval-time hidden-acts extras |
 | `PersistentPGDReconSubsetLoss` | KL | persistent | loss fwds routed per `cfg.routing` (fresh draw per sample); **warmup fwds route ALL** (quirk Q1) | same | |
 
 Not in `LOSS_METRIC_CLASSES` (eval-only, composition-side): `CIHiddenActsReconLoss`,
@@ -78,42 +90,50 @@ the converter folds them into the generated plans. (The delta component, once th
 ```python
 # recon.py — ReconForward gains a source strategy; a step has a TUPLE of recon terms.
 
+
 @dataclass(frozen=True)
 class StochasticSources:
-    sampling: Literal["continuous", "binomial"]   # component sources; delta ~ U[0,1]
+    sampling: Literal["continuous", "binomial"]  # component sources; delta ~ U[0,1]
+
 
 @dataclass(frozen=True)
 class ConstantSources:
-    value: float          # 0.0 → CI-masked (mask = ci); 1.0 → unmasked (mask ≡ 1)
-                          # delta_mask ≡ 0 (no delta path; §4b)
+    # Constant sources have no delta path (`delta_mask ≡ 0`; §4b).
+    value: float  # 0.0 → CI-masked (mask = ci); 1.0 → unmasked (mask ≡ 1)
+
 
 @dataclass(frozen=True)
-class FreshPGDSources:    # torch PGDRecon* family
+class FreshPGDSources:  # torch PGDRecon* family
     init: Literal["random", "ones", "zeroes"]
     n_steps: int
     step_size: float
-    scope: Literal["c", "bc", "bsc"]              # source leading shape
+    scope: Literal["c", "bc", "bsc"]  # source leading shape
+
 
 @dataclass(frozen=True)
 class PersistentSources:  # torch PersistentPGDRecon* family
-    state_key: str        # index into TrainState.sources / .sources_opt_state
+    state_key: str  # index into TrainState.sources / .sources_opt_state
     # scope/optimizer/warmup config rides the shared PersistentPGD*LossConfig,
     # resolved by the step factory; this is just the state pointer.
 
+
 MaskSourceStrategy = StochasticSources | ConstantSources | FreshPGDSources | PersistentSources
+
 
 @dataclass(frozen=True)
 class ReconForward:
     live_sites: tuple[str, ...]
-    sample_routing: RoutingSampler     # unchanged; gains static_probability_routing()
-    sources: MaskSourceStrategy        # NEW
+    sample_routing: RoutingSampler  # unchanged; gains static_probability_routing()
+    sources: MaskSourceStrategy  # NEW
+
 
 @dataclass(frozen=True)
 class ReconLossTerm:
-    name: str                          # = Metric.instance_key → metric log key
+    name: str  # = Metric.instance_key → metric log key
     coeff: float
     plan: tuple[ReconForward, ...]
     # term loss = mean over ALL draws of ALL entries of kl_per_position (S10, per term)
+
 
 ReconLossTerms = tuple[ReconLossTerm, ...]
 ```
@@ -129,7 +149,7 @@ retracing. Only `PersistentSources.state_key` indexes runtime state.
 @dataclass(frozen=True)
 class TrainState:
     ...
-    sources: dict[str, dict[str, Array]]            # state_key → site → source
+    sources: dict[str, dict[str, Array]]  # state_key → site → source
     sources_opt_state: dict[str, SourcesAdamState]  # state_key → moments (sign: empty)
 ```
 
@@ -142,8 +162,16 @@ generalization lands between runs).
 ### 2.3 The step (replaces the `stochastic_recon_loss` / `adversarial_recon_loss` pair)
 
 ```python
-def recon_term_loss(term, frozen, components_bf16, ci_lower, persistent_sources_for_term,
-                    residual, clean_output, key) -> Array:
+def recon_term_loss(
+    term,
+    frozen,
+    components_bf16,
+    ci_lower,
+    persistent_sources_for_term,
+    residual,
+    clean_output,
+    key,
+) -> Array:
     total, n = 0, 0
     for entry in term.plan:
         for routes in entry.sample_routing(entry_key, (B, T)):
@@ -201,7 +229,7 @@ with carrying the shared configs through:
 ```python
 class ExperimentConfig:
     ...
-    loss_metrics: tuple[AnyLossMetricConfig, ...]   # the shared pydantic union, as-is
+    loss_metrics: tuple[AnyLossMetricConfig, ...]  # the shared pydantic union, as-is
     n_mask_samples: int
     sampling: Literal["continuous", "binomial"]
 ```
@@ -301,7 +329,9 @@ the core capture API.
 all return `(Σ sum_kl, Σ n_positions)` accumulated across forwards; live loss
 `sum/n` = mean-over-forwards of `kl_per_position` whenever all forwards share
 `(B,T)` — always true here. `ChunkwiseSubsetReconLoss` computes
-`Σ_f (loss_f/n_pos) / n_forwards` directly — same number. `use_fused_kl` is a
+`Σ_f (loss_f/n_pos) / n_forwards` directly — same number, and exactly the JAX
+`ReconLossTerm` loss: the mean over the term's draws of `kl_per_position` (S10′).
+`use_fused_kl` is a
 memory optimization required to be semantically invisible (`recon_loss_kl`
 equivalence; SPEC §9 already says so) — correctly ignored by the converter. The
 two true reduction outliers are non-recon or bridged: imp-min (global-sum-inside-
@@ -314,8 +344,10 @@ log2, D2, done) and hidden-acts (per-element, bridged). MSE `ReconstructionLoss`
 `PGDReconLoss` + `PersistentPGDReconSubsetLoss`) coexist freely, each with its own
 state and its own `before_backward`/`after_backward` (each does its own
 `autograd.grad(its_live_loss, its_sources, retain_graph=True)`). The unified model
-covers this exactly: N terms, N state keys, one fused backward, N per-term
-unscalings. `TrainState` needs only the §2.2 dicts. The fresh-PGD inner loops and
+covers the explicit `term` objective exactly: N terms, N state keys, one fused backward,
+N per-term unscalings. S14′'s default `e2e` objective retakes only that term's final source
+gradient when the outer backward includes hidden-activation reconstruction.
+`TrainState` needs only the §2.2 dicts. The fresh-PGD inner loops and
 persistent warmups run sequentially before `loss_fn` — same cost structure as
 torch. One torch behavior to preserve: `validate_pgd_scope` (per-rank batch
 divisibility for `nsc`) becomes a converter assert.

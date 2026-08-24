@@ -23,8 +23,10 @@ type EvalSchedule = Every | FirstThenEvery
 
 
 def eval_due(schedule: EvalSchedule, step: int) -> bool:
+    """Step 0 — the untrained baseline — is due only for a schedule naming it as `first`.
+    Every cadence divides 0, so modular arithmetic alone would fire every operation there."""
     match schedule:
         case Every(steps):
-            return step % steps == 0
+            return step > 0 and step % steps == 0
         case FirstThenEvery(first, steps):
-            return step == first or step % steps == 0
+            return step == first or (step > 0 and step % steps == 0)

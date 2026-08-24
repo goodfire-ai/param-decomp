@@ -1,89 +1,67 @@
-"""GSPMD sharding helpers for the 3-D `(replicate, fsdp, tp)` device mesh.
+"""Sharding helpers for the 3-D `(replicate, fsdp, tp)` device mesh.
 
-`replicate` spans nodes. Each node is an `(fsdp, tp)` plane: `fsdp` shards the parameter
-and optimizer-state dimensions used by HSDP, while `tp` tensor-parallelizes target
-matrices that declare it. `tp=1` is the ordinary HSDP layout. Batches shard over
-`(replicate, fsdp)` and are replicated across `tp`.
+`fsdp` shards parameter dimensions used by HSDP, while `tp` tensor-parallelizes
+declared target dimensions. Batches shard over `(replicate, fsdp)` and replicate over
+`tp`. Process and node boundaries are allocation facts, not mesh-shape constraints.
+
+No mesh axis is REQUIRED to coincide with a hardware boundary: `initialize_topology`
+checks only that the realized device count equals the authored
+`replicate * fsdp * tp`. Alignment is an AUTHORED property of a config. The maintained
+seats put `replicate` on node boundaries and the `(fsdp, tp)` plane on NVLink, and the
+owner preset's headline properties — zero cross-node weight collectives per step,
+node-local muon Newton-Schulz — hold exactly when a config is authored that way. A
+convention-breaking mesh is valid and numerically identical (SPEC D4); it forfeits
+only that locality.
+
+The mesh axes are EXPLICIT (`jax.sharding.AxisType.Explicit`): every traced array
+carries its sharding in its type, layout transitions are `jax.sharding.reshard`, and
+the compute-weight residents carry `reduced={"replicate"}` typing so their backward
+reduction is deferred to the master boundary (one reduce-scatter at exit, zero
+cross-replicate collectives inside the layer scan).
 """
 
-import os
-from typing import cast
+from typing import Any
 
 import jax
 import numpy as np
-from jax.sharding import AbstractMesh, Mesh, NamedSharding
+from jax.sharding import AbstractMesh, AxisType, Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from param_decomp.core.model import BATCH_AXES, DecomposedModel
+from param_decomp.core.axes import MeshAxis
+from param_decomp.core.model import BATCH_AXES, DecomposedModel, PlacedModel
+from param_decomp.core.placement import PlacementRules
+
+HSDP_MESH_AXES: tuple[MeshAxis, MeshAxis, MeshAxis] = ("replicate", "fsdp", "tp")
+"""The 3-D mesh's axis names, in the device-grid order the constructors reshape to."""
 
 
-def init_distributed(dp: int, gpus_per_node: int) -> None:
-    """The multi-node process bring-up: `jax.distributed` over `dp // gpus_per_node`
-    nodes. Distributedness is config-DERIVED (`dp > gpus_per_node`), NEVER inferred from ambient
-    SLURM env — `SLURM_PROCID` is present in every process on a SLURM box (incl. a pytest
-    worker), so sniffing it would wrongly fire `jax.distributed.initialize` mid-test.
-
-    The recipe: ONE process per node, each owning all its local GPUs (mirrors the torch
-    torchrun model — under SLURM, srun `--ntasks-per-node=1`). jax auto-detects the SLURM
-    topology (process_id = node rank, num_processes = node count) but its SLURM cluster
-    env claims only ONE device per process by default, so we pass the full local device
-    list explicitly (`CUDA_VISIBLE_DEVICES`, set to all 8 by `--gpus-per-node=8`). The
-    realized total device count must equal `dp`. This also rules out the 8-tasks-per-node
-    placement that a packing node-selection policy (`CR_Pack_Nodes`) would land on one
-    node. `dp` (config) decides distributedness and world size; SLURM env only supplies
-    the rank.
-    """
-    assert dp % gpus_per_node == 0, f"dp={dp} must be a multiple of {gpus_per_node} (GPUs/node)"
-    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
-    n_local = len([d for d in cuda_visible.split(",") if d]) or gpus_per_node
-    jax.distributed.initialize(local_device_ids=list(range(n_local)))
-    assert jax.device_count() == dp, (
-        f"runtime.dp={dp} != realized device count {jax.device_count()} "
-        f"({jax.process_count()} procs × {jax.local_device_count()} local GPUs; "
-        f"CUDA_VISIBLE_DEVICES={cuda_visible!r}) — the config's declared world size must "
-        f"match the launch topology (nodes × {gpus_per_node})"
+def initialize_topology(world_size: int, local_device_count: int) -> None:
+    """Bring up exactly the process topology declared by the launch boundary."""
+    assert world_size % local_device_count == 0, (world_size, local_device_count)
+    if world_size > local_device_count:
+        jax.distributed.initialize(local_device_ids=list(range(local_device_count)))
+    else:
+        assert jax.process_count() == 1, jax.process_count()
+    assert jax.device_count() == world_size, (
+        f"declared world size {world_size} != realized device count {jax.device_count()} "
+        f"({jax.process_count()} processes × {jax.local_device_count()} local devices)"
     )
 
 
-def assert_inline_topology(dp: int) -> None:
-    """The single-process startup gate (`dp <= gpus_per_node`): one process (no
-    `jax.distributed`) whose local
-    devices ARE the whole declared world. Lives at the config-consuming entry, NOT in
-    `hsdp_mesh` — the CPU-sim tests deliberately call `hsdp_mesh` bare under forced host
-    device counts."""
-    assert jax.process_count() == 1, (
-        f"a sub-node world (dp <= gpus_per_node) is single-process, found {jax.process_count()} processes"
-    )
-    assert jax.device_count() == dp, (
-        f"runtime.dp={dp} != local device count {jax.device_count()} — a sub-node world "
-        f"runs one process over exactly the devices the config declares; an ambient "
-        f"mismatch is a mis-sized allocation, never absorbed"
-    )
-
-
-def _hsdp_shape(n_devices: int, tp: int, gpus_per_node: int) -> tuple[int, int, int]:
-    """`(replicate, fsdp, tp)` for a world of `n_devices` — the ONE shape rule both the
-    concrete and abstract mesh constructors share. A multiple-of-`gpus_per_node` world
-    splits into in-node blocks; a smaller world (an inline sub-node run, or CPU sim at a
-    non-multiple count) IS one in-node block (so the divisibility asserts still bite on
-    the real shard dims)."""
-    assert n_devices % tp == 0, f"device count {n_devices} not divisible by tp={tp}"
-    in_node = gpus_per_node if n_devices % gpus_per_node == 0 else n_devices
-    assert in_node % tp == 0, f"in-node block {in_node} not divisible by tp={tp}"
-    return (n_devices // in_node, in_node // tp, tp)
-
-
-def hsdp_mesh(tp: int = 1, gpus_per_node: int = 8) -> Mesh:
-    """The 3-D HSDP+TP device mesh `(replicate, fsdp, tp)`. Both `fsdp` and `tp` are
-    intra-node NVLink axes carved from a node's GPUs (`fsdp * tp = GPUS_PER_NODE`); `tp` is
-    the FAST-VARYING / minor axis so a tp group is adjacent GPUs, and a node's contiguous
-    block in `jax.devices()` becomes one `(fsdp, tp)` plane. `replicate` (= n_devices //
-    GPUS_PER_NODE) is the across-node axis. `tp = 1` is a degenerate `(replicate, fsdp, 1)`
-    mesh — identical to the old 2-D mesh for any `("replicate","fsdp")`-only sharding, so
-    behaviour-preserving."""
+def hsdp_mesh(replicate: int, fsdp: int, tp: int) -> Mesh:
+    """The explicitly declared `(replicate, fsdp, tp)` device mesh."""
     devices = np.array(jax.devices())
-    replicate, fsdp, tp = _hsdp_shape(devices.size, tp, gpus_per_node)
-    return Mesh(devices.reshape(replicate, fsdp, tp), axis_names=("replicate", "fsdp", "tp"))
+    assert devices.size == replicate * fsdp * tp, (
+        devices.size,
+        replicate,
+        fsdp,
+        tp,
+    )
+    return Mesh(
+        devices.reshape(replicate, fsdp, tp),
+        axis_names=HSDP_MESH_AXES,
+        axis_types=(AxisType.Explicit,) * 3,
+    )
 
 
 def single_device_mesh() -> Mesh:
@@ -95,20 +73,33 @@ def single_device_mesh() -> Mesh:
         f"single-device by construction, found {jax.process_count()} processes × "
         f"{jax.local_device_count()} local devices"
     )
-    return hsdp_mesh()
+    return hsdp_mesh(1, 1, 1)
 
 
-def hsdp_abstract_mesh(dp: int, tp: int, gpus_per_node: int) -> AbstractMesh:
-    """The mesh SHAPE a run config implies, with no devices — exactly the `hsdp_mesh` a
-    run realizing `dp` devices builds, since `dp` declares the device count under BOTH
-    launch modes. What config-build placement validation (`placement.from_config`) runs
-    against, so a config refuses at submit validation, before any allocation."""
-    return AbstractMesh(_hsdp_shape(dp, tp, gpus_per_node), ("replicate", "fsdp", "tp"))
+def hsdp_abstract_mesh(replicate: int, fsdp: int, tp: int) -> AbstractMesh:
+    return AbstractMesh(
+        (replicate, fsdp, tp),
+        HSDP_MESH_AXES,
+        axis_types=(AxisType.Explicit,) * 3,
+    )
+
+
+def data_parallel_size(mesh: Mesh | AbstractMesh) -> int:
+    """Number of distinct batch shards; `tp` holds replicas of each shard."""
+    return int(np.prod([mesh.shape[axis] for axis in BATCH_AXES]))
+
+
+def local_data_parallel_size(mesh: Mesh | None) -> int:
+    """Distinct batch shards addressable by this process."""
+    if mesh is None:
+        return 1
+    local_shape = mesh.local_mesh.shape
+    return local_shape["replicate"] * local_shape["fsdp"]
 
 
 def place_via_shardings[T](tree: T, shardings: T) -> T:
     """Place each array leaf of `tree` onto the matching `NamedSharding` leaf of `shardings`
-    (a same-structure pytree, e.g. from a model's `.shardings(mesh)`). Static / non-array
+    (a same-structure pytree, e.g. from a model's `.shardings(placement)`). Static / non-array
     leaves pass through. The apply path for an already-loaded frozen model (vs the jitted
     `out_shardings` init path for freshly-seeded params).
 
@@ -130,35 +121,51 @@ def place_via_shardings[T](tree: T, shardings: T) -> T:
     )
 
 
-def place_target[M: DecomposedModel](tgt: M, mesh: Mesh) -> M:
-    """Eager placement of an already-loaded frozen target onto its own declared per-leaf
-    shardings (`tgt.shardings(mesh)`). The apply path for loaded weights; freshly-seeded
-    params go through the jitted `out_shardings` init path (`init_placed`) instead."""
-    return place_via_shardings(tgt, cast(M, tgt.shardings(mesh)))
+def place_target[PreparedT](
+    tgt: DecomposedModel[PreparedT], placement: PlacementRules
+) -> PlacedModel[PreparedT]:
+    """Eagerly place an already-loaded frozen target using the run's resolved rules, and
+    bundle it with them — THE one placed-model assembly point."""
+    placed = place_via_shardings(tgt, tgt.shardings(placement))
+    return PlacedModel(model=placed, placement=placement)
 
 
-def assert_divisible(dim: int, mesh: Mesh, axis: str, what: str) -> None:
-    """Fail loud if a dim sharded on mesh `axis` cannot tile that axis. Uniform across mesh
-    sizes — at axis size 1 it is trivially true, so there is no single-device special case.
-    `what` names the model / field / axis so a non-dividing dim crashes with a clear
-    message rather than silently replicating."""
-    n = mesh.shape[axis]
-    assert dim % n == 0, f"{what}: dim {dim} not divisible by mesh axis '{axis}' size {n}"
+def target_shardings_audit(
+    placed: PlacedModel[Any],
+) -> dict[str, tuple[NamedSharding, tuple[int, ...]]]:
+    """Audit every dynamic frozen-target leaf against its declared sharding tree."""
+    target, placement = placed.model, placed.placement
+    assert placement is not None, "an unplaced model has no sharding tree to audit"
+    shardings = target.shardings(placement)
+    target_with_paths, target_tree = jax.tree_util.tree_flatten_with_path(target)
+    sharding_leaves, sharding_tree = jax.tree.flatten(
+        shardings, is_leaf=lambda value: isinstance(value, NamedSharding)
+    )
+    assert target_tree == sharding_tree, "target and target sharding trees differ"
+    out: dict[str, tuple[NamedSharding, tuple[int, ...]]] = {}
+    for (path, value), sharding in zip(target_with_paths, sharding_leaves, strict=True):
+        assert hasattr(value, "shape"), (jax.tree_util.keystr(path), type(value))
+        assert isinstance(sharding, NamedSharding), (
+            jax.tree_util.keystr(path),
+            type(sharding),
+        )
+        out[f"target{jax.tree_util.keystr(path)}"] = (sharding, value.shape)
+    return out
 
 
 def batch_shard_leading(x: jax.Array, mesh: Mesh | None) -> jax.Array:
-    """In-jit `with_sharding_constraint` pinning the LEADING (batch) axis over the FULL mesh
+    """In-jit reshard pinning the LEADING (batch) axis over the FULL mesh
     (`('replicate', 'fsdp')`), the rest replicated. `mesh is None` (single device) is a
     passthrough. Keeps the masked re-forwards on per-rank sub-batches (activation memory
     1/N)."""
     if mesh is None:
         return x
     spec = [BATCH_AXES] + [None] * (x.ndim - 1)
-    return jax.lax.with_sharding_constraint(x, NamedSharding(mesh, P(*spec)))
+    return jax.sharding.reshard(x, NamedSharding(mesh, P(*spec)))
 
 
 def shard_batch(full_global: jax.Array, mesh: Mesh, batch_axis: int) -> jax.Array:
-    """Shard `full_global` over the FULL mesh (`('replicate', 'fsdp')`) along `batch_axis`.
+    """Shard `full_global` over the data axes and replicate each shard over `tp`.
     Generated identically on every process (same seed), so each process slices out its
     process-local sub-batch and `make_array_from_process_local_data` does the device
     placement.
@@ -171,8 +178,9 @@ def shard_batch(full_global: jax.Array, mesh: Mesh, batch_axis: int) -> jax.Arra
     """
     n_proc = jax.process_count()
     B = full_global.shape[batch_axis]
-    assert B % mesh.devices.size == 0, (
-        f"batch {B} (axis {batch_axis}) not divisible by mesh size {mesh.devices.size}"
+    n_data = data_parallel_size(mesh)
+    assert B % n_data == 0, (
+        f"batch {B} (axis {batch_axis}) not divisible by data-parallel size {n_data}"
     )
     spec: list[str | tuple[str, ...] | None] = [None] * full_global.ndim
     spec[batch_axis] = BATCH_AXES

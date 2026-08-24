@@ -29,7 +29,7 @@ from typing import Any, Literal
 
 import yaml
 
-# The two LM site grammars (mirrors llama8b / llama_simple_mlp SITE_NAME_PATTERN, plus the
+# The two LM site grammars (mirrors llama31 / llama_simple_mlp SITE_NAME_PATTERN, plus the
 # optional raw-HF `model.` prefix and the `*` layer wildcard the old specs allowed).
 _GLU_PATTERN = re.compile(
     r"^(?:model\.)?layers\.(\d+|\*)\.(?:self_attn\.(q|k|v|o)|mlp\.(gate|up|down))_proj$"
@@ -167,19 +167,19 @@ def _domain_of(path: Path) -> Domain:
 
 
 def _validate_lm(path: Path) -> str:
-    """Parse under the new schema; for HF/vendored llama8b specs also prove the resolved
+    """Parse under the new schema; for HF/vendored Llama-3.1 specs also prove the resolved
     site list is byte-identical to the old canonical expansion of the pre-migration spec
     (pretrained specs need the pretrain cache to resolve, so they get parse-only)."""
     from param_decomp.core.components import SiteC
     from param_decomp.experiments.lm.config import LMExperimentConfig, resolve_site_tree
-    from param_decomp.targets import glu_transformer, llama8b
+    from param_decomp.targets import glu_transformer, llama31
     from param_decomp.targets.glu_transformer import canonical_site_cs
 
     cfg = LMExperimentConfig.model_validate(yaml.safe_load(path.read_text()))
     if cfg.decomposition.sites.kind != "glu_transformer":
         return "parse-only (pretrained target; resolution needs the pretrain cache)"
     tree = resolve_site_tree(
-        cfg.decomposition.sites, glu_transformer.FAMILY, llama8b.llama31_8b_config().n_layer
+        cfg.decomposition.sites, glu_transformer.FAMILY, llama31.llama31_8b_config().n_layer
     )
     new_sites = tree.site_cs(glu_transformer.FAMILY.name_of)
     old_targets = _OLD_RAW[path]["pd"]["decomposition_targets"]

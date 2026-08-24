@@ -1,6 +1,6 @@
 """Tiny random targets — the standard CPU-test fixtures.
 
-One tiny random target per LM family (the llama8b-flavored GLU transformer and the
+One tiny random target per LM family (the Llama-3.1-flavored GLU transformer and the
 `LlamaSimpleMLP`), plus a one-chunk chunkwise CI fn over each. Engine tests use these as
 the concrete target behind the `DecomposedModel` protocol; the per-target suites
 (`tests/`) use them as the system under test. Toy dims throughout — no real weights, no
@@ -25,15 +25,15 @@ from param_decomp.core.model import DecomposedModel, MaterializedMasking
 from param_decomp.targets import llama_simple_mlp
 from param_decomp.targets.glu_transformer import (
     FrozenAttn,
+    GatedMLP,
     GLUDecomposedModel,
     GLULayer,
+    PlainMLP,
     build_decomposed_lm,
     parse_site_name,
 )
 from param_decomp.targets.llama_simple_mlp import (
     LlamaSimpleMLPConfig,
-    SimpleMLPDecomposedModel,
-    SimpleMLPLayer,
     build_decomposed_simple_mlp,
 )
 from param_decomp.vendored_jax.llama import LlamaConfig, llama3_inv_freq
@@ -92,11 +92,15 @@ def tiny_glu_decomposed_lm(
     def fattn():
         return FrozenAttn(
             n((qd, d)), n((kvd, d)), n((kvd, d)), n((d, qd)),
-            cfg.n_head, cfg.n_kv_head, cfg.head_dim, cfg.n_rep,
+            cfg.n_head, cfg.n_kv_head, cfg.head_dim, cfg.n_rep, "auto",
         )  # fmt: skip
 
     def layer():
-        return GLULayer(jnp.ones((d,)), jnp.ones((d,)), fattn(), n((di, d)), n((di, d)), n((d, di)))
+        # attn drawn before the MLP: the key-consumption order the committed
+        # fixture-derived tests (slow-eval histograms) were pinned against.
+        attn = fattn()
+        mlp = GatedMLP(Wg=n((di, d)), Wu=n((di, d)), Wd=n((d, di)))
+        return GLULayer(jnp.ones((d,)), jnp.ones((d,)), attn, mlp)
 
     return build_decomposed_lm(
         embed=n((cfg.vocab_size, d), 0.02),
@@ -130,9 +134,7 @@ def tiny_simple_mlp_cfg() -> LlamaSimpleMLPConfig:
     )
 
 
-def _tiny_simple_mlp_layers(
-    cfg: LlamaSimpleMLPConfig, n: int, key: jax.Array
-) -> list[SimpleMLPLayer]:
+def _tiny_simple_mlp_layers(cfg: LlamaSimpleMLPConfig, n: int, key: jax.Array) -> list[GLULayer]:
     ks = iter(jax.random.split(key, 1024))
     d, di = cfg.n_embd, cfg.n_intermediate
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
@@ -140,37 +142,36 @@ def _tiny_simple_mlp_layers(
     def rand(shape: tuple[int, ...]) -> jax.Array:
         return jax.random.normal(next(ks), shape) * d**-0.5
 
-    return [
-        SimpleMLPLayer(
-            ln1=jnp.ones((d,)),
-            ln2=jnp.ones((d,)),
-            attn=FrozenAttn(
-                rand((qd, d)),
-                rand((kvd, d)),
-                rand((kvd, d)),
-                rand((d, qd)),
-                cfg.n_head,
-                cfg.n_kv_head,
-                cfg.head_dim,
-                cfg.n_rep,
-            ),  # fmt: skip
-            Wfc=rand((di, d)),
-            Wdown=rand((d, di)),
+    def layer() -> GLULayer:
+        # attn drawn before the MLP: the key-consumption order the committed
+        # fixture-derived tests (slow-eval histograms) were pinned against.
+        attn = FrozenAttn(
+            rand((qd, d)),
+            rand((kvd, d)),
+            rand((kvd, d)),
+            rand((d, qd)),
+            cfg.n_head,
+            cfg.n_kv_head,
+            cfg.head_dim,
+            cfg.n_rep,
+            "auto",
         )
-        for _ in range(n)
-    ]
+        mlp = PlainMLP(Wfc=rand((di, d)), Wdown=rand((d, di)))
+        return GLULayer(ln1=jnp.ones((d,)), ln2=jnp.ones((d,)), attn=attn, mlp=mlp)
+
+    return [layer() for _ in range(n)]
 
 
 def tiny_simple_mlp_decomposed_model(
     cfg: LlamaSimpleMLPConfig, sites: tuple[SiteSpec, ...], key: jax.Array
-) -> SimpleMLPDecomposedModel:
-    """A tiny random `SimpleMLPDecomposedModel` carrying a random embedding + full frozen
-    layer stack plus the decomposition `sites`."""
+) -> GLUDecomposedModel:
+    """A tiny random engine-hosted SimpleMLP carrying a random (tied) embedding + full
+    frozen layer stack plus the decomposition `sites`."""
     layers_key, embed_key = jax.random.split(key)
     layers = _tiny_simple_mlp_layers(cfg, cfg.n_layer, layers_key)
     embed = jax.random.normal(embed_key, (cfg.vocab_size, cfg.n_embd)) * 0.02
     return build_decomposed_simple_mlp(
-        embed=embed, layers=layers, norm=jnp.ones((cfg.n_embd,)), lm_head=embed,
+        embed=embed, layers=layers, norm=jnp.ones((cfg.n_embd,)),
         cfg=cfg, sites=sites,
     )  # fmt: skip
 
@@ -179,9 +180,15 @@ SIMPLE_MLP_MIXED_SITE_CS = (
     SiteC("h.2.attn.q_proj", 8),
     SiteC("h.2.attn.v_proj", 12),
     SiteC("h.2.mlp.c_fc", 8),
+    SiteC("h.2.mlp.down_proj", 16),
+    SiteC("h.3.attn.q_proj", 8),
+    SiteC("h.3.attn.v_proj", 12),
+    SiteC("h.3.mlp.c_fc", 8),
     SiteC("h.3.mlp.down_proj", 16),
 )
-"""Attention + MLP sites across two layers with heterogeneous per-site C."""
+"""Mixed attention + MLP kinds with heterogeneous per-kind C, RECTANGULAR over the
+contiguous layer range 2..3 — the engine's segmented masked forward requires every
+decomposed kind on every decomposed layer."""
 
 
 def tiny_simple_mlp_chunkwise_ci_fn(
@@ -191,32 +198,19 @@ def tiny_simple_mlp_chunkwise_ci_fn(
     return _tiny_chunkwise_ci_fn(model, key, first_block, tiny_simple_mlp_cfg().n_embd, 2)
 
 
+# These projections deliberately take the RAW `DecomposedModel`, not the `PlacedModel`
+# bundle: the per-target suites exercise the protocol surface itself — per-call
+# `placement`, here the unplaced (None) CPU-test execution — below the engine's
+# one-bundle assembly.
+
+
 def run_clean(model: DecomposedModel, inputs: Any) -> Any:
-    """Test-only output projection of the new capture-aware forward."""
-    return model.clean_forward(inputs).output
+    """Test-only output projection of the capture-aware clean forward."""
+    return model.clean_forward(inputs, placement=None).output
 
 
 def capture_clean(model: DecomposedModel, inputs: Any, keys: Iterable[str]) -> dict[str, jax.Array]:
-    return model.clean_forward(inputs, frozenset(keys)).captures
-
-
-def _explicit_masking_for_test(
-    masks: dict[str, jax.Array],
-    delta_masks: dict[str, jax.Array],
-    routes: dict[str, jax.Array] | None,
-    live_sites: tuple[str, ...],
-    uses_weight_deltas: bool,
-) -> MaterializedMasking:
-    component_masks = {site: masks[site] for site in live_sites}
-    weight_delta_masks = (
-        {site: delta_masks[site] for site in live_sites} if uses_weight_deltas else None
-    )
-    selected_routes = None if routes is None else {site: routes[site] for site in live_sites}
-    return MaterializedMasking(
-        component_masks=component_masks,
-        weight_delta_masks=weight_delta_masks,
-        routes=selected_routes,
-    )
+    return model.clean_forward(inputs, frozenset(keys), placement=None).captures
 
 
 def run_masked[PreparedT](
@@ -226,15 +220,21 @@ def run_masked[PreparedT](
     masks: dict[str, jax.Array],
     delta_masks: dict[str, jax.Array],
     routes: dict[str, jax.Array] | None,
-    live: tuple[str, ...],
     uses_weight_deltas: bool,
     *,
     remat: bool,
 ) -> Any:
+    """Test-only output projection of a masked forward. The mask dicts must cover exactly
+    the model's sites (the target asserts this)."""
     return model.masked_forward(
         prepared_weights,
         inputs,
-        masking=_explicit_masking_for_test(masks, delta_masks, routes, live, uses_weight_deltas),
+        masking=MaterializedMasking(
+            component_masks=masks,
+            weight_delta_masks=delta_masks if uses_weight_deltas else None,
+            routes=routes,
+        ),
+        placement=None,
         remat=remat,
     ).output
 
@@ -245,15 +245,17 @@ def capture_site_outputs[PreparedT](
     inputs: Any,
     masking: MaterializedMasking,
 ) -> dict[str, jax.Array]:
-    site_output_keys = model.site_output_keys(masking.live_sites)
+    sites = tuple(masking.component_masks)
+    site_output_keys = model.site_output_keys(sites)
     masked_forward_result = model.masked_forward(
         prepared_weights,
         inputs,
         masking=masking,
+        placement=None,
         capture_keys=frozenset(site_output_keys),
         remat=False,
     )
     return {
         site: masked_forward_result.captures[key]
-        for site, key in zip(masking.live_sites, site_output_keys, strict=True)
+        for site, key in zip(sites, site_output_keys, strict=True)
     }

@@ -1,7 +1,7 @@
 # param_decomp
 
 A JAX implementation of the **single-pool** Parameter Decomposition (VPD) training
-loop — the four-term loss (faithfulness + importance-minimality + chunkwise stochastic
+loop — the four-term loss (faithfulness + importance-minimality + stochastic subset
 recon + persistent-PGD adversarial recon) as one `jax.jit` step, GSPMD-sharded,
 **generic over vendored targets**: the engine sees a target only through the
 `DecomposedModel` protocol; the concrete targets live in the sibling subpackage
@@ -15,37 +15,43 @@ the hand-written-NCCL multi-pool design with zero manual collectives.
 `param_decomp/core/` is the engine layer of the one `param-decomp` library, beside its
 sibling subpackages `param_decomp.targets` (the concrete targets),
 `param_decomp.pretrain` (the in-house target-LM pretrainer), `param_decomp.vendored_jax`
-(bit-parity JAX archs), and the composition/consumer layers (`experiments`, `harvest`,
-…). Imports point only downward — pinned by `tests/test_runtime_standalone.py`. Install
+(bit-parity JAX archs), and the composition/consumer layers (`experiments`,
+`clustering`, …). Imports point only downward — pinned by
+`tests/test_runtime_standalone.py`. Install
 the whole workspace into the one venv with `make install-dev`.
 
 ## What's here
 
 | file | what |
 |---|---|
-| `model.py` | `DecomposedModel` — the interface a vendored LM target implements (ordered sites, flat site-keyed dicts, frozen pytree as runtime arg) + generic chunking |
-| `train.py` | the step factory: one fused jit step over faith + imp-min + the recon loss TERMS, per-persistent-term fused final ascents, fp32 masters + bf16 compute |
-| `losses.py` | the pure loss terms (KL/(B·T), faithfulness, imp-min lp+entropy split) + `scheduled_value_traced`, the jnp schedule evaluator every in-step scheduled quantity uses |
+| `model.py` | `DecomposedModel` — the interface a vendored LM target implements (ordered sites, flat site-keyed dicts, frozen pytree as runtime arg) |
+| `train.py` | the step factory: one fused jit step over faith + imp-min + recon + optional nonlinearity, per-persistent-term fused final ascents, fp32 masters + bf16 compute |
+| `losses.py` | pure faithfulness, importance-minimality, reconstruction-comparison, and nonlinearity losses + the jnp schedule evaluators every in-step scheduled quantity uses |
 | `adversary.py` | adversarial source machinery: persistent state + Adam ascents, fresh sign-PGD init |
 | `masking.py` | construction and materialization of explicit/stochastic component and weight-delta masks |
-| `recon.py` | the flat loss surface (LOSS_PARITY_DESIGN.md): the self-describing `LossTerm` union (`FaithfulnessTerm` / `ImportanceMinimalityTerm` / `ReconLossTerm`), mask-source strategies × plans × routing samplers, and `build_loss_terms` — the shared torch loss configs mapped onto a flat tuple of terms |
+| `recon.py` | the recon term vocabulary (LOSS_PARITY_DESIGN.md): `ReconLossTerm` (one all-sites forward family = routing sampler × mask-source strategy), the mask-source strategies, the routing samplers, and the reconstruction specs |
+| `objective.py` | `LossSurface` (`FaithfulnessTerm` / `ImportanceMinimalityTerm` / the `ReconLossTerm` tuple / optional `NonlinearityTerm`) and `build_objective` — the shared loss configs compiled onto the explicit-role surface |
+| `nonlinearity_eval.py` | standing per-component nonlinearity-unit statistics |
 | `ci_fn.py` | shared-transformer CI fn over ordered site specs; the two leaky-hard squashings (SPEC §4.6, S5/S6) |
 | `checkpoint.py` | orbax sharded save/resume of `TrainState` (adversary sources + moments included, no full-gather on the loop, SPEC S22) |
 | `recon_eval.py` | target-generic fresh-PGD reconstruction eval: opaque model inputs/outputs, model-owned `recon_loss_fn`, arbitrary leading axes |
 | `slow_eval.py` | LIBRARY for the in-loop slow (plot) tier (SPEC S28, in-loop only — no offline CLI): the `CIHistograms` / `ComponentActivationDensity` / `CIMeanPerComponent` reductions + renders, the config-gated `PermutedCIPlots` / `IdentityCIError` (off the `(T, C)` position CI), the `UVPlots` figure (`render_uv_figure` / `plot_uv_matrices`, shared by the LM in-loop naive-gather path and the toy `toy_uv_eval` cheap path), and the hidden-acts recon scalars. Torch-free numpy/matplotlib; logged under `slow_eval/figures/*` |
 | `well_temperedness.py` | whether higher causal importance preactivations mean larger reconstruction-loss changes when components are ablated one at a time, compared across all heads and layers |
 | `well_temperedness_eval.py` | target-generic eval operation and rendering for the well-temperedness measurement |
-| `components.py` | the decomposition representation: `ComponentStacks` — V/U masters persisted as same-shape STACKS (owner-partitioned, SPEC D4 amendment 2026-07-15), `site(name)` per-site views, `site_out` the decomposed-linear primitive |
+| `components.py` | the decomposition representation: `ComponentStacks` — V/U masters in target-declared semantic stacks, `site(name)` per-site views, `activation_axes` the one spelling of the waist's semantic axes |
+| `decomposed_linear.py` | the placed decomposed-linear primitive: `site_forward`/`site_out` (SPEC §4.1) executing one site under `PlacementRules`, a precompiled `PlannedComponentLinear`, or unplaced `None`; `constrain_component_activation` pins `[*leading, C]` tensors to the component-waist row |
+| `placement.py` | `PlacementRules` — the typed placement table (components / ci_fn / activations / target rows), preset resolution (`from_config`: `owner` / `zero1` / `ddp`), the compute-weight materialization (`materialize_reduced_weights`), and the stacked-muon staging claims (see PLACEMENT_DESIGN.md) |
+| `muon_stacked.py` | per-kind batched Newton-Schulz for `impl: stacked` muon; `staging_hops`, the one-axis-per-reshard waypoint chain |
 | `run_state.py` | optimizer + initial-`TrainState` construction (`init_train_state(pd, model, ci_fn_arch, positions, …)`; orbax restores onto this reference) |
-| `tools/` | debug tools (`liverange_peak.py`, `memreport.py`) |
-| `sharding.py` | generic GSPMD helpers (`init_distributed`, `hsdp_mesh`, `place_via_shardings`, `place_target`, `shard_batch`) |
+| `tools/` | debug tools (`memreport.py` — proto memory-report + live-range peak attribution, `hlo_census.py`, `fit_check.py` — the AOT GPU-fit check) |
+| `sharding.py` | generic GSPMD helpers (`initialize_topology`, `hsdp_mesh`, `place_via_shardings`, `place_target`, `shard_batch`) |
 | `init_placed.py` | seeded init → placed arrays with no host-side full tree (`init_component_stacks_placed` / `init_ci_fn_placed` / `init_sources_sharded`; the few-outputs-under-jit compile doctrine) |
 | `family.py` | `ArchFamily` (a target's matrix grammar as data: vocabulary + `name_of`/`parse`) + the family-parameterized `canonical_site_cs`/`site_specs` the targets delegate to. The block-structured `SiteTree` + `resolve_site_tree` (tiled c-spec → tree) live composition-side with the LM schema (`param_decomp/experiments/lm/config.py`) |
 | `run.py` | the generic ENGINE `run_decomposition_training` (pure library, no `main`/YAML): faith warmup, loop, metrics jsonl/wandb, in-loop slow renderer, orbax checkpoints, SIGTERM-save + requeue-resume. The LM composition root that reads YAML + builds the target lives composition-side (`param_decomp/experiments/lm/run.py`) |
-| `built_run.py` | generic `BuiltRun[DataT, EvalT]`, `RunInstance`, target-sites protocol, and generic fresh-PGD config; domain data/eval plans live composition-side |
-| `configs.py` | the torch-free pydantic config SCHEMA: routing + the `explicit` (toy) site spec + loss-metric + eval-metric configs, `PDConfig` / `Cadence` / `WandbConfig` / `ResumeProvenance` / `PlacementTableConfig`, and the `wandb.config` shaping helpers. The authored `decomposition.ci` configs, the tiled LM site specs (`GluTransformerCSpec`/`SimpleMlpCSpec`, `LayerSelection`) AND the LM's compute substrate (`RuntimeConfig` / `LaunchEnv`) speak each domain's vocabulary and live with the domain schemas, composition-side (`experiments/lm/config.py` chunkwise + tiled sites, `experiments/lm/runtime.py` the `runtime:` section, `experiments/config.py` toy MLPs); core carries only the RESOLVED CI-fn arches (`ci_fn.py`) and resolved flat sites |
+| `built_run.py` | generic `BuiltRun[DataT, TargetT, PDT]`, `RunInstance`, and the target-sites protocol; domain data/eval plans live composition-side |
+| `configs.py` | the torch-free pydantic config SCHEMA: routing + the `explicit` (toy) site spec + loss-metric + eval-metric configs, `PDConfig` / `Cadence` / `WandbConfig` / `ResumeProvenance` / `PlacementTableConfig`, and the `wandb.config` shaping helpers. The authored `decomposition.ci` configs, the tiled LM site specs (`GluTransformerCSpec`/`SimpleMlpCSpec`, `LayerSelection`) AND the LM's compute substrate (`RuntimeConfig` / `LaunchEnv`) speak each domain's vocabulary and live with the domain schemas, composition-side (`experiments/lm/config.py` chunkwise + tiled sites, `experiments/lm/runtime.py` the `runtime:` section, `experiments/toy_config.py` toy MLPs); core carries only the RESOLVED CI-fn arches (`ci_fn.py`) and resolved flat sites |
 | `base_config.py` | `BaseConfig` (frozen `extra=forbid` pydantic `BaseModel` + YAML/JSON round-trip), `Probability` |
-| `schedule.py` | `ScheduleConfig` + its two evaluators, host `get_scheduled_value` / traced `scheduled_value_traced` (a knot-based piecewise curve `max_val × frac(t)`, interp linear/cosine/hold; every scheduled quantity — LRs, pnorm/gamma, merged-loss `adv_fraction` — routes through here) |
+| `schedule.py` | `ScheduleConfig` + the host evaluator `get_scheduled_value` (the traced twin `scheduled_value_traced` lives in `losses.py`) — a knot-based piecewise curve `max_val × frac(t)`, interp linear/cosine/hold; every scheduled quantity — LRs, pnorm/gamma, merged-loss `adv_fraction` — routes through here |
 | `../experiments/*/configs/` | the domain-owned self-contained run YAMLs (one file per run; no wrapper/schema split) |
 | `tests/` | tiny-target unit tests (incl. attention sites + heterogeneous per-site C), checkpoint resume, sharding, and the layering test (`test_runtime_standalone.py`, pinning the downward-only subpackage layering — composition → targets → core — and the wrapper-never-imported rule). The per-target parity/golden suites (torch↔JAX equivalence, stacked parity, Qwen3 HF parity, SimpleMLP torch fixtures) live with the targets: `param_decomp/targets/tests/` |
 
@@ -55,7 +61,7 @@ the whole workspace into the one venv with `make install-dev`.
 # From the repo root — one venv for the whole workspace:
 make install-dev && source .venv/bin/activate
 
-pytest param_decomp/tests/ param_decomp/targets/tests/
+pytest param_decomp/core/tests/ param_decomp/targets/tests/
 
 # GSPMD device-count invariance (simulated devices on CPU), SPEC D4:
 XLA_FLAGS="--xla_force_host_platform_device_count=4" \

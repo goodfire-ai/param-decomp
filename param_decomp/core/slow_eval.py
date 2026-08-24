@@ -19,13 +19,14 @@ SPEC S28/S29), reusing the fast pass's eval batches and logging `slow_eval/*` on
 
 Cross-batch reductions are exact under micro-batching: density/mean accumulate
 SUM-over-positions + a position count, divided once at the end (token-weighted mean,
-uniform `(B, T)` makes it the plain mean). `CIHistograms` caps its raw-value sample at
-`n_batches_accum` batches, matching the torch metric's `n_batches_accum` early-stop. It
+uniform `(B, T)` makes it the plain mean). `CIHistograms` is the exception — its two value
+histograms bin against each batch's own min/max, and counts on different edges do not sum,
+so they require `eval.n_steps=1`. It
 ALSO opts into a per-token CI density heatmap (`density_heatmap_n_bins`): a per-component
 on-device bincount into log-spaced `[1e-9, 1]` bands over the same forward's `lower`,
-accumulated over EVERY batch (uncapped — it is a small `(C, n_bins + 1)` reduction, no
-raw-value host transfer), rendered as `figures/ci_density_heatmap`
-(`plot_ci_density_heatmap`).
+accumulated over EVERY batch — a small `(C, n_bins + 1)` reduction, so unlike the value
+histograms it costs nothing to carry across batches. Rendered as
+`figures/ci_density_heatmap` (`plot_ci_density_heatmap`).
 
 It also computes the two SCALAR hidden-acts recon eval metrics (`CIHiddenActsReconLoss`,
 `StochasticHiddenActsReconLoss`) natively — per decomposed site, the summed MSE between
@@ -56,14 +57,13 @@ from typing import Any, Literal
 
 import jax.numpy as jnp
 import numpy as np
-from jax.experimental import multihost_utils
 from jaxtyping import Array, Float
 from matplotlib import colormaps
 from matplotlib.colors import Normalize
 from matplotlib.figure import Figure
 
 from param_decomp.core.ci_fn import (
-    CIFn,
+    PlacedCIFn,
     ci_preactivations,
     lower_leaky_hard_sigmoid,
     upper_leaky_hard_sigmoid,
@@ -76,49 +76,76 @@ from param_decomp.core.configs import (
     UVPlotsConfig,
 )
 from param_decomp.core.jit_util import filter_jit
-from param_decomp.core.model import CaptureKeys, DecomposedModel
+from param_decomp.core.model import CaptureKeys, PlacedModel
 
 IDENTITY_CI_ERROR_TOLERANCE = 0.1
 """Torch `IdentityCIPattern.distance_from` / `compute_target_metrics` default tolerance —
 avoids sensitivity to small CI values from inactive components."""
 
 
+VALUE_HISTOGRAM_N_BINS = 100
+"""Bins in each `CIHistograms` value histogram (torch `plot_ci_values_histograms`)."""
+
+
+@dataclass(frozen=True)
+class ValueHistogram:
+    """One `CIHistograms` histogram: `ax.hist(values, bins=VALUE_HISTOGRAM_N_BINS)` binned on
+    device, so the `(*leading, C)` values never cross to the host.
+
+    `lo`/`hi` span every value, as matplotlib's own edges would. They must NOT be taken over
+    a subsample to save the transfer: they are order statistics, so a sample renders a
+    narrower x-axis and empties bins holding a rare-but-real fraction of the mass — on a log
+    y-axis, what the figure is read for."""
+
+    counts: np.ndarray
+    lo: float
+    hi: float
+
+    @property
+    def edges(self) -> np.ndarray:
+        return np.linspace(self.lo, self.hi, len(self.counts) + 1)
+
+
 @dataclass(frozen=True)
 class SiteReduction:
-    """Per-site accumulators across the eval pass (all `(C,)` or scalar / capped sample).
+    """Per-site accumulators across the eval pass (all `(C,)` or scalar / small histogram).
 
     `density_counts[c]` = #(positions where `lower_leaky > threshold`); `ci_sums[c]` =
     Σ positions `lower_leaky`; `n_positions` = total positions seen (shared count for
-    both means). `lower_sample` / `preactivations_sample` are flattened raw values from the first
-    `n_batches_accum` batches, for the two `CIHistograms` histograms. `density_hist` is the
+    both means). `value_histograms` is the `(lower, preactivations)` pair the two
+    `CIHistograms` figures plot — `None` for a metric that renders neither, which then
+    pays no host transfer at all. `density_hist` is the
     opt-in per-token CI density histogram `(C, n_bins + 1)`: column 0 = underflow (CI below
     `CI_DENSITY_HEATMAP_FLOOR`, including exact-zero inactive tokens), columns `1..n_bins` =
     counts in the `n_bins` log-spaced `[FLOOR, 1]` bands. It accumulates over EVERY eval batch
-    (unlike the `n_batches_accum`-capped raw sample) since it is a small on-device reduction;
-    `None` when the metric doesn't opt in."""
+    since it is a small on-device reduction; `None` when the metric doesn't opt in."""
 
     density_counts: np.ndarray
     ci_sums: np.ndarray
     n_positions: int
-    lower_sample: np.ndarray
-    preactivations_sample: np.ndarray
+    value_histograms: tuple[ValueHistogram, ValueHistogram] | None
     density_hist: np.ndarray | None
 
 
+BinnedValues = tuple[Array, Array, Array]
+"""`(counts, lo, hi)` — one on-device value histogram, `(n_bins,)` plus its two edges."""
+
+
 SlowEvalStep = Callable[
-    [DecomposedModel, Any, Float[Array, "*leading d"]],
+    [PlacedModel, Any, Float[Array, "*leading d"]],
     tuple[
         dict[str, Array],
         dict[str, Array],
         Array,
-        dict[str, Array],
-        dict[str, Array],
+        dict[str, BinnedValues],
+        dict[str, BinnedValues],
         dict[str, Array],
     ],
 ]
-"""`(model, ci_fn, residual) -> (density_counts, ci_sums, n_positions, flat_lower,
-flat_preactivations, density_hist)` — the per-batch reduction, pre-reduced over positions.
-`density_hist` maps site -> `(C, n_bins + 1)` counts (empty when the density heatmap is off).
+"""`(model, placed_ci_fn, residual) -> (density_counts, ci_sums, n_positions, binned_lower,
+binned_preactivations, density_hist)` — the per-batch reduction, pre-reduced over positions.
+`density_hist` maps site -> `(C, n_bins + 1)` counts (empty when the density heatmap is off);
+the two binned dicts are empty when the caller asked for no value histogram.
 The slow plot metrics read only the CI arrays, so V/U (`components`) is not an input. `model`
 (frozen-weight-bearing) is the jit ARG."""
 
@@ -128,49 +155,91 @@ CI_DENSITY_HEATMAP_FLOOR = 1e-9
 underflow column 0. Equal to the sampling floor of the mean-CI tail."""
 
 
+def _count_ge(values: Array, edges: Array) -> Array:
+    """`counts[k] = #{v >= edges[k]}`, reduced over every `values` axis — the searchsorted
+    that survives a sharded operand. `jnp.histogram`/`bincount`/`digitize` all lower
+    through scatter or `select` ops that have no explicit-sharding rule and refuse the
+    dp-sharded CI arrays; a broadcast-compare fuses into its reduction instead, and the
+    counts land replicated. Exact: `#{v >= e_k}` IS `searchsorted(e, v, side='right')`
+    summed per edge."""
+    return (values[..., None] >= edges).sum(tuple(range(values.ndim)))
+
+
+def _binned_values(values: Array, n_bins: int) -> BinnedValues:
+    """`ax.hist(values, bins=n_bins)` as a device reduction, the data's own min/max as the
+    outer edges. fp32 throughout: the values are bf16, and matplotlib would have upcast
+    them before binning."""
+    v = values.astype(jnp.float32).reshape(-1, values.shape[-1])
+    lo, hi = v.min(), v.max()
+    edges = jnp.linspace(lo, hi, n_bins + 1)
+    # Bin b is [e_b, e_{b+1}), the last closed at hi (numpy's convention): every value
+    # sits in [lo, hi], so counts[b] = count_ge[b] - count_ge[b+1] with the final
+    # subtrahend dropped.
+    count_ge = _count_ge(v, edges[:-1])
+    counts = count_ge - jnp.concatenate([count_ge[1:], jnp.zeros((1,), count_ge.dtype)])
+    return counts, lo, hi
+
+
+def _to_value_histogram(binned: BinnedValues) -> ValueHistogram:
+    """All three are reductions over the dp-sharded batch axis, hence replicated: a bare
+    `np.asarray` is addressable on every process, no `process_allgather` needed."""
+    counts, lo, hi = binned
+    return ValueHistogram(counts=np.asarray(counts), lo=float(lo), hi=float(hi))
+
+
 def _per_component_ci_hist(lower: Array, n_bins: int) -> Array:
     """Per-component per-token CI histogram `(C, n_bins + 1)` from `lower (*, C)`: column 0
     counts underflow tokens (CI < `CI_DENSITY_HEATMAP_FLOOR`, including exact-zero inactive
     ones), columns `1..n_bins` the `n_bins` log-spaced bands over `[FLOOR, 1]` (the top band
-    includes CI = 1). One `bincount` over a flattened `(component, bin)` index — no
-    `(tokens × C)` one-hot stack."""
+    includes CI = 1). Band membership as cumulative `>=`-edge counts differenced per band
+    (`bincount`'s scatter has no explicit-sharding rule — see `_count_ge`), reduced over
+    tokens only so the counts keep the C axis (and its sharding)."""
     c = lower.shape[-1]
     v = lower.astype(jnp.float32).reshape(-1, c)
     edges = jnp.logspace(math.log10(CI_DENSITY_HEATMAP_FLOOR), 0.0, n_bins + 1)
-    idx = jnp.clip(jnp.digitize(v, edges), 0, n_bins)
-    flat = idx + jnp.arange(c)[None, :] * (n_bins + 1)
-    return jnp.bincount(flat.reshape(-1), length=c * (n_bins + 1)).reshape(c, n_bins + 1)
+    # count_ge[t, c, k] summed over tokens: (C, n_bins + 1) with count_ge[:, 0] = #tokens
+    # at or above the floor; band j >= 1 is [e_{j-1}, e_j) except the top band, closed at
+    # 1 (every CI <= 1, so the final subtrahend is 0); column 0 is the underflow
+    # complement.
+    count_ge = (v[:, :, None] >= edges[:-1]).sum(0)
+    n_tokens = jnp.asarray(v.shape[0], count_ge.dtype)
+    bands = count_ge - jnp.concatenate([count_ge[:, 1:], jnp.zeros_like(count_ge[:, :1])], axis=1)
+    underflow = n_tokens - count_ge[:, 0]
+    return jnp.concatenate([underflow[:, None], bands], axis=1)
 
 
 def make_slow_eval_step(
-    model_static: DecomposedModel,
+    model_static: PlacedModel,
     ci_capture_keys: CaptureKeys,
     ci_alive_threshold: float,
     density_heatmap_n_bins: int | None,
+    value_histogram_n_bins: int | None,
     compiler_options: dict[str, bool | int | str] | None = None,
 ) -> SlowEvalStep:
-    """Build the jit'd per-batch reduction `slow_eval_step(model, ci_fn, residual) ->
-    ({site: density_counts}, {site: ci_sums}, n_positions, {site: flat lower},
-    {site: flat preactivations}, {site: density_hist})`. `lower`/`preactivations` are returned whole (the
-    host caps the histogram sample); counts/sums are pre-reduced over positions.
+    """Build the jit'd per-batch reduction `slow_eval_step(model, placed_ci_fn, residual) ->
+    ({site: density_counts}, {site: ci_sums}, n_positions, {site: binned lower},
+    {site: binned preactivations}, {site: density_hist})`. Counts/sums are pre-reduced over
+    positions. `value_histogram_n_bins` opts into the `lower`/`preactivations` histograms the
+    two `CIHistograms` figures plot, binned ON DEVICE so only counts cross to the host
+    (empty dicts when None — a metric reading neither figure pays no transfer).
     `density_heatmap_n_bins` opts into the per-component CI density histogram (empty dict
     when None); it shares this forward's `lower`, adding only an on-device bincount."""
     site_names = model_static.site_names
 
     def slow_eval_step(
-        model: DecomposedModel, ci_fn: CIFn, residual: Float[Array, "*leading d"]
+        model: PlacedModel, placed_ci_fn: PlacedCIFn, residual: Float[Array, "*leading d"]
     ) -> tuple[
         dict[str, Array],
         dict[str, Array],
         Array,
-        dict[str, Array],
-        dict[str, Array],
+        dict[str, BinnedValues],
+        dict[str, BinnedValues],
         dict[str, Array],
     ]:
         # Read the CI fn in training precision (bf16), like train.py / eval.py: the readout
         # reflects the deployed model, and cuDNN flash attention rejects fp32.
         preactivations = ci_preactivations(
-            ci_fn,
+            placed_ci_fn,
             model.clean_forward(residual, ci_capture_keys).captures,
             remat=False,
         )
@@ -186,42 +255,59 @@ def make_slow_eval_step(
         ci_sums = {s: lower[s].reshape(-1, lower[s].shape[-1]).sum(0) for s in site_names}
         first = lower[site_names[0]]
         n_positions = jnp.asarray(math.prod(first.shape[:-1]), jnp.int32)
-        flat_lower = {s: lower[s].reshape(-1) for s in site_names}
-        flat_preactivations = {s: preactivations[s].reshape(-1) for s in site_names}
+        binned_lower = (
+            {}
+            if value_histogram_n_bins is None
+            else {s: _binned_values(lower[s], value_histogram_n_bins) for s in site_names}
+        )
+        binned_preactivations = (
+            {}
+            if value_histogram_n_bins is None
+            else {s: _binned_values(preactivations[s], value_histogram_n_bins) for s in site_names}
+        )
         density_hist = (
             {s: _per_component_ci_hist(lower[s], density_heatmap_n_bins) for s in site_names}
             if density_heatmap_n_bins is not None
             else {}
         )
-        return density_counts, ci_sums, n_positions, flat_lower, flat_preactivations, density_hist
+        return (
+            density_counts,
+            ci_sums,
+            n_positions,
+            binned_lower,
+            binned_preactivations,
+            density_hist,
+        )
 
     return filter_jit(slow_eval_step, compiler_options=compiler_options)
 
 
 def accumulate_site_reductions(
     slow_eval_step: SlowEvalStep,
-    model: DecomposedModel,
-    ci_fn: CIFn,
+    model: PlacedModel,
+    placed_ci_fn: PlacedCIFn,
     residual_batches: list[Float[Array, "*leading d"]],
-    n_batches_accum: int | None,
 ) -> dict[str, SiteReduction]:
     """Drive `slow_eval_step` over the eval batches and fold the per-batch reductions
-    into one `SiteReduction` per site. `n_batches_accum` caps how many batches feed the
-    `CIHistograms` raw-value sample (torch `n_batches_accum`); None keeps all. The opt-in
-    `density_hist` (when the step emits it) accumulates over EVERY batch, uncapped."""
+    into one `SiteReduction` per site. The `(C,)` reductions and the opt-in `density_hist`
+    accumulate over EVERY batch; the value histograms cannot, and a step emitting them
+    requires exactly one."""
     assert residual_batches, "slow eval needs at least one batch"
     density: dict[str, np.ndarray] = {}
     sums: dict[str, np.ndarray] = {}
     hist: dict[str, np.ndarray] = {}
-    lower_chunks: dict[str, list[np.ndarray]] = {}
-    preactivations_chunks: dict[str, list[np.ndarray]] = {}
+    value_histograms: dict[str, tuple[ValueHistogram, ValueHistogram]] = {}
     total_positions = 0
     for batch_idx, residual in enumerate(residual_batches):
-        d, s, n_pos, flat_lower, flat_preactivations, density_hist = slow_eval_step(
-            model, ci_fn, residual
+        d, s, n_pos, binned_lower, binned_preactivations, density_hist = slow_eval_step(
+            model, placed_ci_fn, residual
+        )
+        assert not (binned_lower and len(residual_batches) > 1), (
+            "the CIHistograms value histograms bin against each batch's own min/max, so "
+            f"counts from {len(residual_batches)} batches cannot be summed: run them at "
+            f"eval.n_steps=1, or drop CIHistograms from eval.metrics"
         )
         total_positions += int(n_pos)
-        keep_sample = n_batches_accum is None or batch_idx < n_batches_accum
         for site in d:
             counts, ci_sum = np.asarray(d[site]), np.asarray(s[site])
             density[site] = counts if batch_idx == 0 else density[site] + counts
@@ -229,16 +315,10 @@ def accumulate_site_reductions(
             if density_hist:
                 h = np.asarray(density_hist[site])
                 hist[site] = h if batch_idx == 0 else hist[site] + h
-            if keep_sample:
-                # The sample keeps the dp-sharded batch axis; on >1 process a bare np.asarray
-                # spans non-addressable devices, so gather it (counts/sums are already reduced).
-                lower_chunks.setdefault(site, []).append(
-                    np.asarray(multihost_utils.process_allgather(flat_lower[site], tiled=True))
-                )
-                preactivations_chunks.setdefault(site, []).append(
-                    np.asarray(
-                        multihost_utils.process_allgather(flat_preactivations[site], tiled=True)
-                    )
+            if binned_lower:
+                value_histograms[site] = (
+                    _to_value_histogram(binned_lower[site]),
+                    _to_value_histogram(binned_preactivations[site]),
                 )
 
     return {
@@ -246,8 +326,7 @@ def accumulate_site_reductions(
             density_counts=density[site],
             ci_sums=sums[site],
             n_positions=total_positions,
-            lower_sample=np.concatenate(lower_chunks[site]),
-            preactivations_sample=np.concatenate(preactivations_chunks[site]),
+            value_histograms=value_histograms.get(site),
             density_hist=hist.get(site),
         )
         for site in density
@@ -255,17 +334,17 @@ def accumulate_site_reductions(
 
 
 PositionCIStep = Callable[
-    [DecomposedModel, Any, Float[Array, "*leading d"]],
+    [PlacedModel, Any, Float[Array, "*leading d"]],
     tuple[dict[str, Array], dict[str, Array], Array],
 ]
-"""`(model, ci_fn, residual) -> ({site: lower (T, C)}, {site: upper (T, C)}, n_batch)` —
+"""`(model, placed_ci_fn, residual) -> ({site: lower (T, C)}, {site: upper (T, C)}, n_batch)` —
 the per-batch CI summed over the batch leading axis, position axis kept. Pairs with
 `accumulate_position_ci` to form a batch-mean `(T, C)` CI matrix per site. `model`
 (frozen-weight-bearing) is the jit ARG."""
 
 
 def make_position_ci_step(
-    model_static: DecomposedModel,
+    model_static: PlacedModel,
     ci_capture_keys: CaptureKeys,
     compiler_options: dict[str, bool | int | str] | None = None,
 ) -> PositionCIStep:
@@ -275,11 +354,11 @@ def make_position_ci_step(
     site_names = model_static.site_names
 
     def position_ci_step(
-        model: DecomposedModel, ci_fn: CIFn, residual: Float[Array, "*leading d"]
+        model: PlacedModel, placed_ci_fn: PlacedCIFn, residual: Float[Array, "*leading d"]
     ) -> tuple[dict[str, Array], dict[str, Array], Array]:
         # Training precision (bf16) readout — see make_slow_eval_step; preactivations upcast to fp32.
         preactivations = ci_preactivations(
-            ci_fn,
+            placed_ci_fn,
             model.clean_forward(residual, ci_capture_keys).captures,
             remat=False,
         )
@@ -305,8 +384,8 @@ class PositionCI:
 
 def accumulate_position_ci(
     position_ci_step: PositionCIStep,
-    model: DecomposedModel,
-    ci_fn: CIFn,
+    model: PlacedModel,
+    placed_ci_fn: PlacedCIFn,
     residual_batches: list[Float[Array, "*leading d"]],
 ) -> dict[str, PositionCI]:
     """Fold `position_ci_step` over the eval batches into a batch-mean `(T, C)` CI matrix
@@ -317,7 +396,7 @@ def accumulate_position_ci(
     upper: dict[str, np.ndarray] = {}
     total_batch = 0
     for batch_idx, residual in enumerate(residual_batches):
-        lo, hi, n_batch = position_ci_step(model, ci_fn, residual)
+        lo, hi, n_batch = position_ci_step(model, placed_ci_fn, residual)
         total_batch += int(n_batch)
         for site in lo:
             lo_np, hi_np = np.asarray(lo[site]), np.asarray(hi[site])
@@ -491,16 +570,17 @@ def _grid_dims(n: int, max_rows: int = 6) -> tuple[int, int]:
     return n_rows, n_cols
 
 
-def plot_ci_value_histograms(samples: dict[str, np.ndarray], bins: int = 100) -> bytes:
-    """Per-site histogram of flattened CI values (torch `plot_ci_values_histograms`)."""
-    n_rows, n_cols = _grid_dims(len(samples))
+def plot_ci_value_histograms(histograms: dict[str, ValueHistogram]) -> bytes:
+    """Per-site histogram of flattened CI values (torch `plot_ci_values_histograms`), drawn
+    from counts binned on device — `ax.stairs` over what `ax.hist` would have computed."""
+    n_rows, n_cols = _grid_dims(len(histograms))
     fig = Figure(figsize=(6 * n_cols, 5 * n_rows))
     axs = fig.subplots(n_rows, n_cols, squeeze=False)
     flat_axes = axs.T.ravel()
-    for ax in flat_axes[len(samples) :]:
+    for ax in flat_axes[len(histograms) :]:
         ax.set_visible(False)
-    for ax, (name, values) in zip(flat_axes, samples.items(), strict=False):
-        ax.hist(values, bins=bins)
+    for ax, (name, histogram) in zip(flat_axes, histograms.items(), strict=False):
+        ax.stairs(histogram.counts, histogram.edges, fill=True)
         ax.set_yscale("log")
         ax.set_title(f"Causal importances for {name.replace('.', '_')}")
         ax.set_xlabel("Causal importance value")
@@ -784,25 +864,28 @@ def render_slow_eval_figures(
     reductions: dict[str, SiteReduction],
 ) -> dict[str, bytes]:
     """The slow plot metrics as `{log_key: png_bytes}`, keyed exactly as torch logs them
-    under `slow_eval/` (`figures/<key>` from each metric's `compute()`). When the run opts
+    under `slow_eval/` (`figures/<key>` from each metric's `compute()`). The two value
+    histograms appear only when the reductions carry one; a metric that renders neither
+    bins nothing. When the run opts
     into the per-token CI density heatmap (`density_hist` present), it is added under
     `figures/ci_density_heatmap`."""
-    lower_hist = plot_ci_value_histograms({s: r.lower_sample for s, r in reductions.items()})
-    preactivations_hist = plot_ci_value_histograms(
-        {s: r.preactivations_sample for s, r in reductions.items()}
-    )
     assert all(r.n_positions > 0 for r in reductions.values())
     densities = {s: r.density_counts / r.n_positions for s, r in reductions.items()}
     mean_cis = {s: r.ci_sums / r.n_positions for s, r in reductions.items()}
-    density_fig = plot_component_activation_density(densities)
     mean_linear, mean_log = plot_mean_component_cis_both_scales(mean_cis)
-    figures = {
-        "figures/causal_importance_values": lower_hist,
-        "figures/causal_importance_values_pre_sigmoid": preactivations_hist,
-        "figures/component_activation_density": density_fig,
-        "figures/ci_mean_per_component": mean_linear,
-        "figures/ci_mean_per_component_log": mean_log,
-    }
+    binned = {s: r.value_histograms for s, r in reductions.items() if r.value_histograms}
+    figures: dict[str, bytes] = {}
+    if binned:
+        assert len(binned) == len(reductions), "value_histograms must be all-sites or none"
+        figures["figures/causal_importance_values"] = plot_ci_value_histograms(
+            {s: lower for s, (lower, _) in binned.items()}
+        )
+        figures["figures/causal_importance_values_pre_sigmoid"] = plot_ci_value_histograms(
+            {s: preactivations for s, (_, preactivations) in binned.items()}
+        )
+    figures["figures/component_activation_density"] = plot_component_activation_density(densities)
+    figures["figures/ci_mean_per_component"] = mean_linear
+    figures["figures/ci_mean_per_component_log"] = mean_log
     density_hists = {s: r.density_hist for s, r in reductions.items() if r.density_hist is not None}
     if density_hists:
         assert len(density_hists) == len(reductions), "density_hist must be all-sites or none"

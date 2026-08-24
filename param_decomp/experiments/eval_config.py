@@ -104,8 +104,9 @@ class EvalConfig(BaseConfig):
     """One evaluation callback's data cadence and requested operations.
 
     Two cadences, one per tier: `every` for the metrics that declare themselves fast,
-    `slow_every` for the rest. `slow_on_first_step` fires the slow tier once at the first
-    eval pass as well, for a baseline against the trained end state.
+    `slow_every` for the rest. `slow_on_first_step` fires the slow tier once at step 0 —
+    before the first optimizer step — for an untrained baseline against the end state.
+    Only a fresh run has a step 0; a resumed one starts past it.
     """
 
     batch_size: PositiveInt
@@ -125,12 +126,15 @@ class EvalConfig(BaseConfig):
         return self
 
 
-def schedule_for(metric: AnyEvalMetricConfig, eval_config: EvalConfig) -> EvalSchedule:
-    """When `metric` fires: its own declared tier read against this callback's cadences."""
-    if not metric.slow:
-        return Every(eval_config.every)
+def slow_schedule(eval_config: EvalConfig) -> EvalSchedule:
+    """The callback's shared schedule for every slow or standing-slow operation."""
     return (
-        FirstThenEvery(eval_config.every, eval_config.slow_every)
+        FirstThenEvery(0, eval_config.slow_every)
         if eval_config.slow_on_first_step
         else Every(eval_config.slow_every)
     )
+
+
+def schedule_for(metric: AnyEvalMetricConfig, eval_config: EvalConfig) -> EvalSchedule:
+    """When `metric` fires: its own declared tier read against this callback's cadences."""
+    return slow_schedule(eval_config) if metric.slow else Every(eval_config.every)

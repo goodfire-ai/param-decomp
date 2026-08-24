@@ -32,7 +32,9 @@ from pydantic import (
     model_validator,
 )
 
+from param_decomp.core.axes import MeshAxis, SemanticAxis
 from param_decomp.core.base_config import BaseConfig, Probability
+from param_decomp.core.nonlinearity import NonlinearityUnitKind
 from param_decomp.core.schedule import ScheduleConfig
 
 # ---------------------------------------------------------------------------
@@ -165,6 +167,8 @@ class HiddenActsReconstructionMixin(BaseConfig):
 
 
 class FaithfulnessLossConfig(LossMetricConfig):
+    """Mean per-site squared weight error, relative to each frozen target matrix."""
+
     type: Literal["FaithfulnessLoss"] = "FaithfulnessLoss"
 
 
@@ -179,12 +183,23 @@ class FrequencyMinimalityConfig(BaseConfig):
     global `batch_size * seq_len` reproduces the implicit `B*T` the old rolled `beta` term
     baked inside its `log2`; coefficients then transfer as `coeff = old imp.coeff * old
     beta`. The `f=0 -> 0` cutoff is inherent to the form.
+
+    `ema_halflife_steps` (when set) evaluates the penalty at a debiased exponential moving
+    average of `f_c` across steps instead of the noisy single-batch estimate, with the
+    gradient kept at the single-batch scale so `coeff` transfers between the two modes
+    (SPEC S8''). Capped at `1e6`: a halflife past the run's length already degenerates
+    to a debiased running mean, and fp32 rounding drift in the recurrence grows with the
+    halflife (pinned by `test_ema_long_scan_rounding_bounded`). While frequencies move
+    faster than the halflife the smoothed penalty lags the batch diagnostic (logged
+    alongside as `FrequencyMinimalityLoss_batch`) — estimator convergence, not
+    instability (S8'').
     """
 
     coeff: NonNegativeFloat | ScheduleConfig
     reference_datapoint_count: PositiveInt = Field(
         validation_alias=AliasChoices("reference_datapoint_count", "reference_token_count")
     )
+    ema_halflife_steps: PositiveFloat | None = Field(default=None, allow_inf_nan=False, le=1e6)
 
 
 class ImportanceMinimalityLossConfig(LossMetricConfig):
@@ -232,12 +247,39 @@ AnyImportanceMinimalityLossConfig = (
 )
 
 
+class NonlinearityLocalityLossConfig(LossMetricConfig):
+    """Concentrate each component's write vector on fewer nonlinearity-facing units
+    (SPEC S36).
+
+    `relative_threshold` is relative to a uniform unit fraction; annealing it down sharpens
+    the soft count. `unit_kind_coefficients` weights each unit kind's component mean and
+    must name every kind the target's partitions declare (asserted at step build); a
+    `None` entry excludes that kind from the objective outright — no reduction is built,
+    which is why weights are strictly positive rather than zero-able.
+    """
+
+    type: Literal["NonlinearityLocalityLoss"] = "NonlinearityLocalityLoss"
+    coeff: NonNegativeFloat | ScheduleConfig | None = None
+    relative_threshold: ScheduleConfig
+    unit_kind_coefficients: dict[NonlinearityUnitKind, PositiveFloat | None]
+
+    @model_validator(mode="after")
+    def validate_relative_threshold(self) -> Self:
+        assert all(knot.frac > 0.0 for knot in self.relative_threshold.points), (
+            "relative_threshold knots must all keep frac > 0"
+        )
+        return self
+
+    @model_validator(mode="after")
+    def validate_unit_kind_coefficients(self) -> Self:
+        assert any(w is not None for w in self.unit_kind_coefficients.values()), (
+            "unit_kind_coefficients must train at least one unit kind"
+        )
+        return self
+
+
 class CIMaskedReconLossConfig(LossMetricConfig, HiddenActsReconstructionMixin):
     type: Literal["CIMaskedReconLoss"] = "CIMaskedReconLoss"
-
-
-class CIMaskedReconLayerwiseLossConfig(LossMetricConfig, HiddenActsReconstructionMixin):
-    type: Literal["CIMaskedReconLayerwiseLoss"] = "CIMaskedReconLayerwiseLoss"
 
 
 class CIMaskedReconSubsetLossConfig(LossMetricConfig, HiddenActsReconstructionMixin):
@@ -249,11 +291,6 @@ class CIMaskedReconSubsetLossConfig(LossMetricConfig, HiddenActsReconstructionMi
 
 class StochasticReconLossConfig(LossMetricConfig, HiddenActsReconstructionMixin):
     type: Literal["StochasticReconLoss"] = "StochasticReconLoss"
-    n_mask_samples: PositiveInt = 1
-
-
-class StochasticReconLayerwiseLossConfig(LossMetricConfig, HiddenActsReconstructionMixin):
-    type: Literal["StochasticReconLayerwiseLoss"] = "StochasticReconLayerwiseLoss"
     n_mask_samples: PositiveInt = 1
 
 
@@ -275,32 +312,6 @@ class UnmaskedReconLossConfig(LossMetricConfig, HiddenActsReconstructionMixin):
     type: Literal["UnmaskedReconLoss"] = "UnmaskedReconLoss"
 
 
-class ChunkwiseSubsetReconLossConfig(LossMetricConfig, HiddenActsReconstructionMixin):
-    """Reconstruction loss that mirrors the 3-pool / 2-pool chunkwise subset recon.
-
-    The decomposed sites (`model.target_module_paths`, in order) are grouped into
-    chunks of `sites_per_chunk`; each chunk runs `SubsetReconPlan(routing, n_samples)`
-    — one masked forward per generated routing, all the chunk's sites swapped in
-    with a per-position routing draw — and the recon is KL against the clean logits. The
-    total is the mean over all chunk forwards of `recon_loss / n_positions`, matching the
-    2-pool's per-step recon.
-
-    The JAX single-pool trainer implements this natively: `objective.build_objective`
-    maps this `type` onto `recon.make_plan(live_groups(sites, sites_per_chunk), routing,
-    StochasticSources(), n_samples)`, and the jitted step runs the chunk forwards
-    directly — no vendored `LMComponentModel` or lab recon-plan machinery is involved.
-    `routing` is honoured as authored; `recon.subset_chunk_plan` is the uniform-k
-    parameterization the parity fixtures pin, not the path this config takes.
-    """
-
-    type: Literal["ChunkwiseSubsetReconLoss"] = "ChunkwiseSubsetReconLoss"
-    sites_per_chunk: PositiveInt
-    routing: Annotated[SubsetRoutingType, Field(discriminator="type")] = (
-        UniformKSubsetRoutingConfig()
-    )
-    n_samples: PositiveInt = 1
-
-
 PGDInitStrategy = Literal["random", "ones", "zeroes"]
 
 SourceShape = Literal["c", "bc", "sc", "bsc"]
@@ -308,11 +319,14 @@ SourceShape = Literal["c", "bc", "sc", "bsc"]
 each letter names an axis the source keeps FULL; a missing letter is a size-1 broadcast
 axis (the rank always matches the waist, so the elementwise combine broadcasts):
 
-  positionless target:  `c (1, C+1)` · `bc (B, C+1)`   (`sc`/`bsc` are invalid — they
+  positionless target:  `c (1, C)` · `bc (B, C)`   (`sc`/`bsc` are invalid — they
                         name a position axis the target lacks)
-  positioned target:    `c (1, 1, C+1)` · `bc (B, 1, C+1)` — one source per batch
-                        element shared over positions — · `sc (1, P, C+1)` ·
-                        `bsc (B, P, C+1)`
+  positioned target:    `c (1, 1, C)` · `bc (B, 1, C)` — one source per batch
+                        element shared over positions — · `sc (1, P, C)` ·
+                        `bsc (B, P, C)`
+
+These are the component-source shapes. Each site also carries a distinct delta source
+with the same leading shape and no C axis.
 
 One vocabulary for BOTH adversaries: persistent PGD implements all four; per-step
 (fresh) PGD implements `c`/`bc`/`bsc` and rejects `sc` at validation."""
@@ -336,10 +350,6 @@ class PGDConfig(LossMetricConfig, HiddenActsReconstructionMixin):
 class PGDReconLossConfig(PGDConfig):
     slow: ClassVar[bool] = False
     type: Literal["PGDReconLoss"] = "PGDReconLoss"
-
-
-class PGDReconLayerwiseLossConfig(PGDConfig):
-    type: Literal["PGDReconLayerwiseLoss"] = "PGDReconLayerwiseLoss"
 
 
 class PGDReconSubsetLossConfig(PGDConfig):
@@ -380,6 +390,10 @@ class PersistentPGDLossConfig(LossMetricConfig, HiddenActsReconstructionMixin):
             " computation."
         ),
     )
+    adversary_objective: Literal["term", "e2e"] = "e2e"
+    """Objective the persistent sources ascend. `e2e` excludes hidden-activation
+    reconstruction from source ascents while keeping it in the outer components/CI
+    objective; `term` makes the sources ascend the complete loss."""
 
 
 class PersistentPGDReconLossConfig(PersistentPGDLossConfig):
@@ -433,7 +447,9 @@ class CIHiddenActsReconLossConfig(BaseConfig):
 
 
 class CIHistogramsConfig(BaseConfig):
-    """`n_batches_accum=None` accumulates every batch in the eval pass. `density_heatmap_n_bins`
+    """The two value histograms bin exactly, over ONE eval batch — counts from batches binned
+    against their own min/max sit on different edges and cannot be summed — so
+    `n_batches_accum` may only be None or 1. `density_heatmap_n_bins`
     opts into the per-token per-component CI density heatmap (an on-device bincount into that
     many log-spaced `[1e-9, 1]` bands sharing the same forward, accumulated over EVERY batch);
     `None` disables it."""
@@ -574,10 +590,11 @@ class MuonOptimizerConfig(BaseConfig):
         default="optax",
         description=(
             "NS implementation. `optax` = per-leaf `optax.contrib.muon` (the reference"
-            " semantics, SPEC S20). `stacked` = same-shape leaves batched into"
-            " one NS with the stack axis sharded over (replicate, fsdp) — device-local"
-            " orthogonalization, no per-iteration collectives (`muon_stacked.py`); same"
-            " trajectory up to float reassociation (the SPEC D4 tolerance class)."
+            " semantics, SPEC S20). `stacked` = one batched NS per semantic kind's"
+            " stack, executed at the placement table's `ns_compute` waypoint row —"
+            " device-local orthogonalization, no per-iteration collectives"
+            " (`muon_stacked.py`); same trajectory up to float reassociation (the"
+            " SPEC D4 tolerance class)."
         ),
     )
     ns_steps: PositiveInt = Field(
@@ -608,16 +625,12 @@ AnyOptimizerConfig = Annotated[
 
 
 type AnyReconLossMetricConfig = (
-    ChunkwiseSubsetReconLossConfig
-    | CIMaskedReconLayerwiseLossConfig
-    | CIMaskedReconLossConfig
+    CIMaskedReconLossConfig
     | CIMaskedReconSubsetLossConfig
     | MergedStochasticSubsetPPGDReconLossConfig
     | PersistentPGDReconLossConfig
-    | PGDReconLayerwiseLossConfig
     | PGDReconLossConfig
     | PGDReconSubsetLossConfig
-    | StochasticReconLayerwiseLossConfig
     | StochasticReconLossConfig
     | StochasticReconSubsetLossConfig
     | UnmaskedReconLossConfig
@@ -628,7 +641,8 @@ AnyLossMetricConfig = Annotated[
     AnyReconLossMetricConfig
     | FaithfulnessLossConfig
     | ImportanceMinimalityLossConfig
-    | SmoothL0ImportanceMinimalityLossConfig,
+    | SmoothL0ImportanceMinimalityLossConfig
+    | NonlinearityLocalityLossConfig,
     Discriminator("type"),
 ]
 """The trainable losses. The hidden-acts metrics are EVAL vocabulary
@@ -653,19 +667,16 @@ class UnmaskedNoDeltaReconLossConfig(LossMetricConfig):
     every component mask `1.0` and every weight-delta mask `0.0`, so the FULL component
     sum alone must reconstruct the frozen output. Prevents components that never activate
     from interfering with the reconstruction (the tPD paper's CSS-only unmasked recon
-    term, Method details). Fully determined: no routing, sampling, or rider vocabulary
-    exists here, and it is non-target-only — the plain and target-pass unions have no
+    term, Method details). Fully determined: no routing, sampling, or optional
+    hidden-activation reconstruction fields exist here, and it is non-target-only — the plain and target-pass unions have no
     member for it."""
 
     type: Literal["UnmaskedNoDeltaReconLoss"] = "UnmaskedNoDeltaReconLoss"
 
 
 NontargetReconLossMetricConfig = (
-    ChunkwiseSubsetReconLossConfig
-    | CIMaskedReconLayerwiseLossConfig
-    | CIMaskedReconLossConfig
+    CIMaskedReconLossConfig
     | CIMaskedReconSubsetLossConfig
-    | StochasticReconLayerwiseLossConfig
     | StochasticReconLossConfig
     | StochasticReconSubsetLossConfig
     | UnmaskedNoDeltaReconLossConfig
@@ -705,8 +716,9 @@ class NontargetConfig(BaseConfig):
             name = cfg.name if cfg.name is not None else cfg.type
             assert name not in seen, f"duplicate non-target loss {name!r}"
             seen.add(name)
-            # `UnmaskedNoDeltaReconLoss` carries no rider field at all (fully determined;
-            # `extra="forbid"` refuses it at parse), so only the shared classes need the check.
+            # `UnmaskedNoDeltaReconLoss` has no `hidden_acts_reconstruction` field
+            # (fully determined; `extra="forbid"` refuses it at parse), so only the
+            # shared classes need the check.
             if not isinstance(cfg, UnmaskedNoDeltaReconLossConfig):
                 assert cfg.hidden_acts_reconstruction is None, (
                     f"nontarget.recon {cfg.type!r}: hidden_acts_reconstruction has no place on "
@@ -717,32 +729,104 @@ class NontargetConfig(BaseConfig):
         return self
 
 
-RuleConfig = dict[str, str | list[str] | None]
+RuleConfig = dict[SemanticAxis, MeshAxis | list[MeshAxis] | None]
 """One placement row as configured: semantic axis name -> mesh axis, ordered mesh axes,
-or null (replicate). Axis-name keys are free-form — semantic names are declared by the
-code that owns each tensor, not enumerated here."""
+or null (replicate). Both name vocabularies are the closed `axes.py` Literals, so an
+axis name outside them is refused at parse; rules construction additionally fails
+closed on any in-vocabulary key no tensor consumes at that row (a typo'd axis would
+silently replicate) and on mesh axes the run's bound mesh does not declare."""
 
 
-class ParamsPlacementConfig(BaseConfig):
-    """The trainable V/U placement rows of an explicit table (`placement.ParamsPlacement`)."""
+class ComponentsPlacementConfig(BaseConfig):
+    """The component V/U lifecycle rows of an explicit placement table. ONE set of rows
+    places every semantic group — there are no per-group fallback rows; a group these
+    rows cannot place refuses at rules construction."""
+
+    optimizer_state: RuleConfig
+    compute_weights: RuleConfig
+    faithfulness_weights: RuleConfig
+    faithfulness_deltas: RuleConfig
+    operands: RuleConfig
+    ns_compute: RuleConfig
+
+
+class CIWeightPlacementConfig(BaseConfig):
+    """The lifecycle rows for one CI weight family. `ns_compute` is the muon NS staging
+    waypoint (`stack` only; matrices whole per device — `placement.ns_staging_sharding`)."""
+
+    optimizer_state: RuleConfig
+    compute_weights: RuleConfig
+    operands: RuleConfig
+    ns_compute: RuleConfig
+
+
+class CIFnPlacementConfig(BaseConfig):
+    """Chunkwise CI-transformer weight and activation roles."""
+
+    attention: CIWeightPlacementConfig
+    ffn: CIWeightPlacementConfig
+    input: CIWeightPlacementConfig
+    output: CIWeightPlacementConfig
+    vectors: RuleConfig
+    activations: RuleConfig
+
+
+class ActivationsPlacementConfig(BaseConfig):
+    """The public and component-internal activation placement rows."""
+
+    external: RuleConfig
+    component: RuleConfig
+
+
+TargetActivationRef = Literal["external", "intermediate"]
+
+
+class TargetLinearPlacementConfig(BaseConfig):
+    """One frozen-target linear declaration."""
 
     persist: RuleConfig
-    zero1: RuleConfig | None = None
-    """The OPT-IN row for shape groups whose stack does not tile the persist stack
-    sharding. A bidirectional claim, checked at config build (`placement.from_config`):
-    absence is strictness (a non-tiling group is a loud error), and declaring it when
-    every group tiles is equally an error (a declared-but-unreachable arm)."""
-    forward: RuleConfig
+    operand: RuleConfig
+    input: TargetActivationRef
+    output: TargetActivationRef
+
+
+class TargetComponentLinearPlacementConfig(BaseConfig):
+    """The component-replaced linear's public activation contract."""
+
+    input: TargetActivationRef
+    output: TargetActivationRef
+
+
+class TargetWeightPlacementConfig(BaseConfig):
+    """A frozen target weight's resting and execution layouts."""
+
+    persist: RuleConfig
+    operand: RuleConfig
+
+
+class TargetPlacementConfig(BaseConfig):
+    """Every frozen-target weight role and its execution contract."""
+
+    embedding: TargetWeightPlacementConfig
+    normalization: RuleConfig
+    position_encoding: RuleConfig
+    column: TargetLinearPlacementConfig
+    row: TargetLinearPlacementConfig
+    output: TargetWeightPlacementConfig
+    intermediate: RuleConfig
+    component: TargetComponentLinearPlacementConfig
 
 
 class PlacementTableConfig(BaseConfig):
     """An explicit placement table (`runtime.sharding`), mirroring the typed
     `placement.PlacementRules`. The row vocabulary is CLOSED (extra keys are a parse
     error); rule values are free-form axis-name -> mesh-axes mappings, where YAML list
-    order is semantics (nested-axis linearization — PLACEMENT_DESIGN.md lesson 4)."""
+    order is semantics (nested-axis linearization — PLACEMENT_DESIGN.md invariant 5)."""
 
-    params: ParamsPlacementConfig
-    activations: RuleConfig
+    components: ComponentsPlacementConfig
+    ci_fn: CIFnPlacementConfig
+    activations: ActivationsPlacementConfig
+    target: TargetPlacementConfig
 
 
 class PDConfigBase(BaseConfig):
@@ -781,6 +865,8 @@ class PDConfigBase(BaseConfig):
 
 class PDConfig(PDConfigBase):
     """The plain-VPD algorithm shape: the full loss vocabulary + the faithfulness warmup."""
+
+    type: Literal["faithful"] = "faithful"
 
     loss_metrics: list[AnyLossMetricConfig] = Field(
         ...,
@@ -843,6 +929,20 @@ class TargetedPDConfig(PDConfigBase):
     @model_validator(mode="after")
     def validate_loss_metrics(self) -> Self:
         _validate_training_losses(self.loss_metrics)
+        for metric in self.loss_metrics:
+            match metric:
+                case (
+                    ImportanceMinimalityLossConfig(frequency=frequency)
+                    | SmoothL0ImportanceMinimalityLossConfig(frequency=frequency)
+                ) if frequency is not None:
+                    assert frequency.ema_halflife_steps is None, (
+                        "frequency.ema_halflife_steps is not implemented for the targeted "
+                        "(tPD) objective: the EMA carries one frequency stream per site, and "
+                        "the two-pass step takes the penalty on two independent streams "
+                        "(SPEC S8'' — plain PD only)"
+                    )
+                case _:
+                    pass
         return self
 
 
@@ -854,8 +954,9 @@ off a shape-blind `pd` take this union; base-field-only consumers take `PDConfig
 def _validate_training_losses(loss_metrics: Sequence[AnyLossMetricConfig]) -> None:
     """The role/identity facts every training-loss list must satisfy, refused at parse:
     coefficients set, identities unique (`name or type` — the logged instance key),
-    exactly one importance-minimality term, at least one recon term. Faithfulness
-    multiplicity is the plain shape's own claim (the targeted union has no member)."""
+    exactly one importance-minimality term, at least one recon term, and at most one
+    nonlinearity term. Faithfulness multiplicity is the plain shape's own claim (the
+    targeted union has no member)."""
     seen: set[str] = set()
     for cfg in loss_metrics:
         assert cfg.coeff is not None, f"loss_metrics.{cfg.type!r} must set `coeff`"
@@ -875,10 +976,17 @@ def _validate_training_losses(loss_metrics: Sequence[AnyLossMetricConfig]) -> No
             cfg,
             FaithfulnessLossConfig
             | ImportanceMinimalityLossConfig
-            | SmoothL0ImportanceMinimalityLossConfig,
+            | SmoothL0ImportanceMinimalityLossConfig
+            | NonlinearityLocalityLossConfig,
         )
     ]
     assert recon_terms, "need at least one recon loss term"
+    nonlinearity_terms = [
+        cfg for cfg in loss_metrics if isinstance(cfg, NonlinearityLocalityLossConfig)
+    ]
+    assert len(nonlinearity_terms) <= 1, (
+        f"need at most one nonlinearity-locality term, got {len(nonlinearity_terms)}"
+    )
 
 
 class DenseLogPhase(BaseConfig):
@@ -907,26 +1015,45 @@ class KeepAllCheckpoints(BaseConfig):
 
 
 CheckpointRetention = Annotated[KeepLastNCheckpoints | KeepAllCheckpoints, Discriminator("kind")]
-"""Which of a run's written checkpoints survive on disk. The trainer always checkpoints — on
-`Cadence.save_every`, on SIGTERM, and at the final step — so this axis only prunes what has
-already been written, and there is deliberately no keep-nothing arm."""
+"""Which of a periodic run's written checkpoints survive on disk. Retention only prunes
+what has already been written; writing nothing at all is `NoCheckpointing` — a sibling
+`Checkpointing` arm, deliberately not a keep-nothing retention kind."""
+
+
+class PeriodicCheckpointing(BaseConfig):
+    """Checkpoint on `save_every`, on SIGTERM, and at the final step — the resumable run
+    shape (SPEC S22). Under `keep_last` retention the retained window always contains the
+    newest checkpoint, so the final-step one is never pruned."""
+
+    kind: Literal["periodic"] = "periodic"
+    save_every: PositiveInt
+    retention: CheckpointRetention
+
+
+class NoCheckpointing(BaseConfig):
+    """The run never writes `ckpts/` — no periodic saves, no final-step save, and no
+    SIGTERM save either: a preemption or cancel exits without writing, so an interrupted
+    run costs zero checkpoint bytes. With nothing to resume from, the run id is
+    single-entry — re-entering it is refused at engine startup. For probe/measurement
+    runs whose trajectory is throwaway; the trained decomposition is unrecoverable."""
+
+    kind: Literal["none"] = "none"
+
+
+Checkpointing = Annotated[PeriodicCheckpointing | NoCheckpointing, Discriminator("kind")]
+"""Whether (and on what rhythm) the trainer writes `ckpts/<step>/` checkpoints."""
 
 
 class Cadence(BaseConfig):
-    """Rhythm of non-eval loop emissions: train-log and checkpoint periods.
+    """Rhythm of non-eval loop emissions: the train-log period and checkpointing.
 
     Held separately from `RunSink` so the sink only owns *where* output goes; `Cadence`
     owns *when* train logs and checkpoints fire. Eval timing lives on `EvalLoop`,
-    alongside the runtime objects it depends on. The trainer (`param_decomp.core.run`) loop
-    always checkpoints at the final step regardless of `save_every`.
+    alongside the runtime objects it depends on.
     """
 
     train_log_every: PositiveInt
-    save_every: PositiveInt
-    checkpoint_retention: CheckpointRetention
-    """Which orbax `ckpts/<step>/` checkpoints survive each checkpoint write. Under
-    `keep_last` the retained window always contains the newest checkpoint, so the
-    final-step one is never pruned."""
+    checkpointing: Checkpointing
     dense_log_phase: DenseLogPhase | None = None
     """Optional denser logging for early training; `None` means a flat `train_log_every`."""
 
@@ -979,18 +1106,16 @@ class ResumeProvenance(BaseConfig):
 # ---------------------------------------------------------------------------
 
 METRIC_SHORT_NAMES: dict[str, str] = {
-    "CIMaskedReconLayerwiseLoss": "CIMaskReconLayer",
     "CIMaskedReconLoss": "CIMaskRecon",
     "CIMaskedReconSubsetLoss": "CIMaskReconSub",
     "FaithfulnessLoss": "Faith",
     "ImportanceMinimalityLoss": "ImpMin",
+    "NonlinearityLocalityLoss": "Nonlinearity",
     "SmoothL0ImportanceMinimalityLoss": "SmoothL0ImpMin",
     "PersistentPGDReconLoss": "PersistPGDRecon",
-    "PGDReconLayerwiseLoss": "PGDReconLayer",
     "PGDReconLoss": "PGDRecon",
     "PGDReconSubsetLoss": "PGDReconSub",
     "StochasticHiddenActsReconLoss": "StochHiddenActRecon",
-    "StochasticReconLayerwiseLoss": "StochReconLayer",
     "StochasticReconLoss": "StochRecon",
     "StochasticReconSubsetLoss": "StochReconSub",
     "UnmaskedReconLoss": "UnmaskedRecon",

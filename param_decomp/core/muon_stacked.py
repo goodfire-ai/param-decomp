@@ -1,30 +1,48 @@
 """Stacked-NS Muon: optax.contrib.muon semantics with the Newton-Schulz orthogonalization
-batched across same-shape leaves and sharded on the stack axis (SPEC S20, `impl: stacked`).
+batched per semantic kind and sharded on the stack axis (SPEC S20, `impl: stacked`).
 
 Why: GSPMD lowers per-leaf NS on ÷N-sharded fp32 masters into per-iteration full-Gram
 all-reduces with the largest matmul replicated on every device — serialized collectives
 that dominate the optimizer step.
-Stacking same-shape matrices and sharding the STACK axis makes each NS device-local:
-one reshard in, one out, zero per-iteration collectives (the Kimi "Muon is Scalable"
-parameter-partitioned recipe, expressed GSPMD-natively).
+Each muon leaf is one kind's `[g, rows, cols]` stack; sharding the STACK axis makes each
+NS device-local: a short hop chain in, its reverse out, zero per-iteration collectives
+(the Kimi "Muon is Scalable" parameter-partitioned recipe, expressed GSPMD-natively).
+
+Why the entry/exit comms are hand-pinned rather than left to declarative lowering: under
+the Explicit mesh the naive per-leaf spelling does not even trace — NS's Gram matmul puts
+the sharded matrix axis on BOTH result dims (`ShardingTypeError`); and in Auto mode the
+partitioner re-gathers the sharded axis and all-reduces Gram partials INSIDE the NS
+while-loop every iteration — it never hoists to reshard-once/compute-local/reshard-back.
+
+The staging is DECLARED, not derived: each muon leaf's `waypoints` sharding is its
+placement table's `ns_compute` row verbatim (`placement.ns_staging_sharding`; a kind
+whose stack does not tile the declared split refuses at the stacked-muon consumer's
+claim, `placement.assert_stacked_muon_*_staging` — nothing is ever padded or gathered
+whole). NS executes AT the waypoint, reached by the
+`staging_hops` chain — one mesh axis moved per reshard, because a single reshard that
+both moves axes between dims and gathers others trips the SPMD
+involuntary-full-rematerialization fallback (which replicates the whole tensor). The
+row language shards the stack axis only: a matrix-axis-carrying waypoint — the persist
+row verbatim included — is refused at table build, for that same fallback (pinned by
+the fd-2-warning tests in tests/test_optim_torch_parity.py) and because a
+matrix-sharded NS operand is an explicit-mode type error on the Gram contraction.
 
 Structure mirrors `optax.contrib.muon` exactly — same `MuonState(count, mu, ns_coeffs)`,
 same muon/adam partition, same chain (NS -> consistent-rms shape scale -> weight decay ->
 lr) — so checkpoints round-trip across `impl: optax|stacked` unchanged. Only the NS call
-differs: leaves are canonicalized to `[g, rows<=cols]`, grouped by 2D shape, concatenated,
-optionally cast to `ns_dtype`, orthogonalized once per group, and unstacked. Stacking
-reorders float ops (concat + shared vmap), so trajectories match `impl: optax` only up to
-reassociation — same tolerance class as device-count invariance (SPEC D4).
+differs: each leaf is canonicalized to `[g, rows<=cols]`, cast to `ns_dtype`, staged at
+its waypoint, orthogonalized, and landed back on its own layout. The vmap batching
+reorders float ops, so trajectories match `impl: optax` only up to reassociation — same
+tolerance class as device-count invariance (SPEC D4).
 """
 
-from collections import defaultdict
 from collections.abc import Callable, Sequence
 from typing import Any
 
 import jax
 import jax.numpy as jnp
 import optax
-from jax.sharding import Mesh, NamedSharding
+from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array
 
@@ -32,14 +50,22 @@ from jaxtyping import Array
 # private import is stable. `muon()` itself builds from these same pieces.
 from optax.contrib._muon import orthogonalize_via_newton_schulz, scale_by_shape
 
+from param_decomp.core.axes import MeshAxis
+
 _NS_DIMS = optax.contrib.MuonDimensionNumbers(reduction_axis=-2, output_axis=-1)
 _2D_DIMS = optax.contrib.MuonDimensionNumbers(reduction_axis=0, output_axis=1)
+
+NSWaypoints = Callable[[optax.Updates], Any]
+"""Maps the muon update tree to a same-structure tree of per-leaf staging shardings —
+each leaf's `ns_compute` placement row at the canonical `[g, rows<=cols]` rank
+(`placement.ns_staging_sharding`)."""
 
 
 def _canonicalize(leaf: Array) -> tuple[Array, bool]:
     """View a muon leaf as a `[g, a, b]` stack with `a <= b` (2D leaves get `g=1`).
     NS orthogonalization and the `consistent_rms`/`sqrt(max(fan_in, fan_out))` scalings
-    are transpose-symmetric, so orientation only affects grouping, not semantics."""
+    are transpose-symmetric, so orientation only affects the canonical view, not
+    semantics."""
     assert leaf.ndim in (2, 3), (
         f"stacked NS handles only 2D matrices and 3D [stack, rows, cols] stacks, got shape"
         f" {leaf.shape} — extend `_canonicalize` for this layout, or run this parameter"
@@ -48,6 +74,44 @@ def _canonicalize(leaf: Array) -> tuple[Array, bool]:
     stacked = leaf[None] if leaf.ndim == 2 else leaf
     transposed = stacked.shape[-2] > stacked.shape[-1]
     return (jnp.swapaxes(stacked, -2, -1) if transposed else stacked), transposed
+
+
+def _spec_entry_axes(entry: object) -> tuple[MeshAxis, ...]:
+    if entry is None:
+        return ()
+    if isinstance(entry, str):
+        return (entry,)  # pyright: ignore[reportReturnType]
+    return tuple(entry)  # pyright: ignore[reportArgumentType]
+
+
+def staging_hops(source: P, target_stack: tuple[MeshAxis, ...]) -> list[P]:
+    """The staging path from a canonical `[g, rows, cols]` master layout to its NS-legal
+    waypoint (`P(target_stack, None, None)`), one mesh axis moved per reshard.
+
+    A single reshard that simultaneously moves axes between dims and gathers others is
+    exactly what trips GSPMD's involuntary-full-rematerialization fallback (it replicates
+    the whole tensor as its last resort — the fd-2-warning tests pin absence); every
+    single-axis move and the one trailing matrix-dim gather lower shard-to-shard. Hops:
+    per target stack axis in declared order, move it from whichever matrix dim holds it
+    (an axis absent from the source is a comms-free split); then one final reshard drops
+    every remaining matrix-dim (and surplus stack) axis."""
+    stack = list(_spec_entry_axes(source[0]))
+    rows = list(_spec_entry_axes(source[1]))
+    cols = list(_spec_entry_axes(source[2]))
+    hops: list[P] = []
+    for axis in target_stack:
+        if axis in stack:
+            continue
+        if axis in rows:
+            rows.remove(axis)
+        elif axis in cols:
+            cols.remove(axis)
+        stack.append(axis)
+        hops.append(P(tuple(stack), tuple(rows) or None, tuple(cols) or None))
+    final = P(target_stack or None, None, None)
+    if not hops or hops[-1] != final:
+        hops.append(final)
+    return hops
 
 
 def _declares_executed_convention(spec: optax.contrib.MuonDimensionNumbers, ndim: int) -> bool:
@@ -104,58 +168,74 @@ def _muon_mask_from_validated_dim_numbers(
     )
 
 
-def _pad_to_multiple(stack: Array, multiple: int) -> Array:
-    remainder = stack.shape[0] % multiple
-    if remainder == 0:
-        return stack
-    pad = multiple - remainder
-    return jnp.concatenate([stack, jnp.zeros((pad, *stack.shape[1:]), stack.dtype)], axis=0)
-
-
-def _grouped_newton_schulz(
+def _staged_newton_schulz(
     mu_hat: optax.Updates,
     ns_coeffs: Array,
     ns_steps: int,
     ns_dtype: jnp.dtype,
-    stack_sharding: NamedSharding | None,
+    waypoints: NSWaypoints | None,
 ) -> optax.Updates:
     """Orthogonalize every leaf of `mu_hat` (all muon-labeled by the partition) via ONE
-    batched NS per distinct canonical 2D shape, the batch axis sharded per
-    `stack_sharding` so each 2D orthogonalization runs device-local."""
-    leaves, treedef = jax.tree.flatten(mu_hat)
-    canon = [_canonicalize(leaf) for leaf in leaves]
-    groups: dict[tuple[int, int], list[int]] = defaultdict(list)
-    for idx, (stacked, _) in enumerate(canon):
-        rows, cols = stacked.shape[-2:]
-        groups[(rows, cols)].append(idx)
+    batched NS per leaf — each leaf IS one semantic kind's stack, so no cross-kind
+    grouping, concatenation, or padding exists.
 
-    n_shards = 1 if stack_sharding is None else stack_sharding.num_devices
-    out: dict[int, Array] = {}
-    for shape, indices in groups.items():
-        stacks = [canon[i][0] for i in indices]
-        sizes = [s.shape[0] for s in stacks]
-        out_dtype = stacks[0].dtype
-        # Cast BEFORE the sharding constraint so the ingress reshard moves ns_dtype
-        # bytes (half, for bf16 NS), not fp32.
-        grouped = jnp.concatenate(stacks, axis=0).astype(ns_dtype)
-        grouped = _pad_to_multiple(grouped, n_shards)
-        if stack_sharding is not None:
-            grouped = jax.lax.with_sharding_constraint(grouped, stack_sharding)
-        orthogonalized = orthogonalize_via_newton_schulz(
-            grouped,
+    Placed execution (`waypoints` given) is one generic choreography per leaf: cast to
+    `ns_dtype` and stage to the leaf's `ns_compute` waypoint via the single-axis-move
+    hop chain (`staging_hops`; the cast sits on the master layout, so the staging
+    collectives move ns_dtype bytes and never ride an unpinned layout transition — task
+    570); NS executes AT the waypoint — whole matrices per device, which is what keeps
+    the NS loop collective-free (a matrix-sharded operand is an explicit-mode type error
+    on the Gram contraction); egress reverses the hop chain and lands the update on the
+    leaf's own layout (the optimizer add demands exact sharding agreement under the
+    Explicit mesh). `waypoints=None` (no mesh: toys, CPU tests) is the same math with no
+    reshards."""
+    leaves, treedef = jax.tree.flatten(mu_hat)
+    per_leaf_waypoints = (
+        [None] * len(leaves) if waypoints is None else jax.tree.flatten(waypoints(mu_hat))[0]
+    )
+    assert len(per_leaf_waypoints) == len(leaves), (
+        f"ns_compute waypoints tree yields {len(per_leaf_waypoints)} leaves for"
+        f" {len(leaves)} muon leaves — the waypoints callable must mirror the update"
+        f" tree's structure"
+    )
+
+    def orthogonalize(stacked: Array) -> Array:
+        return orthogonalize_via_newton_schulz(
+            stacked,
             jnp.asarray(ns_coeffs, ns_dtype),
             ns_steps=ns_steps,
             dimension_numbers=_NS_DIMS,
-        ).astype(out_dtype)
-        offset = 0
-        for i, size in zip(indices, sizes, strict=True):
-            piece = orthogonalized[offset : offset + size]
-            offset += size
-            _, transposed = canon[i]
-            piece = jnp.swapaxes(piece, -2, -1) if transposed else piece
-            out[i] = piece[0] if leaves[i].ndim == 2 else piece
-        del shape
-    return jax.tree.unflatten(treedef, [out[i] for i in range(len(leaves))])
+        )
+
+    out: list[Array] = []
+    for leaf, waypoint in zip(leaves, per_leaf_waypoints, strict=True):
+        stacked, transposed = _canonicalize(leaf)
+        stacked = stacked.astype(ns_dtype)
+        if waypoint is None:
+            orthogonalized = orthogonalize(stacked)
+        else:
+            entries = tuple(jax.typeof(stacked).sharding.spec)
+            source = P(*entries, *(None,) * (3 - len(entries)))
+            hops = staging_hops(source, _spec_entry_axes(waypoint.spec[0]))
+            for spec in hops:
+                stacked = jax.sharding.reshard(stacked, NamedSharding(waypoint.mesh, spec))
+            orthogonalized = orthogonalize(stacked)
+            # The reversed hop chain lands back on the master canonical layout with the
+            # collectives still moving ns_dtype bytes; the cast to the leaf dtype is
+            # then layout-local.
+            for spec in reversed([source, *hops[:-1]]):
+                orthogonalized = jax.sharding.reshard(
+                    orthogonalized, NamedSharding(waypoint.mesh, spec)
+                )
+        orthogonalized = orthogonalized.astype(leaf.dtype)
+        orthogonalized = jnp.swapaxes(orthogonalized, -2, -1) if transposed else orthogonalized
+        orthogonalized = orthogonalized[0] if leaf.ndim == 2 else orthogonalized
+        if waypoint is not None:
+            orthogonalized = jax.sharding.reshard(
+                orthogonalized, NamedSharding(waypoint.mesh, jax.typeof(leaf).sharding.spec)
+            )
+        out.append(orthogonalized)
+    return jax.tree.unflatten(treedef, out)
 
 
 def scale_by_stacked_muon(
@@ -163,10 +243,10 @@ def scale_by_stacked_muon(
     beta: float,
     ns_steps: int,
     ns_dtype: jnp.dtype,
-    stack_sharding: NamedSharding | None,
+    waypoints: NSWaypoints | None,
 ) -> optax.GradientTransformation:
     """`optax.contrib.scale_by_muon` (nesterov, non-adaptive, frobenius) with the per-leaf
-    NS replaced by `_grouped_newton_schulz`. State is optax's `MuonState` verbatim."""
+    NS replaced by `_staged_newton_schulz`. State is optax's `MuonState` verbatim."""
     reference = optax.contrib.scale_by_muon(beta=beta, ns_steps=ns_steps, nesterov=True)
 
     def update_fn(
@@ -181,8 +261,8 @@ def scale_by_stacked_muon(
             optax.tree.bias_correction(mu, beta, optax.safe_increment(count_inc)),
             optax.tree.bias_correction(updates, beta, count_inc),
         )
-        orthogonalized = _grouped_newton_schulz(
-            mu_hat, jnp.asarray(state.ns_coeffs), ns_steps, ns_dtype, stack_sharding
+        orthogonalized = _staged_newton_schulz(
+            mu_hat, jnp.asarray(state.ns_coeffs), ns_steps, ns_dtype, waypoints
         )
         return orthogonalized, optax.contrib.MuonState(
             count=count_inc, mu=mu, ns_coeffs=state.ns_coeffs
@@ -200,17 +280,14 @@ def stacked_muon(
     muon_weight_dimension_numbers: Callable[[optax.Params], optax.Params] | None,
     ns_steps: int,
     ns_dtype: jnp.dtype,
-    mesh: Mesh | None,
+    waypoints: NSWaypoints | None,
 ) -> optax.GradientTransformation:
     """Drop-in for `optax.contrib.muon(...)` at our call site (`run_state`): same
-    muon/adam leaf partition, same post-NS chain, same state pytree — NS runs stacked,
-    sharded over `(replicate, fsdp)` when a mesh is given (None => single-device, e.g.
-    CPU tests and the toys). Muon-labeled leaves must declare exactly the trailing-two
-    convention the kernel executes; anything else dies at optimizer build
-    (`_muon_mask_from_validated_dim_numbers`)."""
-    stack_sharding = (
-        NamedSharding(mesh, P(("replicate", "fsdp"), None, None)) if mesh is not None else None
-    )
+    muon/adam leaf partition, same post-NS chain, same state pytree — NS runs stacked
+    per kind, its staging declared by `waypoints` (None => unplaced single-device
+    execution, e.g. CPU tests and the toys). Muon-labeled leaves must declare exactly
+    the trailing-two convention the kernel executes; anything else dies at optimizer
+    build (`_muon_mask_from_validated_dim_numbers`)."""
     dim_nums = muon_weight_dimension_numbers
     if dim_nums is None:
         dim_nums = lambda params: jax.tree.map(lambda x: _NS_DIMS if x.ndim == 2 else None, params)
@@ -222,7 +299,7 @@ def stacked_muon(
                     beta=beta,
                     ns_steps=ns_steps,
                     ns_dtype=ns_dtype,
-                    stack_sharding=stack_sharding,
+                    waypoints=waypoints,
                 ),
                 scale_by_shape(
                     weight_dimension_numbers=lambda updates: jax.tree.map(

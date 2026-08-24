@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from param_decomp.core import well_temperedness_eval
+from param_decomp.core.ci_fn import PlacedCIFn
 from param_decomp.core.configs import WellTemperednessConfig
 from param_decomp.core.eval_schedule import Every
 from param_decomp.core.run import EvalInvocation
@@ -50,7 +51,13 @@ def test_disabled_figure_rendering_never_builds_a_png(monkeypatch: pytest.Monkey
     )
     state = SimpleNamespace(decomposition=SimpleNamespace(components=object(), ci_fn=object()))
 
-    record = operation.run(EvalInvocation(cast(Any, state), now_step=1))
+    record = operation.run(
+        EvalInvocation(
+            cast(Any, state),
+            now_step=1,
+            placed_ci_fn=PlacedCIFn(fn=cast(Any, None), placement=None),
+        )
+    )
 
     assert record
     assert all("figures" not in name for name in record)

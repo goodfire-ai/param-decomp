@@ -16,19 +16,21 @@ import pytest
 from param_decomp.core.ci_fn import (
     Chunk,
     ChunkwiseTransformerCIArch,
-    CIFn,
     MHACIAttention,
+    PlacedCIFn,
     build_ci_fn,
+    resolve_ci_placement,
 )
 from param_decomp.core.components import SiteSpec
 from param_decomp.core.losses import relative_squared_error
 from param_decomp.core.model import (
     EMPTY_CAPTURE_KEYS,
     CaptureKeys,
-    DecomposedModel,
     ForwardResult,
     Masking,
+    PlacedModel,
 )
+from param_decomp.core.placement import PlacementRules
 from param_decomp.core.recon import OutputAndHiddenActsReconstruction
 from param_decomp.core.recon_eval import FreshPGDReconEval
 from param_decomp.experiments.lm.eval import (
@@ -50,7 +52,7 @@ def test_row_masked_relative_squared_error_excludes_padding_from_both_sums():
     assert float(relative_squared_error(masked, clean, valid_row_mask=row_mask)) == 1.0
 
 
-def _build_ci_fn(model: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
+def _build_ci_fn(model: PlacedModel, n_embd: int, key: jax.Array) -> PlacedCIFn:
     """One transformer chunk over all sites, reading the residual entering the first
     decomposed block. The old `CIArch(16, 1, 2, 32)` dims map onto the chunk arch."""
     site_names = model.site_names
@@ -65,7 +67,10 @@ def _build_ci_fn(model: DecomposedModel, n_embd: int, key: jax.Array) -> CIFn:
         ffn_kind="gelu",
         learned_norm_scale=False,
     )
-    return build_ci_fn(arch, model.sites, key)
+    return PlacedCIFn(
+        fn=build_ci_fn(arch, model.sites, key),
+        placement=resolve_ci_placement(arch, model.placement),
+    )
 
 
 class _PositionlessStub(eqx.Module):
@@ -79,8 +84,8 @@ class _PositionlessStub(eqx.Module):
     def site_names(self) -> tuple[str, ...]:
         return tuple(s.name for s in self.sites)
 
-    def shardings(self, mesh: Any) -> "_PositionlessStub":
-        del mesh
+    def shardings(self, placement: PlacementRules) -> "_PositionlessStub":
+        del placement
         raise AssertionError("positionless stub fn must not be called")
 
     def recon_loss_fn(self, masked_output: Any, clean_output: Any) -> jax.Array:
@@ -95,12 +100,17 @@ class _PositionlessStub(eqx.Module):
         del keys
 
     def clean_forward(
-        self, resid: Any, capture_keys: CaptureKeys = EMPTY_CAPTURE_KEYS
+        self,
+        resid: Any,
+        capture_keys: CaptureKeys = EMPTY_CAPTURE_KEYS,
+        *,
+        placement: PlacementRules | None,
     ) -> ForwardResult:
-        del resid, capture_keys
+        del resid, capture_keys, placement
         raise AssertionError("positionless stub fn must not be called")
 
-    def prepare_compute_weights(self, vu: Any) -> Any:
+    def prepare_compute_weights(self, vu: Any, placement: object | None) -> Any:
+        del placement
         return vu
 
     def component_activation_forward(
@@ -110,8 +120,9 @@ class _PositionlessStub(eqx.Module):
         /,
         *,
         capture_keys: CaptureKeys,
+        placement: PlacementRules | None,
     ) -> tuple[ForwardResult, dict[str, jax.Array]]:
-        del prepared_weights, inputs, capture_keys
+        del prepared_weights, inputs, capture_keys, placement
         raise NotImplementedError
 
     def stack_ci(self, ci_lower: dict[str, Any]) -> dict[str, Any]:
@@ -124,10 +135,14 @@ class _PositionlessStub(eqx.Module):
         /,
         *,
         masking: Masking,
+        placement: PlacementRules | None,
         capture_keys: CaptureKeys = EMPTY_CAPTURE_KEYS,
         remat: bool,
     ) -> ForwardResult:
-        del prepared_weights, inputs, masking, capture_keys, remat
+        del prepared_weights, inputs, masking, placement, capture_keys, remat
+        raise AssertionError("positionless stub fn must not be called")
+
+    def target_weight_sq_norms(self) -> dict[str, jax.Array]:
         raise AssertionError("positionless stub fn must not be called")
 
     def weight_deltas(self, vu: Any) -> dict[str, jax.Array]:
@@ -135,11 +150,12 @@ class _PositionlessStub(eqx.Module):
         raise AssertionError("positionless stub fn must not be called")
 
 
-def _positionless_model() -> DecomposedModel:
-    return _PositionlessStub(
-        sites=(SiteSpec("linear1", 5, 2, 8), SiteSpec("linear2", 2, 5, 6)),
+def _positionless_model() -> PlacedModel:
+    stub = _PositionlessStub(
+        sites=(SiteSpec("linear1", 5, 2, 8, "linear1"), SiteSpec("linear2", 2, 5, 6, "linear2")),
         has_position_axis=False,
     )
+    return PlacedModel(model=stub, placement=None)
 
 
 def test_next_token_cross_entropy_matches_manual():
@@ -157,7 +173,9 @@ def test_eval_step_keys_identities_and_determinism():
     cfg = tiny_glu_cfg()
     C = 8
     sites = glu_site_specs(cfg, mlp_family_site_cs(4, 5, C))
-    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = PlacedModel(
+        model=tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0)), placement=None
+    )
 
     from param_decomp.core.components import init_component_stacks
 
@@ -171,7 +189,7 @@ def test_eval_step_keys_identities_and_determinism():
     # ci_alive_threshold=-1 makes every component alive -> L0 == C exactly.
     eval_step = make_eval_step(
         model,
-        ci_fn.capture_keys,
+        ci_fn.fn.capture_keys,
         rounding_threshold=-1.0,
         ci_alive_threshold=-1.0,
         l0_group_patterns=None,
@@ -210,7 +228,7 @@ def test_eval_step_keys_identities_and_determinism():
 
     eval_step_dead = make_eval_step(
         model,
-        ci_fn.capture_keys,
+        ci_fn.fn.capture_keys,
         rounding_threshold=-1.0,
         ci_alive_threshold=1.5,
         l0_group_patterns=None,
@@ -228,7 +246,9 @@ def test_eval_step_fresh_pgd_probe():
     cfg = tiny_glu_cfg()
     C = 8
     sites = glu_site_specs(cfg, mlp_family_site_cs(4, 4, C))
-    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = PlacedModel(
+        model=tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0)), placement=None
+    )
 
     from param_decomp.core.components import init_component_stacks
 
@@ -239,7 +259,7 @@ def test_eval_step_fresh_pgd_probe():
 
     ascended = make_eval_step(
         model,
-        ci_fn.capture_keys,
+        ci_fn.fn.capture_keys,
         rounding_threshold=0.0,
         ci_alive_threshold=0.0,
         l0_group_patterns=None,
@@ -248,7 +268,7 @@ def test_eval_step_fresh_pgd_probe():
     )
     unascended = make_eval_step(
         model,
-        ci_fn.capture_keys,
+        ci_fn.fn.capture_keys,
         rounding_threshold=0.0,
         ci_alive_threshold=0.0,
         l0_group_patterns=None,
@@ -270,7 +290,9 @@ def test_eval_step_fresh_pgd_probe():
 def test_eval_step_fresh_pgd_hidden_acts_reconstruction_uses_and_logs_combined_objective():
     cfg = tiny_glu_cfg()
     sites = glu_site_specs(cfg, mlp_family_site_cs(4, 4, 8))
-    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = PlacedModel(
+        model=tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0)), placement=None
+    )
 
     from param_decomp.core.components import init_component_stacks
 
@@ -282,7 +304,7 @@ def test_eval_step_fresh_pgd_hidden_acts_reconstruction_uses_and_logs_combined_o
     )
     eval_step = make_eval_step(
         model,
-        ci_fn.capture_keys,
+        ci_fn.fn.capture_keys,
         rounding_threshold=0.0,
         ci_alive_threshold=0.0,
         l0_group_patterns=None,
@@ -309,7 +331,9 @@ def test_eval_step_fresh_pgd_ascends_hidden_acts_reconstruction_objective():
     """Changing only the auxiliary coefficient changes a one-step PGD trajectory."""
     cfg = tiny_glu_cfg()
     sites = glu_site_specs(cfg, mlp_family_site_cs(4, 4, 8))
-    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = PlacedModel(
+        model=tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0)), placement=None
+    )
 
     from param_decomp.core.components import init_component_stacks
 
@@ -321,7 +345,7 @@ def test_eval_step_fresh_pgd_ascends_hidden_acts_reconstruction_objective():
     def run(coeff: float) -> Mapping[str, jax.Array]:
         step = make_eval_step(
             model,
-            ci_fn.capture_keys,
+            ci_fn.fn.capture_keys,
             rounding_threshold=0.0,
             ci_alive_threshold=0.0,
             l0_group_patterns=None,
@@ -353,20 +377,35 @@ def test_eval_step_fresh_pgd_probe_device_count_invariant():
     (torch all-reduce-AVG parity, S15/E19) — NOT a per-shard partial. A per-shard
     partial would flip signs on some shards, send the ascent down a different
     trajectory, and yield a different final KL. Comparing the single-layout run
-    (mesh=None, whole batch on one device) against the GSPMD batch-sharded run pins
-    that the JAX cotangent into the replicated source is the global mean. At 1 device
-    the two paths are identical; the test bites under
+    (mesh=None, whole batch on one device) against the batch-sharded run under the
+    activated mesh (`jax.set_mesh`, as production's run boundary does) pins that the
+    JAX cotangent into the replicated source is the global mean. At 1 device the two
+    paths are identical; the test bites under
     `XLA_FLAGS=--xla_force_host_platform_device_count=4`.
     """
-    from param_decomp.core.components import init_component_stacks
-    from param_decomp.core.sharding import hsdp_mesh
+    import numpy as np
+    from jax.sharding import AxisType, Mesh
 
-    mesh = hsdp_mesh()
-    n_dev = mesh.devices.size
+    from param_decomp.core.components import init_component_stacks
+    from param_decomp.core.placement import from_config
+    from param_decomp.core.sharding import HSDP_MESH_AXES
+
+    # The dp extent caps at 4: the guard is one scalar (the batch-mean KL), and the mean
+    # over shards cancels the bugged per-shard trajectories' divergence as shards grow —
+    # at 8 simulated devices the R-7 signal (~8e-6 here) sits within ~2.5x of benign
+    # reassociation (~3e-6), while at <=4 shards it clears the tolerance by >=40x.
+    n_dev = min(4, jax.device_count())
+    mesh = Mesh(
+        np.asarray(jax.devices()[:n_dev]).reshape(1, n_dev, 1),
+        HSDP_MESH_AXES,
+        axis_types=(AxisType.Explicit,) * 3,
+    )
 
     cfg = tiny_glu_cfg()
     sites = glu_site_specs(cfg, mlp_family_site_cs(4, 4, 8))
-    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = PlacedModel(
+        model=tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0)), placement=None
+    )
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = _build_ci_fn(model, cfg.n_embd, jax.random.PRNGKey(2))
 
@@ -374,16 +413,34 @@ def test_eval_step_fresh_pgd_probe_device_count_invariant():
     token_ids = jax.random.randint(jax.random.PRNGKey(3), (b, t), 0, cfg.vocab_size)
 
     single_step = make_eval_step(
-        model, ci_fn.capture_keys, rounding_threshold=0.0, ci_alive_threshold=0.0,
-        l0_group_patterns=None, fresh_pgd=FreshPGDReconEval(n_steps=8, step_size=0.1), n_valid_rows=None,
-    )  # fmt: skip
+        model,
+        ci_fn.fn.capture_keys,
+        rounding_threshold=0.0,
+        ci_alive_threshold=0.0,
+        l0_group_patterns=None,
+        fresh_pgd=FreshPGDReconEval(n_steps=8, step_size=0.1),
+        n_valid_rows=None,
+    )
+    sharded_model = PlacedModel(model=model.model, placement=from_config("ddp", mesh, sites))
+    # Same weights (same key), paired with the resolved ddp CI rows — the two arms differ
+    # only in placement, exactly the invariant under test.
+    sharded_ci_fn = _build_ci_fn(sharded_model, cfg.n_embd, jax.random.PRNGKey(2))
     sharded_step = make_eval_step(
-        model, ci_fn.capture_keys, rounding_threshold=0.0, ci_alive_threshold=0.0,
-        l0_group_patterns=None, fresh_pgd=FreshPGDReconEval(n_steps=8, step_size=0.1), mesh=mesh, n_valid_rows=None,
-    )  # fmt: skip
+        sharded_model,
+        ci_fn.fn.capture_keys,
+        rounding_threshold=0.0,
+        ci_alive_threshold=0.0,
+        l0_group_patterns=None,
+        fresh_pgd=FreshPGDReconEval(n_steps=8, step_size=0.1),
+        mesh=mesh,
+        n_valid_rows=None,
+    )
 
     out_single = single_step(model, vu, ci_fn, token_ids, jax.random.PRNGKey(5))
-    out_sharded = sharded_step(model, vu, ci_fn, token_ids, jax.random.PRNGKey(5))
+    with jax.set_mesh(mesh):
+        out_sharded = sharded_step(
+            sharded_model, vu, sharded_ci_fn, token_ids, jax.random.PRNGKey(5)
+        )
 
     single_kl = float(out_single["loss/PGDReconLoss"])
     sharded_kl = float(out_sharded["loss/PGDReconLoss"])
@@ -402,7 +459,9 @@ def test_eval_step_l0_groups_sum_member_sites():
     sites' L0s; an unmatched pattern refuses at build time."""
     cfg = tiny_glu_cfg()
     sites = glu_site_specs(cfg, mlp_family_site_cs(4, 5, 8))
-    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = PlacedModel(
+        model=tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0)), placement=None
+    )
     from param_decomp.core.components import init_component_stacks
 
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
@@ -411,9 +470,14 @@ def test_eval_step_l0_groups_sum_member_sites():
 
     groups = {"layer_4": ("layers.4.*",), "total": ("*",)}
     eval_step = make_eval_step(
-        model, ci_fn.capture_keys, rounding_threshold=0.0, ci_alive_threshold=0.0,
-        l0_group_patterns=groups, fresh_pgd=None, n_valid_rows=None,
-    )  # fmt: skip
+        model,
+        ci_fn.fn.capture_keys,
+        rounding_threshold=0.0,
+        ci_alive_threshold=0.0,
+        l0_group_patterns=groups,
+        fresh_pgd=None,
+        n_valid_rows=None,
+    )
     out = eval_step(model, vu, ci_fn, token_ids, jax.random.PRNGKey(5))
     layer4_sites = [s for s in model.site_names if s.startswith("layers.4.")]
     expected_layer4 = sum(float(out[f"l0/0.0_{s}"]) for s in layer4_sites)
@@ -423,9 +487,14 @@ def test_eval_step_l0_groups_sum_member_sites():
 
     with pytest.raises(AssertionError, match="matches no sites"):
         make_eval_step(
-            model, ci_fn.capture_keys, rounding_threshold=0.0, ci_alive_threshold=0.0,
-            l0_group_patterns={"ghost": ("layers.99.*",)}, fresh_pgd=None, n_valid_rows=None,
-        )  # fmt: skip
+            model,
+            ci_fn.fn.capture_keys,
+            rounding_threshold=0.0,
+            ci_alive_threshold=0.0,
+            l0_group_patterns={"ghost": ("layers.99.*",)},
+            fresh_pgd=None,
+            n_valid_rows=None,
+        )
 
 
 def test_make_eval_step_rejects_positionless_target():
@@ -435,9 +504,14 @@ def test_make_eval_step_rejects_positionless_target():
     assert not model.has_position_axis
     with pytest.raises(AssertionError, match="LM-only"):
         make_eval_step(
-            model, frozenset(("linear1",)), rounding_threshold=0.0, ci_alive_threshold=0.0,
-            l0_group_patterns=None, fresh_pgd=None, n_valid_rows=None,
-        )  # fmt: skip
+            model,
+            frozenset(("linear1",)),
+            rounding_threshold=0.0,
+            ci_alive_threshold=0.0,
+            l0_group_patterns=None,
+            fresh_pgd=None,
+            n_valid_rows=None,
+        )
 
 
 @pytest.mark.slow
@@ -448,7 +522,9 @@ def test_eval_step_n_valid_rows_masks_pad_tail():
     in expectation and are excluded."""
     cfg = tiny_glu_cfg()
     sites = glu_site_specs(cfg, mlp_family_site_cs(4, 5, 8))
-    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    model = PlacedModel(
+        model=tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0)), placement=None
+    )
 
     from param_decomp.core.components import init_component_stacks
 
@@ -465,13 +541,23 @@ def test_eval_step_n_valid_rows_masks_pad_tail():
         reconstruction=OutputAndHiddenActsReconstruction(coeff=2.0, points=("resid.5", "resid.8")),
     )
     reference_step = make_eval_step(
-        model, ci_fn.capture_keys, rounding_threshold=0.5, ci_alive_threshold=0.0, l0_group_patterns=None,
-        fresh_pgd=fresh_pgd, n_valid_rows=None,
-    )  # fmt: skip
+        model,
+        ci_fn.fn.capture_keys,
+        rounding_threshold=0.5,
+        ci_alive_threshold=0.0,
+        l0_group_patterns=None,
+        fresh_pgd=fresh_pgd,
+        n_valid_rows=None,
+    )
     masked_step = make_eval_step(
-        model, ci_fn.capture_keys, rounding_threshold=0.5, ci_alive_threshold=0.0, l0_group_patterns=None,
-        fresh_pgd=fresh_pgd, n_valid_rows=b,
-    )  # fmt: skip
+        model,
+        ci_fn.fn.capture_keys,
+        rounding_threshold=0.5,
+        ci_alive_threshold=0.0,
+        l0_group_patterns=None,
+        fresh_pgd=fresh_pgd,
+        n_valid_rows=b,
+    )
     reference = reference_step(model, vu, ci_fn, tokens, jax.random.PRNGKey(5))
     masked = masked_step(model, vu, ci_fn, padded, jax.random.PRNGKey(5))
 

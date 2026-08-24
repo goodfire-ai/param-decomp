@@ -3,7 +3,7 @@
 # (8 nodes), zero1 sharding — validated on H100s.
 #
 # Derived from the l18-23 6L reference run p-2112148d ("jax-l18-23-6L-ablbase-200k"):
-# same algorithm (chunkwise subset recon + persistent-PGD + faith + imp-min), same CI
+# same algorithm (stochastic subset recon + persistent-PGD + faith + imp-min), same CI
 # fn arch, same LRs/coeffs/eval set. How this differs from that reference:
 #   1. sites: 224 (all matrices, all 32 layers) vs the reference's 18 (MLP, layers
 #      18-23). Per-matrix C from the 2026-06-22 full-llama8b BOTEC, rounded UP to
@@ -11,30 +11,29 @@
 #      q/k 2048, v/o 4096, gate/up 8192, down 10240. ΣC=1,245,184; V/U=18.3B params
 #      (~1.1x the reference's 16.3B — params shard cheaply, not the binding constraint).
 #   2. batch 64 at dp 64: per-rank batch 1 (vs the reference's 2).
-#   3. ChunkwiseSubsetReconLoss sites_per_chunk 56 (8 layers/chunk -> 4 chunks): fewer,
-#      larger chunks minimise compile time and per-step compute (each chunk's suffix
-#      forward spans the full network). coeff 2.0 = 0.5 x n_chunks keeps per-site recon
-#      pressure chunk-count-invariant. THIS IS THE KNOB TO RE-TUNE (finer chunks =
-#      better signal).
-#   4. remat_recon_forwards: true (224 sites' full-network chunk forwards need it).
+#   3. StochasticReconSubsetLoss coeff 0.5: one uniform-k forward over all 224 sites
+#      per step.
+#   4. remat_recon_forwards: true (224 sites' full-network recon forward needs it).
 #   5. remat_ci_fn: true (checkpoint the ~31B CI fn; without it the step is the GPU
 #      compile wall — ~80 min + near-OOM — since the whole CI forward materialises).
 #   6. data seq 512 (fineweb_llama_tok_512), matching the reference's seq.
 # out_dir / run_id are minted at launch, never authored here.
-run_name: jax-full32L-HSDP-b64-dp64-andbtdr
+run_name: jax-full32L-HSDP-b64-dp64
 cadence:
-  checkpoint_retention:
-    kind: keep_last
-    n: 2
-  save_every: 5000
   train_log_every: 25
+  checkpointing:
+    kind: periodic
+    save_every: 5000
+    retention:
+      kind: keep_last
+      n: 2
 data:
   train:
     kind: name
     name: fineweb_llama_tok_512
   eval:
     kind: name
-    name: fineweb_llama_tok_512_eval
+    name: fineweb_llama_tok_512_eval1
 eval:
   batch_size: 64
   every: 1000
@@ -124,11 +123,10 @@ pd:
         - {at: 0.0, frac: 1.0}
         - {at: 1.0, frac: 0.2}
     type: ImportanceMinimalityLoss
-  - coeff: 2.0
+  - coeff: 0.5
     routing:
       type: uniform_k_subset
-    sites_per_chunk: 56
-    type: ChunkwiseSubsetReconLoss
+    type: StochasticReconSubsetLoss
   - coeff: 0.5
     n_warmup_steps: 2
     optimizer:
@@ -144,17 +142,21 @@ pd:
       type: adam
     source_shape: bsc
     type: PersistentPGDReconLoss
-  - coeff: 1000000.0
+  - coeff: 1.0e+03
     type: FaithfulnessLoss
   seed: 0
   steps: 200000
 runtime:
+  compilation_cache_dir: ~/.cache/param-decomp/xla
   sharding: zero1
-  dp: 64
+  replicate: 8
+  fsdp: 8
   tp: 1
   remat_recon_forwards: true
   remat_ci_fn: true
+  compiler_options: tuned-v1
 target:
+  attention_implementation: auto
   weights_dtype: bfloat16
   spec:
     kind: hf

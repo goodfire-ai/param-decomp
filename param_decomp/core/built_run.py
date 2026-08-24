@@ -70,7 +70,7 @@ class BuiltRun[DataT, TargetT: TargetSites, PDT: PDConfigBase]:
 
     The compute substrate is deliberately NOT here — core accepts no config type for it at
     all, and the section is declared by the one domain that has one. Its values do reach
-    core, but always unpacked into primitives — `dp`/`gpus_per_node` into `sharding`, the
+    core, but always unpacked into primitives — explicit mesh axes into `sharding`, the
     placement spec into `placement`, the remat flags and `compiler_options` into the
     engine — each passed by the composition root that owns the substrate. So a domain that
     has none (the single-device toys) carries none, rather than carrying a field it must

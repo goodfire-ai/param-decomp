@@ -2,7 +2,7 @@
 
 The composition root and only I/O layer for pretraining; the step stays pure. Reuses the
 decomposition trainer's substrate — `param_decomp.pretrain.batch_data` (offline pre-tokenized parquet,
-never streamed), `param_decomp.core.sharding` (`init_distributed` / `hsdp_mesh`) — but the
+never streamed), `param_decomp.core.sharding` (`initialize_topology` / `hsdp_mesh`) — but the
 trajectory is a plain LM: fp32 master params, AdamW (weight-decay on 2D weights only,
 matching the torch `configure_optimizers` grouping), cosine LR + warmup, grad clip,
 next-token cross-entropy. Data-parallel only: the model is small and replicated on every
@@ -37,7 +37,8 @@ from jaxtyping import Array, Float, Int
 from orbax.checkpoint.checkpoint_managers import preservation_policy
 from orbax.checkpoint.type_handlers import ArrayHandler, register_type_handler
 
-from param_decomp.core.sharding import hsdp_mesh, init_distributed
+from param_decomp.core.model import BATCH_AXES
+from param_decomp.core.sharding import HSDP_MESH_AXES, initialize_topology
 from param_decomp.infra.dataset_store import resolve_dataset_ref
 from param_decomp.pretrain.batch_data import BatchSchedule, ShardServer, scan_shards
 from param_decomp.pretrain.cache import (
@@ -161,9 +162,9 @@ def _cast_arrays(model: PretrainModel, dtype: jnp.dtype) -> PretrainModel:
     """Cast the floating leaves to the compute dtype; integer/static leaves untouched.
     The masters stay fp32 (the model leaf in `TrainState`); this casts a transient copy."""
     return jax.tree.map(
-        lambda a: a.astype(dtype)
-        if eqx.is_array(a) and jnp.issubdtype(a.dtype, jnp.floating)
-        else a,
+        lambda a: (
+            a.astype(dtype) if eqx.is_array(a) and jnp.issubdtype(a.dtype, jnp.floating) else a
+        ),
         model,
     )
 
@@ -174,7 +175,7 @@ def _replicate(tree: PretrainModel, mesh: Mesh) -> PretrainModel:
 
 
 def _global_token_batch(local: np.ndarray, mesh: Mesh, global_batch: int) -> jax.Array:
-    sharding = NamedSharding(mesh, P(("replicate", "fsdp")))
+    sharding = NamedSharding(mesh, P(BATCH_AXES))
     return jax.make_array_from_process_local_data(sharding, local, (global_batch, local.shape[1]))
 
 
@@ -245,12 +246,22 @@ class MetricsSink:
             self._wandb.finish()
 
 
+def _pretrain_mesh(replicate: int, fsdp: int) -> Mesh:
+    """The pretrainer's GSPMD (Auto-mode) data mesh — this trainer still places by
+    constraint propagation, unlike the decomposition trainer's Explicit mesh."""
+    devices = np.array(jax.devices())
+    assert devices.size == replicate * fsdp, (devices.size, replicate, fsdp)
+    return Mesh(devices.reshape(replicate, fsdp, 1), axis_names=HSDP_MESH_AXES)
+
+
 def train(cfg: PretrainConfig) -> None:
     _install_sigterm_flag()
     if cfg.dp is not None:
-        init_distributed(cfg.dp, cfg.gpus_per_node)
+        initialize_topology(cfg.dp, cfg.gpus_per_node)
+        mesh = _pretrain_mesh(cfg.dp // cfg.gpus_per_node, cfg.gpus_per_node)
+    else:
+        mesh = _pretrain_mesh(1, jax.device_count())
     is_distributed = cfg.dp is not None
-    mesh = hsdp_mesh(gpus_per_node=cfg.gpus_per_node)
     n_proc = jax.process_count()
     ndev = mesh.devices.size
     is_main = jax.process_index() == 0

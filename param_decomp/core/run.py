@@ -2,7 +2,7 @@
 (LM, TMS, ResidMLP, …) runs through.
 
 `run_decomposition_training(pd, cadence, run, model, ci_fn, positions,
-remat_recon_forwards, sample_batch, evaluation, mesh)` owns
+remat_recon_forwards, sample_batch, evaluation)` owns
 the generic machinery: init / restore / fine-tune init / faith warmup
 (`_init_or_restore_state`), the recon-plan traversal, orbax checkpointing, schedules,
 metrics fan-out (`MetricsSink`), the figure-tier background renderer (`BackgroundRenderer`), and
@@ -16,6 +16,7 @@ this engine) lives lab-side: `param_decomp/experiments/lm/run.py` for the LM,
 """
 
 import atexit
+import contextlib
 import dataclasses
 import io
 import json
@@ -25,6 +26,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from functools import partial as _partial
+from pathlib import Path
 from types import FrameType, ModuleType
 from typing import Any
 
@@ -32,6 +34,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import nvtx
 import optax
 import orbax.checkpoint as ocp
 import yaml
@@ -47,25 +50,38 @@ from param_decomp.core.checkpoint import (
     restore_latest,
     save_state,
 )
-from param_decomp.core.ci_fn import CIFnArch
+from param_decomp.core.ci_fn import (
+    CIFnArch,
+    PlacedCIFn,
+    resolve_ci_placement,
+)
 from param_decomp.core.components import init_component_stacks
 from param_decomp.core.configs import (
     AnyPDConfig,
     Cadence,
+    Checkpointing,
+    NoCheckpointing,
     NontargetConfig,
     PDConfig,
     PDConfigBase,
+    PeriodicCheckpointing,
     TargetedPDConfig,
     flatten_typed_lists,
 )
 from param_decomp.core.eval_schedule import EvalSchedule, eval_due
+from param_decomp.core.faithfulness import FaithfulnessLossFn, faithfulness_loss_for
 from param_decomp.core.metrics import BarChart, LogRecord, PNGImage
-from param_decomp.core.model import DecomposedModel, PositionAxis
-from param_decomp.core.objective import build_objective, build_targeted_objective
-from param_decomp.core.placement import PlacementRules, component_stacks_audit
+from param_decomp.core.model import PlacedModel, PositionAxis
+from param_decomp.core.objective import (
+    build_objective,
+    build_targeted_objective,
+)
+from param_decomp.core.placement import CIFnPlacement, component_stacks_audit
 from param_decomp.core.run_state import build_optimizers, init_train_state
+from param_decomp.core.sharding import target_shardings_audit
 from param_decomp.core.train import (
     CIScaledWeightDecay,
+    ForwardSubstrate,
     TrainState,
     make_faith_warmup_step,
     make_targeted_train_step,
@@ -73,11 +89,53 @@ from param_decomp.core.train import (
     uv_norm_ratio_metrics,
 )
 
+_PROFILE_WARMUP_EXECUTIONS = 2
+
+
+@dataclasses.dataclass(frozen=True)
+class JaxProfilerTrace:
+    """A profiling run, not a training run: after `_PROFILE_WARMUP_EXECUTIONS` warmup
+    executions the loop traces `steps` steps with `jax.profiler` into `<run_dir>/profile`
+    and returns — no step-0 checkpoint (the trajectory is throwaway) and no training past
+    the trace."""
+
+    steps: int
+
+    def __post_init__(self) -> None:
+        assert self.steps > 0, f"a profile trace needs a positive step count, got {self.steps}"
+
+
+@dataclasses.dataclass(frozen=True)
+class NsightCaptureWindow:
+    """The engine-side half of an external Nsight Systems capture: nvtx-annotate the steps
+    in `[start + warmup_steps, start + warmup_steps + capture_steps)` so the launcher's
+    `nsys --capture-range=nvtx` gate fires; training itself proceeds normally."""
+
+    warmup_steps: int
+    capture_steps: int
+
+    def __post_init__(self) -> None:
+        assert self.warmup_steps >= 0 and self.capture_steps > 0, (
+            f"invalid Nsight capture window: {self}"
+        )
+
+    def contains(self, start_step: int, step: int) -> bool:
+        first = start_step + self.warmup_steps
+        return first <= step < first + self.capture_steps
+
+
+ProfilingMode = JaxProfilerTrace | NsightCaptureWindow
+
 
 @dataclasses.dataclass(frozen=True)
 class EvalInvocation:
+    """One due eval pass's inputs, built by the engine: the live state, the step, and the
+    live CI fn already paired with the run's resolved placement — operations consume
+    `placed_ci_fn`, never a raw (fn, rules) pair."""
+
     state: TrainState
     now_step: int
+    placed_ci_fn: PlacedCIFn
 
 
 @dataclasses.dataclass(frozen=True)
@@ -89,7 +147,9 @@ class EvalOperation[ContextT]:
 @dataclasses.dataclass(frozen=True)
 class Evaluation[ContextT]:
     operations: tuple[EvalOperation[ContextT], ...]
-    make_context: Callable[[TrainState, int], ContextT]
+    make_context: Callable[[EvalInvocation], ContextT]
+    """Extend the engine-built invocation with the domain's own per-pass inputs
+    (identity for a domain that needs none)."""
 
     def __post_init__(self) -> None:
         assert self.operations, "evaluation needs at least one operation"
@@ -115,15 +175,34 @@ def _combine_step_records(
             return {**train_record, **eval_record}
 
 
+def _with_uv_norm_ratios(eval_record: LogRecord, state: TrainState) -> LogRecord:
+    factor_record = {
+        f"eval/{key}": float(value)
+        for key, value in uv_norm_ratio_metrics(state.decomposition.components).items()
+    }
+    overlap = eval_record.keys() & factor_record.keys()
+    assert not overlap, f"U/V norm-ratio metrics collided with eval keys: {sorted(overlap)}"
+    return {**eval_record, **factor_record}
+
+
 def _run_due_evaluation[ContextT](
-    evaluation: Evaluation[ContextT], state: TrainState, now_step: int
+    evaluation: Evaluation[ContextT],
+    state: TrainState,
+    now_step: int,
+    ci_placement: CIFnPlacement | None,
 ) -> LogRecord | None:
     due_operations = tuple(
         operation for operation in evaluation.operations if eval_due(operation.schedule, now_step)
     )
     if not due_operations:
         return None
-    context = evaluation.make_context(state, now_step)
+    context = evaluation.make_context(
+        EvalInvocation(
+            state=state,
+            now_step=now_step,
+            placed_ci_fn=PlacedCIFn(fn=state.decomposition.ci_fn, placement=ci_placement),
+        )
+    )
     record: dict[str, float | BarChart | PNGImage] = {}
     for operation in due_operations:
         values = operation.run(context)
@@ -224,8 +303,10 @@ _METRIC_KEYS = {
     "imp": "train/loss/ImportanceMinimalityLoss",
     "imp_smooth_l0": "train/loss/SmoothL0ImportanceMinimalityLoss",
     "freq": "train/loss/FrequencyMinimalityLoss",
+    "freq_batch": "train/loss/FrequencyMinimalityLoss_batch",
     "p_imp": "train/schedules/p_imp",
     "gamma_imp": "train/schedules/gamma_imp",
+    "nonlinearity_relative_threshold": "train/schedules/nonlinearity_relative_threshold",
     "src_lr": "train/schedules/lr/src",
     "step_time_s": "train/perf/step_time_s",
     "elapsed_s": "train/perf/elapsed_s",
@@ -304,8 +385,8 @@ class MetricsSink:
         # wandb.config is the pinned launch config verbatim — the run's ONE self-contained
         # yaml (the same bytes resume byte-compares), so programmatic config access works.
         # The metric lists flatten into the same flat keys torch logged (E14) so cross-impl
-        # wandb config queries line up. Nothing else rides along: topology is config-driven
-        # (`runtime.dp`, asserted in `init_distributed`), so the config IS the topology.
+        # wandb config queries line up. Nothing else rides along: the logical mesh is pinned
+        # in the config and its realized world is asserted at process bring-up.
         launch_config = run.run_dir / LAUNCH_CONFIG_FILENAME
         assert launch_config.exists(), launch_config
         wandb.init(
@@ -482,37 +563,40 @@ class FaithfulnessWarmup:
     steps: int
     lr: float
     weight_decay: float
+    loss: FaithfulnessLossFn
 
 
 def _init_or_restore_state(
+    *,
     pd: AnyPDConfig,
     ci_fn_arch: CIFnArch,
     positions: PositionAxis,
     run: RunInstance,
-    model: DecomposedModel,
+    model: PlacedModel,
     opt_vu: optax.GradientTransformation,
     opt_ci: optax.GradientTransformation,
     init_key: PRNGKeyArray,
     src_key: PRNGKeyArray,
     mesh: Mesh,
-    rules: PlacementRules,
-    checkpoint_manager: ocp.CheckpointManager,
+    checkpoint_manager: ocp.CheckpointManager | None,
     is_main: bool,
     compiler_options: dict[str, bool | int | str],
     faith_warmup: FaithfulnessWarmup | None,
+    profiling: ProfilingMode | None,
 ) -> tuple[TrainState, int] | None:
     """The shared init/restore/finetune/faith-warmup phase (SPEC S21/S22/S33).
 
     Returns `(state, start_step)`, or `None` when a SIGTERM landed mid-warmup (the caller
-    must exit cleanly for requeue — no valid checkpoint exists pre-step-0)."""
+    must exit cleanly for requeue — no valid checkpoint exists pre-step-0). A
+    `JaxProfilerTrace` run skips the step-0 checkpoint: its trajectory is throwaway.
+    `checkpoint_manager is None` is the `NoCheckpointing` run: nothing is restored
+    (there is never anything on disk) and the step-0 saves are skipped too."""
     state = _ensure_global(
-        init_train_state(
-            pd, model, ci_fn_arch, positions, opt_vu, opt_ci, init_key, src_key, mesh, rules
-        ),
+        init_train_state(pd, model, ci_fn_arch, positions, opt_vu, opt_ci, init_key, src_key),
         mesh,
     )
 
-    restored = restore_latest(checkpoint_manager, state)
+    restored = restore_latest(checkpoint_manager, state) if checkpoint_manager is not None else None
     if restored is not None:
         state, ckpt_step = restored
         assert int(state.training.step) == ckpt_step, (int(state.training.step), ckpt_step)
@@ -539,7 +623,8 @@ def _init_or_restore_state(
         # composition root before this engine is entered.
         prov = run.resume_provenance
         state = init_from_parent(prov.parent_run_dir / "ckpts", prov.parent_step, state)
-        save_state(checkpoint_manager, 0, state)
+        if checkpoint_manager is not None and not isinstance(profiling, JaxProfilerTrace):
+            save_state(checkpoint_manager, 0, state)
         if is_main:
             print(
                 f"fine-tune: initialized V/U + ci_fn from {prov.parent_run_dir} "
@@ -555,7 +640,9 @@ def _init_or_restore_state(
         faith_warmup_opt_state = faith_warmup_optimizer.init(
             eqx.filter(state.decomposition.components, eqx.is_array)
         )
-        faith_warmup_step = make_faith_warmup_step(faith_warmup_optimizer, compiler_options)
+        faith_warmup_step = make_faith_warmup_step(
+            faith_warmup_optimizer, faith_warmup.loss, compiler_options
+        )
         warmed_components = state.decomposition.components
         t0 = time.time()
         faith_warmup_loss = None
@@ -585,58 +672,106 @@ def _init_or_restore_state(
                 f"final faith {float(faith_warmup_loss):.3e}",
                 flush=True,
             )
-    save_state(checkpoint_manager, 0, state)
+    if checkpoint_manager is not None and not isinstance(profiling, JaxProfilerTrace):
+        save_state(checkpoint_manager, 0, state)
     return state, 0
+
+
+@dataclasses.dataclass(frozen=True)
+class _PeriodicSaver:
+    """`PeriodicCheckpointing`'s runtime pair: the orbax manager plus its rhythm. Bundled
+    so a `NoCheckpointing` run (`saver is None`) cannot carry half of it."""
+
+    manager: ocp.CheckpointManager
+    save_every: int
+
+
+_NO_CHECKPOINT_ENTRY_MARKER = "entered-without-checkpoints"
+
+
+def _make_saver(
+    checkpointing: Checkpointing, run_dir: Path, is_main: bool
+) -> _PeriodicSaver | None:
+    match checkpointing:
+        case PeriodicCheckpointing(save_every=save_every, retention=retention):
+            return _PeriodicSaver(make_checkpoint_manager(run_dir / "ckpts", retention), save_every)
+        case NoCheckpointing():
+            # A no-checkpoint run id is single-entry: nothing is ever written to resume
+            # from, so a re-entry (SLURM requeue or a --run-id rerun) would silently
+            # retrain from step 0. The marker turns that into an enumerated refusal.
+            # Checked on the main process only — a non-main rank racing the fresh write
+            # must not misread a first entry as a re-entry.
+            marker = run_dir / _NO_CHECKPOINT_ENTRY_MARKER
+            if is_main:
+                assert not marker.exists(), (
+                    f"run dir {run_dir} was already entered without checkpointing "
+                    "(cadence.checkpointing: none): there is nothing to resume from — "
+                    "launch a fresh run id instead of re-entering this one"
+                )
+                marker.write_text(
+                    "this run trains with cadence.checkpointing: none — it writes no "
+                    "checkpoints and cannot be resumed; this marker refuses re-entry\n"
+                )
+            return None
 
 
 @dataclasses.dataclass(frozen=True)
 class _PreparedRun:
     """The generic pre-loop phase's outputs, shared by both engine entries: the built
     optimizer pair + their schedule fns (re-read at log time so the reported LR is the
-    applied one), the per-step batch/RNG key root, the checkpoint manager, and the
-    initialized-or-restored state."""
+    applied one), the per-step batch/RNG key root, the checkpoint saver (None = a
+    `NoCheckpointing` run), and the initialized-or-restored state."""
 
     opt_vu: optax.GradientTransformation
     opt_ci: optax.GradientTransformation
     sched_vu: Callable[[Any], jax.Array]
     sched_ci: Callable[[Any], jax.Array]
     run_key: PRNGKeyArray
-    checkpoint_manager: ocp.CheckpointManager
+    saver: _PeriodicSaver | None
+    run_dir: Path
     state: TrainState
     start_step: int
+    ci_placement: CIFnPlacement | None
+    """The run's CI-fn placement, resolved once in `_prepare_run` — the value the
+    substrate, the muon waypoints, and every eval invocation pair with the live fn."""
 
 
 def _prepare_run(
+    *,
     pd: AnyPDConfig,
     cadence: Cadence,
     run: RunInstance,
-    model: DecomposedModel,
+    model: PlacedModel,
     ci_fn: CIFnArch,
     positions: PositionAxis,
     compiler_options: dict[str, bool | int | str],
-    mesh: Mesh,
-    placement_rules: PlacementRules,
     is_main: bool,
     faith_warmup: FaithfulnessWarmup | None,
+    profiling: ProfilingMode | None,
 ) -> _PreparedRun | None:
     """Everything before the train loop: mesh activation, optimizers, keys, checkpoint
     manager, the placement audit, and init/restore/finetune/faith-warmup. Returns `None`
     when a SIGTERM landed mid-warmup (the caller exits cleanly for requeue)."""
-    # Activate the mesh so bare-PartitionSpec `with_sharding_constraint`s inside the forward
-    # resolve (the attn q/k/v batch-sharding pin in `FrozenAttn.core`, needed for cuDNN
-    # flash attention under the scan+cond masked forward). Explicit NamedShardings elsewhere
+    rules = model.placement
+    assert rules is not None, "the engine trains placed models only"
+    # The rules' own mesh — the engine never receives a second copy to desync. A training
+    # run executes forwards, so the abstract (spec-check) arm of `PlacementRules.mesh` is
+    # refused here.
+    mesh = rules.mesh
+    assert isinstance(mesh, Mesh), type(mesh)
+    # Activate the mesh so bare-PartitionSpec `reshard`s inside the forward resolve
+    # (the attn q/k/v batch-sharding pin in `FrozenAttn.core`, needed for cuDNN flash
+    # attention under the scan+cond masked forward). Explicit NamedShardings elsewhere
     # are unaffected.
     jax.set_mesh(mesh)
     run.run_dir.mkdir(parents=True, exist_ok=True)
-    opt_vu, opt_ci, (sched_vu, sched_ci) = build_optimizers(pd, ci_fn, mesh)
+    ci_placement = resolve_ci_placement(ci_fn, rules)
+    opt_vu, opt_ci, (sched_vu, sched_ci) = build_optimizers(pd, ci_fn, mesh, rules, ci_placement)
 
     key = random.PRNGKey(pd.seed)
     init_key, src_key, run_key = random.split(key, 3)
 
-    checkpoint_manager = make_checkpoint_manager(
-        run.run_dir / "ckpts", cadence.checkpoint_retention
-    )
-    rules = placement_rules
+    saver = _make_saver(cadence.checkpointing, run.run_dir, is_main)
     if is_main:
         audit = component_stacks_audit(
             eqx.filter_eval_shape(_partial(init_component_stacks, model.sites), init_key), rules
@@ -644,14 +779,28 @@ def _prepare_run(
         print(
             rules.describe(
                 tensors=audit,
-                not_audited=("ci_fn", "frozen target", "persistent sources", "opt state"),
+                sharded_tensors=target_shardings_audit(model),
+                not_audited=("ci_fn", "persistent sources", "opt state"),
             ),
             flush=True,
         )
     init = _init_or_restore_state(
-        pd, ci_fn, positions, run, model, opt_vu, opt_ci, init_key, src_key, mesh, rules,
-        checkpoint_manager, is_main, compiler_options, faith_warmup,
-    )  # fmt: skip
+        pd=pd,
+        ci_fn_arch=ci_fn,
+        positions=positions,
+        run=run,
+        model=model,
+        opt_vu=opt_vu,
+        opt_ci=opt_ci,
+        init_key=init_key,
+        src_key=src_key,
+        mesh=mesh,
+        checkpoint_manager=saver.manager if saver is not None else None,
+        is_main=is_main,
+        compiler_options=compiler_options,
+        faith_warmup=faith_warmup,
+        profiling=profiling,
+    )
     if init is None:
         return None  # SIGTERM mid-warmup: clean exit for requeue
     state, start_step = init
@@ -661,9 +810,11 @@ def _prepare_run(
         sched_vu=sched_vu,
         sched_ci=sched_ci,
         run_key=run_key,
-        checkpoint_manager=checkpoint_manager,
+        saver=saver,
+        run_dir=run.run_dir,
         state=state,
         start_step=start_step,
+        ci_placement=ci_placement,
     )
 
 
@@ -671,25 +822,23 @@ def run_decomposition_training[EvalContextT](
     pd: PDConfig,
     cadence: Cadence,
     run: RunInstance,
-    model: DecomposedModel,
+    model: PlacedModel,
     ci_fn: CIFnArch,
     positions: PositionAxis,
     remat_recon_forwards: bool,
     remat_ci_fn: bool,
-    ascend_replicate: bool,
     compiler_options: dict[str, bool | int | str],
     sample_batch: Callable[[int], Any],
     evaluation: Evaluation[EvalContextT] | None,
     sink: MetricsSink,
-    mesh: Mesh,
-    placement_rules: PlacementRules,
+    profiling: ProfilingMode | None,
 ) -> None:
     """The generic VPD decomposition-training engine — the ONE train loop every target
     (LM, TMS, ResidMLP, …) runs through.
 
     Reads the pydantic algorithm config DIRECTLY: `pd` (seed / steps / optimizers / loss
-    metrics / faith warmup), `cadence` (log / save / checkpoint-retention
-    rhythm), `run` (the run identity + wandb lineage). The lab-built objects ride alongside:
+    metrics / faith warmup), `cadence` (log rhythm + the checkpointing arm),
+    `run` (the run identity + wandb lineage). The lab-built objects ride alongside:
     the decomposed `model` (an `eqx.Module` carrying the frozen target weights as
     fields — threaded into the jitted step as a pytree arg, never closed over), the CI-fn
     arch `ci_fn`, the run's waist geometry (`positions`: `Positioned(seq_len)` for an LM,
@@ -705,6 +854,11 @@ def run_decomposition_training[EvalContextT](
       they share. The engine alone schedules due operations, constructs one context, merges
       disjoint records, and logs the result. `None` disables evaluation.
 
+    `profiling` is threaded as data from the composition root (the engine reads no ambient
+    environment): `None` is a normal training run, `JaxProfilerTrace` turns the run into an
+    in-process profile (trace then return), `NsightCaptureWindow` nvtx-annotates the
+    launcher-declared capture steps of an otherwise-normal run.
+
     Everything generic — `init_train_state`, fine-tune init, faith warmup, the recon-grid
     step factory, orbax checkpointing, schedules, SIGTERM-save — lives here. The step
     numerics are identical across targets; only the data source and the eval metric differ.
@@ -713,40 +867,55 @@ def run_decomposition_training[EvalContextT](
     the same `_prepare_run` / `_run_loop` core.
     """
     is_main = jax.process_index() == 0
+    faithfulness = faithfulness_loss_for(model.model)
     faith_warmup = (
         FaithfulnessWarmup(
             steps=pd.faithfulness_warmup_steps,
             lr=pd.faithfulness_warmup_lr,
             weight_decay=pd.faithfulness_warmup_weight_decay,
+            loss=faithfulness,
         )
         if pd.faithfulness_warmup_steps > 0
         else None
     )
+    objective = build_objective(pd.loss_metrics, model.site_names)
     prepared = _prepare_run(
-        pd, cadence, run, model, ci_fn, positions, compiler_options, mesh, placement_rules,
-        is_main, faith_warmup,
-    )  # fmt: skip
+        pd=pd,
+        cadence=cadence,
+        run=run,
+        model=model,
+        ci_fn=ci_fn,
+        positions=positions,
+        compiler_options=compiler_options,
+        is_main=is_main,
+        faith_warmup=faith_warmup,
+        profiling=profiling,
+    )
     if prepared is None:
         return
 
-    step_fn = make_train_step(
-        model_static=model,
-        losses=build_objective(pd.loss_metrics, model.site_names),
-        components_optimizer=prepared.opt_vu,
-        ci_fn_optimizer=prepared.opt_ci,
-        total_steps=pd.steps,
+    substrate = ForwardSubstrate.of(
+        model,
         remat_recon_forwards=remat_recon_forwards,
         remat_ci_fn=remat_ci_fn,
         ci_capture_keys=prepared.state.decomposition.ci_fn.capture_keys,
-        ascend_replicate=ascend_replicate,
+        ci_placement=prepared.ci_placement,
+    )
+    step_fn = make_train_step(
+        model_static=model,
+        substrate=substrate,
+        objective=objective,
+        components_optimizer=prepared.opt_vu,
+        ci_fn_optimizer=prepared.opt_ci,
+        total_steps=pd.steps,
+        faithfulness=faithfulness,
         compiler_options=compiler_options,
-        mesh=mesh,
     )
 
     def run_step(state: TrainState, step: int) -> tuple[TrainState, dict[str, jax.Array]]:
         return step_fn(model, state, sample_batch(step), random.fold_in(prepared.run_key, step))
 
-    _run_loop(pd, cadence, evaluation, sink, prepared, is_main, run_step)
+    _run_loop(pd, cadence, evaluation, sink, prepared, is_main, run_step, profiling)
 
 
 def run_targeted_decomposition_training[EvalContextT](
@@ -754,19 +923,17 @@ def run_targeted_decomposition_training[EvalContextT](
     nontarget: NontargetConfig,
     cadence: Cadence,
     run: RunInstance,
-    model: DecomposedModel,
+    model: PlacedModel,
     ci_fn: CIFnArch,
     positions: PositionAxis,
     remat_recon_forwards: bool,
     remat_ci_fn: bool,
-    ascend_replicate: bool,
     compiler_options: dict[str, bool | int | str],
     sample_target_batch: Callable[[int], Any],
     sample_nontarget_batch: Callable[[int], Any],
     evaluation: Evaluation[EvalContextT] | None,
     sink: MetricsSink,
-    mesh: Mesh,
-    placement_rules: PlacementRules,
+    profiling: ProfilingMode | None,
 ) -> None:
     """The targeted-PD (tPD) engine entry (SPEC §11) — `run_decomposition_training`'s twin
     over the same `_prepare_run` / `_run_loop` core, stepping the two-pass
@@ -784,29 +951,41 @@ def run_targeted_decomposition_training[EvalContextT](
     member and carries no warmup fields, so neither exists to refuse here."""
     is_main = jax.process_index() == 0
     prepared = _prepare_run(
-        pd, cadence, run, model, ci_fn, positions, compiler_options, mesh, placement_rules,
-        is_main, None,
-    )  # fmt: skip
+        pd=pd,
+        cadence=cadence,
+        run=run,
+        model=model,
+        ci_fn=ci_fn,
+        positions=positions,
+        compiler_options=compiler_options,
+        is_main=is_main,
+        faith_warmup=None,
+        profiling=profiling,
+    )
     if prepared is None:
         return
 
+    objective = build_targeted_objective(pd.loss_metrics, nontarget, model.site_names)
+    substrate = ForwardSubstrate.of(
+        model,
+        remat_recon_forwards=remat_recon_forwards,
+        remat_ci_fn=remat_ci_fn,
+        ci_capture_keys=prepared.state.decomposition.ci_fn.capture_keys,
+        ci_placement=prepared.ci_placement,
+    )
     step_fn = make_targeted_train_step(
         model_static=model,
-        objective=build_targeted_objective(pd.loss_metrics, nontarget, model.site_names),
+        substrate=substrate,
+        objective=objective,
         ci_scaled_weight_decay=(
-            CIScaledWeightDecay(pd.ci_scaled_weight_decay, prepared.sched_vu)
+            CIScaledWeightDecay(pd.ci_scaled_weight_decay, pd.components_optimizer.lr_schedule)
             if pd.ci_scaled_weight_decay is not None
             else None
         ),
         components_optimizer=prepared.opt_vu,
         ci_fn_optimizer=prepared.opt_ci,
         total_steps=pd.steps,
-        remat_recon_forwards=remat_recon_forwards,
-        remat_ci_fn=remat_ci_fn,
-        ci_capture_keys=prepared.state.decomposition.ci_fn.capture_keys,
-        ascend_replicate=ascend_replicate,
         compiler_options=compiler_options,
-        mesh=mesh,
     )
 
     def run_step(state: TrainState, step: int) -> tuple[TrainState, dict[str, jax.Array]]:
@@ -818,7 +997,7 @@ def run_targeted_decomposition_training[EvalContextT](
             random.fold_in(prepared.run_key, step),
         )
 
-    _run_loop(pd, cadence, evaluation, sink, prepared, is_main, run_step)
+    _run_loop(pd, cadence, evaluation, sink, prepared, is_main, run_step, profiling)
 
 
 def _run_loop[EvalContextT](
@@ -829,20 +1008,79 @@ def _run_loop[EvalContextT](
     prepared: _PreparedRun,
     is_main: bool,
     run_step: Callable[[TrainState, int], tuple[TrainState, dict[str, jax.Array]]],
+    profiling: ProfilingMode | None,
 ) -> None:
     """The generic train loop over one already-built `run_step(state, step)`: log cadence,
     eval scheduling, checkpointing, and SIGTERM-save — identical for both engine entries."""
-    save_every = cadence.save_every
-    checkpoint_manager = prepared.checkpoint_manager
+    saver = prepared.saver
     sched_vu, sched_ci = prepared.sched_vu, prepared.sched_ci
     state, start_step = prepared.state, prepared.start_step
+
+    if evaluation is not None and start_step == 0:
+        baseline = _run_due_evaluation(evaluation, state, 0, prepared.ci_placement)
+        if baseline is not None:
+            sink.log(0, _with_uv_norm_ratios(baseline, state))
 
     window_t0 = loop_t0 = time.time()
     last_logged = start_step
     grad_norm_summary_window: list[dict[str, jax.Array]] = []
+    match profiling:
+        case JaxProfilerTrace(steps=profile_steps):
+            nsight_window = None
+        case NsightCaptureWindow() as nsight_window:
+            profile_steps = 0
+        case None:
+            profile_steps = 0
+            nsight_window = None
+    profile_start = start_step + _PROFILE_WARMUP_EXECUTIONS
+    if profile_steps > 0:
+        assert profile_start + profile_steps <= pd.steps, (
+            f"profiling requires {_PROFILE_WARMUP_EXECUTIONS} warmup executions plus "
+            f"{profile_steps} marked executions, but only {pd.steps - start_step} steps remain"
+        )
+    profile_dir = str(prepared.run_dir / "profile")
 
     for step in range(start_step, pd.steps):
-        state, metrics = run_step(state, step)
+        if profile_steps > 0 and is_main and step == profile_start:
+            options = jax.profiler.ProfileOptions()
+            options.host_tracer_level = 1
+            options.device_tracer_level = 1
+            options.python_tracer_level = 0
+            options.advanced_configuration = {"gpu_max_activity_api_events": 2_000_000}
+            jax.profiler.start_trace(
+                profile_dir,
+                create_perfetto_trace=True,
+                profiler_options=options,
+            )
+            print(
+                f"profiling steps {profile_start}..{profile_start + profile_steps - 1}", flush=True
+            )
+
+        profiling_warmup_step = profile_steps > 0 and step < profile_start
+        profiling_step = profile_steps > 0 and step >= profile_start
+        nsight_step = nsight_window is not None and nsight_window.contains(start_step, step)
+        annotation = (
+            jax.profiler.TraceAnnotation("param_decomp.profile_step", step_num=step)
+            if profiling_step
+            else contextlib.nullcontext()
+        )
+        nsight_annotation = (
+            nvtx.annotate("param_decomp.profile_step", domain="param_decomp", payload=step)
+            if nsight_step
+            else contextlib.nullcontext()
+        )
+        with annotation, nsight_annotation:
+            state, metrics = run_step(state, step)
+            if profiling_warmup_step or profiling_step or nsight_step:
+                jax.block_until_ready(metrics["total"])
+
+        if profiling_step:
+            if step + 1 == profile_start + profile_steps:
+                if is_main:
+                    jax.profiler.stop_trace()
+                    print(f"profile written to {profile_dir}", flush=True)
+                return
+            continue
 
         grad_norm_summary_window.append(
             {k: v for k, v in metrics.items() if k.startswith("grad_norms/summary/")}
@@ -867,10 +1105,17 @@ def _run_loop[EvalContextT](
             }
             record.update(_grad_norm_summary_window_stats(grad_norm_summary_window))
             grad_norm_summary_window.clear()
-            for loss_name in ("total", *(k for k in record if k.startswith("loss/"))):
-                assert math.isfinite(record[loss_name]), (
-                    f"non-finite loss {loss_name!r} at step {now_step}: {record[loss_name]}"
-                )
+            nonfinite = {key: value for key, value in record.items() if not math.isfinite(value)}
+            nonfinite_losses = {
+                key: value
+                for key, value in nonfinite.items()
+                if key == "total" or key.startswith("loss/")
+            }
+            nonfinite_other = tuple(key for key in nonfinite if key not in nonfinite_losses)
+            assert not nonfinite, (
+                f"non-finite metrics at step {now_step}: losses={nonfinite_losses}; "
+                f"other_count={len(nonfinite_other)}; other_first={nonfinite_other[:20]}"
+            )
             record["step_time_s"] = per_step
             record["elapsed_s"] = time.time() - loop_t0
             record["eta_s"] = (pd.steps - now_step) * per_step
@@ -883,29 +1128,30 @@ def _run_loop[EvalContextT](
             train_record = record
 
         eval_record = (
-            _run_due_evaluation(evaluation, state, now_step)
+            _run_due_evaluation(evaluation, state, now_step, prepared.ci_placement)
             if evaluation is not None and not sigterm
             else None
         )
         if eval_record is not None:
-            factor_record = {
-                f"eval/{key}": float(value)
-                for key, value in uv_norm_ratio_metrics(state.decomposition.components).items()
-            }
-            overlap = eval_record.keys() & factor_record.keys()
-            assert not overlap, f"U/V norm-ratio metrics collided with eval keys: {sorted(overlap)}"
-            eval_record = {**eval_record, **factor_record}
+            eval_record = _with_uv_norm_ratios(eval_record, state)
         step_record = _combine_step_records(train_record, eval_record)
         if step_record is not None:
             sink.log(now_step, step_record)
             window_t0 = time.time()
 
-        if now_step % save_every == 0 or now_step == pd.steps or sigterm:
-            save_state(checkpoint_manager, now_step, state)
+        if saver is not None and (
+            now_step % saver.save_every == 0 or now_step == pd.steps or sigterm
+        ):
+            save_state(saver.manager, now_step, state)
             if is_main:
                 print(f"checkpoint saved @ step {now_step}", flush=True)
             window_t0 = time.time()
         if sigterm:
             if is_main:
-                print("SIGTERM: checkpoint saved, exiting for requeue", flush=True)
+                print(
+                    "SIGTERM: checkpoint saved, exiting for requeue"
+                    if saver is not None
+                    else "SIGTERM: no checkpoint (cadence.checkpointing: none), exiting",
+                    flush=True,
+                )
             break

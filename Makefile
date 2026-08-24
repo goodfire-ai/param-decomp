@@ -70,7 +70,7 @@ test-all:
 # JAX compile cache and every later run repeats the compile cost. The llama goldens
 # split off because they dominate one xdist worker for ~8 min and co-schedule the
 # heaviest memory peaks next to the recon end-to-end tests on a 16GB runner.
-LLAMA_GOLDEN_TEST_PATHS = param_decomp/targets/tests/test_llama8b.py param_decomp/targets/tests/test_llama_simple_mlp.py
+LLAMA_GOLDEN_TEST_PATHS = param_decomp/targets/tests/test_llama31.py param_decomp/targets/tests/test_llama_simple_mlp.py
 
 .PHONY: test-ci-llama-goldens
 test-ci-llama-goldens:
@@ -86,8 +86,9 @@ test-ci-lab-multidevice:
 	$(MAKE) test-multidevice
 
 # Tests needing >1 device hang at the default 1, so run them on logical CPU devices.
-# Four is the suite-wide minimum: some tests require a 2 x 2 mesh or explicitly need >=4.
-MULTIDEVICE_CPU_DEVICE_COUNT = 4
+# Eight is the suite-wide minimum: the faithfulness-fallback (2,2,2) mesh arm needs 8;
+# tests wanting exactly a 2 x 2 x 1 topology slice jax.devices() themselves.
+MULTIDEVICE_CPU_DEVICE_COUNT = 8
 
 .PHONY: test-multidevice
 test-multidevice:

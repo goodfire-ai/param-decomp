@@ -1,190 +1,303 @@
-# Placement rules — the ab-initio sharding design
+# Placement rules
 
-Status: DRAFT (Oli + Claude, 2026-07-15; externally reviewed 2026-07-16 — fresh-Claude
-verdict adopt-with-changes, fixes applied; Codex review pending). First increment: `placement.py` (the rules
-engine + presets + tests). Not yet wired into the trainer — see "Migration" below.
-History check (2026-07-15 archaeology pass over git + lore): DONE — see "Lessons from
-history" below.
+Status: implemented. `placement.py` is the single source of truth for model-state,
+operand, and activation placement. Run configuration names the logical mesh explicitly as
+`runtime.{replicate,fsdp,tp}`; none of those axes is required to coincide with a node boundary.
 
-## Problem
+Companion prose, each canonical for its piece: `sharding.py`'s module docstring — the
+mesh axes and the authored (not required) hardware alignment; `muon_stacked.py`'s
+module docstring — why Newton-Schulz stages at a waypoint at all; `checkpoint.py`'s
+module docstring — why checkpoints are topology-free; `SPEC.md` D4/S20 — the layout
+and optimizer invariants; `CLAUDE.md` (this directory) — the agent-facing summary.
 
-Layout policy today is smeared across the codebase (spec pins in `site_out`, the
-reconstruct fns, per-class `.shardings` methods), written in *mesh* vocabulary, with no
-notion of *phase* — the same tensor legitimately wants different layouts at rest, in the
-forward, and in the optimizer. Retrofit costs of that structure, observed: the muon NS
-pathology (2.1×), the transient-stacking workaround, the owner-persistence refactor
-(PR #989), and a per-optimizer `impl:` knob that is secretly a placement property.
+## Invariants
 
-## Design
+1. No GPU materializes a fully replicated model. Between forwards, BF16 target, component, and
+   CI weights remain sharded over their declared `fsdp` and `tp` dimensions. At TP1, full matrix
+   replication exists only for the current linear operand, inside that linear's execution
+   boundary; a TP operand retains its Megatron shard.
+2. FP32 trainable parameters and optimizer moments use their declared `optimizer_state` rows.
+   Adam never requires parameter replication.
+3. Every reshard follows from two declared forward placements. Gradient communication is the
+   ordinary transpose of those forward transitions: there are no gradient-placement rows,
+   per-linear custom VJPs, or custom scan backwards.
+4. Semantic axes are authored by the code that owns a tensor. Unlisted semantic axes replicate;
+   unknown rows, unknown mesh axes, rank mismatches, and non-tiling semantic groups fail closed.
+   Placement is total and fallback-free: one set of component rows places every group, and a
+   group those rows cannot place refuses at construction with the remedies spelled out.
+5. Nested mesh-axis order is semantic. For example, `("fsdp", "replicate")` and
+   `("replicate", "fsdp")` are different linearizations and may lower to different collectives.
 
-Three vocabularies; the config owns only the mapping between them:
+## Vocabulary
 
-1. **Semantic axes** — dimension names declared once by the owning code:
-   V/U stacks are `("stack", "d_in", "C")` / `("stack", "C", "d_out")`; the activation
-   waist is `("batch", *positions, "d"|"C")`. Optimizer state inherits its param's names
-   by tree structure (momentum of a V stack is `(stack, d_in, C)`) — optimizer sharding
-   stops being a separate problem.
-2. **Mesh axes** — the physical grid the run config declares.
-3. **Rules table** — one `semantic axis → mesh axes` rule per placement ROW. The rows
-   are TYPED FIELDS of `placement.PlacementRules` (`params.persist`, `params.zero1`,
-   `params.forward`, `activations`; a future `optim/muon.ns` phase is a future field),
-   never string keys — consumers reference fields, labels like `params/persist` are
-   print-only. A tensor's PartitionSpec anywhere is *derived*: look up its dim names in
-   the active row's rule; unlisted names replicate.
+There are three distinct vocabularies:
 
-Phase boundaries (persist→forward at ENTRY; persist→optimizer at the update) are the
-only reshard points, derived mechanically as the diff between two table rows and priced
-by `transition_bytes` — the startup lint prints the whole policy + per-tensor audit
-(`describe`), which is also the documentation.
+- **Semantic axes** describe tensor meaning: `stack`, `d_in`, `d_out`, `C`, `batch`, `q_head`,
+  `kv_head`, `ffn_hidden`, and so on.
+- **Mesh axes** describe the logical device grid: `replicate`, `fsdp`, and `tp`.
+- **Placement rows** map semantic axes to ordered mesh axes for one lifecycle phase or activation
+  boundary. A `PartitionSpec` is always derived from a typed row plus a tensor's semantic axes.
 
-Every historical layout is one table: **zero1** (intra-matrix ÷N), **owner** (stack
-÷replicate, d ÷fsdp — PR #989 / SPEC D4 amendment), **ddp** (all replicated), and
-muon's NS *layout* can be derived from an `optim/muon.ns` row (owner-resident: reshard
-derives to zero; spread: two priced reshards). CORRECTED after external review: the
-`impl:` knob does NOT fully dissolve — `stacked` is also an OP RESTRUCTURING
-(concat same-canonical-shape leaves + pad + one batched NS), which a placement table
-cannot express. The table owns where; the impl owns how.
+`PlacementRules` contains four closed sections:
 
-### Constraints, not choices, from code
+- `components`: `optimizer_state`, `compute_weights`, faithfulness weight/delta rows,
+  `operands`, the muon-NS staging waypoint `ns_compute`, and the resolved semantic-group
+  census (stack lengths);
+- `ci_fn`: `optimizer_state`, `compute_weights`, `operands`, and `ns_compute` for attention,
+  FFN, input, and output weights, plus vector-state and activation rows;
+- `activations`: the target/component external waist and the `C`-sharded internal waist;
+- `target`: persist/operand rows for every frozen weight role, Megatron column/row activation
+  contracts, normalization/position buffers, and the component-replaced public interface.
 
-Models/optimizers declare *requirements*, never layouts: muon declares "each (a, b)
-matrix unit device-local during `ns`"; adam "elementwise, unconstrained"; the scan
-"consumes stack-leading trees"; the recon backward "batch stays sharded" (today's
-OOM-avoidance pin, stated as a constraint). The framework validates a proposed table
-against all declared constraints at startup (loud), and prices it (lint). Choosing the
-table is then a human/agent decision against a checkable, costable artifact —
-`sharding: auto` becomes a legitimate search problem; `zero1|owner|ddp` are preset
-tables for everyone else.
+The explicit config model mirrors these typed fields. It is not a string-keyed escape hatch.
 
-### Deliberate weaknesses (the guardrails)
+## Weight lifecycle
 
-- Rule language: name → mesh axes, first-match, **no conditionals or expressions**.
-  Conditionals become *row choices resolved at rules construction* (the `owner+zero1`
-  preset's opt-in `params.zero1` row for stacks that don't tile `replicate` — strict
-  `owner` errors on those instead; see "Decision at build time" below); true one-offs
-  get a literal-spec override on a named row.
-- Pin only load-bearing surfaces (persist trees, phase entries, the waist); GSPMD
-  propagates between pins, as today.
-- Cost model is an honest upper bound PER MATERIALIZATION (spec differs ⇒ ≤ full tensor
-  bytes). Known-unmodeled: materialization multiplicity (recon-grid forwards, remat
-  replays), residency-vs-regather (the real 8B memory trade), op-count, axis locality.
-  Sufficient to rank resting layouts; NOT sufficient to drive `sharding: auto` — fixing
-  the unit precedes any auto-search.
-- Out-of-table placement policy that stays out (named, not smuggled): `ascend_replicate`
-  (a `runtime:` knob — an adversary-ascent phase), and program-position choices
-  (shard_map, init out_shardings).
+### Trainable components
 
+Component masters are FP32 semantic stacks. The selected ownership row may shard the stack axis
+(`owner`) or intra-matrix over the full mesh (`zero1`: `d_in`/`d_out` on `fsdp`, `C` on
+`("tp", "replicate")` — Adam is elementwise, so the master layout is free to park `replicate`
+minor on `C`, where the compute-entry gather wants it). The mesh axes are jax `Explicit`, so
+every traced array carries its sharding in its type and transitions are `jax.sharding.reshard`.
 
-## Lessons from history (git + lore archaeology, 2026-07-15)
+Before target execution, `component_stacks_to_compute_weights` performs the declared
+cross-`replicate` gather once (`materialize_reduced_weights`), typing the gathered mesh axes
+`reduced` on the resident:
 
-Nothing like this rules table was tried before. What WAS tried, and what it teaches:
+```text
+V: [stack, d_in, C]   e.g. P(None, "fsdp", "tp", reduced={"replicate"})
+U: [stack, C, d_out]  e.g. P(None, "tp", "fsdp", reduced={"replicate"})
+```
 
-1. **Torch-era declarative topology** (`World`/`TwoPoolLayout`, the 3-pool typed DAG —
-   ~9k LOC): fine abstraction, deleted wholesale because it hand-rolled what GSPMD gives
-   free (lore `2026-06-09--jax-vs-torch-codebase-portability-decision`: "the gnarliest,
-   most bug-prone code in the repo"). ⇒ this layer's value must sit strictly ABOVE
-   GSPMD (policy), never parallel to it (transport).
-2. **The one prior generic rule** — inferred `shardable` + "shard the last axis" + silent
-   replicate fallback (PR #883) — lived TWO DAYS before model-owned explicit placement
-   replaced it (PR #891): shape inference couldn't express real layouts (Megatron
-   col/row per-field) and the silent fallback was a memory landmine. ⇒ declarations
-   beat inference; fail loud; and our "unlisted axis ⇒ replicated" default is only
-   acceptable because `describe()` audits it at startup — the lint MUST flag
-   large-tensor replication, never let it be quiet at scale.
-3. **Phase is real and REMAT RE-DECIDES it** (the 2026-06-26 tp OOM: the backward
-   replays `site_out` under remat and re-chooses layouts). ⇒ pins must live where remat
-   replays them; forward-correct is not backward-correct; the table's phase dimension is
-   the load-bearing novelty.
-4. **The cost model must price op-COUNT and axis LOCALITY, not just bytes** (tp2 moved
-   fewer bytes and lost 63% on op-count — lore `2026-07-01--tp-loses-...`), and
-   **nested-axis ORDER inside one assignment is semantics** (fsdp-major vs
-   replicate-major linearization cost ~13 GiB/rank/step of collective-permutes,
-   PR #927 — discovered 2026-07-16 to have NEVER MERGED; its fsdp-major flip is now
-   integrated here as `placement._ZERO1_DATA` + the CI-fn `.shardings`, and
-   `tools/xplane_attr.py` came with it). ⇒ `transition_bytes` is a v0; rule tuples like `[node, device]` are
-   ordered and the order must round-trip exactly.
-5. **Some placement problems are program-POSITION problems** (shard_map for a post-scan
-   psum; jit `out_shardings` at init) that no static table expresses. ⇒ named
-   out-of-scope escape hatches, not rule-language growth — the no-conditionals guardrail
-   stays.
-6. Also: keep tp re-testable as a table edit (every "TP loses" verdict failed on a
-   different axis than comms; do not structurally close the door), and pin the PRODUCER
-   once (per-consumer resharding was a recurring pathology).
+The `reduced` typing is the chained-deferral contract: cotangents flow back `unreduced` over
+those axes — replica-local through the whole target scan — and reduce exactly once, at the
+transpose of this materialization (the masters' exit reduce-scatter). jax's dot transpose
+demands the operand's reduced set EQUAL the batch contraction's mesh-axis set, which is why
+`LinearPlan.weight_reduced` (the master provenance) rides on the plan and is unioned with the
+per-linear gather axes; a provenance-free (frozen) weight stays untagged.
 
-## Validation (2026-07-16)
+After the target scan slices one layer, `placed_linear` reshards only the FSDP shards required
+by that linear into the operand. It never gathers a complete component stack. Its ordinary
+transpose emits the matching reduce-scatter.
 
-- Compile matrix (probe script since deleted; results recorded here): {owner, zero1, ddp} ×
-  {adamw, muon-stacked} all compile at a real 2×2 (replicate, fsdp) sim mesh. Finding:
-  `impl: stacked` under ddp persist does a redundant NS spread (210 collective-permutes)
-  — the stage-4 derive-NS-layout-from-table fix, evidenced.
-- José scale (4L, dp=8, real GPUs): `sharding: owner` 0.204 s/step vs `sharding: ddp`
-  0.201 s/step (~1.5%) — DDP works via one config word; the 4L sharding tax was already
-  negligible. Startup audit + large-replication flag verified in production logs.
-- D4 invariance harness: rules-driven derivation byte-equivalent (rel 9.6e-6).
-- 8B (full32L dp=32): BLOCKED by a pre-existing tip regression, NOT this layer — the
-  savesmoke OOMs (~48 GiB single alloc, empty op name) identically on owner+stacked,
-  zero1+stacked, and the pre-stack per-site baseline (board:
-  full32l-savesmoke-oom-at-tip). The flagship probe re-runs when that's fixed.
+### Frozen target
 
-## Decision at build time, data downward (2026-07-21, Oli-approved)
+Every frozen target matrix persists BF16-sharded over `fsdp` and replicated over `replicate`.
+Column and row roles additionally preserve Megatron TP layouts. The scanned target slices one
+layer before `LinearPlan` materializes its operand, so only the current linear is gathered across
+FSDP; it remains TP-sharded when TP is enabled.
+Embedding and output weights have the same declared persist-to-operand lifecycle; norms and RoPE
+buffers are explicitly replicated.
 
-The per-shape-group persist-vs-zero1 choice is made ONCE, at `PlacementRules`
-construction — `from_config(spec, mesh, sites)` resolves a TOTAL assignment
-(`ParamsPlacement.groups: {VUShape: GroupPlacement}`) from the run's site set — and
-flows downward as data. Construction happens where the resolved site set and the run's
-topology first coexist: config build (`experiments.lm.config._assert_placement_claims`,
-against the `sharding.hsdp_abstract_mesh` the config's `runtime.{dp,tp}` implies — so a
-`dp: N` misconfiguration refuses at config build, before any device is touched)
-and the composition roots (the same `from_config` at the concrete mesh). Shape groups
-derive from config + target dims alone — no weights, no devices.
+### CI transformer
 
-**The receiving end validates; it never re-decides.** `placement._component_stacks_rows`
-(behind `component_stacks_shardings` / `component_stacks_audit`) asserts the assignment's
-shape groups and stack lengths exactly match the arrays actually held — validation of
-received data at a trust boundary. There is deliberately NO second implementation of the
-tiles-or-fallback branch anywhere below construction (`_assign_groups` is the only one).
-A shared-function-called-twice "preview" (decide at build from config, re-decide at
-runtime from concrete arrays through one shared function) was explicitly rejected: two
-call sites feeding one function from different worlds makes the preview only as
-trustworthy as their input-equality, and a future runtime-dependent placement input
-would silently break it. Deciding once and validating the data at the boundary fails
-loudly on any divergence instead.
+CI FP32 masters and optimizer moments use their family-specific `optimizer_state` rows. The local
+shards are cast to BF16 before the declared gather into FSDP-resident compute weights
+(`materialize_reduced_weights` again — the gathered axes typed `reduced`): chunk-weight
+cotangents stay replica-local through the chunk scan and exit once through the materialization's
+transpose (the residency-bounds test pins the in-loop cross-replica collectives to the
+sanctioned smalls — replicated-persisted bias/norm-scale grads' whole-batch sums).
+Attention, FFN, input, and output linears each derive resident, operand, input, and output specs
+from their typed rows. The transformer uses Megatron-style alternating column/row TP and exposes a replicated
+model-width waist between blocks. Biases and learned norm scales use the `vectors` row, which
+shards `ffn_hidden` and `C` while leaving the model-width waist replicated.
 
-**Disjoint claim semantics — a sharding spec is a bidirectional CLAIM, checked at
-construction.** A table WITHOUT a `params.zero1` row (`owner`, or an explicit table
-omitting it) claims every shape group tiles the persist stack sharding — a non-tiling
-group is an error. A table WITH one (`owner+zero1`) claims at least one group does NOT
-tile — if every group tiles at the declared topology, that is ALSO an error: the config
-claims a run shape that isn't happening, and a declared-but-unreachable arm is a
-misconfiguration (common trigger: lowering `dp` for a smoke — an inline single-device
-smoke cannot exercise the owner+zero1 layout). `zero1` / `ddp` shard no stack axis, so
-every group takes persist trivially and there is no claim. One exemption, enumerated by
-name: `from_config_for_consumer` skips only the reachability claim, for consumers
-re-placing a finished run's arrays on their own (typically single-device) mesh
-(`open_jax_run`) — the fail-closed direction still holds there.
+### Faithfulness
 
-## Prior art
+Faithfulness consumes exact FP32 component masters, not the BF16 resident representation. In
+both sharded presets the faithfulness weight rows ARE the master layout, so the weights
+transition is the identity: `owner` keeps the stack rows (delta row `stack` on `replicate`,
+`d_out` on `fsdp`), `zero1` the matrix rows (`d_in`/`d_out` on `fsdp`, `C` on
+`("tp", "replicate")`; the delta row scatters both `C` contractions onto `d_in`, so no
+full-rank delta matrix is materialized). An explicit table may declare a different
+faithfulness pair; a stack-sharded faithfulness row refuses non-tiling groups at
+construction, like every stack-sharded component row. Transitions are typed `reshard`s —
+semantics-preserving by construction (an axis permutation is unrepresentable); the
+anti-collective-permute claim moved from a construction-time allowlist to census-based
+tests over the compiled HLO.
 
-t5x/flax "logical axis rules" (params carry semantic names; a rules list maps
-logical→mesh) — proven at scale. flax's rules are a context manager, so coarse
-phase-dependence IS expressible there (rarely used); what it lacks is the priced
-transitions + audit. We reimplement ~150 lines locally rather than dragging flax into
-an equinox codebase. This design's additions: explicit sites, transition pricing, the
-startup audit, optimizer constraint declarations (planned). PyTorch DTensor/DeviceMesh
-converges on the same vocabulary.
+### Muon NS
 
-## Migration (staged, each lands green)
+Stacked muon's Newton-Schulz is choreographed by the same table. Each muon leaf is one
+semantic kind's `[g, rows<=cols]` stack and gets its own batched NS — grouping by shape
+across kinds is banned by design decision, so two kinds that coincidentally share a shape
+never merge, and no padding concept exists. The leaf casts to `ns_dtype` and stages at
+its family's `ns_compute` waypoint verbatim (`ns_staging_sharding`), where NS executes;
+only `stack` may carry an assignment: whole matrices per device is what keeps the NS
+loop collective-free (a matrix-sharded operand is an explicit-mode type error on the
+Gram contraction, and matrix-axis staging — the persist row verbatim included —
+re-triggers the SPMD full-rematerialization fallback). A kind whose stack length does
+not tile the declared split refuses at the stacked-muon consumer's claim
+(`assert_stacked_muon_*_staging`, fired at optimizer build and at the LM pre-submit
+gate — only a stacked-muon run consumes the row, so non-muon runs keep any-stack-length
+placement) — nothing hunts for an alternative split, and nothing is ever gathered whole
+or padded. The waypoint is reached
+by `muon_stacked.staging_hops` — one mesh axis moved per reshard, since a combined
+move-and-gather reshard also trips the fallback. Every preset declares the same staging,
+the stack split over `replicate` (the node axis under the seats' authored convention —
+see `sharding.py`): under owner persistence the ingress is the identity on the stack
+axis; under intra-matrix (zero1) or replicated (ddp)
+persistence it is a shard-to-shard hop chain. The NS redundancy within a replicate
+group (a kind's shard replicated across that group's fsdp × tp plane — intra-node as
+authored) is accepted — NS is a sliver of the step, and comms-free beats FLOP-optimal.
 
-1. `placement.py` engine + presets + tests (THIS increment).
-2. `runtime.sharding: preset-name | PlacementTableConfig` (the explicit table is
-   a pydantic model mirroring the typed rows: `params: {persist, zero1?, forward}` +
-   `activations`, closed vocabulary — unknown rows die at parse); thread
-   `PlacementRules` into `run.py` → `init_train_state`; `ComponentStacks.shardings` /
-   CI-fn `.shardings` consume `rules.params.persist.sharding_for(axes)` instead of
-   hardcoding specs (their old bodies became the `owner`/`zero1` preset rows). Startup
-   prints `describe(...)` with every persistent tensor.
-3. Reroute the activation pins (`site_out`, train step) through `activations` rules.
-4. Muon: drop `impl:`, derive resident-vs-spread NS from the table; declare muon's
-   locality constraint; wire the constraint checker.
-5. `sharding: auto` (search over tables against the lint + a short probe) — optional,
-   later, possibly agent-driven.
+The redundancy is deliberate, and it has a knob. An `ns_compute` row admits any stack
+assignment (only matrix-axis assignments are refused), so an explicit table can widen
+the split — `{stack: [replicate, fsdp]}` spreads each kind's NS over more devices.
+The presets stay at `{stack: replicate}` because widening tightens the tiling
+constraint (every kind's stack length must divide the larger split,
+`_assert_ns_row_tiles`) and reopens the trade the split exists to close: under owner
+masters the write-back stops being communication-free — egress from a wider split is
+an intra-node collective. NS is off the critical path, so comms-free wins over
+FLOP-optimal until profiling says otherwise.
+
+`owner` staging is Distributed Muon in the sense of Moonshot's Moonlight paper (*Muon
+is Scalable for LLM Training*: ZeRO-1-partitioned optimizer states, whole-matrix
+ownership, local Newton-Schulz, redistribute) — re-expressed as declarative placement
+rows with node-local ownership, so every collective stays compiler-inserted rather
+than hand-written.
+
+## Linear lowering
+
+`LinearPlan` is data: mesh, input placement, resident-weight placement, operand placement, and
+output placement. Its implementation mechanically:
+
+1. reshards the input to the operand-input row;
+2. reshards the weight to the operand row, typing the dropped resident axes (plus the
+   plan's master provenance) `reduced`;
+3. contracts with the output typed to the public output row (`einsum out_sharding` — a
+   contracted TP axis lowers to the reduction the compiler picks).
+
+The implementation contains no optimizer or target special cases. Rematerialization policy stays
+at the enclosing scanned forward. With `nothing_saveable`, backward recreates per-linear operands;
+with `dots_saveable`, a gathered operand is not itself a saved dot residual.
+
+## Presets
+
+- `zero1`: globally matrix-sharded FP32 trainable state; HSDP-resident BF16 compute weights. No
+  row shards the component stack axis, so every semantic group — any stack length — is placeable.
+- `owner`: semantic stacks sharded over `replicate`, matrix dimensions over `fsdp`. A group whose
+  stack does not tile `replicate` refuses at construction; the refusal names the groups and the
+  remedies (a tiling mesh, or a stack-free placement such as `zero1`). There is no fallback
+  preset and no fallback row — mixed per-group placement is unrepresentable.
+- `ddp`: replicated model state for small-model and single-node work only.
+
+Unrepresentable is the point. One row set placing every group is a claim a reader can
+hold whole: every consumer, checkpoint reader, and profile analysis reasons about ONE
+layout per run. A per-group fallback would make each group's layout a build-time
+decision every downstream reader must re-derive — every tolerated fallback is another
+reachable state multiplying what the placement claim has to cover, and the claim stops
+being total. The refusal-with-remedies costs one config edit before submission; the
+multiplication would be paid on every read, forever.
+
+Owner vs `zero1` in magnitude: under elementwise optimizers (Adam) the two are
+~equivalent per-step communication — entry gather and exit reduce-scatter move the same
+bytes either way, and the faithfulness transition is the identity in both. Under
+stacked muon the whole difference is NS staging: owner's ingress/egress are the
+identity on the stack axis (masters already rest at the waypoint's split), while zero1
+masters take the `staging_hops` shard-to-shard chain, in `ns_dtype` bytes. Both are
+bounded, off-critical-path transfers; neither preset is a memory class apart — the
+per-rank whole-fp32-stack peak is what the hop chain excludes, in every preset.
+
+`from_config` resolves the semantic-group census once from the concrete site set and refuses any
+group the rows cannot place. Consumers validate that census against their arrays and never
+re-decide it; a consumer re-placing a finished run on one device tiles trivially (every stack
+length divides 1).
+
+## Performance evidence and profiling validity
+
+Startup prints the mesh, every placement row, target role declarations, and the derived placement
+of persistent leaves. Tests cover numerical forward/gradient parity, real multi-device topology,
+checkpoint round trips, TP boundaries, and forbidden collective patterns. Scale claims require
+the post-SPMD HLO, compiled memory report, and an uncapped XPlane with explicit step boundaries;
+small simulated meshes are necessary but not sufficient.
+
+Every performance claim must be reproducible from an evidence record carrying: the pushed
+commit; the exact invocation, including any config-derivation command; the pinned resolved
+`launch_config.yaml`; cluster, job id, run id, mesh, batch, objective, and warmup count; the
+exact profiled step ranges and paths to the uncapped XPlane and optimized HLO protobuf; and the
+parser command/version that produced the numbers. A run name or prose description is never a
+substitute. Classify a run by its pinned `launch_config.yaml` and startup placement dump —
+names, comments, and copied filenames are labels, not configuration evidence.
+
+### Timing validity
+
+- The uncapped `.xplane.pb` is the timing and kernel-count source of truth. Perfetto/Chrome
+  exports cap at one million events and can silently hold only a prefix of the requested
+  window: never infer step time from an export's span, and verify a window's step boundaries
+  and per-kind kernel counts against the complete XPlane.
+- Every analyzed step needs an explicit host range enclosing its final device synchronization;
+  the requested profile step count is not a boundary oracle. Average only explicitly identified
+  steady-state steps, and say when fewer clean steps remain than the requested window.
+- The first logged step is a startup measurement (compilation + initialization), and one
+  unprofiled execution is not enough: merely dispatching warmups lets asynchronous work spill
+  into the marked window. The harness requires two unprofiled, device-synchronized updates
+  before opening the trace; still inspect every marked host range and reject any containing
+  compilation or first-execution autotuning.
+- Verify algorithmic workload knobs (warmup counts, ablated losses) before comparing
+  throughput: an ablated cell is matched topology evidence, not a production-shaped step time.
+  A comparison across commits is not a one-variable experiment even when the YAMLs match.
+- Kernel-duration unions are intentionally non-additive because streams overlap: report total
+  collective union and exposed collective time separately, never a per-kind sum as wall time.
+  Treat profiler-derived speedups as provisional until the full XPlane and an independent
+  timing source agree.
+
+### Attribution validity
+
+- Never classify collectives by CUDA/NCCL kernel-name substrings. XPlane events carry native
+  `(program_id, hlo_op)` identities and dumped HLO protobufs carry module ids and opcodes:
+  join those records exactly and fail on missing or ambiguous identities. A text-only HLO dump
+  cannot support the join — profiling runs enable `xla_dump_hlo_as_proto` before backend init
+  and copy the protos to durable run artifacts before the allocation exits.
+- An XLA dump-name regex can omit auxiliary programs whose kernels still run inside a marked
+  step. Treat an entirely absent program as an unattributed compute blocker; fail if an event
+  names an absent instruction within a loaded program; never manufacture an HLO match from a
+  kernel name.
+- NVTX projection rows are not one row per physical kernel (nested launch ranges double
+  counts): check physical kernel counts in the XPlane or the CUDA timeline before interpreting
+  projected counts.
+- Nsight Systems: capture only an explicitly marked steady-state range at default NCCL detail
+  (full-process `--nccl-trace=all` capture can destabilize ranks). Repeated-capture reports
+  describe the same process — analyze them separately, never as one multi-report input. A
+  rank-zero process trace covers that process's GPUs, not global communicator metadata.
+  Instrumentation can radically perturb distributed wall time while individual kernel
+  durations stay representative: use such captures for HLO identity, message shapes, and
+  cross-profiler kernel-duration checks, never for throughput.
+
+### Placement-claim validity
+
+- A declared resident placement is not proof that residency survives a scan boundary: GSPMD
+  can sink a pre-scan gather through the scan into each use, and ordinary autodiff then emits
+  in-loop cross-`replicate` reductions. Inspect the optimized HLO around the actual production
+  scan before claiming a pre-scan transition is step-resident.
+- A synthetic gradient probe is not a placement proof: every placement regression must
+  differentiate through the actual target forward with its complete site set, remat policy,
+  masks, and routing inputs.
+- Small-mesh CPU proofs do not cover GPU-only custom derivatives (fused attention's custom
+  VJP) or backend bugs that appear only at the production mesh (partially manual FSDP/TP
+  `shard_map` scopes have aborted jax 0.10.1's CPU backend). Exercise every backend-selected
+  custom primitive on the production accelerator and mesh.
+- Backend substitution is not a harmless correctness workaround: swapping fused attention for
+  the ordinary XLA lowering can change compiled memory far beyond the model-state estimate.
+  Inspect the full compiled memory plan.
+
+### Cluster and cache validity
+
+- A whole-node batch allocation does not give a one-task-per-node `srun` step the node's
+  memory; the launcher pins `--mem=0`. Inspect the step's `AllocTRES` before diagnosing a
+  compiler or GPU-memory failure.
+- XLA's persistent-cache autotune subdir is unsafe for unrelated Unix users to share; the
+  cache dir is the config-authored per-user `runtime.compilation_cache_dir`.
+
+Keep dated measurements, topology sweeps, and reference validations with the experiment
+records that support them; this document carries only the resulting rules.
+
+## Known frontiers
+
+- The step-boundary weight lifecycle is unscheduled: the entry owner-to-resident gathers and
+  exit gradient reduce-scatters run at the cross-node wire floor with zero compute overlap, a
+  material fraction of the measured step (campaign log). The fix is scheduling — a staged
+  per-group owner/resident stream — not byte reduction.
+- Sitewise source, mask, routing, and importance work still grows compiler IR with site count even
+  though target and CI depth are scanned.

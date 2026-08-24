@@ -126,16 +126,27 @@ def main() -> None:
         )
 
     scalars = dict(
-        VOCAB=VOCAB, N_EMBD=N_EMBD, N_INTERMEDIATE=N_INTERMEDIATE, C=C,
-        N_DECOMP_LAYERS=N_DECOMP_LAYERS, N_TAIL=N_TAIL, EPS=EPS, B=B, T=T,
-        IMP_P=IMP_P, IMP_BETA=IMP_BETA, IMP_EPS=IMP_EPS,
-    )  # fmt: skip
+        VOCAB=VOCAB,
+        N_EMBD=N_EMBD,
+        N_INTERMEDIATE=N_INTERMEDIATE,
+        C=C,
+        N_DECOMP_LAYERS=N_DECOMP_LAYERS,
+        N_TAIL=N_TAIL,
+        EPS=EPS,
+        B=B,
+        T=T,
+        IMP_P=IMP_P,
+        IMP_BETA=IMP_BETA,
+        IMP_EPS=IMP_EPS,
+    )
     for name, val in scalars.items():
         arrays[f"_scalar_{name}"] = np.array(val)
 
     np.savez(OUT, **arrays)  # pyright: ignore[reportArgumentType] (numpy savez **kwds stub is strict)
-    print(f"wrote {OUT} ({len(arrays)} arrays, n_decomp_layers={N_DECOMP_LAYERS}, "
-          f"sites={N_DECOMP_LAYERS * 3})")  # fmt: skip
+    print(
+        f"wrote {OUT} ({len(arrays)} arrays, n_decomp_layers={N_DECOMP_LAYERS}, "
+        f"sites={N_DECOMP_LAYERS * 3})"
+    )
 
 
 if __name__ == "__main__":

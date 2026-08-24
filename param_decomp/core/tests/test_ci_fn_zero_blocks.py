@@ -32,15 +32,23 @@ from param_decomp.core.configs import (
     ImportanceMinimalityLossConfig,
     StochasticReconLossConfig,
 )
+from param_decomp.core.faithfulness import faithfulness_loss_for
+from param_decomp.core.model import PlacedModel
 from param_decomp.core.objective import build_objective
 from param_decomp.core.schedule import Knot, ScheduleConfig
 from param_decomp.core.tests.test_generic_model_io import SyntheticDecomposedModel
-from param_decomp.core.train import Decomposition, TrainingItem, TrainState, make_train_step
+from param_decomp.core.train import (
+    Decomposition,
+    ForwardSubstrate,
+    TrainingItem,
+    TrainState,
+    make_train_step,
+)
 
 SITE = "block.0.proj"
 B, T, D, C = 2, 5, 8, 4
 D_MODEL, FFN = 16, 32
-SITES = (SiteSpec(name=SITE, d_in=D, d_out=D, C=C),)
+SITES = (SiteSpec(name=SITE, d_in=D, d_out=D, C=C, group=SITE),)
 
 
 def _arch(n_blocks: int) -> ChunkwiseTransformerCIArch:
@@ -78,7 +86,7 @@ def test_zero_blocks_is_in_proj_plus_heads_and_nothing_else():
 def test_zero_blocks_forward_shape_and_finiteness():
     ci_fn = _ci_fn(0)
     for remat in (False, True):
-        ci = ci_fn(_taps(), remat=remat)
+        ci = ci_fn(_taps(), remat=remat, placement=None)
         assert ci.preactivations[SITE].shape == (B, T, C)
         assert ci.lower[SITE].shape == (B, T, C)
         assert bool(jnp.isfinite(ci.lower[SITE]).all())
@@ -93,8 +101,8 @@ def test_zero_blocks_is_exactly_position_local():
 
     def moved(n_blocks: int) -> jax.Array:
         ci_fn = _ci_fn(n_blocks)
-        base = ci_fn(taps, remat=False).preactivations[SITE]
-        pert = ci_fn(perturbed, remat=False).preactivations[SITE]
+        base = ci_fn(taps, remat=False, placement=None).preactivations[SITE]
+        pert = ci_fn(perturbed, remat=False, placement=None).preactivations[SITE]
         return jnp.abs(base - pert).max(axis=(0, 2))  # per-position
 
     local = moved(0)
@@ -145,35 +153,43 @@ def test_zero_blocks_trains_a_positioned_target():
             components_opt_state=opt_vu.init(eqx.filter(components, eqx.is_array)),
             ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
             adversaries={},
+            freq_ema=None,
             step=jnp.zeros((), jnp.int32),
         ),
     )
-    step_fn = make_train_step(
-        model_static=model,
-        losses=build_objective(
-            (
-                FaithfulnessLossConfig(coeff=1.0),
-                ImportanceMinimalityLossConfig(
-                    coeff=1e-4,
-                    pnorm=ScheduleConfig(
-                        max_val=2.0, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.5))
-                    ),
+    loss_terms = build_objective(
+        (
+            FaithfulnessLossConfig(coeff=1.0),
+            ImportanceMinimalityLossConfig(
+                coeff=1e-4,
+                pnorm=ScheduleConfig(
+                    max_val=2.0, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.5))
                 ),
-                StochasticReconLossConfig(coeff=1.0),
             ),
-            model.site_names,
+            StochasticReconLossConfig(coeff=1.0),
         ),
+        model.site_names,
+    )
+    placed = PlacedModel(model=model, placement=None)
+    step_fn = make_train_step(
+        model_static=placed,
+        substrate=ForwardSubstrate.of(
+            placed,
+            remat_recon_forwards=False,
+            remat_ci_fn=True,
+            ci_capture_keys=ci_fn.capture_keys,
+            ci_placement=None,
+        ),
+        objective=loss_terms,
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=10,
-        remat_recon_forwards=False,
-        remat_ci_fn=True,
-        ci_capture_keys=ci_fn.capture_keys,
+        faithfulness=faithfulness_loss_for(model),
     )
 
     in_proj_before = jax.device_get(ci_fn.chunks.in_proj_w)  # host copy survives step donation
     for step_idx in range(2):
-        state, metrics = step_fn(model, state, inputs, random.fold_in(random.PRNGKey(3), step_idx))
+        state, metrics = step_fn(placed, state, inputs, random.fold_in(random.PRNGKey(3), step_idx))
         assert jnp.isfinite(metrics["total"]), (step_idx, metrics["total"])
 
     trained = state.decomposition.ci_fn
@@ -181,5 +197,9 @@ def test_zero_blocks_trains_a_positioned_target():
     assert not jnp.allclose(trained.chunks.in_proj_w, in_proj_before), (
         "the CI fn did not move — with no blocks there is nothing else left to train"
     )
-    final_ci = trained(model.clean_forward(inputs, ci_fn.capture_keys).captures, remat=False)
+    final_ci = trained(
+        model.clean_forward(inputs, ci_fn.capture_keys, placement=None).captures,
+        remat=False,
+        placement=None,
+    )
     assert final_ci.lower[SITE].shape == (B, T, C)

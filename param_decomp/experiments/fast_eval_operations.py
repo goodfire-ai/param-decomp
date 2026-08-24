@@ -15,19 +15,19 @@ import jax.numpy as jnp
 from jax.sharding import Mesh
 from jaxtyping import Array, PRNGKeyArray
 
-from param_decomp.core.ci_fn import CIFn
+from param_decomp.core.ci_fn import PlacedCIFn
 from param_decomp.core.ci_l0_eval import make_ci_l0_eval_step
 from param_decomp.core.components import ComponentStacks
 from param_decomp.core.configs import CI_L0Config, PGDReconLossConfig
 from param_decomp.core.eval_schedule import EvalSchedule
-from param_decomp.core.model import CaptureKeys, DecomposedModel
+from param_decomp.core.model import CaptureKeys, PlacedModel
 from param_decomp.core.recon import resolve_reconstruction_spec
 from param_decomp.core.recon_eval import FreshPGDReconEval, make_fresh_pgd_eval_step
 from param_decomp.core.run import EvalInvocation, EvalOperation
 from param_decomp.experiments.eval_config import EvalConfig
 
 type ScalarStep = Callable[
-    [DecomposedModel, ComponentStacks, CIFn, Any, PRNGKeyArray], dict[str, Array]
+    [PlacedModel, ComponentStacks, PlacedCIFn, Any, PRNGKeyArray], dict[str, Array]
 ]
 
 
@@ -36,7 +36,7 @@ def _averaged_over_eval_batches(
     eval_config: EvalConfig,
     schedule: EvalSchedule,
     seed: int,
-    model: DecomposedModel,
+    model: PlacedModel,
     sample_eval_batch: Callable[[int], Any],
 ) -> EvalOperation[EvalInvocation]:
     """Run `step` over the pass's eval batches and average each scalar it emits."""
@@ -50,7 +50,7 @@ def _averaged_over_eval_batches(
             values = step(
                 model,
                 context.state.decomposition.components,
-                context.state.decomposition.ci_fn,
+                context.placed_ci_fn,
                 sample_eval_batch(flat_index),
                 jax.random.fold_in(eval_key, flat_index),
             )
@@ -67,7 +67,7 @@ def make_fresh_pgd_operation(
     schedule: EvalSchedule,
     seed: int,
     compiler_options: dict[str, bool | int | str],
-    model: DecomposedModel,
+    model: PlacedModel,
     ci_capture_keys: CaptureKeys,
     mesh: Mesh | None,
     sample_eval_batch: Callable[[int], Any],
@@ -80,17 +80,21 @@ def make_fresh_pgd_operation(
         reconstruction=resolve_reconstruction_spec(metric.hidden_acts_reconstruction),
     )
     pgd_step = make_fresh_pgd_eval_step(
-        model, probe, ci_capture_keys, mesh, compiler_options=compiler_options
+        model,
+        probe,
+        ci_capture_keys,
+        mesh,
+        compiler_options=compiler_options,
     )
 
     def step(
-        model: DecomposedModel,
+        model: PlacedModel,
         components: ComponentStacks,
-        ci_fn: CIFn,
+        placed_ci_fn: PlacedCIFn,
         inputs: Any,
         key: PRNGKeyArray,
     ) -> dict[str, Array]:
-        return {f"loss/{probe.name}": pgd_step(model, components, ci_fn, inputs, key)}
+        return {f"loss/{probe.name}": pgd_step(model, components, placed_ci_fn, inputs, key)}
 
     return _averaged_over_eval_batches(step, eval_config, schedule, seed, model, sample_eval_batch)
 
@@ -101,7 +105,7 @@ def make_ci_l0_operation(
     schedule: EvalSchedule,
     seed: int,
     compiler_options: dict[str, bool | int | str],
-    model: DecomposedModel,
+    model: PlacedModel,
     ci_capture_keys: CaptureKeys,
     mesh: Mesh | None,
     sample_eval_batch: Callable[[int], Any],

@@ -177,7 +177,7 @@ def test_training_smoke_loss_decreases():
         cache = root / "pretrain_cache" / "pretrain-t-smoke"
         loaded_cfg = lsm.load_model_config(cache)
         target = lsm.load_target_from_pretrain_cache(cache, loaded_cfg, jnp.float32)
-        assert target.lm_head.shape == (mc.vocab_size, mc.n_embd)
+        assert target.head_weight.shape == (mc.vocab_size, mc.n_embd)
 
 
 if __name__ == "__main__":

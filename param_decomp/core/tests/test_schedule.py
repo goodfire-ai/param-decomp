@@ -15,8 +15,10 @@ def sched(
     """`(at, frac)` or `(at, frac, interp)` tuples -> ScheduleConfig."""
     return ScheduleConfig(
         max_val=max_val,
-        points=tuple(Knot(at=p[0], frac=p[1], interp=p[2] if len(p) > 2 else "linear") for p in points),
-    )  # fmt: skip
+        points=tuple(
+            Knot(at=p[0], frac=p[1], interp=p[2] if len(p) > 2 else "linear") for p in points
+        ),
+    )
 
 
 class TestValidation:

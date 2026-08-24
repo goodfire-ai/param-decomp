@@ -29,7 +29,7 @@ from param_decomp.core.sharding import hsdp_mesh, shard_batch
 
 def _global_ci_upper() -> dict[str, jax.Array]:
     """Two heterogeneous-C sites; batch B divisible by any visible device count."""
-    mesh = hsdp_mesh()
+    mesh = hsdp_mesh(1, jax.device_count(), 1)
     n = mesh.devices.size
     B, T = 8 * n, 16
     return {
@@ -49,14 +49,12 @@ def test_imp_min_global_reduction_invariant_to_device_count():
         ci_upper, pnorm, eps, reference_datapoint_count=n_positions
     )
 
-    mesh = hsdp_mesh()
+    mesh = hsdp_mesh(1, jax.device_count(), 1)
 
     @jax.jit
     def sharded_terms(ci: dict[str, jax.Array]) -> tuple[jax.Array, jax.Array]:
         ci = {
-            site: jax.lax.with_sharding_constraint(
-                v, NamedSharding(mesh, P(("replicate", "fsdp"), None, None))
-            )
+            site: jax.sharding.reshard(v, NamedSharding(mesh, P(("replicate", "fsdp"), None, None)))
             for site, v in ci.items()
         }
         return importance_minimality_terms(ci, pnorm, eps, reference_datapoint_count=n_positions)

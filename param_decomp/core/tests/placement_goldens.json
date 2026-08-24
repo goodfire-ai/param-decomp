@@ -1,0 +1,4472 @@
+{
+ "explicit_fsdp_only|replicate2_fsdp2_tp2|mixed": {
+  "rules": {
+   "activations": {
+    "component": {
+     "label": "activations/component",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "external": {
+     "label": "activations/external",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    }
+   },
+   "ci_fn": {
+    "activations": {
+     "label": "ci_fn/activations",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "attention": {
+     "compute_weights": {
+      "label": "ci_fn/attention.compute_weights",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/attention.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/attention.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/attention.optimizer_state",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "ffn": {
+     "compute_weights": {
+      "label": "ci_fn/ffn.compute_weights",
+      "rule": {
+       "ffn_hidden": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/ffn.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/ffn.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/ffn.optimizer_state",
+      "rule": {
+       "ffn_hidden": "fsdp"
+      }
+     }
+    },
+    "input": {
+     "compute_weights": {
+      "label": "ci_fn/input.compute_weights",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/input.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/input.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/input.optimizer_state",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "output": {
+     "compute_weights": {
+      "label": "ci_fn/output.compute_weights",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/output.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/output.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/output.optimizer_state",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "vectors": {
+     "label": "ci_fn/vectors",
+     "rule": {}
+    }
+   },
+   "components": {
+    "compute_weights": {
+     "label": "components/compute_weights",
+     "rule": {
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    },
+    "faithfulness_deltas": {
+     "label": "components/faithfulness_deltas",
+     "rule": {
+      "d_out": "fsdp"
+     }
+    },
+    "faithfulness_weights": {
+     "label": "components/faithfulness_weights",
+     "rule": {
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    },
+    "group_stack_lens": {
+     "128x64x8": 1,
+     "64x32x8": 4
+    },
+    "ns_compute": {
+     "label": "components/ns_compute",
+     "rule": {}
+    },
+    "operands": {
+     "label": "components/operands",
+     "rule": {}
+    },
+    "optimizer_state": {
+     "label": "components/optimizer_state",
+     "rule": {
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    }
+   },
+   "mesh": {
+    "fsdp": 2,
+    "replicate": 2,
+    "tp": 2
+   },
+   "target": {
+    "column": {
+     "input": "activations/external",
+     "operand": {
+      "label": "target/column.operand",
+      "rule": {}
+     },
+     "output": "target/intermediate",
+     "persist": {
+      "label": "target/column.persist",
+      "rule": {
+       "d_in": "fsdp"
+      }
+     }
+    },
+    "component": {
+     "input": "activations/external",
+     "output": "activations/external"
+    },
+    "embedding": {
+     "operand": {
+      "label": "target/embedding.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/embedding.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "intermediate": {
+     "label": "target/intermediate",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "normalization": {
+     "label": "target/normalization",
+     "rule": {}
+    },
+    "output": {
+     "operand": {
+      "label": "target/output.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/output.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "position_encoding": {
+     "label": "target/position_encoding",
+     "rule": {}
+    },
+    "row": {
+     "input": "target/intermediate",
+     "operand": {
+      "label": "target/row.operand",
+      "rule": {}
+     },
+     "output": "activations/external",
+     "persist": {
+      "label": "target/row.persist",
+      "rule": {
+       "d_out": "fsdp"
+      }
+     }
+    }
+   }
+  }
+ },
+ "explicit_fsdp_only|replicate2_fsdp2_tp2|tiling": {
+  "rules": {
+   "activations": {
+    "component": {
+     "label": "activations/component",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "external": {
+     "label": "activations/external",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    }
+   },
+   "ci_fn": {
+    "activations": {
+     "label": "ci_fn/activations",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "attention": {
+     "compute_weights": {
+      "label": "ci_fn/attention.compute_weights",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/attention.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/attention.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/attention.optimizer_state",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "ffn": {
+     "compute_weights": {
+      "label": "ci_fn/ffn.compute_weights",
+      "rule": {
+       "ffn_hidden": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/ffn.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/ffn.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/ffn.optimizer_state",
+      "rule": {
+       "ffn_hidden": "fsdp"
+      }
+     }
+    },
+    "input": {
+     "compute_weights": {
+      "label": "ci_fn/input.compute_weights",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/input.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/input.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/input.optimizer_state",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "output": {
+     "compute_weights": {
+      "label": "ci_fn/output.compute_weights",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/output.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/output.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/output.optimizer_state",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "vectors": {
+     "label": "ci_fn/vectors",
+     "rule": {}
+    }
+   },
+   "components": {
+    "compute_weights": {
+     "label": "components/compute_weights",
+     "rule": {
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    },
+    "faithfulness_deltas": {
+     "label": "components/faithfulness_deltas",
+     "rule": {
+      "d_out": "fsdp"
+     }
+    },
+    "faithfulness_weights": {
+     "label": "components/faithfulness_weights",
+     "rule": {
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    },
+    "group_stack_lens": {
+     "64x32x8": 4
+    },
+    "ns_compute": {
+     "label": "components/ns_compute",
+     "rule": {}
+    },
+    "operands": {
+     "label": "components/operands",
+     "rule": {}
+    },
+    "optimizer_state": {
+     "label": "components/optimizer_state",
+     "rule": {
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    }
+   },
+   "mesh": {
+    "fsdp": 2,
+    "replicate": 2,
+    "tp": 2
+   },
+   "target": {
+    "column": {
+     "input": "activations/external",
+     "operand": {
+      "label": "target/column.operand",
+      "rule": {}
+     },
+     "output": "target/intermediate",
+     "persist": {
+      "label": "target/column.persist",
+      "rule": {
+       "d_in": "fsdp"
+      }
+     }
+    },
+    "component": {
+     "input": "activations/external",
+     "output": "activations/external"
+    },
+    "embedding": {
+     "operand": {
+      "label": "target/embedding.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/embedding.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "intermediate": {
+     "label": "target/intermediate",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "normalization": {
+     "label": "target/normalization",
+     "rule": {}
+    },
+    "output": {
+     "operand": {
+      "label": "target/output.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/output.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "position_encoding": {
+     "label": "target/position_encoding",
+     "rule": {}
+    },
+    "row": {
+     "input": "target/intermediate",
+     "operand": {
+      "label": "target/row.operand",
+      "rule": {}
+     },
+     "output": "activations/external",
+     "persist": {
+      "label": "target/row.persist",
+      "rule": {
+       "d_out": "fsdp"
+      }
+     }
+    }
+   }
+  }
+ },
+ "explicit_fsdp_only|replicate4_fsdp8_tp1|mixed": {
+  "rules": {
+   "activations": {
+    "component": {
+     "label": "activations/component",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "external": {
+     "label": "activations/external",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    }
+   },
+   "ci_fn": {
+    "activations": {
+     "label": "ci_fn/activations",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "attention": {
+     "compute_weights": {
+      "label": "ci_fn/attention.compute_weights",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/attention.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/attention.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/attention.optimizer_state",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "ffn": {
+     "compute_weights": {
+      "label": "ci_fn/ffn.compute_weights",
+      "rule": {
+       "ffn_hidden": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/ffn.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/ffn.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/ffn.optimizer_state",
+      "rule": {
+       "ffn_hidden": "fsdp"
+      }
+     }
+    },
+    "input": {
+     "compute_weights": {
+      "label": "ci_fn/input.compute_weights",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/input.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/input.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/input.optimizer_state",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "output": {
+     "compute_weights": {
+      "label": "ci_fn/output.compute_weights",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/output.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/output.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/output.optimizer_state",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "vectors": {
+     "label": "ci_fn/vectors",
+     "rule": {}
+    }
+   },
+   "components": {
+    "compute_weights": {
+     "label": "components/compute_weights",
+     "rule": {
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    },
+    "faithfulness_deltas": {
+     "label": "components/faithfulness_deltas",
+     "rule": {
+      "d_out": "fsdp"
+     }
+    },
+    "faithfulness_weights": {
+     "label": "components/faithfulness_weights",
+     "rule": {
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    },
+    "group_stack_lens": {
+     "128x64x8": 1,
+     "64x32x8": 4
+    },
+    "ns_compute": {
+     "label": "components/ns_compute",
+     "rule": {}
+    },
+    "operands": {
+     "label": "components/operands",
+     "rule": {}
+    },
+    "optimizer_state": {
+     "label": "components/optimizer_state",
+     "rule": {
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    }
+   },
+   "mesh": {
+    "fsdp": 8,
+    "replicate": 4,
+    "tp": 1
+   },
+   "target": {
+    "column": {
+     "input": "activations/external",
+     "operand": {
+      "label": "target/column.operand",
+      "rule": {}
+     },
+     "output": "target/intermediate",
+     "persist": {
+      "label": "target/column.persist",
+      "rule": {
+       "d_in": "fsdp"
+      }
+     }
+    },
+    "component": {
+     "input": "activations/external",
+     "output": "activations/external"
+    },
+    "embedding": {
+     "operand": {
+      "label": "target/embedding.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/embedding.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "intermediate": {
+     "label": "target/intermediate",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "normalization": {
+     "label": "target/normalization",
+     "rule": {}
+    },
+    "output": {
+     "operand": {
+      "label": "target/output.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/output.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "position_encoding": {
+     "label": "target/position_encoding",
+     "rule": {}
+    },
+    "row": {
+     "input": "target/intermediate",
+     "operand": {
+      "label": "target/row.operand",
+      "rule": {}
+     },
+     "output": "activations/external",
+     "persist": {
+      "label": "target/row.persist",
+      "rule": {
+       "d_out": "fsdp"
+      }
+     }
+    }
+   }
+  }
+ },
+ "explicit_fsdp_only|replicate4_fsdp8_tp1|tiling": {
+  "rules": {
+   "activations": {
+    "component": {
+     "label": "activations/component",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "external": {
+     "label": "activations/external",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    }
+   },
+   "ci_fn": {
+    "activations": {
+     "label": "ci_fn/activations",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "attention": {
+     "compute_weights": {
+      "label": "ci_fn/attention.compute_weights",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/attention.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/attention.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/attention.optimizer_state",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "ffn": {
+     "compute_weights": {
+      "label": "ci_fn/ffn.compute_weights",
+      "rule": {
+       "ffn_hidden": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/ffn.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/ffn.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/ffn.optimizer_state",
+      "rule": {
+       "ffn_hidden": "fsdp"
+      }
+     }
+    },
+    "input": {
+     "compute_weights": {
+      "label": "ci_fn/input.compute_weights",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/input.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/input.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/input.optimizer_state",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "output": {
+     "compute_weights": {
+      "label": "ci_fn/output.compute_weights",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/output.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/output.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/output.optimizer_state",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "vectors": {
+     "label": "ci_fn/vectors",
+     "rule": {}
+    }
+   },
+   "components": {
+    "compute_weights": {
+     "label": "components/compute_weights",
+     "rule": {
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    },
+    "faithfulness_deltas": {
+     "label": "components/faithfulness_deltas",
+     "rule": {
+      "d_out": "fsdp"
+     }
+    },
+    "faithfulness_weights": {
+     "label": "components/faithfulness_weights",
+     "rule": {
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    },
+    "group_stack_lens": {
+     "64x32x8": 4
+    },
+    "ns_compute": {
+     "label": "components/ns_compute",
+     "rule": {}
+    },
+    "operands": {
+     "label": "components/operands",
+     "rule": {}
+    },
+    "optimizer_state": {
+     "label": "components/optimizer_state",
+     "rule": {
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    }
+   },
+   "mesh": {
+    "fsdp": 8,
+    "replicate": 4,
+    "tp": 1
+   },
+   "target": {
+    "column": {
+     "input": "activations/external",
+     "operand": {
+      "label": "target/column.operand",
+      "rule": {}
+     },
+     "output": "target/intermediate",
+     "persist": {
+      "label": "target/column.persist",
+      "rule": {
+       "d_in": "fsdp"
+      }
+     }
+    },
+    "component": {
+     "input": "activations/external",
+     "output": "activations/external"
+    },
+    "embedding": {
+     "operand": {
+      "label": "target/embedding.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/embedding.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "intermediate": {
+     "label": "target/intermediate",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "normalization": {
+     "label": "target/normalization",
+     "rule": {}
+    },
+    "output": {
+     "operand": {
+      "label": "target/output.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/output.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "position_encoding": {
+     "label": "target/position_encoding",
+     "rule": {}
+    },
+    "row": {
+     "input": "target/intermediate",
+     "operand": {
+      "label": "target/row.operand",
+      "rule": {}
+     },
+     "output": "activations/external",
+     "persist": {
+      "label": "target/row.persist",
+      "rule": {
+       "d_out": "fsdp"
+      }
+     }
+    }
+   }
+  }
+ },
+ "explicit_owner|replicate2_fsdp2_tp2|mixed": {
+  "refused": "explicit placement table: components/optimizer_state shards the component stack axis (stack -> 'replicate', \u00f72), which these semantic groups' stack lengths do not tile: 128x64x8 (stacks 1). There is no fallback. Use a mesh where every group's stack length divides 2, or a placement whose component rows do not shard the stack axis (`sharding: zero1` rests every master intra-matrix)."
+ },
+ "explicit_owner|replicate2_fsdp2_tp2|tiling": {
+  "rules": {
+   "activations": {
+    "component": {
+     "label": "activations/component",
+     "rule": {
+      "C": "tp",
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "external": {
+     "label": "activations/external",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    }
+   },
+   "ci_fn": {
+    "activations": {
+     "label": "ci_fn/activations",
+     "rule": {
+      "C": "tp",
+      "batch": [
+       "replicate",
+       "fsdp"
+      ],
+      "ffn_hidden": "tp",
+      "input": "tp",
+      "kv_head": "tp",
+      "q_head": "tp"
+     }
+    },
+    "attention": {
+     "compute_weights": {
+      "label": "ci_fn/attention.compute_weights",
+      "rule": {
+       "d_model": "fsdp",
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/attention.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/attention.operands",
+      "rule": {
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/attention.optimizer_state",
+      "rule": {
+       "d_model": [
+        "fsdp",
+        "replicate"
+       ],
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     }
+    },
+    "ffn": {
+     "compute_weights": {
+      "label": "ci_fn/ffn.compute_weights",
+      "rule": {
+       "ffn_hidden": [
+        "fsdp",
+        "tp"
+       ]
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/ffn.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/ffn.operands",
+      "rule": {
+       "ffn_hidden": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/ffn.optimizer_state",
+      "rule": {
+       "ffn_hidden": [
+        "fsdp",
+        "tp",
+        "replicate"
+       ]
+      }
+     }
+    },
+    "input": {
+     "compute_weights": {
+      "label": "ci_fn/input.compute_weights",
+      "rule": {
+       "d_model": "fsdp",
+       "input": "tp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/input.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/input.operands",
+      "rule": {
+       "input": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/input.optimizer_state",
+      "rule": {
+       "d_model": [
+        "fsdp",
+        "replicate"
+       ],
+       "input": "tp"
+      }
+     }
+    },
+    "output": {
+     "compute_weights": {
+      "label": "ci_fn/output.compute_weights",
+      "rule": {
+       "C": "tp",
+       "d_model": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/output.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/output.operands",
+      "rule": {
+       "C": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/output.optimizer_state",
+      "rule": {
+       "C": "tp",
+       "d_model": [
+        "fsdp",
+        "replicate"
+       ]
+      }
+     }
+    },
+    "vectors": {
+     "label": "ci_fn/vectors",
+     "rule": {
+      "C": "tp",
+      "ffn_hidden": "tp"
+     }
+    }
+   },
+   "components": {
+    "compute_weights": {
+     "label": "components/compute_weights",
+     "rule": {
+      "C": "tp",
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    },
+    "faithfulness_deltas": {
+     "label": "components/faithfulness_deltas",
+     "rule": {
+      "d_out": "fsdp",
+      "stack": "replicate"
+     }
+    },
+    "faithfulness_weights": {
+     "label": "components/faithfulness_weights",
+     "rule": {
+      "C": "tp",
+      "d_in": "fsdp",
+      "d_out": "fsdp",
+      "stack": "replicate"
+     }
+    },
+    "group_stack_lens": {
+     "64x32x8": 4
+    },
+    "ns_compute": {
+     "label": "components/ns_compute",
+     "rule": {
+      "stack": "replicate"
+     }
+    },
+    "operands": {
+     "label": "components/operands",
+     "rule": {
+      "C": "tp"
+     }
+    },
+    "optimizer_state": {
+     "label": "components/optimizer_state",
+     "rule": {
+      "C": "tp",
+      "d_in": "fsdp",
+      "d_out": "fsdp",
+      "stack": "replicate"
+     }
+    }
+   },
+   "mesh": {
+    "fsdp": 2,
+    "replicate": 2,
+    "tp": 2
+   },
+   "target": {
+    "column": {
+     "input": "activations/external",
+     "operand": {
+      "label": "target/column.operand",
+      "rule": {
+       "d_out": "tp"
+      }
+     },
+     "output": "target/intermediate",
+     "persist": {
+      "label": "target/column.persist",
+      "rule": {
+       "d_in": "fsdp",
+       "d_out": "tp"
+      }
+     }
+    },
+    "component": {
+     "input": "activations/external",
+     "output": "activations/external"
+    },
+    "embedding": {
+     "operand": {
+      "label": "target/embedding.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/embedding.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "intermediate": {
+     "label": "target/intermediate",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ],
+      "feature": "tp",
+      "kv_head": "tp",
+      "q_head": "tp"
+     }
+    },
+    "normalization": {
+     "label": "target/normalization",
+     "rule": {}
+    },
+    "output": {
+     "operand": {
+      "label": "target/output.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/output.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "position_encoding": {
+     "label": "target/position_encoding",
+     "rule": {}
+    },
+    "row": {
+     "input": "target/intermediate",
+     "operand": {
+      "label": "target/row.operand",
+      "rule": {
+       "d_in": "tp"
+      }
+     },
+     "output": "activations/external",
+     "persist": {
+      "label": "target/row.persist",
+      "rule": {
+       "d_in": "tp",
+       "d_out": "fsdp"
+      }
+     }
+    }
+   }
+  }
+ },
+ "explicit_owner|replicate4_fsdp8_tp1|mixed": {
+  "refused": "explicit placement table: components/optimizer_state shards the component stack axis (stack -> 'replicate', \u00f74), which these semantic groups' stack lengths do not tile: 128x64x8 (stacks 1). There is no fallback. Use a mesh where every group's stack length divides 4, or a placement whose component rows do not shard the stack axis (`sharding: zero1` rests every master intra-matrix)."
+ },
+ "explicit_owner|replicate4_fsdp8_tp1|tiling": {
+  "rules": {
+   "activations": {
+    "component": {
+     "label": "activations/component",
+     "rule": {
+      "C": "tp",
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "external": {
+     "label": "activations/external",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    }
+   },
+   "ci_fn": {
+    "activations": {
+     "label": "ci_fn/activations",
+     "rule": {
+      "C": "tp",
+      "batch": [
+       "replicate",
+       "fsdp"
+      ],
+      "ffn_hidden": "tp",
+      "input": "tp",
+      "kv_head": "tp",
+      "q_head": "tp"
+     }
+    },
+    "attention": {
+     "compute_weights": {
+      "label": "ci_fn/attention.compute_weights",
+      "rule": {
+       "d_model": "fsdp",
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/attention.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/attention.operands",
+      "rule": {
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/attention.optimizer_state",
+      "rule": {
+       "d_model": [
+        "fsdp",
+        "replicate"
+       ],
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     }
+    },
+    "ffn": {
+     "compute_weights": {
+      "label": "ci_fn/ffn.compute_weights",
+      "rule": {
+       "ffn_hidden": [
+        "fsdp",
+        "tp"
+       ]
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/ffn.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/ffn.operands",
+      "rule": {
+       "ffn_hidden": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/ffn.optimizer_state",
+      "rule": {
+       "ffn_hidden": [
+        "fsdp",
+        "tp",
+        "replicate"
+       ]
+      }
+     }
+    },
+    "input": {
+     "compute_weights": {
+      "label": "ci_fn/input.compute_weights",
+      "rule": {
+       "d_model": "fsdp",
+       "input": "tp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/input.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/input.operands",
+      "rule": {
+       "input": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/input.optimizer_state",
+      "rule": {
+       "d_model": [
+        "fsdp",
+        "replicate"
+       ],
+       "input": "tp"
+      }
+     }
+    },
+    "output": {
+     "compute_weights": {
+      "label": "ci_fn/output.compute_weights",
+      "rule": {
+       "C": "tp",
+       "d_model": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/output.ns_compute",
+      "rule": {}
+     },
+     "operands": {
+      "label": "ci_fn/output.operands",
+      "rule": {
+       "C": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/output.optimizer_state",
+      "rule": {
+       "C": "tp",
+       "d_model": [
+        "fsdp",
+        "replicate"
+       ]
+      }
+     }
+    },
+    "vectors": {
+     "label": "ci_fn/vectors",
+     "rule": {
+      "C": "tp",
+      "ffn_hidden": "tp"
+     }
+    }
+   },
+   "components": {
+    "compute_weights": {
+     "label": "components/compute_weights",
+     "rule": {
+      "C": "tp",
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    },
+    "faithfulness_deltas": {
+     "label": "components/faithfulness_deltas",
+     "rule": {
+      "d_out": "fsdp",
+      "stack": "replicate"
+     }
+    },
+    "faithfulness_weights": {
+     "label": "components/faithfulness_weights",
+     "rule": {
+      "C": "tp",
+      "d_in": "fsdp",
+      "d_out": "fsdp",
+      "stack": "replicate"
+     }
+    },
+    "group_stack_lens": {
+     "64x32x8": 4
+    },
+    "ns_compute": {
+     "label": "components/ns_compute",
+     "rule": {
+      "stack": "replicate"
+     }
+    },
+    "operands": {
+     "label": "components/operands",
+     "rule": {
+      "C": "tp"
+     }
+    },
+    "optimizer_state": {
+     "label": "components/optimizer_state",
+     "rule": {
+      "C": "tp",
+      "d_in": "fsdp",
+      "d_out": "fsdp",
+      "stack": "replicate"
+     }
+    }
+   },
+   "mesh": {
+    "fsdp": 8,
+    "replicate": 4,
+    "tp": 1
+   },
+   "target": {
+    "column": {
+     "input": "activations/external",
+     "operand": {
+      "label": "target/column.operand",
+      "rule": {
+       "d_out": "tp"
+      }
+     },
+     "output": "target/intermediate",
+     "persist": {
+      "label": "target/column.persist",
+      "rule": {
+       "d_in": "fsdp",
+       "d_out": "tp"
+      }
+     }
+    },
+    "component": {
+     "input": "activations/external",
+     "output": "activations/external"
+    },
+    "embedding": {
+     "operand": {
+      "label": "target/embedding.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/embedding.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "intermediate": {
+     "label": "target/intermediate",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ],
+      "feature": "tp",
+      "kv_head": "tp",
+      "q_head": "tp"
+     }
+    },
+    "normalization": {
+     "label": "target/normalization",
+     "rule": {}
+    },
+    "output": {
+     "operand": {
+      "label": "target/output.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/output.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "position_encoding": {
+     "label": "target/position_encoding",
+     "rule": {}
+    },
+    "row": {
+     "input": "target/intermediate",
+     "operand": {
+      "label": "target/row.operand",
+      "rule": {
+       "d_in": "tp"
+      }
+     },
+     "output": "activations/external",
+     "persist": {
+      "label": "target/row.persist",
+      "rule": {
+       "d_in": "tp",
+       "d_out": "fsdp"
+      }
+     }
+    }
+   }
+  }
+ },
+ "preset_ddp|replicate2_fsdp2_tp2|mixed": {
+  "rules": {
+   "activations": {
+    "component": {
+     "label": "activations/component",
+     "rule": {
+      "C": "tp",
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "external": {
+     "label": "activations/external",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    }
+   },
+   "ci_fn": {
+    "activations": {
+     "label": "ci_fn/activations",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "attention": {
+     "compute_weights": {
+      "label": "ci_fn/attention.compute_weights",
+      "rule": {}
+     },
+     "ns_compute": {
+      "label": "ci_fn/attention.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/attention.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/attention.optimizer_state",
+      "rule": {}
+     }
+    },
+    "ffn": {
+     "compute_weights": {
+      "label": "ci_fn/ffn.compute_weights",
+      "rule": {}
+     },
+     "ns_compute": {
+      "label": "ci_fn/ffn.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/ffn.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/ffn.optimizer_state",
+      "rule": {}
+     }
+    },
+    "input": {
+     "compute_weights": {
+      "label": "ci_fn/input.compute_weights",
+      "rule": {}
+     },
+     "ns_compute": {
+      "label": "ci_fn/input.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/input.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/input.optimizer_state",
+      "rule": {}
+     }
+    },
+    "output": {
+     "compute_weights": {
+      "label": "ci_fn/output.compute_weights",
+      "rule": {}
+     },
+     "ns_compute": {
+      "label": "ci_fn/output.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/output.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/output.optimizer_state",
+      "rule": {}
+     }
+    },
+    "vectors": {
+     "label": "ci_fn/vectors",
+     "rule": {}
+    }
+   },
+   "components": {
+    "compute_weights": {
+     "label": "components/compute_weights",
+     "rule": {}
+    },
+    "faithfulness_deltas": {
+     "label": "components/faithfulness_deltas",
+     "rule": {}
+    },
+    "faithfulness_weights": {
+     "label": "components/faithfulness_weights",
+     "rule": {}
+    },
+    "group_stack_lens": {
+     "128x64x8": 1,
+     "64x32x8": 4
+    },
+    "ns_compute": {
+     "label": "components/ns_compute",
+     "rule": {
+      "stack": "replicate"
+     }
+    },
+    "operands": {
+     "label": "components/operands",
+     "rule": {}
+    },
+    "optimizer_state": {
+     "label": "components/optimizer_state",
+     "rule": {}
+    }
+   },
+   "mesh": {
+    "fsdp": 2,
+    "replicate": 2,
+    "tp": 2
+   },
+   "target": {
+    "column": {
+     "input": "activations/external",
+     "operand": {
+      "label": "target/column.operand",
+      "rule": {}
+     },
+     "output": "target/intermediate",
+     "persist": {
+      "label": "target/column.persist",
+      "rule": {}
+     }
+    },
+    "component": {
+     "input": "activations/external",
+     "output": "activations/external"
+    },
+    "embedding": {
+     "operand": {
+      "label": "target/embedding.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/embedding.persist",
+      "rule": {}
+     }
+    },
+    "intermediate": {
+     "label": "target/intermediate",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "normalization": {
+     "label": "target/normalization",
+     "rule": {}
+    },
+    "output": {
+     "operand": {
+      "label": "target/output.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/output.persist",
+      "rule": {}
+     }
+    },
+    "position_encoding": {
+     "label": "target/position_encoding",
+     "rule": {}
+    },
+    "row": {
+     "input": "target/intermediate",
+     "operand": {
+      "label": "target/row.operand",
+      "rule": {}
+     },
+     "output": "activations/external",
+     "persist": {
+      "label": "target/row.persist",
+      "rule": {}
+     }
+    }
+   }
+  }
+ },
+ "preset_ddp|replicate2_fsdp2_tp2|tiling": {
+  "rules": {
+   "activations": {
+    "component": {
+     "label": "activations/component",
+     "rule": {
+      "C": "tp",
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "external": {
+     "label": "activations/external",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    }
+   },
+   "ci_fn": {
+    "activations": {
+     "label": "ci_fn/activations",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "attention": {
+     "compute_weights": {
+      "label": "ci_fn/attention.compute_weights",
+      "rule": {}
+     },
+     "ns_compute": {
+      "label": "ci_fn/attention.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/attention.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/attention.optimizer_state",
+      "rule": {}
+     }
+    },
+    "ffn": {
+     "compute_weights": {
+      "label": "ci_fn/ffn.compute_weights",
+      "rule": {}
+     },
+     "ns_compute": {
+      "label": "ci_fn/ffn.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/ffn.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/ffn.optimizer_state",
+      "rule": {}
+     }
+    },
+    "input": {
+     "compute_weights": {
+      "label": "ci_fn/input.compute_weights",
+      "rule": {}
+     },
+     "ns_compute": {
+      "label": "ci_fn/input.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/input.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/input.optimizer_state",
+      "rule": {}
+     }
+    },
+    "output": {
+     "compute_weights": {
+      "label": "ci_fn/output.compute_weights",
+      "rule": {}
+     },
+     "ns_compute": {
+      "label": "ci_fn/output.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/output.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/output.optimizer_state",
+      "rule": {}
+     }
+    },
+    "vectors": {
+     "label": "ci_fn/vectors",
+     "rule": {}
+    }
+   },
+   "components": {
+    "compute_weights": {
+     "label": "components/compute_weights",
+     "rule": {}
+    },
+    "faithfulness_deltas": {
+     "label": "components/faithfulness_deltas",
+     "rule": {}
+    },
+    "faithfulness_weights": {
+     "label": "components/faithfulness_weights",
+     "rule": {}
+    },
+    "group_stack_lens": {
+     "64x32x8": 4
+    },
+    "ns_compute": {
+     "label": "components/ns_compute",
+     "rule": {
+      "stack": "replicate"
+     }
+    },
+    "operands": {
+     "label": "components/operands",
+     "rule": {}
+    },
+    "optimizer_state": {
+     "label": "components/optimizer_state",
+     "rule": {}
+    }
+   },
+   "mesh": {
+    "fsdp": 2,
+    "replicate": 2,
+    "tp": 2
+   },
+   "target": {
+    "column": {
+     "input": "activations/external",
+     "operand": {
+      "label": "target/column.operand",
+      "rule": {}
+     },
+     "output": "target/intermediate",
+     "persist": {
+      "label": "target/column.persist",
+      "rule": {}
+     }
+    },
+    "component": {
+     "input": "activations/external",
+     "output": "activations/external"
+    },
+    "embedding": {
+     "operand": {
+      "label": "target/embedding.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/embedding.persist",
+      "rule": {}
+     }
+    },
+    "intermediate": {
+     "label": "target/intermediate",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "normalization": {
+     "label": "target/normalization",
+     "rule": {}
+    },
+    "output": {
+     "operand": {
+      "label": "target/output.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/output.persist",
+      "rule": {}
+     }
+    },
+    "position_encoding": {
+     "label": "target/position_encoding",
+     "rule": {}
+    },
+    "row": {
+     "input": "target/intermediate",
+     "operand": {
+      "label": "target/row.operand",
+      "rule": {}
+     },
+     "output": "activations/external",
+     "persist": {
+      "label": "target/row.persist",
+      "rule": {}
+     }
+    }
+   }
+  }
+ },
+ "preset_ddp|replicate4_fsdp8_tp1|mixed": {
+  "rules": {
+   "activations": {
+    "component": {
+     "label": "activations/component",
+     "rule": {
+      "C": "tp",
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "external": {
+     "label": "activations/external",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    }
+   },
+   "ci_fn": {
+    "activations": {
+     "label": "ci_fn/activations",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "attention": {
+     "compute_weights": {
+      "label": "ci_fn/attention.compute_weights",
+      "rule": {}
+     },
+     "ns_compute": {
+      "label": "ci_fn/attention.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/attention.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/attention.optimizer_state",
+      "rule": {}
+     }
+    },
+    "ffn": {
+     "compute_weights": {
+      "label": "ci_fn/ffn.compute_weights",
+      "rule": {}
+     },
+     "ns_compute": {
+      "label": "ci_fn/ffn.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/ffn.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/ffn.optimizer_state",
+      "rule": {}
+     }
+    },
+    "input": {
+     "compute_weights": {
+      "label": "ci_fn/input.compute_weights",
+      "rule": {}
+     },
+     "ns_compute": {
+      "label": "ci_fn/input.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/input.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/input.optimizer_state",
+      "rule": {}
+     }
+    },
+    "output": {
+     "compute_weights": {
+      "label": "ci_fn/output.compute_weights",
+      "rule": {}
+     },
+     "ns_compute": {
+      "label": "ci_fn/output.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/output.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/output.optimizer_state",
+      "rule": {}
+     }
+    },
+    "vectors": {
+     "label": "ci_fn/vectors",
+     "rule": {}
+    }
+   },
+   "components": {
+    "compute_weights": {
+     "label": "components/compute_weights",
+     "rule": {}
+    },
+    "faithfulness_deltas": {
+     "label": "components/faithfulness_deltas",
+     "rule": {}
+    },
+    "faithfulness_weights": {
+     "label": "components/faithfulness_weights",
+     "rule": {}
+    },
+    "group_stack_lens": {
+     "128x64x8": 1,
+     "64x32x8": 4
+    },
+    "ns_compute": {
+     "label": "components/ns_compute",
+     "rule": {
+      "stack": "replicate"
+     }
+    },
+    "operands": {
+     "label": "components/operands",
+     "rule": {}
+    },
+    "optimizer_state": {
+     "label": "components/optimizer_state",
+     "rule": {}
+    }
+   },
+   "mesh": {
+    "fsdp": 8,
+    "replicate": 4,
+    "tp": 1
+   },
+   "target": {
+    "column": {
+     "input": "activations/external",
+     "operand": {
+      "label": "target/column.operand",
+      "rule": {}
+     },
+     "output": "target/intermediate",
+     "persist": {
+      "label": "target/column.persist",
+      "rule": {}
+     }
+    },
+    "component": {
+     "input": "activations/external",
+     "output": "activations/external"
+    },
+    "embedding": {
+     "operand": {
+      "label": "target/embedding.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/embedding.persist",
+      "rule": {}
+     }
+    },
+    "intermediate": {
+     "label": "target/intermediate",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "normalization": {
+     "label": "target/normalization",
+     "rule": {}
+    },
+    "output": {
+     "operand": {
+      "label": "target/output.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/output.persist",
+      "rule": {}
+     }
+    },
+    "position_encoding": {
+     "label": "target/position_encoding",
+     "rule": {}
+    },
+    "row": {
+     "input": "target/intermediate",
+     "operand": {
+      "label": "target/row.operand",
+      "rule": {}
+     },
+     "output": "activations/external",
+     "persist": {
+      "label": "target/row.persist",
+      "rule": {}
+     }
+    }
+   }
+  }
+ },
+ "preset_ddp|replicate4_fsdp8_tp1|tiling": {
+  "rules": {
+   "activations": {
+    "component": {
+     "label": "activations/component",
+     "rule": {
+      "C": "tp",
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "external": {
+     "label": "activations/external",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    }
+   },
+   "ci_fn": {
+    "activations": {
+     "label": "ci_fn/activations",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "attention": {
+     "compute_weights": {
+      "label": "ci_fn/attention.compute_weights",
+      "rule": {}
+     },
+     "ns_compute": {
+      "label": "ci_fn/attention.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/attention.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/attention.optimizer_state",
+      "rule": {}
+     }
+    },
+    "ffn": {
+     "compute_weights": {
+      "label": "ci_fn/ffn.compute_weights",
+      "rule": {}
+     },
+     "ns_compute": {
+      "label": "ci_fn/ffn.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/ffn.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/ffn.optimizer_state",
+      "rule": {}
+     }
+    },
+    "input": {
+     "compute_weights": {
+      "label": "ci_fn/input.compute_weights",
+      "rule": {}
+     },
+     "ns_compute": {
+      "label": "ci_fn/input.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/input.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/input.optimizer_state",
+      "rule": {}
+     }
+    },
+    "output": {
+     "compute_weights": {
+      "label": "ci_fn/output.compute_weights",
+      "rule": {}
+     },
+     "ns_compute": {
+      "label": "ci_fn/output.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/output.operands",
+      "rule": {}
+     },
+     "optimizer_state": {
+      "label": "ci_fn/output.optimizer_state",
+      "rule": {}
+     }
+    },
+    "vectors": {
+     "label": "ci_fn/vectors",
+     "rule": {}
+    }
+   },
+   "components": {
+    "compute_weights": {
+     "label": "components/compute_weights",
+     "rule": {}
+    },
+    "faithfulness_deltas": {
+     "label": "components/faithfulness_deltas",
+     "rule": {}
+    },
+    "faithfulness_weights": {
+     "label": "components/faithfulness_weights",
+     "rule": {}
+    },
+    "group_stack_lens": {
+     "64x32x8": 4
+    },
+    "ns_compute": {
+     "label": "components/ns_compute",
+     "rule": {
+      "stack": "replicate"
+     }
+    },
+    "operands": {
+     "label": "components/operands",
+     "rule": {}
+    },
+    "optimizer_state": {
+     "label": "components/optimizer_state",
+     "rule": {}
+    }
+   },
+   "mesh": {
+    "fsdp": 8,
+    "replicate": 4,
+    "tp": 1
+   },
+   "target": {
+    "column": {
+     "input": "activations/external",
+     "operand": {
+      "label": "target/column.operand",
+      "rule": {}
+     },
+     "output": "target/intermediate",
+     "persist": {
+      "label": "target/column.persist",
+      "rule": {}
+     }
+    },
+    "component": {
+     "input": "activations/external",
+     "output": "activations/external"
+    },
+    "embedding": {
+     "operand": {
+      "label": "target/embedding.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/embedding.persist",
+      "rule": {}
+     }
+    },
+    "intermediate": {
+     "label": "target/intermediate",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "normalization": {
+     "label": "target/normalization",
+     "rule": {}
+    },
+    "output": {
+     "operand": {
+      "label": "target/output.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/output.persist",
+      "rule": {}
+     }
+    },
+    "position_encoding": {
+     "label": "target/position_encoding",
+     "rule": {}
+    },
+    "row": {
+     "input": "target/intermediate",
+     "operand": {
+      "label": "target/row.operand",
+      "rule": {}
+     },
+     "output": "activations/external",
+     "persist": {
+      "label": "target/row.persist",
+      "rule": {}
+     }
+    }
+   }
+  }
+ },
+ "preset_owner_zero1|replicate2_fsdp2_tp2|mixed": {
+  "refused": "unknown placement preset 'owner+zero1' (have ('owner', 'zero1', 'ddp'))"
+ },
+ "preset_owner_zero1|replicate2_fsdp2_tp2|tiling": {
+  "refused": "unknown placement preset 'owner+zero1' (have ('owner', 'zero1', 'ddp'))"
+ },
+ "preset_owner_zero1|replicate4_fsdp8_tp1|mixed": {
+  "refused": "unknown placement preset 'owner+zero1' (have ('owner', 'zero1', 'ddp'))"
+ },
+ "preset_owner_zero1|replicate4_fsdp8_tp1|tiling": {
+  "refused": "unknown placement preset 'owner+zero1' (have ('owner', 'zero1', 'ddp'))"
+ },
+ "preset_owner|replicate2_fsdp2_tp2|mixed": {
+  "refused": "sharding preset 'owner': components/optimizer_state shards the component stack axis (stack -> 'replicate', \u00f72), which these semantic groups' stack lengths do not tile: 128x64x8 (stacks 1). There is no fallback. Use a mesh where every group's stack length divides 2, or a placement whose component rows do not shard the stack axis (`sharding: zero1` rests every master intra-matrix)."
+ },
+ "preset_owner|replicate2_fsdp2_tp2|tiling": {
+  "rules": {
+   "activations": {
+    "component": {
+     "label": "activations/component",
+     "rule": {
+      "C": "tp",
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "external": {
+     "label": "activations/external",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    }
+   },
+   "ci_fn": {
+    "activations": {
+     "label": "ci_fn/activations",
+     "rule": {
+      "C": "tp",
+      "batch": [
+       "replicate",
+       "fsdp"
+      ],
+      "ffn_hidden": "tp",
+      "input": "tp",
+      "kv_head": "tp",
+      "q_head": "tp"
+     }
+    },
+    "attention": {
+     "compute_weights": {
+      "label": "ci_fn/attention.compute_weights",
+      "rule": {
+       "d_model": "fsdp",
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/attention.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/attention.operands",
+      "rule": {
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/attention.optimizer_state",
+      "rule": {
+       "d_model": "fsdp",
+       "kv_head": "tp",
+       "q_head": "tp",
+       "stack": "replicate"
+      }
+     }
+    },
+    "ffn": {
+     "compute_weights": {
+      "label": "ci_fn/ffn.compute_weights",
+      "rule": {
+       "ffn_hidden": [
+        "tp",
+        "fsdp"
+       ]
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/ffn.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/ffn.operands",
+      "rule": {
+       "ffn_hidden": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/ffn.optimizer_state",
+      "rule": {
+       "ffn_hidden": [
+        "tp",
+        "fsdp"
+       ],
+       "stack": "replicate"
+      }
+     }
+    },
+    "input": {
+     "compute_weights": {
+      "label": "ci_fn/input.compute_weights",
+      "rule": {
+       "d_model": "fsdp",
+       "input": "tp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/input.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/input.operands",
+      "rule": {
+       "input": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/input.optimizer_state",
+      "rule": {
+       "d_model": "fsdp",
+       "input": "tp",
+       "stack": "replicate"
+      }
+     }
+    },
+    "output": {
+     "compute_weights": {
+      "label": "ci_fn/output.compute_weights",
+      "rule": {
+       "C": "tp",
+       "d_model": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/output.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/output.operands",
+      "rule": {
+       "C": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/output.optimizer_state",
+      "rule": {
+       "C": "tp",
+       "d_model": "fsdp",
+       "stack": "replicate"
+      }
+     }
+    },
+    "vectors": {
+     "label": "ci_fn/vectors",
+     "rule": {
+      "C": "tp",
+      "ffn_hidden": "tp"
+     }
+    }
+   },
+   "components": {
+    "compute_weights": {
+     "label": "components/compute_weights",
+     "rule": {
+      "C": "tp",
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    },
+    "faithfulness_deltas": {
+     "label": "components/faithfulness_deltas",
+     "rule": {
+      "d_out": "fsdp",
+      "stack": "replicate"
+     }
+    },
+    "faithfulness_weights": {
+     "label": "components/faithfulness_weights",
+     "rule": {
+      "C": "tp",
+      "d_in": "fsdp",
+      "d_out": "fsdp",
+      "stack": "replicate"
+     }
+    },
+    "group_stack_lens": {
+     "64x32x8": 4
+    },
+    "ns_compute": {
+     "label": "components/ns_compute",
+     "rule": {
+      "stack": "replicate"
+     }
+    },
+    "operands": {
+     "label": "components/operands",
+     "rule": {
+      "C": "tp"
+     }
+    },
+    "optimizer_state": {
+     "label": "components/optimizer_state",
+     "rule": {
+      "C": "tp",
+      "d_in": "fsdp",
+      "d_out": "fsdp",
+      "stack": "replicate"
+     }
+    }
+   },
+   "mesh": {
+    "fsdp": 2,
+    "replicate": 2,
+    "tp": 2
+   },
+   "target": {
+    "column": {
+     "input": "activations/external",
+     "operand": {
+      "label": "target/column.operand",
+      "rule": {
+       "d_out": "tp"
+      }
+     },
+     "output": "target/intermediate",
+     "persist": {
+      "label": "target/column.persist",
+      "rule": {
+       "d_in": "fsdp",
+       "d_out": "tp"
+      }
+     }
+    },
+    "component": {
+     "input": "activations/external",
+     "output": "activations/external"
+    },
+    "embedding": {
+     "operand": {
+      "label": "target/embedding.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/embedding.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "intermediate": {
+     "label": "target/intermediate",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ],
+      "feature": "tp",
+      "kv_head": "tp",
+      "q_head": "tp"
+     }
+    },
+    "normalization": {
+     "label": "target/normalization",
+     "rule": {}
+    },
+    "output": {
+     "operand": {
+      "label": "target/output.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/output.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "position_encoding": {
+     "label": "target/position_encoding",
+     "rule": {}
+    },
+    "row": {
+     "input": "target/intermediate",
+     "operand": {
+      "label": "target/row.operand",
+      "rule": {
+       "d_in": "tp"
+      }
+     },
+     "output": "activations/external",
+     "persist": {
+      "label": "target/row.persist",
+      "rule": {
+       "d_in": "tp",
+       "d_out": "fsdp"
+      }
+     }
+    }
+   }
+  }
+ },
+ "preset_owner|replicate4_fsdp8_tp1|mixed": {
+  "refused": "sharding preset 'owner': components/optimizer_state shards the component stack axis (stack -> 'replicate', \u00f74), which these semantic groups' stack lengths do not tile: 128x64x8 (stacks 1). There is no fallback. Use a mesh where every group's stack length divides 4, or a placement whose component rows do not shard the stack axis (`sharding: zero1` rests every master intra-matrix)."
+ },
+ "preset_owner|replicate4_fsdp8_tp1|tiling": {
+  "rules": {
+   "activations": {
+    "component": {
+     "label": "activations/component",
+     "rule": {
+      "C": "tp",
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "external": {
+     "label": "activations/external",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    }
+   },
+   "ci_fn": {
+    "activations": {
+     "label": "ci_fn/activations",
+     "rule": {
+      "C": "tp",
+      "batch": [
+       "replicate",
+       "fsdp"
+      ],
+      "ffn_hidden": "tp",
+      "input": "tp",
+      "kv_head": "tp",
+      "q_head": "tp"
+     }
+    },
+    "attention": {
+     "compute_weights": {
+      "label": "ci_fn/attention.compute_weights",
+      "rule": {
+       "d_model": "fsdp",
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/attention.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/attention.operands",
+      "rule": {
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/attention.optimizer_state",
+      "rule": {
+       "d_model": "fsdp",
+       "kv_head": "tp",
+       "q_head": "tp",
+       "stack": "replicate"
+      }
+     }
+    },
+    "ffn": {
+     "compute_weights": {
+      "label": "ci_fn/ffn.compute_weights",
+      "rule": {
+       "ffn_hidden": [
+        "tp",
+        "fsdp"
+       ]
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/ffn.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/ffn.operands",
+      "rule": {
+       "ffn_hidden": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/ffn.optimizer_state",
+      "rule": {
+       "ffn_hidden": [
+        "tp",
+        "fsdp"
+       ],
+       "stack": "replicate"
+      }
+     }
+    },
+    "input": {
+     "compute_weights": {
+      "label": "ci_fn/input.compute_weights",
+      "rule": {
+       "d_model": "fsdp",
+       "input": "tp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/input.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/input.operands",
+      "rule": {
+       "input": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/input.optimizer_state",
+      "rule": {
+       "d_model": "fsdp",
+       "input": "tp",
+       "stack": "replicate"
+      }
+     }
+    },
+    "output": {
+     "compute_weights": {
+      "label": "ci_fn/output.compute_weights",
+      "rule": {
+       "C": "tp",
+       "d_model": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/output.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/output.operands",
+      "rule": {
+       "C": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/output.optimizer_state",
+      "rule": {
+       "C": "tp",
+       "d_model": "fsdp",
+       "stack": "replicate"
+      }
+     }
+    },
+    "vectors": {
+     "label": "ci_fn/vectors",
+     "rule": {
+      "C": "tp",
+      "ffn_hidden": "tp"
+     }
+    }
+   },
+   "components": {
+    "compute_weights": {
+     "label": "components/compute_weights",
+     "rule": {
+      "C": "tp",
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    },
+    "faithfulness_deltas": {
+     "label": "components/faithfulness_deltas",
+     "rule": {
+      "d_out": "fsdp",
+      "stack": "replicate"
+     }
+    },
+    "faithfulness_weights": {
+     "label": "components/faithfulness_weights",
+     "rule": {
+      "C": "tp",
+      "d_in": "fsdp",
+      "d_out": "fsdp",
+      "stack": "replicate"
+     }
+    },
+    "group_stack_lens": {
+     "64x32x8": 4
+    },
+    "ns_compute": {
+     "label": "components/ns_compute",
+     "rule": {
+      "stack": "replicate"
+     }
+    },
+    "operands": {
+     "label": "components/operands",
+     "rule": {
+      "C": "tp"
+     }
+    },
+    "optimizer_state": {
+     "label": "components/optimizer_state",
+     "rule": {
+      "C": "tp",
+      "d_in": "fsdp",
+      "d_out": "fsdp",
+      "stack": "replicate"
+     }
+    }
+   },
+   "mesh": {
+    "fsdp": 8,
+    "replicate": 4,
+    "tp": 1
+   },
+   "target": {
+    "column": {
+     "input": "activations/external",
+     "operand": {
+      "label": "target/column.operand",
+      "rule": {
+       "d_out": "tp"
+      }
+     },
+     "output": "target/intermediate",
+     "persist": {
+      "label": "target/column.persist",
+      "rule": {
+       "d_in": "fsdp",
+       "d_out": "tp"
+      }
+     }
+    },
+    "component": {
+     "input": "activations/external",
+     "output": "activations/external"
+    },
+    "embedding": {
+     "operand": {
+      "label": "target/embedding.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/embedding.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "intermediate": {
+     "label": "target/intermediate",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ],
+      "feature": "tp",
+      "kv_head": "tp",
+      "q_head": "tp"
+     }
+    },
+    "normalization": {
+     "label": "target/normalization",
+     "rule": {}
+    },
+    "output": {
+     "operand": {
+      "label": "target/output.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/output.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "position_encoding": {
+     "label": "target/position_encoding",
+     "rule": {}
+    },
+    "row": {
+     "input": "target/intermediate",
+     "operand": {
+      "label": "target/row.operand",
+      "rule": {
+       "d_in": "tp"
+      }
+     },
+     "output": "activations/external",
+     "persist": {
+      "label": "target/row.persist",
+      "rule": {
+       "d_in": "tp",
+       "d_out": "fsdp"
+      }
+     }
+    }
+   }
+  }
+ },
+ "preset_zero1|replicate2_fsdp2_tp2|mixed": {
+  "rules": {
+   "activations": {
+    "component": {
+     "label": "activations/component",
+     "rule": {
+      "C": "tp",
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "external": {
+     "label": "activations/external",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    }
+   },
+   "ci_fn": {
+    "activations": {
+     "label": "ci_fn/activations",
+     "rule": {
+      "C": "tp",
+      "batch": [
+       "replicate",
+       "fsdp"
+      ],
+      "ffn_hidden": "tp",
+      "input": "tp",
+      "kv_head": "tp",
+      "q_head": "tp"
+     }
+    },
+    "attention": {
+     "compute_weights": {
+      "label": "ci_fn/attention.compute_weights",
+      "rule": {
+       "d_model": "fsdp",
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/attention.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/attention.operands",
+      "rule": {
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/attention.optimizer_state",
+      "rule": {
+       "d_model": [
+        "fsdp",
+        "replicate"
+       ],
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     }
+    },
+    "ffn": {
+     "compute_weights": {
+      "label": "ci_fn/ffn.compute_weights",
+      "rule": {
+       "ffn_hidden": [
+        "tp",
+        "fsdp"
+       ]
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/ffn.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/ffn.operands",
+      "rule": {
+       "ffn_hidden": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/ffn.optimizer_state",
+      "rule": {
+       "ffn_hidden": [
+        "tp",
+        "fsdp",
+        "replicate"
+       ]
+      }
+     }
+    },
+    "input": {
+     "compute_weights": {
+      "label": "ci_fn/input.compute_weights",
+      "rule": {
+       "d_model": "fsdp",
+       "input": "tp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/input.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/input.operands",
+      "rule": {
+       "input": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/input.optimizer_state",
+      "rule": {
+       "d_model": [
+        "fsdp",
+        "replicate"
+       ],
+       "input": "tp"
+      }
+     }
+    },
+    "output": {
+     "compute_weights": {
+      "label": "ci_fn/output.compute_weights",
+      "rule": {
+       "C": "tp",
+       "d_model": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/output.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/output.operands",
+      "rule": {
+       "C": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/output.optimizer_state",
+      "rule": {
+       "C": "tp",
+       "d_model": [
+        "fsdp",
+        "replicate"
+       ]
+      }
+     }
+    },
+    "vectors": {
+     "label": "ci_fn/vectors",
+     "rule": {
+      "C": "tp",
+      "ffn_hidden": "tp"
+     }
+    }
+   },
+   "components": {
+    "compute_weights": {
+     "label": "components/compute_weights",
+     "rule": {
+      "C": "tp",
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    },
+    "faithfulness_deltas": {
+     "label": "components/faithfulness_deltas",
+     "rule": {
+      "d_in": [
+       "tp",
+       "replicate"
+      ],
+      "d_out": "fsdp"
+     }
+    },
+    "faithfulness_weights": {
+     "label": "components/faithfulness_weights",
+     "rule": {
+      "C": [
+       "tp",
+       "replicate"
+      ],
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    },
+    "group_stack_lens": {
+     "128x64x8": 1,
+     "64x32x8": 4
+    },
+    "ns_compute": {
+     "label": "components/ns_compute",
+     "rule": {
+      "stack": "replicate"
+     }
+    },
+    "operands": {
+     "label": "components/operands",
+     "rule": {
+      "C": "tp"
+     }
+    },
+    "optimizer_state": {
+     "label": "components/optimizer_state",
+     "rule": {
+      "C": [
+       "tp",
+       "replicate"
+      ],
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    }
+   },
+   "mesh": {
+    "fsdp": 2,
+    "replicate": 2,
+    "tp": 2
+   },
+   "target": {
+    "column": {
+     "input": "activations/external",
+     "operand": {
+      "label": "target/column.operand",
+      "rule": {
+       "d_out": "tp"
+      }
+     },
+     "output": "target/intermediate",
+     "persist": {
+      "label": "target/column.persist",
+      "rule": {
+       "d_in": "fsdp",
+       "d_out": "tp"
+      }
+     }
+    },
+    "component": {
+     "input": "activations/external",
+     "output": "activations/external"
+    },
+    "embedding": {
+     "operand": {
+      "label": "target/embedding.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/embedding.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "intermediate": {
+     "label": "target/intermediate",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ],
+      "feature": "tp",
+      "kv_head": "tp",
+      "q_head": "tp"
+     }
+    },
+    "normalization": {
+     "label": "target/normalization",
+     "rule": {}
+    },
+    "output": {
+     "operand": {
+      "label": "target/output.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/output.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "position_encoding": {
+     "label": "target/position_encoding",
+     "rule": {}
+    },
+    "row": {
+     "input": "target/intermediate",
+     "operand": {
+      "label": "target/row.operand",
+      "rule": {
+       "d_in": "tp"
+      }
+     },
+     "output": "activations/external",
+     "persist": {
+      "label": "target/row.persist",
+      "rule": {
+       "d_in": "tp",
+       "d_out": "fsdp"
+      }
+     }
+    }
+   }
+  }
+ },
+ "preset_zero1|replicate2_fsdp2_tp2|tiling": {
+  "rules": {
+   "activations": {
+    "component": {
+     "label": "activations/component",
+     "rule": {
+      "C": "tp",
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "external": {
+     "label": "activations/external",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    }
+   },
+   "ci_fn": {
+    "activations": {
+     "label": "ci_fn/activations",
+     "rule": {
+      "C": "tp",
+      "batch": [
+       "replicate",
+       "fsdp"
+      ],
+      "ffn_hidden": "tp",
+      "input": "tp",
+      "kv_head": "tp",
+      "q_head": "tp"
+     }
+    },
+    "attention": {
+     "compute_weights": {
+      "label": "ci_fn/attention.compute_weights",
+      "rule": {
+       "d_model": "fsdp",
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/attention.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/attention.operands",
+      "rule": {
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/attention.optimizer_state",
+      "rule": {
+       "d_model": [
+        "fsdp",
+        "replicate"
+       ],
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     }
+    },
+    "ffn": {
+     "compute_weights": {
+      "label": "ci_fn/ffn.compute_weights",
+      "rule": {
+       "ffn_hidden": [
+        "tp",
+        "fsdp"
+       ]
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/ffn.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/ffn.operands",
+      "rule": {
+       "ffn_hidden": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/ffn.optimizer_state",
+      "rule": {
+       "ffn_hidden": [
+        "tp",
+        "fsdp",
+        "replicate"
+       ]
+      }
+     }
+    },
+    "input": {
+     "compute_weights": {
+      "label": "ci_fn/input.compute_weights",
+      "rule": {
+       "d_model": "fsdp",
+       "input": "tp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/input.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/input.operands",
+      "rule": {
+       "input": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/input.optimizer_state",
+      "rule": {
+       "d_model": [
+        "fsdp",
+        "replicate"
+       ],
+       "input": "tp"
+      }
+     }
+    },
+    "output": {
+     "compute_weights": {
+      "label": "ci_fn/output.compute_weights",
+      "rule": {
+       "C": "tp",
+       "d_model": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/output.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/output.operands",
+      "rule": {
+       "C": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/output.optimizer_state",
+      "rule": {
+       "C": "tp",
+       "d_model": [
+        "fsdp",
+        "replicate"
+       ]
+      }
+     }
+    },
+    "vectors": {
+     "label": "ci_fn/vectors",
+     "rule": {
+      "C": "tp",
+      "ffn_hidden": "tp"
+     }
+    }
+   },
+   "components": {
+    "compute_weights": {
+     "label": "components/compute_weights",
+     "rule": {
+      "C": "tp",
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    },
+    "faithfulness_deltas": {
+     "label": "components/faithfulness_deltas",
+     "rule": {
+      "d_in": [
+       "tp",
+       "replicate"
+      ],
+      "d_out": "fsdp"
+     }
+    },
+    "faithfulness_weights": {
+     "label": "components/faithfulness_weights",
+     "rule": {
+      "C": [
+       "tp",
+       "replicate"
+      ],
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    },
+    "group_stack_lens": {
+     "64x32x8": 4
+    },
+    "ns_compute": {
+     "label": "components/ns_compute",
+     "rule": {
+      "stack": "replicate"
+     }
+    },
+    "operands": {
+     "label": "components/operands",
+     "rule": {
+      "C": "tp"
+     }
+    },
+    "optimizer_state": {
+     "label": "components/optimizer_state",
+     "rule": {
+      "C": [
+       "tp",
+       "replicate"
+      ],
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    }
+   },
+   "mesh": {
+    "fsdp": 2,
+    "replicate": 2,
+    "tp": 2
+   },
+   "target": {
+    "column": {
+     "input": "activations/external",
+     "operand": {
+      "label": "target/column.operand",
+      "rule": {
+       "d_out": "tp"
+      }
+     },
+     "output": "target/intermediate",
+     "persist": {
+      "label": "target/column.persist",
+      "rule": {
+       "d_in": "fsdp",
+       "d_out": "tp"
+      }
+     }
+    },
+    "component": {
+     "input": "activations/external",
+     "output": "activations/external"
+    },
+    "embedding": {
+     "operand": {
+      "label": "target/embedding.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/embedding.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "intermediate": {
+     "label": "target/intermediate",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ],
+      "feature": "tp",
+      "kv_head": "tp",
+      "q_head": "tp"
+     }
+    },
+    "normalization": {
+     "label": "target/normalization",
+     "rule": {}
+    },
+    "output": {
+     "operand": {
+      "label": "target/output.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/output.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "position_encoding": {
+     "label": "target/position_encoding",
+     "rule": {}
+    },
+    "row": {
+     "input": "target/intermediate",
+     "operand": {
+      "label": "target/row.operand",
+      "rule": {
+       "d_in": "tp"
+      }
+     },
+     "output": "activations/external",
+     "persist": {
+      "label": "target/row.persist",
+      "rule": {
+       "d_in": "tp",
+       "d_out": "fsdp"
+      }
+     }
+    }
+   }
+  }
+ },
+ "preset_zero1|replicate4_fsdp8_tp1|mixed": {
+  "rules": {
+   "activations": {
+    "component": {
+     "label": "activations/component",
+     "rule": {
+      "C": "tp",
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "external": {
+     "label": "activations/external",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    }
+   },
+   "ci_fn": {
+    "activations": {
+     "label": "ci_fn/activations",
+     "rule": {
+      "C": "tp",
+      "batch": [
+       "replicate",
+       "fsdp"
+      ],
+      "ffn_hidden": "tp",
+      "input": "tp",
+      "kv_head": "tp",
+      "q_head": "tp"
+     }
+    },
+    "attention": {
+     "compute_weights": {
+      "label": "ci_fn/attention.compute_weights",
+      "rule": {
+       "d_model": "fsdp",
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/attention.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/attention.operands",
+      "rule": {
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/attention.optimizer_state",
+      "rule": {
+       "d_model": [
+        "fsdp",
+        "replicate"
+       ],
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     }
+    },
+    "ffn": {
+     "compute_weights": {
+      "label": "ci_fn/ffn.compute_weights",
+      "rule": {
+       "ffn_hidden": [
+        "tp",
+        "fsdp"
+       ]
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/ffn.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/ffn.operands",
+      "rule": {
+       "ffn_hidden": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/ffn.optimizer_state",
+      "rule": {
+       "ffn_hidden": [
+        "tp",
+        "fsdp",
+        "replicate"
+       ]
+      }
+     }
+    },
+    "input": {
+     "compute_weights": {
+      "label": "ci_fn/input.compute_weights",
+      "rule": {
+       "d_model": "fsdp",
+       "input": "tp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/input.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/input.operands",
+      "rule": {
+       "input": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/input.optimizer_state",
+      "rule": {
+       "d_model": [
+        "fsdp",
+        "replicate"
+       ],
+       "input": "tp"
+      }
+     }
+    },
+    "output": {
+     "compute_weights": {
+      "label": "ci_fn/output.compute_weights",
+      "rule": {
+       "C": "tp",
+       "d_model": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/output.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/output.operands",
+      "rule": {
+       "C": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/output.optimizer_state",
+      "rule": {
+       "C": "tp",
+       "d_model": [
+        "fsdp",
+        "replicate"
+       ]
+      }
+     }
+    },
+    "vectors": {
+     "label": "ci_fn/vectors",
+     "rule": {
+      "C": "tp",
+      "ffn_hidden": "tp"
+     }
+    }
+   },
+   "components": {
+    "compute_weights": {
+     "label": "components/compute_weights",
+     "rule": {
+      "C": "tp",
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    },
+    "faithfulness_deltas": {
+     "label": "components/faithfulness_deltas",
+     "rule": {
+      "d_in": [
+       "tp",
+       "replicate"
+      ],
+      "d_out": "fsdp"
+     }
+    },
+    "faithfulness_weights": {
+     "label": "components/faithfulness_weights",
+     "rule": {
+      "C": [
+       "tp",
+       "replicate"
+      ],
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    },
+    "group_stack_lens": {
+     "128x64x8": 1,
+     "64x32x8": 4
+    },
+    "ns_compute": {
+     "label": "components/ns_compute",
+     "rule": {
+      "stack": "replicate"
+     }
+    },
+    "operands": {
+     "label": "components/operands",
+     "rule": {
+      "C": "tp"
+     }
+    },
+    "optimizer_state": {
+     "label": "components/optimizer_state",
+     "rule": {
+      "C": [
+       "tp",
+       "replicate"
+      ],
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    }
+   },
+   "mesh": {
+    "fsdp": 8,
+    "replicate": 4,
+    "tp": 1
+   },
+   "target": {
+    "column": {
+     "input": "activations/external",
+     "operand": {
+      "label": "target/column.operand",
+      "rule": {
+       "d_out": "tp"
+      }
+     },
+     "output": "target/intermediate",
+     "persist": {
+      "label": "target/column.persist",
+      "rule": {
+       "d_in": "fsdp",
+       "d_out": "tp"
+      }
+     }
+    },
+    "component": {
+     "input": "activations/external",
+     "output": "activations/external"
+    },
+    "embedding": {
+     "operand": {
+      "label": "target/embedding.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/embedding.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "intermediate": {
+     "label": "target/intermediate",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ],
+      "feature": "tp",
+      "kv_head": "tp",
+      "q_head": "tp"
+     }
+    },
+    "normalization": {
+     "label": "target/normalization",
+     "rule": {}
+    },
+    "output": {
+     "operand": {
+      "label": "target/output.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/output.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "position_encoding": {
+     "label": "target/position_encoding",
+     "rule": {}
+    },
+    "row": {
+     "input": "target/intermediate",
+     "operand": {
+      "label": "target/row.operand",
+      "rule": {
+       "d_in": "tp"
+      }
+     },
+     "output": "activations/external",
+     "persist": {
+      "label": "target/row.persist",
+      "rule": {
+       "d_in": "tp",
+       "d_out": "fsdp"
+      }
+     }
+    }
+   }
+  }
+ },
+ "preset_zero1|replicate4_fsdp8_tp1|tiling": {
+  "rules": {
+   "activations": {
+    "component": {
+     "label": "activations/component",
+     "rule": {
+      "C": "tp",
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    },
+    "external": {
+     "label": "activations/external",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ]
+     }
+    }
+   },
+   "ci_fn": {
+    "activations": {
+     "label": "ci_fn/activations",
+     "rule": {
+      "C": "tp",
+      "batch": [
+       "replicate",
+       "fsdp"
+      ],
+      "ffn_hidden": "tp",
+      "input": "tp",
+      "kv_head": "tp",
+      "q_head": "tp"
+     }
+    },
+    "attention": {
+     "compute_weights": {
+      "label": "ci_fn/attention.compute_weights",
+      "rule": {
+       "d_model": "fsdp",
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/attention.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/attention.operands",
+      "rule": {
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/attention.optimizer_state",
+      "rule": {
+       "d_model": [
+        "fsdp",
+        "replicate"
+       ],
+       "kv_head": "tp",
+       "q_head": "tp"
+      }
+     }
+    },
+    "ffn": {
+     "compute_weights": {
+      "label": "ci_fn/ffn.compute_weights",
+      "rule": {
+       "ffn_hidden": [
+        "tp",
+        "fsdp"
+       ]
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/ffn.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/ffn.operands",
+      "rule": {
+       "ffn_hidden": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/ffn.optimizer_state",
+      "rule": {
+       "ffn_hidden": [
+        "tp",
+        "fsdp",
+        "replicate"
+       ]
+      }
+     }
+    },
+    "input": {
+     "compute_weights": {
+      "label": "ci_fn/input.compute_weights",
+      "rule": {
+       "d_model": "fsdp",
+       "input": "tp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/input.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/input.operands",
+      "rule": {
+       "input": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/input.optimizer_state",
+      "rule": {
+       "d_model": [
+        "fsdp",
+        "replicate"
+       ],
+       "input": "tp"
+      }
+     }
+    },
+    "output": {
+     "compute_weights": {
+      "label": "ci_fn/output.compute_weights",
+      "rule": {
+       "C": "tp",
+       "d_model": "fsdp"
+      }
+     },
+     "ns_compute": {
+      "label": "ci_fn/output.ns_compute",
+      "rule": {
+       "stack": "replicate"
+      }
+     },
+     "operands": {
+      "label": "ci_fn/output.operands",
+      "rule": {
+       "C": "tp"
+      }
+     },
+     "optimizer_state": {
+      "label": "ci_fn/output.optimizer_state",
+      "rule": {
+       "C": "tp",
+       "d_model": [
+        "fsdp",
+        "replicate"
+       ]
+      }
+     }
+    },
+    "vectors": {
+     "label": "ci_fn/vectors",
+     "rule": {
+      "C": "tp",
+      "ffn_hidden": "tp"
+     }
+    }
+   },
+   "components": {
+    "compute_weights": {
+     "label": "components/compute_weights",
+     "rule": {
+      "C": "tp",
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    },
+    "faithfulness_deltas": {
+     "label": "components/faithfulness_deltas",
+     "rule": {
+      "d_in": [
+       "tp",
+       "replicate"
+      ],
+      "d_out": "fsdp"
+     }
+    },
+    "faithfulness_weights": {
+     "label": "components/faithfulness_weights",
+     "rule": {
+      "C": [
+       "tp",
+       "replicate"
+      ],
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    },
+    "group_stack_lens": {
+     "64x32x8": 4
+    },
+    "ns_compute": {
+     "label": "components/ns_compute",
+     "rule": {
+      "stack": "replicate"
+     }
+    },
+    "operands": {
+     "label": "components/operands",
+     "rule": {
+      "C": "tp"
+     }
+    },
+    "optimizer_state": {
+     "label": "components/optimizer_state",
+     "rule": {
+      "C": [
+       "tp",
+       "replicate"
+      ],
+      "d_in": "fsdp",
+      "d_out": "fsdp"
+     }
+    }
+   },
+   "mesh": {
+    "fsdp": 8,
+    "replicate": 4,
+    "tp": 1
+   },
+   "target": {
+    "column": {
+     "input": "activations/external",
+     "operand": {
+      "label": "target/column.operand",
+      "rule": {
+       "d_out": "tp"
+      }
+     },
+     "output": "target/intermediate",
+     "persist": {
+      "label": "target/column.persist",
+      "rule": {
+       "d_in": "fsdp",
+       "d_out": "tp"
+      }
+     }
+    },
+    "component": {
+     "input": "activations/external",
+     "output": "activations/external"
+    },
+    "embedding": {
+     "operand": {
+      "label": "target/embedding.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/embedding.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "intermediate": {
+     "label": "target/intermediate",
+     "rule": {
+      "batch": [
+       "replicate",
+       "fsdp"
+      ],
+      "feature": "tp",
+      "kv_head": "tp",
+      "q_head": "tp"
+     }
+    },
+    "normalization": {
+     "label": "target/normalization",
+     "rule": {}
+    },
+    "output": {
+     "operand": {
+      "label": "target/output.operand",
+      "rule": {}
+     },
+     "persist": {
+      "label": "target/output.persist",
+      "rule": {
+       "d_model": "fsdp"
+      }
+     }
+    },
+    "position_encoding": {
+     "label": "target/position_encoding",
+     "rule": {}
+    },
+    "row": {
+     "input": "target/intermediate",
+     "operand": {
+      "label": "target/row.operand",
+      "rule": {
+       "d_in": "tp"
+      }
+     },
+     "output": "activations/external",
+     "persist": {
+      "label": "target/row.persist",
+      "rule": {
+       "d_in": "tp",
+       "d_out": "fsdp"
+      }
+     }
+    }
+   }
+  }
+ },
+ "schema_faithfulness_fallback_pair": {
+  "schema_refused": [
+   {
+    "loc": [
+     "components",
+     "faithfulness_weights_fallback"
+    ],
+    "msg": "Extra inputs are not permitted",
+    "type": "extra_forbidden"
+   },
+   {
+    "loc": [
+     "components",
+     "faithfulness_deltas_fallback"
+    ],
+    "msg": "Extra inputs are not permitted",
+    "type": "extra_forbidden"
+   }
+  ]
+ },
+ "schema_optimizer_state_fallback": {
+  "schema_refused": [
+   {
+    "loc": [
+     "components",
+     "optimizer_state_fallback"
+    ],
+    "msg": "Extra inputs are not permitted",
+    "type": "extra_forbidden"
+   }
+  ]
+ }
+}

@@ -24,6 +24,7 @@ from param_decomp.core.ci_fn import (
     LayerwiseMLPCIArch,
     LayerwiseMLPCIFn,
     MHACIAttention,
+    PlacedCIFn,
     build_ci_fn,
     evaluate_ci,
 )
@@ -33,15 +34,23 @@ from param_decomp.core.configs import (
     ImportanceMinimalityLossConfig,
     StochasticReconLossConfig,
 )
+from param_decomp.core.faithfulness import faithfulness_loss_for
+from param_decomp.core.model import PlacedModel
 from param_decomp.core.objective import build_objective
 from param_decomp.core.precision import COMPUTE_DT
 from param_decomp.core.schedule import Knot, ScheduleConfig
 from param_decomp.core.tests.test_generic_model_io import SyntheticDecomposedModel
-from param_decomp.core.train import Decomposition, TrainingItem, TrainState, make_train_step
+from param_decomp.core.train import (
+    Decomposition,
+    ForwardSubstrate,
+    TrainingItem,
+    TrainState,
+    make_train_step,
+)
 
 SITE = "block.0.proj"
 B, T, D, C = 2, 5, 8, 4
-SITES = (SiteSpec(name=SITE, d_in=D, d_out=D, C=C),)
+SITES = (SiteSpec(name=SITE, d_in=D, d_out=D, C=C, group=SITE),)
 
 
 def _positioned_mlp_ci_fn() -> LayerwiseMLPCIFn:
@@ -83,7 +92,7 @@ def test_mlp_arch_serves_a_positioned_target():
     ci_fn = _positioned_mlp_ci_fn()
     assert ci_fn.has_position_axis is True
 
-    ci = ci_fn(_taps(), remat=False)
+    ci = ci_fn(_taps(), remat=False, placement=None)
     assert ci.preactivations[SITE].shape == (B, T, C)
     assert bool(jnp.isfinite(ci.lower[SITE]).all())
 
@@ -92,8 +101,13 @@ def test_evaluate_ci_casts_fp32_taps_to_compute_precision():
     ci_fn = _positioned_mlp_ci_fn()
     taps = _taps()
     assert taps[SITE].dtype == jnp.float32
-    assert ci_fn(taps, remat=False).preactivations[SITE].dtype == jnp.float32
-    assert evaluate_ci(ci_fn, taps, remat=False).preactivations[SITE].dtype == COMPUTE_DT
+    assert ci_fn(taps, remat=False, placement=None).preactivations[SITE].dtype == jnp.float32
+    assert (
+        evaluate_ci(PlacedCIFn(fn=ci_fn, placement=None), taps, remat=False)
+        .preactivations[SITE]
+        .dtype
+        == COMPUTE_DT
+    )
 
 
 def test_positioned_mlp_is_position_local():
@@ -104,8 +118,8 @@ def test_positioned_mlp_is_position_local():
     perturbed = {SITE: taps[SITE].at[:, 2, :].add(100.0)}
 
     moved = jnp.abs(
-        ci_fn(taps, remat=False).preactivations[SITE]
-        - ci_fn(perturbed, remat=False).preactivations[SITE]
+        ci_fn(taps, remat=False, placement=None).preactivations[SITE]
+        - ci_fn(perturbed, remat=False, placement=None).preactivations[SITE]
     ).max(axis=(0, 2))
 
     assert float(moved[2]) > 0.0, "the perturbed position must move at all"
@@ -124,7 +138,7 @@ def test_positioned_mlp_reads_tap_magnitude_where_the_blockless_chunk_cannot():
 
     def scale_gap(ci_fn: CIFn) -> float:
         x = _taps(1)[SITE]
-        f = lambda t: ci_fn({SITE: t}, remat=False).preactivations[SITE]  # noqa: E731
+        f = lambda t: ci_fn({SITE: t}, remat=False, placement=None).preactivations[SITE]  # noqa: E731
         return float(jnp.abs(f(x) - f(x * 7.0)).max())
 
     assert scale_gap(_positioned_mlp_ci_fn()) > 1.0, "the MLP CI fn ignored tap magnitude"
@@ -167,35 +181,43 @@ def test_positioned_mlp_trains_a_positioned_target():
             components_opt_state=opt_vu.init(eqx.filter(components, eqx.is_array)),
             ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
             adversaries={},
+            freq_ema=None,
             step=jnp.zeros((), jnp.int32),
         ),
     )
-    step_fn = make_train_step(
-        model_static=model,
-        losses=build_objective(
-            (
-                FaithfulnessLossConfig(coeff=1.0),
-                ImportanceMinimalityLossConfig(
-                    coeff=1e-4,
-                    pnorm=ScheduleConfig(
-                        max_val=2.0, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.5))
-                    ),
+    loss_terms = build_objective(
+        (
+            FaithfulnessLossConfig(coeff=1.0),
+            ImportanceMinimalityLossConfig(
+                coeff=1e-4,
+                pnorm=ScheduleConfig(
+                    max_val=2.0, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.5))
                 ),
-                StochasticReconLossConfig(coeff=1.0),
             ),
-            model.site_names,
+            StochasticReconLossConfig(coeff=1.0),
         ),
+        model.site_names,
+    )
+    placed = PlacedModel(model=model, placement=None)
+    step_fn = make_train_step(
+        model_static=placed,
+        substrate=ForwardSubstrate.of(
+            placed,
+            remat_recon_forwards=False,
+            remat_ci_fn=True,
+            ci_capture_keys=ci_fn.capture_keys,
+            ci_placement=None,
+        ),
+        objective=loss_terms,
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=10,
-        remat_recon_forwards=False,
-        remat_ci_fn=True,
-        ci_capture_keys=ci_fn.capture_keys,
+        faithfulness=faithfulness_loss_for(model),
     )
 
     first_before = jax.device_get(ci_fn.site_mlps[SITE].weights[0])  # survives step donation
     for step_idx in range(2):
-        state, metrics = step_fn(model, state, inputs, random.fold_in(random.PRNGKey(3), step_idx))
+        state, metrics = step_fn(placed, state, inputs, random.fold_in(random.PRNGKey(3), step_idx))
         assert jnp.isfinite(metrics["total"]), (step_idx, metrics["total"])
 
     trained = state.decomposition.ci_fn

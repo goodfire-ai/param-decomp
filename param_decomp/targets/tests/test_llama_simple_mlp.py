@@ -1,10 +1,11 @@
 """CPU tests for the LlamaSimpleMLP target + generic trainer at a tiny config.
 
-Mirrors `test_llama8b.py`: validates the `DecomposedModel` contract (clean == all-frozen
-masked forward, shapes, site seams) and the full SPEC step — for mixed attention + MLP
-sites with heterogeneous per-site C — without real weights or a GPU.
+Mirrors `test_llama31.py`: validates the `DecomposedModel` contract (mask=1 identity
+reconstructs the clean forward, shapes, site seams) and the full SPEC step — for mixed
+attention + MLP sites with heterogeneous per-site C — without real weights or a GPU.
 """
 
+import os
 from pathlib import Path
 
 import equinox as eqx
@@ -21,27 +22,38 @@ from param_decomp.core.adversary import (
 from param_decomp.core.ci_fn import (
     ChunkwiseTransformerCIFn,
 )
-from param_decomp.core.components import ComponentStacks, SiteC, init_component_stacks
+from param_decomp.core.components import (
+    ComponentStacks,
+    SiteC,
+    init_component_stacks,
+)
 from param_decomp.core.configs import (
     AdamPGDConfig,
-    ChunkwiseSubsetReconLossConfig,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
+    StochasticReconSubsetLossConfig,
     UniformKSubsetRoutingConfig,
 )
-from param_decomp.core.model import MaterializedMasking
+from param_decomp.core.faithfulness import faithfulness_loss_for
+from param_decomp.core.model import MaterializedMasking, PlacedModel, site_weight_delta
+from param_decomp.core.nonlinearity import (
+    AttentionHeads,
+    Neurons,
+)
 from param_decomp.core.objective import build_objective
+from param_decomp.core.recon import StochasticSources
 from param_decomp.core.schedule import Knot, ScheduleConfig
 from param_decomp.core.train import (
     Decomposition,
+    ForwardSubstrate,
     TrainingItem,
     TrainState,
     make_faith_warmup_step,
     make_train_step,
 )
+from param_decomp.targets.glu_transformer import GLUDecomposedModel
 from param_decomp.targets.llama_simple_mlp import (
-    SimpleMLPDecomposedModel,
     canonical_site_cs,
     parse_site_name,
     site_name,
@@ -81,7 +93,7 @@ def _site_input_key(site: str) -> str:
 
 
 def _capture_site_inputs(
-    model: SimpleMLPDecomposedModel, tokens: jax.Array, sites: tuple[str, ...]
+    model: GLUDecomposedModel, tokens: jax.Array, sites: tuple[str, ...]
 ) -> dict[str, jax.Array]:
     input_keys = tuple(_site_input_key(site) for site in sites)
     captures = capture_clean(model, tokens, tuple(dict.fromkeys(input_keys)))
@@ -117,15 +129,34 @@ def test_site_name_helpers():
 def test_site_specs_dims():
     cfg = tiny_simple_mlp_cfg()
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
-    specs = site_specs(cfg, canonical_site_cs(tuple(SiteC(site_name(2, k), 4) for k in (
-        "q_proj", "k_proj", "v_proj", "o_proj", "c_fc", "down_proj",
-    ))))  # fmt: skip
+    specs = site_specs(
+        cfg,
+        canonical_site_cs(
+            tuple(
+                SiteC(site_name(2, k), 4)
+                for k in (
+                    "q_proj",
+                    "k_proj",
+                    "v_proj",
+                    "o_proj",
+                    "c_fc",
+                    "down_proj",
+                )
+            )
+        ),
+    )
     dims = {s.name: (s.d_in, s.d_out, s.C) for s in specs}
     assert dims["h.2.attn.q_proj"] == (cfg.n_embd, qd, 4)
     assert dims["h.2.attn.k_proj"] == (cfg.n_embd, kvd, 4)
     assert dims["h.2.attn.o_proj"] == (qd, cfg.n_embd, 4)
     assert dims["h.2.mlp.c_fc"] == (cfg.n_embd, cfg.n_intermediate, 4)
     assert dims["h.2.mlp.down_proj"] == (cfg.n_intermediate, cfg.n_embd, 4)
+    partitions = {s.name: s.nonlinearity_partition for s in specs}
+    assert partitions["h.2.mlp.c_fc"] == Neurons()
+    assert partitions["h.2.attn.q_proj"] == AttentionHeads(cfg.n_head)
+    assert partitions["h.2.attn.k_proj"] == AttentionHeads(cfg.n_kv_head)
+    assert partitions["h.2.attn.v_proj"] == AttentionHeads(cfg.n_kv_head)
+    assert partitions["h.2.mlp.down_proj"] is None and partitions["h.2.attn.o_proj"] is None
     with pytest.raises(AssertionError, match="canonical"):
         site_specs(cfg, (SiteC("h.2.mlp.c_fc", 4), SiteC("h.2.attn.q_proj", 4)))
 
@@ -148,16 +179,13 @@ def test_clean_path_and_masked_identity():
     clean = run_clean(model, tokens)
     assert clean.shape == (b, t, cfg.vocab_size)
 
-    # SPEC S2: a masked forward with NO live sites is the frozen path — bit-identical.
-    none_masked = run_masked(model, vu, tokens, {}, {}, None, (), True, remat=False)
-    assert jnp.array_equal(clean, none_masked), "live=() must be the exact frozen path"
-
-    # All-live, masks=1, delta=1, route-everywhere reconstructs the frozen path up to
+    # Masks=1, delta=1, route-everywhere reconstructs the frozen path up to
     # decomposition rounding (the V@U + (W − V@U) identity; exact only in exact math).
     names = model.site_names
     ones_masks = {s.name: jnp.ones((b, t, s.C)) for s in model.sites}
     ones_delta = {s: jnp.ones((b, t)) for s in names}
-    full = run_masked(model, vu, tokens, ones_masks, ones_delta, None, names, True, remat=False)
+    prepared = model.prepare_compute_weights(vu, None)
+    full = run_masked(model, prepared, tokens, ones_masks, ones_delta, None, True, remat=False)
     assert jnp.allclose(clean, full, atol=1e-4), "mask=1 identity drifted"
 
     input_keys = model._capture_grammar().block_tap_keys((2, 3))
@@ -169,17 +197,27 @@ def test_clean_path_and_masked_identity():
 
     deltas = model.weight_deltas(vu)
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
-    assert deltas["h.2.attn.q_proj"].shape == (qd, cfg.n_embd)
-    assert deltas["h.2.attn.v_proj"].shape == (kvd, cfg.n_embd)
-    assert deltas["h.2.mlp.c_fc"].shape == (cfg.n_intermediate, cfg.n_embd)
-    assert deltas["h.3.mlp.down_proj"].shape == (cfg.n_embd, cfg.n_intermediate)
+    assert site_weight_delta(deltas, vu, "h.2.attn.q_proj").shape == (qd, cfg.n_embd)
+    assert site_weight_delta(deltas, vu, "h.2.attn.v_proj").shape == (kvd, cfg.n_embd)
+    assert site_weight_delta(deltas, vu, "h.2.mlp.c_fc").shape == (cfg.n_intermediate, cfg.n_embd)
+    assert site_weight_delta(deltas, vu, "h.3.mlp.down_proj").shape == (
+        cfg.n_embd,
+        cfg.n_intermediate,
+    )
     assert all(v.dtype == jnp.float32 for v in deltas.values())
+    target_sq_norms = model.target_weight_sq_norms()
+    for name, group, slot in vu.site_slots:
+        site = vu.site(name)
+        delta = site_weight_delta(deltas, vu, name)
+        target_weight = delta + (site.V.astype(jnp.float32) @ site.U.astype(jnp.float32)).T
+        assert jnp.allclose(target_sq_norms[group][slot], jnp.sum(target_weight**2))
 
 
 @pytest.mark.parametrize("ablated_site", ["h.2.attn.q_proj", "h.2.mlp.c_fc"])
 def test_zero_masking_one_site_changes_logits(ablated_site: str):
     """q is live ahead of RoPE/SDPA; c_fc ahead of the GELU — zero-mask + zero-delta on
-    either must change the logits."""
+    either must change the logits. The other sites take mask=1 + delta=1 (exactly the
+    frozen W), so the change is attributable to the ablated site alone."""
     cfg = tiny_simple_mlp_cfg()
     sites = site_specs(cfg, SIMPLE_MLP_MIXED_SITE_CS)
     model = tiny_simple_mlp_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
@@ -188,12 +226,11 @@ def test_zero_masking_one_site_changes_logits(ablated_site: str):
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
     clean = run_clean(model, tokens)
-    C = {s.name: s.C for s in SIMPLE_MLP_MIXED_SITE_CS}[ablated_site]
-    ablated = run_masked(model,
-        vu, tokens,
-        {ablated_site: jnp.zeros((b, t, C))}, {ablated_site: jnp.zeros((b, t))},
-        None, (ablated_site,), True, remat=False,
-    )  # fmt: skip
+    fill = {s.name: 0.0 if s.name == ablated_site else 1.0 for s in model.sites}
+    masks = {s.name: jnp.full((b, t, s.C), fill[s.name]) for s in model.sites}
+    delta_masks = {s.name: jnp.full((b, t), fill[s.name]) for s in model.sites}
+    prepared = model.prepare_compute_weights(vu, None)
+    ablated = run_masked(model, prepared, tokens, masks, delta_masks, None, True, remat=False)
     assert not jnp.allclose(clean, ablated, atol=1e-4), f"ablating {ablated_site} did nothing"
 
 
@@ -216,7 +253,7 @@ def test_masked_site_outputs_frozen_when_routed_false_or_unmasked():
 
     clean_outs = capture_site_outputs(
         model,
-        vu,
+        model.prepare_compute_weights(vu, None),
         tokens,
         MaterializedMasking(component_masks=ones_masks, routes=false_routes),
     )
@@ -227,7 +264,7 @@ def test_masked_site_outputs_frozen_when_routed_false_or_unmasked():
         site_components = vu.site(s)
         W = (
             site_components.V.astype(jnp.float32) @ site_components.U.astype(jnp.float32)
-        ).T + deltas[s]  # (d_out, d_in)
+        ).T + site_weight_delta(deltas, vu, s)  # (d_out, d_in)
         expected = site_in[s].astype(jnp.float32) @ W.T
         assert jnp.allclose(clean_outs[s].astype(jnp.float32), expected, atol=1e-3), s
 
@@ -251,9 +288,10 @@ def test_masked_site_outputs_match_hand_computed_masked_linear(site_name_str: st
     site_components = vu.site(site)
     mask = jax.random.uniform(jax.random.PRNGKey(7), (b, t, sites_cs[0].C))
 
+    prepared = model.prepare_compute_weights(vu, None)
     no_delta = capture_site_outputs(
         model,
-        vu,
+        prepared,
         tokens,
         MaterializedMasking(component_masks={site: mask}),
     )
@@ -261,11 +299,11 @@ def test_masked_site_outputs_match_hand_computed_masked_linear(site_name_str: st
     assert jnp.allclose(no_delta[site], hand, atol=1e-4), site
 
     # delta path: + delta_mask · (x @ Δ), Δ = W − V@U == model.weight_deltas (fp32 oracle)
-    delta_in = model.weight_deltas(vu)[site]
+    delta_in = site_weight_delta(model.weight_deltas(vu), vu, site)
     delta_mask = jax.random.uniform(jax.random.PRNGKey(9), (b, t))
     with_delta = capture_site_outputs(
         model,
-        vu,
+        prepared,
         tokens,
         MaterializedMasking(
             component_masks={site: mask},
@@ -287,10 +325,16 @@ def test_o_site_masks_attention_output():
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
     clean = run_clean(model, tokens)
-    ones = run_masked(model,
-        vu, tokens, {o_site: jnp.ones((b, t, 8))}, {o_site: jnp.ones((b, t))}, None,
-        (o_site,), True, remat=False,
-    )  # fmt: skip
+    ones = run_masked(
+        model,
+        model.prepare_compute_weights(vu, None),
+        tokens,
+        {o_site: jnp.ones((b, t, 8))},
+        {o_site: jnp.ones((b, t))},
+        None,
+        True,
+        remat=False,
+    )
     assert jnp.allclose(clean, ones, atol=1e-4)
     # o's clean site input is the pre-o_proj attention output, shape (b, t, qd)
     site_in = _capture_site_inputs(model, tokens, model.site_names)
@@ -344,9 +388,10 @@ def test_step_trains_and_has_vpd_signature():
                     n_warmup=ppgd_cfg.n_warmup_steps,
                 )
             },
+            freq_ema=None,
             step=jnp.zeros((), jnp.int32),
         ),
-    )  # fmt: skip
+    )
     loss_terms = build_objective(
         (
             FaithfulnessLossConfig(coeff=1e5),
@@ -356,32 +401,37 @@ def test_step_trains_and_has_vpd_signature():
                     max_val=2.0, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.2))
                 ),
             ),
-            ChunkwiseSubsetReconLossConfig(
+            StochasticReconSubsetLossConfig(
                 routing=UniformKSubsetRoutingConfig(),
                 coeff=0.5,
-                sites_per_chunk=2,
-                n_samples=1,
+                n_mask_samples=1,
             ),
             ppgd_cfg,
         ),
         model.site_names,
     )
+    placed = PlacedModel(model=model, placement=None)
     step = make_train_step(
-        model_static=model,
-        losses=loss_terms,
+        model_static=placed,
+        substrate=ForwardSubstrate.of(
+            placed,
+            remat_recon_forwards=True,
+            remat_ci_fn=False,
+            ci_capture_keys=ci_fn.capture_keys,
+            ci_placement=None,
+        ),
+        objective=loss_terms,
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=100,
-        remat_recon_forwards=True,
-        remat_ci_fn=False,
-        ci_capture_keys=ci_fn.capture_keys,
+        faithfulness=faithfulness_loss_for(model),
     )
 
     tokens = jax.random.randint(jax.random.PRNGKey(4), (2, seq), 0, cfg.vocab_size)
     n_steps = 4
     losses = []
     for i in range(n_steps):
-        state, m = step(model, state, tokens, jax.random.PRNGKey(100 + i))
+        state, m = step(placed, state, tokens, jax.random.PRNGKey(100 + i))
         losses.append({k: float(v) for k, v in m.items()})
 
     assert all(jnp.isfinite(jnp.array(list(m.values()))).all() for m in losses)
@@ -390,7 +440,7 @@ def test_step_trains_and_has_vpd_signature():
     ppgd_adv = state.training.adversaries["PersistentPGDReconLoss"]
     assert float(ppgd_adv.opt_state.step_count) == n_steps * (n_warmup + 1)
     # SPEC S15: sources stay projected to [0,1].
-    for v in ppgd_adv.sources.values():
+    for v in jax.tree.leaves(ppgd_adv.sources):
         assert float(v.min()) >= 0.0 and float(v.max()) <= 1.0
     # SPEC S9: p annealed below its 2.0 start by step 4 of 100.
     assert losses[-1]["p_imp"] < 2.0
@@ -406,15 +456,17 @@ def test_step_trains_and_has_vpd_signature():
 def test_faith_warmup_decreases_faith():
     cfg = tiny_simple_mlp_cfg()
     sites = site_specs(cfg, canonical_site_cs(SIMPLE_MLP_MIXED_SITE_CS))
-    model = tiny_simple_mlp_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
+    placed = PlacedModel(
+        model=tiny_simple_mlp_decomposed_model(cfg, sites, jax.random.PRNGKey(0)), placement=None
+    )
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     opt = optax.adamw(1e-2, weight_decay=0.0)
-    wstep = make_faith_warmup_step(opt)
+    wstep = make_faith_warmup_step(opt, faithfulness_loss_for(placed.model))
     ostate = opt.init(eqx.filter(vu, eqx.is_array))
     first_loss: float | None = None
     loss = None
     for _ in range(30):
-        vu, ostate, loss = wstep(model, vu, ostate)
+        vu, ostate, loss = wstep(placed, vu, ostate)
         first_loss = float(loss) if first_loss is None else first_loss
     assert first_loss is not None and loss is not None
     assert float(loss) < first_loss * 0.9, (first_loss, float(loss))
@@ -437,7 +489,24 @@ def test_component_stacks_shapes_fp32():
     assert all(a.dtype == jnp.float32 for pair in vu.stacks.values() for a in pair)
 
 
-_REAL_CACHE_DIR = Path("/mnt/data/artifacts/mechanisms/param-decomp/pretrain_cache/spd-t-9d2b8f02")
+def test_engine_rejects_ragged_site_sets():
+    """The engine's segmented masked forward demands kind-uniform decomposed layers —
+    the deleted hand-rolled model's ragged freedom does not carry over."""
+    cfg = tiny_simple_mlp_cfg()
+    ragged = canonical_site_cs((SiteC("h.2.attn.q_proj", 8), SiteC("h.3.mlp.down_proj", 16)))
+    model = tiny_simple_mlp_decomposed_model(cfg, site_specs(cfg, ragged), jax.random.PRNGKey(0))
+    vu = init_component_stacks(model.sites, jax.random.PRNGKey(1))
+    b, t = 2, 16
+    tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
+    masks = {s.name: jnp.ones((b, t, s.C)) for s in model.sites}
+    deltas = {s.name: jnp.ones((b, t)) for s in model.sites}
+    prepared = model.prepare_compute_weights(vu, None)
+    with pytest.raises(AssertionError, match="partially decomposed"):
+        run_masked(model, prepared, tokens, masks, deltas, None, True, remat=False)
+
+
+_DATA_ROOT = Path(env) if (env := os.environ.get("PD_TEST_DATA_ROOT")) else None
+_REAL_CACHE_DIR = _DATA_ROOT / "pretrain_cache" / "spd-t-9d2b8f02" if _DATA_ROOT else None
 _PRODUCTION_CS = {
     "c_fc": 3072,
     "down_proj": 3584,
@@ -449,11 +518,13 @@ _PRODUCTION_CS = {
 """The current JAX 4-layer Pile reference (`pile_llama_simple_mlp-4L.yaml`)."""
 
 
-@pytest.mark.skipif(not _REAL_CACHE_DIR.exists(), reason="t-9d2b8f02 pretrain cache not mounted")
+@pytest.mark.skipif(_REAL_CACHE_DIR is None, reason="PD_TEST_DATA_ROOT not set")
 def test_pretrained_target_converts_with_all_layers():
     """`kind: pretrained` LlamaSimpleMLP target specs convert, tiling the simple_mlp
     c-spec over the checkpoint's n_layer (4)."""
     import yaml
+
+    assert _REAL_CACHE_DIR is not None and _DATA_ROOT is not None
 
     from param_decomp.experiments.lm.config import (
         LMExperimentConfig,
@@ -478,9 +549,7 @@ def test_pretrained_target_converts_with_all_layers():
         "cs": dict(_PRODUCTION_CS),
     }
 
-    cfg = build_experiment_config(
-        LMExperimentConfig(**raw), "p-00000000", _REAL_CACHE_DIR.parent.parent
-    )
+    cfg = build_experiment_config(LMExperimentConfig(**raw), "p-00000000", _DATA_ROOT)
     target = cfg.target
     assert isinstance(target, LlamaSimpleMLPTargetConfig)
     assert target.pretrain_run_path == "goodfire/spd/runs/t-9d2b8f02"
@@ -493,13 +562,12 @@ def test_pretrained_target_converts_with_all_layers():
         assert by_name[f"h.{layer}.attn.q_proj"] == 768
         assert by_name[f"h.{layer}.attn.v_proj"] == 1024
     assert target.sites[0] == SiteC("h.0.attn.q_proj", 768)
-    # StochasticReconSubsetLoss = one all-sites entry
     loss_terms = build_objective(
         cfg.pd.loss_metrics,
         tuple(sc.name for sc in target.sites),
     )
     (stoch_term,) = [t for t in loss_terms.recon if t.name == "StochasticReconSubsetLoss"]
-    (stoch_entry,) = stoch_term.plan
-    assert len(stoch_entry.live_sites) == 24
+    assert isinstance(stoch_term.sources, StochasticSources)
+    assert stoch_term.uses_weight_deltas
     assert isinstance(cfg.data, ResolvedLMData)
     assert cfg.data.dir.name == "fineweb_llama_tok_2048"

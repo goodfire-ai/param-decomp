@@ -17,7 +17,7 @@ from param_decomp.core.configs import (
     PGDReconLossConfig,
     UVPlotsConfig,
 )
-from param_decomp.core.eval_schedule import Every, FirstThenEvery
+from param_decomp.core.eval_schedule import Every, FirstThenEvery, eval_due
 from param_decomp.experiments.eval_config import (
     EVAL_METRIC_CONFIG_TYPES,
     AnyEvalMetricConfig,
@@ -70,12 +70,26 @@ def test_a_fast_and_a_slow_metric_authored_together_get_different_schedules() ->
     eval_config = _eval_config(fast, slow)
 
     assert schedule_for(fast, eval_config) == Every(1000)
-    assert schedule_for(slow, eval_config) == FirstThenEvery(1000, 5000)
+    assert schedule_for(slow, eval_config) == FirstThenEvery(0, 5000)
 
 
 def test_the_slow_tier_skips_the_first_pass_when_unasked() -> None:
     slow = CIHistogramsConfig(n_batches_accum=None)
     assert schedule_for(slow, _eval_config(slow, slow_on_first_step=False)) == Every(5000)
+
+
+def test_slow_on_first_step_is_the_untrained_baseline_not_the_first_eval_pass() -> None:
+    """The flag's whole point is a pre-training readout; landing it on the first `every`
+    pass instead would report an already-trained model and defer any eval-path blowup by
+    `every` steps."""
+    slow = CIHistogramsConfig(n_batches_accum=None)
+    schedule = schedule_for(slow, _eval_config(slow))
+
+    assert eval_due(schedule, 0)
+    assert not eval_due(schedule, 1000)
+    assert eval_due(schedule, 5000)
+    assert not eval_due(Every(1000), 0)
+    assert not eval_due(schedule_for(slow, _eval_config(slow, slow_on_first_step=False)), 0)
 
 
 def test_the_tier_travels_with_the_metric_across_families() -> None:

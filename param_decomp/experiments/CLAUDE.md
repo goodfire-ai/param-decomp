@@ -3,15 +3,12 @@
 Experiment glue + the per-domain COMPOSITION ROOTS, torch-free. Training is JAX through the
 generic core engine (`param_decomp.core.run.run_decomposition_training`, a pure library that reads
 the pydantic `PDConfig` / `Cadence` directly). Each toy domain's `run.py` and LM's `training.py` are composition roots: read the run YAML → build the target / data loader / `config.BuiltRun` → call the
-engine. LM runs go through `python -m param_decomp.experiments.lm.run`, inside a GPU
-allocation; the toy domains (TMS, ResidMLP) run on CPU in-process via their module mains
-(`python -m param_decomp.experiments.{tms,resid_mlp}.run`). The shared experiment YAML schema + the shared
-run-identity helpers (`run_instance` / `ci_arch`) live in
-`experiments/config.py`; each domain's `config.py` carries its own
-target/data schema + (for the LM) its `BuiltRun` build.
-autointerp/clustering read a run's target topology from
-`experiments.lm.load_run.run_metadata` (config + pretrain cache, no checkpoint restore) —
-see `param_decomp/adapters/pd.py`.
+engine. LM runs through `python -m param_decomp.experiments.lm.run` in an allocation
+provided by the caller; the toy domains (TMS, ResidMLP) run on CPU
+in-process via their module mains (`python -m param_decomp.experiments.{tms,resid_mlp}.run`). The shared experiment YAML schema + the shared
+run-identity helper (`run_instance`) live in `experiments/config.py`; the toy CI-arch
+builder is `experiments/toy_config.py::build_toy_ci_arch`; each domain's `config.py`
+carries its own target/data schema + (for the LM) its `BuiltRun` build.
 
 ## `pd` optimizers
 
@@ -67,11 +64,11 @@ distribution — `param_decomp/targets/{tms,resid_mlp}.py`: the JAX `DecomposedM
 (sites, pure fns, MSE `recon_loss_fn`), the frozen target (`eqx.Module`), from-scratch
 in-process pretrain (`pretrain_*_target`), the ground-truth identity-CI eval
 (`identity_ci_error` + the single-feature probe), and the `*TargetConfig` dataclass
-carried on `config.BuiltRun.target` (satisfies the core `config.TargetSites` protocol).
+carried on `BuiltRun.target` (satisfies the core `built_run.TargetSites` protocol).
 Each `experiments/{tms,resid_mlp}/` carries:
-- `run.py` — the toy composition root (module main): builds the `config.BuiltRun` from the
+- `run.py` — the toy composition root (module main): builds the core `BuiltRun` from the
   canonical schema via the public shared helpers
-  (`config.run_instance` / `ci_arch`),
+  (`config.run_instance` / `toy_config.build_toy_ci_arch`),
   pretrains + builds the target, and calls `run_decomposition_training` with a synthetic
   `sample_batch` plus domain-bound identity/PGD/UV eval operations. CPU, synchronous, no
   SLURM — and no `runtime:` section in the YAML at all: a toy is single-device by
@@ -96,16 +93,14 @@ Each `experiments/{tms,resid_mlp}/` carries:
   token metrics refuse when toy evaluator construction reaches them. Ground-truth identity/dense CI scoring remains the
   toy runner's native validation pass on the train-log cadence.
 - `configs/*.yaml` — the canonical `experiments.{tms,resid_mlp}.config` schema (TMS: 5-2 /
-  40-10 / the `-id` deeper variants; ResidMLP: 1l/2l/3l + the global-CI variant).
+  40-10 / the `-id` deeper variants; ResidMLP: 1l/2l/3l).
 
-TMS deeper variant (`n_hidden_layers>0`, the `-id` configs) + the ResidMLP `global` CI arch
-(`fn_type=global_shared_mlp`) are restored and wired end-to-end (the global arch dispatches
-through the core `init_train_state` via `experiments.config.ci_arch`). `resid_mlp_2l`/`_3l`
-also use `global_mlp` (not `resid_mlp_1l`'s historical torch counterpart's per-site
-`layerwise_mlp`): at their much larger `C` (400/500, restored to the historical value), a
-16/128-hidden-unit per-site MLP is an output bottleneck the shared global net doesn't have.
-Toy harvest / autointerp / clustering is NOT yet wired (`load_run` is LM-only) — the
-remaining Phase-3 bucket.
+The TMS deeper variant (`n_hidden_layers>0`, the `-id` configs) and the toy `global_mlp`
+CI arch (`type: global_mlp`) are wired end-to-end (the global arch dispatches through the
+core `init_train_state` via `toy_config.build_toy_ci_arch`). The shipped ResidMLP configs
+all use per-site `layerwise_mlp` with `hidden_dims: [400]` at `C: 200` per site — wide
+enough to avoid the output bottleneck the `global_mlp` variant escapes.
+Toy clustering is not wired (`load_run` is LM-only).
 
 ## Picking a CI-fn arch — and `n_blocks: 0`
 
@@ -141,9 +136,10 @@ a choice. `n_blocks: 0` is available to any lab whose own schema admits it.
 ## Layout
 
 The `ExperimentConfig` schema base (domain subclasses bind concrete
-`target`/`decomposition`/`data`) + `EvalConfig` + the toy authored CI configs
-(`LayerwiseMlpCiConfig` / `GlobalMlpCiConfig`) + the shared validation /
-run-identity helpers live in `experiments/config.py` (`WandbConfig` / `ResumeProvenance` are
+`target`/`decomposition`/`data`) + the shared validation / run-identity helpers live in
+`experiments/config.py`; `EvalConfig` lives in `experiments/eval_config.py`; the toy
+authored CI configs (`LayerwiseMlpCiConfig` / `GlobalMlpCiConfig`) plus
+`build_toy_ci_arch` live in `experiments/toy_config.py` (`WandbConfig` / `ResumeProvenance` are
 core, in `param_decomp.core.configs`; the engine's `BuiltRun` bundle is core, in
 `param_decomp.core.built_run`); the LM schema + LM build (`LMExperimentConfig`, `LMTargetConfig`,
 `LMDataConfig`, the `target.spec` union, the authored LM CI union (`LMCiConfig`:
@@ -161,13 +157,13 @@ target-anatomy vocabulary, so it lives in the domain that IS transformers —
 
 ```
 experiments/
-├── utils.py                 # EXPERIMENT_CONFIG_FILENAME
 ├── lm/
 │   ├── run.py               # python -m param_decomp.experiments.lm.run — pre-JAX env bootstrap deferring to training.py, the LM composition root
+│   ├── run_targeted.py      # the tPD (SPEC §11) twin: bootstrap deferring to training_targeted.py; a targeted run is its own top-level config shape (LMTargetedExperimentConfig: prompts: + nontarget:), never a mode flag
+│   ├── targeted_data.py     # the tPD TARGET stream: kind-discriminated prompt pools, tokenized once at startup, unpadded at one shared prompt length (T8)
 │   ├── resolved.py          # LM-only resolved data/run types (ResolvedLMData, LMRun)
 │   ├── eval.py              # token CE/KL + CI-L0 fast pass
 │   ├── attn_patterns_eval.py / arithmetic_eval.py
-│   ├── data.py / hf_http.py
 │   ├── data.py              # tokenize_and_concatenate (offline helper for prestage)
 │   ├── prestage_tokenized.py  # HF text -> int32 parquet shards for the JAX trainer
 │   └── arithmetic_probe.py    # a x b arithmetic grid spec -> in-memory eval probe (ArithmeticCIGrid)
@@ -193,8 +189,8 @@ The LM target is a discriminated union on `kind`:
 target:
   spec:
     kind: hf                            # HuggingFace model
-    model_class: transformers.GPT2LMHeadModel
-    model_name: openai-community/gpt2
+    model_class: transformers.LlamaForCausalLM
+    model_name: meta-llama/Llama-3.1-8B
 
 # or
 target:
@@ -233,24 +229,29 @@ Torch-era pretrain runs ship `model_step_<N>.pt`, which this loader can't read. 
 downloads it anyway and then fails pointing at the local file and the converter at git
 tag `torch-oracle` — conversion needs torch, which the library deliberately doesn't depend on.
 
-`kind: hf`/`hf_weights_in_vendored` model names must be in `experiments/lm/config.py::HF_MODEL_FAMILIES`
-(Llama-3.1-8B, Qwen3-8B-Base) — anything else refuses at convert time. A Qwen3 run needs
-a Qwen3-tokenized prestaged dataset (`prestage_tokenized` with
-`--tokenizer_name Qwen/Qwen3-8B-Base`).
+`kind: hf`/`hf_weights_in_vendored` model names must be in `experiments/lm/config.py::HF_MODEL_VARIANTS`
+(Llama-3.1-8B; dense Qwen3 0.6B/1.7B/4B/8B/14B Base and post-trained) — anything else
+refuses at convert time. A Qwen3 run needs a Qwen3-tokenized prestaged dataset
+(`prestage_tokenized --tokenizer_name <the selected Qwen checkpoint>`).
 
 ## LM `data`
 
-`data` IS the dataset reference — a discriminated union on `kind`, no wrapper keys:
+`data` carries two required dataset references — `train` and the held-out `eval` split —
+each a discriminated union on `kind`:
 
 ```yaml
 data:
-  kind: name                      # a named store dataset (the portable form)
-  name: fineweb_llama_tok_2048    # pile_neox_tok_512 for LlamaSimpleMLP
+  train:
+    kind: name                    # a named store dataset (the portable form)
+    name: fineweb_llama_tok_2048  # pile_neox_tok_512 for LlamaSimpleMLP
+  eval:
+    kind: name
+    name: fineweb_llama_tok_2048_eval
 
-# or
-data:
-  kind: dir                       # ad-hoc escape hatch: an explicit shard dir
-  dir: /abs/path/to/shards
+# or, per split:
+  train:
+    kind: dir                     # ad-hoc escape hatch: an explicit shard dir
+    dir: /abs/path/to/shards
 ```
 
 A store name resolves to `<data_root>/datasets/<name>` (`infra.dataset_store`); the
@@ -261,38 +262,52 @@ this same strict schema; older shapes require their original revision or an exte
 
 The JAX prediction tensor is always the final logits (there is no `output_extract` —
 it was a torch-era field and current configs reject it). The `model_class` strings
-are NOT imported by the JAX trainer — `param_decomp.core.built_run` only asserts the class-name
-suffix and routes to its own vendored JAX arch (`pretrained` LlamaSimpleMLP -> the
-pretrain-cache loader, `hf_weights_in_vendored` Llama -> `vendored_jax`). The dotted
-`model_class` is a stable identifier only, never imported.
+are NOT imported by the JAX trainer — `experiments/lm/config.py::resolve_decomposition`
+only asserts the class identity (`kind: hf` matches the family's full class string; the
+other kinds match the class-name suffix) and routes to its own vendored JAX arch
+(`pretrained` LlamaSimpleMLP -> the pretrain-cache loader, `hf_weights_in_vendored`
+Llama -> `vendored_jax`). The dotted `model_class` is a stable identifier only, never
+imported.
 
-The path schemas (`topology/path_schemas.py`) cover the GPT-2 and `LlamaSimple*` archs —
-so `PDAdapter`'s layer-description path is exercised by `kind: pretrained` runs (the
-pile `LlamaSimpleMLP` decompositions), the production target.
+The path schemas (`topology/path_schemas.py`) cover the pretrain (`GPT2*`,
+`LlamaSimple*`) and HF GLU (`Llama`, `Qwen3`) architectures used to name harvested
+sites consistently.
 
 ## `runtime.launch_env` (rank env / XLA flags)
 
 The rank env (XLA client flags, NCCL/host-memory knobs) is config-driven via
 `runtime.launch_env` (`param_decomp.experiments.lm.runtime.LaunchEnv`), so `config.yaml`
-fully captures the environment a run executed with — A/B a flag in the YAML, not in your
-launch script. `lm/run.py` exports `LaunchEnv.as_env()` before importing JAX, so it
-applies on every path. `LD_LIBRARY_PATH` is deliberately NOT config-driven: it is
-machine-specific, so it belongs to whatever sets up the venv.
+fully captures the environment a run executed with — A/B a flag in the YAML, not in
+the launcher. `lm/run.py` exports `LaunchEnv.as_env()` before importing JAX, so it applies
+on every path including a direct module invocation. Machine-specific environment such as
+`LD_LIBRARY_PATH` belongs to the caller rather than the authored run configuration.
+
+XLA *compiler* flags go through `runtime.compiler_options` instead (passed natively to
+every jit, in the compile-cache key). REQUIRED, no default, no merge — every run's
+flags trace to a visible authored token: `tuned-v1` = the frozen production set
+(`TUNED_V1_COMPILER_OPTIONS` in `lm/runtime.py`, the one code copy — a changed tuned
+set is a new preset name, never an edit); `bare` = `{}` (true XLA defaults, the
+debugging baseline); or an explicit `xla_*`-keyed dict, used VERBATIM as the run's
+complete flag set (non-`xla_*` keys refuse at parse).
 
 ```yaml
 runtime:
-  dp: 32
+  replicate: 4
+  fsdp: 8
+  tp: 1
+  compiler_options: tuned-v1   # or bare, or an explicit complete xla_* dict
   launch_env:
-    xla_flags: { gpu_enable_command_buffer: "", gpu_autotune_level: "0" }
     xla_python_client_allocator: platform
-    env: { SOME_ONE_OFF_VAR: "1" }           # escape hatch, merged last (overrides)
+    env: { SOME_ONE_OFF_VAR: "1" }
 ```
 
-## `--group` and `--tags`
+## W&B grouping and tags
 
-The toy run commands (`experiments.{tms,resid_mlp}.run`) accept `--group <id>` and
-`--tags a,b,c` (no-ops when `wandb:` is omitted); the LM root reads the same two fields
-from the config's `wandb:` block instead:
+The shipped TMS and ResidualMLP configs include `wandb:` and require authentication. Tests
+that must not contact W&B should use a temporary config with `wandb: null`; local
+`metrics.jsonl` output is still written in the run directory.
+
+Launchers may stamp a W&B group and tags when `wandb:` is configured:
 
 - **`--group`** sets wandb's first-class `group` field — used by the UI's native
   collapsing and matched by workspace filters via `ws.Metric("Group")`.

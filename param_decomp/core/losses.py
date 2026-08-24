@@ -1,20 +1,35 @@
 """The pure loss terms (SPEC §2) and their schedules — fp32 reductions, no state."""
 
 import math
-from collections.abc import Callable
+from collections import defaultdict
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, NamedTuple
 
+import einops
 import jax
 import jax.numpy as jnp
+import numpy as np
 from beartype import beartype
 from jaxtyping import Array, Float, jaxtyped
 
+from param_decomp.core.components import (
+    ComponentStacks,
+    SiteSpec,
+)
 from param_decomp.core.configs import (
     AnyImportanceMinimalityLossConfig,
+    FrequencyMinimalityConfig,
     HiddenActsReconstruction,
     ImportanceMinimalityLossConfig,
     LossCoeff,
     SmoothL0ImportanceMinimalityLossConfig,
+)
+from param_decomp.core.nonlinearity import (
+    AttentionHeads,
+    Neurons,
+    NonlinearityPartition,
+    NonlinearityUnitKind,
 )
 from param_decomp.core.recon import (
     ForwardObservations,
@@ -36,54 +51,49 @@ def _interval_frac_traced(prev: Knot, knot: Knot, t: Array) -> Array:
             return jnp.where(u >= 1.0, knot.frac, prev.frac)
 
 
-def scheduled_value_traced(step_f32: Array, total_steps: int, config: ScheduleConfig) -> Array:
-    """jnp twin of `schedule.get_scheduled_value` for a traced `step_f32` (inside the
-    jitted step, or as an optax schedule over the update count). Same values pointwise
-    (`test_schedule.py` pins the pair); the knot structure is static (from config), only
-    `t` is traced, so interval selection is a `jnp.where` chain. Lives here rather than
-    next to its host twin so the config schema stays jax-free.
-
-    The `total_steps - 1` denominator in `t` is canonical-torch: the `at = 1.0` knot is
-    reached AT `step = total_steps - 1` (SPEC S20). Plain `optax.cosine_decay_schedule`
-    divides by `steps` and gets there one update later — a genuine ~O(1/steps) per-step
-    divergence this fn must avoid."""
-    assert total_steps > 0, f"total_steps must be positive, got {total_steps}"
-
-    if total_steps == 1:
-        t = jnp.zeros((), jnp.float32)
-    else:
-        t = jnp.minimum(step_f32 / (total_steps - 1), 1.0)
-
+def scheduled_value_at(train_frac: Array, config: ScheduleConfig) -> Array:
+    """Evaluate a schedule at one traced fraction of the run."""
+    assert train_frac.shape == (), train_frac.shape
     points = config.points
+    t = train_frac
     frac = _interval_frac_traced(points[0], points[1], t)
     for prev, knot in zip(points[1:], points[2:], strict=False):
         frac = jnp.where(t >= prev.at, _interval_frac_traced(prev, knot, t), frac)
     return jnp.asarray(config.max_val * frac, jnp.float32)
 
 
-def coeff_at(step_f32: Array, total_steps: int, coeff: LossCoeff) -> Float[Array, ""] | float:
-    """A loss coefficient's value at this step: a bare float IS the constant; a
-    `ScheduleConfig` is evaluated like `pnorm` (traced, so the jit signature stays
-    stable across the run)."""
+def train_frac_at(step: Array, total_steps: int) -> Array:
+    """Map update ``0 .. total_steps - 1`` to fraction-time ``0 .. 1`` (SPEC S20)."""
+    assert total_steps > 0, f"total_steps must be positive, got {total_steps}"
+    if total_steps == 1:
+        return jnp.zeros((), jnp.float32)
+    return step.astype(jnp.float32) / jnp.asarray(total_steps - 1, jnp.float32)
+
+
+def scheduled_value_traced(step_f32: Array, total_steps: int, config: ScheduleConfig) -> Array:
+    """Compatibility boundary for optax and host probes that naturally own a count."""
+    train_frac = jnp.minimum(train_frac_at(step_f32, total_steps), 1.0)
+    return scheduled_value_at(train_frac, config)
+
+
+def coeff_at(train_frac: Array, coeff: LossCoeff) -> Float[Array, ""] | float:
+    """Resolve one loss coefficient from the step's fraction-time scalar."""
     match coeff:
         case ScheduleConfig():
-            return scheduled_value_traced(step_f32, total_steps, coeff)
-        case float() | int():  # int: pyright's numeric tower widens the declared float
+            return scheduled_value_at(train_frac, coeff)
+        case float() | int():
             return coeff
 
 
 def reconstruction_spec_at(
     hidden_acts_reconstruction: HiddenActsReconstruction | None,
-    step_f32: Array,
-    total_steps: int,
+    train_frac: Array,
 ) -> ReconstructionSpec:
-    """The value-level reconstruction spec at this step — the S35 rider's
-    possibly-scheduled coeff resolved to a scalar, so schedule objects never enter the
-    loss math. The static twin for step-less contexts is `recon.resolve_reconstruction_spec`."""
+    """Resolve the S35 hidden-activation reconstruction at this fraction-time."""
     if hidden_acts_reconstruction is None:
         return OutputOnlyReconstruction()
     return OutputAndHiddenActsReconstruction(
-        coeff_at(step_f32, total_steps, hidden_acts_reconstruction.coeff),
+        coeff_at(train_frac, hidden_acts_reconstruction.coeff),
         hidden_acts_reconstruction.points,
     )
 
@@ -181,50 +191,219 @@ def mean_reconstruction_losses[T](values: tuple[T, ...]) -> T:
     return jax.tree.map(scalar_mean, *values)
 
 
+def unit_squared_norms(
+    vectors: Float[Array, "*components d"], partition: NonlinearityPartition
+) -> Float[Array, "*components U"]:
+    """Per-unit sums of squared coordinates over the partition's output-axis blocks.
+
+    The per-head sum is a matmul against a constant block indicator, not a
+    reshape-and-sum: `d` may be sharded with shard boundaries splitting heads
+    (under tp), where a reshape forces GSPMD to all-gather the full width while
+    a contraction over `d` keeps partial [C, U] sums shard-local (one tiny
+    all-reduce), in the backward too.
+    """
+    squares = vectors * vectors
+    match partition:
+        case Neurons():
+            return squares
+        case AttentionHeads(head_count=head_count):
+            d = vectors.shape[-1]
+            assert d % head_count == 0, (d, head_count)
+            head_of_column = jnp.repeat(
+                jnp.eye(head_count, dtype=vectors.dtype), d // head_count, axis=0
+            )
+            return squares @ head_of_column
+
+
+def nonlinearity_unit_squared_norm_fractions(
+    vectors: Float[Array, "*components d"], partition: NonlinearityPartition
+) -> Float[Array, "*components U"]:
+    """Each unit's fraction of its component's squared write-vector norm.
+
+    For component `c` and unit `u`, returns
+    `Σ_{j in u} vectors[c,j]² / Σ_j vectors[c,j]²`.
+
+    Stop-gradient max normalization prevents fp32 underflow without changing the result.
+    Exact-zero rows return zero; an epsilon floor would break scale invariance.
+    """
+    vectors = vectors.astype(jnp.float32)
+    scale = jax.lax.stop_gradient(jnp.max(jnp.abs(vectors), axis=-1, keepdims=True))
+    vectors = vectors / jnp.where(scale > 0.0, scale, 1.0)
+    unit_sq = unit_squared_norms(vectors, partition)
+    total_sq = unit_sq.sum(-1, keepdims=True)
+    alive = total_sq > 0.0
+    return jnp.where(alive, unit_sq / jnp.where(alive, total_sq, 1.0), 0.0)
+
+
+def soft_unit_count(
+    fractions: Float[Array, "*components U"], relative_threshold: Float[Array, ""] | float
+) -> Float[Array, "*components"]:
+    """Per-component soft count `Σ_u f_u / (f_u + relative_threshold / U)` (SPEC S36)."""
+    unit_count = fractions.shape[-1]
+    return (fractions / (fractions + relative_threshold / unit_count)).sum(-1)
+
+
+class _NonlinearityGroupTerm(NamedTuple):
+    kind: NonlinearityUnitKind
+    masked_count_sum: Float[Array, ""]
+    n_components: int
+
+
 @jaxtyped(typechecker=beartype)
-def faithfulness_loss(weight_deltas: dict[str, Float[Array, "_ _"]]) -> Float[Array, ""]:
-    """`Σ_s ‖Δ_s‖² / Σ_s numel` over fp32 deltas (SPEC S17). Each `Δ_s` is `(d_out, d_in)`;
-    dims are per-site (anonymous, not bound across sites)."""
-    numerator = sum(
-        ((delta.astype(jnp.float32) ** 2).sum() for delta in weight_deltas.values()),
+def nonlinearity_loss(
+    components: ComponentStacks,
+    partitions: Mapping[str, NonlinearityPartition],
+    relative_threshold: Float[Array, ""],
+    kind_coefficients: Mapping[NonlinearityUnitKind, float],
+) -> tuple[Float[Array, ""], dict[NonlinearityUnitKind, Float[Array, ""]]]:
+    """Return the kind-weighted nonlinearity penalty and its unweighted per-kind means
+    (SPEC S36). Callers exclude a kind by omitting its sites AND its coefficient — an
+    excluded kind is never computed, so weight 0.0 is not a state here."""
+    assert partitions, "nonlinearity loss needs at least one partitioned site"
+    assert {p.unit_kind for p in partitions.values()} == kind_coefficients.keys(), (
+        partitions,
+        kind_coefficients,
+    )
+    grouped: defaultdict[tuple[str, NonlinearityPartition], list[int]] = defaultdict(list)
+    for name, partition in partitions.items():
+        group, slot = components.slot_of(name)
+        grouped[group, partition].append(slot)
+
+    terms: list[_NonlinearityGroupTerm] = []
+    for (group, partition), slots in grouped.items():
+        us = components.stacks[group][1]
+        counts = soft_unit_count(
+            nonlinearity_unit_squared_norm_fractions(us, partition), relative_threshold
+        )
+        # Reduce the full resident stack under a constant slot mask — never gather the
+        # stack axis by slots: it is owner-partitioned across nodes, and a stack-axis
+        # gather forces cross-node resharding.
+        mask = np.zeros((us.shape[0], 1), np.float32)
+        mask[slots] = 1.0
+        terms.append(
+            _NonlinearityGroupTerm(
+                partition.unit_kind, (counts * mask).sum(), len(slots) * us.shape[1]
+            )
+        )
+
+    kinds: tuple[NonlinearityUnitKind, ...] = tuple(dict.fromkeys(term.kind for term in terms))
+    by_kind: dict[NonlinearityUnitKind, Float[Array, ""]] = {
+        kind: sum(
+            (term.masked_count_sum for term in terms if term.kind == kind),
+            start=jnp.zeros((), jnp.float32),
+        )
+        / sum(term.n_components for term in terms if term.kind == kind)
+        for kind in kinds
+    }
+    total = sum(
+        (kind_coefficients[kind] * mean for kind, mean in by_kind.items()),
         start=jnp.zeros((), jnp.float32),
     )
-    # float, not int: the full-model param total (Σ d_in·d_out ≈ 7e9) overflows the int32
-    # that jax materializes a Python int into under jit. A float normalizer is exact here.
-    denominator = float(sum(delta.size for delta in weight_deltas.values()))
-    return numerator / denominator
+    return total, by_kind
 
 
-def _imp_min_terms(
+def _per_component_frequencies(
     ci_upper: dict[str, Float[Array, "*leading _"]],
     per_value_penalty: Callable[[Float[Array, "*leading _"]], Float[Array, "*leading _"]],
-    reference_datapoint_count: int | None,
+) -> dict[str, Float[Array, " _"]]:
+    """Per-site firing frequencies `f_c = mean_{b,t} psi(c)` for any per-value penalty
+    `psi` (SPEC S8). Under GSPMD the leading axes are the global batch, so the reduction
+    IS the exact global per-component mean — XLA reduces across shards inside the graph,
+    so `f_c` is the true full-batch frequency inside the convex `log2` (a per-shard
+    `f_c` would give a Jensen bias)."""
+    return {
+        name: einops.reduce(per_value_penalty(ci.astype(jnp.float32)), "... c -> c", "mean")
+        for name, ci in ci_upper.items()
+    }
+
+
+def _frequency_curve(f: Float[Array, " _"], reference_datapoint_count: int) -> Float[Array, " _"]:
+    """`Φ(f) = f · log2(1 + a'·f)`, the per-component frequency penalty (SPEC S8)."""
+    return f * jnp.log2(1.0 + reference_datapoint_count * f)
+
+
+def _frequency_curve_slope(
+    f: Float[Array, " _"], reference_datapoint_count: int
+) -> Float[Array, " _"]:
+    """`Φ'(f) = log2(1 + a'·f) + a'·f / ((1 + a'·f)·ln 2)`."""
+    af = reference_datapoint_count * f
+    return jnp.log2(1.0 + af) + af / ((1.0 + af) * math.log(2.0))
+
+
+def _lp_psi(
+    pnorm: Float[Array, ""], eps: float
+) -> Callable[[Float[Array, "*leading _"]], Float[Array, "*leading _"]]:
+    return lambda ci: (ci + eps) ** pnorm
+
+
+def _smooth_l0_psi(
+    gamma: Float[Array, ""],
+) -> Callable[[Float[Array, "*leading _"]], Float[Array, "*leading _"]]:
+    gamma_sq = gamma * gamma
+    return lambda ci: ci**2 / (ci**2 + gamma_sq)
+
+
+def lp_term(frequencies: dict[str, Float[Array, " _"]]) -> Float[Array, ""]:
+    """`lp = Σ_s Σ_c f_c` (SPEC S8)."""
+    return sum((jnp.sum(f) for f in frequencies.values()), start=jnp.zeros((), jnp.float32))
+
+
+def _frequency_penalty(
+    frequencies: dict[str, Float[Array, " _"]], reference_datapoint_count: int
+) -> Float[Array, ""]:
+    """`freq = Σ_s Σ_c Φ(f_c)` (SPEC S7/S8)."""
+    return sum(
+        (jnp.sum(_frequency_curve(f, reference_datapoint_count)) for f in frequencies.values()),
+        start=jnp.zeros((), jnp.float32),
+    )
+
+
+def _lp_and_freq(
+    frequencies: dict[str, Float[Array, " _"]], reference_datapoint_count: int | None
 ) -> tuple[Float[Array, ""], Float[Array, ""]]:
-    """`(lp, freq)` for any per-value penalty `psi`, with per-site grouping (SPEC S7/S8):
+    """`(lp, freq)` from one set of per-site frequencies; `freq = 0.0` when no
+    frequency penalty is configured (`reference_datapoint_count is None`, SPEC S8')."""
+    freq = (
+        _frequency_penalty(frequencies, reference_datapoint_count)
+        if reference_datapoint_count is not None
+        else jnp.zeros((), jnp.float32)
+    )
+    return lp_term(frequencies), freq
 
-    - `lp = Σ_s Σ_c f_c`, the bare per-component mean firing rate `f_c = (Σ_{b,t} psi(c)) / B·T`.
-    - `freq = Σ_s Σ_c f_c · log2(1 + a' · f_c)`, the batch-invariant frequency penalty with
-      `a' = reference_datapoint_count`; `0.0` when `reference_datapoint_count is None`.
 
-    The two imp-min penalties (`L_p`, smooth-L0) differ ONLY in `psi`. Under GSPMD the
-    `*leading` axes are the global batch, so `jnp.sum` IS the exact global per-component
-    sum — XLA reduces across shards inside the graph, so `f_c` is the true full-batch
-    frequency inside the convex `log2` (a per-shard `f_c` would give a Jensen bias)."""
-    lp = jnp.zeros((), jnp.float32)
+def ema_frequency_penalty(
+    frequencies: dict[str, Float[Array, " _"]],
+    ema: dict[str, Float[Array, " _"]],
+    step_f32: Array,
+    halflife_steps: float,
+    reference_datapoint_count: int,
+) -> tuple[Float[Array, ""], dict[str, Float[Array, " _"]]]:
+    """`(freq, new_ema)`: the frequency penalty at a debiased EMA of `f_c` (SPEC S8'').
+
+    `new_ema = decay·ema + (1-decay)·sg(f_batch)`, debiased `f̂ = new_ema/(1-decay^(step+1))`
+    — the current batch is included, so step 0 reproduces the un-smoothed penalty exactly.
+    The value is `Σ Φ(f̂)`; the first-order surrogate keeps the gradient at the un-smoothed
+    penalty's scale, `Φ'(f̂)·∂f_batch/∂θ`, with the estimate stop-gradded (both S8'').
+
+    `decay = 2^(-1/halflife)` exists only in log space: formed directly it rounds to 1
+    (past `h ~ 1e16` even in f64), the subtractive `1-decay` forms cancel to 0, and the
+    debias division returns NaN; the direct `-ln(2)/h` with `expm1` stays finite for
+    every admitted halflife. The config's `1e6` halflife cap bounds fp32 rounding drift
+    in the recurrence (pinned by `test_ema_long_scan_rounding_bounded`)."""
+    log_decay = -math.log(2.0) / halflife_steps
+    alpha = -math.expm1(log_decay)  # 1 - decay
+    debias = -jnp.expm1(log_decay * (step_f32 + 1.0))  # 1 - decay^(step+1)
     freq = jnp.zeros((), jnp.float32)
-    for ci in ci_upper.values():
-        ci = ci.astype(jnp.float32)  # (*leading, C)
-        leading_axes = tuple(range(ci.ndim - 1))
-        n_positions = math.prod(ci.shape[:-1])
-        per_component_sums = jnp.sum(per_value_penalty(ci), axis=leading_axes)  # (C,)
-        per_component_means = per_component_sums / n_positions  # f_c
-        lp = lp + jnp.sum(per_component_means)
-        if reference_datapoint_count is not None:
-            freq = freq + jnp.sum(
-                per_component_means
-                * jnp.log2(1.0 + reference_datapoint_count * per_component_means)
-            )
-    return lp, freq
+    new_ema: dict[str, Float[Array, " _"]] = {}
+    for name, f_batch in frequencies.items():
+        f_sg = jax.lax.stop_gradient(f_batch)
+        new_ema[name] = ema[name] + alpha * (f_sg - ema[name])
+        f_hat = new_ema[name] / debias
+        surrogate = _frequency_curve_slope(f_hat, reference_datapoint_count) * (
+            f_batch - jax.lax.stop_gradient(f_batch)
+        )
+        freq = freq + jnp.sum(_frequency_curve(f_hat, reference_datapoint_count) + surrogate)
+    return freq, new_ema
 
 
 @jaxtyped(typechecker=beartype)
@@ -236,7 +415,9 @@ def importance_minimality_terms(
 ) -> tuple[Float[Array, ""], Float[Array, ""]]:
     """`L_p` imp-min terms: per-value penalty `(c + eps)^pnorm`, singular at `c=0` for
     `pnorm < 1` (the `eps` floor caps the gradient there)."""
-    return _imp_min_terms(ci_upper, lambda ci: (ci + eps) ** pnorm, reference_datapoint_count)
+    return _lp_and_freq(
+        _per_component_frequencies(ci_upper, _lp_psi(pnorm, eps)), reference_datapoint_count
+    )
 
 
 @jaxtyped(typechecker=beartype)
@@ -248,15 +429,12 @@ def smooth_l0_importance_minimality_terms(
     """Geman–McClure smooth-L0 imp-min terms: per-value penalty `c^2 / (c^2 + gamma^2)`.
     Flat at the origin (`phi'(0)=0`) and bounded (`|phi'| <= 0.65/gamma`) — no singularity,
     no `eps` floor. Approaches the true `L_0` count as `gamma -> 0`."""
-    gamma_sq = gamma * gamma
-    return _imp_min_terms(
-        ci_upper, lambda ci: ci**2 / (ci**2 + gamma_sq), reference_datapoint_count
+    return _lp_and_freq(
+        _per_component_frequencies(ci_upper, _smooth_l0_psi(gamma)), reference_datapoint_count
     )
 
 
-def annealed_imp_min_param(
-    step_f32: Array, total_steps: int, cfg: AnyImportanceMinimalityLossConfig
-) -> Array:
+def annealed_imp_min_param(train_frac: Array, cfg: AnyImportanceMinimalityLossConfig) -> Array:
     """The scheduled per-value-penalty parameter at this step (`p` for `L_p`, `gamma` for
     smooth-L0; SPEC S9/S9′). Pure in the step, so the train step hoists it out of the
     loss `grad`."""
@@ -265,7 +443,95 @@ def annealed_imp_min_param(
             schedule = cfg.pnorm
         case SmoothL0ImportanceMinimalityLossConfig():
             schedule = cfg.gamma
-    return scheduled_value_traced(step_f32, total_steps, schedule)
+    return scheduled_value_at(train_frac, schedule)
+
+
+def per_component_frequencies(
+    ci_upper: dict[str, Float[Array, "*leading _"]],
+    cfg: AnyImportanceMinimalityLossConfig,
+    annealed_param: Array,
+) -> dict[str, Float[Array, " _"]]:
+    """The per-site `f_c` vectors both imp-min readouts consume (SPEC S8), under the
+    config's per-value penalty at its annealed parameter."""
+    match cfg:
+        case ImportanceMinimalityLossConfig():
+            per_value_penalty = _lp_psi(annealed_param, cfg.eps)
+        case SmoothL0ImportanceMinimalityLossConfig():
+            per_value_penalty = _smooth_l0_psi(annealed_param)
+    return _per_component_frequencies(ci_upper, per_value_penalty)
+
+
+class BatchFrequencyTerm(NamedTuple):
+    """The frequency penalty at the single-batch `f_c` (SPEC S8/S8')."""
+
+    freq: Float[Array, ""]
+
+
+class EmaFrequencyTerm(NamedTuple):
+    """The frequency penalty at the debiased EMA of `f_c` (SPEC S8''). `freq_batch` is
+    the un-smoothed diagnostic logged alongside; `new_freq_ema` is the per-site `(C,)`
+    EMA state to carry forward."""
+
+    freq: Float[Array, ""]
+    freq_batch: Float[Array, ""]
+    new_freq_ema: dict[str, Float[Array, " _"]]
+
+
+FrequencyTerm = BatchFrequencyTerm | EmaFrequencyTerm
+
+
+@dataclass(frozen=True)
+class BatchFrequency:
+    """The single-batch frequency-penalty mode (SPEC S8'), owning no cross-step state."""
+
+    coeff: LossCoeff
+    reference_datapoint_count: int
+
+    def term(self, frequencies: dict[str, Float[Array, " _"]]) -> BatchFrequencyTerm:
+        return BatchFrequencyTerm(_frequency_penalty(frequencies, self.reference_datapoint_count))
+
+
+@dataclass(frozen=True)
+class EmaFrequency:
+    """The debiased-EMA frequency-penalty mode (SPEC S8'') — the only mode that owns
+    EMA state."""
+
+    coeff: LossCoeff
+    reference_datapoint_count: int
+    halflife_steps: float
+
+    def initial_state(self, sites: tuple[SiteSpec, ...]) -> dict[str, Array]:
+        """Zero-init per-site `(C,)` fp32 EMA of the per-component firing frequencies."""
+        return {spec.name: jnp.zeros((spec.C,), jnp.float32) for spec in sites}
+
+    def term(
+        self,
+        frequencies: dict[str, Float[Array, " _"]],
+        freq_ema: dict[str, Float[Array, " _"]] | None,
+        step_f32: Array,
+    ) -> EmaFrequencyTerm:
+        assert freq_ema is not None, "ema_halflife_steps set but no freq_ema state (S8'')"
+        freq, new_freq_ema = ema_frequency_penalty(
+            frequencies, freq_ema, step_f32, self.halflife_steps, self.reference_datapoint_count
+        )
+        return EmaFrequencyTerm(
+            freq, _frequency_penalty(frequencies, self.reference_datapoint_count), new_freq_ema
+        )
+
+
+FrequencyRole = BatchFrequency | EmaFrequency
+
+
+def resolve_frequency(cfg: FrequencyMinimalityConfig | None) -> FrequencyRole | None:
+    """The config's two nested optionals (`frequency`, `ema_halflife_steps`) decided into
+    one mode noun, once, at step-build time — the runtime consumers match on the role."""
+    if cfg is None:
+        return None
+    match cfg.ema_halflife_steps:
+        case None:
+            return BatchFrequency(cfg.coeff, cfg.reference_datapoint_count)
+        case halflife_steps:
+            return EmaFrequency(cfg.coeff, cfg.reference_datapoint_count, halflife_steps)
 
 
 def imp_min_terms(
@@ -273,11 +539,9 @@ def imp_min_terms(
     cfg: AnyImportanceMinimalityLossConfig,
     annealed_param: Array,
 ) -> tuple[Float[Array, ""], Float[Array, ""]]:
-    """Dispatch `(lp, freq)` on the imp-min penalty kind, given its annealed parameter; the
-    `freq` term is `0.0` unless `cfg.frequency` is configured."""
+    """`(lp, freq)` from the single-batch estimate — the reader for steps without EMA
+    state (the targeted objective, evals). The EMA-aware train step composes
+    `per_component_frequencies` + `lp_term` + the resolved `FrequencyRole`'s `term`
+    instead (SPEC S8'')."""
     ref = cfg.frequency.reference_datapoint_count if cfg.frequency is not None else None
-    match cfg:
-        case ImportanceMinimalityLossConfig():
-            return importance_minimality_terms(ci_upper, annealed_param, cfg.eps, ref)
-        case SmoothL0ImportanceMinimalityLossConfig():
-            return smooth_l0_importance_minimality_terms(ci_upper, annealed_param, ref)
+    return _lp_and_freq(per_component_frequencies(ci_upper, cfg, annealed_param), ref)

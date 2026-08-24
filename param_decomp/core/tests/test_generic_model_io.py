@@ -31,21 +31,30 @@ import numpy as np
 import optax
 import pytest
 from jax import random
+from jax.sharding import AxisType
+from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float
 
 from param_decomp.core.ci_fn import (
     Chunk,
     ChunkwiseTransformerCIArch,
     MHACIAttention,
+    PlacedCIFn,
     build_ci_fn,
 )
 from param_decomp.core.ci_l0_eval import make_ci_l0_eval_step
-from param_decomp.core.components import ComponentStacks, SiteSpec, component_stacks_from_sites
+from param_decomp.core.components import (
+    ComponentStacks,
+    SiteSpec,
+    component_stacks_from_sites,
+    site_slots_for,
+)
 from param_decomp.core.configs import (
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     StochasticReconLossConfig,
 )
+from param_decomp.core.faithfulness import faithfulness_loss_for
 from param_decomp.core.masking import all_live_masking_no_delta, materialize_masking
 from param_decomp.core.model import (
     EMPTY_CAPTURE_KEYS,
@@ -54,17 +63,36 @@ from param_decomp.core.model import (
     ForwardResult,
     Masking,
     MaterializedMasking,
+    PlacedModel,
     prepare_compute_weights,
 )
 from param_decomp.core.objective import build_objective
+from param_decomp.core.placement import PlacementRules, from_config
 from param_decomp.core.precision import COMPUTE_DT
 from param_decomp.core.recon_eval import FreshPGDReconEval, make_fresh_pgd_eval_step
 from param_decomp.core.schedule import Knot, ScheduleConfig
-from param_decomp.core.train import Decomposition, TrainingItem, TrainState, make_train_step
+from param_decomp.core.train import (
+    Decomposition,
+    ForwardSubstrate,
+    TrainingItem,
+    TrainState,
+    make_train_step,
+)
 
 B, T, D, C = 2, 3, 8, 5
 K_COORDS, M_AUX = 4, 2
 SITE = "block.0.proj"
+
+
+def _untype(value: Array) -> Array:
+    """Drop axis typing on this fixture's one-device mesh arm (identity there): bare
+    matmuls cannot resolve weight grads against an axis-typed batch under Explicit."""
+    sharding = jax.typeof(value).sharding
+    if sharding.mesh.empty:
+        return value
+    return jax.sharding.reshard(
+        value, jax.sharding.NamedSharding(sharding.mesh, P(*([None] * value.ndim)))
+    )
 
 
 class SyntheticDecomposedModel(eqx.Module):
@@ -83,8 +111,8 @@ class SyntheticDecomposedModel(eqx.Module):
     def site_names(self) -> tuple[str, ...]:
         return tuple(s.name for s in self.sites)
 
-    def shardings(self, mesh: "jax.sharding.Mesh") -> "SyntheticDecomposedModel":
-        repl = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
+    def shardings(self, placement: PlacementRules) -> "SyntheticDecomposedModel":
+        repl = jax.sharding.NamedSharding(placement.mesh, jax.sharding.PartitionSpec())
         return jax.tree.map(lambda _a: repl, self)
 
     @staticmethod
@@ -99,11 +127,18 @@ class SyntheticDecomposedModel(eqx.Module):
         return (jnp.sum(coords_err) + jnp.sum(aux_err)) / (B * T)
 
     def _heads(self, hidden: Array) -> tuple[Array, Array]:
+        # Untyped output edge: cotangents flowing back must be axis-free too.
+        hidden = _untype(hidden)
         return hidden @ self.read_coords.T, hidden @ self.read_aux.T
 
     def _residual(self, inputs: dict[str, Array]) -> Float[Array, "B T D"]:
-        """Input edge: the loader's native DICT batch -> the `[B,T,D]` residual (not token ids)."""
-        return (inputs["feat"] @ self.feat_proj.T) * inputs["gain"][..., None]
+        """Input edge: the loader's native DICT batch -> the `[B,T,D]` residual (not token ids).
+
+        This fixture's linears are bare matmuls, which cannot resolve a weight-grad
+        against an axis-typed batch under the Explicit mesh; its mesh arm is pinned to
+        one device (partitioning is tested elsewhere), where dropping the vacuous
+        typing is the identity."""
+        return _untype((inputs["feat"] @ self.feat_proj.T) * inputs["gain"][..., None])
 
     def _ordered_capture_keys(self, keys: CaptureKeys) -> tuple[str, ...]:
         allowed = {SITE, f"{SITE}.out"}
@@ -118,8 +153,13 @@ class SyntheticDecomposedModel(eqx.Module):
         self._ordered_capture_keys(frozenset(keys))
 
     def clean_forward(
-        self, inputs: dict[str, Array], capture_keys: CaptureKeys = EMPTY_CAPTURE_KEYS
+        self,
+        inputs: dict[str, Array],
+        capture_keys: CaptureKeys = EMPTY_CAPTURE_KEYS,
+        *,
+        placement: PlacementRules | None,
     ) -> ForwardResult:
+        del placement
         ordered_capture_keys = self._ordered_capture_keys(capture_keys)
         residual = self._residual(inputs)
         if not ordered_capture_keys:
@@ -136,7 +176,10 @@ class SyntheticDecomposedModel(eqx.Module):
             capture_values=tuple(values[key] for key in ordered_capture_keys),
         )
 
-    def prepare_compute_weights(self, vu: ComponentStacks) -> ComponentStacks:
+    def prepare_compute_weights(
+        self, vu: ComponentStacks, placement: PlacementRules | None
+    ) -> ComponentStacks:
+        del placement
         return vu
 
     def component_activation_forward(
@@ -146,8 +189,9 @@ class SyntheticDecomposedModel(eqx.Module):
         /,
         *,
         capture_keys: CaptureKeys,
+        placement: PlacementRules | None,
     ) -> tuple[ForwardResult, dict[str, Array]]:
-        del prepared_weights, inputs, capture_keys
+        del prepared_weights, inputs, capture_keys, placement
         raise NotImplementedError
 
     def stack_ci(self, ci_lower: dict[str, Array]) -> dict[str, Array]:
@@ -160,24 +204,22 @@ class SyntheticDecomposedModel(eqx.Module):
         /,
         *,
         masking: Masking,
+        placement: PlacementRules | None,
         capture_keys: CaptureKeys = EMPTY_CAPTURE_KEYS,
         remat: bool,
     ) -> ForwardResult:
-        del remat
+        del placement, remat
         ordered_capture_keys = self._ordered_capture_keys(capture_keys)
         explicit_masking = materialize_masking(masking)
-        assert explicit_masking.live_sites == (SITE,)
+        assert tuple(explicit_masking.component_masks) == (SITE,)
         assert explicit_masking.routes is None
         residual = self._residual(inputs)
         site_components = vu.site(SITE)
-        hidden = (
-            (residual @ site_components.V)
-            * explicit_masking.component_masks[SITE]
-            @ site_components.U
-        )
+        mask = _untype(explicit_masking.component_masks[SITE])
+        hidden = (residual @ site_components.V) * mask @ site_components.U
         if explicit_masking.weight_delta_masks is not None:
             delta = self.W - (site_components.V @ site_components.U).T
-            hidden = hidden + explicit_masking.weight_delta_masks[SITE][..., None] * (
+            hidden = hidden + _untype(explicit_masking.weight_delta_masks[SITE])[..., None] * (
                 residual @ delta.T
             )
         if not ordered_capture_keys:
@@ -191,19 +233,27 @@ class SyntheticDecomposedModel(eqx.Module):
             capture_values=tuple(values[key] for key in ordered_capture_keys),
         )
 
+    def target_weight_sq_norms(self) -> dict[str, Array]:
+        ((_name, group, slot),) = site_slots_for(self.sites)
+        assert slot == 0
+        return {group: jnp.sum(self.W.astype(jnp.float32) ** 2)[None]}
+
     def weight_deltas(self, vu: ComponentStacks) -> dict[str, Array]:
         site_components = vu.site(SITE)
-        return {
-            SITE: self.W.astype(jnp.float32)
+        delta = (
+            self.W.astype(jnp.float32)
             - (site_components.V.astype(jnp.float32) @ site_components.U.astype(jnp.float32)).T
-        }
+        )
+        shape, slot = vu.slot_of(SITE)
+        assert slot == 0
+        return {shape: delta[None]}
 
 
 def test_all_live_masking_uses_each_site_component_count() -> None:
-    sites = (SiteSpec("a", 3, 4, 2), SiteSpec("b", 4, 5, 7))
+    sites = (SiteSpec("a", 3, 4, 2, "a"), SiteSpec("b", 4, 5, 7, "b"))
     masking = all_live_masking_no_delta(sites, leading_shape=(2, 3), dtype=jnp.bfloat16)
 
-    assert masking.live_sites == ("a", "b")
+    assert tuple(masking.component_masks) == ("a", "b")
     assert masking.component_masks["a"].shape == (2, 3, 2)
     assert masking.component_masks["b"].shape == (2, 3, 7)
     assert all(mask.dtype == jnp.bfloat16 for mask in masking.component_masks.values())
@@ -216,7 +266,7 @@ def _synthetic_lm(key: jax.Array) -> SyntheticDecomposedModel:
         W=random.normal(random.fold_in(key, 0), (D, D)),
         read_coords=random.normal(random.fold_in(key, 1), (K_COORDS, D)),
         read_aux=random.normal(random.fold_in(key, 2), (M_AUX, D)),
-        sites=(SiteSpec(name=SITE, d_in=D, d_out=D, C=C),),
+        sites=(SiteSpec(name=SITE, d_in=D, d_out=D, C=C, group=SITE),),
         has_position_axis=True,
     )
 
@@ -229,7 +279,9 @@ def _synthetic_vu(key: jax.Array) -> ComponentStacks:
 
 def test_prepare_compute_weights_owns_the_compute_dtype_boundary() -> None:
     components = _synthetic_vu(random.PRNGKey(0))
-    prepared_weights = prepare_compute_weights(_synthetic_lm(random.PRNGKey(1)), components)
+    prepared_weights = prepare_compute_weights(
+        PlacedModel(model=_synthetic_lm(random.PRNGKey(1)), placement=None), components
+    )
 
     assert {leaf.dtype for leaf in jax.tree.leaves(prepared_weights)} == {jnp.dtype(COMPUTE_DT)}
 
@@ -256,7 +308,9 @@ def _synthetic_inputs(key: jax.Array) -> dict[str, Array]:
 
 def _one_device_mesh() -> jax.sharding.Mesh:
     devices = np.asarray(jax.devices()[:1]).reshape(1, 1, 1)
-    return jax.sharding.Mesh(devices, ("replicate", "fsdp", "tp"))
+    return jax.sharding.Mesh(
+        devices, ("replicate", "fsdp", "tp"), axis_types=(AxisType.Explicit,) * 3
+    )
 
 
 def test_dict_input_tuple_output_and_geometric_loss_flow():
@@ -267,13 +321,13 @@ def test_dict_input_tuple_output_and_geometric_loss_flow():
     components = _synthetic_vu(key)
     inputs = _synthetic_inputs(key)
 
-    assert model.clean_forward(inputs, frozenset({SITE})).captures[SITE].shape == (
+    assert model.clean_forward(inputs, frozenset({SITE}), placement=None).captures[SITE].shape == (
         B,
         T,
         D,
     )
 
-    clean_output = model.clean_forward(inputs).output
+    clean_output = model.clean_forward(inputs, placement=None).output
     assert isinstance(clean_output, tuple) and len(clean_output) == 2
     assert clean_output[0].shape == (B, T, K_COORDS) and clean_output[1].shape == (B, T, M_AUX)
 
@@ -282,6 +336,7 @@ def test_dict_input_tuple_output_and_geometric_loss_flow():
         components,
         inputs,
         masking=MaterializedMasking(component_masks=masks),
+        placement=None,
         remat=False,
     ).output
     assert isinstance(masked_output, tuple) and len(masked_output) == 2
@@ -302,6 +357,7 @@ def _initial_state(
             components_opt_state=opt_vu.init(eqx.filter(components, eqx.is_array)),
             ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
             adversaries={},
+            freq_ema=None,
             step=jnp.zeros((), jnp.int32),
         ),
     )
@@ -336,16 +392,23 @@ def test_train_step_runs_through_generic_target(with_mesh: bool):
         ),
         model.site_names,
     )
+    mesh = _one_device_mesh() if with_mesh else None
+    rules = None if mesh is None else from_config("ddp", mesh, model.sites)
+    placed = PlacedModel(model=model, placement=rules)
     step_fn = make_train_step(
-        model_static=model,
-        losses=loss_terms,
+        model_static=placed,
+        substrate=ForwardSubstrate.of(
+            placed,
+            remat_recon_forwards=False,
+            remat_ci_fn=False,
+            ci_capture_keys=frozenset({SITE}),
+            ci_placement=None if rules is None else rules.ci_fn,
+        ),
+        objective=loss_terms,
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=10,
-        remat_recon_forwards=False,
-        remat_ci_fn=False,
-        ci_capture_keys=frozenset({SITE}),
-        mesh=_one_device_mesh() if with_mesh else None,
+        faithfulness=faithfulness_loss_for(model),
     )
 
     V_before = jax.device_get(
@@ -353,7 +416,7 @@ def test_train_step_runs_through_generic_target(with_mesh: bool):
     )  # host copy survives step donation
     run_key = random.PRNGKey(3)
     for step_idx in range(2):
-        state, metrics = step_fn(model, state, inputs, random.fold_in(run_key, step_idx))
+        state, metrics = step_fn(placed, state, inputs, random.fold_in(run_key, step_idx))
         assert jnp.isfinite(metrics["total"]), (step_idx, metrics["total"])
         assert "loss/StochasticReconLoss" in metrics
 
@@ -373,18 +436,23 @@ def test_fast_eval_metrics_bind_to_positioned_non_categorical_target():
     components = _synthetic_vu(key)
     inputs = _synthetic_inputs(key)
     ci_fn = build_ci_fn(_synthetic_ci_arch(), model.sites, random.PRNGKey(11))
+    placed = PlacedModel(model=model, placement=None)
 
     pgd_step = make_fresh_pgd_eval_step(
-        model,
+        placed,
         FreshPGDReconEval(n_steps=2, step_size=0.1),
         ci_fn.capture_keys,
     )
-    pgd = pgd_step(model, components, ci_fn, inputs, random.PRNGKey(5))
+    pgd = pgd_step(
+        placed, components, PlacedCIFn(fn=ci_fn, placement=None), inputs, random.PRNGKey(5)
+    )
     assert pgd.shape == ()
     assert jnp.isfinite(pgd) and pgd >= 0.0
 
-    l0_step = make_ci_l0_eval_step(model, ci_fn.capture_keys, 0.5, {"block": ("block.*",)})
-    l0 = l0_step(model, components, ci_fn, inputs, random.PRNGKey(6))
+    l0_step = make_ci_l0_eval_step(placed, ci_fn.capture_keys, 0.5, {"block": ("block.*",)})
+    l0 = l0_step(
+        placed, components, PlacedCIFn(fn=ci_fn, placement=None), inputs, random.PRNGKey(6)
+    )
     assert set(l0) == {f"l0/0.5_{SITE}", "l0/0.5_block"}
     assert all(value.shape == () and 0.0 <= value <= C for value in l0.values())
     assert l0["l0/0.5_block"] == l0[f"l0/0.5_{SITE}"], "single-member group sums to its site"
