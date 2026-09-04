@@ -49,7 +49,7 @@ target:
 
 (`run_path` resolves to `pretrain_cache/<project>-<run_id>`.) The pretrain model's forward
 is bit-identical to the decomposition loader's clean-forward round-trip — pinned by
-`param_decomp/core/tests/test_pretrain.py`.
+`param_decomp/tests/core/test_pretrain.py`.
 
 ## Data
 

@@ -120,7 +120,7 @@ DECLARATION, not by construction — `SiteMLP.__call__` is `[*leading, d_in] -> 
 pointwise over every leading axis, so the same weights serve `[batch, d]` and
 `[batch, position, d]` alike. The arch now carries the axis (the target's shape, not the MLP's
 property) and the runtime checks it against the model. Pinned by
-`param_decomp/core/tests/test_ci_fn_positioned_mlp.py`.
+`param_decomp/tests/core/test_ci_fn_positioned_mlp.py`.
 
 `n_blocks: 0` on the chunkwise arch also runs and is also position-local (pinned by
 `test_ci_fn_zero_blocks.py`), but it is a weaker instrument: the chunkwise path RMS-norms
@@ -167,8 +167,10 @@ experiments/
 │   ├── data.py              # tokenize_and_concatenate (offline helper for prestage)
 │   ├── prestage_tokenized.py  # HF text -> int32 parquet shards for the JAX trainer
 │   └── arithmetic_probe.py    # a x b arithmetic grid spec -> in-memory eval probe (ArithmeticCIGrid)
-├── tms/                     # TMS (CPU): run.py + configs/ + tests (target: param_decomp/targets/tms.py; also the tPD engine's test fixture — no shipped toy tPD shape)
-└── resid_mlp/               # ResidMLP (CPU): run.py + configs/ + test (target: param_decomp/targets/resid_mlp.py)
+├── tms/                     # TMS (CPU): run.py + configs/ (target: param_decomp/targets/tms.py; also the tPD engine's test fixture — no shipped toy tPD shape)
+└── resid_mlp/               # ResidMLP (CPU): run.py + configs/ (target: param_decomp/targets/resid_mlp.py)
+
+Tests mirror these roots under `param_decomp/tests/experiments/`.
 ```
 
 ## Sites and the family grammar

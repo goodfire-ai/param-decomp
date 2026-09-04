@@ -19,8 +19,8 @@ from param_decomp.core.recon_eval import FreshPGDReconEval
 from param_decomp.core.run import (
     BackgroundRenderer,
     DeferredMediaRecord,
-    EvalOperation,
     MetricsSink,
+    PassOperation,
 )
 from param_decomp.core.sharding import data_parallel_size, local_data_parallel_size
 from param_decomp.core.train import TrainState
@@ -28,7 +28,6 @@ from param_decomp.experiments.lm.arithmetic_eval import (
     ArithmeticGrid,
     ArithmeticGridStep,
     ArithmeticSelection,
-    component_activation_model,
     compute_arithmetic_selection,
     make_arithmetic_grid_step,
     n_alive_scalars,
@@ -37,7 +36,7 @@ from param_decomp.experiments.lm.arithmetic_eval import (
 from param_decomp.experiments.lm.arithmetic_probe import build_arithmetic_probe
 from param_decomp.experiments.lm.eval import ScalarStep, make_eval_step
 from param_decomp.experiments.lm.eval_config import ArithmeticCIGridConfig
-from param_decomp.experiments.lm.eval_context import LMEvalContext
+from param_decomp.experiments.lm.eval_context import LMEvalPass
 from param_decomp.experiments.lm.eval_keys import EvalKeyStream
 from param_decomp.experiments.lm.resolved import TargetConfig
 from param_decomp.targets.glu_transformer import hf_snapshot_dir
@@ -126,8 +125,7 @@ def make_arithmetic_operation(
     run_key: PRNGKeyArray,
     train_steps: int,
     compiler_options: dict[str, bool | int | str],
-) -> EvalOperation[LMEvalContext]:
-    component_activation_model(model)
+) -> PassOperation[LMEvalPass]:
     assert isinstance(target, TargetConfig), (
         f"arithmetic eval needs an HF tokenizer; {type(target).__name__} has no model_name"
     )
@@ -178,10 +176,10 @@ def make_arithmetic_operation(
         renderer=BackgroundRenderer(sink),
     )
 
-    def run(context: LMEvalContext) -> LogRecord:
+    def run(context: LMEvalPass) -> LogRecord:
         key = jax.random.fold_in(
             run_key, EvalKeyStream.ARITHMETIC * train_steps + context.pass_index
         )
         return operation.run(context.state, context.placed_ci_fn, key, context.now_step)
 
-    return EvalOperation(schedule, run)
+    return PassOperation(schedule, run)

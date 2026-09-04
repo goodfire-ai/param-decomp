@@ -13,6 +13,7 @@ from param_decomp.core.configs import PDConfig, TargetedPDConfig
 from param_decomp.vendored_jax.llama import AttentionImplementation
 
 WeightsDtype = Literal["float32", "bfloat16"]
+ComponentInitialization = Literal["random", "neuron_aligned"]
 
 
 def weights_jnp_dtype(dtype: WeightsDtype) -> DTypeLike:
@@ -44,6 +45,7 @@ class TargetConfig:
     weights_dtype: WeightsDtype
     """The authored `target.weights_dtype`, carried to the composition root's target load."""
     attention_implementation: AttentionImplementation
+    component_initialization: ComponentInitialization
 
     supported_weights_dtypes: ClassVar[frozenset[WeightsDtype]] = frozenset({"bfloat16", "float32"})
     """Frozen-target weight dtypes the loader supports. `HFWeights` casts every tensor on
@@ -65,6 +67,7 @@ class LlamaSimpleMLPTargetConfig:
     weights_dtype: WeightsDtype
     """The authored `target.weights_dtype`, carried to the composition root's target load."""
     attention_implementation: AttentionImplementation
+    component_initialization: ComponentInitialization
 
     supported_weights_dtypes: ClassVar[frozenset[WeightsDtype]] = frozenset({"bfloat16", "float32"})
     """Frozen-target weight dtypes the loader supports — `_checkpoint_weight_getter` casts

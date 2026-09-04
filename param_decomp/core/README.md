@@ -17,8 +17,8 @@ sibling subpackages `param_decomp.targets` (the concrete targets),
 `param_decomp.pretrain` (the in-house target-LM pretrainer), `param_decomp.vendored_jax`
 (bit-parity JAX archs), and the composition/consumer layers (`experiments`,
 `clustering`, …). Imports point only downward — pinned by
-`tests/test_runtime_standalone.py`. Install
-the whole workspace into the one venv with `make install-dev`.
+`param_decomp/tests/core/test_runtime_standalone.py`. Install
+the library into one virtual environment with `make install-dev`.
 
 ## What's here
 
@@ -51,9 +51,10 @@ the whole workspace into the one venv with `make install-dev`.
 | `built_run.py` | generic `BuiltRun[DataT, TargetT, PDT]`, `RunInstance`, and the target-sites protocol; domain data/eval plans live composition-side |
 | `configs.py` | the torch-free pydantic config SCHEMA: routing + the `explicit` (toy) site spec + loss-metric + eval-metric configs, `PDConfig` / `Cadence` / `WandbConfig` / `ResumeProvenance` / `PlacementTableConfig`, and the `wandb.config` shaping helpers. The authored `decomposition.ci` configs, the tiled LM site specs (`GluTransformerCSpec`/`SimpleMlpCSpec`, `LayerSelection`) AND the LM's compute substrate (`RuntimeConfig` / `LaunchEnv`) speak each domain's vocabulary and live with the domain schemas, composition-side (`experiments/lm/config.py` chunkwise + tiled sites, `experiments/lm/runtime.py` the `runtime:` section, `experiments/toy_config.py` toy MLPs); core carries only the RESOLVED CI-fn arches (`ci_fn.py`) and resolved flat sites |
 | `base_config.py` | `BaseConfig` (frozen `extra=forbid` pydantic `BaseModel` + YAML/JSON round-trip), `Probability` |
-| `schedule.py` | `ScheduleConfig` + the host evaluator `get_scheduled_value` (the traced twin `scheduled_value_traced` lives in `losses.py`) — a knot-based piecewise curve `max_val × frac(t)`, interp linear/cosine/hold; every scheduled quantity — LRs, pnorm/gamma, merged-loss `adv_fraction` — routes through here |
+| `schedule.py` | `ScheduleConfig` + the host evaluator `get_scheduled_value` (the traced twin `scheduled_value_traced` lives in `losses.py`) — a knot-based piecewise curve `max_val × frac(t)`, interp linear/cosine/hold; every scheduled quantity — LRs, gamma, merged-loss `adv_fraction` — routes through here |
 | `../experiments/*/configs/` | the domain-owned self-contained run YAMLs (one file per run; no wrapper/schema split) |
-| `tests/` | tiny-target unit tests (incl. attention sites + heterogeneous per-site C), checkpoint resume, sharding, and the layering test (`test_runtime_standalone.py`, pinning the downward-only subpackage layering — composition → targets → core — and the wrapper-never-imported rule). The per-target parity/golden suites (torch↔JAX equivalence, stacked parity, Qwen3 HF parity, SimpleMLP torch fixtures) live with the targets: `param_decomp/targets/tests/` |
+| `../tests/core/` | tiny-target engine tests (incl. attention sites + heterogeneous per-site C), checkpoint resume, sharding, and the layering test (`test_runtime_standalone.py`, pinning composition → targets → core and the wrapper-never-imported rule) |
+| `../tests/targets/` | per-target parity/golden suites (torch↔JAX equivalence, stacked parity, Qwen3 HF parity, SimpleMLP torch fixtures) |
 
 ## Run
 
@@ -61,7 +62,7 @@ the whole workspace into the one venv with `make install-dev`.
 # From the repo root — one venv for the whole workspace:
 make install-dev && source .venv/bin/activate
 
-pytest param_decomp/core/tests/ param_decomp/targets/tests/
+pytest param_decomp/tests/core/ param_decomp/tests/targets/
 
 # GSPMD device-count invariance (simulated devices on CPU), SPEC D4:
 XLA_FLAGS="--xla_force_host_platform_device_count=4" \

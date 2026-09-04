@@ -10,7 +10,7 @@ plain base-`rotary_base` rotate-half RoPE — NOT llama3-rescaled) and a GELU(ta
 The torch RoPE construction (`freq = base**(i/(rd/2))` tiled `.repeat(2)`,
 `rotate_every_two` with `rotary_adjacent_pairs=False`) is exactly the rotate-half RoPE
 of `param_decomp.vendored_jax.llama.rope_cos_sin`/`apply_rope` with `inv_freq = base**(-2i/hd)` —
-pinned by the torch-fixture equivalence test (`tests/simple_mlp_equivalence/`).
+pinned by the torch-fixture equivalence test (`param_decomp/tests/targets/simple_mlp_equivalence/`).
 
 This module is the family DECLARATION: the site vocabulary (`SIMPLE_MLP_ANATOMY` binds
 `q_proj`/…/`c_fc`/`down_proj` to the engine's structural roles, `PlainMLP` + `TiedHead`

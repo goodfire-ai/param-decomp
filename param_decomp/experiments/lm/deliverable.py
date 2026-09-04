@@ -56,7 +56,13 @@ def product_document(run_dir: Path) -> Path:
 def load_deliverable(run_dir: Path, data_root: Path) -> ResolvedDeliverable:
     """Resolve the current product schema from a normalized product or current run pin."""
     raw = _mapping(yaml.safe_load(product_document(run_dir).read_text()), "config")
-    target_config = LMTargetConfig.model_validate(_mapping(raw.get("target"), "target"))
+    target_raw = _mapping(raw.get("target"), "target")
+    # Runs authored before attention routing became explicit used the same adaptive
+    # cuDNN/XLA choice now named ``auto``. Normalize that historical product fact at the
+    # storage boundary while keeping new authored configs strict.
+    if "attention_implementation" not in target_raw:
+        target_raw = {**target_raw, "attention_implementation": "auto"}
+    target_config = LMTargetConfig.model_validate(target_raw)
     decomposition = LMDecompositionConfig.model_validate(
         _mapping(raw.get("decomposition"), "decomposition")
     )

@@ -15,7 +15,7 @@ conversion. The other two archs follow the same key convention for symmetry.
 All three are pre-norm decoder blocks under a flat `h.{i}.` module tree, `wte` tied to
 `lm_head`, no biases on the Llama variants. RoPE is plain rotate-half
 (`param_decomp.vendored_jax.llama.{rope_cos_sin,apply_rope}`); the GELU is the tanh approximation
-(torch `NewGELU`), matching the JAX port pinned by `tests/simple_mlp_equivalence/`.
+(torch `NewGELU`), matching the JAX port pinned by `param_decomp/tests/targets/simple_mlp_equivalence/`.
 
 The torch configs additionally carried knobs for variants this port does not have —
 merged-QKV attention, q/k/v/mlp biases, adjacent-pair rotary, partial rotary

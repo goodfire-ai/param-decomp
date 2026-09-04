@@ -156,8 +156,8 @@ exclude = [
     "**/*_pb2.pyi",
     "nano_param_decomp",
     "param_decomp/vendored_jax",
-    "param_decomp/targets/tests/qwen3_hf_parity/gen_hf_fixtures.py",  # torch-env script
-    "param_decomp/targets/tests/stacked_parity/gen_stacked_fixtures.py",  # base-branch-only script (pre-restructure API)
+    "param_decomp/tests/targets/qwen3_hf_parity/gen_hf_fixtures.py",  # torch-env script
+    "param_decomp/tests/targets/stacked_parity/gen_stacked_fixtures.py",  # base-branch-only script (pre-restructure API)
 ]
 stubPath = "typings" # Having type stubs for transformers shaves 10 seconds off basedpyright calls
 

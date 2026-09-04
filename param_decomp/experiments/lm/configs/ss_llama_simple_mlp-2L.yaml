@@ -41,9 +41,6 @@ eval:
   - type: CEandKLLosses
     rounding_threshold: 0.0
   - type: CIMeanPerComponent
-  - type: StochasticHiddenActsReconLoss
-    coeff: null
-  - type: CIHiddenActsReconLoss
   - type: PGDReconLoss
     name: PGDReconLoss_20step
     coeff: null
@@ -105,7 +102,7 @@ pd:
   faithfulness_warmup_steps: 400
   faithfulness_warmup_weight_decay: 0.0
   loss_metrics:
-  - type: SmoothL0ImportanceMinimalityLoss
+  - type: ImportanceMinimalityLoss
     coeff: 0.000632
     gamma:
       max_val: 1.0

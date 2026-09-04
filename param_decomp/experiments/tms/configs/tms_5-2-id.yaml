@@ -25,7 +25,7 @@ pd:
       coeff: 4.0e-04
       reference_datapoint_count: 32768
     coeff: 8.0e-04
-    type: SmoothL0ImportanceMinimalityLoss
+    type: ImportanceMinimalityLoss
     gamma:
       max_val: 1.0
       points:

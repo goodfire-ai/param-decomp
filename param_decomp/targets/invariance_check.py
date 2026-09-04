@@ -140,14 +140,15 @@ def _run(
         n_warmup_steps=2,
     )
     assert ppgd_cfg.coeff is not None
+    frequency = FrequencyMinimalityConfig(
+        coeff=1e-6, reference_datapoint_count=128, ema_halflife_steps=8.0
+    )
     imp_cfg = ImportanceMinimalityLossConfig(
         coeff=5e-6,
-        pnorm=ScheduleConfig(max_val=2.0, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.2))),
-        frequency=FrequencyMinimalityConfig(
-            coeff=1e-6, reference_datapoint_count=128, ema_halflife_steps=8.0
-        ),
+        gamma=ScheduleConfig(max_val=1.0, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.01))),
+        frequency=frequency,
     )
-    freq_role = resolve_frequency(imp_cfg.frequency)
+    freq_role = resolve_frequency(frequency)
     state = TrainState(
         decomposition=Decomposition(components=vu, ci_fn=ci_fn),
         training=TrainingItem(

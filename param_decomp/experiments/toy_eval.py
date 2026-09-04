@@ -22,7 +22,7 @@ from param_decomp.core.configs import (
 from param_decomp.core.eval_schedule import EvalSchedule
 from param_decomp.core.metrics import LogRecord
 from param_decomp.core.model import CaptureKeys, PlacedModel
-from param_decomp.core.run import EvalInvocation, EvalOperation
+from param_decomp.core.run import EvalInvocation, PassOperation
 from param_decomp.core.train import TrainState
 from param_decomp.core.well_temperedness_eval import make_well_temperedness_operation
 from param_decomp.experiments import toy_uv_eval
@@ -43,7 +43,7 @@ def _make_uv_plots_operation(
     model: PlacedModel,
     probe_ci: ProbeCI,
     wandb_configured: bool,
-) -> EvalOperation[EvalInvocation]:
+) -> PassOperation[EvalInvocation]:
     assert wandb_configured, "UVPlots requires a configured wandb transport"
     spec = toy_uv_eval.toy_uv_spec(model, metric)
 
@@ -54,7 +54,7 @@ def _make_uv_plots_operation(
             probe_ci(context.state),
         )
 
-    return EvalOperation(schedule, run)
+    return PassOperation(schedule, run)
 
 
 def make_toy_evaluation_operations(
@@ -67,9 +67,9 @@ def make_toy_evaluation_operations(
     sample_eval_batch: Callable[[int], Array],
     probe_ci: ProbeCI,
     wandb_configured: bool,
-) -> tuple[EvalOperation[EvalInvocation], ...]:
+) -> tuple[PassOperation[EvalInvocation], ...]:
     """Exhaustively bind each authored toy metric to one executable operation."""
-    operations: list[EvalOperation[EvalInvocation]] = []
+    operations: list[PassOperation[EvalInvocation]] = []
     well_temperedness_base_key = jax.random.PRNGKey(seed + 2)
 
     def well_temperedness_inputs(context: EvalInvocation) -> tuple[Array, jax.Array]:

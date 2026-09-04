@@ -14,7 +14,7 @@ run_name: jax-l18-26-9L-seq512-b128-40k
 # C49k run (torch/llama8b_l18_C49k_200k_1pool.yaml). DELIBERATE EDITS vs that base:
 #   1. decomposition_targets: 3 (layer 18) -> 27 (layers 18..26, gate/up/down each,
 #      canonical layer-major order), all C: 49152.
-#   2. seq 2048 -> 512 (data -> fineweb_llama_tok_512; ci max_len 2048 -> 512). This is
+#   2. seq 2048 -> 512 (data -> fineweb_llama_tok_512_train284; ci max_len 2048 -> 512). This is
 #      what makes 27 sites fit: the 64-GPU AOT probe puts 9-layer/seq512 at 144.8 GiB
 #      (B=64) .. 150.3 GiB (B=256) per device — comfortably under the 180 GiB B200 cap
 #      (seq 2048 was 179 GiB at B=64, over the cliff). The ~130 GiB floor is the
@@ -22,11 +22,9 @@ run_name: jax-l18-26-9L-seq512-b128-40k
 #   3. pd.batch_size + eval.batch_size: 512 -> 128 (2/device on the 1-D dp=64 mesh).
 #   4. lrs: components 1.5e-4, ci_fn 5.0e-5 — the B=128 precedent exactly (components 3x
 #      ci_fn). Both cosine to 0.1x with no warmup, recomputed over 40k.
-#   5. ImportanceMinimalityLoss eps 1e-12 -> 1e-6: at the annealed fractional pnorm the
-#      grad 0.4*(ci+eps)^-0.6 blows up as ci->0; eps bounds it (~4000x smaller worst
-#      case). coeff 5e-6 / beta 0.2 / pnorm 2.0->0.4 UNCHANGED (verified site-count- and
-#      batch-invariant vs the torch oracle).
-#   6. steps 200k -> 40k: short R&D horizon (won't converge; cosine + p-anneal recompute
+#   5. importance minimality: the repo-standard Smooth-L0 seat (gamma annealed
+#      1.0->0.01). coeff 5e-6 / frequency coeff 1e-6 UNCHANGED vs the base.
+#   6. steps 200k -> 40k: short R&D horizon (won't converge; cosine + gamma-anneal recompute
 #      over 40k).
 # Everything else (StochasticReconSubsetLoss coeff 0.5, PersistentPGDReconLoss coeff 0.5
 # source_shape sc, FaithfulnessLoss 1e3, faith warmup, eval metric set,
@@ -45,7 +43,7 @@ cadence:
 data:
   train:
     kind: name
-    name: fineweb_llama_tok_512
+    name: fineweb_llama_tok_512_train284
   eval:
     kind: name
     name: fineweb_llama_tok_512_eval1
@@ -63,9 +61,6 @@ eval:
   - rounding_threshold: 0.0
     type: CEandKLLosses
   - type: CIMeanPerComponent
-  - coeff: null
-    type: StochasticHiddenActsReconLoss
-  - type: CIHiddenActsReconLoss
   - coeff: null
     init: random
     source_shape: c
@@ -129,12 +124,11 @@ pd:
       coeff: 1.0e-06
       reference_datapoint_count: 65536
     coeff: 5.0e-06
-    eps: 1.0e-06
-    pnorm:
-      max_val: 2.0
+    gamma:
+      max_val: 1.0
       points:
         - {at: 0.0, frac: 1.0}
-        - {at: 1.0, frac: 0.2}
+        - {at: 1.0, frac: 0.01}
     type: ImportanceMinimalityLoss
   - coeff: 0.5
     routing:

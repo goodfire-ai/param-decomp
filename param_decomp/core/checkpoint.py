@@ -20,7 +20,7 @@ places values by the abstract reference's shardings — a reference rebuilt from
 on the restoring side's OWN mesh. Any checkpoint restores onto any mesh whose placement
 constructs, train mesh to train mesh included; consumers re-place finished runs the
 same way (`zero1` on `hsdp_mesh(1, device_count, 1)` — every stack length tiles).
-Pinned by the cross-topology restore tests in `tests/test_checkpoint.py`.
+Pinned by the cross-topology restore tests in `param_decomp/tests/core/test_checkpoint.py`.
 
 Synchronous saves (no async): a SIGTERM-triggered save must be on disk before the
 process exits for SLURM requeue-resume.
@@ -45,7 +45,7 @@ from param_decomp.core.configs import (
     KeepAllCheckpoints,
     KeepLastNCheckpoints,
 )
-from param_decomp.core.train import Decomposition, TrainState
+from param_decomp.core.train import TrainState
 
 # Replica-parallel writes (multiple hosts cooperatively writing a REPLICATED array)
 # hit a Shard-internals incompatibility on multi-controller jax 0.10 and buy nothing
@@ -129,15 +129,15 @@ def restore_latest(
     return restore_step(mgr, reference, step), step
 
 
-def restore_decomposition(
-    mgr: ocp.CheckpointManager, step: int, abstract: Decomposition
-) -> Decomposition:
+def restore_decomposition[DecompositionTree](
+    mgr: ocp.CheckpointManager, step: int, abstract: DecompositionTree
+) -> DecompositionTree:
     """Restore ONLY the trained decomposition of checkpoint `step` onto `abstract`'s
     shapes/dtypes/shardings (`to_shape_dtype_struct` of a correctly-placed reference)."""
     composite = mgr.restore(
         step, args=ocp.args.Composite(decomposition=ocp.args.StandardRestore(abstract))
     )
-    return cast(Decomposition, composite["decomposition"])
+    return cast(DecompositionTree, composite["decomposition"])
 
 
 def init_from_parent(parent_ckpt_dir: Path, parent_step: int, reference: TrainState) -> TrainState:

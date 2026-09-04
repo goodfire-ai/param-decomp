@@ -32,7 +32,7 @@ from param_decomp.experiments.lm.config import (
     build_targeted_experiment_config,
 )
 from param_decomp.experiments.lm.eval_operations import global_token_batch, make_lm_evaluation
-from param_decomp.experiments.lm.load_run import build_target
+from param_decomp.experiments.lm.load_run import build_target, component_initializer_for
 from param_decomp.experiments.lm.resolved import (
     AnyLMTargetConfig,
     LlamaSimpleMLPTargetConfig,
@@ -160,6 +160,7 @@ def train_targeted(
         evaluation=evaluation,
         sink=sink,
         profiling=engine_profiling(cfg.runtime.profiling),
+        component_initializer=component_initializer_for(built.target),
     )
 
 

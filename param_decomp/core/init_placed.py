@@ -14,6 +14,7 @@ values), then fan out with a trivial slice jit. `init_component_stacks_placed` i
 template; `init_ci_fn_placed` / `init_sources_sharded` follow it.
 """
 
+from collections.abc import Callable
 from functools import partial
 
 import equinox as eqx
@@ -45,20 +46,48 @@ from param_decomp.core.components import (
     init_component_stacks,
 )
 from param_decomp.core.configs import SourceShape
-from param_decomp.core.model import BATCH_AXES, PositionAxis, Positioned, Positionless
+from param_decomp.core.model import (
+    BATCH_AXES,
+    DecomposedModel,
+    PlacedModel,
+    PositionAxis,
+    Positioned,
+    Positionless,
+)
 from param_decomp.core.placement import PlacementRules, component_stacks_shardings
+
+type ComponentInitializer = Callable[[DecomposedModel, PRNGKeyArray], ComponentStacks]
+"""A target-aware, unplaced V/U initializer. The placed wrapper below owns sharding."""
+
+
+def random_component_initializer(model: DecomposedModel, key: PRNGKeyArray) -> ComponentStacks:
+    """The domain-neutral random initializer used unless a composition root selects another."""
+    return init_component_stacks(model.sites, key)
 
 
 def init_component_stacks_placed(
     sites: tuple[SiteSpec, ...], key: PRNGKeyArray, rules: PlacementRules
 ) -> ComponentStacks:
-    """Seeded V/U init placed by `component_stacks_shardings(_, rules)` (the run's placement
-    policy), values bit-identical to the retired per-site init (pinned by `test_sharding`).
-    One jit, 2×n_shapes sharded outputs — the persistence layout IS the stacked layout, so
-    the old two-stage stack-then-unstack fan-out (and its transient extra copy) is gone."""
+    """Seed random V/U directly into the component persistence layout."""
     abstract = eqx.filter_eval_shape(partial(init_component_stacks, sites), key)
     placement = component_stacks_shardings(abstract, rules)
     return jax.jit(partial(init_component_stacks, sites), out_shardings=placement)(key)
+
+
+def init_model_component_stacks_placed(
+    model: PlacedModel,
+    key: PRNGKeyArray,
+    rules: PlacementRules,
+    initializer: ComponentInitializer,
+) -> ComponentStacks:
+    """Run a target-aware initializer directly into the component persistence layout.
+
+    The frozen model stays a traced argument: an aligned initializer may read target weights.
+    Initializers return semantic-group stacks, preserving the no-host-full-tree contract.
+    """
+    abstract = eqx.filter_eval_shape(initializer, model.model, key)
+    placement = component_stacks_shardings(abstract, rules)
+    return jax.jit(initializer, out_shardings=placement)(model.model, key)
 
 
 def ci_fn_shardings(abstract: CIFn, mesh: Mesh, rules: PlacementRules) -> CIFn:

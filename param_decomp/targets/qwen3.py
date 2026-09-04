@@ -7,7 +7,7 @@ per-head RMSNorm on q/k between the projection and RoPE (HF `Qwen3Attention.q_no
 optional flag) and applies them in the `_prep_qk` hook. Decomposition semantics are
 unchanged: a masked q/k site output feeds q_norm → RoPE → SDPA.
 
-JAX↔HF parity is pinned directly by `param_decomp/targets/tests/qwen3_hf_parity/`."""
+JAX↔HF parity is pinned directly by `param_decomp/tests/targets/qwen3_hf_parity/`."""
 
 from dataclasses import replace
 from typing import override
@@ -163,7 +163,7 @@ class Qwen3FrozenAttn(FrozenAttn):
         """The shared projection layout plus declared norm-vector placement."""
         placed = super().shardings(placement, axes)
         assert isinstance(placed, Qwen3FrozenAttn)
-        norm_axes: Axes = ("head_dim",)
+        norm_axes: Axes = (*axes[:-2], "head_dim")
         placement.target.normalization.validate_shape(norm_axes, self.q_norm.shape)
         placement.target.normalization.validate_shape(norm_axes, self.k_norm.shape)
         norm = placement.target.normalization.sharding_for(norm_axes)

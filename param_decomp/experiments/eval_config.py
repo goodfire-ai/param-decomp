@@ -12,7 +12,6 @@ from pydantic import Discriminator, Field, PositiveInt, model_validator
 from param_decomp.core.base_config import BaseConfig
 from param_decomp.core.configs import (
     CI_L0Config,
-    CIHiddenActsReconLossConfig,
     CIHistogramsConfig,
     CIMeanPerComponentConfig,
     ComponentActivationDensityConfig,
@@ -21,7 +20,6 @@ from param_decomp.core.configs import (
     LossMetricConfig,
     PermutedCIPlotsConfig,
     PGDReconLossConfig,
-    StochasticHiddenActsReconLossConfig,
     UVPlotsConfig,
     WellTemperednessConfig,
 )
@@ -36,7 +34,6 @@ from param_decomp.experiments.lm.eval_config import (
 AnyEvalMetricConfig = Annotated[
     ArithmeticCIGridConfig
     | CEandKLLossesConfig
-    | CIHiddenActsReconLossConfig
     | CIHistogramsConfig
     | CI_L0Config
     | CIMaskedAttnPatternsReconLossConfig
@@ -46,7 +43,6 @@ AnyEvalMetricConfig = Annotated[
     | PermutedCIPlotsConfig
     | PGDReconLossConfig
     | StochasticAttnPatternsReconLossConfig
-    | StochasticHiddenActsReconLossConfig
     | UVPlotsConfig
     | WellTemperednessConfig,
     Discriminator("type"),

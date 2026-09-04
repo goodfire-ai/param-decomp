@@ -18,7 +18,7 @@ cadence:
 data:
   train:
     kind: name
-    name: fineweb_llama_tok_512
+    name: fineweb_llama_tok_512_train284
   eval:
     kind: name
     name: fineweb_llama_tok_512_eval1
@@ -36,9 +36,6 @@ eval:
   - rounding_threshold: 0.0
     type: CEandKLLosses
   - type: CIMeanPerComponent
-  - coeff: null
-    type: StochasticHiddenActsReconLoss
-  - type: CIHiddenActsReconLoss
   - coeff: null
     init: random
     source_shape: c
@@ -104,12 +101,11 @@ pd:
       coeff: 1.0e-06
       reference_datapoint_count: 65536
     coeff: 5.0e-06
-    eps: 1.0e-06
-    pnorm:
-      max_val: 2.0
+    gamma:
+      max_val: 1.0
       points:
         - {at: 0.0, frac: 1.0}
-        - {at: 1.0, frac: 0.2}
+        - {at: 1.0, frac: 0.01}
     type: ImportanceMinimalityLoss
   - coeff: 0.5
     routing:

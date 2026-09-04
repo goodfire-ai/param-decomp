@@ -38,10 +38,11 @@ from param_decomp.core.nonlinearity_eval import (
 from param_decomp.core.objective import build_objective
 from param_decomp.core.run import (
     EvalInvocation,
-    EvalOperation,
     Evaluation,
     MetricsSink,
+    PassOperation,
     install_sigterm_flag,
+    no_batch_contexts,
     run_decomposition_training,
 )
 from param_decomp.core.sharding import single_device_mesh
@@ -259,7 +260,7 @@ def run_resid_mlp_decomposition(
         return metrics
 
     operations = [
-        EvalOperation(schedule=Every(built.cadence.train_log_every), run=ground_truth_eval)
+        PassOperation(schedule=Every(built.cadence.train_log_every), run=ground_truth_eval)
     ]
     if eval_config is not None:
         eval_sampler = make_sampler(eval_config.batch_size)
@@ -278,7 +279,7 @@ def run_resid_mlp_decomposition(
                 wandb_configured=built.run.wandb is not None,
             )
         )
-    evaluation = Evaluation(tuple(operations), lambda invocation: invocation)
+    evaluation = Evaluation(tuple(operations), lambda invocation: invocation, no_batch_contexts)
 
     sink = MetricsSink.for_run(built.run, jax.process_index() == 0)
     run_decomposition_training(

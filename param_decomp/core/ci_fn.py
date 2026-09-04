@@ -37,7 +37,7 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from param_decomp.core.axes import Axes, MeshAxis, SemanticAxis
 from param_decomp.core.components import SiteSpec, activation_axes
@@ -174,6 +174,28 @@ def evaluate_ci(placed_ci_fn: PlacedCIFn, taps: dict[str, Array], *, remat: bool
 def evaluate_compute_ci(compute_ci_fn: PlacedCIFn, taps: dict[str, Array], *, remat: bool) -> CI:
     return compute_ci_fn.fn(
         cast_floating(taps, COMPUTE_DT), remat=remat, placement=compute_ci_fn.placement
+    )
+
+
+def evaluate_padded_ci(
+    placed_ci_fn: PlacedCIFn,
+    taps: dict[str, Array],
+    valid_token_count: Int[Array, ""],
+    *,
+    remat: bool,
+) -> CI:
+    """Evaluate a chunkwise CI fn without allowing right-padding into attention."""
+    compute_ci_fn = materialize_ci_compute_weights(placed_ci_fn)
+    if not isinstance(compute_ci_fn.fn, ChunkwiseTransformerCIFn):
+        raise TypeError(
+            "masked right-padding requires a chunkwise-transformer CI function; "
+            f"got {type(compute_ci_fn.fn)}"
+        )
+    return compute_ci_fn.fn.evaluate_padded(
+        cast_floating(taps, COMPUTE_DT),
+        valid_token_count,
+        remat=remat,
+        placement=compute_ci_fn.placement,
     )
 
 
@@ -360,6 +382,7 @@ class CIBlock(eqx.Module):
         inv_freq: Array,
         *,
         placement: CIFnPlacement | None,
+        valid_token_count: Int[Array, ""] | None,
     ) -> Array:
         t = x.shape[1]
         attn_scale, mlp_scale = (None, None) if self.norm_scales is None else self.norm_scales
@@ -401,7 +424,20 @@ class CIBlock(eqx.Module):
         # head-sharding); XLA elsewhere (CPU tests have no cuDNN). Bidirectional. Fewer K/V
         # heads than query heads is GQA, grouped natively by dot_product_attention.
         impl = attn_implementation("auto", jax.default_backend(), qt.dtype, t)
-        y = jax.nn.dot_product_attention(qt, kt, vt, is_causal=False, implementation=impl)
+        sequence_lengths = (
+            None
+            if valid_token_count is None
+            else jnp.full((x.shape[0],), valid_token_count, dtype=jnp.int32)
+        )
+        y = jax.nn.dot_product_attention(
+            qt,
+            kt,
+            vt,
+            is_causal=False,
+            query_seq_lengths=sequence_lengths,
+            key_value_seq_lengths=sequence_lengths,
+            implementation=impl,
+        )
         x = x + _ci_linear(
             einops.rearrange(y, "b t nh hd -> b t (nh hd)"),
             self.wo,
@@ -476,8 +512,8 @@ class ChunkwiseTransformerCIArch:
     no sensitivity to tap magnitude at all. It is position-local (blocks are the only thing
     reading ACROSS positions) and it runs, so it serves as a cheap baseline, but a positioned
     target that wants a real per-position CI fn wants `LayerwiseMLPCIArch(has_position_axis=True)`.
-    Pinned by `core/tests/test_ci_fn_zero_blocks.py` (locality) and
-    `core/tests/test_ci_fn_positioned_mlp.py` (the magnitude contrast)."""
+    Pinned by `param_decomp/tests/core/test_ci_fn_zero_blocks.py` (locality) and
+    `param_decomp/tests/core/test_ci_fn_positioned_mlp.py` (the magnitude contrast)."""
 
     chunks: tuple[Chunk, ...]
     input_dim: int
@@ -547,6 +583,7 @@ class ChunkTransformer(eqx.Module):
         inv_freq: Array,
         *,
         placement: CIFnPlacement | None,
+        valid_token_count: Int[Array, ""] | None,
     ) -> tuple[Float[Array, "*leading _C"], ...]:
         x = (
             _ci_linear(
@@ -560,7 +597,12 @@ class ChunkTransformer(eqx.Module):
             + self.in_proj_b
         )
         for block in self.blocks:
-            x = block(x, inv_freq, placement=placement)
+            x = block(
+                x,
+                inv_freq,
+                placement=placement,
+                valid_token_count=valid_token_count,
+            )
         return tuple(
             _ci_linear(
                 x,
@@ -699,6 +741,36 @@ class ChunkwiseTransformerCIFn(eqx.Module):
         remat: bool,
         placement: CIFnPlacement | None,
     ) -> CI:
+        return self._evaluate(
+            taps,
+            remat=remat,
+            placement=placement,
+            valid_token_count=None,
+        )
+
+    def evaluate_padded(
+        self,
+        taps: dict[str, Array],
+        valid_token_count: Int[Array, ""],
+        *,
+        remat: bool,
+        placement: CIFnPlacement | None,
+    ) -> CI:
+        return self._evaluate(
+            taps,
+            remat=remat,
+            placement=placement,
+            valid_token_count=valid_token_count,
+        )
+
+    def _evaluate(
+        self,
+        taps: dict[str, Array],
+        *,
+        remat: bool,
+        placement: CIFnPlacement | None,
+        valid_token_count: Int[Array, ""] | None,
+    ) -> CI:
         per_chunk_in = [
             jnp.concatenate(
                 [
@@ -733,7 +805,12 @@ class ChunkwiseTransformerCIFn(eqx.Module):
         ) -> tuple[None, tuple[Array, ...]]:
             chunk_array, chunk_input = scanned
             chunk = eqx.combine(chunk_array, chunk_static)
-            return None, chunk(chunk_input, inv_freq, placement=placement)
+            return None, chunk(
+                chunk_input,
+                inv_freq,
+                placement=placement,
+                valid_token_count=valid_token_count,
+            )
 
         # Per-CHUNK remat: checkpoint the scan BODY so the backward recomputes one chunk at a
         # time, keeping only the carry — NOT all `n_chunks` chunks' attention scores + MLP

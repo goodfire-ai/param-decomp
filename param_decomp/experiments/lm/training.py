@@ -44,7 +44,7 @@ from param_decomp.core.sharding import (
 from param_decomp.experiments.eval_config import EvalConfig
 from param_decomp.experiments.lm.config import load_config
 from param_decomp.experiments.lm.eval_operations import global_token_batch, make_lm_evaluation
-from param_decomp.experiments.lm.load_run import build_target
+from param_decomp.experiments.lm.load_run import build_target, component_initializer_for
 from param_decomp.experiments.lm.resolved import LMRun
 from param_decomp.experiments.lm.runtime import (
     AdHocProfiling,
@@ -117,7 +117,7 @@ def assert_finetune_structural_compat(
     """Fine-tune requires the parent's decomposition STRUCTURE to match the new config's:
     same sites (names + C) and same ci-fn arch. A changed C / layers / target / ci-fn is a
     different-shaped decomposition and is NOT a fine-tune (the parent's V/U + ci_fn would
-    not load onto the new reference). Only LR / coeffs / eps / seq / batch / steps may
+    not load onto the new reference). Only LR / coeffs / gamma / seq / batch / steps may
     change. Read from the parent's pinned launch config so the failure is a readable config
     diff, not an opaque orbax tree mismatch."""
     parent, _ = load_config(
@@ -210,6 +210,7 @@ def train(
         evaluation=evaluation,
         sink=sink,
         profiling=engine_profiling(runtime.profiling),
+        component_initializer=component_initializer_for(built.target),
     )
 
 

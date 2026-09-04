@@ -2,8 +2,10 @@
 
 The reference torch implementation for VPD paper readers — the one torch file left
 in the repo (the rest of the repo is torch-free; training is the JAX trainer in
-`param_decomp/`). The method itself has zero dependencies on the `param_decomp`
-package. The model-wiring entry points (`pile_4L.py` / `simplestories_2L.py`) were
+`param_decomp/`). It implements the paper's L_p importance-minimality objective
+(with the nested `beta` frequency term); the JAX trainer has since retired that
+penalty for the smooth-L0 form, so the two objectives deliberately differ. The
+method itself has zero dependencies on the `param_decomp` package. The model-wiring entry points (`pile_4L.py` / `simplestories_2L.py`) were
 deleted with the torch `pretrain/` archs they imported; to run this, supply a target
 `nn.Module` + token loader and call `decompose(...)` directly.
 

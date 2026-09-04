@@ -31,7 +31,7 @@ hot path). V/U, CI-fn, and source placement are the engine's concern (`placement
 import json
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast, get_args
@@ -43,7 +43,7 @@ import numpy as np
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 from jax.typing import DTypeLike
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, Float, Int, PRNGKeyArray
 from safetensors import safe_open
 
 from param_decomp.core import family
@@ -54,11 +54,11 @@ from param_decomp.core.components import (
     SiteDims,
     SiteSpec,
     activation_axes,
+    component_stacks_from_site_arrays,
     site_slots_for,
 )
 from param_decomp.core.decomposed_linear import (
     PlannedComponentLinear,
-    SiteForward,
     site_forward,
 )
 from param_decomp.core.family import ArchFamily
@@ -79,13 +79,15 @@ from param_decomp.core.model import (
     StochasticMasking,
 )
 from param_decomp.core.nonlinearity import (
-    AttentionHeads,
+    KVHeads,
     Neurons,
     NonlinearityPartition,
+    QueryHeads,
 )
 from param_decomp.core.placement import (
     PlacedRule,
     PlacementRules,
+    TargetLinearPlacement,
     component_stacks_to_compute_weights,
     constrain_activation,
     materialize_stored_weight,
@@ -389,14 +391,15 @@ def anatomy_nonlinearity_partition(
     anatomy: Anatomy, cfg: GLUArch, kind: str
 ) -> NonlinearityPartition | None:
     """The nonlinearity units one per-layer matrix writes into, by structural role: the
-    MLP hidden writers face elementwise neurons, q/k/v face attention heads, and the
-    residual writers (o, down) face none."""
+    MLP hidden writers face elementwise neurons, q faces the query heads, k/v face the
+    kv heads, and the residual writers (o, down) face none."""
     if kind in anatomy.mlp.hidden:
         return Neurons()
     if kind == anatomy.q:
-        return AttentionHeads(cfg.n_head)
+        return QueryHeads(cfg.n_head)
     if kind in (anatomy.k, anatomy.v):
-        return AttentionHeads(cfg.n_kv_head)
+        assert cfg.n_head % cfg.n_kv_head == 0, (cfg.n_head, cfg.n_kv_head)
+        return KVHeads(cfg.n_kv_head, cfg.n_head // cfg.n_kv_head)
     if kind in (anatomy.o, anatomy.mlp.down):
         return None
     raise AssertionError(f"unknown kind {kind!r}")
@@ -628,43 +631,6 @@ def _frozen_site_weight(anatomy: Anatomy, layer: GLULayer, kind: str) -> Array:
 # ----------------------------- forwards -----------------------------
 
 
-def _clean_mlp_out(layer: GLULayer, mlp_in: Array, placement: PlacementRules | None) -> Array:
-    """Frozen target MLP — exactly `W` applied, not the `V@U + (W−V@U)` identity, so
-    non-decomposed layers carry no V/U gradient and no decomposition rounding (SPEC S2/S3)."""
-    column = None if placement is None else placement.target.column
-    row = None if placement is None else placement.target.row
-    match layer.mlp:
-        case GatedMLP(Wg=Wg, Wu=Wu, Wd=Wd):
-            gate = placed_target_linear(mlp_in, Wg, column)
-            up = placed_target_linear(mlp_in, Wu, column)
-            return placed_target_linear(jax.nn.silu(gate) * up, Wd, row)
-        case PlainMLP(Wfc=Wfc, Wdown=Wdown):
-            fc = placed_target_linear(mlp_in, Wfc, column)
-            return placed_target_linear(_gelu_tanh(fc), Wdown, row)
-
-
-def _clean_block(
-    layer: GLULayer,
-    x: Array,
-    inv_freq: Array,
-    eps: float,
-    placement: PlacementRules | None,
-) -> Array:
-    attn = layer.attn
-    h = rms_norm(x, layer.ln1, eps)
-    column = None if placement is None else placement.target.column
-    row = None if placement is None else placement.target.row
-    attention_output = attn.core(
-        placed_target_linear(h, attn.wq, column),
-        placed_target_linear(h, attn.wk, column),
-        placed_target_linear(h, attn.wv, column),
-        inv_freq,
-        None if column is None else column.output,
-    )
-    x = x + placed_target_linear(attention_output, attn.wo, row)
-    return x + _clean_mlp_out(layer, rms_norm(x, layer.ln2, eps), placement)
-
-
 def _stack_layers(layers: list[GLULayer]) -> GLULayer:
     """Stack a per-layer `GLULayer` list into one whose array leaves carry a leading
     layer axis — the `xs` for a `lax.scan` over the (homogeneous) block stack. Static
@@ -690,6 +656,202 @@ class _GLUTap(Enum):
     RESIDUAL_OUT = "residual_out"
 
 
+def _block_taps(anatomy: Anatomy) -> frozenset[_GLUTap]:
+    """Exactly the taps one block of this anatomy computes; `_run_glu_block` asserts its
+    result against it. The MLP arm reaches the tap vocabulary only through the anatomy's
+    own hidden kinds, so a new arm is described once, where its kinds are declared."""
+    hidden_outputs = tuple(anatomy.site_output_tap(kind) for kind in anatomy.mlp.hidden)
+    return frozenset(
+        (
+            _GLUTap.RESIDUAL_IN,
+            _GLUTap.QKV_INPUT,
+            _GLUTap.Q_OUTPUT,
+            _GLUTap.K_OUTPUT,
+            _GLUTap.V_OUTPUT,
+            _GLUTap.ATTENTION_OUTPUT,
+            _GLUTap.O_OUTPUT,
+            _GLUTap.POST_ATTENTION_RESIDUAL,
+            _GLUTap.MLP_INPUT,
+            *hidden_outputs,
+            _GLUTap.DOWN_INPUT,
+            _GLUTap.DOWN_OUTPUT,
+            _GLUTap.RESIDUAL_OUT,
+        )
+    )
+
+
+class _SiteExecutor(Protocol):
+    """How `_run_glu_block` turns one matrix site into its output — the block's only
+    injected concern. It also carries the anatomy the kernel names sites by and the
+    placement the attention seam must agree with (the q/k/v outputs' activation row)."""
+
+    @property
+    def anatomy(self) -> Anatomy: ...
+    @property
+    def placement(self) -> PlacementRules | None: ...
+    def __call__(self, site_input: Array, kind: str, frozen_weight: Array) -> Array: ...
+
+
+def _target_rule(anatomy: Anatomy, placement: PlacementRules, kind: str) -> TargetLinearPlacement:
+    """The Megatron layout one frozen matrix takes: the residual writers (o, down) consume
+    the column shard and reduce onto the waist; every other kind shards its output."""
+    assert kind in anatomy.kind_order, kind
+    return placement.target.row if kind in anatomy.row_kinds else placement.target.column
+
+
+@dataclass(frozen=True)
+class _FrozenSiteExecutor:
+    """Every site applies exactly its frozen `W` — not the `V@U + (W−V@U)` identity, so
+    non-decomposed layers carry no V/U gradient and no decomposition rounding (SPEC S2/S3)."""
+
+    anatomy: Anatomy
+    placement: PlacementRules | None
+
+    def __call__(self, site_input: Array, kind: str, frozen_weight: Array) -> Array:
+        rule = None if self.placement is None else _target_rule(self.anatomy, self.placement, kind)
+        return placed_target_linear(site_input, frozen_weight, rule)
+
+
+@dataclass(frozen=True)
+class _SitePlans:
+    """A decomposed site's two routes under a placement — the frozen `x@W.T` and the
+    `V`/`U` pair — both derived from the same frozen-matrix rule."""
+
+    frozen: LinearPlan
+    component: PlannedComponentLinear
+
+
+def _site_plans(
+    anatomy: Anatomy, placement: PlacementRules, kind: str, site_input: Array
+) -> _SitePlans:
+    rule = _target_rule(anatomy, placement, kind)
+    external_axes = activation_axes(site_input.ndim, "feature")
+    component_axes = activation_axes(site_input.ndim, "C")
+    return _SitePlans(
+        frozen=target_linear_plan(site_input, rule),
+        component=PlannedComponentLinear(
+            v=placement.target_native_component_linear_plan(
+                rule, V_WEIGHT_AXES, external_axes, component_axes
+            ),
+            u=placement.target_native_component_linear_plan(
+                rule, U_WEIGHT_AXES, component_axes, external_axes
+            ),
+            component=placement.activations.component,
+            output=rule.output,
+        ),
+    )
+
+
+@dataclass
+class _DecomposedSiteExecutor:
+    """Sites whose kind is decomposed route through `((x@V)*m)@U` against the frozen `W`;
+    the rest apply `W`. Every decomposed site's `x@V` lands in `component_activations` —
+    already a live value of that site's forward, so holding it adds no operation; whether
+    the scan body emits it as `ys` stays the caller's decision.
+
+    `per_kind_inputs` is ONE layer's slice of the per-kind stacks: `(V, U)` plus either a
+    materialized `mask` (+ optional `delta`, `route`) or the stochastic `ci`/key triple,
+    whose mask is drawn HERE, inside the checkpointed block, so the backward redraws it
+    from the same key instead of holding it."""
+
+    anatomy: Anatomy
+    placement: PlacementRules | None
+    per_kind_inputs: dict[str, dict[str, Array]]
+    component_activations: dict[str, Array] = field(default_factory=dict)
+
+    def __call__(self, site_input: Array, kind: str, frozen_weight: Array) -> Array:
+        inputs = self.per_kind_inputs.get(kind)
+        if inputs is None:
+            rule = (
+                None if self.placement is None else _target_rule(self.anatomy, self.placement, kind)
+            )
+            return placed_target_linear(site_input, frozen_weight, rule)
+        if "ci" in inputs:
+            ci_lower = inputs["ci"]
+            random_source = uniform_like(inputs["src_key"], ci_lower)
+            mask = ci_lower + (1.0 - ci_lower) * random_source
+            delta = uniform_like(inputs["delta_key"], ci_lower, drop_last_axis=True)
+        else:
+            mask = inputs["mask"]
+            delta = inputs.get("delta")
+        plans = (
+            None
+            if self.placement is None
+            else _site_plans(self.anatomy, self.placement, kind, site_input)
+        )
+        result = site_forward(
+            site_input,
+            inputs["V"],
+            inputs["U"],
+            frozen_weight,
+            mask,
+            delta,
+            inputs.get("route"),
+            None if plans is None else plans.component,
+            None if plans is None else plans.frozen,
+        )
+        self.component_activations[kind] = result.component_activation
+        return result.output
+
+
+def _run_glu_block(
+    layer: GLULayer,
+    residual_in: Array,
+    inv_freq: Array,
+    eps: float,
+    *,
+    execute_site: _SiteExecutor,
+) -> dict[_GLUTap, Array]:
+    """The transformer block's equations, stated ONCE. Every value the block computes
+    comes back keyed by tap: each is already a live operand of the next equation, so the
+    dict adds nothing to a caller that reads none — an empty capture request lowers to
+    exactly the compact frozen graph. The frozen and masked forwards differ only in
+    `execute_site`."""
+    anatomy = execute_site.anatomy
+    attn = layer.attn
+    qkv_input = rms_norm(residual_in, layer.ln1, eps)
+    q = execute_site(qkv_input, anatomy.q, attn.wq)
+    k = execute_site(qkv_input, anatomy.k, attn.wk)
+    v = execute_site(qkv_input, anatomy.v, attn.wv)
+    column = None if execute_site.placement is None else execute_site.placement.target.column
+    attention_output = attn.core(q, k, v, inv_freq, None if column is None else column.output)
+    o = execute_site(attention_output, anatomy.o, attn.wo)
+    post_attention_residual = residual_in + o
+    mlp_input = rms_norm(post_attention_residual, layer.ln2, eps)
+    match layer.mlp, anatomy.mlp:
+        case GatedMLP(Wg=Wg, Wu=Wu, Wd=Wd), GatedMLPKinds() as kinds:
+            gate = execute_site(mlp_input, kinds.gate, Wg)
+            up = execute_site(mlp_input, kinds.up, Wu)
+            down_input = jax.nn.silu(gate) * up
+            hidden = {_GLUTap.GATE_OUTPUT: gate, _GLUTap.UP_OUTPUT: up}
+            down_weight = Wd
+        case PlainMLP(Wfc=Wfc, Wdown=Wdown), PlainMLPKinds() as kinds:
+            fc = execute_site(mlp_input, kinds.fc, Wfc)
+            down_input = _gelu_tanh(fc)
+            hidden = {_GLUTap.FC_OUTPUT: fc}
+            down_weight = Wdown
+        case _:
+            raise AssertionError((type(layer.mlp), anatomy.mlp))
+    down_output = execute_site(down_input, kinds.down, down_weight)
+    taps = {
+        _GLUTap.RESIDUAL_IN: residual_in,
+        _GLUTap.QKV_INPUT: qkv_input,
+        _GLUTap.Q_OUTPUT: q,
+        _GLUTap.K_OUTPUT: k,
+        _GLUTap.V_OUTPUT: v,
+        _GLUTap.ATTENTION_OUTPUT: attention_output,
+        _GLUTap.O_OUTPUT: o,
+        _GLUTap.POST_ATTENTION_RESIDUAL: post_attention_residual,
+        _GLUTap.MLP_INPUT: mlp_input,
+        **hidden,
+        _GLUTap.DOWN_INPUT: down_input,
+        _GLUTap.DOWN_OUTPUT: down_output,
+        _GLUTap.RESIDUAL_OUT: post_attention_residual + down_output,
+    }
+    assert taps.keys() == _block_taps(anatomy), sorted(tap.value for tap in taps)
+    return taps
+
+
 @dataclass(frozen=True, kw_only=True)
 class _GLUCaptureSource:
     block: int
@@ -697,37 +859,6 @@ class _GLUCaptureSource:
 
 
 GLUCaptureSources = tuple[_GLUCaptureSource, ...]
-
-
-@dataclass(frozen=True, kw_only=True)
-class _GatedHiddenActs:
-    gate_output: Array
-    up_output: Array
-
-
-@dataclass(frozen=True, kw_only=True)
-class _PlainHiddenActs:
-    fc_output: Array
-
-
-@dataclass(frozen=True, kw_only=True)
-class _GLUBlockActivations:
-    """The target's capturable activations for one block; never returned wholesale.
-    The MLP hidden-producing outputs ride the anatomy arm (`hidden`)."""
-
-    residual_in: Array
-    qkv_input: Array
-    q_output: Array
-    k_output: Array
-    v_output: Array
-    attention_output: Array
-    o_output: Array
-    post_attention_residual: Array
-    mlp_input: Array
-    hidden: _GatedHiddenActs | _PlainHiddenActs
-    down_input: Array
-    down_output: Array
-    residual_out: Array
 
 
 _UNUSED_CAPTURE_SLOT = -1
@@ -775,46 +906,6 @@ def _scan_capture_layout(sources: GLUCaptureSources, n_layer: int) -> _ScanCaptu
     return _ScanCaptureLayout(slot_by_block_per_tap=tuple(tap_slots), sources=sources)
 
 
-def _captured_activation(block_activations: _GLUBlockActivations, tap: _GLUTap) -> Array:
-    match tap:
-        case _GLUTap.RESIDUAL_IN:
-            return block_activations.residual_in
-        case _GLUTap.QKV_INPUT:
-            return block_activations.qkv_input
-        case _GLUTap.Q_OUTPUT:
-            return block_activations.q_output
-        case _GLUTap.K_OUTPUT:
-            return block_activations.k_output
-        case _GLUTap.V_OUTPUT:
-            return block_activations.v_output
-        case _GLUTap.ATTENTION_OUTPUT:
-            return block_activations.attention_output
-        case _GLUTap.O_OUTPUT:
-            return block_activations.o_output
-        case _GLUTap.POST_ATTENTION_RESIDUAL:
-            return block_activations.post_attention_residual
-        case _GLUTap.MLP_INPUT:
-            return block_activations.mlp_input
-        case _GLUTap.GATE_OUTPUT:
-            hidden = block_activations.hidden
-            assert isinstance(hidden, _GatedHiddenActs), tap
-            return hidden.gate_output
-        case _GLUTap.UP_OUTPUT:
-            hidden = block_activations.hidden
-            assert isinstance(hidden, _GatedHiddenActs), tap
-            return hidden.up_output
-        case _GLUTap.FC_OUTPUT:
-            hidden = block_activations.hidden
-            assert isinstance(hidden, _PlainHiddenActs), tap
-            return hidden.fc_output
-        case _GLUTap.DOWN_INPUT:
-            return block_activations.down_input
-        case _GLUTap.DOWN_OUTPUT:
-            return block_activations.down_output
-        case _GLUTap.RESIDUAL_OUT:
-            return block_activations.residual_out
-
-
 def _allocate_capture_buffers(
     layout: _ScanCaptureLayout,
     residual: Array,
@@ -850,13 +941,13 @@ def _write_block_captures(
     layout: _ScanCaptureLayout,
     buffers: dict[str, Array],
     slot_indices: dict[str, Array],
-    block_activations: _GLUBlockActivations,
+    taps: dict[_GLUTap, Array],
 ) -> dict[str, Array]:
     updated_buffers = dict(buffers)
     for tap, _slot_tuple in layout.slot_by_block_per_tap:
         buffer_key = tap.value
         slot_index = slot_indices[buffer_key]
-        captured_value = _captured_activation(block_activations, tap)
+        captured_value = taps[tap]
         if not value_mesh(buffers[buffer_key]).empty:
             # The buffer write requires exact type equality; captures land in the
             # buffer's batch-sharded, feature-replicated layout.
@@ -1278,53 +1369,6 @@ class GLUDecomposedModel(eqx.Module):
             lambda point: _hidden_acts_reconstruction_dependencies(self.anatomy, point),
         )
 
-    def _block_activations(
-        self, residual_in: Array, layer: GLULayer, placement: PlacementRules | None
-    ) -> _GLUBlockActivations:
-        attn = layer.attn
-        column = None if placement is None else placement.target.column
-        row = None if placement is None else placement.target.row
-        h1 = rms_norm(residual_in, layer.ln1, self.eps)
-        q = placed_target_linear(h1, attn.wq, column)
-        k = placed_target_linear(h1, attn.wk, column)
-        v = placed_target_linear(h1, attn.wv, column)
-        attention_output = attn.core(
-            q, k, v, self.inv_freq, None if column is None else column.output
-        )
-        o = placed_target_linear(attention_output, attn.wo, row)
-        post_attention = residual_in + o
-        h2 = rms_norm(post_attention, layer.ln2, self.eps)
-        match layer.mlp:
-            case GatedMLP(Wg=Wg, Wu=Wu, Wd=Wd):
-                gate = placed_target_linear(h2, Wg, column)
-                up = placed_target_linear(h2, Wu, column)
-                down_input = jax.nn.silu(gate) * up
-                down = placed_target_linear(down_input, Wd, row)
-                hidden: _GatedHiddenActs | _PlainHiddenActs = _GatedHiddenActs(
-                    gate_output=gate, up_output=up
-                )
-            case PlainMLP(Wfc=Wfc, Wdown=Wdown):
-                fc = placed_target_linear(h2, Wfc, column)
-                down_input = _gelu_tanh(fc)
-                down = placed_target_linear(down_input, Wdown, row)
-                hidden = _PlainHiddenActs(fc_output=fc)
-        residual_out = post_attention + down
-        return _GLUBlockActivations(
-            residual_in=residual_in,
-            qkv_input=h1,
-            q_output=q,
-            k_output=k,
-            v_output=v,
-            attention_output=attention_output,
-            o_output=o,
-            post_attention_residual=post_attention,
-            mlp_input=h2,
-            hidden=hidden,
-            down_input=down_input,
-            down_output=down,
-            residual_out=residual_out,
-        )
-
     def _value_width(self, value: _GLUTap) -> int:
         d = self.embed.shape[1]
         mlp = self.stacked.mlp
@@ -1364,10 +1408,15 @@ class GLUDecomposedModel(eqx.Module):
                         return Wdown.shape[2]
 
     def _clean_output(self, inputs: Int[Array, "b t"], placement: PlacementRules | None) -> Array:
-        """Untouched graph used when no captures are requested."""
+        """Untouched graph used when no captures are requested — reading one tap of the
+        kernel's result leaves the block exactly the compact frozen graph."""
+        frozen_sites = _FrozenSiteExecutor(self.anatomy, placement)
 
         def block(residual: Array, layer: GLULayer) -> tuple[Array, None]:
-            return _clean_block(layer, residual, self.inv_freq, self.eps, placement), None
+            taps = _run_glu_block(
+                layer, residual, self.inv_freq, self.eps, execute_site=frozen_sites
+            )
+            return taps[_GLUTap.RESIDUAL_OUT], None
 
         residual = self.embed_tokens(inputs, placement)
         residual, _ = jax.lax.scan(block, residual, self.stacked)
@@ -1399,6 +1448,7 @@ class GLUDecomposedModel(eqx.Module):
         layout = _scan_capture_layout(capture_sources, self.n_layer)
         buffers = _allocate_capture_buffers(layout, residual, self._value_width)
         slot_indices_by_tap = _slot_index_arrays(layout)
+        frozen_sites = _FrozenSiteExecutor(self.anatomy, placement)
 
         def block(
             state: tuple[Array, dict[str, Array]],
@@ -1406,10 +1456,10 @@ class GLUDecomposedModel(eqx.Module):
         ) -> tuple[tuple[Array, dict[str, Array]], None]:
             x, buffers_ = state
             layer, slots = layer_and_slots
-            block_activations = self._block_activations(x, layer, placement)
+            taps = _run_glu_block(layer, x, self.inv_freq, self.eps, execute_site=frozen_sites)
             return (
-                block_activations.residual_out,
-                _write_block_captures(layout, buffers_, slots, block_activations),
+                taps[_GLUTap.RESIDUAL_OUT],
+                _write_block_captures(layout, buffers_, slots, taps),
             ), None
 
         (residual, buffers), _ = jax.lax.scan(
@@ -1455,7 +1505,6 @@ class GLUDecomposedModel(eqx.Module):
                     sorted(routes or {}),
                     sorted(site_set),
                 )
-                uses_weight_deltas = True
                 per_kind = _attach_per_kind_stochastic(
                     self.anatomy,
                     prepared_weights,
@@ -1485,7 +1534,6 @@ class GLUDecomposedModel(eqx.Module):
                     sorted(routes or {}),
                     sorted(site_set),
                 )
-                uses_weight_deltas = weight_delta_masks is not None
                 per_kind = _attach_per_kind_masks(
                     self.anatomy,
                     prepared_weights,
@@ -1514,193 +1562,18 @@ class GLUDecomposedModel(eqx.Module):
             f"decomposed layers must be contiguous, got {decomposed_layers}"
         )
 
-        def decomposed_site_output(
-            site_input: Array,
-            frozen_weight: Array,
-            frozen_linear: LinearPlan | None,
-            decomposition_inputs: dict[str, Array],
-            *,
-            site_placement: PlacementRules | PlannedComponentLinear | None,
-        ) -> SiteForward:
-            v = decomposition_inputs["V"]
-            u = decomposition_inputs["U"]
-            if "ci" in decomposition_inputs:
-                ci_lower = decomposition_inputs["ci"]
-                random_source = uniform_like(decomposition_inputs["src_key"], ci_lower)
-                component_mask = ci_lower + (1.0 - ci_lower) * random_source
-                weight_delta_mask = (
-                    uniform_like(decomposition_inputs["delta_key"], ci_lower, drop_last_axis=True)
-                    if uses_weight_deltas
-                    else None
-                )
-                return site_forward(
-                    site_input,
-                    v,
-                    u,
-                    frozen_weight,
-                    component_mask,
-                    weight_delta_mask,
-                    decomposition_inputs.get("route"),
-                    site_placement,
-                    frozen_linear,
-                )
-            return site_forward(
-                site_input,
-                v,
-                u,
-                frozen_weight,
-                decomposition_inputs["mask"],
-                decomposition_inputs.get("delta"),
-                decomposition_inputs.get("route"),
-                site_placement,
-                frozen_linear,
-            )
+        frozen_sites = _FrozenSiteExecutor(self.anatomy, placement)
 
-        def execute_site(
-            site_input: Array,
-            kind: str,
-            frozen_weight: Array,
-            per_kind_inputs: dict[str, dict[str, Array]],
-            *,
-            frozen_linear: LinearPlan | None,
-            site_placement: PlacementRules | PlannedComponentLinear | None,
-        ) -> tuple[Array, Array | None]:
-            if kind not in decomposed_kinds:
-                return (
-                    site_input @ frozen_weight.T
-                    if frozen_linear is None
-                    else placed_linear(site_input, frozen_weight.T, frozen_linear),
-                    None,
-                )
-            decomposition_inputs = per_kind_inputs[kind]
-            result = decomposed_site_output(
-                site_input,
-                frozen_weight,
-                frozen_linear,
-                decomposition_inputs,
-                site_placement=site_placement,
+        def decomposed_block(
+            residual_in: Array, layer: GLULayer, per_kind_layer_inputs: dict[str, dict[str, Array]]
+        ) -> tuple[dict[_GLUTap, Array], dict[str, Array] | None]:
+            executor = _DecomposedSiteExecutor(self.anatomy, placement, per_kind_layer_inputs)
+            taps = _run_glu_block(
+                layer, residual_in, self.inv_freq, self.eps, execute_site=executor
             )
-            component_activation = (
-                result.component_activation if collect_component_activations else None
-            )
-            return result.output, component_activation
-
-        def site_output_and_component_activation(
-            site_input: Array,
-            kind: str,
-            frozen_weight: Array,
-            per_kind_inputs: dict[str, dict[str, Array]],
-        ) -> tuple[Array, Array | None]:
-            if placement is None:
-                return execute_site(
-                    site_input,
-                    kind,
-                    frozen_weight,
-                    per_kind_inputs,
-                    frozen_linear=None,
-                    site_placement=None,
-                )
-            assert kind in self.anatomy.kind_order, kind
-            frozen_placement = (
-                placement.target.row if kind in self.anatomy.row_kinds else placement.target.column
-            )
-            if kind in decomposed_kinds:
-                external_axes = activation_axes(site_input.ndim, "feature")
-                component_axes = activation_axes(site_input.ndim, "C")
-                component_placement = PlannedComponentLinear(
-                    v=placement.target_native_component_linear_plan(
-                        frozen_placement,
-                        V_WEIGHT_AXES,
-                        external_axes,
-                        component_axes,
-                    ),
-                    u=placement.target_native_component_linear_plan(
-                        frozen_placement,
-                        U_WEIGHT_AXES,
-                        component_axes,
-                        external_axes,
-                    ),
-                    component=placement.activations.component,
-                    output=frozen_placement.output,
-                )
-            else:
-                component_placement = None
-            return execute_site(
-                site_input,
-                kind,
-                frozen_weight,
-                per_kind_inputs,
-                frozen_linear=target_linear_plan(site_input, frozen_placement),
-                site_placement=component_placement,
-            )
-
-        def compute_decomposed_block_activations(
-            residual_in: Array,
-            layer: GLULayer,
-            per_kind_inputs: dict[str, dict[str, Array]],
-        ) -> tuple[_GLUBlockActivations, dict[str, Array] | None]:
-            anatomy = self.anatomy
-            attn = layer.attn
-            execute = site_output_and_component_activation
-            h1 = rms_norm(residual_in, layer.ln1, self.eps)
-            q, qa = execute(h1, anatomy.q, attn.wq, per_kind_inputs)
-            k, ka = execute(h1, anatomy.k, attn.wk, per_kind_inputs)
-            v, va = execute(h1, anatomy.v, attn.wv, per_kind_inputs)
-            column = None if placement is None else placement.target.column
-            attention_output = attn.core(
-                q, k, v, self.inv_freq, None if column is None else column.output
-            )
-            o, oa = execute(attention_output, anatomy.o, attn.wo, per_kind_inputs)
-            post_attention = residual_in + o
-            h2 = rms_norm(post_attention, layer.ln2, self.eps)
-            match layer.mlp, anatomy.mlp:
-                case GatedMLP() as mlp, GatedMLPKinds() as mlp_kinds:
-                    gate, ga = execute(h2, mlp_kinds.gate, mlp.Wg, per_kind_inputs)
-                    up, ua = execute(h2, mlp_kinds.up, mlp.Wu, per_kind_inputs)
-                    down_input = jax.nn.silu(gate) * up
-                    down, da = execute(down_input, mlp_kinds.down, mlp.Wd, per_kind_inputs)
-                    hidden: _GatedHiddenActs | _PlainHiddenActs = _GatedHiddenActs(
-                        gate_output=gate, up_output=up
-                    )
-                    mlp_activations = {mlp_kinds.gate: ga, mlp_kinds.up: ua, mlp_kinds.down: da}
-                case PlainMLP() as mlp, PlainMLPKinds() as mlp_kinds:
-                    fc, fa = execute(h2, mlp_kinds.fc, mlp.Wfc, per_kind_inputs)
-                    down_input = _gelu_tanh(fc)
-                    down, da = execute(down_input, mlp_kinds.down, mlp.Wdown, per_kind_inputs)
-                    hidden = _PlainHiddenActs(fc_output=fc)
-                    mlp_activations = {mlp_kinds.fc: fa, mlp_kinds.down: da}
-                case _:
-                    raise AssertionError((type(layer.mlp), anatomy.mlp))
-            residual_out = post_attention + down
-            block_activations = _GLUBlockActivations(
-                residual_in=residual_in,
-                qkv_input=h1,
-                q_output=q,
-                k_output=k,
-                v_output=v,
-                attention_output=attention_output,
-                o_output=o,
-                post_attention_residual=post_attention,
-                mlp_input=h2,
-                hidden=hidden,
-                down_input=down_input,
-                down_output=down,
-                residual_out=residual_out,
-            )
-            if not collect_component_activations:
-                return block_activations, None
-            component_activations_by_kind = {
-                kind: activation
-                for kind, activation in {
-                    anatomy.q: qa,
-                    anatomy.k: ka,
-                    anatomy.v: va,
-                    anatomy.o: oa,
-                    **mlp_activations,
-                }.items()
-                if activation is not None
-            }
-            return block_activations, component_activations_by_kind
+            collected = executor.component_activations
+            assert set(collected) == decomposed_kinds, (sorted(collected), sorted(decomposed_kinds))
+            return taps, collected if collect_component_activations else None
 
         policy = (
             jax.checkpoint_policies.nothing_saveable
@@ -1760,20 +1633,20 @@ class GLUDecomposedModel(eqx.Module):
                         x, buffers_ = state
                         if is_decomposed:
                             layer, per_kind_layer_inputs, slots = layer_input
-                            block_activations, block_component_activations = (
-                                compute_decomposed_block_activations(
-                                    x, layer, per_kind_layer_inputs
-                                )
+                            taps, block_component_activations = decomposed_block(
+                                x, layer, per_kind_layer_inputs
                             )
                         else:
                             layer, slots = layer_input
-                            block_activations = self._block_activations(x, layer, placement)
+                            taps = _run_glu_block(
+                                layer, x, self.inv_freq, self.eps, execute_site=frozen_sites
+                            )
                             block_component_activations = None
                         updated_buffers = _write_block_captures(
-                            capture_layout, buffers_, slots, block_activations
+                            capture_layout, buffers_, slots, taps
                         )
                         return (
-                            block_activations.residual_out,
+                            taps[_GLUTap.RESIDUAL_OUT],
                             updated_buffers,
                         ), block_component_activations
 
@@ -1793,11 +1666,14 @@ class GLUDecomposedModel(eqx.Module):
                 ) -> tuple[Array, dict[str, Array] | None]:
                     if segment_decomposed:
                         layer, per_kind_layer_inputs = layer_input
-                        block_activations, block_component_activations = (
-                            compute_decomposed_block_activations(x, layer, per_kind_layer_inputs)
+                        taps, block_component_activations = decomposed_block(
+                            x, layer, per_kind_layer_inputs
                         )
-                        return block_activations.residual_out, block_component_activations
-                    return _clean_block(layer_input, x, self.inv_freq, self.eps, placement), None
+                        return taps[_GLUTap.RESIDUAL_OUT], block_component_activations
+                    frozen_taps = _run_glu_block(
+                        layer_input, x, self.inv_freq, self.eps, execute_site=frozen_sites
+                    )
+                    return frozen_taps[_GLUTap.RESIDUAL_OUT], None
 
                 residual, segment_component_activations = run_scan(
                     plain_block,
@@ -2007,6 +1883,106 @@ class GLUDecomposedModel(eqx.Module):
                 )
             out[group] = Ws.astype(jnp.float32) - vu_product
         return out
+
+
+def neuron_aligned_component_count(anatomy: Anatomy, spec: SiteSpec) -> int:
+    """Number of neuron/head-channel coordinates touching this matrix."""
+    kind = anatomy.family.parse(spec.name)[1]
+    return spec.d_in if kind in anatomy.row_kinds else spec.d_out
+
+
+def validate_neuron_aligned_capacity(anatomy: Anatomy, spec: SiteSpec) -> None:
+    """Require enough matrix entries to give every overcomplete component nonempty support."""
+    unit_count = neuron_aligned_component_count(anatomy, spec)
+    residual_count = spec.d_in * spec.d_out // unit_count
+    assert unit_count * residual_count >= spec.C, (
+        f"{spec.name}: neuron-aligned init supports at most {unit_count * residual_count} "
+        f"nonempty components, got {spec.C}"
+    )
+
+
+def _gather_unit_rows(weight: Array, units: Array) -> Array:
+    """Gather matrix rows and spell the surviving placement explicitly."""
+    match jax.typeof(weight).sharding:
+        case NamedSharding(mesh=mesh, spec=sharding):
+            return weight.at[units].get(out_sharding=NamedSharding(mesh, P(None, *sharding[1:])))
+        case _:
+            return weight[units]
+
+
+def _neuron_aligned_site_factors(
+    weight: Array, spec: SiteSpec, units_on_input: bool, key: PRNGKeyArray
+) -> tuple[Array, Array]:
+    """Select architectural coordinates below width; partition them above width.
+
+    At equality this is the canonical exact factorization. Below the architectural width,
+    C distinct coordinates are sampled without replacement and copied whole. Above it,
+    every coordinate is present and its vector across the opposite matrix dimension is
+    partitioned among one or more components, so the component sum remains exactly W.
+    """
+    assert weight.shape == (spec.d_out, spec.d_in), (weight.shape, spec)
+    unit_count = spec.d_in if units_on_input else spec.d_out
+    residual_count = spec.d_out if units_on_input else spec.d_in
+    assert unit_count * residual_count >= spec.C
+    weight = weight.astype(jnp.float32)
+
+    if unit_count >= spec.C:
+        units = (
+            jnp.arange(unit_count)
+            if unit_count == spec.C
+            else jax.random.permutation(key, unit_count)[: spec.C]
+        )
+        one_hot = jax.nn.one_hot(units, unit_count, dtype=jnp.float32)
+        if units_on_input:
+            return one_hot.T, _gather_unit_rows(weight.T, units)
+        return _gather_unit_rows(weight, units).T, one_hot
+
+    quotient, remainder = divmod(spec.C, unit_count)
+    unit_order = jax.random.permutation(key, unit_count)
+    shard_counts = quotient + (jnp.arange(unit_count) < remainder)
+    component_units = jnp.repeat(unit_order, shard_counts, total_repeat_length=spec.C)
+
+    unit_keys = jax.random.split(jax.random.fold_in(key, 1), unit_count)
+    coordinates = jax.vmap(lambda k: jax.random.permutation(k, residual_count))(unit_keys)
+    component_offsets = jnp.cumsum(shard_counts) - shard_counts
+    coordinate_shards = (
+        component_offsets[:, None]
+        + jnp.arange(residual_count)[None, :] * shard_counts[:, None] // residual_count
+    )
+    ownership = jnp.zeros((spec.C, residual_count), dtype=jnp.float32)
+    ownership = ownership.at[coordinate_shards, coordinates].set(1)
+
+    one_hot = jax.nn.one_hot(component_units, unit_count, dtype=jnp.float32)
+    if units_on_input:
+        return one_hot.T, _gather_unit_rows(weight.T, component_units) * ownership
+    return _gather_unit_rows(weight, component_units).T * ownership.T, one_hot
+
+
+def neuron_aligned_component_initializer(
+    model: GLUDecomposedModel, key: PRNGKeyArray
+) -> ComponentStacks:
+    """Initialize components along neurons or attention-head channels.
+
+    With fewer components than architectural coordinates, sample distinct coordinates
+    without replacement; the ordinary faithfulness warmup must fill the omitted weights.
+    At equality, retain the canonical exact one-coordinate factorization. With surplus
+    components, split randomly chosen coordinates across disjoint residual-coordinate
+    shards; every component is nonempty and the component sum remains exactly the target.
+    """
+    keys = jax.random.split(key, len(model.sites))
+    site_arrays: dict[str, tuple[Array, Array]] = {}
+    for spec, site_key in zip(model.sites, keys, strict=True):
+        validate_neuron_aligned_capacity(model.anatomy, spec)
+        layer, kind = model.anatomy.family.parse(spec.name)
+        weight = _frozen_site_weight(
+            model.anatomy,
+            jax.tree.map(lambda array, idx=layer: array[idx], model.stacked),
+            kind,
+        )
+        site_arrays[spec.name] = _neuron_aligned_site_factors(
+            weight, spec, kind in model.anatomy.row_kinds, site_key
+        )
+    return component_stacks_from_site_arrays(model.sites, site_arrays)
 
 
 # ----------------------------- HF weight loading -----------------------------

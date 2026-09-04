@@ -3,8 +3,8 @@
 One tiny random target per LM family (the Llama-3.1-flavored GLU transformer and the
 `LlamaSimpleMLP`), plus a one-chunk chunkwise CI fn over each. Engine tests use these as
 the concrete target behind the `DecomposedModel` protocol; the per-target suites
-(`tests/`) use them as the system under test. Toy dims throughout — no real weights, no
-GPU.
+(`param_decomp/tests/targets/`) use them as the system under test. Toy dims throughout —
+no real weights, no GPU.
 """
 
 from collections.abc import Iterable

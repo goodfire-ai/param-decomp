@@ -24,8 +24,7 @@ import math
 import signal
 import threading
 import time
-from collections.abc import Callable, Mapping
-from functools import partial as _partial
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from types import FrameType, ModuleType
 from typing import Any
@@ -55,7 +54,6 @@ from param_decomp.core.ci_fn import (
     PlacedCIFn,
     resolve_ci_placement,
 )
-from param_decomp.core.components import init_component_stacks
 from param_decomp.core.configs import (
     AnyPDConfig,
     Cadence,
@@ -70,6 +68,7 @@ from param_decomp.core.configs import (
 )
 from param_decomp.core.eval_schedule import EvalSchedule, eval_due
 from param_decomp.core.faithfulness import FaithfulnessLossFn, faithfulness_loss_for
+from param_decomp.core.init_placed import ComponentInitializer, random_component_initializer
 from param_decomp.core.metrics import BarChart, LogRecord, PNGImage
 from param_decomp.core.model import PlacedModel, PositionAxis
 from param_decomp.core.objective import (
@@ -139,20 +138,60 @@ class EvalInvocation:
 
 
 @dataclasses.dataclass(frozen=True)
-class EvalOperation[ContextT]:
+class PassOperation[PassT]:
+    """One pass-level result from pass-scoped inputs (the state itself, an own probe
+    batch); never reads the shared per-batch contexts."""
+
     schedule: EvalSchedule
-    run: Callable[[ContextT], LogRecord]
+    run: Callable[[PassT], LogRecord]
 
 
 @dataclasses.dataclass(frozen=True)
-class Evaluation[ContextT]:
-    operations: tuple[EvalOperation[ContextT], ...]
-    make_context: Callable[[EvalInvocation], ContextT]
-    """Extend the engine-built invocation with the domain's own per-pass inputs
-    (identity for a domain that needs none)."""
+class BatchedOperation[PassT, ContextT]:
+    """The torch-oracle Metric lifecycle (reset/update/compute), functionally: `update`
+    folds over the pass's shared per-batch contexts, `finish` turns the accumulated
+    state into log entries. The state rides as `Any` because one operation tuple holds
+    many private state types; `batched_operation` re-establishes each operation's own
+    state type at construction."""
+
+    schedule: EvalSchedule
+    init: Callable[[], Any]
+    update: Callable[[Any, ContextT], Any]
+    finish: Callable[[PassT, Any], LogRecord]
+
+
+def batched_operation[PassT, ContextT, S](
+    schedule: EvalSchedule,
+    init: Callable[[], S],
+    update: Callable[[S, ContextT], S],
+    finish: Callable[[PassT, S], LogRecord],
+) -> BatchedOperation[PassT, ContextT]:
+    """Type-checked constructor: `init`/`update`/`finish` must agree on one state type."""
+    return BatchedOperation(schedule, init, update, finish)
+
+
+type EvalOperation[PassT, ContextT] = PassOperation[PassT] | BatchedOperation[PassT, ContextT]
+
+
+@dataclasses.dataclass(frozen=True)
+class Evaluation[PassT, ContextT]:
+    """The domain-bound eval surface. `make_pass` builds the pass-scoped inputs;
+    `batch_contexts` yields the pass's shared per-batch contexts — the one clean
+    forward + CI envelope every batched operation reads (torch-oracle
+    `_build_metric_context`) — produced only when a due batched operation exists."""
+
+    operations: tuple[EvalOperation[PassT, ContextT], ...]
+    make_pass: Callable[[EvalInvocation], PassT]
+    batch_contexts: Callable[[PassT], Iterable[ContextT]]
 
     def __post_init__(self) -> None:
         assert self.operations, "evaluation needs at least one operation"
+
+
+def no_batch_contexts(eval_pass: object) -> tuple[()]:
+    """The batch phase of a domain whose operations are all pass-level (the toys)."""
+    del eval_pass
+    return ()
 
 
 def _combine_step_records(
@@ -185,8 +224,8 @@ def _with_uv_norm_ratios(eval_record: LogRecord, state: TrainState) -> LogRecord
     return {**eval_record, **factor_record}
 
 
-def _run_due_evaluation[ContextT](
-    evaluation: Evaluation[ContextT],
+def _run_due_evaluation[PassT, ContextT](
+    evaluation: Evaluation[PassT, ContextT],
     state: TrainState,
     now_step: int,
     ci_placement: CIFnPlacement | None,
@@ -196,16 +235,31 @@ def _run_due_evaluation[ContextT](
     )
     if not due_operations:
         return None
-    context = evaluation.make_context(
+    eval_pass = evaluation.make_pass(
         EvalInvocation(
             state=state,
             now_step=now_step,
             placed_ci_fn=PlacedCIFn(fn=state.decomposition.ci_fn, placement=ci_placement),
         )
     )
+    states: dict[int, Any] = {
+        index: operation.init()
+        for index, operation in enumerate(due_operations)
+        if isinstance(operation, BatchedOperation)
+    }
+    if states:
+        for context in evaluation.batch_contexts(eval_pass):
+            for index in states:
+                operation = due_operations[index]
+                assert isinstance(operation, BatchedOperation)
+                states[index] = operation.update(states[index], context)
     record: dict[str, float | BarChart | PNGImage] = {}
-    for operation in due_operations:
-        values = operation.run(context)
+    for index, operation in enumerate(due_operations):
+        match operation:
+            case PassOperation(run=run):
+                values = run(eval_pass)
+            case BatchedOperation(finish=finish):
+                values = finish(eval_pass, states[index])
         overlap = record.keys() & values.keys()
         assert not overlap, f"eval operations emitted colliding keys: {sorted(overlap)}"
         record.update(values)
@@ -301,10 +355,8 @@ _METRIC_KEYS = {
     "total": "train/loss/total",
     "faith": "train/loss/FaithfulnessLoss",
     "imp": "train/loss/ImportanceMinimalityLoss",
-    "imp_smooth_l0": "train/loss/SmoothL0ImportanceMinimalityLoss",
     "freq": "train/loss/FrequencyMinimalityLoss",
     "freq_batch": "train/loss/FrequencyMinimalityLoss_batch",
-    "p_imp": "train/schedules/p_imp",
     "gamma_imp": "train/schedules/gamma_imp",
     "nonlinearity_relative_threshold": "train/schedules/nonlinearity_relative_threshold",
     "src_lr": "train/schedules/lr/src",
@@ -583,6 +635,7 @@ def _init_or_restore_state(
     compiler_options: dict[str, bool | int | str],
     faith_warmup: FaithfulnessWarmup | None,
     profiling: ProfilingMode | None,
+    component_initializer: ComponentInitializer,
 ) -> tuple[TrainState, int] | None:
     """The shared init/restore/finetune/faith-warmup phase (SPEC S21/S22/S33).
 
@@ -592,7 +645,17 @@ def _init_or_restore_state(
     `checkpoint_manager is None` is the `NoCheckpointing` run: nothing is restored
     (there is never anything on disk) and the step-0 saves are skipped too."""
     state = _ensure_global(
-        init_train_state(pd, model, ci_fn_arch, positions, opt_vu, opt_ci, init_key, src_key),
+        init_train_state(
+            pd,
+            model,
+            ci_fn_arch,
+            positions,
+            opt_vu,
+            opt_ci,
+            init_key,
+            src_key,
+            component_initializer,
+        ),
         mesh,
     )
 
@@ -748,6 +811,7 @@ def _prepare_run(
     is_main: bool,
     faith_warmup: FaithfulnessWarmup | None,
     profiling: ProfilingMode | None,
+    component_initializer: ComponentInitializer,
 ) -> _PreparedRun | None:
     """Everything before the train loop: mesh activation, optimizers, keys, checkpoint
     manager, the placement audit, and init/restore/finetune/faith-warmup. Returns `None`
@@ -774,7 +838,7 @@ def _prepare_run(
     saver = _make_saver(cadence.checkpointing, run.run_dir, is_main)
     if is_main:
         audit = component_stacks_audit(
-            eqx.filter_eval_shape(_partial(init_component_stacks, model.sites), init_key), rules
+            eqx.filter_eval_shape(component_initializer, model.model, init_key), rules
         )
         print(
             rules.describe(
@@ -800,6 +864,7 @@ def _prepare_run(
         compiler_options=compiler_options,
         faith_warmup=faith_warmup,
         profiling=profiling,
+        component_initializer=component_initializer,
     )
     if init is None:
         return None  # SIGTERM mid-warmup: clean exit for requeue
@@ -818,7 +883,7 @@ def _prepare_run(
     )
 
 
-def run_decomposition_training[EvalContextT](
+def run_decomposition_training[EvalPassT, EvalContextT](
     pd: PDConfig,
     cadence: Cadence,
     run: RunInstance,
@@ -829,9 +894,10 @@ def run_decomposition_training[EvalContextT](
     remat_ci_fn: bool,
     compiler_options: dict[str, bool | int | str],
     sample_batch: Callable[[int], Any],
-    evaluation: Evaluation[EvalContextT] | None,
+    evaluation: Evaluation[EvalPassT, EvalContextT] | None,
     sink: MetricsSink,
     profiling: ProfilingMode | None,
+    component_initializer: ComponentInitializer = random_component_initializer,
 ) -> None:
     """The generic VPD decomposition-training engine — the ONE train loop every target
     (LM, TMS, ResidMLP, …) runs through.
@@ -890,6 +956,7 @@ def run_decomposition_training[EvalContextT](
         is_main=is_main,
         faith_warmup=faith_warmup,
         profiling=profiling,
+        component_initializer=component_initializer,
     )
     if prepared is None:
         return
@@ -918,7 +985,7 @@ def run_decomposition_training[EvalContextT](
     _run_loop(pd, cadence, evaluation, sink, prepared, is_main, run_step, profiling)
 
 
-def run_targeted_decomposition_training[EvalContextT](
+def run_targeted_decomposition_training[EvalPassT, EvalContextT](
     pd: TargetedPDConfig,
     nontarget: NontargetConfig,
     cadence: Cadence,
@@ -931,9 +998,10 @@ def run_targeted_decomposition_training[EvalContextT](
     compiler_options: dict[str, bool | int | str],
     sample_target_batch: Callable[[int], Any],
     sample_nontarget_batch: Callable[[int], Any],
-    evaluation: Evaluation[EvalContextT] | None,
+    evaluation: Evaluation[EvalPassT, EvalContextT] | None,
     sink: MetricsSink,
     profiling: ProfilingMode | None,
+    component_initializer: ComponentInitializer = random_component_initializer,
 ) -> None:
     """The targeted-PD (tPD) engine entry (SPEC §11) — `run_decomposition_training`'s twin
     over the same `_prepare_run` / `_run_loop` core, stepping the two-pass
@@ -961,6 +1029,7 @@ def run_targeted_decomposition_training[EvalContextT](
         is_main=is_main,
         faith_warmup=None,
         profiling=profiling,
+        component_initializer=component_initializer,
     )
     if prepared is None:
         return
@@ -1000,10 +1069,10 @@ def run_targeted_decomposition_training[EvalContextT](
     _run_loop(pd, cadence, evaluation, sink, prepared, is_main, run_step, profiling)
 
 
-def _run_loop[EvalContextT](
+def _run_loop[EvalPassT, EvalContextT](
     pd: PDConfigBase,
     cadence: Cadence,
-    evaluation: Evaluation[EvalContextT] | None,
+    evaluation: Evaluation[EvalPassT, EvalContextT] | None,
     sink: MetricsSink,
     prepared: _PreparedRun,
     is_main: bool,

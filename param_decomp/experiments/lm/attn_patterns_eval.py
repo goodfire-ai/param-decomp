@@ -36,15 +36,11 @@ import numpy as np
 from jax import random
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
-from param_decomp.core.ci_fn import PlacedCIFn, evaluate_compute_ci, materialize_ci_compute_weights
-from param_decomp.core.components import ComponentStacks
 from param_decomp.core.jit_util import filter_jit
 from param_decomp.core.linear_plan import uniform_like
 from param_decomp.core.model import (
-    CaptureKeys,
     MaterializedMasking,
     PlacedModel,
-    prepare_compute_weights,
 )
 
 
@@ -99,12 +95,29 @@ def _pattern_kl(target_pattern: Array, masked_pattern: Array) -> Array:
 
 
 AttnPatternsStep = Callable[
-    [PlacedModel, Any, Any, Int[Array, "*leading"], PRNGKeyArray],
+    [
+        PlacedModel,
+        Any,
+        Int[Array, "*leading"],
+        dict[str, Array],
+        dict[str, Array],
+        PRNGKeyArray,
+    ],
     tuple[dict[str, Array], dict[str, int]],
 ]
-"""`(model, components, placed_ci_fn, tokens, key) -> ({q_site: sum_kl}, {q_site: n_dists})`
-— one batch's per-layer summed KL (fp32) and distribution counts. `key` is unused by the
-deterministic CI step. `model` (frozen-weight-bearing) is the jit ARG."""
+"""`(model, prepared_weights, tokens, ci_lower, clean_site_outputs_by_site, key) ->
+({q_site: sum_kl}, {q_site: n_dists})` — one batch's per-layer summed KL (fp32) and
+distribution counts. The clean-side Q/K values come from the pass's shared batch context;
+only the masked forward runs here. `key` is unused by the deterministic CI step. `model`
+(frozen-weight-bearing) is the jit ARG."""
+
+
+def attn_output_key_by_site(model_static: PlacedModel) -> dict[str, str]:
+    """The decomposed q/k sites' canonical output capture keys — the clean-capture demand
+    this eval declares on the shared batch context."""
+    layer_pairs = _attn_layer_sites(model_static.site_names)
+    requested_sites = tuple(site for pair in layer_pairs for site in pair)
+    return dict(zip(requested_sites, model_static.site_output_keys(requested_sites), strict=True))
 
 
 def _attn_pattern_model(model: PlacedModel) -> AttnPatternModel:
@@ -155,39 +168,27 @@ def _assert_position_axis(model_static: PlacedModel) -> None:
 
 def make_ci_attn_patterns_step(
     model_static: PlacedModel,
-    ci_capture_keys: CaptureKeys,
     compiler_options: dict[str, bool | int | str] | None = None,
 ) -> AttnPatternsStep:
-    """Deterministic CI-mask attention-pattern step: one clean union and one masked forward."""
+    """Deterministic CI-mask attention-pattern step: one masked forward over the shared
+    context's clean-side Q/K values."""
     _assert_position_axis(model_static)
     assert isinstance(model_static.model, AttnPatternModel), (
         f"attn-patterns eval needs a target exposing attention_pattern_from_qk; {type(model_static.model).__name__} does not"
     )
-    site_names = model_static.site_names
-    layer_pairs = _attn_layer_sites(site_names)
-    requested_sites = tuple(site for pair in layer_pairs for site in pair)
-    site_output_keys = model_static.site_output_keys(requested_sites)
-    clean_capture_keys = ci_capture_keys | frozenset(site_output_keys)
-    output_key_by_site = dict(zip(requested_sites, site_output_keys, strict=True))
+    layer_pairs = _attn_layer_sites(model_static.site_names)
+    output_key_by_site = attn_output_key_by_site(model_static)
+    site_output_keys = tuple(output_key_by_site.values())
 
     def step(
         model: PlacedModel,
-        components: ComponentStacks,
-        placed_ci_fn: PlacedCIFn,
+        prepared_weights: Any,
         tokens: Int[Array, "*leading"],
+        ci_lower: dict[str, Array],
+        clean_site_outputs_by_site: dict[str, Array],
         _key: PRNGKeyArray,
     ) -> tuple[dict[str, Array], dict[str, int]]:
-        clean_captures_by_key = model.clean_forward(tokens, clean_capture_keys).captures
-        clean_ci_inputs_by_key = {key: clean_captures_by_key[key] for key in ci_capture_keys}
-        clean_site_outputs_by_site = {
-            site: clean_captures_by_key[key] for site, key in output_key_by_site.items()
-        }
         target_patterns = _attention_patterns(model, layer_pairs, clean_site_outputs_by_site)
-        prepared_weights = prepare_compute_weights(model, components)
-        ci_lower = evaluate_compute_ci(
-            materialize_ci_compute_weights(placed_ci_fn), clean_ci_inputs_by_key, remat=False
-        ).lower
-
         masked_captures_by_key = model.masked_forward(
             prepared_weights,
             tokens,
@@ -209,13 +210,13 @@ def make_ci_attn_patterns_step(
 
 def make_stochastic_attn_patterns_step(
     model_static: PlacedModel,
-    ci_capture_keys: CaptureKeys,
     n_mask_samples: int,
     compiler_options: dict[str, bool | int | str] | None = None,
 ) -> AttnPatternsStep:
     """Stochastic-mask attn-patterns step: `n_mask_samples` draws of `mask = ci + (1−ci)·s`
-    (with weight deltas), per-draw per-layer pattern KL summed. RNG via per-draw / per-site
-    `fold_in` (the eval-step discipline, mirrors `hidden_acts_eval`)."""
+    (with weight deltas) over the shared context's clean-side Q/K values, per-draw
+    per-layer pattern KL summed. Per-draw and per-site `fold_in` keeps each random stream
+    independent and reproducible."""
     _assert_position_axis(model_static)
     assert isinstance(model_static.model, AttnPatternModel), (
         f"attn-patterns eval needs a target exposing attention_pattern_from_qk; {type(model_static.model).__name__} does not"
@@ -223,28 +224,18 @@ def make_stochastic_attn_patterns_step(
     assert n_mask_samples >= 1, n_mask_samples
     site_names = model_static.site_names
     layer_pairs = _attn_layer_sites(site_names)
-    requested_sites = tuple(site for pair in layer_pairs for site in pair)
-    site_output_keys = model_static.site_output_keys(requested_sites)
-    clean_capture_keys = ci_capture_keys | frozenset(site_output_keys)
-    output_key_by_site = dict(zip(requested_sites, site_output_keys, strict=True))
+    output_key_by_site = attn_output_key_by_site(model_static)
+    site_output_keys = tuple(output_key_by_site.values())
 
     def step(
         model: PlacedModel,
-        components: ComponentStacks,
-        placed_ci_fn: PlacedCIFn,
+        prepared_weights: Any,
         tokens: Int[Array, "*leading"],
+        ci_lower: dict[str, Array],
+        clean_site_outputs_by_site: dict[str, Array],
         key: PRNGKeyArray,
     ) -> tuple[dict[str, Array], dict[str, int]]:
-        clean_captures_by_key = model.clean_forward(tokens, clean_capture_keys).captures
-        clean_ci_inputs_by_key = {key: clean_captures_by_key[key] for key in ci_capture_keys}
-        clean_site_outputs_by_site = {
-            site: clean_captures_by_key[key] for site, key in output_key_by_site.items()
-        }
         target_patterns = _attention_patterns(model, layer_pairs, clean_site_outputs_by_site)
-        prepared_weights = prepare_compute_weights(model, components)
-        ci_lower = evaluate_compute_ci(
-            materialize_ci_compute_weights(placed_ci_fn), clean_ci_inputs_by_key, remat=False
-        ).lower
 
         sum_kl = {q: jnp.zeros((), jnp.float32) for q, _ in layer_pairs}
         for draw_idx in range(n_mask_samples):
@@ -285,28 +276,21 @@ def make_stochastic_attn_patterns_step(
     return filter_jit(step, compiler_options=compiler_options)
 
 
-def accumulate_attn_patterns(
-    step: AttnPatternsStep,
-    model: PlacedModel,
-    components: ComponentStacks,
-    placed_ci_fn: PlacedCIFn,
-    token_batches: list[Int[Array, "*leading"]],
-    base_key: PRNGKeyArray,
+def fold_layer_kl(
+    accumulated: dict[str, LayerKLReduction],
+    batch_sum: dict[str, Array],
+    batch_n: dict[str, int],
 ) -> dict[str, LayerKLReduction]:
-    """Drive `step` over the eval batches, host-accumulating `(Σ sum_kl, Σ n)` per layer
-    (the density/mean/hidden-acts accumulator pattern). Per-batch RNG is
-    `fold_in(base_key, batch_idx)`."""
-    assert token_batches, "attn-patterns eval needs at least one batch"
-    sums: dict[str, float] = {}
-    counts: dict[str, int] = {}
-    for batch_idx, tokens in enumerate(token_batches):
-        batch_sum, batch_n = step(
-            model, components, placed_ci_fn, tokens, random.fold_in(base_key, batch_idx)
+    """Fold one batch's `(Σ sum_kl, Σ n)` per layer into the pass accumulator."""
+    return {
+        site: LayerKLReduction(
+            sum_kl=(accumulated[site].sum_kl if site in accumulated else 0.0)
+            + float(np.asarray(batch_sum[site])),
+            n_distributions=(accumulated[site].n_distributions if site in accumulated else 0)
+            + int(batch_n[site]),
         )
-        for site in batch_sum:
-            sums[site] = sums.get(site, 0.0) + float(np.asarray(batch_sum[site]))
-            counts[site] = counts.get(site, 0) + int(batch_n[site])
-    return {s: LayerKLReduction(sum_kl=sums[s], n_distributions=counts[s]) for s in sums}
+        for site in batch_sum
+    }
 
 
 def attn_patterns_log_entries(

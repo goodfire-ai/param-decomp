@@ -58,7 +58,7 @@ exactly the JAX "mean over all forwards of `kl_per_position`" (§4e).
 | torch class | objective | sources | plan | scope | misc |
 |---|---|---|---|---|---|
 | `FaithfulnessLoss` | weight-space: `Σ‖Δ‖²/Σnumel` | — | — | — | already JAX (`losses.faithfulness_loss`) |
-| `ImportanceMinimalityLoss` | CI-space Lp + entropy | — | — | — | already JAX; p-anneal, β, D2 global sums |
+| `ImportanceMinimalityLoss` | CI-space smooth-L0 activity + entropy | — | — | — | already JAX; gamma anneal, D2 global sums |
 | `UnmaskedReconLoss` | KL final logits | const **1** (mask≡1, CI irrelevant) | 1 fwd, all sites, route-all | n/a (constant) | **no delta path** (delta_mask ≡ 0) |
 | `CIMaskedReconLoss` | KL | const **0** (mask = ci) | 1 fwd, all sites, route-all | n/a | no delta path |
 | `CIMaskedReconSubsetLoss` | KL | const 0 | 1 fwd, all sites live, routed subset (`uniform_k` / `static_p` / `all`) | n/a | router over the full site set |
@@ -300,9 +300,10 @@ no separate boolean can contradict the data. (ii) Stochastic delta masks are alw
 full `(B,T)` fresh draws regardless of anything — consistent with torch.
 
 **(c) Hidden-acts losses.** `StochasticHiddenActsReconLoss.update` compares each
-selected site's linear output under the frozen and masked forwards. The policy remains:
-these are standalone eval metrics, not training recon terms; making site-local MSE a
-training objective still requires an explicit S31 policy amendment. **Plumbing amended
+selected site's linear output under the frozen and masked forwards. The standalone eval
+metrics were removed 2026-08-25 (S31 retired) — S35's per-term rider is the one
+hidden-activation measurement — and site-local MSE as a training objective stays
+refused. **Plumbing amended
 2026-07-30:** the former fifth `masked_site_outputs` method is retired. A target now
 provides canonical keys for site outputs and returns those values from the same
 `masked_forward` used for logits. One clean-forward request obtains frozen site-output
@@ -312,8 +313,8 @@ authorization for a new loss.
 **Update (SPEC S35):** a training use case DID appear: `HiddenActsReconstruction` as an
 auxiliary inside an existing end-to-end recon term, currently measured by relative MSE. It uses the unified target-owned capture
 plan rather than a loss-specific model seam: the clean plan unions CI plus every term's points,
-and each masked draw requests only its term's points. S31's named hidden-acts metrics remain
-eval-only as standalone objectives; S35 authorizes hidden-activation reconstruction only as an
+and each masked draw requests only its term's points. S31's named hidden-acts metrics were
+removed outright (2026-08-25); S35 authorizes hidden-activation reconstruction only as an
 auxiliary that cannot replace the term's end-to-end comparison. The fresh-PGD eval probe configures and ascends the
 same combined objective.
 
@@ -396,7 +397,7 @@ divisibility for `nsc`) becomes a converter assert.
 | torch loss | tier | notes |
 |---|---|---|
 | `FaithfulnessLoss` | **already-runnable** | `losses.faithfulness_loss`, S17/N2 |
-| `ImportanceMinimalityLoss` | **already-runnable** | S7–S9, D2; constant p is a bare-float `pnorm` (#915, knot schedules) |
+| `ImportanceMinimalityLoss` | **already-runnable** | S7–S9, D2; constant gamma is a bare-float `gamma` (#915, knot schedules) |
 | `ChunkwiseSubsetReconLoss` | **already-runnable** | the production stochastic term |
 | `StochasticReconSubsetLoss` (uniform_k) | **already-runnable** | converted today as 1-chunk plan |
 | `PersistentPGDReconLoss` (sc/bsc, Adam, clamp) | **already-runnable** | the production adversary; `bsc` is batch-sharded (`P("dp", None, None)`), no replica sync |
@@ -410,7 +411,7 @@ divisibility for `nsc`) becomes a converter assert.
 | PPGD `sign` SRC_STEP, sigmoid parameterization, `n_samples>1` | **composition-only** | SPEC §6 already names them as variation points |
 | multiple simultaneous loss/adversary terms | **composition-only** | §2.2 TrainState dicts + per-term S14 |
 | PPGD `start_frac > 0` | **implemented (2026-06-16)** | Q3 — `term_active` `where`-gating, SPEC S32 |
-| `StochasticHiddenActsReconLoss` | **eval-only (decided, SPEC S31); plumbing implemented** | target-owned site-output capture on the ordinary clean/masked forward; still refused as a training term (§4c) |
+| `StochasticHiddenActsReconLoss` | **removed 2026-08-25 (S31 retired)** | the standalone eval metrics are deleted; site-local MSE stays refused as a training term (§4c), and the target-owned site-output capture seam survives for the attn-patterns eval |
 | attn-pattern eval losses | **eval-only; plumbing implemented** | Q/K site-output capture plus a target-owned derived pattern recipe (§4d) |
 
 **`torch_config.py` converter changes:** `_losses` stops slotting into
@@ -449,7 +450,7 @@ for `loss_metrics + n_mask_samples + sampling` (`remat_forwards` stays).
    passthrough. Unlocks: Unmasked, CIMasked×3, Stochastic×3, binomial. Pure
    refactor of `train.py`'s two closures into one; production configs must produce
    a bit-identical trajectory (regenerate nothing; the equivalence fixtures
-   already pin the four production terms — extend `tests/equivalence` with one
+   already pin the four production terms — extend `param_decomp/tests/targets/equivalence/` with one
    golden per new strategy).
 2. **Stage 2 — fresh-PGD as a term strategy.** Lift the existing fresh-PGD branch
    into `FreshPGDSources` per term, Q2 routing-draw sharing, `per_site_plan`

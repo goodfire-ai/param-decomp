@@ -59,7 +59,7 @@ chunk over all 4 blocks); git history keeps both.
 ## Rules
 
 1. **Every LM config yaml in the tree parses at tip** — CI-enforced by
-   `param_decomp/tests/test_repo_configs_parse.py` (schema parse + the placement
+   `param_decomp/tests/experiments/test_repo_configs_parse.py` (schema parse + the placement
    gate). A schema PR that breaks one migrates
    it **in the same PR**, with an executed in-repo migration (the #966
    pattern) — never a script attached to a PR comment (#939 attached one; it

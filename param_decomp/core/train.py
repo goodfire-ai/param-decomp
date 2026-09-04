@@ -11,7 +11,7 @@ explicit `term` adversary reuses the fused graph and ascends the complete term (
 S13'/S14'/S23). All trainable state is fp32 masters (SPEC N1); forwards run in bf16
 via explicit casts.
 
-Schedules (imp-min p anneal, source-LR warmup, every scheduled loss coefficient) are
+Schedules (imp-min gamma anneal, source-LR warmup, every scheduled loss coefficient) are
 computed inside the step from `state.step`, so the jit signature is stable across the
 whole run (SPEC S9, S13); each coefficient resolves ONCE at the top of the step and only
 values flow into the loss math.
@@ -57,10 +57,9 @@ from param_decomp.core.losses import (
     EmaFrequencyTerm,
     FrequencyTerm,
     ReconstructionLoss,
-    annealed_imp_min_param,
+    activity_sum,
     coeff_at,
     imp_min_terms,
-    lp_term,
     mean_reconstruction_losses,
     per_component_frequencies,
     reconstruction_loss,
@@ -88,7 +87,6 @@ from param_decomp.core.model import (
     select_captures,
 )
 from param_decomp.core.objective import (
-    ImportanceMinimalityTerm,
     LossSurface,
     ResolvedNonlinearity,
     TargetedObjective,
@@ -944,13 +942,12 @@ def apply_gradients(
 
 def shared_step_metrics(
     terms: tuple[ReconLossTerm[MaskSourceStrategy], ...],
-    imp: ImportanceMinimalityTerm,
     *,
     total_loss: Array,
-    imp_lp: Array,
+    imp_activity: Array,
     imp_freq: Array,
     freq_batch: Array | None,
-    imp_min_param: Array,
+    gamma: Array,
     term_breakdowns: tuple[ReconstructionLoss, ...],
     grad_norm_metrics: dict[str, Array],
     adversaries: dict[str, PersistentAdversary],
@@ -960,10 +957,10 @@ def shared_step_metrics(
     term_losses = tuple(breakdown.total for breakdown in term_breakdowns)
     metrics = {
         "total": total_loss,
-        imp.imp_loss_key: imp_lp,
+        "imp": imp_activity,
         "freq": imp_freq,
         **({"freq_batch": freq_batch} if freq_batch is not None else {}),
-        imp.imp_min_param_key: imp_min_param,
+        "gamma_imp": gamma,
         **{f"loss/{t.name}": v for t, v in zip(terms, term_losses, strict=True)},
         **grad_norm_metrics,
     }
@@ -990,7 +987,7 @@ class MainLossAux(NamedTuple):
 
     reported_total: Array
     faith_loss: Array
-    imp_lp: Array
+    imp_activity: Array
     freq: FrequencyTerm | None
     nonlinearity_metrics: dict[str, Array]
     term_breakdowns: tuple[ReconstructionLoss, ...]
@@ -1010,10 +1007,18 @@ def make_train_step[PreparedT](
     """Build the plain VPD step from its forward substrate and objective."""
     grid = ReconGrid.of(objective.recon, key_offset=1)
     imp = objective.imp
-    nonlinearity = ResolvedNonlinearity.resolve(objective.nonlinearity, model_static.sites)
+    match objective.nonlinearity:
+        case None:
+            nonlinearity = None
+        case term:
+            nonlinearity = ResolvedNonlinearity.resolve(term, model_static.sites)
     assert total_steps > 0, total_steps
     model_static.assert_hidden_acts_reconstruction_points(tuple(sorted(grid.capture_keys)))
-    freq_role = resolve_frequency(imp.cfg.frequency)
+    match imp.cfg.frequency:
+        case None:
+            freq_role = None
+        case freq_cfg:
+            freq_role = resolve_frequency(freq_cfg)
     coeff_schedules: dict[str, LossCoeff] = {
         imp.name: imp.coeff,
         **{term.name: term.coeff for term in grid.terms},
@@ -1039,7 +1044,7 @@ def make_train_step[PreparedT](
         decomposition = state.decomposition
         training = state.training
         train_frac = train_frac_at(training.step, total_steps)
-        imp_min_param = annealed_imp_min_param(train_frac, imp.cfg)
+        gamma = scheduled_value_at(train_frac, imp.cfg.gamma)
         # Every coefficient's per-step value, resolved once at the top of the step: the
         # loss math below sees only scalars, never schedule objects.
         imp_coeff = coeff_at(train_frac, imp.coeff)
@@ -1093,8 +1098,8 @@ def make_train_step[PreparedT](
             ci_stacked = model.stack_ci(ci.lower)
             faith_loss = faithfulness(faithfulness_weight_deltas(model, components))
             faith_term = coeff_at(train_frac, objective.faith.coeff) * faith_loss
-            frequencies = per_component_frequencies(ci.upper, imp.cfg, imp_min_param)
-            imp_lp = lp_term(frequencies)
+            frequencies = per_component_frequencies(ci.upper, gamma)
+            imp_activity = activity_sum(frequencies)
 
             draw_loss = main_draw_loss(
                 substrate,
@@ -1124,7 +1129,7 @@ def make_train_step[PreparedT](
                     freq = freq_role.term(
                         frequencies, training.freq_ema, jnp.asarray(training.step, jnp.float32)
                     )
-            base = faith_term + imp_coeff * imp_lp
+            base = faith_term + imp_coeff * imp_activity
             if freq is not None:
                 base = base + freq_coeff * freq.freq
             nonlinearity_metrics: dict[str, Array] = {}
@@ -1150,7 +1155,7 @@ def make_train_step[PreparedT](
             return total_loss, MainLossAux(
                 reported_total=reported_total,
                 faith_loss=faith_loss,
-                imp_lp=imp_lp,
+                imp_activity=imp_activity,
                 freq=freq,
                 nonlinearity_metrics=nonlinearity_metrics,
                 term_breakdowns=term_breakdowns,
@@ -1208,12 +1213,11 @@ def make_train_step[PreparedT](
         metrics = (
             shared_step_metrics(
                 grid.terms,
-                imp,
                 total_loss=aux.reported_total,
-                imp_lp=aux.imp_lp,
+                imp_activity=aux.imp_activity,
                 imp_freq=imp_freq,
                 freq_batch=freq_batch,
-                imp_min_param=imp_min_param,
+                gamma=gamma,
                 term_breakdowns=aux.term_breakdowns,
                 grad_norm_metrics=grad_norm_metrics,
                 adversaries=training.adversaries,
@@ -1322,7 +1326,11 @@ def make_targeted_train_step[PreparedT](
     model_static.assert_hidden_acts_reconstruction_points(
         tuple(sorted(target.capture_keys | nontarget.capture_keys))
     )
-    freq_role = resolve_frequency(imp.cfg.frequency)
+    match imp.cfg.frequency:
+        case None:
+            freq_role = None
+        case freq_cfg:
+            freq_role = resolve_frequency(freq_cfg)
     nt_terms = nontarget.terms
     coeff_schedules: dict[str, LossCoeff] = {
         imp.name: imp.coeff,
@@ -1395,7 +1403,7 @@ def make_targeted_train_step[PreparedT](
         decomposition = state.decomposition
         training = state.training
         train_frac = train_frac_at(training.step, total_steps)
-        imp_min_param = annealed_imp_min_param(train_frac, imp.cfg)
+        gamma = scheduled_value_at(train_frac, imp.cfg.gamma)
         # Every coefficient's per-step value, resolved once at the top of the step: the
         # loss math below sees only scalars, never schedule objects.
         imp_coeff = coeff_at(train_frac, imp.coeff)
@@ -1455,7 +1463,7 @@ def make_targeted_train_step[PreparedT](
         ]:
             prepared_weights, ci, nt_ci, persistent_sources = trainable
             ci_stacked = model.stack_ci(ci.lower)
-            imp_lp, imp_freq = imp_min_terms(ci.upper, imp.cfg, imp_min_param)
+            imp_activity, imp_freq = imp_min_terms(ci.upper, imp.cfg, gamma)
 
             draw_loss = main_draw_loss(
                 substrate,
@@ -1471,7 +1479,7 @@ def make_targeted_train_step[PreparedT](
                 term_coeffs=term_coeffs,
             )
             term_breakdowns = target.losses(draws_per_term, draw_loss)
-            base = imp_coeff * imp_lp + freq_coeff * imp_freq
+            base = imp_coeff * imp_activity + freq_coeff * imp_freq
             # Differentiated total vs reported total: see the plain factory — a
             # persistent-carrying term's coeff rides its model-side cotangents, so it
             # enters the total at weight 1 and its adversary receives dL/ds (SPEC S14').
@@ -1490,10 +1498,10 @@ def make_targeted_train_step[PreparedT](
             # ── the non-target pass: its imp-min (the shared annealed param, its own
             # coeff) + its delta-pinned grid, added to the SAME total so one backward
             # grads both passes (SPEC T1). ──
-            nt_imp_lp, nt_imp_freq = imp_min_terms(nt_ci.upper, imp.cfg, imp_min_param)
-            nt_total = nt_imp_coeff * nt_imp_lp + freq_coeff * nt_imp_freq
+            nt_imp_activity, nt_imp_freq = imp_min_terms(nt_ci.upper, imp.cfg, gamma)
+            nt_total = nt_imp_coeff * nt_imp_activity + freq_coeff * nt_imp_freq
             nt_aux = {
-                f"loss/nontarget/{imp.imp_loss_key}": nt_imp_lp,
+                "loss/nontarget/imp": nt_imp_activity,
                 "loss/nontarget/freq": nt_imp_freq,
             }
             nt_breakdowns = nontarget.losses(
@@ -1510,10 +1518,10 @@ def make_targeted_train_step[PreparedT](
             nt_aux["loss/nontarget/total"] = nt_total
             total_loss = total_loss + nt_total
             reported_total = reported_total + nt_total
-            return total_loss, (reported_total, imp_lp, imp_freq, term_breakdowns, nt_aux)
+            return total_loss, (reported_total, imp_activity, imp_freq, term_breakdowns, nt_aux)
 
         with jax.named_scope("pd_value_and_grad"):
-            (_, (reported_total, imp_lp, imp_freq, term_breakdowns, nt_aux)), grads = (
+            (_, (reported_total, imp_activity, imp_freq, term_breakdowns, nt_aux)), grads = (
                 eqx.filter_value_and_grad(loss_fn, has_aux=True)(
                     (prepared_weights, ci, nt_ci, warmed_sources)
                 )
@@ -1565,12 +1573,11 @@ def make_targeted_train_step[PreparedT](
         metrics = (
             shared_step_metrics(
                 target.terms,
-                imp,
                 total_loss=reported_total,
-                imp_lp=imp_lp,
+                imp_activity=imp_activity,
                 imp_freq=imp_freq,
                 freq_batch=None,
-                imp_min_param=imp_min_param,
+                gamma=gamma,
                 term_breakdowns=term_breakdowns,
                 grad_norm_metrics=grad_norm_metrics,
                 adversaries=training.adversaries,

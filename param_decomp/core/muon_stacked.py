@@ -24,7 +24,7 @@ both moves axes between dims and gathers others trips the SPMD
 involuntary-full-rematerialization fallback (which replicates the whole tensor). The
 row language shards the stack axis only: a matrix-axis-carrying waypoint — the persist
 row verbatim included — is refused at table build, for that same fallback (pinned by
-the fd-2-warning tests in tests/test_optim_torch_parity.py) and because a
+the fd-2-warning tests in param_decomp/tests/core/test_optim_torch_parity.py) and because a
 matrix-sharded NS operand is an explicit-mode type error on the Gram contraction.
 
 Structure mirrors `optax.contrib.muon` exactly — same `MuonState(count, mu, ns_coeffs)`,

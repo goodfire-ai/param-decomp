@@ -44,11 +44,8 @@ check-pre-commit:
 
 # tests
 
-# `param_decomp/core/tests/` is the engine suite; `param_decomp/targets/tests/` the
-# per-target parity/golden suites (incl. the LM equivalence goldens);
-# `param_decomp/{tests,experiments}/` the library-level + composition suites (the toy
-# TMS/ResidMLP experiment tests live beside their composition roots under experiments/).
-TEST_PATHS = param_decomp/core/tests/ param_decomp/targets/tests/ param_decomp/tests/ param_decomp/experiments/
+# All Python tests live under `param_decomp/tests/`, mirroring the public package.
+TEST_PATHS = param_decomp/tests/
 
 # min(16, nproc). XLA already threads within each test, so once the workers saturate the
 # box another one buys nothing — the cap only stops a large workstation spawning dozens for
@@ -69,8 +66,22 @@ test-all:
 # timeout), and a timed-out job is killed before its post steps, so it never saves the
 # JAX compile cache and every later run repeats the compile cost. The llama goldens
 # split off because they dominate one xdist worker for ~8 min and co-schedule the
-# heaviest memory peaks next to the recon end-to-end tests on a 16GB runner.
-LLAMA_GOLDEN_TEST_PATHS = param_decomp/targets/tests/test_llama31.py param_decomp/targets/tests/test_llama_simple_mlp.py
+# heaviest memory peaks next to the recon end-to-end tests on a 16GB runner. The three
+# core integration modules stay on the lab shard: moving their files must not move their
+# large memory peaks back beside the rest of the core suite.
+LLAMA_GOLDEN_TEST_PATHS = param_decomp/tests/targets/test_llama31.py param_decomp/tests/targets/test_llama_simple_mlp.py
+CORE_LAB_TEST_PATHS = \
+	param_decomp/tests/core/test_hidden_acts_reconstruction.py \
+	param_decomp/tests/core/test_no_checkpointing.py \
+	param_decomp/tests/core/test_placed_eval_tiers.py
+CORE_TEST_PATHS = param_decomp/tests/core/ param_decomp/tests/targets/
+LAB_TEST_PATHS = \
+	param_decomp/tests/clustering/ \
+	param_decomp/tests/experiments/ \
+	param_decomp/tests/infra/ \
+	param_decomp/tests/migrations/ \
+	param_decomp/tests/vendored_jax/ \
+	$(CORE_LAB_TEST_PATHS)
 
 .PHONY: test-ci-llama-goldens
 test-ci-llama-goldens:
@@ -78,11 +89,11 @@ test-ci-llama-goldens:
 
 .PHONY: test-ci-core
 test-ci-core:
-	uv run pytest param_decomp/core/tests/ param_decomp/targets/tests/ $(addprefix --ignore=,$(LLAMA_GOLDEN_TEST_PATHS)) --runslow --durations 10 --numprocesses $(NUM_PROCESSES) --dist worksteal
+	uv run pytest $(CORE_TEST_PATHS) $(addprefix --ignore=,$(LLAMA_GOLDEN_TEST_PATHS) $(CORE_LAB_TEST_PATHS)) --runslow --durations 10 --numprocesses $(NUM_PROCESSES) --dist worksteal
 
 .PHONY: test-ci-lab-multidevice
 test-ci-lab-multidevice:
-	uv run pytest param_decomp/tests/ param_decomp/experiments/ --runslow --durations 10 --numprocesses $(NUM_PROCESSES) --dist worksteal
+	uv run pytest $(LAB_TEST_PATHS) --runslow --durations 10 --numprocesses $(NUM_PROCESSES) --dist worksteal
 	$(MAKE) test-multidevice
 
 # Tests needing >1 device hang at the default 1, so run them on logical CPU devices.

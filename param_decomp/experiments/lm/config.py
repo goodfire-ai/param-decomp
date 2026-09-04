@@ -16,7 +16,7 @@ of a site name — which the CI-arch resolvers (`resolve_lm_ci_arch`) consume di
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Any, Literal, Self, cast
 
 import yaml
 from pydantic import (
@@ -190,6 +190,7 @@ class GluTransformerCSpec(BaseConfig):
     kind: Literal["glu_transformer"] = "glu_transformer"
     layers: LayerSelection
     cs: dict[GluMatrix, PositiveInt] = Field(..., min_length=1)
+    initialization: Literal["random", "neuron_aligned"] = "random"
 
 
 class SimpleMlpCSpec(BaseConfig):
@@ -198,6 +199,7 @@ class SimpleMlpCSpec(BaseConfig):
     kind: Literal["simple_mlp"] = "simple_mlp"
     layers: LayerSelection
     cs: dict[SimpleMlpMatrix, PositiveInt] = Field(..., min_length=1)
+    initialization: Literal["random", "neuron_aligned"] = "random"
 
 
 @dataclass(frozen=True)
@@ -525,6 +527,7 @@ def resolve_decomposition(
     sites = decomposition.sites
     match spec:
         case HFWeightsInVendored() | HFTarget():
+            glu_sites = cast(GluTransformerCSpec, sites)
             match spec:
                 case HFWeightsInVendored():
                     assert spec.model_class.rsplit(".", 1)[-1] == "VendoredLlama", spec.model_class
@@ -543,6 +546,7 @@ def resolve_decomposition(
                 sites=tree.site_cs(glu_transformer.FAMILY.name_of),
                 weights_dtype=target_config.weights_dtype,
                 attention_implementation=target_config.attention_implementation,
+                component_initialization=glu_sites.initialization,
             )
             grammar = _build_tap_grammar(
                 family=glu_transformer.FAMILY,
@@ -553,17 +557,24 @@ def resolve_decomposition(
                 dims_of=lambda kind: glu_transformer.site_dims(arch, kind),
             )
             site_specs = glu_transformer.glu_site_specs(arch, target.sites)
+            if glu_sites.initialization == "neuron_aligned":
+                for site_spec in site_specs:
+                    glu_transformer.validate_neuron_aligned_capacity(
+                        glu_transformer.GLU_ANATOMY, site_spec
+                    )
             return _ResolvedDecomposition(target, tree, grammar, site_specs)
         case PretrainedTarget():
             assert spec.model_class.rsplit(".", 1)[-1] == "LlamaSimpleMLP", spec.model_class
             cache_dir = pretrain_cache.resolved_cache_dir(data_root, spec.run_path)
             arch = llama_simple_mlp.load_model_config(cache_dir)
             tree = resolve_site_tree(sites, llama_simple_mlp.FAMILY, arch.n_layer)
+            simple_mlp_sites = cast(SimpleMlpCSpec, sites)
             target = LlamaSimpleMLPTargetConfig(
                 pretrain_run_path=spec.run_path,
                 sites=tree.site_cs(llama_simple_mlp.FAMILY.name_of),
                 weights_dtype=target_config.weights_dtype,
                 attention_implementation=target_config.attention_implementation,
+                component_initialization=simple_mlp_sites.initialization,
             )
             grammar = _build_tap_grammar(
                 family=llama_simple_mlp.FAMILY,
@@ -574,6 +585,11 @@ def resolve_decomposition(
                 dims_of=lambda kind: llama_simple_mlp.site_dims(arch, kind),
             )
             site_specs = llama_simple_mlp.site_specs(arch, target.sites)
+            if simple_mlp_sites.initialization == "neuron_aligned":
+                for site_spec in site_specs:
+                    glu_transformer.validate_neuron_aligned_capacity(
+                        llama_simple_mlp.SIMPLE_MLP_ANATOMY, site_spec
+                    )
             return _ResolvedDecomposition(target, tree, grammar, site_specs)
 
 

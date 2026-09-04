@@ -1,4 +1,2 @@
-prune param_decomp/core/tests
-prune param_decomp/targets/tests
 prune param_decomp/tests
 global-exclude __pycache__ *.py[cod]

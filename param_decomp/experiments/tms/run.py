@@ -40,10 +40,11 @@ from param_decomp.core.nonlinearity_eval import (
 from param_decomp.core.objective import build_objective
 from param_decomp.core.run import (
     EvalInvocation,
-    EvalOperation,
     Evaluation,
     MetricsSink,
+    PassOperation,
     install_sigterm_flag,
+    no_batch_contexts,
     run_decomposition_training,
 )
 from param_decomp.core.sharding import single_device_mesh
@@ -180,7 +181,7 @@ def tms_ground_truth_operation(
     total_steps: int,
     checkpointing: Checkpointing,
     train_log_every: int,
-) -> EvalOperation[EvalInvocation]:
+) -> PassOperation[EvalInvocation]:
     """The TMS-native ground-truth pass: the `lower_leaky` CI of the single-feature probe
     scored as per-site `IdentityCIError` every train-log step, plus the per-site-permuted
     CI heatmap image alongside each checkpoint."""
@@ -222,7 +223,7 @@ def tms_ground_truth_operation(
         )
         return metrics
 
-    return EvalOperation(schedule=Every(train_log_every), run=ground_truth_eval)
+    return PassOperation(schedule=Every(train_log_every), run=ground_truth_eval)
 
 
 def run_tms_decomposition(built: TMSRun, eval_config: EvalConfig | None, mesh: Mesh) -> None:
@@ -280,7 +281,7 @@ def run_tms_decomposition(built: TMSRun, eval_config: EvalConfig | None, mesh: M
                 wandb_configured=built.run.wandb is not None,
             )
         )
-    evaluation = Evaluation(tuple(operations), lambda invocation: invocation)
+    evaluation = Evaluation(tuple(operations), lambda invocation: invocation, no_batch_contexts)
 
     sink = MetricsSink.for_run(built.run, jax.process_index() == 0)
     run_decomposition_training(

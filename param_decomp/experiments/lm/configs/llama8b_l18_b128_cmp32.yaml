@@ -66,15 +66,14 @@ pd:
     coeff: 1.0e+03
   - type: ImportanceMinimalityLoss
     coeff: 5.0e-06
-    pnorm:
-      max_val: 2.0
+    gamma:
+      max_val: 1.0
       points:
         - {at: 0.0, frac: 1.0}
-        - {at: 1.0, frac: 0.2}
+        - {at: 1.0, frac: 0.01}
     frequency:
       coeff: 1.0e-06
       reference_datapoint_count: 262144
-    eps: 1.0e-12
   - type: StochasticReconSubsetLoss
     coeff: 0.5
     routing:

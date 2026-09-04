@@ -5,7 +5,7 @@ target only through the `DecomposedModel` protocol (`model.py`) and the `ArchFam
 grammar contract (`family.py`). The concrete targets — LM and toy alike — are the
 sibling subpackage `param_decomp.targets` (one slice per architecture); the library's
 layering (core imports NO target, targets import core only) is pinned by
-`tests/test_runtime_standalone.py`. The semantics source of truth is `SPEC.md`
+`param_decomp/tests/core/test_runtime_standalone.py`. The semantics source of truth is `SPEC.md`
 (normative pseudocode + numbered invariants, grounded in the stable torch
 `param_decomp` impl). See `README.md` for the file map.
 
@@ -88,9 +88,6 @@ rejects `sc` at validation; legacy spellings (`scope: {type: ...}`, `mask_scope`
 verbose value names) are rejected at parse — no config aliases remain. Every (positions x source_shape) persistent
 shape is written out in `init_sources_sharded`, so persistent PGD runs on the toys too.
 Batch size is `pd.batch_size` uniformly — `DataConfig` carries no batch.
-`CIHiddenActsReconLoss` / `StochasticHiddenActsReconLoss` are standalone eval metrics
-(`hidden_acts_eval.py`, in-loop on `eval.slow_every`) over canonical site-output keys on the
-same clean/masked forward seam — NOT standalone recon-grid training terms (SPEC S31).
 Each configured recon term retains its end-to-end comparison and may add S35's
 `HiddenActsReconstruction` at explicit target-owned capture points, currently measured as
 positive-coefficient relative MSE. The clean forward
@@ -130,7 +127,7 @@ scan/masked-forward engine, HF loading, and the target's own placement via
 fields applied in the `_prep_qk` pre-RoPE hook; Qwen3's one structural delta). Nothing
 in the shared file switches on a family; the model-name → family registry is composition-side
 (`experiments/lm/config.py::HF_MODEL_VARIANTS`). Qwen3 JAX↔HF parity is pinned DIRECTLY
-by `param_decomp/targets/tests/qwen3_hf_parity/` (a tiny-random `Qwen3ForCausalLM`
+by `param_decomp/tests/targets/qwen3_hf_parity/` (a tiny-random `Qwen3ForCausalLM`
 golden at fp32 tolerance + a slow real-weights logits check; goldens regenerate via its
 torch-env `gen_hf_fixtures.py`). There is ONE
 recon semantics: masks thread through the full token-input forward, loss is KL on final logits
@@ -291,7 +288,7 @@ Llama-8B target is multi-GB. Therefore:
   (`model_static.site_names`, `model_static.sites`, `model_static.recon_loss_fn` — `recon_loss_fn` is a `@staticmethod`,
   pure, holds no arrays, so closing over it is safe). All ARRAY access goes through the
   model ARG (named `model` inside the jitted fn). `make_train_step`, `make_eval_step`,
-  `make_*_hidden_acts_step`, `make_slow_eval_step`, `make_position_ci_step`,
+  `make_slow_eval_step`, `make_position_ci_step`,
   `make_*_attn_patterns_step`, and `make_faith_warmup_step` all follow this; each carries a
   comment at the step factory. The toy `run.py`s follow the same rule.
 - This is why the methods take only the *runtime-varying* args (`vu`, `resid`, masks, …) and
@@ -319,9 +316,9 @@ Llama-8B target is multi-GB. Therefore:
 
 ## Validation stack (run all before claiming correctness)
 
-1. `pytest param_decomp/core/tests/ param_decomp/targets/tests/` — at the default device
+1. `pytest param_decomp/tests/core/ param_decomp/tests/targets/` — at the default device
    count AND `XLA_FLAGS="--xla_force_host_platform_device_count=4"`.
-2. `param_decomp/targets/tests/equivalence/` — fixture-driven JAX-vs-frozen-golden
+2. `param_decomp/tests/targets/equivalence/` — fixture-driven JAX-vs-frozen-golden
    per-term numeric equivalence (fp32, no RNG, zeroed attn). The torch references are
    FROZEN committed goldens (`equivalence/torch_reference.json` + `*.npz`, the sibling
    `simple_mlp_equivalence/*.npz`); the torch generators/verifier that produced them live
@@ -374,7 +371,7 @@ top-level `run_name`, the
 
 **Fine-tune from a parent checkpoint** (`resume_provenance`, SPEC S33, LM-only). A fresh
 run can initialize its trained decomposition (V/U + ci_fn) from a PARENT run's checkpoint
-and continue under a DIFFERENT config (changed LR / coeffs / eps / seq / batch / steps —
+and continue under a DIFFERENT config (changed LR / coeffs / gamma / seq / batch / steps —
 NOT changed C / sites / ci-fn arch). Add to the config:
 
 ```yaml
@@ -388,7 +385,7 @@ resume_provenance:
 On the FIRST entry (own `ckpts/` empty) the trainer restores the `decomposition` item of
 `parent_run_dir/ckpts/175000` onto the fresh reference; the optimizer states,
 persistent sources, and `step` are FRESH (`step = 0`, no faith warmup) so the new LR /
-p-anneal schedule recomputes over the new `cfg.steps` from 0. A subsequent SLURM requeue
+gamma-anneal schedule recomputes over the new `cfg.steps` from 0. A subsequent SLURM requeue
 (own `ckpts/` now non-empty) resumes from the run's own dir and ignores provenance.
 `experiments/lm/training.py::assert_finetune_structural_compat` reads the parent's pinned
 `launch_config.yaml` and

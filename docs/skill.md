@@ -14,8 +14,8 @@ To implement a target model,
 
 - Check for an existing JAX implementation to start from — many language models have JAX implementations on HuggingFace or elsewhere.
 - `core/model.py` is the contract. Read it in full, docstrings included, before writing a line — it carries the waist geometry, the mask semantics, and the per-method requirements.
-- For an LM-shaped target, start from `param_decomp/targets/llama_simple_mlp.py` and copy its structure; read `SyntheticDecomposedModel` in `param_decomp/core/tests/test_generic_model_io.py` (~120 lines, driven through the real train step) when you want the protocol with nothing else attached. Every shipped `DecomposedModel` lives in `param_decomp/targets/` — when you reuse a module from one, read it first; each bakes in its own family's choices (attention flavor, positional encoding, norm placement).
-- Verify the port against an independent reference forward — a torch implementation when one exists, a float64 NumPy forward you write from the architecture spec otherwise; the value of the oracle is its independence from your JAX code. The repo's parity-golden machinery is the shape to copy: frozen goldens under `param_decomp/targets/tests/`, with `qwen3_hf_parity/gen_hf_fixtures.py` as a turnkey generator (tiny-random and `--real` modes, its docstring carries the torch-venv recipe).
+- For an LM-shaped target, start from `param_decomp/targets/llama_simple_mlp.py` and copy its structure; read `SyntheticDecomposedModel` in `param_decomp/tests/core/test_generic_model_io.py` (~120 lines, driven through the real train step) when you want the protocol with nothing else attached. Every shipped `DecomposedModel` lives in `param_decomp/targets/` — when you reuse a module from one, read it first; each bakes in its own family's choices (attention flavor, positional encoding, norm placement).
+- Verify the port against an independent reference forward — a torch implementation when one exists, a float64 NumPy forward you write from the architecture spec otherwise; the value of the oracle is its independence from your JAX code. The repo's parity-golden machinery is the shape to copy: frozen goldens under `param_decomp/tests/targets/`, with `qwen3_hf_parity/gen_hf_fixtures.py` as a turnkey generator (tiny-random and `--real` modes, its docstring carries the torch-venv recipe).
 - **On GPU, set `jax_default_matmul_precision = "highest"` for parity checks**: fp32 matmuls default to TF32 on Ampere+, and a correct port will fail every gate with depth-growing deviation that looks exactly like a wrong block. Check parity on the real target as well as any tiny fixture — the TF32 effect grows with depth, and a 3-layer fixture can read as rounding noise.
 - Before allocating any GPU: parse your config through the experiment schema and run the placement assertions (`assert_placement_claims`) on CPU. Schema, loss-builder, and placement failures are all free to find statically, and their assertion messages are the documentation.
 
@@ -26,19 +26,19 @@ For agents: If you cannot establish an equivalent `DecomposedModel` implementati
 Mapping from our conceptual-level losses (from the handbook) to their (sometimes multiple) instantiations.
 
 - **Parameter faithfulness:** `FaithfulnessLoss`. The squared elementwise error between the component sum and the target weights, averaged over the total decomposed parameter count. Equivalently, the (normalized) sum of squared values in the ∆-component.
-- **Minimality:** `ImportanceMinimalityLoss` (Lp), or the newer `SmoothL0ImportanceMinimalityLoss`. Also measured using L0 as a non-differentiable eval.
-- **Simplicity** — implemented as the nested `frequency:` block on the two importance-minimality losses above.
+- **Minimality:** `ImportanceMinimalityLoss`. Also measured using L0 as a non-differentiable eval.
+- **Simplicity** — implemented as the nested `frequency:` block on the importance-minimality loss above.
 - **Mechanistic faithfulness:** Reconstruction Loss, of which there are many different variations. Loss configs take the rough form `*Recon*Loss`, with the wildcards expanding to variations. Fundamentally a reconstruction loss asks "how well does the decomposition approximate the target model's behaviour" but this leaves unbound various details. There are numerous schemes for masking causally unimportant subcomponents (stochastic masking, adversarial masking, raw CI-value masking), and many other tweaks which improve training dynamics, for example only using the decomposition parameters for a subset of the model, as in our `*ReconSubsetLoss`es or `*ReconLayerwiseLoss`es. In *Interpreting Language Model Parameters*, VPD uses separate stochastic and adversarially masked reconstruction passes, but this is just one potential combination of many valid configurations.
 
 A good default which we have recently settled on:
 
 - `FaithfulnessLoss`
-- `SmoothL0ImportanceMinimalityLoss` + `frequency` term
+- `ImportanceMinimalityLoss` + `frequency` term
 - `MergedStochasticSubsetPPGDReconLoss` — a compound loss combining adversarial (PPGD) and stochastic (StochasticSubset) reconstruction into one pass.
 
 The 4L-Pile reference config (`param_decomp/experiments/lm/configs/pile_llama_simple_mlp-4L.yaml`) carries this recipe with tuned coefficients; the toy reference configs carry the same shape at their own coefficients. In general you should start with a reference config nearest your target.
 
-The most important hyperparameters are not knowable a priori, so **the default arc is to sweep the importance-minimality coefficient** (`SmoothL0ImportanceMinimalityLoss.coeff`). Depending on the pathologies this surfaces, sweep `frequency.coeff` or the subcomponent budget `C` separately. Runs must go to convergence — analyzing or comparing unconverged decompositions is almost always worthless.
+The most important hyperparameters are not knowable a priori, so **the default arc is to sweep the importance-minimality coefficient** (`ImportanceMinimalityLoss.coeff`). Depending on the pathologies this surfaces, sweep `frequency.coeff` or the subcomponent budget `C` separately. Runs must go to convergence — analyzing or comparing unconverged decompositions is almost always worthless.
 
 ### 0. Background
 
@@ -48,10 +48,10 @@ Fresh LM decompositions are usually compute-heavy and often need several sweep r
 
 | Hyperparameter | Reference value | When to change |
 | :---- | :---- | :---- |
-| **Importance-minimality coeff** — `pd.loss_metrics[SmoothL0ImportanceMinimalityLoss].coeff` | `8e-4` (TMS 5→2); `6e-5` (TMS 40→10); `2e-4` (4L-Pile flagship) | **Most sensitive — sweep this first.** Too high → CI collapses below 1 and recon blows up; too low → too many subcomponents fire per input. |
+| **Importance-minimality coeff** — `pd.loss_metrics[ImportanceMinimalityLoss].coeff` | `8e-4` (TMS 5→2); `6e-5` (TMS 40→10); `2e-4` (4L-Pile flagship) | **Most sensitive — sweep this first.** Too high → CI collapses below 1 and recon blows up; too low → too many subcomponents fire per input. |
 | **Component / CI learning rate** — `pd.components_optimizer.lr_schedule.start_val` and `pd.ci_fn_optimizer.lr_schedule.start_val` | `1e-3` both (TMS); `5e-5` both (4L-Pile flagship; cosine →10%) | Standard LR tuning. The flagship keeps the two equal; we vaguely think components at ~3× the CI-fn LR is a good starting point in LMs — unswept, a hunch rather than a tuned fact. |
-| **Frequency-minimality coeff** — `...[SmoothL0ImportanceMinimalityLoss].frequency.coeff` | `4e-4` (TMS 5→2); `3e-5` (TMS 40→10); `1e-4` (4L flagship) | Keep near half the importance-minimality coeff initially. Lower → fewer, more polysemantic subcomponents. **This is an independent loss coefficient; there is no frequency `beta` like in the paper.** |
-| **Smooth-L0 width schedule** — `...[SmoothL0ImportanceMinimalityLoss].gamma` | linear `1.0 → 0.01` | Annealing sharpens the smooth active-count proxy over training. Copy the whole schedule from the flagship config unless intentionally studying it. |
+| **Frequency-minimality coeff** — `...[ImportanceMinimalityLoss].frequency.coeff` | `4e-4` (TMS 5→2); `3e-5` (TMS 40→10); `1e-4` (4L flagship) | Keep near half the importance-minimality coeff initially. Lower → fewer, more polysemantic subcomponents. **This is an independent loss coefficient; there is no frequency `beta` like in the paper.** |
+| **Smooth-L0 width schedule** — `...[ImportanceMinimalityLoss].gamma` | linear `1.0 → 0.01` | Annealing sharpens the smooth active-count proxy over training. Copy the whole schedule from the flagship config unless intentionally studying it. |
 | **Subcomponents `C`** — toy `decomposition.sites.sites[*].C`; LM `decomposition.sites.cs.<matrix>` | TMS 5→2: `20` per site; TMS 40→10: `100`; LM: see the C table below | Start from the matching shipped config. For LMs, calibrate down from a converged `CIMeanPerComponent` spectrum; usually keep C at or above the matrix rank — below rank, exact faithfulness is structurally impossible. |
 | **Δ-L2 parameter-faithfulness coeff** — `pd.loss_metrics[FaithfulnessLoss].coeff` | `1` (TMS); `1e7` (4L flagship) | Insensitive; raise 10× until `kl_unmasked` is negligible. Overshooting is safe within reason, but an excessively large value can still impair optimization — stop raising once `kl_unmasked` is flat. |
 
@@ -72,6 +72,8 @@ In general, we think a safe approach early in tuning is to make C slightly large
 So, for an LM with no close reference, over-provision and do a converged run, then read the `CIMeanPerComponent` spectrum: there's usually a sharp alive/dead cutoff after training, where a long tail of subcomponents have mean ci below ≈1e-6 or 1e-7. We take this to reveal a rough estimate of the count of the "alive" subcomponents. Aim within ~2× of it.
 
 For toy models, do not use this LM heuristic. E.g. for TMS we use `20` per site for 5→2 and `100` for 40→10, which deliberately exceeds the known feature count.
+
+`initialization: neuron_aligned` accepts any positive `C` up to the matrix entry count. If `C` is below the number of nonlinearity-facing coordinates, it samples distinct neurons or attention-head channels without replacement; this is not initially parameter-faithful, so keep a normal faithfulness warmup. At exact width it uses the canonical one-coordinate factorization. Above width it assigns every coordinate at least one component and partitions randomly selected coordinate vectors across the surplus components, preserving the target matrix exactly; no faithfulness warmup is needed solely for initialization in the exact- or overcomplete cases.
 
 ### 1. Define the experimental plan
 
@@ -114,7 +116,7 @@ Confirm convergence before interpreting anything. **For LMs:** eval `PGDReconLos
 - **Metric noise should be accounted for:** The end-of-training value of training/eval metrics is just a point estimate of a noisy quantity. Plot the metric curves over training and compare runs on windows of settled values — don't compare single end-of-run point estimates; you risk just comparing noise.
 - **Monitor but do not optimize CI-masked and rounded-CI-masked reconstruction.** These metrics test whether the causally important set is sufficient. Keep them out of the training loss because optimization can trivially drive them near zero; see the [handbook](handbook.md#evidence-standards). Stochastic reconstruction is a training term. Use its evaluation counterpart, `kl_stoch_masked`, as the average-case result while noting that it is optimized. Adversarial PGD reconstruction is the stronger check against this failure.
 - **Failure mode that superficially looks informative (but is not):**
-  - *Under-training read as "no structure."* Minimality arrives late while the Smooth-L0 `gamma` schedule sharpens (the reference anneals `1.0 → 0.01`), and the adversary takes many steps to bite. If using `ImportanceMinimalityLoss` instead, its `pnorm` schedule plays the analogous role (canonical `2.0 → 0.4`). For LMs, confirm PGD-recon and L0 have settled; for toys, confirm the training losses and target-CI metric have settled. Most apparent VPD nulls are under-training.
+  - *Under-training read as "no structure."* Minimality arrives late while the smooth-L0 `gamma` schedule sharpens (the reference anneals `1.0 → 0.01`), and the adversary takes many steps to bite. For LMs, confirm PGD-recon and L0 have settled; for toys, confirm the training losses and target-CI metric have settled. Most apparent VPD nulls are under-training.
 
 If no runs in the sweep look good, reason through how to modify the hyperparameters in order to fix the observed pathologies, and run a new sweep. Do not proceed to downstream analysis until you've got hyperparameters that you're confident are good.
 
@@ -132,7 +134,6 @@ The eval pass is **authored-only**: exactly the metrics listed in `eval.metrics`
 | `CIMeanPerComponent` | Sorted mean-CI-per-component spectrum (linear + log) | Sharp alive/dead cutoff ≈ true component count → calibrates `C` (see the C table above). No values near 1 → imp-min coeff too high. |
 | `ComponentActivationDensity` | Per-layer histogram of each component's firing density | Alive-vs-dead split; a smear with no bimodality = components aren't specializing. |
 | `CIHistograms` | Per-layer histograms of CI values (lower-leaky + pre-sigmoid) | Want mass piled at 0 and near 1; everything pinned strictly below 1 = CI collapse (coeff too high). |
-| `StochasticHiddenActsReconLoss` / `CIHiddenActsReconLoss` | Per-module hidden-activation MSE under stochastic / CI masks | Localizers: when output KL is bad, these tell you *which module's* reconstruction is failing. Monitor-only. |
 
 Check every metric above and record the anomalies you find. If one shows the run is broken, launch another sweep that tests a fix rather than stopping at the breakage alone.
 

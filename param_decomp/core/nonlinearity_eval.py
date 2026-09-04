@@ -1,16 +1,19 @@
 """Standing nonlinearity eval (SPEC S36).
 
-For each partitioned site it reports two measures of how many nonlinearity units each
-component writes to. The device step reduces U to `[C]` vectors so full component
-stacks are never gathered to the host.
+For each partitioned site it reports two measures of how many nonlinearity uses each
+component's writes feed — under GQA a kv block is used `n_head / n_kv_head` times, so
+both statistics scale by the partition's use multiplicity. The device step reduces U to
+`[C]` vectors so full component stacks are never gathered to the host.
 """
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import get_args
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.experimental import multihost_utils
 from jaxtyping import Array, Float
 
 from param_decomp.core.components import (
@@ -18,32 +21,27 @@ from param_decomp.core.components import (
 )
 from param_decomp.core.jit_util import filter_jit
 from param_decomp.core.losses import nonlinearity_unit_squared_norm_fractions, soft_unit_count
-from param_decomp.core.nonlinearity import (
-    AttentionHeads,
-    Neurons,
-    NonlinearityPartition,
-    NonlinearityUnitKind,
-)
+from param_decomp.core.nonlinearity import NonlinearityPartition, NonlinearityUnitKind
 
 NONLINEARITY_EVAL_RELATIVE_THRESHOLD = 4.0
 NONLINEARITY_EVAL_SOFT_COUNT_KEY = (
-    f"soft_unit_count_relative_threshold_{NONLINEARITY_EVAL_RELATIVE_THRESHOLD:g}"
+    f"soft_use_count_relative_threshold_{NONLINEARITY_EVAL_RELATIVE_THRESHOLD:g}"
 )
-NONLINEARITY_EVAL_EFFECTIVE_COUNT_KEY = "effective_unit_count_per_subcomponent"
+NONLINEARITY_EVAL_EFFECTIVE_COUNT_KEY = "effective_use_count_per_subcomponent"
 _NONLINEARITY_EVAL_METRIC_KEYS = (
     NONLINEARITY_EVAL_SOFT_COUNT_KEY,
     NONLINEARITY_EVAL_EFFECTIVE_COUNT_KEY,
 )
 NONLINEARITY_EVAL_MEAN_CI_CUTOFF = 0.0
 NONLINEARITY_EVAL_MEAN_CI_STRATUM = f"mean_ci_gt_{NONLINEARITY_EVAL_MEAN_CI_CUTOFF:g}"
-_UNIT_KINDS: tuple[NonlinearityUnitKind, ...] = (Neurons.unit_kind, AttentionHeads.unit_kind)
+_UNIT_KINDS: tuple[NonlinearityUnitKind, ...] = get_args(NonlinearityUnitKind)
 
 
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True, kw_only=True)
 class ComponentNonlinearityStats:
-    soft_unit_count: Float[Array, " C"]
-    effective_unit_count_per_subcomponent: Float[Array, " C"]
+    soft_use_count: Float[Array, " C"]
+    effective_use_count_per_subcomponent: Float[Array, " C"]
 
 
 NonlinearityEvalStep = Callable[[ComponentStacks], dict[str, ComponentNonlinearityStats]]
@@ -52,14 +50,17 @@ NonlinearityEvalStep = Callable[[ComponentStacks], dict[str, ComponentNonlineari
 def component_nonlinearity_stats(
     vectors: Float[Array, "C d"], partition: NonlinearityPartition
 ) -> ComponentNonlinearityStats:
-    """Return the fixed-threshold soft count and L1 effective count for each component.
+    """Return the fixed-threshold soft use count and L1 effective use count per component.
 
-    For unit-block norms `r_u`, effective count is `(Σ_u r_u)² / Σ_u r_u²`.
+    For unit-block norms `r_u`, the effective block count is `(Σ_u r_u)² / Σ_u r_u²`;
+    both statistics scale by the partition's use multiplicity to count uses (SPEC S36).
     """
     fractions = nonlinearity_unit_squared_norm_fractions(vectors, partition)
     return ComponentNonlinearityStats(
-        soft_unit_count=soft_unit_count(fractions, NONLINEARITY_EVAL_RELATIVE_THRESHOLD),
-        effective_unit_count_per_subcomponent=jnp.sqrt(fractions).sum(-1) ** 2,
+        soft_use_count=partition.use_multiplicity
+        * soft_unit_count(fractions, NONLINEARITY_EVAL_RELATIVE_THRESHOLD),
+        effective_use_count_per_subcomponent=partition.use_multiplicity
+        * jnp.sqrt(fractions).sum(-1) ** 2,
     )
 
 
@@ -78,11 +79,18 @@ def make_nonlinearity_eval_step(
     return filter_jit(nonlinearity_eval_step, compiler_options=compiler_options)
 
 
+def _host_array(value: Array) -> np.ndarray:
+    """Materialize a small diagnostic reduction that may span multiple processes."""
+    if not value.is_fully_addressable:
+        value = multihost_utils.process_allgather(value, tiled=True)
+    return np.asarray(value)
+
+
 def _metric_values(stat: ComponentNonlinearityStats) -> dict[str, np.ndarray]:
     return {
-        NONLINEARITY_EVAL_SOFT_COUNT_KEY: np.asarray(stat.soft_unit_count),
-        NONLINEARITY_EVAL_EFFECTIVE_COUNT_KEY: np.asarray(
-            stat.effective_unit_count_per_subcomponent
+        NONLINEARITY_EVAL_SOFT_COUNT_KEY: _host_array(stat.soft_use_count),
+        NONLINEARITY_EVAL_EFFECTIVE_COUNT_KEY: _host_array(
+            stat.effective_use_count_per_subcomponent
         ),
     }
 

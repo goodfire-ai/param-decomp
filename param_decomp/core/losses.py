@@ -18,18 +18,17 @@ from param_decomp.core.components import (
     SiteSpec,
 )
 from param_decomp.core.configs import (
-    AnyImportanceMinimalityLossConfig,
     FrequencyMinimalityConfig,
     HiddenActsReconstruction,
     ImportanceMinimalityLossConfig,
     LossCoeff,
-    SmoothL0ImportanceMinimalityLossConfig,
 )
 from param_decomp.core.nonlinearity import (
-    AttentionHeads,
+    KVHeads,
     Neurons,
     NonlinearityPartition,
     NonlinearityUnitKind,
+    QueryHeads,
 )
 from param_decomp.core.recon import (
     ForwardObservations,
@@ -206,7 +205,7 @@ def unit_squared_norms(
     match partition:
         case Neurons():
             return squares
-        case AttentionHeads(head_count=head_count):
+        case QueryHeads(head_count=head_count) | KVHeads(head_count=head_count):
             d = vectors.shape[-1]
             assert d % head_count == 0, (d, head_count)
             head_of_column = jnp.repeat(
@@ -257,8 +256,9 @@ def nonlinearity_loss(
     kind_coefficients: Mapping[NonlinearityUnitKind, float],
 ) -> tuple[Float[Array, ""], dict[NonlinearityUnitKind, Float[Array, ""]]]:
     """Return the kind-weighted nonlinearity penalty and its unweighted per-kind means
-    (SPEC S36). Callers exclude a kind by omitting its sites AND its coefficient — an
-    excluded kind is never computed, so weight 0.0 is not a state here."""
+    of soft uses per component (SPEC S36). Callers exclude a kind by omitting its sites
+    AND its coefficient — an excluded kind is never computed, so weight 0.0 is not a
+    state here."""
     assert partitions, "nonlinearity loss needs at least one partitioned site"
     assert {p.unit_kind for p in partitions.values()} == kind_coefficients.keys(), (
         partitions,
@@ -272,12 +272,15 @@ def nonlinearity_loss(
     terms: list[_NonlinearityGroupTerm] = []
     for (group, partition), slots in grouped.items():
         us = components.stacks[group][1]
-        counts = soft_unit_count(
+        # Uses, not blocks: each block is consumed by `use_multiplicity` attention
+        # nonlinearities, so the per-block soft count scales by that factor (SPEC S36).
+        counts = partition.use_multiplicity * soft_unit_count(
             nonlinearity_unit_squared_norm_fractions(us, partition), relative_threshold
         )
         # Reduce the full resident stack under a constant slot mask — never gather the
         # stack axis by slots: it is owner-partitioned across nodes, and a stack-axis
-        # gather forces cross-node resharding.
+        # gather forces cross-node resharding. The mask is numpy so it bakes into the
+        # graph as a constant rather than a scatter.
         mask = np.zeros((us.shape[0], 1), np.float32)
         mask[slots] = 1.0
         terms.append(
@@ -330,12 +333,6 @@ def _frequency_curve_slope(
     return jnp.log2(1.0 + af) + af / ((1.0 + af) * math.log(2.0))
 
 
-def _lp_psi(
-    pnorm: Float[Array, ""], eps: float
-) -> Callable[[Float[Array, "*leading _"]], Float[Array, "*leading _"]]:
-    return lambda ci: (ci + eps) ** pnorm
-
-
 def _smooth_l0_psi(
     gamma: Float[Array, ""],
 ) -> Callable[[Float[Array, "*leading _"]], Float[Array, "*leading _"]]:
@@ -343,8 +340,8 @@ def _smooth_l0_psi(
     return lambda ci: ci**2 / (ci**2 + gamma_sq)
 
 
-def lp_term(frequencies: dict[str, Float[Array, " _"]]) -> Float[Array, ""]:
-    """`lp = Σ_s Σ_c f_c` (SPEC S8)."""
+def activity_sum(frequencies: dict[str, Float[Array, " _"]]) -> Float[Array, ""]:
+    """`Σ_s Σ_c f_c` — the linear importance term (SPEC S8)."""
     return sum((jnp.sum(f) for f in frequencies.values()), start=jnp.zeros((), jnp.float32))
 
 
@@ -358,17 +355,17 @@ def _frequency_penalty(
     )
 
 
-def _lp_and_freq(
+def _activity_and_freq(
     frequencies: dict[str, Float[Array, " _"]], reference_datapoint_count: int | None
 ) -> tuple[Float[Array, ""], Float[Array, ""]]:
-    """`(lp, freq)` from one set of per-site frequencies; `freq = 0.0` when no
+    """`(activity, freq)` from one set of per-site frequencies; `freq = 0.0` when no
     frequency penalty is configured (`reference_datapoint_count is None`, SPEC S8')."""
     freq = (
         _frequency_penalty(frequencies, reference_datapoint_count)
         if reference_datapoint_count is not None
         else jnp.zeros((), jnp.float32)
     )
-    return lp_term(frequencies), freq
+    return activity_sum(frequencies), freq
 
 
 def ema_frequency_penalty(
@@ -409,56 +406,23 @@ def ema_frequency_penalty(
 @jaxtyped(typechecker=beartype)
 def importance_minimality_terms(
     ci_upper: dict[str, Float[Array, "*leading _"]],
-    pnorm: Float[Array, ""],
-    eps: float,
-    reference_datapoint_count: int | None,
-) -> tuple[Float[Array, ""], Float[Array, ""]]:
-    """`L_p` imp-min terms: per-value penalty `(c + eps)^pnorm`, singular at `c=0` for
-    `pnorm < 1` (the `eps` floor caps the gradient there)."""
-    return _lp_and_freq(
-        _per_component_frequencies(ci_upper, _lp_psi(pnorm, eps)), reference_datapoint_count
-    )
-
-
-@jaxtyped(typechecker=beartype)
-def smooth_l0_importance_minimality_terms(
-    ci_upper: dict[str, Float[Array, "*leading _"]],
     gamma: Float[Array, ""],
     reference_datapoint_count: int | None,
 ) -> tuple[Float[Array, ""], Float[Array, ""]]:
     """Geman–McClure smooth-L0 imp-min terms: per-value penalty `c^2 / (c^2 + gamma^2)`.
     Flat at the origin (`phi'(0)=0`) and bounded (`|phi'| <= 0.65/gamma`) — no singularity,
     no `eps` floor. Approaches the true `L_0` count as `gamma -> 0`."""
-    return _lp_and_freq(
+    return _activity_and_freq(
         _per_component_frequencies(ci_upper, _smooth_l0_psi(gamma)), reference_datapoint_count
     )
 
 
-def annealed_imp_min_param(train_frac: Array, cfg: AnyImportanceMinimalityLossConfig) -> Array:
-    """The scheduled per-value-penalty parameter at this step (`p` for `L_p`, `gamma` for
-    smooth-L0; SPEC S9/S9′). Pure in the step, so the train step hoists it out of the
-    loss `grad`."""
-    match cfg:
-        case ImportanceMinimalityLossConfig():
-            schedule = cfg.pnorm
-        case SmoothL0ImportanceMinimalityLossConfig():
-            schedule = cfg.gamma
-    return scheduled_value_at(train_frac, schedule)
-
-
 def per_component_frequencies(
-    ci_upper: dict[str, Float[Array, "*leading _"]],
-    cfg: AnyImportanceMinimalityLossConfig,
-    annealed_param: Array,
+    ci_upper: dict[str, Float[Array, "*leading _"]], gamma: Array
 ) -> dict[str, Float[Array, " _"]]:
     """The per-site `f_c` vectors both imp-min readouts consume (SPEC S8), under the
-    config's per-value penalty at its annealed parameter."""
-    match cfg:
-        case ImportanceMinimalityLossConfig():
-            per_value_penalty = _lp_psi(annealed_param, cfg.eps)
-        case SmoothL0ImportanceMinimalityLossConfig():
-            per_value_penalty = _smooth_l0_psi(annealed_param)
-    return _per_component_frequencies(ci_upper, per_value_penalty)
+    smooth-L0 penalty at its annealed width (SPEC S9)."""
+    return _per_component_frequencies(ci_upper, _smooth_l0_psi(gamma))
 
 
 class BatchFrequencyTerm(NamedTuple):
@@ -522,11 +486,10 @@ class EmaFrequency:
 FrequencyRole = BatchFrequency | EmaFrequency
 
 
-def resolve_frequency(cfg: FrequencyMinimalityConfig | None) -> FrequencyRole | None:
-    """The config's two nested optionals (`frequency`, `ema_halflife_steps`) decided into
-    one mode noun, once, at step-build time — the runtime consumers match on the role."""
-    if cfg is None:
-        return None
+def resolve_frequency(cfg: FrequencyMinimalityConfig) -> FrequencyRole:
+    """The config's `ema_halflife_steps` optional decided into one mode noun, once, at
+    step-build time — the runtime consumers match on the role. Whether a frequency
+    penalty exists at all is the caller's match on the config's presence."""
     match cfg.ema_halflife_steps:
         case None:
             return BatchFrequency(cfg.coeff, cfg.reference_datapoint_count)
@@ -536,12 +499,12 @@ def resolve_frequency(cfg: FrequencyMinimalityConfig | None) -> FrequencyRole | 
 
 def imp_min_terms(
     ci_upper: dict[str, Float[Array, "*leading _"]],
-    cfg: AnyImportanceMinimalityLossConfig,
-    annealed_param: Array,
+    cfg: ImportanceMinimalityLossConfig,
+    gamma: Array,
 ) -> tuple[Float[Array, ""], Float[Array, ""]]:
-    """`(lp, freq)` from the single-batch estimate — the reader for steps without EMA
-    state (the targeted objective, evals). The EMA-aware train step composes
-    `per_component_frequencies` + `lp_term` + the resolved `FrequencyRole`'s `term`
+    """`(activity, freq)` from the single-batch estimate — the reader for steps without
+    EMA state (the targeted objective, evals). The EMA-aware train step composes
+    `per_component_frequencies` + `activity_sum` + the resolved `FrequencyRole`'s `term`
     instead (SPEC S8'')."""
     ref = cfg.frequency.reference_datapoint_count if cfg.frequency is not None else None
-    return _lp_and_freq(per_component_frequencies(ci_upper, cfg, annealed_param), ref)
+    return _activity_and_freq(per_component_frequencies(ci_upper, gamma), ref)

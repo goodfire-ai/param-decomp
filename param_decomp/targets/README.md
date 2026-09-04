@@ -5,7 +5,7 @@ here**, one slice per architecture, between the generic engine (`param_decomp.co
 and the composition layers above.
 
 The dependency direction is `lab → targets → engine`, pinned by
-`param_decomp/core/tests/test_runtime_standalone.py`. The engine never imports a target — it
+`param_decomp/tests/core/test_runtime_standalone.py`. The engine never imports a target — it
 sees only the `DecomposedModel` protocol (`param_decomp.core.model`) and the `ArchFamily`
 grammar contract (`param_decomp.core.family`). The lab composes: the model-name → family
 registry and all authoring vocabulary stay composition-side
@@ -29,7 +29,8 @@ internal-only slices simply aren't in the set. No slice is ever special to the e
 
 A slice owns everything about its architecture: the frozen modules, the decomposed
 forward (including its sharding/remat strategy behind the protocol), its `ArchFamily`,
-and its weight loading. `tests/` holds the per-target parity/golden suites; engine
-behavior tests that merely use a target as a fixture stay with the engine.
+and its weight loading. `param_decomp/tests/targets/` holds the per-target parity/golden
+suites; engine behavior tests that merely use a target as a fixture live under
+`param_decomp/tests/core/`.
 `invariance_check.py` is the SPEC D4 device-count invariance harness (a tiny GLU target
 driven through the engine at simulated device counts).

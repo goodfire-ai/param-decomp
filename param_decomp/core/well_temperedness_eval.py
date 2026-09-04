@@ -21,7 +21,7 @@ from param_decomp.core.run import (
     BackgroundRenderer,
     DeferredMediaRecord,
     EvalInvocation,
-    EvalOperation,
+    PassOperation,
 )
 from param_decomp.core.well_temperedness import (
     REGIONS,
@@ -115,7 +115,7 @@ def make_well_temperedness_operation[ContextT: EvalInvocation](
     compiler_options: dict[str, bool | int | str],
     inputs_for_context: Callable[[ContextT], tuple[Array, PRNGKeyArray]],
     figure_rendering: FigureRendering,
-) -> EvalOperation[ContextT]:
+) -> PassOperation[ContextT]:
     if figure_rendering is not None:
         assert metric.n_locations <= _MAX_FIGURE_LOCATIONS, (
             f"WellTemperedness scatter supports at most {_MAX_FIGURE_LOCATIONS} locations, "
@@ -149,4 +149,4 @@ def make_well_temperedness_operation[ContextT: EvalInvocation](
                 renderer.submit(partial(_render_deferred, ablations, context.now_step))
         return log_record
 
-    return EvalOperation(schedule, run)
+    return PassOperation(schedule, run)

@@ -90,7 +90,7 @@ class ExplicitCSpec(BaseConfig):
 
 type LossCoeff = float | ScheduleConfig
 """A loss coefficient over training: a bare float IS the constant, a `ScheduleConfig` is
-evaluated at the current step (the `pnorm` pattern) — so warmups, anneals, and
+evaluated at the current step (the `gamma` pattern) — so warmups, anneals, and
 0-until-step activation gates are authorable per term. The float arm is not a parse-time
 spelling of the constant schedule: it also carries the values a schedule's positive
 `max_val` cannot (a plain 0.0), so consumers resolve via `losses.coeff_at`."""
@@ -203,48 +203,23 @@ class FrequencyMinimalityConfig(BaseConfig):
 
 
 class ImportanceMinimalityLossConfig(LossMetricConfig):
-    """Config for the `L_p`-style importance-minimality penalty on upper-leaky CI values.
-
-    `pnorm` is the exponent's full schedule (SPEC S9; canonical is the linear anneal
-    `2.0 → 0.4`: `max_val=2.0` over knots `frac 1.0 → 0.2`). Its knots must keep
-    `frac > 0` (asserted where the term is built) — a `p` touching 0 is never intended.
-    `frequency` (when present) adds the batch-invariant frequency-minimality penalty over
-    the same `(c + eps)^p` per-component sums.
-    """
-
-    type: Literal["ImportanceMinimalityLoss"] = "ImportanceMinimalityLoss"
-    pnorm: ScheduleConfig
-    frequency: FrequencyMinimalityConfig | None = None
-    eps: NonNegativeFloat = 1e-12
-
-
-class SmoothL0ImportanceMinimalityLossConfig(LossMetricConfig):
     """Geman–McClure smooth-L0 importance-minimality penalty on upper-leaky CI values.
 
     Per-value penalty `phi_gamma(c) = c^2 / (c^2 + gamma^2)` — a smooth approximation to
-    the active-component count `1[c>0]`, exact only as `gamma -> 0` — fed through the same
-    per-site `lp` mean (plus the optional `frequency` term) as `ImportanceMinimalityLoss`.
-    Differs from the `L_p` penalty only in the per-value shape: `phi'(0) = 0` and
-    `|phi'| <= 0.65/gamma` everywhere, so there is no singularity at the origin (no `eps`
-    floor, no aggressive grad clip) — the gradient is localized on the threshold band
-    `c ~ gamma/sqrt(3)` and redescends for clearly-on components.
+    the active-component count `1[c>0]`, exact only as `gamma -> 0` — summed over the
+    per-component mean activities, with an optional `frequency` penalty over the same
+    values. `phi'(0) = 0` and `|phi'| <= 0.65/gamma` everywhere, so there is no singularity
+    at the origin (no `eps` floor, no aggressive grad clip) — the gradient is localized
+    on the threshold band `c ~ gamma/sqrt(3)` and redescends for clearly-on components.
 
-    `gamma` is the width's full schedule (SPEC S9′); annealing it down (knots with
+    `gamma` is the width's full schedule (SPEC S9); annealing it down (knots with
     decreasing `frac`) sharpens the count. Its knots must keep `frac > 0` (asserted
     where the term is built) — a `gamma` touching 0 is never intended.
     """
 
-    type: Literal["SmoothL0ImportanceMinimalityLoss"] = "SmoothL0ImportanceMinimalityLoss"
+    type: Literal["ImportanceMinimalityLoss"] = "ImportanceMinimalityLoss"
     gamma: ScheduleConfig
     frequency: FrequencyMinimalityConfig | None = None
-
-
-# The two imp-min penalties share the `coeff` + optional `frequency` surface and the
-# `lp` mean aggregation; they differ only in the per-value penalty shape and its annealed
-# parameter (`p` vs `gamma`). The trainer's single imp-min slot accepts either.
-AnyImportanceMinimalityLossConfig = (
-    ImportanceMinimalityLossConfig | SmoothL0ImportanceMinimalityLossConfig
-)
 
 
 class NonlinearityLocalityLossConfig(LossMetricConfig):
@@ -299,12 +274,6 @@ class StochasticReconSubsetLossConfig(LossMetricConfig, HiddenActsReconstruction
     routing: Annotated[SubsetRoutingType, Field(discriminator="type")] = (
         UniformKSubsetRoutingConfig()
     )
-    n_mask_samples: PositiveInt = 1
-
-
-class StochasticHiddenActsReconLossConfig(LossMetricConfig):
-    slow: ClassVar[bool] = True
-    type: Literal["StochasticHiddenActsReconLoss"] = "StochasticHiddenActsReconLoss"
     n_mask_samples: PositiveInt = 1
 
 
@@ -409,7 +378,7 @@ class MergedStochasticSubsetPPGDReconLossConfig(PersistentPGDLossConfig):
     persistent-PGD adversary's, every site routed) or stochastic otherwise (fresh
     `U[0,1]` sources, routed per `routing`) — the whole sequence takes one family, so no
     sample's loss is scored against a mixed-family attention context. `adv_fraction` is a
-    `ScheduleConfig`, evaluated per step like the imp-min pnorm — a constant is the plain
+    `ScheduleConfig`, evaluated per step like the imp-min gamma — a constant is the plain
     merge; a ramp anneals the adversarial share over training. `coeff` is the TOTAL:
     coeff 1.0 + constant adv_fraction 0.5 replaces the canonical 0.5 stochastic + 0.5
     persistent-PGD pair in expectation. Carries the persistent-adversary fields; one
@@ -439,11 +408,6 @@ class MergedStochasticSubsetPPGDReconLossConfig(PersistentPGDLossConfig):
 # No default, so a new metric cannot skip the decision — swept at import in
 # `experiments.eval_config`, which also refuses a tier that is merely inherited.
 # ---------------------------------------------------------------------------
-
-
-class CIHiddenActsReconLossConfig(BaseConfig):
-    slow: ClassVar[bool] = True
-    type: Literal["CIHiddenActsReconLoss"] = "CIHiddenActsReconLoss"
 
 
 class CIHistogramsConfig(BaseConfig):
@@ -641,7 +605,6 @@ AnyLossMetricConfig = Annotated[
     AnyReconLossMetricConfig
     | FaithfulnessLossConfig
     | ImportanceMinimalityLossConfig
-    | SmoothL0ImportanceMinimalityLossConfig
     | NonlinearityLocalityLossConfig,
     Discriminator("type"),
 ]
@@ -651,9 +614,7 @@ term's `hidden_acts_reconstruction` (SPEC S35), never a standalone term."""
 
 
 TargetedLossMetricConfig = Annotated[
-    AnyReconLossMetricConfig
-    | ImportanceMinimalityLossConfig
-    | SmoothL0ImportanceMinimalityLossConfig,
+    AnyReconLossMetricConfig | ImportanceMinimalityLossConfig,
     Discriminator("type"),
 ]
 """The loss types a tPD TARGET pass admits (SPEC T3): the full recon vocabulary
@@ -931,10 +892,7 @@ class TargetedPDConfig(PDConfigBase):
         _validate_training_losses(self.loss_metrics)
         for metric in self.loss_metrics:
             match metric:
-                case (
-                    ImportanceMinimalityLossConfig(frequency=frequency)
-                    | SmoothL0ImportanceMinimalityLossConfig(frequency=frequency)
-                ) if frequency is not None:
+                case ImportanceMinimalityLossConfig(frequency=frequency) if frequency is not None:
                     assert frequency.ema_halflife_steps is None, (
                         "frequency.ema_halflife_steps is not implemented for the targeted "
                         "(tPD) objective: the EMA carries one frequency stream per site, and "
@@ -963,11 +921,7 @@ def _validate_training_losses(loss_metrics: Sequence[AnyLossMetricConfig]) -> No
         name = cfg.name if cfg.name is not None else cfg.type
         assert name not in seen, f"duplicate loss instance_key {name!r}"
         seen.add(name)
-    imp_terms = [
-        cfg
-        for cfg in loss_metrics
-        if isinstance(cfg, ImportanceMinimalityLossConfig | SmoothL0ImportanceMinimalityLossConfig)
-    ]
+    imp_terms = [cfg for cfg in loss_metrics if isinstance(cfg, ImportanceMinimalityLossConfig)]
     assert len(imp_terms) == 1, f"need exactly one importance-minimality term, got {len(imp_terms)}"
     recon_terms = [
         cfg
@@ -976,7 +930,6 @@ def _validate_training_losses(loss_metrics: Sequence[AnyLossMetricConfig]) -> No
             cfg,
             FaithfulnessLossConfig
             | ImportanceMinimalityLossConfig
-            | SmoothL0ImportanceMinimalityLossConfig
             | NonlinearityLocalityLossConfig,
         )
     ]
@@ -1089,7 +1042,7 @@ class ResumeProvenance(BaseConfig):
     (fresh optimizer / sources) under the new config — only when the run's own `ckpts/`
     is empty (a subsequent SLURM requeue resumes from the run's own dir, ignoring
     provenance). The structure (sites / C / ci-fn arch) must match the parent; only
-    LR / coeffs / eps / seq / batch / steps may change. Provenance flows into
+    LR / coeffs / gamma / seq / batch / steps may change. Provenance flows into
     `launch_config.yaml` and `wandb.config` so the lineage is visible in the wandb UI. A run with
     `resume_provenance is None` is a fresh-from-init run.
     """
@@ -1109,19 +1062,16 @@ METRIC_SHORT_NAMES: dict[str, str] = {
     "CIMaskedReconLoss": "CIMaskRecon",
     "CIMaskedReconSubsetLoss": "CIMaskReconSub",
     "FaithfulnessLoss": "Faith",
-    "ImportanceMinimalityLoss": "ImpMin",
     "NonlinearityLocalityLoss": "Nonlinearity",
-    "SmoothL0ImportanceMinimalityLoss": "SmoothL0ImpMin",
+    "ImportanceMinimalityLoss": "ImpMin",
     "PersistentPGDReconLoss": "PersistPGDRecon",
     "PGDReconLoss": "PGDRecon",
     "PGDReconSubsetLoss": "PGDReconSub",
-    "StochasticHiddenActsReconLoss": "StochHiddenActRecon",
     "StochasticReconLoss": "StochRecon",
     "StochasticReconSubsetLoss": "StochReconSub",
     "UnmaskedReconLoss": "UnmaskedRecon",
     "ArithmeticCIGrid": "ArithCIGrid",
     "CEandKLLosses": "CEandKL",
-    "CIHiddenActsReconLoss": "CIHiddenActRecon",
     "CIHistograms": "CIHist",
     "CI_L0": "CI_L0",
     "CIMaskedAttnPatternsReconLoss": "CIAttnRecon",

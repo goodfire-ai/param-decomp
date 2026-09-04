@@ -30,17 +30,17 @@ from param_decomp.core.ci_fn import (
 from param_decomp.core.configs import (
     AdamPGDConfig,
     AdamWOptimizerConfig,
-    AnyImportanceMinimalityLossConfig,
     AnyPDConfig,
     ImportanceMinimalityLossConfig,
     MuonOptimizerConfig,
     PDConfigBase,
-    SmoothL0ImportanceMinimalityLossConfig,
 )
 from param_decomp.core.init_placed import (
+    ComponentInitializer,
     init_ci_fn_placed,
-    init_component_stacks_placed,
+    init_model_component_stacks_placed,
     init_sources_sharded,
+    random_component_initializer,
 )
 from param_decomp.core.losses import EmaFrequency, resolve_frequency, scheduled_value_traced
 from param_decomp.core.model import PlacedModel, PositionAxis, Positioned
@@ -228,13 +228,14 @@ def init_decomposition(
     model: PlacedModel,
     ci_fn_arch: CIFnArch,
     init_key: PRNGKeyArray,
+    component_initializer: ComponentInitializer = random_component_initializer,
 ) -> Decomposition:
     """The trained-product half of `init_train_state`, factored out so a consumer can
     `jax.eval_shape` it to recover the saved `decomposition` item's tree structure
     without building (or knowing about) the optimizers/adversaries."""
     rules, mesh = _placed_init_geometry(model)
     ci_key = random.fold_in(init_key, 1)
-    components = init_component_stacks_placed(model.sites, init_key, rules)
+    components = init_model_component_stacks_placed(model, init_key, rules, component_initializer)
     ci_fn = init_ci_fn_placed(ci_fn_arch, model.sites, ci_key, mesh, rules)
     assert ci_fn.has_position_axis == model.has_position_axis, (
         f"CI fn has_position_axis={ci_fn.has_position_axis} but model declares "
@@ -243,12 +244,8 @@ def init_decomposition(
     return Decomposition(components=components, ci_fn=ci_fn)
 
 
-def _imp_min_config(pd: AnyPDConfig) -> AnyImportanceMinimalityLossConfig:
-    [imp_cfg] = [
-        m
-        for m in pd.loss_metrics
-        if isinstance(m, ImportanceMinimalityLossConfig | SmoothL0ImportanceMinimalityLossConfig)
-    ]
+def _imp_min_config(pd: AnyPDConfig) -> ImportanceMinimalityLossConfig:
+    [imp_cfg] = [m for m in pd.loss_metrics if isinstance(m, ImportanceMinimalityLossConfig)]
     return imp_cfg
 
 
@@ -261,15 +258,20 @@ def init_train_state(
     opt_ci: optax.GradientTransformation,
     init_key: PRNGKeyArray,
     src_key: PRNGKeyArray,
+    component_initializer: ComponentInitializer = random_component_initializer,
 ) -> TrainState:
     """Persistent sources are shaped from `positions` (the run's waist geometry)."""
     _, mesh = _placed_init_geometry(model)
     assert isinstance(positions, Positioned) == model.has_position_axis, (
         f"{positions} does not match the model's has_position_axis={model.has_position_axis}"
     )
-    decomposition = init_decomposition(model, ci_fn_arch, init_key)
+    decomposition = init_decomposition(model, ci_fn_arch, init_key, component_initializer)
     components, ci_fn = decomposition.components, decomposition.ci_fn
-    freq_role = resolve_frequency(_imp_min_config(pd).frequency)
+    match _imp_min_config(pd).frequency:
+        case None:
+            freq_role = None
+        case freq_cfg:
+            freq_role = resolve_frequency(freq_cfg)
     # Recon terms only — persistent adversaries derive from these, and a targeted run's
     # loss list carries no faithfulness role for a full objective build to demand.
     recon_terms = build_recon_terms(pd.loss_metrics, model.site_names)

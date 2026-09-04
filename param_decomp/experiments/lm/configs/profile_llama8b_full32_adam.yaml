@@ -10,7 +10,7 @@ cadence:
 data:
   train:
     kind: name
-    name: fineweb_llama_tok_512
+    name: fineweb_llama_tok_512_train284
   eval:
     kind: name
     name: fineweb_llama_tok_512_eval1
@@ -76,7 +76,7 @@ pd:
       coeff: 5.0e-06
       reference_datapoint_count: 32768
     coeff: 1.0e-05
-    type: SmoothL0ImportanceMinimalityLoss
+    type: ImportanceMinimalityLoss
     gamma:
       max_val: 1.0
       points:

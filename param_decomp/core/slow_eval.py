@@ -8,8 +8,9 @@ SLOW tier is the heavy plot metrics: `CIHistograms`, `ComponentActivationDensity
 is a reduction over the per-site causal-importance arrays from a masked-free forward, then
 a numpy/matplotlib plot. The forward + reduction is JAX; the plotting is framework-agnostic
 (it mirrors the torch `param_decomp/eval_metrics/plotting.py` reductions on numpy
-arrays, no torch). `accumulate_site_reductions` / `render_slow_eval_figures` / `accumulate_position_ci` /
-`render_permutation_figures` are what the LM slow-tier operations bind
+arrays, no torch). The reduction steps read the pass-shared CI envelope
+(`experiments/lm/eval_context.py`); `make_ci_reduction_step` / `render_slow_eval_figures` /
+`make_position_ci_step` / `render_permutation_figures` are what the LM slow-tier operations bind
 (`experiments/lm/diagnostic_eval_operations.py`); the toys use only the UV figure helpers
 (`render_uv_figure` / `plot_uv_matrices`).
 
@@ -28,18 +29,12 @@ accumulated over EVERY batch — a small `(C, n_bins + 1)` reduction, so unlike 
 histograms it costs nothing to carry across batches. Rendered as
 `figures/ci_density_heatmap` (`plot_ci_density_heatmap`).
 
-It also computes the two SCALAR hidden-acts recon eval metrics (`CIHiddenActsReconLoss`,
-`StochasticHiddenActsReconLoss`) natively — per decomposed site, the summed MSE between
-the masked-model and target-model site OUTPUT activations, divided once by the element
-count (`hidden_acts_eval.py`). Those request the same canonical output keys from clean and masked forwards (SPEC S31)
-and are emitted as scalars under the torch log keys (`<ClassName>/<site>` + a combined `<ClassName>`).
-
 The three CONFIG-GATED permutation metrics (`PermutedCIPlots`, `UVPlots`,
 `IdentityCIError`) are recomputed natively too, off the run's `eval.metrics` block
 from the resolved domain eval plan. They share one column permutation per site — identity (scipy
 `linear_sum_assignment` on `-CI`) or dense (by column mass) — derived from a per-site
 upper-leaky CI matrix. `PermutedCIPlots` and `IdentityCIError` use the LM batch-mean
-`(position, C)` matrix (`make_position_ci_step` / `accumulate_position_ci`) and are LM-only
+`(position, C)` matrix (`make_position_ci_step` / `fold_position_ci`) and are LM-only
 (they need the position axis). `UVPlots` reorders the V/U columns by the same kind of
 permutation and is the one figure metric usable for ANY decomposition: the toys feed it
 their probe CI as the permutation source (`render_uv_figure`), the LM in-loop tier feeds it
@@ -57,14 +52,12 @@ from typing import Any, Literal
 
 import jax.numpy as jnp
 import numpy as np
-from jaxtyping import Array, Float
+from jaxtyping import Array
 from matplotlib import colormaps
 from matplotlib.colors import Normalize
 from matplotlib.figure import Figure
 
 from param_decomp.core.ci_fn import (
-    PlacedCIFn,
-    ci_preactivations,
     lower_leaky_hard_sigmoid,
     upper_leaky_hard_sigmoid,
 )
@@ -76,7 +69,6 @@ from param_decomp.core.configs import (
     UVPlotsConfig,
 )
 from param_decomp.core.jit_util import filter_jit
-from param_decomp.core.model import CaptureKeys, PlacedModel
 
 IDENTITY_CI_ERROR_TOLERANCE = 0.1
 """Torch `IdentityCIPattern.distance_from` / `compute_target_metrics` default tolerance —
@@ -131,8 +123,8 @@ BinnedValues = tuple[Array, Array, Array]
 """`(counts, lo, hi)` — one on-device value histogram, `(n_bins,)` plus its two edges."""
 
 
-SlowEvalStep = Callable[
-    [PlacedModel, Any, Float[Array, "*leading d"]],
+CIReductionStep = Callable[
+    [dict[str, Array]],
     tuple[
         dict[str, Array],
         dict[str, Array],
@@ -142,12 +134,11 @@ SlowEvalStep = Callable[
         dict[str, Array],
     ],
 ]
-"""`(model, placed_ci_fn, residual) -> (density_counts, ci_sums, n_positions, binned_lower,
-binned_preactivations, density_hist)` — the per-batch reduction, pre-reduced over positions.
-`density_hist` maps site -> `(C, n_bins + 1)` counts (empty when the density heatmap is off);
-the two binned dicts are empty when the caller asked for no value histogram.
-The slow plot metrics read only the CI arrays, so V/U (`components`) is not an input. `model`
-(frozen-weight-bearing) is the jit ARG."""
+"""`(ci_preactivations) -> (density_counts, ci_sums, n_positions, binned_lower,
+binned_preactivations, density_hist)` — the per-batch reduction over the pass's shared
+CI envelope, pre-reduced over positions. `density_hist` maps site -> `(C, n_bins + 1)`
+counts (empty when the density heatmap is off); the two binned dicts are empty when the
+caller asked for no value histogram."""
 
 
 CI_DENSITY_HEATMAP_FLOOR = 1e-9
@@ -208,26 +199,24 @@ def _per_component_ci_hist(lower: Array, n_bins: int) -> Array:
     return jnp.concatenate([underflow[:, None], bands], axis=1)
 
 
-def make_slow_eval_step(
-    model_static: PlacedModel,
-    ci_capture_keys: CaptureKeys,
+def make_ci_reduction_step(
     ci_alive_threshold: float,
     density_heatmap_n_bins: int | None,
     value_histogram_n_bins: int | None,
     compiler_options: dict[str, bool | int | str] | None = None,
-) -> SlowEvalStep:
-    """Build the jit'd per-batch reduction `slow_eval_step(model, placed_ci_fn, residual) ->
+) -> CIReductionStep:
+    """Build the jit'd per-batch reduction `ci_reduction_step(ci_preactivations) ->
     ({site: density_counts}, {site: ci_sums}, n_positions, {site: binned lower},
-    {site: binned preactivations}, {site: density_hist})`. Counts/sums are pre-reduced over
-    positions. `value_histogram_n_bins` opts into the `lower`/`preactivations` histograms the
+    {site: binned preactivations}, {site: density_hist})` over the shared context's
+    compute-precision CI preactivations. Counts/sums are pre-reduced over positions.
+    `value_histogram_n_bins` opts into the `lower`/`preactivations` histograms the
     two `CIHistograms` figures plot, binned ON DEVICE so only counts cross to the host
     (empty dicts when None — a metric reading neither figure pays no transfer).
     `density_heatmap_n_bins` opts into the per-component CI density histogram (empty dict
-    when None); it shares this forward's `lower`, adding only an on-device bincount."""
-    site_names = model_static.site_names
+    when None); it adds only an on-device bincount."""
 
-    def slow_eval_step(
-        model: PlacedModel, placed_ci_fn: PlacedCIFn, residual: Float[Array, "*leading d"]
+    def ci_reduction_step(
+        compute_preactivations: dict[str, Array],
     ) -> tuple[
         dict[str, Array],
         dict[str, Array],
@@ -236,13 +225,12 @@ def make_slow_eval_step(
         dict[str, BinnedValues],
         dict[str, Array],
     ]:
-        # Read the CI fn in training precision (bf16), like train.py / eval.py: the readout
-        # reflects the deployed model, and cuDNN flash attention rejects fp32.
-        preactivations = ci_preactivations(
-            placed_ci_fn,
-            model.clean_forward(residual, ci_capture_keys).captures,
-            remat=False,
-        )
+        site_names = tuple(compute_preactivations)
+        # fp32 squash of the compute-precision preactivations — these reductions have
+        # always read the fp32 view (`ci_preactivations`), not the envelope's bf16 lower.
+        preactivations = {
+            s: value.astype(jnp.float32) for s, value in compute_preactivations.items()
+        }
         lower = {s: lower_leaky_hard_sigmoid(preactivations[s]) for s in site_names}
 
         density_counts = {
@@ -279,89 +267,109 @@ def make_slow_eval_step(
             density_hist,
         )
 
-    return filter_jit(slow_eval_step, compiler_options=compiler_options)
+    return filter_jit(ci_reduction_step, compiler_options=compiler_options)
 
 
-def accumulate_site_reductions(
-    slow_eval_step: SlowEvalStep,
-    model: PlacedModel,
-    placed_ci_fn: PlacedCIFn,
-    residual_batches: list[Float[Array, "*leading d"]],
-) -> dict[str, SiteReduction]:
-    """Drive `slow_eval_step` over the eval batches and fold the per-batch reductions
-    into one `SiteReduction` per site. The `(C,)` reductions and the opt-in `density_hist`
-    accumulate over EVERY batch; the value histograms cannot, and a step emitting them
-    requires exactly one."""
-    assert residual_batches, "slow eval needs at least one batch"
-    density: dict[str, np.ndarray] = {}
-    sums: dict[str, np.ndarray] = {}
-    hist: dict[str, np.ndarray] = {}
-    value_histograms: dict[str, tuple[ValueHistogram, ValueHistogram]] = {}
-    total_positions = 0
-    for batch_idx, residual in enumerate(residual_batches):
-        d, s, n_pos, binned_lower, binned_preactivations, density_hist = slow_eval_step(
-            model, placed_ci_fn, residual
-        )
-        assert not (binned_lower and len(residual_batches) > 1), (
-            "the CIHistograms value histograms bin against each batch's own min/max, so "
-            f"counts from {len(residual_batches)} batches cannot be summed: run them at "
-            f"eval.n_steps=1, or drop CIHistograms from eval.metrics"
-        )
-        total_positions += int(n_pos)
-        for site in d:
-            counts, ci_sum = np.asarray(d[site]), np.asarray(s[site])
-            density[site] = counts if batch_idx == 0 else density[site] + counts
-            sums[site] = ci_sum if batch_idx == 0 else sums[site] + ci_sum
-            if density_hist:
-                h = np.asarray(density_hist[site])
-                hist[site] = h if batch_idx == 0 else hist[site] + h
-            if binned_lower:
-                value_histograms[site] = (
-                    _to_value_histogram(binned_lower[site]),
-                    _to_value_histogram(binned_preactivations[site]),
-                )
+@dataclass(frozen=True)
+class SiteReductionAccumulation:
+    """Running fold of `CIReductionStep` outputs across a pass (the torch Metric
+    accumulator). `site_reductions` finalizes it."""
 
+    n_batches: int
+    density: dict[str, np.ndarray]
+    ci_sums: dict[str, np.ndarray]
+    density_hist: dict[str, np.ndarray]
+    value_histograms: dict[str, tuple[ValueHistogram, ValueHistogram]]
+    total_positions: int
+
+
+def empty_site_reduction_accumulation() -> SiteReductionAccumulation:
+    return SiteReductionAccumulation(0, {}, {}, {}, {}, 0)
+
+
+def fold_site_reduction(
+    accumulation: SiteReductionAccumulation,
+    step_output: tuple[
+        dict[str, Array],
+        dict[str, Array],
+        Array,
+        dict[str, BinnedValues],
+        dict[str, BinnedValues],
+        dict[str, Array],
+    ],
+) -> SiteReductionAccumulation:
+    """Fold one batch's reduction in. The `(C,)` reductions and the opt-in `density_hist`
+    accumulate over EVERY batch; the value histograms cannot (each batch bins against its
+    own min/max), so a step emitting them accepts exactly one batch."""
+    density, sums, n_pos, binned_lower, binned_preactivations, density_hist = step_output
+    first = accumulation.n_batches == 0
+    assert first or not binned_lower, (
+        "the CIHistograms value histograms bin against each batch's own min/max, so "
+        "counts from several batches cannot be summed: run them at eval.n_steps=1, or "
+        "drop CIHistograms from eval.metrics"
+    )
+    return SiteReductionAccumulation(
+        n_batches=accumulation.n_batches + 1,
+        density={
+            site: np.asarray(value) if first else accumulation.density[site] + np.asarray(value)
+            for site, value in density.items()
+        },
+        ci_sums={
+            site: np.asarray(value) if first else accumulation.ci_sums[site] + np.asarray(value)
+            for site, value in sums.items()
+        },
+        density_hist={
+            site: (
+                np.asarray(value) if first else accumulation.density_hist[site] + np.asarray(value)
+            )
+            for site, value in density_hist.items()
+        },
+        value_histograms={
+            site: (_to_value_histogram(binned_lower[site]), _to_value_histogram(value))
+            for site, value in binned_preactivations.items()
+        },
+        total_positions=accumulation.total_positions + int(n_pos),
+    )
+
+
+def site_reductions(accumulation: SiteReductionAccumulation) -> dict[str, SiteReduction]:
+    assert accumulation.n_batches > 0, "slow eval needs at least one batch"
     return {
         site: SiteReduction(
-            density_counts=density[site],
-            ci_sums=sums[site],
-            n_positions=total_positions,
-            value_histograms=value_histograms.get(site),
-            density_hist=hist.get(site),
+            density_counts=accumulation.density[site],
+            ci_sums=accumulation.ci_sums[site],
+            n_positions=accumulation.total_positions,
+            value_histograms=accumulation.value_histograms.get(site),
+            density_hist=accumulation.density_hist.get(site),
         )
-        for site in density
+        for site in accumulation.density
     }
 
 
 PositionCIStep = Callable[
-    [PlacedModel, Any, Float[Array, "*leading d"]],
+    [dict[str, Array]],
     tuple[dict[str, Array], dict[str, Array], Array],
 ]
-"""`(model, placed_ci_fn, residual) -> ({site: lower (T, C)}, {site: upper (T, C)}, n_batch)` —
+"""`(ci_preactivations) -> ({site: lower (T, C)}, {site: upper (T, C)}, n_batch)` —
 the per-batch CI summed over the batch leading axis, position axis kept. Pairs with
-`accumulate_position_ci` to form a batch-mean `(T, C)` CI matrix per site. `model`
-(frozen-weight-bearing) is the jit ARG."""
+`fold_position_ci` to form a batch-mean `(T, C)` CI matrix per site."""
 
 
 def make_position_ci_step(
-    model_static: PlacedModel,
-    ci_capture_keys: CaptureKeys,
     compiler_options: dict[str, bool | int | str] | None = None,
 ) -> PositionCIStep:
     """Per-batch CI reduction that KEEPS the position axis (the `(T, C)` matrix the
-    permutation/heatmap metrics plot), summing only over the batch leading axis. LM-only:
-    the residual is `(B, T, d)` and CI is `(B, T, C)`."""
-    site_names = model_static.site_names
+    permutation/heatmap metrics plot), summing only over the batch leading axis, over the
+    shared context's compute-precision CI preactivations. LM-only: CI is `(B, T, C)`."""
 
     def position_ci_step(
-        model: PlacedModel, placed_ci_fn: PlacedCIFn, residual: Float[Array, "*leading d"]
+        compute_preactivations: dict[str, Array],
     ) -> tuple[dict[str, Array], dict[str, Array], Array]:
-        # Training precision (bf16) readout — see make_slow_eval_step; preactivations upcast to fp32.
-        preactivations = ci_preactivations(
-            placed_ci_fn,
-            model.clean_forward(residual, ci_capture_keys).captures,
-            remat=False,
-        )
+        site_names = tuple(compute_preactivations)
+        # fp32 squash of the compute-precision preactivations — see make_ci_reduction_step.
+        preactivations = {
+            s: value.astype(jnp.float32) for s, value in compute_preactivations.items()
+        }
         lower = {s: lower_leaky_hard_sigmoid(preactivations[s]) for s in site_names}
         upper = {s: upper_leaky_hard_sigmoid(preactivations[s]) for s in site_names}
         first = lower[site_names[0]]
@@ -382,30 +390,48 @@ class PositionCI:
     upper: np.ndarray
 
 
-def accumulate_position_ci(
-    position_ci_step: PositionCIStep,
-    model: PlacedModel,
-    placed_ci_fn: PlacedCIFn,
-    residual_batches: list[Float[Array, "*leading d"]],
-) -> dict[str, PositionCI]:
-    """Fold `position_ci_step` over the eval batches into a batch-mean `(T, C)` CI matrix
-    per site (token-weighted mean over batch elements; uniform batch makes it the plain
-    mean). All batches must share one `(B, T)` shape."""
-    assert residual_batches, "position CI accumulation needs at least one batch"
-    lower: dict[str, np.ndarray] = {}
-    upper: dict[str, np.ndarray] = {}
-    total_batch = 0
-    for batch_idx, residual in enumerate(residual_batches):
-        lo, hi, n_batch = position_ci_step(model, placed_ci_fn, residual)
-        total_batch += int(n_batch)
-        for site in lo:
-            lo_np, hi_np = np.asarray(lo[site]), np.asarray(hi[site])
-            lower[site] = lo_np if batch_idx == 0 else lower[site] + lo_np
-            upper[site] = hi_np if batch_idx == 0 else upper[site] + hi_np
-    assert total_batch > 0
+@dataclass(frozen=True)
+class PositionCIAccumulation:
+    """Running fold of `PositionCIStep` outputs across a pass; `position_ci` finalizes it
+    into the batch-mean `(T, C)` CI matrices (token-weighted mean over batch elements;
+    uniform batches make it the plain mean). All batches must share one `(B, T)` shape."""
+
+    lower: dict[str, np.ndarray]
+    upper: dict[str, np.ndarray]
+    total_batch: int
+
+
+def empty_position_ci_accumulation() -> PositionCIAccumulation:
+    return PositionCIAccumulation({}, {}, 0)
+
+
+def fold_position_ci(
+    accumulation: PositionCIAccumulation,
+    step_output: tuple[dict[str, Array], dict[str, Array], Array],
+) -> PositionCIAccumulation:
+    lo, hi, n_batch = step_output
+    first = accumulation.total_batch == 0
+    return PositionCIAccumulation(
+        lower={
+            site: np.asarray(value) if first else accumulation.lower[site] + np.asarray(value)
+            for site, value in lo.items()
+        },
+        upper={
+            site: np.asarray(value) if first else accumulation.upper[site] + np.asarray(value)
+            for site, value in hi.items()
+        },
+        total_batch=accumulation.total_batch + int(n_batch),
+    )
+
+
+def position_ci(accumulation: PositionCIAccumulation) -> dict[str, PositionCI]:
+    assert accumulation.total_batch > 0, "position CI accumulation needs at least one batch"
     return {
-        site: PositionCI(lower=lower[site] / total_batch, upper=upper[site] / total_batch)
-        for site in lower
+        site: PositionCI(
+            lower=accumulation.lower[site] / accumulation.total_batch,
+            upper=accumulation.upper[site] / accumulation.total_batch,
+        )
+        for site in accumulation.lower
     }
 
 

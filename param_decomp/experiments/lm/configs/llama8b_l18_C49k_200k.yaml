@@ -52,9 +52,6 @@ eval:
     type: CEandKLLosses
   - type: CIMeanPerComponent
   - coeff: null
-    type: StochasticHiddenActsReconLoss
-  - type: CIHiddenActsReconLoss
-  - coeff: null
     init: random
     source_shape: c
     n_steps: 20
@@ -128,12 +125,11 @@ pd:
       coeff: 1.0e-06
       reference_datapoint_count: 1048576
     coeff: 5.0e-06
-    eps: 1.0e-12
-    pnorm:
-      max_val: 2.0
+    gamma:
+      max_val: 1.0
       points:
         - {at: 0.0, frac: 1.0}
-        - {at: 1.0, frac: 0.2}
+        - {at: 1.0, frac: 0.01}
     type: ImportanceMinimalityLoss
   - coeff: 0.5
     routing:

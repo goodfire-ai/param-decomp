@@ -22,9 +22,10 @@ from typing_extensions import TypeVar
 
 from param_decomp.core.axes import Axes, SemanticAxis
 from param_decomp.core.nonlinearity import (
-    AttentionHeads,
+    KVHeads,
     Neurons,
     NonlinearityPartition,
+    QueryHeads,
 )
 
 
@@ -70,7 +71,7 @@ class SiteSpec:
 
     def __post_init__(self) -> None:
         match self.nonlinearity_partition:
-            case AttentionHeads(head_count=head_count):
+            case QueryHeads(head_count=head_count) | KVHeads(head_count=head_count):
                 assert self.d_out % head_count == 0, self
             case Neurons() | None:
                 pass
