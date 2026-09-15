@@ -808,7 +808,7 @@ def test_jitted_sharded_inits_match_eager_values():
     """`init_*_placed` (model-owned `.shardings`) must be a placement-only change: same
     values as the host (unsharded) init fns (threefry is partitionable, so generating under
     jit with `out_shardings` cannot perturb the stream — only op fusion can reassociate the
-    scaling, SPEC D4: rel ~1e-7), with the expected pure-HSDP placements (V FSDP d_in on
+    scaling, rel ~1e-7), with the expected pure-HSDP placements (V FSDP d_in on
     `fsdp`, U FSDP d_out on `fsdp`, C never sharded) — for a heterogeneous-C site set
     spanning attention and MLP matrices."""
     from jax.sharding import NamedSharding
@@ -981,7 +981,7 @@ def test_jitted_sharded_inits_match_eager_values():
 
 def test_fresh_pgd_c_bc_sources_are_replica_identical():
     """Fresh-PGD `c`/`bc` sources must be REPLICA-IDENTICAL across every shard (issue
-    #660; SPEC S16, D4): the `c` -> `(1,1,C)` / `bc` -> `(B,1,C)` component leaf carries no
+    #660): the `c` -> `(1,1,C)` / `bc` -> `(B,1,C)` component leaf carries no
     sharded leading axis, so the adversarial source the masks see must hold the same
     values on every device. Replica-identity follows from the init key being replicated
     (the trainer derives it from `fold_in(run_key, step)`, identical on all processes).

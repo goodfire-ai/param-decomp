@@ -33,5 +33,5 @@ forward (including its sharding/remat strategy behind the protocol), its `ArchFa
 and its weight loading. `param_decomp/tests/targets/` holds the per-target parity/golden
 suites; engine behavior tests that merely use a target as a fixture live under
 `param_decomp/tests/core/`.
-`invariance_check.py` is the SPEC D4 device-count invariance harness (a tiny GLU target
+`invariance_check.py` is the device-count invariance harness (a tiny GLU target
 driven through the engine at simulated device counts).

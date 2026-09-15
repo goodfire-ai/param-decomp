@@ -1,4 +1,4 @@
-"""The targeted (tPD, SPEC §11) LM seat: prompt-pool construction (local stub tokenizer —
+"""The targeted (tPD) LM seat: prompt-pool construction (local stub tokenizer —
 no hub dependency), the pure per-step pool batch, the config shape's refusals, and the
 shipped seat config."""
 
@@ -36,13 +36,13 @@ def test_arithmetic_pool_runs_at_natural_prompt_length():
         ArithmeticGridPromptsConfig(operation="add", a_range=(1, 4), b_range=(1, 4)),
         _StubTokenizer(),
     )
-    # "<a>+<b>=" at one char per token — unpadded (T8).
+    # "<a>+<b>=" at one char per token — unpadded.
     assert pool.tokens.shape == (16, 4)
     assert pool.tokens.dtype == np.int32
 
 
 def test_arithmetic_pool_admits_multi_token_answers():
-    """The pool contract is prompt geometry only (T8): `[1, 9] x [1, 9]` sums reach 18 —
+    """The pool contract is prompt geometry only: `[1, 9] x [1, 9]` sums reach 18 —
     two ids under per-digit tokenization, which the eval probe refuses but a training
     pool, which never scores an answer position, must not."""
     pool = build_prompt_pool(
@@ -87,7 +87,7 @@ def test_pool_batch_is_pure_in_seed_and_step():
     b = pool_batch(pool, seed=7, step=3, global_batch=32)
     c = pool_batch(pool, seed=7, step=4, global_batch=32)
     assert a.shape == (32, 4)
-    assert np.array_equal(a, b), "same (seed, step) must draw the same batch (S18)"
+    assert np.array_equal(a, b), "same (seed, step) must draw the same batch"
     assert not np.array_equal(a, c), "different steps must draw different batches"
     # Every drawn row is a pool row.
     pool_rows = {row.tobytes() for row in pool.tokens}

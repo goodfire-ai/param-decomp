@@ -244,7 +244,7 @@ def test_sharded_binning_and_uniform_draws_are_value_identical():
     `_binned_values` / `_per_component_ci_hist` are pure reductions — the batch-sharded
     array must produce byte-identical counts/edges to the unsharded one (integer counts
     are reorder-proof). `uniform_like` must draw the same values sharded as unsharded:
-    threefry is counter-based, so partitioning the draw never changes it (SPEC D4)."""
+    threefry is counter-based, so partitioning the draw never changes it."""
     from param_decomp.core.linear_plan import uniform_like
     from param_decomp.core.slow_eval import _binned_values, _per_component_ci_hist
 

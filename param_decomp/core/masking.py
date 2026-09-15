@@ -191,7 +191,7 @@ def stochastic_delta_pinned_masks(
     ci_lower: Mapping[str, SiteCI], draw_key: Array
 ) -> tuple[dict[str, SiteCI], dict[str, Array]]:
     """Stochastic component masks with every weight-delta mask pinned to 1.0 — the tPD
-    non-target pass (SPEC T4), where `components + Δ` must reconstruct the frozen output.
+    non-target pass, where `components + Δ` must reconstruct the frozen output.
 
     Pre-built (`MaterializedMasking`) rather than the in-target `StochasticMasking`
     rebuild, which draws its own `U[0,1]` delta inside each block and cannot pin it. The
@@ -213,7 +213,7 @@ def constant_delta_pinned_masks(
     value: float, ci_lower: Mapping[str, SiteCI]
 ) -> tuple[dict[str, SiteCI], dict[str, Array]]:
     """Constant component masks (`ci + (1-ci)·value`) with every weight-delta mask pinned
-    to 1.0 — the tPD non-target pass's constant-source arm (SPEC T4). The plain objective's
+    to 1.0 — the tPD non-target pass's constant-source arm. The plain objective's
     constant arm carries NO delta path at all; here the delta must be fully on."""
     masks = {
         site: map_site_ci(lambda v: v + (1.0 - v) * value, ci) for site, ci in ci_lower.items()
@@ -229,7 +229,7 @@ def unmasked_no_delta_masks(
     ci_lower: Mapping[str, SiteCI],
 ) -> tuple[dict[str, SiteCI], dict[str, Array]]:
     """Every component mask `1.0` with every weight-delta mask pinned to `0.0` — the tPD
-    non-target pass's one delta-OFF arm (SPEC T4's enumerated exception): the FULL
+    non-target pass's one delta-OFF arm (the enumerated exception): the FULL
     component sum alone must reconstruct the frozen output, so components that never
     activate cannot hide behind the delta. Deterministic — no sources are drawn;
     `ci_lower` supplies only shapes and dtypes."""
@@ -301,7 +301,7 @@ def source_value_cis(
     ci_lower: Mapping[str, SiteCI], sources: Mapping[str, SiteSource]
 ) -> tuple[dict[str, SiteCI], dict[str, Array]]:
     """Per-site source VALUES in the CI's own emission geometry, plus the delta values —
-    SPEC S1's mask ingredients, not yet composed (`compose_source_mask` is the compose).
+    mask ingredients, not yet composed (`compose_source_mask` is the compose).
 
     Sources broadcast over the leading dimensions left singleton by their source shape.
     Casting the fp32 source state to the CI dtype here matches torch under autocast while
@@ -342,7 +342,7 @@ def source_value_cis(
 
 
 def compose_source_mask(ci: SiteCI, source_values: SiteCI) -> SiteCI:
-    """One site's mask from its CI and source values (SPEC S1): `ci + (1 - ci)·source`,
+    """One site's mask from its CI and source values: `ci + (1 - ci)·source`,
     pointwise at whatever leading layout the pair rides — per-site, target-stacked, or a
     stage slice inside a checkpointed block. The two emissions must agree; a narrow
     pair composes on `values` with the CI's indices carried through."""
@@ -370,7 +370,7 @@ def compose_source_mask(ci: SiteCI, source_values: SiteCI) -> SiteCI:
 def masks_from_sources(
     ci_lower: Mapping[str, SiteCI], sources: Mapping[str, SiteSource]
 ) -> tuple[dict[str, SiteCI], dict[str, Array]]:
-    """Build component and weight-delta masks from per-site sources (SPEC S1) — the
+    """Build component and weight-delta masks from per-site sources — the
     eager spelling of the `SourceMasking` recipe, op-for-op the same composition."""
     values, delta_masks = source_value_cis(ci_lower, sources)
     masks = {site: compose_source_mask(ci, values[site]) for site, ci in ci_lower.items()}
@@ -380,7 +380,7 @@ def masks_from_sources(
 def _per_sample_adversarial_assignment(
     key: PRNGKeyArray, adv_fraction: Array, leading: tuple[int, ...]
 ) -> Array:
-    """Draw one Bernoulli selector per sample, broadcast across position axes (SPEC S34)."""
+    """Draw one Bernoulli selector per sample, broadcast across position axes."""
     one_flag_per_sample = (leading[0], *(1,) * (len(leading) - 1))
     return random.bernoulli(key, adv_fraction, one_flag_per_sample)
 
@@ -393,7 +393,7 @@ def mixed_persistent_stochastic_masks(
     adv_fraction: Array,
     stochastic_routes: dict[str, Array] | None,
 ) -> tuple[dict[str, Array], dict[str, Array], dict[str, Array] | None]:
-    """Build the merged stochastic+PPGD term's forward inputs (SPEC S34).
+    """Build the merged stochastic+PPGD term's forward inputs.
 
     Adversarial samples use the persistent bundle and route every site; the rest use
     fresh uniform sources and the stochastic routes. The persistent sources remain graph

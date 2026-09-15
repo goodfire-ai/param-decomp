@@ -888,7 +888,7 @@ def constrain_faithfulness_deltas(
 # Named rule tables, one per deliberately supported layout. `stack` is the V/U
 # semantic-group stack axis (components.ComponentStacks); `d` covers d_in and d_out via the
 # per-tensor axes tuples. All presets share the activation waist rule (batch over the
-# full data mesh) — that surface is layout-invariant (SPEC §4.1 pins).
+# full data mesh) — that surface is layout-invariant.
 
 # ÷N master rows keep `replicate` MINOR on whichever dim carries it: each compute shard
 # is then the contiguous concat of its own replicate-group's ÷N optimizer shards, so
@@ -1490,7 +1490,7 @@ def _moe_resident_table(base: PlacementTable, components: _ComponentsTable) -> P
 # The built-in tables: `zero1` (intra-matrix ÷N over the full data mesh — no row shards
 # the stack axis, so every semantic group is placeable pad-free; ~equivalent comms to
 # `owner` under elementwise optimizers), `owner` (stack ÷replicate, d ÷fsdp — the
-# muon-motivated D4-amended layout, node-local NS; a stack that doesn't tile ÷replicate
+# muon-motivated layout, node-local NS; a stack that doesn't tile ÷replicate
 # pads its persist stack to the next multiple — `GroupCensus.stack_pad`),
 # `zero1-replicated-resident` (`zero1` masters, resident working copy — classic ZeRO-1;
 # every semantic group is placeable, and the faithfulness rows ARE the master layout so
@@ -1914,7 +1914,7 @@ def component_stacks_shardings(
     stacks: ComponentStacks[Array], rules: PlacementRules
 ) -> ComponentStacks[NamedSharding]:
     """The V/U persistence placement, each group at its factorization's leaf axes
-    (`owner` is the hybrid HSDP layout of the 2026-07-15 SPEC D4 amendment).
+    (`owner` is the hybrid HSDP layout).
     Boundary-validated by `_validate_component_stacks`; divisibility was validated at
     rules construction against these same (padded) shapes."""
     _validate_component_stacks(stacks, rules.components)

@@ -18,7 +18,7 @@ def make_faithfulness_loss(
     target_sq_norms: dict[str, tuple[float, ...]],
     stack_pads: Mapping[str, int],
 ) -> FaithfulnessLossFn:
-    """Bind validated target scales for mean per-site relative Frobenius error (SPEC S17).
+    """Bind validated target scales for mean per-site relative Frobenius error.
 
     `target_sq_norms` carries one `‖W_s‖²` per slot of each persistence stack, aligned
     with the `weight_deltas` grouping; the returned loss consumes those stacked deltas.
@@ -62,7 +62,7 @@ def make_faithfulness_loss(
         return delta_sq_norms / jnp.asarray(sq_norms, jnp.float32)
 
     def faithfulness_loss(weight_deltas: dict[str, Float[Array, "g ..."]]) -> Float[Array, ""]:
-        """The mean over REAL sites of each site's relative error (SPEC S17)."""
+        """The mean over REAL sites of each site's relative error."""
         total = sum(
             (
                 jnp.sum(relative_errors(weight_deltas[group], sq_norms))

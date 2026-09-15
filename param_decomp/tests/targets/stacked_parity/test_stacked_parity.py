@@ -6,7 +6,7 @@ contiguous-MLP-only `llama_decomposed_lm`). This test rebuilds the identical mod
 the per-site representation and checks, for the same MLP-family site set:
 
   * clean output / per-site INPUTS (requested by target-owned canonical activation keys) /
-    `weight_deltas` / `masked_output` — to a portable fp32 reassociation tolerance (SPEC D4),
+    `weight_deltas` / `masked_output` — to a portable fp32 reassociation tolerance,
     not bit-exact: float32 matmul reduction order differs across CPU microarchitectures, so
     the same op sequence diverges by ~1 ULP between the fixture-generating host and a given
     CI runner (`ubuntu-latest` is a heterogeneous pool). These pins are CI-fn-INDEPENDENT —

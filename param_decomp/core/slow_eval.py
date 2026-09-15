@@ -14,8 +14,7 @@ arrays, no torch). The reduction steps read the pass-shared CI envelope
 (`experiments/lm/diagnostic_eval_operations.py`); the toys use only the UV figure helpers
 (`render_uv_figure` / `plot_uv_matrices`).
 
-The slow tier runs IN-LOOP on `eval.slow_every` next to the fast pass (`run.py`,
-SPEC S28/S29), reusing the fast pass's eval batches and logging `slow_eval/*` on the live
+The slow tier runs IN-LOOP on `eval.slow_every` next to the fast pass (`run.py`), reusing the fast pass's eval batches and logging `slow_eval/*` on the live
 `_step` axis from a rank-0 background thread.
 
 Cross-batch reductions are exact under micro-batching: density/mean accumulate

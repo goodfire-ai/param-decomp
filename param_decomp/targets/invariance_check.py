@@ -1,4 +1,4 @@
-"""Device-count invariance of the generic trainer (SPEC D4), on the tiny Llama target.
+"""Device-count invariance of the generic trainer, on the tiny Llama target.
 
 Runs the SAME fixed global batch + seed through the full step twice on this host:
 once single-layout (mesh=None — everything on device 0), once GSPMD batch-sharded over
@@ -244,7 +244,7 @@ def check_device_count_invariance(
     rel: float = 5e-4,
 ) -> float:
     """Run the full step single-layout and topology-sharded and ASSERT the metric
-    trajectories match (SPEC D4); returns the worst relative error. `census` also
+    trajectories match; returns the worst relative error. `census` also
     asserts the sharded step's cross-replicate collective placement. `rel` is sized
     for the default (1, n, 1) arm; replicate>1 topologies reduce in more orders and
     need a step-count-matched widening (drift grows ~5-10x per step)."""
@@ -272,7 +272,7 @@ def check_device_count_invariance(
                 failures.append(
                     f"step {i} {k}: single {a[k]!r} vs sharded({n_dev}) {b[k]!r} err {err:.2e}"
                 )
-    assert not failures, "trajectory diverged across shardings (SPEC D4):\n" + "\n".join(failures)
+    assert not failures, "trajectory diverged across shardings:\n" + "\n".join(failures)
     return worst
 
 

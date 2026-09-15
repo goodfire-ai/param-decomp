@@ -284,7 +284,7 @@ ExpertsExecution = Literal["routed", "dense"]
 """The enumerated decomposed-expert executions — correctness-identical up to fp32
 reassociation. `routed` is the production arm (job-space compute over the k selected
 experts per token — the memory-efficient arm for large component counts); `dense` computes every expert
-for every token (`expert_block_site_forward` over the whole fused matrix, SPEC §4.1
+for every token (`expert_block_site_forward` over the whole fused matrix,
 verbatim) and exists as the parity oracle."""
 
 
@@ -1665,7 +1665,7 @@ class Qwen36MoeDecomposedModel(eqx.Module):
         the grouped-matmul rhs layout), masks/CI gathered to job space (`[J, c]` — the
         k selected blocks per token), the frozen delta/route channels on the same
         grouped matmuls, routing weights folded into the down-site input in fp32
-        (`_fold_routing_weights` — the identical SPEC §4.1 math `_dense_experts`
+        (`_fold_routing_weights` — the identical math `_dense_experts`
         computes over every expert with the same fold, so those two arms differ by fp32
         reassociation only; against the frozen arm's post-down fp32 combine the fold
         costs one bf16 rounding of the fused input), and an unweighted per-token
@@ -1686,7 +1686,7 @@ class Qwen36MoeDecomposedModel(eqx.Module):
                 return grouped_matmul(input_jobs, frozen_blocks, jobs.group_sizes, backend)
             mask, delta_mask, route = _entry_masking(entry, uses_weight_deltas)
             # Delta/route may carry size-1 broadcast lead axes (batch-shared persistent
-            # sources, SPEC S16/D1). The dense arm broadcasts them through its
+            # sources). The dense arm broadcasts them through its
             # elementwise ops; the job gathers need them at the full lead first — the
             # broadcast's transpose is the same cross-lead sum dense's autodiff performs.
             if delta_mask is not None:
@@ -1790,7 +1790,7 @@ class Qwen36MoeDecomposedModel(eqx.Module):
                 return ep_grouped_matmul(input_jobs, frozen_blocks, jobs, shard_axis, backend)
             mask, delta_mask, route = _entry_masking(entry, uses_weight_deltas)
             # Delta/route may carry size-1 broadcast lead axes (batch-shared persistent
-            # sources, SPEC S16/D1). The dense arm broadcasts them through its
+            # sources). The dense arm broadcasts them through its
             # elementwise ops; the job gathers need them at the full lead first — the
             # broadcast's transpose is the same cross-lead sum dense's autodiff performs.
             lead = h2.shape[:-1]
@@ -2582,7 +2582,7 @@ class Qwen36MoeDecomposedModel(eqx.Module):
         }
 
     def weight_deltas(self, vu: ComponentStacks) -> dict[str, Array]:
-        """fp32 `W − V@U` per kind stack (slot axis = layer axis, SPEC N2). Shared
+        """fp32 `W − V@U` per kind stack (slot axis = layer axis). Shared
         kinds stack fused `[g, d_out, d_in]`; expert kinds stack per-expert blocks
         `[g, expert, d_out, d_in]` — the blocks partition the fused matrix, so per-slot
         Frobenius reductions agree.

@@ -10,7 +10,7 @@ restructured away. Regenerate from a base-branch checkout, e.g.:
 
 `test_stacked_parity.py` then rebuilds the same model in the per-site representation
 and must reproduce: clean logits BIT-IDENTICAL, masked logits / weight deltas /
-site inputs to reassociation tolerance (SPEC D4, rel ~1e-5). This script once also
+site inputs to reassociation tolerance (rel ~1e-5). This script once also
 recorded a 2-step training trajectory; that part is deleted because its loss was the
 removed L_p penalty, which only this old branch can still express — no comparable
 recording can be made again (the committed npz still carries the dead `out::` arrays).

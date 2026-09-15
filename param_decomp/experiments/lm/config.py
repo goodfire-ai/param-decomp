@@ -503,12 +503,12 @@ class LMExperimentConfig(ExperimentConfig):
 
 
 class LMTargetedExperimentConfig(ExperimentConfigBase):
-    """The targeted (tPD, SPEC §11) LM run shape — its own top-level schema, not a mode
+    """The targeted (tPD) LM run shape — its own top-level schema, not a mode
     flag on the plain one: choosing the root (`experiments.lm.run_targeted` vs
     `experiments.lm.run`) chooses the algorithm, and each shape refuses the other's
     sections at parse. `pd.loss_metrics` authors the TARGET pass at `pd.batch_size`
     over the `prompts:` pool; `data:` is the broad NON-TARGET stream at
-    `nontarget.batch_size` (T2). No `resume_provenance`: fine-tune semantics for a
+    `nontarget.batch_size`. No `resume_provenance`: fine-tune semantics for a
     targeted run (whose parent may be plain OR targeted) are undefined, so the field is
     unrepresentable rather than accepted and wrong.
 
@@ -852,7 +852,7 @@ def _resolve_global_mlp_ci_arch(
     `_chunk_input_taps` over the whole tree names each physical vector once (q/k/v sites
     share their block's attention input), and each tap carries its grammar width. The MLP
     is pointwise per token, so `has_position_axis=True` is the target's shape, not an
-    attention claim (SPEC T8 holds unconditionally)."""
+    attention claim (holds unconditionally)."""
     tap_keys = _chunk_input_taps(ci.input_tap, tree.blocks, grammar)
     return GlobalMLPCIArch(
         hidden_dims=ci.hidden_dims,
@@ -988,7 +988,7 @@ def _assert_placement_claims(
     ci_fn: LMCIFnArch,
     pd: PDConfigBase,
 ) -> None:
-    """The config-build placement gate (SPEC D4 amendment 2026-07-21): construct the
+    """The config-build placement gate: construct the
     run's `PlacementRules` at the declared `runtime.mesh` shape, firing the
     per-semantic-group tiling refusals and the preset↔mesh-axes claim where the
     resolved site set and the declared topology first coexist — at
@@ -1086,7 +1086,7 @@ def build_targeted_experiment_config(
 ) -> LMTargetedRun:
     """The targeted build route: identical resolution to `build_experiment_config`, with
     the objective validated as the two-pass tPD surface (faithfulness refused, the
-    non-target list checked; SPEC T3/T5). The targeted sections (`prompts`, `nontarget`)
+    non-target list checked). The targeted sections (`prompts`, `nontarget`)
     ride the authored config into the composition root, like `runtime` — the engine
     bundle stays the shared `BuiltRun`."""
     resolved = resolve_decomposition(cfg.target, cfg.decomposition, data_root)

@@ -8,10 +8,10 @@ partition the model's sites — every site needs exactly one CI value — assert
 construction. Core treats both keyspaces as OPAQUE dict keys: look up inputs, scatter
 outputs, validate the partition. It never parses a key.
 
-The SAME preactivations are squashed two ways (SPEC S5/S6) in ONE place (`CI.from_preactivations`):
+The SAME preactivations are squashed two ways in ONE place (`CI.from_preactivations`):
 `lower` (clip[0,1], leaky-below) feeds recon / PPGD / routing masks; `upper`
 (leaky-above-1) feeds importance-minimality. `preactivations` is kept too — the CI histograms /
-heatmaps plot the pre-squash view. Params are fp32 masters (SPEC N1); the trainer casts
+heatmaps plot the pre-squash view. Params are fp32 masters; the trainer casts
 for bf16 compute.
 
 The chunkwise-transformer (`ChunkwiseTransformerCIFn`) is the LM impl: each chunk reads
@@ -91,7 +91,7 @@ from param_decomp.target_ports.llama import (
 
 CI_FN_RMS_EPS = float(jnp.finfo(jnp.float32).eps)
 """Matches torch's `F.rms_norm` default eps (`finfo(fp32).eps` ~1.19e-7); RMS upcasts to
-fp32 internally, so this is the dtype that governs (SPEC S4)."""
+fp32 internally, so this is the dtype that governs."""
 
 
 SiteDict = dict[str, SiteCI]
@@ -120,7 +120,7 @@ def _vector_sharding(
     return row.sharding_for(axes)
 
 
-# ----------------------------- squashings (SPEC S5/S6) -----------------------------
+# ----------------------------- squashings -----------------------------
 
 
 @jax.custom_vjp
@@ -638,7 +638,7 @@ class ChunkTransformer(eqx.Module):
 
     One head per site-slot (`out_ws[j] [d_model, C_j]` / `out_bs[j] [C_j]`) instead of a
     single glued `[d_model, ΣC]` head: each head's output IS that site's CI, born already
-    split per site (matching `x@V` / the mask, SPEC §4.1 `site_out`). Under pure HSDP the C
+    split per site (matching `x@V` / the mask, `site_out`). Under pure HSDP the C
     axis is replicated (not sharded), so the split is a pure layout convenience; it was
     load-bearing under the prior TP layout (a tp-sharded glued ΣC axis sliced mid-site),
     and is kept harmlessly.

@@ -73,7 +73,7 @@ from param_decomp.core.train import Decomposition, TrainingItem, TrainState
 
 def optax_schedule(config: ScheduleConfig, total_steps: int) -> Callable[[ArrayLike], Array]:
     """`scheduled_value_traced` curried into an optax schedule over the update count.
-    Torch cosine parity (the `decay_steps - 1` denominator, SPEC S20) is pinned by
+    Torch cosine parity (the `decay_steps - 1` denominator) is pinned by
     `test_optim_torch_parity.py`."""
 
     def schedule(count: ArrayLike) -> Array:
@@ -86,7 +86,7 @@ def clip_by_global_norm_with_eps(max_norm: float, eps: float) -> optax.GradientT
     """Global-norm clip matching torch's `clip_grad_norm_`: scale by
     `clip(max_norm / (global_norm + eps), max=1)`. optax's `clip_by_global_norm` omits
     `eps`; at small `max_norm` (0.01) the clip fires almost every step so this ~1e-4
-    relative offset is per-step (SPEC S19)."""
+    relative offset is per-step."""
 
     def init(params: optax.Params) -> optax.EmptyState:
         del params
@@ -177,9 +177,9 @@ def _optimizer_with_clip(
     waypoints: NSWaypoints | None,
 ):
     """The group optimizer (fp32 master) over `schedule`, optionally preceded by
-    torch-parity global-norm clip (SPEC S19/N1). AdamW is canonical (eps is the torch/optax
+    torch-parity global-norm clip. AdamW is canonical (eps is the torch/optax
     default 1e-8, not exposed on `AdamWOptimizerConfig`; optax's wd default overridden to the
-    config's — torch's is 0); Muon is a config-gated experimental variant (SPEC S19').
+    config's — torch's is 0); Muon is a config-gated experimental variant.
     `muon_dimension_numbers` labels the group's leaves for muon (None = optax's default
     2D-matrix rule, correct for the MLP CI fns); it and `waypoints` (the group's declared
     NS staging) are read only by the muon arm."""

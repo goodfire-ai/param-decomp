@@ -26,11 +26,11 @@ run directories carry the exact configs.
 | chunkwise fixture | `param_decomp/experiments/lm/configs/llama8b_l18-26_9layer_chunkwise.yaml` | the 27-site chunkwise CI-fn config `test_config.py` converts |
 | pile 4L VPD reference | `param_decomp/experiments/lm/configs/pile_llama_simple_mlp-4L.yaml` | current JAX reference for the VPD paper target; reproduces [p-8383f5e5](https://wandb.ai/goodfire/param-decomp/runs/p-8383f5e5) |
 | full32 performance benchmark | `param_decomp/experiments/lm/configs/profile_llama8b_full32_adam.yaml` | canonical faith-on base for derivable, matched H100 communication profiles; the checked-in file is maintained, while generated topology variants remain launch-local |
-| tPD L18 arithmetic | `param_decomp/experiments/lm/configs/llama8b_l18_arith_targeted.yaml` | the tPD (SPEC §11) L18 modular-addition recipe; the targeted-schema fixture `test_lm_targeted.py` loads |
+| tPD L18 arithmetic | `param_decomp/experiments/lm/configs/llama8b_l18_arith_targeted.yaml` | the tPD L18 modular-addition recipe; the targeted-schema fixture `test_lm_targeted.py` loads |
 | qwen36 large-capacity reference | `param_decomp/experiments/lm/configs/qwen36_35b_cpe512_dp8tp8.yaml` | large-capacity reference: c_per_expert 512 (C = 131,072/site), MoE chunkwise CI with narrow emission, smooth-L0, batch-shared sources, and batch 32×512 |
 | qwen36 large-capacity reference (bsc) | `param_decomp/experiments/lm/configs/qwen36_35b_cpe512_bsc_dp8tp8.yaml` | the large-capacity seat with per-example `bsc` sources (uint16 fixed-point values, stochastic-rounding stores, and momentum SGD), a streamed output edge, and command-buffer capture |
 | qwen36 compact reference | `param_decomp/experiments/lm/configs/qwen36_35b_cpe128_b32_dp8tp8.yaml` | smaller-capacity reference with c_per_expert 128, CI width 2048, and batch 32×512 |
-| qwen36 tPD arithmetic | `param_decomp/experiments/lm/configs/qwen36_35b_tpd_arith_cpe128_dp8tp8.yaml` | targeted decomposition (SPEC §11) of a single-digit addition pool, with c_per_expert 128, narrow MoE CI, Muon components, uint16 momentum sources, and mesh {data: 8, tp: 8} |
+| qwen36 tPD arithmetic | `param_decomp/experiments/lm/configs/qwen36_35b_tpd_arith_cpe128_dp8tp8.yaml` | targeted decomposition of a single-digit addition pool, with c_per_expert 128, narrow MoE CI, Muon components, uint16 momentum sources, and mesh {data: 8, tp: 8} |
 
 The toy testbeds (`param_decomp/experiments/tms/configs/`,
 `param_decomp/experiments/resid_mlp/configs/`) and the pretrain configs

@@ -2,7 +2,7 @@
 
 Authored loss metrics become explicit objective roles: the plain objective is exactly one
 faithfulness term, one importance-minimality term, a non-empty ordered tuple of recon
-terms, and at most one nonlinearity-locality term; the targeted (tPD, SPEC §11)
+terms, and at most one nonlinearity-locality term; the targeted (tPD)
 objective is a faithfulness-free target-pass surface plus a directly-authored
 non-target pass (delta-pinned recon + importance-minimality at its own coefficient).
 The recon vocabulary (routing samplers, mask-source strategies) lives in `recon.py`;
@@ -137,7 +137,7 @@ class LossSurface:
 
 @dataclass(frozen=True)
 class TargetPass:
-    """The tPD target-pass surface (SPEC T3/T7): the full decomposition objective minus
+    """The tPD target-pass surface: the full decomposition objective minus
     faithfulness — the delta is the off-target escape valve and must never be penalized,
     so a targeted objective has no faithfulness role at all."""
 
@@ -147,27 +147,27 @@ class TargetPass:
 
 @dataclass(frozen=True)
 class NontargetPass:
-    """The tPD non-target-pass surface, complete (SPEC T4/T5): with the delta mask pinned
+    """The tPD non-target-pass surface, complete: with the delta mask pinned
     fully on, the broad stream judges only what the components must not disturb — so its
     whole objective is delta-pinned reconstruction against the frozen output plus
-    importance-minimality at its own coefficient (T4's one enumerated exception is the
+    importance-minimality at its own coefficient (the enumerated exception is the
     unmasked-no-delta term, whose delta is pinned OFF). `imp.cfg` IS the target pass's
     config (penalty shape, anneal, frequency block shared by construction); only the
     coefficient is the non-target pass's own."""
 
     recon: tuple[ReconLossTerm[StochasticSources | ConstantSources | UnmaskedNoDeltaSources], ...]
-    """The enumerated non-target strategies ONLY, in the type (SPEC T5): the delta-pinned
+    """The enumerated non-target strategies ONLY, in the type: the delta-pinned
     stochastic/constant pair plus the delta-off unmasked arm — a term carrying an
     adversarial or mixed strategy is unrepresentable here, not filtered out."""
     impmin_coeff: LossCoeff
     """The non-target pass's importance-minimality COEFFICIENT — the penalty config
     (shape, anneal, frequency block) is the target pass's, structurally: this pass
-    cannot carry its own (SPEC T6)."""
+    cannot carry its own."""
 
 
 @dataclass(frozen=True)
 class TargetedObjective:
-    """The complete two-pass tPD objective; both passes sum into ONE backward (SPEC §11)."""
+    """The complete two-pass tPD objective; both passes sum into ONE backward."""
 
     target: TargetPass
     nontarget: NontargetPass
@@ -187,7 +187,7 @@ def _collect_terms(
     claim, not this walk's.
 
     Recon-term order follows the authored list and is semantically load-bearing: per-term
-    RNG keys derive from the recon index (SPEC R1).
+    RNG keys derive from the recon index.
     """
     faith: FaithfulnessTerm | None = None
     imp: ImportanceMinimalityTerm | None = None
@@ -303,10 +303,10 @@ def build_targeted_objective(
     nontarget: NontargetConfig,
     site_names: tuple[str, ...],
 ) -> TargetedObjective:
-    """Build the closed two-pass tPD objective (SPEC §11).
+    """Build the closed two-pass tPD objective.
 
     `loss_metrics` authors the TARGET pass — typed by `TargetedLossMetricConfig`, which
-    has no faithfulness member (T3: the delta is the unpenalized off-target escape valve,
+    has no faithfulness member (the delta is the unpenalized off-target escape valve,
     so a targeted config cannot spell a faithfulness role). The non-target pass is
     authored directly on `nontarget` — never derived from the target list — and its
     importance-minimality shares the target's penalty config (shape + anneal) by
@@ -314,14 +314,12 @@ def build_targeted_objective(
     faith, imp, recon_terms, nonlinearity = _collect_terms(loss_metrics, site_names)
     # The library boundary for lists built outside the schema; unreachable for a parsed
     # TargetedPDConfig.
-    assert faith is None, "a targeted loss list carried a FaithfulnessLossConfig (SPEC T3)"
-    assert nonlinearity is None, (
-        "a targeted loss list carried a NonlinearityLocalityLossConfig (SPEC S36/T3)"
-    )
+    assert faith is None, "a targeted loss list carried a FaithfulnessLossConfig"
+    assert nonlinearity is None, "a targeted loss list carried a NonlinearityLocalityLossConfig"
     assert imp is not None, f"need a ImportanceMinimalityLoss, got {[m.type for m in loss_metrics]}"
     assert imp.cfg.frequency is None or imp.cfg.frequency.ema_halflife_steps is None, (
         "frequency.ema_halflife_steps is not implemented for the targeted (tPD) objective "
-        "(SPEC S8'' — plain PD only; the TargetedPDConfig validator carries the why)"
+        "(plain PD only; the TargetedPDConfig validator carries the why)"
     )
     assert recon_terms, "no recon loss terms configured"
 
@@ -332,7 +330,7 @@ def build_targeted_objective(
         assert name not in {t.name for t in nt_terms}, f"duplicate non-target loss {name!r}"
         routing, sources, n_samples = _nontarget_recon_parts(cfg)
         # `hidden_acts_reconstruction=None` structurally: this option is target-pass-only
-        # (SPEC T5), refused at parse by `NontargetConfig`.
+        # Refused at parse by `NontargetConfig`.
         nt_terms.append(
             ReconLossTerm(
                 name,
@@ -352,9 +350,9 @@ def _nontarget_recon_parts(
     cfg: NontargetReconLossMetricConfig,
 ) -> tuple[SubsetRoutingType, StochasticSources | ConstantSources | UnmaskedNoDeltaSources, int]:
     """The `(routing, sources, n_samples)` family of one recon config the non-target pass
-    admits (SPEC T5): the stochastic/constant-source types — shared verbatim with the
+    admits: the stochastic/constant-source types — shared verbatim with the
     plain objective's arms, which widen through `recon` — plus the non-target-only
-    unmasked-no-delta term (T4's one delta-off exception)."""
+    unmasked-no-delta term (the delta-off exception)."""
     match cfg:
         case CIMaskedReconLossConfig():
             return AllRoutingConfig(), ConstantSources(0.0), 1

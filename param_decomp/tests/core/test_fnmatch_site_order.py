@@ -1,4 +1,4 @@
-"""Tiled site-resolution: JAX canonical order vs torch first-match order (E21, S5/S7/S10).
+"""Tiled site-resolution: JAX canonical order vs torch first-match order (E21).
 
 torch (`param_decomp/decomposition_targets.py::resolve_decomposition_targets`, the
 ORACLE) resolved a module-pattern list by looping patterns in CONFIG order (outer) over
@@ -10,7 +10,7 @@ whose flat view is CANONICAL by construction — layer-ascending, then the famil
 `KIND_ORDER` within a layer — with no pattern order to depend on (module patterns no
 longer exist in the config schema).
 
-Site order is RNG- and concat/split-load-bearing (S10), so the resolved SET must match
+Site order is RNG- and concat/split-load-bearing, so the resolved SET must match
 torch exactly. The ORDER convention is a separate, still-open decision: this test
 asserts SET-equality unconditionally and PINS the ORDER divergence for the configs where
 it bites, so a silent convergence/regression is caught.

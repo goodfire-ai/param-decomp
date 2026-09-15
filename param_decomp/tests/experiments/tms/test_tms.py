@@ -1,7 +1,7 @@
 """CPU tests for the TMS target + layerwise-MLP CI fn over the generic positionless core.
 
 Covers the `DecomposedModel` contract (mask=1 identity reconstructs the clean forward,
-MSE recon), the MLP CI fn (positionless, per-site preactivations), the full SPEC
+MSE recon), the MLP CI fn (positionless, per-site preactivations), the full training
 step trains, and the ground-truth target-CI eval — including an end-to-end
 pretrain → decompose → recovers-identity-structure validation on a tiny 5→2 TMS.
 """
@@ -298,7 +298,7 @@ def _make_state_and_step(
 
 
 def test_step_with_ema_frequency_penalty():
-    """The EMA frequency penalty (SPEC S8'') through the real jitted step: the state
+    """The EMA frequency penalty through the real jitted step: the state
     threads, the smoothed penalty starts at the un-smoothed value (debias), and the
     per-site EMA buffers fill in."""
     cfg = _tiny_cfg()
@@ -341,7 +341,7 @@ def test_step_with_ema_frequency_penalty():
 
 
 def test_step_with_ema_and_scheduled_frequency_coeff():
-    """The merge seam of S8'' with schedulable coefficients: a ramping `frequency.coeff`
+    """The merge seam of EMA frequency penalties with schedulable coefficients: a ramping `frequency.coeff`
     resolves per step via `coeff_at` while the EMA buffers still thread."""
     cfg = _tiny_cfg()
     sites = site_specs(cfg, _site_cs())
@@ -382,7 +382,7 @@ def test_step_with_ema_and_scheduled_frequency_coeff():
 
 
 def test_step_refuses_forged_freq_ema_without_frequency_config():
-    # Fail-closed (S8''): a freq_ema buffer alongside a config with no frequency term is
+    # Fail-closed: a freq_ema buffer alongside a config with no frequency term is
     # a state/config mismatch, refused at trace time rather than silently dropped.
     cfg = _tiny_cfg()
     sites = site_specs(cfg, _site_cs())
@@ -403,7 +403,7 @@ def test_step_refuses_forged_freq_ema_without_frequency_config():
     x = sample_sparse_features(
         jax.random.PRNGKey(99), 64, cfg.n_features, 0.1, "at_least_zero_active"
     )
-    with pytest.raises(AssertionError, match="S8''"):
+    with pytest.raises(AssertionError, match="freq_ema state without a frequency config"):
         step(model, forged, x, jax.random.PRNGKey(100))
 
 

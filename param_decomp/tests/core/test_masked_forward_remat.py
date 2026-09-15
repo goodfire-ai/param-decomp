@@ -170,7 +170,7 @@ def test_masked_forward_gradients_match_the_unplaced_reference(remat: bool):
         actual_v, actual_u = actual_grads.stacks[group]
         for actual, expected in ((actual_v, expected_v), (actual_u, expected_u)):
             expected_host = np.asarray(expected)
-            # BF16 compute: placed and unplaced graphs reassociate differently (SPEC D4),
+            # BF16 compute: placed and unplaced graphs reassociate differently,
             # so small-magnitude entries carry absolute noise scaled by the group's grads.
             np.testing.assert_allclose(
                 np.asarray(actual),

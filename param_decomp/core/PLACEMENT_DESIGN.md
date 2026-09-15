@@ -13,8 +13,7 @@ requires every axis of a shape, so `tp: 1` is how a run says "no tensor parallel
 Companion prose, each canonical for its piece: `sharding.py`'s module docstring — the
 mesh axes and the authored (not required) hardware alignment; `muon_stacked.py`'s
 module docstring — why Newton-Schulz stages at a waypoint at all; `checkpoint.py`'s
-module docstring — why checkpoints are topology-free; `SPEC.md` D4/S20 — the layout
-and optimizer invariants; `CLAUDE.md` (this directory) — the agent-facing summary.
+module docstring — why checkpoints are topology-free; `CLAUDE.md` (this directory) — the agent-facing summary.
 
 ## Invariants
 
@@ -371,7 +370,7 @@ of the replicated arm's all-reduce), with the between-blocks residuals and norms
 and computing at 1/tp. The final residual gathers back to `external` before the output
 edge, and clean forwards, CI-fn taps, and eval comparisons keep the replicated residual
 everywhere, so nothing outside the masked engine sees the sharded type. It is a
-resharding of the same math (numerics move at reassociation level, SPEC D4); captures
+resharding of the same math (numerics move at reassociation level); captures
 under sequence parallelism are an enumerated gap and refuse. Sequence length must tile
 tp, and only targets implementing it accept the row (qwen36_moe; others refuse at their
 masked forward).

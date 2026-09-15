@@ -1,4 +1,4 @@
-"""Standing nonlinearity eval (SPEC S36).
+"""Standing nonlinearity eval.
 
 For each partitioned site it reports two measures of how many nonlinearity uses each
 component's writes feed — under GQA a kv block is used `n_head / n_kv_head` times, so
@@ -69,7 +69,7 @@ def component_nonlinearity_stats(
     """Return the fixed-threshold soft use count and L1 effective use count per component.
 
     For unit-block norms `r_u`, the effective block count is `(Σ_u r_u)² / Σ_u r_u²`;
-    both statistics scale by the partition's use multiplicity to count uses (SPEC S36).
+    both statistics scale by the partition's use multiplicity to count uses.
     """
     fractions = nonlinearity_unit_squared_norm_fractions(vectors, partition)
     return ComponentNonlinearityStats(

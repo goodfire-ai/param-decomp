@@ -90,8 +90,7 @@ so authenticate with `wandb login` or set `WANDB_API_KEY` before running them. F
 tests, copy the config and set `wandb: null`; the run still writes `metrics.jsonl` under
 `<data-root>/runs/<run-id>/`. The torch
 trainer is preserved only at git tag `torch-oracle`; current training uses the JAX
-single-pool engine. See `param_decomp/core/SPEC.md` for its numerical contract and
-`param_decomp/experiments/CLAUDE.md` for the complete LM config schema.
+single-pool engine. See `param_decomp/experiments/CLAUDE.md` for the complete LM config schema.
 
 ## Metrics
 

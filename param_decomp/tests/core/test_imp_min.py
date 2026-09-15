@@ -1,4 +1,4 @@
-"""Smooth-L0 (Geman–McClure) importance-minimality penalty (SPEC S7/S8/S9).
+"""Smooth-L0 (Geman–McClure) importance-minimality penalty.
 
 The penalty sums per-component mean activity and optionally adds a frequency term. These
 checks pin the properties that motivate it over the retired `L_p` penalty: flat at the

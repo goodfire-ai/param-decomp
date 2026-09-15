@@ -116,7 +116,7 @@ class LossMetricConfig(BaseConfig):
 
 
 class HiddenActsReconstruction(BaseConfig):
-    """The auxiliary relative-MSE part of one recon loss (SPEC S35): how hard, and measured
+    """The auxiliary relative-MSE part of one recon loss: how hard, and measured
     where. Both are required together, so they are one object rather than two optional fields.
     Training requires positive strength; eval additionally admits zero to measure the configured
     activation errors without changing the reconstruction probe's masks or output objective."""
@@ -151,7 +151,7 @@ class HiddenActsReconstruction(BaseConfig):
 
 
 class HiddenActsReconstructionMixin(BaseConfig):
-    """Adds an optional auxiliary relative-MSE term to a recon loss (SPEC S35), pulling each
+    """Adds an optional auxiliary relative-MSE term to a recon loss, pulling each
     masked forward toward the clean forward at named internal activations rather than only at
     the output. Per-point division by the clean activation's own squared scale keeps points of
     different magnitude and width comparable; the mean over points keeps the coefficient's
@@ -186,13 +186,12 @@ class FrequencyMinimalityConfig(BaseConfig):
 
     `ema_halflife_steps` (when set) evaluates the penalty at a debiased exponential moving
     average of `f_c` across steps instead of the noisy single-batch estimate, with the
-    gradient kept at the single-batch scale so `coeff` transfers between the two modes
-    (SPEC S8''). Capped at `1e6`: a halflife past the run's length already degenerates
+    gradient kept at the single-batch scale so `coeff` transfers between the two modes. Capped at `1e6`: a halflife past the run's length already degenerates
     to a debiased running mean, and fp32 rounding drift in the recurrence grows with the
     halflife (pinned by `test_ema_long_scan_rounding_bounded`). While frequencies move
     faster than the halflife the smoothed penalty lags the batch diagnostic (logged
     alongside as `FrequencyMinimalityLoss_batch`) — estimator convergence, not
-    instability (S8'').
+    instability.
     """
 
     coeff: NonNegativeFloat | ScheduleConfig
@@ -212,7 +211,7 @@ class ImportanceMinimalityLossConfig(LossMetricConfig):
     at the origin (no `eps` floor, no aggressive grad clip) — the gradient is localized
     on the threshold band `c ~ gamma/sqrt(3)` and redescends for clearly-on components.
 
-    `gamma` is the width's full schedule (SPEC S9); annealing it down (knots with
+    `gamma` is the width's full schedule; annealing it down (knots with
     decreasing `frac`) sharpens the count. Its knots must keep `frac > 0` (asserted
     where the term is built) — a `gamma` touching 0 is never intended.
 
@@ -229,8 +228,7 @@ class ImportanceMinimalityLossConfig(LossMetricConfig):
 
 
 class NonlinearityLocalityLossConfig(LossMetricConfig):
-    """Concentrate each component's write vector on fewer nonlinearity-facing units
-    (SPEC S36).
+    """Concentrate each component's write vector on fewer nonlinearity-facing units.
 
     `relative_threshold` is relative to a uniform unit fraction; annealing it down sharpens
     the soft count. `unit_kind_coefficients` weights each unit kind's component mean and
@@ -344,7 +342,7 @@ class PGDReconSubsetLossConfig(PGDConfig):
 
 
 class AdamPGDConfig(BaseConfig):
-    """Adam-style persistent-PGD source optimizer (SPEC §6 SRC_STEP `adam`): coordinate
+    """Adam-style persistent-PGD source optimizer (SRC_STEP `adam`): coordinate
     moments persist alongside the sources."""
 
     type: Literal["adam"] = "adam"
@@ -355,7 +353,7 @@ class AdamPGDConfig(BaseConfig):
 
 
 class SgdPGDConfig(BaseConfig):
-    """Stateless persistent-PGD source optimizer (SPEC §6 SRC_STEP `sgd`):
+    """Stateless persistent-PGD source optimizer (SRC_STEP `sgd`):
     `sources += lr·grad`, project to [0,1] — no moments, so the persistent bundle is the
     sources alone (the arm that makes large `bsc` source banks storable)."""
 
@@ -364,7 +362,7 @@ class SgdPGDConfig(BaseConfig):
 
 
 class MomentumSgdPGDConfig(BaseConfig):
-    """Momentum-SGD persistent-PGD source optimizer (SPEC §6 SRC_STEP `momentum_sgd`):
+    """Momentum-SGD persistent-PGD source optimizer (SRC_STEP `momentum_sgd`):
     `v = momentum·v + grad; sources += lr·v`, project to [0,1]. One velocity buffer
     persists, float at `adversary.velocity_dtype` of the storage (bf16 under either
     16-bit storage) — the supported SRC_STEP optimizer for the `bsc` reference."""
@@ -383,7 +381,7 @@ class PersistentAdversaryLossConfig(LossMetricConfig, HiddenActsReconstructionMi
     source_dtype: Literal["float32", "bfloat16", "uint16"] = "float32"
     """Storage representation for the persistent PPGD source VALUES; adam moments follow
     it, the momentum velocity takes its float sibling (`adversary.velocity_dtype`).
-    `float32` (default) is SPEC N1 (fp32 SRC_STEP moments) and the only oracle-parity
+    `float32` (default) keeps SRC_STEP moments in fp32 and is the only oracle-parity
     path. `bfloat16` halves the resident footprint at ~2^-8 resolution near 1.0.
     `uint16` is the unit-interval FIXED-POINT representation (`value = u/65535`,
     `adversary.UINT16_UNIT_SCALE`): same bytes as bf16, uniform 1/65535 resolution across
@@ -458,7 +456,7 @@ class MergedStochasticSubsetPooledPPGDReconLossConfig(PersistentAdversaryLossCon
 
 
 class MergedStochasticSubsetPPGDReconLossConfig(PersistentPGDLossConfig):
-    """ONE masked forward serving both recon pressures (SPEC S10' variation): each batch
+    """ONE masked forward serving both recon pressures: each batch
     element is assigned adversarial with probability `adv_fraction` (mask sources = the
     persistent-PGD adversary's, every site routed) or stochastic otherwise (fresh
     `U[0,1]` sources, routed per `routing`) — the whole sequence takes one family, so no
@@ -467,7 +465,7 @@ class MergedStochasticSubsetPPGDReconLossConfig(PersistentPGDLossConfig):
     merge; a ramp anneals the adversarial share over training. `coeff` is the TOTAL:
     coeff 1.0 + constant adv_fraction 0.5 replaces the canonical 0.5 stochastic + 0.5
     persistent-PGD pair in expectation. Carries the persistent-adversary fields; one
-    source bundle feeds this one term (SPEC S23) and the S14' final ascent rides its
+    source bundle feeds this one term and the final ascent rides its
     backward — no extra forward."""
 
     type: Literal["MergedStochasticSubsetPPGDReconLoss"] = "MergedStochasticSubsetPPGDReconLoss"
@@ -596,7 +594,7 @@ class AdamWOptimizerConfig(BaseConfig):
 class MuonOptimizerConfig(BaseConfig):
     """Muon: Newton-Schulz-orthogonalized momentum for the group's matrix leaves; the rest
     fall back to Adam(0.9, 0.999) at the same LR. Experimental (non-canonical). The
-    semantics are `optax.contrib.muon`'s (SPEC S20); the NS runs batched per semantic
+    semantics are `optax.contrib.muon`'s; the NS runs batched per semantic
     kind at the placement table's `ns_compute` waypoint (`muon_stacked.py`). Which leaves
     are matrices is per-group (`run_state.build_optimizers`):
     the V/U components tree is all-2D (fallback never fires); the chunkwise CI fn is
@@ -627,7 +625,7 @@ class MuonOptimizerConfig(BaseConfig):
     ns_dtype: Literal["float32", "bfloat16"] = Field(
         default="float32",
         description=(
-            "Dtype of the NS orthogonalization only (masters/momentum stay fp32 per N1);"
+            "Dtype of the NS orthogonalization only (masters/momentum stay fp32);"
             " bfloat16 halves NS compute+comm (the Kimi recipe)."
         ),
     )
@@ -670,22 +668,22 @@ AnyLossMetricConfig = Annotated[
     Discriminator("type"),
 ]
 """The trainable losses. The hidden-acts metrics are EVAL vocabulary
-(`AnyEvalMetricConfig`, SPEC S31) — hidden-acts pressure on TRAINING rides a recon
-term's `hidden_acts_reconstruction` (SPEC S35), never a standalone term."""
+(`AnyEvalMetricConfig`) — hidden-acts pressure on TRAINING rides a recon
+term's `hidden_acts_reconstruction`, never a standalone term."""
 
 
 TargetedLossMetricConfig = Annotated[
     AnyReconLossMetricConfig | ImportanceMinimalityLossConfig,
     Discriminator("type"),
 ]
-"""The loss types a tPD TARGET pass admits (SPEC T3): the full recon vocabulary
-(adversaries run in the target pass, T7) + importance-minimality — no
+"""The loss types a tPD TARGET pass admits: the full recon vocabulary
+(adversaries run in the target pass) + importance-minimality — no
 `FaithfulnessLossConfig` member, so a targeted config cannot spell a faithfulness role,
 and no eval-only hidden-acts type."""
 
 
 class UnmaskedNoDeltaReconLossConfig(LossMetricConfig):
-    """The tPD non-target pass's unmasked reconstruction term — T4's one delta-OFF arm:
+    """The tPD non-target pass's unmasked reconstruction term — its delta-OFF arm:
     every component mask `1.0` and every weight-delta mask `0.0`, so the FULL component
     sum alone must reconstruct the frozen output. Prevents components that never activate
     from interfering with the reconstruction (the tPD paper's CSS-only unmasked recon
@@ -703,15 +701,15 @@ NontargetReconLossMetricConfig = (
     | StochasticReconSubsetLossConfig
     | UnmaskedNoDeltaReconLossConfig
 )
-"""The recon types a tPD non-target pass admits (SPEC T5): the stochastic/constant-source
-ones (delta pinned fully ON, T4) plus `UnmaskedNoDeltaReconLoss` — T4's one enumerated
+"""The recon types a tPD non-target pass admits: the stochastic/constant-source
+ones (delta pinned fully ON) plus `UnmaskedNoDeltaReconLoss` — the enumerated
 delta-OFF exception. With the delta pinned on, an adversarially-chosen or mixed source has
 no meaning there — so those types are unrepresentable in the non-target schema rather
 than filtered out of it."""
 
 
 class NontargetConfig(BaseConfig):
-    """The tPD non-target pass, authored directly (SPEC T5) — never derived from the
+    """The tPD non-target pass, authored directly — never derived from the
     target pass's loss list.
 
     `batch_size` is the broad stream's GLOBAL batch; `pd.batch_size` stays the target
@@ -744,7 +742,7 @@ class NontargetConfig(BaseConfig):
             if not isinstance(cfg, UnmaskedNoDeltaReconLossConfig):
                 assert cfg.hidden_acts_reconstruction is None, (
                     f"nontarget.recon {cfg.type!r}: hidden_acts_reconstruction has no place on "
-                    "the non-target pass (SPEC T5) — with the delta pinned on, "
+                    "the non-target pass — with the delta pinned on, "
                     "internal-activation matching would constrain exactly the behavior tPD "
                     "deliberately declines to decompose"
                 )
@@ -937,9 +935,9 @@ class PDConfigBase(BaseConfig):
     Domain-agnostic — the target-coupled apparatus (which sites to decompose + the CI-fn
     arch) lives in the per-domain `decomposition` section, not here. Flipping any field here
     changes what algorithm runs. The concrete shapes are `PDConfig` (plain VPD: the full
-    loss vocabulary + the faithfulness warmup) and `TargetedPDConfig` (tPD, SPEC §11: the
+    loss vocabulary + the faithfulness warmup) and `TargetedPDConfig` (tPD, the
     faithfulness-free loss vocabulary, no warmup fields at all — a targeted config cannot
-    SPELL a faithfulness role, T3). Pair with `Cadence` (when to emit) when running the
+    SPELL a faithfulness role). Pair with `Cadence` (when to emit) when running the
     trainer (`param_decomp.core.run`); the compute substrate reaches the engine unpacked
     into primitives, never as a config object.
     """
@@ -959,7 +957,7 @@ class PDConfigBase(BaseConfig):
         ...,
         description=(
             "Global batch size (may be divided across multiple devices). For a targeted "
-            "run this is the TARGET stream's batch (T2); the broad stream's lives on "
+            "run this is the TARGET stream's batch; the broad stream's lives on "
             "`nontarget.batch_size`."
         ),
     )
@@ -1003,10 +1001,10 @@ class PDConfig(PDConfigBase):
 
 
 class TargetedPDConfig(PDConfigBase):
-    """The tPD algorithm shape (SPEC §11): the faithfulness-free loss vocabulary, and no
+    """The tPD algorithm shape: the faithfulness-free loss vocabulary, and no
     faithfulness-warmup fields at all — warmup drives the weight delta to zero, and tPD
-    needs the delta free to carry off-target behavior (T3), so the knobs do not exist
-    here rather than being validated to zero. `batch_size` is the TARGET stream's (T2)."""
+    needs the delta free to carry off-target behavior, so the knobs do not exist
+    here rather than being validated to zero. `batch_size` is the TARGET stream's."""
 
     loss_metrics: list[TargetedLossMetricConfig] = Field(
         ...,
@@ -1020,7 +1018,7 @@ class TargetedPDConfig(PDConfigBase):
     ci_scaled_weight_decay: PositiveFloat | None = Field(
         default=None,
         description=(
-            "CI-scaled weight decay on the subcomponent V/U vectors (SPEC T11): after each "
+            "CI-scaled weight decay on the subcomponent V/U vectors: after each "
             "optimizer step every subcomponent's V column and U row scale by "
             "`1 - lr*wd*(1 - max CI)` with the max over BOTH streams' batches, so dead "
             "components — never important on either stream — get dragged to zero. None "
@@ -1037,7 +1035,7 @@ class TargetedPDConfig(PDConfigBase):
                     "frequency.ema_halflife_steps is not implemented for the targeted "
                     "(tPD) objective: the EMA carries one frequency stream per site, and "
                     "the two-pass step takes the penalty on two independent streams "
-                    "(SPEC S8'' — plain PD only)"
+                    "(plain PD only)"
                 )
         return self
 
@@ -1122,7 +1120,7 @@ what has already been written; writing nothing at all is `NoCheckpointing` — a
 
 class PeriodicCheckpointing(BaseConfig):
     """Checkpoint on `save_every`, on SIGTERM, and at the final step — the resumable run
-    shape (SPEC S22). Under `keep_last` retention the retained window always contains the
+    shape. Under `keep_last` retention the retained window always contains the
     newest checkpoint, so the final-step one is never pruned."""
 
     kind: Literal["periodic"] = "periodic"
@@ -1184,7 +1182,7 @@ class ResumeProvenance(BaseConfig):
     `ExperimentConfig`.
 
     A fine-tune run gets its own `run_id` / `launch_config.yaml` / `ckpts/`; this records the
-    parent it forked from. The JAX trainer (SPEC S33) loads the parent checkpoint's
+    parent it forked from. The JAX trainer loads the parent checkpoint's
     V/U + ci_fn onto a fresh reference state and trains a clean schedule from step 0
     (fresh optimizer / sources) under the new config — only when the run's own `ckpts/`
     is empty (a subsequent SLURM requeue resumes from the run's own dir, ignoring

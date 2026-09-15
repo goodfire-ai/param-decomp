@@ -5,7 +5,7 @@ mean-CI per component are exact under micro-batching), the `pre_sigmoid`-vs-`low
 distinction, the value histograms binned on device against what `ax.hist` would draw
 (and their refusal of more than one batch), and that the renderer
 emits valid PNGs under the exact torch `slow_eval/figures/*` keys. Also covers the in-loop
-slow tier (SPEC S28/S29): the `slow_every` / `slow_on_first_step` cadence and the rank-0
+slow tier: the `slow_every` / `slow_on_first_step` cadence and the rank-0
 background `BackgroundRenderer` logging figures on a deferred semantic step axis.
 """
 
@@ -647,7 +647,7 @@ def test_in_loop_renderer_includes_permutation_heatmaps_and_uv_when_gathered(
 ):
     """The in-loop slow tier renders the CI heatmaps from the materialized position-CI and,
     when the config names UVPlots and the gathered V/U is passed, the UVPlots figure too
-    (SPEC S28 amended: in-loop UVPlots is a naive gather, small-scale-only). IdentityCIError
+    (in-loop UVPlots is a naive gather, small-scale-only). IdentityCIError
     is computed synchronously on the collective path, not on the background thread."""
     cfg, model, ci_fn, step, C = _tiny_setup(threshold=0.0)
     residual = jax.random.randint(jax.random.PRNGKey(4), (3, 12), 0, cfg.vocab_size)

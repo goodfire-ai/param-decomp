@@ -1,6 +1,6 @@
 """Schedulable loss coefficients (`configs.LossCoeff`): the tPD paper's two shapes —
 linear warmup→decay and 0-until-activation — the preserved bare-float / eval-None arms,
-and the model-side cotangent scaling that keeps the S14′ final ascent coeff-blind."""
+and the model-side cotangent scaling that keeps the final ascent coeff-blind."""
 
 import jax
 import jax.numpy as jnp
@@ -149,7 +149,7 @@ class TestScheduledHiddenActsReconstruction:
 
 
 class TestModelCotangentsScaled:
-    """S14′ post-refactor: `model_cotangents_scaled` applies a persistent term's
+    """`model_cotangents_scaled` applies a persistent term's
     coefficient only to its model-side cotangents. The source path is never scaled, so
     the final ascent consumes `dL/ds` directly and stays live through an activation gate."""
 

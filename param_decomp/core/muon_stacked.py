@@ -1,5 +1,5 @@
 """Muon: optax.contrib.muon semantics with the Newton-Schulz orthogonalization batched per
-semantic kind and sharded on the stack axis (SPEC S20).
+semantic kind and sharded on the stack axis.
 
 Why: GSPMD lowers per-leaf NS on ÷N-sharded fp32 masters into per-iteration full-Gram
 all-reduces with the largest matmul replicated on every device — serialized collectives
@@ -33,7 +33,7 @@ lr). Only the NS call differs: each leaf is canonicalized to `[g, rows<=cols]`, 
 `ns_dtype`, staged at its waypoint, orthogonalized, and landed back on its own layout. The
 vmap batching reorders float ops, so trajectories match per-leaf `optax.contrib.muon` (the
 reference the parity tests build directly) only up to reassociation — same tolerance
-class as device-count invariance (SPEC D4).
+class as device-count invariance.
 """
 
 from collections.abc import Callable, Sequence
@@ -163,7 +163,7 @@ def _muon_mask_from_validated_dim_numbers(
     """Muon/adam labels for `optax.partition`, refusing any muon-labeled leaf whose
     declared axes differ from the convention the kernel executes. `_canonicalize` and
     the `scale_by_shape` wiring DISCARD the declaration (hardcoded trailing-two axes),
-    while `optax.contrib.muon` — the SPEC S20 reference semantics — honors it, so a
+    while `optax.contrib.muon` — the reference semantics — honors it, so a
     nonconforming declaration would silently orthogonalize different axes than the
     reference; it dies here at optimizer build instead."""
 

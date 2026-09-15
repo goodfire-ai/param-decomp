@@ -10,11 +10,11 @@ Two kinds of check:
     (`recon_loss_kl` / `get_ppgd_mask_infos` / `LinearComponents.forward`), compared
     at ~1e-4.
 
-  * **Structural.** `test_structure_*` pin SPEC invariants that aren't a single number:
-    each recon term loops its routing draws (S10'), recon is KL not MSE (§2.3),
-    and the PPGD source carries the trailing raw weight-delta channel (S1).
+  * **Structural.** `test_structure_*` pin structural invariants that aren't a single number:
+    each recon term loops its routing draws, recon is KL not MSE,
+    and the PPGD source carries the trailing raw weight-delta channel.
     `test_sc_source_broadcasts_over_batch_in_masked_forward` pins the `sc`
-    broadcast (S1/S16): an `(1, T, C+1)` source broadcasts over `[B, T]` in the masked
+    broadcast: an `(1, T, C+1)` source broadcasts over `[B, T]` in the masked
     forward, and a B/T-transposed source must break it (the fixtures keep `B != T`).
 
 Faithfulness is no longer compared because the target-relative formula intentionally differs
@@ -84,7 +84,7 @@ def test_jax_matches_torch_reference(term: str) -> None:
 
 
 def test_structure_stoch_is_mean_over_draws() -> None:
-    """SPEC S10': one forward per routing draw, and the term's loss is the mean over
+    """One forward per routing draw, and the term's loss is the mean over
     its draws — not one fused forward over all draws."""
     src = inspect.getsource(train_mod.ReconGrid)
     assert "for draw_key, routes in draws" in src, "each recon term must loop its sampled draws"
@@ -99,14 +99,14 @@ def test_structure_stoch_is_mean_over_draws() -> None:
 
 
 def test_structure_recon_is_kl_not_mse() -> None:
-    """SPEC §2.3: recon is KL on logits, not MSE."""
+    """Recon is KL on logits, not MSE."""
     src = inspect.getsource(losses_mod.kl_per_position)
     assert "log_softmax" in src and "log_p - log_q" in src, "recon must be KL"
     assert "** 2" not in src and "**2" not in src, "recon must not be MSE"
 
 
 def test_structure_ppgd_has_delta_channel() -> None:
-    """SPEC S1: component sources are interpolated; delta sources are raw masks."""
+    """Component sources are interpolated; delta sources are raw masks."""
     ingredients = inspect.getsource(masking_mod.source_value_cis)
     assert "source.components" in ingredients and "source.delta" in ingredients
     compose = inspect.getsource(masking_mod.compose_source_mask)
@@ -116,7 +116,7 @@ def test_structure_ppgd_has_delta_channel() -> None:
 
 
 def test_sc_scope_broadcast_axis_matches_torch() -> None:
-    """SPEC S1/S16: the `sc`-scope PPGD source `(1, T, C+1)` broadcasts over the batch
+    """The `sc`-scope PPGD source `(1, T, C+1)` broadcasts over the batch
     axis and varies per position. This pins the batch broadcast axis: a silent transpose
     (`(1, T, ...)` read as `(T, 1, ...)`) would broadcast over position and vary per
     batch element instead — uncaught by the scalar-KL `ppgd` term, which sums over `B·T`.
@@ -177,7 +177,7 @@ def test_fixtures_are_batch_asymmetric_so_a_bt_transpose_is_observable() -> None
 
 @_PENDING_REGEN
 def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
-    """SPEC S1/S16: an sc-scope source `(1, T, C+1)` broadcasts over `[B, T]` in the
+    """An sc-scope source `(1, T, C+1)` broadcasts over `[B, T]` in the
     masked forward — shared across batch elements, free per position. This exercises the
     `delta_mask[..., None]` / mask broadcast (`components.site_out`) the way the PPGD path
     does, and pins the broadcast AXIS: transposing the source to `(1, B, C+1)` (B != T)

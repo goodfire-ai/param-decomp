@@ -1,4 +1,4 @@
-"""The qwen36_moe TARGETED (tPD, SPEC §11) composition wiring: authored targeted config →
+"""The qwen36_moe TARGETED (tPD) composition wiring: authored targeted config →
 built run through `build_targeted_experiment_config`, the pool-tokenizer seam, and the
 refusals nothing else exercises for this combination. Resolution-level only — no 35B
 weights and no HF snapshot; the placed targeted step is the trace gate's job
@@ -191,7 +191,7 @@ def test_qwen36_targeted_build_refuses_layer_isolation(tmp_path: Path):
 
 
 def test_qwen36_targeted_shape_cannot_spell_faithfulness():
-    """tPD has no faithfulness role (T3): neither the loss entry nor the warmup knobs
+    """tPD has no faithfulness role: neither the loss entry nor the warmup knobs
     are representable on the targeted shape."""
     raw = _raw_targeted_config()
     raw["pd"]["loss_metrics"].append({"type": "FaithfulnessLoss", "coeff": 1.0e03})

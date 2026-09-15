@@ -5,15 +5,12 @@ target only through the `DecomposedModel` protocol (`model.py`) and the `ArchFam
 grammar contract (`family.py`). The concrete targets — LM and toy alike — are the
 sibling subpackage `param_decomp.targets` (one slice per architecture); the library's
 layering (core imports NO target, targets import core only) is pinned by
-`param_decomp/tests/core/test_runtime_standalone.py`. The semantics source of truth is `SPEC.md`
-(normative pseudocode + numbered invariants, grounded in the stable torch
-`param_decomp` impl). See `README.md` for the file map.
+`param_decomp/tests/core/test_runtime_standalone.py`. See `README.md` for the file map.
 
 Open items: the persistent-source shape `nsc` and sigmoid parameterization are
-deliberately refused. SPEC S24's two torch-parity quirks (PPGD warmup route-all,
+deliberately refused. Two torch-parity quirks (PPGD warmup route-all,
 fresh-PGD single routing draw) are pinned pending a team decision. tPD's target-pass
-delta polarity is decided (SPEC T10, resolved 2026-08-27, with its rationale in the
-row); whether T3's faithfulness exclusion is definitional stays open.
+delta polarity is decided; whether its faithfulness exclusion is definitional stays open.
 
 ## Step-machinery rules
 
@@ -22,16 +19,9 @@ row); whether T3's faithfulness exclusion is definitional stays open.
   boolean or `isinstance` branch inside shared machinery. The step factories enumerate
   the shapes that exist; shared pieces stay shape-blind.
 - **Why tidiness IS flexibility now**: with agents doing the rewriting, restructuring
-  is cheap — the scarce resource is verifiability of intent. Narrow typed nouns, SPEC
-  rows, RNG-chain pins and trajectory goldens are what make the next reshape an
+  is cheap — the scarce resource is verifiability of intent. Narrow typed nouns, RNG-chain pins and trajectory goldens are what make the next reshape an
   afternoon of bounded agent work instead of archaeology. Flexibility is maintained
   through pins and types, not through anticipatory parameterization.
-
-## The one rule
-
-**Every change is checked against SPEC.md, by invariant ID.** If a change deviates
-from an invariant, either fix the change or deliberately amend the spec —
-never silently diverge. Cite IDs (`S14`, `N1`, …) in commit messages and reviews.
 
 ## Architecture in one breath
 
@@ -85,7 +75,7 @@ Adversarial sources (both adversaries) are configured by `source_shape: c | bc |
 (`configs.SourceShape`): each letter names a waist axis the source keeps full, missing
 letters are stored size-1 broadcast axes, rank always matches the waist. Batch-B shapes
 (`bc`/`bsc`) are batch-sharded, no cross-replica sync; batch-1 shapes are shared across
-the batch (SPEC S16/D1). `sc`/`bsc` on a positionless target raise; per-step (fresh) PGD
+the batch. `sc`/`bsc` on a positionless target raise; per-step (fresh) PGD
 rejects `sc` at validation; legacy spellings (`scope: {type: ...}`, `mask_scope`, the
 verbose value names) are rejected at parse — no config aliases remain. Every (positions x source_shape) persistent
 shape is written out in `init_placed._source_leading`, so persistent PGD runs on the toys too.
@@ -97,16 +87,16 @@ The SRC_STEP state and checkpoint tree mirror that layout; every CONSUMER (mask
 formation, eval probes) reads the site-keyed view (`site(name)` / `per_site()`), whose
 slot slices are views — core never sees a kind vocabulary.
 Batch size is `pd.batch_size` uniformly — `DataConfig` carries no batch.
-Each configured recon term retains its end-to-end comparison and may add S35's
+Each configured recon term retains its end-to-end comparison and may add
 `HiddenActsReconstruction` at explicit target-owned capture points, currently measured as
 positive-coefficient relative MSE. The clean forward
 captures the order-preserving union of CI inputs and every term's points; each masked draw
 captures only its own points. Persistent adversaries default to `adversary_objective: e2e`,
-which excludes S35 hidden-activation reconstruction from every source ascent while the outer
+which excludes hidden-activation reconstruction from every source ascent while the outer
 components/CI objective keeps it; explicit `term` mode makes the adversary ascend the
 complete loss. CI-fn
 numerics: GELU is exact-erf (`approximate=False`),
-RMSNorm eps is `finfo(fp32).eps` (`CI_FN_RMS_EPS`) — SPEC §4.6. The
+RMSNorm eps is `finfo(fp32).eps` (`CI_FN_RMS_EPS`). The
 three EDGES are generic so non-LM (bio-style) targets fit: the model INPUT
 (the opaque batch `clean_forward` / `masked_forward` consume, typed `Any` — token ids for
 an LM, a dict for bio), the model OUTPUT (`ForwardResult[Out].output` — `Out` is the
@@ -126,7 +116,7 @@ tensors in one forward share one `*leading` prefix) is enforced at trace time by
 (fp32 masters / bf16 compute) over the explicit-role loss surface
 (`objective.LossSurface` — faithfulness, importance-minimality, the recon terms, and an
 optional nonlinearity-locality term;
-S10′ — each authored recon config compiles to ONE `ReconLossTerm` = routing sampler ×
+Each authored recon config compiles to ONE `ReconLossTerm` = routing sampler ×
 mask-source strategy, every draw routing over ALL the model's sites, built from the
 shared configs by `objective.build_objective`;
 see LOSS_PARITY_DESIGN.md),
@@ -146,8 +136,7 @@ in the shared file switches on a family; the model-name → family registry is c
 by `param_decomp/tests/targets/qwen3_hf_parity/` (a tiny-random `Qwen3ForCausalLM`
 golden at fp32 tolerance + a slow real-weights logits check; goldens regenerate via its
 torch-env `gen_hf_fixtures.py`). There is ONE
-recon semantics: masks thread through the full token-input forward, loss is KL on final logits
-(SPEC §2.3–2.5). Site-local recon is a conceptual no-no, not a "simplification".
+recon semantics: masks thread through the full token-input forward, loss is KL on final logits. Site-local recon is a conceptual no-no, not a "simplification".
 `param_decomp/targets/llama_simple_mlp.py` is the second target (the pile-pretrained `LlamaSimpleMLP`,
 t-9d2b8f02; sites `h.{i}.attn.{q,k,v,o}_proj` / `h.{i}.mlp.{c_fc,down_proj}`) —
 config dispatch is `TargetConfig` (the HF GLU families) vs `LlamaSimpleMLPTargetConfig`, both composition-side
@@ -157,7 +146,7 @@ config dispatch is `TargetConfig` (the HF GLU families) vs `LlamaSimpleMLPTarget
 `param_decomp/experiments/lm/training.py::main` (`experiments/lm/run.py` is the pre-JAX
 env bootstrap deferring to it). The slow plot metrics are computed
 NATIVELY in JAX (`slow_eval.py`) — no torch export round-trip. They run IN-LOOP ONLY on
-`eval.slow_every` next to the fast pass (SPEC S28/S29; there is NO offline/retrospective
+`eval.slow_every` next to the fast pass (there is NO offline/retrospective
 CLI — `slow_eval.py` is a pure library): the collective
 forward + device→host pull in lockstep on all ranks, then a pure matplotlib renderer on a
 rank-0 background thread (`run.py::BackgroundRenderer`). The renderer returns encoded media
@@ -179,7 +168,7 @@ gather), sharing `slow_eval.render_uv_figure` / `plot_uv_matrices` with the LM p
 modular-arithmetic mechanism (Feucht et al.'s L18 addition neurons). The probe is a FIXED
 `a x b` operand grid of `"<a><op><b>="` prompts (one prompt per row, all one token length,
 the `=` answer at a constant position) — NOT the streaming corpus, so it brings its own
-batch. The probe is a SPEC (`operation` + `a_range`/`b_range` on the metric config), not a
+batch. The probe is a specification (`operation` + `a_range`/`b_range` on the metric config), not a
 filesystem artifact: `experiments/lm/arithmetic_eval_operation.py::make_arithmetic_operation` builds it in-memory at
 startup from the target's tokenizer (`experiments/lm/arithmetic_probe.py`, deterministic —
 every rank builds the identical grid, no rank-0 write or barrier), so configs stay
@@ -256,7 +245,7 @@ mid-site. **Persistence layouts (÷N)**: the trainable V/U masters AND their
 optimizer moments persist as target-declared semantic stacks (`ComponentStacks.stacks`; LM
 targets group by matrix kind). Under owner placement, the stack
 axis ÷`replicate` — whole matrices owned per node-group, zero cross-node weight collectives,
-muon NS node-local — matrix d dims ÷`fsdp`, C ÷`tp`; SPEC D4. Placement is fallback-free:
+muon NS node-local — matrix d dims ÷`fsdp`, C ÷`tp`. Placement is fallback-free:
 one set of component rows places EVERY semantic group. A stack that doesn't tile a
 stack-sharded row is placed by PADDING the persist stack with trailing all-zero slots
 (`StackCensus.stack_pad` — an enumerated fact, never shape-inferred: the V/U groups'
@@ -326,22 +315,22 @@ Llama-8B target is multi-GB. Therefore:
 
 ## Invariants with sharp teeth (the ones that have actually bitten)
 
-- **S3**: the recon target is the FROZEN-path `clean_forward(...).output`, never the
+- the recon target is the FROZEN-path `clean_forward(...).output`, never the
   `mask=1` decomposed identity (bf16 rounding + V/U in the stopped graph). An empty
   capture-key set selects the target's compact no-capture path.
-- **S13/S15**: source updates go through the persistent Adam AND project to [0,1]
+- source updates go through the persistent Adam AND project to [0,1]
   after EVERY ascent — an unprojected drift past 1 has zero `clip` gradient and the
   entry dies.
-- **S14**: the default `e2e` final ascent uses the source gradient of output
+- the default `e2e` final ascent uses the source gradient of output
   reconstruction only. When hidden-activation reconstruction makes the outer objective differ,
   it retakes that gradient with pre-update θ and the same draws; otherwise it reuses the
   main backward's source-grad. Explicit `term` mode always reuses the complete term's
   source-grad. Neither source objective is scaled by the ppgd coeff.
-- **N1**: fp32 masters everywhere (`optax.adamw(..., weight_decay=0.0)` — optax's
+- fp32 masters everywhere (`optax.adamw(..., weight_decay=0.0)` — optax's
   default wd is 1e-4, torch's is 0).
 - **`inv_freq` is a buffer, not a param** — `stop_gradient` in
   `ChunkwiseTransformerCIFn.__call__`.
-- **S11**: uniform-k routing is per position over ALL the model's sites —
+- uniform-k routing is per position over ALL the model's sites —
   `k ~ U{1..|sites|}`, then a uniform k-subset routes True; draws are fresh per step.
 
 ## Validation stack (run all before claiming correctness)
@@ -358,7 +347,7 @@ Llama-8B target is multi-GB. Therefore:
    `torch_reference.py` / `gen_torch_fixtures.py` / `gen_export_fixture.py`, copying the
    emitted goldens back here.
 3. `param_decomp/targets/invariance_check.py` at 4 sim devices — trajectory invariant
-   to device count up to float reassociation (SPEC D4).
+   to device count up to float reassociation.
 
 `basedpyright` over the whole workspace must be clean (run `make type`); `param_decomp`
 is in the root `[tool.pyright]` include and is checked in the one venv, one pass,
@@ -382,8 +371,7 @@ loader satisfying all three is welcome — the parquet `ShardServer` does today.
 Checkpoints are orbax sharded saves (no on-loop full-gather), TWO items per step —
 `decomposition` (V/U + ci_fn, the
 product every consumer restores alone) and `training` (opt states + adversaries + step,
-trainer-only) — a clean break, no in-code compat for pre-split `default`-item runs (SPEC
-S22); SIGTERM → save → SLURM requeue → resume from latest.
+trainer-only) — a clean break, no in-code compat for pre-split `default`-item runs; SIGTERM → save → SLURM requeue → resume from latest.
 Resume with a changed config is refused (byte-compare). Smokes before a long run
 MUST exercise save AND resume at the production per-rank shape.
 
@@ -399,7 +387,7 @@ top-level `run_name`, the
 passes `--run-id`, and the run dir is a pure function of `data_root` + id
 (`experiments.config.run_instance`).
 
-**Fine-tune from a parent checkpoint** (`resume_provenance`, SPEC S33, LM-only). A fresh
+**Fine-tune from a parent checkpoint** (`resume_provenance`, LM-only). A fresh
 run can initialize its trained decomposition (V/U + ci_fn) from a PARENT run's checkpoint
 and continue under a DIFFERENT config (changed LR / coeffs / gamma / seq / batch / steps —
 NOT changed C / sites / ci-fn arch). Add to the config:

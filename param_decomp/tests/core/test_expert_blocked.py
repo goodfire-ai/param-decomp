@@ -510,7 +510,7 @@ def test_train_step_runs_through_expert_blocked_target(kind: str):
 @pytest.mark.multidevice
 @pytest.mark.skipif(len(jax.devices()) < 4, reason="requires four local devices")
 def test_device_count_invariance_expert_blocked():
-    """SPEC D4 for the 4-D leaves: the trajectory at one device matches the trajectory
+    """For the 4-D leaves: the trajectory at one device matches the trajectory
     at four (ddp rules), up to float reassociation."""
     one = _run_steps("adamw", _mesh(1), n_steps=3, batch=4)
     jax.set_mesh(None)

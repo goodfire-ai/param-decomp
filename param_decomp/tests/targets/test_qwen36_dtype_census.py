@@ -1,4 +1,4 @@
-"""The dtype census of the placed train step (SPEC §7, the N rows), on the tiny qwen36
+"""The dtype census of the placed train step, on the tiny qwen36
 cell at an 8-device simulated `(data, tp)` mesh.
 
 Every buffer class is read off a TYPED value — the state pytree, `jax.eval_shape` of the
@@ -78,7 +78,7 @@ from param_decomp.tests.targets.test_qwen36_placement import (
 multidevice = pytest.mark.skipif(len(jax.devices()) < 8, reason="requires eight local devices")
 
 RESIDENT_COTANGENT_DTYPE = jnp.bfloat16
-"""SPEC N3's sharded spelling as it stands: masters are cast to the compute dtype BEFORE
+"""Sharded spelling as it stands: masters are cast to the compute dtype BEFORE
 the entry gather, so the resident stacks — and with them their cotangents and the exit
 reduce-scatter's wire — are bf16. This test pins that implemented boundary rather than
 a hypothetical per-term pullback or fp32 resident-cotangent design."""
@@ -196,7 +196,7 @@ def test_placed_train_step_dtype_census():
         )
         key = jax.random.PRNGKey(4)
 
-        # N1: fp32 masters (V/U and CI fn) and fp32 optimizer moments, before and after a step
+        # fp32 masters (V/U and CI fn) and fp32 optimizer moments, before and after a step
         new_state, metrics = jax.eval_shape(
             lambda m, s, b, k: step_fn(m, s, b, k), placed_model, state, tokens, key
         )
@@ -206,15 +206,15 @@ def test_placed_train_step_dtype_census():
             )
             assert _inexact_dtypes(item.training.components_opt_state) == {jnp.dtype(jnp.float32)}
             assert _inexact_dtypes(item.training.ci_fn_opt_state) == {jnp.dtype(jnp.float32)}
-            # S15/N1: uint16 fixed-point sources with the momentum_sgd bf16 velocity
+            # uint16 fixed-point sources with the momentum_sgd bf16 velocity
             adv = item.training.adversaries[ppgd.type]
             assert _dtypes(adv.sources) == {jnp.dtype(jnp.uint16)}, _dtypes(adv.sources)
             assert isinstance(adv.opt_state, SourcesMomentumState)
             assert _dtypes(adv.opt_state.velocity) == {jnp.dtype(jnp.bfloat16)}
-        # N3: loss scalars fp32 (every inexact metric; the step counter is the one integer)
+        # loss scalars fp32 (every inexact metric; the step counter is the one integer)
         assert _inexact_dtypes(metrics) == {jnp.dtype(jnp.float32)}, _inexact_dtypes(metrics)
 
-        # N1/N3: compute weights bf16 == resident cotangent stacks == the exit wire
+        # compute weights bf16 == resident cotangent stacks == the exit wire
         prepared = jax.eval_shape(prepare_compute_weights, placed_model, components)
         assert _dtypes(prepared) == {jnp.dtype(RESIDENT_COTANGENT_DTYPE)}, _dtypes(prepared)
         _, pullback = jax.vjp(lambda c: prepare_compute_weights(placed_model, c), components)
@@ -237,11 +237,11 @@ def test_placed_train_step_dtype_census():
         )
         assert _inexact_dtypes(compute_ci_fn.fn) == {jnp.dtype(jnp.bfloat16)}
 
-        # N2: faithfulness deltas fp32
+        # faithfulness deltas fp32
         deltas = jax.eval_shape(faithfulness_weight_deltas, placed_model, components)
         assert _dtypes(deltas) == {jnp.dtype(jnp.float32)}, _dtypes(deltas)
 
-        # N1 (uniform CI compute): CI activations bf16 (router indices ride as integers)
+        # (uniform CI compute): CI activations bf16 (router indices ride as integers)
         taps = jax.eval_shape(
             lambda m, b: m.clean_forward(b, ci_fn.capture_keys).captures, placed_model, tokens
         )
@@ -252,7 +252,7 @@ def test_placed_train_step_dtype_census():
         )
         assert _inexact_dtypes(ci) == {jnp.dtype(jnp.bfloat16)}, _inexact_dtypes(ci)
 
-        # N3: the imp-min reduction and the KL run their transcendentals in fp32 on bf16 inputs
+        # the imp-min reduction and the KL run their transcendentals in fp32 on bf16 inputs
         gamma = jnp.asarray(0.5, jnp.float32)
         imp_activity = lambda c: activity_sum_from_ci(c.upper, gamma, normalize_at_one=False)  # noqa: E731
         assert jax.eval_shape(imp_activity, ci).dtype == jnp.float32

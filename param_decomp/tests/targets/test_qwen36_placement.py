@@ -554,7 +554,7 @@ def test_placed_shared_only_masked_grads_flow_through_expert_parallel_arm():
 def test_placed_stochastic_masked_forward_matches_unplaced(sequence_sharding: SequenceSharding):
     """The stochastic masked forward (masks rebuilt from the shared CI + draw keys
     INSIDE the checkpointed stage bodies) placed vs unplaced: threefry is counter-based,
-    so the batch-sharded draws are value-identical (SPEC D4) and the V/U gradients match
+    so the batch-sharded draws are value-identical and the V/U gradients match
     to bf16-cast tolerance — under both `sequence_sharding` arms (sequence parallelism
     is a resharding of the same draws)."""
     mesh = _mesh()

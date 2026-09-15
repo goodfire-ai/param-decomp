@@ -1,4 +1,4 @@
-"""The placed decomposed-linear primitive (SPEC §4.1): `((x@V)*m)@U + (x@Δ)*d`.
+"""The placed decomposed-linear primitive: `((x@V)*m)@U + (x@Δ)*d`.
 
 `site_forward` executes one decomposed site against its frozen linear; `site_out` is its
 output-only view. Placement arrives as one of three enumerated shapes: the run's resolved
@@ -79,7 +79,7 @@ def site_forward(
     placement: PlacementRules | PlannedComponentLinear | None,
     frozen_linear: LinearPlan | None,
 ) -> SiteForward:
-    """One decomposed linear (SPEC §4.1): `((x@V)*m)@U + (x@Δ)*d`, routed per position
+    """One decomposed linear: `((x@V)*m)@U + (x@Δ)*d`, routed per position
     against the frozen `x @ W.T`. `mask` may be None (fully on); `route` None routes
     everywhere. `delta_mask` None drops the delta path entirely (constant-source entries
     carry no delta, LOSS_PARITY_DESIGN §4b). `delta_mask`/`route` broadcast over batch;
@@ -179,7 +179,7 @@ def expert_block_site_forward(
     placement: ExpertPlannedComponentLinear | None,
     frozen_linear: LinearPlan | None,
 ) -> SiteForward:
-    """The expert-blocked sibling of `site_forward` (SPEC §4.1, applied per expert
+    """The expert-blocked sibling of `site_forward` (applied per expert
     block). `V [E, d_in, c]` and `U [E, c, d_out]` hold each expert's factors, `W` is
     the site's fused frozen matrix, and the computation runs densely over every expert.
     `contraction` is the target-declared orientation of the site (`ExpertContraction`);

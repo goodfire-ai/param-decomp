@@ -1,4 +1,4 @@
-"""Component/CI optimizer seams match torch's formulas exactly (SPEC S19, S20).
+"""Component/CI optimizer seams match torch's formulas exactly.
 
 - cosine LR uses torch's `step / (total_steps - 1)` denominator, NOT optax's
   `cosine_decay_schedule` `count / total_steps` (reaches `0.1×` one step later).
@@ -66,7 +66,7 @@ def test_cosine_schedule_matches_torch_denominator():
         jax_value = _scalar(sched(jnp.int32(step)))
         torch_value = torch_cosine_reference(peak_lr, total_steps, alpha, step)
         # rel 1e-6: the traced evaluator runs in fp32 and associates the cosine
-        # interpolation differently than torch's float64 formula; the S20 contract is
+        # interpolation differently than torch's float64 formula; the contract is
         # the step placement (endpoints exact below), not mid-curve bit-parity.
         assert jax_value == pytest.approx(torch_value, rel=1e-6), f"step {step}"
     assert _scalar(sched(jnp.int32(total_steps - 1))) == pytest.approx(alpha * peak_lr, rel=1e-6)
@@ -76,7 +76,7 @@ def test_cosine_schedule_differs_from_optax():
     """Torch's `step / (total_steps - 1)` denominator reaches `alpha·peak` one step
     earlier than optax's `count / total_steps`: at `total_steps - 1` ours is already at
     the floor while optax still has a full step of decay left. The gap is largest with
-    few steps (with 400k it flattens into fp noise at the endpoints — SPEC S19)."""
+    few steps (with 400k it flattens into fp noise at the endpoints)."""
     peak_lr = 1.5e-4
     total_steps = 10
     optax_sched = optax.cosine_decay_schedule(peak_lr, total_steps, alpha=0.1)
@@ -123,7 +123,7 @@ def test_grad_clip_noop_below_threshold():
 
 
 def test_muon_orthogonalizes_2d_leaves_and_adam_falls_back_elsewhere():
-    """`type: muon` (SPEC S20 amendment): a 2D leaf's update is NS-orthogonalized (flat
+    """`type: muon`: a 2D leaf's update is NS-orthogonalized (flat
     singular values), a non-2D leaf falls back to Adam; default `type: adamw` keeps the
     canonical optimizer so existing configs are untouched."""
     muon_cfg = MuonOptimizerConfig(
@@ -162,7 +162,7 @@ def test_muon_orthogonalizes_2d_leaves_and_adam_falls_back_elsewhere():
 
 
 def test_muon_chunk_stacked_dimension_numbers_orthogonalize_3d_and_adam_2d_bias_stacks():
-    """SPEC S20 amendment (2026-07-11): under `stacked_muon_dimension_numbers` a 3D
+    """Under `stacked_muon_dimension_numbers` a 3D
     `[n_chunks, d_in, d_out]` matrix stack is NS-orthogonalized per chunk slice, while a 2D
     `[n_chunks, d]` bias stack takes the Adam fallback — the reverse of optax's default 2D
     rule, which on the chunkwise CI-fn tree would orthogonalize the bias stacks."""
@@ -208,8 +208,8 @@ def test_muon_chunk_stacked_dimension_numbers_orthogonalize_3d_and_adam_2d_bias_
 
 
 def test_stacked_muon_update_matches_optax_muon():
-    """SPEC S20: the production muon (per-kind batched NS) produces the same updates as
-    the reference semantics — per-leaf `optax.contrib.muon` under the same S19 clip chain,
+    """The production muon (per-kind batched NS) produces the same updates as
+    the reference semantics — per-leaf `optax.contrib.muon` under the same clip chain,
     built here directly (same momentum, same partition, same post-NS chain) — up to float
     reassociation, on a tree mixing 2D matrices (shared-shape group + a transposed member),
     a 3D chunk stack, and Adam-fallback leaves."""
@@ -318,7 +318,7 @@ def test_stacked_muon_sharded_matches_unsharded():
 
 
 def test_stacked_muon_bf16_ns_is_sane():
-    """`ns_dtype: bfloat16` (the stacked-only Kimi recipe, SPEC N1: masters and momentum
+    """`ns_dtype: bfloat16` (the stacked-only Kimi recipe, masters and momentum
     stay fp32 — only the NS iteration itself runs half-precision). This pins "the fast
     path is not fp16-degenerate and not garbage", NOT parity: bf16 NS genuinely drifts a
     few percent from fp32 NS, so the update-norm comparison is a loose ~10% sanity bound.
@@ -379,7 +379,7 @@ def test_stacked_muon_bf16_ns_is_sane():
 
 
 def test_stacked_muon_dim_numbers_fail_closed():
-    """SPEC S20: the stacked NS executes hardcoded trailing-two matrix axes and DISCARDS
+    """The stacked NS executes hardcoded trailing-two matrix axes and DISCARDS
     the declared dim numbers, so a muon leaf honestly declaring any other layout must die
     at optimizer build — the reference `optax.contrib.muon` would honor the declaration
     and the two would silently diverge. Conforming declarations (trailing-two, negative
@@ -448,7 +448,7 @@ def test_grouped_ns_owner_waypoint_matches_replicated_on_stack_owned_leaves(
 ):
     """The stack-owner `ns_compute` waypoint (`{stack: replicate}` staging) is the same
     math as the replicated waypoint — the declared rows change only where the entry
-    reshards happen (SPEC D4 tolerance class) — and NEITHER staging may trigger the SPMD
+    reshards happen (within float-reassociation tolerance) — and NEITHER staging may trigger the SPMD
     partitioner's involuntary-full-rematerialization fallback. The check reads the
     partitioner's warning off fd 2 (`capfd`) — the same signal the production log grep
     uses. bf16 is a separate arm because an unpinned `convert_element_type` is its own

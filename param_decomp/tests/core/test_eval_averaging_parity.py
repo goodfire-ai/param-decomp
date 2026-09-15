@@ -90,7 +90,7 @@ def test_mean_metric_averaging_diverges_under_ragged_bt():
 
 
 def test_nonmean_metric_is_jensen_divergent():
-    """A metric that is a nonlinear fn of a GLOBAL accumulated sum (the S8-class caveat,
+    """A metric that is a nonlinear fn of a GLOBAL accumulated sum (the nonlinear-reduction caveat,
     e.g. `log2(Σ_batches L0)`) is NOT exact under `sum/n_steps`. Exhibits the gap so a
     future addition can't silently ride the mean path: torch's accumulate-then-compute
     (log2 of the global sum) differs from JAX's per-batch-mean-then-average

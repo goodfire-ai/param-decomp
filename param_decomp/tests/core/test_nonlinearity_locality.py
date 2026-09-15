@@ -1,4 +1,4 @@
-"""Numerics, validation, eval, and training plumbing for the S36 nonlinearity loss."""
+"""Numerics, validation, eval, and training plumbing for the nonlinearity loss."""
 
 import jax
 import jax.numpy as jnp
@@ -201,7 +201,7 @@ def test_per_kind_reduction_and_attention_head_multiplier():
 
 def test_concentrated_kv_component_counts_its_uses():
     """A kv component fully in one kv head feeds G = n_head/n_kv_head attention
-    nonlinearities, so at small t its soft count is ≈ G, not ≈ 1 (SPEC S36)."""
+    nonlinearities, so at small t its soft count is ≈ G, not ≈ 1."""
     n_head, n_kv_head, head_dim = 8, 2, 3
     g = n_head // n_kv_head
     kv = KVHeads(n_kv_head, g)
@@ -213,7 +213,7 @@ def test_concentrated_kv_component_counts_its_uses():
 
 def test_uniform_kv_matches_uniform_q_at_equal_n_head():
     """Uniform over kv heads counts n_head/(1+t) uses — the same footing as uniform
-    over n_head query heads (SPEC S36)."""
+    over n_head query heads."""
     n_head, n_kv_head, head_dim, t = 8, 2, 3, 4.0
     g = n_head // n_kv_head
     kv_loss = _loss(

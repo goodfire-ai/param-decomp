@@ -1,4 +1,4 @@
-"""Target-selected residual relative-MSE auxiliary recon loss (SPEC S35)."""
+"""Target-selected residual relative-MSE auxiliary recon loss."""
 
 from collections.abc import Callable
 
@@ -57,7 +57,7 @@ from param_decomp.targets.testing import (
 )
 
 SIMPLE_MLP_POINTS = ("resid.3", "resid.4", "resid.5", "resid.6")
-"""Meaningful S35 points for blocks 2-3 of 6: downstream residual boundaries only."""
+"""Meaningful points for blocks 2-3 of 6: downstream residual boundaries only."""
 
 
 def _hidden_acts_reconstruction(coeff: float | None) -> HiddenActsReconstruction | None:
@@ -217,7 +217,7 @@ def test_build_loss_terms_threads_hidden_acts_reconstruction_coeff():
 
 
 def test_hidden_acts_reconstruction_config_needs_both_halves_and_sane_points():
-    """Strength and points are two halves of one setting (SPEC S35), so they live in one
+    """Strength and points are two halves of one setting, so they live in one
     object: a coefficient with nowhere to measure is not expressible, which is why there is
     no cross-section validator. What still needs checking is the points themselves."""
     HiddenActsReconstruction(coeff=0.3, points=("resid.3", "resid.4"))
@@ -340,7 +340,7 @@ def test_hidden_acts_reconstruction_coeff_logs_e2e_and_per_point_breakdown_separ
 
 
 def test_hidden_acts_reconstruction_combined_is_e2e_plus_coeff_times_point_MEAN():
-    """The production path's own composition (SPEC S35), not the loss fn in isolation:
+    """The production path's own composition, not the loss fn in isolation:
     `loss/<name>` == `e2e + coeff * mean_over_points`. Pins the MEAN specifically — a
     `jnp.mean` -> `jnp.sum` slip in `train.py` fails here as soon as there is >1 point."""
     coeff = 0.3
@@ -501,7 +501,7 @@ def _ppgd_run(
 
 def test_hidden_acts_reconstruction_with_persistent_pgd_adversary():
     """The adversary's warmup + final ascent must run through the combined (e2e +
-    hidden-activation reconstruction) objective without shape/finiteness errors (SPEC S35 x S13'/S14')."""
+    hidden-activation reconstruction) objective without shape/finiteness errors."""
     n_steps, n_warmup = 3, 1
     ppgd_key = "PersistentPGDReconLoss"
     state, per_step = _ppgd_run(hidden_acts_reconstruction_coeff=0.2, n_steps=n_steps)

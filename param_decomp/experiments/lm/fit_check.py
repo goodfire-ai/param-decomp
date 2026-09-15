@@ -324,7 +324,7 @@ def main() -> None:
     # fallbacks. Scoped to lower/compile only — eager array creation on a compile-only
     # device must keep failing loudly.
     if targeted is not None:
-        # The receipt prices the TARGET stream at the pool's true geometry (T8: unpadded
+        # The receipt prices the TARGET stream at the pool's true geometry (unpadded
         # at its own prompt length), so the pool tokenizer IS loaded here — unlike the
         # trace gate, whose extent is sharding-irrelevant.
         tokenizer = load_pool_tokenizer(

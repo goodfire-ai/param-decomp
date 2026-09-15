@@ -131,7 +131,7 @@ def attn_implementation(
     fp32, so fp32 parity harnesses take the XLA composite) and for the sequence-length
     family we run through it — multiples of 64, the corpus shapes. Everything else takes
     the XLA composite: cuDNN's flash kernel rejects small/odd lengths (`check_is_flash_
-    attention`), which the tPD target stream's natural prompt lengths hit (SPEC T8)."""
+    attention`), which the tPD target stream's natural prompt lengths hit."""
     supported = backend == "gpu" and dtype in (jnp.float16, jnp.bfloat16)
     cudnn_compatible = supported and seq_len % 64 == 0 and seq_len > 0
     match requested:

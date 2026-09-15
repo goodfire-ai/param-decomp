@@ -440,7 +440,7 @@ def test_routed_decomposed_matches_dense_stochastic():
 
 def test_routed_decomposed_matches_dense_with_broadcast_masking():
     """Delta masks and routes may carry size-1 broadcast lead axes (batch-shared
-    persistent sources, SPEC S16/D1): the routed arm must broadcast them to the full
+    persistent sources): the routed arm must broadcast them to the full
     lead before its job gathers, with the same gradient (the cross-lead sum) the dense
     arm's elementwise broadcasting yields — the shape batch-shared `sc` sources
     trace."""

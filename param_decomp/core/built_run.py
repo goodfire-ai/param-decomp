@@ -50,8 +50,7 @@ class RunInstance:
     out_dir: Path
     wandb: WandbConfig | None
     resume_provenance: ResumeProvenance | None
-    """Set on a fine-tune run: the parent run dir + step to initialize V/U + ci_fn from
-    (SPEC S33). `None` for a fresh-from-init run."""
+    """Set on a fine-tune run: the parent run dir + step to initialize V/U + ci_fn from. `None` for a fresh-from-init run."""
 
     @property
     def run_dir(self) -> Path:

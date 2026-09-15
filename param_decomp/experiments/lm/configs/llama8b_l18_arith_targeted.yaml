@@ -1,10 +1,10 @@
-# TARGETED (tPD, SPEC §11) Llama-3.1-8B layer-18 decomposition of the modular-addition
+# TARGETED (tPD) Llama-3.1-8B layer-18 decomposition of the modular-addition
 # mechanism (Feucht et al.'s L18 addition neurons). Runs via
 # `python -m param_decomp.experiments.lm.run_targeted` — the targeted root; the plain
 # root refuses this shape. TARGET stream: the 1..100 a+b= prompt grid at
-# `pd.batch_size`, unpadded at its own prompt length (T8). NON-TARGET stream: the
-# fineweb corpus at `nontarget.batch_size`, delta pinned fully on (T4). No
-# FaithfulnessLoss and no warmup — tPD has no faithfulness role (T3).
+# `pd.batch_size`, unpadded at its own prompt length. NON-TARGET stream: the
+# fineweb corpus at `nontarget.batch_size`, delta pinned fully on. No
+# FaithfulnessLoss and no warmup — tPD has no faithfulness role.
 run_name: jax-l18-arith-targeted
 decomposition:
   sites:
@@ -54,7 +54,7 @@ pd:
     weight_decay: 0.0
   steps: 20000
   batch_size: 256
-  # Paper: 0.1 weight decay on subcomponent vectors scaled by 1 - max_batch(CI) (T11).
+  # Paper: 0.1 weight decay on subcomponent vectors scaled by 1 - max_batch(CI).
   ci_scaled_weight_decay: 0.1
   loss_metrics:
   - type: ImportanceMinimalityLoss
@@ -94,7 +94,7 @@ pd:
       beta1: 0.5
       beta2: 0.99
       eps: 1.0e-08
-      # The S24 warmup ascents run coeff-free every step, so the adversary keeps
+      # The warmup ascents run coeff-free every step, so the adversary keeps
       # tracking the decomposition through the gated phase and is warm at activation.
       lr_schedule:
         max_val: 0.01

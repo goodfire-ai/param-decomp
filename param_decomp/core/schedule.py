@@ -29,7 +29,7 @@ class Knot(BaseConfig):
 class ScheduleConfig(BaseConfig):
     """A piecewise curve `step -> max_val * frac(t)` over normalized run time
     `t = step / (total_steps - 1)`, so the `at = 1.0` knot lands exactly ON the final
-    step (the torch-parity convention, SPEC S20). `max_val` is the sweepable magnitude;
+    step (the torch-parity convention). `max_val` is the sweepable magnitude;
     the knots are the shape (`frac` in `[0, 1]`, attained at least once so `max_val` is
     honest). A bare float parses as the constant schedule at that value."""
 

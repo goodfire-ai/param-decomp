@@ -31,7 +31,7 @@ Both blocks are honored exactly as written: `run_state.build_optimizers` reads t
 global-norm clip only where `grad_clip_norm` is non-null. A schedule is `max_val` times a
 piecewise `frac` curve over normalized time `t = step / (total_steps - 1)`; a bare float
 is the constant schedule, so the seats spell the cosine decay out as knots. The shape
-below is the METHOD's recipe (SPEC S20) — what the maintained seats run, not a subspace
+below is the METHOD's recipe — what the maintained seats run, not a subspace
 the schema enforces:
 
 ```yaml
@@ -83,11 +83,11 @@ Each `experiments/{tms,resid_mlp}/` carries:
   and renders the config-gated `UVPlots` figure when the run's `eval.metrics` names it
   (`toy_uv_eval.render_uv_metric`): the toys feed `UVPlots` their probe CI as the
   column-permutation source and their small on-host V/U, sharing `slow_eval.render_uv_figure`
-  / `plot_uv_matrices` with the LM in-loop tier (SPEC S28). Toy `eval:` is a domain-specific
+  / `plot_uv_matrices` with the LM in-loop tier. Toy `eval:` is a domain-specific
   closed schema: fresh `PGDReconLoss` runs against the target's own `recon_loss_fn` on
   independent synthetic batches; the optional `UVPlots` operation runs on the slow cadence —
   read off its own `slow` declaration, the same one the LM binder reads
-  (`eval_config.schedule_for`; SPEC S29), never a per-family choice. LM-only metrics
+  (`eval_config.schedule_for`), never a per-family choice. LM-only metrics
   (`CEandKLLosses`, `WellTemperedness`) refuse when toy evaluator construction reaches them. Ground-truth identity/dense CI scoring remains the
   toy runner's native validation pass on the train-log cadence.
 - `configs/*.yaml` — the canonical `experiments.{tms,resid_mlp}.config` schema (TMS: 5-2 /
@@ -157,8 +157,8 @@ target-anatomy vocabulary, so it lives in the domain that IS transformers —
 experiments/
 ├── lm/
 │   ├── run.py               # python -m param_decomp.experiments.lm.run — pre-JAX env bootstrap deferring to training.py, the LM composition root
-│   ├── run_targeted.py      # the tPD (SPEC §11) twin: bootstrap deferring to training_targeted.py; a targeted run is its own top-level config shape (LMTargetedExperimentConfig: prompts: + nontarget:), never a mode flag
-│   ├── targeted_data.py     # the tPD TARGET stream: kind-discriminated prompt pools, tokenized once at startup, unpadded at one shared prompt length (T8)
+│   ├── run_targeted.py      # the tPD twin: bootstrap deferring to training_targeted.py; a targeted run is its own top-level config shape (LMTargetedExperimentConfig: prompts: + nontarget:), never a mode flag
+│   ├── targeted_data.py     # the tPD TARGET stream: kind-discriminated prompt pools, tokenized once at startup, unpadded at one shared prompt length
 │   ├── resolved.py          # LM-only resolved data/run types (ResolvedLMData, LMRun)
 │   ├── eval.py              # token CE/KL + CI-L0 fast pass
 │   ├── attn_patterns_eval.py / arithmetic_eval.py

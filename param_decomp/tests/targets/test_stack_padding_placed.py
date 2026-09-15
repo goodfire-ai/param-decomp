@@ -1,6 +1,5 @@
 """Placed persist-stack padding: the entry's pad strip and real-slot gather, its grad
-transpose, the faithfulness lane, and a full padded train step (SPEC D4, 2026-09-01
-amendment) — for the V/U groups and for the chunkwise CI fn's chunk stack.
+transpose, the faithfulness lane, and a full padded train step — for the V/U groups and for the chunkwise CI fn's chunk stack.
 
 Three worlds over the 8-device suite: `owner` at (4,2,1), where the 6-layer tiny target's
 kind stacks pad to 8 naturally; `owner` at (2,2,1) — pad-free — where a census surgery

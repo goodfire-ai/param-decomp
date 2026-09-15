@@ -263,12 +263,12 @@ def _frozen_site_weight(target: ResidMLPTarget, name: str) -> Array:
 
 
 def clean_output(target: ResidMLPTarget, resid: Float[Array, "B d_embed"]) -> Array:
-    """The all-frozen forward — the recon target (SPEC S3). `resid` is `x @ W_E`."""
+    """The all-frozen forward — the recon target. `resid` is `x @ W_E`."""
     return clean_residual(target, resid) @ target.W_U
 
 
 def site_inputs(target: ResidMLPTarget, resid: Float[Array, "B d_embed"]) -> dict[str, Array]:
-    """Clean CI inputs per site (SPEC S4): `mlp_in` reads the clean residual entering its
+    """Clean CI inputs per site: `mlp_in` reads the clean residual entering its
     layer; `mlp_out` reads the clean post-activation hidden of its layer."""
     act = _act_fn(target.act_fn_name)
     inputs: dict[str, Array] = {}
@@ -382,7 +382,7 @@ def _run_masked(
 
 def weight_deltas_fp32(target: ResidMLPTarget, components: ComponentStacks) -> dict[str, Array]:
     """fp32 `W − (V@U)ᵀ` per persistence stack, slot-aligned with `components.stacks`
-    (SPEC N2; faithfulness input) — whole-stack einsum, never per-site `site()` slices."""
+    (faithfulness input) — whole-stack einsum, never per-site `site()` slices."""
     out: dict[str, Array] = {}
     for shape, (Vs, Us) in components.stacks.items():
         Ws = jnp.stack(
@@ -409,7 +409,7 @@ def resid_mlp_mse(
 
 
 class ResidMLPDecomposedModel(eqx.Module):
-    """The ResidualMLP `DecomposedModel` (the `model.py` contract; SPEC §1), positionless.
+    """The ResidualMLP `DecomposedModel` (the `model.py` contract), positionless.
 
     Carries the FROZEN `ResidMLPTarget` weights as a field — threaded into the jitted step
     as a pytree arg, weights traced not baked. The TRAINABLE V/U (`vu: ComponentStacks`) is an
@@ -534,7 +534,7 @@ class ResidMLPDecomposedModel(eqx.Module):
 
     def target_weight_sq_norms(self) -> dict[str, Array]:
         """Per-slot `‖W_s‖²` of each frozen stack, slot-aligned with `weight_deltas`
-        (the S17 relative-error scales, read once at setup)."""
+        (the relative-error scales, read once at setup)."""
         norms: dict[str, list[Array]] = {}
         for name, group, _slot in site_slots_for(self.sites):
             frozen_weight = _frozen_site_weight(self.target, name)

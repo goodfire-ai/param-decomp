@@ -1,13 +1,13 @@
 """Adversarial source state, initialization, and optimization.
 
 Two semantically distinct adversaries share source initialization and optimization but
-nothing else (SPEC §3):
+nothing else:
 
 - **Persistent PGD (PPGD)** — `PersistentPGDReconLossConfig`. The sources + their
   SRC_STEP optimizer state live in `TrainState` across steps, persisted as
   target-declared semantic stacks (`SourceStacks`, the grouping `ComponentStacks` uses)
   and shaped per `source_shape` (`configs.SourceShape`); every consumer reads the
-  site-keyed `per_site()` view. SRC_STEP is a closed enumeration (SPEC §6): `adam` carries
+  site-keyed `per_site()` view. SRC_STEP is a closed enumeration: `adam` carries
   coordinate moments (`SourcesAdamState`); `sgd` is the stateless plain ascent
   (`SourcesSgdState`, no leaves) — the arm whose persistent state is the sources alone;
   `momentum_sgd` carries one float velocity buffer (`SourcesMomentumState`).
@@ -15,7 +15,7 @@ nothing else (SPEC §3):
   unit-interval fixed-point representation (`UINT16_UNIT_SCALE`): ascents differentiate
   and update the float view and store back with stochastic rounding.
   Each step runs `n_warmup_steps` supplemental ascents plus one final ascent from
-  the main backward (SPEC S13/S14), projecting to [0,1] after every update (S15).
+  the main backward, projecting to [0,1] after every update.
 - **Fresh PGD** — `PGDReconLossConfig` (torch `PGDReconLoss` as a TRAINING loss).
   Sources are re-initialized every step, ascended `n_steps` times by
   `step_size * sign(grad)` with clamp to [0,1], and carry NO state across steps —
@@ -159,7 +159,7 @@ class SourceStacks(eqx.Module, Generic[SourceLeaf]):
 
 UINT16_UNIT_SCALE = 65535.0
 """The uint16 fixed-point representation of a unit-interval value: `value = u / 65535`.
-Sources live in [0,1] by construction (SPEC S15's projection), so the representation is
+Sources live in [0,1] by construction (projection), so the representation is
 exact at the interval's ends and uniformly 1/65535 everywhere — bf16 resolves only
 ~2^-8 near 1.0. The stored integer is NOT differentiable; every consumer reads the
 float view (`source_values_to_float`) and every store quantizes back."""
@@ -193,7 +193,7 @@ def _quantize_unit_stochastic(value: Array, key: PRNGKeyArray) -> Array:
     """[0,1] float -> uint16 fixed-point with STOCHASTIC rounding (unbiased: an update
     smaller than half a step still lands in expectation — round-to-nearest would stall
     every |Δ| < 1/(2·65535) forever) and saturating ends (composes exactly with the
-    S15 projection). The rounding draw is typed to the value's sharding: a bare draw
+    projection). The rounding draw is typed to the value's sharding: a bare draw
     lowers REPLICATED under the Explicit mesh, every rank forming the global-shape bits."""
     scaled = jnp.clip(value.astype(jnp.float32), 0.0, 1.0) * UINT16_UNIT_SCALE
     low = jnp.floor(scaled)
@@ -285,7 +285,7 @@ def velocity_dtype(source_storage_dtype: DTypeLike) -> jnp.dtype:
 SourcesOptState = SourcesAdamState | SourcesSgdState | SourcesMomentumState
 
 SourceOptimizerConfig = AdamPGDConfig | SgdPGDConfig | MomentumSgdPGDConfig
-"""The SRC_STEP enumeration (SPEC §6), paired with its state by `init_sources_opt_state`
+"""The SRC_STEP enumeration, paired with its state by `init_sources_opt_state`
 and re-matched at every ascent — a config/state mismatch dies in `sources_ascend_project`."""
 
 
@@ -301,12 +301,12 @@ def init_persistent_sources(
     per-site draw under `keys[site_index]` — and the jitted graph has n_groups sharded
     outputs, not n_sites (the per-site form was a ~55s XLA compile at 224 sites).
 
-    `leading_shape` spells the `source_shape` over the model's leading axes (SPEC §1.6),
+    `leading_shape` spells the `source_shape` over the model's leading axes,
     rank matching the waist with size-1 broadcast axes — e.g. an LM's `(1, T)` for `sc`
     (shared across batch, free per position), `(B, 1)` for `bc` (per batch element,
     shared over positions).
 
-    `source_dtype` is the resident storage dtype (SPEC N1 fp32 for oracle parity; bf16 to
+    `source_dtype` is the resident storage dtype (fp32 for oracle parity; bf16 to
     halve footprint). Drawing in fp32 then casting keeps the U[0,1] draw dtype-stable."""
     keys = random.split(key, len(sites))
     site_index = {site.name: idx for idx, site in enumerate(sites)}
@@ -403,8 +403,7 @@ def init_sources_opt_state(
 def sources_sgd_ascend_project(
     sources: SourceStacks, sources_grad: SourceStacks, lr: Array
 ) -> SourceStacks:
-    """One plain-SGD ASCENT on the persistent sources, then project to [0,1] (SPEC
-    S13/S15; SRC_STEP `sgd`). The `lr·grad` product runs at fp32 (scalar-lr promotion)
+    """One plain-SGD ASCENT on the persistent sources, then project to [0,1] (SRC_STEP `sgd`). The `lr·grad` product runs at fp32 (scalar-lr promotion)
     and casts ONCE into the source storage dtype — nothing wider persists."""
     return jax.tree.map(
         lambda source, g: jnp.clip(source + (lr * g).astype(source.dtype), 0.0, 1.0),
@@ -420,8 +419,7 @@ def sources_momentum_ascend_project(
     lr: Array,
     momentum: float,
 ) -> tuple[SourceStacks, SourcesMomentumState]:
-    """One momentum-SGD ASCENT on the float source values, then project to [0,1] (SPEC
-    S13/S15; SRC_STEP `momentum_sgd`): `v = momentum·v + grad; values += lr·v`. The EMA
+    """One momentum-SGD ASCENT on the float source values, then project to [0,1] (SRC_STEP `momentum_sgd`): `v = momentum·v + grad; values += lr·v`. The EMA
     forms in fp32 and rounds ONCE into the velocity's own float dtype — a Python-float
     coefficient times a bf16 buffer multiplies IN bf16, rounding the coefficient itself;
     the store rounding is the 16-bit seam, the coefficient rounding is not."""
@@ -446,8 +444,8 @@ def sources_ascend_project(
     optimizer: SourceOptimizerConfig,
     key: PRNGKeyArray,
 ) -> tuple[SourceStacks, SourcesOptState]:
-    """One SRC_STEP ASCENT (SPEC §6) dispatched over the config/state pair — the
-    enumerated arms share only the projection contract (S15). `sources` is the STORED
+    """One SRC_STEP ASCENT dispatched over the config/state pair — the
+    enumerated arms share only the projection contract. `sources` is the STORED
     representation; the arms ascend its float view (`sources_grad` is d/d(float view))
     and `store_sources` lands the projected values back — `key` feeds only the uint16
     stochastic rounding and is dead in the graph for float storage."""
@@ -478,7 +476,7 @@ def sources_adam_ascend_project(
     lr: Array,
     adam: AdamPGDConfig,
 ) -> tuple[SourceStacks, SourcesAdamState]:
-    """One Adam ASCENT on the persistent sources, then project to [0,1] (SPEC S13/S15)."""
+    """One Adam ASCENT on the persistent sources, then project to [0,1]."""
     step_count = adam_state.step_count + 1.0
     # `sources_grad` arrives in the masked-forward compute dtype (bf16); cast to the moment
     # dtype so the persistent `m`/`v` keep their declared storage dtype across steps.
@@ -508,14 +506,14 @@ def sources_adam_ascend_project(
 
 
 class PersistentAdversary(eqx.Module):
-    """One persistent-PGD adversary (SPEC §3): the source stacks + their SRC_STEP state
+    """One persistent-PGD adversary: the source stacks + their SRC_STEP state
     that persist across steps, plus the lifecycle the trainer drives around the shared
     backward. `sources` / `opt_state` are dynamic state; the rest is static config.
 
     Per step: `warmup_ascend` (n_warmup supplemental ascents vs a scoring forward, params
     + CI detached) → the warmed sources enter the main `value_and_grad` as leaves →
     `final_ascend` (one more ascent from the SAME backward's source-grad — which IS
-    `dL_term/d(sources)`: the source path is never coeff-scaled, SPEC S14'/S23).
+    `dL_term/d(sources)`: the source path is never coeff-scaled).
     Ascents and grads are STACKED throughout; a scoring loss takes the stacked float view
     and reads sites through `per_site()`."""
 
@@ -565,7 +563,7 @@ class PersistentAdversary(eqx.Module):
     def after_one_ascent(
         self, grad: SourceStacks, train_frac: Array, key: PRNGKeyArray
     ) -> "PersistentAdversary":
-        """The adversary one SRC_STEP ascent-and-project (SPEC S13/S15) further along
+        """The adversary one SRC_STEP ascent-and-project further along
         `grad` (taken w.r.t. the float source view)."""
         lr = self.source_lr(train_frac)
         sources, opt_state = sources_ascend_project(
@@ -576,7 +574,7 @@ class PersistentAdversary(eqx.Module):
     def final_ascend(
         self, source_grad: SourceStacks, train_frac: Array, key: PRNGKeyArray
     ) -> "PersistentAdversary":
-        """One final ascent recycled from the shared backward (SPEC S13'/S14'): the
+        """One final ascent recycled from the shared backward: the
         source path enters the backward UNSCALED — the term's coeff scales only the
         model-side cotangents (`train.model_cotangents_scaled`) — so `source_grad` IS
         `dL_term/d(sources)`, with nothing to unscale, at every step of any coeff

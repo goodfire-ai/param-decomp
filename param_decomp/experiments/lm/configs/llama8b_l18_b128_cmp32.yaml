@@ -4,7 +4,7 @@
 # same run as llama8b_l18_b128_cmp32.yaml — the converter test asserts that.
 run_name: jax-l18-b128-cmp32-from-torch
 # torch leg of the torch-vs-JAX same-config comparison (32 GPU / 4 nodes each side).
-# Single-pool core trainer (param_decomp/core/run.py) with the SPEC §2 production
+# Single-pool core trainer (param_decomp/core/run.py) with the production
 # constants (= lr_mid), full-model forward (no residual-start on this path), vendored
 # Llama, pre-tokenized fineweb (no HF at run time). JAX leg:
 # pd-nano-jax param_decomp/configs/llama8b_l18_b128_cmp32.yaml — same constants,

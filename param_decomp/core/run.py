@@ -561,7 +561,7 @@ class MetricsSink:
 class BackgroundRenderer:
     """Background thread for a figure tier's pure host-rendering tail.
 
-    The slow/plot tier (SPEC S28/S29) and the LM arithmetic tier each hold one. A pure
+    The slow/plot tier and the LM arithmetic tier each hold one. A pure
     renderer returns ``DeferredMediaRecord``; the shared ``MetricsSink`` performs the
     serialized W&B write.
 
@@ -623,8 +623,8 @@ class BackgroundRenderer:
 
 @dataclasses.dataclass(frozen=True)
 class FaithfulnessWarmup:
-    """SPEC S21's warmup phase as the engine consumes it — built by the PLAIN entry from
-    `PDConfig`'s fields. A targeted run has no faithfulness role to warm (T3): its config
+    """Warmup phase as the engine consumes it — built by the PLAIN entry from
+    `PDConfig`'s fields. A targeted run has no faithfulness role to warm: its config
     shape carries no warmup fields, and its entry passes no warmup by construction."""
 
     steps: int
@@ -652,7 +652,7 @@ def _init_or_restore_state[Out, PreparedT](
     profiling: ProfilingMode | None,
     component_initializer: ComponentInitializer[Out, PreparedT],
 ) -> tuple[TrainState, int] | None:
-    """The shared init/restore/finetune/faith-warmup phase (SPEC S21/S22/S33).
+    """The shared init/restore/finetune/faith-warmup phase.
 
     Returns `(state, start_step)`, or `None` when a SIGTERM landed mid-warmup (the caller
     must exit cleanly for requeue — no valid checkpoint exists pre-step-0). A
@@ -694,7 +694,7 @@ def _init_or_restore_state[Out, PreparedT](
         return state, ckpt_step
 
     if run.resume_provenance is not None:
-        # Fine-tune init (SPEC S33): own ckpts/ is empty, so this is the FIRST entry, not a
+        # Fine-tune init: own ckpts/ is empty, so this is the FIRST entry, not a
         # requeue — load the parent's trained V/U + ci_fn onto the fresh reference, start a
         # clean schedule from step 0 (fresh optimizer / sources, no faith warmup). The
         # parent↔new structural-compat check (sites + ci-fn arch) runs lab-side in the LM
@@ -1037,7 +1037,7 @@ def run_targeted_decomposition_training[Out, PreparedT, EvalPassT, EvalContextT]
     profiling: ProfilingMode | None,
     component_initializer: ComponentInitializer[Out, PreparedT] = random_component_initializer,
 ) -> None:
-    """The targeted-PD (tPD) engine entry (SPEC §11) — `run_decomposition_training`'s twin
+    """The targeted-PD (tPD) engine entry — `run_decomposition_training`'s twin
     over the same `_prepare_run` / `_run_loop` core, stepping the two-pass
     `make_targeted_train_step`.
 
@@ -1045,11 +1045,11 @@ def run_targeted_decomposition_training[Out, PreparedT, EvalPassT, EvalContextT]
     stream (global batch `pd.batch_size` — the pass the persistent adversaries and every
     other decomposition loss run on), and `sample_nontarget_batch(step)` the broad
     NON-TARGET stream (global batch `nontarget.batch_size`, delta pinned fully on save
-    T4's one unmasked-no-delta exception). `positions` is the TARGET stream's waist
+    one unmasked-no-delta exception). `positions` is the TARGET stream's waist
     geometry — persistent sources live in the target pass; each stream runs at its own
-    natural sequence length (SPEC T2/T8).
+    natural sequence length.
 
-    tPD has no faithfulness role (T3): `TargetedPDConfig` admits no faithfulness loss
+    tPD has no faithfulness role: `TargetedPDConfig` admits no faithfulness loss
     member and carries no warmup fields, so neither exists to refuse here."""
     is_main = jax.process_index() == 0
     prepared = _prepare_run(

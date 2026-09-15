@@ -1,4 +1,4 @@
-"""Multi-device invariance of the fresh-PGD `c`-source sign-ascent (SPEC S24, S12', S15, D1).
+"""Multi-device invariance of the fresh-PGD `c`-source sign-ascent.
 
 The fresh-PGD eval probe (`PGDReconLoss`, fresh sign-PGD, `c`-source, 20 step;
 `eval.py`) and the training-loss path (`train.py` `sign_ascend_body`) ascend a
@@ -132,7 +132,7 @@ def _ascend(
 def test_fresh_pgd_c_source_sign_ascent_is_device_count_invariant():
     """The `c`-source ascended source AND its mask are bit-identical at 1 layout vs N
     GSPMD shards. `sign(avg)==sign(sum)`, so the sign decision is exact — assert with
-    NO float tolerance. Guards fresh-PGD `c`-source DP equivalence (SPEC S24, S12', S15, D1)."""
+    NO float tolerance. Guards fresh-PGD `c`-source DP equivalence."""
     n_dev = len(jax.devices())
     n_steps, step_size = 20, 0.05
 

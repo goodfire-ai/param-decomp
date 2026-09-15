@@ -8,7 +8,7 @@ masks / sources / routing from the fixtures (no RNG). Compares to
 
 Term wiring (all `param_decomp.core.train` + the `DecomposedModel` boundary):
   * ppgd  — `masks_from_sources` + `run_masked` over every site; `kl_per_position`
-            vs `model.clean_output` (the frozen path, SPEC S3).
+            vs `model.clean_output` (the frozen path).
 
 The torch golden's `stoch` term drove partial per-chunk masked forwards — a capability
 the masked forward no longer has (masks must cover every site) — so it is not compared.

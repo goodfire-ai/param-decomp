@@ -1,4 +1,4 @@
-"""Replicated-source-leaf grad is the global MEAN, not N× it (SPEC R-7, D1/S16/D3).
+"""Replicated-source-leaf grad is the global MEAN, not N× it.
 
 Torch AVG-reduces shared-source grads explicitly (`reduce_source_grads(op=AVG)`,
 `persistent_pgd_state.py`); JAX gets the same AVG *implicitly*: GSPMD autodiff of a
@@ -12,7 +12,7 @@ source is the GLOBAL mean. If GSPMD instead emitted a bare all-reduce(SUM) on th
 source cotangent (the bug), the N-device source grad would be N× the single-device grad.
 We compute the source-leaf grad of the adversarial ascent objective
 (`kl_per_position(masked_output(...), clean_output)`, the same loss the persistent
-ascent backprops, SPEC S12'/S14') on the SAME fixed global batch + seed at 1 layout
+ascent backprops) on the SAME fixed global batch + seed at 1 layout
 (`mesh=None`) and at N≥2 simulated devices, and assert they match to rel ≤ 1e-4.
 
 Run the multi-device leg via the simulated-device env (matches the validation stack):
@@ -66,7 +66,7 @@ from param_decomp.targets.testing import (
 
 def _source_grad(sharded: bool) -> SourceStacks:
     """Grad of the route-all adversarial KL objective w.r.t. the persistent `sc`-scope
-    source stacks, with components/CI frozen (SPEC §4.5) — the leaves whose cross-device
+    source stacks, with components/CI frozen — the leaves whose cross-device
     reduction we are pinning. Returns the fp32 grad mirroring the stacks."""
     cfg = tiny_glu_cfg()
     C, seq, gbatch = 8, 16, 8

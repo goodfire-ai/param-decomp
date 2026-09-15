@@ -1,4 +1,4 @@
-"""JAX-free vocabulary for nonlinearity-facing output partitions (SPEC S36)."""
+"""JAX-free vocabulary for nonlinearity-facing output partitions."""
 
 from dataclasses import dataclass
 from typing import ClassVar, Literal
@@ -8,7 +8,7 @@ NonlinearityUnitKind = Literal["neuron", "attention_head"]
 
 @dataclass(frozen=True)
 class Neurons:
-    """One nonlinearity unit per output coordinate, each used once (SPEC S36)."""
+    """One nonlinearity unit per output coordinate, each used once."""
 
     unit_kind: ClassVar[NonlinearityUnitKind] = "neuron"
     use_multiplicity: ClassVar[int] = 1
@@ -16,8 +16,7 @@ class Neurons:
 
 @dataclass(frozen=True)
 class QueryHeads:
-    """Equal contiguous blocks of a q projection's output axis, one per query head
-    (SPEC S36). Each block is used in exactly its own attention nonlinearity."""
+    """Equal contiguous blocks of a q projection's output axis, one per query head. Each block is used in exactly its own attention nonlinearity."""
 
     head_count: int
 
@@ -30,11 +29,10 @@ class QueryHeads:
 
 @dataclass(frozen=True)
 class KVHeads:
-    """Equal contiguous blocks of a k/v projection's output axis, one per kv head
-    (SPEC S36).
+    """Equal contiguous blocks of a k/v projection's output axis, one per kv head.
 
     Under GQA a kv block is written once but consumed by `n_head / n_kv_head`
-    query-attention nonlinearities, and the soft count measures uses (SPEC S36) —
+    query-attention nonlinearities, and the soft count measures uses —
     so this is the one partition where `use_multiplicity` is a real field.
     """
 

@@ -1,5 +1,5 @@
 """Round-trip + resume-continuation tests for `checkpoint.py` (orbax) on the generic
-trainer state (SPEC S22): a restored `TrainState` must continue the EXACT trajectory —
+trainer state: a restored `TrainState` must continue the EXACT trajectory —
 including the persistent adversary's sources and Adam moments."""
 
 from collections.abc import Callable
@@ -285,7 +285,7 @@ def _roundtrip_and_exact_resume(
         assert mu_leaves, "no V/U leaf labeled muon: the partition under test is empty"
         assert all(bool(jnp.any(leaf != 0)) for leaf in mu_leaves)
 
-    # SPEC S22: the restored state continues the exact trajectory.
+    # the restored state continues the exact trajectory.
     state_cont, m_cont = step(model, state, resid, jax.random.PRNGKey(100))
     loaded_cont, m_load = step(model, loaded, resid, jax.random.PRNGKey(100))
     for k in m_cont:
@@ -301,13 +301,13 @@ def test_roundtrip_and_exact_resume(tmp_path: Path):
 
 @pytest.mark.slow
 def test_freq_ema_roundtrip_and_exact_resume(tmp_path: Path):
-    """The S8'' EMA buffers are checkpointed trajectory state: two live steps fill them,
+    """The EMA buffers are checkpointed trajectory state: two live steps fill them,
     the roundtrip restores every leaf bit-exactly onto a differently-seeded reference."""
     _roundtrip_and_exact_resume(tmp_path, muon_components=False, freq_ema=True)
 
 
 def test_muon_roundtrip_and_exact_resume(tmp_path: Path):
-    """SPEC S20 amendment: the muon components opt state (optax's `MuonState` pytree
+    """The muon components opt state (optax's `MuonState` pytree
     verbatim, partitioned into muon/adam masked trees) must ALSO restore onto a rebuilt
     reference and continue exactly — this is what a scavenge preemption + requeue
     exercises."""
@@ -316,14 +316,14 @@ def test_muon_roundtrip_and_exact_resume(tmp_path: Path):
 
 @pytest.mark.slow
 def test_muon_ci_fn_roundtrip_and_exact_resume(tmp_path: Path):
-    """SPEC S20 amendment (2026-07-11): same guarantee with muon on BOTH groups, the ci-fn
+    """Same guarantee with muon on BOTH groups, the ci-fn
     partitioned by `stacked_muon_dimension_numbers` (3D chunk stacks muon'd, 2D bias
     stacks in the Adam-fallback mask)."""
     _roundtrip_and_exact_resume(tmp_path, muon_components=True, muon_ci_fn=True)
 
 
 def test_persistent_adam_step_count_roundtrip_and_post_resume_bias_correction(tmp_path: Path):
-    """Issue #678 (matrix §8 + S22/S13/S23): after N persistent ascents, the orbax
+    """Issue #678 (matrix §8): after N persistent ascents, the orbax
     checkpoint must carry the adversary's `step_count` leaf (present, fp32, == N) and
     bit-equal Adam moments; the FIRST post-resume ascent must apply bias-correction for
     count N+1 (not N, not 1)."""
@@ -447,7 +447,7 @@ def test_read_only_manager_never_prunes(tmp_path: Path):
 
 
 def test_init_from_parent_restores_decomposition_only(tmp_path: Path):
-    """Fine-tune init (S33): `init_from_parent` restores ONLY the parent's
+    """Fine-tune init: `init_from_parent` restores ONLY the parent's
     `decomposition` item (components + ci_fn) onto a fresh reference, keeping the fresh
     reference's optimizer states / adversaries / `step=0` — never reading the parent's
     `training` item, which may differ freely."""
@@ -534,7 +534,7 @@ def _build_sharded(
 
 
 def test_sharded_roundtrip_bit_equal(tmp_path: Path):
-    """S22 at the PRODUCTION per-rank shape: a sharded `TrainState` (the failure-prone
+    """At the PRODUCTION per-rank shape: a sharded `TrainState` (the failure-prone
     path that bit the torch job-34446 save and the jsp SIGTERM saves) must round-trip
     through orbax onto a sharded reference bit-equal, leaf shardings preserved.
 

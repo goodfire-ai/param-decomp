@@ -1,4 +1,4 @@
-"""SPEC R4: a draw follows its consumer's dtype, and the bf16 and fp32 streams from one key
+"""A draw follows its consumer's dtype, and the bf16 and fp32 streams from one key
 are unrelated samples — not roundings of each other."""
 
 import jax
@@ -40,7 +40,7 @@ def test_same_key_bf16_and_fp32_are_unrelated_samples():
 
 
 def test_pinning_the_draw_dtype_makes_the_sample_dtype_invariant():
-    """The R4 remedy: `dtype=` overrides the reference's dtype, so a bf16 consumer can draw
+    """Consumer-directed draws: `dtype=` overrides the reference's dtype, so a bf16 consumer can draw
     the fp32 sample and cast — both compute arms then score the same sample."""
     key = jax.random.PRNGKey(11)
     pinned_for_bf16 = uniform_like(key, jnp.zeros(_SHAPE, jnp.bfloat16), dtype=jnp.float32)

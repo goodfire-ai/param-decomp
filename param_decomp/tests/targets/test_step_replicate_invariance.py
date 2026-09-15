@@ -1,6 +1,5 @@
 """EXECUTED replicate>1 gate: the full train step at an owner/ddp (2,2,2) mesh runs for
-real steps and its metric trajectory matches the single-device layout by value (SPEC
-D4), with the census asserting the cross-replicate collective placement (weight grads
+real steps and its metric trajectory matches the single-device layout by value, with the census asserting the cross-replicate collective placement (weight grads
 defer to entry; in-loop cross-replicate collectives bounded to the sanctioned smalls)."""
 
 import jax

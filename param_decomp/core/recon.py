@@ -38,7 +38,7 @@ RoutingSampler = Callable[[PRNGKeyArray, tuple[int, ...]], tuple[Routes, ...]]
 """`(key, leading_shape) -> (routes, ...)` — a STATICALLY-sized family of routing draws,
 each `{site: bool[*leading]}` (or None = route everywhere) becoming ONE forward. The torch
 `Router.get_masks` made pure: fresh draws per step require the key threaded in —
-samplers run INSIDE the jitted step, so they must be traceable (SPEC R1). Returning
+samplers run INSIDE the jitted step, so they must be traceable. Returning
 several draws from one invocation enables JOINTLY-sampled families (independent
 repeats, antithetic/complementary subsets, per-step random covers) that independent
 per-draw keys alone cannot express. The term's structure — sampler identity, family
@@ -65,7 +65,7 @@ class ConstantSources:
 @dataclass(frozen=True)
 class UnmaskedNoDeltaSources:
     """Every component mask `1.0`, every weight-delta mask `0.0` — the full component sum
-    alone reconstructs. The tPD non-target pass's one delta-OFF arm (SPEC T4's enumerated
+    alone reconstructs. The tPD non-target pass's one delta-OFF arm (enumerated
     exception): the polarity rides this type, never a flag on the delta-pinned strategies.
     Deterministic — no sources are drawn."""
 
@@ -75,7 +75,7 @@ class FreshPGDSources:
     """Per-step sign-PGD-ascended sources (torch `PGDRecon*` as TRAINING losses): init
     per `init`, `n_steps` of `step_size * sign(grad)` with clamp to [0,1], no state
     across steps. The entry's routing is drawn ONCE per step and shared by every
-    ascent and the final loss forward (SPEC S24, torch parity)."""
+    ascent and the final loss forward (torch parity)."""
 
     init: PGDInitStrategy
     n_steps: int
@@ -88,7 +88,7 @@ class PersistentSources:
     """Sources living in `TrainState.adversaries[state_key]` across steps (PPGD). Carries
     the shared `PersistentPGDReconLossConfig` so the term is self-describing — the step
     reads its scope/optimizer/warmup straight off `cfg`. `state_key` indexes
-    `TrainState.adversaries` (one key per persistent term, SPEC S23)."""
+    `TrainState.adversaries` (one key per persistent term)."""
 
     state_key: str
     cfg: PersistentPGDReconLossConfig
@@ -202,13 +202,11 @@ def hidden_acts_capture_keys(reconstruction: ReconstructionSpec) -> CaptureKeys:
 
 @dataclass(frozen=True)
 class ReconLossTerm[SourcesT: MaskSourceStrategy]:
-    """One coefficiented recon loss: mean over its routing draws of `kl_per_position`
-    (SPEC S10'). Every draw runs all sites decomposed; `sample_routing` produces the
+    """One coefficiented recon loss: mean over its routing draws of `kl_per_position`. Every draw runs all sites decomposed; `sample_routing` produces the
     term's statically-sized family of draws and `sources` generates each draw's
     mask/delta sources. `SourcesT` narrows which strategies a term can carry — the tPD
-    non-target pass admits only the enumerated non-target strategies IN THE TYPE (SPEC
-    T5). `name` is the config's `instance_key` — the metric log key is `loss/<name>`.
-    `coeff` and the S35 hidden-activation reconstruction coeff may be schedules, so the
+    non-target pass admits only the enumerated non-target strategies IN THE TYPE. `name` is the config's `instance_key` — the metric log key is `loss/<name>`.
+    `coeff` and the hidden-activation reconstruction coeff may be schedules, so the
     term stays a static description; the step resolves both to per-step values (`losses.coeff_at` /
     `losses.reconstruction_spec_at`)."""
 
@@ -223,7 +221,7 @@ class ReconLossTerm[SourcesT: MaskSourceStrategy]:
         """`ConstantSources` carries no delta path (torch passes no `weight_deltas` for the
         Unmasked/CIMasked losses); its `delta_mask` would be a constant 0, so the `x @ Δ`
         matmul is skipped entirely (static, retrace-safe — LOSS_PARITY_DESIGN §4b).
-        `UnmaskedNoDeltaSources` carries a materialized delta mask pinned to 0 (SPEC T4's
+        `UnmaskedNoDeltaSources` carries a materialized delta mask pinned to 0 (the
         exception); every other strategy drives a live delta mask."""
         return not isinstance(self.sources, ConstantSources)
 
@@ -249,7 +247,7 @@ def uniform_k_subset_routes(
     key: PRNGKeyArray, sites: tuple[str, ...], leading_shape: tuple[int, ...]
 ) -> dict[str, Array]:
     """Per position: `k ~ U{1..|sites|}`, then a uniform k-subset of the sites
-    routes True (SPEC S11). Distributionally identical to torch's double-argsort ranks."""
+    routes True. Distributionally identical to torch's double-argsort ranks."""
     n_sites = len(sites)
     k_key, perm_key = random.split(key)
     k = random.randint(k_key, leading_shape, 1, n_sites + 1)
@@ -326,7 +324,7 @@ PERSISTENT_SOURCE_TYPES = (
 def persistent_configs(
     recon_terms: tuple[AnyReconLossTerm, ...],
 ) -> dict[str, AnyPersistentLossConfig]:
-    """``state_key -> config`` for every persistent-source-carrying recon term (S23)."""
+    """``state_key -> config`` for every persistent-source-carrying recon term."""
     out: dict[str, AnyPersistentLossConfig] = {}
     for term in recon_terms:
         if isinstance(term.sources, PERSISTENT_SOURCE_TYPES):

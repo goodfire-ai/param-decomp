@@ -2,7 +2,7 @@
 positionless core.
 
 Covers the `DecomposedModel` contract (mask=1 identity reconstructs the clean forward,
-MSE recon, residual accumulation), the reused MLP CI fn, the full SPEC step
+MSE recon, residual accumulation), the reused MLP CI fn, the full training step
 trains, and the ground-truth target-CI eval — including an end-to-end pretrain →
 decompose → recovers-identity-structure validation on a tiny single-layer ResidMLP.
 """

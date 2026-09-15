@@ -1,7 +1,7 @@
 """`DecomposedModel` — the interface a vendored target implements for the generic trainer.
 
 The trainer (`train.py`) is abstract over the target model: it sees an ordered set of
-decomposed **sites** (SPEC §1.2) and a handful of methods on the model `eqx.Module`. The
+decomposed **sites** and a handful of methods on the model `eqx.Module`. The
 model carries its FROZEN target weights as fields; the TRAINABLE V/U (`vu`) is passed to
 the forward methods explicitly (separate lifecycle). Everything at the boundary is keyed
 by site name (flat dicts, torch-module-path style) — except `weight_deltas`, keyed like
@@ -92,8 +92,7 @@ SiteDeltaMasks = Mapping[str, Float[Array, "*leading"]]
 with no C axis."""
 
 SiteRoutes = Mapping[str, Bool[Array, "*leading"]] | None
-"""Per-site per-position routing; `None` routes every position to the decomposition
-(SPEC §1.3). Positions routing False take the frozen `x @ W` path."""
+"""Per-site per-position routing; `None` routes every position to the decomposition. Positions routing False take the frozen `x @ W` path."""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -359,11 +358,11 @@ class DecomposedModel(Protocol[Out, PreparedT]):
     def target_weight_sq_norms(self) -> dict[str, Float[Array, " g"]]:
         """Per-slot `‖W_s‖²_F` of each frozen target stack, fp32 — slot-aligned with the
         `weight_deltas` grouping (`site_slots_for(self.sites)`), read once at setup to
-        bind the S17 relative-error scales."""
+        bind the relative-error scales."""
         ...
 
     def weight_deltas(self, vu: ComponentStacks) -> dict[str, Float[Array, "g ..."]]:
-        """fp32 `W − V@U` per persistence STACK, slot-aligned with `vu.stacks` (SPEC N2).
+        """fp32 `W − V@U` per persistence STACK, slot-aligned with `vu.stacks`.
         A dense group's stack is `[g, d_out, d_in]`. An expert-blocked group's is
         `[g, expert, d_out, d_in]` with per-expert block dimensions; every entry of
         the site's weight matrix belongs to exactly one expert's block, so summing
@@ -374,7 +373,7 @@ class DecomposedModel(Protocol[Out, PreparedT]):
         frozen weight extends it by `vu.pad_of(group)` all-zero slots so pad deltas are
         exactly zero, and the returned stacks keep the padded extent.
 
-        Stacked, not per-site: the only trainer consumer is the S17 faithfulness
+        Stacked, not per-site: the only trainer consumer is the faithfulness
         loss (per-slot reductions of the stacks), and slicing per-site V/U out of a
         stack-sharded persist layout
         redistributes every slice cross-node (task 577). Per-site access (tests,

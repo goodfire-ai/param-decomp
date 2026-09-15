@@ -450,9 +450,9 @@ def lowered_targeted_train_step[Out, PreparedT](
     remat_ci_fn: bool,
     compiler_options: dict[str, bool | int | str] | None,
 ) -> tuple[Any, DeclaredRun]:
-    """`lowered_train_step`'s tPD twin (SPEC §11): assemble and LOWER the two-stream
+    """`lowered_train_step`'s tPD twin: assemble and LOWER the two-stream
     targeted step at the declared placement, exactly as `run_targeted_decomposition_
-    training` assembles it. `positions` is the TARGET stream's waist geometry (T2) —
+    training` assembles it. `positions` is the TARGET stream's waist geometry —
     persistent sources live in the target pass."""
     rules = model.placement
     assert rules is not None, "fit check is a placed-run question"
@@ -554,7 +554,7 @@ def aot_targeted_fit_check[Out](
     pool_gib: float,
     dump: DumpConfig | None,
 ) -> FitReport:
-    """`aot_fit_check`'s tPD twin (SPEC §11): compile the two-stream targeted jit_step
+    """`aot_fit_check`'s tPD twin: compile the two-stream targeted jit_step
     AOT and report per-device memory vs the stated pool. `positions` is the TARGET
     stream's waist geometry — the pool's own prompt length, so the receipt prices the
     persistent sources at their true extent."""

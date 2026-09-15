@@ -1,7 +1,7 @@
 """CPU tests for the LlamaSimpleMLP target + generic trainer at a tiny config.
 
 Mirrors `test_llama31.py`: validates the `DecomposedModel` contract (mask=1 identity
-reconstructs the clean forward, shapes, site seams) and the full SPEC step — for mixed
+reconstructs the clean forward, shapes, site seams) and the full training step — for mixed
 attention + MLP sites with heterogeneous per-site C — without real weights or a GPU.
 """
 
@@ -491,16 +491,16 @@ def test_step_trains_and_has_vpd_signature():
 
     assert all(jnp.isfinite(jnp.array(list(m.values()))).all() for m in losses)
     assert int(state.training.step) == n_steps
-    # SPEC S13: n_warmup + 1 source-Adam updates per training step, moments persist.
+    # n_warmup + 1 source-Adam updates per training step, moments persist.
     ppgd_adv = state.training.adversaries["PersistentPGDReconLoss"]
     assert isinstance(ppgd_adv.opt_state, SourcesAdamState)
     assert float(ppgd_adv.opt_state.step_count) == n_steps * (n_warmup + 1)
-    # SPEC S15: sources stay projected to [0,1].
+    # sources stay projected to [0,1].
     for v in jax.tree.leaves(ppgd_adv.sources):
         assert float(v.min()) >= 0.0 and float(v.max()) <= 1.0
-    # SPEC S9: gamma annealed below its 1.0 start by step 4 of 100.
+    # gamma annealed below its 1.0 start by step 4 of 100.
     assert losses[-1]["gamma_imp"] < 1.0
-    # fp32 masters preserved through updates (SPEC N1).
+    # fp32 masters preserved through updates.
     assert isinstance(state.decomposition.components, ComponentStacks)
     for _, site_components in state.decomposition.components.sites_items():
         assert site_components.V.dtype == jnp.float32

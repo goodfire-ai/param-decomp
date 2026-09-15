@@ -246,7 +246,7 @@ def make_stochastic_attn_patterns_step(
             delta_masks = {}
             # `uniform_like`, never a bare draw: a bare `random.uniform` lowers REPLICATED
             # under the Explicit mesh and the per-kind mask stacks then hold the full
-            # eval batch on every rank (value-identical either way — threefry, SPEC D4).
+            # eval batch on every rank (value-identical either way — threefry).
             for site_idx, site in enumerate(site_names):
                 ci_site = ci_lower[site]
                 source_key = random.fold_in(mask_key, site_idx)

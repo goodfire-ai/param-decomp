@@ -1,4 +1,4 @@
-"""SPEC R1: reconstruction-grid RNG derivation is explicit and disjoint."""
+"""Reconstruction-grid RNG derivation is explicit and disjoint."""
 
 import jax
 import jax.numpy as jnp
@@ -27,7 +27,7 @@ def _term(name: str) -> ReconLossTerm[StochasticSources]:
 
 
 def test_recon_grid_fold_in_chain_pins_term_and_draw_offsets():
-    """Target starts at 1; non-target starts after every target term (SPEC R1)."""
+    """Target starts at 1; non-target starts after every target term."""
     key = jax.random.PRNGKey(17)
     target_terms = (_term("target-0"), _term("target-1"))
     grids = (

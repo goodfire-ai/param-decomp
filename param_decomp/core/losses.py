@@ -1,4 +1,4 @@
-"""The pure loss terms (SPEC §2) and their schedules — fp32 reductions, no state."""
+"""The pure loss terms and their schedules — fp32 reductions, no state."""
 
 import math
 from collections import defaultdict
@@ -66,7 +66,7 @@ def scheduled_value_at(train_frac: Array, config: ScheduleConfig) -> Array:
 
 
 def train_frac_at(step: Array, total_steps: int) -> Array:
-    """Map update ``0 .. total_steps - 1`` to fraction-time ``0 .. 1`` (SPEC S20)."""
+    """Map update ``0 .. total_steps - 1`` to fraction-time ``0 .. 1``."""
     assert total_steps > 0, f"total_steps must be positive, got {total_steps}"
     if total_steps == 1:
         return jnp.zeros((), jnp.float32)
@@ -92,7 +92,7 @@ def reconstruction_spec_at(
     hidden_acts_reconstruction: HiddenActsReconstruction | None,
     train_frac: Array,
 ) -> ReconstructionSpec:
-    """Resolve the S35 hidden-activation reconstruction at this fraction-time."""
+    """Resolve the hidden-activation reconstruction at this fraction-time."""
     if hidden_acts_reconstruction is None:
         return OutputOnlyReconstruction()
     return OutputAndHiddenActsReconstruction(
@@ -108,7 +108,7 @@ def relative_squared_error(
     *,
     valid_row_mask: Float[Array, " batch"] | None = None,
 ) -> Float[Array, ""]:
-    """`Σ(masked−clean)² / Σ(clean²)` at ONE measurement point, in fp32 (SPEC S35).
+    """`Σ(masked−clean)² / Σ(clean²)` at ONE measurement point, in fp32.
 
     Per point, not over a stacked point axis: points need not share a width, and each
     divides by its own clean scale. Callers stack the resulting scalars, never the
@@ -145,7 +145,7 @@ def reconstruction_loss[Out](
     reconstruction: ReconstructionSpec,
     valid_row_mask: Array | None = None,
 ) -> ReconstructionLoss:
-    """The closed forms of one recon comparison (SPEC S35)."""
+    """The closed forms of one recon comparison."""
     output_loss = recon_loss_fn(masked.output, clean.output)
     match reconstruction:
         case OutputOnlyReconstruction():
@@ -241,7 +241,7 @@ def nonlinearity_unit_squared_norm_fractions(
 def soft_unit_count(
     fractions: Float[Array, "*components U"], relative_threshold: Float[Array, ""] | float
 ) -> Float[Array, "*components"]:
-    """Per-component soft count `Σ_u f_u / (f_u + relative_threshold / U)` (SPEC S36)."""
+    """Per-component soft count `Σ_u f_u / (f_u + relative_threshold / U)`."""
     unit_count = fractions.shape[-1]
     return (fractions / (fractions + relative_threshold / unit_count)).sum(-1)
 
@@ -260,7 +260,7 @@ def nonlinearity_loss(
     kind_coefficients: Mapping[NonlinearityUnitKind, float],
 ) -> tuple[Float[Array, ""], dict[NonlinearityUnitKind, Float[Array, ""]]]:
     """Return the kind-weighted nonlinearity penalty and its unweighted per-kind means
-    of soft uses per component (SPEC S36). Callers exclude a kind by omitting its sites
+    of soft uses per component. Callers exclude a kind by omitting its sites
     AND its coefficient — an excluded kind is never computed, so weight 0.0 is not a
     state here."""
     assert partitions, "nonlinearity loss needs at least one partitioned site"
@@ -277,7 +277,7 @@ def nonlinearity_loss(
     for (group, partition), slots in grouped.items():
         us = components.stacks[group][1]
         # Uses, not blocks: each block is consumed by `use_multiplicity` attention
-        # nonlinearities, so the per-block soft count scales by that factor (SPEC S36).
+        # nonlinearities, so the per-block soft count scales by that factor.
         counts = partition.use_multiplicity * soft_unit_count(
             nonlinearity_unit_squared_norm_fractions(us, partition), relative_threshold
         )
@@ -314,7 +314,7 @@ def _narrow_site_frequencies(
 ) -> Float[Array, " C"]:
     """The exact full-width `f_c` from the bundle: routed values' penalties scatter to
     their global components (`narrow_component_sums` — shard-local partial sums, one
-    global reduction BEFORE the convex `log2`, S8/D2's Jensen requirement), and every
+    global reduction BEFORE the convex `log2`, as required by Jensen’s inequality), and every
     unrouted (token, component) contributes `psi(0)` — zero for smooth-L0's psi, kept so
     the helper is exact for any per-value penalty — over the SAME `B·T` denominator."""
     n = math.prod(ci.values.shape[:-1])
@@ -340,7 +340,7 @@ def _per_component_frequencies(
     per_value_penalty: Callable[[Float[Array, "*leading _"]], Float[Array, "*leading _"]],
 ) -> dict[str, Float[Array, " _"]]:
     """Per-site firing frequencies `f_c = mean_{b,t} psi(c)` for any per-value penalty
-    `psi` (SPEC S8). Under GSPMD the leading axes are the global batch, so the reduction
+    `psi`. Under GSPMD the leading axes are the global batch, so the reduction
     IS the exact global per-component mean — XLA reduces across shards inside the graph,
     so `f_c` is the true full-batch frequency inside the convex `log2` (a per-shard
     `f_c` would give a Jensen bias). Narrow sites take the exact scatter arm
@@ -368,7 +368,7 @@ def _site_activity(ci: SiteCI, per_value_penalty: Callable[[Array], Array]) -> F
 
 
 def _frequency_curve(f: Float[Array, " _"], reference_datapoint_count: int) -> Float[Array, " _"]:
-    """`Φ(f) = f · log2(1 + a'·f)`, the per-component frequency penalty (SPEC S8)."""
+    """`Φ(f) = f · log2(1 + a'·f)`, the per-component frequency penalty."""
     return f * jnp.log2(1.0 + reference_datapoint_count * f)
 
 
@@ -390,7 +390,7 @@ def _smooth_l0_psi(
 
 
 def activity_sum(frequencies: dict[str, Float[Array, " _"]]) -> Float[Array, ""]:
-    """`Σ_s Σ_c f_c` — the linear importance term (SPEC S8)."""
+    """`Σ_s Σ_c f_c` — the linear importance term."""
     return sum((jnp.sum(f) for f in frequencies.values()), start=jnp.zeros((), jnp.float32))
 
 
@@ -409,7 +409,7 @@ def activity_sum_from_ci(
 def _frequency_penalty(
     frequencies: dict[str, Float[Array, " _"]], reference_datapoint_count: int
 ) -> Float[Array, ""]:
-    """`freq = Σ_s Σ_c Φ(f_c)` (SPEC S7/S8)."""
+    """`freq = Σ_s Σ_c Φ(f_c)`."""
     return sum(
         (jnp.sum(_frequency_curve(f, reference_datapoint_count)) for f in frequencies.values()),
         start=jnp.zeros((), jnp.float32),
@@ -423,12 +423,12 @@ def ema_frequency_penalty(
     halflife_steps: float,
     reference_datapoint_count: int,
 ) -> tuple[Float[Array, ""], dict[str, Float[Array, " _"]]]:
-    """`(freq, new_ema)`: the frequency penalty at a debiased EMA of `f_c` (SPEC S8'').
+    """`(freq, new_ema)`: the frequency penalty at a debiased EMA of `f_c`.
 
     `new_ema = decay·ema + (1-decay)·sg(f_batch)`, debiased `f̂ = new_ema/(1-decay^(step+1))`
     — the current batch is included, so step 0 reproduces the un-smoothed penalty exactly.
     The value is `Σ Φ(f̂)`; the first-order surrogate keeps the gradient at the un-smoothed
-    penalty's scale, `Φ'(f̂)·∂f_batch/∂θ`, with the estimate stop-gradded (both S8'').
+    penalty's scale, `Φ'(f̂)·∂f_batch/∂θ`, with the estimate stop-gradded.
 
     `decay = 2^(-1/halflife)` exists only in log space: formed directly it rounds to 1
     (past `h ~ 1e16` even in f64), the subtractive `1-decay` forms cancel to 0, and the
@@ -464,7 +464,7 @@ def importance_minimality_terms(
     no `eps` floor. Approaches the true `L_0` count as `gamma -> 0`. `normalize_at_one`
     switches to `(1 + gamma^2) c^2 / (c^2 + gamma^2)`, so `c = 1` contributes exactly 1.
 
-    Without a frequency penalty (`reference_datapoint_count is None`, SPEC S8'), the
+    Without a frequency penalty (`reference_datapoint_count is None`), the
     activity reads the CI values directly (no `[C]` accumulator — a narrow site's sum is
     exact as-is) and `freq = 0.0`; with one, both terms read the same per-component
     frequencies."""
@@ -481,21 +481,21 @@ def importance_minimality_terms(
 def per_component_frequencies(
     ci_upper: Mapping[str, SiteCI], gamma: Array, *, normalize_at_one: bool
 ) -> dict[str, Float[Array, " _"]]:
-    """The per-site `f_c` vectors both imp-min readouts consume (SPEC S8), under the
-    smooth-L0 penalty at its annealed width (SPEC S9)."""
+    """The per-site `f_c` vectors both imp-min readouts consume, under the
+    smooth-L0 penalty at its annealed width."""
     return _per_component_frequencies(
         ci_upper, _smooth_l0_psi(gamma, normalize_at_one=normalize_at_one)
     )
 
 
 class BatchFrequencyTerm(NamedTuple):
-    """The frequency penalty at the single-batch `f_c` (SPEC S8/S8')."""
+    """The frequency penalty at the single-batch `f_c`."""
 
     freq: Float[Array, ""]
 
 
 class EmaFrequencyTerm(NamedTuple):
-    """The frequency penalty at the debiased EMA of `f_c` (SPEC S8''). `freq_batch` is
+    """The frequency penalty at the debiased EMA of `f_c`. `freq_batch` is
     the un-smoothed diagnostic logged alongside; `new_freq_ema` is the per-site `(C,)`
     EMA state to carry forward."""
 
@@ -509,7 +509,7 @@ FrequencyTerm = BatchFrequencyTerm | EmaFrequencyTerm
 
 @dataclass(frozen=True)
 class BatchFrequency:
-    """The single-batch frequency-penalty mode (SPEC S8'), owning no cross-step state."""
+    """The single-batch frequency-penalty mode, owning no cross-step state."""
 
     coeff: LossCoeff
     reference_datapoint_count: int
@@ -520,7 +520,7 @@ class BatchFrequency:
 
 @dataclass(frozen=True)
 class EmaFrequency:
-    """The debiased-EMA frequency-penalty mode (SPEC S8'') — the only mode that owns
+    """The debiased-EMA frequency-penalty mode — the only mode that owns
     EMA state."""
 
     coeff: LossCoeff
@@ -537,7 +537,7 @@ class EmaFrequency:
         freq_ema: dict[str, Float[Array, " _"]] | None,
         step_f32: Array,
     ) -> EmaFrequencyTerm:
-        assert freq_ema is not None, "ema_halflife_steps set but no freq_ema state (S8'')"
+        assert freq_ema is not None, "ema_halflife_steps set but no freq_ema state"
         freq, new_freq_ema = ema_frequency_penalty(
             frequencies, freq_ema, step_f32, self.halflife_steps, self.reference_datapoint_count
         )
@@ -568,6 +568,6 @@ def imp_min_terms(
     """`(activity, freq)` from the single-batch estimate — the reader for steps without
     EMA state (the targeted objective, evals). The EMA-aware train step composes
     `per_component_frequencies` + `activity_sum` + the resolved `FrequencyRole`'s `term`
-    instead (SPEC S8'')."""
+    instead."""
     ref = cfg.frequency.reference_datapoint_count if cfg.frequency is not None else None
     return importance_minimality_terms(ci_upper, gamma, ref, normalize_at_one=cfg.normalize_at_one)

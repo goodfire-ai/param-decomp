@@ -1,13 +1,13 @@
-"""Frequency-minimality penalty `Σ_c Φ(f_c)`, `Φ(f) = f·log2(1 + a'·f)` (SPEC S7/S8/S8'').
+"""Frequency-minimality penalty `Σ_c Φ(f_c)`, `Φ(f) = f·log2(1 + a'·f)`.
 
 The closed-form tests pin the properties that motivate the split from the old rolled
 `lp + beta·log2(1 + B·T·f_c)`: batch-invariance, the `f=0 → 0` cutoff, and that
 `a' = B·T` reproduces the old implicit-`B·T` value exactly (so coefficients transfer).
-The EMA tests pin S8'': debiased smoothing of `f_c` (step-0 identity, closed form,
+The EMA tests pin debiased smoothing of `f_c` (step-0 identity, closed form,
 settling near `Φ(mean f)` under alternating batches) and the surrogate gradient
 (full single-batch scale at stationarity, zero gradient into the EMA state).
 Every `f_c` here is the smooth-L0 activity `mean c²/(c²+γ²)` — the one per-value
-penalty (SPEC S9).
+penalty.
 """
 
 import math

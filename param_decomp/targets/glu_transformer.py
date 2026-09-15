@@ -4,7 +4,7 @@ model FAMILIES live in their own files — `llama31.py`, `qwen3.py` —
 each contributing its arch config, its `FrozenAttn` variant (via the `_prep_qk` pre-RoPE
 hook, e.g. Qwen3's QK-norm), and its HF attn loader; nothing here switches on a family.
 
-The decomposed sites are any per-layer weight matrices (SPEC §1/§3) named torch-style:
+The decomposed sites are any per-layer weight matrices named torch-style:
 `layers.{i}.self_attn.{q,k,v,o}_proj` and `layers.{i}.mlp.{gate,up,down}_proj`, each
 with its own C. `GLUDecomposedModel` (an `eqx.Module`) carries the full frozen model —
 embedding through every layer to the LM head — as array fields, threaded into the jitted
@@ -12,7 +12,7 @@ step as a pytree arg; layers without sites run the plain frozen block.
 
 q/k/v sites are decomposed BEFORE `_prep_qk`/RoPE/SDPA (the masked site output feeds the
 attention math); the o site applies to the attention output. V/U masters are fp32
-keyed per site (`ComponentStacks`); frozen weights are stored bf16 (SPEC N1) — the trainer
+keyed per site (`ComponentStacks`); frozen weights are stored bf16 — the trainer
 casts for compute.
 
 Real HF weights load straight from the cached safetensors (no torch dep).
@@ -711,7 +711,7 @@ def _target_rule(anatomy: Anatomy, placement: PlacementRules, kind: str) -> Targ
 @dataclass(frozen=True)
 class _FrozenSiteExecutor:
     """Every site applies exactly its frozen `W` — not the `V@U + (W−V@U)` identity, so
-    non-decomposed layers carry no V/U gradient and no decomposition rounding (SPEC S2/S3)."""
+    non-decomposed layers carry no V/U gradient and no decomposition rounding."""
 
     anatomy: Anatomy
     placement: PlacementRules | None
@@ -1250,7 +1250,7 @@ class TiedHead(eqx.Module):
 
 
 class GLUDecomposedModel(eqx.Module):
-    """The GLU-transformer `DecomposedModel` (the `model.py` contract; SPEC §1), shared
+    """The GLU-transformer `DecomposedModel` (the `model.py` contract), shared
     across the HF GLU families — a family's identity lives in its `stacked.attn` module
     (its `FrozenAttn` variant) and `inv_freq`, never in a switch here.
 
@@ -1918,7 +1918,7 @@ class GLUDecomposedModel(eqx.Module):
 
     def target_weight_sq_norms(self) -> dict[str, Array]:
         """Per-slot `‖W_s‖²` of each frozen stack, slot-aligned with `weight_deltas`
-        (the S17 relative-error scales, read once at setup)."""
+        (the relative-error scales, read once at setup)."""
         norms: dict[str, list[Array]] = {}
         for name, group, _slot in site_slots_for(self.sites):
             layer, kind = self.anatomy.family.parse(name)
@@ -1929,7 +1929,7 @@ class GLUDecomposedModel(eqx.Module):
         return {group: jnp.stack(per_slot) for group, per_slot in norms.items()}
 
     def weight_deltas(self, vu: ComponentStacks) -> dict[str, Array]:
-        """fp32 `W − V@U` per persistence stack from fp32 masters (SPEC N2; faithfulness
+        """fp32 `W − V@U` per persistence stack from fp32 masters (faithfulness
         input). Whole-stack einsum per group — never `vu.site()`, whose per-site slices
         of a stack-sharded persist layout redistribute cross-node."""
         out: dict[str, Array] = {}
@@ -2101,7 +2101,7 @@ def hf_snapshot_dir(model_name: str) -> Path:
 
 class HFWeights:
     """Lazy keyed access to the safetensors of an HF checkpoint, cast to the FAMILY's
-    frozen-weights dtype (SPEC N1: bf16 storage — the families pass it; this module holds
+    frozen-weights dtype (bf16 storage — the families pass it; this module holds
     no dtype opinion)."""
 
     def __init__(self, snapshot: Path, dtype: DTypeLike):

@@ -1,22 +1,20 @@
-"""The generic single-pool VPD training step over a `DecomposedModel` (SPEC §4).
+"""The generic single-pool VPD training step over a `DecomposedModel`.
 
 One `jax.jit` step: clean target forward → CI envelope → per-persistent-term supplemental
 ascents + per-fresh-term sign-PGD ascents (`adversary.py`) → faith + imp-min +
-the recon loss TERMS (`recon.py`; each term = plan × mask-source strategy, SPEC
-S10') + optional nonlinearity-locality term (S36) → one fused backward over
+the recon loss TERMS (`recon.py`; each term = plan × mask-source strategy) + optional nonlinearity-locality term → one fused backward over
 (components, ci_fn, all persistent sources) → optimizer updates → each persistent
 term's final ascent. The default `e2e` adversary retakes only its output-reconstruction
 source gradient when the outer term also includes hidden-activation reconstruction; an
-explicit `term` adversary reuses the fused graph and ascends the complete term (SPEC
-S13'/S14'/S23). All trainable state is fp32 masters (SPEC N1); forwards run in bf16
+explicit `term` adversary reuses the fused graph and ascends the complete term. All trainable state is fp32 masters; forwards run in bf16
 via explicit casts.
 
 Schedules (imp-min gamma anneal, source-LR warmup, every scheduled loss coefficient) are
 computed inside the step from `state.step`, so the jit signature is stable across the
-whole run (SPEC S9, S13); each coefficient resolves ONCE at the top of the step and only
+whole run; each coefficient resolves ONCE at the top of the step and only
 values flow into the loss math.
 Per-term RNG: term i draws from `fold_in(step_key, offset + i)` in config-list order
-(SPEC R1) — offset 1 for the main grid reproduces the pre-unification production key
+— offset 1 for the main grid reproduces the pre-unification production key
 derivation exactly.
 
 The factories bind explicit ``ForwardSubstrate`` and ``ReconGrid`` values while keeping
@@ -158,11 +156,11 @@ class TrainingItem:
     ci_fn_opt_state: optax.OptState
     adversaries: dict[str, PersistentAdversary]
     """Persistent-PGD adversaries, `state_key -> adversary` (each owns its sources + Adam
-    state + static config). One state_key per persistent loss term (SPEC S23); empty when
+    state + static config). One state_key per persistent loss term; empty when
     no persistent term."""
     freq_ema: dict[str, Array] | None
     """Per-site `(C,)` fp32 EMA of the per-component firing frequencies `f_c`, feeding the
-    smoothed frequency penalty (SPEC S8''); present iff the run's resolved frequency mode
+    smoothed frequency penalty; present iff the run's resolved frequency mode
     is `EmaFrequency`, so configs without the EMA keep their checkpoint tree byte-identical."""
     step: Array
 
@@ -290,8 +288,7 @@ _cotangent_scaled.defvjp(_cotangent_scaled_fwd, _cotangent_scaled_bwd)
 
 def model_cotangents_scaled[T](tree: T, by: Array | float) -> T:
     """`tree`, bit-identical in the forward, with every backward cotangent scaled `by`
-    the term's per-step coeff. This is WHERE a persistent term's coeff applies (SPEC
-    S14'): the term's loss enters the differentiated total UNSCALED so the source path
+    the term's per-step coeff. This is WHERE a persistent term's coeff applies: the term's loss enters the differentiated total UNSCALED so the source path
     carries `dL/ds` directly, and the model-side inputs (prepared weights, CI envelope)
     are wrapped here so the components/CI fn still receive `coeff·dL/dθ` — an exact 0
     while an activation gate holds the coeff at 0, with no division anywhere."""
@@ -309,8 +306,7 @@ def coeff_application(term: AnyReconLossTerm) -> CoeffApplication:
     """WHERE this term's coeff applies — static structure, decided at trace time.
 
     A term that trains its sources FROM the shared backward (a persistent bundle as its
-    sources) must keep the source path unscaled so the backward hands the adversary `dL/ds`
-    (SPEC S14'): its coeff rides the model-side cotangents (`model_cotangents_scaled`)
+    sources) must keep the source path unscaled so the backward hands the adversary `dL/ds`: its coeff rides the model-side cotangents (`model_cotangents_scaled`)
     and the term enters the differentiated total at weight 1. Every other term's coeff
     scales its loss scalar in the total."""
     trains_sources_from_backward = isinstance(term.sources, PERSISTENT_SOURCE_TYPES)
@@ -334,9 +330,9 @@ class StreamInputs[Out]:
 
 @dataclass(frozen=True)
 class AscendedAdversaries:
-    """The ascent phase's outputs: warmed persistent adversaries (SPEC S24), each
+    """The ascent phase's outputs: warmed persistent adversaries, each
     fresh-PGD term's ascended sources, and the per-term routing draws those ascents
-    fixed for the main grid to reuse (SPEC S24, torch parity)."""
+    fixed for the main grid to reuse (torch parity)."""
 
     warmed: dict[str, PersistentAdversary]
     fresh_sources: dict[int, Sources]
@@ -349,7 +345,7 @@ type DrawLoss[S: MaskSourceStrategy] = Callable[
 """`(term_idx, term, draw_key, routes) -> the draw's scored recon` — one grid's
 per-draw dispatcher, built by the factory that owns the grid's trainables. `S` is the
 grid's source-strategy width: the non-target grid's dispatcher takes only the enumerated
-non-target strategies, so its match is exhaustive over those arms (SPEC T5)."""
+non-target strategies, so its match is exhaustive over those arms."""
 
 type TermDraws = list[tuple[PRNGKeyArray, Routes]]
 """One term's flat `(draw_key, routes)` forwards."""
@@ -367,7 +363,7 @@ def constant_source_masks(
 
 @dataclass(frozen=True)
 class ReconGrid[S: MaskSourceStrategy]:
-    """One reconstruction grid and its first reserved per-term RNG index (SPEC R1)."""
+    """One reconstruction grid and its first reserved per-term RNG index."""
 
     terms: tuple[ReconLossTerm[S], ...]
     key_offset: int
@@ -491,7 +487,7 @@ class ReconGrid[S: MaskSourceStrategy]:
         fixed_routes: dict[int, tuple[Routes, ...]],
         leading: tuple[int, ...],
     ) -> list[TermDraws]:
-        """Materialize every term/draw key chain (SPEC R1)."""
+        """Materialize every term/draw key chain."""
         draws_per_term: list[TermDraws] = []
         for term_idx, term in enumerate(self.terms):
             draw_key, routing_key, _ = self._term_keys(key, term_idx, term)
@@ -521,7 +517,7 @@ class ReconGrid[S: MaskSourceStrategy]:
         draws_per_term: list[TermDraws],
         draw_loss: DrawLoss[S],
     ) -> tuple[ReconstructionLoss, ...]:
-        """Mean reconstruction over each term's draws (SPEC S10')."""
+        """Mean reconstruction over each term's draws."""
         return tuple(
             mean_reconstruction_losses(
                 tuple(draw_loss(term_idx, term, draw_key, routes) for draw_key, routes in draws)
@@ -844,7 +840,7 @@ def main_draw_loss[Out, PreparedT](
 
     Persistent(-carrying) draws take the coeff on their MODEL-SIDE inputs
     (`model_cotangents_scaled`) and enter the total at weight 1, so the fused
-    backward hands each adversary `dL/ds` unscaled (SPEC S14')."""
+    backward hands each adversary `dL/ds` unscaled."""
 
     def draw_loss(
         term_idx: int,
@@ -876,8 +872,8 @@ def main_draw_loss[Out, PreparedT](
                     )
                 case UnmaskedNoDeltaSources():
                     raise AssertionError(
-                        "UnmaskedNoDeltaSources is non-target-pass vocabulary "
-                        "(SPEC T4/T5); the main grid never carries it"
+                        "UnmaskedNoDeltaSources is non-target-pass vocabulary"
+                        "; the main grid never carries it"
                     )
                 case FreshPGDSources():
                     component_masks, weight_delta_masks = masks_from_sources(
@@ -890,7 +886,7 @@ def main_draw_loss[Out, PreparedT](
                     )
                 case PersistentSources(state_key=state_key):
                     # Persistent recon passes `SourceMasking`: the CI stacks are the
-                    # stochastic draws' own (coeff on their cotangents per S14'), the
+                    # stochastic draws' own (coeff on their cotangents), the
                     # source values ride stacked in the same layout, and a scan target
                     # recomposes `ci + (1-ci)·source` inside each checkpointed block —
                     # no per-draw mask stack outlives its block.
@@ -1024,9 +1020,9 @@ def apply_gradients(
     mesh: Mesh | None,
 ) -> tuple[TrainState, dict[str, Array]]:
     """The optimizer tail: grad-norm metrics, each adversary's final ascent from the
-    fused graph (SPEC S13'/S14': the source path is never coeff-scaled, so the
+    fused graph (the source path is never coeff-scaled, so the
     backward's grad IS dL_term/d(sources) — exact since one source bundle feeds one
-    term, S23), then both optimizer updates into the next `TrainState`."""
+    term), then both optimizer updates into the next `TrainState`."""
     grad_norm_metrics = _grad_norm_metrics(components_grad, ci_fn_grad, mesh)
 
     new_adversaries = {
@@ -1107,7 +1103,7 @@ def shared_step_metrics(
 
 class MainLossAux(NamedTuple):
     """The plain step's `has_aux` payload: `reported_total` is the objective Σ coeff·L
-    (the differentiated total differs only in persistent-source plumbing, SPEC S14')."""
+    (the differentiated total differs only in persistent-source plumbing)."""
 
     reported_total: Array
     faith_loss: Array
@@ -1181,7 +1177,7 @@ def make_train_step[Out, PreparedT](
 
         stream = substrate.prep_stream(model, batch, grid.capture_keys)
 
-        # ── adversary ascents: params + CI detached (SPEC §4.5) ──
+        # ── adversary ascents: params + CI detached ──
         prepared_weights, recon_vjp = substrate.component_weights_vjp(
             model, decomposition.components
         )
@@ -1209,7 +1205,7 @@ def make_train_step[Out, PreparedT](
         )
 
         # ── main losses: live components/ci; the PERSISTENT sources participate in
-        # the graph so their gradient comes from the SAME backward (SPEC S14'); they
+        # the graph so their gradient comes from the SAME backward; they
         # are NOT detached here, but components/ci grads through them are what torch
         # gets too (sources are leaves). ──
         warmed_sources = {k: a.float_sources for k, a in ascended.warmed.items()}
@@ -1232,7 +1228,7 @@ def make_train_step[Out, PreparedT](
             faith_term = coeff_at(train_frac, objective.faith.coeff) * faith_loss
             # The [C]-accumulator frequencies exist only when a frequency penalty reads
             # them; without one, the activity reads the CI values directly — the narrow
-            # arm's sum is exact with no per-component scatter at all (SPEC S8, F5).
+            # arm's sum is exact with no per-component scatter at all.
             frequencies = (
                 None
                 if freq_role is None
@@ -1264,12 +1260,10 @@ def make_train_step[Out, PreparedT](
             term_losses = tuple(breakdown.total for breakdown in term_breakdowns)
             match freq_role:
                 case None:
-                    assert training.freq_ema is None, (
-                        "freq_ema state without a frequency config (S8'')"
-                    )
+                    assert training.freq_ema is None, "freq_ema state without a frequency config"
                     freq = None
                 case BatchFrequency():
-                    assert training.freq_ema is None, "freq_ema state without the EMA mode (S8'')"
+                    assert training.freq_ema is None, "freq_ema state without the EMA mode"
                     assert frequencies is not None
                     freq = freq_role.term(frequencies)
                 case EmaFrequency():
@@ -1288,7 +1282,7 @@ def make_train_step[Out, PreparedT](
                 base = base + weighted
             # The differentiated total: persistent-carrying terms enter at weight 1 —
             # their coeff already rides their model-side cotangents — so the backward
-            # hands each adversary dL/ds unscaled (SPEC S14'). The OBJECTIVE (the
+            # hands each adversary dL/ds unscaled. The OBJECTIVE (the
             # reported `total`, Σ coeff·L) has the same gradients up to that plumbing
             # and the identical value for every non-persistent term.
             total_loss = base
@@ -1387,7 +1381,7 @@ def make_train_step[Out, PreparedT](
 
 @dataclass(frozen=True)
 class CIScaledWeightDecay:
-    """The tPD CI-scaled weight decay (SPEC T11): its coefficient joined with the
+    """The tPD CI-scaled weight decay: its coefficient joined with the
     components optimizer's LR schedule, applied after the optimizer update."""
 
     coeff: float
@@ -1401,7 +1395,7 @@ class CIScaledWeightDecay:
         train_frac: Array,
         sites: tuple[SiteSpec, ...],
     ) -> tuple[TrainState, dict[str, Array]]:
-        """Apply T11 after the optimizer update, using this step's pre-update CIs."""
+        """Apply CI-scaled weight decay after the optimizer update, using this step's pre-update CIs."""
         target_max = _per_component_batch_max(target_ci.lower)
         nontarget_max = _per_component_batch_max(nontarget_ci.lower)
         rate = scheduled_value_at(train_frac, self.components_lr) * self.coeff
@@ -1432,10 +1426,10 @@ class CIScaledWeightDecay:
 
 def _per_component_batch_max(ci_lower: dict[str, SiteCI]) -> dict[str, Array]:
     """Each site's per-subcomponent max CI over every leading (batch AND position) axis,
-    fp32. Reads `lower` deliberately: `lower ≡ clip(upper, 0, 1)` pointwise (S6), so the
+    fp32. Reads `lower` deliberately: `lower ≡ clip(upper, 0, 1)` pointwise, so the
     two squashings agree on this statistic and no clamp is needed. A narrow site takes
     the exact segment-max (`narrow_component_maxes`): an unrouted component's CI is zero
-    by definition, so a never-important component's max stays 0 and T11 drags it at the
+    by definition, so a never-important component's max stays 0 and CI-scaled weight decay drags it at the
     full rate."""
 
     def site_max(v: SiteCI) -> Array:
@@ -1554,7 +1548,7 @@ def make_targeted_train_step[Out, PreparedT](
         nt_reconstruction_specs: dict[str, ReconstructionSpec],
     ) -> DrawLoss[StochasticSources | ConstantSources | UnmaskedNoDeltaSources]:
         """The non-target grid's per-draw dispatcher: every delta mask pinned to 1.0 —
-        except the unmasked-no-delta arm, which pins it to 0.0 (SPEC T4) — scored
+        except the unmasked-no-delta arm, which pins it to 0.0 — scored
         against the broad stream's frozen output."""
 
         def draw_loss(
@@ -1620,7 +1614,7 @@ def make_targeted_train_step[Out, PreparedT](
         stream = substrate.prep_stream(model, batch, target.capture_keys)
         nt_stream = substrate.prep_stream(model, nontarget_batch, nontarget.capture_keys)
 
-        # ── adversary ascents: TARGET pass only, params + CI detached (SPEC §4.5/§11) ──
+        # ── adversary ascents: TARGET pass only, params + CI detached ──
         prepared_weights, recon_vjp = substrate.component_weights_vjp(
             model, decomposition.components
         )
@@ -1647,7 +1641,7 @@ def make_targeted_train_step[Out, PreparedT](
         draws_per_term = target.draws(key, ascended.fixed_routes, stream.leading)
         source_pool_sample_keys = target.source_pool_sample_keys(key)
         # The non-target grid's per-term RNG offsets past the target grid's, so the two
-        # grids' draws stay disjoint under the one step key (SPEC R1).
+        # grids' draws stay disjoint under the one step key.
         nt_draws_per_term = nontarget.draws(key, {}, nt_stream.leading)
 
         def loss_fn(
@@ -1684,7 +1678,7 @@ def make_targeted_train_step[Out, PreparedT](
             base = imp_coeff * imp_activity + freq_coeff * imp_freq
             # Differentiated total vs reported total: see the plain factory — a
             # persistent-carrying term's coeff rides its model-side cotangents, so it
-            # enters the total at weight 1 and its adversary receives dL/ds (SPEC S14').
+            # enters the total at weight 1 and its adversary receives dL/ds.
             total_loss = base
             reported_total = base
             for term, coeff, breakdown in zip(
@@ -1699,7 +1693,7 @@ def make_targeted_train_step[Out, PreparedT](
 
             # ── the non-target pass: its imp-min (the shared annealed param, its own
             # coeff) + its delta-pinned grid, added to the SAME total so one backward
-            # grads both passes (SPEC T1). ──
+            # grads both passes. ──
             nt_imp_activity, nt_imp_freq = imp_min_terms(nt_ci.upper, imp.cfg, gamma)
             nt_total = nt_imp_coeff * nt_imp_activity + freq_coeff * nt_imp_freq
             nt_aux = {
@@ -1754,7 +1748,7 @@ def make_targeted_train_step[Out, PreparedT](
             term_coeffs=term_coeffs,
         )
 
-        assert training.freq_ema is None, "the targeted objective refuses the EMA (S8'')"
+        assert training.freq_ema is None, "the targeted objective refuses the EMA"
         new_state, grad_norm_metrics = apply_gradients(
             components_optimizer,
             ci_fn_optimizer,
@@ -1796,7 +1790,7 @@ def make_targeted_train_step[Out, PreparedT](
     return filter_jit(targeted_step, donate="all-except-first", compiler_options=compiler_options)
 
 
-# ───────────────────────────── faithfulness warmup (SPEC S21) ─────────────────────────────
+# ───────────────────────────── faithfulness warmup ─────────────────────────────
 
 
 type FaithWarmupStep[Out, PreparedT] = Callable[

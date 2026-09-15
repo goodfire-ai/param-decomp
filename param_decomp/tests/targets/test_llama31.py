@@ -1,7 +1,7 @@
 """CPU tests for the Llama target + generic trainer at a tiny config.
 
 Validates the `DecomposedModel` contract (clean == mask-1/delta-1 masked forward, shapes) and
-the full SPEC step (trains, VPD loss signature, adversary state advances) — for the
+the full training step (trains, VPD loss signature, adversary state advances) — for the
 MLP site family AND for attention (q/k/v/o) sites with heterogeneous per-site C —
 without real weights or a GPU.
 """
@@ -361,7 +361,7 @@ def test_attention_sites_clean_and_masked_identity():
 
 
 def test_clean_output_and_activations_shares_the_forward():
-    """The fused accessor must be exactly the two separate calls (SPEC S3+S4): taps
+    """The fused accessor must be exactly the two separate calls: taps
     bit-equal to clean capture, and — when the taps reach the last block, every
     production config — clean logits bit-equal to `clean_output` (one full-depth scan,
     no tail; a mid-stack tap cutoff may recompile the tail within fp32 tolerance).
@@ -527,16 +527,16 @@ def test_step_trains_and_has_vpd_signature(site_cs: tuple[SiteC, ...]):
             losses[-1][f"loss/StochasticReconSubsetLoss/hidden_acts_reconstruction/{point}"]
         )
     assert int(state.training.step) == n_steps
-    # SPEC S13: n_warmup + 1 source-Adam updates per training step, moments persist.
+    # n_warmup + 1 source-Adam updates per training step, moments persist.
     ppgd_adv = state.training.adversaries["PersistentPGDReconLoss"]
     assert isinstance(ppgd_adv.opt_state, SourcesAdamState)
     assert float(ppgd_adv.opt_state.step_count) == n_steps * (n_warmup + 1)
-    # SPEC S15: sources stay projected to [0,1].
+    # sources stay projected to [0,1].
     for v in jax.tree.leaves(ppgd_adv.sources):
         assert float(v.min()) >= 0.0 and float(v.max()) <= 1.0
-    # SPEC S9: gamma annealed below its 1.0 start by step 4 of 100.
+    # gamma annealed below its 1.0 start by step 4 of 100.
     assert losses[-1]["gamma_imp"] < 1.0
-    # fp32 masters preserved through updates (SPEC N1).
+    # fp32 masters preserved through updates.
     assert isinstance(state.decomposition.components, ComponentStacks)
     for _, site_components in state.decomposition.components.sites_items():
         assert site_components.V.dtype == jnp.float32
@@ -732,7 +732,7 @@ def test_glu_source_masking_matches_materialized_masks_bit_identically():
     """The GLU family's `SourceMasking` arm (eager stacked composition,
     `_attach_per_kind_sources`) vs the committed spelling (`masks_from_sources` →
     `MaterializedMasking`): output and grads w.r.t. V/U, the CI envelope, and the float
-    source view BIT-identical under one jit — the arm re-spells the same S1 composition
+    source view BIT-identical under one jit — the arm re-spells the same composition
     at the stacked geometry. Subset sites exercise the dummy-filler rows; `sc` uint16
     sources exercise the broadcast lead axes and the fixed-point dequant seam."""
     import numpy as np

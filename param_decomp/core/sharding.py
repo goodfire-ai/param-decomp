@@ -14,7 +14,7 @@ is an AUTHORED property of a config. The maintained seats put `replicate` on nod
 boundaries and the `(fsdp, tp)` plane on NVLink, and the owner preset's headline
 properties — zero cross-node weight collectives per step, node-local muon
 Newton-Schulz — hold exactly when a config is authored that way. A convention-breaking
-mesh is valid and numerically identical (SPEC D4); it forfeits only that locality.
+mesh is valid and numerically identical; it forfeits only that locality.
 
 The mesh axes are EXPLICIT (`jax.sharding.AxisType.Explicit`): every traced array
 carries its sharding in its type, layout transitions are `jax.sharding.reshard`, and

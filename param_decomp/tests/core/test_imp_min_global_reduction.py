@@ -1,4 +1,4 @@
-"""Imp-min global-sum-inside-log2 is device-count invariant (SPEC S7/S8/D2).
+"""Imp-min global-sum-inside-log2 is device-count invariant.
 
 The eval-path imp-min value reuses the SAME `importance_minimality_terms` as the
 train path (there is one impl in JAX — `losses.py`). Its correctness hinges on the
@@ -73,5 +73,5 @@ def test_imp_min_global_reduction_invariant_to_device_count():
         assert rel <= 1e-4, (
             f"imp-min {name} diverged across shardings (n={mesh.devices.size}): "
             f"single {single_f!r} vs sharded {sharded_f!r} rel {rel:.2e} — "
-            "global per-component sum not formed before log2 (SPEC S8/D2)"
+            "global per-component sum not formed before log2"
         )

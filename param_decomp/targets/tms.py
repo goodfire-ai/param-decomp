@@ -255,14 +255,14 @@ def _frozen_hidden_forward(target: TMSTarget, hidden: Array) -> Array:
 
 
 def clean_output(target: TMSTarget, resid: Float[Array, "B n_features"]) -> Array:
-    """The all-frozen forward — the recon target (SPEC S3). `resid` is the raw input `x`."""
+    """The all-frozen forward — the recon target. `resid` is the raw input `x`."""
     hidden = resid @ target.W1.T
     hidden = _frozen_hidden_forward(target, hidden)
     return jax.nn.relu(hidden @ target.W2.T + target.b2)
 
 
 def site_inputs(target: TMSTarget, resid: Float[Array, "B n_features"]) -> dict[str, Array]:
-    """Clean CI inputs per site (SPEC S4): each site reads the frozen output of the chain
+    """Clean CI inputs per site: each site reads the frozen output of the chain
     up to it — `linear1` reads `x`, `hidden_layers.{i}` reads the frozen output through
     `hidden_layers.{i-1}`, `linear2` reads the frozen output through the last hidden layer."""
     inputs: dict[str, Array] = {LINEAR1: resid}
@@ -357,7 +357,7 @@ def _run_masked(
 
 def weight_deltas_fp32(target: TMSTarget, components: ComponentStacks) -> dict[str, Array]:
     """fp32 `W − (V@U)ᵀ` per persistence stack, slot-aligned with `components.stacks`
-    (SPEC N2; faithfulness input) — whole-stack einsum, never per-site `site()` slices."""
+    (faithfulness input) — whole-stack einsum, never per-site `site()` slices."""
     out: dict[str, Array] = {}
     for shape, (Vs, Us) in components.stacks.items():
         Ws = jnp.stack(
@@ -385,7 +385,7 @@ def tms_mse(
 
 
 class TMSDecomposedModel(eqx.Module):
-    """The TMS `DecomposedModel` (the `model.py` contract; SPEC §1), positionless.
+    """The TMS `DecomposedModel` (the `model.py` contract), positionless.
 
     Carries the FROZEN `TMSTarget` weights as a field — threaded into the jitted step as a
     pytree arg, weights traced not baked. The TRAINABLE V/U (`vu: ComponentStacks`) is an explicit
@@ -506,7 +506,7 @@ class TMSDecomposedModel(eqx.Module):
 
     def target_weight_sq_norms(self) -> dict[str, Array]:
         """Per-slot `‖W_s‖²` of each frozen stack, slot-aligned with `weight_deltas`
-        (the S17 relative-error scales, read once at setup)."""
+        (the relative-error scales, read once at setup)."""
         norms: dict[str, list[Array]] = {}
         for name, group, _slot in site_slots_for(self.sites):
             frozen_weight = _frozen_site_weight(self.target, name)
@@ -605,7 +605,7 @@ def scatter_features(
     x_active: Float[Array, "B n_active"], active_indices: tuple[int, ...], n_features: int
 ) -> Float[Array, "B n_features"]:
     """Embed a batch sampled over ONLY the target features into full feature width — a
-    targeted (tPD) run's TARGET stream (SPEC T2). The generator runs at `n_active` width
+    targeted (tPD) run's TARGET stream. The generator runs at `n_active` width
     so its generation type means what it says over the target features ("exactly one
     active" = one active TARGET feature; restricting a full-width sample after the fact
     would mostly produce empty rows). Non-target columns are identically zero."""

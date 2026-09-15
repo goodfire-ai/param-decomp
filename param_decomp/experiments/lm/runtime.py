@@ -282,7 +282,7 @@ class RuntimeConfig(BaseConfig):
             "{external, component}`, and the frozen-`target` role rows, each row a "
             "semantic-axis -> mesh-axes rule; list order is "
             "semantics). Same math under every value — layouts differ only by float "
-            "reassociation (SPEC D4)."
+            "reassociation."
         ),
     )
     sequence_sharding: SequenceSharding = Field(
@@ -297,7 +297,7 @@ class RuntimeConfig(BaseConfig):
             "forwards, CI-fn taps and the output edge keep the replicated residual. "
             "Sequence length must tile tp; only targets implementing it accept it "
             "(qwen36_moe). Same math either way — a resharding, so layouts differ only "
-            "by float reassociation (SPEC D4)."
+            "by float reassociation."
         ),
     )
     remat_recon_forwards: bool = Field(

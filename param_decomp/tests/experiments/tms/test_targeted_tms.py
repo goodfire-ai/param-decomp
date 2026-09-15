@@ -1,4 +1,4 @@
-"""The tPD engine (SPEC §11) exercised over the TMS target as a TEST FIXTURE: the
+"""The tPD engine exercised over the TMS target as a TEST FIXTURE: the
 two-pass step trains, adversaries ride the target pass, the factory boundary holds, and
 the whole engine path runs end-to-end as a library. There is no shipped toy tPD run
 shape — the LM is the only targeted product surface."""
@@ -130,7 +130,7 @@ def _loss_metrics():
 
 
 def test_targeted_two_pass_step_trains():
-    """T1/T2: the two-pass step consumes both streams and advances finite training."""
+    """The two-pass step consumes both streams and advances finite training."""
     cfg, model, state, step = _tiny_setup(_loss_metrics(), _stochastic_nontarget())
     active = (0, 1)
     tkey, ntkey = jax.random.PRNGKey(10), jax.random.PRNGKey(11)
@@ -148,7 +148,7 @@ def test_targeted_two_pass_step_trains():
         )
     assert int(state.training.step) == 6
     assert all(bool(jnp.isfinite(jnp.asarray(v)).all()) for v in metrics.values())
-    # T3: no faithfulness anywhere in the record.
+    # no faithfulness anywhere in the record.
     assert "faith" not in metrics
     # Both passes' losses are reported.
     assert "loss/StochasticReconLoss" in metrics
@@ -157,7 +157,7 @@ def test_targeted_two_pass_step_trains():
 
 
 def test_targeted_step_trains_with_persistent_adversary():
-    """T7: a persistent-PGD term rides the TARGET pass; sources size at pd.batch_size."""
+    """A persistent-PGD term rides the TARGET pass; sources size at pd.batch_size."""
     ppgd = PersistentPGDReconLossConfig.model_validate(
         {
             "type": "PersistentPGDReconLoss",
@@ -244,7 +244,7 @@ def test_targeted_step_trains_with_persistent_adversary():
 
 
 def test_targeted_step_refuses_forged_freq_ema():
-    # S8'': a targeted config cannot carry the EMA knob, so a freq_ema buffer on the
+    # a targeted config cannot carry the EMA knob, so a freq_ema buffer on the
     # state is a forgery — refused at trace time rather than silently overwritten.
     cfg, model, state, step = _tiny_setup(_loss_metrics(), _stochastic_nontarget())
     forged = TrainState(
@@ -262,12 +262,12 @@ def test_targeted_step_refuses_forged_freq_ema():
     nontarget_batch = sample_sparse_features(
         jax.random.PRNGKey(11), 32, cfg.n_features, 0.3, "at_least_zero_active"
     )
-    with pytest.raises(AssertionError, match="S8''"):
+    with pytest.raises(AssertionError, match="the targeted objective refuses the EMA"):
         step(model, forged, target_batch, nontarget_batch, jax.random.PRNGKey(100))
 
 
 def test_targeted_step_unmasked_no_delta_scores_components_only():
-    """T4's one exception: the UnmaskedNoDeltaReconLoss non-target term scores the FULL
+    """One exception: the UnmaskedNoDeltaReconLoss non-target term scores the FULL
     component sum with the weight delta actually OFF — the step's reported loss matches
     a delta-zero masked forward and not the delta-pinned-on one (which reproduces the
     frozen output near-exactly, collapsing the loss toward zero)."""
@@ -399,14 +399,14 @@ def test_tpd_three_step_golden():
     one deliberate math change of the Lp removal). A pure restructuring of the step
     machinery must reproduce these
     values — needing to regenerate them means the MATH changed, which is a different PR.
-    Tolerance absorbs the D4 float-reassociation class (SPEC D4): the per-step-metric
+    Tolerance absorbs the float-reassociation tolerance: the per-step-metric
     rel=5e-3 is sized from the site_forward regrouping `((x@V)*m)@U + d*(x@W - (x@V)@U)`
     -> `((x@V)*(m-d))@U + d*(x@W)` (9fe2b6246, algebraically identical — verified by
     reverting only that hunk, which reproduces the literals bit-for-bit), whose drift on
     these near-cancelling recon residuals is rel <= 1.04e-3; x5 headroom covers
     cross-platform BLAS low bits on the same class. The final V/U and source sums stay
     at rel=1e-4 (observed drift <= 8e-6 and <= 6.8e-5) — a tolerance is widened only
-    when a D4-class event fires it, so each family keeps its maximum catching power."""
+    when float reassociation changes the result, so each family keeps its maximum catching power."""
     import numpy as np
     from jax.sharding import Mesh
 
@@ -520,7 +520,7 @@ def test_tpd_three_step_golden():
 
 
 def test_gated_ppgd_shapes_nothing_but_the_adversary_still_ascends():
-    """S14′ with an activation gate: while the PPGD coeff is 0 the term must not shape
+    """With an activation gate: while the PPGD coeff is 0 the term must not shape
     the decomposition — the step's new components and CI fn are bit-equal across
     DIFFERENT persistent-source values — while the adversary itself still takes its
     warmup AND final ascents (the source path is never coeff-scaled)."""
@@ -561,7 +561,7 @@ def test_gated_ppgd_shapes_nothing_but_the_adversary_still_ascends():
 
 
 def test_targeted_factory_refuses_adversarial_nontarget_surface():
-    """T5's library boundary: a programmatically-built non-target term with adversarial
+    """Library boundary: a programmatically-built non-target term with adversarial
     sources refuses at factory build even though the config schema can't spell one."""
     _, model, state, _ = _tiny_setup(_loss_metrics(), _stochastic_nontarget())
     nontarget = NontargetConfig(
@@ -639,7 +639,7 @@ def _nontarget_batch(cfg: TMSConfig, i: int) -> jax.Array:
 
 
 def _pin_ci_fn(state: TrainState) -> TrainState:
-    """Freeze the CI landscape so T11's statistic is known exactly: every CI-fn weight
+    """Freeze the CI landscape so the CI-scaled weight-decay statistic is known exactly: every CI-fn weight
     zeroed, head biases pinned to saturation — linear1 component 0 at CI 1 everywhere,
     every other component at CI 0 — EXCEPT linear1 component 1, which reads feature 3
     through a large pass-through weight: CI 1 whenever feature 3 fires. Feature 3 lies
@@ -675,7 +675,7 @@ def _component_norms(state: TrainState, site: str) -> jax.Array:
 
 
 def test_ci_scaled_weight_decay_decays_exactly_the_dead_components():
-    """T11, one step from one state with the decay and without: the decay-run differs
+    """One step from one state with the decay and without: the decay-run differs
     from the None-run by EXACTLY the post-optimizer V/U scaling. Dead components (CI 0 on
     both streams) shrink by the full `lr·wd` rate; the component saturated on the target
     stream and the one alive only on the NON-TARGET stream are both untouched
@@ -716,7 +716,7 @@ def test_ci_scaled_weight_decay_decays_exactly_the_dead_components():
 
 
 def test_ci_scaled_weight_decay_drags_dead_norms_down_across_steps():
-    """T11's cleanup force over a short run: never-important components' V/U norms
+    """Cleanup force over a short run: never-important components' V/U norms
     strictly shrink every step (nothing else in the objective shrinks them), while the
     always-important component's norm sees only ordinary optimizer drift."""
     wd = CIScaledWeightDecay(coeff=0.2, components_lr=ScheduleConfig.constant(1.0))

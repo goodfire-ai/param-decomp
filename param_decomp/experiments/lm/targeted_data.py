@@ -1,4 +1,4 @@
-"""The tPD TARGET stream for an LM (SPEC T2/T8): a fixed prompt pool, tokenized once at
+"""The tPD TARGET stream for an LM: a fixed prompt pool, tokenized once at
 startup — deterministically on every rank, like the arithmetic probe. Every prompt must
 tokenize to ONE shared length, so the target pass runs unpadded at the pool's own
 natural geometry, independent of the broad stream's."""
@@ -22,7 +22,7 @@ class ArithmeticGridPromptsConfig(BaseConfig):
     construction as the `ArithmeticCIGrid` eval probe, reused as a training pool.
 
     A pool draws prompt rows and never scores an answer position, so unlike the probe it
-    carries NO single-token-answer premise — only the shared prompt length (T8). Under a
+    carries NO single-token-answer premise — only the shared prompt length. Under a
     per-digit number tokenizer (the Qwen family) that means same-digit-count operands;
     single-digit-ANSWER ranges (e.g. add over `[1, 4] x [1, 5]`) are the working default
     for arithmetic-style pools, keeping the same grid usable as the eval probe too."""
@@ -49,7 +49,7 @@ LMPromptPoolConfig = Annotated[
 @dataclass(frozen=True)
 class TargetPromptPool:
     """`tokens` is the whole pool, `(n_prompts, prompt_len)` int32 — unpadded, every row
-    the one shared prompt length (T8)."""
+    the one shared prompt length."""
 
     tokens: np.ndarray
 
@@ -60,7 +60,7 @@ def build_prompt_pool(
 ) -> TargetPromptPool:
     """Tokenize the pool. Every prompt must tokenize to ONE shared length — the target
     pass runs at that geometry unpadded, and a constant answer/score position is what
-    makes any grid-shaped analysis meaningful (SPEC T8)."""
+    makes any grid-shaped analysis meaningful."""
     match config:
         case ArithmeticGridPromptsConfig():
             tokens = build_arithmetic_prompt_grid(
@@ -76,7 +76,7 @@ def build_prompt_pool(
             lengths = sorted({e.shape[0] for e in encoded})
             assert len(lengths) == 1, (
                 f"prompts must tokenize to ONE shared length, got lengths {lengths} — the "
-                "target stream is unpadded by construction (SPEC T8)"
+                "target stream is unpadded by construction"
             )
             tokens = np.stack(encoded)
     return TargetPromptPool(tokens=tokens)
@@ -84,7 +84,7 @@ def build_prompt_pool(
 
 def pool_batch(pool: TargetPromptPool, seed: int, step: int, global_batch: int) -> np.ndarray:
     """The step's global target batch: `global_batch` rows drawn uniformly (with
-    replacement) from the pool — a pure function of `(seed, step)` (S18/O(1) resume),
+    replacement) from the pool — a pure function of `(seed, step)` (O(1) resume),
     identical on every rank; the caller slices its process share."""
     rng = np.random.default_rng(np.random.SeedSequence((seed, step)))
     indices = rng.integers(0, pool.tokens.shape[0], size=global_batch)

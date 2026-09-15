@@ -122,7 +122,7 @@ def test_fresh_pgd_sources_take_the_block_arm(init: PGDInitStrategy):
 
 
 def test_sgd_src_step_is_stateless_and_projects():
-    """SRC_STEP `sgd` (SPEC §6): `sources += lr·grad` then clamp to [0,1]. The optimizer
+    """SRC_STEP `sgd`: `sources += lr·grad` then clamp to [0,1]. The optimizer
     state carries ZERO leaves — the persistent bundle checkpoints as the sources alone —
     and bf16 sources stay bf16 through the update; a config/state mismatch dies."""
     sgd = SgdPGDConfig(lr_schedule=ScheduleConfig.constant(0.5))
@@ -190,7 +190,7 @@ def test_sharded_init_matches_eager_with_mixed_geometries():
 
 
 def test_momentum_sgd_src_step_carries_one_float_velocity():
-    """SRC_STEP `momentum_sgd` (SPEC §6): `v = momentum*v + grad; sources += lr*v`,
+    """SRC_STEP `momentum_sgd`: `v = momentum*v + grad; sources += lr*v`,
     project. The velocity is the ONLY buffer, mirrors the source tree, and rides the
     storage's float sibling (bf16 under 16-bit storage, fp32 under fp32)."""
     from param_decomp.core.adversary import SourcesMomentumState

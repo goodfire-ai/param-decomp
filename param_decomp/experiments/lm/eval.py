@@ -6,7 +6,7 @@ reconstruction. Each authored operation compiles only its own kernel; `make_eval
 composes them only for the fixed arithmetic probe and parity tests.
 Plot-type metrics (CI histograms, activation density, per-component means, the
 permutation/UV figures) ride the in-loop SLOW tier instead — natively in JAX
-(`slow_eval.py`, SPEC S28; in-loop only, no offline CLI).
+(`slow_eval.py`; in-loop only, no offline CLI).
 
 Variant semantics mirror `param_decomp/eval_metrics/ce_and_kl_losses.py`: each
 variant is a masked forward with ALL sites live and no routing; only `stoch_masked`
@@ -19,7 +19,7 @@ function returns is a per-BATCH scalar that the caller averages uniformly over t
 eval batches. This is mean-safe against the torch reference — i.e. it matches torch's
 accumulate-then-`compute()` to within float reassociation — only because every emitted
 key is itself a per-batch reduction that torch *also* averages across batches, and the
-eval batches are uniform `(B, T)`. The S8/D2 Jensen trap (a nonlinearity applied AFTER
+eval batches are uniform `(B, T)`. The Jensen trap (a nonlinearity applied AFTER
 the cross-batch reduction, so mean-of-batch-results ≠ result-of-global-batch) does NOT
 arise here, because no emitted key wraps the cross-batch axis in a nonlinearity:
 
@@ -269,7 +269,7 @@ def make_ce_kl_scorer[PreparedT](
         # stacks masks per kind into `[n_layers, B, T, C]` scan inputs — replicated, that
         # stack held the FULL eval batch on every rank (112 GiB per big kind at the 32L
         # production shape). Threefry is counter-based, so the sharded draw is
-        # value-identical (SPEC D4).
+        # value-identical.
         zeros_delta = {
             site: jnp.zeros_like(batch.tokens, dtype=COMPUTE_DT) for site in model.site_names
         }

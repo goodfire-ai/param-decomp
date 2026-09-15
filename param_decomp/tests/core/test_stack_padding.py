@@ -1,5 +1,5 @@
 """Persist-stack padding: census resolution, the padded value tree, pad-inert
-optimizers, and the faithfulness lane's pad exit (SPEC D4, 2026-09-01 amendment) — for
+optimizers, and the faithfulness lane's pad exit — for
 the V/U semantic groups and for the chunkwise CI fn's chunk stack.
 
 The placed integration (entry slice, grad transpose, full train step, padded-vs-unpadded

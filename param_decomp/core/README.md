@@ -7,8 +7,7 @@ recon + persistent-PGD adversarial recon) as one `jax.jit` step, GSPMD-sharded,
 `DecomposedModel` protocol; the concrete targets live in the sibling subpackage
 [`param_decomp.targets`](../targets/README.md).
 
-The semantics are pinned by [`SPEC.md`](SPEC.md) (normative: pseudocode + numbered
-invariants, grounded in the torch oracle at git tag `torch-oracle`). It realized the
+The trainer realizes the
 "single-pool SPMD collapse" hypothesis: XLA + whole-step `jit` + GSPMD sharding replaces
 the hand-written-NCCL multi-pool design with zero manual collectives.
 
@@ -32,14 +31,14 @@ tools into one virtual environment with `make install-dev`.
 | `recon.py` | the recon term vocabulary (LOSS_PARITY_DESIGN.md): `ReconLossTerm` (one all-sites forward family = routing sampler × mask-source strategy), the mask-source strategies, the routing samplers, and the reconstruction specs |
 | `objective.py` | `LossSurface` (`FaithfulnessTerm` / `ImportanceMinimalityTerm` / the `ReconLossTerm` tuple / optional `NonlinearityTerm`) and `build_objective` — the shared loss configs compiled onto the explicit-role surface |
 | `nonlinearity_eval.py` | standing per-component nonlinearity-unit statistics |
-| `ci_fn.py` | shared-transformer CI fn over ordered site specs; the two leaky-hard squashings (SPEC §4.6, S5/S6) |
-| `checkpoint.py` | orbax sharded save/resume of `TrainState` (adversary sources + moments included, no full-gather on the loop, SPEC S22) |
+| `ci_fn.py` | shared-transformer CI fn over ordered site specs; the two leaky-hard squashings |
+| `checkpoint.py` | orbax sharded save/resume of `TrainState` (adversary sources + moments included, no full-gather on the loop) |
 | `ci_l0_eval.py` | target-generic `CI_L0`: components whose causal importance clears `ci_alive_threshold`, per site and per authored group, with the unrouted term of a narrow emission priced analytically |
 | `hardware_utilization.py` | `StepCost`: flops read off the compiled step's XLA cost analysis and the HFU ratio against the device peak |
 | `recon_eval.py` | target-generic fresh-PGD reconstruction eval: opaque model inputs/outputs, model-owned `recon_loss_fn`, arbitrary leading axes |
-| `slow_eval.py` | LIBRARY for the in-loop slow (plot) tier (SPEC S28, in-loop only — no offline CLI): the `CIHistograms` / `ComponentActivationDensity` / `CIMeanPerComponent` reductions + renders, the config-gated `PermutedCIPlots` / `IdentityCIError` (off the `(T, C)` position CI), the `UVPlots` figure (`render_uv_figure` / `plot_uv_matrices`, shared by the LM in-loop naive-gather path and the toy `toy_uv_eval` cheap path), and the hidden-acts recon scalars. Torch-free numpy/matplotlib; logged under `slow_eval/figures/*` |
+| `slow_eval.py` | LIBRARY for the in-loop slow (plot) tier (in-loop only — no offline CLI): the `CIHistograms` / `ComponentActivationDensity` / `CIMeanPerComponent` reductions + renders, the config-gated `PermutedCIPlots` / `IdentityCIError` (off the `(T, C)` position CI), the `UVPlots` figure (`render_uv_figure` / `plot_uv_matrices`, shared by the LM in-loop naive-gather path and the toy `toy_uv_eval` cheap path), and the hidden-acts recon scalars. Torch-free numpy/matplotlib; logged under `slow_eval/figures/*` |
 | `components.py` | the decomposition representation: `ComponentStacks` — V/U masters in target-declared semantic stacks, `site(name)` per-site views, `activation_axes` the one spelling of the waist's semantic axes |
-| `decomposed_linear.py` | the placed decomposed-linear primitive: `site_forward`/`site_out` (SPEC §4.1) executing one site under `PlacementRules`, a precompiled `PlannedComponentLinear`, or unplaced `None`; `constrain_component_activation` pins `[*leading, C]` tensors to the component-waist row |
+| `decomposed_linear.py` | the placed decomposed-linear primitive: `site_forward`/`site_out` executing one site under `PlacementRules`, a precompiled `PlannedComponentLinear`, or unplaced `None`; `constrain_component_activation` pins `[*leading, C]` tensors to the component-waist row |
 | `placement.py` | `PlacementRules` — the typed placement table (components / ci_fn / activations / target rows), preset resolution (`from_config`: `owner` / `zero1` / `ddp` on the three-axis mesh, the `*-replicated-resident` pair and the `*-replicated-resident-moe` pair on the `(data, tp)` mesh), the compute-weight materialization (`materialize_reduced_weights`), and the stacked-muon staging claims (see PLACEMENT_DESIGN.md) |
 | `muon_stacked.py` | the muon optimizer: per-kind batched Newton-Schulz at the `ns_compute` waypoint; `staging_hops`, the one-axis-per-reshard waypoint chain |
 | `run_state.py` | optimizer + initial-`TrainState` construction (`init_train_state(pd, model, ci_fn_arch, positions, …)`; orbax restores onto this reference) |
@@ -64,7 +63,7 @@ make install-dev && source .venv/bin/activate
 
 pytest param_decomp/tests/core/ param_decomp/tests/targets/
 
-# GSPMD device-count invariance (simulated devices on CPU), SPEC D4:
+# GSPMD device-count invariance (simulated devices on CPU):
 XLA_FLAGS="--xla_force_host_platform_device_count=4" \
   python -m param_decomp.targets.invariance_check --steps 3
 ```
@@ -83,7 +82,7 @@ XLA_FLAGS="--xla_force_host_platform_device_count=4" \
 - **One jit'd step, functional minimax.** The persistent adversary (source stacks +
   their SRC_STEP state) lives in `TrainState` and is threaded through; `n_warmup`
   supplemental ascents + one final ascent whose gradient comes from the same backward
-  as the param grads (SPEC S13/S14).
+  as the param grads.
 - **GSPMD, not pools.** Data over the mesh's batch axes (`placement.batch_axes`), params placed by the target's sharding plan,
   `jax.jit` inserts every collective. The torch `reduce_source_grads` dance is absorbed
   by autodiff of the global-mean loss. Validated by `invariance_check.py`: the

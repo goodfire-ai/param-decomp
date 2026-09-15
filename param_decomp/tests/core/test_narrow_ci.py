@@ -278,7 +278,7 @@ def test_narrow_component_maxes_match_the_scatter_oracle():
 
 
 def test_per_component_batch_max_dispatches_on_emission():
-    """T11's statistic agrees with the full-width oracle on a mixed narrow/full dict."""
+    """The CI-scaled weight-decay statistic agrees with the full-width oracle on a mixed narrow/full dict."""
     from param_decomp.core.train import _per_component_batch_max
 
     bundle = _bundle(jax.random.key(16)).map_values(jax.nn.sigmoid)

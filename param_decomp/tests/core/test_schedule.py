@@ -86,7 +86,7 @@ def retired_value(
 
 
 # Every distinct no-warmup shape the 14 seat YAMLs author, as `(retired form, knot form)`.
-# These carry SPEC S20's torch-parity endpoint through unchanged, so they must agree at
+# These carry the torch-parity endpoint through unchanged, so they must agree at
 # EVERY step — a production anneal silently moving is the regression this pins.
 POINTWISE_SEATS = [
     # main + CI-fn LRs (all 14 seats; max_val varies, the shape does not)
@@ -136,7 +136,7 @@ def test_final_value_is_held_past_the_end(
 # over `int(total_steps * 0.025)` whole steps, the knot form over normalized time, so the
 # two differ INSIDE the warmup window and nowhere else. Per production seat: its step count
 # and the measured max |Δ| relative to `max_val`. The deltas shrink as O(1/steps) — the same
-# class SPEC S9/S20 already accept — except the 250-step smoke seat, which is coarse enough
+# class of schedule-migration differences — except the 250-step smoke seat, which is coarse enough
 # that one whole warmup step (of six) lands on the wrong side of the ramp.
 PPGD_WARMUP_SEATS = [
     (250, 3.62e-02),  # llama8b_full32L_HSDP_b32_dp32_SAVESMOKE — smoke only, not a result seat

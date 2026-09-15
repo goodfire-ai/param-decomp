@@ -1,5 +1,5 @@
 """The first post-resume persistent ascent must apply Adam bias-correction at count
-N+1, not reset to 1 (SPEC S22/S13/S15/S23; EDGES E13).
+N+1, not reset to 1 (EDGES E13).
 
 `SourcesAdamState.step_count` is an fp32 scalar incremented +1.0 per ascent
 (`sources_adam_ascend_project`) and round-trips through the checkpoint. torch keeps
@@ -90,7 +90,7 @@ def test_first_post_resume_ascent_uses_count_n_plus_1():
     # Resumed: round-trip the post-N Adam state through the checkpoint, then run the
     # (N+1)th ascent from the SAME sources/grad.
     resumed_state = _roundtrip(adam_state_n)
-    assert float(resumed_state.step_count) == float(n)  # SPEC S22: count N survives resume
+    assert float(resumed_state.step_count) == float(n)  # count N survives resume
     resumed_next, resumed_state_n1 = sources_adam_ascend_project(
         sources_n, _grad_for_ascent(n), resumed_state, lr, adam
     )

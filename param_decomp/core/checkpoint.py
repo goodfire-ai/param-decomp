@@ -1,4 +1,4 @@
-"""Checkpoint / resume of the generic trainer's `TrainState` via orbax (SPEC S22).
+"""Checkpoint / resume of the generic trainer's `TrainState` via orbax.
 
 Each checkpoint step holds TWO orbax items, splitting the product from the process:
 
@@ -13,7 +13,7 @@ own `.decomposition` / `.training` fields with no regrouping.
 
 Both items save **sharded** (every process writes its own shards, no full-gather on the
 training loop) and restore onto the reference state's shardings. The frozen target is
-NOT saved (SPEC §3): resume rebuilds it from HF and loads only the trajectory.
+NOT saved: resume rebuilds it from HF and loads only the trajectory.
 
 Checkpoints are therefore topology-free: orbax saves the LOGICAL array, and restore
 places values by the abstract reference's shardings — a reference rebuilt from config
@@ -25,7 +25,7 @@ Pinned by the cross-topology restore tests in `param_decomp/tests/core/test_chec
 Synchronous saves (no async): a SIGTERM-triggered save must be on disk before the
 process exits for SLURM requeue-resume.
 
-`init_from_parent` is the fine-tune entry (SPEC S33): a fresh run loads a PARENT
+`init_from_parent` is the fine-tune entry: a fresh run loads a PARENT
 checkpoint's `decomposition` (the trained product) but starts a clean schedule —
 fresh optimizer / sources, `step=0` — under a NEW config (changed LR / coeffs / steps,
 same component & ci-fn structure).
@@ -110,7 +110,7 @@ def restore_step(mgr: ocp.CheckpointManager, reference: TrainState, step: int) -
     )
     restored = TrainState(decomposition=composite["decomposition"], training=composite["training"])
     # Coerce the restored tree onto the reference's exact FORMAT (layout + sharding), not just its
-    # sharding. StandardRestore already honors the sharding SPEC (verified), so a device_put onto
+    # sharding. StandardRestore already honors the sharding specification (verified), so a device_put onto
     # sharding alone is a no-op — but orbax-restored arrays carry a default memory LAYOUT that
     # differs from what the jitted step was compiled for. The reference is a fresh-init state built
     # by the same XLA layout assignment as the step, so its `.format` IS the step's expected input
@@ -141,7 +141,7 @@ def restore_decomposition[DecompositionTree](
 
 
 def init_from_parent(parent_ckpt_dir: Path, parent_step: int, reference: TrainState) -> TrainState:
-    """Fine-tune init (SPEC S33): load the parent checkpoint's trained decomposition ONTO
+    """Fine-tune init: load the parent checkpoint's trained decomposition ONTO
     `reference` (a fresh-from-init `TrainState` built from the NEW config), and keep the
     fresh reference's optimizer states, persistent sources, and `step=0`.
 

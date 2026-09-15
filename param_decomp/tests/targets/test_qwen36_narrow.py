@@ -397,9 +397,9 @@ def test_source_masking_recomposes_bit_identically_to_materialized_masks():
     eager spelling (`masks_from_sources` → `MaterializedMasking`) through the REAL
     masked forward: uint16 `bsc` sources, real narrow CI, remat on. The output and the
     gradients w.r.t. V/U, the CI envelope, and the float source view must be
-    BIT-identical — the recipe re-spells the same ops (SPEC S1), staged not saved, and
+    BIT-identical — the recipe re-spells the same ops, staged not saved, and
     the persistent coeff rides the STACKED CI's cotangents exactly as the eager
-    spelling rides the per-site CI's (S14': model-side scaled, source path not)."""
+    spelling rides the per-site CI's (model-side scaled, source path not)."""
     from param_decomp.core.masking import masks_from_sources, source_value_cis
     from param_decomp.core.model import MaterializedMasking, SourceMasking
     from param_decomp.core.train import model_cotangents_scaled

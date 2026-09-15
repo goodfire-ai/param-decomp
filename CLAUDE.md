@@ -9,7 +9,6 @@ For other work, start with the smallest relevant source of truth:
 
 - [`README.md`](README.md) — installation, runnable entry points, datasets, packaging, and development commands.
 - [`CONFIGS.md`](CONFIGS.md) — which configurations belong in the repository and how they stay portable.
-- [`param_decomp/core/SPEC.md`](param_decomp/core/SPEC.md) — the trainer's normative numerical contract.
 - The nearest module-level `CLAUDE.md` — local architecture and interfaces. These exist under `core`, `routed`, `experiments`, and `experiments/lm/pretrain`; `targets` carries a `README.md`.
 
 ## Repository-wide constraints
@@ -20,7 +19,7 @@ For other work, start with the smallest relevant source of truth:
 - Dispatch on a tag or kind is an exhaustive `match` with every arm written out — no `case _` catch-alls. Where basedpyright proves the match exhaustive, that proof is the fail-closed mechanism (a trailing `case _: raise` is dead code and is rejected); where it cannot, the last arm raises.
 - Operations are locally truthful: each is correct given only what its input types promise, and the types carry those guarantees across seams. An operation whose correctness rests on an informal bound elsewhere in the program (a value "known" to be in range because something upstream clips it) is a defect — encode the bound in the type at the seam (a bounded type, a discriminated union) or make the operation correct for every value its input type admits.
 - No code is written for a test's convenience. A test that needs a known state computes its expectation from real, in-domain inputs; production code never gains an out-of-range knob, debug flag, or special arm so a test can reach a state.
-- Import public names from the modules that define them; package-level re-exports are exceptional. Update the nearest guide or specification when changing a documented structure or interface.
+- Import public names from the modules that define them; package-level re-exports are exceptional. Update the nearest guide when changing a documented structure or interface.
 
 ## Development
 

@@ -88,10 +88,10 @@ def uniform_like(
     and — when the reference is mesh-typed — its sharding. An untyped draw lowers
     REPLICATED under the Explicit mesh: every rank computes the full-batch threefry bits
     and holds global-shape tensors (measured +22.5 GB/rank at the 32L production shape).
-    Threefry is counter-based, so the sharded draw is value-identical (SPEC D4). The draw
+    Threefry is counter-based, so the sharded draw is value-identical. The draw
     is NOT dtype-invariant: bf16 and fp32 draws from one key are unrelated samples (16 vs
     32 random bits consumed), so a cross-dtype parity check must pass `dtype` explicitly
-    and cast (SPEC R4)."""
+    and cast."""
     shape = reference.shape[:-1] if drop_last_axis else reference.shape
     draw_dtype = reference.dtype if dtype is None else dtype
     if value_mesh(reference).empty:

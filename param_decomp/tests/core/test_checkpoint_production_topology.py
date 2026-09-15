@@ -1,4 +1,4 @@
-"""Production-topology orbax round-trip (SPEC S22, issue #617).
+"""Production-topology orbax round-trip (issue #617).
 
 Preemptions can miss the SIGTERM save and fall back to periodic checkpoints, so it is
 load-bearing that the SHARDED orbax save at the production placement actually persists
@@ -11,7 +11,7 @@ topology:
     sources/moments are replicated over a multi-device mesh (`init_placed.py`), exactly
     as `init_train_state` places them — so the test exercises the sharded save/restore
     path, not the all-on-one path;
-  * MULTIPLE persistent terms (SPEC S23: one `adversaries` entry per term), so a
+  * MULTIPLE persistent terms (one `adversaries` entry per term), so a
     per-term moment tree that got dropped would surface;
   * an explicit structural assertion that the RESTORED pytree carries `m`, `v`, and a
     non-zero `step_count` for every persistent term and every site — not just that the
@@ -180,7 +180,7 @@ def _build_sharded(seed: int):
 
 
 def _assert_moments_present(adversaries: dict[str, PersistentAdversary]) -> None:
-    """SPEC S22/S23: every persistent term carries m, v (mirroring the source stacks
+    """Every persistent term carries m, v (mirroring the source stacks
     leaf-for-leaf, same shapes) and a non-zero step_count."""
     assert tuple(adversaries) == PERSISTENT_TERMS, adversaries.keys()
     for term in PERSISTENT_TERMS:

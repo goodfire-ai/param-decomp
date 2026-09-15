@@ -398,7 +398,7 @@ def test_eval_step_fresh_pgd_probe_device_count_invariant():
     The probe ascends `source += step * sign(dKL/dsource)` on a `(1,1,C)` component
     source (plus its `(1,1)` delta) REPLICATED across the dp mesh. Each ascent's sign is taken AFTER the cotangent
     folds into the replicated leaf, so the gradient must be the GLOBAL-batch mean grad
-    (torch all-reduce-AVG parity, S15/E19) — NOT a per-shard partial. A per-shard
+    (torch all-reduce-AVG parity, E19) — NOT a per-shard partial. A per-shard
     partial would flip signs on some shards, send the ascent down a different
     trajectory, and yield a different final KL. Comparing the single-layout run
     (mesh=None, whole batch on one device) against the batch-sharded run under the

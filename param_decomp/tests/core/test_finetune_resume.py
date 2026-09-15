@@ -1,4 +1,4 @@
-"""Fine-tune init from a parent checkpoint (SPEC S33).
+"""Fine-tune init from a parent checkpoint.
 
 `init_from_parent` loads the parent's trained V/U + ci_fn onto a fresh reference state
 and keeps the fresh optimizer / sources and `step = 0`; the config-level

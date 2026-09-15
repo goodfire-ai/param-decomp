@@ -1,4 +1,4 @@
-"""Deterministic batches over local pre-tokenized Parquet shards (SPEC S18).
+"""Deterministic batches over local pre-tokenized Parquet shards.
 
 Each epoch shuffles equal-sized row groups within each shard, then visits one row group
 from every shard before returning to any shard. Short tail groups come last so finite
