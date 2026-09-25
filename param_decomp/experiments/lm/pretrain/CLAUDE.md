@@ -68,6 +68,6 @@ process topology. `dp = null` runs on the devices visible to one process.
 
 ```bash
 # Single process; the config leaves `dp` unset.
-python -m param_decomp.pretrain.train \
+uv run python -m param_decomp.pretrain.train \
   param_decomp/pretrain/configs/pile_llama_simple_mlp-2L-128_SMOKE.yaml
 ```

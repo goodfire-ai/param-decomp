@@ -430,7 +430,7 @@ entry receives `local_device_count` from whoever allocated it; `initialize_topol
 uses that fact only for JAX process bring-up and asserts the realized world matches the
 authored mesh.
 
-`python -m param_decomp.experiments.lm.run <config> --data-root … --local-device-count N`
+`uv run python -m param_decomp.experiments.lm.run <config> --data-root … --local-device-count N`
 runs in the current allocation, minting and pinning its own identity when `--run-id` is
 absent. A caller may instead supply the identity, pin the config and code revision, and
 start the matching process topology; those deployment choices are not part of the library.

@@ -80,7 +80,7 @@ For `target.spec.kind: pretrained`, `run_path` names a W&B pretrain run such as
 `goodfire/spd/runs/t-9d2b8f02`; it is never a filesystem path. On first use, the library
 fetches `model_config.yaml` and `model_step_<N>.safetensors` into
 `<data-root>/pretrain_cache/<project>-<run-id>/`. Later runs read that cache without
-network access. `python -m param_decomp.pretrain.train` writes the same layout directly
+network access. `uv run python -m param_decomp.pretrain.train` writes the same layout directly
 when training a target locally.
 
 TMS and ResidualMLP run the same way — in-process module mains, on CPU:

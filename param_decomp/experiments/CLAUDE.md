@@ -3,9 +3,9 @@
 Experiment glue + the per-domain COMPOSITION ROOTS, torch-free. Training is JAX through the
 generic core engine (`param_decomp.core.run.run_decomposition_training`, a pure library that reads
 the pydantic `PDConfig` / `Cadence` directly). Each toy domain's `run.py` and LM's `training.py` are composition roots: read the run YAML → build the target / data loader / `config.BuiltRun` → call the
-engine. LM runs through `python -m param_decomp.experiments.lm.run` in an allocation
+engine. LM runs through `uv run python -m param_decomp.experiments.lm.run` in an allocation
 provided by the caller; the toy domains (TMS, ResidMLP) run on CPU
-in-process via their module mains (`python -m param_decomp.experiments.{tms,resid_mlp}.run`). The shared experiment YAML schema + the shared
+in-process via their module mains (`uv run python -m param_decomp.experiments.{tms,resid_mlp}.run`). The shared experiment YAML schema + the shared
 run-identity helper (`run_instance`) live in `experiments/config.py`; the toy CI-arch
 builder is `experiments/toy_config.py::build_toy_ci_arch`; each domain's `config.py`
 carries its own target/data schema + (for the LM) its `BuiltRun` build.

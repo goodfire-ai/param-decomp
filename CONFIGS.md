@@ -13,9 +13,10 @@ A launched run's config provenance already lives outside the repo tree:
 2. the W&B run config, when W&B logging is enabled.
 
 So a sweep/profile/one-off yaml committed "for the record" records nothing —
-it only rots. Launch one-offs from your workspace (`python -m param_decomp.experiments.lm.run <path>`
-takes any path); if the sweep matters, record its run IDs and findings externally. The
-run directories carry the exact configs.
+it only rots. Keep one-off configs in your workspace and launch from the repo root with
+`uv run python -m param_decomp.experiments.lm.run <path-to-config>` (the config can live
+outside the repo); if the sweep matters, record its run IDs and findings externally.
+The run directories carry the exact configs.
 
 ## The canonical seats
 
