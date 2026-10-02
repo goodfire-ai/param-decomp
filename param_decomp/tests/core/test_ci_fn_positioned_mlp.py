@@ -11,82 +11,80 @@ difference — able to read tap MAGNITUDE. The chunkwise path RMS-norms every ta
 `in_proj`, so a blockless chunk is `RMSNorm -> affine`: scale-invariant by construction.
 """
 
+from typing import Any
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import optax
 from jax import random
 
-from param_decomp.core.ci_fn import (
+from param_decomp.core.ci_fn.implementations.chunkwise.arch import (
     Chunk,
-    ChunkwiseTransformerCIArch,
-    CIFn,
-    LayerwiseMLPCIArch,
-    LayerwiseMLPCIFn,
-    MHACIAttention,
-    PlacedCIFn,
-    build_ci_fn,
-    evaluate_ci,
+    ChunkwiseTransformerCIFnArch,
 )
+from param_decomp.core.ci_fn.implementations.layerwise_mlp import (
+    LayerwiseMLPCIFn,
+    LayerwiseMLPCIFnArch,
+)
+from param_decomp.core.ci_fn.implementations.transformer.backbone import BackboneCIFn
+from param_decomp.core.ci_fn.implementations.transformer.layers import MHACIFnAttention
+from param_decomp.core.ci_fn.interface import CIFn
 from param_decomp.core.components import (
-    Dense,
+    DenseFactorization,
     SiteSpec,
     component_stacks_from_sites,
+    init_component_stacks,
     require_full_emission,
 )
 from param_decomp.core.configs import (
+    AdamWOptimizerConfig,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     StochasticReconLossConfig,
 )
 from param_decomp.core.faithfulness import faithfulness_loss_for
+from param_decomp.core.losses import BatchFrequency
 from param_decomp.core.model import PlacedModel
 from param_decomp.core.objective import build_objective
 from param_decomp.core.precision import COMPUTE_DT
+from param_decomp.core.run_state import _adamw_optimizer
 from param_decomp.core.schedule import Knot, ScheduleConfig
 from param_decomp.core.train import (
     Decomposition,
     ForwardSubstrate,
-    TrainingItem,
+    PDTrainingState,
     TrainState,
     make_train_step,
 )
+from param_decomp.targets.testing import chunkwise_transformer_backbone
 from param_decomp.tests.core.test_generic_model_io import SyntheticDecomposedModel
+from param_decomp.tests.sequence import unsegmented_sequence_layout
 
 SITE = "block.0.proj"
 B, T, D, C = 2, 5, 8, 4
-SITES = (SiteSpec(name=SITE, factorization=Dense(d_in=D, d_out=D, C=C), group=SITE),)
+SITES = (SiteSpec(name=SITE, factorization=DenseFactorization(d_in=D, d_out=D, C=C), group=SITE),)
+COMPONENTS = init_component_stacks(SITES, random.PRNGKey(3))
 
 
 def _positioned_mlp_ci_fn() -> LayerwiseMLPCIFn:
-    ci_fn = build_ci_fn(
-        LayerwiseMLPCIArch(
-            hidden_dims=(16,),
-            has_position_axis=True,
-            input_names=tuple(s.name for s in SITES),
-        ),
-        SITES,
-        random.PRNGKey(0),
-    )
+    ci_fn = LayerwiseMLPCIFnArch(
+        hidden_dims=(16,), has_position_axis=True, input_names=tuple(s.name for s in SITES)
+    ).initialize(SITES, None, random.PRNGKey(0))
     assert isinstance(ci_fn, LayerwiseMLPCIFn)
     return ci_fn
 
 
 def _blockless_chunkwise_ci_fn():
-    return build_ci_fn(
-        ChunkwiseTransformerCIArch(
-            chunks=(Chunk(input_taps=(SITE,), output_sites=(SITE,)),),
-            input_dim=D,
-            d_model=16,
-            n_blocks=0,
-            attention=MHACIAttention(n_heads=2),
-            ffn_hidden=32,
-            ffn_kind="gelu",
-            learned_norm_scale=False,
-        ),
-        SITES,
-        random.PRNGKey(0),
-    )
+    return ChunkwiseTransformerCIFnArch(
+        chunks=(Chunk(input_taps=(SITE,), output_sites=(SITE,)),),
+        input_dim=D,
+        d_model=16,
+        n_blocks=0,
+        attention=MHACIFnAttention(mask="bidirectional", implementation="xla", n_heads=2),
+        ffn_hidden=32,
+        ffn_kind="gelu",
+        learned_norm_scale=False,
+    ).initialize(SITES, None, random.PRNGKey(0))
 
 
 def _taps(key_idx: int = 1) -> dict[str, jax.Array]:
@@ -97,7 +95,9 @@ def test_mlp_arch_serves_a_positioned_target():
     ci_fn = _positioned_mlp_ci_fn()
     assert ci_fn.has_position_axis is True
 
-    ci = ci_fn(_taps(), remat=False, placement=None)
+    ci = ci_fn(
+        _taps(), None, COMPONENTS, sequence=unsegmented_sequence_layout(_taps()), remat=False
+    )
     assert require_full_emission(ci.preactivations[SITE]).shape == (B, T, C)
     assert bool(jnp.isfinite(require_full_emission(ci.lower[SITE])).all())
 
@@ -107,14 +107,22 @@ def test_evaluate_ci_casts_fp32_taps_to_compute_precision():
     taps = _taps()
     assert taps[SITE].dtype == jnp.float32
     assert (
-        require_full_emission(ci_fn(taps, remat=False, placement=None).preactivations[SITE]).dtype
+        require_full_emission(
+            ci_fn(
+                taps, None, COMPONENTS, sequence=unsegmented_sequence_layout(taps), remat=False
+            ).preactivations[SITE]
+        ).dtype
         == jnp.float32
     )
     assert (
         require_full_emission(
-            evaluate_ci(PlacedCIFn(fn=ci_fn, placement=None), taps, remat=False).preactivations[
-                SITE
-            ]
+            ci_fn.prepare()(
+                taps,
+                None,
+                COMPONENTS,
+                sequence=unsegmented_sequence_layout(taps),
+                remat=False,
+            ).preactivations[SITE]
         ).dtype
         == COMPUTE_DT
     )
@@ -128,8 +136,20 @@ def test_positioned_mlp_is_position_local():
     perturbed = {SITE: taps[SITE].at[:, 2, :].add(100.0)}
 
     moved = jnp.abs(
-        require_full_emission(ci_fn(taps, remat=False, placement=None).preactivations[SITE])
-        - require_full_emission(ci_fn(perturbed, remat=False, placement=None).preactivations[SITE])
+        require_full_emission(
+            ci_fn(
+                taps, None, COMPONENTS, sequence=unsegmented_sequence_layout(taps), remat=False
+            ).preactivations[SITE]
+        )
+        - require_full_emission(
+            ci_fn(
+                perturbed,
+                None,
+                COMPONENTS,
+                sequence=unsegmented_sequence_layout(perturbed),
+                remat=False,
+            ).preactivations[SITE]
+        )
     ).max(axis=(0, 2))
 
     assert float(moved[2]) > 0.0, "the perturbed position must move at all"
@@ -146,17 +166,24 @@ def test_positioned_mlp_reads_tap_magnitude_where_the_blockless_chunk_cannot():
     subcomponent whose activation grows can be scored differently — which is usually the
     point of a causal-importance function."""
 
-    def scale_gap(ci_fn: CIFn) -> float:
+    def scale_gap(ci_fn: CIFn[Any]) -> float:
         x = _taps(1)[SITE]
         f = lambda t: require_full_emission(  # noqa: E731
-            ci_fn({SITE: t}, remat=False, placement=None).preactivations[SITE]
+            ci_fn(
+                {SITE: t},
+                None,
+                COMPONENTS,
+                sequence=unsegmented_sequence_layout({SITE: t}),
+                remat=False,
+            ).preactivations[SITE]
         )
-        return float(jnp.abs(f(x) - f(x * 7.0)).max())
+        # a power of two scales bf16 taps exactly, so a direction-only CI fn stays exact
+        return float(jnp.abs(f(x) - f(x * 8.0)).max())
 
     assert scale_gap(_positioned_mlp_ci_fn()) > 1.0, "the MLP CI fn ignored tap magnitude"
-    assert scale_gap(_blockless_chunkwise_ci_fn()) < 1e-5, (
-        "the blockless chunk was NOT scale-invariant — the contrast this test draws is void"
-    )
+    assert (
+        scale_gap(BackboneCIFn(chunkwise_transformer_backbone(_blockless_chunkwise_ci_fn()))) < 1e-5
+    ), "the blockless chunk was NOT scale-invariant — the contrast this test draws is void"
 
 
 def test_positioned_mlp_trains_a_positioned_target():
@@ -185,18 +212,8 @@ def test_positioned_mlp_trains_a_positioned_target():
     ci_fn = _positioned_mlp_ci_fn()
     assert ci_fn.has_position_axis == model.has_position_axis  # the run_state agreement assert
 
-    opt_vu = optax.adamw(1e-2, weight_decay=0.0)
-    opt_ci = optax.adamw(1e-2, weight_decay=0.0)
-    state = TrainState(
-        decomposition=Decomposition(components=components, ci_fn=ci_fn),
-        training=TrainingItem(
-            components_opt_state=opt_vu.init(eqx.filter(components, eqx.is_array)),
-            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-            adversaries={},
-            freq_ema=None,
-            step=jnp.zeros((), jnp.int32),
-        ),
-    )
+    opt_vu = _adamw_optimizer(AdamWOptimizerConfig(lr_schedule=ScheduleConfig.constant(1e-2)), 1)
+    opt_ci = _adamw_optimizer(AdamWOptimizerConfig(lr_schedule=ScheduleConfig.constant(1e-2)), 1)
     loss_terms = build_objective(
         (
             FaithfulnessLossConfig(coeff=1.0),
@@ -208,23 +225,34 @@ def test_positioned_mlp_trains_a_positioned_target():
             ),
             StochasticReconLossConfig(coeff=1.0),
         ),
-        model.site_names,
+        model.sites,
+    )
+    state = TrainState(
+        decomposition=Decomposition(components=components, ci_fn=ci_fn),
+        training=PDTrainingState(
+            frequency=BatchFrequency(),
+            objective=loss_terms,
+            components_opt_state=opt_vu.init(eqx.filter(components, eqx.is_array)),
+            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+            adversaries={},
+            step=jnp.zeros((), jnp.int32),
+        ),
     )
     placed = PlacedModel(model=model, placement=None)
-    step_fn = make_train_step(
-        model_static=placed,
-        substrate=ForwardSubstrate.of(
-            placed,
-            remat_recon_forwards=False,
-            remat_ci_fn=True,
-            ci_capture_keys=ci_fn.capture_keys,
-            ci_placement=None,
-        ),
-        objective=loss_terms,
-        components_optimizer=opt_vu,
-        ci_fn_optimizer=opt_ci,
-        total_steps=10,
-        faithfulness=faithfulness_loss_for(placed),
+    step_fn = jax.jit(
+        make_train_step(
+            model_static=placed,
+            substrate=ForwardSubstrate.of(
+                placed,
+                remat_recon_forwards=False,
+                remat_ci_fn=True,
+                ci_capture_keys=ci_fn.capture_keys,
+            ),
+            components_optimizer=opt_vu,
+            ci_fn_optimizer=opt_ci,
+            total_steps=10,
+            faithfulness=faithfulness_loss_for(placed),
+        )
     )
 
     first_before = jax.device_get(ci_fn.site_mlps[SITE].weights[0])  # survives step donation

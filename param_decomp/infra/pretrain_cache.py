@@ -56,6 +56,19 @@ def is_complete(cache_dir: Path) -> bool:
     ) == 1
 
 
+def resolved_model_config_dir(data_root: Path, run_path: str) -> Path:
+    """Resolve architecture metadata without fetching the model's weights."""
+    cache_dir = cache_dir_for_run(data_root, run_path)
+    if (cache_dir / MODEL_CONFIG_FILENAME).is_file():
+        return cache_dir
+
+    entity, project, run_id = _run_reference(run_path)
+    run = wandb.Api().run(f"{entity}/{project}/{run_id}")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    download_wandb_file(run, cache_dir, MODEL_CONFIG_FILENAME)
+    return cache_dir
+
+
 def resolved_cache_dir(data_root: Path, run_path: str) -> Path:
     """Resolve `run_path` to its store entry, downloading the W&B run's checkpoint and
     `model_config.yaml` into it first if it isn't already complete.
@@ -91,18 +104,18 @@ def resolved_cache_dir(data_root: Path, run_path: str) -> Path:
 
 
 def _raise_for_missing_safetensors(
-    run: Run, cache_dir: Path, run_path: str, filenames: list[str]
+    run: Run, cache_dir: Path, run_path_for_err: str, filenames: list[str]
 ) -> NoReturn:
     """The run has no converted checkpoint. Torch-era runs carry `model_step_<N>.pt`;
     download it so the one remaining step is a local conversion, then say so."""
     torch_checkpoints = [n for n in filenames if fnmatch(n, TORCH_CHECKPOINT_GLOB)]
     assert torch_checkpoints, (
-        f"{run_path} has no {CHECKPOINT_GLOB} and no {TORCH_CHECKPOINT_GLOB} — it is not "
+        f"{run_path_for_err} has no {CHECKPOINT_GLOB} and no {TORCH_CHECKPOINT_GLOB} — it is not "
         f"a pretrain run this loader can consume. Files: {sorted(filenames)[:20]}"
     )
     staged = [download_wandb_file(run, cache_dir, n) for n in torch_checkpoints]
     raise AssertionError(
-        f"{run_path} is a torch-era pretrain run: it ships {torch_checkpoints} and this "
+        f"{run_path_for_err} is a torch-era pretrain run: it ships {torch_checkpoints} and this "
         f"loader reads {CHECKPOINT_GLOB}. The torch checkpoint(s) are now downloaded at "
         f"{[str(p) for p in staged]} — convert one in a torch venv with `{_CONVERTER}` "
         f"(git tag `torch-oracle`), writing `model_step_<N>.safetensors` beside them in "

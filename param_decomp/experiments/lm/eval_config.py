@@ -1,11 +1,25 @@
 """Authored metric schemas whose semantics require an LM target."""
 
-from typing import ClassVar, Literal
+from collections.abc import Sequence
+from typing import Annotated, ClassVar, Literal, Self
 
-from pydantic import Field, NonNegativeInt, PositiveFloat, PositiveInt
+from pydantic import (
+    Discriminator,
+    Field,
+    NonNegativeInt,
+    PositiveFloat,
+    PositiveInt,
+    model_validator,
+)
 
 from param_decomp.core.base_config import BaseConfig, Probability
-from param_decomp.core.configs import HiddenActsReconstruction
+from param_decomp.core.configs import (
+    AnyLossMetricConfig,
+    MergedStochasticSubsetPPGDReconLossConfig,
+    PersistentPGDReconLossConfig,
+    ReconstructionAuxiliariesMixin,
+    TargetedLossMetricConfig,
+)
 
 
 class CEandKLLossesConfig(BaseConfig):
@@ -16,15 +30,112 @@ class CEandKLLossesConfig(BaseConfig):
     rounding_threshold: Probability
 
 
+class CIActiveCountsPerPositionConfig(BaseConfig):
+    """`CI_L0`'s active-component count at every position of the eval window, summed over
+    all sites, for CI > 0, > 0.01 and > 0.1: one native W&B line chart, `eval/l0/per_position`."""
+
+    slow: ClassVar[bool] = True
+    type: Literal["CIActiveCountsPerPosition"] = "CIActiveCountsPerPosition"
+
+
 class CIMaskedAttnPatternsReconLossConfig(BaseConfig):
+    """Materializes [B, H, T, T] attention maps even when the forward uses flash."""
+
     slow: ClassVar[bool] = False
     type: Literal["CIMaskedAttnPatternsReconLoss"] = "CIMaskedAttnPatternsReconLoss"
 
 
 class StochasticAttnPatternsReconLossConfig(BaseConfig):
+    """Materializes attention maps for each mask sample; memory grows quadratically in T."""
+
     slow: ClassVar[bool] = False
     type: Literal["StochasticAttnPatternsReconLoss"] = "StochasticAttnPatternsReconLoss"
-    n_mask_samples: PositiveInt = 1
+
+
+class CIMaskedStrategy(BaseConfig):
+    """Masks = the CI envelope's lower values; no weight-delta correction."""
+
+    kind: Literal["ci_masked"] = "ci_masked"
+
+
+class StochasticStrategy(BaseConfig):
+    """One draw of `ci + (1 - ci)·U[0,1]` with random weight-delta masks."""
+
+    kind: Literal["stochastic"] = "stochastic"
+
+
+class FreshPGDStrategy(BaseConfig):
+    """Fresh sign-PGD sources (random init, one source per component shared by every
+    token) ascended `n_steps` times against the output KL, composed with the CI."""
+
+    kind: Literal["fresh_pgd"] = "fresh_pgd"
+    n_steps: NonNegativeInt
+    step_size: PositiveFloat
+
+
+class PersistentStrategy(BaseConfig):
+    """The run's persistent-PGD adversary sources, composed with the CI. `state_key` is
+    the `name` (instance key) of the persistent training term whose sources are read. A
+    `c`/`sc` source applies to the eval batch as it is; a `bc`/`bsc` source's rows index
+    training samples, so each eval sequence draws one row (`masking.sample_source_rows`)
+    — in expectation the eval batch sees the adversary the training batch saw."""
+
+    kind: Literal["persistent"] = "persistent"
+    state_key: str
+
+
+RouterDivergenceStrategy = Annotated[
+    CIMaskedStrategy | StochasticStrategy | FreshPGDStrategy | PersistentStrategy,
+    Discriminator("kind"),
+]
+
+
+class RouterDivergenceConfig(BaseConfig):
+    """Per MoE layer, how far the masked model's expert router drifts from the target's:
+    the target's router applied to the masked residual, read out at every layer under the
+    target's own expert selection pinned everywhere, against the target's routing at that
+    layer. Masking and mixing-weight changes can still propagate through the residual.
+    Each strategy's masks run their own masked forwards per batch; `kind` names the strategy in the log keys, so each kind
+    appears once."""
+
+    slow: ClassVar[bool] = False
+    type: Literal["RouterDivergence"] = "RouterDivergence"
+    strategies: tuple[RouterDivergenceStrategy, ...]
+
+    @model_validator(mode="after")
+    def validate_strategies(self) -> Self:
+        kinds = [strategy.kind for strategy in self.strategies]
+        assert kinds, "RouterDivergence needs at least one strategy"
+        assert len(kinds) == len(set(kinds)), (
+            f"RouterDivergence strategies repeat a kind: {kinds} — a strategy is logged under "
+            "its kind, so each kind appears once"
+        )
+        return self
+
+
+def assert_router_divergence_persistent_terms_exist(
+    metric: RouterDivergenceConfig,
+    loss_metrics: Sequence[AnyLossMetricConfig | TargetedLossMetricConfig],
+) -> None:
+    """Every `persistent` strategy names one of the run's persistent-PGD training terms
+    (by instance key, `name or type` — the key its adversary lives under in the training
+    state)."""
+    persistent_terms = {
+        (term.name if term.name is not None else term.type)
+        for term in loss_metrics
+        if isinstance(
+            term, (PersistentPGDReconLossConfig, MergedStochasticSubsetPPGDReconLossConfig)
+        )
+    }
+    for strategy in metric.strategies:
+        match strategy:
+            case PersistentStrategy(state_key=state_key):
+                assert state_key in persistent_terms, (
+                    f"RouterDivergence persistent strategy names state_key {state_key!r}, but "
+                    f"the run's persistent-PGD terms are {sorted(persistent_terms)}"
+                )
+            case CIMaskedStrategy() | StochasticStrategy() | FreshPGDStrategy():
+                pass
 
 
 class WellTemperednessConfig(BaseConfig):
@@ -53,11 +164,10 @@ class ArithmeticCIL0Config(BaseConfig):
     groups: dict[str, list[str]] | None
 
 
-class ArithmeticFreshPGDConfig(BaseConfig):
+class ArithmeticFreshPGDConfig(ReconstructionAuxiliariesMixin):
     name: str | None = None
     n_steps: NonNegativeInt
     step_size: PositiveFloat
-    hidden_acts_reconstruction: HiddenActsReconstruction | None = None
 
 
 class ArithmeticProbeMetrics(BaseConfig):

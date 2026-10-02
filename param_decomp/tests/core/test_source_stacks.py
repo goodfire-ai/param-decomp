@@ -16,7 +16,7 @@ from jax.sharding import PartitionSpec as P
 from jax.typing import DTypeLike
 
 from param_decomp.core.adversary import (
-    ExpertBlockedSource,
+    BlockedSourceComponents,
     SourceStacks,
     _draw_site_source,
     init_persistent_sources,
@@ -24,8 +24,13 @@ from param_decomp.core.adversary import (
     store_sources,
     store_unit_float,
 )
-from param_decomp.core.components import Dense, ExpertBlocked, SiteSpec, site_slots_for
-from param_decomp.core.configs import SourceShape
+from param_decomp.core.components import (
+    BlockedFactorization,
+    DenseFactorization,
+    SiteSpec,
+    site_stack_indices_for,
+)
+from param_decomp.core.configs import BatchSourceShape
 from param_decomp.core.init_placed import init_sources_sharded, persistent_sources_shardings
 from param_decomp.core.model import PositionAxis, Positioned, Positionless
 
@@ -35,8 +40,8 @@ N_EXPERTS, C_PER_EXPERT, DENSE_C = 4, 3, 6
 def _sites() -> tuple[SiteSpec, ...]:
     """Two semantic groups per factorization, interleaved in site order, so slot ≠ site
     index and two same-shape expert groups must NOT share a stack."""
-    expert = ExpertBlocked(n_experts=N_EXPERTS, d_in=8, d_out=4, c_per_expert=C_PER_EXPERT)
-    dense = Dense(d_in=8, d_out=8, C=DENSE_C)
+    expert = BlockedFactorization(n_blocks=N_EXPERTS, d_in=8, d_out=4, c_per_block=C_PER_EXPERT)
+    dense = DenseFactorization(d_in=8, d_out=8, C=DENSE_C)
     return (
         SiteSpec(name="l0.gate", factorization=expert, group="gate"),
         SiteSpec(name="l0.up", factorization=expert, group="up"),
@@ -62,10 +67,10 @@ def test_stacks_follow_the_declared_grouping_and_views_pin_the_per_site_draws(dt
     key = jax.random.PRNGKey(3)
     stacks = init_persistent_sources(sites, leading, dtype, key)
 
-    assert stacks.site_slots == site_slots_for(sites)
+    assert stacks.site_stack_indices == site_stack_indices_for(sites)
     assert set(stacks.stacks) == {"gate", "up", "shared"}
     gate = stacks.stacks["gate"].components
-    assert isinstance(gate, ExpertBlockedSource)
+    assert isinstance(gate, BlockedSourceComponents)
     assert gate.values.shape == (2, *leading, N_EXPERTS, C_PER_EXPERT)
     shared = stacks.stacks["shared"].components
     assert isinstance(shared, jax.Array) and shared.shape == (2, *leading, DENSE_C)
@@ -98,10 +103,12 @@ def test_stacks_follow_the_declared_grouping_and_views_pin_the_per_site_draws(dt
 
 
 def test_grouping_refuses_mixed_factorizations_within_a_group():
-    expert = ExpertBlocked(n_experts=N_EXPERTS, d_in=8, d_out=4, c_per_expert=C_PER_EXPERT)
+    expert = BlockedFactorization(n_blocks=N_EXPERTS, d_in=8, d_out=4, c_per_block=C_PER_EXPERT)
     sites = (
         SiteSpec(name="a", factorization=expert, group="g"),
-        SiteSpec(name="b", factorization=Dense(d_in=8, d_out=8, C=expert.C), group="g"),
+        SiteSpec(
+            name="b", factorization=DenseFactorization(d_in=8, d_out=8, C=expert.C), group="g"
+        ),
     )
     with pytest.raises(AssertionError, match="mixes factorizations"):
         init_persistent_sources(sites, (1, 2), jnp.float32, jax.random.PRNGKey(0))
@@ -115,12 +122,9 @@ def test_declared_shardings_mirror_the_container_with_the_slot_axis_replicated()
     mesh = _mesh()
     n_data = mesh.shape["data"]
     batch = 4 * n_data
-    cases: list[tuple[PositionAxis, SourceShape, P]] = [
-        (Positioned(7), "c", P(None, None, None)),
+    cases: list[tuple[PositionAxis, BatchSourceShape, P]] = [
         (Positioned(7), "bc", P(None, "data", None)),
-        (Positioned(7), "sc", P(None, None, None)),
         (Positioned(7), "bsc", P(None, "data", None)),
-        (Positionless(), "c", P(None, None)),
         (Positionless(), "bc", P(None, "data")),
     ]
     for positions, source_shape, delta_spec in cases:
@@ -138,25 +142,23 @@ def test_declared_shardings_mirror_the_container_with_the_slot_axis_replicated()
         for group, stack in shardings.stacks.items():
             assert stack.delta.spec == delta_spec, (source_shape, group)
             match stack.components:
-                case ExpertBlockedSource(values=values):
+                case BlockedSourceComponents(values=values):
                     assert isinstance(values, NamedSharding)
                     assert values.spec == P(*delta_spec, "tp", None), (source_shape, group)
                 case components:
                     assert components.spec == P(*delta_spec, "tp"), (source_shape, group)
         for leaf, sharding in zip(jax.tree.leaves(placed), jax.tree.leaves(shardings), strict=True):
             assert leaf.sharding.is_equivalent_to(sharding, leaf.ndim), (source_shape, leaf.shape)
-    positioned_only: SourceShape
-    for positioned_only in ("sc", "bsc"):
-        with pytest.raises(ValueError, match="positionless"):
-            init_sources_sharded(
-                sites,
-                Positionless(),
-                positioned_only,
-                batch,
-                jnp.float32,
-                jax.random.PRNGKey(1),
-                mesh,
-            )
+    with pytest.raises(ValueError, match="positionless"):
+        init_sources_sharded(
+            sites,
+            Positionless(),
+            "bsc",
+            batch,
+            jnp.float32,
+            jax.random.PRNGKey(1),
+            mesh,
+        )
 
 
 def test_stochastic_store_stream_is_a_function_of_the_container_leaf_order():
@@ -186,5 +188,5 @@ def test_source_stacks_is_a_pytree_with_static_slots():
     leaves, treedef = jax.tree.flatten(stacks)
     rebuilt = jax.tree.unflatten(treedef, leaves)
     assert isinstance(rebuilt, SourceStacks)
-    assert rebuilt.site_slots == stacks.site_slots
+    assert rebuilt.site_stack_indices == stacks.site_stack_indices
     assert len(leaves) == 2 * 3

@@ -18,12 +18,16 @@ the clean + stochastic paths). RoPE uses the llama3 frequency rescaling.
 """
 
 from dataclasses import dataclass
-from typing import Literal, NamedTuple
+from typing import NamedTuple
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Int
+
+from param_decomp.attention import AttentionImplementation, causal_attention_head_first
+from param_decomp.lm.batch import LMBatchWithDocuments
+from param_decomp.sequence import SequenceLayout
 
 
 @dataclass(frozen=True)
@@ -93,10 +97,11 @@ def rms_norm(
     return weight * x.astype(in_dtype)
 
 
-def rope_cos_sin(inv_freq: Float[Array, " hd2"], seq_len: int, dtype) -> tuple[Array, Array]:
-    pos = jnp.arange(seq_len, dtype=jnp.float32)  # (T,)
-    freqs = jnp.einsum("f,t->tf", inv_freq, pos)  # (T, hd2)
-    emb = jnp.concatenate([freqs, freqs], axis=-1)  # (T, hd)
+def rope_cos_sin(
+    inv_freq: Float[Array, " hd2"], position_ids: Int[Array, "b t"], dtype
+) -> tuple[Array, Array]:
+    freqs = position_ids.astype(jnp.float32)[..., None] * inv_freq
+    emb = jnp.concatenate([freqs, freqs], axis=-1)
     return jnp.cos(emb).astype(dtype), jnp.sin(emb).astype(dtype)
 
 
@@ -107,9 +112,8 @@ def rotate_half(x: Array) -> Array:
 
 
 def apply_rope(q: Array, k: Array, cos: Array, sin: Array) -> tuple[Array, Array]:
-    # q,k: (B, n_head, T, hd); cos,sin: (T, hd) -> broadcast over (B, head)
-    cos = cos[None, None, :, :]
-    sin = sin[None, None, :, :]
+    cos = cos[:, None, :, :]
+    sin = sin[:, None, :, :]
     return q * cos + rotate_half(q) * sin, k * cos + rotate_half(k) * sin
 
 
@@ -119,53 +123,6 @@ def repeat_kv(x: Float[Array, "b kvh t hd"], n_rep: int) -> Float[Array, "b h t 
         return x
     x = jnp.broadcast_to(x[:, :, None, :, :], (b, kvh, n_rep, t, hd))
     return x.reshape(b, kvh * n_rep, t, hd)
-
-
-AttentionImplementation = Literal["auto", "cudnn", "xla"]
-
-
-def attn_implementation(
-    requested: AttentionImplementation, backend: str, dtype: jnp.dtype, seq_len: int
-) -> Literal["cudnn", "xla"]:
-    """cuDNN flash attention on GPU for the half precisions it supports (its SDPA rejects
-    fp32, so fp32 parity harnesses take the XLA composite) and for the sequence-length
-    family we run through it — multiples of 64, the corpus shapes. Everything else takes
-    the XLA composite: cuDNN's flash kernel rejects small/odd lengths (`check_is_flash_
-    attention`), which the tPD target stream's natural prompt lengths hit (SPEC T8)."""
-    supported = backend == "gpu" and dtype in (jnp.float16, jnp.bfloat16)
-    cudnn_compatible = supported and seq_len % 64 == 0 and seq_len > 0
-    match requested:
-        case "auto":
-            return "cudnn" if cudnn_compatible else "xla"
-        case "cudnn":
-            assert cudnn_compatible, (backend, dtype, seq_len)
-            return "cudnn"
-        case "xla":
-            return "xla"
-
-
-def causal_sdpa(
-    q: Array,
-    k: Array,
-    v: Array,
-    qkv_sharding: jax.sharding.Sharding | None,
-    implementation: AttentionImplementation,
-) -> Array:
-    # q,k,v: (B, H, T, hd); jax.nn.dot_product_attention takes (B, T, H, D).
-    qt, kt, vt = (a.transpose(0, 2, 1, 3) for a in (q, k, v))
-    if qkv_sharding is not None:
-        # cuDNN's custom partitioner requires identical sharding on its direct operands.
-        qt, kt, vt = (jax.sharding.reshard(a, qkv_sharding) for a in (qt, kt, vt))
-    out = jax.nn.dot_product_attention(
-        qt,
-        kt,
-        vt,
-        is_causal=True,
-        implementation=attn_implementation(
-            implementation, jax.default_backend(), q.dtype, qt.shape[1]
-        ),
-    )
-    return out.transpose(0, 2, 1, 3)
 
 
 # ----------------------------- component leaf (mirror ComponentLinear) -----------------------------
@@ -205,8 +162,11 @@ class Attention(eqx.Module):
     head_dim: int = eqx.field(static=True)
     n_rep: int = eqx.field(static=True)
     paths: tuple[str, str, str, str] = eqx.field(static=True)  # q,k,v,o mask keys
+    implementation: AttentionImplementation = eqx.field(static=True)
 
-    def __call__(self, x: Float[Array, "b t d"], masks: "dict | None") -> Array:
+    def __call__(
+        self, x: Float[Array, "b t d"], sequence: SequenceLayout, masks: "dict | None"
+    ) -> Array:
         b, t, _ = x.shape
         mi = lambda p: None if masks is None else masks.get(p)
         q = self.q_proj(x, mi(self.paths[0]))
@@ -215,11 +175,13 @@ class Attention(eqx.Module):
         q = q.reshape(b, t, self.n_head, self.head_dim).transpose(0, 2, 1, 3)
         k = k.reshape(b, t, self.n_kv_head, self.head_dim).transpose(0, 2, 1, 3)
         v = v.reshape(b, t, self.n_kv_head, self.head_dim).transpose(0, 2, 1, 3)
-        cos, sin = rope_cos_sin(self.inv_freq, t, x.dtype)
+        cos, sin = rope_cos_sin(self.inv_freq, sequence.position_ids(), x.dtype)
         q, k = apply_rope(q, k, cos, sin)
         k = repeat_kv(k, self.n_rep)
         v = repeat_kv(v, self.n_rep)
-        y = causal_sdpa(q, k, v, None, "auto")  # (b, h, t, hd)
+        y = causal_attention_head_first(
+            q, k, v, sequence, None, self.implementation
+        )  # (b, h, t, hd)
         y = y.transpose(0, 2, 1, 3).reshape(b, t, self.n_head * self.head_dim)
         return self.o_proj(y, mi(self.paths[3]))
 
@@ -244,8 +206,8 @@ class Block(eqx.Module):
     mlp: MLP
     eps: float = eqx.field(static=True)
 
-    def __call__(self, x: Array, masks: "dict | None") -> Array:
-        x = x + self.self_attn(rms_norm(x, self.input_layernorm, self.eps), masks)
+    def __call__(self, x: Array, sequence: SequenceLayout, masks: "dict | None") -> Array:
+        x = x + self.self_attn(rms_norm(x, self.input_layernorm, self.eps), sequence, masks)
         x = x + self.mlp(rms_norm(x, self.post_attention_layernorm, self.eps), masks)
         return x
 
@@ -258,11 +220,12 @@ class ComponentLlama(eqx.Module):
     eps: float = eqx.field(static=True)
 
     def __call__(
-        self, idx: Int[Array, "b t"], masks: "dict | None" = None
+        self, inputs: LMBatchWithDocuments, masks: "dict | None" = None
     ) -> Float[Array, "b t vocab"]:
-        x = self.embed_tokens[idx]  # (b, t, d)
+        inputs.validate_shapes()
+        x = self.embed_tokens[inputs.batch.token_ids]  # (b, t, d)
         for block in self.blocks:
-            x = block(x, masks)
+            x = block(x, inputs.sequence, masks)
         x = rms_norm(x, self.norm, self.eps)
         return x @ self.lm_head.T
 
@@ -283,7 +246,9 @@ def _clin(sd: dict, path: str) -> ComponentLinear:
     )
 
 
-def build_from_torch_state(cfg: LlamaConfig, sd: dict[str, Array]) -> ComponentLlama:
+def build_from_torch_state(
+    cfg: LlamaConfig, sd: dict[str, Array], implementation: AttentionImplementation
+) -> ComponentLlama:
     """sd: torch ComponentLlama state keyed HF-style (model. prefix already stripped),
     with `layers.{i}.<leaf>.target_weight` / `.components.V` / `.components.U`."""
     inv_freq = llama3_inv_freq(cfg)
@@ -301,6 +266,7 @@ def build_from_torch_state(cfg: LlamaConfig, sd: dict[str, Array]) -> ComponentL
             head_dim=cfg.head_dim,
             n_rep=cfg.n_rep,
             paths=tuple(f"{p}.{s}" for s in _ATTN),
+            implementation=implementation,
         )
         mlp = MLP(
             gate_proj=_clin(sd, f"{p}.mlp.gate_proj"),
@@ -346,7 +312,9 @@ def site_shapes(cfg: LlamaConfig) -> dict[str, tuple[int, int]]:
     return {f"layers.{i}.{k}": v for i in range(cfg.n_layer) for k, v in per_layer.items()}
 
 
-def random_init(cfg: LlamaConfig, C: int, key) -> ComponentLlama:
+def random_init(
+    cfg: LlamaConfig, C: int, key, implementation: AttentionImplementation
+) -> ComponentLlama:
     """Random ComponentLlama with C components/site — for benchmarking at scale (no weights)."""
     shapes = site_shapes(cfg)
     ks = iter(jax.random.split(key, len(shapes) * 3 + cfg.n_layer * 2 + 4))
@@ -375,6 +343,7 @@ def random_init(cfg: LlamaConfig, C: int, key) -> ComponentLlama:
             head_dim=cfg.head_dim,
             n_rep=cfg.n_rep,
             paths=tuple(f"{p}.{s}" for s in _ATTN),
+            implementation=implementation,
         )
         mlp = MLP(
             gate_proj=clin(*shapes[f"{p}.mlp.gate_proj"]),

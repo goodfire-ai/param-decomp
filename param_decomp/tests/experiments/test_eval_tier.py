@@ -15,7 +15,7 @@ from param_decomp.core.configs import (
     AnyLossMetricConfig,
     CI_L0Config,
     CIHistogramsConfig,
-    PGDReconLossConfig,
+    EvalPGDReconLossConfig,
     SlowPGDReconLossConfig,
     UVPlotsConfig,
 )
@@ -32,11 +32,13 @@ FAST_METRICS = {
     "CEandKLLossesConfig",
     "CIMaskedAttnPatternsReconLossConfig",
     "CI_L0Config",
-    "PGDReconLossConfig",
+    "EvalPGDReconLossConfig",
+    "RouterDivergenceConfig",
     "StochasticAttnPatternsReconLossConfig",
 }
 SLOW_METRICS = {
     "ArithmeticCIGridConfig",
+    "CIActiveCountsPerPositionConfig",
     "CIHistogramsConfig",
     "CIMeanPerComponentConfig",
     "ComponentActivationDensityConfig",
@@ -96,13 +98,12 @@ def test_slow_on_first_step_is_the_untrained_baseline_not_the_first_eval_pass() 
 def test_the_tier_travels_with_the_metric_across_families() -> None:
     """UVPlots is slow wherever it is bound; the toy and LM binders read the same
     declaration rather than each assigning a tier of their own."""
-    assert UVPlotsConfig.slow and not PGDReconLossConfig.slow
+    assert UVPlotsConfig.slow and not EvalPGDReconLossConfig.slow
 
 
 def _fresh_pgd_raw(metric_type: str, n_steps: int) -> dict[str, object]:
     return {
         "type": metric_type,
-        "coeff": None,
         "name": f"PGDReconLoss_{n_steps}step",
         "init": "random",
         "source_shape": "c",
@@ -113,7 +114,7 @@ def _fresh_pgd_raw(metric_type: str, n_steps: int) -> dict[str, object]:
 
 def test_the_slow_fresh_pgd_probe_is_the_fast_one_on_the_other_cadence() -> None:
     """A long attack ladder rides `slow_every` beside the 20-step fast probe; both are the
-    same probe to every binder (`case PGDReconLossConfig()` covers the subclass)."""
+    same probe to every binder, with distinct config types for their cadences."""
     eval_config = EvalConfig.model_validate(
         {
             "batch_size": 8,
@@ -127,8 +128,7 @@ def test_the_slow_fresh_pgd_probe_is_the_fast_one_on_the_other_cadence() -> None
         }
     )
     fast, slow = eval_config.metrics
-    assert type(fast) is PGDReconLossConfig and type(slow) is SlowPGDReconLossConfig
-    assert isinstance(slow, PGDReconLossConfig)
+    assert type(fast) is EvalPGDReconLossConfig and type(slow) is SlowPGDReconLossConfig
     assert schedule_for(fast, eval_config) == Every(1000)
     assert schedule_for(slow, eval_config) == FirstThenEvery(0, 5000)
 

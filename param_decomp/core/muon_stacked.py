@@ -1,5 +1,5 @@
 """Muon: optax.contrib.muon semantics with the Newton-Schulz orthogonalization batched per
-semantic kind and sharded on the stack axis (SPEC S20).
+semantic kind and sharded on the stack axis.
 
 Why: GSPMD lowers per-leaf NS on ÷N-sharded fp32 masters into per-iteration full-Gram
 all-reduces with the largest matmul replicated on every device — serialized collectives
@@ -17,7 +17,8 @@ while-loop every iteration — it never hoists to reshard-once/compute-local/res
 The staging is DECLARED, not derived: each muon leaf's `waypoints` sharding is its
 placement table's `ns_compute` row verbatim (`placement.ns_staging_sharding`; a kind
 whose stack does not tile the declared split refuses at the stacked-muon consumer's
-claim, `placement.assert_stacked_muon_*_staging` — nothing is ever padded or gathered
+claim — `placement.assert_stacked_muon_component_staging` for V/U,
+`ci_fn.optimizer.assert_ci_muon_staging_tiles` for CI matrices — nothing is ever padded or gathered
 whole). NS executes AT the waypoint, reached by the
 `staging_hops` chain — one mesh axis moved per reshard, because a single reshard that
 both moves axes between dims and gathers others trips the SPMD
@@ -33,10 +34,11 @@ lr). Only the NS call differs: each leaf is canonicalized to `[g, rows<=cols]`, 
 `ns_dtype`, staged at its waypoint, orthogonalized, and landed back on its own layout. The
 vmap batching reorders float ops, so trajectories match per-leaf `optax.contrib.muon` (the
 reference the parity tests build directly) only up to reassociation — same tolerance
-class as device-count invariance (SPEC D4).
+class as device-count invariance.
 """
 
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import jax
@@ -55,10 +57,18 @@ from param_decomp.core.axes import MeshAxis
 _NS_DIMS = optax.contrib.MuonDimensionNumbers(reduction_axis=-2, output_axis=-1)
 _2D_DIMS = optax.contrib.MuonDimensionNumbers(reduction_axis=0, output_axis=1)
 
+
+@dataclass(frozen=True)
+class StageInPlace:
+    """Newton–Schulz runs where the matrix already rests; no reshard."""
+
+
+NSWaypoint = NamedSharding | StageInPlace
+
 NSWaypoints = Callable[[optax.Updates], Any]
-"""Maps the muon update tree to a same-structure tree of per-leaf staging shardings —
-each leaf's `ns_compute` placement row at the canonical `[g, rows<=cols]` rank
-(`placement.ns_staging_sharding`)."""
+"""Maps the muon update tree to a same-structure tree of per-leaf `NSWaypoint`s: a
+staging sharding (an `ns_compute` placement row at the canonical `[g, rows<=cols]` rank,
+`placement.ns_staging_sharding`) or `StageInPlace`."""
 
 
 def _canonicalize(leaf: Array) -> tuple[Array, bool]:
@@ -163,17 +173,19 @@ def _muon_mask_from_validated_dim_numbers(
     """Muon/adam labels for `optax.partition`, refusing any muon-labeled leaf whose
     declared axes differ from the convention the kernel executes. `_canonicalize` and
     the `scale_by_shape` wiring DISCARD the declaration (hardcoded trailing-two axes),
-    while `optax.contrib.muon` — the SPEC S20 reference semantics — honors it, so a
+    while `optax.contrib.muon` — the reference semantics — honors it, so a
     nonconforming declaration would silently orthogonalize different axes than the
     reference; it dies here at optimizer build instead."""
 
-    def label(spec_path: tuple[Any, ...], spec: object, subtree: optax.Params) -> optax.Params:
+    def label(
+        spec_path_for_err: tuple[Any, ...], spec: object, subtree: optax.Params
+    ) -> optax.Params:
         assert spec is None or isinstance(spec, optax.contrib.MuonDimensionNumbers), spec
         if spec is None:
             return jax.tree.map(lambda _: "adam", subtree)
         for leaf_path, leaf in jax.tree_util.tree_flatten_with_path(subtree)[0]:
             assert _declares_executed_convention(spec, leaf.ndim), (
-                f"muon leaf {jax.tree_util.keystr(spec_path + leaf_path)} with shape"
+                f"muon leaf {jax.tree_util.keystr(spec_path_for_err + leaf_path)} with shape"
                 f" {leaf.shape} declares MuonDimensionNumbers(reduction_axis="
                 f"{spec.reduction_axis}, output_axis={spec.output_axis}), but the"
                 f" stacked NS executes hardcoded trailing-two matrix axes"
@@ -189,6 +201,58 @@ def _muon_mask_from_validated_dim_numbers(
         resolved_dim_numbers,
         params,
         is_leaf=lambda x: x is None or isinstance(x, optax.contrib.MuonDimensionNumbers),
+    )
+
+
+def _orthogonalize_at_waypoint(
+    leaf: Array,
+    waypoint: NamedSharding,
+    ns_dtype: jnp.dtype,
+    orthogonalize: Callable[[Array], Array],
+) -> Array:
+    staged_leaf = leaf.astype(ns_dtype)
+    if staged_leaf.ndim == 4:
+        # A 4D [stack, expert, rows, cols] leaf merges its leading two axes in
+        # `_canonicalize`, and a merge whose SECOND axis is sharded (the
+        # `*-replicated-resident-moe` presets' `expert->tp`) has no shard-preserving
+        # view — an explicit-sharding refusal. One single-axis-move reshard (the hop
+        # discipline, in ns_dtype bytes) clears the block axis (`expert`) first, by
+        # where its mesh axes belong at the waypoint: staging axes park on the leading
+        # stack axis (the merge is then a pure view and they ride the canonical
+        # stack); non-staging axes (owner's co-located `expert: tp`) GATHER — the
+        # intra-node whole-block move owner staging accepts — leaving the stack axes
+        # in place, so the canonical leaf typically sits at the waypoint already.
+        entry0, entry1, *matrix = (
+            *jax.typeof(staged_leaf).sharding.spec,
+            *(None,) * (4 - len(jax.typeof(staged_leaf).sharding.spec)),
+        )
+        if _spec_entry_axes(entry1):
+            if set(_spec_entry_axes(entry1)) <= set(_spec_entry_axes(waypoint.spec[0])):
+                merged_stack = (*_spec_entry_axes(entry0), *_spec_entry_axes(entry1))
+                staged_leaf = jax.sharding.reshard(
+                    staged_leaf,
+                    NamedSharding(waypoint.mesh, P(merged_stack, None, *matrix)),
+                )
+            else:
+                staged_leaf = jax.sharding.reshard(
+                    staged_leaf,
+                    NamedSharding(waypoint.mesh, P(entry0, None, *matrix)),
+                )
+    stacked, transposed = _canonicalize(staged_leaf)
+    entries = tuple(jax.typeof(stacked).sharding.spec)
+    source = P(*entries, *(None,) * (3 - len(entries)))
+    hops = staging_hops(source, _spec_entry_axes(waypoint.spec[0]))
+    for spec in hops:
+        stacked = jax.sharding.reshard(stacked, NamedSharding(waypoint.mesh, spec))
+    orthogonalized = orthogonalize(stacked)
+    # The reversed hop chain lands back on the master canonical layout with the
+    # collectives still moving ns_dtype bytes; the cast to the leaf dtype is then
+    # layout-local.
+    for spec in reversed([source, *hops[:-1]]):
+        orthogonalized = jax.sharding.reshard(orthogonalized, NamedSharding(waypoint.mesh, spec))
+    orthogonalized = _decanonicalize(orthogonalized.astype(leaf.dtype), leaf, transposed)
+    return jax.sharding.reshard(
+        orthogonalized, NamedSharding(waypoint.mesh, jax.typeof(leaf).sharding.spec)
     )
 
 
@@ -211,11 +275,13 @@ def _staged_newton_schulz(
     the NS loop collective-free (a matrix-sharded operand is an explicit-mode type error
     on the Gram contraction); egress reverses the hop chain and lands the update on the
     leaf's own layout (the optimizer add demands exact sharding agreement under the
-    Explicit mesh). `waypoints=None` (no mesh: the CPU trajectory tests) is the same math
-    with no reshards."""
+    Explicit mesh). A `StageInPlace` leaf, and every leaf when `waypoints=None` (no mesh:
+    the CPU trajectory tests), is the same math with no reshards."""
     leaves, treedef = jax.tree.flatten(mu_hat)
-    per_leaf_waypoints = (
-        [None] * len(leaves) if waypoints is None else jax.tree.flatten(waypoints(mu_hat))[0]
+    per_leaf_waypoints: list[NSWaypoint] = (
+        [StageInPlace()] * len(leaves)
+        if waypoints is None
+        else jax.tree.flatten(waypoints(mu_hat))[0]
     )
     assert len(per_leaf_waypoints) == len(leaves), (
         f"ns_compute waypoints tree yields {len(per_leaf_waypoints)} leaves for"
@@ -233,58 +299,13 @@ def _staged_newton_schulz(
 
     out: list[Array] = []
     for leaf, waypoint in zip(leaves, per_leaf_waypoints, strict=True):
-        staged_leaf = leaf.astype(ns_dtype)
-        if waypoint is not None and staged_leaf.ndim == 4:
-            # A 4D [stack, expert, rows, cols] leaf merges its leading two axes in
-            # `_canonicalize`, and a merge whose SECOND axis is sharded (the moe
-            # presets' expert->tp) has no shard-preserving view — an explicit-sharding
-            # refusal. One single-axis-move reshard (the hop discipline, in ns_dtype
-            # bytes) clears the expert axis first, by where its mesh axes belong at the
-            # waypoint: staging axes park on the leading stack axis (the merge is then
-            # a pure view and they ride the canonical stack); non-staging axes (owner's
-            # co-located expert: tp) GATHER — the intra-node whole-block move owner
-            # staging accepts — leaving the stack axes in place, so the canonical leaf
-            # typically sits at the waypoint already.
-            entry0, entry1, *matrix = (
-                *jax.typeof(staged_leaf).sharding.spec,
-                *(None,) * (4 - len(jax.typeof(staged_leaf).sharding.spec)),
-            )
-            if _spec_entry_axes(entry1):
-                if set(_spec_entry_axes(entry1)) <= set(_spec_entry_axes(waypoint.spec[0])):
-                    merged_stack = (*_spec_entry_axes(entry0), *_spec_entry_axes(entry1))
-                    staged_leaf = jax.sharding.reshard(
-                        staged_leaf,
-                        NamedSharding(waypoint.mesh, P(merged_stack, None, *matrix)),
-                    )
-                else:
-                    staged_leaf = jax.sharding.reshard(
-                        staged_leaf,
-                        NamedSharding(waypoint.mesh, P(entry0, None, *matrix)),
-                    )
-        stacked, transposed = _canonicalize(staged_leaf)
-        if waypoint is None:
-            orthogonalized = orthogonalize(stacked)
-        else:
-            entries = tuple(jax.typeof(stacked).sharding.spec)
-            source = P(*entries, *(None,) * (3 - len(entries)))
-            hops = staging_hops(source, _spec_entry_axes(waypoint.spec[0]))
-            for spec in hops:
-                stacked = jax.sharding.reshard(stacked, NamedSharding(waypoint.mesh, spec))
-            orthogonalized = orthogonalize(stacked)
-            # The reversed hop chain lands back on the master canonical layout with the
-            # collectives still moving ns_dtype bytes; the cast to the leaf dtype is
-            # then layout-local.
-            for spec in reversed([source, *hops[:-1]]):
-                orthogonalized = jax.sharding.reshard(
-                    orthogonalized, NamedSharding(waypoint.mesh, spec)
-                )
-        orthogonalized = orthogonalized.astype(leaf.dtype)
-        orthogonalized = _decanonicalize(orthogonalized, leaf, transposed)
-        if waypoint is not None:
-            orthogonalized = jax.sharding.reshard(
-                orthogonalized, NamedSharding(waypoint.mesh, jax.typeof(leaf).sharding.spec)
-            )
-        out.append(orthogonalized)
+        match waypoint:
+            case StageInPlace():
+                stacked, transposed = _canonicalize(leaf.astype(ns_dtype))
+                orthogonalized = orthogonalize(stacked).astype(leaf.dtype)
+                out.append(_decanonicalize(orthogonalized, leaf, transposed))
+            case NamedSharding():
+                out.append(_orthogonalize_at_waypoint(leaf, waypoint, ns_dtype, orthogonalize))
     return jax.tree.unflatten(treedef, out)
 
 

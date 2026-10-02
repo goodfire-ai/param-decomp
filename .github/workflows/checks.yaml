@@ -10,8 +10,13 @@ on:
   pull_request:
     branches:
       - "**"
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
+
+# A new push to a pull request supersedes its running checks. Pushes to main never cancel
+# each other: each run there is the only record of its commit.
+concurrency:
+  group: checks-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Guard the requires-python floor: downstream consumers deploy on Python 3.12, so
@@ -37,43 +42,78 @@ jobs:
       - name: Import smoke
         run: |
           uv run python -c "import param_decomp.core.built_run; from param_decomp.core.components import SiteSpec"
-          uv run python -c "import param_decomp.experiments.lm.run, param_decomp.pretrain.train"
+          uv run python -m param_decomp.experiments.tms.run --help > /dev/null
+
+  # Once, not once per shard: ruff, the `|=` check, and basedpyright over the whole tree.
+  lint:
+    name: lint and types
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.8.19"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Set up Python
+        run: uv python install 3.13
+      - name: Install dependencies
+        run: make install-ci
+      - name: Lint and type check
+        run: make lint
 
   build:
-    # The test suite is sharded across parallel jobs (an exact partition — see the
-    # test-ci-* Makefile targets): one job running everything overruns the job timeout,
-    # and a timed-out job never saves its JAX compile cache, leaving every later run
-    # cold and slower still.
+    # The whole suite, sharded across parallel jobs (an exact partition — see the test-ci-*
+    # Makefile targets and `param_decomp/tests/infra/test_ci_shards.py`). Runners are
+    # 2-core machines, so wall clock is set by the slowest shard, not the sum.
     strategy:
       fail-fast: false
       matrix:
         shard:
           - llama-goldens
-          - core-engine
-          - core-targets
+          - core-recon
+          - core-training
+          - core-losses
+          - core-checkpoint
+          - core-integration
+          - core-state
+          - targets-moe-model
+          - targets-moe-narrow
+          - targets-moe-sites
+          - targets-dense
+          - lab-lm-eval
           - lab-lm
-          - lab-pipeline
+          - lab-experiments
           - multidevice-placement
-          - multidevice-worlds
+          - multidevice-placed-llama
+          - multidevice-qwen-placement
+          - multidevice-qwen-ci-fn
+          - multidevice-qwen-ci-fn-training
+          - multidevice-qwen-pooled-ragged-tp
+          - multidevice-qwen-pooled-dense-tp
+          - multidevice-qwen-pooled-mixers
+          - multidevice-qwen-batch-sources
+          - multidevice-qwen-router
+          - multidevice-qwen-parity
+          - multidevice-qwen-mixer-sites
+          - multidevice-padding
+          - multidevice-replicate
           - multidevice-routed
+          - multidevice-eval-context
           - multidevice-evals
+          - multidevice-sharding
           - multidevice-substrate
     name: build (${{ matrix.shard }})
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: read
-    container:
-      image: ghcr.io/${{ github.repository }}/ci-mpi:latest
-    timeout-minutes: 35
+    # Three times the slowest shard: catches a hung XLA collective without a slow runner
+    # day going red.
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      # Container runs as different user than repo owner, causing "dubious ownership" errors.
-      # Tests that run subprocesses (e.g. test_distributed.py) need git commands to work.
-      - name: Configure git safe directory
-        run: git config --global --add safe.directory $GITHUB_WORKSPACE
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -88,56 +128,60 @@ jobs:
       - name: Install dependencies
         run: make install-ci
 
-      - name: Print dependencies
-        run: uv pip list
-
+      # The tests' HF downloads are a few tokenizer and config files. Cache entries are
+      # immutable and each shard downloads its own subset, so the key is per shard. Bump
+      # the suffix when a fixture changes.
       - name: Cache HuggingFace downloads
         uses: actions/cache@v6
         with:
-          path: ${{ github.workspace }}/.hf-cache
-          key: hf-${{ github.run_id }}-${{ matrix.shard }}
-          restore-keys: |
-            hf-
+          path: .hf-cache
+          key: hf-fixtures-${{ matrix.shard }}-1
 
       # JAX's disk cache is content-addressed by HLO, backend, and JAX/XLA version;
-      # conftest.py caps CPU ISA at AVX2, so the broad restore prefixes are safe. GitHub
-      # cache keys are immutable: one key per shard avoids concurrent writers, while the
-      # commit sha lets each run publish newly compiled HLOs.
+      # conftest.py caps CPU ISA at AVX2, so reuse across runners is safe. The repository's
+      # cache store is capped at 10 GB and evicts oldest-first: saving an entry per commit
+      # from every pull request turned the whole store over in about two hours, so no run
+      # ever found its cache. One entry per shard, lockfile and week, never written by a
+      # pull request, keeps the store a few GB and lets every pull request restore it.
+      - name: Compile cache key
+        id: cache-key
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
       - name: Restore JAX compilation cache
         uses: actions/cache/restore@v6
         with:
-          path: ${{ github.workspace }}/.jax_test_cache
-          key: jax-test-cache-${{ matrix.shard }}-${{ hashFiles('uv.lock') }}-${{ github.sha }}
+          path: .jax_test_cache
+          key: jax-test-cache-${{ matrix.shard }}-${{ hashFiles('uv.lock') }}-${{ steps.cache-key.outputs.week }}
           restore-keys: |
             jax-test-cache-${{ matrix.shard }}-${{ hashFiles('uv.lock') }}-
-            jax-test-cache-${{ matrix.shard }}-
-            jax-test-cache-
 
-      - name: Run basedpyright
-        run: uv run basedpyright
-
-      - name: Run ruff lint
-        run: uv run ruff check --fix-only .
-
-      - name: Run ruff format
-        run: uv run ruff format .
-
-      # Disable core dumps: one process holding eight simulated devices' executables
-      # can dump multiple GB and leave no room to save the compile cache.
+      # An aborting pass must not dump core: one process holding eight simulated devices'
+      # executables dumps multiple GB, enough to fill the runner's disk.
       - name: Run tests
         run: |
           ulimit -c 0
           make test-ci-${{ matrix.shard }}
         env:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-          OMPI_ALLOW_RUN_AS_ROOT: 1
-          OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
           HF_HOME: ${{ github.workspace }}/.hf-cache
+          PYTEST_ADDOPTS: --junitxml=junit/${{ matrix.shard }}.xml
 
-      # Retain compiles completed before a test failure.
-      - name: Save JAX compilation cache
+      # Every test's wall time, per shard: the `--durations` top ten in the log cannot
+      # answer "where do the minutes go".
+      - name: Upload per-test timings
         if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-${{ matrix.shard }}
+          path: junit/
+          if-no-files-found: error
+
+      # The first non-pull-request run of the week writes the entry (a later save to an
+      # existing key is skipped); pull requests only read. Runs after a test failure so
+      # completed compiles are kept.
+      - name: Save JAX compilation cache
+        if: always() && github.event_name != 'pull_request'
         uses: actions/cache/save@v6
         with:
-          path: ${{ github.workspace }}/.jax_test_cache
-          key: jax-test-cache-${{ matrix.shard }}-${{ hashFiles('uv.lock') }}-${{ github.sha }}
+          path: .jax_test_cache
+          key: jax-test-cache-${{ matrix.shard }}-${{ hashFiles('uv.lock') }}-${{ steps.cache-key.outputs.week }}

@@ -83,7 +83,6 @@ pd:
   faithfulness_warmup_lr: 0.01
   faithfulness_warmup_weight_decay: 0.0
 cadence:
-  train_log_every: 100
   checkpointing:
     kind: periodic
     save_every: 5000
@@ -116,7 +115,6 @@ eval:
   slow_on_first_step: true
   metrics:
   - type: PGDReconLoss
-    coeff: null
     init: random
     source_shape: c
     n_steps: 20

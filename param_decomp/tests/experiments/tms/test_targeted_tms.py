@@ -1,24 +1,30 @@
-"""The tPD engine (SPEC §11) exercised over the TMS target as a TEST FIXTURE: the
+"""The tPD engine exercised over the TMS target as a TEST FIXTURE: the
 two-pass step trains, adversaries ride the target pass, the factory boundary holds, and
 the whole engine path runs end-to-end as a library. There is no shipped toy tPD run
 shape — the LM is the only targeted product surface."""
 
 import dataclasses
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-import optax
+import orbax.checkpoint as ocp
 import pytest
 from jax.sharding import AxisType
+from jaxtyping import Array
 
-from param_decomp.core.ci_fn import LayerwiseMLPCIArch, init_layerwise_mlp_ci_fn
-from param_decomp.core.components import SiteC, init_component_stacks
+from param_decomp.core.ci_fn.implementations.layerwise_mlp import (
+    LayerwiseMLPCIFnArch,
+    init_layerwise_mlp_ci_fn,
+)
+from param_decomp.core.components import ComponentStacks, SiteC, init_component_stacks
 from param_decomp.core.configs import (
     AdamPGDConfig,
+    AdamWOptimizerConfig,
+    FrequencyMinimalityConfig,
     ImportanceMinimalityLossConfig,
     NontargetConfig,
     PersistentPGDReconLossConfig,
@@ -26,10 +32,12 @@ from param_decomp.core.configs import (
     TargetedLossMetricConfig,
     UnmaskedNoDeltaReconLossConfig,
 )
-from param_decomp.core.model import MaterializedMasking, PlacedModel, prepare_compute_weights
+from param_decomp.core.init_placed import seeded_ci_fn_initializer
+from param_decomp.core.losses import EmaFrequency, init_frequency_estimator
+from param_decomp.core.model import MaterializedMasking, PlacedModel
 from param_decomp.core.objective import (
     NontargetPass,
-    TargetedObjective,
+    TargetedPDObjective,
     build_targeted_objective,
 )
 from param_decomp.core.recon import (
@@ -38,12 +46,15 @@ from param_decomp.core.recon import (
     StochasticSources,
     UnmaskedNoDeltaSources,
 )
+from param_decomp.core.run_state import _adamw_optimizer
 from param_decomp.core.schedule import ScheduleConfig
+from param_decomp.core.sharding import hsdp_mesh
 from param_decomp.core.train import (
     CIScaledWeightDecay,
     Decomposition,
     ForwardSubstrate,
-    TrainingItem,
+    TargetedPDState,
+    TargetedPDTrainingState,
     TrainState,
     make_targeted_train_step,
 )
@@ -83,7 +94,7 @@ def _tiny_setup(
     model = PlacedModel(model=tms_decomposed_model(cfg, target, sites), placement=None)
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = init_layerwise_mlp_ci_fn(
-        LayerwiseMLPCIArch(
+        LayerwiseMLPCIFnArch(
             hidden_dims=(16,),
             has_position_axis=False,
             input_names=site_input_tap_keys(tuple(s.name for s in sites)),
@@ -91,33 +102,39 @@ def _tiny_setup(
         sites,
         jax.random.PRNGKey(2),
     )
-    opt_vu = optax.adamw(1e-3, weight_decay=0.0)
-    opt_ci = optax.adamw(1e-3, weight_decay=0.0)
+    optimizer_config = AdamWOptimizerConfig(lr_schedule=ScheduleConfig.constant(1e-3))
+    opt_vu = _adamw_optimizer(optimizer_config, total_steps)
+    opt_ci = _adamw_optimizer(optimizer_config, total_steps)
+    objective = build_targeted_objective(loss_metrics, nontarget, model.model.sites)
+    importance = next(
+        term for term in loss_metrics if isinstance(term, ImportanceMinimalityLossConfig)
+    )
     state = TrainState(
-        decomposition=Decomposition(components=vu, ci_fn=ci_fn),
-        training=TrainingItem(
+        decomposition=Decomposition[Array](components=vu, ci_fn=ci_fn),
+        training=TargetedPDTrainingState(
+            target_frequency=init_frequency_estimator(importance.frequency, sites),
+            nontarget_frequency=init_frequency_estimator(importance.frequency, sites),
+            objective=objective,
+            ci_scaled_weight_decay=ci_scaled_weight_decay,
             components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
             ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
             adversaries={},
-            freq_ema=None,
             step=jnp.zeros((), jnp.int32),
         ),
     )
-    objective = build_targeted_objective(loss_metrics, nontarget, model.site_names)
-    step = make_targeted_train_step(
-        model_static=model,
-        substrate=ForwardSubstrate.of(
-            model,
-            remat_recon_forwards=False,
-            remat_ci_fn=False,
-            ci_capture_keys=ci_fn.capture_keys,
-            ci_placement=None,
-        ),
-        objective=objective,
-        ci_scaled_weight_decay=ci_scaled_weight_decay,
-        components_optimizer=opt_vu,
-        ci_fn_optimizer=opt_ci,
-        total_steps=total_steps,
+    step = jax.jit(
+        make_targeted_train_step(
+            model_static=model,
+            substrate=ForwardSubstrate.of(
+                model,
+                remat_recon_forwards=False,
+                remat_ci_fn=False,
+                ci_capture_keys=ci_fn.capture_keys,
+            ),
+            components_optimizer=opt_vu,
+            ci_fn_optimizer=opt_ci,
+            total_steps=total_steps,
+        )
     )
     return cfg, model, state, step
 
@@ -129,8 +146,97 @@ def _loss_metrics():
     )
 
 
+def _frequency_loss_metrics(halflife_steps: float | None):
+    return (
+        ImportanceMinimalityLossConfig(
+            coeff=3e-3,
+            gamma=ScheduleConfig.constant(1.0),
+            frequency=FrequencyMinimalityConfig(
+                coeff=1e-3, reference_datapoint_count=64, ema_halflife_steps=halflife_steps
+            ),
+        ),
+        StochasticReconLossConfig(coeff=1.0),
+    )
+
+
+def test_targeted_frequency_ema_tracks_each_stream():
+    cfg, model, state, step = _tiny_setup(_frequency_loss_metrics(4.0), _stochastic_nontarget())
+    objective = jax.tree.map(jnp.copy, state.training.objective)
+    substrate = ForwardSubstrate.of(
+        model,
+        remat_recon_forwards=False,
+        remat_ci_fn=False,
+        ci_capture_keys=state.decomposition.ci_fn.capture_keys,
+    )
+    _, batch_model, batch_state, batch_step = _tiny_setup(
+        _frequency_loss_metrics(None), _stochastic_nontarget()
+    )
+    batch_state, _ = batch_step(
+        batch_model,
+        batch_state,
+        _target_batch(cfg, 0),
+        _nontarget_batch(cfg, 0),
+        jax.random.PRNGKey(0),
+    )
+
+    @eqx.filter_jit
+    def batch_frequencies(
+        model: PlacedModel[jax.Array, jax.Array, ComponentStacks, jax.Array, MaterializedMasking],
+        decomposition: Decomposition[Array],
+        batch: jax.Array,
+    ):
+        compute_ci_fn, _ = substrate.ci_fn_prepare_vjp(decomposition.ci_fn)
+        stream = substrate.prep_stream(model, batch, frozenset())
+        prepared = model.prepare_compute_weights(decomposition.components)
+        ci, _ = substrate.ci_fn_forward_vjp(compute_ci_fn, prepared, stream)
+        return substrate.component_frequencies(
+            ci, jnp.asarray(1.0, jnp.float32), normalize_at_one=False
+        )
+
+    decay = 2 ** (-1 / 4.0)
+    expected = [
+        {site.name: np.zeros(site.C, np.float64) for site in model.model.sites} for _ in range(2)
+    ]
+    for i in range(3):
+        batches = (_target_batch(cfg, i), _nontarget_batch(cfg, i))
+        for history, batch in zip(expected, batches, strict=True):
+            frequencies = batch_frequencies(model, state.decomposition, batch)
+            for name, frequency in frequencies.items():
+                history[name] = decay * history[name] + (1 - decay) * np.asarray(frequency)
+        state, metrics = step(model, state, *batches, jax.random.PRNGKey(i))
+        if i == 0:
+            for actual, batch_actual in zip(
+                jax.tree.leaves(state.decomposition),
+                jax.tree.leaves(batch_state.decomposition),
+                strict=True,
+            ):
+                np.testing.assert_allclose(actual, batch_actual, rtol=1e-5, atol=1e-7)
+        target_frequency = state.training.target_frequency
+        nontarget_frequency = state.training.nontarget_frequency
+        assert isinstance(target_frequency, EmaFrequency)
+        assert isinstance(nontarget_frequency, EmaFrequency)
+        assert int(target_frequency.count) == int(nontarget_frequency.count) == i + 1
+        assert eqx.tree_equal(state.training.objective, objective)
+        for actual, history, metric in zip(
+            (target_frequency.estimate, nontarget_frequency.estimate),
+            expected,
+            ("freq", "loss/nontarget/freq"),
+            strict=True,
+        ):
+            for name, values in history.items():
+                np.testing.assert_allclose(actual[name], values, rtol=1e-5, atol=1e-7)
+            debiased = [values / (1 - decay ** (i + 1)) for values in history.values()]
+            penalty = sum(np.sum(values * np.log2(1 + 64 * values)) for values in debiased)
+            assert float(metrics[metric]) == pytest.approx(float(penalty), rel=1e-5)
+            if i == 0:
+                assert float(metrics[metric]) == pytest.approx(float(metrics[f"{metric}_batch"]))
+            else:
+                assert not np.isclose(metrics[metric], metrics[f"{metric}_batch"])
+    assert any(not np.allclose(expected[0][name], expected[1][name]) for name in expected[0])
+
+
 def test_targeted_two_pass_step_trains():
-    """T1/T2: the two-pass step consumes both streams and advances finite training."""
+    """The two-pass step consumes both streams and advances finite training."""
     cfg, model, state, step = _tiny_setup(_loss_metrics(), _stochastic_nontarget())
     active = (0, 1)
     tkey, ntkey = jax.random.PRNGKey(10), jax.random.PRNGKey(11)
@@ -148,7 +254,7 @@ def test_targeted_two_pass_step_trains():
         )
     assert int(state.training.step) == 6
     assert all(bool(jnp.isfinite(jnp.asarray(v)).all()) for v in metrics.values())
-    # T3: no faithfulness anywhere in the record.
+    # No faithfulness anywhere in the record.
     assert "faith" not in metrics
     # Both passes' losses are reported.
     assert "loss/StochasticReconLoss" in metrics
@@ -157,7 +263,7 @@ def test_targeted_two_pass_step_trains():
 
 
 def test_targeted_step_trains_with_persistent_adversary():
-    """T7: a persistent-PGD term rides the TARGET pass; sources size at pd.batch_size."""
+    """A persistent-PGD term rides the TARGET pass; sources size at pd.batch_size."""
     ppgd = PersistentPGDReconLossConfig.model_validate(
         {
             "type": "PersistentPGDReconLoss",
@@ -192,7 +298,7 @@ def test_targeted_step_trains_with_persistent_adversary():
     )
     sources = _untyped(
         init_sources_sharded(
-            model.sites,
+            model.model.sites,
             Positionless(),
             "bc",
             target_batch_size,
@@ -210,11 +316,14 @@ def test_targeted_step_trains_with_persistent_adversary():
     )
     state = TrainState(
         decomposition=state.decomposition,
-        training=TrainingItem(
+        training=TargetedPDTrainingState(
+            target_frequency=state.training.target_frequency,
+            nontarget_frequency=state.training.nontarget_frequency,
+            objective=state.training.objective,
+            ci_scaled_weight_decay=state.training.ci_scaled_weight_decay,
             components_opt_state=state.training.components_opt_state,
             ci_fn_opt_state=state.training.ci_fn_opt_state,
             adversaries={"PersistentPGDReconLoss": adversary},
-            freq_ema=None,
             step=state.training.step,
         ),
     )
@@ -243,31 +352,70 @@ def test_targeted_step_trains_with_persistent_adversary():
     assert "src_lr" in metrics
 
 
-def test_targeted_step_refuses_forged_freq_ema():
-    # S8'': a targeted config cannot carry the EMA knob, so a freq_ema buffer on the
-    # state is a forgery — refused at trace time rather than silently overwritten.
-    cfg, model, state, step = _tiny_setup(_loss_metrics(), _stochastic_nontarget())
-    forged = TrainState(
-        decomposition=state.decomposition,
-        training=dataclasses.replace(
-            state.training,
-            freq_ema={
-                "linear1": jnp.zeros((8,), jnp.float32),
-                "linear2": jnp.zeros((6,), jnp.float32),
-            },
-        ),
+@pytest.mark.parametrize("ema", [False, True])
+def test_targeted_checkpoint_resumes_exact_trajectory(tmp_path: Path, ema: bool):
+    from param_decomp.core.checkpoint import (
+        make_checkpoint_manager,
+        restore_destination,
+        restore_step,
+        save_state,
     )
-    narrow = sample_sparse_features(jax.random.PRNGKey(10), 16, 2, 0.3, "exactly_one_active")
-    target_batch = scatter_features(narrow, (0, 1), cfg.n_features)
-    nontarget_batch = sample_sparse_features(
-        jax.random.PRNGKey(11), 32, cfg.n_features, 0.3, "at_least_zero_active"
+    from param_decomp.core.configs import KeepLastNCheckpoints
+
+    losses = _frequency_loss_metrics(4.0) if ema else _loss_metrics()
+    cfg, model, state, step = _tiny_setup(
+        losses,
+        _stochastic_nontarget(),
+        ci_scaled_weight_decay=CIScaledWeightDecay(jnp.asarray(0.2, jnp.float32)),
     )
-    with pytest.raises(AssertionError, match="S8''"):
-        step(model, forged, target_batch, nontarget_batch, jax.random.PRNGKey(100))
+    state, _ = step(
+        model, state, _target_batch(cfg, 0), _nontarget_batch(cfg, 0), jax.random.PRNGKey(0)
+    )
+    next_inputs = (model, _target_batch(cfg, 1), _nontarget_batch(cfg, 1), jax.random.PRNGKey(1))
+    abstract_model, abstract_target, abstract_nontarget, abstract_key = jax.tree.map(
+        ocp.utils.to_shape_dtype_struct, next_inputs
+    )
+    with jax.transfer_guard("disallow"):
+        abstract = jax.eval_shape(
+            lambda: _tiny_setup(
+                losses,
+                _stochastic_nontarget(),
+                ci_scaled_weight_decay=CIScaledWeightDecay(jnp.asarray(0.9, jnp.float32)),
+            )[2]
+        )
+        compiled = (
+            jax.jit(step)
+            .lower(abstract_model, abstract, abstract_target, abstract_nontarget, abstract_key)
+            .compile()
+        )
+        destination = restore_destination(
+            abstract, compiled.input_formats[0][1], hsdp_mesh(1, 1, 1)
+        )
+    assert all(isinstance(leaf, jax.ShapeDtypeStruct) for leaf in jax.tree.leaves(destination))
+    with make_checkpoint_manager(tmp_path / "checkpoint", KeepLastNCheckpoints(n=1)) as manager:
+        save_state(manager, 1, state)
+        restored = restore_step(manager, destination, 1)
+    assert isinstance(restored.training, TargetedPDTrainingState)
+    for expected, actual in zip(jax.tree.leaves(state), jax.tree.leaves(restored), strict=True):
+        np.testing.assert_array_equal(actual, expected)
+    for leaf, fmt in zip(
+        jax.tree.leaves(restored), jax.tree.leaves(compiled.input_formats[0][1]), strict=True
+    ):
+        if fmt.sharding is not None:
+            assert leaf.format == fmt
+    _, target_batch, nontarget_batch, key = next_inputs
+    uninterrupted, metrics = compiled(model, state, target_batch, nontarget_batch, key)
+    resumed, resumed_metrics = compiled(model, restored, target_batch, nontarget_batch, key)
+    for expected, actual in zip(
+        jax.tree.leaves((uninterrupted, metrics)),
+        jax.tree.leaves((resumed, resumed_metrics)),
+        strict=True,
+    ):
+        np.testing.assert_array_equal(actual, expected)
 
 
 def test_targeted_step_unmasked_no_delta_scores_components_only():
-    """T4's one exception: the UnmaskedNoDeltaReconLoss non-target term scores the FULL
+    """The UnmaskedNoDeltaReconLoss non-target term scores the FULL
     component sum with the weight delta actually OFF — the step's reported loss matches
     a delta-zero masked forward and not the delta-pinned-on one (which reproduces the
     frozen output near-exactly, collapsing the loss toward zero)."""
@@ -286,17 +434,23 @@ def test_targeted_step_unmasked_no_delta_scores_components_only():
     )
 
     # Expected values computed BEFORE the step — the jitted step donates its inputs.
-    prepared = prepare_compute_weights(model, vu)
-    clean_output = model.clean_forward(nontarget_batch).output
+    prepared = model.prepare_compute_weights(vu)
+    clean = model.clean_forward(nontarget_batch)
     n = nontarget_batch.shape[0]
 
     def all_ones_recon_at_delta(delta_value: float) -> jax.Array:
         masking = MaterializedMasking(
-            component_masks={s.name: jnp.ones((n, s.C)) for s in model.sites},
-            weight_delta_masks={s.name: jnp.full((n,), delta_value) for s in model.sites},
+            component_masks={s.name: jnp.ones((n, s.C)) for s in model.model.sites},
+            weight_delta_masks={s.name: jnp.full((n,), delta_value) for s in model.model.sites},
         )
-        masked = model.masked_forward(prepared, nontarget_batch, masking=masking, remat=False)
-        return model.recon_loss_fn(masked.output, clean_output)
+        masked = model.masked_forward(
+            prepared,
+            clean.conditioning,
+            masking=model.model.prepare_masking(masking),
+            routes=None,
+            remat=False,
+        )
+        return model.recon_loss_fn(masked.output, clean.output)
 
     delta_off = all_ones_recon_at_delta(0.0)
     delta_on = all_ones_recon_at_delta(1.0)
@@ -337,13 +491,13 @@ def _gated_ppgd():
 
 
 def _with_adversary_sources(
-    state: TrainState, cfg_optimizer: AdamPGDConfig, source_key: int
-) -> TrainState:
+    state: TargetedPDState[Array], cfg_optimizer: AdamPGDConfig, source_key: int
+) -> TargetedPDState[Array]:
     import numpy as np
     from jax.sharding import Mesh
 
     from param_decomp.core.adversary import PersistentAdversary, init_sources_adam_state
-    from param_decomp.core.components import Dense, SiteSpec
+    from param_decomp.core.components import DenseFactorization, SiteSpec
     from param_decomp.core.init_placed import init_sources_sharded
     from param_decomp.core.model import Positionless
 
@@ -356,10 +510,14 @@ def _with_adversary_sources(
         init_sources_sharded(
             (
                 SiteSpec(
-                    name="linear1", factorization=Dense(d_in=8, d_out=8, C=8), group="linear1"
+                    name="linear1",
+                    factorization=DenseFactorization(d_in=8, d_out=8, C=8),
+                    group="linear1",
                 ),
                 SiteSpec(
-                    name="linear2", factorization=Dense(d_in=6, d_out=6, C=6), group="linear2"
+                    name="linear2",
+                    factorization=DenseFactorization(d_in=6, d_out=6, C=6),
+                    group="linear2",
                 ),
             ),
             Positionless(),
@@ -379,34 +537,31 @@ def _with_adversary_sources(
     )
     return TrainState(
         decomposition=state.decomposition,
-        training=TrainingItem(
+        training=TargetedPDTrainingState(
+            target_frequency=state.training.target_frequency,
+            nontarget_frequency=state.training.nontarget_frequency,
+            objective=state.training.objective,
+            ci_scaled_weight_decay=state.training.ci_scaled_weight_decay,
             components_opt_state=state.training.components_opt_state,
             ci_fn_opt_state=state.training.ci_fn_opt_state,
             adversaries={"PersistentPGDReconLoss": adversary},
-            freq_ema=None,
             step=state.training.step,
         ),
     )
 
 
 def test_tpd_three_step_golden():
-    """REFACTOR PIN: a 3-step tPD trajectory (stochastic + persistent-PGD target grid,
-    stochastic non-target grid, constant coeffs) against literals generated at
-    81c510cee and RE-PINNED twice since: under the explicit-field source draw (the
-    packed [.., C+1] init draw was deleted, deliberately changing the U[0,1] stream;
-    the step math is unchanged — per-step values moved only through the source values)
-    and under the smooth-L0 imp-min seat (gamma constant 1.0, replacing Lp p=1 — the
-    one deliberate math change of the Lp removal). A pure restructuring of the step
-    machinery must reproduce these
-    values — needing to regenerate them means the MATH changed, which is a different PR.
-    Tolerance absorbs the D4 float-reassociation class (SPEC D4): the per-step-metric
-    rel=5e-3 is sized from the site_forward regrouping `((x@V)*m)@U + d*(x@W - (x@V)@U)`
-    -> `((x@V)*(m-d))@U + d*(x@W)` (9fe2b6246, algebraically identical — verified by
-    reverting only that hunk, which reproduces the literals bit-for-bit), whose drift on
-    these near-cancelling recon residuals is rel <= 1.04e-3; x5 headroom covers
-    cross-platform BLAS low bits on the same class. The final V/U and source sums stay
-    at rel=1e-4 (observed drift <= 8e-6 and <= 6.8e-5) — a tolerance is widened only
-    when a D4-class event fires it, so each family keeps its maximum catching power."""
+    """Pin a three-step tPD trajectory with stochastic and persistent-adversarial losses.
+
+    The target grid uses stochastic and persistent-PGD terms; the non-target grid
+    uses stochastic reconstruction. Coefficients and smooth-L0 gamma are constant.
+    Refactoring must preserve the recorded trajectory rather than regenerate it.
+
+    Metric tolerance `rel=5e-3` covers the measured `1.04e-3` drift from regrouping
+    `((x@V)*m)@U + d*(x@W - (x@V)@U)` as `((x@V)*(m-d))@U + d*(x@W)`, with
+    headroom for cross-platform reduction order. Final V/U and source sums use
+    `rel=1e-4` (observed drift at most `8e-6` and `6.8e-5`). Widen a tolerance only
+    for a demonstrated floating-point reassociation, not an algorithm change."""
     import numpy as np
     from jax.sharding import Mesh
 
@@ -437,7 +592,7 @@ def test_tpd_three_step_golden():
     )
     sources = _untyped(
         init_sources_sharded(
-            model.sites,
+            model.model.sites,
             Positionless(),
             "bc",
             16,
@@ -455,33 +610,36 @@ def test_tpd_three_step_golden():
     )
     state = TrainState(
         decomposition=state.decomposition,
-        training=TrainingItem(
+        training=TargetedPDTrainingState(
+            target_frequency=state.training.target_frequency,
+            nontarget_frequency=state.training.nontarget_frequency,
+            objective=state.training.objective,
+            ci_scaled_weight_decay=state.training.ci_scaled_weight_decay,
             components_opt_state=state.training.components_opt_state,
             ci_fn_opt_state=state.training.ci_fn_opt_state,
             adversaries={"PersistentPGDReconLoss": adversary},
-            freq_ema=None,
             step=state.training.step,
         ),
     )
 
     expected_per_step = (
         {
-            "total": 1.428222283721e-02,
-            "loss/StochasticReconLoss": 2.224520547315e-03,
+            "total": 1.561456080526e-02,
+            "loss/StochasticReconLoss": 2.032259944826e-03,
             "loss/PersistentPGDReconLoss": 2.443142002448e-03,
-            "loss/nontarget/total": 9.804574772716e-03,
+            "loss/nontarget/total": 1.132917311043e-02,
         },
         {
-            "total": 1.113750413060e-02,
-            "loss/StochasticReconLoss": 1.461514621042e-03,
-            "loss/PersistentPGDReconLoss": 2.150140702724e-03,
-            "loss/nontarget/total": 7.966522127390e-03,
+            "total": 1.104030385613e-02,
+            "loss/StochasticReconLoss": 1.436100690626e-03,
+            "loss/PersistentPGDReconLoss": 2.149317879230e-03,
+            "loss/nontarget/total": 7.899543270469e-03,
         },
         {
-            "total": 9.230432100594e-03,
-            "loss/StochasticReconLoss": 1.873412053101e-03,
-            "loss/PersistentPGDReconLoss": 2.740368479863e-03,
-            "loss/nontarget/total": 5.058536771685e-03,
+            "total": 1.162519864738e-02,
+            "loss/StochasticReconLoss": 2.155765192583e-03,
+            "loss/PersistentPGDReconLoss": 2.739871386439e-03,
+            "loss/nontarget/total": 7.180720567703e-03,
         },
     )
     for i, expected in enumerate(expected_per_step):
@@ -502,16 +660,16 @@ def test_tpd_three_step_golden():
             assert got == pytest.approx(want, rel=5e-3), (i, key, got, want)
 
     expected_sums = {
-        ("V", "linear2"): -1.364253997803e00,
-        ("U", "linear2"): -2.957349777222e00,
-        ("V", "linear1"): 8.885897994041e-01,
-        ("U", "linear1"): 1.314910650253e00,
+        ("V", "linear2"): -1.363017678261e00,
+        ("U", "linear2"): -2.960402011871e00,
+        ("V", "linear1"): 8.811393380165e-01,
+        ("U", "linear1"): 1.312216877937e00,
     }
     for shape, (v_stack, u_stack) in state.decomposition.components.stacks.items():
         assert float(jnp.sum(v_stack)) == pytest.approx(expected_sums[("V", shape)], rel=1e-4)
         assert float(jnp.sum(u_stack)) == pytest.approx(expected_sums[("U", shape)], rel=1e-4)
     final = state.training.adversaries["PersistentPGDReconLoss"]
-    expected_sources = {"linear1": 6.525482368469e01, "linear2": 5.563022947311e01}
+    expected_sources = {"linear1": 6.526098918915e01, "linear2": 5.564957189560e01}
     for site, want in expected_sources.items():
         total = sum(
             float(jnp.sum(leaf)) for leaf in jax.tree.leaves(final.sources.per_site()[site])
@@ -520,7 +678,7 @@ def test_tpd_three_step_golden():
 
 
 def test_gated_ppgd_shapes_nothing_but_the_adversary_still_ascends():
-    """S14′ with an activation gate: while the PPGD coeff is 0 the term must not shape
+    """With an activation gate: while the PPGD coeff is 0 the term must not shape
     the decomposition — the step's new components and CI fn are bit-equal across
     DIFFERENT persistent-source values — while the adversary itself still takes its
     warmup AND final ascents (the source path is never coeff-scaled)."""
@@ -560,14 +718,14 @@ def test_gated_ppgd_shapes_nothing_but_the_adversary_still_ascends():
         assert jnp.array_equal(got, want), "gated PPGD leaked into the CI fn"
 
 
-def test_targeted_factory_refuses_adversarial_nontarget_surface():
-    """T5's library boundary: a programmatically-built non-target term with adversarial
-    sources refuses at factory build even though the config schema can't spell one."""
-    _, model, state, _ = _tiny_setup(_loss_metrics(), _stochastic_nontarget())
+def test_targeted_step_refuses_adversarial_nontarget_surface():
+    """Library boundary: a programmatically-built non-target term with adversarial
+    sources refuses at tracing even though the config schema can't spell one."""
+    _, model, state, step = _tiny_setup(_loss_metrics(), _stochastic_nontarget())
     nontarget = NontargetConfig(
         batch_size=32, impmin_coeff=6e-3, recon=[StochasticReconLossConfig(coeff=1.0)]
     )
-    objective = build_targeted_objective(_loss_metrics(), nontarget, model.site_names)
+    objective = build_targeted_objective(_loss_metrics(), nontarget, model.model.sites)
     from param_decomp.core.configs import PGDReconLossConfig
     from param_decomp.core.objective import build_recon_terms
 
@@ -584,38 +742,27 @@ def test_targeted_factory_refuses_adversarial_nontarget_surface():
                 }
             ),
         ),
-        model.site_names,
+        model.model.sites,
     )
     # Deliberately breaching NontargetPass's narrow type (hence the cast) to exercise
-    # the factory's boundary assert behind it.
-    forged = TargetedObjective(
+    # the step's boundary assert behind it.
+    forged = TargetedPDObjective(
         target=objective.target,
         nontarget=NontargetPass(
             recon=cast(
                 "tuple[ReconLossTerm[StochasticSources | ConstantSources | UnmaskedNoDeltaSources], ...]",
                 (adversarial_term,),
             ),
-            impmin_coeff=objective.nontarget.impmin_coeff,
+            minimality=objective.nontarget.minimality,
         ),
     )
-    import optax
 
+    state = dataclasses.replace(
+        state, training=dataclasses.replace(state.training, objective=forged)
+    )
+    batch = jnp.ones((4, 5), jnp.float32)
     with pytest.raises(AssertionError, match="PGDReconLoss"):
-        make_targeted_train_step(
-            model_static=model,
-            substrate=ForwardSubstrate.of(
-                model,
-                remat_recon_forwards=False,
-                remat_ci_fn=False,
-                ci_capture_keys=state.decomposition.ci_fn.capture_keys,
-                ci_placement=None,
-            ),
-            objective=forged,
-            ci_scaled_weight_decay=None,
-            components_optimizer=optax.adamw(1e-3),
-            ci_fn_optimizer=optax.adamw(1e-3),
-            total_steps=10,
-        )
+        step(model, state, batch, batch.copy(), jax.random.PRNGKey(0))
 
 
 _ACTIVE = (0, 1)
@@ -638,9 +785,9 @@ def _nontarget_batch(cfg: TMSConfig, i: int) -> jax.Array:
     )
 
 
-def _pin_ci_fn(state: TrainState) -> TrainState:
-    """Freeze the CI landscape so T11's statistic is known exactly: every CI-fn weight
-    zeroed, head biases pinned to saturation — linear1 component 0 at CI 1 everywhere,
+def _pin_ci_fn(state: TargetedPDState[Array]) -> TargetedPDState[Array]:
+    """Freeze the CI landscape so the CI-scaled weight-decay statistic is known exactly: every
+    CI-fn weight zeroed, head biases pinned to saturation — linear1 component 0 at CI 1 everywhere,
     every other component at CI 0 — EXCEPT linear1 component 1, which reads feature 3
     through a large pass-through weight: CI 1 whenever feature 3 fires. Feature 3 lies
     outside the target stream's `_ACTIVE` set, so component 1 is alive on the NON-TARGET
@@ -648,7 +795,7 @@ def _pin_ci_fn(state: TrainState) -> TrainState:
     ci_fn = jax.tree.map(jnp.zeros_like, state.decomposition.ci_fn)
     linear1 = ci_fn.site_mlps["linear1"]
     linear2 = ci_fn.site_mlps["linear2"]
-    pinned = eqx.tree_at(
+    conditioning = eqx.tree_at(
         lambda f: (
             f.site_mlps["linear1"].weights[0],
             f.site_mlps["linear1"].weights[1],
@@ -664,23 +811,25 @@ def _pin_ci_fn(state: TrainState) -> TrainState:
         ),
     )
     return TrainState(
-        decomposition=Decomposition(components=state.decomposition.components, ci_fn=pinned),
+        decomposition=Decomposition[Array](
+            components=state.decomposition.components, ci_fn=conditioning
+        ),
         training=state.training,
     )
 
 
-def _component_norms(state: TrainState, site: str) -> jax.Array:
+def _component_norms(state: TargetedPDState[Array], site: str) -> jax.Array:
     vu = state.decomposition.components.site(site)
     return jnp.sqrt(jnp.sum(vu.V**2, axis=0) + jnp.sum(vu.U**2, axis=1))
 
 
 def test_ci_scaled_weight_decay_decays_exactly_the_dead_components():
-    """T11, one step from one state with the decay and without: the decay-run differs
+    """One step from one state with the decay and without: the decay-run differs
     from the None-run by EXACTLY the post-optimizer V/U scaling. Dead components (CI 0 on
     both streams) shrink by the full `lr·wd` rate; the component saturated on the target
     stream and the one alive only on the NON-TARGET stream are both untouched
     bit-for-bit, and so is everything that is not a component master."""
-    wd = CIScaledWeightDecay(coeff=0.2, components_lr=ScheduleConfig.constant(1.0))
+    wd = CIScaledWeightDecay(coeff=jnp.asarray(0.2, jnp.float32))
     cfg, model, state_a, step_none = _tiny_setup(_loss_metrics(), _stochastic_nontarget())
     _, _, state_b, step_decay = _tiny_setup(
         _loss_metrics(), _stochastic_nontarget(), ci_scaled_weight_decay=wd
@@ -694,6 +843,9 @@ def test_ci_scaled_weight_decay_decays_exactly_the_dead_components():
     state_n, metrics_n = step_none(model, state_a, target_batch, nontarget_batch, key)
     state_d, metrics_d = step_decay(model, state_b, target_batch, nontarget_batch, key)
 
+    decay = state_d.training.ci_scaled_weight_decay
+    assert decay is not None
+    rate = float(state_n.training.components_opt_state.applied_learning_rate) * float(decay.coeff)
     protected = {"linear1": (0, 1), "linear2": ()}
     for site in ("linear1", "linear2"):
         vu_n = state_n.decomposition.components.site(site)
@@ -703,23 +855,25 @@ def test_ci_scaled_weight_decay_decays_exactly_the_dead_components():
                 assert jnp.array_equal(vu_d.V[:, c], vu_n.V[:, c]), (site, c)
                 assert jnp.array_equal(vu_d.U[c], vu_n.U[c]), (site, c)
             else:
-                assert jnp.allclose(vu_d.V[:, c], 0.8 * vu_n.V[:, c], rtol=1e-6), (site, c)
-                assert jnp.allclose(vu_d.U[c], 0.8 * vu_n.U[c], rtol=1e-6), (site, c)
+                assert jnp.allclose(vu_d.V[:, c], (1 - rate) * vu_n.V[:, c], rtol=1e-6), (site, c)
+                assert jnp.allclose(vu_d.U[c], (1 - rate) * vu_n.U[c], rtol=1e-6), (site, c)
     # Nothing but the component masters moved.
     assert eqx.tree_equal(state_d.decomposition.ci_fn, state_n.decomposition.ci_fn)
-    assert eqx.tree_equal(state_d.training, state_n.training)
+    assert eqx.tree_equal(
+        dataclasses.replace(state_d.training, ci_scaled_weight_decay=None), state_n.training
+    )
     # The mechanism is observable: dead components decay at the full rate...
-    assert float(metrics_d["ci_scaled_weight_decay/max"]) == pytest.approx(0.2)
-    assert 0.0 < float(metrics_d["ci_scaled_weight_decay/mean"]) < 0.2
+    assert float(metrics_d["ci_scaled_weight_decay/max"]) == pytest.approx(rate)
+    assert 0.0 < float(metrics_d["ci_scaled_weight_decay/mean"]) < rate
     # ...and the None run carries no trace of it.
     assert not any(k.startswith("ci_scaled_weight_decay") for k in metrics_n)
 
 
 def test_ci_scaled_weight_decay_drags_dead_norms_down_across_steps():
-    """T11's cleanup force over a short run: never-important components' V/U norms
+    """Under CI-scaled weight decay, never-important components' V/U norms
     strictly shrink every step (nothing else in the objective shrinks them), while the
     always-important component's norm sees only ordinary optimizer drift."""
-    wd = CIScaledWeightDecay(coeff=0.2, components_lr=ScheduleConfig.constant(1.0))
+    wd = CIScaledWeightDecay(coeff=jnp.asarray(200.0, jnp.float32))
     cfg, model, state, step = _tiny_setup(
         _loss_metrics(), _stochastic_nontarget(), ci_scaled_weight_decay=wd
     )
@@ -754,33 +908,53 @@ def test_scatter_features_places_and_zeroes():
         scatter_features(x, (3, 1), 5)  # unsorted
 
 
-def test_targeted_engine_end_to_end(tmp_path: Path):
+@pytest.mark.parametrize(
+    "loss_metrics", [_loss_metrics(), _frequency_loss_metrics(4.0)], ids=["no_frequency", "ema"]
+)
+def test_targeted_engine_end_to_end(
+    tmp_path: Path,
+    loss_metrics: tuple[TargetedLossMetricConfig, ...],
+    monkeypatch: pytest.MonkeyPatch,
+):
     """The whole targeted engine path driven as a LIBRARY — TMS is the test fixture, not
     a shipped tPD surface (the LM is the only targeted run shape): prepare → two-pass
     train → checkpoint → metrics, via run_targeted_decomposition_training directly."""
     import numpy as np
-    import yaml
     from jax.sharding import Mesh
 
     from param_decomp.core import placement
+    from param_decomp.core import run as engine
     from param_decomp.core.built_run import RunInstance
     from param_decomp.core.configs import Cadence, TargetedPDConfig
     from param_decomp.core.model import Positionless
     from param_decomp.core.run import MetricsSink, run_targeted_decomposition_training
 
-    pd = TargetedPDConfig.model_validate(
-        yaml.safe_load(
-            """
-            seed: 0
-            steps: 4
-            batch_size: 16
-            loss_metrics:
-              - {type: ImportanceMinimalityLoss, coeff: 3.0e-03, gamma: 1.0}
-              - {type: StochasticReconLoss, coeff: 1.0}
-            components_optimizer: {lr_schedule: 1.0e-03}
-            ci_fn_optimizer: {lr_schedule: 1.0e-03}
-            """
-        )
+    compilation_events: list[str] = []
+    timed_loop = engine._run_timed_loop
+
+    def compilation_listener(
+        event: str, start_time: float, end_time: float, **_metadata: Any
+    ) -> None:
+        del start_time, end_time
+        if event == "/jax/core/compile/backend_compile_duration":
+            compilation_events.append(event)
+
+    def observed_loop(*args: Any, **kwargs: Any) -> None:
+        jax.monitoring.register_event_time_span_listener(compilation_listener)
+        try:
+            timed_loop(*args, **kwargs)
+        finally:
+            jax.monitoring.unregister_event_time_span_listener(compilation_listener)
+
+    monkeypatch.setattr(engine, "_run_timed_loop", observed_loop)
+
+    pd = TargetedPDConfig(
+        seed=0,
+        steps=4,
+        batch_size=16,
+        loss_metrics=list(loss_metrics),
+        components_optimizer=AdamWOptimizerConfig(lr_schedule=ScheduleConfig.constant(1e-3)),
+        ci_fn_optimizer=AdamWOptimizerConfig(lr_schedule=ScheduleConfig.constant(1e-3)),
     )
     nontarget = NontargetConfig(
         batch_size=32, impmin_coeff=6e-3, recon=[StochasticReconLossConfig(coeff=1.0)]
@@ -788,7 +962,7 @@ def test_targeted_engine_end_to_end(tmp_path: Path):
     cfg = TMSConfig(n_features=5, n_hidden=2)
     sites = site_specs(cfg, (SiteC("linear1", 8), SiteC("linear2", 6)))
     model = tms_decomposed_model(cfg, init_tms_target(cfg, jax.random.PRNGKey(0)), sites)
-    ci_arch = LayerwiseMLPCIArch(
+    ci_fn_arch = LayerwiseMLPCIFnArch(
         hidden_dims=(16,),
         has_position_axis=False,
         input_names=site_input_tap_keys(tuple(s.name for s in sites)),
@@ -820,7 +994,9 @@ def test_targeted_engine_end_to_end(tmp_path: Path):
             jax.random.fold_in(ntkey, step), 32, cfg.n_features, 0.3, "at_least_zero_active"
         )
 
+    rules = placement.from_config("ddp", mesh, model.sites)
     run_targeted_decomposition_training(
+        mfu_accounting=None,
         pd=pd,
         nontarget=nontarget,
         cadence=Cadence.model_validate(
@@ -834,21 +1010,22 @@ def test_targeted_engine_end_to_end(tmp_path: Path):
             }
         ),
         run=run,
-        model=PlacedModel(model=model, placement=placement.from_config("ddp", mesh, model.sites)),
-        ci_fn=ci_arch,
+        model=PlacedModel(model=model, placement=rules),
+        ci_fn_initializer=seeded_ci_fn_initializer(ci_fn_arch, model.sites, rules),
         positions=Positionless(),
         remat_recon_forwards=False,
         remat_ci_fn=False,
         compiler_options={},
         sample_target_batch=sample_target_batch,
         sample_nontarget_batch=sample_nontarget_batch,
-        evaluation=None,
+        build_evaluation=None,
         profiling=None,
         sink=MetricsSink.for_run(run, is_main=True),
     )
 
     run_dir = tmp_path / "runs" / "p-00000000"
     assert (run_dir / "ckpts" / "4" / "decomposition").exists()
+    assert not compilation_events
     import json
 
     lines = (run_dir / "metrics.jsonl").read_text().strip().splitlines()

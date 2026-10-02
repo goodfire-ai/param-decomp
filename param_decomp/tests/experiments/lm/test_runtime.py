@@ -15,6 +15,7 @@ from param_decomp.core.configs import (
 )
 from param_decomp.core.placement import PRESET_NAMES
 from param_decomp.core.run import JaxProfilerTrace, NsightCaptureWindow
+from param_decomp.core.world_size import MultiNode, SingleNode
 from param_decomp.experiments.lm.config import LMExperimentConfig
 from param_decomp.experiments.lm.runtime import (
     TUNED_V2_AUTOTUNE1_COMPILER_OPTIONS,
@@ -29,7 +30,7 @@ from param_decomp.experiments.lm.runtime import (
 from param_decomp.experiments.lm.training import engine_profiling
 
 CONFIGS = Path(__file__).parents[3] / "experiments" / "lm" / "configs"
-SEAT = CONFIGS / "llama8b_l18_C49k_200k.yaml"
+SEAT = CONFIGS / "llama3_1_8b.yaml"
 
 _MINIMAL_RUNTIME: dict[str, Any] = {
     "mesh": {"replicate": 1, "fsdp": 1, "tp": 1},
@@ -52,41 +53,7 @@ _EXPLICIT_TABLE: dict[str, Any] = {
         "operands": {"C": "tp"},
         "ns_compute": {},
     },
-    "ci_fn": {
-        "attention": {
-            "optimizer_state": {"d_model": ["fsdp", "replicate"]},
-            "compute_weights": {"d_model": "fsdp"},
-            "operands": {},
-            "ns_compute": {},
-        },
-        "ffn": {
-            "optimizer_state": {"ffn_hidden": ["fsdp", "tp", "replicate"]},
-            "compute_weights": {"ffn_hidden": ["fsdp", "tp"]},
-            "operands": {},
-            "ns_compute": {},
-        },
-        "input": {
-            "optimizer_state": {"input": "tp", "d_model": ["fsdp", "replicate"]},
-            "compute_weights": {"input": "tp", "d_model": "fsdp"},
-            "operands": {},
-            "ns_compute": {},
-        },
-        "output": {
-            "optimizer_state": {"d_model": ["fsdp", "replicate"], "C": "tp"},
-            "compute_weights": {"d_model": "fsdp", "C": "tp"},
-            "operands": {},
-            "ns_compute": {},
-        },
-        "vectors": {"ffn_hidden": "tp", "C": "tp"},
-        "activations": {
-            "batch": ["replicate", "fsdp"],
-            "input": "tp",
-            "q_head": "tp",
-            "kv_head": "tp",
-            "ffn_hidden": "tp",
-            "C": "tp",
-        },
-    },
+    "ci_fn": "owner",
     "activations": {
         "external": {"batch": ["replicate", "fsdp"]},
         "component": {"batch": ["replicate", "fsdp"], "C": "tp"},
@@ -125,7 +92,7 @@ def test_topology_is_explicit_and_fails_closed():
 
     configured = runtime(mesh={"replicate": 16, "fsdp": 4, "tp": 2})
     assert configured.mesh == HsdpMeshShape(replicate=16, fsdp=4, tp=2)
-    assert configured.world_size == 128
+    assert configured.world_size == MultiNode(n_nodes=16)
     assert configured.data_parallel_size == 64
 
     for missing in ("replicate", "fsdp", "tp"):
@@ -136,7 +103,7 @@ def test_topology_is_explicit_and_fails_closed():
 
     # Removed launch intent is not part of the live authoring schema.
     with pytest.raises(ValidationError):
-        runtime(launch="slurm")
+        runtime(launch="external")
 
     with pytest.raises(ValidationError):
         RuntimeConfig.model_validate({"dp": 128, "gpus_per_node": 8, "tp": 2, "sharding": "zero1"})
@@ -160,11 +127,36 @@ def test_resident_mesh_parses():
         _MINIMAL_RUNTIME | {"mesh": {"data": 4, "tp": 2}, "sharding": "zero1-replicated-resident"}
     )
     assert configured.mesh == ResidentMeshShape(data=4, tp=2)
-    assert configured.world_size == 8
+    assert configured.world_size == SingleNode(n_gpus=8)
     assert configured.data_parallel_size == 4
     # A mixed mesh spelling matches neither shape (disjoint required keys, extra=forbid).
     with pytest.raises(ValidationError):
         RuntimeConfig.model_validate(_MINIMAL_RUNTIME | {"mesh": {"data": 4, "fsdp": 2, "tp": 1}})
+
+
+@pytest.mark.parametrize(
+    "mesh",
+    [
+        {"replicate": 3, "fsdp": 2, "tp": 2},
+        {"replicate": 1, "fsdp": 9, "tp": 1},
+        {"data": 3, "tp": 4},
+        {"data": 17, "tp": 1},
+    ],
+)
+def test_runtime_refuses_partial_multi_node_worlds_at_parse(mesh: dict[str, int]):
+    with pytest.raises(ValidationError, match="World size must"):
+        RuntimeConfig.model_validate(_MINIMAL_RUNTIME | {"mesh": mesh})
+
+
+@pytest.mark.parametrize("devices", [1, 7, 8, 16, 24])
+def test_world_size_is_derived_without_changing_the_saved_schema(devices: int):
+    configured = RuntimeConfig.model_validate(
+        _MINIMAL_RUNTIME | {"mesh": {"data": devices, "tp": 1}}
+    )
+    assert configured.world_size.device_count == devices
+    saved = configured.model_dump(mode="json")
+    assert "world_size" not in saved
+    assert RuntimeConfig.model_validate(saved).world_size == configured.world_size
 
 
 def test_dead_tuned_v1_spellings_refuse_naming_the_successor():
@@ -290,13 +282,13 @@ def test_a_pinned_launch_config_still_round_trips(tmp_path: Path):
     """The current pinned config shape round-trips without moving `runtime.launch_env`."""
     raw = yaml.safe_load(SEAT.read_text())
     raw["runtime"]["launch_env"] = _PINNED_LAUNCH_ENV
-    pinned = tmp_path / "launch_config.yaml"
-    pinned.write_text(yaml.safe_dump(raw, sort_keys=False))
+    conditioning = tmp_path / "launch_config.yaml"
+    conditioning.write_text(yaml.safe_dump(raw, sort_keys=False))
 
-    cfg = LMExperimentConfig.from_file(pinned)
+    cfg = LMExperimentConfig.from_file(conditioning)
 
-    assert cfg.runtime.mesh == HsdpMeshShape(replicate=4, fsdp=8, tp=1)
-    assert cfg.runtime.sharding == "zero1"
+    assert cfg.runtime.mesh == ResidentMeshShape(data=32, tp=4)
+    assert cfg.runtime.sharding == "owner-replicated-resident"
     assert cfg.runtime.launch_env.as_env(None) == {
         "NCCL_DEBUG": "INFO",
         "MALLOC_ARENA_MAX": "4",
@@ -314,7 +306,7 @@ def test_a_pinned_launch_config_still_round_trips(tmp_path: Path):
 def test_launch_env_composes_inherited_xla_flags():
     """`as_env` merges the config's `XLA_FLAGS` with flags the environment already
     carries, keyed by flag name, three arms: disjoint flags compose (config's first,
-    the environment's extras appended — a wrapper's exports survive the bootstrap),
+    the environment's extras appended — the caller's exports survive the bootstrap),
     an identical duplicate dedupes silently, and the same flag with a DIFFERENT value
     refuses — a reviewed config value conflicting with ambient env is a confused state,
     never a silent resolution."""

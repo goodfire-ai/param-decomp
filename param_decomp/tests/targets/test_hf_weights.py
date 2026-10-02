@@ -8,13 +8,14 @@ numpy only can when ml_dtypes registration has run as an import side effect).
 import json
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
-import numpy as np
 import pytest
 from safetensors.flax import save_file
 
-from param_decomp.targets import glu_transformer
-from param_decomp.targets.glu_transformer import HFWeights
+from param_decomp.targets import transformer
+from param_decomp.targets.lm_output import MaterializedOutputEdge, OutputEdge, StreamedOutputEdge
+from param_decomp.targets.transformer import HFWeights
 
 _EMBED_KEY = "model.embed_tokens.weight"
 _NORM_KEY = "model.norm.weight"
@@ -63,7 +64,8 @@ def test_hf_weights_stages_reads_in_host_memory(tmp_path: Path):
     accelerator first."""
     _write_snapshot(tmp_path)
     got = HFWeights(tmp_path, jnp.bfloat16).get(_EMBED_KEY)
-    assert isinstance(got, np.ndarray)
+    assert isinstance(got, jax.Array)
+    assert all(device.platform == "cpu" for device in got.devices())
 
 
 def test_hf_weights_reads_single_file_snapshot(tmp_path: Path):
@@ -77,8 +79,9 @@ def test_hf_weights_reads_single_file_snapshot(tmp_path: Path):
 
 
 @pytest.mark.parametrize("tied", [False, True])
+@pytest.mark.parametrize("output_edge", [MaterializedOutputEdge(), StreamedOutputEdge(2)])
 def test_glu_hf_loader_selects_tied_or_separate_head(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, tied: bool
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, tied: bool, output_edge: OutputEdge
 ):
     requested: list[str] = []
 
@@ -89,20 +92,20 @@ def test_glu_hf_loader_selects_tied_or_separate_head(
 
         def get(self, key: str):
             requested.append(key)
-            return jnp.ones((2, 2))
+            return jnp.ones((2, 2), dtype=jnp.float32)
 
     captured: dict[str, object] = {}
     sentinel = object()
-    monkeypatch.setattr(glu_transformer, "hf_snapshot_dir", lambda _model_name: tmp_path)
-    monkeypatch.setattr(glu_transformer, "HFWeights", FakeWeights)
-    monkeypatch.setattr(glu_transformer, "load_glu_blocks", lambda _w, _cfg, _load_attn: [])
+    monkeypatch.setattr(transformer, "hf_snapshot_dir", lambda _model_name: tmp_path)
+    monkeypatch.setattr(transformer, "HFWeights", FakeWeights)
+    monkeypatch.setattr(transformer, "load_glu_blocks", lambda _w, _cfg, _load_attn: [])
 
     def capture_build(**kwargs: object):
         captured.update(kwargs)
         return sentinel
 
-    monkeypatch.setattr(glu_transformer, "build_decomposed_lm", capture_build)
-    cfg = glu_transformer.GLUConfig(
+    monkeypatch.setattr(transformer, "build_engine_model", capture_build)
+    cfg = transformer.TransformerConfig(
         vocab_size=2,
         n_layer=0,
         n_head=1,
@@ -115,15 +118,17 @@ def test_glu_hf_loader_selects_tied_or_separate_head(
         max_position_embeddings=1,
         tie_word_embeddings=tied,
     )
-    got = glu_transformer.load_decomposed_glu_from_hf(
+    got = transformer.load_decomposed_glu_from_hf(
         "fake/model",
         cfg=cfg,
         sites=(),
         load_attn=lambda _w, _i: pytest.fail("load_glu_blocks was patched"),
-        inv_freq=jnp.ones((1,)),
+        inv_freq=jnp.ones((1,), dtype=jnp.float32),
         weights_dtype=jnp.bfloat16,
+        output_edge=output_edge,
     )
 
     assert got is sentinel
-    assert isinstance(captured["lm_head"], glu_transformer.TiedHead) is tied
+    assert captured["output_edge"] == output_edge
+    assert isinstance(captured["lm_head"], transformer.TiedHead) is tied
     assert ("lm_head.weight" in requested) is not tied

@@ -1,4 +1,4 @@
-"""Device-count invariance of the generic trainer (SPEC D4), on the tiny Llama target.
+"""Device-count invariance of the generic trainer, on the tiny Llama target.
 
 Runs the SAME fixed global batch + seed through the full step twice on this host:
 once single-layout (mesh=None — everything on device 0), once GSPMD batch-sharded over
@@ -19,12 +19,11 @@ differs across layouts.)
 
 import argparse
 import contextlib
-from typing import Any, cast
+from typing import cast
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import optax
 from jax import random
 
 from param_decomp.core.adversary import (
@@ -32,16 +31,15 @@ from param_decomp.core.adversary import (
     init_persistent_sources,
     init_sources_opt_state,
 )
-from param_decomp.core.ci_fn import (
+from param_decomp.core.ci_fn.implementations.chunkwise.arch import (
     Chunk,
-    ChunkwiseTransformerCIArch,
-    MHACIAttention,
-    build_ci_fn,
-    resolve_ci_placement,
+    ChunkwiseTransformerCIFnArch,
 )
+from param_decomp.core.ci_fn.implementations.transformer.layers import MHACIFnAttention
 from param_decomp.core.components import init_component_stacks
 from param_decomp.core.configs import (
     AdamPGDConfig,
+    AdamWOptimizerConfig,
     FaithfulnessLossConfig,
     FrequencyMinimalityConfig,
     ImportanceMinimalityLossConfig,
@@ -52,25 +50,27 @@ from param_decomp.core.configs import (
     UniformKSubsetRoutingConfig,
 )
 from param_decomp.core.faithfulness import faithfulness_loss_for
-from param_decomp.core.init_placed import init_ci_fn_placed, init_component_stacks_placed
-from param_decomp.core.losses import EmaFrequency, resolve_frequency
+from param_decomp.core.init_placed import init_component_stacks_placed
+from param_decomp.core.losses import init_frequency_estimator
 from param_decomp.core.model import PlacedModel
 from param_decomp.core.objective import build_objective
 from param_decomp.core.placement import from_config
+from param_decomp.core.run_state import _adamw_optimizer
 from param_decomp.core.schedule import Knot, ScheduleConfig
 from param_decomp.core.sharding import hsdp_mesh, place_target, shard_batch
 from param_decomp.core.train import (
     Decomposition,
     ForwardSubstrate,
-    TrainingItem,
+    PDTrainingState,
     TrainState,
     make_train_step,
 )
-from param_decomp.targets.glu_transformer import (
+from param_decomp.lm.batch import LMBatchWithDocuments
+from param_decomp.targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
+from param_decomp.targets.transformer import (
     glu_site_specs,
     mlp_family_site_cs,
 )
-from param_decomp.targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
 from param_decomp.targets.transformer_taps import resid_tap_key
 
 
@@ -86,7 +86,7 @@ def _run(
     model = tiny_glu_decomposed_lm(cfg, sites, random.PRNGKey(0))
     half = len(model.site_names) // 2
     assert len(model.site_names) % 2 == 0, model.site_names
-    arch = ChunkwiseTransformerCIArch(
+    arch = ChunkwiseTransformerCIFnArch(
         chunks=(
             Chunk(input_taps=(resid_tap_key(3),), output_sites=model.site_names[:half]),
             Chunk(input_taps=(resid_tap_key(3),), output_sites=model.site_names[half:]),
@@ -94,13 +94,15 @@ def _run(
         input_dim=cfg.n_embd,
         d_model=16,
         n_blocks=2,
-        attention=MHACIAttention(n_heads=2),
+        attention=MHACIFnAttention(mask="bidirectional", implementation="xla", n_heads=2),
         ffn_hidden=32,
         ffn_kind="gelu",
         learned_norm_scale=False,
     )
-    opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
-    opt_ci = optax.adamw(1e-3, weight_decay=0.0)
+    opt_vu = _adamw_optimizer(
+        AdamWOptimizerConfig(lr_schedule=ScheduleConfig.constant(1e-3), grad_clip_norm=0.01), 1
+    )
+    opt_ci = _adamw_optimizer(AdamWOptimizerConfig(lr_schedule=ScheduleConfig.constant(1e-3)), 1)
     tokens = random.randint(random.PRNGKey(4), (gbatch, seq), 0, cfg.vocab_size)
 
     mesh = None if topology is None else hsdp_mesh(*topology)
@@ -108,10 +110,10 @@ def _run(
     if mesh is None:
         placed = PlacedModel(model=model, placement=None)
         vu = init_component_stacks(sites, random.PRNGKey(1))
-        ci_fn = build_ci_fn(arch, model.sites, random.PRNGKey(2))
+        ci_fn = arch.initialize(model.sites, None, random.PRNGKey(2))
         src = init_persistent_sources(
             model.sites,
-            (1, seq),
+            (tokens.shape[0], seq),
             jnp.float32,
             random.PRNGKey(3),
         )
@@ -119,10 +121,15 @@ def _run(
         assert rules is not None
         placed = place_target(model, rules)
         vu = init_component_stacks_placed(sites, random.PRNGKey(1), rules)
-        ci_fn = init_ci_fn_placed(arch, placed.sites, random.PRNGKey(2), mesh, rules)
+        ci_key = random.PRNGKey(2)
+        init_ci_fn = lambda key: arch.initialize(placed.model.sites, rules, key)
+        ci_fn_shardings = eqx.filter_eval_shape(init_ci_fn, ci_key).shardings(mesh)
+        ci_fn = jax.reshard(
+            jax.jit(init_ci_fn, out_shardings=ci_fn_shardings)(ci_key), ci_fn_shardings
+        )
         src = init_persistent_sources(
-            placed.sites,
-            (1, seq),
+            placed.model.sites,
+            (tokens.shape[0], seq),
             jnp.float32,
             random.PRNGKey(3),
         )
@@ -130,7 +137,7 @@ def _run(
 
     ppgd_cfg = PersistentPGDReconLossConfig(
         coeff=0.5,
-        source_shape="sc",
+        source_shape="bsc",
         optimizer=AdamPGDConfig(
             beta1=0.5,
             beta2=0.99,
@@ -141,7 +148,6 @@ def _run(
         ),
         n_warmup_steps=2,
     )
-    assert ppgd_cfg.coeff is not None
     frequency = FrequencyMinimalityConfig(
         coeff=1e-6, reference_datapoint_count=128, ema_halflife_steps=8.0
     )
@@ -150,10 +156,25 @@ def _run(
         gamma=ScheduleConfig(max_val=1.0, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.01))),
         frequency=frequency,
     )
-    freq_role = resolve_frequency(frequency)
+    loss_terms = build_objective(
+        (
+            FaithfulnessLossConfig(coeff=1e5),
+            imp_cfg,
+            StochasticReconSubsetLossConfig(routing=UniformKSubsetRoutingConfig(), coeff=0.5),
+            NonlinearityLocalityLossConfig(
+                coeff=0.05,
+                relative_threshold=ScheduleConfig.constant(4.0),
+                unit_kind_coefficients={"neuron": 1.0},
+            ),
+            ppgd_cfg,
+        ),
+        placed.model.sites,
+    )
     state = TrainState(
         decomposition=Decomposition(components=vu, ci_fn=ci_fn),
-        training=TrainingItem(
+        training=PDTrainingState(
+            objective=loss_terms,
+            frequency=init_frequency_estimator(frequency, placed.model.sites),
             components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
             ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
             adversaries={
@@ -165,27 +186,8 @@ def _run(
                     n_warmup=ppgd_cfg.n_warmup_steps,
                 )
             },
-            freq_ema=freq_role.initial_state(model.sites)
-            if isinstance(freq_role, EmaFrequency)
-            else None,
             step=jnp.zeros((), jnp.int32),
         ),
-    )
-    loss_terms = build_objective(
-        (
-            FaithfulnessLossConfig(coeff=1e5),
-            imp_cfg,
-            StochasticReconSubsetLossConfig(
-                routing=UniformKSubsetRoutingConfig(), coeff=0.5, n_mask_samples=1
-            ),
-            NonlinearityLocalityLossConfig(
-                coeff=0.05,
-                relative_threshold=ScheduleConfig.constant(4.0),
-                unit_kind_coefficients={"neuron": 1.0},
-            ),
-            ppgd_cfg,
-        ),
-        placed.site_names,
     )
     step = make_train_step(
         model_static=placed,
@@ -194,9 +196,7 @@ def _run(
             remat_recon_forwards=True,
             remat_ci_fn=False,
             ci_capture_keys=ci_fn.capture_keys,
-            ci_placement=resolve_ci_placement(arch, rules),
         ),
-        objective=loss_terms,
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=100,
@@ -205,6 +205,8 @@ def _run(
 
     out = []
     with jax.set_mesh(mesh) if mesh is not None else contextlib.nullcontext():
+        batch = LMBatchWithDocuments.from_unsegmented_sequences(tokens)
+        compiled = jax.jit(step).lower(placed, state, batch, random.PRNGKey(100)).compile()
         if census:
             assert mesh is not None and mesh.shape["replicate"] > 1, (
                 "--census asserts CROSS-REPLICATE collective placement; at replicate=1 "
@@ -212,8 +214,8 @@ def _run(
             )
             from param_decomp.core.tools.hlo_census import collective_census
 
-            lowered = cast(Any, step).lower(placed, state, tokens, random.PRNGKey(100))
-            hlo = lowered.compile().compiled.as_text()
+            hlo = compiled.as_text()
+            assert hlo is not None
             stride = mesh.shape["fsdp"] * mesh.shape["tp"]
             result = collective_census(hlo, replica_stride=stride, n_devices=mesh.devices.size)
             print(
@@ -230,7 +232,7 @@ def _run(
             )
             assert result.exit_reductions > 0, result.counts
         for i in range(steps):
-            state, m = step(placed, state, tokens, random.PRNGKey(100 + i))
+            state, m = compiled(placed, state, batch, random.PRNGKey(100 + i))
             out.append({k: float(v) for k, v in m.items()})
     return out
 
@@ -244,7 +246,7 @@ def check_device_count_invariance(
     rel: float = 5e-4,
 ) -> float:
     """Run the full step single-layout and topology-sharded and ASSERT the metric
-    trajectories match (SPEC D4); returns the worst relative error. `census` also
+    trajectories match; returns the worst relative error. `census` also
     asserts the sharded step's cross-replicate collective placement. `rel` is sized
     for the default (1, n, 1) arm; replicate>1 topologies reduce in more orders and
     need a step-count-matched widening (drift grows ~5-10x per step)."""
@@ -272,7 +274,7 @@ def check_device_count_invariance(
                 failures.append(
                     f"step {i} {k}: single {a[k]!r} vs sharded({n_dev}) {b[k]!r} err {err:.2e}"
                 )
-    assert not failures, "trajectory diverged across shardings (SPEC D4):\n" + "\n".join(failures)
+    assert not failures, "trajectory diverged across shardings:\n" + "\n".join(failures)
     return worst
 
 

@@ -1,5 +1,5 @@
 """Persist-stack padding: census resolution, the padded value tree, pad-inert
-optimizers, and the faithfulness lane's pad exit (SPEC D4, 2026-09-01 amendment) — for
+optimizers, and the faithfulness lane's pad exit — for
 the V/U semantic groups and for the chunkwise CI fn's chunk stack.
 
 The placed integration (entry slice, grad transpose, full train step, padded-vs-unpadded
@@ -11,47 +11,52 @@ from typing import Any
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 import pytest
 from jax import random
 from jax.sharding import PartitionSpec as P
 
-from param_decomp.core.ci_fn import (
+from param_decomp.core.ci_fn.implementations.chunkwise.arch import (
     Chunk,
-    ChunkwiseTransformerCIArch,
-    ChunkwiseTransformerCIFn,
-    MHACIAttention,
-    build_ci_fn,
-    pad_ci_fn,
-    resolve_ci_placement,
+    ChunkwiseTransformerCIFnArch,
+    ChunkwiseTransformerCIFnPlacement,
 )
+from param_decomp.core.ci_fn.implementations.chunkwise.placement import (
+    CHUNK_STACK_AXES,
+    STACKED_FFN_IN_AXES,
+    STACKED_FFN_OUT_AXES,
+    ZERO1_CHUNKWISE_ROWS,
+)
+from param_decomp.core.ci_fn.implementations.transformer.layers import MHACIFnAttention
+from param_decomp.core.ci_fn.optimizer import assert_ci_fn_muon_staging_tiles
 from param_decomp.core.components import (
     DENSE_U_AXES,
     DENSE_V_AXES,
+    BlockedFactorization,
     ComponentStacks,
-    Dense,
-    ExpertBlocked,
+    DenseFactorization,
     SiteSpec,
     init_component_stacks,
     pad_component_stacks,
-    site_slots_for,
+    site_stack_indices_for,
 )
-from param_decomp.core.configs import PlacementTableConfig
+from param_decomp.core.configs import PlacementSpec, PlacementTableConfig
 from param_decomp.core.faithfulness import make_faithfulness_loss
 from param_decomp.core.muon_stacked import stacked_muon
 from param_decomp.core.placement import (
-    CIFnPlacement,
     StackCensus,
-    assert_stacked_muon_ci_staging,
     assert_stacked_muon_component_staging,
+    bind_ci_fn_weight_rows,
+    bind_scanned_ci_fn_row,
     from_config,
     padded_entry_waypoint,
 )
 from param_decomp.core.run_state import component_muon_dimension_numbers
+from param_decomp.targets.testing import chunkwise_transformer_backbone
 from param_decomp.tests.core.test_placement import (
     _ACTIVATION_ROWS,
     _OWNER_TABLE_ROWS,
-    CI_ROWS,
     TARGET_ROWS,
     _sites,
 )
@@ -63,11 +68,12 @@ RESIDENT_D8_TP8 = jax.sharding.AbstractMesh((8, 8), ("data", "tp"))
 
 
 def _expert_sites(stack_len: int) -> tuple[SiteSpec, ...]:
-    factorization = ExpertBlocked(n_experts=2, d_in=8, d_out=4, c_per_expert=4)
+    factorization = BlockedFactorization(n_blocks=2, d_in=8, d_out=4, c_per_block=4)
     return tuple(
         SiteSpec(f"expert.{i}", factorization, "experts") for i in range(stack_len)
     ) + tuple(
-        SiteSpec(f"shared.{i}", Dense(d_in=8, d_out=8, C=16), "shared") for i in range(stack_len)
+        SiteSpec(f"shared.{i}", DenseFactorization(d_in=8, d_out=8, C=16), "shared")
+        for i in range(stack_len)
     )
 
 
@@ -111,7 +117,7 @@ def test_pad_resolves_over_the_lcm_of_all_stack_sharding_rows():
                 "operands": {"C": "tp"},
                 "ns_compute": {"stack": "replicate"},
             },
-            "ci_fn": CI_ROWS,
+            "ci_fn": "zero1",
             "activations": {
                 "external": {"batch": ["replicate", "fsdp"]},
                 "component": {"batch": ["replicate", "fsdp"], "C": "tp"},
@@ -148,7 +154,7 @@ def test_padded_entry_waypoint_parks_the_stack_cut_minor():
     )
     assert waypoint_v.spec_for(DENSE_V_AXES) == P(None, None, ("tp", "data"))
     assert waypoint_u.spec_for(DENSE_U_AXES) == P(None, "tp", "data")
-    assert waypoint_v.label == "components/compute_weights (padded-entry waypoint)"
+    assert waypoint_v.label_for_log == "components/compute_weights (padded-entry waypoint)"
     owner = from_config("owner", MESH, _sites({(64, 32, 8): 6})).components
     assert padded_entry_waypoint(
         owner.optimizer_state, owner.compute_weights, DENSE_V_AXES
@@ -184,7 +190,7 @@ def test_padded_entry_refuses_a_gather_beyond_the_stack_cut():
                 "operands": {"C": "tp"},
                 "ns_compute": {"stack": "replicate"},
             },
-            "ci_fn": CI_ROWS,
+            "ci_fn": "zero1",
             "activations": {
                 "external": {"batch": ["replicate", "fsdp"]},
                 "component": {"batch": ["replicate", "fsdp"], "C": "tp"},
@@ -209,7 +215,7 @@ def _padded_stacks() -> tuple[tuple[SiteSpec, ...], ComponentStacks, ComponentSt
 def test_pad_component_stacks_appends_zero_slots_and_enumerates_them():
     _, unpadded, padded = _padded_stacks()
     assert padded.stack_pads == (("8x4x4", 2),) and padded.pad_of("8x4x4") == 2
-    assert padded.site_slots == unpadded.site_slots
+    assert padded.site_stack_indices == unpadded.site_stack_indices
     for (Vs, Us), (pVs, pUs) in zip(unpadded.stacks.values(), padded.stacks.values(), strict=True):
         assert pVs.shape == (5, *Vs.shape[1:]) and pUs.shape == (5, *Us.shape[1:])
         assert (pVs[:3] == Vs).all() and (pUs[:3] == Us).all()
@@ -242,7 +248,7 @@ def _pad_row_grads(padded: ComponentStacks) -> ComponentStacks:
             * mask.reshape(-1, *([1] * (Us.ndim - 1))),
         )
     return ComponentStacks(
-        stacks=stacks, site_slots=padded.site_slots, stack_pads=padded.stack_pads
+        stacks=stacks, site_stack_indices=padded.site_stack_indices, stack_pads=padded.stack_pads
     )
 
 
@@ -260,7 +266,7 @@ def test_pads_stay_exactly_zero_through_optimizer_steps(which: str):
                 weight_decay=0.0,
                 consistent_rms=None,
                 muon_weight_dimension_numbers=component_muon_dimension_numbers(
-                    {"8x4x4": Dense(d_in=8, d_out=4, C=4)}
+                    {"8x4x4": DenseFactorization(d_in=8, d_out=4, C=4)}
                 ),
                 ns_steps=5,
                 ns_dtype=jnp.float32,
@@ -288,18 +294,20 @@ def test_pads_stay_exactly_zero_through_optimizer_steps(which: str):
 
 def test_faithfulness_loss_ignores_zero_pad_slots_exactly():
     sites = _sites({(8, 4, 4): 3})
-    site_slots = site_slots_for(sites)
+    site_stack_indices = site_stack_indices_for(sites)
     norms = {"8x4x4": (2.0, 3.0, 4.0)}
     deltas = {"8x4x4": random.normal(random.PRNGKey(0), (3, 4, 8))}
     padded_deltas = {"8x4x4": jnp.concatenate([deltas["8x4x4"], jnp.zeros((2, 4, 8))])}
-    unpadded_loss = make_faithfulness_loss(site_slots, norms, {})(deltas)
-    padded_loss = make_faithfulness_loss(site_slots, norms, {"8x4x4": 2})(padded_deltas)
+    unpadded_loss = make_faithfulness_loss(site_stack_indices, norms, {})(deltas)
+    padded_loss = make_faithfulness_loss(site_stack_indices, norms, {"8x4x4": 2})(padded_deltas)
     assert padded_loss == unpadded_loss
 
 
 def test_faithfulness_loss_refuses_a_delta_stack_of_the_wrong_extent():
     sites = _sites({(8, 4, 4): 3})
-    loss = make_faithfulness_loss(site_slots_for(sites), {"8x4x4": (1.0, 1.0, 1.0)}, {"8x4x4": 2})
+    loss = make_faithfulness_loss(
+        site_stack_indices_for(sites), {"8x4x4": (1.0, 1.0, 1.0)}, {"8x4x4": 2}
+    )
     with pytest.raises(AssertionError):
         loss({"8x4x4": jnp.zeros((3, 4, 8))})  # real-length deltas at a padded binding
 
@@ -309,11 +317,11 @@ def test_faithfulness_loss_refuses_a_delta_stack_of_the_wrong_extent():
 
 def _chunkwise_arch(
     sites: tuple[SiteSpec, ...], sites_per_chunk: int
-) -> ChunkwiseTransformerCIArch:
+) -> ChunkwiseTransformerCIFnArch:
     """One chunk per `sites_per_chunk` consecutive sites (equal C, so the heads stack)."""
     names = tuple(spec.name for spec in sites)
     assert len(names) % sites_per_chunk == 0, (len(names), sites_per_chunk)
-    return ChunkwiseTransformerCIArch(
+    return ChunkwiseTransformerCIFnArch(
         chunks=tuple(
             Chunk(input_taps=("tap",), output_sites=names[i : i + sites_per_chunk])
             for i in range(0, len(names), sites_per_chunk)
@@ -321,7 +329,7 @@ def _chunkwise_arch(
         input_dim=64,
         d_model=64,
         n_blocks=1,
-        attention=MHACIAttention(n_heads=8),
+        attention=MHACIFnAttention(mask="bidirectional", implementation="xla", n_heads=8),
         ffn_hidden=128,
         ffn_kind="gelu",
         learned_norm_scale=False,
@@ -329,14 +337,9 @@ def _chunkwise_arch(
 
 
 def _resolved(
-    spec: str, mesh: jax.sharding.AbstractMesh, sites: tuple[SiteSpec, ...]
-) -> CIFnPlacement:
-    placement = resolve_ci_placement(
-        _chunkwise_arch(sites, 1),
-        from_config(spec, mesh, sites),  # pyright: ignore[reportArgumentType]
-    )
-    assert placement is not None
-    return placement
+    spec: PlacementSpec, mesh: jax.sharding.AbstractMesh, sites: tuple[SiteSpec, ...]
+) -> ChunkwiseTransformerCIFnPlacement:
+    return _chunkwise_arch(sites, 1).resolve_placement(from_config(spec, mesh, sites))
 
 
 def test_owner_resident_ci_census_pads_the_chunk_stack_to_the_data_cut():
@@ -356,20 +359,27 @@ def test_owner_resident_ci_census_pads_the_chunk_stack_to_the_data_cut():
 def test_zero1_ci_rows_cut_no_stack_so_no_chunk_pad_resolves():
     # 3 chunks do not tile MOE_MESH's data=4, but zero1 (and ddp) cut no CI stack axis
     sites = _sites({(64, 32, 8): 3})
-    for spec, mesh in (("zero1-replicated-resident", MOE_MESH), ("ddp", MESH)):
+    layouts: tuple[tuple[PlacementSpec, jax.sharding.AbstractMesh], ...] = (
+        ("zero1-replicated-resident", MOE_MESH),
+        ("ddp", MESH),
+    )
+    for spec, mesh in layouts:
         assert _resolved(spec, mesh, sites).chunks == StackCensus(stack_len=3, stack_pad=0)
 
 
 def test_ci_muon_staging_claim_holds_on_the_padded_chunk_census():
     sites = _sites({(64, 64, 64): 36})
     rules = from_config("owner-replicated-resident", RESIDENT_D64, sites)
-    placement = resolve_ci_placement(_chunkwise_arch(sites, 1), rules)
-    assert placement is not None
-    assert_stacked_muon_ci_staging(placement)  # 64 padded slots tile the ÷64 split
-    with pytest.raises(AssertionError, match=r"ci_fn/attention \(stacks 36\)"):
-        assert_stacked_muon_ci_staging(
-            CIFnPlacement.resolved(rules.ci_fn, StackCensus(stack_len=36, stack_pad=0))
+    arch = _chunkwise_arch(sites, 1)
+    padded = eqx.filter_eval_shape(lambda: arch.initialize(sites, rules, jax.random.PRNGKey(0)))
+    assert_ci_fn_muon_staging_tiles(padded)  # 64 padded slots tile the ÷64 split
+    # the claim counts the matrices as stored: the real 36 chunks alone do not tile
+    unpadded = eqx.filter_eval_shape(lambda: arch.initialize(sites, None, jax.random.PRNGKey(0)))
+    with pytest.raises(AssertionError, match="36 independent CI matrices"):
+        stored_as_padded = dataclasses.replace(
+            unpadded.backbone, placement=padded.backbone.placement
         )
+        assert_ci_fn_muon_staging_tiles(dataclasses.replace(unpadded, backbone=stored_as_padded))
 
 
 def test_resolution_refuses_a_ci_master_leaf_the_rows_cannot_tile():
@@ -379,41 +389,39 @@ def test_resolution_refuses_a_ci_master_leaf_the_rows_cannot_tile():
     arch = dataclasses.replace(_chunkwise_arch(sites, 1), ffn_hidden=12)
     rules = from_config("owner-replicated-resident", RESIDENT_D8_TP8, sites)
     with pytest.raises(AssertionError, match=r"'ffn_hidden' \(dim 12\) does not tile"):
-        resolve_ci_placement(arch, rules)
+        arch.resolve_placement(rules)
 
 
-def test_pad_ci_fn_appends_zero_chunk_slots_and_enumerates_them():
+def test_placed_init_appends_zero_chunk_slots_and_enumerates_them():
     sites = _sites({(64, 32, 8): 3})
     arch = _chunkwise_arch(sites, 1)
-    placement = resolve_ci_placement(
-        arch, from_config("owner-replicated-resident", MOE_MESH, sites)
-    )
-    assert placement is not None and placement.chunks == StackCensus(stack_len=3, stack_pad=1)
-    fn = build_ci_fn(arch, sites, random.PRNGKey(0))
-    assert isinstance(fn, ChunkwiseTransformerCIFn) and fn.stack_pad == 0
-    padded = pad_ci_fn(fn, placement)
-    assert isinstance(padded, ChunkwiseTransformerCIFn)
-    assert padded.stack_pad == 1 and padded.chunk_meta == fn.chunk_meta
-    assert padded.inv_freq is fn.inv_freq
-    for real, wide in zip(jax.tree.leaves(fn.chunks), jax.tree.leaves(padded.chunks), strict=True):
+    rules = from_config("owner-replicated-resident", MOE_MESH, sites)
+    unpadded = chunkwise_transformer_backbone(arch.initialize(sites, None, random.PRNGKey(0)))
+    padded = chunkwise_transformer_backbone(arch.initialize(sites, rules, random.PRNGKey(0)))
+    assert isinstance(padded.placement, ChunkwiseTransformerCIFnPlacement)
+    assert padded.placement.chunks == StackCensus(stack_len=3, stack_pad=1)
+    assert unpadded.census.stack_pad == 0
+    assert padded.census.stack_pad == 1 and padded.chunk_meta == unpadded.chunk_meta
+    assert (padded.inv_freq == unpadded.inv_freq).all()
+    for real, wide in zip(
+        jax.tree.leaves(unpadded.chunks), jax.tree.leaves(padded.chunks), strict=True
+    ):
         assert wide.shape == (4, *real.shape[1:])
         assert (wide[:3] == real).all() and (wide[3:] == 0).all()
-    with pytest.raises(AssertionError, match="already padded"):
-        pad_ci_fn(padded, placement)
-    # the scan consumes the compute residents only; a padded persist tree never reaches it
-    with pytest.raises(AssertionError, match="compute residents"):
-        padded({"tap": jnp.zeros((2, 4, 64))}, remat=False, placement=None)
 
 
-def test_zero_chunk_pad_keeps_the_fn_itself():
+def test_zero_chunk_pad_keeps_the_real_chunks():
     sites = _sites({(64, 32, 8): 4})
     arch = _chunkwise_arch(sites, 1)
-    placement = resolve_ci_placement(
-        arch, from_config("owner-replicated-resident", MOE_MESH, sites)
-    )
-    assert placement is not None and placement.chunks.stack_pad == 0
-    fn = build_ci_fn(arch, sites, random.PRNGKey(0))
-    assert pad_ci_fn(fn, placement) is fn
+    rules = from_config("owner-replicated-resident", MOE_MESH, sites)
+    fn = arch.initialize(sites, None, random.PRNGKey(0))
+    placed = arch.initialize(sites, rules, random.PRNGKey(0))
+    backbone = chunkwise_transformer_backbone(placed)
+    assert isinstance(backbone.placement, ChunkwiseTransformerCIFnPlacement)
+    assert backbone.placement.chunks.stack_pad == 0
+    assert backbone.census.stack_pad == 0
+    for real, stored in zip(jax.tree.leaves(fn), jax.tree.leaves(placed), strict=True):
+        assert (real == stored).all()
 
 
 @pytest.mark.parametrize(
@@ -422,27 +430,72 @@ def test_zero_chunk_pad_keeps_the_fn_itself():
 def test_the_scanned_rows_refuse_a_stack_assignment(row: str):
     # the arrays at these rows are iterated slot by slot by the scans and are what the pad
     # exit slices, so their stack axis rests whole — a `stack` key refuses at bind
-    components: dict[str, Any] = dict(_OWNER_TABLE_ROWS)
-    ci_fn: dict[str, Any] = {family: dict(rows) for family, rows in CI_ROWS.items()}
-    match row:
-        case "components/compute_weights":
-            components["compute_weights"] = {**components["compute_weights"], "stack": "replicate"}
-        case "ci_fn/ffn.compute_weights":
-            ci_fn["ffn"] = {
-                **ci_fn["ffn"],
-                "compute_weights": {**ci_fn["ffn"]["compute_weights"], "stack": "replicate"},
-            }
-        case "ci_fn/vectors":
-            ci_fn["vectors"] = {**ci_fn["vectors"], "stack": "replicate"}
-        case _:
-            raise AssertionError(row)
-    table = PlacementTableConfig.model_validate(
-        {
-            "components": components,
-            "ci_fn": ci_fn,
-            "activations": _ACTIVATION_ROWS,
-            "target": TARGET_ROWS,
-        }
-    )
     with pytest.raises(AssertionError, match=rf"row '{row}' assigns `stack`"):
-        from_config(table, MESH, _sites({(64, 32, 8): 4}))
+        match row:
+            case "components/compute_weights":
+                components: dict[str, Any] = dict(_OWNER_TABLE_ROWS)
+                components["compute_weights"] = {
+                    **components["compute_weights"],
+                    "stack": "replicate",
+                }
+                table = PlacementTableConfig.model_validate(
+                    {
+                        "components": components,
+                        "ci_fn": "owner",
+                        "activations": _ACTIVATION_ROWS,
+                        "target": TARGET_ROWS,
+                    }
+                )
+                from_config(table, MESH, _sites({(64, 32, 8): 4}))
+            case "ci_fn/ffn.compute_weights":
+                ffn = ZERO1_CHUNKWISE_ROWS.weights.ffn
+                bind_ci_fn_weight_rows(
+                    "ci_fn/ffn",
+                    dataclasses.replace(
+                        ffn, compute_weights={**ffn.compute_weights, "stack": ("replicate",)}
+                    ),
+                    MESH,
+                    (STACKED_FFN_IN_AXES, STACKED_FFN_OUT_AXES),
+                    CHUNK_STACK_AXES,
+                )
+            case "ci_fn/vectors":
+                bind_scanned_ci_fn_row(
+                    "ci_fn/vectors",
+                    {**ZERO1_CHUNKWISE_ROWS.vectors, "stack": ("replicate",)},
+                    MESH,
+                    frozenset({"stack", "ffn_hidden", "C"}),
+                    CHUNK_STACK_AXES,
+                )
+            case _:
+                raise AssertionError(row)
+
+
+@pytest.mark.multidevice
+@pytest.mark.skipif(len(jax.devices()) < 2, reason="requires two devices")
+def test_pad_component_stacks_preserves_explicit_input_sharding():
+    mesh = jax.sharding.Mesh(
+        np.array(jax.devices()[:2]),
+        ("tp",),
+        axis_types=(jax.sharding.AxisType.Explicit,),
+    )
+    sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(None, "tp", None, None))
+    Vs = jax.device_put(jnp.ones((1, 2, 4, 3)), sharding)
+    Us = jax.device_put(jnp.ones((1, 2, 3, 4)), sharding)
+    stacks = ComponentStacks(
+        stacks={"experts": (Vs, Us)},
+        site_stack_indices=(("expert", "experts", 0),),
+    )
+
+    padded = jax.eval_shape(
+        lambda x: pad_component_stacks(x, {"experts": 1}),
+        jax.tree.map(lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype, sharding=x.sharding), stacks),
+    )
+
+    pVs, pUs = padded.stacks["experts"]
+    assert pVs.shape == (2, 2, 4, 3) and pUs.shape == (2, 2, 3, 4)
+    assert pVs.sharding.spec == sharding.spec
+    assert pUs.sharding.spec == sharding.spec
+
+    concrete = pad_component_stacks(stacks, {"experts": 1})
+    cVs, cUs = concrete.stacks["experts"]
+    assert (cVs[1] == 0).all() and (cUs[1] == 0).all()

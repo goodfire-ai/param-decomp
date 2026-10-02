@@ -2,6 +2,7 @@ run_name: pile_llama_simple_mlp-4L-768
 seed: 45
 dp: 8
 dtype: bfloat16
+attention_implementation: flash
 global_batch: 1024
 num_iterations: 100000
 warmup_iters: 600

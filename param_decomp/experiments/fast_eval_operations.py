@@ -8,108 +8,165 @@ are; positioned non-categorical targets included.
 """
 
 from collections.abc import Callable
-from typing import Any
 
 import jax
-import jax.numpy as jnp
+import numpy as np
 from jax.sharding import Mesh
 from jaxtyping import Array, PRNGKeyArray
 
-from param_decomp.core.ci_fn import PlacedCIFn
+from param_decomp.core.ci_fn.interface import CIFn
 from param_decomp.core.ci_l0_eval import make_ci_l0_eval_step
 from param_decomp.core.components import ComponentStacks
-from param_decomp.core.configs import CI_L0Config, PGDReconLossConfig
+from param_decomp.core.configs import (
+    AnyPGDEvalConfig,
+    CI_L0Config,
+)
 from param_decomp.core.eval_schedule import EvalSchedule
-from param_decomp.core.model import CaptureKeys, PlacedModel
-from param_decomp.core.recon import resolve_reconstruction_spec
+from param_decomp.core.model import CaptureKeys, ComponentActivations, PlacedModel
+from param_decomp.core.recon import resolve_auxiliary_reconstruction
 from param_decomp.core.recon_eval import FreshPGDReconEval, make_fresh_pgd_eval_step
-from param_decomp.core.run import EvalInvocation, PassOperation
+from param_decomp.core.run import EvalInvocation, StandaloneOperation, StandaloneOperationPlan
 from param_decomp.experiments.eval_config import EvalConfig
 
-type ScalarStep[Out] = Callable[
-    [PlacedModel[Out], ComponentStacks, PlacedCIFn, Any, PRNGKeyArray], dict[str, Array]
-]
+type ScalarStep[TargetIn, Out, PreparedT: ComponentActivations, Conditioning, PreparedMaskingT] = (
+    Callable[
+        [
+            PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
+            ComponentStacks,
+            CIFn[Conditioning],
+            TargetIn,
+            PRNGKeyArray,
+        ],
+        dict[str, Array],
+    ]
+)
 
 
-def _averaged_over_eval_batches[Out](
-    step: ScalarStep[Out],
-    eval_config: EvalConfig,
-    schedule: EvalSchedule,
-    seed: int,
-    model: PlacedModel[Out],
-    sample_eval_batch: Callable[[int], Any],
-) -> PassOperation[EvalInvocation]:
-    """Run `step` over the pass's eval batches and average each scalar it emits."""
-    eval_key = jax.random.PRNGKey(seed + 1)
-
-    def run(context: EvalInvocation) -> dict[str, float]:
-        pass_index = context.now_step // eval_config.every
-        sums: dict[str, Array] = {}
-        for batch_index in range(eval_config.n_steps):
-            flat_index = pass_index * eval_config.n_steps + batch_index
-            values = step(
-                model,
-                context.state.decomposition.components,
-                context.placed_ci_fn,
-                sample_eval_batch(flat_index),
-                jax.random.fold_in(eval_key, flat_index),
-            )
-            for name, value in values.items():
-                sums[name] = sums.get(name, jnp.zeros(())) + value
-        return {f"eval/{name}": float(value) / eval_config.n_steps for name, value in sums.items()}
-
-    return PassOperation(schedule, run)
-
-
-def make_fresh_pgd_operation[Out](
-    metric: PGDReconLossConfig,
+def _averaged_over_eval_batches[
+    TargetIn,
+    Out,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](
+    step: ScalarStep[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
     eval_config: EvalConfig,
     schedule: EvalSchedule,
     seed: int,
     compiler_options: dict[str, bool | int | str],
-    model: PlacedModel[Out],
+    model: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
+    sample_eval_batch: Callable[[np.uint32], TargetIn],
+) -> StandaloneOperationPlan[EvalInvocation[Conditioning]]:
+    """Run `step` over the pass's eval batches and average each scalar it emits."""
+    eval_key = jax.random.PRNGKey(seed + 1)
+
+    def score(
+        model: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
+        components: ComponentStacks,
+        ci_fn: CIFn[Conditioning],
+        inputs: TargetIn,
+        batch_index: np.uint32,
+    ) -> dict[str, Array]:
+        key = jax.random.fold_in(eval_key, batch_index)
+        return step(model, components, ci_fn, inputs, key)
+
+    def prepare(
+        example: EvalInvocation[Conditioning],
+    ) -> StandaloneOperation[EvalInvocation[Conditioning]]:
+        compiled_step = (
+            jax.jit(score, compiler_options=compiler_options)
+            .lower(
+                model,
+                example.decomposition.components,
+                example.decomposition.ci_fn,
+                sample_eval_batch(np.uint32(0)),
+                np.uint32(0),
+            )
+            .compile()
+        )
+
+        def run(context: EvalInvocation[Conditioning]) -> dict[str, float]:
+            pass_index = context.now_step // eval_config.every
+            sums: dict[str, float] = {}
+            for batch_index in range(eval_config.n_steps):
+                flat_index = np.uint32(pass_index * eval_config.n_steps + batch_index)
+                values = compiled_step(
+                    model,
+                    context.decomposition.components,
+                    context.decomposition.ci_fn,
+                    sample_eval_batch(flat_index),
+                    flat_index,
+                )
+                for name, value in values.items():
+                    sums[name] = sums.get(name, 0.0) + float(value)
+            return {f"eval/{name}": value / eval_config.n_steps for name, value in sums.items()}
+
+        return StandaloneOperation(schedule, run)
+
+    return StandaloneOperationPlan(prepare)
+
+
+def make_fresh_pgd_operation[
+    TargetIn,
+    Out,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](
+    metric: AnyPGDEvalConfig,
+    eval_config: EvalConfig,
+    schedule: EvalSchedule,
+    seed: int,
+    compiler_options: dict[str, bool | int | str],
+    model: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
     ci_capture_keys: CaptureKeys,
     mesh: Mesh | None,
-    sample_eval_batch: Callable[[int], Any],
-) -> PassOperation[EvalInvocation]:
-    assert metric.init == "random" and metric.source_shape == "c", metric
+    sample_eval_batch: Callable[[np.uint32], TargetIn],
+) -> StandaloneOperationPlan[EvalInvocation[Conditioning]]:
     probe = FreshPGDReconEval(
         name=metric.name or metric.type,
         n_steps=metric.n_steps,
         step_size=metric.step_size,
-        reconstruction=resolve_reconstruction_spec(metric.hidden_acts_reconstruction),
+        reconstruction=resolve_auxiliary_reconstruction(metric.auxiliaries),
     )
     pgd_step = make_fresh_pgd_eval_step(
         model,
         probe,
         ci_capture_keys,
         mesh,
-        compiler_options=compiler_options,
     )
 
     def step(
-        model: PlacedModel[Out],
+        model: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
         components: ComponentStacks,
-        placed_ci_fn: PlacedCIFn,
-        inputs: Any,
+        ci_fn: CIFn[Conditioning],
+        inputs: TargetIn,
         key: PRNGKeyArray,
     ) -> dict[str, Array]:
-        return {f"loss/{probe.name}": pgd_step(model, components, placed_ci_fn, inputs, key)}
+        return {f"loss/{probe.name}": pgd_step(model, components, ci_fn, inputs, key)}
 
-    return _averaged_over_eval_batches(step, eval_config, schedule, seed, model, sample_eval_batch)
+    return _averaged_over_eval_batches(
+        step, eval_config, schedule, seed, compiler_options, model, sample_eval_batch
+    )
 
 
-def make_ci_l0_operation[Out](
+def make_ci_l0_operation[
+    TargetIn,
+    Out,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](
     metric: CI_L0Config,
     eval_config: EvalConfig,
     schedule: EvalSchedule,
     seed: int,
     compiler_options: dict[str, bool | int | str],
-    model: PlacedModel[Out],
+    model: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
     ci_capture_keys: CaptureKeys,
     mesh: Mesh | None,
-    sample_eval_batch: Callable[[int], Any],
-) -> PassOperation[EvalInvocation]:
+    sample_eval_batch: Callable[[np.uint32], TargetIn],
+) -> StandaloneOperationPlan[EvalInvocation[Conditioning]]:
     groups = (
         {name: tuple(patterns) for name, patterns in metric.groups.items()}
         if metric.groups is not None
@@ -121,6 +178,7 @@ def make_ci_l0_operation[Out](
         metric.ci_alive_threshold,
         groups,
         mesh,
-        compiler_options=compiler_options,
     )
-    return _averaged_over_eval_batches(step, eval_config, schedule, seed, model, sample_eval_batch)
+    return _averaged_over_eval_batches(
+        step, eval_config, schedule, seed, compiler_options, model, sample_eval_batch
+    )

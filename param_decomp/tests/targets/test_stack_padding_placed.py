@@ -1,12 +1,12 @@
 """Placed persist-stack padding: the entry's pad strip and real-slot gather, its grad
-transpose, the faithfulness lane, and a full padded train step (SPEC D4, 2026-09-01
-amendment) — for the V/U groups and for the chunkwise CI fn's chunk stack.
+transpose, the faithfulness lane, and a full padded train step — for the V/U groups and for the
+chunkwise CI fn's chunk stack.
 
 Three worlds over the 8-device suite: `owner` at (4,2,1), where the 6-layer tiny target's
 kind stacks pad to 8 naturally; `owner` at (2,2,1) — pad-free — where a census surgery
 re-runs the SAME world padded, pinning real-slot bit-identity; and
 `owner-replicated-resident` at (data=4, tp=2), where the kind stacks pad to 8 and a
-3-chunk CI fn pads to 4 (the Qwen3-4B seat's mechanism at toy scale)."""
+3-chunk CI fn pads to 4 (the Qwen3-4B configuration's mechanism at toy scale)."""
 
 import dataclasses
 import re
@@ -16,7 +16,6 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-import optax
 import pytest
 from jax import random
 from jax.sharding import AxisType, Mesh, NamedSharding
@@ -28,48 +27,44 @@ from param_decomp.core.adversary import (
     init_sources_adam_state,
 )
 from param_decomp.core.axes import Axes
-from param_decomp.core.ci_fn import (
+from param_decomp.core.ci_fn.implementations.chunkwise.arch import (
     Chunk,
-    ChunkwiseTransformerCIArch,
-    ChunkwiseTransformerCIFn,
-    MHACIAttention,
-    PlacedCIFn,
-    build_ci_fn,
-    evaluate_ci,
-    materialize_ci_compute_weights,
-    pad_ci_fn,
-    resolve_ci_placement,
+    ChunkwiseTransformerBackbone,
+    ChunkwiseTransformerCIFnArch,
+    ChunkwiseTransformerCIFnPlacement,
+    init_chunkwise_transformer_backbone,
 )
+from param_decomp.core.ci_fn.implementations.chunkwise.chunk_stack import real_chunks
+from param_decomp.core.ci_fn.implementations.transformer.backbone import BackboneCIFn
+from param_decomp.core.ci_fn.implementations.transformer.layers import MHACIFnAttention
 from param_decomp.core.components import (
     ComponentStacks,
     SiteC,
     SiteSpec,
     init_component_stacks,
+    pad_component_stacks,
     require_full_emission,
 )
 from param_decomp.core.configs import (
     AdamPGDConfig,
+    AdamWOptimizerConfig,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
     StochasticReconSubsetLossConfig,
     UniformKSubsetRoutingConfig,
 )
+from param_decomp.core.dict_utils import FrozenMapping
 from param_decomp.core.faithfulness import faithfulness_loss_for
 from param_decomp.core.init_placed import (
-    init_ci_fn_placed,
     init_component_stacks_placed,
     padded_component_initializer,
     random_component_initializer,
 )
-from param_decomp.core.model import (
-    MaterializedMasking,
-    PlacedModel,
-    faithfulness_weight_deltas,
-)
+from param_decomp.core.losses import BatchFrequency
+from param_decomp.core.model import MaterializedMasking, PlacedModel, faithfulness_weight_deltas
 from param_decomp.core.objective import build_objective
 from param_decomp.core.placement import (
-    CIFnPlacement,
     PlacementRules,
     StackCensus,
     component_stacks_audit,
@@ -77,16 +72,19 @@ from param_decomp.core.placement import (
     dropped_mesh_axes,
     from_config,
 )
+from param_decomp.core.run_state import _adamw_optimizer
 from param_decomp.core.schedule import Knot, ScheduleConfig
 from param_decomp.core.sharding import place_target, shard_batch
 from param_decomp.core.train import (
     Decomposition,
     ForwardSubstrate,
-    TrainingItem,
+    PDState,
+    PDTrainingState,
     TrainState,
     make_train_step,
 )
-from param_decomp.targets.glu_transformer import GLUDecomposedModel
+from param_decomp.lm.batch import LMBatchWithDocuments  # noqa: E402
+from param_decomp.sequence import SequenceLayout  # noqa: E402
 from param_decomp.targets.llama_simple_mlp import (
     KIND_ORDER,
     canonical_site_cs,
@@ -94,10 +92,13 @@ from param_decomp.targets.llama_simple_mlp import (
     site_specs,
 )
 from param_decomp.targets.testing import (
+    chunkwise_transformer_backbone,
     materialized_logits,
     tiny_simple_mlp_cfg,
     tiny_simple_mlp_decomposed_model,
 )
+from param_decomp.targets.transformer import TransformerDecomposedModel
+from param_decomp.tests.placed_ci_fn import placed_ci_fn
 
 pytestmark = [
     pytest.mark.multidevice,
@@ -127,12 +128,12 @@ def _resident_mesh(data: int, tp: int) -> Mesh:
     )
 
 
-def _ci_arch(site_names: tuple[str, ...], n_chunks: int) -> ChunkwiseTransformerCIArch:
+def _ci_fn_arch(site_names: tuple[str, ...], n_chunks: int) -> ChunkwiseTransformerCIFnArch:
     """`n_chunks` equal chunks over the sites in order (every site has one C, so the
     per-slot heads stack whatever the boundaries)."""
     per_chunk = len(site_names) // n_chunks
     assert per_chunk * n_chunks == len(site_names), (len(site_names), n_chunks)
-    return ChunkwiseTransformerCIArch(
+    return ChunkwiseTransformerCIFnArch(
         chunks=tuple(
             Chunk(
                 input_taps=("resid.0",),
@@ -143,14 +144,14 @@ def _ci_arch(site_names: tuple[str, ...], n_chunks: int) -> ChunkwiseTransformer
         input_dim=tiny_simple_mlp_cfg().n_embd,
         d_model=16,
         n_blocks=2,
-        attention=MHACIAttention(n_heads=2),
+        attention=MHACIFnAttention(mask="bidirectional", implementation="xla", n_heads=2),
         ffn_hidden=32,
         ffn_kind="gelu",
         learned_norm_scale=False,
     )
 
 
-def _model_and_sites() -> tuple[GLUDecomposedModel, tuple[SiteSpec, ...]]:
+def _model_and_sites() -> tuple[TransformerDecomposedModel, tuple[SiteSpec, ...]]:
     cfg = tiny_simple_mlp_cfg()
     site_cs = canonical_site_cs(
         tuple(
@@ -230,6 +231,37 @@ def test_padding_world_pre_init_audit_sees_the_pads():
     assert all(shape[0] == _N_LAYER + 2 for _, _, shape in audit.values())
 
 
+def test_padding_pads_typed_like_sharded_stacks():
+    """Owner initialization can carry FSDP-sharded matrix axes before stack padding;
+    padding must preserve those layouts, real values, and exact-zero trailing slots."""
+    _, sites = _model_and_sites()
+    mesh = _mesh(4, 2)
+    stacks = init_component_stacks(sites, random.PRNGKey(1))
+    rules = from_config("owner", mesh, sites)
+    pads = {group: census.stack_pad for group, census in rules.components.group_census.items()}
+    assert set(pads.values()) == {2}
+    with jax.set_mesh(mesh):
+        typed = ComponentStacks(
+            stacks={
+                group: (
+                    jax.sharding.reshard(Vs, P(None, "fsdp", None)),
+                    jax.sharding.reshard(Us, P(None, None, "fsdp")),
+                )
+                for group, (Vs, Us) in stacks.stacks.items()
+            },
+            site_stack_indices=stacks.site_stack_indices,
+        )
+        padded = pad_component_stacks(typed, pads)
+    assert padded.site_stack_indices == typed.site_stack_indices
+    for group, pair in padded.stacks.items():
+        for value, original in zip(pair, typed.stacks[group], strict=True):
+            assert value.shape == (_N_LAYER + 2, *original.shape[1:])
+            assert value.sharding == original.sharding
+            actual, expected = np.asarray(value), np.asarray(original)
+            np.testing.assert_array_equal(actual[:_N_LAYER], expected, strict=True)
+            np.testing.assert_array_equal(actual[_N_LAYER:], np.zeros_like(actual[_N_LAYER:]))
+
+
 def test_padding_world_faithfulness_lane_pads_are_exact_zeros():
     model, sites = _model_and_sites()
     mesh = _mesh(4, 2)
@@ -258,23 +290,25 @@ def test_padding_world_faithfulness_lane_pads_are_exact_zeros():
 
 
 def _full_objective_state_and_step(
-    model: GLUDecomposedModel,
+    model: TransformerDecomposedModel,
     sites: tuple[SiteSpec, ...],
     mesh: Mesh,
     rules: PlacementRules,
-    arch: ChunkwiseTransformerCIArch,
+    arch: ChunkwiseTransformerCIFnArch,
 ):
-    """The real `make_train_step` over the committed seat's term classes (faithfulness +
+    """The real `make_train_step` over the maintained config's term classes (faithfulness +
     imp-min + stochastic subset + persistent PPGD), assembled placed."""
     placed = place_target(model, rules)
     vu = init_component_stacks_placed(sites, random.PRNGKey(1), rules)
-    ci_fn = init_ci_fn_placed(arch, placed.sites, random.PRNGKey(2), mesh, rules)
-    src = init_persistent_sources(placed.sites, (1, _T), jnp.float32, random.PRNGKey(3))
-    opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
-    opt_ci = optax.adamw(1e-3, weight_decay=0.0)
+    ci_fn = placed_ci_fn(arch, placed.model.sites, random.PRNGKey(2), mesh, rules)
+    src = init_persistent_sources(placed.model.sites, (_B, _T), jnp.float32, random.PRNGKey(3))
+    opt_vu = _adamw_optimizer(
+        AdamWOptimizerConfig(lr_schedule=ScheduleConfig.constant(1e-3), grad_clip_norm=0.01), 1
+    )
+    opt_ci = _adamw_optimizer(AdamWOptimizerConfig(lr_schedule=ScheduleConfig.constant(1e-3)), 1)
     ppgd_cfg = PersistentPGDReconLossConfig(
         coeff=0.5,
-        source_shape="sc",
+        source_shape="bsc",
         optimizer=AdamPGDConfig(
             beta1=0.5,
             beta2=0.99,
@@ -285,9 +319,25 @@ def _full_objective_state_and_step(
         ),
         n_warmup_steps=2,
     )
+    loss_terms = build_objective(
+        (
+            FaithfulnessLossConfig(coeff=1e5),
+            ImportanceMinimalityLossConfig(
+                coeff=5e-6,
+                gamma=ScheduleConfig(
+                    max_val=1.0, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.2))
+                ),
+            ),
+            StochasticReconSubsetLossConfig(routing=UniformKSubsetRoutingConfig(), coeff=0.5),
+            ppgd_cfg,
+        ),
+        placed.model.sites,
+    )
     state = TrainState(
-        decomposition=Decomposition(components=vu, ci_fn=ci_fn),
-        training=TrainingItem(
+        decomposition=Decomposition[LMBatchWithDocuments](components=vu, ci_fn=ci_fn),
+        training=PDTrainingState(
+            frequency=BatchFrequency(),
+            objective=loss_terms,
             components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
             ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
             adversaries={
@@ -299,45 +349,28 @@ def _full_objective_state_and_step(
                     n_warmup=ppgd_cfg.n_warmup_steps,
                 )
             },
-            freq_ema=None,
             step=jnp.zeros((), jnp.int32),
         ),
     )
-    loss_terms = build_objective(
-        (
-            FaithfulnessLossConfig(coeff=1e5),
-            ImportanceMinimalityLossConfig(
-                coeff=5e-6,
-                gamma=ScheduleConfig(
-                    max_val=1.0, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.2))
-                ),
+    step = jax.jit(
+        make_train_step(
+            model_static=placed,
+            substrate=ForwardSubstrate.of(
+                placed,
+                remat_recon_forwards=True,
+                remat_ci_fn=False,
+                ci_capture_keys=ci_fn.capture_keys,
             ),
-            StochasticReconSubsetLossConfig(
-                routing=UniformKSubsetRoutingConfig(), coeff=0.5, n_mask_samples=1
-            ),
-            ppgd_cfg,
-        ),
-        placed.site_names,
-    )
-    step = make_train_step(
-        model_static=placed,
-        substrate=ForwardSubstrate.of(
-            placed,
-            remat_recon_forwards=True,
-            remat_ci_fn=False,
-            ci_capture_keys=ci_fn.capture_keys,
-            ci_placement=resolve_ci_placement(arch, rules),
-        ),
-        objective=loss_terms,
-        components_optimizer=opt_vu,
-        ci_fn_optimizer=opt_ci,
-        total_steps=100,
-        faithfulness=faithfulness_loss_for(placed),
+            components_optimizer=opt_vu,
+            ci_fn_optimizer=opt_ci,
+            total_steps=100,
+            faithfulness=faithfulness_loss_for(placed),
+        )
     )
     return placed, state, step
 
 
-def _assert_pads_exactly_zero(state: TrainState, real: int) -> None:
+def _assert_pads_exactly_zero(state: PDState[LMBatchWithDocuments], real: int) -> None:
     vu = state.decomposition.components
     for group, (Vs, Us) in vu.stacks.items():
         assert (jax.device_get(Vs)[real:] == 0.0).all(), group
@@ -352,13 +385,18 @@ def test_padded_owner_full_train_step_keeps_pads_exactly_zero():
     mesh = _mesh(4, 2)
     rules = from_config("owner", mesh, model.sites)
     # 4 chunks tile owner's ÷replicate=4 CI rows: this world pads the components only
-    arch = _ci_arch(model.site_names, 4)
+    arch = _ci_fn_arch(model.site_names, 4)
     with jax.set_mesh(mesh):
         placed, state, step = _full_objective_state_and_step(model, sites, mesh, rules, arch)
         tokens = shard_batch(_tokens(), mesh, batch_axis=0)
         metrics: dict[str, jax.Array] = {}
         for i in range(2):
-            state, metrics = step(placed, state, tokens, random.PRNGKey(100 + i))
+            state, metrics = step(
+                placed,
+                state,
+                LMBatchWithDocuments.from_unsegmented_sequences(tokens),
+                random.PRNGKey(100 + i),
+            )
     assert jnp.isfinite(metrics["total"]), metrics
     _assert_pads_exactly_zero(state, _N_LAYER)
 
@@ -415,7 +453,7 @@ def test_padded_entry_matches_the_gather_then_strip_spelling_bit_for_bit():
             census = components.group_census[group]
             f = census.factorization
             stacks_out[group] = (one(vs, census, f.v_axes), one(us, census, f.u_axes))
-        return ComponentStacks(stacks=stacks_out, site_slots=stacks.site_slots)
+        return ComponentStacks(stacks=stacks_out, site_stack_indices=stacks.site_stack_indices)
 
     def loss_through(
         route: Callable[[ComponentStacks], ComponentStacks],
@@ -445,33 +483,33 @@ def test_padded_entry_matches_the_gather_then_strip_spelling_bit_for_bit():
 
 
 def test_padded_entry_gathers_real_slots_only():
-    """The compiled entry at the resident world (kinds 6 → 8, chunks 3 → 4) carries no pad
-    through any gather: every all-gather result — forward and its transpose — leads with
-    a REAL stack length, never the padded one, and the persist→waypoint hop lowers as an
-    all-to-all. The pad-free (2,2,1) owner world keeps the direct stack-axis gather and
-    lowers no all-to-all at all."""
+    """The compiled entries at the resident world (kinds 6 → 8, chunks 3 → 4): the V/U
+    entry carries no pad through any gather — every all-gather result, forward and
+    transpose, leads with the REAL stack length, and the persist→waypoint hop lowers as an
+    all-to-all. The CI entry gathers its padded chunk stack whole in one reshard, with no
+    all-to-all. The pad-free (2,2,1) owner world keeps the direct stack-axis V/U gather
+    and lowers no all-to-all at all."""
     model, sites, mesh, rules = _resident_world()
-    arch = _ci_arch(model.site_names, _N_CHUNKS)
-    placement = resolve_ci_placement(arch, rules)
+    arch = _ci_fn_arch(model.site_names, _N_CHUNKS)
 
     def components_loss(stacks: ComponentStacks) -> jax.Array:
         return _sum_of_squares(
             jax.tree.leaves(component_stacks_to_compute_weights(stacks, rules.components))
         )
 
-    def ci_loss(fn: ChunkwiseTransformerCIFn) -> jax.Array:
-        compute = materialize_ci_compute_weights(PlacedCIFn(fn=fn, placement=placement)).fn
-        assert isinstance(compute, ChunkwiseTransformerCIFn)
-        return _sum_of_squares(_chunk_leaves(compute))
+    def ci_loss(fn: BackboneCIFn) -> jax.Array:
+        compute = fn.prepare()
+        assert isinstance(compute.backbone, ChunkwiseTransformerBackbone)
+        return _sum_of_squares(_chunk_leaves(compute.backbone))
 
     with jax.set_mesh(mesh):
         vu = init_component_stacks_placed(sites, random.PRNGKey(1), rules)
-        fn = init_ci_fn_placed(arch, sites, random.PRNGKey(2), mesh, rules)
+        fn = placed_ci_fn(arch, sites, random.PRNGKey(2), mesh, rules)
         components_hlo = _compiled_grad_hlo(components_loss, vu)
         ci_hlo = _compiled_grad_hlo(ci_loss, fn)
     assert _all_gather_leading_dims(components_hlo) == {_N_LAYER}
-    assert _all_gather_leading_dims(ci_hlo) == {_N_CHUNKS}
-    assert "all-to-all" in components_hlo and "all-to-all" in ci_hlo
+    assert _all_gather_leading_dims(ci_hlo) == {_N_CHUNKS + 1}
+    assert "all-to-all" in components_hlo and "all-to-all" not in ci_hlo
 
     pad_free_mesh = _mesh(2, 2)
     pad_free_rules = from_config("owner", pad_free_mesh, model.sites)
@@ -492,10 +530,12 @@ def test_padded_entry_gathers_real_slots_only():
 def _padded_by_surgery(rules: PlacementRules, pad: int) -> PlacementRules:
     """The SAME rules with every census entry's pad bumped — the pads are data, so a
     test can author a padded world where the mesh alone would not demand one."""
-    census = {
-        group: dataclasses.replace(entry, stack_pad=pad)
-        for group, entry in rules.components.group_census.items()
-    }
+    census = FrozenMapping(
+        {
+            group: dataclasses.replace(entry, stack_pad=pad)
+            for group, entry in rules.components.group_census.items()
+        }
+    )
     return dataclasses.replace(
         rules, components=dataclasses.replace(rules.components, group_census=census)
     )
@@ -525,8 +565,9 @@ def test_padded_grads_are_bit_identical_to_unpadded_at_the_same_world():
             output = materialized_logits(
                 model.masked_forward(
                     prepared,
-                    tokens,
-                    masking=masking,
+                    LMBatchWithDocuments.from_unsegmented_sequences(tokens),
+                    masking=model.prepare_masking(masking),
+                    routes=None,
                     placement=world_rules,
                     capture_keys=frozenset(),
                     remat=False,
@@ -560,15 +601,20 @@ def test_padded_train_step_matches_unpadded_at_the_same_world():
     rules = from_config("owner", mesh, model.sites)
     padded_rules = _padded_by_surgery(rules, 2)
     tokens_host = _tokens()
-    arch = _ci_arch(model.site_names, 4)
+    arch = _ci_fn_arch(model.site_names, 4)
 
-    def run(world_rules: PlacementRules) -> TrainState:
+    def run(world_rules: PlacementRules) -> PDState[LMBatchWithDocuments]:
         with jax.set_mesh(mesh):
             placed, state, step = _full_objective_state_and_step(
                 model, sites, mesh, world_rules, arch
             )
             tokens = shard_batch(tokens_host, mesh, batch_axis=0)
-            state, _ = step(placed, state, tokens, random.PRNGKey(100))
+            state, _ = step(
+                placed,
+                state,
+                LMBatchWithDocuments.from_unsegmented_sequences(tokens),
+                random.PRNGKey(100),
+            )
         return state
 
     unpadded, padded = run(rules), run(padded_rules)
@@ -582,58 +628,73 @@ def test_padded_train_step_matches_unpadded_at_the_same_world():
 
 
 # ── the CI fn's chunk stack under owner-replicated-resident ──────────────────
-# The Qwen3-4B seat's mechanism at toy scale: `{data: 4, tp: 2}`, 3 chunks that do not
+# The Qwen3-4B configuration's mechanism at toy scale: `{data: 4, tp: 2}`, 3 chunks that do not
 # tile the ÷data cut of the CI-fn persist rows, so the chunk stack pads to 4.
 
 _N_CHUNKS = 3
 
 
-def _resident_world() -> tuple[GLUDecomposedModel, tuple[SiteSpec, ...], Mesh, PlacementRules]:
+def _resident_world() -> tuple[
+    TransformerDecomposedModel, tuple[SiteSpec, ...], Mesh, PlacementRules
+]:
     model, sites = _model_and_sites()
     mesh = _resident_mesh(4, 2)
     return model, sites, mesh, from_config("owner-replicated-resident", mesh, model.sites)
 
 
-def _chunk_leaves(fn: ChunkwiseTransformerCIFn) -> list[jax.Array]:
-    return jax.tree.leaves(fn.chunks)
+def _chunk_leaves(backbone: ChunkwiseTransformerBackbone) -> list[jax.Array]:
+    return jax.tree.leaves(backbone.chunks)
 
 
 def test_ci_chunk_padding_world_init_entry_slice_and_grad_transpose():
     """At (data=4, tp=2) the 3-chunk CI fn pads to 4: the census says so, the placed init
     seeds the real chunk slots like the unplaced init and zeros the pad on EVERY leaf, the
-    entry (`materialize_ci_compute_weights`) hands the scan exactly the real chunks, and
-    its transpose returns real-chunk grads with exact zeros on the pad."""
+    entry (`prepare_compute_weights`) gathers the padded stack whole, the forward's
+    real-chunk slice hands the scan exactly the real chunks, and the transpose of slice
+    and gather returns real-chunk grads with exact zeros on the pad of every leaf."""
     model, sites, mesh, rules = _resident_world()
-    arch = _ci_arch(model.site_names, _N_CHUNKS)
-    placement = resolve_ci_placement(arch, rules)
-    assert placement is not None
+    arch = _ci_fn_arch(model.site_names, _N_CHUNKS)
+    placement = arch.resolve_placement(rules)
     assert placement.chunks == StackCensus(stack_len=_N_CHUNKS, stack_pad=1)
-    reference = build_ci_fn(arch, sites, random.PRNGKey(2))
-    assert isinstance(reference, ChunkwiseTransformerCIFn)
+    reference = arch.initialize(sites, None, random.PRNGKey(2))
 
-    def compute_loss(f: ChunkwiseTransformerCIFn, ci_placement: CIFnPlacement | None) -> jax.Array:
-        compute = materialize_ci_compute_weights(PlacedCIFn(fn=f, placement=ci_placement)).fn
-        assert isinstance(compute, ChunkwiseTransformerCIFn) and compute.stack_pad == 0
+    def compute_loss(f: BackboneCIFn) -> jax.Array:
+        compute = f.prepare()
+        backbone = compute.backbone
+        assert isinstance(backbone, ChunkwiseTransformerBackbone)
+        assert backbone.census.stack_pad == chunkwise_transformer_backbone(f).census.stack_pad
+        for leaf in _chunk_leaves(backbone):
+            assert leaf.shape[0] == _N_CHUNKS + backbone.census.stack_pad
+        scanned = real_chunks(backbone.chunks, backbone.census)
         total = jnp.zeros(())
-        for leaf in _chunk_leaves(compute):
+        for leaf in jax.tree.leaves(scanned):
             assert leaf.shape[0] == _N_CHUNKS
             leaf = leaf.astype(jnp.float32)
             total = total + jnp.sum(leaf * leaf)
         return total
 
     with jax.set_mesh(mesh):
-        fn = init_ci_fn_placed(arch, sites, random.PRNGKey(2), mesh, rules)
-        assert isinstance(fn, ChunkwiseTransformerCIFn) and fn.stack_pad == 1
-        for placed_leaf, expected in zip(_chunk_leaves(fn), _chunk_leaves(reference), strict=True):
+        fn = placed_ci_fn(arch, sites, random.PRNGKey(2), mesh, rules)
+        assert isinstance(fn, BackboneCIFn), type(fn)
+        stored = chunkwise_transformer_backbone(fn)
+        assert stored.census.stack_pad == 1
+        assert stored.placement == placement
+        for placed_leaf, expected in zip(
+            _chunk_leaves(stored),
+            _chunk_leaves(chunkwise_transformer_backbone(reference)),
+            strict=True,
+        ):
             gathered = jax.device_get(placed_leaf)
             assert gathered.shape == (_N_CHUNKS + 1, *expected.shape[1:])
             np.testing.assert_allclose(gathered[:_N_CHUNKS], expected, rtol=1e-6)
             assert (gathered[_N_CHUNKS:] == 0.0).all()
-        grads = eqx.filter_grad(compute_loss)(fn, placement)
+        grads = eqx.filter_grad(compute_loss)(fn)
 
-    reference_grads = eqx.filter_grad(compute_loss)(reference, None)
+    reference_grads = eqx.filter_grad(compute_loss)(reference)
     for placed_leaf, expected in zip(
-        _chunk_leaves(grads), _chunk_leaves(reference_grads), strict=True
+        _chunk_leaves(chunkwise_transformer_backbone(grads)),
+        _chunk_leaves(chunkwise_transformer_backbone(reference_grads)),
+        strict=True,
     ):
         gathered = jax.device_get(placed_leaf)
         assert (gathered[_N_CHUNKS:] == 0.0).all()
@@ -645,18 +706,28 @@ def test_padded_ci_fn_forward_and_grads_are_bit_identical_to_unpadded_at_the_sam
     world re-run with its chunk stack padded (+4) must emit bit-identical CI and
     bit-identical real-chunk raw grads, with exact zeros on the pad slots."""
     model, sites, mesh, rules = _resident_world()
-    arch = _ci_arch(model.site_names, 4)
-    unpadded = resolve_ci_placement(arch, rules)
-    assert unpadded is not None and unpadded.chunks == StackCensus(stack_len=4, stack_pad=0)
-    padded = CIFnPlacement.resolved(rules.ci_fn, StackCensus(stack_len=4, stack_pad=4))
+    arch = _ci_fn_arch(model.site_names, 4)
+    unpadded = arch.resolve_placement(rules)
+    assert unpadded.chunks == StackCensus(stack_len=4, stack_pad=0)
+    padded = dataclasses.replace(unpadded, chunks=StackCensus(stack_len=4, stack_pad=4))
     taps_host = random.normal(random.PRNGKey(5), (_B, _T, tiny_simple_mlp_cfg().n_embd))
 
-    def run(placement: CIFnPlacement) -> tuple[dict[str, np.ndarray], list[np.ndarray]]:
-        fn = pad_ci_fn(build_ci_fn(arch, sites, random.PRNGKey(2)), placement)
-        assert isinstance(fn, ChunkwiseTransformerCIFn)
+    def run(
+        placement: ChunkwiseTransformerCIFnPlacement,
+    ) -> tuple[dict[str, np.ndarray], list[np.ndarray]]:
+        fn = BackboneCIFn(
+            init_chunkwise_transformer_backbone(arch, sites, placement, random.PRNGKey(2))
+        )
 
-        def loss(f: ChunkwiseTransformerCIFn) -> tuple[jax.Array, dict[str, jax.Array]]:
-            ci = evaluate_ci(PlacedCIFn(fn=f, placement=placement), taps, remat=False)
+        def loss(f: BackboneCIFn) -> tuple[jax.Array, dict[str, jax.Array]]:
+            components = init_component_stacks(sites, random.PRNGKey(9))
+            ci = f.prepare()(
+                taps,
+                None,
+                components,
+                sequence=SequenceLayout(jnp.zeros(taps_host.shape[:2], dtype=jnp.int32)),
+                remat=False,
+            )
             preactivations = {
                 site: require_full_emission(value) for site, value in ci.preactivations.items()
             }
@@ -670,12 +741,14 @@ def test_padded_ci_fn_forward_and_grads_are_bit_identical_to_unpadded_at_the_sam
             return total, preactivations
 
         with jax.set_mesh(mesh):
-            placed_fn = jax.device_put(fn, fn.shardings(mesh, placement))
+            placed_fn = jax.device_put(fn, fn.shardings(mesh))
             taps = {"resid.0": shard_batch(taps_host, mesh, batch_axis=0)}
             (_, preactivations), grads = eqx.filter_jit(
                 eqx.filter_value_and_grad(loss, has_aux=True)
             )(placed_fn)
-        return jax.device_get(preactivations), [jax.device_get(g) for g in _chunk_leaves(grads)]
+        return jax.device_get(preactivations), [
+            jax.device_get(g) for g in _chunk_leaves(chunkwise_transformer_backbone(grads))
+        ]
 
     (ci_unpadded, grads_unpadded), (ci_padded, grads_padded) = run(unpadded), run(padded)
     for site, expected in ci_unpadded.items():
@@ -690,18 +763,23 @@ def test_padded_ci_chunk_stack_full_train_step_keeps_pads_exactly_zero():
     chunks 3 → 4): the loss is finite, and every pad slot — CI masters and their moments
     alike — stays exactly zero (zero grads through the entry slice, wd = 0)."""
     model, sites, mesh, rules = _resident_world()
-    arch = _ci_arch(model.site_names, _N_CHUNKS)
+    arch = _ci_fn_arch(model.site_names, _N_CHUNKS)
     with jax.set_mesh(mesh):
         placed, state, step = _full_objective_state_and_step(model, sites, mesh, rules, arch)
         tokens = shard_batch(_tokens(), mesh, batch_axis=0)
         metrics: dict[str, jax.Array] = {}
         for i in range(2):
-            state, metrics = step(placed, state, tokens, random.PRNGKey(100 + i))
+            state, metrics = step(
+                placed,
+                state,
+                LMBatchWithDocuments.from_unsegmented_sequences(tokens),
+                random.PRNGKey(100 + i),
+            )
     assert jnp.isfinite(metrics["total"]), metrics
     _assert_pads_exactly_zero(state, _N_LAYER)
-    ci_fn = state.decomposition.ci_fn
-    assert isinstance(ci_fn, ChunkwiseTransformerCIFn) and ci_fn.stack_pad == 1
-    for leaf in _chunk_leaves(ci_fn):
+    backbone = chunkwise_transformer_backbone(state.decomposition.ci_fn)
+    assert backbone.census.stack_pad == 1
+    for leaf in _chunk_leaves(backbone):
         assert (jax.device_get(leaf)[_N_CHUNKS:] == 0.0).all()
     moments = [
         leaf

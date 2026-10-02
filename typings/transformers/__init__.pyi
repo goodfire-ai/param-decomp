@@ -3,9 +3,8 @@
 from pathlib import Path
 from typing import Any, Self
 
-import numpy as np
-from numpy.typing import NDArray
 from torch import nn
+from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 class PreTrainedModel(nn.Module):
     @classmethod
@@ -13,18 +12,12 @@ class PreTrainedModel(nn.Module):
         cls, pretrained_model_name_or_path: str | Path, /, *args: Any, **kwargs: Any
     ) -> Self: ...
 
-class PreTrainedTokenizer:
-    bos_token_id: int
-    eos_token: str
-
-    def encode(self, text: str, /, *args: Any, **kwargs: Any) -> NDArray[np.signedinteger[Any]]: ...
-
 class AutoTokenizer:
     # Actually differs from the original implementation which doesn't have a return type hint
     @classmethod
     def from_pretrained(
         cls, pretrained_model_name_or_path: str | Path | None, /, *args: Any, **kwargs: Any
-    ) -> PreTrainedTokenizer: ...
+    ) -> PreTrainedTokenizerBase: ...
 
 class LlamaForCausalLM(PreTrainedModel): ...
 class GPT2LMHeadModel(PreTrainedModel): ...

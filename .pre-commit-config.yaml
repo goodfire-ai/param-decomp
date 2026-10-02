@@ -12,6 +12,7 @@ repos:
       - id: format
         name: Ruff lint and format
         entry: make format
+        pass_filenames: false
         language: system
         types: [python]
         stages:
@@ -20,6 +21,7 @@ repos:
       - id: type
         name: "Type check with BasedPyright"
         entry: make type
+        pass_filenames: false
         language: system
         types: [python]
         stages:

@@ -36,6 +36,7 @@ from param_decomp.core.axes import MeshAxis, SemanticAxis
 from param_decomp.core.base_config import BaseConfig, Probability
 from param_decomp.core.nonlinearity import NonlinearityUnitKind
 from param_decomp.core.schedule import ScheduleConfig
+from param_decomp.metric_schema import MetricSchema
 
 # ---------------------------------------------------------------------------
 # Routing
@@ -93,80 +94,63 @@ type LossCoeff = float | ScheduleConfig
 evaluated at the current step (the `gamma` pattern) — so warmups, anneals, and
 0-until-step activation gates are authorable per term. The float arm is not a parse-time
 spelling of the constant schedule: it also carries the values a schedule's positive
-`max_val` cannot (a plain 0.0), so consumers resolve via `losses.coeff_at`."""
+`max_val` cannot (a plain 0.0), so the trainer carries it as a `RuntimeSchedule` with a traced magnitude."""
 
 
 class LossMetricConfig(BaseConfig):
-    """Pydantic config for a metric that can also be used as a training loss.
+    """A loss-shaped metric: a training loss or an eval probe measuring the same quantity.
 
-    `coeff` is required when this metric is listed under `loss_metrics` and must be null
-    when listed under `eval.metrics` — both directions are asserted
-    (`PDConfig.validate_loss_metrics`;
-    `param_decomp.experiments.eval_config.validate_eval_metrics`). It is a `LossCoeff`:
-    a bare float or a step-evaluated `ScheduleConfig`.
-
-    `name` overrides the class name as this instance's identity (`Metric.instance_key`),
-    letting the same metric class appear under both `loss_metrics` and `eval.metrics`
-    with different settings — e.g. a 1-step PGD training loss alongside a 20-step PGD
-    eval probe. Leave `None` (the default) and the class name is used.
+    `name` overrides the serialized `type` as this instance's logged identity,
+    letting a metric appear under both `loss_metrics` and `eval.metrics` with
+    different settings — e.g. a 1-step PGD training loss alongside a 20-step PGD
+    eval probe. Leave `None` (the default) and the metric's tag is used.
     """
 
-    coeff: LossCoeff | None = None
     name: str | None = None
 
 
-class HiddenActsReconstruction(BaseConfig):
-    """The auxiliary relative-MSE part of one recon loss (SPEC S35): how hard, and measured
-    where. Both are required together, so they are one object rather than two optional fields.
-    Training requires positive strength; eval additionally admits zero to measure the configured
-    activation errors without changing the reconstruction probe's masks or output objective."""
+class TrainingLossConfig(LossMetricConfig):
+    """A loss weighted into the training objective by `coeff`. Eval probes (`EvalPGDConfig`)
+    derive from `LossMetricConfig` directly, so they cannot spell a weight."""
 
-    coeff: NonNegativeFloat | ScheduleConfig = Field(
-        ...,
-        description=(
-            "Strength RELATIVE to the e2e loss: each forward uses "
-            "`e2e + coeff * mean_points(relative squared error)`. Zero is the eval-only "
-            "measurement arm: it logs the hidden errors while leaving the probe objective "
-            "exactly e2e. A training term's outer `coeff` scales the sum; the eval probe "
-            "has no training step and therefore takes only the float arm. A `ScheduleConfig` is "
-            "evaluated at the current step like every other loss coefficient."
-        ),
-    )
-    points: tuple[str, ...] = Field(
-        ...,
-        description=(
-            "Activations compared between the masked and clean forwards, named in the TARGET's "
-            "own tap vocabulary — e.g. `resid.19` for the residual stream leaving block 18. "
-            "There is no default: which internal activations matter is a question about the "
-            "experiment, not something the trainer should guess. Each unique selected physical "
-            "value is retained once; the target owns how those values are materialized."
-        ),
-    )
+    coeff: LossCoeff
+
+
+class CaptureReconstruction(BaseConfig):
+    """One target-owned capture and the numerical distance applied to its paired values."""
+
+    capture: str = Field(min_length=1)
+    distance: Literal["relative_squared_error", "categorical_kl_from_logits"]
+
+
+class AuxiliaryReconstructionConfig(BaseConfig):
+    """Add `coeff * mean(comparisons)` to the same masked output reconstruction."""
+
+    name: str = Field(min_length=1, pattern=r"^[^/]+$")
+    coeff: NonNegativeFloat | ScheduleConfig
+    comparisons: tuple[CaptureReconstruction, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
-    def validate_points(self) -> Self:
-        assert self.points, "hidden_acts_reconstruction.points must name at least one activation"
-        assert len(set(self.points)) == len(self.points), f"duplicate points: {self.points}"
+    def validate_comparisons(self) -> Self:
+        assert self.name != "e2e", "e2e names the model-output comparison"
+        captures = tuple(comparison.capture for comparison in self.comparisons)
+        assert len(set(captures)) == len(captures), f"duplicate comparison captures: {captures}"
         return self
 
 
-class HiddenActsReconstructionMixin(BaseConfig):
-    """Adds an optional auxiliary relative-MSE term to a recon loss (SPEC S35), pulling each
-    masked forward toward the clean forward at named internal activations rather than only at
-    the output. Per-point division by the clean activation's own squared scale keeps points of
-    different magnitude and width comparable; the mean over points keeps the coefficient's
-    meaning stable as the point count changes.
+class ReconstructionAuxiliariesMixin(BaseConfig):
+    """Named comparison groups sharing their reconstruction term's masks and draws."""
 
-    Self-contained on the loss, like every other loss-specific input (routing, `n_samples`, the
-    PPGD optimizer): a recon term carries everything needed to compute it. In a transformer the
-    points are typically residual-stream boundaries after each block, but the loss itself is
-    architecture-neutral. Adversarial recon losses ascend this same combined objective. `None`
-    (default) disables the auxiliary part for this loss."""
+    auxiliaries: tuple[AuxiliaryReconstructionConfig, ...] = ()
 
-    hidden_acts_reconstruction: HiddenActsReconstruction | None = None
+    @model_validator(mode="after")
+    def validate_auxiliary_names(self) -> Self:
+        names = tuple(auxiliary.name for auxiliary in self.auxiliaries)
+        assert len(set(names)) == len(names), f"duplicate auxiliary names: {names}"
+        return self
 
 
-class FaithfulnessLossConfig(LossMetricConfig):
+class FaithfulnessLossConfig(TrainingLossConfig):
     """Mean per-site squared weight error, relative to each frozen target matrix."""
 
     type: Literal["FaithfulnessLoss"] = "FaithfulnessLoss"
@@ -186,13 +170,13 @@ class FrequencyMinimalityConfig(BaseConfig):
 
     `ema_halflife_steps` (when set) evaluates the penalty at a debiased exponential moving
     average of `f_c` across steps instead of the noisy single-batch estimate, with the
-    gradient kept at the single-batch scale so `coeff` transfers between the two modes
-    (SPEC S8''). Capped at `1e6`: a halflife past the run's length already degenerates
+    gradient kept at the single-batch scale so `coeff` transfers between the two modes. Capped
+    at `1e6`: a halflife past the run's length already degenerates
     to a debiased running mean, and fp32 rounding drift in the recurrence grows with the
     halflife (pinned by `test_ema_long_scan_rounding_bounded`). While frequencies move
     faster than the halflife the smoothed penalty lags the batch diagnostic (logged
     alongside as `FrequencyMinimalityLoss_batch`) — estimator convergence, not
-    instability (S8'').
+    instability.
     """
 
     coeff: NonNegativeFloat | ScheduleConfig
@@ -202,25 +186,18 @@ class FrequencyMinimalityConfig(BaseConfig):
     ema_halflife_steps: PositiveFloat | None = Field(default=None, allow_inf_nan=False, le=1e6)
 
 
-class ImportanceMinimalityLossConfig(LossMetricConfig):
-    """Geman–McClure smooth-L0 importance-minimality penalty on upper-leaky CI values.
+class ImportanceMinimalityLossConfig(TrainingLossConfig):
+    """Smooth-L0 activity and optional frequency penalties on upper-leaky CI values.
 
-    Per-value penalty `phi_gamma(c) = c^2 / (c^2 + gamma^2)` — a smooth approximation to
-    the active-component count `1[c>0]`, exact only as `gamma -> 0` — summed over the
-    per-component mean activities, with an optional `frequency` penalty over the same
-    values. `phi'(0) = 0` and `|phi'| <= 0.65/gamma` everywhere, so there is no singularity
-    at the origin (no `eps` floor, no aggressive grad clip) — the gradient is localized
-    on the threshold band `c ~ gamma/sqrt(3)` and redescends for clearly-on components.
+    The per-value penalty is `c^2 / (c^2 + gamma^2)` (Geman–McClure), summed over
+    per-component mean activity. It approaches the active-component count as
+    positive `gamma` anneals toward zero. Its derivative is zero at the origin and bounded by
+    `0.65 / gamma`; no epsilon floor or gradient clip is needed. Every gamma
+    schedule knot must have `frac > 0`; zero collapses the threshold band.
 
-    `gamma` is the width's full schedule (SPEC S9); annealing it down (knots with
-    decreasing `frac`) sharpens the count. Its knots must keep `frac > 0` (asserted
-    where the term is built) — a `gamma` touching 0 is never intended.
-
-    With `normalize_at_one`, `phi` is rescaled by `(1 + gamma^2)` so a fully-on component
-    (`c = 1`) contributes exactly 1 regardless of `gamma`. Otherwise `phi(1) =
-    1/(1+gamma^2)` grows as `gamma` anneals, silently ramping the effective `coeff` on
-    saturated components.
-    """
+    `normalize_at_one` multiplies by `1 + gamma^2`, so CI 1 contributes exactly 1
+    throughout the schedule. Without it, saturated components contribute more as
+    `gamma` decreases. The optional frequency penalty uses the same activities."""
 
     type: Literal["ImportanceMinimalityLoss"] = "ImportanceMinimalityLoss"
     gamma: ScheduleConfig
@@ -228,21 +205,24 @@ class ImportanceMinimalityLossConfig(LossMetricConfig):
     normalize_at_one: bool = False
 
 
-class NonlinearityLocalityLossConfig(LossMetricConfig):
-    """Concentrate each component's write vector on fewer nonlinearity-facing units
-    (SPEC S36).
+class NonlinearityLocalityLossConfig(TrainingLossConfig):
+    """Concentrate each component's write vector on fewer nonlinearity-facing units.
 
     `relative_threshold` is relative to a uniform unit fraction; annealing it down sharpens
-    the soft count. `unit_kind_coefficients` weights each unit kind's component mean and
-    must name every kind the target's partitions declare (asserted at step build); a
-    `None` entry excludes that kind from the objective outright — no reduction is built,
-    which is why weights are strictly positive rather than zero-able.
+    the soft count. With `normalize_at_one`, the count is rescaled by
+    `1 + relative_threshold / unit_count`, so an aligned vector concentrated in one unit contributes
+    exactly one use (or the partition's use multiplicity for shared heads) throughout the schedule.
+    Otherwise its cost grows as the threshold anneals down. `unit_kind_coefficients` weights
+    each unit kind's component mean and must name every kind the target's partitions declare
+    (asserted at step build); a `None` entry excludes that kind from the objective outright —
+    no reduction is built, which is why weights are strictly positive rather than zero-able.
     """
 
     type: Literal["NonlinearityLocalityLoss"] = "NonlinearityLocalityLoss"
-    coeff: NonNegativeFloat | ScheduleConfig | None = None
+    coeff: NonNegativeFloat | ScheduleConfig
     relative_threshold: ScheduleConfig
     unit_kind_coefficients: dict[NonlinearityUnitKind, PositiveFloat | None]
+    normalize_at_one: bool = False
 
     @model_validator(mode="after")
     def validate_relative_threshold(self) -> Self:
@@ -259,93 +239,97 @@ class NonlinearityLocalityLossConfig(LossMetricConfig):
         return self
 
 
-class CIMaskedReconLossConfig(LossMetricConfig, HiddenActsReconstructionMixin):
+class CIMaskedReconLossConfig(TrainingLossConfig, ReconstructionAuxiliariesMixin):
     type: Literal["CIMaskedReconLoss"] = "CIMaskedReconLoss"
 
 
-class CIMaskedReconSubsetLossConfig(LossMetricConfig, HiddenActsReconstructionMixin):
+class CIMaskedReconSubsetLossConfig(TrainingLossConfig, ReconstructionAuxiliariesMixin):
     type: Literal["CIMaskedReconSubsetLoss"] = "CIMaskedReconSubsetLoss"
     routing: Annotated[SubsetRoutingType, Field(discriminator="type")] = (
         UniformKSubsetRoutingConfig()
     )
 
 
-class StochasticReconLossConfig(LossMetricConfig, HiddenActsReconstructionMixin):
+class StochasticReconLossConfig(TrainingLossConfig, ReconstructionAuxiliariesMixin):
     type: Literal["StochasticReconLoss"] = "StochasticReconLoss"
-    n_mask_samples: PositiveInt = 1
 
 
-class StochasticReconSubsetLossConfig(LossMetricConfig, HiddenActsReconstructionMixin):
+class StochasticReconSubsetLossConfig(TrainingLossConfig, ReconstructionAuxiliariesMixin):
     type: Literal["StochasticReconSubsetLoss"] = "StochasticReconSubsetLoss"
     routing: Annotated[SubsetRoutingType, Field(discriminator="type")] = (
         UniformKSubsetRoutingConfig()
     )
-    n_mask_samples: PositiveInt = 1
 
 
-class UnmaskedReconLossConfig(LossMetricConfig, HiddenActsReconstructionMixin):
+class UnmaskedReconLossConfig(TrainingLossConfig, ReconstructionAuxiliariesMixin):
     type: Literal["UnmaskedReconLoss"] = "UnmaskedReconLoss"
 
 
 PGDInitStrategy = Literal["random", "ones", "zeroes"]
 
-SourceShape = Literal["c", "bc", "sc", "bsc"]
-"""The stored adversarial-source shape, spelled over the waist axes in tensor order —
-each letter names an axis the source keeps FULL; a missing letter is a size-1 broadcast
-axis (the rank always matches the waist, so the elementwise combine broadcasts):
+BatchSourceShape = Literal["bc", "bsc"]
+"""Training sources keep the full batch axis: each row owns its adversarial state.
 
-  positionless target:  `c (1, C)` · `bc (B, C)`   (`sc`/`bsc` are invalid — they
-                        name a position axis the target lacks)
-  positioned target:    `c (1, 1, C)` · `bc (B, 1, C)` — one source per batch
-                        element shared over positions — · `sc (1, P, C)` ·
-                        `bsc (B, P, C)`
+`bc` shares a row's source across positions; `bsc` keeps every position and requires
+a positioned target. Component sources also keep C; delta sources omit C.
+"""
 
-These are the component-source shapes. Each site also carries a distinct delta source
-with the same leading shape and no C axis.
+SourceShape = Literal["c", "bc", "bsc"]
+"""Fresh PGD also admits batch-shared `c` sources for evaluation.
 
-One vocabulary for BOTH adversaries: persistent PGD implements all four; per-step
-(fresh) PGD implements `c`/`bc`/`bsc` and rejects `sc` at validation."""
+Every source has the waist's rank. Omitted axes are size-1 broadcast axes:
+positionless `c (1, C)` / `bc (B, C)`; positioned `c (1, 1, C)` /
+`bc (B, 1, C)` / `bsc (B, P, C)`.
+"""
 
 
-class PGDConfig(LossMetricConfig, HiddenActsReconstructionMixin):
-    """Shared base for per-step PGD loss configs."""
+class PGDConfig(LossMetricConfig, ReconstructionAuxiliariesMixin):
+    """Reconstruction and ascent settings shared by training losses and eval probes."""
 
-    init: PGDInitStrategy
     step_size: PositiveFloat
     n_steps: NonNegativeInt
-    source_shape: SourceShape
-
-    @model_validator(mode="after")
-    def validate_source_shape_implemented(self) -> Self:
-        if self.source_shape == "sc":
-            raise ValueError("per-step PGD does not implement `sc` (persistent PGD does)")
-        return self
 
 
-class PGDReconLossConfig(PGDConfig):
-    slow: ClassVar[bool] = False
+class TrainingPGDConfig(PGDConfig, TrainingLossConfig):
+    """Fresh training adversaries own independent sources for every batch row."""
+
+    init: PGDInitStrategy
+    source_shape: BatchSourceShape
+
+
+class PGDReconLossConfig(TrainingPGDConfig):
     type: Literal["PGDReconLoss"] = "PGDReconLoss"
 
 
-class SlowPGDReconLossConfig(PGDReconLossConfig):
-    """The fresh-PGD probe on the slow tier: same attack, same binding, only the cadence
-    differs. For long attack ladders (hundreds of steps) that would dominate the fast pass.
-    Eval-only — it is not a member of the training-loss union."""
-
-    slow: ClassVar[bool] = True
-    type: Literal["SlowPGDReconLoss"] = "SlowPGDReconLoss"  # pyright: ignore[reportIncompatibleVariableOverride]
-
-
-class PGDReconSubsetLossConfig(PGDConfig):
+class PGDReconSubsetLossConfig(TrainingPGDConfig):
     type: Literal["PGDReconSubsetLoss"] = "PGDReconSubsetLoss"
     routing: Annotated[SubsetRoutingType, Field(discriminator="type")] = (
         UniformKSubsetRoutingConfig()
     )
 
 
+class EvalPGDConfig(PGDConfig):
+    """Fresh evaluation probes optimize randomly initialized, batch-shared sources."""
+
+    init: Literal["random"]
+    source_shape: Literal["c"]
+
+
+class EvalPGDReconLossConfig(EvalPGDConfig):
+    slow: ClassVar[bool] = False
+    type: Literal["PGDReconLoss"] = "PGDReconLoss"
+
+
+class SlowPGDReconLossConfig(EvalPGDConfig):
+    slow: ClassVar[bool] = True
+    type: Literal["SlowPGDReconLoss"] = "SlowPGDReconLoss"
+
+
+type AnyPGDEvalConfig = EvalPGDReconLossConfig | SlowPGDReconLossConfig
+
+
 class AdamPGDConfig(BaseConfig):
-    """Adam-style persistent-PGD source optimizer (SPEC §6 SRC_STEP `adam`): coordinate
-    moments persist alongside the sources."""
+    """Adam source ascent with persistent first and second moments."""
 
     type: Literal["adam"] = "adam"
     beta1: Probability = Field(default=0.9, description="Adam beta1 for masks")
@@ -355,26 +339,28 @@ class AdamPGDConfig(BaseConfig):
 
 
 class SgdPGDConfig(BaseConfig):
-    """Stateless persistent-PGD source optimizer (SPEC §6 SRC_STEP `sgd`):
-    `sources += lr·grad`, project to [0,1] — no moments, so the persistent bundle is the
-    sources alone (the arm that makes large `bsc` source banks storable)."""
+    """Projected SGD source ascent without optimizer buffers.
+
+    Omitting moment buffers keeps per-datapoint `bsc` sources affordable at large
+    component counts."""
 
     type: Literal["sgd"] = "sgd"
     lr_schedule: ScheduleConfig
 
 
 class MomentumSgdPGDConfig(BaseConfig):
-    """Momentum-SGD persistent-PGD source optimizer (SPEC §6 SRC_STEP `momentum_sgd`):
-    `v = momentum·v + grad; sources += lr·v`, project to [0,1]. One velocity buffer
-    persists, float at `adversary.velocity_dtype` of the storage (bf16 under either
-    16-bit storage) — the supported SRC_STEP optimizer for the `bsc` reference."""
+    """Projected momentum-SGD source ascent with one persistent velocity buffer.
+
+    `v = momentum * v + grad; sources += lr * v`, followed by clipping to [0, 1].
+    Velocity uses `adversary.velocity_dtype`: bf16 for either 16-bit source format,
+    fp32 for fp32 sources."""
 
     type: Literal["momentum_sgd"] = "momentum_sgd"
     momentum: Probability
     lr_schedule: ScheduleConfig
 
 
-class PersistentAdversaryLossConfig(LossMetricConfig, HiddenActsReconstructionMixin):
+class PersistentAdversaryLossConfig(TrainingLossConfig, ReconstructionAuxiliariesMixin):
     """Shared optimizer and lifecycle fields for persistent adversarial sources."""
 
     optimizer: Annotated[
@@ -383,20 +369,20 @@ class PersistentAdversaryLossConfig(LossMetricConfig, HiddenActsReconstructionMi
     source_dtype: Literal["float32", "bfloat16", "uint16"] = "float32"
     """Storage representation for the persistent PPGD source VALUES; adam moments follow
     it, the momentum velocity takes its float sibling (`adversary.velocity_dtype`).
-    `float32` (default) is SPEC N1 (fp32 SRC_STEP moments) and the only oracle-parity
+    `float32` (default) keeps source optimizer moments in fp32 and is the oracle-parity
     path. `bfloat16` halves the resident footprint at ~2^-8 resolution near 1.0.
     `uint16` is the unit-interval FIXED-POINT representation (`value = u/65535`,
     `adversary.UINT16_UNIT_SCALE`): same bytes as bf16, uniform 1/65535 resolution across
     [0,1]; ascents update the fp32 view and store back with stochastic rounding
     (unbiased — round-to-nearest would permanently stall sub-half-step updates). uint16
-    pairs with the float-buffered or stateless SRC_STEPs; adam refuses it (its moments
+    pairs with the float-buffered or stateless source optimizers; adam refuses it (its moments
     follow the storage dtype, and integer moments are meaningless)."""
 
     @model_validator(mode="after")
     def validate_storage_supports_optimizer(self) -> Self:
         if self.source_dtype == "uint16" and isinstance(self.optimizer, AdamPGDConfig):
             raise ValueError(
-                "uint16 fixed-point source storage pairs with SRC_STEP sgd/momentum_sgd; "
+                "uint16 fixed-point source storage pairs with source optimizer sgd/momentum_sgd; "
                 "adam stores its moments at the source dtype"
             )
         return self
@@ -409,15 +395,15 @@ class PersistentAdversaryLossConfig(LossMetricConfig, HiddenActsReconstructionMi
         ),
     )
     adversary_objective: Literal["term", "e2e"] = "e2e"
-    """Objective the persistent sources ascend. `e2e` excludes hidden-activation
-    reconstruction from source ascents while keeping it in the outer components/CI
+    """Objective the persistent sources ascend. `e2e` excludes reconstruction
+    auxiliaries from source ascents while keeping them in the outer components/CI
     objective; `term` makes the sources ascend the complete loss."""
 
 
 class PersistentPGDLossConfig(PersistentAdversaryLossConfig):
-    """A persistent adversary stored in one of the ordinary waist-axis shapes."""
+    """A persistent adversary with independent state for every batch row."""
 
-    source_shape: SourceShape
+    source_shape: BatchSourceShape
 
 
 class PersistentPGDReconLossConfig(PersistentPGDLossConfig):
@@ -427,26 +413,25 @@ class PersistentPGDReconLossConfig(PersistentPGDLossConfig):
     type: Literal["PersistentPGDReconLoss"] = "PersistentPGDReconLoss"
 
 
+class SourcePoolConfig(BaseConfig):
+    """Each batch element owns this many persistent cross-site particles."""
+
+    size_per_batch_element: PositiveInt
+
+
 class MergedStochasticSubsetPooledPPGDReconLossConfig(PersistentAdversaryLossConfig):
-    """The merged stochastic/PPGD term with a persistent pool of cross-site source particles.
+    """The merged stochastic/PPGD term with persistent cross-site source particles.
 
-    A pool row is one cross-site particle: row ``i`` at every site is trained and used
-    together. Each step draws one row per batch element with replacement and broadcasts
-    it over every position in that element. The same sampled row indices are used by the warmup
-    ascents, the main forward, and the final source-gradient retake. Persistent source
-    storage therefore scales as ``pool_size * (C + 1)`` per site instead of
-    ``batch * positions * (C + 1)``.
-
-    This is deliberately a sibling of ``MergedStochasticSubsetPPGDReconLossConfig`` so
-    matches on the dense strategy cannot silently capture the pooled strategy. The
-    selected source-LR×2 recipe is authored normally through ``optimizer.lr_schedule``;
-    the pool does not hide a multiplier relative to that explicit schedule.
+    Each batch element samples one particle from its configured pool and broadcasts it over
+    positions. Warmup ascents, the main forward, and the source-gradient retake share
+    the sampled indices. Each site stores ``batch_size * pool.size_per_batch_element``
+    particles, each containing a component vector and a delta scalar.
     """
 
     type: Literal["MergedStochasticSubsetPooledPPGDReconLoss"] = (
         "MergedStochasticSubsetPooledPPGDReconLoss"
     )
-    pool_size: PositiveInt
+    pool: SourcePoolConfig
     adv_fraction: ScheduleConfig
     routing: SubsetRoutingType = Field(default_factory=UniformKSubsetRoutingConfig)
 
@@ -458,17 +443,14 @@ class MergedStochasticSubsetPooledPPGDReconLossConfig(PersistentAdversaryLossCon
 
 
 class MergedStochasticSubsetPPGDReconLossConfig(PersistentPGDLossConfig):
-    """ONE masked forward serving both recon pressures (SPEC S10' variation): each batch
-    element is assigned adversarial with probability `adv_fraction` (mask sources = the
-    persistent-PGD adversary's, every site routed) or stochastic otherwise (fresh
-    `U[0,1]` sources, routed per `routing`) — the whole sequence takes one family, so no
-    sample's loss is scored against a mixed-family attention context. `adv_fraction` is a
-    `ScheduleConfig`, evaluated per step like the imp-min gamma — a constant is the plain
-    merge; a ramp anneals the adversarial share over training. `coeff` is the TOTAL:
-    coeff 1.0 + constant adv_fraction 0.5 replaces the canonical 0.5 stochastic + 0.5
-    persistent-PGD pair in expectation. Carries the persistent-adversary fields; one
-    source bundle feeds this one term (SPEC S23) and the S14' final ascent rides its
-    backward — no extra forward."""
+    """Combine persistent-adversarial and stochastic reconstruction in one forward.
+
+    Each batch element uses persistent sources at every site with probability
+    `adv_fraction`; otherwise it uses fresh uniform sources and the configured
+    routing. The choice is shared across its sequence. `adv_fraction` may be
+    scheduled, and `coeff` weights the combined loss: coefficient 1 with an
+    adversarial fraction of 0.5 matches a 0.5-weighted pair in expectation.
+    The persistent sources receive their final ascent gradient from this forward."""
 
     type: Literal["MergedStochasticSubsetPPGDReconLoss"] = "MergedStochasticSubsetPPGDReconLoss"
     adv_fraction: ScheduleConfig
@@ -596,7 +578,7 @@ class AdamWOptimizerConfig(BaseConfig):
 class MuonOptimizerConfig(BaseConfig):
     """Muon: Newton-Schulz-orthogonalized momentum for the group's matrix leaves; the rest
     fall back to Adam(0.9, 0.999) at the same LR. Experimental (non-canonical). The
-    semantics are `optax.contrib.muon`'s (SPEC S20); the NS runs batched per semantic
+    semantics are `optax.contrib.muon`'s; the NS runs batched per semantic
     kind at the placement table's `ns_compute` waypoint (`muon_stacked.py`). Which leaves
     are matrices is per-group (`run_state.build_optimizers`):
     the V/U components tree is all-2D (fallback never fires); the chunkwise CI fn is
@@ -608,12 +590,14 @@ class MuonOptimizerConfig(BaseConfig):
     beta: Probability = Field(
         default=0.95, description="Momentum decay for the orthogonalized update"
     )
+    # 0.2 approximately matches AdamW's empirical update RMS, following Moonshot Muon
+    # (https://arxiv.org/abs/2502.16982), so matrix learning rates use a comparable scale.
     consistent_rms: PositiveFloat | None = Field(
-        default=None,
+        default=0.2,
         description=(
-            "If set, scale updates by `sqrt(max(fan_in, fan_out)) * consistent_rms` so update"
-            " RMS is shape-independent (0.2 ~ AdamW's empirical RMS, making the AdamW LR"
-            " transferable). If None, optax's width scaling `sqrt(max(1, fan_out / fan_in))`."
+            "If set, scale updates by `sqrt(max(fan_in, fan_out)) * consistent_rms` for"
+            " approximately shape-independent update RMS. If None, use optax's width"
+            " scaling `sqrt(max(1, fan_out / fan_in))`."
         ),
     )
     weight_decay: NonNegativeFloat = Field(default=0.0, description="Weight decay")
@@ -625,11 +609,8 @@ class MuonOptimizerConfig(BaseConfig):
         default=5, description="Newton-Schulz iterations (optax default 5; fewer = cheaper/looser)"
     )
     ns_dtype: Literal["float32", "bfloat16"] = Field(
-        default="float32",
-        description=(
-            "Dtype of the NS orthogonalization only (masters/momentum stay fp32 per N1);"
-            " bfloat16 halves NS compute+comm (the Kimi recipe)."
-        ),
+        default="bfloat16",
+        description="Dtype of the NS orthogonalization only; masters and momentum stay float32.",
     )
 
 
@@ -669,29 +650,23 @@ AnyLossMetricConfig = Annotated[
     | NonlinearityLocalityLossConfig,
     Discriminator("type"),
 ]
-"""The trainable losses. The hidden-acts metrics are EVAL vocabulary
-(`AnyEvalMetricConfig`, SPEC S31) — hidden-acts pressure on TRAINING rides a recon
-term's `hidden_acts_reconstruction` (SPEC S35), never a standalone term."""
+"""Trainable losses; hidden-activation reconstruction is a reconstruction auxiliary,
+not a standalone loss."""
 
 
 TargetedLossMetricConfig = Annotated[
     AnyReconLossMetricConfig | ImportanceMinimalityLossConfig,
     Discriminator("type"),
 ]
-"""The loss types a tPD TARGET pass admits (SPEC T3): the full recon vocabulary
-(adversaries run in the target pass, T7) + importance-minimality — no
-`FaithfulnessLossConfig` member, so a targeted config cannot spell a faithfulness role,
-and no eval-only hidden-acts type."""
+"""Target-pass losses: reconstruction (including adversaries) and importance-minimality.
+Faithfulness is excluded so the delta can carry off-target behavior."""
 
 
-class UnmaskedNoDeltaReconLossConfig(LossMetricConfig):
-    """The tPD non-target pass's unmasked reconstruction term — T4's one delta-OFF arm:
-    every component mask `1.0` and every weight-delta mask `0.0`, so the FULL component
-    sum alone must reconstruct the frozen output. Prevents components that never activate
-    from interfering with the reconstruction (the tPD paper's CSS-only unmasked recon
-    term, Method details). Fully determined: no routing, sampling, or optional
-    hidden-activation reconstruction fields exist here, and it is non-target-only — the plain and target-pass unions have no
-    member for it."""
+class UnmaskedNoDeltaReconLossConfig(TrainingLossConfig):
+    """Reconstruct non-target outputs using the full component sum without the delta.
+
+    Component masks are 1 and there is no weight delta. This constrains even
+    components that never activate, so they cannot interfere with reconstruction."""
 
     type: Literal["UnmaskedNoDeltaReconLoss"] = "UnmaskedNoDeltaReconLoss"
 
@@ -703,15 +678,13 @@ NontargetReconLossMetricConfig = (
     | StochasticReconSubsetLossConfig
     | UnmaskedNoDeltaReconLossConfig
 )
-"""The recon types a tPD non-target pass admits (SPEC T5): the stochastic/constant-source
-ones (delta pinned fully ON, T4) plus `UnmaskedNoDeltaReconLoss` — T4's one enumerated
-delta-OFF exception. With the delta pinned on, an adversarially-chosen or mixed source has
-no meaning there — so those types are unrepresentable in the non-target schema rather
-than filtered out of it."""
+"""Non-target reconstruction losses: stochastic or constant component sources with the
+delta on, or the full component sum with the delta off. Adversarial and mixed sources
+are excluded from this pass."""
 
 
 class NontargetConfig(BaseConfig):
-    """The tPD non-target pass, authored directly (SPEC T5) — never derived from the
+    """The tPD non-target pass, authored directly — never derived from the
     target pass's loss list.
 
     `batch_size` is the broad stream's GLOBAL batch; `pd.batch_size` stays the target
@@ -730,23 +703,18 @@ class NontargetConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_nontarget_entries(self) -> Self:
         """Per-entry facts the shared recon classes can spell but the non-target pass
-        refuses — caught at parse (seat authoring, submit validation), not at objective
+        refuses — caught at parse (config authoring and validation), not at objective
         build on the GPUs."""
         seen: set[str] = set()
         for cfg in self.recon:
-            assert cfg.coeff is not None, f"nontarget.recon {cfg.type!r} must set `coeff`"
             name = cfg.name if cfg.name is not None else cfg.type
             assert name not in seen, f"duplicate non-target loss {name!r}"
             seen.add(name)
-            # `UnmaskedNoDeltaReconLoss` has no `hidden_acts_reconstruction` field
-            # (fully determined; `extra="forbid"` refuses it at parse), so only the
-            # shared classes need the check.
             if not isinstance(cfg, UnmaskedNoDeltaReconLossConfig):
-                assert cfg.hidden_acts_reconstruction is None, (
-                    f"nontarget.recon {cfg.type!r}: hidden_acts_reconstruction has no place on "
-                    "the non-target pass (SPEC T5) — with the delta pinned on, "
-                    "internal-activation matching would constrain exactly the behavior tPD "
-                    "deliberately declines to decompose"
+                assert not cfg.auxiliaries, (
+                    f"nontarget.recon {cfg.type!r}: auxiliary reconstruction is target-pass-only "
+                    "— with the delta pinned on, internal-activation matching would "
+                    "constrain the behavior tPD declines to decompose"
                 )
         return self
 
@@ -773,38 +741,6 @@ class ComponentsPlacementConfig(BaseConfig):
     faithfulness_deltas: RuleConfig
     operands: RuleConfig
     ns_compute: RuleConfig
-
-
-class CIWeightPlacementConfig(BaseConfig):
-    """The lifecycle rows for one CI weight family. `ns_compute` is the muon NS staging
-    waypoint (`stack` only; matrices whole per device — `placement.ns_staging_sharding`)."""
-
-    optimizer_state: RuleConfig
-    compute_weights: RuleConfig
-    operands: RuleConfig
-    ns_compute: RuleConfig
-
-
-class CIMoEPlacementConfig(BaseConfig):
-    """The MoE chunkwise CI fn's expert-carrying weight families (concat-wide expert
-    banks + fused narrow heads)."""
-
-    expert_ffn: CIWeightPlacementConfig
-    expert_head: CIWeightPlacementConfig
-
-
-class CIFnPlacementConfig(BaseConfig):
-    """Chunkwise CI-transformer weight and activation roles. `moe` carries the MoE
-    arch's extra families; a table without it refuses that arch at placement
-    resolution."""
-
-    attention: CIWeightPlacementConfig
-    ffn: CIWeightPlacementConfig
-    input: CIWeightPlacementConfig
-    output: CIWeightPlacementConfig
-    vectors: RuleConfig
-    activations: RuleConfig
-    moe: CIMoEPlacementConfig | None = None
 
 
 class ActivationsPlacementConfig(BaseConfig):
@@ -853,18 +789,6 @@ class TargetPlacementConfig(BaseConfig):
     component: TargetComponentLinearPlacementConfig
 
 
-class PlacementTableConfig(BaseConfig):
-    """An explicit placement table (`runtime.sharding`), mirroring the typed
-    `placement.PlacementRules`. The row vocabulary is CLOSED (extra keys are a parse
-    error); rule values are free-form axis-name -> mesh-axes mappings, where YAML list
-    order is semantics (nested-axis linearization — PLACEMENT_DESIGN.md invariant 5)."""
-
-    components: ComponentsPlacementConfig
-    ci_fn: CIFnPlacementConfig
-    activations: ActivationsPlacementConfig
-    target: TargetPlacementConfig
-
-
 PlacementPresetName = Literal[
     "owner",
     "zero1",
@@ -872,10 +796,26 @@ PlacementPresetName = Literal[
     "owner-replicated-resident",
     "zero1-replicated-resident-moe",
     "owner-replicated-resident-moe",
+    "zero1-replicated-resident-moe-replicated-ns",
     "ddp",
 ]
 """The built-in placement tables by name (`placement.PRESETS` holds the tables and asserts
-it enumerates exactly these names)."""
+it enumerates exactly these names). Each CI architecture maps these same names to its own
+rows."""
+
+
+class PlacementTableConfig(BaseConfig):
+    """An explicit placement table (`runtime.sharding`), mirroring the typed
+    `placement.PlacementRules`. The row vocabulary is CLOSED (extra keys are a parse
+    error); rule values are free-form axis-name -> mesh-axes mappings, where YAML list
+    order is semantics (nested-axis linearization — PLACEMENT_DESIGN.md invariant 5).
+    CI rows are the CI architecture's own: `ci_fn` names the preset it takes them from."""
+
+    components: ComponentsPlacementConfig
+    ci_fn: PlacementPresetName
+    activations: ActivationsPlacementConfig
+    target: TargetPlacementConfig
+
 
 PlacementSpec = PlacementPresetName | PlacementTableConfig
 """What a run or consumer writes down as its placement: a preset name or an explicit table."""
@@ -937,9 +877,9 @@ class PDConfigBase(BaseConfig):
     Domain-agnostic — the target-coupled apparatus (which sites to decompose + the CI-fn
     arch) lives in the per-domain `decomposition` section, not here. Flipping any field here
     changes what algorithm runs. The concrete shapes are `PDConfig` (plain VPD: the full
-    loss vocabulary + the faithfulness warmup) and `TargetedPDConfig` (tPD, SPEC §11: the
+    loss vocabulary + the faithfulness warmup) and `TargetedPDConfig` (tPD, the
     faithfulness-free loss vocabulary, no warmup fields at all — a targeted config cannot
-    SPELL a faithfulness role, T3). Pair with `Cadence` (when to emit) when running the
+    SPELL a faithfulness role). Pair with `Cadence` (when to emit) when running the
     trainer (`param_decomp.core.run`); the compute substrate reaches the engine unpacked
     into primitives, never as a config object.
     """
@@ -959,7 +899,7 @@ class PDConfigBase(BaseConfig):
         ...,
         description=(
             "Global batch size (may be divided across multiple devices). For a targeted "
-            "run this is the TARGET stream's batch (T2); the broad stream's lives on "
+            "run this is the TARGET stream's batch; the broad stream's lives on "
             "`nontarget.batch_size`."
         ),
     )
@@ -1003,10 +943,10 @@ class PDConfig(PDConfigBase):
 
 
 class TargetedPDConfig(PDConfigBase):
-    """The tPD algorithm shape (SPEC §11): the faithfulness-free loss vocabulary, and no
-    faithfulness-warmup fields at all — warmup drives the weight delta to zero, and tPD
-    needs the delta free to carry off-target behavior (T3), so the knobs do not exist
-    here rather than being validated to zero. `batch_size` is the TARGET stream's (T2)."""
+    """Targeted-PD losses and updates, without faithfulness or faithfulness warmup.
+
+    The weight delta must remain free to carry off-target behavior; these fields
+    are absent rather than accepted at zero. `batch_size` sizes the target stream."""
 
     loss_metrics: list[TargetedLossMetricConfig] = Field(
         ...,
@@ -1020,7 +960,7 @@ class TargetedPDConfig(PDConfigBase):
     ci_scaled_weight_decay: PositiveFloat | None = Field(
         default=None,
         description=(
-            "CI-scaled weight decay on the subcomponent V/U vectors (SPEC T11): after each "
+            "CI-scaled weight decay on the subcomponent V/U vectors: after each "
             "optimizer step every subcomponent's V column and U row scale by "
             "`1 - lr*wd*(1 - max CI)` with the max over BOTH streams' batches, so dead "
             "components — never important on either stream — get dragged to zero. None "
@@ -1031,14 +971,6 @@ class TargetedPDConfig(PDConfigBase):
     @model_validator(mode="after")
     def validate_loss_metrics(self) -> Self:
         _validate_training_losses(self.loss_metrics)
-        for metric in self.loss_metrics:
-            if isinstance(metric, ImportanceMinimalityLossConfig) and metric.frequency is not None:
-                assert metric.frequency.ema_halflife_steps is None, (
-                    "frequency.ema_halflife_steps is not implemented for the targeted "
-                    "(tPD) objective: the EMA carries one frequency stream per site, and "
-                    "the two-pass step takes the penalty on two independent streams "
-                    "(SPEC S8'' — plain PD only)"
-                )
         return self
 
 
@@ -1049,22 +981,19 @@ off a shape-blind `pd` take this union; base-field-only consumers take `PDConfig
 
 def _validate_training_losses(loss_metrics: Sequence[AnyLossMetricConfig]) -> None:
     """The role/identity facts every training-loss list must satisfy, refused at parse:
-    coefficients set, identities unique (`name or type` — the logged instance key),
+    identities unique (`name or type` — the logged instance key),
     exactly one importance-minimality term, at least one recon term, and at most one
-    nonlinearity term. Faithfulness multiplicity is the plain shape's own claim (the
-    targeted union has no member)."""
+    nonlinearity term. Faithfulness multiplicity is the plain shape's own claim
+    (the targeted union has no member)."""
     seen: set[str] = set()
     for cfg in loss_metrics:
-        assert cfg.coeff is not None, f"loss_metrics.{cfg.type!r} must set `coeff`"
-        if (
-            isinstance(cfg, HiddenActsReconstructionMixin)
-            and cfg.hidden_acts_reconstruction is not None
-            and isinstance(cfg.hidden_acts_reconstruction.coeff, float)
-        ):
-            assert cfg.hidden_acts_reconstruction.coeff > 0.0, (
-                f"loss_metrics.{cfg.type!r}.hidden_acts_reconstruction.coeff must be positive; "
-                "zero is reserved for eval-only measurement"
-            )
+        if isinstance(cfg, ReconstructionAuxiliariesMixin):
+            for auxiliary in cfg.auxiliaries:
+                if isinstance(auxiliary.coeff, float):
+                    assert auxiliary.coeff > 0.0, (
+                        f"loss_metrics.{cfg.type!r}.auxiliaries.{auxiliary.name}.coeff must be positive; "
+                        "zero is reserved for eval-only measurement"
+                    )
         name = cfg.name if cfg.name is not None else cfg.type
         assert name not in seen, f"duplicate loss instance_key {name!r}"
         seen.add(name)
@@ -1122,7 +1051,7 @@ what has already been written; writing nothing at all is `NoCheckpointing` — a
 
 class PeriodicCheckpointing(BaseConfig):
     """Checkpoint on `save_every`, on SIGTERM, and at the final step — the resumable run
-    shape (SPEC S22). Under `keep_last` retention the retained window always contains the
+    shape. Under `keep_last` retention the retained window always contains the
     newest checkpoint, so the final-step one is never pruned."""
 
     kind: Literal["periodic"] = "periodic"
@@ -1152,7 +1081,7 @@ class Cadence(BaseConfig):
     alongside the runtime objects it depends on.
     """
 
-    train_log_every: PositiveInt
+    train_log_every: PositiveInt = 20
     checkpointing: Checkpointing
     dense_log_phase: DenseLogPhase | None = None
     """Optional denser logging for early training; `None` means a flat `train_log_every`."""
@@ -1172,6 +1101,8 @@ class WandbConfig(BaseConfig):
     """Wandb logging settings. Presence on `ExperimentConfig` opts in; omit to skip wandb."""
 
     project: str
+    metric_schema: MetricSchema = "legacy"
+    """W&B key layout, fixed for the lifetime of a run. Local JSONL keys stay unchanged."""
     entity: str | None = None
     group: str | None = None
     """Wandb UI group; None = ungrouped."""
@@ -1184,10 +1115,10 @@ class ResumeProvenance(BaseConfig):
     `ExperimentConfig`.
 
     A fine-tune run gets its own `run_id` / `launch_config.yaml` / `ckpts/`; this records the
-    parent it forked from. The JAX trainer (SPEC S33) loads the parent checkpoint's
+    parent it forked from. The JAX trainer loads the parent checkpoint's
     V/U + ci_fn onto a fresh reference state and trains a clean schedule from step 0
     (fresh optimizer / sources) under the new config — only when the run's own `ckpts/`
-    is empty (a subsequent SLURM requeue resumes from the run's own dir, ignoring
+    is empty (a subsequent restart resumes from the run's own dir, ignoring
     provenance). The structure (sites / C / ci-fn arch) must match the parent; only
     LR / coeffs / gamma / seq / batch / steps may change. Provenance flows into
     `launch_config.yaml` and `wandb.config` so the lineage is visible in the wandb UI. A run with

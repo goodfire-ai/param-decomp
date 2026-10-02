@@ -3,13 +3,13 @@
 Binding is two closed passes over the authored metrics: first each metric declares its
 clean-capture demand on the shared batch context (`clean_capture_demand`), then each
 binds its operation. The pass's one context step captures the union of those demands, so
-every batched operation reads one clean forward + CI envelope per batch.
+every shared-forward operation reads one clean forward + CI envelope per batch.
 """
 
+from collections.abc import Callable, Iterable
+
 import jax
-import numpy as np
-from jax.sharding import Mesh, NamedSharding
-from jax.sharding import PartitionSpec as P
+from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray
 
 from param_decomp.core.components import nonlinearity_partitions
@@ -18,21 +18,30 @@ from param_decomp.core.configs import (
     CIHistogramsConfig,
     CIMeanPerComponentConfig,
     ComponentActivationDensityConfig,
+    EvalPGDReconLossConfig,
     IdentityCIErrorConfig,
     PermutedCIPlotsConfig,
-    PGDReconLossConfig,
+    SlowPGDReconLossConfig,
     UVPlotsConfig,
 )
-from param_decomp.core.model import EMPTY_CAPTURE_KEYS, CaptureKeys, PlacedModel
-from param_decomp.core.placement import batch_axes
+from param_decomp.core.model import (
+    EMPTY_CAPTURE_KEYS,
+    CaptureKeys,
+    ComponentActivations,
+    PlacedModel,
+)
 from param_decomp.core.run import (
     BackgroundRenderer,
     EvalInvocation,
     EvalOperation,
+    EvalOperationPlan,
     Evaluation,
+    EvaluationPlan,
     MetricsSink,
+    SharedForwardOperationPlan,
+    StandaloneOperationPlan,
+    no_batch_contexts,
 )
-from param_decomp.core.sharding import local_data_parallel_size
 from param_decomp.core.slow_eval import component_group_counts
 from param_decomp.experiments.eval_config import (
     AnyEvalMetricConfig,
@@ -42,16 +51,20 @@ from param_decomp.experiments.eval_config import (
 )
 from param_decomp.experiments.lm.arithmetic_eval_operation import make_arithmetic_operation
 from param_decomp.experiments.lm.attn_patterns_eval import attn_output_key_by_site
+from param_decomp.experiments.lm.ci_position_eval import make_ci_position_counts_operation
 from param_decomp.experiments.lm.diagnostic_eval_operations import (
     make_attention_operation,
     make_nonlinearity_operation,
     make_permutation_operation,
+    make_router_divergence_operation,
     make_site_figures_operation,
 )
 from param_decomp.experiments.lm.eval_config import (
     ArithmeticCIGridConfig,
     CEandKLLossesConfig,
+    CIActiveCountsPerPositionConfig,
     CIMaskedAttnPatternsReconLossConfig,
+    RouterDivergenceConfig,
     StochasticAttnPatternsReconLossConfig,
     WellTemperednessConfig,
 )
@@ -61,9 +74,8 @@ from param_decomp.experiments.lm.eval_context import (
     make_lm_batch_context_step,
     make_lm_batch_contexts,
 )
-from param_decomp.experiments.lm.eval_keys import EvalKeyStream
-from param_decomp.experiments.lm.load_run import target_vocab_size
 from param_decomp.experiments.lm.resolved import LMAnyRun
+from param_decomp.experiments.lm.router_divergence_eval import router_probs_capture_keys
 from param_decomp.experiments.lm.scalar_eval_operations import (
     fresh_pgd_probe,
     make_ce_kl_operation,
@@ -71,38 +83,31 @@ from param_decomp.experiments.lm.scalar_eval_operations import (
     make_fresh_pgd_operation,
 )
 from param_decomp.experiments.lm.well_temperedness_eval import make_well_temperedness_operation
-from param_decomp.infra.dataset_store import read_dataset_meta
-from param_decomp.pretrain.batch_data import BatchSchedule, ShardServer, scan_shards
+from param_decomp.lm.batch import LMBatch, LMBatchWithDocuments
 from param_decomp.targets.lm_output import LMOutput
 
 
-def global_token_batch(
-    local: np.ndarray, mesh: Mesh, global_batch: int, vocab_size: int
-) -> jax.Array:
-    """This process's token rows onto the batch axes of the global `[global_batch, T]`.
-
-    The ONE host boundary every LM token stream crosses (train, eval, the targeted
-    pools), so it is where token ids are asserted inside `[0, vocab_size)`: past it they
-    are labels under jit, where an out-of-range id is a NaN CE at best (the materialized
-    edge's fill) and no assertion idiom exists."""
-    assert local.size == 0 or (local.min() >= 0 and local.max() < vocab_size), (
-        f"token ids outside [0, {vocab_size}): min {local.min()}, max {local.max()} — the "
-        "dataset was tokenized for a different vocabulary than the target's"
-    )
-    sharding = NamedSharding(mesh, P(batch_axes(mesh)))
-    return jax.make_array_from_process_local_data(sharding, local, (global_batch, local.shape[1]))
-
-
-def clean_capture_demand(metric: AnyEvalMetricConfig, model: PlacedModel[LMOutput]) -> CaptureKeys:
+def clean_capture_demand[
+    TargetIn: LMBatch | LMBatchWithDocuments,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](
+    metric: AnyEvalMetricConfig,
+    model: PlacedModel[TargetIn, LMOutput, PreparedT, Conditioning, PreparedMaskingT],
+) -> CaptureKeys:
     """What this metric reads off the shared clean forward beyond the CI taps."""
     match metric:
         case CIMaskedAttnPatternsReconLossConfig() | StochasticAttnPatternsReconLossConfig():
             return frozenset(attn_output_key_by_site(model).values())
-        case PGDReconLossConfig():
-            return fresh_pgd_probe(metric).hidden_acts_capture_keys
+        case EvalPGDReconLossConfig() | SlowPGDReconLossConfig():
+            return fresh_pgd_probe(metric).reconstruction_capture_keys
+        case RouterDivergenceConfig():
+            return frozenset(router_probs_capture_keys(model))
         case (
             CEandKLLossesConfig()
             | CI_L0Config()
+            | CIActiveCountsPerPositionConfig()
             | CIHistogramsConfig()
             | ComponentActivationDensityConfig()
             | CIMeanPerComponentConfig()
@@ -115,46 +120,40 @@ def clean_capture_demand(metric: AnyEvalMetricConfig, model: PlacedModel[LMOutpu
             return EMPTY_CAPTURE_KEYS
 
 
-def make_lm_evaluation(
+def make_lm_evaluation[
+    TargetIn: LMBatch | LMBatchWithDocuments,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](
     built: LMAnyRun,
     eval: EvalConfig,
-    model: PlacedModel[LMOutput],
+    model: PlacedModel[TargetIn, LMOutput, PreparedT, Conditioning, PreparedMaskingT],
     run_key: PRNGKeyArray,
     mesh: Mesh,
     n_proc: int,
     sink: MetricsSink,
     compiler_options: dict[str, bool | int | str],
-) -> Evaluation[LMEvalPass, LMBatchContext]:
-    """Construct one executable operation for every authored LM metric."""
+    *,
+    sample_batch: Callable[[int], TargetIn],
+) -> EvaluationPlan[
+    Conditioning,
+    LMEvalPass[TargetIn, Conditioning],
+    LMBatchContext[TargetIn, PreparedT, Conditioning],
+]:
+    """Describe the kernels each authored metric needs before any evaluation runs."""
     pd = built.pd
     capture_inputs = built.ci_fn.capture_keys
-    data = built.data
-    schedule = BatchSchedule(scan_shards(data.eval_dir), eval.batch_size, pd.seed + 1)
-    seq_len = read_dataset_meta(data.eval_dir).seq_len
-    server = ShardServer(schedule, seq_len, jax.process_index(), n_proc)
-    assert server.per_process % local_data_parallel_size(mesh) == 0
-    vocab_size = target_vocab_size(model)
     renderer = BackgroundRenderer(sink)
 
-    def batches(pass_index: int) -> list[jax.Array]:
-        return [
-            global_token_batch(
-                server.local_batch(pass_index * eval.n_steps + j),
-                mesh,
-                eval.batch_size,
-                vocab_size,
-            )
-            for j in range(eval.n_steps)
-        ]
+    def batches(pass_index: int) -> list[TargetIn]:
+        return [sample_batch(pass_index * eval.n_steps + j) for j in range(eval.n_steps)]
 
-    def well_temperedness_inputs(
-        eval_pass: LMEvalPass,
-    ) -> tuple[jax.Array, PRNGKeyArray]:
-        return eval_pass.batches[0], jax.random.fold_in(
-            run_key, EvalKeyStream.WELL_TEMPEREDNESS * pd.steps + eval_pass.pass_index
-        )
-
-    def make_operation(metric: AnyEvalMetricConfig) -> EvalOperation[LMEvalPass, LMBatchContext]:
+    def make_operation(
+        metric: AnyEvalMetricConfig,
+    ) -> EvalOperationPlan[
+        LMEvalPass[TargetIn, Conditioning], LMBatchContext[TargetIn, PreparedT, Conditioning]
+    ]:
         schedule = schedule_for(metric, eval)
         match metric:
             case CEandKLLossesConfig():
@@ -168,6 +167,8 @@ def make_lm_evaluation(
                     mesh,
                     compiler_options,
                 )
+            case CIActiveCountsPerPositionConfig():
+                return make_ci_position_counts_operation(schedule, compiler_options)
             case CI_L0Config():
                 return make_ci_l0_operation(
                     metric,
@@ -179,7 +180,7 @@ def make_lm_evaluation(
                     mesh,
                     compiler_options,
                 )
-            case PGDReconLossConfig():
+            case EvalPGDReconLossConfig() | SlowPGDReconLossConfig():
                 return make_fresh_pgd_operation(
                     metric,
                     schedule,
@@ -195,6 +196,10 @@ def make_lm_evaluation(
                 return make_attention_operation(
                     metric, schedule, model, run_key, pd.steps, compiler_options
                 )
+            case RouterDivergenceConfig():
+                return make_router_divergence_operation(
+                    metric, schedule, model, run_key, pd.steps, mesh, compiler_options
+                )
             case (
                 CIHistogramsConfig()
                 | ComponentActivationDensityConfig()
@@ -203,7 +208,7 @@ def make_lm_evaluation(
                 return make_site_figures_operation(
                     metric,
                     schedule,
-                    component_group_counts(model.sites),
+                    component_group_counts(model.model.sites),
                     compiler_options,
                     renderer,
                 )
@@ -220,7 +225,8 @@ def make_lm_evaluation(
                     capture_inputs,
                     mesh,
                     compiler_options,
-                    inputs_for_context=well_temperedness_inputs,
+                    run_key=run_key,
+                    train_steps=pd.steps,
                     figure_rendering=renderer if sink.accepts_deferred_media else None,
                 )
 
@@ -240,8 +246,12 @@ def make_lm_evaluation(
                 )
 
     standing_operations = (
-        (make_nonlinearity_operation(slow_schedule(eval), model.sites, compiler_options),)
-        if nonlinearity_partitions(model.sites)
+        (
+            make_nonlinearity_operation(
+                slow_schedule(eval), model.model.sites, compiler_options, mesh
+            ),
+        )
+        if nonlinearity_partitions(model.model.sites)
         else ()
     )
     operations = tuple(make_operation(metric) for metric in eval.metrics) + standing_operations
@@ -249,18 +259,59 @@ def make_lm_evaluation(
     operation_capture_keys = frozenset().union(
         *(clean_capture_demand(metric, model) for metric in eval.metrics), EMPTY_CAPTURE_KEYS
     )
-    context_step = make_lm_batch_context_step(
-        model, capture_inputs, operation_capture_keys, mesh, compiler_options
-    )
+    context_step = make_lm_batch_context_step(model, capture_inputs, operation_capture_keys, mesh)
 
-    def make_pass(invocation: EvalInvocation) -> LMEvalPass:
+    def make_pass(invocation: EvalInvocation[Conditioning]) -> LMEvalPass[TargetIn, Conditioning]:
         pass_index = invocation.now_step // eval.every
         return LMEvalPass(
-            state=invocation.state,
+            decomposition=invocation.decomposition,
+            persistent_sources=invocation.persistent_sources,
             now_step=invocation.now_step,
-            placed_ci_fn=invocation.placed_ci_fn,
             pass_index=pass_index,
             batches=tuple(batches(pass_index)),
         )
 
-    return Evaluation(operations, make_pass, make_lm_batch_contexts(context_step, model))
+    def prepare(
+        invocation: EvalInvocation[Conditioning],
+    ) -> Evaluation[
+        Conditioning,
+        LMEvalPass[TargetIn, Conditioning],
+        LMBatchContext[TargetIn, PreparedT, Conditioning],
+    ]:
+        example_pass = make_pass(invocation)
+        example_context = None
+        batch_contexts: Callable[
+            [LMEvalPass[TargetIn, Conditioning]],
+            Iterable[LMBatchContext[TargetIn, PreparedT, Conditioning]],
+        ] = no_batch_contexts
+        if any(isinstance(operation, SharedForwardOperationPlan) for operation in operations):
+            lowered_context = jax.jit(context_step, compiler_options=compiler_options).lower(
+                model,
+                invocation.decomposition.components,
+                invocation.decomposition.ci_fn,
+                example_pass.batches[0],
+            )
+            compiled_context = lowered_context.compile()
+            example_context = LMBatchContext(
+                pass_index=example_pass.pass_index,
+                batch_index=0,
+                forward=compiled_context.out_info,
+                persistent_sources=invocation.persistent_sources,
+            )
+            batch_contexts = make_lm_batch_contexts(compiled_context, model)
+        prepared_operations: list[
+            EvalOperation[
+                LMEvalPass[TargetIn, Conditioning],
+                LMBatchContext[TargetIn, PreparedT, Conditioning],
+            ]
+        ] = []
+        for operation in operations:
+            match operation:
+                case StandaloneOperationPlan():
+                    prepared_operations.append(operation.prepare(example_pass))
+                case SharedForwardOperationPlan():
+                    assert example_context is not None
+                    prepared_operations.append(operation.prepare(example_pass, example_context))
+        return Evaluation(tuple(prepared_operations), make_pass, batch_contexts)
+
+    return EvaluationPlan(prepare)

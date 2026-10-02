@@ -1,6 +1,7 @@
 run_name: pile_llama_simple_mlp-2L-128_SMOKE
 seed: 45
 dtype: float32
+attention_implementation: xla
 global_batch: 8
 num_iterations: 40
 warmup_iters: 5

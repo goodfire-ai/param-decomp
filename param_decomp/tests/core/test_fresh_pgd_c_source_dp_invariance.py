@@ -1,4 +1,4 @@
-"""Multi-device invariance of the fresh-PGD `c`-source sign-ascent (SPEC S24, S12', S15, D1).
+"""Multi-device invariance of the fresh-PGD `c`-source sign-ascent.
 
 The fresh-PGD eval probe (`PGDReconLoss`, fresh sign-PGD, `c`-source, 20 step;
 `eval.py`) and the training-loss path (`train.py` `sign_ascend_body`) ascend a
@@ -36,23 +36,26 @@ from param_decomp.core.components import (
     init_component_stacks,
     require_full_emission,
 )
-from param_decomp.core.masking import masks_from_sources
+from param_decomp.core.masking import materialize_masking, source_masking
 from param_decomp.core.model import DecomposedModel
 from param_decomp.core.sharding import hsdp_mesh, shard_batch
-from param_decomp.targets.glu_transformer import (
-    glu_site_specs,
-    mlp_family_site_cs,
-)
+from param_decomp.lm.batch import LMBatchWithDocuments
 from param_decomp.targets.lm_output import LMOutput
 from param_decomp.targets.losses import kl_per_position
 from param_decomp.targets.testing import run_clean, run_masked, tiny_glu_cfg, tiny_glu_decomposed_lm
+from param_decomp.targets.transformer import (
+    TransformerPreparedMasking,
+    TransformerPreparedWeights,
+    glu_site_specs,
+    mlp_family_site_cs,
+)
 
 
 def _ascend_c_source(
     sharded: bool, n_steps: int, step_size: float
 ) -> tuple[Sources, dict[str, jax.Array]]:
     """Run the fresh-PGD `c`-source sign-ascent on a fixed batch+seed and return the
-    ascended sources plus their materialized masks (`masks_from_sources`).
+    ascended sources plus their materialized masks (`materialize_masking`).
 
     Mirrors `train.py` `sign_ascend_body`: a batch-reduced KL ascent loss, grad w.r.t.
     a `(1, 1, C)` `c` source, `step_size * sign(grad)`, clamp to [0,1]. When
@@ -86,14 +89,22 @@ def _ascend_c_source(
 
 def _ascend(
     sites: tuple[SiteSpec, ...],
-    model: DecomposedModel[LMOutput],
+    model: DecomposedModel[
+        LMBatchWithDocuments,
+        LMOutput,
+        TransformerPreparedWeights,
+        LMBatchWithDocuments,
+        TransformerPreparedMasking,
+    ],
     components: ComponentStacks,
     residual: jax.Array,
     n_steps: int,
     step_size: float,
 ) -> tuple[Sources, dict[str, jax.Array]]:
     gbatch, seq = residual.shape
-    clean_output = jax.lax.stop_gradient(run_clean(model, residual))
+    clean_output = jax.lax.stop_gradient(
+        run_clean(model, LMBatchWithDocuments.from_unsegmented_sequences(residual))
+    )
     assert isinstance(clean_output, jax.Array)
     # ci_lower = 0 so the mask is just the `c` source — the cleanest probe of the
     # sign-ascent. Shapes match the masked forward's per-site (B, T, C) expectation.
@@ -102,16 +113,14 @@ def _ascend(
     init = init_fresh_pgd_sources(sites, "random", "c", (gbatch, seq), random.PRNGKey(5))
 
     def ascent_loss(sources: Sources) -> jax.Array:
-        masks, delta_masks = masks_from_sources(ci_lower, sources)
+        masking = materialize_masking(source_masking(ci_lower, sources))
         masked = run_masked(
             model,
             model.prepare_compute_weights(components, None),
-            residual,
-            masks,
-            delta_masks,
-            None,
-            True,
+            LMBatchWithDocuments.from_unsegmented_sequences(residual),
+            masking,
             remat=False,
+            routes=None,
         )
         assert isinstance(masked, jax.Array)
         return kl_per_position(masked, clean_output)
@@ -125,14 +134,15 @@ def _ascend(
         ), None
 
     ascended, _ = jax.lax.scan(sign_ascend_body, init, None, length=n_steps)
-    masks, _ = masks_from_sources(ci_lower, ascended)
+    masking = materialize_masking(source_masking(ci_lower, ascended))
+    masks = masking.component_masks
     return ascended, {site: require_full_emission(mask) for site, mask in masks.items()}
 
 
 def test_fresh_pgd_c_source_sign_ascent_is_device_count_invariant():
     """The `c`-source ascended source AND its mask are bit-identical at 1 layout vs N
     GSPMD shards. `sign(avg)==sign(sum)`, so the sign decision is exact — assert with
-    NO float tolerance. Guards fresh-PGD `c`-source DP equivalence (SPEC S24, S12', S15, D1)."""
+    NO float tolerance. Guards fresh-PGD `c`-source DP equivalence."""
     n_dev = len(jax.devices())
     n_steps, step_size = 20, 0.05
 

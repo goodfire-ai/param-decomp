@@ -1,4 +1,4 @@
-"""Component/CI optimizer seams match torch's formulas exactly (SPEC S19, S20).
+"""Component/CI optimizer seams match torch's formulas exactly.
 
 - cosine LR uses torch's `step / (total_steps - 1)` denominator, NOT optax's
   `cosine_decay_schedule` `count / total_steps` (reaches `0.1×` one step later).
@@ -8,6 +8,7 @@
 
 from collections.abc import Callable
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
@@ -17,19 +18,26 @@ from jax.typing import ArrayLike
 from jaxtyping import Array
 from pydantic import TypeAdapter
 
+from param_decomp.core.components import DenseFactorization, SiteSpec
 from param_decomp.core.configs import (
     AdamWOptimizerConfig,
     AnyOptimizerConfig,
     MuonOptimizerConfig,
     PlacementTableConfig,
 )
+from param_decomp.core.dict_utils import FrozenMapping
+from param_decomp.core.optimizer import ScheduledOptimizerState
 from param_decomp.core.run_state import (
-    _optimizer_with_clip,
+    _adamw_optimizer,
+    _muon_optimizer,
     clip_by_global_norm_with_eps,
-    optax_schedule,
-    stacked_muon_dimension_numbers,
 )
 from param_decomp.core.schedule import Knot, ScheduleConfig
+
+
+def _dimension_numbers(matrix_roles: dict[str, bool]) -> optax.Params:
+    dims = optax.contrib.MuonDimensionNumbers(-2, -1)
+    return jax.tree.map(lambda is_matrix: dims if is_matrix else None, matrix_roles)
 
 
 def _scalar(value: ArrayLike) -> float:
@@ -54,43 +62,77 @@ def torch_cosine_reference(peak_lr: float, total_steps: int, alpha: float, step:
     return peak_lr * (alpha + (1 - alpha) * 0.5 * (1 + math.cos(math.pi * progress)))
 
 
-def test_cosine_schedule_matches_torch_denominator():
-    peak_lr = 1.5e-4
-    total_steps = 400_000
-    alpha = 0.1
-    config = ScheduleConfig(
-        max_val=peak_lr, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=alpha, interp="cosine"))
-    )
-    sched = optax_schedule(config, total_steps)
-    for step in (0, total_steps // 2, total_steps - 1):
-        jax_value = _scalar(sched(jnp.int32(step)))
-        torch_value = torch_cosine_reference(peak_lr, total_steps, alpha, step)
-        # rel 1e-6: the traced evaluator runs in fp32 and associates the cosine
-        # interpolation differently than torch's float64 formula; the S20 contract is
-        # the step placement (endpoints exact below), not mid-curve bit-parity.
-        assert jax_value == pytest.approx(torch_value, rel=1e-6), f"step {step}"
-    assert _scalar(sched(jnp.int32(total_steps - 1))) == pytest.approx(alpha * peak_lr, rel=1e-6)
-
-
-def test_cosine_schedule_differs_from_optax():
-    """Torch's `step / (total_steps - 1)` denominator reaches `alpha·peak` one step
-    earlier than optax's `count / total_steps`: at `total_steps - 1` ours is already at
-    the floor while optax still has a full step of decay left. The gap is largest with
-    few steps (with 400k it flattens into fp noise at the endpoints — SPEC S19)."""
+def test_optimizer_cosine_schedule_matches_torch_denominator():
     peak_lr = 1.5e-4
     total_steps = 10
-    optax_sched = optax.cosine_decay_schedule(peak_lr, total_steps, alpha=0.1)
-    ours = optax_schedule(
-        ScheduleConfig(
+    alpha = 0.1
+    config = AdamWOptimizerConfig(
+        lr_schedule=ScheduleConfig(
             max_val=peak_lr,
-            points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.1, interp="cosine")),
+            points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=alpha, interp="cosine")),
         ),
-        total_steps,
+        weight_decay=0.0,
     )
-    endpoint = total_steps - 1
-    assert _scalar(ours(jnp.int32(endpoint))) == pytest.approx(0.1 * peak_lr, rel=1e-6)
-    assert _scalar(optax_sched(jnp.int32(endpoint))) != pytest.approx(0.1 * peak_lr, rel=1e-6)
-    assert _scalar(optax_sched(jnp.int32(total_steps))) == pytest.approx(0.1 * peak_lr, rel=1e-6)
+    optimizer = _adamw_optimizer(config, total_steps)
+    params = {"weight": jnp.ones((), jnp.float32)}
+    state = optimizer.init(params)
+    update = jax.jit(optimizer.update)
+    for step in range(total_steps):
+        _, state = update(params, state, params)
+        torch_value = torch_cosine_reference(peak_lr, total_steps, alpha, step)
+        assert float(state.applied_learning_rate) == pytest.approx(torch_value, rel=1e-6)
+
+    optax_sched = optax.cosine_decay_schedule(peak_lr, total_steps, alpha=alpha)
+    assert float(state.applied_learning_rate) == pytest.approx(alpha * peak_lr, rel=1e-6)
+    assert _scalar(optax_sched(jnp.int32(total_steps - 1))) != pytest.approx(
+        alpha * peak_lr, rel=1e-6
+    )
+    assert _scalar(optax_sched(jnp.int32(total_steps))) == pytest.approx(alpha * peak_lr, rel=1e-6)
+
+
+@pytest.mark.parametrize("optimizer_kind", ["adamw", "muon"])
+def test_learning_rate_sweeps_share_hlo_and_scale_updates(optimizer_kind: str):
+    params = {"matrix": jnp.arange(16, dtype=jnp.float32).reshape(4, 4) / 16}
+    grads = {"matrix": jnp.cos(params["matrix"])}
+    lowered_programs = []
+    updates_by_rate = []
+    states = []
+    for peak in (1e-3, 3e-3):
+        schedule = ScheduleConfig(
+            max_val=peak,
+            points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.1, interp="cosine")),
+        )
+        config = TypeAdapter[AdamWOptimizerConfig | MuonOptimizerConfig](
+            AnyOptimizerConfig
+        ).validate_python(
+            {
+                "type": optimizer_kind,
+                "lr_schedule": schedule,
+                "weight_decay": 0.1,
+                "grad_clip_norm": 0.01,
+            }
+        )
+        match config:
+            case AdamWOptimizerConfig():
+                optimizer = _adamw_optimizer(config, 5)
+            case MuonOptimizerConfig():
+                optimizer = _muon_optimizer(config, 5, None, None)
+        state = optimizer.init(params)
+        step = jax.jit(optimizer.update)
+        lowered_programs.append(step.lower(grads, state, params).as_text())
+        trajectory = []
+        for _ in range(5):
+            updates, state = step(grads, state, params)
+            trajectory.append(jax.tree.leaves(updates)[0])
+        updates_by_rate.append(jnp.stack(trajectory))
+        assert float(state.schedule.magnitude) == pytest.approx(peak)
+        states.append(state.inner_state)
+
+    assert lowered_programs[0] == lowered_programs[1]
+    assert bool(jnp.allclose(updates_by_rate[1], 3 * updates_by_rate[0], rtol=1e-6, atol=1e-8))
+    assert jax.tree.structure(states[0]) == jax.tree.structure(states[1])
+    for left, right in zip(jax.tree.leaves(states[0]), jax.tree.leaves(states[1]), strict=True):
+        assert bool(jnp.array_equal(left, right))
 
 
 def test_grad_clip_matches_torch_eps():
@@ -123,18 +165,16 @@ def test_grad_clip_noop_below_threshold():
 
 
 def test_muon_orthogonalizes_2d_leaves_and_adam_falls_back_elsewhere():
-    """`type: muon` (SPEC S20 amendment): a 2D leaf's update is NS-orthogonalized (flat
+    """`type: muon`: a 2D leaf's update is NS-orthogonalized (flat
     singular values), a non-2D leaf falls back to Adam; default `type: adamw` keeps the
     canonical optimizer so existing configs are untouched."""
     muon_cfg = MuonOptimizerConfig(
         type="muon",
-        lr_schedule=ScheduleConfig(
-            max_val=1e-3, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.1, interp="cosine"))
-        ),
+        lr_schedule=ScheduleConfig.constant(1e-3),
         grad_clip_norm=0.01,
     )
     lr = 1e-3
-    opt = _optimizer_with_clip(muon_cfg, lambda count: jnp.float32(lr), None, waypoints=None)
+    opt = _muon_optimizer(muon_cfg, 1, None, waypoints=None)
     key = jax.random.key(0)
     params = {"V": jnp.zeros((16, 8)), "scale": jnp.zeros((8,))}
     grads = {
@@ -162,22 +202,18 @@ def test_muon_orthogonalizes_2d_leaves_and_adam_falls_back_elsewhere():
 
 
 def test_muon_chunk_stacked_dimension_numbers_orthogonalize_3d_and_adam_2d_bias_stacks():
-    """SPEC S20 amendment (2026-07-11): under `stacked_muon_dimension_numbers` a 3D
-    `[n_chunks, d_in, d_out]` matrix stack is NS-orthogonalized per chunk slice, while a 2D
-    `[n_chunks, d]` bias stack takes the Adam fallback — the reverse of optax's default 2D
-    rule, which on the chunkwise CI-fn tree would orthogonalize the bias stacks."""
+    """Declared matrix stacks are orthogonalized; declared bias stacks use Adam."""
     muon_cfg = MuonOptimizerConfig(
         type="muon",
-        lr_schedule=ScheduleConfig(
-            max_val=1e-3, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.1, interp="cosine"))
-        ),
+        lr_schedule=ScheduleConfig.constant(1e-3),
         grad_clip_norm=None,
+        ns_dtype="float32",
     )
     lr = 1e-3
-    opt = _optimizer_with_clip(
+    opt = _muon_optimizer(
         muon_cfg,
-        lambda count: jnp.float32(lr),
-        stacked_muon_dimension_numbers,
+        1,
+        lambda _: _dimension_numbers({"w": True, "b": False}),
         waypoints=None,
     )
     key = jax.random.key(0)
@@ -208,14 +244,12 @@ def test_muon_chunk_stacked_dimension_numbers_orthogonalize_3d_and_adam_2d_bias_
 
 
 def test_stacked_muon_update_matches_optax_muon():
-    """SPEC S20: the production muon (per-kind batched NS) produces the same updates as
-    the reference semantics — per-leaf `optax.contrib.muon` under the same S19 clip chain,
+    """The production muon (per-kind batched NS) produces the same updates as
+    the reference semantics — per-leaf `optax.contrib.muon` under the same clip chain,
     built here directly (same momentum, same partition, same post-NS chain) — up to float
     reassociation, on a tree mixing 2D matrices (shared-shape group + a transposed member),
     a 3D chunk stack, and Adam-fallback leaves."""
-    schedule = ScheduleConfig(
-        max_val=1e-3, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.1, interp="cosine"))
-    )
+    schedule = ScheduleConfig.constant(1e-3)
     lr = lambda count: jnp.float32(1e-3)
     key = jax.random.key(7)
     params = {
@@ -228,12 +262,17 @@ def test_stacked_muon_update_matches_optax_muon():
         name: jax.random.normal(jax.random.fold_in(key, i), p.shape)
         for i, (name, p) in enumerate(params.items())
     }
-    dim_nums = stacked_muon_dimension_numbers
+    dim_nums = lambda _: _dimension_numbers(
+        {"w_a": True, "w_b": True, "stack": True, "bias_stack": False}
+    )
     cfg = MuonOptimizerConfig(
-        type="muon", lr_schedule=schedule, grad_clip_norm=0.01, consistent_rms=0.2
+        type="muon",
+        lr_schedule=schedule,
+        grad_clip_norm=0.01,
+        ns_dtype="float32",
     )
     assert cfg.grad_clip_norm is not None
-    production = _optimizer_with_clip(cfg, lr, dim_nums, waypoints=None)
+    production = _muon_optimizer(cfg, 1, dim_nums, waypoints=None)
     oracle = optax.chain(
         clip_by_global_norm_with_eps(cfg.grad_clip_norm, eps=1e-6),
         optax.contrib.muon(
@@ -246,15 +285,19 @@ def test_stacked_muon_update_matches_optax_muon():
         ),
     )
 
-    def two_steps(opt: optax.GradientTransformation):
-        state = opt.init(params)
+    def two_steps[State](
+        init: Callable[[optax.Params], State],
+        update: Callable[[optax.Updates, State, optax.Params], tuple[optax.Updates, State]],
+    ):
+        state = init(params)
         p = params
         for _ in range(2):
-            updates, state = opt.update(grads, state, p)
+            updates, state = update(grads, state, p)
             p = jax.tree.map(lambda x, u: x + u, p, updates)
         return p
 
-    oracle_p, production_p = two_steps(oracle), two_steps(production)
+    oracle_p = two_steps(oracle.init, oracle.update)
+    production_p = two_steps(production.init, production.update)
     for k in params:
         assert jnp.allclose(oracle_p[k], production_p[k], rtol=1e-4, atol=1e-6), (
             f"{k}: stacked NS diverged from per-leaf optax muon beyond reassociation tolerance"
@@ -285,7 +328,7 @@ def test_stacked_muon_sharded_matches_unsharded():
         name: jax.random.normal(jax.random.fold_in(key, i), p.shape)
         for i, (name, p) in enumerate(params.items())
     }
-    dim_nums = stacked_muon_dimension_numbers
+    dim_nums = lambda _: _dimension_numbers({"w": True, "v": True, "b": False})
 
     def replicated_waypoints(mesh: "Mesh") -> Callable[[optax.Updates], optax.Updates]:
         sharding = NamedSharding(mesh, P(None, None, None))
@@ -318,15 +361,11 @@ def test_stacked_muon_sharded_matches_unsharded():
 
 
 def test_stacked_muon_bf16_ns_is_sane():
-    """`ns_dtype: bfloat16` (the stacked-only Kimi recipe, SPEC N1: masters and momentum
+    """`ns_dtype: bfloat16` (the stacked-only Kimi recipe, masters and momentum
     stay fp32 — only the NS iteration itself runs half-precision). This pins "the fast
     path is not fp16-degenerate and not garbage", NOT parity: bf16 NS genuinely drifts a
     few percent from fp32 NS, so the update-norm comparison is a loose ~10% sanity bound.
     The exactness claims live in the fp32-NS tests above."""
-    from typing import Literal
-
-    from param_decomp.core.muon_stacked import stacked_muon
-
     key = jax.random.key(11)
     params = {
         "stack": jnp.zeros((3, 16, 24)),
@@ -340,15 +379,11 @@ def test_stacked_muon_bf16_ns_is_sane():
 
     _, treedef = jax.tree.flatten(params)
 
-    def run(ns_dtype: Literal["float32", "bfloat16"]) -> tuple[dict[str, Array], optax.OptState]:
-        opt = stacked_muon(
-            lambda count: jnp.float32(1e-3),
-            beta=0.95,
-            weight_decay=0.0,
-            consistent_rms=0.2,
-            muon_weight_dimension_numbers=stacked_muon_dimension_numbers,
-            ns_steps=5,
-            ns_dtype=jnp.dtype(ns_dtype),
+    def run(config: MuonOptimizerConfig) -> tuple[dict[str, Array], ScheduledOptimizerState]:
+        opt = _muon_optimizer(
+            config,
+            1,
+            lambda _: _dimension_numbers({"stack": True, "w": True, "bias_stack": False}),
             waypoints=None,
         )
         state = opt.init(params)
@@ -361,8 +396,16 @@ def test_stacked_muon_bf16_ns_is_sane():
         raw, state = opt.update(grads, state, p)
         return jax.tree.unflatten(treedef, jax.tree.leaves(raw)), state
 
-    bf16_updates, bf16_state = run("bfloat16")
-    fp32_updates, _ = run("float32")
+    bf16_updates, bf16_state = run(
+        MuonOptimizerConfig(type="muon", lr_schedule=ScheduleConfig.constant(1e-3))
+    )
+    fp32_updates, _ = run(
+        MuonOptimizerConfig(
+            type="muon",
+            lr_schedule=ScheduleConfig.constant(1e-3),
+            ns_dtype="float32",
+        )
+    )
 
     for leaf in jax.tree.leaves((bf16_updates, bf16_state)):
         assert bool(jnp.all(jnp.isfinite(leaf)))
@@ -379,7 +422,7 @@ def test_stacked_muon_bf16_ns_is_sane():
 
 
 def test_stacked_muon_dim_numbers_fail_closed():
-    """SPEC S20: the stacked NS executes hardcoded trailing-two matrix axes and DISCARDS
+    """The stacked NS executes hardcoded trailing-two matrix axes and DISCARDS
     the declared dim numbers, so a muon leaf honestly declaring any other layout must die
     at optimizer build — the reference `optax.contrib.muon` would honor the declaration
     and the two would silently diverge. Conforming declarations (trailing-two, negative
@@ -438,7 +481,14 @@ def test_optimizer_config_type_discriminator():
     assert isinstance(default, AdamWOptimizerConfig), "untyped configs stay canonical AdamW"
     muon = adapter.validate_python({"type": "muon", "lr_schedule": schedule})
     assert isinstance(muon, MuonOptimizerConfig)
-    assert muon.beta == 0.95 and muon.consistent_rms is None
+    assert muon.beta == 0.95 and muon.consistent_rms == 0.2
+    assert muon.ns_dtype == "bfloat16"
+    for rms in (None, 0.4):
+        override = adapter.validate_python(
+            {"type": "muon", "lr_schedule": schedule, "consistent_rms": rms}
+        )
+        assert isinstance(override, MuonOptimizerConfig)
+        assert override.consistent_rms == rms
 
 
 @pytest.mark.multidevice
@@ -448,8 +498,8 @@ def test_grouped_ns_owner_waypoint_matches_replicated_on_stack_owned_leaves(
 ):
     """The stack-owner `ns_compute` waypoint (`{stack: replicate}` staging) is the same
     math as the replicated waypoint — the declared rows change only where the entry
-    reshards happen (SPEC D4 tolerance class) — and NEITHER staging may trigger the SPMD
-    partitioner's involuntary-full-rematerialization fallback. The check reads the
+    reshards happen (within float-reassociation tolerance) — and NEITHER staging may trigger the
+    SPMD partitioner's involuntary-full-rematerialization fallback. The check reads the
     partitioner's warning off fd 2 (`capfd`) — the same signal the production log grep
     uses. bf16 is a separate arm because an unpinned `convert_element_type` is its own
     fallback trigger."""
@@ -531,23 +581,13 @@ def test_stacked_ns_is_invariant_to_tensor_parallel_partition():
     assert np.allclose(np.asarray(run(1)), np.asarray(run(2)), rtol=2e-6, atol=1e-6)
 
 
-def _explicit_table(
-    components: dict[str, object], ci_ns: dict[str, object]
-) -> PlacementTableConfig:
+def _explicit_table(components: dict[str, object]) -> PlacementTableConfig:
     """A minimal valid explicit table around parametrized components rows: replicated
-    CI/target rows, the shared activation waist."""
-    ci_family = {"optimizer_state": {}, "compute_weights": {}, "operands": {}, "ns_compute": ci_ns}
+    target rows, the shared activation waist."""
     return PlacementTableConfig.model_validate(
         {
             "components": components,
-            "ci_fn": {
-                "attention": ci_family,
-                "ffn": ci_family,
-                "input": ci_family,
-                "output": ci_family,
-                "vectors": {},
-                "activations": {},
-            },
+            "ci_fn": "ddp",
             "activations": {
                 "external": {"batch": ["replicate", "fsdp"]},
                 "component": {"batch": ["replicate", "fsdp"]},
@@ -590,47 +630,71 @@ def test_ns_compute_waypoints_are_declared_rows():
     import jax.sharding
     from pydantic import ValidationError
 
-    from param_decomp.core.components import Dense, SiteSpec
     from param_decomp.core.placement import from_config
 
     mesh = jax.sharding.AbstractMesh((4, 8, 1), ("replicate", "fsdp", "tp"))
-    tiling = tuple(SiteSpec(f"t.{i}", Dense(d_in=64, d_out=32, C=8), "t") for i in range(4))
-    mixed = tiling + (SiteSpec("odd.0", Dense(d_in=128, d_out=64, C=8), "odd"),)
+    tiling = tuple(
+        SiteSpec(f"t.{i}", DenseFactorization(d_in=64, d_out=32, C=8), "t") for i in range(4)
+    )
+    mixed = tiling + (SiteSpec("odd.0", DenseFactorization(d_in=128, d_out=64, C=8), "odd"),)
+
+    from param_decomp.core.ci_fn.implementations.chunkwise.placement import preset_rows
+    from param_decomp.core.ci_fn.implementations.transformer.backbone import BackboneCIFn
 
     for preset in ("owner", "zero1", "ddp"):
         rules = from_config(preset, mesh, tiling)
         assert dict(rules.components.ns_compute.rule) == {"stack": ("replicate",)}
-        assert dict(rules.ci_fn.ffn.ns_compute.rule) == {"stack": ("replicate",)}
+        assert preset_rows(preset).weights.ffn.ns_compute == {"stack": ("replicate",)}
 
     # Only a stacked-muon optimizer consumes the ns_compute rows, so a non-tiling group
     # builds fine (zero1 keeps its any-stack-length universality for adamw runs) and the
     # refusal fires at the muon consumer's claim instead.
-    from param_decomp.core.placement import (
-        assert_stacked_muon_ci_staging,
-        assert_stacked_muon_component_staging,
+    from param_decomp.core.ci_fn.implementations.chunkwise.arch import (
+        Chunk,
+        ChunkwiseTransformerCIFnArch,
     )
+    from param_decomp.core.ci_fn.implementations.transformer.layers import MHACIFnAttention
+    from param_decomp.core.ci_fn.optimizer import assert_ci_fn_muon_staging_tiles
+    from param_decomp.core.placement import assert_stacked_muon_component_staging
 
     mixed_rules = from_config("zero1", mesh, mixed)
     with pytest.raises(AssertionError, match="stack lengths do not tile"):
         assert_stacked_muon_component_staging(mixed_rules)
     # zero1's CI masters rest intra-matrix, so no chunk-stack pad resolves and the NS
-    # claim sees the real chunk count.
-    from param_decomp.core.placement import CIFnPlacement, StackCensus
+    # claim sees the real chunk count: eight sites as one chunk, or one chunk each.
+    chunk_sites = tuple(
+        SiteSpec(f"c.{i}", DenseFactorization(d_in=64, d_out=32, C=8), "c") for i in range(8)
+    )
+    chunk_rules = from_config("zero1", mesh, chunk_sites)
 
-    def ci_placement(n_chunks: int) -> CIFnPlacement:
-        return CIFnPlacement.resolved(
-            mixed_rules.ci_fn, StackCensus(stack_len=n_chunks, stack_pad=0)
+    def abstract_ci_fn(sites_per_chunk: int) -> BackboneCIFn:
+        names = tuple(site.name for site in chunk_sites)
+        arch = ChunkwiseTransformerCIFnArch(
+            chunks=tuple(
+                Chunk(input_taps=("tap",), output_sites=names[i : i + sites_per_chunk])
+                for i in range(0, len(names), sites_per_chunk)
+            ),
+            input_dim=64,
+            d_model=64,
+            n_blocks=1,
+            attention=MHACIFnAttention(mask="bidirectional", implementation="xla", n_heads=8),
+            ffn_hidden=128,
+            ffn_kind="gelu",
+            learned_norm_scale=False,
+        )
+        return eqx.filter_eval_shape(
+            lambda: arch.initialize(chunk_sites, chunk_rules, jax.random.PRNGKey(0))
         )
 
-    with pytest.raises(AssertionError, match="stack lengths do not tile"):
-        assert_stacked_muon_ci_staging(ci_placement(1))
+    with pytest.raises(AssertionError, match="does not tile"):
+        assert_ci_fn_muon_staging_tiles(abstract_ci_fn(8))
     # the muon <-> owner pairing rule: zero1's intra-matrix masters ride the staging
     # axis (`C -> (tp, replicate)`), so the components claim refuses even a tiling set;
     # owner's stack-cut masters pass, and the CI rows (their own families) are exempt.
     with pytest.raises(AssertionError, match="stacked muon refuses this master layout"):
         assert_stacked_muon_component_staging(from_config("zero1", mesh, tiling))
     assert_stacked_muon_component_staging(from_config("owner", mesh, tiling))
-    assert_stacked_muon_ci_staging(ci_placement(8))
+    assert_ci_fn_muon_staging_tiles(abstract_ci_fn(1))
 
     # A stack-sharded persistence that is NOT the owner geometry simply builds: its
     # NS staging is whatever row it declares, not a derived hop path.
@@ -643,12 +707,13 @@ def test_ns_compute_waypoints_are_declared_rows():
             "operands": {},
             "ns_compute": {},
         },
-        {},
     )
     swapped_rules = from_config(
         swapped,
         mesh,
-        tuple(SiteSpec(f"sw.{i}", Dense(d_in=64, d_out=32, C=8), "sw") for i in range(8)),
+        tuple(
+            SiteSpec(f"sw.{i}", DenseFactorization(d_in=64, d_out=32, C=8), "sw") for i in range(8)
+        ),
     )
     assert dict(swapped_rules.components.ns_compute.rule) == {}
 
@@ -661,12 +726,48 @@ def test_ns_compute_waypoints_are_declared_rows():
     }
     with pytest.raises(AssertionError, match="may assign only `stack`"):
         from_config(
-            _explicit_table({**ddp_components, "ns_compute": {"d_in": "fsdp"}}, {}), mesh, tiling
+            _explicit_table({**ddp_components, "ns_compute": {"d_in": "fsdp"}}), mesh, tiling
         )
     # `rows`/`cols` died with the canonical-shape grouping: not a semantic axis at all,
     # so an explicit table naming one refuses at parse, before table build.
     with pytest.raises(ValidationError):
-        _explicit_table({**ddp_components, "ns_compute": {}}, {"rows": "fsdp"})
+        _explicit_table({**ddp_components, "ns_compute": {"rows": "fsdp"}})
+
+
+def test_adamw_build_accepts_placement_incompatible_with_muon():
+    from param_decomp.core.configs import PDConfigBase
+    from param_decomp.core.placement import from_config
+    from param_decomp.core.run_state import build_optimizers
+    from param_decomp.core.sharding import hsdp_mesh
+
+    mesh = hsdp_mesh(1, 1, 1)
+    sites = (SiteSpec("site", DenseFactorization(d_in=8, d_out=4, C=4), "site"),)
+    placement = from_config("zero1", mesh, sites)
+    config = AdamWOptimizerConfig(
+        lr_schedule=ScheduleConfig.constant(1e-3), weight_decay=0.1, betas=(0.8, 0.95)
+    )
+    pd = PDConfigBase(components_optimizer=config, ci_fn_optimizer=config, steps=3, batch_size=1)
+    optimizers = build_optimizers(pd, placement, sites)
+    params = {"weight": jnp.arange(32, dtype=jnp.float32).reshape(8, 4) / 32}
+    grads = {"weight": jnp.cos(params["weight"])}
+    oracle = optax.adamw(1e-3, b1=0.8, b2=0.95, eps=1e-8, weight_decay=0.1)
+    expected, _ = oracle.update(grads, oracle.init(params), params)
+    for optimizer in optimizers:
+        updates, state = jax.jit(optimizer.update)(grads, optimizer.init(params), params)
+        assert int(state.count) == 1
+        for actual, reference in zip(
+            jax.tree.leaves(updates), jax.tree.leaves(expected), strict=True
+        ):
+            assert jnp.allclose(actual, reference, rtol=1e-6, atol=1e-8)
+
+    muon_pd = PDConfigBase(
+        components_optimizer=MuonOptimizerConfig(type="muon", lr_schedule=config.lr_schedule),
+        ci_fn_optimizer=config,
+        steps=3,
+        batch_size=1,
+    )
+    with pytest.raises(AssertionError, match="stacked muon refuses this master layout"):
+        build_optimizers(muon_pd, placement, sites)
 
 
 def test_ns_staging_sharding_is_the_row_verbatim():
@@ -678,16 +779,21 @@ def test_ns_staging_sharding_is_the_row_verbatim():
     from param_decomp.core.placement import PlacedRule, ns_staging_sharding
 
     mesh = AbstractMesh((2, 2, 1), ("replicate", "fsdp", "tp"))
-    row = PlacedRule(mesh=mesh, label="ns", rule={"stack": ("replicate",)})
-    assert ns_staging_sharding(row, mesh).spec == P("replicate", None, None)
-    replicated = PlacedRule(mesh=mesh, label="ns", rule={})
-    assert ns_staging_sharding(replicated, mesh).spec == P(None, None, None)
+    row = PlacedRule(mesh=mesh, label_for_log="ns", rule=FrozenMapping({"stack": ("replicate",)}))
+    assert ns_staging_sharding(row, ("stack",)).spec == P("replicate", None, None)
+    replicated = PlacedRule(mesh=mesh, label_for_log="ns", rule=FrozenMapping({}))
+    assert ns_staging_sharding(replicated, ("stack",)).spec == P(None, None, None)
     with pytest.raises(AssertionError):
-        ns_staging_sharding(PlacedRule(mesh=mesh, label="bad", rule={"d_in": ("fsdp",)}), mesh)
+        ns_staging_sharding(
+            PlacedRule(mesh=mesh, label_for_log="bad", rule=FrozenMapping({"d_in": ("fsdp",)})),
+            ("stack",),
+        )
     # The resident two-axis mesh: the respelled `{stack: data}` row, verbatim too.
     resident_mesh = AbstractMesh((4, 2), ("data", "tp"))
-    resident_row = PlacedRule(mesh=resident_mesh, label="ns", rule={"stack": ("data",)})
-    assert ns_staging_sharding(resident_row, resident_mesh).spec == P("data", None, None)
+    resident_row = PlacedRule(
+        mesh=resident_mesh, label_for_log="ns", rule=FrozenMapping({"stack": ("data",)})
+    )
+    assert ns_staging_sharding(resident_row, ("stack",)).spec == P("data", None, None)
 
 
 def test_staging_hops_move_one_axis_per_reshard():
@@ -821,7 +927,7 @@ def test_per_kind_ns_census_zero_collectives_inside_the_ns_loop(
     coeffs = jnp.array([(3.4445, -4.7750, 2.0315)] * 5, jnp.float32)
 
     def compiled_census(tree: dict[str, Array], row: PlacedRule) -> str:
-        waypoint = ns_staging_sharding(row, mesh)
+        waypoint = ns_staging_sharding(row, ("stack",))
         waypoints = lambda t: jax.tree.map(lambda _: waypoint, t)
         capfd.readouterr()
         compiled = (
@@ -847,7 +953,10 @@ def test_per_kind_ns_census_zero_collectives_inside_the_ns_loop(
         "a": jax.device_put(jax.random.normal(k1, (4, 8, 16), jnp.float32), owner),
         "b": jax.device_put(jax.random.normal(k2, (2, 16, 8), jnp.float32), owner),
     }
-    compiled_census(owner_tree, PlacedRule(mesh=mesh, label="ns", rule={"stack": ("replicate",)}))
+    compiled_census(
+        owner_tree,
+        PlacedRule(mesh=mesh, label_for_log="ns", rule=FrozenMapping({"stack": ("replicate",)})),
+    )
 
     # zero1 geometry: intra-matrix masters hopping to the same node-axis stack split.
     # The receipt-class guard: replicated staging used to materialize whole fp32 stacks
@@ -859,7 +968,8 @@ def test_per_kind_ns_census_zero_collectives_inside_the_ns_loop(
         "b": jax.device_put(jax.random.normal(k3, (6, 8, 16), jnp.float32), zero1),
     }
     hlo = compiled_census(
-        zero1_tree, PlacedRule(mesh=mesh, label="ns", rule={"stack": ("replicate",)})
+        zero1_tree,
+        PlacedRule(mesh=mesh, label_for_log="ns", rule=FrozenMapping({"stack": ("replicate",)})),
     )
     smallest_kind_elems = min(math.prod(v.shape) for v in zero1_tree.values())
     for shape in _collective_result_shapes(hlo):
@@ -879,8 +989,8 @@ def test_per_kind_ns_census_zero_collectives_inside_the_ns_loop(
     )
     ffn_master = NamedSharding(mesh3, P(None, None, ("tp", "fsdp", "replicate")))
     ffn_tree = {"w1": jax.device_put(jax.random.normal(k1, (4, 8, 16), jnp.float32), ffn_master)}
-    row = PlacedRule(mesh=mesh3, label="ns", rule={"stack": ("replicate",)})
-    waypoint3 = ns_staging_sharding(row, mesh3)
+    row = PlacedRule(mesh=mesh3, label_for_log="ns", rule=FrozenMapping({"stack": ("replicate",)}))
+    waypoint3 = ns_staging_sharding(row, ("stack",))
     waypoints = lambda t: jax.tree.map(lambda _: waypoint3, t)
     capfd.readouterr()
     compiled = (

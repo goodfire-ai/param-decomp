@@ -1,7 +1,7 @@
 """Every maintained config YAML parses, round-trips, and ships in the built package.
 
-A schema PR that breaks a seat migrates it in the same PR, with an executed in-repo
-migration — never a script attached to a PR comment (see CONFIGS.md).
+A schema change that breaks a maintained config migrates it in the same PR, with an executed in-repo
+migration — never a script attached to a PR comment (see README.md#maintained-lm-configs).
 """
 
 import os
@@ -15,16 +15,17 @@ import pytest
 import yaml
 
 from param_decomp.core.base_config import BaseConfig
-from param_decomp.core.configs import (
-    ImportanceMinimalityLossConfig,
-    MergedStochasticSubsetPooledPPGDReconLossConfig,
-    NonlinearityLocalityLossConfig,
-    PGDReconLossConfig,
-)
 from param_decomp.experiments.lm.config import (
     QWEN36_MOE_MODEL_CLASS,
+    ChunkwiseTransformerCIFnConfig,
+    GlobalMlpCIFnConfig,
+    GlobalTransformerCIFnConfig,
+    HFTarget,
+    HFWeightsInVendored,
     LMExperimentConfig,
     LMTargetedExperimentConfig,
+    MoEChunkwiseTransformerCIFnConfig,
+    PretrainedQwen35MoeTarget,
     PretrainedTarget,
     assert_placement_claims,
 )
@@ -55,7 +56,7 @@ def _seat_schema(path: Path, rel_dir: str) -> type[BaseConfig]:
     plain, targeted = PUBLIC_SCHEMA_BY_DIR[rel_dir]
     if not _is_targeted_seat(path):
         return plain
-    assert targeted is not None, f"{path} is a targeted seat but {rel_dir} has no targeted shape"
+    assert targeted is not None, f"{path} is a targeted config but {rel_dir} has no targeted shape"
     return targeted
 
 
@@ -71,80 +72,54 @@ def _load(path: Path) -> dict[str, Any]:
     return yaml.safe_load(path.read_text())
 
 
-def test_pile4l_canonical_recipe() -> None:
-    config = LMExperimentConfig.from_file(
-        REPO / "param_decomp/experiments/lm/configs/pile_llama_simple_mlp-4L.yaml"
-    )
-    imp = next(
-        term for term in config.pd.loss_metrics if isinstance(term, ImportanceMinimalityLossConfig)
-    )
-    locality = next(
-        term for term in config.pd.loss_metrics if isinstance(term, NonlinearityLocalityLossConfig)
-    )
-    recon = next(
-        term
-        for term in config.pd.loss_metrics
-        if isinstance(term, MergedStochasticSubsetPooledPPGDReconLossConfig)
-    )
-    assert config.eval is not None
-    eval_pgd = next(
-        metric for metric in config.eval.metrics if isinstance(metric, PGDReconLossConfig)
-    )
-
-    assert imp.coeff == 2e-4
-    assert imp.frequency is not None
-    assert imp.frequency.coeff == 6.6e-5
-    assert imp.frequency.reference_datapoint_count == 6_553_600
-    assert locality.coeff == 3e-5
-    assert recon.hidden_acts_reconstruction is None
-    assert recon.pool_size == 2064
-    assert recon.optimizer.lr_schedule.max_val == 0.02
-    assert config.runtime.sharding == "owner"
-    assert eval_pgd.hidden_acts_reconstruction is not None
-    assert eval_pgd.hidden_acts_reconstruction.coeff == 0.0
-    assert eval_pgd.hidden_acts_reconstruction.points == (
-        "resid.1",
-        "resid.2",
-        "resid.3",
-        "resid.4",
-    )
-
-    schedules = (
-        imp.gamma,
-        config.pd.components_optimizer.lr_schedule,
-        config.pd.ci_fn_optimizer.lr_schedule,
-    )
-    assert all(schedule.points[-2].at == 0.9 for schedule in schedules)
-    assert all(schedule.points[-2].frac == schedule.points[-1].frac for schedule in schedules)
-
-
 def test_gate_collects_the_seat_registry() -> None:
     """Moved roots must not silently make a domain disappear from the parametrized tests."""
     collected_dirs = {str(path.parent.relative_to(REPO)) for path in PUBLIC_CONFIG_PATHS}
     assert collected_dirs == set(PUBLIC_SCHEMA_BY_DIR), (
         f"config glob collected {collected_dirs or 'nothing'} — did a configs dir move?"
     )
-    assert len(LM_CONFIG_PATHS) <= 10, (
-        f"{len(LM_CONFIG_PATHS)} LM configs exceed the CONFIGS.md registry cap of 10 — "
-        "adding a seat requires an eviction (or this is an uncommitted one-off, see rule 2)"
-    )
+    identities = [
+        _load(path)["target"]["spec"].get("model_name") or _load(path)["target"]["spec"]["run_path"]
+        for path in LM_CONFIG_PATHS
+    ]
+    assert len(identities) == len(set(identities)), "Maintain one LM config per model"
 
 
 @pytest.mark.parametrize("path", LM_CONFIG_PATHS, ids=lambda p: str(p.relative_to(REPO)))
-def test_lm_config_builds_placement_claims(path: Path) -> None:
+def test_lm_config_preflight(path: Path) -> None:
     config = (
         LMTargetedExperimentConfig.model_validate(_load(path))
         if _is_targeted_seat(path)
         else LMExperimentConfig.model_validate(_load(path))
     )
-    # The placement gate resolves the site set from config + arch, so every maintained
-    # config's sharding claim is exercised at its pinned dp. A pretrained target is the
-    # enumerated gap: resolving it reads a external pretrain cache.
-    if not isinstance(config.target.spec, PretrainedTarget):
-        assert_placement_claims(config, Path("out"))
+    match config.target.spec:
+        case HFTarget() | HFWeightsInVendored():
+            assert_placement_claims(config, Path("out"))
+        case PretrainedTarget() | PretrainedQwen35MoeTarget():
+            # These resolve a pretrain cache; synthetic-cache coverage lives in test_qwen36_wiring.
+            pass
 
 
-# Seats the CPU trace gate covers: families with an abstract (shape-only) model
+@pytest.mark.parametrize("size_per_batch_element", [1, 3, 512])
+def test_pool_placement_accepts_size_independent_of_data_mesh(size_per_batch_element: int) -> None:
+    raw = _load(REPO / "param_decomp/experiments/lm/configs/llama3_1_8b.yaml")
+    reference = _load(REPO / "param_decomp/experiments/lm/configs/pile_llama_simple_mlp-4L.yaml")
+    pooled = next(
+        loss
+        for loss in reference["pd"]["loss_metrics"]
+        if loss["type"] == "MergedStochasticSubsetPooledPPGDReconLoss"
+    )
+    pooled["pool"] = {"size_per_batch_element": size_per_batch_element}
+    raw["pd"]["loss_metrics"] = [
+        loss
+        for loss in raw["pd"]["loss_metrics"]
+        if loss["type"] != "MergedStochasticSubsetPooledPPGDReconLoss"
+    ] + [pooled]
+    config = LMExperimentConfig.model_validate(raw)
+    assert_placement_claims(config, Path("out"))
+
+
+# Configs the CPU trace gate covers: families with an abstract (shape-only) model
 # builder — today the qwen36_moe family (`trace_check` enumerates the gap).
 TRACE_GATE_PATHS = [
     path
@@ -154,20 +129,28 @@ TRACE_GATE_PATHS = [
 
 
 @pytest.mark.parametrize("path", TRACE_GATE_PATHS, ids=lambda p: str(p.relative_to(REPO)))
-def test_lm_seat_train_step_traces_at_declared_topology(path: Path) -> None:
-    """The placement-claims gate never TRACES the step, and explicit-sharding refusals
-    (an ambiguous sharded contraction) fire only at trace time. Lower the seat's real
-    train step at its declared topology on
-    simulated CPU devices: a subprocess, because the world size must exist as local
-    devices before jax initializes. Sequence is never sharded, so the pinned 512 (the
-    seats' dataset extent) exercises every sharding rule any extent would. The gate also
-    lowers the seat's eval programs on every output edge the family supports, so an
-    eval-only streamed-edge trace failure dies here too."""
+def test_lm_seat_train_step_traces_at_declared_topology(path: Path, tmp_path: Path) -> None:
+    """Lower CPU-attention variants at the declared mesh and tensor shapes, including
+    evaluation on every supported output edge. This checks explicit sharding and output
+    dispatch; GPU attention lowering requires a GPU compile target and is not covered."""
     config = (
         LMTargetedExperimentConfig.model_validate(_load(path))
         if _is_targeted_seat(path)
         else LMExperimentConfig.model_validate(_load(path))
     )
+    cpu_raw = config.model_dump(mode="json")
+    cpu_raw["target"]["attention_implementation"] = "xla"
+    match config.decomposition.ci:
+        case (
+            ChunkwiseTransformerCIFnConfig()
+            | GlobalTransformerCIFnConfig()
+            | MoEChunkwiseTransformerCIFnConfig()
+        ):
+            cpu_raw["decomposition"]["ci"]["attention"]["implementation"] = "xla"
+        case GlobalMlpCIFnConfig():
+            pass
+    cpu_path = tmp_path / path.name
+    type(config).model_validate(cpu_raw).to_file(cpu_path)
     env = os.environ | {
         "XLA_FLAGS": f"--xla_force_host_platform_device_count={config.runtime.mesh.world_size}",
         "JAX_PLATFORMS": "cpu",
@@ -177,7 +160,7 @@ def test_lm_seat_train_step_traces_at_declared_topology(path: Path) -> None:
             sys.executable,
             "-m",
             "param_decomp.experiments.lm.trace_check",
-            str(path),
+            str(cpu_path),
             "--seq-len",
             "512",
         ],
@@ -195,7 +178,7 @@ def test_lm_seat_train_step_traces_at_declared_topology(path: Path) -> None:
     ids=[str(path.relative_to(REPO)) for path, _ in PUBLIC_CONFIG_CASES],
 )
 def test_public_config_round_trips(path: Path, schema: type[BaseConfig], tmp_path: Path) -> None:
-    """Every maintained public seat survives both BaseConfig persistence formats."""
+    """Every maintained public config survives both BaseConfig persistence formats."""
     config = schema.from_file(path)
     assert schema.model_validate(config.model_dump(mode="json")) == config
     for suffix in (".yaml", ".json"):
@@ -206,14 +189,14 @@ def test_public_config_round_trips(path: Path, schema: type[BaseConfig], tmp_pat
 
 @pytest.mark.parametrize("path", PRETRAIN_CONFIG_PATHS, ids=lambda p: str(p.relative_to(REPO)))
 def test_pretrain_seat_resolves_to_the_dataset_store(path: Path) -> None:
-    """Every pretrain seat resolves its dataset name under the caller's data root."""
+    """Every pretrain config resolves its dataset name under the caller's data root."""
     data = PretrainConfig.model_validate(_load(path)).data
     data_root = Path("/any/data/root")
     match data:
         case NamedDataset(name=name):
             assert resolve_dataset_ref(data, data_root) == data_root / "datasets" / name
         case DatasetDir(dir=dir):
-            pytest.fail(f"{path.name} seats an ad-hoc shard dir ({dir}); a seat carries a name")
+            pytest.fail(f"{path.name} seats an ad-hoc shard dir ({dir}); a config carries a name")
 
 
 def test_wheel_contains_every_public_config(tmp_path: Path) -> None:
@@ -261,6 +244,6 @@ def _absolute_path_leaks(node: object, key: str | None = None, exempt: bool = Fa
 
 @pytest.mark.parametrize("path", PUBLIC_CONFIG_PATHS, ids=lambda p: str(p.relative_to(REPO)))
 def test_seats_carry_names_never_locations(path: Path) -> None:
-    """Committed seats do not hard-code an absolute machine path outside an escape arm."""
+    """Committed configs do not hard-code an absolute machine path outside an escape arm."""
     leaks = _absolute_path_leaks(_load(path))
     assert not leaks, f"absolute paths outside tagged `kind: dir` arms: {leaks}"

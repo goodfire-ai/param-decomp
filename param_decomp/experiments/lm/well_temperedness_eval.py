@@ -2,27 +2,30 @@
 
 import io
 import math
-from collections.abc import Callable
 from functools import partial
 from typing import Literal
 
 import jax
 import numpy as np
 from jax.sharding import Mesh
-from jaxtyping import Array, PRNGKeyArray
+from jaxtyping import PRNGKeyArray
 from matplotlib.figure import Figure
 
+from param_decomp.core.ci_fn.interface import CIFn
 from param_decomp.core.ci_l0_eval import resolve_site_groups
+from param_decomp.core.components import ComponentStacks
 from param_decomp.core.eval_schedule import EvalSchedule
 from param_decomp.core.metrics import LogRecord, PNGImage
-from param_decomp.core.model import CaptureKeys, PlacedModel
+from param_decomp.core.model import CaptureKeys, ComponentActivations, PlacedModel
 from param_decomp.core.run import (
     BackgroundRenderer,
     DeferredMediaRecord,
-    EvalInvocation,
-    PassOperation,
+    StandaloneOperation,
+    StandaloneOperationPlan,
 )
 from param_decomp.experiments.lm.eval_config import WellTemperednessConfig
+from param_decomp.experiments.lm.eval_context import LMEvalPass
+from param_decomp.experiments.lm.eval_keys import EvalKeyStream
 from param_decomp.experiments.lm.well_temperedness import (
     REGIONS,
     Ablations,
@@ -31,6 +34,7 @@ from param_decomp.experiments.lm.well_temperedness import (
     make_well_temperedness_step,
     well_temperedness_log_entries,
 )
+from param_decomp.lm.batch import LMBatch, LMBatchWithDocuments
 from param_decomp.targets.lm_output import LMOutput
 
 _PREFIX = "eval/slow/well_temperedness/"
@@ -107,47 +111,79 @@ def _render_deferred(ablations: Ablations, now_step: int) -> DeferredMediaRecord
     )
 
 
-def make_well_temperedness_operation[ContextT: EvalInvocation](
+def make_well_temperedness_operation[
+    TargetIn: LMBatch | LMBatchWithDocuments,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](
     metric: WellTemperednessConfig,
     schedule: EvalSchedule,
-    model: PlacedModel[LMOutput],
+    model: PlacedModel[TargetIn, LMOutput, PreparedT, Conditioning, PreparedMaskingT],
     ci_capture_keys: CaptureKeys,
     mesh: Mesh | None,
     compiler_options: dict[str, bool | int | str],
-    inputs_for_context: Callable[[ContextT], tuple[Array, PRNGKeyArray]],
+    run_key: PRNGKeyArray,
+    train_steps: int,
     figure_rendering: FigureRendering,
-) -> PassOperation[ContextT]:
+) -> StandaloneOperationPlan[LMEvalPass[TargetIn, Conditioning]]:
     if figure_rendering is not None:
         assert metric.n_locations <= _MAX_FIGURE_LOCATIONS, (
             f"WellTemperedness scatter supports at most {_MAX_FIGURE_LOCATIONS} locations, "
             f"got {metric.n_locations}"
         )
-    site_groups = _resolve_groups(model.site_names, metric.groups)
-    measure_ablations = make_well_temperedness_step(
-        model, ci_capture_keys, metric, mesh, compiler_options
-    )
+    site_groups = _resolve_groups(model.model.site_names, metric.groups)
+    measure_ablations = make_well_temperedness_step(model, ci_capture_keys, metric, mesh)
 
-    def run(context: ContextT) -> LogRecord:
-        inputs, sampling_key = inputs_for_context(context)
-        device_ablations = measure_ablations(
-            model,
-            context.state.decomposition.components,
-            context.placed_ci_fn,
-            inputs,
-            sampling_key,
+    def measure(
+        model: PlacedModel[TargetIn, LMOutput, PreparedT, Conditioning, PreparedMaskingT],
+        components: ComponentStacks,
+        ci_fn: CIFn[Conditioning],
+        inputs: TargetIn,
+        pass_index: np.uint32,
+    ) -> Ablations:
+        sampling_key = jax.random.fold_in(
+            run_key, EvalKeyStream.WELL_TEMPEREDNESS * train_steps + pass_index
         )
-        ablations = jax.device_get(device_ablations)
-        log_record: dict[str, float | PNGImage] = {
-            f"{_PREFIX}{name}": value
-            for name, value in well_temperedness_log_entries(ablations, site_groups).items()
-        }
-        match figure_rendering:
-            case None:
-                pass
-            case "synchronous":
-                log_record[_FIGURE_KEY] = PNGImage(_plot_preactivation_vs_damage(ablations))
-            case BackgroundRenderer() as renderer:
-                renderer.submit(partial(_render_deferred, ablations, context.now_step))
-        return log_record
+        return measure_ablations(model, components, ci_fn, inputs, sampling_key)
 
-    return PassOperation(schedule, run)
+    def prepare(
+        example: LMEvalPass[TargetIn, Conditioning],
+    ) -> StandaloneOperation[LMEvalPass[TargetIn, Conditioning]]:
+        compiled_measurement = (
+            jax.jit(measure, compiler_options=compiler_options)
+            .lower(
+                model,
+                example.decomposition.components,
+                example.decomposition.ci_fn,
+                example.batches[0],
+                np.uint32(example.pass_index),
+            )
+            .compile()
+        )
+
+        def run(context: LMEvalPass[TargetIn, Conditioning]) -> LogRecord:
+            device_ablations = compiled_measurement(
+                model,
+                context.decomposition.components,
+                context.decomposition.ci_fn,
+                context.batches[0],
+                np.uint32(context.pass_index),
+            )
+            ablations = jax.device_get(device_ablations)
+            log_record: dict[str, float | PNGImage] = {
+                f"{_PREFIX}{name}": value
+                for name, value in well_temperedness_log_entries(ablations, site_groups).items()
+            }
+            match figure_rendering:
+                case None:
+                    pass
+                case "synchronous":
+                    log_record[_FIGURE_KEY] = PNGImage(_plot_preactivation_vs_damage(ablations))
+                case BackgroundRenderer() as renderer:
+                    renderer.submit(partial(_render_deferred, ablations, context.now_step))
+            return log_record
+
+        return StandaloneOperation(schedule, run)
+
+    return StandaloneOperationPlan(prepare)

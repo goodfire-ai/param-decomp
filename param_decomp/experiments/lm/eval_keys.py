@@ -10,3 +10,4 @@ class EvalKeyStream(IntEnum):
     ATTENTION_PATTERNS = 2
     ARITHMETIC = 4
     WELL_TEMPEREDNESS = 5
+    ROUTER_DIVERGENCE = 6

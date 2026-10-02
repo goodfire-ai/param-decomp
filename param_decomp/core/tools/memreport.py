@@ -39,7 +39,7 @@ def walk_fields(buf: memoryview) -> Iterator[tuple[int, int | memoryview]]:
         while True:
             assert i < n, "truncated proto: varint runs past EOF"
             b = buf[i]
-            tag |= (b & 0x7F) << shift
+            tag = tag | ((b & 0x7F) << shift)
             i += 1
             if not b & 0x80:
                 break
@@ -50,7 +50,7 @@ def walk_fields(buf: memoryview) -> Iterator[tuple[int, int | memoryview]]:
             while True:
                 assert i < n, "truncated proto: varint runs past EOF"
                 b = buf[i]
-                val |= (b & 0x7F) << shift
+                val = val | ((b & 0x7F) << shift)
                 i += 1
                 if not b & 0x80:
                     break
@@ -65,7 +65,7 @@ def walk_fields(buf: memoryview) -> Iterator[tuple[int, int | memoryview]]:
             while True:
                 assert i < n, "truncated proto: varint runs past EOF"
                 b = buf[i]
-                length |= (b & 0x7F) << shift
+                length = length | ((b & 0x7F) << shift)
                 i += 1
                 if not b & 0x80:
                     break
@@ -102,7 +102,7 @@ def _repeated_ints(value: int | memoryview) -> list[int]:
         shift, val = 0, 0
         while True:
             b = value[i]
-            val |= (b & 0x7F) << shift
+            val = val | ((b & 0x7F) << shift)
             i += 1
             if not b & 0x80:
                 break

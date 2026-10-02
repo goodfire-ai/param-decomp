@@ -1,7 +1,7 @@
 """CPU tests for the LlamaSimpleMLP target + generic trainer at a tiny config.
 
 Mirrors `test_llama31.py`: validates the `DecomposedModel` contract (mask=1 identity
-reconstructs the clean forward, shapes, site seams) and the full SPEC step — for mixed
+reconstructs the clean forward, shapes, site seams) and the full training step — for mixed
 attention + MLP sites with heterogeneous per-site C — without real weights or a GPU.
 """
 
@@ -20,9 +20,6 @@ from param_decomp.core.adversary import (
     init_persistent_sources,
     init_sources_adam_state,
 )
-from param_decomp.core.ci_fn import (
-    ChunkwiseTransformerCIFn,
-)
 from param_decomp.core.components import (
     ComponentStacks,
     SiteC,
@@ -30,6 +27,7 @@ from param_decomp.core.components import (
 )
 from param_decomp.core.configs import (
     AdamPGDConfig,
+    AdamWOptimizerConfig,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
@@ -37,27 +35,27 @@ from param_decomp.core.configs import (
     UniformKSubsetRoutingConfig,
 )
 from param_decomp.core.faithfulness import faithfulness_loss_for
+from param_decomp.core.losses import BatchFrequency
 from param_decomp.core.model import MaterializedMasking, PlacedModel, site_weight_delta
 from param_decomp.core.nonlinearity import (
     KVHeads,
     Neurons,
+    NonlinearityAlignment,
     QueryHeads,
 )
 from param_decomp.core.objective import build_objective
 from param_decomp.core.recon import StochasticSources
+from param_decomp.core.run_state import _adamw_optimizer
 from param_decomp.core.schedule import Knot, ScheduleConfig
 from param_decomp.core.train import (
     Decomposition,
     ForwardSubstrate,
-    TrainingItem,
+    PDTrainingState,
     TrainState,
     make_faith_warmup_step,
     make_train_step,
 )
-from param_decomp.targets.glu_transformer import (
-    GLUDecomposedModel,
-    neuron_aligned_component_initializer,
-)
+from param_decomp.lm.batch import LMBatchWithDocuments
 from param_decomp.targets.llama_simple_mlp import (
     KIND_ORDER,
     SIMPLE_MLP_ANATOMY,
@@ -71,12 +69,16 @@ from param_decomp.targets.testing import (
     SIMPLE_MLP_MIXED_SITE_CS,
     capture_clean,
     capture_site_outputs,
+    chunkwise_transformer_backbone,
     materialized_logits,
     run_clean,
     run_masked,
     tiny_simple_mlp_cfg,
     tiny_simple_mlp_chunkwise_ci_fn,
     tiny_simple_mlp_decomposed_model,
+)
+from param_decomp.targets.transformer import (
+    TransformerDecomposedModel,
 )
 from param_decomp.targets.transformer_taps import (
     attention_input_tap_key,
@@ -102,10 +104,14 @@ def _site_input_key(site: str) -> str:
 
 
 def _capture_site_inputs(
-    model: GLUDecomposedModel, tokens: jax.Array, sites: tuple[str, ...]
+    model: TransformerDecomposedModel, tokens: jax.Array, sites: tuple[str, ...]
 ) -> dict[str, jax.Array]:
     input_keys = tuple(_site_input_key(site) for site in sites)
-    captures = capture_clean(model, tokens, tuple(dict.fromkeys(input_keys)))
+    captures = capture_clean(
+        model,
+        LMBatchWithDocuments.from_unsegmented_sequences(tokens),
+        tuple(dict.fromkeys(input_keys)),
+    )
     return dict(zip(sites, (captures[key] for key in input_keys), strict=True))
 
 
@@ -160,33 +166,23 @@ def test_site_specs_dims():
     assert dims["h.2.attn.o_proj"] == (qd, cfg.n_embd, 4)
     assert dims["h.2.mlp.c_fc"] == (cfg.n_embd, cfg.n_intermediate, 4)
     assert dims["h.2.mlp.down_proj"] == (cfg.n_intermediate, cfg.n_embd, 4)
-    partitions = {s.name: s.nonlinearity_partition for s in specs}
-    assert partitions["h.2.mlp.c_fc"] == Neurons()
-    assert partitions["h.2.attn.q_proj"] == QueryHeads(cfg.n_head)
+    alignments = {s.name: s.alignment for s in specs}
+    assert alignments["h.2.mlp.c_fc"] == NonlinearityAlignment("output", Neurons())
+    assert alignments["h.2.attn.q_proj"] == NonlinearityAlignment("output", QueryHeads(cfg.n_head))
     kv_heads = KVHeads(cfg.n_kv_head, cfg.n_head // cfg.n_kv_head)
-    assert partitions["h.2.attn.k_proj"] == kv_heads
-    assert partitions["h.2.attn.v_proj"] == kv_heads
-    assert partitions["h.2.mlp.down_proj"] is None and partitions["h.2.attn.o_proj"] is None
+    assert alignments["h.2.attn.k_proj"] == NonlinearityAlignment("output", kv_heads)
+    assert alignments["h.2.attn.v_proj"] == NonlinearityAlignment("output", kv_heads)
+    assert alignments["h.2.mlp.down_proj"] == NonlinearityAlignment("input", Neurons())
+    assert alignments["h.2.attn.o_proj"] == NonlinearityAlignment("input", QueryHeads(cfg.n_head))
     with pytest.raises(AssertionError, match="canonical"):
         site_specs(cfg, (SiteC("h.2.mlp.c_fc", 4), SiteC("h.2.attn.q_proj", 4)))
 
 
-def test_simple_mlp_target_selects_neuron_aligned_initializer():
+def test_nonlinearity_aligned_init_exactly_reconstructs_simple_mlp():
     from param_decomp.experiments.lm.load_run import component_initializer_for
     from param_decomp.experiments.lm.resolved import LlamaSimpleMLPTargetConfig
+    from param_decomp.targets.lm_output import MaterializedOutputEdge
 
-    target = LlamaSimpleMLPTargetConfig(
-        pretrain_run_path="goodfire/spd/runs/t-9d2b8f02",
-        sites=(),
-        weights_dtype="float32",
-        attention_implementation="auto",
-        component_initialization="neuron_aligned",
-    )
-
-    assert component_initializer_for(target) is neuron_aligned_component_initializer
-
-
-def test_neuron_aligned_init_exactly_reconstructs_simple_mlp():
     cfg = tiny_simple_mlp_cfg()
     capacities = {
         kind: (
@@ -202,7 +198,17 @@ def test_neuron_aligned_init_exactly_reconstructs_simple_mlp():
     )
     model = tiny_simple_mlp_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
 
-    components = neuron_aligned_component_initializer(model, jax.random.PRNGKey(1))
+    target = LlamaSimpleMLPTargetConfig(
+        pretrain_run_path="goodfire/spd/runs/t-9d2b8f02",
+        sites=tuple(SiteC(spec.name, spec.C) for spec in sites),
+        weights_dtype="float32",
+        attention_implementation="xla",
+        component_initialization="nonlinearity_aligned",
+        output_edge=MaterializedOutputEdge(),
+    )
+    placed = PlacedModel(model=model, placement=None)
+    initialize = component_initializer_for(target, placed)
+    components = initialize(model, jax.random.PRNGKey(1))
 
     for delta in model.weight_deltas(components).values():
         assert jnp.array_equal(delta, jnp.zeros_like(delta))
@@ -226,7 +232,9 @@ def test_clean_path_and_masked_identity():
         assert site_components.V.shape == (spec.d_in, spec.C)
         assert site_components.U.shape == (spec.C, spec.d_out)
 
-    clean = materialized_logits(run_clean(model, tokens))
+    clean = materialized_logits(
+        run_clean(model, LMBatchWithDocuments.from_unsegmented_sequences(tokens))
+    )
     assert clean.shape == (b, t, cfg.vocab_size)
 
     # Masks=1, delta=1, route-everywhere reconstructs the frozen path up to
@@ -236,12 +244,21 @@ def test_clean_path_and_masked_identity():
     ones_delta = {s: jnp.ones((b, t)) for s in names}
     prepared = model.prepare_compute_weights(vu, None)
     full = materialized_logits(
-        run_masked(model, prepared, tokens, ones_masks, ones_delta, None, True, remat=False)
+        run_masked(
+            model,
+            prepared,
+            LMBatchWithDocuments.from_unsegmented_sequences(tokens),
+            MaterializedMasking(component_masks=ones_masks, weight_delta_masks=ones_delta),
+            remat=False,
+            routes=None,
+        )
     )
     assert jnp.allclose(clean, full, atol=1e-4), "mask=1 identity drifted"
 
-    input_keys = model._capture_grammar().block_tap_keys((2, 3))
-    site_in = capture_clean(model, tokens, input_keys)
+    input_keys = model._capture_grammar().site_input_tap_keys((2, 3))
+    site_in = capture_clean(
+        model, LMBatchWithDocuments.from_unsegmented_sequences(tokens), input_keys
+    )
     assert set(site_in) == set(input_keys)
     assert attention_input_tap_key(2) in site_in
     assert site_in[mlp_hidden_tap_key(3)].shape == (b, t, cfg.n_intermediate)
@@ -258,7 +275,7 @@ def test_clean_path_and_masked_identity():
     )
     assert all(v.dtype == jnp.float32 for v in deltas.values())
     target_sq_norms = model.target_weight_sq_norms()
-    for name, group, slot in vu.site_slots:
+    for name, group, slot in vu.site_stack_indices:
         site = vu.site(name)
         delta = site_weight_delta(deltas, vu, name)
         target_weight = delta + (site.V.astype(jnp.float32) @ site.U.astype(jnp.float32)).T
@@ -277,13 +294,22 @@ def test_zero_masking_one_site_changes_logits(ablated_site: str):
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
-    clean = materialized_logits(run_clean(model, tokens))
+    clean = materialized_logits(
+        run_clean(model, LMBatchWithDocuments.from_unsegmented_sequences(tokens))
+    )
     fill = {s.name: 0.0 if s.name == ablated_site else 1.0 for s in model.sites}
     masks = {s.name: jnp.full((b, t, s.C), fill[s.name]) for s in model.sites}
     delta_masks = {s.name: jnp.full((b, t), fill[s.name]) for s in model.sites}
     prepared = model.prepare_compute_weights(vu, None)
     ablated = materialized_logits(
-        run_masked(model, prepared, tokens, masks, delta_masks, None, True, remat=False)
+        run_masked(
+            model,
+            prepared,
+            LMBatchWithDocuments.from_unsegmented_sequences(tokens),
+            MaterializedMasking(component_masks=masks, weight_delta_masks=delta_masks),
+            remat=False,
+            routes=None,
+        )
     )
     assert not jnp.allclose(clean, ablated, atol=1e-4), f"ablating {ablated_site} did nothing"
 
@@ -308,8 +334,9 @@ def test_masked_site_outputs_frozen_when_routed_false_or_unmasked():
     clean_outs = capture_site_outputs(
         model,
         model.prepare_compute_weights(vu, None),
-        tokens,
-        MaterializedMasking(component_masks=ones_masks, routes=false_routes),
+        LMBatchWithDocuments.from_unsegmented_sequences(tokens),
+        MaterializedMasking(component_masks=ones_masks),
+        routes=false_routes,
     )
     assert set(clean_outs) == set(names)
     # frozen `x @ W` per site, reconstructed independently from weight_deltas + V@U.
@@ -338,7 +365,9 @@ def test_masked_site_outputs_match_hand_computed_masked_linear(site_name_str: st
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
     input_key = _site_input_key(site)
-    x_in = capture_clean(model, tokens, (input_key,))[input_key]
+    x_in = capture_clean(
+        model, LMBatchWithDocuments.from_unsegmented_sequences(tokens), (input_key,)
+    )[input_key]
     site_components = vu.site(site)
     mask = jax.random.uniform(jax.random.PRNGKey(7), (b, t, sites_cs[0].C))
 
@@ -346,8 +375,9 @@ def test_masked_site_outputs_match_hand_computed_masked_linear(site_name_str: st
     no_delta = capture_site_outputs(
         model,
         prepared,
-        tokens,
+        LMBatchWithDocuments.from_unsegmented_sequences(tokens),
         MaterializedMasking(component_masks={site: mask}),
+        routes=None,
     )
     hand = ((x_in @ site_components.V) * mask) @ site_components.U
     assert jnp.allclose(no_delta[site], hand, atol=1e-4), site
@@ -358,11 +388,12 @@ def test_masked_site_outputs_match_hand_computed_masked_linear(site_name_str: st
     with_delta = capture_site_outputs(
         model,
         prepared,
-        tokens,
+        LMBatchWithDocuments.from_unsegmented_sequences(tokens),
         MaterializedMasking(
             component_masks={site: mask},
             weight_delta_masks={site: delta_mask},
         ),
+        routes=None,
     )
     hand_delta = delta_mask[..., None] * (x_in.astype(jnp.float32) @ delta_in.T)
     expected = hand.astype(jnp.float32) + hand_delta
@@ -378,17 +409,20 @@ def test_o_site_masks_attention_output():
     b, t = 2, 16
     tokens = jax.random.randint(jax.random.PRNGKey(2), (b, t), 0, cfg.vocab_size)
 
-    clean = materialized_logits(run_clean(model, tokens))
+    clean = materialized_logits(
+        run_clean(model, LMBatchWithDocuments.from_unsegmented_sequences(tokens))
+    )
     ones = materialized_logits(
         run_masked(
             model,
             model.prepare_compute_weights(vu, None),
-            tokens,
-            {o_site: jnp.ones((b, t, 8))},
-            {o_site: jnp.ones((b, t))},
-            None,
-            True,
+            LMBatchWithDocuments.from_unsegmented_sequences(tokens),
+            MaterializedMasking(
+                component_masks={o_site: jnp.ones((b, t, 8))},
+                weight_delta_masks={o_site: jnp.ones((b, t))},
+            ),
             remat=False,
+            routes=None,
         )
     )
     assert jnp.allclose(clean, ones, atol=1e-4)
@@ -406,18 +440,20 @@ def test_step_trains_and_has_vpd_signature():
     model = tiny_simple_mlp_decomposed_model(cfg, sites, jax.random.PRNGKey(0))
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = tiny_simple_mlp_chunkwise_ci_fn(model, jax.random.PRNGKey(2))
-    opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
-    opt_ci = optax.adamw(1e-3, weight_decay=0.0)
+    opt_vu = _adamw_optimizer(
+        AdamWOptimizerConfig(lr_schedule=ScheduleConfig.constant(1e-3), grad_clip_norm=0.01), 1
+    )
+    opt_ci = _adamw_optimizer(AdamWOptimizerConfig(lr_schedule=ScheduleConfig.constant(1e-3)), 1)
 
     src = init_persistent_sources(
         model.sites,
-        (1, seq),
+        (2, seq),
         jnp.float32,
         jax.random.PRNGKey(3),
     )
     ppgd_cfg = PersistentPGDReconLossConfig(
         coeff=0.5,
-        source_shape="sc",
+        source_shape="bsc",
         optimizer=AdamPGDConfig(
             beta1=0.5,
             beta2=0.99,
@@ -427,25 +463,6 @@ def test_step_trains_and_has_vpd_signature():
             ),
         ),
         n_warmup_steps=n_warmup,
-    )
-    assert ppgd_cfg.coeff is not None
-    state = TrainState(
-        decomposition=Decomposition(components=vu, ci_fn=ci_fn),
-        training=TrainingItem(
-            components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
-            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-            adversaries={
-                ppgd_cfg.type: PersistentAdversary(
-                    sources=src,
-                    opt_state=init_sources_adam_state(src),
-                    state_key=ppgd_cfg.type,
-                    optimizer=ppgd_cfg.optimizer,
-                    n_warmup=ppgd_cfg.n_warmup_steps,
-                )
-            },
-            freq_ema=None,
-            step=jnp.zeros((), jnp.int32),
-        ),
     )
     loss_terms = build_objective(
         (
@@ -459,54 +476,77 @@ def test_step_trains_and_has_vpd_signature():
             StochasticReconSubsetLossConfig(
                 routing=UniformKSubsetRoutingConfig(),
                 coeff=0.5,
-                n_mask_samples=1,
             ),
             ppgd_cfg,
         ),
-        model.site_names,
+        model.sites,
+    )
+    state = TrainState(
+        decomposition=Decomposition(components=vu, ci_fn=ci_fn),
+        training=PDTrainingState(
+            frequency=BatchFrequency(),
+            objective=loss_terms,
+            components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
+            ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
+            adversaries={
+                ppgd_cfg.type: PersistentAdversary(
+                    sources=src,
+                    opt_state=init_sources_adam_state(src),
+                    state_key=ppgd_cfg.type,
+                    optimizer=ppgd_cfg.optimizer,
+                    n_warmup=ppgd_cfg.n_warmup_steps,
+                )
+            },
+            step=jnp.zeros((), jnp.int32),
+        ),
     )
     placed = PlacedModel(model=model, placement=None)
-    step = make_train_step(
-        model_static=placed,
-        substrate=ForwardSubstrate.of(
-            placed,
-            remat_recon_forwards=True,
-            remat_ci_fn=False,
-            ci_capture_keys=ci_fn.capture_keys,
-            ci_placement=None,
-        ),
-        objective=loss_terms,
-        components_optimizer=opt_vu,
-        ci_fn_optimizer=opt_ci,
-        total_steps=100,
-        faithfulness=faithfulness_loss_for(placed),
+    step = jax.jit(
+        make_train_step(
+            model_static=placed,
+            substrate=ForwardSubstrate.of(
+                placed,
+                remat_recon_forwards=True,
+                remat_ci_fn=False,
+                ci_capture_keys=ci_fn.capture_keys,
+            ),
+            components_optimizer=opt_vu,
+            ci_fn_optimizer=opt_ci,
+            total_steps=100,
+            faithfulness=faithfulness_loss_for(placed),
+        )
     )
 
     tokens = jax.random.randint(jax.random.PRNGKey(4), (2, seq), 0, cfg.vocab_size)
     n_steps = 4
     losses = []
     for i in range(n_steps):
-        state, m = step(placed, state, tokens, jax.random.PRNGKey(100 + i))
+        state, m = step(
+            placed,
+            state,
+            LMBatchWithDocuments.from_unsegmented_sequences(tokens),
+            jax.random.PRNGKey(100 + i),
+        )
         losses.append({k: float(v) for k, v in m.items()})
 
     assert all(jnp.isfinite(jnp.array(list(m.values()))).all() for m in losses)
     assert int(state.training.step) == n_steps
-    # SPEC S13: n_warmup + 1 source-Adam updates per training step, moments persist.
+    # n_warmup + 1 source-Adam updates per training step, moments persist.
     ppgd_adv = state.training.adversaries["PersistentPGDReconLoss"]
     assert isinstance(ppgd_adv.opt_state, SourcesAdamState)
     assert float(ppgd_adv.opt_state.step_count) == n_steps * (n_warmup + 1)
-    # SPEC S15: sources stay projected to [0,1].
+    # Sources stay projected to [0,1].
     for v in jax.tree.leaves(ppgd_adv.sources):
         assert float(v.min()) >= 0.0 and float(v.max()) <= 1.0
-    # SPEC S9: gamma annealed below its 1.0 start by step 4 of 100.
+    # Gamma annealed below its 1.0 start by step 4 of 100.
     assert losses[-1]["gamma_imp"] < 1.0
-    # fp32 masters preserved through updates (SPEC N1).
+    # fp32 masters preserved through updates.
     assert isinstance(state.decomposition.components, ComponentStacks)
     for _, site_components in state.decomposition.components.sites_items():
         assert site_components.V.dtype == jnp.float32
         assert site_components.U.dtype == jnp.float32
-    assert isinstance(state.decomposition.ci_fn, ChunkwiseTransformerCIFn)
-    assert state.decomposition.ci_fn.chunks.in_proj_w.dtype == jnp.float32
+    backbone = chunkwise_transformer_backbone(state.decomposition.ci_fn)
+    assert backbone.chunks.in_proj_w.dtype == jnp.float32
 
 
 def test_faith_warmup_decreases_faith():
@@ -517,7 +557,7 @@ def test_faith_warmup_decreases_faith():
     )
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     opt = optax.adamw(1e-2, weight_decay=0.0)
-    wstep = make_faith_warmup_step(opt, faithfulness_loss_for(placed))
+    wstep = jax.jit(make_faith_warmup_step(opt, faithfulness_loss_for(placed)))
     ostate = opt.init(eqx.filter(vu, eqx.is_array))
     first_loss: float | None = None
     loss = None
@@ -558,7 +598,14 @@ def test_engine_rejects_ragged_site_sets():
     deltas = {s.name: jnp.ones((b, t)) for s in model.sites}
     prepared = model.prepare_compute_weights(vu, None)
     with pytest.raises(AssertionError, match="partially decomposed"):
-        run_masked(model, prepared, tokens, masks, deltas, None, True, remat=False)
+        run_masked(
+            model,
+            prepared,
+            LMBatchWithDocuments.from_unsegmented_sequences(tokens),
+            MaterializedMasking(component_masks=masks, weight_delta_masks=deltas),
+            remat=False,
+            routes=None,
+        )
 
 
 _DATA_ROOT = Path(env) if (env := os.environ.get("PD_TEST_DATA_ROOT")) else None
@@ -574,24 +621,25 @@ _PRODUCTION_CS = {
 """The current JAX 4-layer Pile reference (`pile_llama_simple_mlp-4L.yaml`)."""
 
 
-@pytest.mark.skipif(_REAL_CACHE_DIR is None, reason="PD_TEST_DATA_ROOT not set")
+@pytest.mark.skipif(
+    _REAL_CACHE_DIR is None or not _REAL_CACHE_DIR.exists(),
+    reason="PD_TEST_DATA_ROOT pretrain cache not available",
+)
 def test_pretrained_target_converts_with_all_layers():
     """`kind: pretrained` LlamaSimpleMLP target specs convert, tiling the simple_mlp
     c-spec over the checkpoint's n_layer (4)."""
-    import yaml
 
     assert _REAL_CACHE_DIR is not None and _DATA_ROOT is not None
 
     from param_decomp.experiments.lm.config import (
         LMExperimentConfig,
         build_experiment_config,
+        resolve_decomposition,
     )
     from param_decomp.experiments.lm.resolved import LlamaSimpleMLPTargetConfig, ResolvedLMData
+    from param_decomp.tests.lm_configs import l18_mlp_raw
 
-    reference_yaml = (
-        Path(__file__).parents[2] / "experiments" / "lm" / "configs" / "llama8b_l18_b128_cmp32.yaml"
-    )
-    raw = yaml.safe_load(reference_yaml.read_text())
+    raw = l18_mlp_raw()
     raw["target"]["spec"] = {
         "kind": "pretrained",
         "model_class": (
@@ -603,14 +651,15 @@ def test_pretrained_target_converts_with_all_layers():
         "kind": "simple_mlp",
         "layers": {"kind": "all"},
         "cs": dict(_PRODUCTION_CS),
-        "initialization": "neuron_aligned",
+        "initialization": "nonlinearity_aligned",
     }
 
-    cfg = build_experiment_config(LMExperimentConfig(**raw), "p-00000000", _DATA_ROOT)
+    authored = LMExperimentConfig(**raw)
+    cfg = build_experiment_config(authored, "p-00000000", _DATA_ROOT)
     target = cfg.target
     assert isinstance(target, LlamaSimpleMLPTargetConfig)
     assert target.pretrain_run_path == "goodfire/spd/runs/t-9d2b8f02"
-    assert target.component_initialization == "neuron_aligned"
+    assert target.component_initialization == "nonlinearity_aligned"
     assert len(target.sites) == 4 * 6
     assert target.sites == canonical_site_cs(target.sites)
     by_name = {sc.name: sc.C for sc in target.sites}
@@ -622,10 +671,9 @@ def test_pretrained_target_converts_with_all_layers():
     assert target.sites[0] == SiteC("h.0.attn.q_proj", 768)
     loss_terms = build_objective(
         cfg.pd.loss_metrics,
-        tuple(sc.name for sc in target.sites),
+        resolve_decomposition(authored.target, authored.decomposition, _DATA_ROOT).site_specs,
     )
     (stoch_term,) = [t for t in loss_terms.recon if t.name == "StochasticReconSubsetLoss"]
     assert isinstance(stoch_term.sources, StochasticSources)
-    assert stoch_term.uses_weight_deltas
     assert isinstance(cfg.data, ResolvedLMData)
-    assert cfg.data.dir.name == "fineweb_llama_tok_2048"
+    assert cfg.data.dir.name == "fineweb350bt_llama3_docs512_r9bb295dd_seed0_train48_v2"

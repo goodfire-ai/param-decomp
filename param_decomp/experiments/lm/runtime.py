@@ -35,6 +35,7 @@ from param_decomp.core.configs import (
     ResidentMeshShape,
     SequenceSharding,
 )
+from param_decomp.core.world_size import WorldSize, world_size_from_device_count
 
 TUNED_V2_COMPILER_OPTIONS: Mapping[str, bool | int | str] = MappingProxyType(
     {
@@ -150,7 +151,7 @@ class LaunchEnv(BaseConfig):
     """`XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB` — cap on XLA's pinned host-staging pool
     (allocated on demand)."""
     nccl_debug: str = "WARN"
-    """`NCCL_DEBUG` — overrides the INFO + SUBSYS=ALL default some clusters set, which logs
+    """`NCCL_DEBUG` — overrides an ambient INFO + SUBSYS=ALL default, which logs
     every collective and bloats a run's logs to tens of GB."""
     malloc_arena_max: PositiveInt = 2
     """`MALLOC_ARENA_MAX` — caps glibc malloc arenas to bound host RSS under many threads."""
@@ -187,8 +188,8 @@ class LaunchEnv(BaseConfig):
         validation, so no key is written twice.
 
         `inherited_xla_flags` is the `XLA_FLAGS` the environment already carries: a
-        bootstrap applying this map in-process passes `os.environ.get("XLA_FLAGS")` so a
-        wrapper's exports compose with the config's flags — additively, with a
+        bootstrap applying this map in-process passes `os.environ.get("XLA_FLAGS")` so the
+        caller's exports compose with the config's flags — additively, with a
         conflicting value refused (`_merged_xla_flags`); a rank spawner rendering the map
         into a fresh process passes `None` — the parent machine's env is not the
         rank's."""
@@ -257,7 +258,7 @@ class RuntimeConfig(BaseConfig):
             "ownership (stack ÷replicate, d ÷fsdp, C ÷tp) — the muon-motivated layout "
             "(Newton-Schulz stays node-local); a semantic group whose stack does not "
             "tile ÷replicate refuses at config build (placement.from_config, "
-            "pre-submission for a submitted run) — there is no fallback; "
+            "during validation before execution) — there is no fallback; "
             "`zero1-replicated-resident` = `zero1` masters with the bf16 working copy "
             "RESIDENT whole (÷tp only — classic ZeRO-1: the resident rows equal the "
             "operand rows, so the once-per-step entry gather is the only weight "
@@ -271,18 +272,20 @@ class RuntimeConfig(BaseConfig):
             "÷data place any stack length, owner masters `{stack: data, expert: tp}` "
             "rest whole blocks per device — the stacked-muon pairing, faithfulness "
             "fully rank-local; stacks must tile ÷data) — binding only site sets that "
-            "hold expert-blocked groups. "
+            "hold expert-blocked groups; `zero1-replicated-resident-moe-replicated-ns` = "
+            "the zero1 twin with every Newton-Schulz staging row replicated, so stacks too "
+            "short to tile ÷data still stage under muon. "
             "The `*-replicated-resident*` presets run on the "
             "two-axis (data, tp) mesh — residency leaves fsdp nothing to shard, so the "
             "axis does not exist and the run spells `mesh: {data: D, tp: T}`; "
             "`ddp` = fully replicated. Or an explicit `PlacementTableConfig` table (`components: "
             "{optimizer_state, compute_weights, faithfulness_weights, "
-            "faithfulness_deltas, operands}`, per-CI-weight-family "
-            "`{optimizer_state, compute_weights, operands}` rows, `activations: "
+            "faithfulness_deltas, operands, ns_compute}`, `activations: "
             "{external, component}`, and the frozen-`target` role rows, each row a "
-            "semantic-axis -> mesh-axes rule; list order is "
-            "semantics). Same math under every value — layouts differ only by float "
-            "reassociation (SPEC D4)."
+            "semantic-axis -> mesh-axes rule, list order being semantics; plus `ci_fn: "
+            "<preset>`, the preset whose rows the CI architecture takes — CI rows are "
+            "architecture-owned, never authored). Same math under every value — layouts "
+            "differ only by float reassociation."
         ),
     )
     sequence_sharding: SequenceSharding = Field(
@@ -297,7 +300,7 @@ class RuntimeConfig(BaseConfig):
             "forwards, CI-fn taps and the output edge keep the replicated residual. "
             "Sequence length must tile tp; only targets implementing it accept it "
             "(qwen36_moe). Same math either way — a resharding, so layouts differ only "
-            "by float reassociation (SPEC D4)."
+            "by float reassociation."
         ),
     )
     remat_recon_forwards: bool = Field(
@@ -314,10 +317,11 @@ class RuntimeConfig(BaseConfig):
     remat_ci_fn: bool = Field(
         default=False,
         description=(
-            "JAX trainer memory/compute trade: rematerialize the CI-fn forward "
-            "(recompute it in the backward instead of storing its activations). The "
-            "CI-fn activations scale with batch, so this is the main lever for larger "
-            "batch on big targets. Compute substrate knob, no algorithm effect."
+            "Checkpoint policy between transformer CI chunks: True recomputes chunk "
+            "activations (`nothing_saveable`); False permits saving activation dots "
+            "(`dots_saveable`). Transformer blocks within each chunk are always "
+            "checkpointed individually to bound backward temporaries. Compute "
+            "substrate knob, no algorithm effect."
         ),
     )
     compiler_options: (
@@ -429,9 +433,15 @@ class RuntimeConfig(BaseConfig):
     `nsys` (machine-specific executable resolution stays outside the library; the profiler
     and its version remain pinned here)."""
 
+    @field_validator("mesh")
+    @classmethod
+    def _mesh_has_supported_world_size(cls, mesh: MeshShape) -> MeshShape:
+        world_size_from_device_count(mesh.world_size)
+        return mesh
+
     @property
-    def world_size(self) -> int:
-        return self.mesh.world_size
+    def world_size(self) -> WorldSize:
+        return world_size_from_device_count(self.mesh.world_size)
 
     @property
     def data_parallel_size(self) -> int:

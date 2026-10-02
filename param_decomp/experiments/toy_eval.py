@@ -7,6 +7,7 @@ read the toy's single-feature CI probe.
 
 from collections.abc import Callable
 
+import numpy as np
 from jax.sharding import Mesh
 from jaxtyping import Array
 
@@ -16,17 +17,18 @@ from param_decomp.core.configs import (
     CIHistogramsConfig,
     CIMeanPerComponentConfig,
     ComponentActivationDensityConfig,
+    EvalPGDReconLossConfig,
     IdentityCIErrorConfig,
     PDConfig,
     PermutedCIPlotsConfig,
-    PGDReconLossConfig,
+    SlowPGDReconLossConfig,
     UVPlotsConfig,
 )
 from param_decomp.core.eval_schedule import EvalSchedule
 from param_decomp.core.metrics import LogRecord
-from param_decomp.core.model import CaptureKeys, PlacedModel
-from param_decomp.core.run import EvalInvocation, PassOperation
-from param_decomp.core.train import TrainState
+from param_decomp.core.model import CaptureKeys, ComponentActivations, PlacedModel
+from param_decomp.core.run import EvalInvocation, StandaloneOperation, StandaloneOperationPlan
+from param_decomp.core.train import Decomposition
 from param_decomp.experiments import toy_uv_eval
 from param_decomp.experiments.eval_config import EvalConfig, schedule_for
 from param_decomp.experiments.fast_eval_operations import (
@@ -36,52 +38,67 @@ from param_decomp.experiments.fast_eval_operations import (
 from param_decomp.experiments.lm.eval_config import (
     ArithmeticCIGridConfig,
     CEandKLLossesConfig,
+    CIActiveCountsPerPositionConfig,
     CIMaskedAttnPatternsReconLossConfig,
+    RouterDivergenceConfig,
     StochasticAttnPatternsReconLossConfig,
     WellTemperednessConfig,
 )
+from param_decomp.experiments.toy_config import ToyCIFnArch
 
-type ToyRun[TargetT: TargetSites] = BuiltRun[None, TargetT, PDConfig]
-type ProbeCI = Callable[[TrainState], dict[str, Array]]
+type ToyRun[TargetT: TargetSites] = BuiltRun[None, TargetT, PDConfig, ToyCIFnArch]
+type ProbeCI[Conditioning] = Callable[[Decomposition[Conditioning]], dict[str, Array]]
 
 
-def _make_uv_plots_operation[Out](
+def _make_uv_plots_operation[
+    TargetIn,
+    Out,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](
     metric: UVPlotsConfig,
     schedule: EvalSchedule,
-    model: PlacedModel[Out],
-    probe_ci: ProbeCI,
+    model: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
+    probe_ci: ProbeCI[Conditioning],
     wandb_configured: bool,
-) -> PassOperation[EvalInvocation]:
+) -> StandaloneOperationPlan[EvalInvocation[Conditioning]]:
     assert wandb_configured, "UVPlots requires a configured wandb transport"
     spec = toy_uv_eval.toy_uv_spec(model, metric)
 
-    def run(context: EvalInvocation) -> LogRecord:
+    def run(context: EvalInvocation[Conditioning]) -> LogRecord:
         return toy_uv_eval.render_uv_metric(
             spec,
-            dict(context.state.decomposition.components.sites_items()),
-            probe_ci(context.state),
+            context.decomposition.components,
+            probe_ci(context.decomposition),
         )
 
-    return PassOperation(schedule, run)
+    return StandaloneOperationPlan(lambda _example: StandaloneOperation(schedule, run))
 
 
-def make_toy_evaluation_operations[Out](
+def make_toy_evaluation_operations[
+    TargetIn,
+    Out,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](
     eval_config: EvalConfig,
     seed: int,
     compiler_options: dict[str, bool | int | str],
-    model: PlacedModel[Out],
+    model: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
     ci_capture_keys: CaptureKeys,
     mesh: Mesh,
-    sample_eval_batch: Callable[[int], Array],
-    probe_ci: ProbeCI,
+    sample_eval_batch: Callable[[np.uint32], TargetIn],
+    probe_ci: ProbeCI[Conditioning],
     wandb_configured: bool,
-) -> tuple[PassOperation[EvalInvocation], ...]:
+) -> tuple[StandaloneOperationPlan[EvalInvocation[Conditioning]], ...]:
     """Exhaustively bind each authored toy metric to one executable operation."""
-    operations: list[PassOperation[EvalInvocation]] = []
+    operations: list[StandaloneOperationPlan[EvalInvocation[Conditioning]]] = []
     for metric in eval_config.metrics:
         schedule = schedule_for(metric, eval_config)
         match metric:
-            case PGDReconLossConfig():
+            case EvalPGDReconLossConfig() | SlowPGDReconLossConfig():
                 operation = make_fresh_pgd_operation(
                     metric,
                     eval_config,
@@ -121,12 +138,14 @@ def make_toy_evaluation_operations[Out](
                 )
             case (
                 ArithmeticCIGridConfig()
+                | CIActiveCountsPerPositionConfig()
                 | CIHistogramsConfig()
                 | CIMaskedAttnPatternsReconLossConfig()
                 | CIMeanPerComponentConfig()
                 | ComponentActivationDensityConfig()
                 | IdentityCIErrorConfig()
                 | PermutedCIPlotsConfig()
+                | RouterDivergenceConfig()
                 | StochasticAttnPatternsReconLossConfig()
             ):
                 raise AssertionError(f"eval metric {metric.type!r} has no toy binding")

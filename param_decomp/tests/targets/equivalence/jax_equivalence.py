@@ -7,8 +7,8 @@ masks / sources / routing from the fixtures (no RNG). Compares to
 `torch_reference.json` at fp32 tolerance.
 
 Term wiring (all `param_decomp.core.train` + the `DecomposedModel` boundary):
-  * ppgd  — `masks_from_sources` + `run_masked` over every site; `kl_per_position`
-            vs `model.clean_output` (the frozen path, SPEC S3).
+  * ppgd  — `materialize_masking` + `run_masked` over every site; `kl_per_position`
+            vs `model.clean_output` (the frozen path).
 
 The torch golden's `stoch` term drove partial per-chunk masked forwards — a capability
 the masked forward no longer has (masks must cover every site) — so it is not compared.
@@ -28,23 +28,26 @@ jax.config.update("jax_enable_x64", False)
 
 from param_decomp.core.adversary import SiteSource  # noqa: E402
 from param_decomp.core.components import component_stacks_from_sites  # noqa: E402
-from param_decomp.core.masking import masks_from_sources  # noqa: E402
+from param_decomp.core.masking import materialize_masking, source_masking  # noqa: E402
+from param_decomp.lm.batch import LMBatchWithDocuments  # noqa: E402
 from param_decomp.target_ports.llama import LlamaConfig  # noqa: E402
-from param_decomp.targets.glu_transformer import (  # noqa: E402
-    MLP_KINDS,
-    FrozenAttn,
-    GatedMLP,
-    GLULayer,
-    build_decomposed_lm,
-    glu_site_specs,
-    mlp_family_site_cs,
-    site_name,
-)
+from param_decomp.targets.lm_output import MaterializedOutputEdge  # noqa: E402
 from param_decomp.targets.losses import kl_per_position  # noqa: E402
 from param_decomp.targets.testing import (  # noqa: E402
     materialized_logits,
     run_clean,
     run_masked,
+)
+from param_decomp.targets.transformer import (  # noqa: E402
+    GLU_MLP_KINDS,
+    MLP_KINDS,
+    FrozenAttn,
+    GatedMLP,
+    TransformerLayer,
+    build_decomposed_lm,
+    glu_site_specs,
+    mlp_family_site_cs,
+    site_name,
 )
 
 HERE = Path(__file__).resolve().parent
@@ -74,7 +77,7 @@ def _zero_attn(d: int, _di: int) -> FrozenAttn:
     return FrozenAttn(
         wq=z(qd, d), wk=z(kvd, d), wv=z(kvd, d), wo=z(d, qd),
         n_head=n_head, n_kv_head=n_kv_head, head_dim=head_dim, n_rep=n_head // n_kv_head,
-        implementation="auto",
+        implementation="xla",
     )  # fmt: skip
 
 
@@ -88,20 +91,25 @@ def _build(f: dict[str, np.ndarray]):
     C = int(f[f"Vg_0"].shape[-1])  # noqa: F541
 
     decomp_layers = [
-        GLULayer(
+        TransformerLayer(
             ln1=a(f"ln1_{i}"),
             ln2=a(f"ln2_{i}"),
             attn=_zero_attn(d, di),
-            mlp=GatedMLP(Wg=a(f"Wg_{i}"), Wu=a(f"Wu_{i}"), Wd=a(f"Wd_{i}")),
+            mlp=GatedMLP(kinds=GLU_MLP_KINDS, Wg=a(f"Wg_{i}"), Wu=a(f"Wu_{i}"), Wd=a(f"Wd_{i}")),
         )
         for i in range(n_layers)
     ]
     tail = [
-        GLULayer(
+        TransformerLayer(
             ln1=a(f"tail_ln1_{j}"),
             ln2=a(f"tail_ln2_{j}"),
             attn=_zero_attn(d, di),
-            mlp=GatedMLP(Wg=a(f"tail_Wg_{j}"), Wu=a(f"tail_Wu_{j}"), Wd=a(f"tail_Wd_{j}")),
+            mlp=GatedMLP(
+                kinds=GLU_MLP_KINDS,
+                Wg=a(f"tail_Wg_{j}"),
+                Wu=a(f"tail_Wu_{j}"),
+                Wd=a(f"tail_Wd_{j}"),
+            ),
         )
         for j in range(n_tail)
     ]
@@ -137,6 +145,7 @@ def _build(f: dict[str, np.ndarray]):
         inv_freq=inv_freq,
         cfg=cfg,
         sites=glu_site_specs(cfg, mlp_family_site_cs(0, n_layers - 1, C)),
+        output_edge=MaterializedOutputEdge(),
     )
     return model, vu, n_layers
 
@@ -147,7 +156,11 @@ def compute_jax_terms(f: dict[str, np.ndarray]) -> dict[str, float]:
     model, vu, n_layers = _build(f)
     resid = jnp.asarray(f["resid"], dtype=FP)
 
-    clean = jax.lax.stop_gradient(materialized_logits(run_clean(model, resid)))
+    clean = jax.lax.stop_gradient(
+        materialized_logits(
+            run_clean(model, LMBatchWithDocuments.from_unsegmented_sequences(resid))
+        )
+    )
 
     # fixtures key CI per kind as (B, T, L, C); the trainer keys per site.
     def per_site(prefix: str) -> dict[str, jnp.ndarray]:
@@ -161,17 +174,15 @@ def compute_jax_terms(f: dict[str, np.ndarray]) -> dict[str, float]:
         site: split_packed_fixture(jnp.asarray(packed))
         for site, packed in per_site("ppgd_source").items()
     }
-    masks, delta_masks = masks_from_sources(ci_lower, source)
+    masking = materialize_masking(source_masking(ci_lower, source))
     pred = materialized_logits(
         run_masked(
             model,
             model.prepare_compute_weights(vu, None),
-            resid,
-            masks,
-            delta_masks,
-            None,
-            True,
+            LMBatchWithDocuments.from_unsegmented_sequences(resid),
+            masking,
             remat=False,
+            routes=None,
         )
     )
     ppgd = float(kl_per_position(pred, clean))

@@ -2,7 +2,7 @@
 positionless core.
 
 Covers the `DecomposedModel` contract (mask=1 identity reconstructs the clean forward,
-MSE recon, residual accumulation), the reused MLP CI fn, the full SPEC step
+MSE recon, residual accumulation), the reused MLP CI fn, the full training step
 trains, and the ground-truth target-CI eval — including an end-to-end pretrain →
 decompose → recovers-identity-structure validation on a tiny single-layer ResidMLP.
 """
@@ -14,15 +14,18 @@ import jax
 import jax.numpy as jnp
 import optax
 import pytest
+from jaxtyping import Array
 
-from param_decomp.core.ci_fn import (
-    CI,
-    GlobalMLPCIArch,
-    LayerwiseMLPCIArch,
-    TapSpec,
+from param_decomp.core.ci_fn.implementations.global_mlp import (
+    GlobalMLPCIFnArch,
     init_global_mlp_ci_fn,
+)
+from param_decomp.core.ci_fn.implementations.layerwise_mlp import (
+    LayerwiseMLPCIFn,
+    LayerwiseMLPCIFnArch,
     init_layerwise_mlp_ci_fn,
 )
+from param_decomp.core.ci_fn.interface import CI, TapSpec
 from param_decomp.core.components import (
     ComponentStacks,
     SiteC,
@@ -31,22 +34,27 @@ from param_decomp.core.components import (
     require_full_emission,
 )
 from param_decomp.core.configs import (
+    AdamWOptimizerConfig,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     StochasticReconLossConfig,
     StochasticReconSubsetLossConfig,
 )
 from param_decomp.core.faithfulness import faithfulness_loss_for
-from param_decomp.core.model import PlacedModel, site_weight_delta
+from param_decomp.core.losses import BatchFrequency
+from param_decomp.core.model import MaterializedMasking, PlacedModel, site_weight_delta
 from param_decomp.core.nonlinearity import (
     Neurons,
+    NonlinearityAlignment,
 )
 from param_decomp.core.objective import build_objective
+from param_decomp.core.run_state import _adamw_optimizer
 from param_decomp.core.schedule import Knot, ScheduleConfig
 from param_decomp.core.train import (
     Decomposition,
     ForwardSubstrate,
-    TrainingItem,
+    PDState,
+    PDTrainingState,
     TrainState,
     make_faith_warmup_step,
     make_train_step,
@@ -71,6 +79,7 @@ from param_decomp.targets.resid_mlp import (
     site_specs,
 )
 from param_decomp.targets.testing import capture_clean, run_clean, run_masked
+from param_decomp.tests.sequence import unsegmented_sequence_layout
 
 
 def _tiny_cfg(n_layers: int = 1) -> ResidMLPConfig:
@@ -115,9 +124,9 @@ def test_canonical_order_and_dims():
     # right-mult orientation: mlp_in (d_embed -> d_mlp), mlp_out (d_mlp -> d_embed)
     assert dims["layers.0.mlp_in"] == (5, 8, 6)
     assert dims["layers.0.mlp_out"] == (8, 5, 7)
-    partitions = {s.name: s.nonlinearity_partition for s in specs}
-    assert partitions["layers.0.mlp_in"] == Neurons()
-    assert partitions["layers.0.mlp_out"] is None
+    alignments = {s.name: s.alignment for s in specs}
+    assert alignments["layers.0.mlp_in"] == NonlinearityAlignment("output", Neurons())
+    assert alignments["layers.0.mlp_out"] == NonlinearityAlignment("input", Neurons())
 
 
 def test_site_specs_requires_both_sites_per_layer():
@@ -132,7 +141,7 @@ def test_positionless_and_ci_fn_position_kind_match():
     target = init_resid_mlp_target(cfg, jax.random.PRNGKey(0))
     model = resid_mlp_decomposed_model(cfg, target, sites)
     ci_fn = init_layerwise_mlp_ci_fn(
-        LayerwiseMLPCIArch(
+        LayerwiseMLPCIFnArch(
             hidden_dims=(16,),
             has_position_axis=False,
             input_names=tuple(s.name for s in sites),
@@ -156,14 +165,27 @@ def test_clean_path_and_masked_identity():
     )
     resid = x @ target.W_E
 
-    clean = run_clean(model, resid)
+    clean_result = model.clean_forward(resid, placement=None)
+    captured_result = model.clean_forward(
+        resid, frozenset(model.site_output_keys(model.site_names)), placement=None
+    )
+    assert jnp.array_equal(clean_result.conditioning, resid)
+    assert jnp.array_equal(captured_result.conditioning, resid)
+    clean = clean_result.output
     assert clean.shape == (b, cfg.n_features)
 
     # Masks=1, delta=1 reconstructs the frozen path up to decomposition rounding.
     names = model.site_names
     ones_masks = {s.name: jnp.ones((b, s.C)) for s in model.sites}
     ones_delta = {s: jnp.ones((b,)) for s in names}
-    full = run_masked(model, vu, resid, ones_masks, ones_delta, None, True, remat=False)
+    full = run_masked(
+        model,
+        vu,
+        clean_result.conditioning,
+        MaterializedMasking(component_masks=ones_masks, weight_delta_masks=ones_delta),
+        remat=False,
+        routes=None,
+    )
     assert jnp.allclose(clean, full, atol=1e-4), "mask=1 identity drifted"
 
     # site_inputs: mlp_in reads the residual entering its layer, mlp_out the post-act hidden.
@@ -180,7 +202,7 @@ def test_clean_path_and_masked_identity():
     assert site_weight_delta(deltas, vu, "layers.0.mlp_out").shape == (cfg.d_embed, cfg.d_mlp)
     assert all(v.dtype == jnp.float32 for v in deltas.values())
     target_sq_norms = model.target_weight_sq_norms()
-    for name, group, slot in vu.site_slots:
+    for name, group, slot in vu.site_stack_indices:
         site = vu.site(name)
         delta = site_weight_delta(deltas, vu, name)
         target_weight = delta + (site.V.astype(jnp.float32) @ site.U.astype(jnp.float32)).T
@@ -205,7 +227,14 @@ def test_zero_masking_one_site_changes_output():
     fill = {s.name: 0.0 if s.name == ablated_site else 1.0 for s in sites}
     masks = {s.name: jnp.full((b, s.C), fill[s.name]) for s in sites}
     delta_masks = {s.name: jnp.full((b,), fill[s.name]) for s in sites}
-    ablated = run_masked(model, vu, resid, masks, delta_masks, None, True, remat=False)
+    ablated = run_masked(
+        model,
+        vu,
+        resid,
+        MaterializedMasking(component_masks=masks, weight_delta_masks=delta_masks),
+        remat=False,
+        routes=None,
+    )
     assert not jnp.allclose(clean, ablated, atol=1e-5), "ablating mlp_out did nothing"
 
 
@@ -231,7 +260,7 @@ def test_mlp_ci_fn_per_site_preactivations_and_values():
     target = init_resid_mlp_target(cfg, jax.random.PRNGKey(0))
     model = resid_mlp_decomposed_model(cfg, target, sites)
     ci_fn = init_layerwise_mlp_ci_fn(
-        LayerwiseMLPCIArch(
+        LayerwiseMLPCIFnArch(
             hidden_dims=(16,),
             has_position_axis=False,
             input_names=tuple(s.name for s in sites),
@@ -244,7 +273,10 @@ def test_mlp_ci_fn_per_site_preactivations_and_values():
         jax.random.PRNGKey(2), b, cfg.n_features, 0.3, "at_least_zero_active"
     )
     inputs = capture_clean(model, x @ target.W_E, ci_fn.capture_keys)
-    values = ci_fn(inputs, remat=False, placement=None)
+    components = init_component_stacks(sites, jax.random.PRNGKey(1))
+    values = ci_fn(
+        inputs, None, components, sequence=unsegmented_sequence_layout(inputs), remat=False
+    )
     assert isinstance(values, CI)
     assert require_full_emission(values.lower["layers.0.mlp_in"]).shape == (b, 6)
     assert require_full_emission(values.lower["layers.0.mlp_out"]).shape == (b, 7)
@@ -283,12 +315,14 @@ def _loss_metrics():
 def _make_state_and_step(
     cfg: ResidMLPConfig, target: ResidMLPTarget, sites: tuple[SiteSpec, ...], total_steps: int
 ) -> tuple[
-    PlacedModel[jax.Array], TrainState, Callable[..., tuple[TrainState, dict[str, jax.Array]]]
+    PlacedModel[jax.Array, jax.Array, ComponentStacks, jax.Array, MaterializedMasking],
+    PDState[Array],
+    Callable[..., tuple[PDState[Array], dict[str, jax.Array]]],
 ]:
     model = PlacedModel(model=resid_mlp_decomposed_model(cfg, target, sites), placement=None)
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = init_layerwise_mlp_ci_fn(
-        LayerwiseMLPCIArch(
+        LayerwiseMLPCIFnArch(
             hidden_dims=(16,),
             has_position_axis=False,
             input_names=tuple(s.name for s in sites),
@@ -296,33 +330,36 @@ def _make_state_and_step(
         sites,
         jax.random.PRNGKey(2),
     )
-    opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
-    opt_ci = optax.adamw(1e-3, weight_decay=0.0)
+    opt_vu = _adamw_optimizer(
+        AdamWOptimizerConfig(lr_schedule=ScheduleConfig.constant(1e-3), grad_clip_norm=0.01), 1
+    )
+    opt_ci = _adamw_optimizer(AdamWOptimizerConfig(lr_schedule=ScheduleConfig.constant(1e-3)), 1)
+    loss_terms = build_objective(_loss_metrics(), model.model.sites)
     state = TrainState(
-        decomposition=Decomposition(components=vu, ci_fn=ci_fn),
-        training=TrainingItem(
+        decomposition=Decomposition[Array](components=vu, ci_fn=ci_fn),
+        training=PDTrainingState(
+            frequency=BatchFrequency(),
+            objective=loss_terms,
             components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
             ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
             adversaries={},
-            freq_ema=None,
             step=jnp.zeros((), jnp.int32),
         ),
     )
-    loss_terms = build_objective(_loss_metrics(), model.site_names)
-    step = make_train_step(
-        model_static=model,
-        substrate=ForwardSubstrate.of(
-            model,
-            remat_recon_forwards=False,
-            remat_ci_fn=False,
-            ci_capture_keys=ci_fn.capture_keys,
-            ci_placement=None,
-        ),
-        objective=loss_terms,
-        components_optimizer=opt_vu,
-        ci_fn_optimizer=opt_ci,
-        total_steps=total_steps,
-        faithfulness=faithfulness_loss_for(model),
+    step = jax.jit(
+        make_train_step(
+            model_static=model,
+            substrate=ForwardSubstrate.of(
+                model,
+                remat_recon_forwards=False,
+                remat_ci_fn=False,
+                ci_capture_keys=ci_fn.capture_keys,
+            ),
+            components_optimizer=opt_vu,
+            ci_fn_optimizer=opt_ci,
+            total_steps=total_steps,
+            faithfulness=faithfulness_loss_for(model),
+        )
     )
     return model, state, step
 
@@ -359,7 +396,7 @@ def test_faith_warmup_decreases_faith():
     model = PlacedModel(model=resid_mlp_decomposed_model(cfg, target, sites), placement=None)
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     opt = optax.adamw(1e-2, weight_decay=0.0)
-    wstep = make_faith_warmup_step(opt, faithfulness_loss_for(model))
+    wstep = jax.jit(make_faith_warmup_step(opt, faithfulness_loss_for(model)))
     ostate = opt.init(eqx.filter(vu, eqx.is_array))
     first_loss = None
     loss = None
@@ -416,14 +453,14 @@ def _recovery_loss_metrics():
 
 
 def _faith_warmed_state(
-    model: PlacedModel[jax.Array],
+    model: PlacedModel[jax.Array, jax.Array, ComponentStacks, jax.Array, MaterializedMasking],
     sites: tuple[SiteSpec, ...],
     total_steps: int,
     warmup_steps: int,
-) -> tuple[TrainState, Callable[..., tuple[TrainState, dict[str, jax.Array]]]]:
+) -> tuple[PDState[Array], Callable[..., tuple[PDState[Array], dict[str, jax.Array]]]]:
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     ci_fn = init_layerwise_mlp_ci_fn(
-        LayerwiseMLPCIArch(
+        LayerwiseMLPCIFnArch(
             hidden_dims=(16,),
             has_position_axis=False,
             input_names=tuple(s.name for s in sites),
@@ -432,37 +469,40 @@ def _faith_warmed_state(
         jax.random.PRNGKey(2),
     )
     warm_opt = optax.adamw(1e-2, weight_decay=0.0)
-    wstep = make_faith_warmup_step(warm_opt, faithfulness_loss_for(model))
+    wstep = jax.jit(make_faith_warmup_step(warm_opt, faithfulness_loss_for(model)))
     warm_state = warm_opt.init(eqx.filter(vu, eqx.is_array))
     for _ in range(warmup_steps):
         vu, warm_state, _ = wstep(model, vu, warm_state)
-    opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
-    opt_ci = optax.adamw(1e-3, weight_decay=0.0)
+    opt_vu = _adamw_optimizer(
+        AdamWOptimizerConfig(lr_schedule=ScheduleConfig.constant(1e-3), grad_clip_norm=0.01), 1
+    )
+    opt_ci = _adamw_optimizer(AdamWOptimizerConfig(lr_schedule=ScheduleConfig.constant(1e-3)), 1)
+    loss_terms = build_objective(_recovery_loss_metrics(), model.model.sites)
     state = TrainState(
-        decomposition=Decomposition(components=vu, ci_fn=ci_fn),
-        training=TrainingItem(
+        decomposition=Decomposition[Array](components=vu, ci_fn=ci_fn),
+        training=PDTrainingState(
+            frequency=BatchFrequency(),
+            objective=loss_terms,
             components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
             ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
             adversaries={},
-            freq_ema=None,
             step=jnp.zeros((), jnp.int32),
         ),
     )
-    loss_terms = build_objective(_recovery_loss_metrics(), model.site_names)
-    step = make_train_step(
-        model_static=model,
-        substrate=ForwardSubstrate.of(
-            model,
-            remat_recon_forwards=False,
-            remat_ci_fn=False,
-            ci_capture_keys=ci_fn.capture_keys,
-            ci_placement=None,
-        ),
-        objective=loss_terms,
-        components_optimizer=opt_vu,
-        ci_fn_optimizer=opt_ci,
-        total_steps=total_steps,
-        faithfulness=faithfulness_loss_for(model),
+    step = jax.jit(
+        make_train_step(
+            model_static=model,
+            substrate=ForwardSubstrate.of(
+                model,
+                remat_recon_forwards=False,
+                remat_ci_fn=False,
+                ci_capture_keys=ci_fn.capture_keys,
+            ),
+            components_optimizer=opt_vu,
+            ci_fn_optimizer=opt_ci,
+            total_steps=total_steps,
+            faithfulness=faithfulness_loss_for(model),
+        )
     )
     return state, step
 
@@ -518,7 +558,13 @@ def test_end_to_end_pretrain_decompose_recovers_identity():
         totals.append(float(m["total"]))
     assert totals[-1] < totals[0], (totals[0], totals[-1])
 
-    ci_lower = single_feature_ci(model, state.decomposition.ci_fn, n_features=5)
+    assert isinstance(state.decomposition.ci_fn, LayerwiseMLPCIFn)
+    ci_lower, _ = single_feature_ci(
+        model,
+        state.decomposition.ci_fn,
+        state.decomposition.components,
+        n_features=5,
+    )
     err = identity_ci_error(ci_lower["layers.0.mlp_in"], tolerance=0.2)
     assert err == 0, (
         f"mlp_in did not recover identity (err={err}):\n{jnp.round(ci_lower['layers.0.mlp_in'], 2)}"
@@ -534,7 +580,7 @@ def test_global_ci_fn_shapes_and_range():
     target = init_resid_mlp_target(cfg, jax.random.PRNGKey(0))
     model = resid_mlp_decomposed_model(cfg, target, sites)
     ci_fn = init_global_mlp_ci_fn(
-        GlobalMLPCIArch(
+        GlobalMLPCIFnArch(
             hidden_dims=(32, 24),
             has_position_axis=False,
             input_taps=tuple(TapSpec(key=s.name, width=s.d_in) for s in sites),
@@ -547,8 +593,15 @@ def test_global_ci_fn_shapes_and_range():
     x = sample_sparse_features(
         jax.random.PRNGKey(2), b, cfg.n_features, 0.3, "at_least_zero_active"
     )
+    components = init_component_stacks(sites, jax.random.PRNGKey(1))
     values = ci_fn(
-        capture_clean(model, x @ target.W_E, ci_fn.capture_keys), remat=False, placement=None
+        capture_clean(model, x @ target.W_E, ci_fn.capture_keys),
+        None,
+        components,
+        sequence=unsegmented_sequence_layout(
+            capture_clean(model, x @ target.W_E, ci_fn.capture_keys)
+        ),
+        remat=False,
     )
     assert isinstance(values, CI)
     assert require_full_emission(values.lower["layers.0.mlp_in"]).shape == (b, 6)
@@ -565,7 +618,7 @@ def test_global_ci_fn_concat_split_order_is_canonical():
     cfg = _tiny_cfg(n_layers=2)
     sites = site_specs(cfg, _site_cs(n_layers=2))
     ci_fn = init_global_mlp_ci_fn(
-        GlobalMLPCIArch(
+        GlobalMLPCIFnArch(
             hidden_dims=(40,),
             has_position_axis=False,
             input_taps=tuple(TapSpec(key=s.name, width=s.d_in) for s in sites),
@@ -578,17 +631,32 @@ def test_global_ci_fn_concat_split_order_is_canonical():
         s.name: jax.random.normal(jax.random.fold_in(jax.random.PRNGKey(9), i), (b, s.d_in))
         for i, s in enumerate(sites)
     }
-    base = ci_fn(inputs, remat=False, placement=None)
+    components = init_component_stacks(sites, jax.random.PRNGKey(1))
+    base = ci_fn(
+        inputs, None, components, sequence=unsegmented_sequence_layout(inputs), remat=False
+    )
     reordered = {name: inputs[name] for name in reversed(list(inputs))}
     assert list(reordered) != list(inputs)
-    same = ci_fn(reordered, remat=False, placement=None)
+    same = ci_fn(
+        reordered,
+        None,
+        components,
+        sequence=unsegmented_sequence_layout(reordered),
+        remat=False,
+    )
     for name in inputs:
         assert jnp.array_equal(
             require_full_emission(base.lower[name]), require_full_emission(same.lower[name])
         ), name
     perturbed = dict(inputs)
     perturbed["layers.1.mlp_out"] = perturbed["layers.1.mlp_out"] + 1.0
-    cross = ci_fn(perturbed, remat=False, placement=None)
+    cross = ci_fn(
+        perturbed,
+        None,
+        components,
+        sequence=unsegmented_sequence_layout(perturbed),
+        remat=False,
+    )
     assert not jnp.allclose(
         require_full_emission(cross.lower["layers.0.mlp_in"]),
         require_full_emission(base.lower["layers.0.mlp_in"]),
@@ -616,7 +684,14 @@ def test_three_layer_clean_and_masked_forward():
     assert len(names) == 6  # mlp_in + mlp_out per layer
     ones_masks = {s.name: jnp.ones((b, s.C)) for s in model.sites}
     ones_delta = {s: jnp.ones((b,)) for s in names}
-    full = run_masked(model, vu, resid, ones_masks, ones_delta, None, True, remat=False)
+    full = run_masked(
+        model,
+        vu,
+        resid,
+        MaterializedMasking(component_masks=ones_masks, weight_delta_masks=ones_delta),
+        remat=False,
+        routes=None,
+    )
     assert jnp.allclose(clean, full, atol=1e-4)
 
     site_in = site_inputs(target, resid)

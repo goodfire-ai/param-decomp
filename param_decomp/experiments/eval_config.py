@@ -15,11 +15,11 @@ from param_decomp.core.configs import (
     CIHistogramsConfig,
     CIMeanPerComponentConfig,
     ComponentActivationDensityConfig,
-    HiddenActsReconstructionMixin,
+    EvalPGDReconLossConfig,
     IdentityCIErrorConfig,
     LossMetricConfig,
     PermutedCIPlotsConfig,
-    PGDReconLossConfig,
+    ReconstructionAuxiliariesMixin,
     SlowPGDReconLossConfig,
     UVPlotsConfig,
 )
@@ -27,7 +27,9 @@ from param_decomp.core.eval_schedule import EvalSchedule, Every, FirstThenEvery
 from param_decomp.experiments.lm.eval_config import (
     ArithmeticCIGridConfig,
     CEandKLLossesConfig,
+    CIActiveCountsPerPositionConfig,
     CIMaskedAttnPatternsReconLossConfig,
+    RouterDivergenceConfig,
     StochasticAttnPatternsReconLossConfig,
     WellTemperednessConfig,
 )
@@ -35,6 +37,7 @@ from param_decomp.experiments.lm.eval_config import (
 AnyEvalMetricConfig = Annotated[
     ArithmeticCIGridConfig
     | CEandKLLossesConfig
+    | CIActiveCountsPerPositionConfig
     | CIHistogramsConfig
     | CI_L0Config
     | CIMaskedAttnPatternsReconLossConfig
@@ -42,7 +45,8 @@ AnyEvalMetricConfig = Annotated[
     | ComponentActivationDensityConfig
     | IdentityCIErrorConfig
     | PermutedCIPlotsConfig
-    | PGDReconLossConfig
+    | EvalPGDReconLossConfig
+    | RouterDivergenceConfig
     | SlowPGDReconLossConfig
     | StochasticAttnPatternsReconLossConfig
     | UVPlotsConfig
@@ -80,18 +84,15 @@ def validate_eval_metrics(metrics: list[AnyEvalMetricConfig]) -> None:
     identities: list[str] = []
     for metric in metrics:
         if isinstance(metric, LossMetricConfig):
-            assert metric.coeff is None, f"eval metric {metric.type} cannot set training-only coeff"
             identities.append(metric.name or metric.type)
         else:
             identities.append(metric.type)
-        if (
-            isinstance(metric, HiddenActsReconstructionMixin)
-            and metric.hidden_acts_reconstruction is not None
-        ):
-            assert isinstance(metric.hidden_acts_reconstruction.coeff, float), (
-                f"eval metric {metric.type}: hidden_acts_reconstruction.coeff must be a "
-                "constant float — an eval probe has no training step for a schedule to read"
-            )
+        if isinstance(metric, ReconstructionAuxiliariesMixin):
+            for auxiliary in metric.auxiliaries:
+                assert isinstance(auxiliary.coeff, float), (
+                    f"eval metric {metric.type}: {auxiliary.name}.coeff must be a constant float "
+                    "— an eval probe has no training step for a schedule to read"
+                )
     assert len(identities) == len(set(identities)), (
         f"eval.metrics contains metrics sharing a logged identity: {identities}. Give one a "
         "distinct `name` if you meant to run the same metric twice."

@@ -1,11 +1,8 @@
-"""The trace gate is a `python -m` composition root, so it owns its process's import order.
+"""The trace root loads tokamax before Arrow-backed data can register protobuf.
 
-tokamax must load before pyarrow: xprof's C++ static initializer (tokamax's dependency)
-self-deadlocks when pyarrow's bundled protobuf registered first — the guard `run.py` and
-the root conftest carry — and the gate's eval imports reach pyarrow through the LM data
-path while the routed experts import tokamax lazily at trace time. `sys.modules` is
-insertion-ordered, so a fresh interpreter that imports the module records which of the two
-began loading first. A subprocess, because this test process has both loaded already."""
+The probe starts a fresh interpreter because this test process already imported both
+libraries. Data loading is a separate import, independent of trace_check's dependencies.
+"""
 
 import os
 import subprocess
@@ -16,9 +13,12 @@ import sys
 
 import param_decomp.experiments.lm.trace_check
 
+assert "tokamax" in sys.modules, "the trace gate must import tokamax"
+
+import param_decomp.lm.batch_data
+
 loaded = list(sys.modules)
-assert "tokamax" in loaded, "the trace gate must import tokamax"
-assert "pyarrow" in loaded, "the trace gate's eval imports reach pyarrow"
+assert "pyarrow" in loaded, "the batch loader must import pyarrow"
 assert loaded.index("tokamax") < loaded.index("pyarrow"), (
     loaded.index("tokamax"),
     loaded.index("pyarrow"),
@@ -32,5 +32,6 @@ def test_trace_check_imports_tokamax_before_pyarrow() -> None:
         env=os.environ | {"JAX_PLATFORMS": "cpu"},
         capture_output=True,
         text=True,
+        timeout=60,
     )
     assert result.returncode == 0, result.stderr[-3000:]

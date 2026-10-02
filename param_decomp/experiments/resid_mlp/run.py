@@ -7,12 +7,12 @@ scratch in-process (the `act_fn(coeffs·x) + x` read-off objective), then decomp
 the same engine the LM uses, validating via the ground-truth identity-CI metric.
 
 These toys train in seconds; the runner is synchronous, on CPU, in the main venv
-(no SLURM / `param_decomp.core.run` / CUDA). It mints its own `p-<8hex>` run id;
+(no scheduler integration, `param_decomp.core.run`, or CUDA). It mints its own `p-<8hex>` run id;
 pass `--run-id` to resume an existing run from its checkpoints.
 """
 
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Never
 
 import equinox as eqx
 import fire
@@ -22,12 +22,13 @@ import yaml
 from jax import random
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
+from jaxtyping import Array
 
 from param_decomp.core import placement
 from param_decomp.core.built_run import BuiltRun
-from param_decomp.core.ci_fn import CIFn
-from param_decomp.core.components import SiteC, nonlinearity_partitions, require_full_emission
+from param_decomp.core.components import SiteC, nonlinearity_partitions
 from param_decomp.core.eval_schedule import Every
+from param_decomp.core.init_placed import seeded_ci_fn_initializer
 from param_decomp.core.log import setup_logger
 from param_decomp.core.metrics import LogRecord, MetricValue
 from param_decomp.core.model import PlacedModel, Positionless
@@ -40,8 +41,9 @@ from param_decomp.core.objective import build_objective
 from param_decomp.core.run import (
     EvalInvocation,
     Evaluation,
+    EvaluationPlan,
     MetricsSink,
-    PassOperation,
+    StandaloneOperation,
     install_sigterm_flag,
     no_batch_contexts,
     run_decomposition_training,
@@ -55,7 +57,7 @@ from param_decomp.experiments.config import (
 )
 from param_decomp.experiments.eval_config import EvalConfig
 from param_decomp.experiments.resid_mlp.config import ResidMLPExperimentConfig
-from param_decomp.experiments.toy_config import build_toy_ci_arch
+from param_decomp.experiments.toy_config import build_toy_ci_fn_arch
 from param_decomp.experiments.toy_eval import ToyRun, make_toy_evaluation_operations
 from param_decomp.infra.run_files import generate_run_id
 from param_decomp.targets import resid_mlp
@@ -72,10 +74,6 @@ def build_resid_mlp_built_run(
     site_cs = resid_mlp.canonical_site_cs(
         tuple(SiteC(s.name, s.C) for s in cfg.decomposition.sites.sites)
     )
-    build_objective(
-        cfg.pd.loss_metrics,
-        tuple(sc.name for sc in site_cs),
-    )
     resid_cfg = resid_mlp.ResidMLPConfig(
         n_features=cfg.target.n_features,
         d_embed=cfg.target.d_embed,
@@ -85,6 +83,9 @@ def build_resid_mlp_built_run(
         in_bias=cfg.target.in_bias,
         out_bias=cfg.target.out_bias,
         fixed_identity_embedding=cfg.target.fixed_identity_embedding,
+    )
+    eqx.filter_eval_shape(
+        lambda: build_objective(cfg.pd.loss_metrics, resid_mlp.site_specs(resid_cfg, site_cs))
     )
     target = resid_mlp.ResidMLPTargetConfig(
         n_features=cfg.target.n_features,
@@ -114,7 +115,7 @@ def build_resid_mlp_built_run(
         run=run_instance(cfg, run_id, data_root, None),
         target=target,
         data=None,
-        ci_fn=build_toy_ci_arch(
+        ci_fn=build_toy_ci_fn_arch(
             cfg.decomposition.ci,
             tuple(sc.name for sc in site_cs),
             resid_mlp.site_specs(resid_cfg, site_cs),
@@ -169,16 +170,12 @@ def run_resid_mlp_decomposition(
         ),
         mesh,
     )
-    placed_model = PlacedModel(
-        model=model, placement=placement.from_config("ddp", mesh, model.sites)
-    )
+    rules = placement.from_config("ddp", mesh, model.sites)
+    placed_model = PlacedModel(model=model, placement=rules)
 
     data_key = random.fold_in(random.PRNGKey(built.pd.seed), 17)
 
-    # `tgt` is the filter_jit ARG (frozen `W_E` traced, not baked) — closing over an
-    # array-bearing eqx target would bake its weights into the HLO.
     def make_sampler(batch_size: int):
-        @eqx.filter_jit
         def sample(tgt: resid_mlp.ResidMLPTarget, step_key: jax.Array) -> jax.Array:
             x = resid_mlp.sample_sparse_features(
                 step_key,
@@ -196,23 +193,13 @@ def run_resid_mlp_decomposition(
 
     sample_train = make_sampler(target_cfg.global_batch)
 
-    def sample_batch(step: int) -> jax.Array:
-        return sample_train(model.target, random.fold_in(data_key, step))
+    def train_batch(target: resid_mlp.ResidMLPTarget, index: np.uint32) -> jax.Array:
+        return sample_train(target, random.fold_in(data_key, index))
 
-    # `model` is the filter_jit ARG (frozen weights traced, not baked).
-    @eqx.filter_jit
-    def single_feature_ci(
-        model: resid_mlp.ResidMLPDecomposedModel, ci_fn: CIFn
-    ) -> tuple[dict[str, jax.Array], dict[str, jax.Array]]:
-        resid = resid_mlp.single_feature_probe(target_cfg.n_features) @ model.target.W_E
-        ci = ci_fn(
-            model.clean_forward(resid, ci_fn.capture_keys, placement=None).captures,
-            remat=False,
-            placement=None,
-        )
-        lower = {site: require_full_emission(v) for site, v in ci.lower.items()}
-        upper = {site: require_full_emission(v) for site, v in ci.upper.items()}
-        return lower, upper
+    compiled_train_batch = jax.jit(train_batch).lower(model.target, np.uint32(0)).compile()
+
+    def sample_batch(step: int) -> jax.Array:
+        return compiled_train_batch(model.target, np.uint32(step))
 
     # `mlp_out` targets DENSE recovery (every d_mlp direction stays live), not identity —
     # torch parity (`resid_mlp{1,2,3}_config.yaml` `dense_patterns: [layers.*.mlp_out]`).
@@ -223,80 +210,106 @@ def run_resid_mlp_decomposition(
     }
 
     partitions = nonlinearity_partitions(model.sites)
-    nonlinearity_eval_step = make_nonlinearity_eval_step(model.sites, {})
+    nonlinearity_eval_step = make_nonlinearity_eval_step(model.sites, None)
 
-    def ground_truth_eval(context: EvalInvocation) -> LogRecord:
-        state, now_step = context.state, context.now_step
-        ci_lower, ci_upper = single_feature_ci(model, state.decomposition.ci_fn)
-        figures: LogRecord = {}
-        if toy_uv_eval.permuted_ci_heatmap_due(
-            now_step, built.pd.steps, built.cadence.checkpointing
-        ):
-            figures = toy_uv_eval.render_permuted_ci_heatmap(
-                ci_lower,
-                ci_upper,
-                ci_permutation,
-            )
-        metrics: dict[str, MetricValue] = dict(figures)
-        metrics.update(
-            {
-                f"eval/identity_ci_error/{site}": float(
-                    resid_mlp.identity_ci_error(ci, tolerance=0.1)
+    def prepare_evaluation(
+        example: EvalInvocation[Array],
+    ) -> Evaluation[Array, EvalInvocation[Array], Never]:
+        compiled_single_feature_ci = (
+            jax.jit(
+                lambda model, decomposition: resid_mlp.single_feature_ci(
+                    model,
+                    decomposition.ci_fn,
+                    decomposition.components,
+                    target_cfg.n_features,
                 )
-                for site, ci in ci_lower.items()
-                if ci_permutation[site] == "identity"
-            }
-        )
-        metrics.update(
-            {
-                f"eval/dense_ci_error/{site}": float(
-                    dense_ci_error(np.asarray(ci_lower[site]), k=target_cfg.d_mlp, tolerance=0.1)
-                )
-                for site in ci_lower
-                if ci_permutation[site] == "dense"
-            }
-        )
-        ci_means = {name: np.asarray(value).mean(0) for name, value in ci_lower.items()}
-        metrics.update(
-            nonlinearity_log_entries(
-                site_nonlinearity_stats(
-                    nonlinearity_eval_step(state.decomposition.components), model.sites
-                ),
-                ci_means,
-                partitions,
             )
+            .lower(model, example.decomposition)
+            .compile()
         )
-        return metrics
+        compiled_nonlinearity_eval_step = (
+            jax.jit(nonlinearity_eval_step).lower(example.decomposition.components).compile()
+        )
 
-    operations = [
-        PassOperation(schedule=Every(built.cadence.train_log_every), run=ground_truth_eval)
-    ]
-    if eval_config is not None:
-        eval_sampler = make_sampler(eval_config.batch_size)
-        operations.extend(
-            make_toy_evaluation_operations(
+        def ground_truth_eval(context: EvalInvocation[Array]) -> LogRecord:
+            decomposition, now_step = context.decomposition, context.now_step
+            ci_lower, ci_upper = compiled_single_feature_ci(model, decomposition)
+            figures: LogRecord = {}
+            if toy_uv_eval.permuted_ci_heatmap_due(
+                now_step, built.pd.steps, built.cadence.checkpointing
+            ):
+                figures = toy_uv_eval.render_permuted_ci_heatmap(
+                    ci_lower,
+                    ci_upper,
+                    ci_permutation,
+                )
+            metrics: dict[str, MetricValue] = dict(figures)
+            metrics.update(
+                {
+                    f"eval/identity_ci_error/{site}": float(
+                        resid_mlp.identity_ci_error(ci, tolerance=0.1)
+                    )
+                    for site, ci in ci_lower.items()
+                    if ci_permutation[site] == "identity"
+                }
+            )
+            metrics.update(
+                {
+                    f"eval/dense_ci_error/{site}": float(
+                        dense_ci_error(
+                            np.asarray(ci_lower[site]), k=target_cfg.d_mlp, tolerance=0.1
+                        )
+                    )
+                    for site in ci_lower
+                    if ci_permutation[site] == "dense"
+                }
+            )
+            ci_means = {name: np.asarray(value).mean(0) for name, value in ci_lower.items()}
+            metrics.update(
+                nonlinearity_log_entries(
+                    site_nonlinearity_stats(
+                        compiled_nonlinearity_eval_step(decomposition.components), model.sites
+                    ),
+                    ci_means,
+                    partitions,
+                )
+            )
+            return metrics
+
+        operations = [
+            StandaloneOperation(
+                schedule=Every(built.cadence.train_log_every), run=ground_truth_eval
+            )
+        ]
+        if eval_config is not None:
+            eval_sampler = make_sampler(eval_config.batch_size)
+
+            def eval_batch(target: resid_mlp.ResidMLPTarget, index: np.uint32) -> jax.Array:
+                return eval_sampler(target, random.fold_in(data_key, built.pd.steps + index))
+
+            compiled_eval_batch = jax.jit(eval_batch).lower(model.target, np.uint32(0)).compile()
+            plans = make_toy_evaluation_operations(
                 eval_config,
                 built.pd.seed,
                 compiler_options={},
                 model=placed_model,
                 ci_capture_keys=built.ci_fn.capture_keys,
                 mesh=mesh,
-                sample_eval_batch=lambda index: eval_sampler(
-                    model.target, random.fold_in(data_key, built.pd.steps + index)
-                ),
-                probe_ci=lambda state: single_feature_ci(model, state.decomposition.ci_fn)[1],
+                sample_eval_batch=lambda index: compiled_eval_batch(model.target, index),
+                probe_ci=lambda decomposition: compiled_single_feature_ci(model, decomposition)[1],
                 wandb_configured=built.run.wandb is not None,
             )
-        )
-    evaluation = Evaluation(tuple(operations), lambda invocation: invocation, no_batch_contexts)
+            operations.extend(plan.prepare(example) for plan in plans)
+        return Evaluation(tuple(operations), lambda invocation: invocation, no_batch_contexts)
 
     sink = MetricsSink.for_run(built.run, jax.process_index() == 0)
     run_decomposition_training(
         pd=built.pd,
+        mfu_accounting=None,
         cadence=built.cadence,
         run=built.run,
         model=placed_model,
-        ci_fn=built.ci_fn,
+        ci_fn_initializer=seeded_ci_fn_initializer(built.ci_fn, model.sites, rules),
         positions=Positionless(),
         # A toy trains in seconds on one CPU device: nothing to trade memory for, and no
         # GPU collectives for an XLA flag to tune.
@@ -304,7 +317,7 @@ def run_resid_mlp_decomposition(
         remat_ci_fn=False,
         compiler_options={},
         sample_batch=sample_batch,
-        evaluation=evaluation,
+        build_evaluation=lambda _run_key: EvaluationPlan(prepare_evaluation),
         sink=sink,
         profiling=None,
     )

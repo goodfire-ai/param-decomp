@@ -1,13 +1,13 @@
-"""Frequency-minimality penalty `Σ_c Φ(f_c)`, `Φ(f) = f·log2(1 + a'·f)` (SPEC S7/S8/S8'').
+"""Frequency-minimality penalty `Σ_c Φ(f_c)`, `Φ(f) = f·log2(1 + a'·f)`.
 
 The closed-form tests pin the properties that motivate the split from the old rolled
 `lp + beta·log2(1 + B·T·f_c)`: batch-invariance, the `f=0 → 0` cutoff, and that
 `a' = B·T` reproduces the old implicit-`B·T` value exactly (so coefficients transfer).
-The EMA tests pin S8'': debiased smoothing of `f_c` (step-0 identity, closed form,
+The EMA tests pin debiased smoothing of `f_c` (step-0 identity, closed form,
 settling near `Φ(mean f)` under alternating batches) and the surrogate gradient
 (full single-batch scale at stationarity, zero gradient into the EMA state).
 Every `f_c` here is the smooth-L0 activity `mean c²/(c²+γ²)` — the one per-value
-penalty (SPEC S9).
+penalty.
 """
 
 import math
@@ -16,6 +16,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+from param_decomp.core.components import DenseFactorization, SiteSpec
 from param_decomp.core.configs import (
     FrequencyMinimalityConfig,
     ImportanceMinimalityLossConfig,
@@ -27,11 +28,13 @@ from param_decomp.core.losses import (
     ema_frequency_penalty,
     imp_min_terms,
     importance_minimality_terms,
+    init_frequency_estimator,
     per_component_frequencies,
-    resolve_frequency,
-    scheduled_value_at,
 )
+from param_decomp.core.runtime_schedule import scheduled_value_at
 from param_decomp.core.schedule import ScheduleConfig
+
+SITES = (SiteSpec(name="a", factorization=DenseFactorization(d_in=2, d_out=2, C=2), group="g"),)
 
 GAMMA = jnp.asarray(1.0)
 
@@ -140,9 +143,9 @@ def test_frequencies_seam_matches_direct_terms(normalize_at_one: bool):
     gamma = scheduled_value_at(jnp.asarray(0.0), cfg.gamma)
     frequencies = per_component_frequencies(ci, gamma, normalize_at_one=cfg.normalize_at_one)
     assert cfg.frequency is not None
-    role = resolve_frequency(cfg.frequency)
+    role = init_frequency_estimator(cfg.frequency, SITES)
     assert isinstance(role, BatchFrequency)
-    term = role.term(frequencies)
+    term, _ = role.evaluate(frequencies, cfg.frequency.reference_datapoint_count)
     activity_d, freq_d = importance_minimality_terms(
         ci,
         gamma,
@@ -150,7 +153,7 @@ def test_frequencies_seam_matches_direct_terms(normalize_at_one: bool):
         normalize_at_one=normalize_at_one,
     )
     assert jnp.allclose(activity_sum(frequencies), activity_d)
-    assert jnp.allclose(term.freq, freq_d)
+    assert jnp.allclose(term.value, freq_d)
 
 
 def _ema_cfg(halflife: float) -> ImportanceMinimalityLossConfig:
@@ -175,13 +178,12 @@ def test_ema_finite_at_extreme_halflife():
     cfg = _ema_cfg(halflife=1e6)
     ci = {"a": jnp.array([[0.2, 0.8], [0.4, 0.1]])}
     frequencies = per_component_frequencies(ci, GAMMA, normalize_at_one=False)
-    ema = {"a": jnp.zeros(2, jnp.float32)}
     assert cfg.frequency is not None
-    role = resolve_frequency(cfg.frequency)
+    role = init_frequency_estimator(cfg.frequency, SITES)
     assert isinstance(role, EmaFrequency)
-    term = role.term(frequencies, ema, jnp.asarray(0.0))
-    assert jnp.isfinite(term.freq)
-    assert jnp.allclose(term.freq, term.freq_batch, rtol=1e-4)
+    term, _ = role.evaluate(frequencies, cfg.frequency.reference_datapoint_count)
+    assert jnp.isfinite(term.value)
+    assert jnp.allclose(term.value, term.batch_value, rtol=1e-4)
 
 
 def test_ema_long_scan_rounding_bounded():
@@ -209,14 +211,12 @@ def test_ema_stationary_equals_batch_penalty():
     cfg = _ema_cfg(halflife=8.0)
     ci = {"a": jnp.array([[0.2, 0.8], [0.4, 0.1]])}
     frequencies = per_component_frequencies(ci, GAMMA, normalize_at_one=False)
-    ema = {name: jnp.zeros(v.shape[-1], jnp.float32) for name, v in ci.items()}
     assert cfg.frequency is not None
-    role = resolve_frequency(cfg.frequency)
+    role = init_frequency_estimator(cfg.frequency, SITES)
     assert isinstance(role, EmaFrequency)
     for step in range(6):
-        term = role.term(frequencies, ema, jnp.asarray(float(step)))
-        ema = term.new_freq_ema
-        assert jnp.allclose(term.freq, term.freq_batch, rtol=1e-5), step
+        term, role = role.evaluate(frequencies, cfg.frequency.reference_datapoint_count)
+        assert jnp.allclose(term.value, term.batch_value, rtol=1e-5), step
 
 
 def test_ema_matches_closed_form():
@@ -258,12 +258,12 @@ def test_ema_gradient_matches_unsmoothed_at_stationarity():
     cfg = _ema_cfg(halflife=50.0)
     ci_val = jnp.array([[0.1, 0.9], [0.4, 0.6]])
     assert cfg.frequency is not None
-    role = resolve_frequency(cfg.frequency)
+    role = init_frequency_estimator(cfg.frequency, SITES)
     assert isinstance(role, EmaFrequency)
 
     def ema_freq(ci: jax.Array) -> jax.Array:
         frequencies = per_component_frequencies({"a": ci}, GAMMA, normalize_at_one=False)
-        return role.term(frequencies, {"a": jnp.zeros(2)}, jnp.asarray(0.0)).freq
+        return role.evaluate(frequencies, 64)[0].value
 
     def batch_freq(ci: jax.Array) -> jax.Array:
         _, freq = importance_minimality_terms(
@@ -278,13 +278,27 @@ def test_ema_state_carries_no_gradient():
     # The CI fn must not be able to steer the frequency estimate: new_ema is grad-free.
     cfg = _ema_cfg(halflife=50.0)
     assert cfg.frequency is not None
-    role = resolve_frequency(cfg.frequency)
+    role = init_frequency_estimator(cfg.frequency, SITES)
     assert isinstance(role, EmaFrequency)
 
     def ema_mass(ci: jax.Array) -> jax.Array:
         frequencies = per_component_frequencies({"a": ci}, GAMMA, normalize_at_one=False)
-        ft = role.term(frequencies, {"a": jnp.zeros(2)}, jnp.asarray(0.0))
-        return jnp.sum(ft.new_freq_ema["a"])
+        _, updated = role.evaluate(frequencies, 64)
+        return jnp.sum(updated.estimate["a"])
 
     grad = jax.grad(ema_mass)(jnp.array([[0.1, 0.9], [0.4, 0.6]]))
     assert jnp.allclose(grad, 0.0)
+
+
+def test_ema_counts_its_own_observations():
+    cfg = FrequencyMinimalityConfig(coeff=0.5, reference_datapoint_count=64, ema_halflife_steps=4.0)
+    frequent = init_frequency_estimator(cfg, SITES)
+    occasional = init_frequency_estimator(cfg, SITES)
+    assert isinstance(frequent, EmaFrequency)
+    assert isinstance(occasional, EmaFrequency)
+    for value in (0.2, 0.7, 0.4):
+        _, frequent = frequent.evaluate({"a": jnp.full((2,), value)}, 64)
+    penalty, occasional = occasional.evaluate({"a": jnp.full((2,), 0.3)}, 64)
+    assert int(frequent.count) == 3
+    assert int(occasional.count) == 1
+    assert jnp.allclose(penalty.value, penalty.batch_value, rtol=1e-5)

@@ -6,7 +6,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from param_decomp.core.components import Dense, SiteSpec, component_stacks_from_site_arrays
+from param_decomp.core.components import (
+    DenseFactorization,
+    SiteSpec,
+    component_stacks_from_site_arrays,
+)
 from param_decomp.core.train import _grad_norm_metrics
 
 SITE_VU_SHAPES = {
@@ -26,7 +30,7 @@ def test_components_grad_norms_are_per_site() -> None:
         for name, (d_in, d_out, c) in SITE_VU_SHAPES.items()
     }
     sites = tuple(
-        SiteSpec(name, Dense(d_in=d_in, d_out=d_out, C=c), name.rsplit(".", 1)[1])
+        SiteSpec(name, DenseFactorization(d_in=d_in, d_out=d_out, C=c), name.rsplit(".", 1)[1])
         for name, (d_in, d_out, c) in SITE_VU_SHAPES.items()
     )
     components_grad = component_stacks_from_site_arrays(sites, vu)

@@ -11,7 +11,8 @@ from typing import Literal, override
 _EMBED_RE = re.compile(r"^embed$")
 _OUTPUT_RE = re.compile(r"^output$")
 _LAYER_RE = re.compile(
-    r"^(?P<layer>\d+)\.(?P<sublayer>attn|attn_fused|glu|mlp|moe|moe_shared)\.(?P<proj>[a-z]+)$"
+    r"^(?P<layer>\d+)\.(?P<sublayer>attn|attn_fused|deltanet|glu|mlp|moe|moe_shared)"
+    r"\.(?P<proj>[a-z]+)$"
 )
 
 
@@ -72,6 +73,15 @@ AttnWeight = SeparateAttnWeight | FusedAttnWeight
 
 
 @dataclass(frozen=True)
+class DeltaNetWeight:
+    """One projection of a gated-DeltaNet (linear-attention) token mixer: the q/k/v row
+    blocks of the fused `in_proj_qkv`, the output gate `z`, the write strength `b`, the
+    decay `a`, and the `out` projection."""
+
+    weight: Literal["q", "k", "v", "z", "b", "a", "out"]
+
+
+@dataclass(frozen=True)
 class GLUWeight:
     weight: Literal["up", "down", "gate"]
 
@@ -101,7 +111,7 @@ FFNWeight = GLUWeight | MLPWeight | MoEExpertsWeight | MoESharedWeight
 @dataclass(frozen=True)
 class LayerWeight(CanonicalWeight):
     layer_idx: int
-    name: AttnWeight | FFNWeight
+    name: AttnWeight | DeltaNetWeight | FFNWeight
 
     @override
     def canonical_str(self) -> str:
@@ -110,6 +120,8 @@ class LayerWeight(CanonicalWeight):
                 return f"{self.layer_idx}.attn.{p}"
             case FusedAttnWeight(weight=p):
                 return f"{self.layer_idx}.attn_fused.{p}"
+            case DeltaNetWeight(weight=p):
+                return f"{self.layer_idx}.deltanet.{p}"
             case GLUWeight(weight=p):
                 return f"{self.layer_idx}.glu.{p}"
             case MLPWeight(weight=p):
@@ -123,6 +135,7 @@ class LayerWeight(CanonicalWeight):
 _SUBLAYER_PROJECTIONS: dict[str, tuple[type, tuple[str, ...]]] = {
     "attn": (SeparateAttnWeight, ("q", "k", "v", "o")),
     "attn_fused": (FusedAttnWeight, ("qkv", "o")),
+    "deltanet": (DeltaNetWeight, ("q", "k", "v", "z", "b", "a", "out")),
     "glu": (GLUWeight, ("up", "down", "gate")),
     "mlp": (MLPWeight, ("up", "down")),
     "moe": (MoEExpertsWeight, ("up", "down", "gate")),

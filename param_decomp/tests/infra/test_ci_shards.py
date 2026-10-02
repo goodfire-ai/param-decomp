@@ -4,8 +4,7 @@ The workflow matrix names the shards; each `test-ci-<shard>` Makefile target nam
 paths. This pins that every test file runs in exactly one xdist shard and every
 multidevice-marked file runs in exactly one multidevice shard — a directory added
 to the tree, or a marked file added to a subsystem, must be placed deliberately rather
-than silently never run (which is how `prompt_analysis/` and `topology/` went
-uncollected for weeks).
+than silently never run.
 """
 
 import re
@@ -50,9 +49,9 @@ def _selected_files(argv: list[str]) -> set[Path]:
     ignored: set[Path] = set()
     for token in argv:
         if token.startswith("--ignore="):
-            ignored |= _test_files(REPO / token.removeprefix("--ignore="))
+            ignored.update(_test_files(REPO / token.removeprefix("--ignore=")))
         elif not token.startswith("-") and (token.endswith(".py") or token.endswith("/")):
-            included |= _test_files(REPO / token)
+            included.update(_test_files(REPO / token))
     return included - ignored
 
 
@@ -67,6 +66,13 @@ def _multidevice_files() -> set[Path]:
 def test_workflow_shards_are_make_targets() -> None:
     targets = set(re.findall(r"^test-ci-([a-z0-9-]+):", (REPO / "Makefile").read_text(), re.M))
     assert set(_shards()) == targets, (sorted(_shards()), sorted(targets))
+
+
+def test_every_shard_runs_slow_tests() -> None:
+    """CI runs the whole suite: a shard command without `--runslow` would silently drop
+    every `slow`-marked test in its files (the multidevice pass once did exactly that)."""
+    for shard in _shards():
+        assert "--runslow" in _pytest_argv(shard), shard
 
 
 def test_xdist_shards_partition_every_test_file() -> None:

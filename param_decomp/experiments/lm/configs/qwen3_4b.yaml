@@ -1,0 +1,171 @@
+# Latest canonical run: https://wandb.ai/goodfire/param-decomp-llama/runs/p-d0c95247
+# Canonical run's resume source: https://wandb.ai/goodfire/param-decomp-llama/runs/p-c2f25236
+# Model-only run name replaces the source run's experiment label.
+run_name: qwen3-4b
+cadence:
+  checkpointing:
+    kind: periodic
+    save_every: 5000
+    retention:
+      kind: keep_last
+      n: 1
+# Source-document IDs isolate target/CI attention and omit cross-document labels.
+# Qwen3 framing is text + <|endoftext|> (151643), without BOS; old runs keep their pins.
+data:
+  train:
+    kind: name
+    name: fineweb350bt_qwen3_docs512_r9bb295dd_train284_v1
+  eval:
+    kind: name
+    name: fineweb350bt_qwen3_docs512_r9bb295dd_eval284_v1
+eval:
+  batch_size: 256
+  every: 1000
+  metrics:
+  - n_batches_accum: 1
+    type: CIHistograms
+  - ci_alive_threshold: 0.0
+    type: ComponentActivationDensity
+  - ci_alive_threshold: 0.0
+    groups: null
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  - type: CIMeanPerComponent
+  # Adds per-position active-CI diagnostics; absent from p-d0c95247
+  - type: CIActiveCountsPerPosition
+  - init: random
+    source_shape: c
+    n_steps: 20
+    step_size: 0.1
+    type: PGDReconLoss
+  n_steps: 1
+  slow_every: 10000
+  slow_on_first_step: true
+decomposition:
+  sites:
+    kind: glu_transformer
+    layers:
+      kind: all
+    cs:
+      q: 4096
+      k: 1024
+      v: 1024
+      o: 4096
+      gate: 9728
+      up: 9728
+      down: 9728
+    # Retired neuron_aligned -> supported nonlinearity_aligned;
+    # initialization geometry differs from p-d0c95247.
+    initialization: nonlinearity_aligned
+  ci:
+    type: chunkwise_transformer
+    blocks_per_chunk: 1
+    input_tap: all_block_resids
+    d_model: 2560
+    n_blocks: 4
+    attention:
+      kind: mha
+      # Explicit bidirectional CI mask, matching p-d0c95247's implicit behavior.
+      mask: bidirectional
+      n_heads: 20
+      # Explicit GPU attention; CI implementation was implicit in p-d0c95247
+      implementation: flash
+    ffn:
+      kind: gelu
+      hidden: 10240
+pd:
+  batch_size: 256
+  ci_fn_optimizer:
+    type: muon
+    ns_dtype: bfloat16
+    grad_clip_norm: 1.0
+    lr_schedule:
+      max_val: 5.0e-05
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 1.0
+        frac: 0.1
+        interp: cosine
+  components_optimizer:
+    type: muon
+    ns_dtype: bfloat16
+    grad_clip_norm: 1.0
+    lr_schedule:
+      max_val: 5.0e-05
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 1.0
+        frac: 0.1
+        interp: cosine
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 0
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - frequency:
+      coeff: 5.0e-06
+      reference_datapoint_count: 33554432
+      ema_halflife_steps: 200
+    coeff: 2.0e-05
+    type: ImportanceMinimalityLoss
+    gamma:
+      max_val: 1.0
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 0.9
+        frac: 0.01
+      - at: 1.0
+        frac: 0.01
+  - type: MergedStochasticSubsetPPGDReconLoss
+    coeff: 1.0
+    adv_fraction: 0.5
+    adversary_objective: e2e
+    n_warmup_steps: 2
+    routing:
+      type: uniform_k_subset
+    optimizer:
+      beta1: 0.01
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        max_val: 0.01
+        points:
+        - at: 0.0
+          frac: 0.0
+        - at: 0.05
+          frac: 1.0
+        - at: 1.0
+          frac: 1.0
+      type: adam
+    source_shape: bsc
+    source_dtype: float32
+  - coeff: 30000.0
+    type: FaithfulnessLoss
+  seed: 0
+  # Fresh training, unlike p-d0c95247
+  # which resumed at step 200000 from p-c2f25236
+  steps: 400000
+runtime:
+  compilation_cache_dir: ~/.cache/param-decomp/xla
+  sharding: owner-replicated-resident
+  mesh:
+    data: 32
+    tp: 2
+  remat_recon_forwards: true
+  remat_ci_fn: true
+  compiler_options: tuned-v2
+target:
+  # Explicit GPU attention instead of auto selection in p-d0c95247
+  attention_implementation: flash
+  output_edge:
+    kind: materialized
+  weights_dtype: bfloat16
+  spec:
+    kind: hf
+    model_class: transformers.Qwen3ForCausalLM
+    model_name: Qwen/Qwen3-4B
+wandb:
+  project: param-decomp

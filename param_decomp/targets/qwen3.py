@@ -16,15 +16,19 @@ import equinox as eqx
 from jax.typing import DTypeLike
 from jaxtyping import Array, Float
 
+from param_decomp.attention import AttentionImplementation
 from param_decomp.core.axes import Axes
 from param_decomp.core.components import SiteSpec
 from param_decomp.core.placement import PlacementRules
+from param_decomp.core.pytree import ShardingTree
 from param_decomp.target_ports.llama import rms_norm
-from param_decomp.targets.glu_transformer import (
+from param_decomp.targets.host import cpu_staging
+from param_decomp.targets.lm_output import OutputEdge
+from param_decomp.targets.transformer import (
     FrozenAttn,
-    GLUConfig,
-    GLUDecomposedModel,
     HFWeights,
+    TransformerConfig,
+    TransformerDecomposedModel,
     default_inv_freq,
     load_decomposed_glu_from_hf,
 )
@@ -38,8 +42,8 @@ def _qwen3_config(
     n_intermediate: int,
     max_position_embeddings: int,
     tie_word_embeddings: bool,
-) -> GLUConfig:
-    return GLUConfig(
+) -> TransformerConfig:
+    return TransformerConfig(
         vocab_size=151936,
         n_layer=n_layer,
         n_head=n_head,
@@ -54,7 +58,7 @@ def _qwen3_config(
     )
 
 
-def qwen3_0_6b_base_config() -> GLUConfig:
+def qwen3_0_6b_base_config() -> TransformerConfig:
     """Architecture of `Qwen/Qwen3-0.6B-Base`. Its explicit 128-wide heads make
     the query projection twice the residual width; `n_embd // n_head` is not the
     head width for this model."""
@@ -68,12 +72,12 @@ def qwen3_0_6b_base_config() -> GLUConfig:
     )
 
 
-def qwen3_0_6b_config() -> GLUConfig:
+def qwen3_0_6b_config() -> TransformerConfig:
     """Architecture of the post-trained `Qwen/Qwen3-0.6B`."""
     return replace(qwen3_0_6b_base_config(), max_position_embeddings=40960)
 
 
-def qwen3_1_7b_base_config() -> GLUConfig:
+def qwen3_1_7b_base_config() -> TransformerConfig:
     """Architecture of `Qwen/Qwen3-1.7B-Base`."""
     return _qwen3_config(
         n_layer=28,
@@ -85,12 +89,12 @@ def qwen3_1_7b_base_config() -> GLUConfig:
     )
 
 
-def qwen3_1_7b_config() -> GLUConfig:
+def qwen3_1_7b_config() -> TransformerConfig:
     """Architecture of the post-trained `Qwen/Qwen3-1.7B`."""
     return replace(qwen3_1_7b_base_config(), max_position_embeddings=40960)
 
 
-def qwen3_4b_base_config() -> GLUConfig:
+def qwen3_4b_base_config() -> TransformerConfig:
     """Architecture of `Qwen/Qwen3-4B-Base`."""
     return _qwen3_config(
         n_layer=36,
@@ -102,12 +106,12 @@ def qwen3_4b_base_config() -> GLUConfig:
     )
 
 
-def qwen3_4b_config() -> GLUConfig:
+def qwen3_4b_config() -> TransformerConfig:
     """Architecture of the post-trained `Qwen/Qwen3-4B`."""
     return replace(qwen3_4b_base_config(), max_position_embeddings=40960)
 
 
-def qwen3_8b_base_config() -> GLUConfig:
+def qwen3_8b_base_config() -> TransformerConfig:
     """Architecture of `Qwen/Qwen3-8B-Base`."""
     return _qwen3_config(
         n_layer=36,
@@ -119,12 +123,12 @@ def qwen3_8b_base_config() -> GLUConfig:
     )
 
 
-def qwen3_8b_config() -> GLUConfig:
+def qwen3_8b_config() -> TransformerConfig:
     """Architecture of the post-trained `Qwen/Qwen3-8B`."""
     return replace(qwen3_8b_base_config(), max_position_embeddings=40960)
 
 
-def qwen3_14b_base_config() -> GLUConfig:
+def qwen3_14b_base_config() -> TransformerConfig:
     """Architecture of `Qwen/Qwen3-14B-Base`."""
     return _qwen3_config(
         n_layer=40,
@@ -136,7 +140,7 @@ def qwen3_14b_base_config() -> GLUConfig:
     )
 
 
-def qwen3_14b_config() -> GLUConfig:
+def qwen3_14b_config() -> TransformerConfig:
     """Architecture of the post-trained `Qwen/Qwen3-14B`."""
     return replace(qwen3_14b_base_config(), max_position_embeddings=40960)
 
@@ -159,18 +163,23 @@ class Qwen3FrozenAttn(FrozenAttn):
         return rms_norm(q, self.q_norm, self.eps), rms_norm(k, self.k_norm, self.eps)
 
     @override
-    def shardings(self, placement: PlacementRules, axes: Axes) -> "Qwen3FrozenAttn":
+    def shardings(self, placement: PlacementRules, axes: Axes) -> ShardingTree:
         """The shared projection layout plus declared norm-vector placement."""
-        placed = super().shardings(placement, axes)
-        assert isinstance(placed, Qwen3FrozenAttn)
+        column, row = self._projection_shardings(placement, axes)
         norm_axes: Axes = (*axes[:-2], "head_dim")
         placement.target.normalization.validate_shape(norm_axes, self.q_norm.shape)
         placement.target.normalization.validate_shape(norm_axes, self.k_norm.shape)
         norm = placement.target.normalization.sharding_for(norm_axes)
-        return eqx.tree_at(lambda a: (a.q_norm, a.k_norm), placed, (norm, norm))
+        return eqx.tree_at(
+            lambda a: (a.wq, a.wk, a.wv, a.wo, a.q_norm, a.k_norm),
+            self,
+            (column, column, column, row, norm, norm),
+        )
 
 
-def _load_attn(w: HFWeights, i: int, cfg: GLUConfig) -> Qwen3FrozenAttn:
+def _load_attn(
+    w: HFWeights, i: int, cfg: TransformerConfig, attention_implementation: AttentionImplementation
+) -> Qwen3FrozenAttn:
     pre = "model.layers"
     return Qwen3FrozenAttn(
         wq=w.get(f"{pre}.{i}.self_attn.q_proj.weight"),
@@ -181,25 +190,29 @@ def _load_attn(w: HFWeights, i: int, cfg: GLUConfig) -> Qwen3FrozenAttn:
         n_kv_head=cfg.n_kv_head,
         head_dim=cfg.head_dim,
         n_rep=cfg.n_rep,
-        implementation="auto",
+        implementation=attention_implementation,
         q_norm=w.get(f"{pre}.{i}.self_attn.q_norm.weight"),
         k_norm=w.get(f"{pre}.{i}.self_attn.k_norm.weight"),
         eps=cfg.rms_norm_eps,
     )
 
 
+@cpu_staging()
 def load_decomposed_qwen3_from_hf(
     model_name: str,
-    cfg: GLUConfig,
+    cfg: TransformerConfig,
     sites: tuple[SiteSpec, ...],
     weights_dtype: DTypeLike,
-) -> GLUDecomposedModel:
+    output_edge: OutputEdge,
+    attention_implementation: AttentionImplementation,
+) -> TransformerDecomposedModel:
     """The Qwen3 family HF load: QK-norm attention + plain RoPE frequencies."""
     return load_decomposed_glu_from_hf(
         model_name,
         cfg,
         sites,
-        load_attn=lambda w, i: _load_attn(w, i, cfg),
+        load_attn=lambda w, i: _load_attn(w, i, cfg, attention_implementation),
         weights_dtype=weights_dtype,
         inv_freq=default_inv_freq(cfg.head_dim, cfg.rope_theta),
+        output_edge=output_edge,
     )

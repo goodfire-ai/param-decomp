@@ -11,7 +11,9 @@ decomposition trainer share it. It lives beside the layout because resolving its
 arm IS the layout.
 """
 
+import json
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Annotated, Literal, Self
 
 from pydantic import Discriminator, Field, PositiveInt, model_validator
@@ -65,24 +67,50 @@ def resolve_dataset_ref(ref: DatasetRef, data_root: Path) -> Path:
             return dir
 
 
-class DatasetMeta(BaseConfig):
-    """`seq_len` is the training sequence length — rows may carry `seq_len` or
-    `seq_len + 1` tokens (next-token staging), so the artifact is ambiguous without it.
-    `tokenizer_name` is the tokenizer that produced the ids — the decode authority for
-    consumers rendering harvested tokens."""
+class DatasetIdentity(BaseConfig):
+    """Tokenizer and staged row width, independent of the shard storage format.
+
+    Enough to tokenize new prompts or decode stored token IDs; this does not certify
+    that a dataset can be read by the current training loader.
+    """
 
     seq_len: PositiveInt
     tokenizer_name: str = Field(min_length=1)
+
+
+class DatasetMeta(DatasetIdentity):
+    """`seq_len` is the exact staged row width, including any final next-token label.
+    `tokenizer_name` is the tokenizer that produced the ids — the decode authority for
+    consumers rendering harvested tokens. Version 2 requires paired int32 `input_ids`
+    and `document_ids` columns. `preprocessing_name` records the producing recipe;
+    it is provenance, not a runtime behavior switch. Older artifacts must be tokenized again."""
+
+    format_version: Literal[2]
+    preprocessing_name: str = Field(min_length=1)
+
+
+def read_dataset_identity(data_dir: Path) -> DatasetIdentity:
+    """Read only tokenizer/context facts; never authorize reading or rewriting shards."""
+    raw = json.loads((data_dir / DATASET_META_FILENAME).read_text())
+    return DatasetIdentity(seq_len=raw["seq_len"], tokenizer_name=raw["tokenizer_name"])
 
 
 def read_dataset_meta(data_dir: Path) -> DatasetMeta:
     path = data_dir / DATASET_META_FILENAME
     assert path.exists(), (
         f"no {DATASET_META_FILENAME} in {data_dir}: dataset dirs are self-describing "
-        "(prestage writes it; a pre-meta dir needs a one-time backfill)"
+        "(prestage writes document-aware metadata; older datasets must be tokenized again)"
     )
     return DatasetMeta.model_validate_json(path.read_text())
 
 
 def write_dataset_meta(data_dir: Path, meta: DatasetMeta) -> None:
-    (data_dir / DATASET_META_FILENAME).write_text(meta.model_dump_json() + "\n")
+    """Publish immutable metadata atomically, including concurrent prestage workers."""
+    path = data_dir / DATASET_META_FILENAME
+    with NamedTemporaryFile(mode="w", dir=data_dir.parent, suffix=".meta.json") as temporary:
+        temporary.write(meta.model_dump_json() + "\n")
+        temporary.flush()
+        try:
+            path.hardlink_to(temporary.name)
+        except FileExistsError:
+            assert read_dataset_meta(data_dir) == meta, f"dataset metadata differs in {data_dir}"

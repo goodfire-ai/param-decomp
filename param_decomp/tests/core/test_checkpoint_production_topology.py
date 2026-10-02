@@ -1,4 +1,4 @@
-"""Production-topology orbax round-trip (SPEC S22, issue #617).
+"""Production-topology Orbax round-trip.
 
 Preemptions can miss the SIGTERM save and fall back to periodic checkpoints, so it is
 load-bearing that the SHARDED orbax save at the production placement actually persists
@@ -9,9 +9,9 @@ topology:
 
   * the V/U + Adam states are sharded along their matrix dimensions and the
     sources/moments are replicated over a multi-device mesh (`init_placed.py`), exactly
-    as `init_train_state` places them — so the test exercises the sharded save/restore
+    as `init_pd_state` places them — so the test exercises the sharded save/restore
     path, not the all-on-one path;
-  * MULTIPLE persistent terms (SPEC S23: one `adversaries` entry per term), so a
+  * MULTIPLE persistent terms (one `adversaries` entry per term), so a
     per-term moment tree that got dropped would surface;
   * an explicit structural assertion that the RESTORED pytree carries `m`, `v`, and a
     non-zero `step_count` for every persistent term and every site — not just that the
@@ -30,7 +30,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-import optax
+import orbax.checkpoint as ocp
 import pytest
 
 from param_decomp.core.adversary import (
@@ -40,29 +40,35 @@ from param_decomp.core.adversary import (
     sources_adam_ascend_project,
 )
 from param_decomp.core.checkpoint import make_checkpoint_manager, restore_latest, save_state
-from param_decomp.core.ci_fn import (
+from param_decomp.core.ci_fn.implementations.chunkwise.arch import (
     Chunk,
-    ChunkwiseTransformerCIArch,
-    MHACIAttention,
+    ChunkwiseTransformerCIFnArch,
 )
+from param_decomp.core.ci_fn.implementations.transformer.layers import MHACIFnAttention
 from param_decomp.core.configs import (
     AdamPGDConfig,
+    AdamWOptimizerConfig,
+    FaithfulnessLossConfig,
+    ImportanceMinimalityLossConfig,
     KeepLastNCheckpoints,
     PersistentPGDReconLossConfig,
 )
 from param_decomp.core.init_placed import (
-    init_ci_fn_placed,
     init_component_stacks_placed,
     init_sources_sharded,
 )
+from param_decomp.core.losses import BatchFrequency
 from param_decomp.core.model import Positioned
+from param_decomp.core.objective import build_objective
 from param_decomp.core.placement import from_config
 from param_decomp.core.run import _ensure_global
+from param_decomp.core.run_state import _adamw_optimizer
 from param_decomp.core.schedule import Knot, ScheduleConfig
 from param_decomp.core.sharding import hsdp_mesh
-from param_decomp.core.train import Decomposition, TrainingItem, TrainState
-from param_decomp.targets.glu_transformer import glu_site_specs, mlp_family_site_cs
+from param_decomp.core.train import Decomposition, PDTrainingState, TrainState
 from param_decomp.targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
+from param_decomp.targets.transformer import glu_site_specs, mlp_family_site_cs
+from param_decomp.tests.placed_ci_fn import placed_ci_fn
 
 # Needs >1 jax device (production topology); hangs at the default 1 device, so gated behind
 # --runmultidevice. Run via `make test-multidevice` (simulated CPU devices). See conftest.
@@ -75,7 +81,7 @@ def _persistent_cfg(name: str | None) -> PersistentPGDReconLossConfig:
     return PersistentPGDReconLossConfig(
         name=name,
         coeff=0.5,
-        source_shape="sc",
+        source_shape="bsc",
         optimizer=AdamPGDConfig(
             beta1=0.5,
             beta2=0.99,
@@ -89,7 +95,7 @@ def _persistent_cfg(name: str | None) -> PersistentPGDReconLossConfig:
 
 
 def _build_sharded(seed: int):
-    """A TrainState placed exactly as `init_train_state` places a production run on the
+    """A PDState placed exactly as `init_pd_state` places a production run on the
     `(replicate, fsdp, tp)` HSDP mesh: V/U + their Adam moments sharded ÷N over the data
     axes (V d_in, U d_out; C replicated), the CI fn ÷N over the data axes (d_model), and
     sources + their Adam moments replicated, with TWO persistent terms. On the four-device
@@ -104,7 +110,7 @@ def _build_sharded(seed: int):
     by_layer: dict[int, list[str]] = {}
     for name in model.site_names:
         by_layer.setdefault(int(name.split(".")[1]), []).append(name)
-    ci_arch = ChunkwiseTransformerCIArch(
+    ci_fn_arch = ChunkwiseTransformerCIFnArch(
         chunks=tuple(
             Chunk(input_taps=(f"resid.{layer}",), output_sites=tuple(names))
             for layer, names in sorted(by_layer.items())
@@ -112,7 +118,7 @@ def _build_sharded(seed: int):
         input_dim=cfg.n_embd,
         d_model=16,
         n_blocks=2,
-        attention=MHACIAttention(n_heads=2),
+        attention=MHACIFnAttention(mask="bidirectional", implementation="xla", n_heads=2),
         ffn_hidden=32,
         ffn_kind="gelu",
         learned_norm_scale=False,
@@ -120,23 +126,24 @@ def _build_sharded(seed: int):
     vu = init_component_stacks_placed(
         model.sites, jax.random.PRNGKey(seed), from_config("owner", mesh, model.sites)
     )
-    ci_fn = init_ci_fn_placed(
-        ci_arch,
+    ci_fn = placed_ci_fn(
+        ci_fn_arch,
         model.sites,
         jax.random.PRNGKey(seed + 1),
         mesh,
         from_config("zero1", mesh, model.sites),
     )
-    opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
-    opt_ci = optax.adamw(1e-3, weight_decay=0.0)
+    opt_vu = _adamw_optimizer(
+        AdamWOptimizerConfig(lr_schedule=ScheduleConfig.constant(1e-3), grad_clip_norm=0.01), 1
+    )
+    opt_ci = _adamw_optimizer(AdamWOptimizerConfig(lr_schedule=ScheduleConfig.constant(1e-3)), 1)
     ppgd_cfgs = (_persistent_cfg(None), _persistent_cfg("ppgd_second"))
     adversaries: dict[str, PersistentAdversary] = {}
     for i, (state_key, ppgd_cfg) in enumerate(zip(PERSISTENT_TERMS, ppgd_cfgs, strict=True)):
-        assert ppgd_cfg.coeff is not None
         src = init_sources_sharded(
             model.sites,
             Positioned(seq),
-            "sc",
+            "bsc",
             mesh.devices.size,
             jnp.float32,
             jax.random.fold_in(jax.random.PRNGKey(seed + 2), i),
@@ -161,13 +168,22 @@ def _build_sharded(seed: int):
             optimizer=ppgd_cfg.optimizer,
             n_warmup=ppgd_cfg.n_warmup_steps,
         )
+    objective = build_objective(
+        (
+            FaithfulnessLossConfig(coeff=1e5),
+            ImportanceMinimalityLossConfig(coeff=5e-6, gamma=ScheduleConfig.constant(1.0)),
+            *ppgd_cfgs,
+        ),
+        model.sites,
+    )
     state = TrainState(
         decomposition=Decomposition(components=vu, ci_fn=ci_fn),
-        training=TrainingItem(
+        training=PDTrainingState(
+            frequency=BatchFrequency(),
+            objective=objective,
             components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
             ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
             adversaries=adversaries,
-            freq_ema=None,
             step=jnp.zeros((), jnp.int32),
         ),
     )
@@ -180,7 +196,7 @@ def _build_sharded(seed: int):
 
 
 def _assert_moments_present(adversaries: dict[str, PersistentAdversary]) -> None:
-    """SPEC S22/S23: every persistent term carries m, v (mirroring the source stacks
+    """Every persistent term carries m, v (mirroring the source stacks
     leaf-for-leaf, same shapes) and a non-zero step_count."""
     assert tuple(adversaries) == PERSISTENT_TERMS, adversaries.keys()
     for term in PERSISTENT_TERMS:
@@ -224,7 +240,7 @@ def test_sharded_roundtrip_persists_source_moments(tmp_path: Path):
                 strict=True,
             )
         ), f"{term}: saved and reference moments must differ for the restore check to bite"
-    restored = restore_latest(mgr, fresh)
+    restored = restore_latest(mgr, jax.tree.map(ocp.utils.to_shape_dtype_struct, fresh))
     assert restored is not None
     loaded, ckpt_step = restored
     assert ckpt_step == 2

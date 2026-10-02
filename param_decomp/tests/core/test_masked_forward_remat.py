@@ -14,11 +14,9 @@ load-bearing at scale and pinned here on a tiny fully-decomposed GLU over the
     executable allocates the whole gathered model at once.
 """
 
-import dataclasses
 import math
 import re
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -34,23 +32,21 @@ from jaxtyping import Array
 
 from param_decomp.core.components import ComponentStacks, SiteC, init_component_stacks
 from param_decomp.core.init_placed import init_component_stacks_placed
-from param_decomp.core.model import (
-    MaterializedMasking,
-    PlacedModel,
-    prepare_compute_weights,
-)
+from param_decomp.core.model import MaterializedMasking, PlacedModel
 from param_decomp.core.placement import from_config
 from param_decomp.core.sharding import place_target
-from param_decomp.target_ports.llama import AttentionImplementation
-from param_decomp.targets.glu_transformer import (
+from param_decomp.lm.batch import LMBatchWithDocuments
+from param_decomp.targets.lm_output import LMOutput
+from param_decomp.targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
+from param_decomp.targets.transformer import (
     KIND_ORDER,
-    GLUDecomposedModel,
+    TransformerDecomposedModel,
+    TransformerPreparedMasking,
+    TransformerPreparedWeights,
     canonical_site_cs,
     glu_site_specs,
     site_name,
 )
-from param_decomp.targets.lm_output import LMOutput
-from param_decomp.targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
 
 pytestmark = [
     pytest.mark.multidevice,
@@ -66,7 +62,7 @@ pytestmark = [
 _BATCH, _SEQ = 6, 5
 
 
-def _fixture(implementation: AttentionImplementation = "auto"):
+def _fixture():
     cfg = tiny_glu_cfg()
     sites = glu_site_specs(
         cfg,
@@ -79,9 +75,6 @@ def _fixture(implementation: AttentionImplementation = "auto"):
         ),
     )
     model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(7))
-    if implementation != "auto":
-        attn = dataclasses.replace(model.stacked.attn, implementation=implementation)
-        model = eqx.tree_at(lambda m: m.stacked.attn, model, attn)
     tokens = jnp.arange(_BATCH * _SEQ, dtype=jnp.int32).reshape(_BATCH, _SEQ) % cfg.vocab_size
     masks = {site.name: jnp.full((_BATCH, _SEQ, site.C), 0.7) for site in sites}
     deltas = {site.name: jnp.full((_BATCH, _SEQ), 0.3) for site in sites}
@@ -109,7 +102,13 @@ def _place_batched[T](mesh: Mesh, tree: T) -> T:
 
 
 def _loss_fn(
-    model: PlacedModel[LMOutput],
+    model: PlacedModel[
+        LMBatchWithDocuments,
+        LMOutput,
+        TransformerPreparedWeights,
+        LMBatchWithDocuments,
+        TransformerPreparedMasking,
+    ],
     tokens: Array,
     masks: dict[str, Array],
     deltas: dict[str, Array],
@@ -118,13 +117,14 @@ def _loss_fn(
     remat: bool,
 ):
     def loss(components: ComponentStacks) -> Array:
-        prepared = prepare_compute_weights(model, components)
+        prepared = model.prepare_compute_weights(components)
         result = model.masked_forward(
             prepared,
-            tokens,
-            masking=MaterializedMasking(
-                component_masks=masks, weight_delta_masks=deltas, routes=routes
+            LMBatchWithDocuments.from_unsegmented_sequences(tokens),
+            masking=model.model.prepare_masking(
+                MaterializedMasking(component_masks=masks, weight_delta_masks=deltas)
             ),
+            routes=routes,
             capture_keys=capture_keys,
             remat=remat,
         )
@@ -170,7 +170,7 @@ def test_masked_forward_gradients_match_the_unplaced_reference(remat: bool):
         actual_v, actual_u = actual_grads.stacks[group]
         for actual, expected in ((actual_v, expected_v), (actual_u, expected_u)):
             expected_host = np.asarray(expected)
-            # BF16 compute: placed and unplaced graphs reassociate differently (SPEC D4),
+            # BF16 compute: placed and unplaced graphs reassociate differently,
             # so small-magnitude entries carry absolute noise scaled by the group's grads.
             np.testing.assert_allclose(
                 np.asarray(actual),
@@ -181,9 +181,8 @@ def test_masked_forward_gradients_match_the_unplaced_reference(remat: bool):
             )
 
 
-@pytest.mark.parametrize("implementation", ("auto", "xla"))
-def test_remat_off_saves_only_batch_scaled_residuals(implementation: AttentionImplementation):
-    cfg, sites, model, tokens, masks, deltas, routes, capture_keys = _fixture(implementation)
+def test_remat_off_saves_only_batch_scaled_residuals():
+    cfg, sites, model, tokens, masks, deltas, routes, capture_keys = _fixture()
     mesh = _mesh()
     rules = from_config("owner", mesh, sites)
     placed_model = place_target(model, rules)
@@ -192,23 +191,25 @@ def test_remat_off_saves_only_batch_scaled_residuals(implementation: AttentionIm
     placed_masks, placed_deltas, placed_routes = _place_batched(mesh, (masks, deltas, routes))
 
     placed_target = placed_model.model
-    assert isinstance(placed_target, GLUDecomposedModel)
+    assert isinstance(placed_target, TransformerDecomposedModel)
     weight_shapes = _weight_matrix_shapes(placed_target, placed_components)
     with jax.set_mesh(mesh):
-        prepared = prepare_compute_weights(placed_model, placed_components)
+        prepared = placed_model.prepare_compute_weights(placed_components)
 
         # Differentiate from the PREPARED compute weights: the once-per-step resident
         # relayout stays outside the audited graph, so every residual below is something
         # the masked forward itself asks the backward to store.
-        def loss(prepared_weights: dict[str, dict[str, Array]]) -> Array:
+        def loss(prepared_weights: TransformerPreparedWeights) -> Array:
             result = placed_model.masked_forward(
                 prepared_weights,
-                placed_tokens,
-                masking=MaterializedMasking(
-                    component_masks=placed_masks,
-                    weight_delta_masks=placed_deltas,
-                    routes=placed_routes,
+                LMBatchWithDocuments.from_unsegmented_sequences(placed_tokens),
+                masking=placed_model.model.prepare_masking(
+                    MaterializedMasking(
+                        component_masks=placed_masks,
+                        weight_delta_masks=placed_deltas,
+                    )
                 ),
+                routes=placed_routes,
                 capture_keys=capture_keys,
                 remat=False,
             )
@@ -265,7 +266,7 @@ def test_remat_off_saves_only_batch_scaled_residuals(implementation: AttentionIm
 
 
 def _weight_matrix_shapes(
-    model: GLUDecomposedModel, components: ComponentStacks
+    model: TransformerDecomposedModel, components: ComponentStacks
 ) -> frozenset[tuple[int, ...]]:
     """Trailing-2D shapes of every frozen weight and component matrix (and transposes)."""
     shapes: set[tuple[int, ...]] = set()

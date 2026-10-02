@@ -9,25 +9,25 @@ experiment, not here.
 """
 
 import re
-from typing import cast
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax.sharding import AxisType
-from jaxtyping import Array
+from jaxtyping import Array, TypeCheckError
 
 from param_decomp.core.components import (
     DENSE_U_AXES,
     DENSE_V_AXES,
     ComponentStacks,
-    Dense,
+    DenseFactorization,
     SiteSpec,
-    site_slots_for,
+    site_stack_indices_for,
 )
 from param_decomp.core.configs import PlacementPresetName
-from param_decomp.core.decomposed_linear import site_out
+from param_decomp.core.decomposed_linear import SiteWeights, site_out
+from param_decomp.core.dict_utils import FrozenMapping
 from param_decomp.core.linear_plan import placed_linear
 from param_decomp.core.model import Positioned, Positionless
 from param_decomp.core.placement import (
@@ -38,10 +38,12 @@ from param_decomp.core.placement import (
 from param_decomp.core.sharding import (
     data_parallel_size,
     hsdp_mesh,
+    place_cpu_arrays,
     place_target,
-    place_via_shardings,
     shard_batch,
 )
+from param_decomp.lm.batch import LMBatchWithDocuments
+from param_decomp.targets.transformer import TransformerPreparedMasking, TransformerPreparedWeights
 
 # Needs >1 jax device; hangs at the default 1 device, so gated behind --runmultidevice.
 # Run via `make test-multidevice` (sets XLA_FLAGS for simulated CPU devices). See conftest.
@@ -60,12 +62,12 @@ def test_frozen_target_fsdp_placement_preserves_the_clean_forward():
     from jax.sharding import PartitionSpec as P
 
     from param_decomp.core.components import SiteC
-    from param_decomp.targets.glu_transformer import (
+    from param_decomp.targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
+    from param_decomp.targets.transformer import (
         GatedMLP,
-        GLUDecomposedModel,
+        TransformerDecomposedModel,
         glu_site_specs,
     )
-    from param_decomp.targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
 
     mesh = hsdp_mesh(1, jax.device_count(), 1)
     cfg = tiny_glu_cfg()
@@ -75,7 +77,7 @@ def test_frozen_target_fsdp_placement_preserves_the_clean_forward():
     placed = place_target(model, rules)
 
     target = placed.model
-    assert isinstance(target, GLUDecomposedModel)
+    assert isinstance(target, TransformerDecomposedModel)
     placed_mlp = target.stacked.mlp
     assert isinstance(placed_mlp, GatedMLP)
     assert isinstance(target.embed.sharding, NamedSharding)
@@ -89,11 +91,17 @@ def test_frozen_target_fsdp_placement_preserves_the_clean_forward():
 
     batch = jax.device_count()  # the (replicate, fsdp) data plane
     tokens = jnp.arange(batch * 8, dtype=jnp.int32).reshape(batch, 8) % cfg.vocab_size
-    expected = jax.jit(lambda target_, x: target_.clean_forward(x, placement=None).output)(
-        model, tokens
-    )
+    expected = jax.jit(
+        lambda target_, x: target_.clean_forward(
+            LMBatchWithDocuments.from_unsegmented_sequences(x), placement=None
+        ).output
+    )(model, tokens)
     with jax.set_mesh(mesh):
-        actual = jax.jit(lambda placed_, x: placed_.clean_forward(x).output)(placed, tokens)
+        actual = jax.jit(
+            lambda placed_, x: placed_.clean_forward(
+                LMBatchWithDocuments.from_unsegmented_sequences(x)
+            ).output
+        )(placed, tokens)
     assert jnp.allclose(actual, expected, rtol=2e-5, atol=2e-5)
 
 
@@ -103,18 +111,14 @@ def test_owner_fsdp_tp_masked_forward_keeps_frozen_megatron_plan():
 
     from param_decomp.core.components import SiteC, init_component_stacks
     from param_decomp.core.init_placed import init_component_stacks_placed
-    from param_decomp.core.model import (
-        MaterializedMasking,
-        PlacedModel,
-        prepare_compute_weights,
-    )
-    from param_decomp.targets.glu_transformer import (
+    from param_decomp.core.model import MaterializedMasking, PlacedModel
+    from param_decomp.targets.lm_output import LMOutput
+    from param_decomp.targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
+    from param_decomp.targets.transformer import (
         canonical_site_cs,
         glu_site_specs,
         site_name,
     )
-    from param_decomp.targets.lm_output import LMOutput
-    from param_decomp.targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
 
     replicate = 2 if jax.device_count() >= 8 else 1
     mesh = Mesh(
@@ -142,20 +146,19 @@ def test_owner_fsdp_tp_masked_forward_keeps_frozen_megatron_plan():
     capture_keys = frozenset(f"resid.{layer + 1}" for layer in range(4))
     unplaced = PlacedModel(model=model, placement=None)
     expected = jax.jit(
-        lambda target, prepared, batch, component, delta, route: (
-            target.masked_forward(
-                prepared,
-                batch,
-                masking=MaterializedMasking(
-                    component_masks=component, weight_delta_masks=delta, routes=route
-                ),
-                capture_keys=capture_keys,
-                remat=True,
-            ).output
-        )
+        lambda target, prepared, batch, component, delta, route: target.masked_forward(
+            prepared,
+            LMBatchWithDocuments.from_unsegmented_sequences(batch),
+            masking=target.model.prepare_masking(
+                MaterializedMasking(component_masks=component, weight_delta_masks=delta)
+            ),
+            routes=route,
+            capture_keys=capture_keys,
+            remat=True,
+        ).output
     )(
         unplaced,
-        prepare_compute_weights(unplaced, components),
+        unplaced.prepare_compute_weights(components),
         tokens,
         component_masks,
         delta_masks,
@@ -175,8 +178,14 @@ def test_owner_fsdp_tp_masked_forward_keeps_frozen_megatron_plan():
     )
 
     def masked(
-        target: PlacedModel[LMOutput],
-        prepared: dict[str, dict[str, Array]],
+        target: PlacedModel[
+            LMBatchWithDocuments,
+            LMOutput,
+            TransformerPreparedWeights,
+            LMBatchWithDocuments,
+            TransformerPreparedMasking,
+        ],
+        prepared: TransformerPreparedWeights,
         batch: Array,
         component: dict[str, Array],
         delta: dict[str, Array],
@@ -184,10 +193,11 @@ def test_owner_fsdp_tp_masked_forward_keeps_frozen_megatron_plan():
     ) -> Array:
         output = target.masked_forward(
             prepared,
-            batch,
-            masking=MaterializedMasking(
-                component_masks=component, weight_delta_masks=delta, routes=route
+            LMBatchWithDocuments.from_unsegmented_sequences(batch),
+            masking=target.model.prepare_masking(
+                MaterializedMasking(component_masks=component, weight_delta_masks=delta)
             ),
+            routes=route,
             capture_keys=capture_keys,
             remat=True,
         ).output
@@ -195,7 +205,7 @@ def test_owner_fsdp_tp_masked_forward_keeps_frozen_megatron_plan():
         return output
 
     with jax.set_mesh(mesh):
-        prepared = prepare_compute_weights(placed_model, placed_components)
+        prepared = placed_model.prepare_compute_weights(placed_components)
         args = (
             placed_model,
             prepared,
@@ -208,7 +218,7 @@ def test_owner_fsdp_tp_masked_forward_keeps_frozen_megatron_plan():
         actual = jax.jit(masked)(*args)
 
         def component_loss(value: ComponentStacks) -> Array:
-            prepared_value = prepare_compute_weights(placed_model, value)
+            prepared_value = placed_model.prepare_compute_weights(value)
             return jnp.sum(
                 masked(
                     placed_model,
@@ -261,17 +271,13 @@ def test_placed_masked_forward_decomposes_only_the_mlp_kinds():
 
     from param_decomp.core.components import init_component_stacks
     from param_decomp.core.init_placed import init_component_stacks_placed
-    from param_decomp.core.model import (
-        MaterializedMasking,
-        PlacedModel,
-        prepare_compute_weights,
-    )
-    from param_decomp.targets.glu_transformer import (
+    from param_decomp.core.model import MaterializedMasking, PlacedModel
+    from param_decomp.targets.lm_output import LMOutput
+    from param_decomp.targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
+    from param_decomp.targets.transformer import (
         glu_site_specs,
         mlp_family_site_cs,
     )
-    from param_decomp.targets.lm_output import LMOutput
-    from param_decomp.targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
 
     cfg = tiny_glu_cfg()
     sites = glu_site_specs(cfg, mlp_family_site_cs(2, 3, 8))
@@ -286,8 +292,14 @@ def test_placed_masked_forward_decomposes_only_the_mlp_kinds():
     rules = from_config("ddp", mesh, sites)
 
     def masked(
-        target: PlacedModel[LMOutput],
-        prepared: dict[str, dict[str, Array]],
+        target: PlacedModel[
+            LMBatchWithDocuments,
+            LMOutput,
+            TransformerPreparedWeights,
+            LMBatchWithDocuments,
+            TransformerPreparedMasking,
+        ],
+        prepared: TransformerPreparedWeights,
         batch_: Array,
         component: dict[str, Array],
         delta: dict[str, Array],
@@ -295,10 +307,11 @@ def test_placed_masked_forward_decomposes_only_the_mlp_kinds():
     ) -> Array:
         output = target.masked_forward(
             prepared,
-            batch_,
-            masking=MaterializedMasking(
-                component_masks=component, weight_delta_masks=delta, routes=route
+            LMBatchWithDocuments.from_unsegmented_sequences(batch_),
+            masking=target.model.prepare_masking(
+                MaterializedMasking(component_masks=component, weight_delta_masks=delta)
             ),
+            routes=route,
             capture_keys=frozenset(),
             remat=True,
         ).output
@@ -308,7 +321,7 @@ def test_placed_masked_forward_decomposes_only_the_mlp_kinds():
     unplaced = PlacedModel(model=model, placement=None)
     expected = jax.jit(masked)(
         unplaced,
-        prepare_compute_weights(unplaced, components),
+        unplaced.prepare_compute_weights(components),
         tokens,
         component_masks,
         delta_masks,
@@ -325,7 +338,7 @@ def test_placed_masked_forward_decomposes_only_the_mlp_kinds():
         (component_masks, delta_masks, routes),
     )
     with jax.set_mesh(mesh):
-        prepared = prepare_compute_weights(placed_model, placed_components)
+        prepared = placed_model.prepare_compute_weights(placed_components)
         actual = jax.jit(masked)(
             placed_model,
             prepared,
@@ -345,8 +358,8 @@ def test_glu_prepared_weights_follow_the_declared_compute_row():
 
     from param_decomp.core.components import SiteC, init_component_stacks
     from param_decomp.core.placement import PlacedRule
-    from param_decomp.targets.glu_transformer import canonical_site_cs, glu_site_specs, site_name
     from param_decomp.targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
+    from param_decomp.targets.transformer import canonical_site_cs, glu_site_specs, site_name
 
     mesh = Mesh(
         np.asarray(jax.devices()[:4]).reshape(1, 2, 2),
@@ -360,8 +373,8 @@ def test_glu_prepared_weights_follow_the_declared_compute_row():
     rules = from_config("zero1", mesh, sites)
     compute = PlacedRule(
         mesh=mesh,
-        label="test/swapped_compute",
-        rule={"d_in": ("tp",), "d_out": ("tp",), "C": ("fsdp",)},
+        label_for_log="test/swapped_compute",
+        rule=FrozenMapping({"d_in": ("tp",), "d_out": ("tp",), "C": ("fsdp",)}),
     )
     rules = replace(rules, components=replace(rules.components, compute_weights=compute))
 
@@ -371,10 +384,10 @@ def test_glu_prepared_weights_follow_the_declared_compute_row():
     # The swapped compute row still gathers the zero1 masters over `replicate`, so the
     # residents carry the chained-reduced typing (size-1 replicate included — jax's dot
     # transpose matches reduced sets against contraction specs as written).
-    assert prepared["gate"]["V"].sharding.spec == P(
+    assert prepared.per_kind["gate"]["V"].sharding.spec == P(
         None, "tp", "fsdp", reduced=frozenset({"replicate"})
     )
-    assert prepared["gate"]["U"].sharding.spec == P(
+    assert prepared.per_kind["gate"]["U"].sharding.spec == P(
         None, "fsdp", "tp", reduced=frozenset({"replicate"})
     )
 
@@ -394,7 +407,11 @@ def test_chained_reduced_transpose_defers_master_reduction_past_the_scan():
         axis_types=(AxisType.Explicit,) * 3,
     )
     sites = tuple(
-        SiteSpec(name=f"linear.{i}", factorization=Dense(d_in=8, d_out=8, C=4), group="linear")
+        SiteSpec(
+            name=f"linear.{i}",
+            factorization=DenseFactorization(d_in=8, d_out=8, C=4),
+            group="linear",
+        )
         for i in range(2)
     )
     rules = from_config("owner", mesh, sites)
@@ -415,7 +432,7 @@ def test_chained_reduced_transpose_defers_master_reduction_past_the_scan():
     def loss(value: Array) -> Array:
         components = ComponentStacks(
             stacks={"linear": (value, jnp.zeros((2, 4, 8), value.dtype))},
-            site_slots=site_slots_for(sites),
+            site_stack_indices=site_stack_indices_for(sites),
         )
         compute = component_stacks_to_compute_weights(components, rules.components).stacks[
             "linear"
@@ -462,24 +479,20 @@ def test_replicated_resident_masked_forward_gathers_no_weights_in_loop(
 
     from param_decomp.core.components import SiteC, init_component_stacks
     from param_decomp.core.init_placed import init_component_stacks_placed
-    from param_decomp.core.model import (
-        MaterializedMasking,
-        PlacedModel,
-        prepare_compute_weights,
-    )
+    from param_decomp.core.model import MaterializedMasking, PlacedModel
     from param_decomp.core.placement import batch_axes
     from param_decomp.core.tools.hlo_census import (
         _computations,
         _loop_computations,
         collective_census,
     )
-    from param_decomp.targets.glu_transformer import (
+    from param_decomp.targets.lm_output import LMOutput
+    from param_decomp.targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
+    from param_decomp.targets.transformer import (
         canonical_site_cs,
         glu_site_specs,
         site_name,
     )
-    from param_decomp.targets.lm_output import LMOutput
-    from param_decomp.targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
 
     replicate = 4 if jax.device_count() >= 8 else 2
     devices = np.asarray(jax.devices()[: 2 * replicate])
@@ -516,8 +529,14 @@ def test_replicated_resident_masked_forward_gathers_no_weights_in_loop(
     capture_keys = frozenset(f"resid.{layer + 1}" for layer in range(4))
 
     def masked(
-        target: PlacedModel[LMOutput],
-        prepared: dict[str, dict[str, Array]],
+        target: PlacedModel[
+            LMBatchWithDocuments,
+            LMOutput,
+            TransformerPreparedWeights,
+            LMBatchWithDocuments,
+            TransformerPreparedMasking,
+        ],
+        prepared: TransformerPreparedWeights,
         batch_: Array,
         component: dict[str, Array],
         delta: dict[str, Array],
@@ -525,10 +544,11 @@ def test_replicated_resident_masked_forward_gathers_no_weights_in_loop(
     ) -> Array:
         output = target.masked_forward(
             prepared,
-            batch_,
-            masking=MaterializedMasking(
-                component_masks=component, weight_delta_masks=delta, routes=route
+            LMBatchWithDocuments.from_unsegmented_sequences(batch_),
+            masking=target.model.prepare_masking(
+                MaterializedMasking(component_masks=component, weight_delta_masks=delta)
             ),
+            routes=route,
             capture_keys=capture_keys,
             remat=True,
         ).output
@@ -538,7 +558,7 @@ def test_replicated_resident_masked_forward_gathers_no_weights_in_loop(
     unplaced = PlacedModel(model=model, placement=None)
     expected = jax.jit(masked)(
         unplaced,
-        prepare_compute_weights(unplaced, components),
+        unplaced.prepare_compute_weights(components),
         tokens,
         component_masks,
         delta_masks,
@@ -565,13 +585,19 @@ def test_replicated_resident_masked_forward_gathers_no_weights_in_loop(
         def component_loss(
             value: ComponentStacks,
             *,
-            placed_model: PlacedModel[LMOutput] = placed_model,
+            placed_model: PlacedModel[
+                LMBatchWithDocuments,
+                LMOutput,
+                TransformerPreparedWeights,
+                LMBatchWithDocuments,
+                TransformerPreparedMasking,
+            ] = placed_model,
             placed_tokens: Array = placed_tokens,
             placed_component: dict[str, Array] = placed_component,
             placed_delta: dict[str, Array] = placed_delta,
             placed_routes: dict[str, Array] = placed_routes,
         ) -> Array:
-            prepared_value = prepare_compute_weights(placed_model, value)
+            prepared_value = placed_model.prepare_compute_weights(value)
             return jnp.sum(
                 masked(
                     placed_model,
@@ -584,7 +610,7 @@ def test_replicated_resident_masked_forward_gathers_no_weights_in_loop(
             )
 
         with jax.set_mesh(mesh):
-            prepared = prepare_compute_weights(placed_model, placed_components)
+            prepared = placed_model.prepare_compute_weights(placed_components)
             outputs[arm] = jax.jit(masked)(
                 placed_model,
                 prepared,
@@ -651,7 +677,11 @@ def test_owner_replicated_resident_faithfulness_transition_is_identity():
         axis_types=(AxisType.Explicit,) * 2,
     )
     sites = tuple(
-        SiteSpec(name=f"linear.{i}", factorization=Dense(d_in=8, d_out=8, C=8), group="linear")
+        SiteSpec(
+            name=f"linear.{i}",
+            factorization=DenseFactorization(d_in=8, d_out=8, C=8),
+            group="linear",
+        )
         for i in range(4)
     )
     rules = from_config("owner-replicated-resident", mesh, sites)
@@ -667,7 +697,7 @@ def test_owner_replicated_resident_faithfulness_transition_is_identity():
                 jax.device_put(host_u, components_rows.optimizer_state.sharding_for(DENSE_U_AXES)),
             )
         },
-        site_slots=site_slots_for(sites),
+        site_stack_indices=site_stack_indices_for(sites),
     )
     with jax.set_mesh(mesh):
         materialize = jax.jit(
@@ -682,13 +712,7 @@ def test_owner_replicated_resident_faithfulness_transition_is_identity():
     assert faith_v.sharding == components.stacks["linear"][0].sharding
 
 
-def test_place_via_shardings_does_not_device_put_complete_local_leaves(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A frozen target is loaded completely and identically on every process. Placement must
-    serve each addressable shard from that local copy; `device_put` first equality-gathers any
-    axis replicated across processes, which materializes a process-count-multiplied global leaf.
-    """
+def test_place_cpu_arrays_preserves_values_and_assigns_device_slices() -> None:
     from jax.sharding import Mesh, NamedSharding
     from jax.sharding import PartitionSpec as P
 
@@ -698,24 +722,42 @@ def test_place_via_shardings_does_not_device_put_complete_local_leaves(
         axis_types=(AxisType.Explicit,) * 2,
     )
     full = jnp.arange(8 * 12, dtype=jnp.bfloat16).reshape(8, 12)
+    tree = {"weights": (full, full), "step": jnp.array(3, dtype=jnp.int32), "absent": None}
     shardings = {
-        "replicated": NamedSharding(mesh, P()),
-        "fsdp": NamedSharding(mesh, P(None, "fsdp")),
+        "weights": (NamedSharding(mesh, P()), NamedSharding(mesh, P(None, "fsdp"))),
+        "step": NamedSharding(mesh, P()),
+        "absent": None,
     }
+    placed = place_cpu_arrays(tree, shardings)
 
-    def device_put_is_the_regression(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("loaded target placement must not call jax.device_put")
+    assert jax.tree.structure(placed) == jax.tree.structure(tree)
+    for original, actual, expected_sharding in zip(
+        jax.tree.leaves(tree), jax.tree.leaves(placed), jax.tree.leaves(shardings), strict=True
+    ):
+        assert actual.sharding == expected_sharding
+        assert actual.shape == original.shape
+        assert actual.dtype == original.dtype
+        np.testing.assert_array_equal(actual, original)
+        for shard in actual.addressable_shards:
+            np.testing.assert_array_equal(shard.data, np.asarray(original)[shard.index])
 
-    monkeypatch.setattr(jax, "device_put", device_put_is_the_regression)
-    placed = cast(
-        dict[str, jax.Array],
-        place_via_shardings({"replicated": full, "fsdp": full}, shardings),
-    )
 
-    assert placed["replicated"].sharding == shardings["replicated"]
-    assert placed["fsdp"].sharding == shardings["fsdp"]
-    assert jnp.array_equal(placed["replicated"], full)
-    assert jnp.array_equal(placed["fsdp"], full)
+def test_place_cpu_arrays_rejects_mismatched_structure_and_nonarray_leaves() -> None:
+    from jax.sharding import NamedSharding
+    from jax.sharding import PartitionSpec as P
+
+    sharding = NamedSharding(hsdp_mesh(1, 1, jax.device_count()), P())
+    array = jnp.ones(4)
+    with pytest.raises(TypeCheckError):
+        place_cpu_arrays({"weight": array}, {"different": sharding})
+    with pytest.raises(TypeCheckError):
+        place_cpu_arrays({"weight": array}, sharding)
+    with pytest.raises(TypeCheckError):
+        place_cpu_arrays({"weight": array, "count": 3}, {"weight": sharding, "count": sharding})
+    with pytest.raises(TypeCheckError):
+        place_cpu_arrays({"weight": np.ones(4)}, {"weight": sharding})
+    with pytest.raises(TypeCheckError):
+        place_cpu_arrays({"weight": array}, {"weight": array})
 
 
 def test_shard_batch_preserves_global_data():
@@ -762,7 +804,6 @@ def test_decomposed_linear_forward_and_backward_are_tp_invariant():
     v = jnp.arange(8 * 6, dtype=jnp.float32).reshape(8, 6) / 50
     u = jnp.arange(6 * 12, dtype=jnp.float32).reshape(6, 12) / 70
     mask = jax.nn.sigmoid(jnp.arange(4 * 3 * 6).reshape(4, 3, 6) / 20)
-    frozen = jnp.zeros((12, 8))
 
     def run(tp: int) -> tuple[Array, tuple[Array, Array, Array, Array]]:
         # a fixed four-device mesh: the varied axis is tp, and the toy dims tile ÷4
@@ -781,14 +822,24 @@ def test_decomposed_linear_forward_and_backward_are_tp_invariant():
         rules = from_config(
             "owner",
             mesh,
-            (SiteSpec(name="linear", factorization=Dense(d_in=8, d_out=12, C=6), group="linear"),),
+            (
+                SiteSpec(
+                    name="linear",
+                    factorization=DenseFactorization(d_in=8, d_out=12, C=6),
+                    group="linear",
+                ),
+            ),
         )
 
+        unread_target = jnp.zeros((12, 8))
+
         def forward(x: Array, v: Array, u: Array, mask: Array) -> Array:
-            return site_out(x, v, u, frozen, mask, None, None, rules, None)
+            return site_out(x, SiteWeights(unread_target, v, u, None, rules), mask, None, None)
 
         def loss(x: Array, v: Array, u: Array, mask: Array) -> Array:
-            return jnp.sum(site_out(x, v, u, frozen, mask, None, None, rules, None) ** 2)
+            return jnp.sum(
+                site_out(x, SiteWeights(unread_target, v, u, None, rules), mask, None, None) ** 2
+            )
 
         with jax.set_mesh(mesh):
             output = jax.jit(forward)(*args)
@@ -808,27 +859,26 @@ def test_jitted_sharded_inits_match_eager_values():
     """`init_*_placed` (model-owned `.shardings`) must be a placement-only change: same
     values as the host (unsharded) init fns (threefry is partitionable, so generating under
     jit with `out_shardings` cannot perturb the stream — only op fusion can reassociate the
-    scaling, SPEC D4: rel ~1e-7), with the expected pure-HSDP placements (V FSDP d_in on
+    scaling, rel ~1e-7), with the expected pure-HSDP placements (V FSDP d_in on
     `fsdp`, U FSDP d_out on `fsdp`, C never sharded) — for a heterogeneous-C site set
     spanning attention and MLP matrices."""
     from jax.sharding import NamedSharding
     from jax.sharding import PartitionSpec as P
 
     from param_decomp.core.adversary import full_source_components, init_persistent_sources
-    from param_decomp.core.ci_fn import (
+    from param_decomp.core.ci_fn.implementations.chunkwise.arch import (
         Chunk,
-        ChunkwiseTransformerCIArch,
-        MHACIAttention,
-        build_ci_fn,
+        ChunkwiseTransformerCIFnArch,
     )
+    from param_decomp.core.ci_fn.implementations.transformer.layers import MHACIFnAttention
     from param_decomp.core.components import SiteC, init_component_stacks
     from param_decomp.core.init_placed import (
-        init_ci_fn_placed,
         init_component_stacks_placed,
         init_sources_sharded,
     )
-    from param_decomp.targets.glu_transformer import canonical_site_cs, glu_site_specs
     from param_decomp.targets.testing import tiny_glu_cfg
+    from param_decomp.targets.transformer import canonical_site_cs, glu_site_specs
+    from param_decomp.tests.placed_ci_fn import placed_ci_fn
 
     # The HSDP mesh `(replicate, fsdp)`: on the n-device CPU sim with n not a multiple of 8,
     # `fsdp` takes the full count and `replicate` is 1. V FSDP-shards d_in on `fsdp`, U FSDP
@@ -891,7 +941,9 @@ def test_jitted_sharded_inits_match_eager_values():
         # d_in = n+1 (does not tile N=n) -> placement construction must crash.
         indivisible = (
             SiteSpec(
-                "layers.2.mlp.gate_proj", Dense(d_in=n + 1, d_out=8 * n, C=16), group="gate_proj"
+                "layers.2.mlp.gate_proj",
+                DenseFactorization(d_in=n + 1, d_out=8 * n, C=16),
+                group="gate_proj",
             ),
         )
         try:
@@ -904,22 +956,22 @@ def test_jitted_sharded_inits_match_eager_values():
             raise AssertionError("expected a non-dividing d_in to fail at placement construction")
 
     first_block = min(int(s.name.split(".")[1]) for s in sites)
-    arch = ChunkwiseTransformerCIArch(
+    arch = ChunkwiseTransformerCIFnArch(
         chunks=(
             Chunk(input_taps=(f"resid.{first_block}",), output_sites=tuple(s.name for s in sites)),
         ),
         input_dim=cfg.n_embd,
         d_model=16,
         n_blocks=1,
-        attention=MHACIAttention(n_heads=2),
+        attention=MHACIFnAttention(mask="bidirectional", implementation="xla", n_heads=2),
         ffn_hidden=8 * n,
         ffn_kind="gelu",
         learned_norm_scale=False,
     )
-    ci_placed = init_ci_fn_placed(
+    ci_placed = placed_ci_fn(
         arch, sites, jax.random.PRNGKey(2), mesh, from_config("zero1", mesh, sites)
     )
-    ci_eager = build_ci_fn(arch, sites, jax.random.PRNGKey(2))
+    ci_eager = arch.initialize(sites, None, jax.random.PRNGKey(2))
     for got, want in zip(jax.tree.leaves(ci_placed), jax.tree.leaves(ci_eager), strict=True):
         assert got.shape == want.shape and got.dtype == want.dtype
         assert jnp.allclose(jnp.asarray(got), want, rtol=1e-6, atol=0)
@@ -928,23 +980,23 @@ def test_jitted_sharded_inits_match_eager_values():
     src_sharded = init_sources_sharded(
         sites,
         Positioned(16),
-        "sc",
-        1,
+        "bsc",
+        n,
         jnp.float32,
         jax.random.PRNGKey(3),
         mesh,
     )
-    src_eager = init_persistent_sources(sites, (1, 16), jnp.float32, jax.random.PRNGKey(3))
+    src_eager = init_persistent_sources(sites, (n, 16), jnp.float32, jax.random.PRNGKey(3))
     # The placed init must be BIT-identical to the eager stacked init (same per-site
     # keys): uniform draws are pure threefry bit-ops, so even eager-vs-jit is exact. The
     # storage is one slot-major stack per semantic group: slot axis replicated, C on tp.
-    assert src_sharded.site_slots == src_eager.site_slots
+    assert src_sharded.site_stack_indices == src_eager.site_stack_indices
     for group, stack in src_sharded.stacks.items():
         components = full_source_components(stack.components)
         assert isinstance(components.sharding, NamedSharding)
         assert isinstance(stack.delta.sharding, NamedSharding)
-        assert components.sharding.spec == P(None, None, None, "tp"), group
-        assert stack.delta.sharding.spec == P(None, None, None), group
+        assert components.sharding.spec == P(None, ("replicate", "fsdp"), None, "tp"), group
+        assert stack.delta.sharding.spec == P(None, ("replicate", "fsdp"), None), group
     for got, want in zip(jax.tree.leaves(src_sharded), jax.tree.leaves(src_eager), strict=True):
         assert jnp.array_equal(got, want)
     for name in site_names:
@@ -980,8 +1032,7 @@ def test_jitted_sharded_inits_match_eager_values():
 
 
 def test_fresh_pgd_c_bc_sources_are_replica_identical():
-    """Fresh-PGD `c`/`bc` sources must be REPLICA-IDENTICAL across every shard (issue
-    #660; SPEC S16, D4): the `c` -> `(1,1,C)` / `bc` -> `(B,1,C)` component leaf carries no
+    """Fresh-PGD `c`/`bc` sources must be REPLICA-IDENTICAL across every shard: the `c` -> `(1,1,C)` / `bc` -> `(B,1,C)` component leaf carries no
     sharded leading axis, so the adversarial source the masks see must hold the same
     values on every device. Replica-identity follows from the init key being replicated
     (the trainer derives it from `fold_in(run_key, step)`, identical on all processes).
@@ -1003,8 +1054,12 @@ def test_fresh_pgd_c_bc_sources_are_replica_identical():
     batch = 4 * n
     seq = 7
     sites = (
-        SiteSpec("layers.2.self_attn.q_proj", Dense(d_in=16, d_out=16, C=8), group="q_proj"),
-        SiteSpec("layers.3.mlp.down_proj", Dense(d_in=8, d_out=16, C=13), group="down_proj"),
+        SiteSpec(
+            "layers.2.self_attn.q_proj", DenseFactorization(d_in=16, d_out=16, C=8), group="q_proj"
+        ),
+        SiteSpec(
+            "layers.3.mlp.down_proj", DenseFactorization(d_in=8, d_out=16, C=13), group="down_proj"
+        ),
     )
 
     for scope in ("c", "bc"):
@@ -1030,34 +1085,33 @@ def test_fresh_pgd_c_bc_sources_are_replica_identical():
 
 def test_init_sources_sharded_shape_and_placement_per_arm():
     """Every (positions x source_shape) arm: the stored shape and `PartitionSpec` per
-    `configs.SourceShape`, and the positionless raise for `sc`/`bsc`."""
+    `configs.BatchSourceShape`, and the positionless raise for `bsc`."""
     from jax.sharding import NamedSharding
     from jax.sharding import PartitionSpec as P
 
     from param_decomp.core.adversary import full_source_components
-    from param_decomp.core.components import Dense, SiteSpec
-    from param_decomp.core.configs import SourceShape
+    from param_decomp.core.components import DenseFactorization, SiteSpec
+    from param_decomp.core.configs import BatchSourceShape
     from param_decomp.core.init_placed import init_sources_sharded
     from param_decomp.core.model import PositionAxis
 
     mesh = hsdp_mesh(1, jax.device_count(), 1)
     C, B = 8 * jax.device_count(), 4 * jax.device_count()
     site = SiteSpec(
-        name="layers.2.mlp.gate_proj", factorization=Dense(d_in=C, d_out=C, C=C), group="g"
+        name="layers.2.mlp.gate_proj",
+        factorization=DenseFactorization(d_in=C, d_out=C, C=C),
+        group="g",
     )
 
-    def init(positions: PositionAxis, source_shape: SourceShape):
+    def init(positions: PositionAxis, source_shape: BatchSourceShape):
         return init_sources_sharded(
             (site,), positions, source_shape, B, jnp.float32, jax.random.PRNGKey(3), mesh
         )
 
     batch_sharded = ("replicate", "fsdp")
-    cases: list[tuple[PositionAxis, SourceShape, tuple[int, ...], P]] = [
-        (Positioned(16), "c", (1, 1), P(None, None)),
+    cases: list[tuple[PositionAxis, BatchSourceShape, tuple[int, ...], P]] = [
         (Positioned(16), "bc", (B, 1), P(batch_sharded, None)),
-        (Positioned(16), "sc", (1, 16), P(None, None)),
         (Positioned(16), "bsc", (B, 16), P(batch_sharded, None)),
-        (Positionless(), "c", (1,), P(None)),
         (Positionless(), "bc", (B,), P(batch_sharded)),
     ]
     for positions, source_shape, want_leading, want_delta_spec in cases:
@@ -1071,57 +1125,58 @@ def test_init_sources_sharded_shape_and_placement_per_arm():
         assert components.sharding.spec == P(None, *want_delta_spec, "tp")
         assert isinstance(stack.delta.sharding, NamedSharding)
         assert stack.delta.sharding.spec == P(None, *want_delta_spec)
-    for positioned_only in ("sc", "bsc"):
-        with pytest.raises(ValueError, match="positionless"):
-            init(Positionless(), positioned_only)
+    with pytest.raises(ValueError, match="positionless"):
+        init(Positionless(), "bsc")
 
 
-def test_source_pool_placed_gather_and_scatter_add_grad():
-    """A replicated pool gathers by batch-sharded indices under the Explicit mesh."""
+def test_batch_source_pool_placed_gather_and_scatter_add_grad():
+    """Each batch element updates its selected particle under pure tensor parallelism."""
     from jax.sharding import NamedSharding
     from jax.sharding import PartitionSpec as P
 
     from param_decomp.core.adversary import SourceStacks, full_source_components
-    from param_decomp.core.components import Dense, SiteSpec
+    from param_decomp.core.components import DenseFactorization, SiteSpec
+    from param_decomp.core.configs import SourcePoolConfig
     from param_decomp.core.init_placed import init_source_pool_sharded
     from param_decomp.core.masking import sample_source_pool
 
-    mesh = hsdp_mesh(1, jax.device_count(), 1)
+    mesh = hsdp_mesh(1, 1, jax.device_count())
     C, B, T, N = 8 * jax.device_count(), 4 * jax.device_count(), 6, 8
     site = SiteSpec(
         name="layers.2.mlp.gate_proj",
-        factorization=Dense(d_in=C, d_out=C, C=C),
+        factorization=DenseFactorization(d_in=C, d_out=C, C=C),
         group="g",
     )
-    pool = init_source_pool_sharded((site,), N, jnp.float32, jax.random.PRNGKey(3), mesh)
+    pool_cfg = SourcePoolConfig(size_per_batch_element=N)
+    pool = init_source_pool_sharded((site,), pool_cfg, B, jnp.float32, jax.random.PRNGKey(3), mesh)
     stack = pool.stacks["g"]
     components = full_source_components(stack.components)
-    assert components.shape == (1, N, C)
+    assert components.shape == (1, B, N, C)
     assert isinstance(components.sharding, NamedSharding)
-    assert components.sharding.spec == P(None, None, "tp")
-    assert stack.delta.shape == (1, N)
+    assert components.sharding.spec == P(None, ("replicate", "fsdp"), None, "tp")
+    assert stack.delta.shape == (1, B, N)
     assert isinstance(stack.delta.sharding, NamedSharding)
-    assert stack.delta.sharding.spec == P(None, None)
+    assert stack.delta.sharding.spec == P(None, ("replicate", "fsdp"), None)
 
     batch_sharded = ("replicate", "fsdp")
     with jax.set_mesh(mesh):
-        ci = jax.device_put(
-            jnp.zeros((B, T, C), jnp.float32),
-            NamedSharding(mesh, P(batch_sharded, None, "tp")),
-        )
-        sampled = jax.jit(lambda p: sample_source_pool(jax.random.PRNGKey(0), {site.name: ci}, p))(
-            pool
-        )[site.name]
+        sampled = jax.jit(lambda p: sample_source_pool(jax.random.PRNGKey(0), p, (B, T)))(pool)[
+            site.name
+        ]
         assert isinstance(sampled.components, jax.Array)
         assert sampled.components.shape == (B, 1, C)
         assert sampled.delta.shape == (B, 1)
         assert isinstance(sampled.components.sharding, NamedSharding)
         assert isinstance(sampled.delta.sharding, NamedSharding)
-        assert sampled.components.sharding.spec == P(batch_sharded, None, "tp")
-        assert sampled.delta.sharding.spec == P(batch_sharded, None)
+        assert sampled.components.sharding.is_equivalent_to(
+            NamedSharding(mesh, P(batch_sharded, None, "tp")), ndim=3
+        )
+        assert sampled.delta.sharding.is_equivalent_to(
+            NamedSharding(mesh, P(batch_sharded, None)), ndim=2
+        )
 
         def summed(p: SourceStacks) -> Array:
-            source = sample_source_pool(jax.random.PRNGKey(0), {site.name: ci}, p)[site.name]
+            source = sample_source_pool(jax.random.PRNGKey(0), p, (B, T))[site.name]
             assert isinstance(source.components, jax.Array)
             return jnp.sum(source.components) + jnp.sum(source.delta)
 
@@ -1141,8 +1196,8 @@ def test_faithfulness_deltas_lower_piecewise_without_full_master_gathers():
 
     from param_decomp.core.components import SiteC, init_component_stacks
     from param_decomp.core.model import faithfulness_weight_deltas
-    from param_decomp.targets.glu_transformer import canonical_site_cs, glu_site_specs, site_name
     from param_decomp.targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
+    from param_decomp.targets.transformer import canonical_site_cs, glu_site_specs, site_name
 
     mesh = Mesh(
         np.asarray(jax.devices()[:8]).reshape(2, 2, 2),
@@ -1201,8 +1256,8 @@ def test_per_site_metric_readers_trace_under_stack_owned_placement():
     from param_decomp.core.components import SiteC
     from param_decomp.core.init_placed import init_component_stacks_placed
     from param_decomp.core.train import _grad_norm_metrics, uv_norm_ratio_metrics
-    from param_decomp.targets.glu_transformer import canonical_site_cs, glu_site_specs
     from param_decomp.targets.testing import tiny_glu_cfg
+    from param_decomp.targets.transformer import canonical_site_cs, glu_site_specs
 
     n = jax.device_count()
     assert n % 2 == 0, n
@@ -1230,6 +1285,6 @@ def test_per_site_metric_readers_trace_under_stack_owned_placement():
         grad_norms = jax.jit(lambda c: _grad_norm_metrics(c, {}, mesh))(vu)
         ratios = uv_norm_ratio_metrics(vu)
 
-    for name, _, _ in vu.site_slots:
+    for name, _, _ in vu.site_stack_indices:
         assert np.isfinite(float(grad_norms[f"grad_norms/components.vu['{name}'][0]"])), name
         assert np.isfinite(float(ratios[f"uv_norm_ratio['{name}']"])), name

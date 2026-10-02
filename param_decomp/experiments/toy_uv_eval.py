@@ -10,7 +10,7 @@ from typing import Literal
 import numpy as np
 from jaxtyping import Array
 
-from param_decomp.core.components import SiteComponents
+from param_decomp.core.components import ComponentStacks
 from param_decomp.core.configs import (
     Checkpointing,
     NoCheckpointing,
@@ -18,7 +18,7 @@ from param_decomp.core.configs import (
     UVPlotsConfig,
 )
 from param_decomp.core.metrics import LogRecord, PNGImage
-from param_decomp.core.model import PlacedModel
+from param_decomp.core.model import ComponentActivations, PlacedModel
 from param_decomp.core.slow_eval import (
     PermutationMetricSpec,
     PositionCI,
@@ -28,23 +28,27 @@ from param_decomp.core.slow_eval import (
 )
 
 
-def toy_uv_spec[Out](
-    model: PlacedModel[Out], metric: UVPlotsConfig | None
+def toy_uv_spec[TargetIn, Out, PreparedT: ComponentActivations, Conditioning, PreparedMaskingT](
+    model: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
+    metric: UVPlotsConfig | None,
 ) -> PermutationMetricSpec:
     """Resolve the optional typed UV-plot metric over the toy model's sites."""
-    return resolve_permutation_metrics(model.site_names, [] if metric is None else [metric])
+    return resolve_permutation_metrics(model.model.site_names, [] if metric is None else [metric])
 
 
 def render_uv_metric(
     spec: PermutationMetricSpec,
-    components_vu: dict[str, SiteComponents],
+    components_vu: ComponentStacks,
     probe_ci_upper: dict[str, Array],
 ) -> LogRecord:
     """Render the authored ``UVPlots`` operation into typed PNG values."""
     assert spec.want_uv_plots, "UVPlots renderer requires an authored UVPlots metric"
+    host_stacks = {
+        group: (np.asarray(v), np.asarray(u)) for group, (v, u) in components_vu.stacks.items()
+    }
     components = {
-        name: (np.asarray(site_components.V), np.asarray(site_components.U))
-        for name, site_components in components_vu.items()
+        name: (host_stacks[group][0][index], host_stacks[group][1][index])
+        for name, group, index in components_vu.site_stack_indices
     }
     perm_source = {name: np.asarray(probe_ci_upper[name]) for name in spec.permutation}
     return {

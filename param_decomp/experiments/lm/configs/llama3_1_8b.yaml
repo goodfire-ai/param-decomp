@@ -1,0 +1,172 @@
+# Latest canonical run: https://wandb.ai/goodfire/param-decomp-llama/runs/p-8b091031
+# Model-only run name replaces the source run's experiment label.
+run_name: llama3-1-8b
+cadence:
+  checkpointing:
+    kind: periodic
+    save_every: 625
+    retention:
+      kind: keep_last
+      n: 1
+data:
+  train:
+    kind: name
+    name: fineweb350bt_llama3_docs512_r9bb295dd_seed0_train48_v2
+  eval:
+    kind: name
+    name: fineweb350bt_llama3_docs512_r9bb295dd_eval284_v2
+eval:
+  batch_size: 256
+  every: 125
+  metrics:
+  - n_batches_accum: 1
+    type: CIHistograms
+  - ci_alive_threshold: 0.0
+    type: ComponentActivationDensity
+  - ci_alive_threshold: 0.0
+    groups: null
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  - type: CIMeanPerComponent
+  # Adds per-position active-CI diagnostics; absent from p-8b091031
+  - type: CIActiveCountsPerPosition
+  - init: random
+    source_shape: c
+    n_steps: 20
+    step_size: 0.1
+    type: PGDReconLoss
+  n_steps: 1
+  slow_every: 1250
+  slow_on_first_step: true
+decomposition:
+  sites:
+    kind: glu_transformer
+    layers:
+      kind: all
+    cs:
+      q: 4096
+      k: 1024
+      v: 1024
+      o: 4096
+      gate: 14336
+      up: 14336
+      down: 14336
+    # Retired neuron_aligned -> supported nonlinearity_aligned;
+    # initialization geometry differs from p-8b091031.
+    initialization: nonlinearity_aligned
+  ci:
+    type: chunkwise_transformer
+    blocks_per_chunk: 1
+    input_tap: all_block_resids
+    d_model: 4096
+    n_blocks: 4
+    attention:
+      kind: mha
+      # Explicit bidirectional CI mask, matching p-8b091031's implicit behavior.
+      mask: bidirectional
+      n_heads: 64
+      implementation: flash
+    ffn:
+      kind: gelu
+      hidden: 16384
+pd:
+  batch_size: 1024
+  ci_fn_optimizer:
+    type: muon
+    grad_clip_norm: 1.0
+    lr_schedule:
+      max_val: 0.0001
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 1.0
+        frac: 0.1
+        interp: cosine
+    ns_dtype: bfloat16
+  components_optimizer:
+    type: muon
+    grad_clip_norm: 1.0
+    lr_schedule:
+      max_val: 0.0001
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 1.0
+        frac: 0.1
+        interp: cosine
+    ns_dtype: bfloat16
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 0
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - frequency:
+      coeff: 2.8e-06
+      reference_datapoint_count: 6553600
+      ema_halflife_steps: 200
+    coeff: 8.5e-06
+    type: ImportanceMinimalityLoss
+    gamma:
+      max_val: 1.0
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 0.9
+        frac: 0.01
+      - at: 1.0
+        frac: 0.01
+    normalize_at_one: true
+  - type: MergedStochasticSubsetPooledPPGDReconLoss
+    coeff: 1.0
+    adv_fraction: 0.5
+    adversary_objective: e2e
+    n_warmup_steps: 2
+    routing:
+      type: uniform_k_subset
+    optimizer:
+      beta1: 0.01
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        max_val: 0.02
+        points:
+        - at: 0.0
+          frac: 0.0
+        - at: 0.05
+          frac: 1.0
+        - at: 1.0
+          frac: 1.0
+      type: adam
+    source_dtype: float32
+    # p-8b091031 used pool: {size: 8192, group_size: 32}. The current per-batch
+    # API uses 8192 / 1024 = 8; same total, different ownership and random draws.
+    pool:
+      size_per_batch_element: 8
+  - coeff: 100000.0
+    type: FaithfulnessLoss
+  seed: 0
+  steps: 50000
+runtime:
+  compilation_cache_dir: ~/.cache/param-decomp/xla
+  sharding: owner-replicated-resident
+  remat_recon_forwards: true
+  remat_ci_fn: true
+  compiler_options: tuned-v2
+  launch_env:
+    xla_python_client_allocator: cuda_async
+  mesh:
+    data: 32
+    tp: 4
+target:
+  attention_implementation: flash
+  weights_dtype: bfloat16
+  spec:
+    kind: hf
+    model_class: transformers.LlamaForCausalLM
+    model_name: meta-llama/Llama-3.1-8B
+  output_edge:
+    kind: streamed
+    n_vocab_chunks: 32
+# Drop the source run's experiment-specific group; retain its W&B project.
+wandb:
+  project: param-decomp-llama

@@ -22,11 +22,11 @@ two-axis `(data, tp)` mesh."""
 
 SemanticAxis = Literal[
     # Axes of the component V/U stacks and their faithfulness deltas. A dense stack
-    # uses `stack`, `d_in`, `d_out`, and `C`. An expert-blocked stack
-    # (`components.ExpertBlocked`) adds `expert` for its per-expert block axis and
-    # `C_block` for the components within one expert, and its `d_in`/`d_out` name the
-    # dimensions of one expert's block. `C` stays the flat per-site component axis the
-    # mask/CI boundary sees (expert-major, of size `n_experts * C_block`).
+    # uses `stack`, `d_in`, `d_out`, and `C`. A block-factored stack
+    # (`components.BlockedFactorization`) adds `expert` — the placement rows' spelling
+    # of the block/table axis — and `C_block` for the components within one block, and
+    # its `d_in`/`d_out` name the dimensions of one block. `C` stays the flat per-site
+    # component axis the mask/CI boundary sees (block-major, of size `n_blocks * C_block`).
     "stack",
     "d_in",
     "d_out",
@@ -41,10 +41,13 @@ SemanticAxis = Literal[
     "kv_head",
     "ffn_hidden",
     "input",
-    # the narrow CI emission's token-major routed-slot axis (k·c_per_expert wide). NOT
-    # `C`: its slots are routed-order, carry no expert co-location, and replicate at the
-    # activation waist rather than sharding over tp.
-    "routed_c",
+    # independent matrix axes besides `stack`
+    "depth",
+    "site",
+    # the selected CI emission's token-major pick axis (k·c_per_block wide). NOT `C`:
+    # its picks are in selection order, carry no block co-location, and replicate at
+    # the activation waist rather than sharding over tp.
+    "selected_c",
     # activation waists (`components.activation_axes`) and the attention head-split view
     "batch",
     "position",

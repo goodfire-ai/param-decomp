@@ -13,6 +13,7 @@ at the first measured step. The step-cost path re-checks as a tripwire.
 """
 
 import dataclasses
+import math
 from collections.abc import Sequence
 from typing import Any, Literal, cast, get_args
 
@@ -41,10 +42,8 @@ def checked_device_kind(devices: Sequence[Any]) -> DeviceKind:
     return cast(DeviceKind, kind)
 
 
-def peak_bf16_dense_flops_per_second(device_kind: DeviceKind) -> float | None:
-    """Dense (non-sparsity) bf16 tensor-core peak of ONE device, from the vendor datasheet.
-
-    `None` is the deliberate no-peak arm (CPU test/toy runs) — HFU is not emitted there."""
+def peak_bf16_dense_flops_per_second(device_kind: DeviceKind) -> float:
+    """Dense BF16 tensor-core peak of one GPU; CPU has no declared peak."""
     match device_kind:
         case "NVIDIA B200":
             return 2.25e15  # HGX/DGX B200 datasheets: 4.5 PFLOPS/GPU with sparsity, dense = half
@@ -53,7 +52,7 @@ def peak_bf16_dense_flops_per_second(device_kind: DeviceKind) -> float | None:
         case "NVIDIA H100 80GB HBM3":
             return 989.4e12  # H100 SXM datasheet: 1,979 TFLOPS bf16 with sparsity, dense = half
         case "cpu":
-            return None
+            raise ValueError("CPU has no declared BF16 peak; utilization requires a supported GPU")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -80,7 +79,7 @@ class StepCost:
         return cls(
             flops_per_step=float(analysis["flops"]) * len(devices),
             n_devices=len(devices),
-            peak_flops_per_device=peak_bf16_dense_flops_per_second(kind),
+            peak_flops_per_device=None if kind == "cpu" else peak_bf16_dense_flops_per_second(kind),
         )
 
     def hfu(self, step_time_s: float) -> float | None:
@@ -88,3 +87,35 @@ class StepCost:
         if self.peak_flops_per_device is None:
             return None
         return self.flops_per_step / (step_time_s * self.n_devices * self.peak_flops_per_device)
+
+
+@dataclasses.dataclass(frozen=True)
+class ModelCost:
+    """Analytical work for one global step, normalized by the whole fleet's BF16 peak.
+
+    The numerator may include optimizer arithmetic. This is a common BF16 reference,
+    not a prediction of throughput for mixed-precision or scalar operations.
+    """
+
+    flops_per_step: float
+    n_devices: int
+    device_kind: DeviceKind
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.flops_per_step) or self.flops_per_step < 0 or self.n_devices <= 0:
+            raise ValueError("Model FLOPs must be nonnegative and device count must be positive")
+        if self.device_kind not in DEVICE_KINDS:
+            raise ValueError(f"Unknown device kind: {self.device_kind!r}")
+        peak_bf16_dense_flops_per_second(self.device_kind)
+
+    @property
+    def ideal_step_time_s(self) -> float:
+        """Seconds at the declared dense BF16 peak."""
+        peak = peak_bf16_dense_flops_per_second(self.device_kind)
+        return self.flops_per_step / (self.n_devices * peak)
+
+    def mfu(self, step_time_s: float) -> float:
+        """Return a fraction, without clipping values that expose inconsistent inputs."""
+        if not math.isfinite(step_time_s) or step_time_s <= 0:
+            raise ValueError("Measured step time must be finite and positive")
+        return self.ideal_step_time_s / step_time_s

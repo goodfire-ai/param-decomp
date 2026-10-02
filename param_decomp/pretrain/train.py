@@ -1,7 +1,7 @@
 """`python -m param_decomp.pretrain.train <config.yaml>` — JAX next-token-CE pretraining of an in-house target LM.
 
 The composition root and only I/O layer for pretraining; the step stays pure. Reuses the
-decomposition trainer's substrate — `param_decomp.pretrain.batch_data` (offline pre-tokenized parquet,
+decomposition trainer's substrate — `param_decomp.lm.batch_data` (offline pre-tokenized parquet,
 never streamed), `param_decomp.core.sharding` (`initialize_topology` / `hsdp_mesh`) — but the
 trajectory is a plain LM: fp32 master params, AdamW (weight-decay on 2D weights only,
 matching the torch `configure_optimizers` grouping), cosine LR + warmup, grad clip,
@@ -9,7 +9,7 @@ next-token cross-entropy. Data-parallel only: the model is small and replicated 
 device; `jax.jit`'s mean-over-the-sharded-batch inserts the grad all-reduce.
 
 Orbax sharded checkpoints under `<run_dir>/ckpts/` are the resume substrate (SIGTERM →
-save → SLURM requeue → resume from latest). At each save the pretrained weights are ALSO
+save → restart → resume from latest). At each save the pretrained weights are ALSO
 written to the decomposition trainer's `pretrain_cache/<project>-<run_id>/` layout
 (`cache.write_pretrain_cache`) so the target is immediately decomposable.
 """
@@ -37,10 +37,17 @@ from jaxtyping import Array, Float, Int
 from orbax.checkpoint.checkpoint_managers import preservation_policy
 from orbax.checkpoint.type_handlers import ArrayHandler, register_type_handler
 
-from param_decomp.core.placement import batch_axes
 from param_decomp.core.sharding import HSDP_MESH_AXES, initialize_topology
-from param_decomp.infra.dataset_store import resolve_dataset_ref
-from param_decomp.pretrain.batch_data import BatchSchedule, ShardServer, scan_shards
+from param_decomp.core.world_size import world_size_from_device_count
+from param_decomp.infra.dataset_store import read_dataset_meta, resolve_dataset_ref
+from param_decomp.lm.batch import LMBatchWithDocuments
+from param_decomp.lm.batch_data import (
+    ShardServer,
+    global_lm_batch,
+    scan_shards,
+)
+from param_decomp.lm.batch_schedule import BatchSchedule
+from param_decomp.metric_schema import MetricNames, validate_resume_schema
 from param_decomp.pretrain.cache import (
     cache_dir_for,
     torch_model_config_dict,
@@ -107,20 +114,22 @@ def make_optimizer(cfg: PretrainConfig, model: PretrainModel) -> optax.GradientT
 
 
 def _next_token_ce(
-    logits: Float[Array, "b t1 vocab"], tokens: Int[Array, "b t"]
+    logits: Float[Array, "b t1 vocab"], batch: LMBatchWithDocuments
 ) -> Float[Array, ""]:
-    """Mean cross-entropy of position-`i` logits predicting token `i+1`, truncating the
-    logits to the shifted targets' width: train rows carry a final-label extra token
-    (`block_size + 1` wide); a val row may be `block_size` wide, leaving the last logit
-    targetless."""
-    targets = tokens[:, 1:]
+    """Mean CE over adjacent tokens in the same document; empty comparisons yield zero.
+
+    Train rows carry an extra final label (`block_size + 1`); a validation row may
+    be `block_size` wide, leaving its last logit targetless.
+    """
+    targets = batch.batch.token_ids[:, 1:]
     logp = jax.nn.log_softmax(logits[:, : targets.shape[1]].astype(jnp.float32), axis=-1)
     picked = jnp.take_along_axis(logp, targets[..., None], axis=-1)[..., 0]
-    return -picked.mean()
+    weights = batch.sequence.next_token_mask()
+    return -jnp.sum(jnp.where(weights, picked, 0)) / jnp.maximum(jnp.sum(weights), 1)
 
 
-TrainStepFn = Callable[[TrainState, Int[Array, "b tplus1"]], tuple[TrainState, Array]]
-EvalStepFn = Callable[[PretrainModel, Int[Array, "b tplus1"]], Array]
+TrainStepFn = Callable[[TrainState, LMBatchWithDocuments], tuple[TrainState, Array]]
+EvalStepFn = Callable[[PretrainModel, LMBatchWithDocuments], Array]
 
 
 def make_train_step(cfg: PretrainConfig, optimizer: optax.GradientTransformation) -> TrainStepFn:
@@ -128,11 +137,11 @@ def make_train_step(cfg: PretrainConfig, optimizer: optax.GradientTransformation
     block = cfg.block_size
 
     @eqx.filter_jit
-    def step_fn(state: TrainState, tokens: Int[Array, "b tplus1"]) -> tuple[TrainState, Array]:
+    def step_fn(state: TrainState, batch: LMBatchWithDocuments) -> tuple[TrainState, Array]:
         def loss_fn(model: PretrainModel) -> Array:
             cast_model = _cast_arrays(model, compute_dtype)
-            logits = model_logits(cast_model, tokens[:, :block])
-            return _next_token_ce(logits, tokens)
+            logits = model_logits(cast_model, jax.tree.map(lambda a: a[:, :block], batch))
+            return _next_token_ce(logits, batch)
 
         loss, grads = eqx.filter_value_and_grad(loss_fn)(state.model)
         params = eqx.filter(state.model, eqx.is_array)
@@ -151,9 +160,11 @@ def make_eval_step(cfg: PretrainConfig) -> EvalStepFn:
     block = cfg.block_size
 
     @eqx.filter_jit
-    def eval_fn(model: PretrainModel, tokens: Int[Array, "b tplus1"]) -> Array:
-        logits = model_logits(_cast_arrays(model, compute_dtype), tokens[:, :block])
-        return _next_token_ce(logits, tokens)
+    def eval_fn(model: PretrainModel, batch: LMBatchWithDocuments) -> Array:
+        logits = model_logits(
+            _cast_arrays(model, compute_dtype), jax.tree.map(lambda a: a[:, :block], batch)
+        )
+        return _next_token_ce(logits, batch)
 
     return eval_fn
 
@@ -172,11 +183,6 @@ def _cast_arrays(model: PretrainModel, dtype: jnp.dtype) -> PretrainModel:
 def _replicate(tree: PretrainModel, mesh: Mesh) -> PretrainModel:
     repl = NamedSharding(mesh, P())
     return jax.tree.map(lambda a: jax.device_put(a, repl) if eqx.is_array(a) else a, tree)
-
-
-def _global_token_batch(local: np.ndarray, mesh: Mesh, global_batch: int) -> jax.Array:
-    sharding = NamedSharding(mesh, P(batch_axes(mesh)))
-    return jax.make_array_from_process_local_data(sharding, local, (global_batch, local.shape[1]))
 
 
 def _make_checkpoint_manager(ckpt_dir: Path, keep_last: int) -> ocp.CheckpointManager:
@@ -210,13 +216,13 @@ class MetricsSink:
         self._is_main = is_main
         self._wandb = None
         self._jsonl = None
+        self._metric_names = MetricNames(cfg.wandb.metric_schema if cfg.wandb else "legacy")
         if not is_main:
             return
-        self._jsonl = open(cfg.paths.run_dir / "metrics.jsonl", "a")  # noqa: SIM115 — sink lives the whole run
         if cfg.wandb is not None:
             import wandb
 
-            wandb.init(
+            tracker = wandb.init(
                 project=cfg.wandb.project,
                 entity=cfg.wandb.entity,
                 id=cfg.run_id,
@@ -224,9 +230,13 @@ class MetricsSink:
                 group=cfg.wandb.group,
                 tags=list(cfg.wandb.tags),
                 resume="allow",
-                config=cfg.model_dump(mode="json"),
             )
+            if tracker.resumed:
+                validate_resume_schema(tracker.config.as_dict(), cfg.wandb.metric_schema)
+            else:
+                tracker.config.update(cfg.model_dump(mode="json"), allow_val_change=False)
             self._wandb = wandb
+        self._jsonl = open(cfg.paths.run_dir / "metrics.jsonl", "a")  # noqa: SIM115 — sink lives the whole run
 
     def log(self, step: int, record: dict[str, float]) -> None:
         if not self._is_main:
@@ -237,7 +247,7 @@ class MetricsSink:
         self._jsonl.write(json.dumps({"step": step, **record}) + "\n")
         self._jsonl.flush()
         if self._wandb is not None:
-            self._wandb.log(record, step=step)
+            self._wandb.log(self._metric_names.record(record), step=step)
 
     def finish(self) -> None:
         if self._jsonl is not None:
@@ -257,7 +267,7 @@ def _pretrain_mesh(replicate: int, fsdp: int) -> Mesh:
 def train(cfg: PretrainConfig) -> None:
     _install_sigterm_flag()
     if cfg.dp is not None:
-        initialize_topology(cfg.dp, cfg.gpus_per_node)
+        initialize_topology(world_size_from_device_count(cfg.dp), cfg.gpus_per_node)
         mesh = _pretrain_mesh(cfg.dp // cfg.gpus_per_node, cfg.gpus_per_node)
     else:
         mesh = _pretrain_mesh(1, jax.device_count())
@@ -277,7 +287,7 @@ def train(cfg: PretrainConfig) -> None:
         )
 
     key = random.PRNGKey(cfg.seed)
-    model = _replicate(init_model(cfg.model, key), mesh)
+    model = _replicate(init_model(cfg.model, key, cfg.attention_implementation), mesh)
     optimizer = make_optimizer(cfg, model)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
     reference = TrainState(model=model, opt_state=opt_state, step=_global_zero(mesh))
@@ -295,14 +305,25 @@ def train(cfg: PretrainConfig) -> None:
     # The shards are `block_size + 1` wide (the extra token is the final label); serve the
     # full row and split x/y inside the step.
     seq_plus1 = cfg.block_size + 1
-    shards = scan_shards(resolve_dataset_ref(cfg.data, paths.data_root))
+    train_dir = resolve_dataset_ref(cfg.data, paths.data_root)
+    train_meta = read_dataset_meta(train_dir)
+    assert train_meta.seq_len == seq_plus1, (
+        f"training rows must contain block_size + 1 = {seq_plus1} tokens"
+    )
+    shards = scan_shards(train_dir)
     schedule = BatchSchedule(shards, cfg.global_batch, cfg.seed)
     server = ShardServer(schedule, seq_plus1, jax.process_index(), n_proc)
     if cfg.val_data is not None:
-        # A held-out split may be staged exactly `block_size` wide; `_next_token_ce`
-        # pairs that width with its shifted targets.
-        eval_shards = scan_shards(resolve_dataset_ref(cfg.val_data, paths.data_root))
-        eval_width = cfg.block_size
+        eval_dir = resolve_dataset_ref(cfg.val_data, paths.data_root)
+        eval_meta = read_dataset_meta(eval_dir)
+        assert eval_meta.tokenizer_name == train_meta.tokenizer_name, (
+            "training and evaluation datasets must use the same tokenizer"
+        )
+        assert eval_meta.seq_len in (cfg.block_size, seq_plus1), (
+            "evaluation rows must contain block_size or block_size + 1 tokens"
+        )
+        eval_shards = scan_shards(eval_dir)
+        eval_width = eval_meta.seq_len
     else:
         eval_shards, eval_width = shards, seq_plus1
     eval_schedule = BatchSchedule(eval_shards, cfg.global_batch, cfg.seed + 1)
@@ -318,8 +339,10 @@ def train(cfg: PretrainConfig) -> None:
     window_t0 = time.time()
 
     for step in range(start_step, cfg.num_iterations):
-        tokens = _global_token_batch(server.local_batch(step), mesh, cfg.global_batch)
-        state, loss = step_fn(state, tokens)
+        batch = global_lm_batch(
+            server.local_batch(step), mesh, cfg.global_batch, cfg.model.vocab_size
+        )
+        state, loss = step_fn(state, batch)
         now = step + 1
 
         if now % cfg.log_every == 0 or now == cfg.num_iterations:
@@ -347,12 +370,13 @@ def train(cfg: PretrainConfig) -> None:
         if now % cfg.val_every == 0 or now == cfg.num_iterations:
             val = 0.0
             for j in range(cfg.val_steps):
-                eval_tokens = _global_token_batch(
+                eval_batch = global_lm_batch(
                     eval_server.local_batch((now // cfg.val_every) * cfg.val_steps + j),
                     mesh,
                     cfg.global_batch,
+                    cfg.model.vocab_size,
                 )
-                val += float(eval_fn(state.model, eval_tokens))
+                val += float(eval_fn(state.model, eval_batch))
             sink.log(now, {"val_loss": val / cfg.val_steps})
             if is_main:
                 print(f"  val loss {val / cfg.val_steps:.4f}", flush=True)

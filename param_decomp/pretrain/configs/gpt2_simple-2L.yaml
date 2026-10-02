@@ -1,6 +1,7 @@
 run_name: gpt2_simple-2L
 seed: 45
 dtype: float32
+attention_implementation: xla
 global_batch: 8
 num_iterations: 100000
 warmup_iters: 600

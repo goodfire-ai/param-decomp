@@ -1,5 +1,5 @@
 """`runtime.compilation_cache_dir` is authored, never ambient: the schema requires it,
-the seats author the per-user home (XLA's autotune subdir is not safe for unrelated
+the configs author the per-user home (XLA's autotune subdir is not safe for unrelated
 Unix users to share), and the trainer only `~`-expands what was written."""
 
 from pathlib import Path
@@ -28,7 +28,7 @@ def test_authored_tilde_expands_to_the_running_users_home():
 
 
 def test_every_seat_authors_a_per_user_cache_dir():
-    """Per-user isolation is the seats' AUTHORED value, not a code default — a seat
+    """Per-user isolation is the configs' authored value, not a code default — a config
     pointing the cache under a shared artifact root reintroduces the cross-user autotune
     collision."""
     for seat in sorted(CONFIGS.glob("*.yaml")):

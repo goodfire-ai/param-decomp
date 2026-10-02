@@ -1,4 +1,4 @@
-"""The qwen36_moe TARGETED (tPD, SPEC §11) composition wiring: authored targeted config →
+"""The qwen36_moe TARGETED (tPD) composition wiring: authored targeted config →
 built run through `build_targeted_experiment_config`, the pool-tokenizer seam, and the
 refusals nothing else exercises for this combination. Resolution-level only — no 35B
 weights and no HF snapshot; the placed targeted step is the trace gate's job
@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from param_decomp.core.components import ExpertBlocked
+from param_decomp.core.components import BlockedFactorization
 from param_decomp.experiments.lm.config import (
     QWEN36_MOE_MODEL_CLASS,
     QWEN36_MOE_MODEL_NAME,
@@ -18,7 +18,7 @@ from param_decomp.experiments.lm.config import (
     build_targeted_experiment_config,
     resolve_decomposition,
 )
-from param_decomp.experiments.lm.resolved import Qwen36MoeTargetConfig
+from param_decomp.experiments.lm.resolved import HFSnapshotWeights, Qwen36MoeTargetConfig
 from param_decomp.experiments.lm.training_targeted import (
     HubTokenizer,
     SnapshotTokenizer,
@@ -65,7 +65,12 @@ def _raw_targeted_config() -> dict[str, Any]:
                 "blocks_per_chunk": 4,
                 "d_model": 64,
                 "n_blocks": 1,
-                "attention": {"kind": "mha", "n_heads": 8},
+                "attention": {
+                    "mask": "bidirectional",
+                    "kind": "mha",
+                    "implementation": "xla",
+                    "n_heads": 8,
+                },
                 "ffn": {"kind": "gelu", "hidden": 128},
             },
         },
@@ -97,7 +102,7 @@ def _raw_targeted_config() -> dict[str, Any]:
                     "type": "PersistentPGDReconLoss",
                     "coeff": 0.5,
                     "n_warmup_steps": 2,
-                    "source_shape": "sc",
+                    "source_shape": "bsc",
                     "optimizer": {
                         "type": "adam",
                         "beta1": 0.01,
@@ -134,7 +139,6 @@ def _raw_targeted_config() -> dict[str, Any]:
             "attention_implementation": "xla",
             "weights_dtype": "bfloat16",
             "output_edge": {"kind": "materialized"},
-            "experts_execution": "routed",
         },
         "runtime": {
             "compilation_cache_dir": "~/.cache/param-decomp/xla",
@@ -153,13 +157,13 @@ def test_qwen36_targeted_config_builds(tmp_path: Path):
 
     target = built.target
     assert isinstance(target, Qwen36MoeTargetConfig)
-    assert target.model_name == QWEN36_MOE_MODEL_NAME
+    assert target.weights == HFSnapshotWeights(QWEN36_MOE_MODEL_NAME)
     assert len(target.sites) == N_LAYER * SITE_KINDS
 
     resolved = resolve_decomposition(cfg.target, cfg.decomposition, tmp_path)
     by_group = {spec.group: spec.factorization for spec in resolved.site_specs}
-    assert by_group["experts_gate"] == ExpertBlocked(
-        n_experts=N_EXPERTS, d_in=2048, d_out=512, c_per_expert=1
+    assert by_group["experts_gate"] == BlockedFactorization(
+        n_blocks=N_EXPERTS, d_in=2048, d_out=512, c_per_block=1
     )
 
 
@@ -186,12 +190,12 @@ def test_qwen36_targeted_build_refuses_layer_isolation(tmp_path: Path):
     raw = _raw_targeted_config()
     raw["decomposition"]["sites"]["layers"] = {"kind": "range", "start": 0, "end": 8}
     cfg = LMTargetedExperimentConfig.model_validate(raw)
-    with pytest.raises(AssertionError, match="whole-grid"):
+    with pytest.raises(AssertionError, match="coverage the architecture derives"):
         build_targeted_experiment_config(cfg, "p-00000000", tmp_path)
 
 
 def test_qwen36_targeted_shape_cannot_spell_faithfulness():
-    """tPD has no faithfulness role (T3): neither the loss entry nor the warmup knobs
+    """tPD has no faithfulness role: neither the loss entry nor the warmup knobs
     are representable on the targeted shape."""
     raw = _raw_targeted_config()
     raw["pd"]["loss_metrics"].append({"type": "FaithfulnessLoss", "coeff": 1.0e03})

@@ -4,7 +4,10 @@ from typing import Literal
 
 import jax
 
-from param_decomp.core.ci_fn import LayerwiseMLPCIArch, init_layerwise_mlp_ci_fn
+from param_decomp.core.ci_fn.implementations.layerwise_mlp import (
+    LayerwiseMLPCIFnArch,
+    init_layerwise_mlp_ci_fn,
+)
 from param_decomp.core.components import SiteC, init_component_stacks, require_full_emission
 from param_decomp.core.configs import (
     KeepAllCheckpoints,
@@ -24,6 +27,7 @@ from param_decomp.targets.tms import (
     site_specs,
     tms_decomposed_model,
 )
+from param_decomp.tests.sequence import unsegmented_sequence_layout
 
 
 def _toy_setup():
@@ -32,7 +36,7 @@ def _toy_setup():
     target = init_tms_target(cfg, jax.random.PRNGKey(3))
     model = tms_decomposed_model(cfg, target, sites)
     ci_fn = init_layerwise_mlp_ci_fn(
-        LayerwiseMLPCIArch(
+        LayerwiseMLPCIFnArch(
             hidden_dims=(16,),
             has_position_axis=False,
             input_names=site_input_tap_keys(tuple(s.name for s in sites)),
@@ -42,7 +46,13 @@ def _toy_setup():
     )
     vu = init_component_stacks(sites, jax.random.PRNGKey(1))
     probe = single_feature_probe(cfg.n_features)
-    ci = ci_fn(capture_clean(model, probe, ci_fn.capture_keys), remat=False, placement=None)
+    ci = ci_fn(
+        capture_clean(model, probe, ci_fn.capture_keys),
+        None,
+        vu,
+        sequence=unsegmented_sequence_layout(capture_clean(model, probe, ci_fn.capture_keys)),
+        remat=False,
+    )
     lower = {name: require_full_emission(value) for name, value in ci.lower.items()}
     upper = {name: require_full_emission(value) for name, value in ci.upper.items()}
     return PlacedModel(model=model, placement=None), vu, lower, upper
@@ -61,7 +71,7 @@ def test_render_uv_metric_returns_transport_independent_png():
         model, UVPlotsConfig(identity_patterns=None, dense_patterns=None)
     )
 
-    record = toy_uv_eval.render_uv_metric(spec, dict(vu.sites_items()), probe_upper)
+    record = toy_uv_eval.render_uv_metric(spec, vu, probe_upper)
 
     assert set(record) == {"slow_eval/figures/uv_matrices"}
     assert isinstance(record["slow_eval/figures/uv_matrices"], PNGImage)
@@ -82,7 +92,7 @@ def test_permuted_ci_heatmap_due_fires_only_at_the_final_step_without_checkpoint
 def test_render_permuted_ci_heatmap_returns_both_leaky_views():
     model, _, ci_lower, ci_upper = _toy_setup()
     permutation: dict[str, Literal["identity", "dense"]] = {
-        name: "identity" for name in model.site_names
+        name: "identity" for name in model.model.site_names
     }
 
     record = toy_uv_eval.render_permuted_ci_heatmap(ci_lower, ci_upper, permutation)
@@ -97,7 +107,7 @@ def test_render_permuted_ci_heatmap_returns_both_leaky_views():
 def test_permuted_ci_heatmap_dense_site_permutes_by_mass_not_hungarian():
     model, _, ci_lower, ci_upper = _toy_setup()
     permutation: dict[str, Literal["identity", "dense"]] = {
-        name: "dense" for name in model.site_names
+        name: "dense" for name in model.model.site_names
     }
 
     record = toy_uv_eval.render_permuted_ci_heatmap(ci_lower, ci_upper, permutation)
@@ -112,13 +122,13 @@ def test_toy_figure_owners_emit_disjoint_keys():
     into one step and ASSERTS on key collisions — overlap here would crash real runs."""
     model, vu, ci_lower, ci_upper = _toy_setup()
     permutation: dict[str, Literal["identity", "dense"]] = {
-        name: "identity" for name in model.site_names
+        name: "identity" for name in model.model.site_names
     }
     spec = toy_uv_eval.toy_uv_spec(
         model, UVPlotsConfig(identity_patterns=None, dense_patterns=None)
     )
 
     heatmaps = toy_uv_eval.render_permuted_ci_heatmap(ci_lower, ci_upper, permutation)
-    uv = toy_uv_eval.render_uv_metric(spec, dict(vu.sites_items()), ci_upper)
+    uv = toy_uv_eval.render_uv_metric(spec, vu, ci_upper)
 
     assert not heatmaps.keys() & uv.keys()

@@ -20,7 +20,7 @@ attention never materializes one.
 The attention-pattern reproduction is target-specific (RoPE base, GQA, head reshape,
 Qwen3's per-layer QK-norm), so it is TARGET-OWNED: the model exposes
 `attention_pattern_from_qk(q_site, q_flat, k_flat)` (the `AttnPatternModel` protocol below —
-`GLUDecomposedModel` delegates to the layer's own attention module). This file only drives it; nothing here switches on a model family. A target
+`TransformerDecomposedModel` delegates to the layer's own attention module). This file only drives it; nothing here switches on a model family. A target
 without the method refuses at step-build time.
 
 Masked and clean Q/K run in COMPUTE_DT (bf16, matching the trained model); the
@@ -29,20 +29,18 @@ pattern softmax and the KL reduction are fp32.
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 import jax.numpy as jnp
 import numpy as np
 from jax import random
-from jaxtyping import Array, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Float, PRNGKeyArray
 
-from param_decomp.core.components import SiteCI, map_site_ci, site_ci_values
-from param_decomp.core.jit_util import filter_jit
-from param_decomp.core.linear_plan import uniform_like
-from param_decomp.core.model import (
-    MaterializedMasking,
-    PlacedModel,
-)
+from param_decomp.core.components import SiteCI
+from param_decomp.core.masking import sample_component_mask, sample_delta_mask
+from param_decomp.core.model import ComponentActivations, MaterializedMasking, PlacedModel
+from param_decomp.lm.batch import LMBatch, LMBatchWithDocuments
+from param_decomp.sequence import SequenceLayout
 from param_decomp.targets.lm_output import LMOutput
 
 
@@ -58,6 +56,7 @@ class AttnPatternModel(Protocol):
         q_site: str,
         q_flat: Float[Array, "B T qd"],
         k_flat: Float[Array, "B T kvd"],
+        sequence: SequenceLayout,
     ) -> Float[Array, "B H T T"]: ...
 
 
@@ -96,33 +95,53 @@ def _pattern_kl(target_pattern: Array, masked_pattern: Array) -> Array:
     return jnp.sum(target_pattern * (log_target - log_masked))
 
 
-AttnPatternsStep = Callable[
+type AttnPatternsStep[
+    TargetIn: LMBatch | LMBatchWithDocuments,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+] = Callable[
     [
-        PlacedModel[LMOutput],
-        Any,
-        Int[Array, "*leading"],
+        PlacedModel[TargetIn, LMOutput, PreparedT, Conditioning, PreparedMaskingT],
+        PreparedT,
+        Conditioning,
         Mapping[str, SiteCI],
         dict[str, Array],
         PRNGKeyArray,
     ],
     tuple[dict[str, Array], dict[str, int]],
 ]
-"""`(model, prepared_weights, tokens, ci_lower, clean_site_outputs_by_site, key) ->
-({q_site: sum_kl}, {q_site: n_dists})` — one batch's per-layer summed KL (fp32) and
-distribution counts. The clean-side Q/K values come from the pass's shared batch context;
-only the masked forward runs here. `key` is unused by the deterministic CI step. `model`
+"""`(model, prepared_weights, conditioning, ci_lower, clean_site_outputs_by_site, key)
+-> ({q_site: sum_kl}, {q_site: n_dists})` — one batch's per-layer summed KL (fp32) and
+distribution counts. The clean-side Q/K values and `conditioning` (the clean forward's conditioning
+decisions the masked forward reproduces) come from the pass's shared batch context; only
+the masked forward runs here. `key` is unused by the deterministic CI step. `model`
 (frozen-weight-bearing) is the jit ARG."""
 
 
-def attn_output_key_by_site(model_static: PlacedModel[LMOutput]) -> dict[str, str]:
+def attn_output_key_by_site[
+    TargetIn: LMBatch | LMBatchWithDocuments,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](
+    model_static: PlacedModel[TargetIn, LMOutput, PreparedT, Conditioning, PreparedMaskingT],
+) -> dict[str, str]:
     """The decomposed q/k sites' canonical output capture keys — the clean-capture demand
     this eval declares on the shared batch context."""
-    layer_pairs = _attn_layer_sites(model_static.site_names)
+    layer_pairs = _attn_layer_sites(model_static.model.site_names)
     requested_sites = tuple(site for pair in layer_pairs for site in pair)
     return dict(zip(requested_sites, model_static.site_output_keys(requested_sites), strict=True))
 
 
-def _attn_pattern_model(model: PlacedModel[LMOutput]) -> AttnPatternModel:
+def _attn_pattern_model[
+    TargetIn: LMBatch | LMBatchWithDocuments,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](
+    model: PlacedModel[TargetIn, LMOutput, PreparedT, Conditioning, PreparedMaskingT],
+) -> AttnPatternModel:
     """Narrow the bundle's target to the pattern-capable surface — re-derived from the
     traced model arg each call, never closed over (the HLO-baking rule)."""
     inner = model.model
@@ -130,155 +149,171 @@ def _attn_pattern_model(model: PlacedModel[LMOutput]) -> AttnPatternModel:
     return inner
 
 
-def _attention_patterns(
-    model: PlacedModel[LMOutput],
+def _attention_patterns[
+    TargetIn: LMBatch | LMBatchWithDocuments,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](
+    model: PlacedModel[TargetIn, LMOutput, PreparedT, Conditioning, PreparedMaskingT],
     layer_pairs: tuple[tuple[str, str], ...],
     site_outputs: dict[str, Array],
+    sequence: SequenceLayout,
 ) -> dict[str, Array]:
     """Per-layer target-owned attention pattern derived from captured Q/K outputs."""
     pattern_model = _attn_pattern_model(model)
     return {
-        q: pattern_model.attention_pattern_from_qk(q, site_outputs[q], site_outputs[k])
+        q: pattern_model.attention_pattern_from_qk(q, site_outputs[q], site_outputs[k], sequence)
         for q, k in layer_pairs
     }
 
 
-def _attention_pattern_kl_by_layer(
-    model: PlacedModel[LMOutput],
+def _attention_pattern_kl_by_layer[
+    TargetIn: LMBatch | LMBatchWithDocuments,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](
+    model: PlacedModel[TargetIn, LMOutput, PreparedT, Conditioning, PreparedMaskingT],
     layer_pairs: tuple[tuple[str, str], ...],
     masked_outputs: dict[str, Array],
     target_patterns: dict[str, Array],
+    sequence: SequenceLayout,
 ) -> dict[str, Array]:
     pattern_model = _attn_pattern_model(model)
     return {
         q: _pattern_kl(
             target_patterns[q],
-            pattern_model.attention_pattern_from_qk(q, masked_outputs[q], masked_outputs[k]),
+            pattern_model.attention_pattern_from_qk(
+                q, masked_outputs[q], masked_outputs[k], sequence
+            ),
         )
         for q, k in layer_pairs
     }
 
 
-def _assert_position_axis(model_static: PlacedModel[LMOutput]) -> None:
+def _assert_position_axis[
+    TargetIn: LMBatch | LMBatchWithDocuments,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](
+    model_static: PlacedModel[TargetIn, LMOutput, PreparedT, Conditioning, PreparedMaskingT],
+) -> None:
     """Attention patterns are `(B, H, T_query, T_key)` causal maps over the position
     axis; the metric only applies to a positioned LM target (the `AttnPatternModel`
     capability assert in the step factories rejects non-attention targets)."""
-    assert model_static.has_position_axis, (
+    assert model_static.model.has_position_axis, (
         "attn-patterns eval is LM-only (causal attention over the position axis)"
     )
 
 
-def make_ci_attn_patterns_step(
-    model_static: PlacedModel[LMOutput],
-    compiler_options: dict[str, bool | int | str] | None = None,
-) -> AttnPatternsStep:
-    """Deterministic CI-mask attention-pattern step: one masked forward over the shared
-    context's clean-side Q/K values."""
+type _MaskingFrom = Callable[[Mapping[str, SiteCI], PRNGKeyArray], MaterializedMasking]
+"""`(ci_lower, key) -> the masked forward's masking` — what distinguishes the two
+attention-pattern metrics; everything else about the step is shared."""
+
+
+def _make_attn_patterns_step[
+    TargetIn: LMBatch | LMBatchWithDocuments,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](
+    model_static: PlacedModel[TargetIn, LMOutput, PreparedT, Conditioning, PreparedMaskingT],
+    masking_from: _MaskingFrom,
+) -> AttnPatternsStep[TargetIn, PreparedT, Conditioning, PreparedMaskingT]:
+    """One masked forward over the shared context's clean-side Q/K values, its per-layer
+    attention-pattern KL against the clean patterns summed, plus the per-layer count of
+    scored distributions."""
     _assert_position_axis(model_static)
     assert isinstance(model_static.model, AttnPatternModel), (
         f"attn-patterns eval needs a target exposing attention_pattern_from_qk; {type(model_static.model).__name__} does not"
     )
-    layer_pairs = _attn_layer_sites(model_static.site_names)
+    layer_pairs = _attn_layer_sites(model_static.model.site_names)
     output_key_by_site = attn_output_key_by_site(model_static)
     site_output_keys = tuple(output_key_by_site.values())
 
     def step(
-        model: PlacedModel[LMOutput],
-        prepared_weights: Any,
-        tokens: Int[Array, "*leading"],
-        ci_lower: Mapping[str, SiteCI],
-        clean_site_outputs_by_site: dict[str, Array],
-        _key: PRNGKeyArray,
-    ) -> tuple[dict[str, Array], dict[str, int]]:
-        target_patterns = _attention_patterns(model, layer_pairs, clean_site_outputs_by_site)
-        masked_captures_by_key = model.masked_forward(
-            prepared_weights,
-            tokens,
-            masking=MaterializedMasking(component_masks=ci_lower),
-            capture_keys=frozenset(site_output_keys),
-            remat=False,
-        ).captures
-        masked_site_outputs_by_site = {
-            site: masked_captures_by_key[key] for site, key in output_key_by_site.items()
-        }
-        sum_kl = _attention_pattern_kl_by_layer(
-            model, layer_pairs, masked_site_outputs_by_site, target_patterns
-        )
-        n_distributions = {q: int(np.prod(target_patterns[q].shape[:3])) for q, _ in layer_pairs}
-        return sum_kl, n_distributions
-
-    return filter_jit(step, compiler_options=compiler_options)
-
-
-def make_stochastic_attn_patterns_step(
-    model_static: PlacedModel[LMOutput],
-    n_mask_samples: int,
-    compiler_options: dict[str, bool | int | str] | None = None,
-) -> AttnPatternsStep:
-    """Stochastic-mask attn-patterns step: `n_mask_samples` draws of `mask = ci + (1−ci)·s`
-    (with weight deltas) over the shared context's clean-side Q/K values, per-draw
-    per-layer pattern KL summed. Per-draw and per-site `fold_in` keeps each random stream
-    independent and reproducible."""
-    _assert_position_axis(model_static)
-    assert isinstance(model_static.model, AttnPatternModel), (
-        f"attn-patterns eval needs a target exposing attention_pattern_from_qk; {type(model_static.model).__name__} does not"
-    )
-    assert n_mask_samples >= 1, n_mask_samples
-    site_names = model_static.site_names
-    layer_pairs = _attn_layer_sites(site_names)
-    output_key_by_site = attn_output_key_by_site(model_static)
-    site_output_keys = tuple(output_key_by_site.values())
-
-    def step(
-        model: PlacedModel[LMOutput],
-        prepared_weights: Any,
-        tokens: Int[Array, "*leading"],
+        model: PlacedModel[TargetIn, LMOutput, PreparedT, Conditioning, PreparedMaskingT],
+        prepared_weights: PreparedT,
+        conditioning: Conditioning,
         ci_lower: Mapping[str, SiteCI],
         clean_site_outputs_by_site: dict[str, Array],
         key: PRNGKeyArray,
     ) -> tuple[dict[str, Array], dict[str, int]]:
-        target_patterns = _attention_patterns(model, layer_pairs, clean_site_outputs_by_site)
-
-        sum_kl = {q: jnp.zeros((), jnp.float32) for q, _ in layer_pairs}
-        for draw_idx in range(n_mask_samples):
-            mask_key, delta_key = random.split(random.fold_in(key, draw_idx))
-            masks = {}
-            delta_masks = {}
-            # `uniform_like`, never a bare draw: a bare `random.uniform` lowers REPLICATED
-            # under the Explicit mesh and the per-kind mask stacks then hold the full
-            # eval batch on every rank (value-identical either way — threefry, SPEC D4).
-            for site_idx, site in enumerate(site_names):
-                ci_site = ci_lower[site]
-                source_key = random.fold_in(mask_key, site_idx)
-                masks[site] = map_site_ci(
-                    lambda v, k=source_key: v + (1.0 - v) * uniform_like(k, v), ci_site
-                )
-                delta_masks[site] = uniform_like(
-                    random.fold_in(delta_key, site_idx),
-                    site_ci_values(ci_site),
-                    drop_last_axis=True,
-                )
-            masked_captures_by_key = model.masked_forward(
-                prepared_weights,
-                tokens,
-                masking=MaterializedMasking(component_masks=masks, weight_delta_masks=delta_masks),
-                capture_keys=frozenset(site_output_keys),
-                remat=False,
-            ).captures
-            masked_site_outputs_by_site = {
-                site: masked_captures_by_key[key] for site, key in output_key_by_site.items()
-            }
-            draw_kl = _attention_pattern_kl_by_layer(
-                model, layer_pairs, masked_site_outputs_by_site, target_patterns
-            )
-            sum_kl = {q: sum_kl[q] + draw_kl[q] for q, _ in layer_pairs}
-
-        n_distributions = {
-            q: int(np.prod(target_patterns[q].shape[:3])) * n_mask_samples for q, _ in layer_pairs
+        masked = model.masked_forward(
+            prepared_weights,
+            conditioning,
+            masking=model.model.prepare_masking(masking_from(ci_lower, key)),
+            routes=None,
+            capture_keys=frozenset(site_output_keys),
+            remat=False,
+        )
+        sequence = masked.sequence
+        assert sequence is not None, "attention-pattern evaluation requires a document layout"
+        target_patterns = _attention_patterns(
+            model, layer_pairs, clean_site_outputs_by_site, sequence
+        )
+        masked_site_outputs_by_site = {
+            site: masked.captures[key] for site, key in output_key_by_site.items()
         }
+        sum_kl = _attention_pattern_kl_by_layer(
+            model,
+            layer_pairs,
+            masked_site_outputs_by_site,
+            target_patterns,
+            sequence,
+        )
+        n_distributions = {q: int(np.prod(target_patterns[q].shape[:3])) for q, _ in layer_pairs}
         return sum_kl, n_distributions
 
-    return filter_jit(step, compiler_options=compiler_options)
+    return step
+
+
+def make_ci_attn_patterns_step[
+    TargetIn: LMBatch | LMBatchWithDocuments,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](
+    model_static: PlacedModel[TargetIn, LMOutput, PreparedT, Conditioning, PreparedMaskingT],
+) -> AttnPatternsStep[TargetIn, PreparedT, Conditioning, PreparedMaskingT]:
+    """Deterministic CI-mask attention-pattern step: masks = the CI envelope's lower
+    values, no weight-delta correction."""
+
+    def ci_masking(ci_lower: Mapping[str, SiteCI], _key: PRNGKeyArray) -> MaterializedMasking:
+        return MaterializedMasking(component_masks=ci_lower)
+
+    return _make_attn_patterns_step(model_static, ci_masking)
+
+
+def make_stochastic_attn_patterns_step[
+    TargetIn: LMBatch | LMBatchWithDocuments,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](
+    model_static: PlacedModel[TargetIn, LMOutput, PreparedT, Conditioning, PreparedMaskingT],
+) -> AttnPatternsStep[TargetIn, PreparedT, Conditioning, PreparedMaskingT]:
+    """Stochastic-mask attention-pattern step: one draw of `mask = ci + (1−ci)·s` with
+    `U[0,1]` weight-delta masks. Per-site `fold_in` keeps each random stream independent
+    and reproducible."""
+    site_names = model_static.model.site_names
+
+    def stochastic_masking(
+        ci_lower: Mapping[str, SiteCI], key: PRNGKeyArray
+    ) -> MaterializedMasking:
+        mask_key, delta_key = random.split(key)
+        masks = {}
+        delta_masks = {}
+        for site_idx, site in enumerate(site_names):
+            ci_site = ci_lower[site]
+            source_key = random.fold_in(mask_key, site_idx)
+            masks[site] = sample_component_mask(ci_site, source_key)
+            delta_masks[site] = sample_delta_mask(ci_site, random.fold_in(delta_key, site_idx))
+        return MaterializedMasking(component_masks=masks, weight_delta_masks=delta_masks)
+
+    return _make_attn_patterns_step(model_static, stochastic_masking)
 
 
 def fold_layer_kl(

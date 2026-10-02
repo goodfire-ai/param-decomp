@@ -12,7 +12,6 @@ the torch reference's `CI_L0` is compared against them.
 
 from collections.abc import Callable
 from fnmatch import fnmatch
-from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -20,16 +19,24 @@ from jax.sharding import Mesh
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from param_decomp.core.base_config import Probability
-from param_decomp.core.ci_fn import PlacedCIFn, evaluate_ci
-from param_decomp.core.components import ComponentStacks, NarrowCI, SiteCI, site_ci_leading
-from param_decomp.core.jit_util import filter_jit
-from param_decomp.core.model import CaptureKeys, PlacedModel
+from param_decomp.core.ci_fn.interface import CIFn
+from param_decomp.core.ci_fn.runtime import evaluate_ci_from_captures
+from param_decomp.core.components import ComponentStacks, SelectedCI, SiteCI
+from param_decomp.core.model import CaptureKeys, ComponentActivations, PlacedModel
 from param_decomp.core.sharding import batch_shard_leading
 
-type CI_L0Step[Out, PreparedT] = Callable[
-    [PlacedModel[Out, PreparedT], ComponentStacks, PlacedCIFn, Any, PRNGKeyArray],
-    dict[str, Array],
-]
+type CI_L0Step[TargetIn, Out, PreparedT: ComponentActivations, Conditioning, PreparedMaskingT] = (
+    Callable[
+        [
+            PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
+            ComponentStacks,
+            CIFn[Conditioning],
+            TargetIn,
+            PRNGKeyArray,
+        ],
+        dict[str, Array],
+    ]
+)
 
 
 def resolve_site_groups(
@@ -50,14 +57,15 @@ def resolve_site_groups(
 
 def alive_component_counts(ci: SiteCI, threshold: Probability) -> Float[Array, "*leading"]:
     """Per-position count of components whose CI is strictly above `threshold` — exact
-    for EVERY threshold on both emissions: a narrow site's unrouted components have CI
-    exactly 0.0 by definition, so each contributes the analytic `[threshold < 0.0]` (the
-    `psi(0)` move of the narrow loss spellings), `C − k·c` of them per position."""
+    for EVERY threshold on both emissions: a selected-emitting site's unselected
+    components have CI exactly 0.0 by definition, so each contributes the analytic
+    `[threshold < 0.0]` (the `psi(0)` move of the selected-emission loss spellings),
+    `C − k·c` of them per position."""
     match ci:
-        case NarrowCI():
-            routed = (ci.values > threshold).astype(jnp.float32).sum(-1)
-            n_unrouted = ci.C - ci.values.shape[-1]
-            return routed + n_unrouted * float(threshold < 0.0)
+        case SelectedCI():
+            selected = (ci.values > threshold).astype(jnp.float32).sum(-1)
+            n_unselected = ci.C - ci.values.shape[-1]
+            return selected + n_unselected * float(threshold < 0.0)
         case jax.Array():
             return (ci > threshold).astype(jnp.float32).sum(-1)
 
@@ -86,33 +94,45 @@ def ci_l0_scalars(
     }
 
 
-def make_ci_l0_eval_step[Out, PreparedT](
-    model_static: PlacedModel[Out, PreparedT],
+def make_ci_l0_eval_step[
+    TargetIn,
+    Out,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](
+    model_static: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
     ci_capture_keys: CaptureKeys,
     ci_alive_threshold: Probability,
     groups: dict[str, tuple[str, ...]] | None,
     mesh: Mesh | None = None,
-    compiler_options: dict[str, bool | int | str] | None = None,
-) -> CI_L0Step[Out, PreparedT]:
+) -> CI_L0Step[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT]:
     """Build `CI_L0` for ANY target: the CI envelope is all it reads, so only the taps
     forward is target-specific. No clean output, no masked re-forward, no recon metric."""
-    site_names = model_static.site_names
+    site_names = model_static.model.site_names
     resolved_groups = resolve_site_groups(site_names, groups)
-    leading_rank = 2 if model_static.has_position_axis else 1
+    leading_rank = 2 if model_static.model.has_position_axis else 1
 
     def eval_step(
-        model: PlacedModel[Out, PreparedT],
+        model: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
         components: ComponentStacks,
-        placed_ci_fn: PlacedCIFn,
-        inputs: Any,
+        ci_fn: CIFn[Conditioning],
+        inputs: TargetIn,
         key: PRNGKeyArray,
     ) -> dict[str, Array]:
-        del components, key  # L0 reads the CI envelope alone
+        del key
         sharded_inputs = jax.tree.map(lambda x: batch_shard_leading(x, mesh), inputs)
-        ci_input_activations = model.clean_forward(sharded_inputs, ci_capture_keys).captures
-        ci_lower = evaluate_ci(placed_ci_fn, ci_input_activations, remat=False).lower
-        leading = site_ci_leading(next(iter(ci_lower.values())))
-        assert len(leading) == leading_rank, (leading, model_static.has_position_axis)
+        clean = model.clean_forward(sharded_inputs, ci_capture_keys)
+        ci_lower = evaluate_ci_from_captures(
+            ci_fn.prepare(),
+            clean.captures,
+            clean.conditioning,
+            model.prepare_compute_weights(components),
+            sequence=clean.sequence,
+            remat=False,
+        ).lower
+        leading = clean.leading_shape
+        assert len(leading) == leading_rank, (leading, model_static.model.has_position_axis)
         return ci_l0_scalars(ci_lower, site_names, ci_alive_threshold, resolved_groups, jnp.mean)
 
-    return filter_jit(eval_step, compiler_options=compiler_options)
+    return eval_step

@@ -1,4 +1,4 @@
-"""Core tPD semantics (SPEC §11, T1–T10): the targeted objective builders' closure
+"""Core tPD semantics: the targeted objective builders' closure
 rules, the delta-pinned mask constructions, and the two-pass step factory's boundary
 refusals. The full two-pass training run is pinned by the TMS seat's tests
 (`param_decomp/tests/experiments/tms/test_targeted_tms.py`); this module needs no target."""
@@ -9,10 +9,9 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from param_decomp.core.components import require_full_emission
+from param_decomp.core.components import DenseFactorization, SiteSpec, require_full_emission
 from param_decomp.core.configs import (
     FaithfulnessLossConfig,
-    FrequencyMinimalityConfig,
     ImportanceMinimalityLossConfig,
     NontargetConfig,
     PDConfig,
@@ -23,14 +22,20 @@ from param_decomp.core.configs import (
     UniformKSubsetRoutingConfig,
     UnmaskedNoDeltaReconLossConfig,
 )
+from param_decomp.core.losses import BatchFrequency, EmaFrequency, init_frequency_estimator
 from param_decomp.core.masking import (
-    constant_delta_pinned_masks,
-    stochastic_delta_pinned_masks,
-    unmasked_no_delta_masks,
+    constant_delta_pinned_masking,
+    stochastic_delta_pinned_masking,
+    unmasked_no_delta_masking,
 )
 from param_decomp.core.objective import build_targeted_objective
 from param_decomp.core.recon import ConstantSources, StochasticSources, UnmaskedNoDeltaSources
 from param_decomp.core.schedule import ScheduleConfig
+
+SITES = tuple(
+    SiteSpec(name=name, factorization=DenseFactorization(d_in=4, d_out=4, C=4), group="g")
+    for name in ("a", "b")
+)
 
 
 def _target_metrics():
@@ -49,18 +54,20 @@ def _nontarget():
 
 
 def test_targeted_objective_shape_and_shared_imp_config():
-    objective = build_targeted_objective(_target_metrics(), _nontarget(), ("a", "b"))
-    # T6: the non-target pass carries only a coefficient — it structurally CANNOT hold
-    # its own penalty config; the step reads the target pass's.
-    assert objective.target.imp.coeff == 3e-3
-    assert objective.nontarget.impmin_coeff == 6e-3
-    # T5: the non-target surface is stochastic/constant-source only, output-only scored.
+    objective = build_targeted_objective(_target_metrics(), _nontarget(), SITES)
+    assert float(
+        objective.target.minimality.activity_coeff.at(jnp.asarray(0.0, jnp.float32))
+    ) == pytest.approx(3e-3)
+    assert float(
+        objective.nontarget.minimality.activity_coeff.at(jnp.asarray(0.0, jnp.float32))
+    ) == pytest.approx(6e-3)
+    # The non-target surface is stochastic/constant-source only, output-only scored.
     for term in objective.nontarget.recon:
         assert isinstance(term.sources, StochasticSources | ConstantSources)
 
 
 def test_targeted_pd_config_cannot_spell_faithfulness():
-    # T3: a faithfulness term — even at coeff 0 — is a different algorithm, and the
+    # A faithfulness term — even at coeff 0 — is a different algorithm, and the
     # targeted shape's loss union has no member for it: refusal is a parse error, not a
     # runtime check.
     with pytest.raises(Exception, match="FaithfulnessLoss"):
@@ -90,36 +97,45 @@ def test_targeted_pd_config_cannot_spell_faithfulness():
         )
 
 
-def test_targeted_pd_config_refuses_frequency_ema():
-    # The EMA carries one frequency stream per site, while the tPD step takes the penalty
-    # on two independent streams — tPD EMA is not implemented (S8''), so an authored
-    # config with the knob fails loudly at parse rather than half-applying it.
-    with pytest.raises(Exception, match="not implemented for the targeted"):
-        TargetedPDConfig.model_validate(
-            {
-                "loss_metrics": [
-                    {
-                        "type": "ImportanceMinimalityLoss",
+@pytest.mark.parametrize("halflife", [None, 500.0])
+def test_targeted_pd_config_accepts_both_frequency_modes(halflife: float | None):
+    pd = TargetedPDConfig.model_validate(
+        {
+            "loss_metrics": [
+                {
+                    "type": "ImportanceMinimalityLoss",
+                    "coeff": 1e-4,
+                    "gamma": 1.0,
+                    "frequency": {
                         "coeff": 1e-4,
-                        "gamma": 1.0,
-                        "frequency": {
-                            "coeff": 1e-4,
-                            "reference_datapoint_count": 128,
-                            "ema_halflife_steps": 500,
-                        },
+                        "reference_datapoint_count": 128,
+                        "ema_halflife_steps": halflife,
                     },
-                    {"type": "StochasticReconLoss", "coeff": 1.0},
-                ],
-                "components_optimizer": {"lr_schedule": 1e-3},
-                "ci_fn_optimizer": {"lr_schedule": 1e-3},
-                "steps": 10,
-                "batch_size": 8,
-            }
-        )
+                },
+                {"type": "StochasticReconLoss", "coeff": 1.0},
+            ],
+            "components_optimizer": {"lr_schedule": 1e-3},
+            "ci_fn_optimizer": {"lr_schedule": 1e-3},
+            "steps": 10,
+            "batch_size": 8,
+        }
+    )
+    objective = build_targeted_objective(pd.loss_metrics, _nontarget(), SITES)
+    assert objective.target.minimality.frequency is not None
+    importance = next(
+        term for term in pd.loss_metrics if isinstance(term, ImportanceMinimalityLossConfig)
+    )
+    frequency = init_frequency_estimator(importance.frequency, SITES)
+    match halflife:
+        case None:
+            assert isinstance(frequency, BatchFrequency)
+        case int() | float():
+            assert isinstance(frequency, EmaFrequency)
+            assert frequency.halflife_steps == halflife
 
 
 def test_targeted_pd_config_ci_scaled_weight_decay_parses():
-    # T11: absent is the real, intended state (None — no decay); a set value must be a
+    # Absent is the real, intended state (None — no decay); a set value must be a
     # positive float.
     base = {
         "loss_metrics": [
@@ -140,9 +156,8 @@ def test_targeted_pd_config_ci_scaled_weight_decay_parses():
 
 
 def test_plain_pd_config_cannot_spell_ci_scaled_weight_decay():
-    # T11 is targeted-only: in plain PD faithfulness penalizes the residual delta, so
-    # decaying component vectors would fight it head-on — the field does not exist on
-    # the plain shape, and refusal is a parse error.
+    # Decaying components would oppose plain PD's faithfulness objective, so the
+    # plain schema excludes CI-scaled weight decay.
     with pytest.raises(Exception, match="ci_scaled_weight_decay"):
         PDConfig.model_validate(
             {
@@ -167,34 +182,22 @@ def test_targeted_objective_boundary_refuses_programmatic_faithfulness():
         "list[TargetedLossMetricConfig]", [FaithfulnessLossConfig(coeff=0.0), *_target_metrics()]
     )
     with pytest.raises(AssertionError, match="FaithfulnessLossConfig"):
-        build_targeted_objective(forged, _nontarget(), ("a", "b"))
-
-
-def test_targeted_objective_boundary_refuses_programmatic_frequency_ema():
-    # The library boundary behind the schema: a loss list built outside pydantic cannot
-    # smuggle the plain-PD-only EMA into the two-pass objective (S8'').
-    with_ema = ImportanceMinimalityLossConfig(
-        coeff=1e-4,
-        gamma=ScheduleConfig.constant(1.0),
-        frequency=FrequencyMinimalityConfig(
-            coeff=1e-4, reference_datapoint_count=128, ema_halflife_steps=500
-        ),
-    )
-    forged = cast(
-        "list[TargetedLossMetricConfig]",
-        [
-            with_ema,
-            *[m for m in _target_metrics() if not isinstance(m, ImportanceMinimalityLossConfig)],
-        ],
-    )
-    with pytest.raises(AssertionError, match="not implemented for the targeted"):
-        build_targeted_objective(forged, _nontarget(), ("a", "b"))
+        build_targeted_objective(
+            forged,
+            _nontarget(),
+            tuple(
+                SiteSpec(
+                    name=name, factorization=DenseFactorization(d_in=4, d_out=4, C=4), group="g"
+                )
+                for name in ("a", "b")
+            ),
+        )
 
 
 def test_nontarget_schema_refuses_hidden_acts_at_parse():
-    # T5: S35 hidden-activation reconstruction is target-pass-only — refused when the
+    # Hidden-activation reconstruction is target-pass-only — refused when the
     # seat parses, not at objective build on the GPUs.
-    with pytest.raises(Exception, match="hidden_acts_reconstruction"):
+    with pytest.raises(Exception, match="auxiliar"):
         NontargetConfig.model_validate(
             {
                 "batch_size": 32,
@@ -203,7 +206,15 @@ def test_nontarget_schema_refuses_hidden_acts_at_parse():
                     {
                         "type": "StochasticReconLoss",
                         "coeff": 1.0,
-                        "hidden_acts_reconstruction": {"coeff": 0.1, "points": ["resid.1"]},
+                        "auxiliaries": [
+                            {
+                                "name": "hidden_acts_reconstruction",
+                                "coeff": 0.1,
+                                "comparisons": [
+                                    {"capture": "resid.1", "distance": "relative_squared_error"}
+                                ],
+                            }
+                        ],
                     }
                 ],
             }
@@ -211,7 +222,7 @@ def test_nontarget_schema_refuses_hidden_acts_at_parse():
 
 
 def test_nontarget_schema_rejects_adversarial_sources():
-    # T5: adversarial/unmasked sources are unrepresentable, not filtered.
+    # Adversarial sources are excluded by the non-target schema.
     with pytest.raises(Exception, match="PGDReconLoss"):
         NontargetConfig.model_validate(
             {
@@ -232,16 +243,23 @@ def test_nontarget_schema_rejects_adversarial_sources():
 
 
 def test_unmasked_no_delta_config_is_fully_determined():
-    # The term is fully determined by its type: routing, sampling, and optional
-    # hidden-activation reconstruction fields are structurally absent, refused at parse (`extra="forbid"`), not validated away.
+    # The term is fully determined by its type: routing and optional hidden-activation
+    # reconstruction fields are structurally absent, refused at parse (`extra="forbid"`), not validated away.
     cfg = UnmaskedNoDeltaReconLossConfig.model_validate(
         {"type": "UnmaskedNoDeltaReconLoss", "coeff": 1.0}
     )
     assert cfg.coeff == 1.0
     for extra in (
         {"routing": {"type": "UniformKSubsetRouting"}},
-        {"n_mask_samples": 2},
-        {"hidden_acts_reconstruction": {"coeff": 0.1, "points": ["resid.1"]}},
+        {
+            "auxiliaries": [
+                {
+                    "name": "hidden_acts_reconstruction",
+                    "coeff": 0.1,
+                    "comparisons": [{"capture": "resid.1", "distance": "relative_squared_error"}],
+                }
+            ]
+        },
     ):
         with pytest.raises(Exception, match="[Ee]xtra"):
             UnmaskedNoDeltaReconLossConfig.model_validate(
@@ -249,16 +267,16 @@ def test_unmasked_no_delta_config_is_fully_determined():
             )
 
 
-def test_unmasked_no_delta_masks_are_ones_and_zeros():
-    # T4's one exception: all-ones component masks, all-zeros delta masks, deterministic.
+def test_unmasked_no_delta_masking_is_ones_without_delta():
     ci_lower = {
         "a": jax.random.uniform(jax.random.PRNGKey(0), (4, 6)),
         "b": jax.random.uniform(jax.random.PRNGKey(1), (4, 3)),
     }
-    masks, deltas = unmasked_no_delta_masks(ci_lower)
+    masking = unmasked_no_delta_masking(ci_lower)
+    masks = masking.component_masks
+    assert masking.weight_delta_masks is None
     for site in ("a", "b"):
         assert jnp.array_equal(require_full_emission(masks[site]), jnp.ones_like(ci_lower[site]))
-        assert jnp.array_equal(deltas[site], jnp.zeros((4,)))
 
 
 def test_targeted_objective_admits_unmasked_no_delta_for_nontarget():
@@ -270,13 +288,13 @@ def test_targeted_objective_admits_unmasked_no_delta_for_nontarget():
             StochasticReconSubsetLossConfig(coeff=1.0, routing=UniformKSubsetRoutingConfig()),
         ],
     )
-    objective = build_targeted_objective(_target_metrics(), nontarget, ("a", "b"))
+    objective = build_targeted_objective(_target_metrics(), nontarget, SITES)
     unmasked_term = next(
         t for t in objective.nontarget.recon if t.name == "UnmaskedNoDeltaReconLoss"
     )
     # A single all-routed draw — the term is fully determined.
     assert isinstance(unmasked_term.sources, UnmaskedNoDeltaSources)
-    assert unmasked_term.sample_routing(jax.random.PRNGKey(0), (4,)) == (None,)
+    assert unmasked_term.sample_routing(jax.random.PRNGKey(0), (4,)) is None
 
 
 def test_target_pass_and_plain_unions_refuse_unmasked_no_delta():
@@ -302,37 +320,48 @@ def test_target_pass_and_plain_unions_refuse_unmasked_no_delta():
 
 
 def test_delta_pinned_masks_pin_every_delta_to_one():
-    # T4: both non-target mask constructions carry an all-ones delta mask per site.
+    # Both non-target mask constructions carry an all-ones delta mask per site.
     ci_lower = {
         "a": jax.random.uniform(jax.random.PRNGKey(0), (4, 6)),
         "b": jax.random.uniform(jax.random.PRNGKey(1), (4, 3)),
     }
-    stoch_masks, stoch_deltas = stochastic_delta_pinned_masks(ci_lower, jax.random.PRNGKey(2))
-    const_masks, const_deltas = constant_delta_pinned_masks(0.0, ci_lower)
+    stoch_masking = stochastic_delta_pinned_masking(ci_lower, jax.random.PRNGKey(2))
+    stoch_masks = stoch_masking.component_masks
+    assert stoch_masking.weight_delta_masks is not None
+    stoch_deltas = stoch_masking.weight_delta_masks
+    const_masking = constant_delta_pinned_masking(0.0, ci_lower)
+    const_masks = const_masking.component_masks
+    assert const_masking.weight_delta_masks is not None
+    const_deltas = const_masking.weight_delta_masks
     for site in ("a", "b"):
         assert jnp.array_equal(stoch_deltas[site], jnp.ones((4,)))
         assert jnp.array_equal(const_deltas[site], jnp.ones((4,)))
-        # S1 interpolation: masks lie in [ci, 1] for stochastic, equal ci at value 0.
+        # Interpolation: masks lie in [ci, 1] for stochastic, equal ci at value 0.
         assert bool(jnp.all(require_full_emission(stoch_masks[site]) >= ci_lower[site]))
         assert jnp.array_equal(require_full_emission(const_masks[site]), ci_lower[site])
 
 
 def test_ci_scaled_weight_decay_scales_expert_blocked_stacks_expert_major():
-    """T11 addresses an expert-blocked group's `[g, E, d, c]` leaves through the flat
-    expert-major `C = E·c` component ordering — component `(e, k)` scales exactly expert
-    `e`'s block, dense groups keep the `[g, d_in, C]` broadcast."""
-    from param_decomp.core.components import ComponentStacks, Dense, ExpertBlocked
+    """CI-scaled decay maps flat component `(e, k)` to expert `e`'s factor block.
+
+    Blocked stacks use expert-major `C = E * c` ordering; dense stacks retain their
+    `[g, d_in, C]` broadcast."""
+    from param_decomp.core.components import (
+        BlockedFactorization,
+        ComponentStacks,
+        DenseFactorization,
+    )
     from param_decomp.core.train import _scale_subcomponents
 
     g, E, d_in, d_out, c = 2, 3, 4, 5, 2
-    expert = ExpertBlocked(n_experts=E, d_in=d_in, d_out=d_out, c_per_expert=c)
-    dense = Dense(d_in=d_in, d_out=d_out, C=4)
+    expert = BlockedFactorization(n_blocks=E, d_in=d_in, d_out=d_out, c_per_block=c)
+    dense = DenseFactorization(d_in=d_in, d_out=d_out, C=4)
     stacks = ComponentStacks(
         stacks={
             "experts": (jnp.ones((g, E, d_in, c)), jnp.ones((g, E, c, d_out))),
             "shared": (jnp.ones((g, d_in, dense.C)), jnp.ones((g, dense.C, d_out))),
         },
-        site_slots=(
+        site_stack_indices=(
             ("experts.0", "experts", 0),
             ("experts.1", "experts", 1),
             ("shared.0", "shared", 0),

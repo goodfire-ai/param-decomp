@@ -7,14 +7,29 @@ from typing import ClassVar, Literal
 import jax.numpy as jnp
 from jax.typing import DTypeLike
 
+from param_decomp.attention import AttentionImplementation
 from param_decomp.core.built_run import BuiltRun
+from param_decomp.core.ci_fn.implementations.block_selected.arch import (
+    BlockSelectedChunkwiseTransformerCIFnArch,
+)
+from param_decomp.core.ci_fn.implementations.chunkwise.arch import ChunkwiseTransformerCIFnArch
+from param_decomp.core.ci_fn.implementations.global_mlp import GlobalMLPCIFnArch
+from param_decomp.core.ci_fn.implementations.global_transformer.arch import (
+    GlobalTransformerCIFnArch,
+)
+from param_decomp.core.ci_fn.implementations.transformer.component_conditioning import (
+    ConditionedCIFnArch,
+)
 from param_decomp.core.components import SiteC
 from param_decomp.core.configs import PDConfig, TargetedPDConfig
-from param_decomp.target_ports.llama import AttentionImplementation
-from param_decomp.targets.qwen36_moe import ExpertsExecution, OutputEdge
+from param_decomp.routed.experts import ExpertImplementation
+from param_decomp.targets.llama_simple_mlp import SIMPLE_MLP_ANATOMY
+from param_decomp.targets.lm_output import OutputEdge
+from param_decomp.targets.qwen36_moe import Qwen36MoeConfig
+from param_decomp.targets.transformer import GLU_ANATOMY, Anatomy
 
 WeightsDtype = Literal["float32", "bfloat16"]
-ComponentInitialization = Literal["random", "neuron_aligned"]
+ComponentInitialization = Literal["random", "nonlinearity_aligned"]
 
 
 def weights_jnp_dtype(dtype: WeightsDtype) -> DTypeLike:
@@ -46,18 +61,19 @@ class TargetConfig:
     weights_dtype: WeightsDtype
     """The authored `target.weights_dtype`, carried to the composition root's target load."""
     attention_implementation: AttentionImplementation
+    output_edge: OutputEdge
     component_initialization: ComponentInitialization
 
     supported_weights_dtypes: ClassVar[frozenset[WeightsDtype]] = frozenset({"bfloat16", "float32"})
     """Frozen-target weight dtypes the loader supports. `HFWeights` casts every tensor on
     read, so the family loaders honour whichever of the two the config names. A config
     requesting a dtype outside this set is refused at convert time — no silent downgrade
-    (issue #727)."""
+    without silently changing the authored dtype."""
 
 
 @dataclass(frozen=True)
 class LlamaSimpleMLPTargetConfig:
-    """The `LlamaSimpleMLP` lab-pretrained target (`param_decomp.targets.llama_simple_mlp`);
+    """The locally pretrained `LlamaSimpleMLP` target (`param_decomp.targets.llama_simple_mlp`);
     weights from the store entry `pretrain_run_path` resolves to
     (`infra.pretrain_cache.resolved_cache_dir`)."""
 
@@ -68,6 +84,7 @@ class LlamaSimpleMLPTargetConfig:
     weights_dtype: WeightsDtype
     """The authored `target.weights_dtype`, carried to the composition root's target load."""
     attention_implementation: AttentionImplementation
+    output_edge: OutputEdge
     component_initialization: ComponentInitialization
 
     supported_weights_dtypes: ClassVar[frozenset[WeightsDtype]] = frozenset({"bfloat16", "float32"})
@@ -76,29 +93,61 @@ class LlamaSimpleMLPTargetConfig:
 
 
 @dataclass(frozen=True)
-class Qwen36MoeTargetConfig:
-    """The Qwen3.6-35B-A3B MoE target (`param_decomp.targets.qwen36_moe`): the one
-    registered MoE checkpoint. Expert sites decompose expert-locally, the hybrid
-    DeltaNet/attention mixers stay frozen, and only random V/U init exists."""
+class HFSnapshotWeights:
+    """The local HF hub snapshot of `model_name` (`transformer.hf_snapshot_dir`)."""
 
     model_name: str
+
+
+@dataclass(frozen=True)
+class PretrainCacheWeights:
+    """The pretrain-cache entry `pretrain_run_path` resolves to
+    (`infra.pretrain_cache.resolved_cache_dir`)."""
+
+    pretrain_run_path: str
+
+
+Qwen36MoeWeights = HFSnapshotWeights | PretrainCacheWeights
+"""Where a qwen36_moe target's frozen weights come from; its `arch` is read from the
+same place."""
+
+
+@dataclass(frozen=True)
+class Qwen36MoeTargetConfig:
+    """A target on the qwen36_moe engine (`param_decomp.targets.qwen36_moe`): the HF
+    Qwen3.6-35B-A3B checkpoint or a lab-pretrained `Qwen35Moe` toy, its `arch` resolved
+    once from where `weights` come from. Expert and mixer projections support random
+    or nonlinearity-aligned decomposition."""
+
+    arch: Qwen36MoeConfig
+    weights: Qwen36MoeWeights
     sites: tuple[SiteC, ...]
     """Decomposed sites with per-site C, in canonical order (whole-grid per kind)."""
     weights_dtype: WeightsDtype
     attention_implementation: AttentionImplementation
-    """The full-attention SDPA lowering. The maintained 35B configs author `xla` because
-    cuDNN rejects this family's head-dimension-256 training graph; the choice remains
-    explicit rather than silently falling back."""
-    experts_execution: ExpertsExecution
-    """Which decomposed-expert execution the masked forwards run
-    (`targets.qwen36_moe.ExpertsExecution`) — a seat-authored pricing/arch choice."""
+    """The full-attention SDPA lowering; unsupported flash execution fails explicitly."""
     output_edge: OutputEdge
-    """The model-output edge (`targets.qwen36_moe.OutputEdge`): materialized logits, or
+    """The model-output edge (`targets.lm_output.OutputEdge`): materialized logits, or
     the factored streamed package whose comparisons chunk the 248k vocab axis."""
-    component_initialization: Literal["random"]
+    expert_implementation: ExpertImplementation
+    """The target's dense masked execution or admitted routed kernel. CI expert
+    computation is configured independently."""
+    component_initialization: ComponentInitialization
 
     supported_weights_dtypes: ClassVar[frozenset[WeightsDtype]] = frozenset({"bfloat16", "float32"})
     """See `TargetConfig.supported_weights_dtypes`; `HFWeights` casts every tensor on read."""
+
+
+DenseTransformerTargetConfig = TargetConfig | LlamaSimpleMLPTargetConfig
+
+
+def dense_transformer_anatomy(target: DenseTransformerTargetConfig) -> Anatomy:
+    """The dense transformer family's site anatomy: what each site reads and writes."""
+    match target:
+        case TargetConfig():
+            return GLU_ANATOMY
+        case LlamaSimpleMLPTargetConfig():
+            return SIMPLE_MLP_ANATOMY
 
 
 AnyLMTargetConfig = TargetConfig | LlamaSimpleMLPTargetConfig | Qwen36MoeTargetConfig
@@ -108,8 +157,41 @@ Non-LM targets (the toys) satisfy only the core `TargetSites` protocol and never
 the LM aliases below."""
 
 
-LMRun = BuiltRun[ResolvedLMData, AnyLMTargetConfig, PDConfig]
-LMTargetedRun = BuiltRun[ResolvedLMData, AnyLMTargetConfig, TargetedPDConfig]
+LMCIFnArch = (
+    ChunkwiseTransformerCIFnArch
+    | GlobalTransformerCIFnArch
+    | ConditionedCIFnArch[GlobalTransformerCIFnArch]
+    | BlockSelectedChunkwiseTransformerCIFnArch
+    | GlobalMLPCIFnArch
+)
+"""What `LMCIFnConfig` resolves to — the arches an LM run (and its stored-run consumers)
+can carry."""
+
+UnroutedLMCIFnArch = (
+    ChunkwiseTransformerCIFnArch
+    | GlobalTransformerCIFnArch
+    | ConditionedCIFnArch[GlobalTransformerCIFnArch]
+    | GlobalMLPCIFnArch
+)
+"""The LM arches whose CI fns read no target routing."""
+
+
+def require_unrouted_ci_fn_arch(arch: LMCIFnArch) -> UnroutedLMCIFnArch:
+    """A document-aware target carries no routing, so it pairs only with an unrouted CI."""
+    match arch:
+        case (
+            ChunkwiseTransformerCIFnArch()
+            | GlobalTransformerCIFnArch()
+            | ConditionedCIFnArch()
+            | GlobalMLPCIFnArch()
+        ):
+            return arch
+        case BlockSelectedChunkwiseTransformerCIFnArch():
+            raise ValueError("the block-selected CI reads target routing; this target has none")
+
+
+LMRun = BuiltRun[ResolvedLMData, AnyLMTargetConfig, PDConfig, LMCIFnArch]
+LMTargetedRun = BuiltRun[ResolvedLMData, AnyLMTargetConfig, TargetedPDConfig, LMCIFnArch]
 LMAnyRun = LMRun | LMTargetedRun
 """The stored-run consumers' view: the closed union of run shapes — consumers read only
 the sections the shapes share."""

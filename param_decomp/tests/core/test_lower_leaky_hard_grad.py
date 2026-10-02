@@ -1,4 +1,4 @@
-"""Grad-check for the custom VJP of `lower_leaky_hard_sigmoid` (SPEC S6, risk R-5).
+"""Grad-check for the custom VJP of `lower_leaky_hard_sigmoid` (risk R-5).
 
 The equivalence fixtures feed CI values in pre-computed, so the custom backward is
 never exercised there. This pins it directly: the cotangent is a grad-sign gate (leak
@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from param_decomp.core.ci_fn import lower_leaky_hard_sigmoid
+from param_decomp.core.ci_fn.squashing import lower_leaky_hard_sigmoid
 
 ALPHA = 0.01
 

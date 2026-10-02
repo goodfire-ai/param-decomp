@@ -86,5 +86,5 @@ def test_arithmetic_probe_global_preserves_grid():
     mesh = Mesh(devices, ("replicate", "fsdp"), axis_types=(AxisType.Explicit,) * 2)
     sharded = global_arithmetic_probe(probe.tokens, mesh, n_proc=1)
     # one device: no padding, rows preserved verbatim (the eval trims pad via n_prompts anyway)
-    assert sharded.shape == probe.tokens.shape
-    np.testing.assert_array_equal(np.asarray(sharded), probe.tokens)
+    assert sharded.batch.token_ids.shape == probe.tokens.shape
+    np.testing.assert_array_equal(np.asarray(sharded.batch.token_ids), probe.tokens)

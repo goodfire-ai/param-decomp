@@ -1,4 +1,4 @@
-"""`LlamaSimpleMLP` pile-pretrained target, hosted on the shared GLU-transformer engine.
+"""`LlamaSimpleMLP` pile-pretrained target, hosted on the shared transformer engine.
 
 Torch reference (read-only, ground truth):
 `param_decomp/experiments/lm/pretrain/models/llama_simple_mlp.py`, weights from
@@ -15,7 +15,7 @@ pinned by the torch-fixture equivalence test (`param_decomp/tests/targets/simple
 This module is the family DECLARATION: the site vocabulary (`SIMPLE_MLP_ANATOMY` binds
 `q_proj`/…/`c_fc`/`down_proj` to the engine's structural roles, `PlainMLP` + `TiedHead`
 select its anatomical arms), the torch config parser, and the checkpoint loaders. All
-forwards run on `glu_transformer.GLUDecomposedModel`.
+forwards run on `transformer.TransformerDecomposedModel`.
 
 Decomposed sites are torch-module-path named: `h.{i}.attn.{q,k,v,o}_proj`,
 `h.{i}.mlp.c_fc`, `h.{i}.mlp.down_proj`, each with its own C.
@@ -29,8 +29,9 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast, get_args
+from typing import Literal, get_args
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import yaml
@@ -38,19 +39,22 @@ from jax.typing import DTypeLike
 from jaxtyping import Array, Float
 from safetensors import safe_open
 
+from param_decomp.attention import AttentionImplementation
 from param_decomp.core import family
 from param_decomp.core.components import SiteC, SiteDims, SiteSpec
 from param_decomp.core.family import ArchFamily
-from param_decomp.core.nonlinearity import NonlinearityPartition
-from param_decomp.targets.glu_transformer import (
+from param_decomp.core.nonlinearity import NonlinearityAlignment
+from param_decomp.targets.host import cpu_staging
+from param_decomp.targets.lm_output import OutputEdge
+from param_decomp.targets.transformer import (
     Anatomy,
     FrozenAttn,
-    GLUDecomposedModel,
-    GLULayer,
     PlainMLP,
     PlainMLPKinds,
     TiedHead,
-    anatomy_nonlinearity_partition,
+    TransformerDecomposedModel,
+    TransformerLayer,
+    anatomy_nonlinearity_alignment,
     anatomy_site_dims,
     build_engine_model,
 )
@@ -150,13 +154,15 @@ FAMILY = ArchFamily("simple_mlp", KIND_ORDER, site_name, parse_site_name)
 """This target's matrix grammar as data — the vocabulary + name renderer the tiled
 `simple_mlp` c-specs resolve against."""
 
+SIMPLE_MLP_KINDS = PlainMLPKinds(fc="c_fc", down="down_proj")
+
 SIMPLE_MLP_ANATOMY = Anatomy(
     family=FAMILY,
     q="q_proj",
     k="k_proj",
     v="v_proj",
     o="o_proj",
-    mlp=PlainMLPKinds(fc="c_fc", down="down_proj"),
+    mlp=SIMPLE_MLP_KINDS,
 )
 """This target's vocabulary bound to the shared engine's structural roles."""
 
@@ -170,8 +176,8 @@ def canonical_site_cs(site_cs: tuple[SiteC, ...]) -> tuple[SiteC, ...]:
     return family.canonical_site_cs(FAMILY, site_cs)
 
 
-def nonlinearity_partition(cfg: LlamaSimpleMLPConfig, kind: str) -> NonlinearityPartition | None:
-    return anatomy_nonlinearity_partition(SIMPLE_MLP_ANATOMY, cfg, kind)
+def nonlinearity_alignment(cfg: LlamaSimpleMLPConfig, kind: str) -> NonlinearityAlignment:
+    return anatomy_nonlinearity_alignment(SIMPLE_MLP_ANATOMY, cfg, kind)
 
 
 def site_specs(cfg: LlamaSimpleMLPConfig, site_cs: tuple[SiteC, ...]) -> tuple[SiteSpec, ...]:
@@ -179,7 +185,7 @@ def site_specs(cfg: LlamaSimpleMLPConfig, site_cs: tuple[SiteC, ...]) -> tuple[S
         FAMILY,
         site_cs,
         lambda kind, c: site_dims(cfg, kind).dense(c),
-        lambda kind: nonlinearity_partition(cfg, kind),
+        lambda kind: nonlinearity_alignment(cfg, kind),
         cfg.n_layer,
     )
 
@@ -212,14 +218,22 @@ def _checkpoint_weight_getter(cache_dir: Path, dtype: DTypeLike) -> WeightGetter
     handle = safe_open(str(checkpoint_safetensors_path(cache_dir)), framework="numpy")
 
     def get(key: str) -> Array:
-        host_array = np.asarray(handle.get_tensor(key), dtype=dtype)
-        return cast(Array, cast(object, host_array))
+        with cpu_staging():
+            return jax.device_put(
+                np.asarray(handle.get_tensor(key), dtype=dtype),
+                jax.local_devices(backend="cpu")[0],
+            )
 
     return get
 
 
-def _layer_from_weights(get: WeightGetter, layer_idx: int, cfg: LlamaSimpleMLPConfig) -> GLULayer:
-    return GLULayer(
+def _layer_from_weights(
+    get: WeightGetter,
+    layer_idx: int,
+    cfg: LlamaSimpleMLPConfig,
+    attention_implementation: AttentionImplementation,
+) -> TransformerLayer:
+    return TransformerLayer(
         ln1=get(f"h.{layer_idx}.rms_1.weight"),
         ln2=get(f"h.{layer_idx}.rms_2.weight"),
         attn=FrozenAttn(
@@ -231,9 +245,10 @@ def _layer_from_weights(get: WeightGetter, layer_idx: int, cfg: LlamaSimpleMLPCo
             n_kv_head=cfg.n_kv_head,
             head_dim=cfg.head_dim,
             n_rep=cfg.n_rep,
-            implementation="auto",
+            implementation=attention_implementation,
         ),
         mlp=PlainMLP(
+            kinds=SIMPLE_MLP_KINDS,
             Wfc=get(f"h.{layer_idx}.mlp.c_fc.weight"),
             Wdown=get(f"h.{layer_idx}.mlp.down_proj.weight"),
         ),
@@ -242,11 +257,12 @@ def _layer_from_weights(get: WeightGetter, layer_idx: int, cfg: LlamaSimpleMLPCo
 
 def build_decomposed_simple_mlp(
     embed: Array,
-    layers: list[GLULayer],
+    layers: list[TransformerLayer],
     norm: Array,
     cfg: LlamaSimpleMLPConfig,
     sites: tuple[SiteSpec, ...],
-) -> GLUDecomposedModel:
+    output_edge: OutputEdge,
+) -> TransformerDecomposedModel:
     """`build_engine_model` at the SimpleMLP anatomy — plain-GELU MLP arm, TIED output
     head. `sites` must be canonical-ordered with dims matching `cfg`."""
     return build_engine_model(
@@ -258,6 +274,7 @@ def build_decomposed_simple_mlp(
         cfg=cfg,
         sites=sites,
         anatomy=SIMPLE_MLP_ANATOMY,
+        output_edge=output_edge,
     )
 
 
@@ -270,38 +287,62 @@ def all_site_specs(cfg: LlamaSimpleMLPConfig) -> tuple[SiteSpec, ...]:
     return site_specs(cfg, canonical_site_cs(site_cs))
 
 
-def target_from_weights(get: WeightGetter, cfg: LlamaSimpleMLPConfig) -> GLUDecomposedModel:
+def target_from_weights(
+    get: WeightGetter,
+    cfg: LlamaSimpleMLPConfig,
+    output_edge: OutputEdge,
+    attention_implementation: AttentionImplementation,
+) -> TransformerDecomposedModel:
     """Build a forward-only decomposed model from checkpoint-keyed weights, with the full
     decomposable site set. Used by the torch-parity equivalence test (it calls the no-capture
     clean forward, which is independent of the site config)."""
     return build_decomposed_simple_mlp(
         embed=get("wte.weight"),
-        layers=[_layer_from_weights(get, i, cfg) for i in range(cfg.n_layer)],
+        layers=[
+            _layer_from_weights(get, i, cfg, attention_implementation) for i in range(cfg.n_layer)
+        ],
         norm=get("ln_f.weight"),
         cfg=cfg,
         sites=all_site_specs(cfg),
+        output_edge=output_edge,
     )
 
 
+@cpu_staging()
 def load_target_from_pretrain_cache(
-    cache_dir: Path, cfg: LlamaSimpleMLPConfig, dtype: DTypeLike
-) -> GLUDecomposedModel:
+    cache_dir: Path,
+    cfg: LlamaSimpleMLPConfig,
+    dtype: DTypeLike,
+    output_edge: OutputEdge,
+    attention_implementation: AttentionImplementation,
+) -> TransformerDecomposedModel:
     """Forward-only decomposed model from the pretrain cache (full site set). For the
     torch-parity equivalence test; the real PD path uses
     `load_decomposed_lm_from_pretrain_cache`."""
-    return target_from_weights(_checkpoint_weight_getter(cache_dir, dtype), cfg)
+    return load_decomposed_lm_from_pretrain_cache(
+        cache_dir, cfg, all_site_specs(cfg), dtype, output_edge, attention_implementation
+    )
 
 
+@cpu_staging()
 def load_decomposed_lm_from_pretrain_cache(
-    cache_dir: Path, cfg: LlamaSimpleMLPConfig, sites: tuple[SiteSpec, ...], dtype: DTypeLike
-) -> GLUDecomposedModel:
+    cache_dir: Path,
+    cfg: LlamaSimpleMLPConfig,
+    sites: tuple[SiteSpec, ...],
+    dtype: DTypeLike,
+    output_edge: OutputEdge,
+    attention_implementation: AttentionImplementation,
+) -> TransformerDecomposedModel:
     """Load the `SimpleMLP` `DecomposedModel`: the full frozen model (tied embedding, all
     blocks, final norm) as fields plus the static decomposition `sites`."""
     get = _checkpoint_weight_getter(cache_dir, dtype)
     return build_decomposed_simple_mlp(
         embed=get("wte.weight"),
-        layers=[_layer_from_weights(get, i, cfg) for i in range(cfg.n_layer)],
+        layers=[
+            _layer_from_weights(get, i, cfg, attention_implementation) for i in range(cfg.n_layer)
+        ],
         norm=get("ln_f.weight"),
         cfg=cfg,
         sites=sites,
+        output_edge=output_edge,
     )

@@ -1,13 +1,14 @@
 """The generic VPD decomposition-training ENGINE — the one train loop every target
 (LM, TMS, ResidMLP, …) runs through.
 
-`run_decomposition_training(pd, cadence, run, model, ci_fn, positions,
-remat_recon_forwards, sample_batch, evaluation)` owns
+`run_decomposition_training(pd, cadence, run, model, ci_fn_initializer, positions,
+remat_recon_forwards, sample_batch, build_evaluation)` owns
 the generic machinery: init / restore / fine-tune init / faith warmup
-(`_init_or_restore_state`), the recon-plan traversal, orbax checkpointing, schedules,
+(`_start_training`), the recon-plan traversal, orbax checkpointing, schedules,
 metrics fan-out (`MetricsSink`), the figure-tier background renderer (`BackgroundRenderer`), and
-SIGTERM-save for SLURM requeue. It reads the pydantic `PDConfig` / `Cadence` DIRECTLY; the
-target injects two seams: the data source (`sample_batch`) and domain-bound `evaluation`.
+SIGTERM-triggered save before restart. It reads the pydantic `PDConfig` / `Cadence` DIRECTLY; the
+target injects two seams: the data source (`sample_batch`) and domain-bound evaluation
+(`build_evaluation`).
 
 This module is a pure library — it has NO `main()` and reads no YAML. The per-domain
 composition root (read the run YAML → build the target / data loader / `BuiltRun` → call
@@ -16,7 +17,6 @@ this engine) lives lab-side: `param_decomp/experiments/lm/run.py` for the LM,
 """
 
 import atexit
-import contextlib
 import dataclasses
 import io
 import json
@@ -24,8 +24,10 @@ import math
 import signal
 import threading
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
+from time import monotonic
 from types import FrameType, ModuleType
 from typing import Any
 
@@ -42,20 +44,18 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import PRNGKeyArray
 
-from param_decomp.core.built_run import LAUNCH_CONFIG_FILENAME, RunInstance
+from param_decomp.core.adversary import SourceStacks
+from param_decomp.core.built_run import RunInstance
 from param_decomp.core.checkpoint import (
-    init_from_parent,
     make_checkpoint_manager,
-    restore_latest,
+    make_read_only_checkpoint_manager,
+    restore_decomposition,
+    restore_destination,
+    restore_step,
     save_state,
 )
-from param_decomp.core.ci_fn import (
-    CIFnArch,
-    PlacedCIFn,
-    resolve_ci_placement,
-)
+from param_decomp.core.components import ComponentStacks
 from param_decomp.core.configs import (
-    AnyPDConfig,
     Cadence,
     Checkpointing,
     NoCheckpointing,
@@ -63,47 +63,60 @@ from param_decomp.core.configs import (
     PDConfig,
     PDConfigBase,
     PeriodicCheckpointing,
+    ResumeProvenance,
     TargetedPDConfig,
     flatten_typed_lists,
 )
+from param_decomp.core.dict_utils import dict_safe_update_
 from param_decomp.core.eval_schedule import EvalSchedule, eval_due
 from param_decomp.core.faithfulness import FaithfulnessLossFn, faithfulness_loss_for
 from param_decomp.core.hardware_utilization import StepCost
 from param_decomp.core.init_placed import (
+    CIFnInitializer,
     ComponentInitializer,
     padded_component_initializer,
     random_component_initializer,
 )
-from param_decomp.core.jit_util import aot_compile
-from param_decomp.core.metrics import BarChart, LogRecord, PNGImage
-from param_decomp.core.model import PlacedModel, PositionAxis
-from param_decomp.core.objective import (
-    build_objective,
-    build_targeted_objective,
+from param_decomp.core.metrics import BarChart, LineChart, LogRecord, MetricValue, PNGImage
+from param_decomp.core.model import ComponentActivations, PlacedModel, PositionAxis
+from param_decomp.core.optimizer import ScheduledOptimizer
+from param_decomp.core.placement import component_stacks_audit
+from param_decomp.core.pytree import ShapeTree
+from param_decomp.core.run_files import LAUNCH_CONFIG_FILENAME
+from param_decomp.core.run_state import (
+    build_optimizers,
+    init_decomposition,
+    init_pd_training,
+    init_targeted_pd_training,
 )
-from param_decomp.core.placement import CIFnPlacement, component_stacks_audit
-from param_decomp.core.run_state import build_optimizers, init_train_state
 from param_decomp.core.sharding import target_shardings_audit
 from param_decomp.core.train import (
-    CIScaledWeightDecay,
+    Decomposition,
     FaithWarmupStep,
     ForwardSubstrate,
+    PDState,
+    TargetedPDState,
+    TrainingProgress,
     TrainState,
     make_faith_warmup_step,
     make_targeted_train_step,
     make_train_step,
     uv_norm_ratio_metrics,
 )
+from param_decomp.core.training_performance import MfuAccounting, PerformanceTracker
+from param_decomp.metric_schema import MetricNames, MetricSchema, validate_resume_schema
 
 _PROFILE_WARMUP_EXECUTIONS = 2
 
 
 @dataclasses.dataclass(frozen=True)
 class JaxProfilerTrace:
-    """A profiling run, not a training run: after `_PROFILE_WARMUP_EXECUTIONS` warmup
-    executions the loop traces `steps` steps with `jax.profiler` into `<run_dir>/profile`
-    and returns — no step-0 checkpoint (the trajectory is throwaway) and no training past
-    the trace."""
+    """Trace `steps` executions after `_PROFILE_WARMUP_EXECUTIONS` warmup executions.
+
+    Warmup retains normal logging, evaluation, and periodic checkpointing. Traced
+    executions skip that work, and the loop returns when the capture finishes.
+    The initial step-0 checkpoint is omitted; traces go to `<run_dir>/profile`.
+    """
 
     steps: int
 
@@ -134,32 +147,29 @@ ProfilingMode = JaxProfilerTrace | NsightCaptureWindow
 
 
 @dataclasses.dataclass(frozen=True)
-class EvalInvocation:
-    """One due eval pass's inputs, built by the engine: the live state, the step, and the
-    live CI fn already paired with the run's resolved placement — operations consume
-    `placed_ci_fn`, never a raw (fn, rules) pair."""
+class EvalInvocation[Conditioning]:
+    """The current decomposition and persistent sources needed to evaluate it."""
 
-    state: TrainState
+    decomposition: Decomposition[Conditioning]
+    persistent_sources: dict[str, SourceStacks]
     now_step: int
-    placed_ci_fn: PlacedCIFn
 
 
 @dataclasses.dataclass(frozen=True)
-class PassOperation[PassT]:
-    """One pass-level result from pass-scoped inputs (the state itself, an own probe
-    batch); never reads the shared per-batch contexts."""
+class StandaloneOperation[PassT]:
+    """Own its evaluation computation without consuming shared forward results."""
 
     schedule: EvalSchedule
     run: Callable[[PassT], LogRecord]
 
 
 @dataclasses.dataclass(frozen=True)
-class BatchedOperation[PassT, ContextT]:
-    """The torch-oracle Metric lifecycle (reset/update/compute), functionally: `update`
-    folds over the pass's shared per-batch contexts, `finish` turns the accumulated
-    state into log entries. The state rides as `Any` because one operation tuple holds
-    many private state types; `batched_operation` re-establishes each operation's own
-    state type at construction."""
+class SharedForwardOperation[PassT, ContextT]:
+    """Accumulate results over shared batch forwards, then produce one log record.
+
+    State is erased to `Any` so operations with different accumulator types can coexist;
+    The typed constructor `shared_forward_operation` keeps its callbacks' state types aligned.
+    """
 
     schedule: EvalSchedule
     init: Callable[[], Any]
@@ -167,36 +177,71 @@ class BatchedOperation[PassT, ContextT]:
     finish: Callable[[PassT, Any], LogRecord]
 
 
-def batched_operation[PassT, ContextT, S](
+def shared_forward_operation[PassT, ContextT, S](
     schedule: EvalSchedule,
     init: Callable[[], S],
     update: Callable[[S, ContextT], S],
     finish: Callable[[PassT, S], LogRecord],
-) -> BatchedOperation[PassT, ContextT]:
+) -> SharedForwardOperation[PassT, ContextT]:
     """Type-checked constructor: `init`/`update`/`finish` must agree on one state type."""
-    return BatchedOperation(schedule, init, update, finish)
+    return SharedForwardOperation(schedule, init, update, finish)
 
 
-type EvalOperation[PassT, ContextT] = PassOperation[PassT] | BatchedOperation[PassT, ContextT]
+type EvalOperation[PassT, ContextT] = (
+    StandaloneOperation[PassT] | SharedForwardOperation[PassT, ContextT]
+)
 
 
 @dataclasses.dataclass(frozen=True)
-class Evaluation[PassT, ContextT]:
-    """The domain-bound eval surface. `make_pass` builds the pass-scoped inputs;
-    `batch_contexts` yields the pass's shared per-batch contexts — the one clean
-    forward + CI envelope every batched operation reads (torch-oracle
-    `_build_metric_context`) — produced only when a due batched operation exists."""
+class Evaluation[Conditioning, PassT, ContextT]:
+    """Scheduled operations and their inputs for one evaluation pass.
+
+    Shared batch contexts are produced only when a shared-forward operation is due.
+    """
 
     operations: tuple[EvalOperation[PassT, ContextT], ...]
-    make_pass: Callable[[EvalInvocation], PassT]
+    make_pass: Callable[[EvalInvocation[Conditioning]], PassT]
     batch_contexts: Callable[[PassT], Iterable[ContextT]]
 
     def __post_init__(self) -> None:
         assert self.operations, "evaluation needs at least one operation"
 
 
+@dataclasses.dataclass(frozen=True)
+class StandaloneOperationPlan[PassT]:
+    """Prepare an operation that owns its evaluation computation."""
+
+    prepare: Callable[[PassT], StandaloneOperation[PassT]]
+
+
+@dataclasses.dataclass(frozen=True)
+class SharedForwardOperationPlan[PassT, ContextT]:
+    """Prepare an operation using the shapes of shared forward results."""
+
+    prepare: Callable[[PassT, ContextT], SharedForwardOperation[PassT, ContextT]]
+
+
+type EvalOperationPlan[PassT, ContextT] = (
+    StandaloneOperationPlan[PassT] | SharedForwardOperationPlan[PassT, ContextT]
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class EvaluationPlan[Conditioning, PassT, ContextT]:
+    """Bind every configured operation to executable kernels before timing begins."""
+
+    prepare: Callable[[EvalInvocation[Conditioning]], Evaluation[Conditioning, PassT, ContextT]]
+
+
+type EvaluationBuilder[Conditioning, PassT, ContextT] = Callable[
+    [PRNGKeyArray], EvaluationPlan[Conditioning, PassT, ContextT]
+]
+"""An evaluation plan drawing its randomness from the run key, which the engine alone
+derives from `pd.seed`."""
+
+
 def no_batch_contexts(eval_pass: object) -> tuple[()]:
-    """The batch phase of a domain whose operations are all pass-level (the toys)."""
+    """No shared forwards are needed when every operation is standalone."""
     del eval_pass
     return ()
 
@@ -221,21 +266,24 @@ def _combine_step_records(
             return {**train_record, **eval_record}
 
 
-def _with_uv_norm_ratios(eval_record: LogRecord, state: TrainState) -> LogRecord:
+def _with_uv_norm_ratios[Conditioning](
+    eval_record: LogRecord,
+    decomposition: Decomposition[Conditioning],
+    compute_norm_ratios: Callable[[ComponentStacks], dict[str, jax.Array]],
+) -> LogRecord:
     factor_record = {
         f"eval/{key}": float(value)
-        for key, value in uv_norm_ratio_metrics(state.decomposition.components).items()
+        for key, value in compute_norm_ratios(decomposition.components).items()
     }
     overlap = eval_record.keys() & factor_record.keys()
     assert not overlap, f"U/V norm-ratio metrics collided with eval keys: {sorted(overlap)}"
     return {**eval_record, **factor_record}
 
 
-def _run_due_evaluation[PassT, ContextT](
-    evaluation: Evaluation[PassT, ContextT],
-    state: TrainState,
+def _run_due_evaluation[Conditioning, Training: TrainingProgress, PassT, ContextT](
+    evaluation: Evaluation[Conditioning, PassT, ContextT],
+    state: TrainState[Conditioning, Training],
     now_step: int,
-    ci_placement: CIFnPlacement | None,
 ) -> LogRecord | None:
     due_operations = tuple(
         operation for operation in evaluation.operations if eval_due(operation.schedule, now_step)
@@ -244,28 +292,30 @@ def _run_due_evaluation[PassT, ContextT](
         return None
     eval_pass = evaluation.make_pass(
         EvalInvocation(
-            state=state,
+            decomposition=state.decomposition,
+            persistent_sources={
+                name: adversary.sources for name, adversary in state.training.adversaries.items()
+            },
             now_step=now_step,
-            placed_ci_fn=PlacedCIFn(fn=state.decomposition.ci_fn, placement=ci_placement),
         )
     )
     states: dict[int, Any] = {
         index: operation.init()
         for index, operation in enumerate(due_operations)
-        if isinstance(operation, BatchedOperation)
+        if isinstance(operation, SharedForwardOperation)
     }
     if states:
         for context in evaluation.batch_contexts(eval_pass):
             for index in states:
                 operation = due_operations[index]
-                assert isinstance(operation, BatchedOperation)
+                assert isinstance(operation, SharedForwardOperation)
                 states[index] = operation.update(states[index], context)
-    record: dict[str, float | BarChart | PNGImage] = {}
+    record: dict[str, MetricValue] = {}
     for index, operation in enumerate(due_operations):
         match operation:
-            case PassOperation(run=run):
+            case StandaloneOperation(run=run):
                 values = run(eval_pass)
-            case BatchedOperation(finish=finish):
+            case SharedForwardOperation(finish=finish):
                 values = finish(eval_pass, states[index])
         overlap = record.keys() & values.keys()
         assert not overlap, f"eval operations emitted colliding keys: {sorted(overlap)}"
@@ -297,8 +347,12 @@ def install_sigterm_flag() -> None:
     signal.signal(signal.SIGTERM, handler)
 
 
-def _sigterm_consensus() -> bool:
-    """Cross-rank-agreed SIGTERM flag. The scheduler delivers SIGTERM per task with no
+def _any_sigterm_received(flags: jax.Array) -> jax.Array:
+    return jnp.any(flags)
+
+
+def _prepare_sigterm_consensus(training_mesh: Mesh) -> Callable[[], bool]:
+    """Cross-rank-agreed SIGTERM flag. A process manager may deliver SIGTERM per process with no
     simultaneity guarantee, so reading the per-process flag independently at a collective gate
     (faith-warmup exit, eval entry, orbax save) can diverge ranks and hang. OR-reduce it across
     processes; callers read it once into a local the handler can't mutate mid-step. The reduce
@@ -307,13 +361,23 @@ def _sigterm_consensus() -> bool:
     step) — the log step already blocks on the step's metrics, and every rank derives the log
     step from the step count alone, so all enter the collective together and it adds no device
     sync of its own. Worst-case added latency to a requeue save: `train_log_every - 1` further
-    training steps after the signal lands; the lead time the scheduler grants between SIGTERM
+    training steps after the signal lands; the lead time between SIGTERM
     and SIGKILL must cover that plus the save. No-op when not distributed."""
     if jax.process_count() == 1:
-        return _sigterm_received
-    import jax.experimental.multihost_utils as mhu
+        return lambda: _sigterm_received
 
-    return bool(np.asarray(mhu.process_allgather(np.asarray(_sigterm_received))).any())
+    mesh = Mesh(training_mesh.devices.reshape(-1), ("device",))
+    sharding = NamedSharding(mesh, P("device"))
+    abstract_flags = jax.ShapeDtypeStruct((mesh.size,), np.bool_, sharding=sharding)
+    with jax.set_mesh(mesh):
+        any_received = jax.jit(_any_sigterm_received).lower(abstract_flags).compile()
+
+    def consensus() -> bool:
+        local_flags = np.full(len(mesh.local_devices), _sigterm_received, dtype=np.bool_)
+        flags = jax.make_array_from_process_local_data(sharding, local_flags, (mesh.size,))
+        return bool(any_received(flags))
+
+    return consensus
 
 
 def log_wandb_safe(
@@ -321,7 +385,7 @@ def log_wandb_safe(
     payload: Mapping[str, object],
     step: int | None,
     commit: bool,
-    what: str,
+    what_for_log: str,
 ) -> None:
     """`wandb.log` swallowing `CommError` only — a transient wandb-server outage must not
     kill a multi-day run, while genuine misuse (e.g. a non-dict record) still raises. The
@@ -337,7 +401,7 @@ def log_wandb_safe(
             case _:
                 raise AssertionError((step, commit))
     except wandb.errors.CommError as e:
-        print(f"wandb communication error, skipping {what}: {e}", flush=True)
+        print(f"wandb communication error, skipping {what_for_log}: {e}", flush=True)
 
 
 def _ensure_global[T](tree: T, mesh: Mesh) -> T:
@@ -381,7 +445,7 @@ _METRIC_KEYS = {
 }
 
 
-def _fmt_duration(seconds: float) -> str:
+def _duration_for_log(seconds: float) -> str:
     h, rem = divmod(int(seconds), 3600)
     m, s = divmod(rem, 60)
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
@@ -403,10 +467,11 @@ def _grad_norm_summary_window_stats(window: list[dict[str, jax.Array]]) -> dict[
     between logs rather than subsampling grad norms at the log step."""
     assert window, "grad-norm summary window is empty at a log boundary"
     keys = list(window[0].keys())
-    stacked = jnp.stack([jnp.stack([snap[k] for snap in window]) for k in keys])  # [keys, steps]
-    mins = np.asarray(jnp.min(stacked, axis=1))
-    maxs = np.asarray(jnp.max(stacked, axis=1))
-    medians = np.asarray(jnp.median(stacked, axis=1))
+    host_window = jax.device_get(window)
+    stacked = np.asarray([[snapshot[key] for snapshot in host_window] for key in keys])
+    mins = np.min(stacked, axis=1)
+    maxs = np.max(stacked, axis=1)
+    medians = np.median(stacked, axis=1)
     out: dict[str, float] = {}
     for i, key in enumerate(keys):
         out[f"{key}/min"] = float(mins[i])
@@ -424,13 +489,20 @@ class MetricsSink:
     rank. `silent()` is for tests and throwaway interactive runs only. Not the
     resolved-channel `__init__` directly."""
 
-    def __init__(self, jsonl: io.TextIOWrapper | None, wandb_module: ModuleType | None):
+    def __init__(
+        self,
+        jsonl: io.TextIOWrapper | None,
+        wandb_module: ModuleType | None,
+        metric_schema: MetricSchema,
+    ):
         self._jsonl = jsonl
         self._wandb = wandb_module
+        self._metric_names = MetricNames(metric_schema)
         self._wandb_lock = threading.Lock()
         self._defined_deferred_metrics: set[tuple[str, str]] = set()
         self._deferred_media_keys: set[tuple[str, int, str]] = set()
         self._last_committed_step: int | None = None
+        self._renderers: list[BackgroundRenderer] = []
 
     @classmethod
     def silent(cls) -> "MetricsSink":
@@ -438,15 +510,15 @@ class MetricsSink:
         the run writes no `metrics.jsonl` at all. This is not "wandb off": a run without a
         tracker still wants its jsonl, and gets it from `for_run` (`wandb: null` in the
         config is what turns wandb off)."""
-        return cls(jsonl=None, wandb_module=None)
+        return cls(jsonl=None, wandb_module=None, metric_schema="legacy")
 
     @classmethod
     def for_run(cls, run: RunInstance, is_main: bool) -> "MetricsSink":
         if not is_main:
             return cls.silent()
-        jsonl = (run.run_dir / "metrics.jsonl").open("a")
+        metrics_path = run.run_dir / "metrics.jsonl"
         if run.wandb is None:
-            return cls(jsonl=jsonl, wandb_module=None)
+            return cls(jsonl=metrics_path.open("a"), wandb_module=None, metric_schema="legacy")
         import wandb
 
         # wandb.config is the pinned launch config verbatim — the run's ONE self-contained
@@ -456,7 +528,7 @@ class MetricsSink:
         # in the config and its realized world is asserted at process bring-up.
         launch_config = run.run_dir / LAUNCH_CONFIG_FILENAME
         assert launch_config.exists(), launch_config
-        wandb.init(
+        tracker = wandb.init(
             project=run.wandb.project,
             entity=run.wandb.entity,
             name=run.run_name,
@@ -464,12 +536,32 @@ class MetricsSink:
             group=run.wandb.group,
             tags=list(run.wandb.tags),
             resume="allow",
-            config=flatten_typed_lists(yaml.safe_load(launch_config.read_text())),
         )
+        if tracker.resumed:
+            validate_resume_schema(tracker.config.as_dict(), run.wandb.metric_schema)
+        else:
+            tracker.config.update(
+                flatten_typed_lists(yaml.safe_load(launch_config.read_text())),
+                allow_val_change=False,
+            )
+        match run.wandb.metric_schema:
+            case "legacy":
+                pass
+            case "grouped":
+                wandb.define_metric("axes/*", hidden=True)
         # Also save the pin as a downloadable wandb run file, alongside (not in place of)
         # the wandb.config dict.
         wandb.save(str(launch_config), base_path=str(run.run_dir), policy="now")
-        return cls(jsonl=jsonl, wandb_module=wandb)
+        return cls(
+            jsonl=metrics_path.open("a"), wandb_module=wandb, metric_schema=run.wandb.metric_schema
+        )
+
+    def register_renderer(self, renderer: "BackgroundRenderer") -> None:
+        self._renderers.append(renderer)
+
+    def wait_for_renderers(self) -> None:
+        for renderer in self._renderers:
+            renderer.join()
 
     def log(self, step: int, record: "LogRecord") -> None:
         if self._jsonl is None:
@@ -496,11 +588,13 @@ class MetricsSink:
         head = f"[step {step}]"
         if "train/perf/eta_s" in console:  # train logs carry the paired timing; eval logs don't
             elapsed, eta = console.pop("train/perf/elapsed_s"), console.pop("train/perf/eta_s")
-            head += f" {_fmt_duration(elapsed)}<{_fmt_duration(eta)}"
+            head += f" {_duration_for_log(elapsed)}<{_duration_for_log(eta)}"
         print(head + " " + " ".join(f"{k}={v:.4g}" for k, v in console.items()), flush=True)
         if self._wandb is not None:
+            with self._wandb_lock:
+                named_record = self._metric_names.record(record)
             wandb_record: dict[str, object] = {}
-            for key, value in record.items():
+            for key, value in named_record.items():
                 match value:
                     case float() | int():
                         wandb_record[key] = float(value)
@@ -513,6 +607,18 @@ class MetricsSink:
                             x_label,
                             y_label,
                             title=title,
+                        )
+                    case LineChart(xs, series, x_label, title):
+                        # The run-media copy has a lower row cap than the artifact copy.
+                        assert xs.size * len(series) <= self._wandb.Table.MAX_ROWS, (
+                            "line chart exceeds W&B's run-media row limit; refusing to truncate"
+                        )
+                        wandb_record[key] = self._wandb.plot.line_series(
+                            xs=xs.tolist(),
+                            ys=[ys.tolist() for _, ys in series],
+                            keys=[name for name, _ in series],
+                            title=title,
+                            xname=x_label,
                         )
                     case PNGImage(encoded):
                         import io
@@ -541,6 +647,8 @@ class MetricsSink:
         from PIL import Image
 
         with self._wandb_lock:
+            step_key = self._metric_names.axis(record.step_key)
+            media = self._metric_names.record(record.media)
             semantic_keys = {(record.step_key, record.step, key) for key in record.media}
             overlap = self._deferred_media_keys & semantic_keys
             assert not overlap, (
@@ -548,11 +656,11 @@ class MetricsSink:
                 f"{sorted(key for _, _, key in overlap)} at step {record.step}"
             )
             self._deferred_media_keys.update(semantic_keys)
-            payload: dict[str, object] = {record.step_key: float(record.step)}
-            for key, encoded in record.media.items():
-                registration = (key, record.step_key)
+            payload: dict[str, object] = {step_key: float(record.step)}
+            for key, encoded in media.items():
+                registration = (key, step_key)
                 if registration not in self._defined_deferred_metrics:
-                    self._wandb.define_metric(key, step_metric=record.step_key)
+                    self._wandb.define_metric(key, step_metric=step_key)
                     self._defined_deferred_metrics.add(registration)
                 payload[key] = self._wandb.Image(Image.open(io.BytesIO(encoded)))
             log_wandb_safe(self._wandb, payload, None, False, "deferred media")
@@ -561,7 +669,7 @@ class MetricsSink:
 class BackgroundRenderer:
     """Background thread for a figure tier's pure host-rendering tail.
 
-    The slow/plot tier (SPEC S28/S29) and the LM arithmetic tier each hold one. A pure
+    The slow/plot tier and the LM arithmetic tier each hold one. A pure
     renderer returns ``DeferredMediaRecord``; the shared ``MetricsSink`` performs the
     serialized W&B write.
 
@@ -576,9 +684,9 @@ class BackgroundRenderer:
     coarse, so this effectively never blocks). Deferred figures carry their eval step as a
     dedicated W&B metric axis (`slow_eval/figure_step` or `eval/arithmetic/figure_step`)
     rather than writing an old `_step`: rendering may finish after synchronous scalar logs
-    have advanced `_step`, and W&B correctly rejects out-of-order writes. An `atexit` join
-    flushes the last render
-    before process exit (the trainer never calls `wandb.finish`). The atexit handler is
+    have advanced `_step`, and W&B correctly rejects out-of-order writes. The loop joins
+    remaining renderers before its final timing observation. An `atexit` join also flushes
+    on early exit (the trainer never calls `wandb.finish`). The atexit handler is
     registered on the FIRST submit, not in `__init__` — the first submit happens after
     `MetricsSink`'s `wandb.init` (eval comes after sink construction in the loop), so
     atexit's LIFO order runs our join BEFORE wandb's own atexit flush, and the figures
@@ -595,6 +703,7 @@ class BackgroundRenderer:
         self._thread: threading.Thread | None = None
         self._failure: BaseException | None = None
         self._atexit_registered = False
+        sink.register_renderer(self)
 
     def join(self) -> None:
         if self._thread is not None:
@@ -623,9 +732,9 @@ class BackgroundRenderer:
 
 @dataclasses.dataclass(frozen=True)
 class FaithfulnessWarmup:
-    """SPEC S21's warmup phase as the engine consumes it — built by the PLAIN entry from
-    `PDConfig`'s fields. A targeted run has no faithfulness role to warm (T3): its config
-    shape carries no warmup fields, and its entry passes no warmup by construction."""
+    """Faithfulness-only warmup before the main loop, for plain PD.
+
+    Targeted runs omit this phase because they have no faithfulness objective."""
 
     steps: int
     lr: float
@@ -633,126 +742,136 @@ class FaithfulnessWarmup:
     loss: FaithfulnessLossFn
 
 
-def _init_or_restore_state[Out, PreparedT](
-    *,
-    pd: AnyPDConfig,
-    ci_fn_arch: CIFnArch,
-    positions: PositionAxis,
-    run: RunInstance,
-    model: PlacedModel[Out, PreparedT],
-    opt_vu: optax.GradientTransformation,
-    opt_ci: optax.GradientTransformation,
-    init_key: PRNGKeyArray,
-    src_key: PRNGKeyArray,
+@dataclasses.dataclass(frozen=True)
+class Interrupted:
+    """SIGTERM ended the phase before it produced a usable training state."""
+
+
+def _warmup_pd[TargetIn, Out, PreparedT: ComponentActivations, Conditioning, PreparedMaskingT](
+    state: PDState[Conditioning],
+    config: FaithfulnessWarmup,
+    model: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
+    opt_vu: ScheduledOptimizer,
     mesh: Mesh,
-    checkpoint_manager: ocp.CheckpointManager | None,
-    is_main: bool,
     compiler_options: dict[str, bool | int | str],
-    faith_warmup: FaithfulnessWarmup | None,
-    profiling: ProfilingMode | None,
-    component_initializer: ComponentInitializer[Out, PreparedT],
-) -> tuple[TrainState, int] | None:
-    """The shared init/restore/finetune/faith-warmup phase (SPEC S21/S22/S33).
-
-    Returns `(state, start_step)`, or `None` when a SIGTERM landed mid-warmup (the caller
-    must exit cleanly for requeue — no valid checkpoint exists pre-step-0). A
-    `JaxProfilerTrace` run skips the step-0 checkpoint: its trajectory is throwaway.
-    `checkpoint_manager is None` is the `NoCheckpointing` run: nothing is restored
-    (there is never anything on disk) and the step-0 saves are skipped too."""
-    state = _ensure_global(
-        init_train_state(
-            pd,
-            model,
-            ci_fn_arch,
-            positions,
-            opt_vu,
-            opt_ci,
-            init_key,
-            src_key,
-            component_initializer,
-        ),
-        mesh,
+    is_main: bool,
+    sigterm_consensus: Callable[[], bool],
+) -> PDState[Conditioning] | Interrupted:
+    faith_warmup_optimizer = optax.adamw(config.lr, weight_decay=config.weight_decay)
+    faith_warmup_opt_state = faith_warmup_optimizer.init(
+        eqx.filter(state.decomposition.components, eqx.is_array)
     )
+    faith_warmup_step: FaithWarmupStep[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT] = (
+        make_faith_warmup_step(faith_warmup_optimizer, config.loss)
+    )
+    faith_warmup_step = (
+        jax.jit(faith_warmup_step, compiler_options=compiler_options)
+        .lower(model, state.decomposition.components, faith_warmup_opt_state)
+        .compile()
+    )
+    warmed_components = state.decomposition.components
+    t0 = time.time()
+    faith_warmup_loss = None
+    for _ in range(config.steps):
+        warmed_components, faith_warmup_opt_state, faith_warmup_loss = faith_warmup_step(
+            model, warmed_components, faith_warmup_opt_state
+        )
+        if sigterm_consensus():
+            # No valid checkpoint exists yet (the step-0 save happens only after warmup
+            # completes, and resume skips warmup whenever a checkpoint is present — a
+            # partially-warmed step-0 save would resume as if fully warmed). Exit
+            # cleanly; the restarted process redoes warmup from scratch.
+            if is_main:
+                print("SIGTERM during faith warmup: exiting for requeue", flush=True)
+            return Interrupted()
+    assert faith_warmup_loss is not None
+    jax.block_until_ready(faith_warmup_loss)
+    new_opt_vu = _ensure_global(opt_vu.init(eqx.filter(warmed_components, eqx.is_array)), mesh)
+    state = dataclasses.replace(
+        state,
+        decomposition=dataclasses.replace(state.decomposition, components=warmed_components),
+        training=dataclasses.replace(state.training, components_opt_state=new_opt_vu),
+    )
+    if is_main:
+        print(
+            f"faith warmup: {config.steps} steps in {time.time() - t0:.0f}s, "
+            f"final faith {float(faith_warmup_loss):.3e}",
+            flush=True,
+        )
+    return state
 
-    restored = restore_latest(checkpoint_manager, state) if checkpoint_manager is not None else None
-    if restored is not None:
-        state, ckpt_step = restored
-        assert int(state.training.step) == ckpt_step, (int(state.training.step), ckpt_step)
-        # A mid-training restore is the requeue path and proceeds; a restore at (or past)
-        # the configured horizon has nothing to run, and exiting 0 there is indistinguishable
-        # from a run that trained. Raising `pd.steps` on this id is not an option either —
-        # the pinned launch config byte-compares on every re-entry.
-        assert ckpt_step < pd.steps, (
-            f"run {run.run_id} is already trained to step {ckpt_step} of pd.steps={pd.steps}: "
-            "nothing left to run. There is no way to extend this trajectory: raising `pd.steps` "
-            "on this id is refused by the pinned-config byte-compare, a new run id trains from "
-            "scratch, and a new run id with `resume_provenance` inherits the decomposition only "
-            "— fresh optimizer state, fresh adversaries, step 0, schedules re-annealed."
-        )
-        if is_main:
-            print(f"resumed from checkpoint step {ckpt_step}", flush=True)
-        return state, ckpt_step
 
-    if run.resume_provenance is not None:
-        # Fine-tune init (SPEC S33): own ckpts/ is empty, so this is the FIRST entry, not a
-        # requeue — load the parent's trained V/U + ci_fn onto the fresh reference, start a
-        # clean schedule from step 0 (fresh optimizer / sources, no faith warmup). The
-        # parent↔new structural-compat check (sites + ci-fn arch) runs lab-side in the LM
-        # composition root before this engine is entered.
-        prov = run.resume_provenance
-        state = init_from_parent(prov.parent_run_dir / "ckpts", prov.parent_step, state)
-        if checkpoint_manager is not None and not isinstance(profiling, JaxProfilerTrace):
-            save_state(checkpoint_manager, 0, state)
-        if is_main:
-            print(
-                f"fine-tune: initialized V/U + ci_fn from {prov.parent_run_dir} "
-                f"step {prov.parent_step}; training fresh from step 0",
-                flush=True,
-            )
-        return state, 0
+@dataclasses.dataclass(frozen=True)
+class FreshTraining:
+    """A new decomposition and fresh training history."""
 
-    if faith_warmup is not None:
-        faith_warmup_optimizer = optax.adamw(
-            faith_warmup.lr, weight_decay=faith_warmup.weight_decay
-        )
-        faith_warmup_opt_state = faith_warmup_optimizer.init(
-            eqx.filter(state.decomposition.components, eqx.is_array)
-        )
-        faith_warmup_step: FaithWarmupStep[Out, PreparedT] = make_faith_warmup_step(
-            faith_warmup_optimizer, faith_warmup.loss, compiler_options
-        )
-        warmed_components = state.decomposition.components
-        t0 = time.time()
-        faith_warmup_loss = None
-        for _ in range(faith_warmup.steps):
-            warmed_components, faith_warmup_opt_state, faith_warmup_loss = faith_warmup_step(
-                model, warmed_components, faith_warmup_opt_state
+
+@dataclasses.dataclass(frozen=True)
+class ResumeTraining:
+    manager: ocp.CheckpointManager
+    step: int
+
+
+@dataclasses.dataclass(frozen=True)
+class FineTune:
+    parent: ResumeProvenance
+
+
+type TrainingStart = FreshTraining | ResumeTraining | FineTune
+
+
+def _resolve_training_start(
+    run: RunInstance, manager: ocp.CheckpointManager | None, total_steps: int
+) -> TrainingStart:
+    if manager is not None:
+        checkpoint_step = manager.latest_step()
+        if checkpoint_step is not None:
+            assert checkpoint_step < total_steps, (
+                f"run {run.run_id} is already trained to step {checkpoint_step} of pd.steps={total_steps}: "
+                "nothing left to run. There is no way to extend this trajectory: raising `pd.steps` "
+                "on this id is refused by the pinned-config byte-compare, a new run id trains from "
+                "scratch, and a new run id with `resume_provenance` inherits the decomposition only "
+                "— fresh optimizer state, fresh adversaries, step 0, schedules re-annealed."
             )
-            if _sigterm_consensus():
-                # No valid checkpoint exists yet (the step-0 save happens only after warmup
-                # completes, and resume skips warmup whenever a checkpoint is present — a
-                # partially-warmed step-0 save would resume as if fully warmed). Exit
-                # cleanly; the SLURM requeue redoes warmup from scratch.
-                if is_main:
-                    print("SIGTERM during faith warmup: exiting for requeue", flush=True)
-                return None
-        assert faith_warmup_loss is not None
-        jax.block_until_ready(faith_warmup_loss)
-        new_opt_vu = _ensure_global(opt_vu.init(eqx.filter(warmed_components, eqx.is_array)), mesh)
-        state = dataclasses.replace(
-            state,
-            decomposition=dataclasses.replace(state.decomposition, components=warmed_components),
-            training=dataclasses.replace(state.training, components_opt_state=new_opt_vu),
-        )
-        if is_main:
-            print(
-                f"faith warmup: {faith_warmup.steps} steps in {time.time() - t0:.0f}s, "
-                f"final faith {float(faith_warmup_loss):.3e}",
-                flush=True,
-            )
-    if checkpoint_manager is not None and not isinstance(profiling, JaxProfilerTrace):
-        save_state(checkpoint_manager, 0, state)
-    return state, 0
+            return ResumeTraining(manager, checkpoint_step)
+    match run.resume_provenance:
+        case None:
+            return FreshTraining()
+        case ResumeProvenance() as parent:
+            return FineTune(parent)
+
+
+def _start_training[Conditioning, Training: TrainingProgress](
+    start: TrainingStart,
+    *,
+    initialize_decomposition: Callable[[], Decomposition[Conditioning]],
+    initialize: Callable[[Decomposition[Conditioning]], TrainState[Conditioning, Training]],
+    destination: ShapeTree[TrainState[Conditioning, Training]],
+    mesh: Mesh,
+    is_main: bool,
+) -> TrainState[Conditioning, Training]:
+    match start:
+        case ResumeTraining(manager=manager, step=step):
+            state = restore_step(manager, destination, step)
+            assert int(state.training.step) == step, (int(state.training.step), step)
+            if is_main:
+                print(f"resumed from checkpoint step {step}", flush=True)
+            return state
+        case FineTune(parent=parent):
+            with make_read_only_checkpoint_manager(parent.parent_run_dir / "ckpts") as manager:
+                decomposition = restore_decomposition(
+                    manager, parent.parent_step, destination.decomposition
+                )
+            state = _ensure_global(initialize(decomposition), mesh)
+            if is_main:
+                print(
+                    f"fine-tune: initialized V/U + ci_fn from {parent.parent_run_dir} "
+                    f"step {parent.parent_step}; training fresh from step 0",
+                    flush=True,
+                )
+            return state
+        case FreshTraining():
+            return _ensure_global(initialize(initialize_decomposition()), mesh)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -775,7 +894,7 @@ def _make_saver(
             return _PeriodicSaver(make_checkpoint_manager(run_dir / "ckpts", retention), save_every)
         case NoCheckpointing():
             # A no-checkpoint run id is single-entry: nothing is ever written to resume
-            # from, so a re-entry (SLURM requeue or a --run-id rerun) would silently
+            # from, so a re-entry (process restart or a --run-id rerun) would silently
             # retrain from step 0. The marker turns that into an enumerated refusal.
             # Checked on the main process only — a non-main rank racing the fresh write
             # must not misread a first entry as a re-entry.
@@ -794,65 +913,76 @@ def _make_saver(
 
 
 @dataclasses.dataclass(frozen=True)
-class _PreparedRun:
-    """The generic pre-loop phase's outputs, shared by both engine entries: the built
-    optimizer pair + their schedule fns (re-read at log time so the reported LR is the
-    applied one), the per-step batch/RNG key root, the checkpoint saver (None = a
-    `NoCheckpointing` run), and the initialized-or-restored state."""
+class _RunResources:
+    """Optimizers, random keys, placement, and checkpoint storage for one run."""
 
-    opt_vu: optax.GradientTransformation
-    opt_ci: optax.GradientTransformation
-    sched_vu: Callable[[Any], jax.Array]
-    sched_ci: Callable[[Any], jax.Array]
+    opt_vu: ScheduledOptimizer
+    opt_ci: ScheduledOptimizer
+    init_key: PRNGKeyArray
+    src_key: PRNGKeyArray
     run_key: PRNGKeyArray
+    mesh: Mesh
     saver: _PeriodicSaver | None
     run_dir: Path
-    state: TrainState
-    start_step: int
-    ci_placement: CIFnPlacement | None
-    """The run's CI-fn placement, resolved once in `_prepare_run` — the value the
-    substrate, the muon waypoints, and every eval invocation pair with the live fn."""
+    start: TrainingStart
+    sigterm_consensus: Callable[[], bool]
+
+    @property
+    def start_step(self) -> int:
+        match self.start:
+            case ResumeTraining(step=step):
+                return step
+            case FreshTraining() | FineTune():
+                return 0
 
 
-def _prepare_run[Out, PreparedT](
+def _training_mesh[
+    TargetIn,
+    Out,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](model: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT]) -> Mesh:
+    """The rules' own mesh — the engine never receives a second copy to desync. A training
+    run executes forwards, so the abstract (spec-check) arm of `PlacementRules.mesh` is
+    refused here. The engine activates it around the whole run so bare-PartitionSpec
+    `reshard`s inside the forward resolve (the attn q/k/v batch-sharding pin in
+    `FrozenAttn.core`, needed for cuDNN flash attention under the scan+cond masked forward)."""
+    assert model.placement is not None, "the engine trains placed models only"
+    mesh = model.placement.mesh
+    assert isinstance(mesh, Mesh), type(mesh)
+    return mesh
+
+
+def _prepare_run[
+    TargetIn,
+    Out,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](
     *,
-    pd: AnyPDConfig,
+    pd: PDConfigBase,
     cadence: Cadence,
     run: RunInstance,
-    model: PlacedModel[Out, PreparedT],
-    ci_fn: CIFnArch,
-    positions: PositionAxis,
-    compiler_options: dict[str, bool | int | str],
+    model: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
+    mesh: Mesh,
     is_main: bool,
-    faith_warmup: FaithfulnessWarmup | None,
-    profiling: ProfilingMode | None,
-    component_initializer: ComponentInitializer[Out, PreparedT],
-) -> _PreparedRun | None:
-    """Everything before the train loop: mesh activation, optimizers, keys, checkpoint
-    manager, the placement audit, and init/restore/finetune/faith-warmup. Returns `None`
-    when a SIGTERM landed mid-warmup (the caller exits cleanly for requeue)."""
+    component_initializer: ComponentInitializer[
+        TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT
+    ],
+) -> _RunResources:
+    """Prepare the run's resources and placement before allocating training state."""
     rules = model.placement
     assert rules is not None, "the engine trains placed models only"
-    # The rules' own mesh — the engine never receives a second copy to desync. A training
-    # run executes forwards, so the abstract (spec-check) arm of `PlacementRules.mesh` is
-    # refused here.
-    mesh = rules.mesh
-    assert isinstance(mesh, Mesh), type(mesh)
-    # Activate the mesh so bare-PartitionSpec `reshard`s inside the forward resolve
-    # (the attn q/k/v batch-sharding pin in `FrozenAttn.core`, needed for cuDNN flash
-    # attention under the scan+cond masked forward). Explicit NamedShardings elsewhere
-    # are unaffected.
-    jax.set_mesh(mesh)
     run.run_dir.mkdir(parents=True, exist_ok=True)
-    ci_placement = resolve_ci_placement(ci_fn, rules)
-    opt_vu, opt_ci, (sched_vu, sched_ci) = build_optimizers(
-        pd, ci_fn, mesh, rules, ci_placement, model.sites
-    )
+    opt_vu, opt_ci = build_optimizers(pd, rules, model.model.sites)
 
     key = random.PRNGKey(pd.seed)
     init_key, src_key, run_key = random.split(key, 3)
 
     saver = _make_saver(cadence.checkpointing, run.run_dir, is_main)
+    start = _resolve_training_start(run, saver.manager if saver is not None else None, pd.steps)
     if is_main:
         audit = component_stacks_audit(
             eqx.filter_eval_shape(
@@ -861,67 +991,53 @@ def _prepare_run[Out, PreparedT](
             rules,
         )
         print(
-            rules.describe(
+            rules.description_for_log(
                 tensors=audit,
                 sharded_tensors=target_shardings_audit(model),
                 not_audited=("ci_fn", "persistent sources", "opt state"),
             ),
             flush=True,
         )
-        if ci_placement is not None:
-            chunks = ci_placement.chunks
-            suffix = f" (stack pad +{chunks.stack_pad})" if chunks.stack_pad else ""
-            print(f"ci_fn chunk stack: {chunks.stack_len} chunks{suffix}", flush=True)
-    init = _init_or_restore_state(
-        pd=pd,
-        ci_fn_arch=ci_fn,
-        positions=positions,
-        run=run,
-        model=model,
+    return _RunResources(
         opt_vu=opt_vu,
         opt_ci=opt_ci,
         init_key=init_key,
         src_key=src_key,
-        mesh=mesh,
-        checkpoint_manager=saver.manager if saver is not None else None,
-        is_main=is_main,
-        compiler_options=compiler_options,
-        faith_warmup=faith_warmup,
-        profiling=profiling,
-        component_initializer=component_initializer,
-    )
-    if init is None:
-        return None  # SIGTERM mid-warmup: clean exit for requeue
-    state, start_step = init
-    return _PreparedRun(
-        opt_vu=opt_vu,
-        opt_ci=opt_ci,
-        sched_vu=sched_vu,
-        sched_ci=sched_ci,
         run_key=run_key,
+        mesh=mesh,
         saver=saver,
         run_dir=run.run_dir,
-        state=state,
-        start_step=start_step,
-        ci_placement=ci_placement,
+        start=start,
+        sigterm_consensus=_prepare_sigterm_consensus(mesh),
     )
 
 
-def run_decomposition_training[Out, PreparedT, EvalPassT, EvalContextT](
+def run_decomposition_training[
+    TargetIn,
+    Out,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+    EvalPassT,
+    EvalContextT,
+](
     pd: PDConfig,
     cadence: Cadence,
     run: RunInstance,
-    model: PlacedModel[Out, PreparedT],
-    ci_fn: CIFnArch,
+    model: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
+    ci_fn_initializer: CIFnInitializer[Conditioning],
     positions: PositionAxis,
     remat_recon_forwards: bool,
     remat_ci_fn: bool,
     compiler_options: dict[str, bool | int | str],
-    sample_batch: Callable[[int], Any],
-    evaluation: Evaluation[EvalPassT, EvalContextT] | None,
+    sample_batch: Callable[[int], TargetIn],
+    build_evaluation: EvaluationBuilder[Conditioning, EvalPassT, EvalContextT] | None,
     sink: MetricsSink,
     profiling: ProfilingMode | None,
-    component_initializer: ComponentInitializer[Out, PreparedT] = random_component_initializer,
+    mfu_accounting: MfuAccounting | None,
+    component_initializer: ComponentInitializer[
+        TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT
+    ] = random_component_initializer,
 ) -> None:
     """The generic VPD decomposition-training engine — the ONE train loop every target
     (LM, TMS, ResidMLP, …) runs through.
@@ -930,8 +1046,9 @@ def run_decomposition_training[Out, PreparedT, EvalPassT, EvalContextT](
     metrics / faith warmup), `cadence` (log rhythm + the checkpointing arm),
     `run` (the run identity + wandb lineage). The lab-built objects ride alongside:
     the decomposed `model` (an `eqx.Module` carrying the frozen target weights as
-    fields — threaded into the jitted step as a pytree arg, never closed over), the CI-fn
-    arch `ci_fn`, the run's waist geometry (`positions`: `Positioned(seq_len)` for an LM,
+    fields — threaded into the jitted step as a pytree arg, never closed over), the CI fn's
+    `ci_fn_initializer` (called only on a fresh start; a resume or fine-tune traces it for
+    shapes alone), the run's waist geometry (`positions`: `Positioned(seq_len)` for an LM,
     `Positionless()` for a toy), and the `remat_recon_forwards` compute knob.
 
     The target supplies only its three injectable seams:
@@ -940,16 +1057,16 @@ def run_decomposition_training[Out, PreparedT, EvalPassT, EvalContextT](
       `step`, for O(1) resume). The model interprets it (an LM's token ids `[B, T]` → embed;
       a toy's feature vector, which already is the `[*leading, d]` waist). The engine only
       assumes axis 0 is the batch/`dp` axis (for sharding); it never names tokens or `d`.
-    - `evaluation`: a fixed tuple of domain-bound operations plus the typed context factory
-      they share. The engine alone schedules due operations, constructs one context, merges
-      disjoint records, and logs the result. `None` disables evaluation.
+    - `build_evaluation(run_key)`: a fixed tuple of domain-bound operations plus the typed
+      context factory they share. The engine alone schedules due operations, constructs one
+      context, merges disjoint records, and logs the result. `None` disables evaluation.
 
     `profiling` is threaded as data from the composition root (the engine reads no ambient
     environment): `None` is a normal training run, `JaxProfilerTrace` turns the run into an
     in-process profile (trace then return), `NsightCaptureWindow` nvtx-annotates the
     caller-declared capture steps of an otherwise-normal run.
 
-    Everything generic — `init_train_state`, fine-tune init, faith warmup, the recon-grid
+    Everything generic — state initialization, fine-tune init, faith warmup, the recon-grid
     step factory, orbax checkpointing, schedules, SIGTERM-save — lives here. The step
     numerics are identical across targets; only the data source and the eval metric differ.
 
@@ -968,235 +1085,460 @@ def run_decomposition_training[Out, PreparedT, EvalPassT, EvalContextT](
         if pd.faithfulness_warmup_steps > 0
         else None
     )
-    objective = build_objective(pd.loss_metrics, model.site_names)
-    prepared = _prepare_run(
-        pd=pd,
-        cadence=cadence,
-        run=run,
-        model=model,
-        ci_fn=ci_fn,
-        positions=positions,
-        compiler_options=compiler_options,
-        is_main=is_main,
-        faith_warmup=faith_warmup,
-        profiling=profiling,
-        component_initializer=component_initializer,
-    )
-    if prepared is None:
-        return
 
-    substrate = ForwardSubstrate.of(
-        model,
-        remat_recon_forwards=remat_recon_forwards,
-        remat_ci_fn=remat_ci_fn,
-        ci_capture_keys=prepared.state.decomposition.ci_fn.capture_keys,
-        ci_placement=prepared.ci_placement,
-    )
-    step_fn = make_train_step(
-        model_static=model,
-        substrate=substrate,
-        objective=objective,
-        components_optimizer=prepared.opt_vu,
-        ci_fn_optimizer=prepared.opt_ci,
-        total_steps=pd.steps,
-        faithfulness=faithfulness,
-        compiler_options=compiler_options,
-    )
+    mesh = _training_mesh(model)
+    with jax.set_mesh(mesh):
+        prepared = _prepare_run(
+            pd=pd,
+            cadence=cadence,
+            run=run,
+            model=model,
+            mesh=mesh,
+            is_main=is_main,
+            component_initializer=component_initializer,
+        )
 
-    def run_step(state: TrainState, step: int) -> tuple[TrainState, dict[str, jax.Array]]:
-        return step_fn(model, state, sample_batch(step), random.fold_in(prepared.run_key, step))
+        def initialize_decomposition() -> Decomposition[Conditioning]:
+            return init_decomposition(
+                model, ci_fn_initializer, prepared.init_key, component_initializer
+            )
 
-    step_cost = StepCost.of(
-        aot_compile(
-            step_fn,
+        def initialize(decomposition: Decomposition[Conditioning]) -> PDState[Conditioning]:
+            return TrainState(
+                decomposition=decomposition,
+                training=init_pd_training(
+                    pd,
+                    model,
+                    positions,
+                    prepared.opt_vu,
+                    prepared.opt_ci,
+                    decomposition,
+                    prepared.src_key,
+                ),
+            )
+
+        shape = eqx.filter_eval_shape(lambda: initialize(initialize_decomposition()))
+        if is_main:
+            print(shape.decomposition.ci_fn.placement_for_log(), flush=True)
+        substrate = ForwardSubstrate.of(
             model,
-            prepared.state,
-            sample_batch(prepared.start_step),
-            random.fold_in(prepared.run_key, prepared.start_step),
-        ),
-        jax.devices(),
-    )
-    _run_loop(pd, cadence, evaluation, sink, prepared, is_main, run_step, step_cost, profiling)
+            remat_recon_forwards=remat_recon_forwards,
+            remat_ci_fn=remat_ci_fn,
+            ci_capture_keys=shape.decomposition.ci_fn.capture_keys,
+        )
+        step_fn = make_train_step(
+            model_static=model,
+            substrate=substrate,
+            components_optimizer=prepared.opt_vu,
+            ci_fn_optimizer=prepared.opt_ci,
+            total_steps=pd.steps,
+            faithfulness=faithfulness,
+        )
+
+        def training_step(
+            model: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
+            state: PDState[Conditioning],
+            batch: TargetIn,
+            run_key: PRNGKeyArray,
+        ) -> tuple[PDState[Conditioning], dict[str, jax.Array]]:
+            return step_fn(model, state, batch, random.fold_in(run_key, state.training.step))
+
+        def run_step(
+            state: PDState[Conditioning], step: int
+        ) -> tuple[PDState[Conditioning], dict[str, jax.Array]]:
+            return compiled(model, state, sample_batch(step), prepared.run_key)
+
+        compiled = (
+            jax.jit(training_step, donate_argnums=(1, 2), compiler_options=compiler_options)
+            .lower(
+                model,
+                shape,
+                sample_batch(prepared.start_step),
+                prepared.run_key,
+            )
+            .compile()
+        )
+
+        state = _start_training(
+            prepared.start,
+            initialize_decomposition=initialize_decomposition,
+            initialize=initialize,
+            destination=restore_destination(shape, compiled.input_formats[0][1], prepared.mesh),
+            mesh=prepared.mesh,
+            is_main=is_main,
+        )
+        match prepared.start:
+            case FreshTraining():
+                if faith_warmup is not None:
+                    warmed = _warmup_pd(
+                        state,
+                        faith_warmup,
+                        model,
+                        prepared.opt_vu,
+                        prepared.mesh,
+                        compiler_options,
+                        is_main,
+                        prepared.sigterm_consensus,
+                    )
+                    match warmed:
+                        case Interrupted():
+                            return
+                        case TrainState():
+                            state = warmed
+            case ResumeTraining() | FineTune():
+                pass
+        step_cost = StepCost.of(compiled, jax.devices())
+        jax.block_until_ready((model, state))
+        _run_loop(
+            pd,
+            cadence,
+            build_evaluation,
+            sink,
+            prepared,
+            state,
+            is_main,
+            run_step,
+            step_cost,
+            profiling,
+            mfu_accounting,
+        )
 
 
-def run_targeted_decomposition_training[Out, PreparedT, EvalPassT, EvalContextT](
+def run_targeted_decomposition_training[
+    TargetIn,
+    Out,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    EvalPassT,
+    EvalContextT,
+    PreparedMaskingT,
+](
     pd: TargetedPDConfig,
     nontarget: NontargetConfig,
     cadence: Cadence,
     run: RunInstance,
-    model: PlacedModel[Out, PreparedT],
-    ci_fn: CIFnArch,
+    model: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
+    ci_fn_initializer: CIFnInitializer[Conditioning],
     positions: PositionAxis,
     remat_recon_forwards: bool,
     remat_ci_fn: bool,
     compiler_options: dict[str, bool | int | str],
-    sample_target_batch: Callable[[int], Any],
-    sample_nontarget_batch: Callable[[int], Any],
-    evaluation: Evaluation[EvalPassT, EvalContextT] | None,
+    sample_target_batch: Callable[[int], TargetIn],
+    sample_nontarget_batch: Callable[[int], TargetIn],
+    build_evaluation: EvaluationBuilder[Conditioning, EvalPassT, EvalContextT] | None,
     sink: MetricsSink,
     profiling: ProfilingMode | None,
-    component_initializer: ComponentInitializer[Out, PreparedT] = random_component_initializer,
+    mfu_accounting: MfuAccounting | None,
+    component_initializer: ComponentInitializer[
+        TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT
+    ] = random_component_initializer,
 ) -> None:
-    """The targeted-PD (tPD) engine entry (SPEC §11) — `run_decomposition_training`'s twin
+    """The targeted-PD (tPD) engine entry — `run_decomposition_training`'s twin
     over the same `_prepare_run` / `_run_loop` core, stepping the two-pass
     `make_targeted_train_step`.
 
     Two data seams instead of one: `sample_target_batch(step)` feeds the narrow TARGET
     stream (global batch `pd.batch_size` — the pass the persistent adversaries and every
     other decomposition loss run on), and `sample_nontarget_batch(step)` the broad
-    NON-TARGET stream (global batch `nontarget.batch_size`, delta pinned fully on save
-    T4's one unmasked-no-delta exception). `positions` is the TARGET stream's waist
+    NON-TARGET stream (global batch `nontarget.batch_size`, delta pinned fully on,
+    except in the unmasked-no-delta term). `positions` is the TARGET stream's waist
     geometry — persistent sources live in the target pass; each stream runs at its own
-    natural sequence length (SPEC T2/T8).
+    natural sequence length.
 
-    tPD has no faithfulness role (T3): `TargetedPDConfig` admits no faithfulness loss
+    tPD has no faithfulness role: `TargetedPDConfig` admits no faithfulness loss
     member and carries no warmup fields, so neither exists to refuse here."""
     is_main = jax.process_index() == 0
-    prepared = _prepare_run(
-        pd=pd,
-        cadence=cadence,
-        run=run,
-        model=model,
-        ci_fn=ci_fn,
-        positions=positions,
-        compiler_options=compiler_options,
-        is_main=is_main,
-        faith_warmup=None,
-        profiling=profiling,
-        component_initializer=component_initializer,
-    )
-    if prepared is None:
-        return
 
-    objective = build_targeted_objective(pd.loss_metrics, nontarget, model.site_names)
-    substrate = ForwardSubstrate.of(
-        model,
-        remat_recon_forwards=remat_recon_forwards,
-        remat_ci_fn=remat_ci_fn,
-        ci_capture_keys=prepared.state.decomposition.ci_fn.capture_keys,
-        ci_placement=prepared.ci_placement,
-    )
-    step_fn = make_targeted_train_step(
-        model_static=model,
-        substrate=substrate,
-        objective=objective,
-        ci_scaled_weight_decay=(
-            CIScaledWeightDecay(pd.ci_scaled_weight_decay, pd.components_optimizer.lr_schedule)
-            if pd.ci_scaled_weight_decay is not None
-            else None
-        ),
-        components_optimizer=prepared.opt_vu,
-        ci_fn_optimizer=prepared.opt_ci,
-        total_steps=pd.steps,
-        compiler_options=compiler_options,
-    )
-
-    def run_step(state: TrainState, step: int) -> tuple[TrainState, dict[str, jax.Array]]:
-        return step_fn(
-            model,
-            state,
-            sample_target_batch(step),
-            sample_nontarget_batch(step),
-            random.fold_in(prepared.run_key, step),
+    mesh = _training_mesh(model)
+    with jax.set_mesh(mesh):
+        prepared = _prepare_run(
+            pd=pd,
+            cadence=cadence,
+            run=run,
+            model=model,
+            mesh=mesh,
+            is_main=is_main,
+            component_initializer=component_initializer,
         )
 
-    step_cost = StepCost.of(
-        aot_compile(
-            step_fn,
+        def initialize_decomposition() -> Decomposition[Conditioning]:
+            return init_decomposition(
+                model, ci_fn_initializer, prepared.init_key, component_initializer
+            )
+
+        def initialize(decomposition: Decomposition[Conditioning]) -> TargetedPDState[Conditioning]:
+            return TrainState(
+                decomposition=decomposition,
+                training=init_targeted_pd_training(
+                    pd,
+                    model,
+                    positions,
+                    prepared.opt_vu,
+                    prepared.opt_ci,
+                    decomposition,
+                    prepared.src_key,
+                    nontarget,
+                ),
+            )
+
+        shape = eqx.filter_eval_shape(lambda: initialize(initialize_decomposition()))
+        if is_main:
+            print(shape.decomposition.ci_fn.placement_for_log(), flush=True)
+        substrate = ForwardSubstrate.of(
             model,
-            prepared.state,
-            sample_target_batch(prepared.start_step),
-            sample_nontarget_batch(prepared.start_step),
-            random.fold_in(prepared.run_key, prepared.start_step),
-        ),
-        jax.devices(),
-    )
-    _run_loop(pd, cadence, evaluation, sink, prepared, is_main, run_step, step_cost, profiling)
+            remat_recon_forwards=remat_recon_forwards,
+            remat_ci_fn=remat_ci_fn,
+            ci_capture_keys=shape.decomposition.ci_fn.capture_keys,
+        )
+        step_fn = make_targeted_train_step(
+            model_static=model,
+            substrate=substrate,
+            components_optimizer=prepared.opt_vu,
+            ci_fn_optimizer=prepared.opt_ci,
+            total_steps=pd.steps,
+        )
+
+        def training_step(
+            model: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
+            state: TargetedPDState[Conditioning],
+            target_batch: TargetIn,
+            nontarget_batch: TargetIn,
+            run_key: PRNGKeyArray,
+        ) -> tuple[TargetedPDState[Conditioning], dict[str, jax.Array]]:
+            return step_fn(
+                model,
+                state,
+                target_batch,
+                nontarget_batch,
+                random.fold_in(run_key, state.training.step),
+            )
+
+        def run_step(
+            state: TargetedPDState[Conditioning], step: int
+        ) -> tuple[TargetedPDState[Conditioning], dict[str, jax.Array]]:
+            return compiled(
+                model,
+                state,
+                sample_target_batch(step),
+                sample_nontarget_batch(step),
+                prepared.run_key,
+            )
+
+        compiled = (
+            jax.jit(training_step, donate_argnums=(1, 2, 3), compiler_options=compiler_options)
+            .lower(
+                model,
+                shape,
+                sample_target_batch(prepared.start_step),
+                sample_nontarget_batch(prepared.start_step),
+                prepared.run_key,
+            )
+            .compile()
+        )
+        state = _start_training(
+            prepared.start,
+            initialize_decomposition=initialize_decomposition,
+            initialize=initialize,
+            destination=restore_destination(shape, compiled.input_formats[0][1], prepared.mesh),
+            mesh=prepared.mesh,
+            is_main=is_main,
+        )
+        step_cost = StepCost.of(compiled, jax.devices())
+        jax.block_until_ready((model, state))
+        _run_loop(
+            pd,
+            cadence,
+            build_evaluation,
+            sink,
+            prepared,
+            state,
+            is_main,
+            run_step,
+            step_cost,
+            profiling,
+            mfu_accounting,
+        )
 
 
-def _run_loop[EvalPassT, EvalContextT](
+@contextmanager
+def _jax_trace(run_dir: Path, steps: range, is_main: bool) -> Iterator[None]:
+    assert steps, "a profile trace needs at least one execution"
+    profile_dir = str(run_dir / "profile")
+    if is_main:
+        options = jax.profiler.ProfileOptions()
+        options.host_tracer_level = 1
+        options.device_tracer_level = 1
+        options.python_tracer_level = 0
+        options.advanced_configuration = {"gpu_max_activity_api_events": 2_000_000}
+        jax.profiler.start_trace(
+            profile_dir,
+            create_perfetto_trace=True,
+            profiler_options=options,
+        )
+    try:
+        if is_main:
+            print(f"profiling steps {steps[0]}..{steps[-1]}", flush=True)
+        yield
+    finally:
+        if is_main:
+            jax.profiler.stop_trace()
+    if is_main:
+        print(f"profile written to {profile_dir}", flush=True)
+
+
+def _training_steps[Conditioning, Training: TrainingProgress](
+    state: TrainState[Conditioning, Training],
+    run_step: Callable[
+        [TrainState[Conditioning, Training], int],
+        tuple[TrainState[Conditioning, Training], dict[str, jax.Array]],
+    ],
+    start_step: int,
+    total_steps: int,
+    profiling: ProfilingMode | None,
+    run_dir: Path,
+    is_main: bool,
+) -> Iterator[tuple[int, TrainState[Conditioning, Training], dict[str, jax.Array]]]:
+    """Execute steps, yielding those due for training bookkeeping.
+
+    JAX warmup yields normally; the traced tail completes without yielding so logging,
+    evaluation, and checkpointing stay outside the capture. Annotation scopes close
+    before each yield.
+    """
+    match profiling:
+        case JaxProfilerTrace(steps=steps):
+            profile_start = start_step + _PROFILE_WARMUP_EXECUTIONS
+            profile_stop = profile_start + steps
+            assert profile_stop <= total_steps, (
+                f"profiling requires {_PROFILE_WARMUP_EXECUTIONS} warmup executions plus "
+                f"{steps} marked executions, but only {total_steps - start_step} steps remain"
+            )
+            for step in range(start_step, profile_start):
+                state, metrics = run_step(state, step)
+                jax.block_until_ready(metrics["total"])
+                yield step, state, metrics
+            trace_steps = range(profile_start, profile_stop)
+            with _jax_trace(run_dir, trace_steps, is_main):
+                for step in trace_steps:
+                    with jax.profiler.TraceAnnotation("param_decomp.profile_step", step_num=step):
+                        state, metrics = run_step(state, step)
+                        jax.block_until_ready(metrics["total"])
+        case NsightCaptureWindow() as window:
+            for step in range(start_step, total_steps):
+                if window.contains(start_step, step):
+                    with nvtx.annotate(
+                        "param_decomp.profile_step", domain="param_decomp", payload=step
+                    ):
+                        state, metrics = run_step(state, step)
+                        jax.block_until_ready(metrics["total"])
+                else:
+                    state, metrics = run_step(state, step)
+                yield step, state, metrics
+        case None:
+            for step in range(start_step, total_steps):
+                state, metrics = run_step(state, step)
+                yield step, state, metrics
+
+
+def _run_loop[Conditioning, Training: TrainingProgress, EvalPassT, EvalContextT](
     pd: PDConfigBase,
     cadence: Cadence,
-    evaluation: Evaluation[EvalPassT, EvalContextT] | None,
+    build_evaluation: EvaluationBuilder[Conditioning, EvalPassT, EvalContextT] | None,
     sink: MetricsSink,
-    prepared: _PreparedRun,
+    prepared: _RunResources,
+    state: TrainState[Conditioning, Training],
     is_main: bool,
-    run_step: Callable[[TrainState, int], tuple[TrainState, dict[str, jax.Array]]],
+    run_step: Callable[
+        [TrainState[Conditioning, Training], int],
+        tuple[TrainState[Conditioning, Training], dict[str, jax.Array]],
+    ],
     step_cost: StepCost,
     profiling: ProfilingMode | None,
+    mfu_accounting: MfuAccounting | None,
 ) -> None:
-    """The generic train loop over one already-built `run_step(state, step)`: log cadence,
-    eval scheduling, checkpointing, and SIGTERM-save — identical for both engine entries."""
+    compiled_evaluation = (
+        build_evaluation(prepared.run_key).prepare(
+            EvalInvocation(
+                decomposition=state.decomposition,
+                persistent_sources={
+                    name: adversary.sources
+                    for name, adversary in state.training.adversaries.items()
+                },
+                now_step=prepared.start_step,
+            )
+        )
+        if build_evaluation is not None
+        else None
+    )
+    compute_norm_ratios = (
+        jax.jit(uv_norm_ratio_metrics).lower(state.decomposition.components).compile()
+    )
     saver = prepared.saver
-    sched_vu, sched_ci = prepared.sched_vu, prepared.sched_ci
-    state, start_step = prepared.state, prepared.start_step
+    match profiling:
+        case JaxProfilerTrace():
+            pass
+        case NsightCaptureWindow() | None:
+            match prepared.start:
+                case FreshTraining() | FineTune():
+                    if saver is not None:
+                        save_state(saver.manager, 0, state)
+                case ResumeTraining():
+                    pass
+
+    _run_timed_loop(
+        pd,
+        cadence,
+        compiled_evaluation,
+        sink,
+        prepared,
+        state,
+        is_main,
+        run_step,
+        step_cost,
+        profiling,
+        mfu_accounting,
+        compute_norm_ratios,
+    )
+
+
+def _run_timed_loop[Conditioning, Training: TrainingProgress, EvalPassT, EvalContextT](
+    pd: PDConfigBase,
+    cadence: Cadence,
+    evaluation: Evaluation[Conditioning, EvalPassT, EvalContextT] | None,
+    sink: MetricsSink,
+    prepared: _RunResources,
+    state: TrainState[Conditioning, Training],
+    is_main: bool,
+    run_step: Callable[
+        [TrainState[Conditioning, Training], int],
+        tuple[TrainState[Conditioning, Training], dict[str, jax.Array]],
+    ],
+    step_cost: StepCost,
+    profiling: ProfilingMode | None,
+    mfu_accounting: MfuAccounting | None,
+    compute_norm_ratios: Callable[[ComponentStacks], dict[str, jax.Array]],
+) -> None:
+    """Training windows exclude evaluation and checkpointing; the loop clock includes both."""
+    saver = prepared.saver
+    start_step = prepared.start_step
+
+    performance = PerformanceTracker(monotonic(), mfu_accounting)
 
     if evaluation is not None and start_step == 0:
-        baseline = _run_due_evaluation(evaluation, state, 0, prepared.ci_placement)
+        baseline = _run_due_evaluation(evaluation, state, 0)
         if baseline is not None:
-            sink.log(0, _with_uv_norm_ratios(baseline, state))
+            baseline_record = dict(
+                _with_uv_norm_ratios(baseline, state.decomposition, compute_norm_ratios)
+            )
+            dict_safe_update_(baseline_record, performance.metrics(monotonic()))
+            sink.log(0, baseline_record)
 
-    window_t0 = loop_t0 = time.time()
-    last_logged = start_step
     grad_norm_summary_window: list[dict[str, jax.Array]] = []
-    match profiling:
-        case JaxProfilerTrace(steps=profile_steps):
-            nsight_window = None
-        case NsightCaptureWindow() as nsight_window:
-            profile_steps = 0
-        case None:
-            profile_steps = 0
-            nsight_window = None
-    profile_start = start_step + _PROFILE_WARMUP_EXECUTIONS
-    if profile_steps > 0:
-        assert profile_start + profile_steps <= pd.steps, (
-            f"profiling requires {_PROFILE_WARMUP_EXECUTIONS} warmup executions plus "
-            f"{profile_steps} marked executions, but only {pd.steps - start_step} steps remain"
-        )
-    profile_dir = str(prepared.run_dir / "profile")
-
-    for step in range(start_step, pd.steps):
-        if profile_steps > 0 and is_main and step == profile_start:
-            options = jax.profiler.ProfileOptions()
-            options.host_tracer_level = 1
-            options.device_tracer_level = 1
-            options.python_tracer_level = 0
-            options.advanced_configuration = {"gpu_max_activity_api_events": 2_000_000}
-            jax.profiler.start_trace(
-                profile_dir,
-                create_perfetto_trace=True,
-                profiler_options=options,
-            )
-            print(
-                f"profiling steps {profile_start}..{profile_start + profile_steps - 1}", flush=True
-            )
-
-        profiling_warmup_step = profile_steps > 0 and step < profile_start
-        profiling_step = profile_steps > 0 and step >= profile_start
-        nsight_step = nsight_window is not None and nsight_window.contains(start_step, step)
-        annotation = (
-            jax.profiler.TraceAnnotation("param_decomp.profile_step", step_num=step)
-            if profiling_step
-            else contextlib.nullcontext()
-        )
-        nsight_annotation = (
-            nvtx.annotate("param_decomp.profile_step", domain="param_decomp", payload=step)
-            if nsight_step
-            else contextlib.nullcontext()
-        )
-        with annotation, nsight_annotation:
-            state, metrics = run_step(state, step)
-            if profiling_warmup_step or profiling_step or nsight_step:
-                jax.block_until_ready(metrics["total"])
-
-        if profiling_step:
-            if step + 1 == profile_start + profile_steps:
-                if is_main:
-                    jax.profiler.stop_trace()
-                    print(f"profile written to {profile_dir}", flush=True)
-                return
-            continue
-
+    training_steps = _training_steps(
+        state, run_step, start_step, pd.steps, profiling, prepared.run_dir, is_main
+    )
+    performance.training_started(monotonic())
+    for step, state, metrics in training_steps:
+        performance.record_step(step)
         grad_norm_summary_window.append(
             {k: v for k, v in metrics.items() if k.startswith("grad_norms/summary/")}
         )
@@ -1209,16 +1551,26 @@ def _run_loop[EvalPassT, EvalContextT](
             or now_step == pd.steps
             or (dense is not None and now_step <= dense.until_step and now_step % dense.every == 0)
         )
-        sigterm = log_now and _sigterm_consensus()
+        sigterm = log_now and prepared.sigterm_consensus()
+        evaluate_now = (
+            evaluation is not None
+            and not sigterm
+            and any(eval_due(operation.schedule, now_step) for operation in evaluation.operations)
+        )
+        save_now = saver is not None and (
+            now_step % saver.save_every == 0 or now_step == pd.steps or sigterm
+        )
+        pause_training = log_now or evaluate_now or save_now
+        if pause_training:
+            jax.block_until_ready((state, metrics))
+            performance.training_paused(monotonic())
         if log_now:
-            jax.block_until_ready(metrics["total"])
-            dt = time.time() - window_t0
-            per_step = dt / max(now_step - last_logged, 1)
-            last_logged = now_step
+            timing = performance.metrics(monotonic())
+            per_step = timing["train/perf/step_time_s"]
             record = {
                 k: float(v) for k, v in metrics.items() if not k.startswith("grad_norms/summary/")
             }
-            record.update(_grad_norm_summary_window_stats(grad_norm_summary_window))
+            dict_safe_update_(record, _grad_norm_summary_window_stats(grad_norm_summary_window))
             grad_norm_summary_window.clear()
             nonfinite = {key: value for key, value in record.items() if not math.isfinite(value)}
             nonfinite_losses = {
@@ -1231,15 +1583,16 @@ def _run_loop[EvalPassT, EvalContextT](
                 f"non-finite metrics at step {now_step}: losses={nonfinite_losses}; "
                 f"other_count={len(nonfinite_other)}; other_first={nonfinite_other[:20]}"
             )
-            record["step_time_s"] = per_step
             record["flops_per_step"] = step_cost.flops_per_step
             if (hfu := step_cost.hfu(per_step)) is not None:
                 record["hfu"] = hfu
-            record["elapsed_s"] = time.time() - loop_t0
             record["eta_s"] = (pd.steps - now_step) * per_step
-            # the LR this step applied (optax count is the pre-increment `step` == now_step - 1)
-            record["train/schedules/lr/components"] = float(jnp.asarray(sched_vu(now_step - 1)))
-            record["train/schedules/lr/ci_fn"] = float(jnp.asarray(sched_ci(now_step - 1)))
+            record["train/schedules/lr/components"] = float(
+                state.training.components_opt_state.applied_learning_rate
+            )
+            record["train/schedules/lr/ci_fn"] = float(
+                state.training.ci_fn_opt_state.applied_learning_rate
+            )
             mem_stats = jax.local_devices()[0].memory_stats()
             if mem_stats is not None:
                 record["train/mem/peak_gb_per_rank"] = mem_stats["peak_bytes_in_use"] / 1e9
@@ -1259,24 +1612,32 @@ def _run_loop[EvalPassT, EvalContextT](
             train_record = record
 
         eval_record = (
-            _run_due_evaluation(evaluation, state, now_step, prepared.ci_placement)
-            if evaluation is not None and not sigterm
+            _run_due_evaluation(evaluation, state, now_step)
+            if evaluation is not None and evaluate_now
             else None
         )
         if eval_record is not None:
-            eval_record = _with_uv_norm_ratios(eval_record, state)
-        step_record = _combine_step_records(train_record, eval_record)
-        if step_record is not None:
-            sink.log(now_step, step_record)
-            window_t0 = time.time()
-
-        if saver is not None and (
-            now_step % saver.save_every == 0 or now_step == pd.steps or sigterm
-        ):
+            eval_record = _with_uv_norm_ratios(
+                eval_record, state.decomposition, compute_norm_ratios
+            )
+        if saver is not None and save_now:
             save_state(saver.manager, now_step, state)
             if is_main:
                 print(f"checkpoint saved @ step {now_step}", flush=True)
-            window_t0 = time.time()
+        if now_step == pd.steps or sigterm:
+            sink.wait_for_renderers()
+        step_record = _combine_step_records(train_record, eval_record)
+        if step_record is not None:
+            timing = performance.metrics(monotonic())
+            record_with_performance = dict(step_record)
+            dict_safe_update_(record_with_performance, timing)
+            if log_now:
+                record_with_performance["elapsed_s"] = timing["train/perf/runtime_s"]
+            sink.log(now_step, record_with_performance)
+            if log_now:
+                performance.reset_window(monotonic())
+        if pause_training and now_step < pd.steps and not sigterm:
+            performance.training_started(monotonic())
         if sigterm:
             if is_main:
                 print(

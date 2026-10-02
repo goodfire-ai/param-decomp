@@ -7,6 +7,7 @@ Runs the real module entry in a child process (as `test_run_inline` does), so ea
 starts with fresh process state just as a requeued job does.
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -125,7 +126,16 @@ def test_tms_rerun_below_the_horizon_resumes(trained: TrainedRun, tmp_path: Path
     assert rerun.returncode == 0, rerun.stderr
     assert "resumed from checkpoint step 1" in rerun.stdout
     assert "checkpoint saved @ step 2" in rerun.stdout
-    assert (run_dir / "metrics.jsonl").read_text().count("\n") == records_before + 1
+    lines = (run_dir / "metrics.jsonl").read_text().splitlines()
+    assert len(lines) == records_before + 1
+    previous, resumed = json.loads(lines[-2]), json.loads(lines[-1])
+    assert previous["train/perf/n_completed_steps"] == 2
+    assert resumed["train/perf/n_completed_steps"] == 1
+    assert all("mfu" not in name and "useful" not in name for name in resumed)
+    assert 0 < resumed["train/perf/training_time_s"] <= resumed["train/perf/runtime_s"]
+    losses = {name: value for name, value in previous.items() if name.startswith("train/loss/")}
+    assert losses
+    assert {name: resumed[name] for name in losses} == pytest.approx(losses)
 
 
 def test_tms_rerun_refuses_a_changed_config(trained: TrainedRun) -> None:

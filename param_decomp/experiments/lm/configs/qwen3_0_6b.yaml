@@ -1,0 +1,179 @@
+# Latest canonical run: https://wandb.ai/goodfire/param-decomp-llama/runs/p-3653caa3
+# Model-only run name replaces the source run's experiment label.
+run_name: qwen3-0-6b
+cadence:
+  # p-3653caa3's save_every/checkpoint_retention in the current nested schema;
+  # save interval and retention are unchanged.
+  checkpointing:
+    kind: periodic
+    save_every: 2000
+    retention:
+      kind: keep_last
+      n: 1
+# Source-document IDs isolate target/CI attention and omit cross-document labels.
+# Qwen3 framing is text + <|endoftext|> (151643), without BOS; old runs keep their pins.
+data:
+  train:
+    kind: name
+    name: fineweb350bt_qwen3_docs1024_r9bb295dd_train284_v1
+  eval:
+    kind: name
+    name: fineweb350bt_qwen3_docs1024_r9bb295dd_eval284_v1
+eval:
+  batch_size: 256
+  every: 1000
+  # Omit unsupported StochasticHiddenActsReconLoss/CIHiddenActsReconLoss from p-3653caa3
+  # The remaining metrics do not provide equivalent coverage.
+  metrics:
+  - n_batches_accum: 1
+    type: CIHistograms
+  - ci_alive_threshold: 0.0
+    type: ComponentActivationDensity
+  - ci_alive_threshold: 0.0
+    groups: null
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  - type: CIMeanPerComponent
+  # Adds per-position active-CI diagnostics; absent from p-3653caa3
+  - type: CIActiveCountsPerPosition
+  - init: random
+    source_shape: c
+    n_steps: 20
+    step_size: 0.1
+    type: PGDReconLoss
+  n_steps: 1
+  slow_every: 10000
+  slow_on_first_step: true
+decomposition:
+  sites:
+    kind: glu_transformer
+    layers:
+      kind: all
+    cs:
+      q: 2048
+      k: 1024
+      v: 1024
+      o: 2048
+      gate: 3072
+      up: 3072
+      down: 3072
+    # Retired neuron_head_aligned -> supported nonlinearity_aligned;
+    # initialization geometry differs from p-3653caa3.
+    initialization: nonlinearity_aligned
+  ci:
+    type: chunkwise_transformer
+    blocks_per_chunk: 1
+    input_tap: all_block_resids
+    d_model: 1024
+    n_blocks: 4
+    attention:
+      kind: mha
+      # Explicit bidirectional CI mask, matching p-3653caa3's implicit behavior.
+      mask: bidirectional
+      n_heads: 16
+      # Explicit GPU attention; CI implementation was implicit in p-3653caa3
+      implementation: flash
+    ffn:
+      kind: gelu
+      hidden: 4096
+pd:
+  # Both Muon optimizers omit the retired impl: stacked selector.
+  batch_size: 256
+  ci_fn_optimizer:
+    type: muon
+    ns_dtype: bfloat16
+    grad_clip_norm: 1.0
+    lr_schedule:
+      max_val: 5.0e-05
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 1.0
+        frac: 0.1
+        interp: cosine
+  components_optimizer:
+    type: muon
+    ns_dtype: bfloat16
+    grad_clip_norm: 1.0
+    lr_schedule:
+      max_val: 5.0e-05
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 1.0
+        frac: 0.1
+        interp: cosine
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 0
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - frequency:
+      coeff: 1.0e-05
+      reference_datapoint_count: 32768
+      ema_halflife_steps: 200
+    coeff: 2.0e-05
+    # Current name for p-3653caa3's SmoothL0ImportanceMinimalityLoss;
+    # coefficients, gamma schedule and unnormalized smooth-L0 penalty are retained.
+    type: ImportanceMinimalityLoss
+    gamma:
+      max_val: 1.0
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 0.9
+        frac: 0.01
+      - at: 1.0
+        frac: 0.01
+  - type: MergedStochasticSubsetPPGDReconLoss
+    coeff: 1.0
+    adv_fraction: 0.5
+    adversary_objective: e2e
+    n_warmup_steps: 2
+    routing:
+      type: uniform_k_subset
+    optimizer:
+      beta1: 0.01
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        max_val: 0.01
+        points:
+        - at: 0.0
+          frac: 0.0
+        - at: 0.05
+          frac: 1.0
+        - at: 1.0
+          frac: 1.0
+      type: adam
+    source_shape: bsc
+  - coeff: 10000.0
+    type: FaithfulnessLoss
+  seed: 0
+  steps: 400000
+runtime:
+  compilation_cache_dir: ~/.cache/param-decomp/xla
+  # Muon requires owner placement rather than zero1 used in p-3653caa3
+  sharding: owner
+  remat_recon_forwards: true
+  remat_ci_fn: true
+  # Supported compiler flags; tuned-v1 is retired. Differs from p-3653caa3
+  compiler_options: tuned-v2
+  # p-3653caa3's flat replicate/fsdp/tp fields moved under mesh; counts unchanged.
+  mesh:
+    replicate: 4
+    fsdp: 16
+    tp: 1
+target:
+  # Explicit GPU attention instead of auto selection in p-3653caa3
+  attention_implementation: flash
+  weights_dtype: bfloat16
+  spec:
+    kind: hf
+    model_class: transformers.Qwen3ForCausalLM
+    model_name: Qwen/Qwen3-0.6B
+  # Explicit materialized output: p-3653caa3 omitted this now-required choice.
+  output_edge:
+    kind: materialized
+wandb:
+  project: param-decomp

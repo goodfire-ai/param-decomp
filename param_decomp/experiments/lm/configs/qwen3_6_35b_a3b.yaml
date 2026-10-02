@@ -1,0 +1,269 @@
+# Maintained Qwen3.6-35B-A3B recommendation; no human-selected canonical run yet.
+# Large-capacity Qwen3.6-35B-A3B config on mesh {data: 8, tp: 8} (64 GPUs).
+# Expert kinds at c_per_expert = 512 (C = 131,072/site, 120
+# expert sites), shared kinds at C = 4096, batch 32x512.
+#
+# The CI fn is the MoE chunkwise transformer with NARROW emission (the typed SelectedCI
+# path): one chunk per target stage (blocks_per_chunk = 4), n_blocks = 2 concat-wide
+# routed blocks per chunk — each block carries 4 x 256 expert banks dispatched by the
+# captured routing, one target stage's expert parameters per block — and per-expert
+# heads fused into the last block's expert slots. Expert sites emit [.., k*c] bundles
+# married to their router indices; the full 131k axis never materializes.
+#
+# Imp-min is smooth-L0 with no frequency term: the narrow lp
+# reduction is a plain sum over the routed values — no per-component [C] accumulator
+# anywhere in the hot loop.
+#
+# Persistent-PGD sources are `source_shape: bsc` (per-datapoint slots: [B, S, C],
+# warm-start semantics — the slot persists across steps while the data in the slot
+# changes) stored FULL-C as uint16 unit-interval FIXED-POINT (uniform 1/65535
+# resolution across [0,1] where bf16 resolves only ~2^-8 near 1.0; ascents update the
+# fp32 view and store back with stochastic rounding, so sub-half-step updates land in
+# expectation instead of stalling) under the `momentum_sgd` source optimizer: one bf16
+# velocity buffer, no adam moments (which would outweigh the sources themselves).
+# Sources and velocity double-shard {batch: data, expert: tp}, so the per-device
+# resident add is the global bytes ÷ 64; narrow sites read their routed entries out of
+# the source by the bundle's indices (a gather — never a scatter to [.., C]). The eval
+# fresh-PGD probe keeps the configuration's `source_shape: c`.
+#
+# The schedule: 400,000 steps at 16,384 tokens/step (batch 32x512) — 6.6B tokens, a
+# single pass over ~2/3 of the ~10B-token train14 split. Schedules ride normalized
+# time, so the configuration anneals (LR cosine to 0.1x, smooth-L0 gamma
+# 1.0 → 0.01) span this horizon as written. Faithfulness warmup runs
+# for 400 steps at lr 1e-3; qwen36_moe components init random — the family's only
+# init — so the nonlinearity-aligned warmup exemption cannot apply.
+run_name: jax-qwen36-35b-cpe512-bsc
+cadence:
+  checkpointing:
+    kind: periodic
+    save_every: 2500
+    retention:
+      kind: keep_last
+      n: 2
+data:
+  train:
+    kind: name
+    name: fineweb_qwen36_tok_512_train14
+  eval:
+    kind: name
+    name: fineweb_qwen36_tok_512_eval1
+eval:
+  batch_size: 8
+  every: 1000
+  metrics:
+  - n_batches_accum: 1
+    type: CIHistograms
+  - ci_alive_threshold: 0.0
+    type: ComponentActivationDensity
+  - ci_alive_threshold: 0.0
+    groups:
+      experts_gate:
+      - layers.*.mlp.experts.gate_proj
+      experts_up:
+      - layers.*.mlp.experts.up_proj
+      experts_down:
+      - layers.*.mlp.experts.down_proj
+      shared:
+      - layers.*.mlp.shared_expert.*
+      total:
+      - '*'
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  - type: CIMeanPerComponent
+  - type: CIActiveCountsPerPosition
+  - init: random
+    source_shape: c
+    n_steps: 20
+    name: PGDReconLoss_20step
+    step_size: 0.1
+    type: PGDReconLoss
+  n_steps: 1
+  slow_every: 10000
+  # the step-0 slow pass pays the one-time eval-program compile up front, before
+  # days of training ride on those programs
+  slow_on_first_step: true
+decomposition:
+  sites:
+    kind: qwen36_moe
+    layers:
+      kind: all
+    cs:
+      experts_gate: 131072
+      experts_up: 131072
+      experts_down: 131072
+      shared_gate: 4096
+      shared_up: 4096
+      shared_down: 4096
+  ci:
+    type: moe_chunkwise_transformer
+    expert_implementation: tokamax_split_vjp
+    blocks_per_chunk: 4
+    d_model: 2048
+    n_blocks: 2
+    attention:
+      kind: mha
+      # Explicit bidirectional CI mask; formerly the schema default.
+      mask: bidirectional
+      implementation: flash
+      n_heads: 16
+    expert_ffn_hidden: 512
+    shared_ffn_hidden: 512
+pd:
+  batch_size: 32
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: null
+    lr_schedule:
+      max_val: 2.0e-05
+      points:
+        - {at: 0.0, frac: 1.0}
+        - {at: 1.0, frac: 0.1, interp: cosine}
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 0.01
+    lr_schedule:
+      max_val: 2.0e-05
+      points:
+        - {at: 0.0, frac: 1.0}
+        - {at: 1.0, frac: 0.1, interp: cosine}
+    weight_decay: 0.0
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 400
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - coeff: 5.0e-06
+    gamma:
+      max_val: 1.0
+      points:
+        - {at: 0.0, frac: 1.0}
+        - {at: 1.0, frac: 0.01}
+    type: ImportanceMinimalityLoss
+  - coeff: 0.5
+    routing:
+      type: uniform_k_subset
+    type: StochasticReconSubsetLoss
+    # This recommendation has not yet been validated by a completed run.
+    # Scale mean router KL by 40 MoE layers; share it across the 50/50 recon terms.
+    auxiliaries: &router_kl
+    - name: router_kl
+      coeff: 40.0
+      comparisons:
+      - {capture: router_logits.0, distance: categorical_kl_from_logits}
+      - {capture: router_logits.1, distance: categorical_kl_from_logits}
+      - {capture: router_logits.2, distance: categorical_kl_from_logits}
+      - {capture: router_logits.3, distance: categorical_kl_from_logits}
+      - {capture: router_logits.4, distance: categorical_kl_from_logits}
+      - {capture: router_logits.5, distance: categorical_kl_from_logits}
+      - {capture: router_logits.6, distance: categorical_kl_from_logits}
+      - {capture: router_logits.7, distance: categorical_kl_from_logits}
+      - {capture: router_logits.8, distance: categorical_kl_from_logits}
+      - {capture: router_logits.9, distance: categorical_kl_from_logits}
+      - {capture: router_logits.10, distance: categorical_kl_from_logits}
+      - {capture: router_logits.11, distance: categorical_kl_from_logits}
+      - {capture: router_logits.12, distance: categorical_kl_from_logits}
+      - {capture: router_logits.13, distance: categorical_kl_from_logits}
+      - {capture: router_logits.14, distance: categorical_kl_from_logits}
+      - {capture: router_logits.15, distance: categorical_kl_from_logits}
+      - {capture: router_logits.16, distance: categorical_kl_from_logits}
+      - {capture: router_logits.17, distance: categorical_kl_from_logits}
+      - {capture: router_logits.18, distance: categorical_kl_from_logits}
+      - {capture: router_logits.19, distance: categorical_kl_from_logits}
+      - {capture: router_logits.20, distance: categorical_kl_from_logits}
+      - {capture: router_logits.21, distance: categorical_kl_from_logits}
+      - {capture: router_logits.22, distance: categorical_kl_from_logits}
+      - {capture: router_logits.23, distance: categorical_kl_from_logits}
+      - {capture: router_logits.24, distance: categorical_kl_from_logits}
+      - {capture: router_logits.25, distance: categorical_kl_from_logits}
+      - {capture: router_logits.26, distance: categorical_kl_from_logits}
+      - {capture: router_logits.27, distance: categorical_kl_from_logits}
+      - {capture: router_logits.28, distance: categorical_kl_from_logits}
+      - {capture: router_logits.29, distance: categorical_kl_from_logits}
+      - {capture: router_logits.30, distance: categorical_kl_from_logits}
+      - {capture: router_logits.31, distance: categorical_kl_from_logits}
+      - {capture: router_logits.32, distance: categorical_kl_from_logits}
+      - {capture: router_logits.33, distance: categorical_kl_from_logits}
+      - {capture: router_logits.34, distance: categorical_kl_from_logits}
+      - {capture: router_logits.35, distance: categorical_kl_from_logits}
+      - {capture: router_logits.36, distance: categorical_kl_from_logits}
+      - {capture: router_logits.37, distance: categorical_kl_from_logits}
+      - {capture: router_logits.38, distance: categorical_kl_from_logits}
+      - {capture: router_logits.39, distance: categorical_kl_from_logits}
+  - coeff: 0.5
+    n_warmup_steps: 2
+    optimizer:
+      type: momentum_sgd
+      # the conventional default, not a measured choice: a bsc slot's data churns
+      # every step, so momentum mixes unrelated batches' gradients — retune this
+      # deliberately, not by analogy to adam-first-moment findings
+      momentum: 0.9
+      lr_schedule:
+        max_val: 0.01
+        points:
+          - {at: 0.0, frac: 0.0}
+          - {at: 0.025, frac: 1.0}
+          - {at: 1.0, frac: 1.0}
+    source_shape: bsc
+    source_dtype: uint16
+    type: PersistentPGDReconLoss
+    auxiliaries: *router_kl
+  - coeff: 1.0e+03
+    type: FaithfulnessLoss
+  seed: 0
+  steps: 400000
+runtime:
+  compilation_cache_dir: ~/.cache/param-decomp/xla
+  # owner flavor: component masters stack-cut (40 layers / data 8), identity
+  # faithfulness with zero entry collectives, muon-legal if the components group
+  # ever flips; the CI MoE families are identical across both moe flavors.
+  sharding: owner-replicated-resident-moe
+  mesh:
+    data: 8
+    tp: 8
+  remat_recon_forwards: true
+  remat_ci_fn: true
+  # tuned-v2-autotune1's flags plus command-buffer capture (jaxlib 0.11.1's default
+  # command set). Capture must live HERE, in compiler_options: env XLA_FLAGS is inert
+  # for it — the preset's explicit `xla_gpu_enable_command_buffer: ""` override beats
+  # env, and env flags are not in the compile-cache key, so an env-only flip can
+  # silently reuse a capture-off executable.
+  compiler_options:
+    xla_gpu_enable_latency_hiding_scheduler: true
+    xla_gpu_enable_triton_gemm: false
+    xla_gpu_enable_highest_priority_async_stream: true
+    xla_gpu_all_reduce_combine_threshold_bytes: 1073741824
+    xla_gpu_all_gather_combine_threshold_bytes: 1073741824
+    xla_gpu_reduce_scatter_combine_threshold_bytes: 134217728
+    xla_gpu_enable_while_loop_double_buffering: false
+    xla_gpu_enable_all_gather_combine_by_dim: false
+    xla_gpu_enable_reduce_scatter_combine_by_dim: false
+    xla_gpu_autotune_level: 1
+    xla_gpu_enable_command_buffer: "FUSION,CUBLAS,CUBLASLT,CUDNN,CUSTOM_CALL,DYNAMIC_SLICE_FUSION,CONDITIONAL"
+target:
+  # cuDNN rejects this family's head_dim=256 backward graph on B200.
+  attention_implementation: xla
+  # Stream logits to reduce the activation footprint alongside persistent sources.
+  output_edge:
+    kind: streamed
+    n_vocab_chunks: 32
+  weights_dtype: bfloat16
+  spec:
+    kind: hf
+    model_class: transformers.Qwen3_5MoeForCausalLM
+    model_name: Qwen/Qwen3.6-35B-A3B
+wandb:
+  entity: null
+  project: param-decomp-qwen36
+  group: qwen36-reference
+  tags:
+  - qwen36-moe
+  - large-capacity
+  - narrow-emission
+  - bsc-sources
+  - dp8tp8
+  - seq512

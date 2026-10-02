@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from param_decomp.core.losses import scheduled_value_traced
+from param_decomp.core.runtime_schedule import scheduled_value_traced
 from param_decomp.core.schedule import Interp, Knot, ScheduleConfig, get_scheduled_value
 
 
@@ -66,7 +66,7 @@ def retired_value(
     fn_type: str,
 ) -> float:
     """`get_scheduled_value` as it read before knot schedules — verbatim. This is the only
-    remaining executable record of the trajectory the production seats used to run, and it
+    remaining executable record of the trajectory the reference configurations used to run, and it
     is what the migration harness below measures every seat against."""
     warmup_steps = int(total_steps * warmup_pct)
     decay_steps = total_steps - warmup_steps
@@ -85,14 +85,14 @@ def retired_value(
             return start_val * (final_val_frac + (1 - final_val_frac) * cosine)
 
 
-# Every distinct no-warmup shape the 14 seat YAMLs author, as `(retired form, knot form)`.
-# These carry SPEC S20's torch-parity endpoint through unchanged, so they must agree at
+# Every distinct no-warmup shape the reference YAMLs author, as `(retired form, knot form)`.
+# These carry the torch-parity endpoint through unchanged, so they must agree at
 # EVERY step — a production anneal silently moving is the regression this pins.
 POINTWISE_SEATS = [
-    # main + CI-fn LRs (all 14 seats; max_val varies, the shape does not)
+    # main + CI-fn LRs (all reference configs; max_val varies, the shape does not)
     ((7e-05, 0.1, "cosine"), sched(7e-05, (0.0, 1.0), (1.0, 0.1, "cosine"))),
     ((2e-03, 0.1, "cosine"), sched(2e-03, (0.0, 1.0), (1.0, 0.1, "cosine"))),
-    ((1.0, 0.01, "linear"), sched(1.0, (0.0, 1.0), (1.0, 0.01))),  # the gamma seats
+    ((1.0, 0.01, "linear"), sched(1.0, (0.0, 1.0), (1.0, 0.01))),  # the gamma configurations
     ((0.5, 1.0, "constant"), ScheduleConfig.constant(0.5)),  # adv_fraction
 ]
 
@@ -124,7 +124,7 @@ def test_final_value_is_held_past_the_end(
     """At the one-past-the-end `step == total_steps` an optax count can reach, `t` clamps to
     1.0 and the schedule HOLDS its final value. The retired evaluator instead let `progress`
     run past 1 and extrapolated through the far endpoint (e.g. linear `2.0 -> 0.4` returned
-    0.3919 at `step == 100` of 100). No update ever consumed that count, so no seat's
+    0.3919 at `step == 100` of 100). No update ever consumed that count, so no config's
     trajectory moved — but holding is the honest behaviour, and this pins it."""
     _, final_val_frac, _ = retired
     assert get_scheduled_value(total_steps, total_steps, migrated) == pytest.approx(
@@ -134,14 +134,14 @@ def test_final_value_is_held_past_the_end(
 
 # The PPGD source LR is the ONE knowingly non-pointwise migration: the retired form ramped
 # over `int(total_steps * 0.025)` whole steps, the knot form over normalized time, so the
-# two differ INSIDE the warmup window and nowhere else. Per production seat: its step count
-# and the measured max |Δ| relative to `max_val`. The deltas shrink as O(1/steps) — the same
-# class SPEC S9/S20 already accept — except the 250-step smoke seat, which is coarse enough
+# two differ INSIDE the warmup window and nowhere else. Per reference configuration: its step count
+# and the measured max |Δ| relative to `max_val`. The deltas shrink as O(1/steps),
+# except the 250-step smoke config, which is coarse enough
 # that one whole warmup step (of six) lands on the wrong side of the ramp.
 PPGD_WARMUP_SEATS = [
-    (250, 3.62e-02),  # llama8b_full32L_HSDP_b32_dp32_SAVESMOKE — smoke only, not a result seat
+    (250, 3.62e-02),  # llama8b_full32L_HSDP_b32_dp32_SAVESMOKE — smoke only, not a result config
     (5_000, 1.99e-04),  # llama8b_l18_b128_cmp32
-    (20_000, 4.99e-05),  # the four TMS seats
+    (20_000, 4.99e-05),  # the four TMS configs
     (40_000, 2.50e-05),  # llama8b_l18-26_9layer_chunkwise
     (50_000, 2.00e-05),  # resid_mlp_1l
     (100_000, 1.00e-05),  # resid_mlp_2l, resid_mlp_3l
@@ -259,7 +259,9 @@ class TestTracedParity:
         config = SCHEDULES[name]
         for step in range(total_steps + 1):
             host = get_scheduled_value(step, total_steps, config)
-            traced = float(scheduled_value_traced(jnp.asarray(float(step)), total_steps, config))
+            traced = float(
+                scheduled_value_traced(jnp.asarray(step, jnp.float32), total_steps, config)
+            )
             # rel 1e-5: the traced twin runs in fp32 (in-step), the host reference in
             # float64; a steep cosine interval amplifies the fp32 cos rounding.
             assert traced == pytest.approx(host, rel=1e-5, abs=1e-12), (step, config)

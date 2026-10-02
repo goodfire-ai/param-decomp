@@ -1,8 +1,9 @@
 """Round-trip + resume-continuation tests for `checkpoint.py` (orbax) on the generic
-trainer state (SPEC S22): a restored `TrainState` must continue the EXACT trajectory —
+trainer state: a restored `PDState` must continue the EXACT trajectory —
 including the persistent adversary's sources and Adam moments."""
 
 from collections.abc import Callable
+from dataclasses import replace
 from functools import cache
 from pathlib import Path
 
@@ -11,6 +12,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+import orbax.checkpoint as ocp
 import pytest
 from jax.sharding import AxisType, Mesh
 
@@ -23,65 +25,81 @@ from param_decomp.core.adversary import (
     sources_adam_ascend_project,
 )
 from param_decomp.core.checkpoint import (
-    init_from_parent,
     make_checkpoint_manager,
     make_read_only_checkpoint_manager,
     restore_decomposition,
+    restore_destination,
     restore_latest,
     restore_step,
     save_state,
 )
-from param_decomp.core.ci_fn import (
+from param_decomp.core.ci_fn.implementations.chunkwise.arch import (
     Chunk,
-    ChunkwiseTransformerCIArch,
-    MHACIAttention,
-    build_ci_fn,
+    ChunkwiseTransformerCIFnArch,
 )
-from param_decomp.core.components import ComponentStacks, SiteSpec, init_component_stacks
+from param_decomp.core.ci_fn.implementations.transformer.layers import MHACIFnAttention
+from param_decomp.core.ci_fn.optimizer import ci_fn_muon_dimension_numbers
+from param_decomp.core.components import (
+    ComponentStacks,
+    SiteSpec,
+    group_factorizations,
+    init_component_stacks,
+)
 from param_decomp.core.configs import (
     AdamPGDConfig,
+    AdamWOptimizerConfig,
     FaithfulnessLossConfig,
     FrequencyMinimalityConfig,
     ImportanceMinimalityLossConfig,
     KeepAllCheckpoints,
     KeepLastNCheckpoints,
+    MuonOptimizerConfig,
     PersistentPGDReconLossConfig,
     StochasticReconSubsetLossConfig,
     UniformKSubsetRoutingConfig,
 )
 from param_decomp.core.faithfulness import faithfulness_loss_for
 from param_decomp.core.init_placed import (
-    init_ci_fn_placed,
     init_component_stacks_placed,
     init_sources_sharded,
 )
+from param_decomp.core.losses import BatchFrequency, init_frequency_estimator
 from param_decomp.core.model import DecomposedModel, PlacedModel, Positioned
-from param_decomp.core.muon_stacked import stacked_muon
 from param_decomp.core.objective import build_objective
+from param_decomp.core.optimizer import ScheduledOptimizer, ScheduledOptimizerState
 from param_decomp.core.placement import from_config
-from param_decomp.core.run_state import stacked_muon_dimension_numbers
+from param_decomp.core.run_state import (
+    _adamw_optimizer,
+    _muon_optimizer,
+    component_muon_dimension_numbers,
+)
 from param_decomp.core.schedule import Knot, ScheduleConfig
 from param_decomp.core.sharding import hsdp_mesh
 from param_decomp.core.train import (
     Decomposition,
     ForwardSubstrate,
-    TrainingItem,
+    PDState,
+    PDTrainingState,
     TrainState,
     make_train_step,
 )
+from param_decomp.lm.batch import LMBatchWithDocuments
 from param_decomp.target_ports.llama import LlamaConfig
-from param_decomp.targets.glu_transformer import (
+from param_decomp.targets.lm_output import LMOutput
+from param_decomp.targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
+from param_decomp.targets.transformer import (
+    TransformerPreparedMasking,
+    TransformerPreparedWeights,
     glu_site_specs,
     mlp_family_site_cs,
 )
-from param_decomp.targets.lm_output import LMOutput
-from param_decomp.targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
+from param_decomp.tests.placed_ci_fn import placed_ci_fn
 
 
 def _ppgd_cfg(n_warmup: int) -> PersistentPGDReconLossConfig:
     return PersistentPGDReconLossConfig(
         coeff=0.5,
-        source_shape="sc",
+        source_shape="bsc",
         optimizer=AdamPGDConfig(
             beta1=0.5,
             beta2=0.99,
@@ -95,7 +113,6 @@ def _ppgd_cfg(n_warmup: int) -> PersistentPGDReconLossConfig:
 
 
 def _adversary(src: SourceStacks, cfg: PersistentPGDReconLossConfig) -> PersistentAdversary:
-    assert cfg.coeff is not None
     return PersistentAdversary(
         sources=src,
         opt_state=init_sources_adam_state(src),
@@ -106,18 +123,25 @@ def _adversary(src: SourceStacks, cfg: PersistentPGDReconLossConfig) -> Persiste
 
 
 def _chunkwise_arch(
-    model: DecomposedModel[LMOutput], cfg: LlamaConfig
-) -> ChunkwiseTransformerCIArch:
+    model: DecomposedModel[
+        LMBatchWithDocuments,
+        LMOutput,
+        TransformerPreparedWeights,
+        LMBatchWithDocuments,
+        TransformerPreparedMasking,
+    ],
+    cfg: LlamaConfig,
+) -> ChunkwiseTransformerCIFnArch:
     """The old `CIArch(16, 2, 2, 32)` → one chunk reading the residual entering the first
     decomposed block and emitting CI for every site; `input_dim` is the residual width."""
     site_names = model.site_names
     first_block = min(int(n.split(".")[1]) for n in site_names)
-    return ChunkwiseTransformerCIArch(
+    return ChunkwiseTransformerCIFnArch(
         chunks=(Chunk(input_taps=(f"resid.{first_block}",), output_sites=site_names),),
         input_dim=cfg.n_embd,
         d_model=16,
         n_blocks=2,
-        attention=MHACIAttention(n_heads=2),
+        attention=MHACIFnAttention(mask="bidirectional", implementation="xla", n_heads=2),
         ffn_hidden=32,
         ffn_kind="gelu",
         learned_norm_scale=False,
@@ -127,45 +151,12 @@ def _chunkwise_arch(
 _C, _SEQ = 8, 16
 
 
-@cache
-def _optimizers_and_step(muon_components: bool, muon_ci_fn: bool, freq_ema: bool = False):
-    """Everything in `_build` that the seed cannot reach.
-
-    The step is built from statics only — the model, the loss terms, and the two
-    optimizers — while the seed reaches it as array VALUES inside the state passed at call
-    time, so it cannot change the HLO. JAX's persistent cache stores the compiled
-    executable but nothing caches the trace, so one step per optimizer configuration is
-    the distinction worth keeping."""
-    cfg = tiny_glu_cfg()
-    sites = glu_site_specs(cfg, mlp_family_site_cs(3, 4, _C))
-    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
-
-    def muon(dim_nums: Callable[[optax.Params], optax.Params]):
-        return stacked_muon(
-            1e-3,
-            beta=0.95,
-            weight_decay=0.0,
-            consistent_rms=0.2,
-            muon_weight_dimension_numbers=dim_nums,
-            ns_steps=5,
-            ns_dtype=jnp.dtype(jnp.float32),
-            waypoints=None,
-        )
-
-    # Production labeling (`run_state.build_optimizers`): the V/U tree is all-3D
-    # `ComponentStacks` stacks, so optax's default 2D rule (dim_nums=None) would label
-    # every leaf adam and leave the muon partition under test empty.
-    inner_vu = (
-        muon(stacked_muon_dimension_numbers)
-        if muon_components
-        else optax.adamw(1e-3, weight_decay=0.0)
-    )
-    opt_vu = optax.chain(optax.clip_by_global_norm(0.01), inner_vu)
-    opt_ci = (
-        muon(stacked_muon_dimension_numbers) if muon_ci_fn else optax.adamw(1e-3, weight_decay=0.0)
-    )
-    ppgd_cfg = _ppgd_cfg(n_warmup=1)
-    loss_terms = build_objective(
+def _objective(
+    sites: tuple[SiteSpec, ...],
+    ppgd_cfg: PersistentPGDReconLossConfig,
+    frequency: FrequencyMinimalityConfig | None,
+):
+    return build_objective(
         (
             FaithfulnessLossConfig(coeff=1e5),
             ImportanceMinimalityLossConfig(
@@ -173,37 +164,101 @@ def _optimizers_and_step(muon_components: bool, muon_ci_fn: bool, freq_ema: bool
                 gamma=ScheduleConfig(
                     max_val=1.0, points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.01))
                 ),
-                frequency=FrequencyMinimalityConfig(
-                    coeff=1e-6, reference_datapoint_count=128, ema_halflife_steps=8.0
-                )
-                if freq_ema
-                else None,
+                frequency=frequency,
             ),
-            StochasticReconSubsetLossConfig(
-                routing=UniformKSubsetRoutingConfig(), coeff=0.5, n_mask_samples=1
-            ),
+            StochasticReconSubsetLossConfig(routing=UniformKSubsetRoutingConfig(), coeff=0.5),
             ppgd_cfg,
         ),
-        model.site_names,
+        sites,
     )
-    placed = PlacedModel(model=model, placement=None)
-    step = make_train_step(
-        model_static=placed,
-        substrate=ForwardSubstrate.of(
-            placed,
-            remat_recon_forwards=True,
-            remat_ci_fn=False,
-            ci_capture_keys=_chunkwise_arch(model, cfg).capture_keys,
-            ci_placement=None,
+
+
+def _optimizer(
+    muon: bool,
+    grad_clip_norm: float | None,
+    dimension_numbers: Callable[[optax.Params], optax.Params] | None,
+) -> ScheduledOptimizer:
+    schedule = ScheduleConfig(
+        max_val=1e-3,
+        points=(Knot(at=0.0, frac=1.0), Knot(at=1.0, frac=0.1, interp="cosine")),
+    )
+    match muon:
+        case True:
+            assert dimension_numbers is not None
+            config = MuonOptimizerConfig(
+                type="muon", lr_schedule=schedule, grad_clip_norm=grad_clip_norm
+            )
+            return _muon_optimizer(config, 100, dimension_numbers, None)
+        case False:
+            config = AdamWOptimizerConfig(lr_schedule=schedule, grad_clip_norm=grad_clip_norm)
+            return _adamw_optimizer(config, 100)
+
+
+def _different_scalar_settings(
+    state: PDState[LMBatchWithDocuments],
+) -> PDState[LMBatchWithDocuments]:
+    def change_lr(optimizer_state: ScheduledOptimizerState) -> ScheduledOptimizerState:
+        return eqx.tree_at(
+            lambda value: value.schedule.magnitude,
+            optimizer_state,
+            optimizer_state.schedule.magnitude * 3,
+        )
+
+    objective = state.training.objective
+    return replace(
+        state,
+        training=replace(
+            state.training,
+            objective=eqx.tree_at(
+                lambda value: value.minimality.activity_coeff.magnitude,
+                objective,
+                objective.minimality.activity_coeff.magnitude * 2,
+            ),
+            components_opt_state=change_lr(state.training.components_opt_state),
+            ci_fn_opt_state=change_lr(state.training.ci_fn_opt_state),
         ),
-        objective=loss_terms,
-        components_optimizer=opt_vu,
-        ci_fn_optimizer=opt_ci,
-        total_steps=100,
-        faithfulness=faithfulness_loss_for(placed),
+    )
+
+
+@cache
+def _optimizers_and_step(muon_components: bool, muon_ci_fn: bool):
+    """Reuse the trace across independently seeded checkpoint fixtures."""
+    cfg = tiny_glu_cfg()
+    sites = glu_site_specs(cfg, mlp_family_site_cs(3, 4, _C))
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+
+    opt_vu = _optimizer(
+        muon_components, 0.01, component_muon_dimension_numbers(group_factorizations(sites))
+    )
+    opt_ci = _optimizer(muon_ci_fn, None, ci_fn_muon_dimension_numbers)
+    ppgd_cfg = _ppgd_cfg(n_warmup=1)
+    placed = PlacedModel(model=model, placement=None)
+    step = jax.jit(
+        make_train_step(
+            model_static=placed,
+            substrate=ForwardSubstrate.of(
+                placed,
+                remat_recon_forwards=True,
+                remat_ci_fn=False,
+                ci_capture_keys=_chunkwise_arch(model, cfg).capture_keys,
+            ),
+            components_optimizer=opt_vu,
+            ci_fn_optimizer=opt_ci,
+            total_steps=100,
+            faithfulness=faithfulness_loss_for(placed),
+        )
     )
     resid = jax.random.randint(jax.random.PRNGKey(9), (2, _SEQ), 0, cfg.vocab_size)
-    return cfg, sites, placed, opt_vu, opt_ci, ppgd_cfg, step, resid
+    return (
+        cfg,
+        sites,
+        placed,
+        opt_vu,
+        opt_ci,
+        ppgd_cfg,
+        step,
+        LMBatchWithDocuments.from_unsegmented_sequences(resid),
+    )
 
 
 def _build(
@@ -213,25 +268,31 @@ def _build(
     freq_ema: bool = False,
 ):
     cfg, sites, model, opt_vu, opt_ci, ppgd_cfg, step, resid = _optimizers_and_step(
-        muon_components, muon_ci_fn, freq_ema
+        muon_components, muon_ci_fn
     )
     vu = init_component_stacks(sites, jax.random.PRNGKey(seed))
-    ci_fn = build_ci_fn(
-        _chunkwise_arch(model.model, cfg), model.sites, jax.random.PRNGKey(seed + 1)
+    ci_fn = _chunkwise_arch(model.model, cfg).initialize(
+        model.model.sites, None, jax.random.PRNGKey(seed + 1)
     )
     src = init_persistent_sources(
-        model.sites,
-        (1, _SEQ),
+        model.model.sites,
+        (2, _SEQ),
         jnp.float32,
         jax.random.PRNGKey(seed + 2),
     )
+    frequency = (
+        FrequencyMinimalityConfig(coeff=1e-6, reference_datapoint_count=128, ema_halflife_steps=8.0)
+        if freq_ema
+        else None
+    )
     state = TrainState(
-        decomposition=Decomposition(components=vu, ci_fn=ci_fn),
-        training=TrainingItem(
+        decomposition=Decomposition[LMBatchWithDocuments](components=vu, ci_fn=ci_fn),
+        training=PDTrainingState(
+            frequency=init_frequency_estimator(frequency, model.model.sites),
+            objective=_objective(model.model.sites, ppgd_cfg, frequency),
             components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
             ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
             adversaries={ppgd_cfg.type: _adversary(src, ppgd_cfg)},
-            freq_ema={s.name: jnp.zeros((s.C,), jnp.float32) for s in sites} if freq_ema else None,
             step=jnp.zeros((), jnp.int32),
         ),
     )
@@ -256,14 +317,29 @@ def _roundtrip_and_exact_resume(
     mgr = make_checkpoint_manager(tmp_path / "ckpts", KeepLastNCheckpoints(n=2))
     save_state(mgr, 2, state)
 
-    # Restore onto a DIFFERENTLY-seeded reference: every leaf must come from disk.
-    _, fresh, _, _ = _build(
-        seed=7,
-        muon_components=muon_components,
-        muon_ci_fn=muon_ci_fn,
-        freq_ema=freq_ema,
+    abstract_inputs = jax.tree.map(
+        ocp.utils.to_shape_dtype_struct, (model, resid, jax.random.PRNGKey(100))
     )
-    restored = restore_latest(mgr, fresh)
+    abstract_model, abstract_batch, abstract_key = abstract_inputs
+    with jax.transfer_guard("disallow"):
+        abstract = jax.eval_shape(
+            lambda: _different_scalar_settings(
+                _build(
+                    seed=7,
+                    muon_components=muon_components,
+                    muon_ci_fn=muon_ci_fn,
+                    freq_ema=freq_ema,
+                )[1]
+            )
+        )
+        compiled = (
+            jax.jit(step).lower(abstract_model, abstract, abstract_batch, abstract_key).compile()
+        )
+        destination = restore_destination(
+            abstract, compiled.input_formats[0][1], hsdp_mesh(1, 1, 1)
+        )
+    assert all(isinstance(leaf, jax.ShapeDtypeStruct) for leaf in jax.tree.leaves(destination))
+    restored = restore_latest(mgr, destination)
     assert restored is not None
     loaded, ckpt_step = restored
     assert ckpt_step == 2
@@ -285,9 +361,14 @@ def _roundtrip_and_exact_resume(
         assert mu_leaves, "no V/U leaf labeled muon: the partition under test is empty"
         assert all(bool(jnp.any(leaf != 0)) for leaf in mu_leaves)
 
-    # SPEC S22: the restored state continues the exact trajectory.
-    state_cont, m_cont = step(model, state, resid, jax.random.PRNGKey(100))
-    loaded_cont, m_load = step(model, loaded, resid, jax.random.PRNGKey(100))
+    for leaf, fmt in zip(
+        jax.tree.leaves(loaded), jax.tree.leaves(compiled.input_formats[0][1]), strict=True
+    ):
+        if fmt.sharding is not None:
+            assert leaf.format == fmt
+
+    state_cont, m_cont = compiled(model, state, resid, jax.random.PRNGKey(100))
+    loaded_cont, m_load = compiled(model, loaded, resid, jax.random.PRNGKey(100))
     for k in m_cont:
         assert float(m_cont[k]) == float(m_load[k]), k
     for a, b in zip(jax.tree.leaves(state_cont), jax.tree.leaves(loaded_cont), strict=True):
@@ -301,29 +382,29 @@ def test_roundtrip_and_exact_resume(tmp_path: Path):
 
 @pytest.mark.slow
 def test_freq_ema_roundtrip_and_exact_resume(tmp_path: Path):
-    """The S8'' EMA buffers are checkpointed trajectory state: two live steps fill them,
-    the roundtrip restores every leaf bit-exactly onto a differently-seeded reference."""
+    """EMA histories, counts, and adversary state restore exactly without a live reference."""
     _roundtrip_and_exact_resume(tmp_path, muon_components=False, freq_ema=True)
 
 
 def test_muon_roundtrip_and_exact_resume(tmp_path: Path):
-    """SPEC S20 amendment: the muon components opt state (optax's `MuonState` pytree
-    verbatim, partitioned into muon/adam masked trees) must ALSO restore onto a rebuilt
-    reference and continue exactly — this is what a scavenge preemption + requeue
+    """The muon components opt state (optax's `MuonState` pytree
+    verbatim, partitioned into muon/adam masked trees) must restore from abstract
+    initialization and continue exactly — this is what a scavenge preemption + requeue
     exercises."""
     _roundtrip_and_exact_resume(tmp_path, muon_components=True)
 
 
 @pytest.mark.slow
 def test_muon_ci_fn_roundtrip_and_exact_resume(tmp_path: Path):
-    """SPEC S20 amendment (2026-07-11): same guarantee with muon on BOTH groups, the ci-fn
-    partitioned by `stacked_muon_dimension_numbers` (3D chunk stacks muon'd, 2D bias
-    stacks in the Adam-fallback mask)."""
+    """Restore Muon state for both components and CI, then continue the exact trajectory.
+
+    The CI tree mixes 3D matrix stacks optimized by Muon and 2D bias stacks using
+    Adam, so both optimizer partitions must survive the checkpoint."""
     _roundtrip_and_exact_resume(tmp_path, muon_components=True, muon_ci_fn=True)
 
 
 def test_persistent_adam_step_count_roundtrip_and_post_resume_bias_correction(tmp_path: Path):
-    """Issue #678 (matrix §8 + S22/S13/S23): after N persistent ascents, the orbax
+    """After N persistent ascents, the Orbax
     checkpoint must carry the adversary's `step_count` leaf (present, fp32, == N) and
     bit-equal Adam moments; the FIRST post-resume ascent must apply bias-correction for
     count N+1 (not N, not 1)."""
@@ -344,7 +425,7 @@ def test_persistent_adam_step_count_roundtrip_and_post_resume_bias_correction(tm
     save_state(mgr, 3, state)
 
     _, fresh, _, _ = _build(seed=7)
-    restored = restore_latest(mgr, fresh)
+    restored = restore_latest(mgr, jax.tree.map(ocp.utils.to_shape_dtype_struct, fresh))
     assert restored is not None
     loaded, _ = restored
     loaded_adam = loaded.training.adversaries[state_key].opt_state
@@ -395,7 +476,7 @@ def test_persistent_adam_step_count_roundtrip_and_post_resume_bias_correction(tm
 def test_no_checkpoint_returns_none(tmp_path: Path):
     _, fresh, _, _ = _build(seed=7)
     mgr = make_checkpoint_manager(tmp_path / "empty", KeepLastNCheckpoints(n=2))
-    assert restore_latest(mgr, fresh) is None
+    assert restore_latest(mgr, jax.tree.map(ocp.utils.to_shape_dtype_struct, fresh)) is None
 
 
 def test_saved_layout_is_two_items(tmp_path: Path):
@@ -446,87 +527,52 @@ def test_read_only_manager_never_prunes(tmp_path: Path):
     assert sorted(int(p.name) for p in ckpt_dir.iterdir() if p.is_dir()) == [0, 1, 2]
 
 
-def test_init_from_parent_restores_decomposition_only(tmp_path: Path):
-    """Fine-tune init (S33): `init_from_parent` restores ONLY the parent's
-    `decomposition` item (components + ci_fn) onto a fresh reference, keeping the fresh
-    reference's optimizer states / adversaries / `step=0` — never reading the parent's
-    `training` item, which may differ freely."""
-    model, parent, step, resid = _build(seed=1)
-    for i in range(2):
-        parent, _ = step(model, parent, resid, jax.random.PRNGKey(i))
-    mgr = make_checkpoint_manager(tmp_path / "ckpts", KeepLastNCheckpoints(n=2))
-    save_state(mgr, 2, parent)
-
-    # A fresh reference from a DIFFERENT seed: its components/ci_fn, optimizer state and
-    # adversaries all differ from the parent's, so the carry-over vs keep-fresh split is
-    # observable on every leaf.
-    _, fresh, _, _ = _build(seed=7)
-    finetuned = init_from_parent(tmp_path / "ckpts", parent_step=2, reference=fresh)
-
-    # decomposition carries over from the parent...
-    for a, b in zip(
-        jax.tree.leaves(finetuned.decomposition),
-        jax.tree.leaves(parent.decomposition),
-        strict=True,
-    ):
-        assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
-    # ...while optimizer state, adversaries and step stay the fresh reference's.
-    for a, b in zip(
-        jax.tree.leaves(
-            (finetuned.training.components_opt_state, finetuned.training.ci_fn_opt_state)
-        ),
-        jax.tree.leaves((fresh.training.components_opt_state, fresh.training.ci_fn_opt_state)),
-        strict=True,
-    ):
-        assert jnp.array_equal(jnp.asarray(a), jnp.asarray(b))
-    assert int(finetuned.training.step) == 0
-
-
 def _build_sharded(
     seed: int,
     mesh: Mesh,
     place_vu: "Callable[[tuple[SiteSpec, ...], jax.Array], ComponentStacks]",
     C: int,
+    global_batch: int,
 ):
-    """A `TrainState` placed exactly as the production trainer places it
-    (`run_state.init_train_state`): C-sharded V/U + ci_fn, replicated sources, over the
+    """A `PDState` placed exactly as the production trainer places it
+    (`run_state.init_pd_state`): C-sharded V/U + ci_fn, batch-sharded sources, over the
     `dp` mesh. Built directly from the `*_sharded` init fns so the saved/restored
     leaves carry real `NamedSharding`s — the production checkpoint path, not `mesh=None`.
     `place_vu` seeds AND places the V/U masters (their moments inherit the placement via
-    `opt.init`), so a test can pin any master layout, current or historical. `C` is
-    explicit so two builds on differently-sized meshes can share one logical shape."""
+    `opt.init`), so a test can pin any master layout, current or historical. `C` and
+    `global_batch` are explicit: changing placement preserves every logical shape."""
     cfg = tiny_glu_cfg()
-    n = mesh.devices.size
     seq = 16
     sites = glu_site_specs(cfg, mlp_family_site_cs(3, 4, C))
     model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
     vu = place_vu(sites, jax.random.PRNGKey(seed))
-    ci_fn = init_ci_fn_placed(
+    ci_fn = placed_ci_fn(
         _chunkwise_arch(model, cfg),
         model.sites,
         jax.random.PRNGKey(seed + 1),
         mesh,
         from_config("zero1", mesh, model.sites),
     )
-    opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
-    opt_ci = optax.adamw(1e-3, weight_decay=0.0)
+    opt_vu = _optimizer(False, 0.01, None)
+    opt_ci = _optimizer(False, None, None)
     src = init_sources_sharded(
         model.sites,
         Positioned(seq),
-        "sc",
-        n,
+        "bsc",
+        global_batch,
         jnp.float32,
         jax.random.PRNGKey(seed + 2),
         mesh,
     )
     ppgd_cfg = _ppgd_cfg(n_warmup=1)
     state = TrainState(
-        decomposition=Decomposition(components=vu, ci_fn=ci_fn),
-        training=TrainingItem(
+        decomposition=Decomposition[LMBatchWithDocuments](components=vu, ci_fn=ci_fn),
+        training=PDTrainingState(
+            frequency=BatchFrequency(),
+            objective=_objective(model.sites, ppgd_cfg, None),
             components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
             ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
             adversaries={ppgd_cfg.type: _adversary(src, ppgd_cfg)},
-            freq_ema=None,
             step=jnp.asarray(7, jnp.int32),
         ),
     )
@@ -534,8 +580,8 @@ def _build_sharded(
 
 
 def test_sharded_roundtrip_bit_equal(tmp_path: Path):
-    """S22 at the PRODUCTION per-rank shape: a sharded `TrainState` (the failure-prone
-    path that bit the torch job-34446 save and the jsp SIGTERM saves) must round-trip
+    """At the PRODUCTION per-rank shape: a sharded `PDState` (the failure-prone
+    path that bit legacy Torch and JAX interrupted saves) must round-trip
     through orbax onto a sharded reference bit-equal, leaf shardings preserved.
 
     Run this at `XLA_FLAGS=--xla_force_host_platform_device_count=4` to exercise the
@@ -548,7 +594,13 @@ def test_sharded_roundtrip_bit_equal(tmp_path: Path):
     def place_vu(sites: tuple[SiteSpec, ...], key: jax.Array) -> ComponentStacks:
         return init_component_stacks_placed(sites, key, from_config("owner", mesh, sites))
 
-    state = _build_sharded(seed=1, mesh=mesh, place_vu=place_vu, C=8 * mesh.devices.size)
+    state = _build_sharded(
+        seed=1,
+        mesh=mesh,
+        place_vu=place_vu,
+        C=8 * mesh.devices.size,
+        global_batch=mesh.devices.size,
+    )
 
     # The big V/U + ci_fn + sources leaves must be genuinely C-sharded over the mesh
     # (the multi-shard write path); only the small scalars (step) stay single-device.
@@ -560,8 +612,14 @@ def test_sharded_roundtrip_bit_equal(tmp_path: Path):
 
     # Restore onto a DIFFERENTLY-seeded sharded reference: every leaf comes from disk,
     # but its placement comes from the (correctly-placed) reference.
-    reference = _build_sharded(seed=7, mesh=mesh, place_vu=place_vu, C=8 * mesh.devices.size)
-    loaded = restore_step(mgr, reference, 3)
+    reference = _build_sharded(
+        seed=7,
+        mesh=mesh,
+        place_vu=place_vu,
+        C=8 * mesh.devices.size,
+        global_batch=mesh.devices.size,
+    )
+    loaded = restore_step(mgr, jax.tree.map(ocp.utils.to_shape_dtype_struct, reference), 3)
 
     state_leaves = jax.tree.leaves(state)
     loaded_leaves = jax.tree.leaves(loaded)
@@ -595,19 +653,31 @@ def test_restore_reshards_a_checkpoint_saved_in_another_master_layout(tmp_path: 
             vu,
             ComponentStacks(
                 stacks={group: (old_v, old_u) for group in vu.stacks},
-                site_slots=vu.site_slots,
+                site_stack_indices=vu.site_stack_indices,
             ),
         )
 
     def place_vu_new(sites: tuple[SiteSpec, ...], key: jax.Array) -> ComponentStacks:
         return init_component_stacks_placed(sites, key, from_config("zero1", mesh, sites))
 
-    saved = _build_sharded(seed=1, mesh=mesh, place_vu=place_vu_old, C=8 * mesh.devices.size)
+    saved = _build_sharded(
+        seed=1,
+        mesh=mesh,
+        place_vu=place_vu_old,
+        C=8 * mesh.devices.size,
+        global_batch=mesh.devices.size,
+    )
     mgr = make_checkpoint_manager(tmp_path / "ckpts", KeepLastNCheckpoints(n=2))
     save_state(mgr, 3, saved)
 
-    reference = _build_sharded(seed=7, mesh=mesh, place_vu=place_vu_new, C=8 * mesh.devices.size)
-    loaded = restore_step(mgr, reference, 3)
+    reference = _build_sharded(
+        seed=7,
+        mesh=mesh,
+        place_vu=place_vu_new,
+        C=8 * mesh.devices.size,
+        global_batch=mesh.devices.size,
+    )
+    loaded = restore_step(mgr, jax.tree.map(ocp.utils.to_shape_dtype_struct, reference), 3)
 
     for was, got, ref in zip(
         jax.tree.leaves(saved), jax.tree.leaves(loaded), jax.tree.leaves(reference), strict=True
@@ -618,7 +688,9 @@ def test_restore_reshards_a_checkpoint_saved_in_another_master_layout(tmp_path: 
         assert got.sharding == ref.sharding
 
 
-def _filled_with_asymmetric_content(state: TrainState, seed: int) -> TrainState:
+def _filled_with_asymmetric_content(
+    state: PDState[LMBatchWithDocuments], seed: int
+) -> PDState[LMBatchWithDocuments]:
     """Every array leaf refilled with distinct nonzero position-asymmetric values
     (a per-leaf-offset ramp plus noise), placement preserved. Seeded inits leave CI
     biases (and other leaves) at zero — symmetric content a value-dropping or
@@ -667,14 +739,17 @@ def test_restore_reshards_a_train_topology_checkpoint_onto_a_single_device(
         return place
 
     saved = _filled_with_asymmetric_content(
-        _build_sharded(seed=1, mesh=train_mesh, place_vu=place_vu(train_mesh), C=C), seed=11
+        _build_sharded(seed=1, mesh=train_mesh, place_vu=place_vu(train_mesh), C=C, global_batch=n),
+        seed=11,
     )
     assert any(len(leaf.sharding.device_set) > 1 for leaf in jax.tree.leaves(saved))
     mgr = make_checkpoint_manager(tmp_path / "ckpts", KeepLastNCheckpoints(n=2))
     save_state(mgr, 3, saved)
 
-    reference = _build_sharded(seed=7, mesh=single_mesh, place_vu=place_vu(single_mesh), C=C)
-    loaded = restore_step(mgr, reference, 3)
+    reference = _build_sharded(
+        seed=7, mesh=single_mesh, place_vu=place_vu(single_mesh), C=C, global_batch=n
+    )
+    loaded = restore_step(mgr, jax.tree.map(ocp.utils.to_shape_dtype_struct, reference), 3)
 
     for was, got, ref in zip(
         jax.tree.leaves(saved), jax.tree.leaves(loaded), jax.tree.leaves(reference), strict=True

@@ -1,23 +1,17 @@
-"""End-to-end run-here coverage through the REAL module entry
-(`python -m param_decomp.experiments.lm.run`).
+"""Train through the LM module entry point on one or more GPUs.
 
-`launch.main` validates the config (placement claims at the declared topology), pins it
-into a fresh run dir, and runs the trainer as a child process of this allocation — which
-must claim exactly the explicit mesh's local devices (simulated CPU devices via
-`XLA_FLAGS=--xla_force_host_platform_device_count`) and train end-to-end: a tiny
-LlamaSimpleMLP target fabricated into the pretrain cache, tokens from tiny parquet
-shards, a real train step, and the final-step orbax checkpoint.
-
-The multi-device tests need `--runmultidevice`; the frozen-target dtype test runs at
-dp=1 so the default suite keeps covering it.
+The child process loads a tiny cached LlamaSimpleMLP target, reads parquet batches,
+and writes the final checkpoint. Multi-device cases require `--runmultidevice`.
 """
 
 import math
+import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
+import jax
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -80,11 +74,21 @@ def _write_pretrain_cache(out_dir: Path) -> None:
 
 def _write_token_shards(shards_dir: Path) -> None:
     shards_dir.mkdir(parents=True)
-    write_dataset_meta(shards_dir, DatasetMeta(seq_len=_SEQ, tokenizer_name="unused"))
+    write_dataset_meta(
+        shards_dir,
+        DatasetMeta(
+            format_version=2, seq_len=_SEQ, tokenizer_name="unused", preprocessing_name="fixture"
+        ),
+    )
     rng = np.random.default_rng(1)
     rows = rng.integers(0, _VOCAB, size=(64, _SEQ), dtype=np.int32)
     pq.write_table(
-        pa.table({"input_ids": [row.tolist() for row in rows]}), shards_dir / "shard_00000.parquet"
+        pa.table(
+            {
+                "input_ids": pa.array(rows.tolist(), type=pa.list_(pa.int32())),
+            }
+        ),
+        shards_dir / "shard_00000.parquet",
     )
 
 
@@ -105,7 +109,12 @@ def _write_run_config(path: Path, shards_dir: Path, dp: int, tp: int, weights_dt
                 # 2 heads so the tp=2 case tiles the q/kv head axes: a head count the
                 # assignment cannot tile refuses at the config gate (no replication
                 # fallback), which the tp=2 variant would otherwise hit.
-                "attention": {"kind": "mha", "n_heads": 2},
+                "attention": {
+                    "mask": "bidirectional",
+                    "kind": "mha",
+                    "implementation": "xla",
+                    "n_heads": 2,
+                },
                 "ffn": {"kind": "gelu", "hidden": _D},
             },
         },
@@ -159,7 +168,7 @@ def _write_run_config(path: Path, shards_dir: Path, dp: int, tp: int, weights_dt
             },
         },
         "target": {
-            "attention_implementation": "auto",
+            "attention_implementation": "xla",
             "weights_dtype": weights_dtype,
             "output_edge": {"kind": "materialized"},
             "spec": {
@@ -197,13 +206,14 @@ def _run_module(config: Path, data_root: Path) -> None:
 
 
 def _scaffold(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, devices: int) -> Path:
-    """Out dir + pretrain cache + shards; the trainer child gets the root as an explicit
-    `--data-root` (the env carries only the forced CPU device count)."""
+    if jax.default_backend() != "gpu" or jax.device_count() < devices:
+        pytest.skip(f"requires {devices} GPUs")
     _write_pretrain_cache(tmp_path / "out")
     _write_token_shards(tmp_path / "shards")
     _write_token_shards(tmp_path / "eval_shards")
-    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
-    monkeypatch.setenv("XLA_FLAGS", f"--xla_force_host_platform_device_count={devices}")
+    monkeypatch.setenv("JAX_PLATFORMS", "cuda")
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES", ",".join(map(str, range(jax.device_count()))))
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", ",".join(visible.split(",")[:devices]))
     return tmp_path
 
 
@@ -271,3 +281,40 @@ def test_inline_launch_trains_with_tensor_parallel_ci(inline_setup: Path) -> Non
     _run_module(config, tmp_path / "out")
 
     _assert_trained(tmp_path / "out", final_step=2)
+
+
+@pytest.mark.parametrize("n_vocab_chunks", [1, 4])
+def test_streamed_pretrained_target_resolves_and_loads(tmp_path: Path, n_vocab_chunks: int) -> None:
+    import jax.numpy as jnp
+
+    from param_decomp.experiments.lm.config import LMExperimentConfig, resolve_decomposition
+    from param_decomp.experiments.lm.load_run import load_target
+    from param_decomp.experiments.lm.resolved import LlamaSimpleMLPTargetConfig
+    from param_decomp.lm.batch import LMBatchWithDocuments
+    from param_decomp.targets.lm_output import StreamedLinearOutput, StreamedOutputEdge
+    from param_decomp.targets.transformer import TransformerDecomposedModel
+
+    _write_pretrain_cache(tmp_path)
+    path = tmp_path / "run.yaml"
+    _write_run_config(path, tmp_path / "shards", dp=1, tp=1, weights_dtype="float32")
+    raw = yaml.safe_load(path.read_text())
+    raw["target"]["output_edge"] = {"kind": "streamed", "n_vocab_chunks": n_vocab_chunks}
+    config = LMExperimentConfig.model_validate(raw)
+    resolved = resolve_decomposition(config.target, config.decomposition, tmp_path)
+    assert isinstance(resolved.target, LlamaSimpleMLPTargetConfig)
+    assert resolved.target.output_edge == StreamedOutputEdge(n_vocab_chunks=n_vocab_chunks)
+    model = load_target(resolved.target, tmp_path)
+    assert isinstance(model, TransformerDecomposedModel)
+    output = model.clean_forward(
+        LMBatchWithDocuments.from_unsegmented_sequences(jnp.zeros((1, _SEQ), dtype=jnp.int32)),
+        placement=None,
+    ).output
+    assert isinstance(output, StreamedLinearOutput)
+    assert output.n_chunks == n_vocab_chunks
+    assert output.head is model.embed
+    assert output.activations.shape == (1, _SEQ, _D)
+
+    raw["target"]["output_edge"]["n_vocab_chunks"] = 3
+    invalid = LMExperimentConfig.model_validate(raw)
+    with pytest.raises(AssertionError, match="must divide the"):
+        resolve_decomposition(invalid.target, invalid.decomposition, tmp_path)

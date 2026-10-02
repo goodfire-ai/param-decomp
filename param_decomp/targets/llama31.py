@@ -7,12 +7,15 @@ release gets its own architecture module rather than another branch here.
 
 from jax.typing import DTypeLike
 
+from param_decomp.attention import AttentionImplementation
 from param_decomp.core.components import SiteSpec
 from param_decomp.target_ports.llama import LlamaConfig, llama3_inv_freq
-from param_decomp.targets.glu_transformer import (
+from param_decomp.targets.host import cpu_staging
+from param_decomp.targets.lm_output import OutputEdge
+from param_decomp.targets.transformer import (
     FrozenAttn,
-    GLUDecomposedModel,
     HFWeights,
+    TransformerDecomposedModel,
     load_decomposed_glu_from_hf,
 )
 
@@ -35,7 +38,9 @@ def llama31_8b_config() -> LlamaConfig:
     )
 
 
-def _load_attn(w: HFWeights, i: int, cfg: LlamaConfig) -> FrozenAttn:
+def _load_attn(
+    w: HFWeights, i: int, cfg: LlamaConfig, attention_implementation: AttentionImplementation
+) -> FrozenAttn:
     pre = "model.layers"
     return FrozenAttn(
         wq=w.get(f"{pre}.{i}.self_attn.q_proj.weight"),
@@ -46,22 +51,26 @@ def _load_attn(w: HFWeights, i: int, cfg: LlamaConfig) -> FrozenAttn:
         n_kv_head=cfg.n_kv_head,
         head_dim=cfg.head_dim,
         n_rep=cfg.n_rep,
-        implementation="auto",
+        implementation=attention_implementation,
     )
 
 
+@cpu_staging()
 def load_decomposed_llama31_from_hf(
     model_name: str,
     cfg: LlamaConfig,
     sites: tuple[SiteSpec, ...],
     weights_dtype: DTypeLike,
-) -> GLUDecomposedModel:
+    output_edge: OutputEdge,
+    attention_implementation: AttentionImplementation,
+) -> TransformerDecomposedModel:
     """The Llama-3.1 HF load: plain attention + llama3-rescaled RoPE frequencies."""
     return load_decomposed_glu_from_hf(
         model_name,
         cfg,
         sites,
-        load_attn=lambda w, i: _load_attn(w, i, cfg),
+        load_attn=lambda w, i: _load_attn(w, i, cfg, attention_implementation),
         weights_dtype=weights_dtype,
         inv_freq=llama3_inv_freq(cfg),
+        output_edge=output_edge,
     )

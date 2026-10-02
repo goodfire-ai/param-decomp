@@ -24,16 +24,13 @@ import pytest
 from jax import random
 from jax.sharding import AxisType, Mesh
 
-from param_decomp.core.ci_fn import (
+from param_decomp.core.ci_fn.implementations.chunkwise.arch import (
     Chunk,
-    ChunkwiseTransformerCIArch,
-    MHACIAttention,
-    PlacedCIFn,
-    build_ci_fn,
-    resolve_ci_placement,
+    ChunkwiseTransformerCIFnArch,
 )
+from param_decomp.core.ci_fn.implementations.transformer.layers import MHACIFnAttention
 from param_decomp.core.components import SiteC, init_component_stacks
-from param_decomp.core.init_placed import init_ci_fn_placed, init_component_stacks_placed
+from param_decomp.core.init_placed import init_component_stacks_placed
 from param_decomp.core.model import PlacedModel
 from param_decomp.core.placement import from_config
 from param_decomp.core.sharding import place_target, shard_batch
@@ -48,10 +45,12 @@ from param_decomp.experiments.lm.eval import make_ce_kl_step, make_ci_l0_step
 from param_decomp.experiments.lm.eval_config import WellTemperednessConfig
 from param_decomp.experiments.lm.eval_context import make_lm_batch_context_step
 from param_decomp.experiments.lm.well_temperedness import make_well_temperedness_step
+from param_decomp.lm.batch import LMBatchWithDocuments
 from param_decomp.target_ports.llama import LlamaConfig
-from param_decomp.targets.glu_transformer import glu_site_specs, site_name
 from param_decomp.targets.testing import tiny_glu_cfg, tiny_glu_decomposed_lm
+from param_decomp.targets.transformer import glu_site_specs, site_name
 from param_decomp.targets.transformer_taps import resid_tap_key
+from param_decomp.tests.placed_ci_fn import placed_ci_fn
 
 pytestmark = [
     pytest.mark.multidevice,
@@ -62,8 +61,8 @@ pytestmark = [
 ]
 
 
-def _ci_arch(cfg: LlamaConfig, site_names: tuple[str, ...]) -> ChunkwiseTransformerCIArch:
-    return ChunkwiseTransformerCIArch(
+def _ci_fn_arch(cfg: LlamaConfig, site_names: tuple[str, ...]) -> ChunkwiseTransformerCIFnArch:
+    return ChunkwiseTransformerCIFnArch(
         chunks=(
             Chunk(input_taps=(resid_tap_key(3),), output_sites=site_names[:7]),
             Chunk(input_taps=(resid_tap_key(4),), output_sites=site_names[7:]),
@@ -71,7 +70,7 @@ def _ci_arch(cfg: LlamaConfig, site_names: tuple[str, ...]) -> ChunkwiseTransfor
         input_dim=cfg.n_embd,
         d_model=16,
         n_blocks=1,
-        attention=MHACIAttention(n_heads=2),
+        attention=MHACIFnAttention(mask="bidirectional", implementation="xla", n_heads=2),
         ffn_hidden=32,
         ffn_kind="gelu",
         learned_norm_scale=False,
@@ -96,14 +95,16 @@ def _placed_setup(seq: int, gbatch: int):
     rules = from_config("owner", mesh, model.sites)
     model = place_target(model, rules)
     vu = init_component_stacks_placed(sites, random.PRNGKey(1), rules)
-    arch = _ci_arch(cfg, model.site_names)
-    ci_fn = init_ci_fn_placed(arch, model.sites, random.PRNGKey(2), mesh, rules)
+    arch = _ci_fn_arch(cfg, model.model.site_names)
+    ci_fn = placed_ci_fn(arch, model.model.sites, random.PRNGKey(2), mesh, rules)
     tokens = random.randint(random.PRNGKey(4), (gbatch, seq), 0, cfg.vocab_size)
-    tokens = shard_batch(tokens, mesh, batch_axis=0)
+    tokens = LMBatchWithDocuments.from_unsegmented_sequences(
+        shard_batch(tokens, mesh, batch_axis=0)
+    )
     return (
         model,
         vu,
-        PlacedCIFn(fn=ci_fn, placement=resolve_ci_placement(arch, rules)),
+        ci_fn,
         tokens,
         mesh,
         rules,
@@ -115,71 +116,80 @@ def test_every_placed_eval_tier_traces_and_returns_finite_values():
     key = random.PRNGKey(9)
 
     with jax.set_mesh(mesh):
-        ce_kl = make_ce_kl_step(model, ci_fn.fn.capture_keys, 0.5, mesh)(
+        ce_kl = jax.jit(make_ce_kl_step(model, ci_fn.capture_keys, 0.5, mesh))(
             model, vu, ci_fn, tokens, key
         )
         assert all(np.isfinite(np.asarray(v)).all() for v in ce_kl.values())
 
-        l0 = make_ci_l0_step(model, ci_fn.fn.capture_keys, 0.1, None, mesh)(
+        l0 = jax.jit(make_ci_l0_step(model, ci_fn.capture_keys, 0.1, None, mesh))(
             model, vu, ci_fn, tokens, key
         )
         assert all(np.isfinite(np.asarray(v)).all() for v in l0.values())
 
         output_key_by_site = attn_output_key_by_site(model)
-        context_step = make_lm_batch_context_step(
-            model, ci_fn.fn.capture_keys, frozenset(output_key_by_site.values()), mesh
+        context_step = jax.jit(
+            make_lm_batch_context_step(
+                model, ci_fn.capture_keys, frozenset(output_key_by_site.values()), mesh
+            )
         )
-        ctx_tokens, _clean_output, captures, ci, prepared_weights = context_step(
-            model, vu, ci_fn, tokens
-        )
+        forward = context_step(model, vu, ci_fn, tokens)
+        jax.tree.map(np.testing.assert_array_equal, forward.tokens, tokens)
+        jax.tree.map(np.testing.assert_array_equal, forward.conditioning, tokens)
+        captures = forward.captures
+        ci = forward.ci
+        prepared_weights = forward.prepared_weights
+        conditioning = forward.conditioning
         clean_qk = {site: captures[key] for site, key in output_key_by_site.items()}
 
-        density, ci_sums, n_positions, binned_lower, binned_pre, density_hist = (
-            make_ci_reduction_step(0.1, 8, 16)(ci.preactivations)
-        )
-        assert int(n_positions) == tokens.shape[0] * tokens.shape[1]
+        density, ci_sums, n_positions, binned_lower, binned_pre, density_hist = jax.jit(
+            make_ci_reduction_step(0.1, 8, 16)
+        )(ci.preactivations)
+        assert int(n_positions) == tokens.batch.token_ids.shape[0] * tokens.batch.token_ids.shape[1]
         for tree in (density, ci_sums, binned_lower, binned_pre, density_hist):
             assert all(np.isfinite(np.asarray(v)).all() for v in jax.tree.leaves(tree))
 
-        lower_sum, upper_sum, n_batch = make_position_ci_step()(ci.preactivations)
-        assert int(n_batch) == tokens.shape[0]
+        lower_sum, upper_sum, n_batch = jax.jit(make_position_ci_step())(ci.preactivations)
+        assert int(n_batch) == tokens.batch.token_ids.shape[0]
         for tree in (lower_sum, upper_sum):
             assert all(np.isfinite(np.asarray(v)).all() for v in jax.tree.leaves(tree))
-        wt = make_well_temperedness_step(
-            model,
-            ci_fn.fn.capture_keys,
-            WellTemperednessConfig(
-                groups=None, n_locations=2, n_components_per_region=4, ablations_per_forward=4
-            ),
-            mesh,
+        wt = jax.jit(
+            make_well_temperedness_step(
+                model,
+                ci_fn.capture_keys,
+                WellTemperednessConfig(
+                    groups=None, n_locations=2, n_components_per_region=4, ablations_per_forward=4
+                ),
+                mesh,
+            )
         )(model, vu, ci_fn, tokens, key)
         assert np.isfinite(np.asarray(wt.damage)).all()
 
-        kl, _ = make_ci_attn_patterns_step(model)(
-            model, prepared_weights, ctx_tokens, ci.lower, clean_qk, key
+        kl, _ = jax.jit(make_ci_attn_patterns_step(model))(
+            model, prepared_weights, conditioning, ci.lower, clean_qk, key
         )
         assert all(np.isfinite(np.asarray(v)).all() for v in kl.values())
 
-        kl, _ = make_stochastic_attn_patterns_step(model, 2)(
-            model, prepared_weights, ctx_tokens, ci.lower, clean_qk, key
+        kl, _ = jax.jit(make_stochastic_attn_patterns_step(model))(
+            model, prepared_weights, conditioning, ci.lower, clean_qk, key
         )
         assert all(np.isfinite(np.asarray(v)).all() for v in kl.values())
 
-        ci_grid, activation_grid, max_ci = make_arithmetic_grid_step(
-            model,
-            ci_fn.fn.capture_keys,
-            answer_position=8,
-            n_valid_rows=tokens.shape[0],
+        ci_grid, activation_grid, max_ci = jax.jit(
+            make_arithmetic_grid_step(
+                model,
+                ci_fn.capture_keys,
+                answer_position=8,
+                n_valid_rows=tokens.batch.token_ids.shape[0],
+            )
         )(model, vu, ci_fn, tokens)
         for grid in (ci_grid, activation_grid, max_ci):
             assert all(np.isfinite(np.asarray(v)).all() for v in grid.values())
 
         # The trainer-side dtype policy holds through the placed prepare: compute
         # residents are bf16 and carry the chained-reduced typing.
-        from param_decomp.core.model import prepare_compute_weights
 
-        prepared = prepare_compute_weights(model, vu)
-        v_leaf = prepared["gate"]["V"]
+        prepared = model.prepare_compute_weights(vu)
+        v_leaf = prepared.per_kind["gate"]["V"]
         assert v_leaf.dtype == jnp.bfloat16
         assert set(jax.typeof(v_leaf).sharding.spec.reduced) == {"replicate"}
 
@@ -191,8 +201,9 @@ def _compiled_shape_dims(step: Any, args: tuple[Any, ...]) -> set[int]:
     """Every dimension extent appearing in a buffer shape of the step's compiled (i.e.
     SPMD-partitioned, per-device) module. Shape tokens are `dtype[d0,d1,...]`; the dtype
     prefix keeps metadata brackets (equinox arg tags, source annotations) out of the
-    census. `step` is an `eqx.filter_jit` wrapper (its Compiled wraps the jax one)."""
-    hlo = step.lower(*args).compile().compiled.as_text()
+    census."""
+    hlo = jax.jit(step).lower(*args).compile().as_text()
+    assert hlo is not None
     dims: set[int] = set()
     for group in _SHAPE_TOKEN.findall(hlo):
         dims.update(int(d) for d in group.split(","))
@@ -209,27 +220,32 @@ def test_eval_steps_keep_the_batch_axis_sharded_in_compiled_hlo():
     appear — the positive control that the census reads real shapes."""
     model, vu, ci_fn, tokens, mesh, _ = _placed_setup(seq=24, gbatch=40)
     key = random.PRNGKey(9)
-    keys = ci_fn.fn.capture_keys
+    keys = ci_fn.capture_keys
     output_key_by_site = attn_output_key_by_site(model)
     with jax.set_mesh(mesh):
-        context_step = make_lm_batch_context_step(
-            model, keys, frozenset(output_key_by_site.values()), mesh
+        context_step = jax.jit(
+            make_lm_batch_context_step(model, keys, frozenset(output_key_by_site.values()), mesh)
         )
-        ctx_tokens, _clean_output, captures, ci, prepared_weights = context_step(
-            model, vu, ci_fn, tokens
-        )
+        forward = context_step(model, vu, ci_fn, tokens)
+        captures = forward.captures
+        ci = forward.ci
+        prepared_weights = forward.prepared_weights
+        conditioning = forward.conditioning
         clean_qk = {site: captures[key_] for site, key_ in output_key_by_site.items()}
         step_args = {
-            "ce_kl": (make_ce_kl_step(model, keys, 0.5, mesh), (model, vu, ci_fn, tokens, key)),
+            "ce_kl": (
+                jax.jit(make_ce_kl_step(model, keys, 0.5, mesh)),
+                (model, vu, ci_fn, tokens, key),
+            ),
             "ci_l0": (
-                make_ci_l0_step(model, keys, 0.1, None, mesh),
+                jax.jit(make_ci_l0_step(model, keys, 0.1, None, mesh)),
                 (model, vu, ci_fn, tokens, key),
             ),
             "batch_context": (context_step, (model, vu, ci_fn, tokens)),
-            "ci_reduction": (make_ci_reduction_step(0.1, 8, 16), (ci.preactivations,)),
+            "ci_reduction": (jax.jit(make_ci_reduction_step(0.1, 8, 16)), (ci.preactivations,)),
             "stochastic_attn": (
-                make_stochastic_attn_patterns_step(model, 2),
-                (model, prepared_weights, ctx_tokens, ci.lower, clean_qk, key),
+                jax.jit(make_stochastic_attn_patterns_step(model)),
+                (model, prepared_weights, conditioning, ci.lower, clean_qk, key),
             ),
         }
         for name, (step, args) in step_args.items():
@@ -244,7 +260,7 @@ def test_sharded_binning_and_uniform_draws_are_value_identical():
     `_binned_values` / `_per_component_ci_hist` are pure reductions — the batch-sharded
     array must produce byte-identical counts/edges to the unsharded one (integer counts
     are reorder-proof). `uniform_like` must draw the same values sharded as unsharded:
-    threefry is counter-based, so partitioning the draw never changes it (SPEC D4)."""
+    threefry is counter-based, so partitioning the draw never changes it."""
     from param_decomp.core.linear_plan import uniform_like
     from param_decomp.core.slow_eval import _binned_values, _per_component_ci_hist
 
@@ -292,16 +308,20 @@ def test_scalar_eval_values_match_unplaced():
     sites = glu_site_specs(cfg, site_cs)
     raw_model = tiny_glu_decomposed_lm(cfg, sites, random.PRNGKey(0))
     vu = init_component_stacks(sites, random.PRNGKey(1))
-    arch = _ci_arch(cfg, tuple(s.name for s in sites))
-    ci_fn = build_ci_fn(arch, sites, random.PRNGKey(2))
+    arch = _ci_fn_arch(cfg, tuple(s.name for s in sites))
+    ci_fn = arch.initialize(sites, None, random.PRNGKey(2))
     tokens = random.randint(random.PRNGKey(4), (gbatch, seq), 0, cfg.vocab_size)
     key = random.PRNGKey(9)
 
     unplaced_model = PlacedModel(model=raw_model, placement=None)
-    unplaced_ci = PlacedCIFn(fn=ci_fn, placement=None)
-    keys = unplaced_ci.fn.capture_keys
-    ce_kl_single = make_ce_kl_step(unplaced_model, keys, 0.5)(
-        unplaced_model, vu, unplaced_ci, tokens, key
+    unplaced_ci = ci_fn
+    keys = unplaced_ci.capture_keys
+    ce_kl_single = jax.jit(make_ce_kl_step(unplaced_model, keys, 0.5))(
+        unplaced_model,
+        vu,
+        unplaced_ci,
+        LMBatchWithDocuments.from_unsegmented_sequences(tokens),
+        key,
     )
 
     mesh = Mesh(
@@ -311,10 +331,12 @@ def test_scalar_eval_values_match_unplaced():
     )
     rules = from_config("ddp", mesh, sites)
     sharded_model = PlacedModel(model=raw_model, placement=rules)
-    sharded_ci = PlacedCIFn(fn=ci_fn, placement=resolve_ci_placement(arch, rules))
-    sharded_tokens = shard_batch(tokens, mesh, batch_axis=0)
+    sharded_ci = arch.initialize(sites, rules, random.PRNGKey(2))
+    sharded_tokens = LMBatchWithDocuments.from_unsegmented_sequences(
+        shard_batch(tokens, mesh, batch_axis=0)
+    )
     with jax.set_mesh(mesh):
-        ce_kl_sharded = make_ce_kl_step(sharded_model, keys, 0.5, mesh)(
+        ce_kl_sharded = jax.jit(make_ce_kl_step(sharded_model, keys, 0.5, mesh))(
             sharded_model, vu, sharded_ci, sharded_tokens, key
         )
 

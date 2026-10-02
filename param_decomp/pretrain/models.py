@@ -31,16 +31,13 @@ from typing import Literal
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, Float
 
+from param_decomp.attention import AttentionImplementation, causal_attention_head_first
 from param_decomp.core.base_config import BaseConfig
-from param_decomp.target_ports.llama import (
-    apply_rope,
-    causal_sdpa,
-    repeat_kv,
-    rms_norm,
-    rope_cos_sin,
-)
+from param_decomp.lm.batch import LMBatchWithDocuments
+from param_decomp.sequence import SequenceLayout
+from param_decomp.target_ports.llama import apply_rope, repeat_kv, rms_norm, rope_cos_sin
 
 # ----------------------------- configs -----------------------------
 
@@ -150,14 +147,15 @@ class GPT2SimpleAttention(eqx.Module):
     wo: Float[Array, "d d"]
     n_head: int = eqx.field(static=True)
     head_dim: int = eqx.field(static=True)
+    implementation: AttentionImplementation = eqx.field(static=True)
 
-    def __call__(self, x: Float[Array, "b t d"]) -> Float[Array, "b t d"]:
+    def __call__(self, x: Float[Array, "b t d"], sequence: SequenceLayout) -> Float[Array, "b t d"]:
         b, t, _ = x.shape
         q = (x @ self.wq.T).reshape(b, t, self.n_head, self.head_dim).transpose(0, 2, 1, 3)
         k = (x @ self.wk.T).reshape(b, t, self.n_head, self.head_dim).transpose(0, 2, 1, 3)
         v = (x @ self.wv.T).reshape(b, t, self.n_head, self.head_dim).transpose(0, 2, 1, 3)
         y = (
-            causal_sdpa(q, k, v, None, "auto")
+            causal_attention_head_first(q, k, v, sequence, None, self.implementation)
             .transpose(0, 2, 1, 3)
             .reshape(b, t, self.n_head * self.head_dim)
         )
@@ -174,8 +172,8 @@ class GPT2SimpleBlock(eqx.Module):
     Wdown: Float[Array, "d di"]
     eps: float = eqx.field(static=True)
 
-    def __call__(self, x: Float[Array, "b t d"]) -> Float[Array, "b t d"]:
-        x = x + self.attn(_layer_norm(x, self.ln1_w, self.ln1_b, self.eps))
+    def __call__(self, x: Float[Array, "b t d"], sequence: SequenceLayout) -> Float[Array, "b t d"]:
+        x = x + self.attn(_layer_norm(x, self.ln1_w, self.ln1_b, self.eps), sequence)
         h = _layer_norm(x, self.ln2_w, self.ln2_b, self.eps)
         return x + _gelu_tanh(h @ self.Wfc.T) @ self.Wdown.T
 
@@ -197,12 +195,13 @@ class GPT2Simple(eqx.Module):
     lnf_b: Float[Array, " d"]
     n_ctx: int = eqx.field(static=True)
 
-    def __call__(self, idx: Int[Array, "b t"]) -> Float[Array, "b t vocab"]:
-        _, t = idx.shape
+    def __call__(self, inputs: LMBatchWithDocuments) -> Float[Array, "b t vocab"]:
+        inputs.validate_shapes()
+        _, t = inputs.batch.token_ids.shape
         assert t <= self.n_ctx, (t, self.n_ctx)
-        x = self.wte[idx] + self.wpe[jnp.arange(t)][None]
+        x = self.wte[inputs.batch.token_ids] + self.wpe[inputs.sequence.position_ids()]
         for block in self.blocks:
-            x = block(x)
+            x = block(x, inputs.sequence)
         x = _layer_norm(x, self.lnf_w, self.lnf_b, self.blocks[0].eps)
         return x @ self.wte.T
 
@@ -224,7 +223,9 @@ class GPT2Simple(eqx.Module):
         return sd
 
 
-def init_gpt2_simple(cfg: GPT2SimpleConfig, key: Array) -> GPT2Simple:
+def init_gpt2_simple(
+    cfg: GPT2SimpleConfig, key: Array, attention_implementation: AttentionImplementation
+) -> GPT2Simple:
     keys = iter(jax.random.split(key, cfg.n_layer * 6 + 3))
     d, di = cfg.n_embd, cfg.n_intermediate
     blocks = [
@@ -240,6 +241,7 @@ def init_gpt2_simple(cfg: GPT2SimpleConfig, key: Array) -> GPT2Simple:
                 wo=_normal(next(keys), (d, d), _linear_std(cfg, True)),
                 n_head=cfg.n_head,
                 head_dim=cfg.head_dim,
+                implementation=attention_implementation,
             ),
             Wfc=_normal(next(keys), (di, d), _linear_std(cfg, False)),
             Wdown=_normal(next(keys), (d, di), _linear_std(cfg, True)),
@@ -268,19 +270,22 @@ class LlamaAttention(eqx.Module):
     n_head: int = eqx.field(static=True)
     n_kv_head: int = eqx.field(static=True)
     head_dim: int = eqx.field(static=True)
+    implementation: AttentionImplementation = eqx.field(static=True)
     n_rep: int = eqx.field(static=True)
 
-    def __call__(self, x: Float[Array, "b t d"], inv_freq: Float[Array, " hd2"]) -> Array:
+    def __call__(
+        self, x: Float[Array, "b t d"], inv_freq: Float[Array, " hd2"], sequence: SequenceLayout
+    ) -> Array:
         b, t, _ = x.shape
         q = (x @ self.wq.T).reshape(b, t, self.n_head, self.head_dim).transpose(0, 2, 1, 3)
         k = (x @ self.wk.T).reshape(b, t, self.n_kv_head, self.head_dim).transpose(0, 2, 1, 3)
         v = (x @ self.wv.T).reshape(b, t, self.n_kv_head, self.head_dim).transpose(0, 2, 1, 3)
-        cos, sin = rope_cos_sin(inv_freq, t, x.dtype)
+        cos, sin = rope_cos_sin(inv_freq, sequence.position_ids(), x.dtype)
         q, k = apply_rope(q, k, cos, sin)
         k = repeat_kv(k, self.n_rep)
         v = repeat_kv(v, self.n_rep)
         y = (
-            causal_sdpa(q, k, v, None, "auto")
+            causal_attention_head_first(q, k, v, sequence, None, self.implementation)
             .transpose(0, 2, 1, 3)
             .reshape(b, t, self.n_head * self.head_dim)
         )
@@ -293,7 +298,9 @@ def _plain_rope_inv_freq(cfg: "LlamaSimpleConfig | LlamaSimpleMLPConfig") -> Flo
 
 
 def _init_llama_attention(
-    cfg: "LlamaSimpleConfig | LlamaSimpleMLPConfig", keys: "Callable[[], Array]"
+    cfg: "LlamaSimpleConfig | LlamaSimpleMLPConfig",
+    keys: "Callable[[], Array]",
+    attention_implementation: AttentionImplementation,
 ) -> LlamaAttention:
     d = cfg.n_embd
     qd = cfg.n_head * cfg.head_dim
@@ -307,6 +314,7 @@ def _init_llama_attention(
         n_kv_head=cfg.n_key_value_heads,
         head_dim=cfg.head_dim,
         n_rep=cfg.n_rep,
+        implementation=attention_implementation,
     )
 
 
@@ -321,8 +329,8 @@ class LlamaSimpleBlock(eqx.Module):
     Wdown: Float[Array, "d di"]
     eps: float = eqx.field(static=True)
 
-    def __call__(self, x: Array, inv_freq: Array) -> Array:
-        x = x + self.attn(rms_norm(x, self.ln1, self.eps), inv_freq)
+    def __call__(self, x: Array, inv_freq: Array, sequence: SequenceLayout) -> Array:
+        x = x + self.attn(rms_norm(x, self.ln1, self.eps), inv_freq, sequence)
         h = rms_norm(x, self.ln2, self.eps)
         return x + (jax.nn.silu(h @ self.Wgate.T) * (h @ self.Wup.T)) @ self.Wdown.T
 
@@ -335,12 +343,13 @@ class LlamaSimple(eqx.Module):
     n_ctx: int = eqx.field(static=True)
     eps: float = eqx.field(static=True)
 
-    def __call__(self, idx: Int[Array, "b t"]) -> Float[Array, "b t vocab"]:
-        t = idx.shape[1]
+    def __call__(self, inputs: LMBatchWithDocuments) -> Float[Array, "b t vocab"]:
+        inputs.validate_shapes()
+        t = inputs.batch.token_ids.shape[1]
         assert t <= self.n_ctx, (t, self.n_ctx)
-        x = self.wte[idx]
+        x = self.wte[inputs.batch.token_ids]
         for block in self.blocks:
-            x = block(x, self.inv_freq)
+            x = block(x, self.inv_freq, inputs.sequence)
         x = rms_norm(x, self.norm, self.eps)
         return x @ self.wte.T
 
@@ -359,7 +368,9 @@ class LlamaSimple(eqx.Module):
         return sd
 
 
-def init_llama_simple(cfg: LlamaSimpleConfig, key: Array) -> LlamaSimple:
+def init_llama_simple(
+    cfg: LlamaSimpleConfig, key: Array, attention_implementation: AttentionImplementation
+) -> LlamaSimple:
     keys_it = iter(jax.random.split(key, cfg.n_layer * 7 + 2))
     nxt = lambda: next(keys_it)
     d, di = cfg.n_embd, cfg.n_intermediate
@@ -367,7 +378,7 @@ def init_llama_simple(cfg: LlamaSimpleConfig, key: Array) -> LlamaSimple:
         LlamaSimpleBlock(
             ln1=jnp.ones((d,)),
             ln2=jnp.ones((d,)),
-            attn=_init_llama_attention(cfg, nxt),
+            attn=_init_llama_attention(cfg, nxt, attention_implementation),
             Wgate=_normal(nxt(), (di, d), _linear_std(cfg, False)),
             Wup=_normal(nxt(), (di, d), _linear_std(cfg, False)),
             Wdown=_normal(nxt(), (d, di), _linear_std(cfg, True)),
@@ -395,8 +406,8 @@ class LlamaSimpleMLPBlock(eqx.Module):
     Wdown: Float[Array, "d di"]
     eps: float = eqx.field(static=True)
 
-    def __call__(self, x: Array, inv_freq: Array) -> Array:
-        x = x + self.attn(rms_norm(x, self.ln1, self.eps), inv_freq)
+    def __call__(self, x: Array, inv_freq: Array, sequence: SequenceLayout) -> Array:
+        x = x + self.attn(rms_norm(x, self.ln1, self.eps), inv_freq, sequence)
         h = rms_norm(x, self.ln2, self.eps)
         return x + _gelu_tanh(h @ self.Wfc.T) @ self.Wdown.T
 
@@ -409,12 +420,13 @@ class LlamaSimpleMLP(eqx.Module):
     n_ctx: int = eqx.field(static=True)
     eps: float = eqx.field(static=True)
 
-    def __call__(self, idx: Int[Array, "b t"]) -> Float[Array, "b t vocab"]:
-        t = idx.shape[1]
+    def __call__(self, inputs: LMBatchWithDocuments) -> Float[Array, "b t vocab"]:
+        inputs.validate_shapes()
+        t = inputs.batch.token_ids.shape[1]
         assert t <= self.n_ctx, (t, self.n_ctx)
-        x = self.wte[idx]
+        x = self.wte[inputs.batch.token_ids]
         for block in self.blocks:
-            x = block(x, self.inv_freq)
+            x = block(x, self.inv_freq, inputs.sequence)
         x = rms_norm(x, self.norm, self.eps)
         return x @ self.wte.T
 
@@ -433,7 +445,9 @@ class LlamaSimpleMLP(eqx.Module):
         return sd
 
 
-def init_llama_simple_mlp(cfg: LlamaSimpleMLPConfig, key: Array) -> LlamaSimpleMLP:
+def init_llama_simple_mlp(
+    cfg: LlamaSimpleMLPConfig, key: Array, attention_implementation: AttentionImplementation
+) -> LlamaSimpleMLP:
     keys_it = iter(jax.random.split(key, cfg.n_layer * 6 + 2))
     nxt = lambda: next(keys_it)
     d, di = cfg.n_embd, cfg.n_intermediate
@@ -441,7 +455,7 @@ def init_llama_simple_mlp(cfg: LlamaSimpleMLPConfig, key: Array) -> LlamaSimpleM
         LlamaSimpleMLPBlock(
             ln1=jnp.ones((d,)),
             ln2=jnp.ones((d,)),
-            attn=_init_llama_attention(cfg, nxt),
+            attn=_init_llama_attention(cfg, nxt, attention_implementation),
             Wfc=_normal(nxt(), (di, d), _linear_std(cfg, False)),
             Wdown=_normal(nxt(), (d, di), _linear_std(cfg, True)),
             eps=cfg.rms_norm_eps,
@@ -461,15 +475,17 @@ def init_llama_simple_mlp(cfg: LlamaSimpleMLPConfig, key: Array) -> LlamaSimpleM
 PretrainModel = GPT2Simple | LlamaSimple | LlamaSimpleMLP
 
 
-def init_model(cfg: ModelConfig, key: Array) -> PretrainModel:
+def init_model(
+    cfg: ModelConfig, key: Array, attention_implementation: AttentionImplementation
+) -> PretrainModel:
     match cfg:
         case GPT2SimpleConfig():
-            return init_gpt2_simple(cfg, key)
+            return init_gpt2_simple(cfg, key, attention_implementation)
         case LlamaSimpleConfig():
-            return init_llama_simple(cfg, key)
+            return init_llama_simple(cfg, key, attention_implementation)
         case LlamaSimpleMLPConfig():
-            return init_llama_simple_mlp(cfg, key)
+            return init_llama_simple_mlp(cfg, key, attention_implementation)
 
 
-def model_logits(model: PretrainModel, idx: Int[Array, "b t"]) -> Float[Array, "b t vocab"]:
-    return model(idx)
+def model_logits(model: PretrainModel, inputs: LMBatchWithDocuments) -> Float[Array, "b t vocab"]:
+    return model(inputs)

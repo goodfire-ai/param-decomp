@@ -5,21 +5,23 @@ from typing import Annotated, Literal
 from pydantic import Field, PositiveInt
 
 from param_decomp.core.base_config import BaseConfig
-from param_decomp.core.ci_fn import CIFnArch, GlobalMLPCIArch, LayerwiseMLPCIArch, TapSpec
+from param_decomp.core.ci_fn.implementations.global_mlp import GlobalMLPCIFnArch
+from param_decomp.core.ci_fn.implementations.layerwise_mlp import LayerwiseMLPCIFnArch
+from param_decomp.core.ci_fn.interface import TapSpec
 from param_decomp.core.components import SiteSpec
 from param_decomp.core.configs import ExplicitCSpec
 from param_decomp.experiments.config import ExperimentConfig
 from param_decomp.experiments.eval_config import EvalConfig
 
 
-class LayerwiseMlpCiConfig(BaseConfig):
+class LayerwiseMlpCIFnConfig(BaseConfig):
     """One independent MLP CI function per toy site."""
 
     type: Literal["layerwise_mlp"] = "layerwise_mlp"
     hidden_dims: list[PositiveInt] = Field(..., min_length=1)
 
 
-class GlobalMlpCiConfig(BaseConfig):
+class GlobalMlpCIFnConfig(BaseConfig):
     """One MLP CI function over all toy sites jointly."""
 
     type: Literal["global_mlp"] = "global_mlp"
@@ -30,7 +32,7 @@ class ToyDecompositionConfig(BaseConfig):
     """Explicit toy sites and their positionless CI architecture."""
 
     sites: ExplicitCSpec
-    ci: Annotated[LayerwiseMlpCiConfig | GlobalMlpCiConfig, Field(discriminator="type")]
+    ci: Annotated[LayerwiseMlpCIFnConfig | GlobalMlpCIFnConfig, Field(discriminator="type")]
 
 
 class ToyExperimentConfig(ExperimentConfig):
@@ -44,23 +46,27 @@ class ToyExperimentConfig(ExperimentConfig):
     eval: EvalConfig | None = None
 
 
-def build_toy_ci_arch(
-    ci_config: LayerwiseMlpCiConfig | GlobalMlpCiConfig,
+ToyCIFnArch = LayerwiseMLPCIFnArch | GlobalMLPCIFnArch
+"""The pointwise arches a positionless toy run carries."""
+
+
+def build_toy_ci_fn_arch(
+    ci_fn_config: LayerwiseMlpCIFnConfig | GlobalMlpCIFnConfig,
     input_names: tuple[str, ...],
     sites: tuple[SiteSpec, ...],
-) -> CIFnArch:
+) -> ToyCIFnArch:
     """`input_names[i]` is the tap feeding `sites[i]` (the toy one-tap-per-site
     alignment), so the global arm reads each tap's width off its site's `d_in`."""
-    match ci_config:
-        case LayerwiseMlpCiConfig():
-            return LayerwiseMLPCIArch(
-                hidden_dims=tuple(ci_config.hidden_dims),
+    match ci_fn_config:
+        case LayerwiseMlpCIFnConfig():
+            return LayerwiseMLPCIFnArch(
+                hidden_dims=tuple(ci_fn_config.hidden_dims),
                 has_position_axis=False,
                 input_names=input_names,
             )
-        case GlobalMlpCiConfig():
-            return GlobalMLPCIArch(
-                hidden_dims=tuple(ci_config.hidden_dims),
+        case GlobalMlpCIFnConfig():
+            return GlobalMLPCIFnArch(
+                hidden_dims=tuple(ci_fn_config.hidden_dims),
                 has_position_axis=False,
                 input_taps=tuple(
                     TapSpec(key=name, width=site.d_in)

@@ -16,6 +16,7 @@ the torch half (`cls.__name__ == cfg.type`) was pinned against live torch dispat
 before push-1 severed the torch import — it now holds by the frozen `type` literals.
 """
 
+from param_decomp.core.components import DenseFactorization, SiteSpec
 from param_decomp.core.configs import (
     AdamPGDConfig,
     CIMaskedReconLossConfig,
@@ -63,7 +64,7 @@ RECON_CONFIGS = (
         n_steps=1,
         source_shape="bsc",
     ),
-    PersistentPGDReconLossConfig(coeff=1.0, optimizer=_persistent_optimizer(), source_shape="sc"),
+    PersistentPGDReconLossConfig(coeff=1.0, optimizer=_persistent_optimizer(), source_shape="bsc"),
 )
 
 
@@ -77,7 +78,10 @@ def _non_recon_configs() -> tuple[FaithfulnessLossConfig, ImportanceMinimalityLo
 def _recon_terms(recon_configs: tuple[object, ...]) -> tuple[AnyReconLossTerm, ...]:
     terms = build_objective(
         (*_non_recon_configs(), *recon_configs),  # pyright: ignore[reportArgumentType]
-        site_names=SITE_NAMES,
+        sites=tuple(
+            SiteSpec(name=name, factorization=DenseFactorization(d_in=4, d_out=4, C=4), group="g")
+            for name in SITE_NAMES
+        ),
     )
     return terms.recon
 
@@ -113,7 +117,7 @@ def test_no_train_loss_no_beta_key():
     """Torch's `ImportanceMinimalityLoss_no_beta` diagnostic is emitted only by
     `Metric.compute` (the eval path), never from the train step. The JAX trainer must
     not emit a `train/loss/*_no_beta` key — doing so was a logged-key divergence from
-    torch (#647)."""
+    torch."""
     from param_decomp.core.run import _METRIC_KEYS
 
     assert not any(k.endswith("_no_beta") for k in _METRIC_KEYS), _METRIC_KEYS

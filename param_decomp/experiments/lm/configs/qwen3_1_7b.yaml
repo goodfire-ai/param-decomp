@@ -1,0 +1,315 @@
+# Latest canonical run: https://wandb.ai/goodfire/param-decomp-llama/runs/p-47857a3b
+# Model-only run name replaces the source run's experiment label.
+run_name: qwen3-1-7b
+cadence:
+  train_log_every: 20
+  # p-47857a3b's save_every/checkpoint_retention in the current nested schema;
+  # save interval and retention are unchanged.
+  checkpointing:
+    kind: periodic
+    save_every: 2000
+    retention:
+      kind: keep_last
+      n: 1
+data:
+  train:
+    kind: name
+    name: fineweb_qwen3_tok_512_train284
+  eval:
+    kind: name
+    name: fineweb_qwen3_tok_512_eval1
+eval:
+  batch_size: 128
+  every: 1000
+  # Omit unsupported StochasticHiddenActsReconLoss/CIHiddenActsReconLoss from p-47857a3b
+  # The remaining metrics do not provide equivalent coverage.
+  metrics:
+  - n_batches_accum: 1
+    type: CIHistograms
+  - ci_alive_threshold: 0.0
+    type: ComponentActivationDensity
+  - ci_alive_threshold: 0.0
+    groups: null
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  - type: CIMeanPerComponent
+  # Adds per-position active-CI diagnostics; absent from p-47857a3b
+  - type: CIActiveCountsPerPosition
+  - init: random
+    source_shape: c
+    n_steps: 20
+    step_size: 0.1
+    type: PGDReconLoss
+    auxiliaries:
+    - name: hidden_acts_reconstruction
+      coeff: 0.0
+      comparisons:
+      - capture: resid.1
+        distance: relative_squared_error
+      - capture: resid.2
+        distance: relative_squared_error
+      - capture: resid.3
+        distance: relative_squared_error
+      - capture: resid.4
+        distance: relative_squared_error
+      - capture: resid.5
+        distance: relative_squared_error
+      - capture: resid.6
+        distance: relative_squared_error
+      - capture: resid.7
+        distance: relative_squared_error
+      - capture: resid.8
+        distance: relative_squared_error
+      - capture: resid.9
+        distance: relative_squared_error
+      - capture: resid.10
+        distance: relative_squared_error
+      - capture: resid.11
+        distance: relative_squared_error
+      - capture: resid.12
+        distance: relative_squared_error
+      - capture: resid.13
+        distance: relative_squared_error
+      - capture: resid.14
+        distance: relative_squared_error
+      - capture: resid.15
+        distance: relative_squared_error
+      - capture: resid.16
+        distance: relative_squared_error
+      - capture: resid.17
+        distance: relative_squared_error
+      - capture: resid.18
+        distance: relative_squared_error
+      - capture: resid.19
+        distance: relative_squared_error
+      - capture: resid.20
+        distance: relative_squared_error
+      - capture: resid.21
+        distance: relative_squared_error
+      - capture: resid.22
+        distance: relative_squared_error
+      - capture: resid.23
+        distance: relative_squared_error
+      - capture: resid.24
+        distance: relative_squared_error
+      - capture: resid.25
+        distance: relative_squared_error
+      - capture: resid.26
+        distance: relative_squared_error
+      - capture: resid.27
+        distance: relative_squared_error
+      - capture: resid.28
+        distance: relative_squared_error
+  - init: random
+    source_shape: c
+    n_steps: 40
+    name: PGDReconLoss_40step
+    step_size: 0.1
+    type: SlowPGDReconLoss
+  - init: random
+    source_shape: c
+    n_steps: 80
+    name: PGDReconLoss_80step
+    step_size: 0.1
+    type: SlowPGDReconLoss
+  - init: random
+    source_shape: c
+    n_steps: 160
+    name: PGDReconLoss_160step
+    step_size: 0.1
+    type: SlowPGDReconLoss
+  - init: random
+    source_shape: c
+    n_steps: 320
+    name: PGDReconLoss_320step
+    step_size: 0.1
+    type: SlowPGDReconLoss
+  - init: random
+    source_shape: c
+    n_steps: 640
+    name: PGDReconLoss_640step
+    step_size: 0.1
+    type: SlowPGDReconLoss
+  - init: random
+    source_shape: c
+    n_steps: 1280
+    name: PGDReconLoss_1280step
+    step_size: 0.1
+    type: SlowPGDReconLoss
+  n_steps: 1
+  slow_every: 10000
+  slow_on_first_step: true
+decomposition:
+  sites:
+    kind: glu_transformer
+    layers:
+      kind: all
+    cs:
+      q: 2048
+      k: 1024
+      v: 1024
+      o: 2048
+      gate: 6144
+      up: 6144
+      down: 6144
+    # Retired neuron_head_aligned -> supported nonlinearity_aligned;
+    # initialization geometry differs from p-47857a3b.
+    initialization: nonlinearity_aligned
+  ci:
+    type: global_transformer
+    # Conditions each site's CI on its component activations (x @ V of its clean input);
+    # p-47857a3b's CI read residual taps only; not yet compared against that run.
+    # At most one of the positive and negative arms is nonzero on a token, so the readout
+    # reaches one arm's output scale, 1, where |h| hits its calibrated quantile.
+    # Calibrates on the whole step-0 batch: 2048 x 512 = 2**20 tokens, exactly min_n_tokens.
+    component_conditioning:
+      kind: affine_clipped_component_activation
+      output_scale_init: 1.0
+      calibration:
+        min_n_tokens: 1048576  # 2**20
+    input_tap:
+      kind: residual_boundaries
+      offsets:
+      - 0
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      - 8
+      - 9
+      - 10
+      - 11
+      - 12
+      - 13
+      - 14
+      - 15
+      - 16
+      - 17
+      - 18
+      - 19
+      - 20
+      - 21
+      - 22
+      - 23
+      - 24
+      - 25
+      - 26
+      - 27
+      - 28
+    d_model: 3840
+    n_blocks: 32
+    attention:
+      kind: mha
+      # Explicit bidirectional CI mask, matching p-47857a3b's implicit behavior.
+      mask: bidirectional
+      n_heads: 16
+      # Explicit GPU attention; CI implementation was implicit in p-47857a3b
+      implementation: flash
+    ffn:
+      kind: gelu
+      hidden: 8192
+pd:
+  # Both Muon optimizers omit the retired impl: stacked selector.
+  batch_size: 128
+  ci_fn_optimizer:
+    type: muon
+    consistent_rms: 0.2
+    grad_clip_norm: 1.0
+    lr_schedule:
+      max_val: 5.0e-05
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 1.0
+        frac: 0.1
+        interp: cosine
+  components_optimizer:
+    type: muon
+    consistent_rms: 0.2
+    grad_clip_norm: 1.0
+    lr_schedule:
+      max_val: 5.0e-05
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 1.0
+        frac: 0.1
+        interp: cosine
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 0
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - frequency:
+      coeff: 1.0e-05
+      reference_datapoint_count: 32768
+      ema_halflife_steps: 200
+    coeff: 2.0e-05
+    # Current name for p-47857a3b's SmoothL0ImportanceMinimalityLoss;
+    # coefficients, gamma schedule and unnormalized smooth-L0 penalty are retained.
+    type: ImportanceMinimalityLoss
+    gamma:
+      max_val: 1.0
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 0.9
+        frac: 0.01
+      - at: 1.0
+        frac: 0.01
+  - type: MergedStochasticSubsetPPGDReconLoss
+    coeff: 1.0
+    adv_fraction: 0.5
+    adversary_objective: e2e
+    n_warmup_steps: 2
+    routing:
+      type: uniform_k_subset
+    optimizer:
+      beta1: 0.01
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        max_val: 0.01
+        points:
+        - at: 0.0
+          frac: 0.0
+        - at: 0.05
+          frac: 1.0
+        - at: 1.0
+          frac: 1.0
+      type: adam
+    source_shape: bsc
+  - coeff: 10000.0
+    type: FaithfulnessLoss
+  seed: 0
+  steps: 400000
+runtime:
+  compilation_cache_dir: ~/.cache/param-decomp/xla
+  # Muon requires owner placement rather than zero1 used in p-47857a3b
+  sharding: owner
+  remat_recon_forwards: true
+  remat_ci_fn: true
+  # Supported compiler flags; tuned-v1 is retired. Differs from p-47857a3b
+  compiler_options: tuned-v2
+  # p-47857a3b's flat replicate/fsdp/tp fields moved under mesh; counts unchanged.
+  mesh:
+    replicate: 4
+    fsdp: 16
+    tp: 1
+target:
+  # Explicit GPU attention instead of auto selection in p-47857a3b
+  attention_implementation: flash
+  weights_dtype: bfloat16
+  spec:
+    kind: hf
+    model_class: transformers.Qwen3ForCausalLM
+    model_name: Qwen/Qwen3-1.7B
+  # Explicit materialized output: p-47857a3b omitted this now-required choice.
+  output_edge:
+    kind: materialized
+# Drop the source run's experiment-specific group/tags; retain its W&B project.
+wandb:
+  project: param-decomp-llama

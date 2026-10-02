@@ -1,4 +1,4 @@
-"""Tiled site-resolution: JAX canonical order vs torch first-match order (E21, S5/S7/S10).
+"""Tiled site-resolution: JAX canonical order vs torch first-match order (E21).
 
 torch (`param_decomp/decomposition_targets.py::resolve_decomposition_targets`, the
 ORACLE) resolved a module-pattern list by looping patterns in CONFIG order (outer) over
@@ -10,7 +10,7 @@ whose flat view is CANONICAL by construction — layer-ascending, then the famil
 `KIND_ORDER` within a layer — with no pattern order to depend on (module patterns no
 longer exist in the config schema).
 
-Site order is RNG- and concat/split-load-bearing (S10), so the resolved SET must match
+Site order is RNG- and concat/split-load-bearing, so the resolved SET must match
 torch exactly. The ORDER convention is a separate, still-open decision: this test
 asserts SET-equality unconditionally and PINS the ORDER divergence for the configs where
 it bites, so a silent convergence/regression is caught.
@@ -33,7 +33,7 @@ from param_decomp.experiments.lm.config import (
     SimpleMlpCSpec,
     resolve_site_tree,
 )
-from param_decomp.targets import glu_transformer, llama_simple_mlp
+from param_decomp.targets import llama_simple_mlp, transformer
 
 
 def _named_modules_order(
@@ -79,8 +79,8 @@ def _llama8b_module_names(n_layer: int) -> tuple[str, ...]:
         "layers",
         "self_attn",
         "mlp",
-        tuple(f"{k}_proj" for k in glu_transformer.KIND_ORDER),
-        tuple(f"{k}_proj" for k in glu_transformer.ATTN_KINDS),
+        tuple(f"{k}_proj" for k in transformer.KIND_ORDER),
+        tuple(f"{k}_proj" for k in transformer.ATTN_KINDS),
         n_layer,
     )
 
@@ -105,9 +105,7 @@ def test_llama8b_single_layer_mlp_set_matches_torch():
     spec = GluTransformerCSpec(
         layers=LayerList(indices=[18]), cs={"gate": 24576, "up": 24576, "down": 24576}
     )
-    jax_sites = resolve_site_tree(spec, glu_transformer.FAMILY, 32).site_cs(
-        glu_transformer.FAMILY.name_of
-    )
+    jax_sites = resolve_site_tree(spec, transformer.FAMILY, 32).site_cs(transformer.FAMILY.name_of)
     torch_targets = (
         SiteC("layers.18.mlp.gate_proj", 24576),
         SiteC("layers.18.mlp.up_proj", 24576),

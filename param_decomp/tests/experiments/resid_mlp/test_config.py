@@ -5,7 +5,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from param_decomp.core.configs import PGDReconLossConfig
+from param_decomp.core.configs import EvalPGDReconLossConfig
 from param_decomp.experiments.resid_mlp.config import ResidMLPExperimentConfig
 from param_decomp.experiments.resid_mlp.run import build_resid_mlp_built_run
 from param_decomp.experiments.toy_eval import make_toy_evaluation_operations
@@ -18,12 +18,14 @@ CONFIG_PATH = (
 
 def test_pretrain_intent_survives_config_build() -> None:
     raw = yaml.safe_load(CONFIG_PATH.read_text())
-    raw["target"]["pretrain"] |= {
-        "label_type": "abs",
-        "loss_type": "readoff",
-        "use_trivial_label_coeffs": False,
-        "importance_val": 0.7,
-    }
+    raw["target"]["pretrain"].update(
+        {
+            "label_type": "abs",
+            "loss_type": "readoff",
+            "use_trivial_label_coeffs": False,
+            "importance_val": 0.7,
+        }
+    )
 
     built = build_resid_mlp_built_run(ResidMLPExperimentConfig(**raw), "p-00000000", Path("out"))
 
@@ -52,7 +54,9 @@ def test_the_same_metric_twice_is_authorable_when_the_instances_are_named() -> N
 
     built = ResidMLPExperimentConfig(**raw)
     assert built.eval is not None
-    pgd_names = [m.name for m in built.eval.metrics if isinstance(m, PGDReconLossConfig) and m.name]
+    pgd_names = [
+        m.name for m in built.eval.metrics if isinstance(m, EvalPGDReconLossConfig) and m.name
+    ]
     assert pgd_names == ["PGDReconLoss_20step"], pgd_names
 
 

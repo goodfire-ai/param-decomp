@@ -5,7 +5,7 @@ mean-CI per component are exact under micro-batching), the `pre_sigmoid`-vs-`low
 distinction, the value histograms binned on device against what `ax.hist` would draw
 (and their refusal of more than one batch), and that the renderer
 emits valid PNGs under the exact torch `slow_eval/figures/*` keys. Also covers the in-loop
-slow tier (SPEC S28/S29): the `slow_every` / `slow_on_first_step` cadence and the rank-0
+slow tier: the `slow_every` / `slow_on_first_step` cadence and the rank-0
 background `BackgroundRenderer` logging figures on a deferred semantic step axis.
 """
 
@@ -18,28 +18,28 @@ from pathlib import Path
 from typing import Any
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from param_decomp.core.ci_fn import (
+from param_decomp.core.ci_fn.implementations.chunkwise.arch import (
     Chunk,
-    ChunkwiseTransformerCIArch,
-    MHACIAttention,
-    PlacedCIFn,
-    build_ci_fn,
-    ci_preactivations,
-    evaluate_ci,
-    lower_leaky_hard_sigmoid,
+    ChunkwiseTransformerCIFnArch,
 )
-from param_decomp.core.components import SiteC, SiteCI
+from param_decomp.core.ci_fn.implementations.transformer.layers import MHACIFnAttention
+from param_decomp.core.ci_fn.interface import CIFn
+from param_decomp.core.ci_fn.squashing import lower_leaky_hard_sigmoid
+from param_decomp.core.components import SiteC, SiteCI, init_component_stacks
 from param_decomp.core.configs import (
     IdentityCIErrorConfig,
     IdentityCITargetSpec,
     PermutedCIPlotsConfig,
     UVPlotsConfig,
 )
+from param_decomp.core.dict_utils import dict_safe_update_
 from param_decomp.core.eval_schedule import FirstThenEvery, eval_due
 from param_decomp.core.model import DecomposedModel, PlacedModel
+from param_decomp.core.precision import cast_floating
 from param_decomp.core.run import (
     BackgroundRenderer,
     DeferredMediaRecord,
@@ -75,13 +75,19 @@ from param_decomp.core.slow_eval import (
 from param_decomp.core.slow_eval import (
     site_reductions as finalize_site_reductions,
 )
-from param_decomp.targets.glu_transformer import glu_site_specs
+from param_decomp.lm.batch import LMBatchWithDocuments
 from param_decomp.targets.lm_output import LMOutput
 from param_decomp.targets.testing import (
     capture_clean,
     tiny_glu_cfg,
     tiny_glu_decomposed_lm,
 )
+from param_decomp.targets.transformer import (
+    TransformerPreparedMasking,
+    TransformerPreparedWeights,
+    glu_site_specs,
+)
+from param_decomp.tests.sequence import unsegmented_sequence_layout
 
 
 def _slow_eval_media(
@@ -96,7 +102,7 @@ def _slow_eval_media(
     once, so one render exercises every key the deferred axis has to carry."""
     figures = render_slow_eval_figures(reductions, {})
     if position_ci is not None:
-        figures |= render_permutation_figures(perm_spec, position_ci, components)
+        dict_safe_update_(figures, render_permutation_figures(perm_spec, position_ci, components))
     return DeferredMediaRecord(
         step_key="slow_eval/figure_step",
         step=now_step,
@@ -104,22 +110,32 @@ def _slow_eval_media(
     )
 
 
-def _build_ci_fn(model: DecomposedModel[LMOutput], n_embd: int, key: jax.Array) -> PlacedCIFn:
+def _build_ci_fn(
+    model: DecomposedModel[
+        LMBatchWithDocuments,
+        LMOutput,
+        TransformerPreparedWeights,
+        LMBatchWithDocuments,
+        TransformerPreparedMasking,
+    ],
+    n_embd: int,
+    key: jax.Array,
+) -> CIFn[Any]:
     """One transformer chunk over all sites, reading the residual entering the first
     decomposed block. The old `CIArch(16, 1, 2, 32)` dims map onto the chunk arch."""
     site_names = model.site_names
     first_block = min(int(name.split(".")[1]) for name in site_names)
-    arch = ChunkwiseTransformerCIArch(
+    arch = ChunkwiseTransformerCIFnArch(
         chunks=(Chunk(input_taps=(f"resid.{first_block}",), output_sites=site_names),),
         input_dim=n_embd,
         d_model=16,
         n_blocks=1,
-        attention=MHACIAttention(n_heads=2),
+        attention=MHACIFnAttention(mask="bidirectional", implementation="xla", n_heads=2),
         ffn_hidden=32,
         ffn_kind="gelu",
         learned_norm_scale=False,
     )
-    return PlacedCIFn(fn=build_ci_fn(arch, model.sites, key), placement=None)
+    return arch.initialize(model.sites, None, key)
 
 
 _C = 4
@@ -142,29 +158,69 @@ def _tiny_setup(
     value_histogram_n_bins: int | None = VALUE_HISTOGRAM_N_BINS,
 ):
     """Shared across tests: everything returned is frozen (a pydantic config, equinox
-    modules, a `filter_jit` over them), so there is nothing for a test to mutate."""
+    modules, and their jitted numerical function), so there is nothing for a test to mutate."""
     cfg = tiny_glu_cfg()
     sites = glu_site_specs(cfg, _SITE_CS)
     model = PlacedModel(
         model=tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0)), placement=None
     )
     ci_fn = _build_ci_fn(model.model, cfg.n_embd, jax.random.PRNGKey(2))
-    step = make_ci_reduction_step(threshold, density_heatmap_n_bins, value_histogram_n_bins)
+    step = jax.jit(
+        make_ci_reduction_step(threshold, density_heatmap_n_bins, value_histogram_n_bins)
+    )
     return cfg, model, ci_fn, step, _C
 
 
+def _prepared_components(
+    model: PlacedModel[
+        LMBatchWithDocuments,
+        LMOutput,
+        TransformerPreparedWeights,
+        LMBatchWithDocuments,
+        TransformerPreparedMasking,
+    ],
+) -> TransformerPreparedWeights:
+    return model.prepare_compute_weights(
+        init_component_stacks(model.model.sites, jax.random.PRNGKey(3))
+    )
+
+
 def _preactivations(
-    model: PlacedModel[LMOutput], ci_fn: PlacedCIFn, residual: jax.Array
+    model: PlacedModel[
+        LMBatchWithDocuments,
+        LMOutput,
+        TransformerPreparedWeights,
+        LMBatchWithDocuments,
+        TransformerPreparedMasking,
+    ],
+    ci_fn: CIFn[Any],
+    residual: jax.Array,
 ) -> Mapping[str, SiteCI]:
     """The shared batch context's compute-precision CI preactivations, prepared eagerly."""
-    captures = capture_clean(model.model, residual, ci_fn.fn.capture_keys)
-    return evaluate_ci(ci_fn, captures, remat=False).preactivations
+    captures = capture_clean(
+        model.model,
+        LMBatchWithDocuments.from_unsegmented_sequences(residual),
+        ci_fn.capture_keys,
+    )
+    return ci_fn.prepare()(
+        captures,
+        None,
+        _prepared_components(model),
+        sequence=unsegmented_sequence_layout(captures),
+        remat=False,
+    ).preactivations
 
 
 def accumulate_site_reductions(
     step: CIReductionStep,
-    model: PlacedModel[LMOutput],
-    ci_fn: PlacedCIFn,
+    model: PlacedModel[
+        LMBatchWithDocuments,
+        LMOutput,
+        TransformerPreparedWeights,
+        LMBatchWithDocuments,
+        TransformerPreparedMasking,
+    ],
+    ci_fn: CIFn[Any],
     residual_batches: list[jax.Array],
 ) -> dict[str, SiteReduction]:
     accumulation = empty_site_reduction_accumulation()
@@ -177,8 +233,14 @@ def accumulate_site_reductions(
 
 def accumulate_position_ci(
     step: PositionCIStep,
-    model: PlacedModel[LMOutput],
-    ci_fn: PlacedCIFn,
+    model: PlacedModel[
+        LMBatchWithDocuments,
+        LMOutput,
+        TransformerPreparedWeights,
+        LMBatchWithDocuments,
+        TransformerPreparedMasking,
+    ],
+    ci_fn: CIFn[Any],
     residual_batches: list[jax.Array],
 ) -> dict[str, PositionCI]:
     accumulation = empty_position_ci_accumulation()
@@ -195,11 +257,28 @@ def test_reductions_match_hand_rolled_per_component():
     reductions = accumulate_site_reductions(step, model, ci_fn, [residual])
 
     # Mirror slow_eval_step's training-precision (bf16) readout.
-    preactivations = ci_preactivations(
-        ci_fn, capture_clean(model.model, residual, ci_fn.fn.capture_keys), remat=False
+    preactivations = cast_floating(
+        ci_fn.prepare()(
+            capture_clean(
+                model.model,
+                LMBatchWithDocuments.from_unsegmented_sequences(residual),
+                ci_fn.capture_keys,
+            ),
+            None,
+            _prepared_components(model),
+            sequence=unsegmented_sequence_layout(
+                capture_clean(
+                    model.model,
+                    LMBatchWithDocuments.from_unsegmented_sequences(residual),
+                    ci_fn.capture_keys,
+                )
+            ),
+            remat=False,
+        ).preactivations,
+        jnp.float32,
     )
-    lower = {s: lower_leaky_hard_sigmoid(preactivations[s]) for s in model.site_names}
-    for site in model.site_names:
+    lower = {s: lower_leaky_hard_sigmoid(preactivations[s]) for s in model.model.site_names}
+    for site in model.model.site_names:
         flat = np.asarray(lower[site]).reshape(-1, C).astype(np.float32)
         r = reductions[site]
         assert r.n_positions == b * t
@@ -215,7 +294,7 @@ def test_cross_batch_sum_accumulates_linearly():
     one = accumulate_site_reductions(step, model, ci_fn, [res_a])
     two = accumulate_site_reductions(step, model, ci_fn, [res_a, res_b])
     other = accumulate_site_reductions(step, model, ci_fn, [res_b])
-    for site in model.site_names:
+    for site in model.model.site_names:
         assert two[site].n_positions == one[site].n_positions + other[site].n_positions
         np.testing.assert_allclose(
             two[site].ci_sums, one[site].ci_sums + other[site].ci_sums, rtol=1e-4, atol=1e-4
@@ -245,11 +324,28 @@ def test_the_device_histogram_is_what_ax_hist_would_have_drawn():
 
     reductions = accumulate_site_reductions(step, model, ci_fn, [residual])
 
-    preactivations = ci_preactivations(
-        ci_fn, capture_clean(model.model, residual, ci_fn.fn.capture_keys), remat=False
+    preactivations = cast_floating(
+        ci_fn.prepare()(
+            capture_clean(
+                model.model,
+                LMBatchWithDocuments.from_unsegmented_sequences(residual),
+                ci_fn.capture_keys,
+            ),
+            None,
+            _prepared_components(model),
+            sequence=unsegmented_sequence_layout(
+                capture_clean(
+                    model.model,
+                    LMBatchWithDocuments.from_unsegmented_sequences(residual),
+                    ci_fn.capture_keys,
+                )
+            ),
+            remat=False,
+        ).preactivations,
+        jnp.float32,
     )
-    lower = {s: lower_leaky_hard_sigmoid(preactivations[s]) for s in model.site_names}
-    for site in model.site_names:
+    lower = {s: lower_leaky_hard_sigmoid(preactivations[s]) for s in model.model.site_names}
+    for site in model.model.site_names:
         for values, rendered in zip(
             (lower[site], preactivations[site]), _histograms(reductions[site]), strict=True
         ):
@@ -440,7 +536,7 @@ def test_resolve_permutation_metrics_empty_when_unconfigured():
 @cache
 def _position_ci_step() -> PositionCIStep:
     """One trace for the file: the reduction is model-free (it reads the shared CI)."""
-    return make_position_ci_step()
+    return jax.jit(make_position_ci_step())
 
 
 @cache
@@ -471,8 +567,8 @@ def test_render_permutation_figures_emits_pngs():
         PermutedCIPlotsConfig(identity_patterns=["*gate_proj"], dense_patterns=["*down_proj"]),
         UVPlotsConfig(identity_patterns=["*gate_proj"], dense_patterns=["*down_proj"]),
     ]
-    spec = resolve_permutation_metrics(model.site_names, metrics)
-    components = {name: (np.zeros((4, _C)), np.zeros((_C, 4))) for name in model.site_names}
+    spec = resolve_permutation_metrics(model.model.site_names, metrics)
+    components = {name: (np.zeros((4, _C)), np.zeros((_C, 4))) for name in model.model.site_names}
     figures = render_permutation_figures(spec, position_ci, components)
     assert set(figures) == {
         "figures/causal_importances",
@@ -485,14 +581,14 @@ def test_render_permutation_figures_emits_pngs():
 
 def test_render_permutation_figures_empty_without_plot_metrics():
     model, position_ci = _tiny_position_ci()
-    spec = resolve_permutation_metrics(model.site_names, [])
+    spec = resolve_permutation_metrics(model.model.site_names, [])
     assert render_permutation_figures(spec, position_ci, {}) == {}
 
 
 def test_compute_identity_ci_errors_end_to_end():
     model, position_ci = _tiny_position_ci()
     spec = resolve_permutation_metrics(
-        model.site_names,
+        model.model.site_names,
         [
             IdentityCIErrorConfig(
                 identity_ci=[IdentityCITargetSpec(layer_pattern="*gate_proj", n_features=2)],
@@ -573,8 +669,8 @@ def test_renderer_logs_figures_on_deferred_semantic_step_axis(monkeypatch: pytes
     monkeypatch.setitem(sys.modules, "wandb", fake)
     monkeypatch.setitem(sys.modules, "wandb.errors", fake.errors)
 
-    spec = resolve_permutation_metrics(model.site_names, [])
-    renderer = BackgroundRenderer(MetricsSink(None, fake))
+    spec = resolve_permutation_metrics(model.model.site_names, [])
+    renderer = BackgroundRenderer(MetricsSink(None, fake, "legacy"))
     renderer.submit(partial(_slow_eval_media, reductions, spec, None, None, 4242))
     renderer.join()  # flush the background render
 
@@ -604,7 +700,7 @@ def test_renderer_logs_figures_on_deferred_semantic_step_axis(monkeypatch: pytes
 
 
 def test_metrics_sink_rejects_a_second_committed_record_at_the_same_step(tmp_path: Path):
-    sink = MetricsSink((tmp_path / "metrics.jsonl").open("a"), None)
+    sink = MetricsSink((tmp_path / "metrics.jsonl").open("a"), None, "legacy")
     sink.log(100, {"train/loss/total": 1.0})
 
     with pytest.raises(AssertionError, match="metrics steps must be strictly increasing"):
@@ -622,12 +718,12 @@ def test_deferred_media_cannot_advance_wandb_past_same_step_scalars(
     cfg, model, ci_fn, step, _ = _tiny_setup(threshold=0.0)
     residual = jax.random.randint(jax.random.PRNGKey(4), (2, 16), 0, cfg.vocab_size)
     reductions = accumulate_site_reductions(step, model, ci_fn, [residual])
-    spec = resolve_permutation_metrics(model.site_names, [])
+    spec = resolve_permutation_metrics(model.model.site_names, [])
 
     fake = _FakeWandb()
     monkeypatch.setitem(sys.modules, "wandb", fake)
     monkeypatch.setitem(sys.modules, "wandb.errors", fake.errors)
-    sink = MetricsSink((tmp_path / "metrics.jsonl").open("a"), fake)
+    sink = MetricsSink((tmp_path / "metrics.jsonl").open("a"), fake, "legacy")
     renderer = BackgroundRenderer(sink)
 
     renderer.submit(partial(_slow_eval_media, reductions, spec, None, None, 100))
@@ -647,7 +743,7 @@ def test_in_loop_renderer_includes_permutation_heatmaps_and_uv_when_gathered(
 ):
     """The in-loop slow tier renders the CI heatmaps from the materialized position-CI and,
     when the config names UVPlots and the gathered V/U is passed, the UVPlots figure too
-    (SPEC S28 amended: in-loop UVPlots is a naive gather, small-scale-only). IdentityCIError
+    (in-loop UVPlots is a naive gather, small-scale-only). IdentityCIError
     is computed synchronously on the collective path, not on the background thread."""
     cfg, model, ci_fn, step, C = _tiny_setup(threshold=0.0)
     residual = jax.random.randint(jax.random.PRNGKey(4), (3, 12), 0, cfg.vocab_size)
@@ -662,7 +758,7 @@ def test_in_loop_renderer_includes_permutation_heatmaps_and_uv_when_gathered(
             dense_ci=None,
         ),
     ]
-    spec = resolve_permutation_metrics(model.site_names, metrics)
+    spec = resolve_permutation_metrics(model.model.site_names, metrics)
     assert spec.want_uv_plots
 
     # the IdentityCIError SCALARS are computed synchronously (the in-loop collective path),
@@ -674,8 +770,8 @@ def test_in_loop_renderer_includes_permutation_heatmaps_and_uv_when_gathered(
     monkeypatch.setitem(sys.modules, "wandb", fake)
     monkeypatch.setitem(sys.modules, "wandb.errors", fake.errors)
 
-    components = {name: (np.zeros((4, C)), np.zeros((C, 5))) for name in model.site_names}
-    renderer = BackgroundRenderer(MetricsSink(None, fake))
+    components = {name: (np.zeros((4, C)), np.zeros((C, 5))) for name in model.model.site_names}
+    renderer = BackgroundRenderer(MetricsSink(None, fake, "legacy"))
     renderer.submit(partial(_slow_eval_media, reductions, spec, position_ci, components, 7000))
     renderer.join()
 
@@ -703,7 +799,7 @@ def test_in_loop_renderer_skips_uv_when_components_not_gathered(
     position_ci = accumulate_position_ci(_position_ci_step(), model, ci_fn, [residual])
 
     spec = resolve_permutation_metrics(
-        model.site_names,
+        model.model.site_names,
         [PermutedCIPlotsConfig(identity_patterns=["*gate_proj"], dense_patterns=["*down_proj"])],
     )
     assert not spec.want_uv_plots
@@ -712,7 +808,7 @@ def test_in_loop_renderer_skips_uv_when_components_not_gathered(
     monkeypatch.setitem(sys.modules, "wandb", fake)
     monkeypatch.setitem(sys.modules, "wandb.errors", fake.errors)
 
-    renderer = BackgroundRenderer(MetricsSink(None, fake))
+    renderer = BackgroundRenderer(MetricsSink(None, fake, "legacy"))
     renderer.submit(partial(_slow_eval_media, reductions, spec, position_ci, None, 7000))
     renderer.join()
 
@@ -730,7 +826,7 @@ def test_renderer_noop_off_main_rank(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setitem(sys.modules, "wandb", fake)
     monkeypatch.setitem(sys.modules, "wandb.errors", fake.errors)
 
-    spec = resolve_permutation_metrics(model.site_names, [])
+    spec = resolve_permutation_metrics(model.model.site_names, [])
     renderer = BackgroundRenderer(MetricsSink.silent())
     renderer.submit(partial(_slow_eval_media, reductions, spec, None, None, 4242))
     renderer.join()
@@ -749,7 +845,7 @@ def test_figure_rendering_never_enters_the_pyplot_registry():
     reductions = accumulate_site_reductions(step, model, ci_fn, [residual])
     position_ci = accumulate_position_ci(_position_ci_step(), model, ci_fn, [residual])
     spec = resolve_permutation_metrics(
-        model.site_names,
+        model.model.site_names,
         [PermutedCIPlotsConfig(identity_patterns=["*gate_proj"], dense_patterns=["*down_proj"])],
     )
 
@@ -763,7 +859,7 @@ def test_renderer_surfaces_a_failed_render_on_join(monkeypatch: pytest.MonkeyPat
     fake = _FakeWandb()
     monkeypatch.setitem(sys.modules, "wandb", fake)
     monkeypatch.setitem(sys.modules, "wandb.errors", fake.errors)
-    renderer = BackgroundRenderer(MetricsSink(None, fake))
+    renderer = BackgroundRenderer(MetricsSink(None, fake, "legacy"))
 
     def failing_render() -> DeferredMediaRecord:
         raise ValueError("render exploded")
@@ -789,9 +885,9 @@ def test_in_loop_slow_tier_fires_on_cadence_without_stalling(monkeypatch: pytest
     monkeypatch.setitem(sys.modules, "wandb", fake)
     monkeypatch.setitem(sys.modules, "wandb.errors", fake.errors)
 
-    spec = resolve_permutation_metrics(model.site_names, [])
+    spec = resolve_permutation_metrics(model.model.site_names, [])
     every, slow_every = 1000, 3000
-    renderer = BackgroundRenderer(MetricsSink(None, fake))
+    renderer = BackgroundRenderer(MetricsSink(None, fake, "legacy"))
     # Time only the dispatch the loop pays (accumulate + submit), not the off-thread render.
     # Joining between submits, outside the timed window, recreates the real loop's gap of
     # `slow_every` train steps where the render finishes before the next submit (so submit's
@@ -828,7 +924,7 @@ def test_deferred_media_rejects_duplicate_semantic_keys(
     fake = _FakeWandb()
     monkeypatch.setitem(sys.modules, "wandb", fake)
     monkeypatch.setitem(sys.modules, "wandb.errors", fake.errors)
-    sink = MetricsSink((tmp_path / "metrics.jsonl").open("a"), fake)
+    sink = MetricsSink((tmp_path / "metrics.jsonl").open("a"), fake, "legacy")
     encoded = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
     )
@@ -847,7 +943,7 @@ def test_group_figures_render_for_grouped_sites():
     """Sites whose components come in groups get the group-shaped views: the mean-CI
     spectrum `(n_groups, c)` and per-group dead counts — dense sites render only the
     flat figures, and a run with no grouped sites emits no `*_groups` key at all."""
-    from param_decomp.core.components import Dense, ExpertBlocked, SiteSpec
+    from param_decomp.core.components import BlockedFactorization, DenseFactorization, SiteSpec
     from param_decomp.core.slow_eval import SiteReduction, component_group_counts
 
     def reduction(c_total: int) -> SiteReduction:
@@ -863,10 +959,12 @@ def test_group_figures_render_for_grouped_sites():
     sites = (
         SiteSpec(
             name="moe",
-            factorization=ExpertBlocked(n_experts=3, d_in=4, d_out=4, c_per_expert=2),
+            factorization=BlockedFactorization(n_blocks=3, d_in=4, d_out=4, c_per_block=2),
             group="experts",
         ),
-        SiteSpec(name="dense", factorization=Dense(d_in=4, d_out=4, C=6), group="shared"),
+        SiteSpec(
+            name="dense", factorization=DenseFactorization(d_in=4, d_out=4, C=6), group="shared"
+        ),
     )
     group_counts = component_group_counts(sites)
     assert group_counts == {"moe": 3}

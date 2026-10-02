@@ -71,7 +71,7 @@ def parse_wandb_run_path(input_path: str) -> tuple[str, str, str]:
             f'Drop it from "{input_path}".'
         )
 
-    # Bare run ID (e.g. "p-17805b61") → the environment's entity + default project
+    # Bare run ID (e.g. "p-00000000") → the environment's entity + default project
     if m := _BARE_RUN_ID_RE.match(s):
         project = os.getenv("WANDB_PROJECT", DEFAULT_WANDB_PROJECT)
         return get_wandb_entity(), project, m.group(1)
@@ -145,7 +145,7 @@ def init_wandb(
 
     `entity` falls back to `get_wandb_entity()`; `view_meta` is merged under a
     `view_meta/` prefix so the UI can group runs by researcher-facing axes. `resume=True`
-    continues the existing wandb run `run_id` (continuous curves across a SLURM requeue);
+    continues the existing wandb run `run_id` (continuous curves across a process restart);
     `resume=False` creates a fresh run.
     """
     wandb.init(

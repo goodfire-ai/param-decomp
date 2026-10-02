@@ -1,13 +1,13 @@
-"""The targeted (tPD, SPEC §11) LM seat: prompt-pool construction (local stub tokenizer —
-no hub dependency), the pure per-step pool batch, the config shape's refusals, and the
-shipped seat config."""
+"""The targeted (tPD) LM seat: prompt-pool construction (local stub tokenizer —
+no hub dependency), the pure per-step pool batch, the config shape's refusals, and
+a targeted variant of the canonical Llama recipe."""
 
 from pathlib import Path
 
 import numpy as np
 import pytest
-import yaml
 
+from param_decomp.core.components import DenseFactorization, SiteSpec
 from param_decomp.core.objective import build_targeted_objective
 from param_decomp.experiments.lm.arithmetic_probe import build_arithmetic_probe
 from param_decomp.experiments.lm.config import LMExperimentConfig, LMTargetedExperimentConfig
@@ -17,8 +17,40 @@ from param_decomp.experiments.lm.targeted_data import (
     build_prompt_pool,
     pool_batch,
 )
+from param_decomp.tests.lm_configs import l18_mlp_raw
 
-_CONFIGS_DIR = Path(__file__).parents[3] / "experiments" / "lm" / "configs"
+
+def _targeted_raw():
+    raw = l18_mlp_raw()
+    raw["target"]["attention_implementation"] = "xla"
+    raw["decomposition"]["ci"]["attention"]["implementation"] = "xla"
+    raw["pd"]["loss_metrics"] = [
+        loss for loss in raw["pd"]["loss_metrics"] if loss["type"] != "FaithfulnessLoss"
+    ]
+    for field in (
+        "faithfulness_warmup_lr",
+        "faithfulness_warmup_steps",
+        "faithfulness_warmup_weight_decay",
+    ):
+        del raw["pd"][field]
+    raw["prompts"] = {
+        "kind": "arithmetic_grid",
+        "operation": "add",
+        "a_range": [1, 100],
+        "b_range": [1, 100],
+    }
+    raw["nontarget"] = {
+        "batch_size": 256,
+        "impmin_coeff": 1e-5,
+        "recon": [
+            {
+                "type": "StochasticReconSubsetLoss",
+                "coeff": 1.0,
+                "routing": {"type": "uniform_k_subset"},
+            }
+        ],
+    }
+    return raw
 
 
 class _StubTokenizer:
@@ -36,13 +68,13 @@ def test_arithmetic_pool_runs_at_natural_prompt_length():
         ArithmeticGridPromptsConfig(operation="add", a_range=(1, 4), b_range=(1, 4)),
         _StubTokenizer(),
     )
-    # "<a>+<b>=" at one char per token — unpadded (T8).
+    # "<a>+<b>=" at one char per token — unpadded.
     assert pool.tokens.shape == (16, 4)
     assert pool.tokens.dtype == np.int32
 
 
 def test_arithmetic_pool_admits_multi_token_answers():
-    """The pool contract is prompt geometry only (T8): `[1, 9] x [1, 9]` sums reach 18 —
+    """The pool contract is prompt geometry only: `[1, 9] x [1, 9]` sums reach 18 —
     two ids under per-digit tokenization, which the eval probe refuses but a training
     pool, which never scores an answer position, must not."""
     pool = build_prompt_pool(
@@ -87,33 +119,40 @@ def test_pool_batch_is_pure_in_seed_and_step():
     b = pool_batch(pool, seed=7, step=3, global_batch=32)
     c = pool_batch(pool, seed=7, step=4, global_batch=32)
     assert a.shape == (32, 4)
-    assert np.array_equal(a, b), "same (seed, step) must draw the same batch (S18)"
+    assert np.array_equal(a, b), "same (seed, step) must draw the same batch"
     assert not np.array_equal(a, c), "different steps must draw different batches"
     # Every drawn row is a pool row.
     pool_rows = {row.tobytes() for row in pool.tokens}
     assert all(row.tobytes() in pool_rows for row in a)
 
 
-def test_shipped_targeted_config_validates():
-    raw = yaml.safe_load((_CONFIGS_DIR / "llama8b_l18_arith_targeted.yaml").read_text())
+def test_targeted_variant_validates():
+    raw = _targeted_raw()
     cfg = LMTargetedExperimentConfig.model_validate(raw)
     # The objective builds (faithfulness-free target pass + the authored non-target pass)
     # against a stand-in site list — full resolution needs the HF snapshot.
     build_targeted_objective(
         cfg.pd.loss_metrics,
         cfg.nontarget,
-        ("layers.18.mlp.gate_proj", "layers.18.mlp.up_proj", "layers.18.mlp.down_proj"),
+        tuple(
+            SiteSpec(name=name, factorization=DenseFactorization(d_in=4, d_out=4, C=4), group="g")
+            for name in (
+                "layers.18.mlp.gate_proj",
+                "layers.18.mlp.up_proj",
+                "layers.18.mlp.down_proj",
+            )
+        ),
     )
 
 
 def test_targeted_shape_refuses_plain_only_sections():
-    raw = yaml.safe_load((_CONFIGS_DIR / "llama8b_l18_arith_targeted.yaml").read_text())
+    raw = _targeted_raw()
     raw["resume_provenance"] = {"parent_run_dir": "/abs/run", "parent_step": 100}
     with pytest.raises(Exception, match="resume_provenance"):
         LMTargetedExperimentConfig.model_validate(raw)
 
 
 def test_plain_shape_refuses_targeted_sections():
-    raw = yaml.safe_load((_CONFIGS_DIR / "llama8b_l18_arith_targeted.yaml").read_text())
+    raw = _targeted_raw()
     with pytest.raises(Exception, match="prompts|nontarget"):
         LMExperimentConfig.model_validate(raw)

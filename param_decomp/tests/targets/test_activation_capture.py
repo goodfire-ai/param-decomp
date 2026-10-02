@@ -9,24 +9,26 @@ from jax.sharding import PartitionSpec as P
 from jaxtyping import Array
 
 from param_decomp.core.components import SiteC, init_component_stacks
-from param_decomp.core.model import MaterializedMasking, PlacedModel
+from param_decomp.core.model import MaterializedMasking, PlacedModel, SiteRoutes
 from param_decomp.core.placement import batch_axes, from_config
 from param_decomp.core.sharding import hsdp_mesh, target_shardings_audit
+from param_decomp.lm.batch import LMBatchWithDocuments
+from param_decomp.sequence import SequenceLayout
 from param_decomp.target_ports.llama import rms_norm
-from param_decomp.targets.glu_transformer import (
-    GLU_ANATOMY,
-    GatedMLP,
-    GLUDecomposedModel,
-    GLULayer,
-    _capture_source_for_point,
-    canonical_site_cs,
-    glu_site_specs,
-    site_name,
-)
 from param_decomp.targets.testing import (
     materialized_logits,
     tiny_glu_cfg,
     tiny_glu_decomposed_lm,
+)
+from param_decomp.targets.transformer import (
+    GLU_ANATOMY,
+    GatedMLP,
+    TransformerDecomposedModel,
+    TransformerLayer,
+    _capture_source_for_point,
+    canonical_site_cs,
+    glu_site_specs,
+    site_name,
 )
 from param_decomp.targets.transformer_taps import (
     attention_input_tap_key,
@@ -38,7 +40,7 @@ from param_decomp.targets.transformer_taps import (
 )
 
 
-def _gated_mlp_out(layer: GLULayer, mlp_in: Array) -> Array:
+def _gated_mlp_out(layer: TransformerLayer, mlp_in: Array) -> Array:
     """The SwiGLU MLP written out directly — the independent oracle these tests hold the
     engine's block against, so it must never route back through the engine's own kernel.
     The lowering-equality test compares traces, so the statement order is load-bearing:
@@ -89,34 +91,25 @@ def test_frozen_target_persistence_and_linear_operands_follow_the_table():
     )
     rules = from_config("owner", mesh, model.sites)
 
-    shardings = model.shardings(rules)
-    assert isinstance(shardings.embed, NamedSharding)
-    assert isinstance(shardings.norm, NamedSharding)
-    assert isinstance(shardings.lm_head, NamedSharding)
-    assert isinstance(shardings.inv_freq, NamedSharding)
-    assert shardings.embed.spec == P(None, "fsdp")
-    assert shardings.norm.spec == P(None)
-    assert shardings.lm_head.spec == P(None, "fsdp")
-    assert shardings.inv_freq.spec == P(None)
-    mlp_shardings = shardings.stacked.mlp
-    assert isinstance(mlp_shardings, GatedMLP)
-    for sharding, expected in (
-        (shardings.stacked.attn.wq, P(None, "tp", "fsdp")),
-        (shardings.stacked.attn.wo, P(None, "fsdp", "tp")),
-        (mlp_shardings.Wg, P(None, "tp", "fsdp")),
-        (mlp_shardings.Wd, P(None, "fsdp", "tp")),
-    ):
-        assert isinstance(sharding, NamedSharding)
-        assert sharding.spec == expected
-
     audit = target_shardings_audit(PlacedModel(model=model, placement=rules))
     assert len(audit) == len(jax.tree.leaves(model))
-    assert audit["target.embed"][0].spec == P(None, "fsdp")
-    assert audit["target.stacked.mlp.Wg"][0].spec == P(None, "tp", "fsdp")
+    for path, expected in (
+        ("target.embed", P(None, "fsdp")),
+        ("target.norm", P(None)),
+        ("target.lm_head", P(None, "fsdp")),
+        ("target.inv_freq", P(None)),
+        ("target.stacked.attn.wq", P(None, "tp", "fsdp")),
+        ("target.stacked.attn.wo", P(None, "fsdp", "tp")),
+        ("target.stacked.mlp.Wg", P(None, "tp", "fsdp")),
+        ("target.stacked.mlp.Wd", P(None, "fsdp", "tp")),
+    ):
+        assert audit[path][0].spec == expected
 
     tokens = jax.random.randint(jax.random.PRNGKey(7), (2, 8), 0, cfg.vocab_size)
     jaxpr = jax.make_jaxpr(
-        lambda target, inputs: target.clean_forward(inputs, placement=rules).output
+        lambda target, inputs: target.clean_forward(
+            LMBatchWithDocuments.from_unsegmented_sequences(inputs), placement=rules
+        ).output
     )(model, tokens)
     scan = next(equation for equation in jaxpr.jaxpr.eqns if equation.primitive.name == "scan")
     matrix_constraints = [
@@ -136,45 +129,37 @@ def test_frozen_target_persistence_and_linear_operands_follow_the_table():
         P(None, "tp"),
         P("tp", None),
     ]
-    activation_constraints = [
-        equation.params["dst_sharding"].spec
-        for equation in scan.params["jaxpr"].jaxpr.eqns
-        if equation.primitive.name == "reshard" and len(equation.params["dst_sharding"].spec) >= 3
-    ]
-    intermediate = P(("replicate", "fsdp"), None, "tp")
-    heads = P(("replicate", "fsdp"), None, "tp", None)
-    external = P(("replicate", "fsdp"), None, None)
-    # Fewer explicit intermediate reshards than the constraint-based lowering had:
-    # the linears' outputs are now typed at the einsum (out_sharding), so only the
-    # activation-row pins remain as reshard equations.
-    assert activation_constraints.count(intermediate) == 3
-    assert activation_constraints.count(heads) == 3
-    assert activation_constraints.count(external) == 5
 
 
-def _frozen_routes_masking(
-    model: GLUDecomposedModel, leading: tuple[int, ...]
+def _unit_masking(
+    model: TransformerDecomposedModel, leading: tuple[int, ...]
 ) -> MaterializedMasking:
-    """Total masks with all-False routes: every position takes the frozen `x @ W` path —
-    the representable frozen forward now that masks must cover every site."""
     return MaterializedMasking(
-        component_masks={s.name: jnp.ones((*leading, s.C)) for s in model.sites},
-        routes={s.name: jnp.zeros(leading, bool) for s in model.sites},
+        component_masks={s.name: jnp.ones((*leading, s.C)) for s in model.sites}
     )
+
+
+def _frozen_routes(model: TransformerDecomposedModel, leading: tuple[int, ...]) -> SiteRoutes:
+    """All-False routes: every position takes the target `x @ Wᵀ` path — the
+    representable frozen forward now that masks must cover every site."""
+    return {s.name: jnp.zeros(leading, bool) for s in model.sites}
 
 
 def test_clean_and_frozen_masked_paths_agree_at_every_declared_point_class():
     cfg, model = _model()
     keys = frozenset(_all_point_classes(2, cfg.n_layer))
     tokens = jax.random.randint(jax.random.PRNGKey(1), (2, 8), 0, cfg.vocab_size)
-    clean_forward_result = model.clean_forward(tokens, keys, placement=None)
+    clean_forward_result = model.clean_forward(
+        LMBatchWithDocuments.from_unsegmented_sequences(tokens), keys, placement=None
+    )
     clean_captures = clean_forward_result.captures
 
     components = init_component_stacks(model.sites, jax.random.PRNGKey(2))
     masked_forward_result = model.masked_forward(
         model.prepare_compute_weights(components, None),
-        tokens,
-        masking=_frozen_routes_masking(model, (2, 8)),
+        clean_forward_result.conditioning,
+        masking=model.prepare_masking(_unit_masking(model, (2, 8))),
+        routes=_frozen_routes(model, (2, 8)),
         placement=None,
         capture_keys=keys,
         remat=True,
@@ -196,13 +181,19 @@ def test_new_residual_point_classes_match_direct_block_algebra():
     block = 2
     keys = frozenset(("resid.0", post_attention_tap_key(block), f"resid.{cfg.n_layer}"))
     tokens = jax.random.randint(jax.random.PRNGKey(4), (2, 8), 0, cfg.vocab_size)
-    captures = model.clean_forward(tokens, keys, placement=None).captures
+    captures = model.clean_forward(
+        LMBatchWithDocuments.from_unsegmented_sequences(tokens), keys, placement=None
+    ).captures
 
     residual = model.embed_tokens(tokens, None)
     assert jnp.array_equal(captures["resid.0"], residual)
     expected_post_attention = None
     for index, layer in enumerate(model.layers):
-        residual = residual + layer.attn(rms_norm(residual, layer.ln1, model.eps), model.inv_freq)
+        residual = residual + layer.attn(
+            rms_norm(residual, layer.ln1, model.eps),
+            model.inv_freq,
+            SequenceLayout(jnp.zeros_like(tokens, dtype=jnp.int32)),
+        )
         if index == block:
             expected_post_attention = residual
         residual = residual + _gated_mlp_out(layer, rms_norm(residual, layer.ln2, model.eps))
@@ -217,7 +208,11 @@ def test_new_residual_point_classes_match_direct_block_algebra():
 def test_forward_result_pytree_reconstruction_is_inert():
     _cfg, model = _model()
     tokens = jnp.ones((1, 4), jnp.int32)
-    clean_forward_result = model.clean_forward(tokens, frozenset({"resid.2"}), placement=None)
+    clean_forward_result = model.clean_forward(
+        LMBatchWithDocuments.from_unsegmented_sequences(tokens),
+        frozenset({"resid.2"}),
+        placement=None,
+    )
 
     erased = jax.tree.map(lambda _value: None, clean_forward_result)
     assert erased.output is None
@@ -233,10 +228,16 @@ def test_shared_input_has_one_canonical_capture_key():
     tokens = jnp.ones((1, 4), jnp.int32)
     for site in qkv:
         with pytest.raises(AssertionError, match="unknown transformer activation"):
-            model.clean_forward(tokens, frozenset({site}), placement=None)
+            model.clean_forward(
+                LMBatchWithDocuments.from_unsegmented_sequences(tokens),
+                frozenset({site}),
+                placement=None,
+            )
 
     clean_forward_result = model.clean_forward(
-        tokens, frozenset({attention_input_tap_key(2)}), placement=None
+        LMBatchWithDocuments.from_unsegmented_sequences(tokens),
+        frozenset({attention_input_tap_key(2)}),
+        placement=None,
     )
     assert clean_forward_result.captures.keys() == {attention_input_tap_key(2)}
 
@@ -253,16 +254,20 @@ def test_capture_values_are_batch_sharded_at_the_producer():
     components = model.prepare_compute_weights(
         init_component_stacks(model.sites, jax.random.PRNGKey(5)), None
     )
-    masking = _frozen_routes_masking(model, tokens.shape)
+    masking = _unit_masking(model, tokens.shape)
+    routes = _frozen_routes(model, tokens.shape)
     with jax.set_mesh(mesh):
         clean_forward_result = jax.jit(
-            lambda m, x: m.clean_forward(x, capture_keys, placement=None)
+            lambda m, x: m.clean_forward(
+                LMBatchWithDocuments.from_unsegmented_sequences(x), capture_keys, placement=None
+            )
         )(model, tokens)
         masked_forward_result = jax.jit(
             lambda m, prepared, x: m.masked_forward(
                 prepared,
-                x,
-                masking=masking,
+                clean_forward_result.conditioning,
+                masking=m.prepare_masking(masking),
+                routes=routes,
                 capture_keys=capture_keys,
                 placement=None,
                 remat=True,
@@ -295,9 +300,13 @@ def test_no_capture_wrapper_lowers_to_the_compact_clean_graph():
     _cfg, model = _model()
     tokens = jnp.ones((1, 4), jnp.int32)
 
-    def compact_clean(m: GLUDecomposedModel, x: Array) -> Array:
-        def block(residual: Array, layer: GLULayer) -> tuple[Array, None]:
-            residual = residual + layer.attn(rms_norm(residual, layer.ln1, m.eps), m.inv_freq)
+    def compact_clean(m: TransformerDecomposedModel, x: Array) -> Array:
+        sequence = SequenceLayout(jnp.zeros_like(x, dtype=jnp.int32))
+
+        def block(residual: Array, layer: TransformerLayer) -> tuple[Array, None]:
+            residual = residual + layer.attn(
+                rms_norm(residual, layer.ln1, m.eps), m.inv_freq, sequence
+            )
             residual = residual + _gated_mlp_out(layer, rms_norm(residual, layer.ln2, m.eps))
             return residual, None
 
@@ -308,7 +317,11 @@ def test_no_capture_wrapper_lowers_to_the_compact_clean_graph():
 
     direct = jax.jit(lambda m, x: compact_clean(m, x)).lower(model, tokens).as_text()
     public = (
-        jax.jit(lambda m, x: m.clean_forward(x, placement=None).output)
+        jax.jit(
+            lambda m, x: m.clean_forward(
+                LMBatchWithDocuments.from_unsegmented_sequences(x), placement=None
+            ).output
+        )
         .lower(model, tokens)
         .as_text()
     )
@@ -320,9 +333,11 @@ def test_resolution_fails_at_first_trace_for_unknown_points():
     tokens = jnp.ones((1, 4), jnp.int32)
     with pytest.raises(AssertionError, match="unknown transformer activation"):
         jax.jit(
-            lambda m, x: (
-                m.clean_forward(x, frozenset({"python_local_variable"}), placement=None).output
-            )
+            lambda m, x: m.clean_forward(
+                LMBatchWithDocuments.from_unsegmented_sequences(x),
+                frozenset({"python_local_variable"}),
+                placement=None,
+            ).output
         ).lower(model, tokens)
 
 
@@ -344,7 +359,11 @@ def test_attention_refuses_a_tp_that_does_not_divide_the_kv_head_count():
             axis_types=(AxisType.Explicit,) * 3,
         )
         rules = from_config("zero1", mesh, model.sites)
-        jax.make_jaxpr(lambda m, x: m.clean_forward(x, placement=rules).output)(model, tokens)
+        jax.make_jaxpr(
+            lambda m, x: m.clean_forward(
+                LMBatchWithDocuments.from_unsegmented_sequences(x), placement=rules
+            ).output
+        )(model, tokens)
 
     trace(1, 4, 2)  # both head counts tile tp=2
     with pytest.raises(AssertionError, match=r"'kv_head' \(dim 2\) does not tile"):

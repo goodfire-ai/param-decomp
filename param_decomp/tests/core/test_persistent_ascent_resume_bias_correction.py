@@ -1,5 +1,5 @@
 """The first post-resume persistent ascent must apply Adam bias-correction at count
-N+1, not reset to 1 (SPEC S22/S13/S15/S23; EDGES E13).
+N+1, not reset to 1 (EDGES E13).
 
 `SourcesAdamState.step_count` is an fp32 scalar incremented +1.0 per ascent
 (`sources_adam_ascend_project`) and round-trips through the checkpoint. torch keeps
@@ -24,12 +24,12 @@ from param_decomp.core.adversary import (
     init_sources_adam_state,
     sources_adam_ascend_project,
 )
-from param_decomp.core.components import Dense, SiteSpec, site_slots_for
+from param_decomp.core.components import DenseFactorization, SiteSpec, site_stack_indices_for
 from param_decomp.core.configs import AdamPGDConfig
 from param_decomp.core.schedule import ScheduleConfig
 
-SITE_SLOTS = site_slots_for(
-    (SiteSpec(name="site", factorization=Dense(d_in=2, d_out=2, C=2), group="g"),)
+SITE_SLOTS = site_stack_indices_for(
+    (SiteSpec(name="site", factorization=DenseFactorization(d_in=2, d_out=2, C=2), group="g"),)
 )
 
 
@@ -41,7 +41,7 @@ def _stacks(components: jax.Array, delta: jax.Array) -> SourceStacks:
     """The one-site stacks: a single slot over the `[2, C=2]` components and `[2]` delta."""
     return SourceStacks(
         stacks={"g": SourceStack(components=components[None], delta=delta[None])},
-        site_slots=SITE_SLOTS,
+        site_stack_indices=SITE_SLOTS,
     )
 
 
@@ -90,7 +90,7 @@ def test_first_post_resume_ascent_uses_count_n_plus_1():
     # Resumed: round-trip the post-N Adam state through the checkpoint, then run the
     # (N+1)th ascent from the SAME sources/grad.
     resumed_state = _roundtrip(adam_state_n)
-    assert float(resumed_state.step_count) == float(n)  # SPEC S22: count N survives resume
+    assert float(resumed_state.step_count) == float(n)  # count N survives resume
     resumed_next, resumed_state_n1 = sources_adam_ascend_project(
         sources_n, _grad_for_ascent(n), resumed_state, lr, adam
     )

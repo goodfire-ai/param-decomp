@@ -6,7 +6,7 @@ contiguous-MLP-only `llama_decomposed_lm`). This test rebuilds the identical mod
 the per-site representation and checks, for the same MLP-family site set:
 
   * clean output / per-site INPUTS (requested by target-owned canonical activation keys) /
-    `weight_deltas` / `masked_output` — to a portable fp32 reassociation tolerance (SPEC D4),
+    `weight_deltas` / `masked_output` — to a portable fp32 reassociation tolerance,
     not bit-exact: float32 matmul reduction order differs across CPU microarchitectures, so
     the same op sequence diverges by ~1 ULP between the fixture-generating host and a given
     CI runner (`ubuntu-latest` is a heterogeneous pool). These pins are CI-fn-INDEPENDENT —
@@ -26,24 +26,27 @@ import numpy as np
 import pytest
 
 from param_decomp.core.components import ComponentStacks, component_stacks_from_sites
-from param_decomp.core.model import site_weight_delta
+from param_decomp.core.model import MaterializedMasking, site_weight_delta
+from param_decomp.lm.batch import LMBatchWithDocuments
 from param_decomp.target_ports.llama import llama3_inv_freq
-from param_decomp.targets.glu_transformer import (
-    FrozenAttn,
-    GatedMLP,
-    GLUDecomposedModel,
-    GLULayer,
-    build_decomposed_lm,
-    glu_site_specs,
-    mlp_family_site_cs,
-    parse_site_name,
-)
+from param_decomp.targets.lm_output import MaterializedOutputEdge
 from param_decomp.targets.testing import (
     capture_clean,
     materialized_logits,
     run_clean,
     run_masked,
     tiny_glu_cfg,
+)
+from param_decomp.targets.transformer import (
+    GLU_MLP_KINDS,
+    FrozenAttn,
+    GatedMLP,
+    TransformerDecomposedModel,
+    TransformerLayer,
+    build_decomposed_lm,
+    glu_site_specs,
+    mlp_family_site_cs,
+    parse_site_name,
 )
 from param_decomp.targets.transformer_taps import (
     attention_input_tap_key,
@@ -66,7 +69,9 @@ _PENDING_REGEN = pytest.mark.xfail(
 )
 
 
-def _load() -> tuple[dict[str, np.ndarray], GLUDecomposedModel, ComponentStacks, jnp.ndarray]:
+def _load() -> tuple[
+    dict[str, np.ndarray], TransformerDecomposedModel, ComponentStacks, jnp.ndarray
+]:
     assert FIXTURES.exists(), "regenerate via gen_stacked_fixtures.py on the base branch"
     f = dict(np.load(FIXTURES))
     cfg = tiny_glu_cfg()
@@ -78,7 +83,7 @@ def _load() -> tuple[dict[str, np.ndarray], GLUDecomposedModel, ComponentStacks,
         return jnp.asarray(f[key])
 
     layers = [
-        GLULayer(
+        TransformerLayer(
             ln1=a(f"tgt::layers.{i}.ln1"),
             ln2=a(f"tgt::layers.{i}.ln2"),
             attn=FrozenAttn(
@@ -90,9 +95,10 @@ def _load() -> tuple[dict[str, np.ndarray], GLUDecomposedModel, ComponentStacks,
                 cfg.n_kv_head,
                 cfg.head_dim,
                 cfg.n_rep,
-                "auto",
+                "xla",
             ),  # fmt: skip
             mlp=GatedMLP(
+                kinds=GLU_MLP_KINDS,
                 Wg=a(f"tgt::layers.{i}.Wg"),
                 Wu=a(f"tgt::layers.{i}.Wu"),
                 Wd=a(f"tgt::layers.{i}.Wd"),
@@ -109,6 +115,7 @@ def _load() -> tuple[dict[str, np.ndarray], GLUDecomposedModel, ComponentStacks,
         inv_freq=llama3_inv_freq(cfg),
         cfg=cfg,
         sites=sites,
+        output_edge=MaterializedOutputEdge(),
     )
     vu = component_stacks_from_sites(
         {s.name: (a(f"vu::V::{s.name}"), a(f"vu::U::{s.name}")) for s in sites}
@@ -123,7 +130,9 @@ def _assert_close(got: jnp.ndarray, want: np.ndarray, what: str) -> None:
 @_PENDING_REGEN
 def test_clean_output_matches():
     f, model, _vu, resid = _load()
-    clean = materialized_logits(run_clean(model, resid))
+    clean = materialized_logits(
+        run_clean(model, LMBatchWithDocuments.from_unsegmented_sequences(resid))
+    )
     _assert_close(clean, f["out::clean"], "clean logits")
 
 
@@ -146,7 +155,11 @@ def test_site_inputs_and_weight_deltas_match():
                 raise AssertionError(kind)
 
     input_keys = tuple(site_input_key(site) for site in model.site_names)
-    captures = capture_clean(model, resid, tuple(dict.fromkeys(input_keys)))
+    captures = capture_clean(
+        model,
+        LMBatchWithDocuments.from_unsegmented_sequences(resid),
+        tuple(dict.fromkeys(input_keys)),
+    )
     for name, input_key in zip(model.site_names, input_keys, strict=True):
         _assert_close(captures[input_key], f[f"out::site_input::{name}"], f"site_input {name}")
     deltas = model.weight_deltas(vu)
@@ -166,12 +179,10 @@ def test_masked_output_match():
         run_masked(
             model,
             prepared_weights,
-            resid,
-            masks,
-            delta_masks,
-            None,
-            True,
+            LMBatchWithDocuments.from_unsegmented_sequences(resid),
+            MaterializedMasking(component_masks=masks, weight_delta_masks=delta_masks),
             remat=False,
+            routes=None,
         )
     )
     _assert_close(masked_all, f["out::masked_all"], "masked_output (all live)")

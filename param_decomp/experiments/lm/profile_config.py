@@ -10,6 +10,7 @@ from typing import Any, Literal, cast
 import yaml
 
 from param_decomp.experiments.lm.config import LMExperimentConfig
+from param_decomp.targets.transformer_taps import resid_tap_key
 
 ShardingPreset = Literal["owner", "zero1", "ddp"]
 
@@ -34,14 +35,14 @@ class ProfileShape:
     @property
     def run_name(self) -> str:
         return (
-            f"profile-h100-{self.layers}l-b{self.batch_size}-"
+            f"profile-{self.layers}l-b{self.batch_size}-"
             f"r{self.replicate}-f{self.fsdp}-t{self.tp}-"
-            f"semantic-{self.sharding}-adam"
+            f"semantic-{self.sharding}"
         )
 
 
-def _mapping(value: object, path: str) -> dict[str, Any]:
-    assert isinstance(value, dict), f"{path} must be a mapping"
+def _mapping(value: object, path_for_err: str) -> dict[str, Any]:
+    assert isinstance(value, dict), f"{path_for_err} must be a mapping"
     return cast(dict[str, Any], value)
 
 
@@ -51,9 +52,14 @@ def derive_profile(raw: dict[str, Any], shape: ProfileShape) -> dict[str, Any]:
     decomposition = _mapping(derived["decomposition"], "decomposition")
     sites = _mapping(decomposition["sites"], "decomposition.sites")
     layers = _mapping(sites["layers"], "decomposition.sites.layers")
-    assert layers["kind"] == "range", "profile derivation requires a contiguous layer range"
-    assert layers["start"] == 0, "profile derivation currently requires a zero-based layer range"
-    layers["end"] = shape.layers
+    match layers:
+        case {"kind": "all"}:
+            pass
+        case {"kind": "range", "start": 0, "end": end}:
+            assert shape.layers <= end, "profile cannot extend the base layer range"
+        case _:
+            raise AssertionError("profile derivation requires all layers or a zero-based range")
+    sites["layers"] = {"kind": "range", "start": 0, "end": shape.layers}
 
     pd = _mapping(derived["pd"], "pd")
     pd["batch_size"] = shape.batch_size
@@ -61,14 +67,16 @@ def derive_profile(raw: dict[str, Any], shape: ProfileShape) -> dict[str, Any]:
     losses = pd["loss_metrics"]
     assert isinstance(losses, list), "pd.loss_metrics must be a list"
     hidden_reconstructions = [
-        _mapping(loss["hidden_acts_reconstruction"], "hidden_acts_reconstruction")
+        _mapping(auxiliary, "auxiliaries")
         for loss in losses
-        if isinstance(loss, dict) and loss.get("hidden_acts_reconstruction") is not None
+        for auxiliary in _mapping(loss, "loss_metrics").get("auxiliaries", [])
+        if _mapping(auxiliary, "auxiliaries")["name"] == "hidden_acts_reconstruction"
     ]
-    assert len(hidden_reconstructions) == 1, (
-        "canonical profiling config must declare exactly one hidden-acts reconstruction"
-    )
-    hidden_reconstructions[0]["points"] = [f"resid.{layer}" for layer in range(1, shape.layers + 1)]
+    for reconstruction in hidden_reconstructions:
+        reconstruction["comparisons"] = [
+            {"capture": resid_tap_key(layer), "distance": "relative_squared_error"}
+            for layer in range(1, shape.layers + 1)
+        ]
 
     runtime = _mapping(derived["runtime"], "runtime")
     runtime["mesh"] = {"replicate": shape.replicate, "fsdp": shape.fsdp, "tp": shape.tp}

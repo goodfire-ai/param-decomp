@@ -2,7 +2,6 @@
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -10,29 +9,40 @@ from jax.sharding import Mesh
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from param_decomp.core.adversary import Sources, init_fresh_pgd_sources
-from param_decomp.core.ci_fn import PlacedCIFn, evaluate_ci
+from param_decomp.core.ci_fn.interface import CIFn
+from param_decomp.core.ci_fn.runtime import evaluate_ci_from_captures
 from param_decomp.core.components import ComponentStacks, SiteCI, SiteSpec
 from param_decomp.core.decomposed_linear import constrain_component_activation
-from param_decomp.core.jit_util import filter_jit
 from param_decomp.core.losses import reconstruction_loss
-from param_decomp.core.masking import masks_from_sources
+from param_decomp.core.masking import materialize_masking, source_masking
 from param_decomp.core.model import (
     CaptureKeys,
+    ComponentActivations,
     MaterializedMasking,
     PlacedModel,
-    prepare_compute_weights,
     select_captures,
 )
 from param_decomp.core.recon import (
-    OutputOnlyReconstruction,
-    ReconstructionSpec,
-    hidden_acts_capture_keys,
+    AuxiliaryReconstructionSpec,
+    auxiliary_capture_keys,
     reconstruction_observations,
 )
 from param_decomp.core.sharding import batch_shard_leading
 
-type FreshPGDStep[Out, PreparedT] = Callable[
-    [PlacedModel[Out, PreparedT], ComponentStacks, PlacedCIFn, Any, PRNGKeyArray],
+type FreshPGDStep[
+    TargetIn,
+    Out,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+] = Callable[
+    [
+        PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
+        ComponentStacks,
+        CIFn[Conditioning],
+        TargetIn,
+        PRNGKeyArray,
+    ],
     Float[Array, ""],
 ]
 """One batch's fresh-PGD reconstruction scalar. `inputs` is the target's own opaque batch
@@ -45,13 +55,13 @@ class FreshPGDReconEval:
 
     n_steps: int
     step_size: float
-    reconstruction: ReconstructionSpec = OutputOnlyReconstruction()
+    reconstruction: AuxiliaryReconstructionSpec = ()
     name: str = "PGDReconLoss"
     """Output-key suffix; overridden only when the authored metric sets ``name``."""
 
     @property
-    def hidden_acts_capture_keys(self) -> CaptureKeys:
-        return hidden_acts_capture_keys(self.reconstruction)
+    def reconstruction_capture_keys(self) -> CaptureKeys:
+        return auxiliary_capture_keys(self.reconstruction)
 
 
 def fresh_pgd_recon_sources(
@@ -60,14 +70,13 @@ def fresh_pgd_recon_sources(
     leading: tuple[int, ...],
     key: PRNGKeyArray,
     fresh_pgd: FreshPGDReconEval,
-    loss_at_masks: Callable[[dict[str, SiteCI], dict[str, Array]], Array],
+    loss_at_masking: Callable[[MaterializedMasking], Array],
 ) -> Sources:
     """Ascend fresh sources against a caller-owned recon objective."""
     initial_sources = init_fresh_pgd_sources(sites, "random", "c", leading, key)
 
     def loss_at_sources(sources: Sources) -> Array:
-        masks, delta_masks = masks_from_sources(ci_lower, sources)
-        return loss_at_masks(masks, delta_masks)
+        return loss_at_masking(materialize_masking(source_masking(ci_lower, sources)))
 
     def ascend(sources: Sources, _: None) -> tuple[Sources, None]:
         gradients = jax.grad(loss_at_sources)(sources)
@@ -89,42 +98,43 @@ def fresh_pgd_recon_loss(
     leading: tuple[int, ...],
     key: PRNGKeyArray,
     fresh_pgd: FreshPGDReconEval,
-    loss_at_masks: Callable[[dict[str, SiteCI], dict[str, Array]], Array],
+    loss_at_masking: Callable[[MaterializedMasking], Array],
 ) -> Array:
     """Fresh sign-PGD over generic model masks, scored by a caller-owned recon metric."""
-    sources = fresh_pgd_recon_sources(sites, ci_lower, leading, key, fresh_pgd, loss_at_masks)
-    masks, delta_masks = masks_from_sources(ci_lower, sources)
-    return loss_at_masks(masks, delta_masks)
+    sources = fresh_pgd_recon_sources(sites, ci_lower, leading, key, fresh_pgd, loss_at_masking)
+    return loss_at_masking(materialize_masking(source_masking(ci_lower, sources)))
 
 
-def make_fresh_pgd_eval_step[Out, PreparedT](
-    model_static: PlacedModel[Out, PreparedT],
+def make_fresh_pgd_eval_step[
+    TargetIn,
+    Out,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](
+    model_static: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
     fresh_pgd: FreshPGDReconEval,
     ci_capture_keys: CaptureKeys,
     mesh: Mesh | None = None,
-    compiler_options: dict[str, bool | int | str] | None = None,
-) -> FreshPGDStep[Out, PreparedT]:
+) -> FreshPGDStep[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT]:
     """Build fresh-PGD reconstruction eval for any target. Only static topology and the
     target's array-free output operations close over the factory; `model` is the jit ARG."""
-    sites = model_static.sites
+    sites = model_static.model.sites
     recon_loss_fn = model_static.recon_loss_fn
     pin_output_batch = model_static.pin_output_batch
     placement = model_static.placement
-    leading_rank = 2 if model_static.has_position_axis else 1
-    reconstruction_capture_keys = fresh_pgd.hidden_acts_capture_keys
-    model_static.assert_hidden_acts_reconstruction_points(
-        tuple(sorted(reconstruction_capture_keys))
-    )
+    leading_rank = 2 if model_static.model.has_position_axis else 1
+    reconstruction_capture_keys = fresh_pgd.reconstruction_capture_keys
     clean_capture_keys = ci_capture_keys | reconstruction_capture_keys
 
     def shard_batch_tree[T](tree: T) -> T:
         return jax.tree.map(lambda x: batch_shard_leading(x, mesh), tree)
 
     def eval_step(
-        model: PlacedModel[Out, PreparedT],
+        model: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
         components: ComponentStacks,
-        placed_ci_fn: PlacedCIFn,
-        inputs: Any,
+        ci_fn: CIFn[Conditioning],
+        inputs: TargetIn,
         key: PRNGKeyArray,
     ) -> Array:
         sharded_inputs = shard_batch_tree(inputs)
@@ -133,35 +143,40 @@ def make_fresh_pgd_eval_step[Out, PreparedT](
         clean = reconstruction_observations(
             clean_forward_result,
             pin_output_batch,
-            hidden_acts_capture_keys=reconstruction_capture_keys,
+            capture_keys=reconstruction_capture_keys,
             mesh=mesh,
         )
-        leading = next(iter(ci_input_activations.values())).shape[:-1]
-        assert len(leading) == leading_rank, (leading, model_static.has_position_axis)
+        leading = clean_forward_result.leading_shape
+        assert len(leading) == leading_rank, (leading, model_static.model.has_position_axis)
 
-        prepared_weights = prepare_compute_weights(model, components)
+        prepared_weights = model.prepare_compute_weights(components)
         ci_lower = {
-            site: constrain_component_activation(value, placement)
-            for site, value in evaluate_ci(
-                placed_ci_fn, ci_input_activations, remat=False
+            site: constrain_component_activation(
+                value, None if placement is None else placement.activations.component
+            )
+            for site, value in evaluate_ci_from_captures(
+                ci_fn.prepare(),
+                ci_input_activations,
+                clean_forward_result.conditioning,
+                prepared_weights,
+                sequence=clean_forward_result.sequence,
+                remat=False,
             ).lower.items()
         }
 
-        def loss_at_masks(masks: dict[str, SiteCI], delta_masks: dict[str, Array]) -> Array:
+        def loss_at_masking(masking: MaterializedMasking) -> Array:
             masked_forward_result = model.masked_forward(
                 prepared_weights,
-                sharded_inputs,
-                masking=MaterializedMasking(
-                    component_masks=masks,
-                    weight_delta_masks=delta_masks,
-                ),
+                clean_forward_result.conditioning,
+                masking=model.model.prepare_masking(masking),
+                routes=None,
                 capture_keys=reconstruction_capture_keys,
                 remat=False,
             )
             masked = reconstruction_observations(
                 masked_forward_result,
                 pin_output_batch,
-                hidden_acts_capture_keys=reconstruction_capture_keys,
+                capture_keys=reconstruction_capture_keys,
                 mesh=mesh,
             )
             return reconstruction_loss(
@@ -171,6 +186,6 @@ def make_fresh_pgd_eval_step[Out, PreparedT](
                 reconstruction=fresh_pgd.reconstruction,
             ).total
 
-        return fresh_pgd_recon_loss(sites, ci_lower, leading, key, fresh_pgd, loss_at_masks)
+        return fresh_pgd_recon_loss(sites, ci_lower, leading, key, fresh_pgd, loss_at_masking)
 
-    return filter_jit(eval_step, compiler_options=compiler_options)
+    return eval_step

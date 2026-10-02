@@ -14,9 +14,9 @@ arrays, no torch). The reduction steps read the pass-shared CI envelope
 (`experiments/lm/diagnostic_eval_operations.py`); the toys use only the UV figure helpers
 (`render_uv_figure` / `plot_uv_matrices`).
 
-The slow tier runs IN-LOOP on `eval.slow_every` next to the fast pass (`run.py`,
-SPEC S28/S29), reusing the fast pass's eval batches and logging `slow_eval/*` on the live
-`_step` axis from a rank-0 background thread.
+The slow tier runs IN-LOOP on `eval.slow_every` next to the fast pass (`run.py`), reusing the
+fast pass's eval batches. A rank-0 background thread logs `slow_eval/*` on the live
+`_step` axis.
 
 Cross-batch reductions are exact under micro-batching: density/mean accumulate
 SUM-over-positions + a position count, divided once at the end (token-weighted mean,
@@ -59,19 +59,16 @@ from matplotlib.colors import Normalize
 from matplotlib.figure import Figure
 
 from param_decomp.core.base_config import Probability
-from param_decomp.core.ci_fn import (
-    lower_leaky_hard_sigmoid,
-    upper_leaky_hard_sigmoid,
-)
+from param_decomp.core.ci_fn.squashing import lower_leaky_hard_sigmoid, upper_leaky_hard_sigmoid
 from param_decomp.core.components import (
-    ExpertBlocked,
-    NarrowCI,
+    BlockedFactorization,
+    SelectedCI,
     SiteCI,
     SiteSpec,
+    block_selection_counts,
     map_site_ci,
-    narrow_component_sums,
-    narrow_routed_counts,
     require_full_emission,
+    selected_component_sums,
     site_ci_leading,
     site_ci_values,
 )
@@ -82,7 +79,6 @@ from param_decomp.core.configs import (
     PermutedCIPlotsConfig,
     UVPlotsConfig,
 )
-from param_decomp.core.jit_util import filter_jit
 
 IDENTITY_CI_ERROR_TOLERANCE = 0.1
 """Torch `IdentityCIPattern.distance_from` / `compute_target_metrics` default tolerance —
@@ -170,12 +166,12 @@ def _count_ge(values: Array, edges: Array) -> Array:
     return (values[..., None] >= edges).sum(tuple(range(values.ndim)))
 
 
-def _binned_values(values: Array, n_bins: int) -> BinnedValues:
+def _binned_values(values: SiteCI, n_bins: int) -> BinnedValues:
     """`ax.hist(values, bins=n_bins)` as a device reduction, the data's own min/max as the
     outer edges. fp32 throughout: the values are bf16, and matplotlib would have upcast
     them before binning. No reshape: `_count_ge` reduces over every axis, and a flatten
     of the (possibly dp-sharded) leading axes has no explicit-sharding rule to lean on."""
-    v = values.astype(jnp.float32)
+    v = site_ci_values(values).astype(jnp.float32)
     lo, hi = v.min(), v.max()
     edges = jnp.linspace(lo, hi, n_bins + 1)
     # Bin b is [e_b, e_{b+1}), the last closed at hi (numpy's convention): every value
@@ -187,7 +183,7 @@ def _binned_values(values: Array, n_bins: int) -> BinnedValues:
 
 
 def _to_value_histogram(binned: BinnedValues) -> ValueHistogram:
-    """All three are reductions over the dp-sharded batch axis, hence replicated: a bare
+    """All three reduce every distributed value axis and are replicated: a bare
     `np.asarray` is addressable on every process, no `process_allgather` needed."""
     counts, lo, hi = binned
     return ValueHistogram(counts=np.asarray(counts), lo=float(lo), hi=float(hi))
@@ -195,24 +191,25 @@ def _to_value_histogram(binned: BinnedValues) -> ValueHistogram:
 
 def _per_component_alive_counts(value: SiteCI, threshold: Probability) -> Array:
     """Per-component counts of positions whose CI is strictly above `threshold`, over
-    every leading axis — exact for EVERY threshold on both emissions: a narrow site's
-    unrouted (position, component) pairs have CI exactly 0.0 by definition, so each
-    contributes the analytic `[threshold < 0.0]` (the `psi(0)` move of the narrow loss
-    spellings); a component of expert `e` has `n_positions − routed_positions(e)` of
-    them. The same term `ci_l0_eval.alive_component_counts` adds per position, so the
-    two L0 readouts agree at every threshold."""
+    every leading axis — exact for EVERY threshold on both emissions: a selected-emitting
+    site's unselected (position, component) pairs have CI exactly 0.0 by definition, so
+    each contributes the analytic `[threshold < 0.0]` (the `psi(0)` move of the
+    selected-emission loss spellings); a component of block `e` has
+    `n_positions − selected_positions(e)` of them. The same term
+    `ci_l0_eval.alive_component_counts` adds per position, so the two L0 readouts agree
+    at every threshold."""
 
     def alive(v: Array) -> Array:
         return (v > threshold).astype(jnp.float32)
 
     match value:
-        case NarrowCI():
-            routed = narrow_component_sums(value, alive(value.values.astype(jnp.float32)))
+        case SelectedCI():
+            selected = selected_component_sums(value, alive(value.values.astype(jnp.float32)))
             n_positions = math.prod(site_ci_leading(value))
-            unrouted_positions = jnp.repeat(
-                n_positions - narrow_routed_counts(value), value.c_per_expert
+            unselected_positions = jnp.repeat(
+                n_positions - block_selection_counts(value), value.c_per_block
             )
-            return routed + unrouted_positions * float(threshold < 0.0)
+            return selected + unselected_positions * float(threshold < 0.0)
         case jax.Array():
             return _per_component_sums(value, alive)
 
@@ -220,11 +217,11 @@ def _per_component_alive_counts(value: SiteCI, threshold: Probability) -> Array:
 def _per_component_sums(value: SiteCI, pointwise: Callable[[Array], Array]) -> Array:
     """One site's per-component fp32 sums of a pointwise readout, over every leading
     axis — the full arm sums the leading axes in place (no flatten: the dp-sharded lead
-    keeps its spec); the narrow arm scatter-sums the routed values (exact wherever
+    keeps its spec); the selected arm scatter-sums the selected values (exact wherever
     `pointwise(0) == 0`, which both callers satisfy)."""
     match value:
-        case NarrowCI():
-            return narrow_component_sums(value, pointwise(value.values.astype(jnp.float32)))
+        case SelectedCI():
+            return selected_component_sums(value, pointwise(value.values.astype(jnp.float32)))
         case jax.Array():
             v = pointwise(value.astype(jnp.float32))
             return v.sum(axis=tuple(range(v.ndim - 1)))
@@ -255,7 +252,6 @@ def make_ci_reduction_step(
     ci_alive_threshold: Probability,
     density_heatmap_n_bins: int | None,
     value_histogram_n_bins: int | None,
-    compiler_options: dict[str, bool | int | str] | None = None,
 ) -> CIReductionStep:
     """Build the jit'd per-batch reduction `ci_reduction_step(ci_preactivations) ->
     ({site: density_counts}, {site: ci_sums}, n_positions, {site: binned lower},
@@ -287,31 +283,26 @@ def make_ci_reduction_step(
         lower = {s: map_site_ci(lower_leaky_hard_sigmoid, preactivations[s]) for s in site_names}
 
         # Per-component accumulators stay FULL [C] (they feed cross-batch means aligned
-        # against V/U): a narrow site scatters its routed values and prices its unrouted
-        # pairs analytically (CI exactly 0: a 0 summand, `[threshold < 0]` alive each).
+        # against V/U): a selected-emitting site scatters its selected values and prices
+        # its unselected pairs analytically (CI exactly 0: a 0 summand, `[threshold < 0]`
+        # alive each).
         density_counts = {
             s: _per_component_alive_counts(lower[s], ci_alive_threshold) for s in site_names
         }
         ci_sums = {s: _per_component_sums(lower[s], lambda v: v) for s in site_names}
         n_positions = jnp.asarray(math.prod(site_ci_leading(lower[site_names[0]])), jnp.int32)
-        # Value histograms bin the ROUTED values on a narrow site — the unrouted head
-        # outputs a full-width fn would histogram don't exist. Interpretation shift, no
-        # breakage.
+        # Value histograms bin the SELECTED values on a selected-emitting site — the
+        # unselected head outputs a full-width fn would histogram don't exist.
+        # Interpretation shift, no breakage.
         binned_lower = (
             {}
             if value_histogram_n_bins is None
-            else {
-                s: _binned_values(site_ci_values(lower[s]), value_histogram_n_bins)
-                for s in site_names
-            }
+            else {s: _binned_values(lower[s], value_histogram_n_bins) for s in site_names}
         )
         binned_preactivations = (
             {}
             if value_histogram_n_bins is None
-            else {
-                s: _binned_values(site_ci_values(preactivations[s]), value_histogram_n_bins)
-                for s in site_names
-            }
+            else {s: _binned_values(preactivations[s], value_histogram_n_bins) for s in site_names}
         )
         density_hist = (
             {
@@ -330,7 +321,7 @@ def make_ci_reduction_step(
             density_hist,
         )
 
-    return filter_jit(ci_reduction_step, compiler_options=compiler_options)
+    return ci_reduction_step
 
 
 @dataclass(frozen=True)
@@ -418,9 +409,7 @@ the per-batch CI summed over the batch leading axis, position axis kept. Pairs w
 `fold_position_ci` to form a batch-mean `(T, C)` CI matrix per site."""
 
 
-def make_position_ci_step(
-    compiler_options: dict[str, bool | int | str] | None = None,
-) -> PositionCIStep:
+def make_position_ci_step() -> PositionCIStep:
     """Per-batch CI reduction that KEEPS the position axis (the `(T, C)` matrix the
     permutation/heatmap metrics plot), summing only over the batch leading axis, over the
     shared context's compute-precision CI preactivations. LM-only: CI is `(B, T, C)`."""
@@ -430,9 +419,9 @@ def make_position_ci_step(
     ) -> tuple[dict[str, Array], dict[str, Array], Array]:
         site_names = tuple(compute_preactivations)
         # fp32 squash of the compute-precision preactivations — see make_ci_reduction_step.
-        # `(T, 131k)` per site is out of reach regardless of emission, and the narrow slot
-        # axis means a different component at every (b, t): the opt-in position-CI metrics
-        # refuse narrow sites (enumerated arm).
+        # `(T, 131k)` per site is out of reach regardless of emission, and the pick axis
+        # means a different component at every (b, t): the opt-in position-CI
+        # metrics refuse selected-emitting sites (enumerated arm).
         preactivations = {
             s: require_full_emission(compute_preactivations[s]).astype(jnp.float32)
             for s in site_names
@@ -446,7 +435,7 @@ def make_position_ci_step(
         upper_sum = {s: upper[s].sum(0) for s in site_names}
         return lower_sum, upper_sum, n_batch
 
-    return filter_jit(position_ci_step, compiler_options=compiler_options)
+    return position_ci_step
 
 
 @dataclass(frozen=True)
@@ -702,14 +691,14 @@ def plot_component_activation_density(densities: dict[str, np.ndarray], bins: in
 
 
 def component_group_counts(sites: tuple[SiteSpec, ...]) -> dict[str, int]:
-    """Sites whose components come in GROUPS (an expert-blocked factorization), as
+    """Sites whose components come in GROUPS (a block factorization), as
     `{site: n_groups}`. Flat C is group-major, so a per-component `(C,)` vector
     reshapes `(n_groups, C // n_groups)` losslessly — the figure layer's one source
     for group structure; analysis code never does index arithmetic."""
     return {
-        site.name: site.factorization.n_experts
+        site.name: site.factorization.n_blocks
         for site in sites
-        if isinstance(site.factorization, ExpertBlocked)
+        if isinstance(site.factorization, BlockedFactorization)
     }
 
 

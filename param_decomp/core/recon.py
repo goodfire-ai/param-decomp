@@ -1,28 +1,29 @@
 """Recon terms for the VPD objective.
 
-A recon term is one forward family over ALL the model's sites: a routing sampler (which
-sites' masks apply at each position, per draw) crossed with a mask-source strategy. This
-module knows nothing about the objective's faithfulness or importance terms; `objective.py`
-composes those with the recon terms into the complete loss surface.
+A recon term is one forward over ALL the model's sites: a routing sampler (which sites'
+masks apply at each position) crossed with a mask-source strategy. This module knows
+nothing about the objective's faithfulness or importance terms; `objective.py` composes
+those with the recon terms into the complete loss surface.
 """
 
 from collections.abc import Callable
 from dataclasses import dataclass
 
+import equinox as eqx
 import jax
 from jax import random
 from jax.sharding import Mesh
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Float32, PRNGKeyArray
 
 from param_decomp.core.configs import (
     AllRoutingConfig,
-    HiddenActsReconstruction,
-    LossCoeff,
+    AuxiliaryReconstructionConfig,
+    BatchSourceShape,
+    CaptureReconstruction,
     MergedStochasticSubsetPooledPPGDReconLossConfig,
     MergedStochasticSubsetPPGDReconLossConfig,
     PersistentPGDReconLossConfig,
     PGDInitStrategy,
-    SourceShape,
     StaticProbabilityRoutingConfig,
     SubsetRoutingType,
     UniformKSubsetRoutingConfig,
@@ -30,19 +31,13 @@ from param_decomp.core.configs import (
 from param_decomp.core.model import (
     CaptureKeys,
     ForwardResult,
+    SiteRoutes,
     select_captures,
 )
+from param_decomp.core.runtime_schedule import RuntimeSchedule
 
-Routes = dict[str, Array] | None
-RoutingSampler = Callable[[PRNGKeyArray, tuple[int, ...]], tuple[Routes, ...]]
-"""`(key, leading_shape) -> (routes, ...)` — a STATICALLY-sized family of routing draws,
-each `{site: bool[*leading]}` (or None = route everywhere) becoming ONE forward. The torch
-`Router.get_masks` made pure: fresh draws per step require the key threaded in —
-samplers run INSIDE the jitted step, so they must be traceable (SPEC R1). Returning
-several draws from one invocation enables JOINTLY-sampled families (independent
-repeats, antithetic/complementary subsets, per-step random covers) that independent
-per-draw keys alone cannot express. The term's structure — sampler identity, family
-size, strategy kind — is static; only the key varies per step."""
+Routes = SiteRoutes | None
+type RoutingSampler = UniformKRouting | StaticProbabilityRouting | AllRouting
 
 
 # ───────────────────────────── mask-source strategies ─────────────────────────────
@@ -50,24 +45,23 @@ size, strategy kind — is static; only the key varies per step."""
 
 @dataclass(frozen=True)
 class StochasticSources:
-    """Fresh per-draw sources: components `U[0,1]`, delta `U[0,1]`."""
+    """Fresh sources each step: components `U[0,1]`, delta `U[0,1]`."""
 
 
 @dataclass(frozen=True)
 class ConstantSources:
-    """`mask = ci + (1-ci)*value`: 0.0 = CI-masked, 1.0 = unmasked. `delta_mask = 0`
-    (torch passes no delta path at all for these; multiplying by zero is
-    mathematically identical, it just pays the delta matmul)."""
+    """`mask = ci + (1-ci)*value`: 0.0 = CI-masked, 1.0 = unmasked. No delta
+    (LOSS_PARITY_DESIGN §4b)."""
 
     value: float
 
 
 @dataclass(frozen=True)
 class UnmaskedNoDeltaSources:
-    """Every component mask `1.0`, every weight-delta mask `0.0` — the full component sum
-    alone reconstructs. The tPD non-target pass's one delta-OFF arm (SPEC T4's enumerated
-    exception): the polarity rides this type, never a flag on the delta-pinned strategies.
-    Deterministic — no sources are drawn."""
+    """Non-target reconstruction using all components and no weight delta.
+
+    Component masks are 1 and there is no delta. Delta polarity is carried by this
+    type, not by a flag on the delta-on strategies."""
 
 
 @dataclass(frozen=True)
@@ -75,20 +69,20 @@ class FreshPGDSources:
     """Per-step sign-PGD-ascended sources (torch `PGDRecon*` as TRAINING losses): init
     per `init`, `n_steps` of `step_size * sign(grad)` with clamp to [0,1], no state
     across steps. The entry's routing is drawn ONCE per step and shared by every
-    ascent and the final loss forward (SPEC S24, torch parity)."""
+    ascent and the final loss forward (torch parity)."""
 
     init: PGDInitStrategy
     n_steps: int
     step_size: float
-    source_shape: SourceShape
+    source_shape: BatchSourceShape
 
 
 @dataclass(frozen=True)
 class PersistentSources:
-    """Sources living in `TrainState.adversaries[state_key]` across steps (PPGD). Carries
+    """Sources living in `state.training.adversaries[state_key]` across steps (PPGD). Carries
     the shared `PersistentPGDReconLossConfig` so the term is self-describing — the step
     reads its scope/optimizer/warmup straight off `cfg`. `state_key` indexes
-    `TrainState.adversaries` (one key per persistent term, SPEC S23)."""
+    `state.training.adversaries` (one key per persistent term)."""
 
     state_key: str
     cfg: PersistentPGDReconLossConfig
@@ -98,7 +92,7 @@ class PersistentSources:
 class MixedPersistentStochasticSources:
     """The merged stochastic+PPGD strategy: per batch element, the persistent bundle's
     sources (probability `cfg.adv_fraction`, routed all-live) or fresh `U[0,1]` (routed
-    per the entry's sampler). `state_key` indexes `TrainState.adversaries` like
+    per the entry's sampler). `state_key` indexes `state.training.adversaries` like
     `PersistentSources`."""
 
     state_key: str
@@ -107,11 +101,10 @@ class MixedPersistentStochasticSources:
 
 @dataclass(frozen=True)
 class PersistentSourcePool:
-    """A persistent pool whose rows are cross-site adversarial particles.
+    """One persistent minipool of cross-site particles per batch index.
 
-    Each row supplies one component vector per site. Consumers sample one row per batch
-    element and apply it at every position; ``state_key`` indexes the pool in
-    ``TrainState.adversaries``.
+    Each batch element samples from its own particles and shares the draw across
+    sites and positions. ``state_key`` identifies the stored pool and optimizer.
     """
 
     state_key: str
@@ -130,24 +123,22 @@ MaskSourceStrategy = (
 
 
 @dataclass(frozen=True)
-class OutputOnlyReconstruction:
-    """A reconstruction specification that compares only the model output."""
+class AuxiliaryReconstruction:
+    name: str
+    coeff: Float32[Array, ""] | float
+    comparisons: tuple[CaptureReconstruction, ...]
 
 
-@dataclass(frozen=True)
-class OutputAndHiddenActsReconstruction:
-    """A reconstruction specification that also compares named hidden activations.
+class AuxiliaryReconstructionTerm(eqx.Module):
+    name: str = eqx.field(static=True)
+    coeff: RuntimeSchedule
+    comparisons: tuple[CaptureReconstruction, ...] = eqx.field(static=True)
 
-    Value-level: `coeff` is the hidden-activation reconstruction strength AT one step —
-    a literal for static contexts (eval probes), a traced scalar when the step resolved a schedule
-    (`losses.reconstruction_spec_at`) — never a schedule object, so the loss math
-    downstream stays step-blind."""
-
-    coeff: Float[Array, ""] | float
-    points: tuple[str, ...]
+    def at(self, train_frac: Float32[Array, ""]) -> AuxiliaryReconstruction:
+        return AuxiliaryReconstruction(self.name, self.coeff.at(train_frac), self.comparisons)
 
 
-type ReconstructionSpec = OutputOnlyReconstruction | OutputAndHiddenActsReconstruction
+type AuxiliaryReconstructionSpec = tuple[AuxiliaryReconstruction, ...]
 
 
 @jax.tree_util.register_dataclass
@@ -156,155 +147,121 @@ class ForwardObservations[Out]:
     """The output and named activations one reconstruction comparison consumes."""
 
     output: Out
-    hidden_acts_by_point: dict[str, Array]
+    captures: dict[str, Array]
 
 
-def reconstruction_observations[Out](
-    result: ForwardResult[Out],
+def reconstruction_observations[Out, Conditioning](
+    result: ForwardResult[Out, Conditioning],
     pin_output_batch: Callable[[Out, Mesh | None], Out],
     *,
-    hidden_acts_capture_keys: CaptureKeys,
+    capture_keys: CaptureKeys,
     mesh: Mesh | None,
 ) -> ForwardObservations[Out]:
     """Convert one forward result into the exact view a reconstruction consumes;
     `pin_output_batch` is the target's (`DecomposedModel.pin_output_batch`)."""
     return ForwardObservations(
         pin_output_batch(result.output, mesh),
-        select_captures(result.captures, hidden_acts_capture_keys),
+        select_captures(result.captures, capture_keys),
     )
 
 
-def resolve_reconstruction_spec(
-    hidden_acts_reconstruction: HiddenActsReconstruction | None,
-) -> ReconstructionSpec:
-    """Resolve the authored optional into one explicit reconstruction specification —
-    STATIC contexts only (eval probes): a scheduled hidden-activation reconstruction
-    coefficient needs the step threaded
-    in (`losses.reconstruction_spec_at`), which an eval probe deliberately lacks."""
-    if hidden_acts_reconstruction is None:
-        return OutputOnlyReconstruction()
-    coeff = hidden_acts_reconstruction.coeff
-    assert isinstance(coeff, float), (
-        "an eval probe's hidden-activation reconstruction coeff must be a constant "
-        f"float, got {coeff}"
+def resolve_auxiliary_reconstruction(
+    configs: tuple[AuxiliaryReconstructionConfig, ...],
+) -> AuxiliaryReconstructionSpec:
+    """Resolve constant eval coefficients; schedules require a training step."""
+    auxiliaries: list[AuxiliaryReconstruction] = []
+    for config in configs:
+        assert isinstance(config.coeff, float), (
+            "an eval probe's auxiliary coeff must be a constant float"
+        )
+        auxiliaries.append(AuxiliaryReconstruction(config.name, config.coeff, config.comparisons))
+    return tuple(auxiliaries)
+
+
+def auxiliary_capture_keys(reconstruction: AuxiliaryReconstructionSpec) -> CaptureKeys:
+    return frozenset(
+        comparison.capture for auxiliary in reconstruction for comparison in auxiliary.comparisons
     )
-    return OutputAndHiddenActsReconstruction(coeff, hidden_acts_reconstruction.points)
 
 
-def hidden_acts_capture_keys(reconstruction: ReconstructionSpec) -> CaptureKeys:
-    """Return the hidden activations required before evaluating this specification."""
-    match reconstruction:
-        case OutputOnlyReconstruction():
-            return frozenset()
-        case OutputAndHiddenActsReconstruction(points=points):
-            return frozenset(points)
+class ReconLossTerm[SourcesT: MaskSourceStrategy](eqx.Module):
+    """One weighted reconstruction term with one masked forward per training step.
 
+    `sample_routing` selects sites per position; `sources` supplies mask values.
+    The target model defines the output comparison, and `auxiliaries` adds named
+    activation comparisons. Coefficients are resolved from schedules in the step.
+    `SourcesT` restricts the allowed strategies, and `name` gives the `loss/<name>`
+    metric key."""
 
-@dataclass(frozen=True)
-class ReconLossTerm[SourcesT: MaskSourceStrategy]:
-    """One coefficiented recon loss: mean over its routing draws of `kl_per_position`
-    (SPEC S10'). Every draw runs all sites decomposed; `sample_routing` produces the
-    term's statically-sized family of draws and `sources` generates each draw's
-    mask/delta sources. `SourcesT` narrows which strategies a term can carry — the tPD
-    non-target pass admits only the enumerated non-target strategies IN THE TYPE (SPEC
-    T5). `name` is the config's `instance_key` — the metric log key is `loss/<name>`.
-    `coeff` and the S35 hidden-activation reconstruction coeff may be schedules, so the
-    term stays a static description; the step resolves both to per-step values (`losses.coeff_at` /
-    `losses.reconstruction_spec_at`)."""
-
-    name: str
-    coeff: LossCoeff
-    sample_routing: RoutingSampler
-    sources: SourcesT
-    hidden_acts_reconstruction: HiddenActsReconstruction | None
+    name: str = eqx.field(static=True)
+    coeff: RuntimeSchedule
+    sample_routing: RoutingSampler = eqx.field(static=True)
+    sources: SourcesT = eqx.field(static=True)
+    auxiliaries: tuple[AuxiliaryReconstructionTerm, ...]
 
     @property
-    def uses_weight_deltas(self) -> bool:
-        """`ConstantSources` carries no delta path (torch passes no `weight_deltas` for the
-        Unmasked/CIMasked losses); its `delta_mask` would be a constant 0, so the `x @ Δ`
-        matmul is skipped entirely (static, retrace-safe — LOSS_PARITY_DESIGN §4b).
-        `UnmaskedNoDeltaSources` carries a materialized delta mask pinned to 0 (SPEC T4's
-        exception); every other strategy drives a live delta mask."""
-        return not isinstance(self.sources, ConstantSources)
-
-    @property
-    def hidden_acts_capture_keys(self) -> CaptureKeys:
-        match self.hidden_acts_reconstruction:
-            case None:
-                return frozenset()
-            case HiddenActsReconstruction(points=points):
-                return frozenset(points)
+    def capture_keys(self) -> CaptureKeys:
+        return frozenset(
+            comparison.capture
+            for auxiliary in self.auxiliaries
+            for comparison in auxiliary.comparisons
+        )
 
 
 AnyReconLossTerm = ReconLossTerm[MaskSourceStrategy]
-"""The width-erased term — what heterogeneous storage (the plain objective and ``ReconGrid``) holds. Machinery that must preserve a narrower width is generic over `SourcesT` instead
-(dataclass type params are invariant on 3.13: the synthesized `__replace__` puts them in
-parameter position)."""
+"""A reconstruction term with any admitted source strategy."""
 
 
 # ───────────────────────────── routing samplers ─────────────────────────────
 
 
-def uniform_k_subset_routes(
-    key: PRNGKeyArray, sites: tuple[str, ...], leading_shape: tuple[int, ...]
-) -> dict[str, Array]:
-    """Per position: `k ~ U{1..|sites|}`, then a uniform k-subset of the sites
-    routes True (SPEC S11). Distributionally identical to torch's double-argsort ranks."""
-    n_sites = len(sites)
-    k_key, perm_key = random.split(key)
-    k = random.randint(k_key, leading_shape, 1, n_sites + 1)
-    perms = random.uniform(perm_key, (n_sites, *leading_shape)).argsort(axis=0)
-    routed = perms < k
-    return {name: routed[j] for j, name in enumerate(sites)}
+@dataclass(frozen=True)
+class UniformKRouting:
+    """Draw a uniform nonempty subset of sites independently at each position."""
+
+    sites: tuple[str, ...]
+
+    def __call__(self, key: PRNGKeyArray, leading_shape: tuple[int, ...]) -> Routes:
+        n_sites = len(self.sites)
+        k_key, perm_key = random.split(key)
+        k = random.randint(k_key, leading_shape, 1, n_sites + 1)
+        perms = random.uniform(perm_key, (n_sites, *leading_shape)).argsort(axis=0)
+        routed = perms < k
+        return {name: routed[j] for j, name in enumerate(self.sites)}
 
 
-def uniform_k_routing(sites: tuple[str, ...], n_draws: int) -> RoutingSampler:
-    """`n_draws` independent per-position uniform-k-subset draws over `sites`."""
+@dataclass(frozen=True)
+class StaticProbabilityRouting:
+    """Route each position to each site independently with probability `p`."""
 
-    def sample(key: PRNGKeyArray, leading_shape: tuple[int, ...]) -> tuple[Routes, ...]:
-        return tuple(
-            uniform_k_subset_routes(draw_key, sites, leading_shape)
-            for draw_key in random.split(key, n_draws)
-        )
+    sites: tuple[str, ...]
+    p: float
 
-    return sample
-
-
-def static_probability_routing(sites: tuple[str, ...], p: float, n_draws: int) -> RoutingSampler:
-    """`n_draws` independent draws routing each position to each site with
-    probability `p` (torch `StaticProbabilityRouter`)."""
-
-    def sample(key: PRNGKeyArray, leading_shape: tuple[int, ...]) -> tuple[Routes, ...]:
-        return tuple(
-            {
-                name: random.bernoulli(random.fold_in(draw_key, j), p, leading_shape)
-                for j, name in enumerate(sites)
-            }
-            for draw_key in random.split(key, n_draws)
-        )
-
-    return sample
+    def __call__(self, key: PRNGKeyArray, leading_shape: tuple[int, ...]) -> Routes:
+        return {
+            name: random.bernoulli(random.fold_in(key, j), self.p, leading_shape)
+            for j, name in enumerate(self.sites)
+        }
 
 
-def route_all_n(n_draws: int) -> RoutingSampler:
-    """`n_draws` forwards, each routing every position to every site (`AllRoutingConfig`)."""
+@dataclass(frozen=True)
+class AllRouting:
+    """Route every position to every site."""
 
-    def sample(_key: PRNGKeyArray, _leading_shape: tuple[int, ...]) -> tuple[Routes, ...]:
-        return (None,) * n_draws
-
-    return sample
+    def __call__(self, key: PRNGKeyArray, leading_shape: tuple[int, ...]) -> Routes:
+        return None
 
 
 def routing_sampler_from_config(
-    routing: SubsetRoutingType, sites: tuple[str, ...], n_draws: int
+    routing: SubsetRoutingType, sites: tuple[str, ...]
 ) -> RoutingSampler:
     match routing:
         case UniformKSubsetRoutingConfig():
-            return uniform_k_routing(sites, n_draws)
+            return UniformKRouting(sites)
         case StaticProbabilityRoutingConfig():
-            return static_probability_routing(sites, routing.p, n_draws)
+            return StaticProbabilityRouting(sites, routing.p)
         case AllRoutingConfig():
-            return route_all_n(n_draws)
+            return AllRouting()
 
 
 # ───────────────────────────── shared-config -> flat terms ─────────────────────────────
@@ -326,7 +283,7 @@ PERSISTENT_SOURCE_TYPES = (
 def persistent_configs(
     recon_terms: tuple[AnyReconLossTerm, ...],
 ) -> dict[str, AnyPersistentLossConfig]:
-    """``state_key -> config`` for every persistent-source-carrying recon term (S23)."""
+    """``state_key -> config`` for every persistent-source-carrying recon term."""
     out: dict[str, AnyPersistentLossConfig] = {}
     for term in recon_terms:
         if isinstance(term.sources, PERSISTENT_SOURCE_TYPES):

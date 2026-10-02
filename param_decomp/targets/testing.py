@@ -8,69 +8,75 @@ no real weights, no GPU.
 """
 
 from collections.abc import Iterable, Mapping
-from typing import Any
+from dataclasses import replace
 
 import jax
 import jax.numpy as jnp
 
-from param_decomp.core.ci_fn import (
-    Chunk,
-    ChunkwiseTransformerCIArch,
-    ChunkwiseTransformerCIFn,
+from param_decomp.core.ci_fn.implementations.block_selected.arch import (
+    BlockSelectedChunk,
+    BlockSelectedChunkwiseTransformerCIFn,
+    BlockSelectedChunkwiseTransformerCIFnArch,
     FullSlot,
-    MHACIAttention,
-    MoEChunk,
-    MoEChunkwiseTransformerCIArch,
-    MoEChunkwiseTransformerCIFn,
-    NarrowSlot,
-    RoutingTap,
-    build_ci_fn,
+    SelectedSlot,
 )
-from param_decomp.core.components import SiteC, SiteCI, SiteSpec
-from param_decomp.core.model import DecomposedModel, MaterializedMasking
+from param_decomp.core.ci_fn.implementations.chunkwise.arch import (
+    Chunk,
+    ChunkwiseTransformerBackbone,
+    ChunkwiseTransformerCIFnArch,
+)
+from param_decomp.core.ci_fn.implementations.transformer.backbone import BackboneCIFn
+from param_decomp.core.ci_fn.implementations.transformer.layers import MHACIFnAttention
+from param_decomp.core.components import BlockSelection, SelectedCI, SiteC, SiteCI, SiteSpec
+from param_decomp.core.model import (
+    ComponentActivations,
+    DecomposedModel,
+    MaterializedMasking,
+    SiteRoutes,
+)
 from param_decomp.target_ports.llama import LlamaConfig, llama3_inv_freq
 from param_decomp.targets import llama_simple_mlp, qwen36_moe
-from param_decomp.targets.glu_transformer import (
-    FrozenAttn,
-    GatedMLP,
-    GLUDecomposedModel,
-    GLULayer,
-    PlainMLP,
-    build_decomposed_lm,
-    parse_site_name,
-)
 from param_decomp.targets.llama_simple_mlp import (
+    SIMPLE_MLP_KINDS,
     LlamaSimpleMLPConfig,
     build_decomposed_simple_mlp,
 )
-from param_decomp.targets.lm_output import LMOutput
+from param_decomp.targets.lm_output import LMOutput, MaterializedOutputEdge
 from param_decomp.targets.qwen36_moe import (
     AttnSublayer,
     DeltaNetSublayer,
-    FrozenGatedAttention,
-    FrozenGatedDeltaNet,
     FrozenMoE,
+    GatedAttention,
+    GatedDeltaNet,
     Qwen36MoeConfig,
     Qwen36MoeDecomposedModel,
     build_qwen36_moe_model,
     layer_is_full_attention,
-    router_idx_tap_key,
-    router_weights_tap_key,
+)
+from param_decomp.targets.transformer import (
+    GLU_MLP_KINDS,
+    FrozenAttn,
+    GatedMLP,
+    PlainMLP,
+    TransformerDecomposedModel,
+    TransformerLayer,
+    build_decomposed_lm,
+    parse_site_name,
 )
 from param_decomp.targets.transformer_taps import resid_tap_key
 
 
-def _tiny_chunkwise_ci_arch(
-    model: GLUDecomposedModel, first_block: int, input_dim: int, n_blocks: int
-) -> ChunkwiseTransformerCIArch:
+def _tiny_chunkwise_ci_fn_arch(
+    model: TransformerDecomposedModel, first_block: int, input_dim: int, n_blocks: int
+) -> ChunkwiseTransformerCIFnArch:
     """One chunk reading the residual entering the first decomposed block, emitting CI
     for every site. `input_dim` is the target residual width (`n_embd`)."""
-    return ChunkwiseTransformerCIArch(
+    return ChunkwiseTransformerCIFnArch(
         chunks=(Chunk(input_taps=(f"resid.{first_block}",), output_sites=model.site_names),),
         input_dim=input_dim,
         d_model=16,
         n_blocks=n_blocks,
-        attention=MHACIAttention(n_heads=2),
+        attention=MHACIFnAttention(mask="bidirectional", implementation="xla", n_heads=2),
         ffn_hidden=32,
         ffn_kind="gelu",
         learned_norm_scale=False,
@@ -78,12 +84,22 @@ def _tiny_chunkwise_ci_arch(
 
 
 def _tiny_chunkwise_ci_fn(
-    model: GLUDecomposedModel, key: jax.Array, first_block: int, input_dim: int, n_blocks: int
-) -> ChunkwiseTransformerCIFn:
-    arch = _tiny_chunkwise_ci_arch(model, first_block, input_dim, n_blocks)
-    ci_fn = build_ci_fn(arch, model.sites, key)
-    assert isinstance(ci_fn, ChunkwiseTransformerCIFn)
-    return ci_fn
+    model: TransformerDecomposedModel,
+    key: jax.Array,
+    first_block: int,
+    input_dim: int,
+    n_blocks: int,
+) -> BackboneCIFn:
+    arch = _tiny_chunkwise_ci_fn_arch(model, first_block, input_dim, n_blocks)
+    return arch.initialize(model.sites, None, key)
+
+
+def chunkwise_transformer_backbone(ci_fn: object) -> ChunkwiseTransformerBackbone:
+    """`ci_fn`'s backbone, asserted to be a chunkwise transformer's."""
+    assert isinstance(ci_fn, BackboneCIFn), type(ci_fn)
+    backbone = ci_fn.backbone
+    assert isinstance(backbone, ChunkwiseTransformerBackbone), type(backbone)
+    return backbone
 
 
 def tiny_glu_cfg() -> LlamaConfig:
@@ -106,8 +122,8 @@ def tiny_glu_cfg() -> LlamaConfig:
 
 def tiny_glu_decomposed_lm(
     cfg: LlamaConfig, sites: tuple[SiteSpec, ...], key: jax.Array
-) -> GLUDecomposedModel:
-    """A tiny random `GLUDecomposedModel` (random embedding + full frozen layer stack
+) -> TransformerDecomposedModel:
+    """A tiny random `TransformerDecomposedModel` (random embedding + full frozen layer stack
     plus the decomposition `sites`) — the CPU-test analog of `load_decomposed_lm_from_hf`."""
     ks = iter(jax.random.split(key, 1024))
     d, di = cfg.n_embd, cfg.n_intermediate
@@ -119,15 +135,15 @@ def tiny_glu_decomposed_lm(
     def fattn():
         return FrozenAttn(
             n((qd, d)), n((kvd, d)), n((kvd, d)), n((d, qd)),
-            cfg.n_head, cfg.n_kv_head, cfg.head_dim, cfg.n_rep, "auto",
+            cfg.n_head, cfg.n_kv_head, cfg.head_dim, cfg.n_rep, "xla",
         )  # fmt: skip
 
     def layer():
         # attn drawn before the MLP: the key-consumption order the committed
         # fixture-derived tests (slow-eval histograms) were pinned against.
         attn = fattn()
-        mlp = GatedMLP(Wg=n((di, d)), Wu=n((di, d)), Wd=n((d, di)))
-        return GLULayer(jnp.ones((d,)), jnp.ones((d,)), attn, mlp)
+        mlp = GatedMLP(kinds=GLU_MLP_KINDS, Wg=n((di, d)), Wu=n((di, d)), Wd=n((d, di)))
+        return TransformerLayer(jnp.ones((d,)), jnp.ones((d,)), attn, mlp)
 
     return build_decomposed_lm(
         embed=n((cfg.vocab_size, d), 0.02),
@@ -137,19 +153,20 @@ def tiny_glu_decomposed_lm(
         inv_freq=llama3_inv_freq(cfg),
         cfg=cfg,
         sites=sites,
+        output_edge=MaterializedOutputEdge(),
     )
 
 
-def tiny_glu_chunkwise_ci_arch(
-    model: GLUDecomposedModel, n_blocks: int
-) -> ChunkwiseTransformerCIArch:
+def tiny_glu_chunkwise_ci_fn_arch(
+    model: TransformerDecomposedModel, n_blocks: int
+) -> ChunkwiseTransformerCIFnArch:
     first_block = min(parse_site_name(n)[0] for n in model.site_names)
-    return _tiny_chunkwise_ci_arch(model, first_block, tiny_glu_cfg().n_embd, n_blocks)
+    return _tiny_chunkwise_ci_fn_arch(model, first_block, tiny_glu_cfg().n_embd, n_blocks)
 
 
 def tiny_glu_chunkwise_ci_fn(
-    model: GLUDecomposedModel, key: jax.Array, n_blocks: int
-) -> ChunkwiseTransformerCIFn:
+    model: TransformerDecomposedModel, key: jax.Array, n_blocks: int
+) -> BackboneCIFn:
     first_block = min(parse_site_name(n)[0] for n in model.site_names)
     return _tiny_chunkwise_ci_fn(model, key, first_block, tiny_glu_cfg().n_embd, n_blocks)
 
@@ -168,7 +185,9 @@ def tiny_simple_mlp_cfg() -> LlamaSimpleMLPConfig:
     )
 
 
-def _tiny_simple_mlp_layers(cfg: LlamaSimpleMLPConfig, n: int, key: jax.Array) -> list[GLULayer]:
+def _tiny_simple_mlp_layers(
+    cfg: LlamaSimpleMLPConfig, n: int, key: jax.Array
+) -> list[TransformerLayer]:
     ks = iter(jax.random.split(key, 1024))
     d, di = cfg.n_embd, cfg.n_intermediate
     qd, kvd = cfg.n_head * cfg.head_dim, cfg.n_kv_head * cfg.head_dim
@@ -176,7 +195,7 @@ def _tiny_simple_mlp_layers(cfg: LlamaSimpleMLPConfig, n: int, key: jax.Array) -
     def rand(shape: tuple[int, ...]) -> jax.Array:
         return jax.random.normal(next(ks), shape) * d**-0.5
 
-    def layer() -> GLULayer:
+    def layer() -> TransformerLayer:
         # attn drawn before the MLP: the key-consumption order the committed
         # fixture-derived tests (slow-eval histograms) were pinned against.
         attn = FrozenAttn(
@@ -188,17 +207,17 @@ def _tiny_simple_mlp_layers(cfg: LlamaSimpleMLPConfig, n: int, key: jax.Array) -
             cfg.n_kv_head,
             cfg.head_dim,
             cfg.n_rep,
-            "auto",
+            "xla",
         )
-        mlp = PlainMLP(Wfc=rand((di, d)), Wdown=rand((d, di)))
-        return GLULayer(ln1=jnp.ones((d,)), ln2=jnp.ones((d,)), attn=attn, mlp=mlp)
+        mlp = PlainMLP(kinds=SIMPLE_MLP_KINDS, Wfc=rand((di, d)), Wdown=rand((d, di)))
+        return TransformerLayer(ln1=jnp.ones((d,)), ln2=jnp.ones((d,)), attn=attn, mlp=mlp)
 
     return [layer() for _ in range(n)]
 
 
 def tiny_simple_mlp_decomposed_model(
     cfg: LlamaSimpleMLPConfig, sites: tuple[SiteSpec, ...], key: jax.Array
-) -> GLUDecomposedModel:
+) -> TransformerDecomposedModel:
     """A tiny random engine-hosted SimpleMLP carrying a random (tied) embedding + full
     frozen layer stack plus the decomposition `sites`."""
     layers_key, embed_key = jax.random.split(key)
@@ -206,7 +225,7 @@ def tiny_simple_mlp_decomposed_model(
     embed = jax.random.normal(embed_key, (cfg.vocab_size, cfg.n_embd)) * 0.02
     return build_decomposed_simple_mlp(
         embed=embed, layers=layers, norm=jnp.ones((cfg.n_embd,)),
-        cfg=cfg, sites=sites,
+        cfg=cfg, sites=sites, output_edge=MaterializedOutputEdge(),
     )  # fmt: skip
 
 
@@ -226,8 +245,8 @@ decomposed kind on every decomposed layer."""
 
 
 def tiny_simple_mlp_chunkwise_ci_fn(
-    model: GLUDecomposedModel, key: jax.Array
-) -> ChunkwiseTransformerCIFn:
+    model: TransformerDecomposedModel, key: jax.Array
+) -> BackboneCIFn:
     first_block = min(llama_simple_mlp.parse_site_name(n)[0] for n in model.site_names)
     return _tiny_chunkwise_ci_fn(model, key, first_block, tiny_simple_mlp_cfg().n_embd, 2)
 
@@ -238,7 +257,10 @@ def tiny_simple_mlp_chunkwise_ci_fn(
 # one-bundle assembly.
 
 
-def run_clean[Out](model: DecomposedModel[Out], inputs: Any) -> Out:
+def run_clean[TargetIn, Out, PreparedT: ComponentActivations, Conditioning, PreparedMaskingT](
+    model: DecomposedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
+    inputs: TargetIn,
+) -> Out:
     """Test-only output projection of the capture-aware clean forward."""
     return model.clean_forward(inputs, placement=None).output
 
@@ -250,50 +272,55 @@ def materialized_logits(output: LMOutput) -> jax.Array:
     return output
 
 
-def capture_clean[Out](
-    model: DecomposedModel[Out], inputs: Any, keys: Iterable[str]
+def capture_clean[TargetIn, Out, PreparedT: ComponentActivations, Conditioning, PreparedMaskingT](
+    model: DecomposedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
+    inputs: TargetIn,
+    keys: Iterable[str],
 ) -> dict[str, jax.Array]:
     return model.clean_forward(inputs, frozenset(keys), placement=None).captures
 
 
-def run_masked[Out, PreparedT](
-    model: DecomposedModel[Out, PreparedT],
+def run_masked[TargetIn, Out, PreparedT: ComponentActivations, Conditioning, PreparedMaskingT](
+    model: DecomposedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
     prepared_weights: PreparedT,
-    inputs: Any,
-    masks: Mapping[str, SiteCI],
-    delta_masks: dict[str, jax.Array],
-    routes: dict[str, jax.Array] | None,
-    uses_weight_deltas: bool,
+    conditioning: Conditioning,
+    masking: MaterializedMasking,
     *,
+    routes: SiteRoutes | None,
     remat: bool,
 ) -> Out:
-    """Test-only output projection of a masked forward. The mask dicts must cover exactly
-    the model's sites (the target asserts this)."""
+    """Test-only output projection of a complete masked forward."""
     return model.masked_forward(
         prepared_weights,
-        inputs,
-        masking=MaterializedMasking(
-            component_masks=masks,
-            weight_delta_masks=delta_masks if uses_weight_deltas else None,
-            routes=routes,
-        ),
+        conditioning,
+        masking=model.prepare_masking(masking),
+        routes=routes,
         placement=None,
         remat=remat,
     ).output
 
 
-def capture_site_outputs[Out, PreparedT](
-    model: DecomposedModel[Out, PreparedT],
+def capture_site_outputs[
+    TargetIn,
+    Out,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](
+    model: DecomposedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
     prepared_weights: PreparedT,
-    inputs: Any,
+    conditioning: Conditioning,
     masking: MaterializedMasking,
+    *,
+    routes: SiteRoutes | None,
 ) -> dict[str, jax.Array]:
     sites = tuple(masking.component_masks)
     site_output_keys = model.site_output_keys(sites)
     masked_forward_result = model.masked_forward(
         prepared_weights,
-        inputs,
-        masking=masking,
+        conditioning,
+        masking=model.prepare_masking(masking),
+        routes=routes,
         placement=None,
         capture_keys=frozenset(site_output_keys),
         remat=False,
@@ -344,6 +371,50 @@ TINY_QWEN36_CS: dict[str, int] = {
 }
 
 
+def exact_width_cs(cfg: Qwen36MoeConfig, kinds: Iterable[str]) -> dict[str, int]:
+    """Each kind at the width of the axis its nonlinearity-aligned init aligns on — the input
+    axis for the residual writers, the output axis otherwise — the C at which that init
+    is the exact one-coordinate factorization."""
+
+    def width(kind: str) -> int:
+        dims = qwen36_moe.site_dims(cfg, kind)
+        match qwen36_moe.nonlinearity_alignment(cfg, kind).side:
+            case "input":
+                return dims.d_in
+            case "output":
+                return dims.d_out
+
+    return {kind: width(kind) for kind in kinds}
+
+
+TINY_QWEN36_MIXER_CS: dict[str, int] = exact_width_cs(
+    tiny_qwen36_cfg(),
+    [kind for kind in qwen36_moe.KIND_ORDER if qwen36_moe.sublayer_of(kind) != "moe"],
+)
+"""The eleven token-mixer kinds at exact width."""
+
+TINY_QWEN36_ALL_CS: dict[str, int] = {**TINY_QWEN36_MIXER_CS, **TINY_QWEN36_CS}
+"""All seventeen kinds in `KIND_ORDER`: the mixers at exact width, the MoE at `TINY_QWEN36_CS`."""
+
+
+def awkward_qwen36_cfg() -> Qwen36MoeConfig:
+    """`tiny_qwen36_cfg` on the parameter-matched pretrained toy's expert grid — 42 routed
+    experts, top-8 — a non-power-of-two expert count with k > 2, where slot bookkeeping
+    that happens to hold at E=4/k=2 cannot coincide. Not for the (data=4, tp=2) mesh:
+    42 experts split tp=2 but the fused axis 294 does not tile it with the tiny d_in."""
+    return replace(tiny_qwen36_cfg(), n_experts=42, n_experts_per_token=8, moe_intermediate=7)
+
+
+AWKWARD_QWEN36_CS: dict[str, int] = {
+    "experts_gate": 84,
+    "experts_up": 84,
+    "experts_down": 126,
+    "shared_gate": 4,
+    "shared_up": 4,
+    "shared_down": 5,
+}
+
+
 def tiny_qwen36_decomposed_model(
     cfg: Qwen36MoeConfig, sites: tuple[SiteSpec, ...], key: jax.Array
 ) -> Qwen36MoeDecomposedModel:
@@ -365,7 +436,7 @@ def tiny_qwen36_decomposed_model(
     def deltanet_sublayer() -> DeltaNetSublayer:
         return DeltaNetSublayer(
             ln1=centered_norm((d,)),
-            mixer=FrozenGatedDeltaNet(
+            mixer=GatedDeltaNet(
                 w_q=n((cfg.linear_key_dim, d)),
                 w_k=n((cfg.linear_key_dim, d)),
                 w_v=n((cfg.linear_value_dim, d)),
@@ -390,7 +461,7 @@ def tiny_qwen36_decomposed_model(
     def attn_sublayer() -> AttnSublayer:
         return AttnSublayer(
             ln1=centered_norm((d,)),
-            attn=FrozenGatedAttention(
+            attn=GatedAttention(
                 wq=n((2 * qd, d)),
                 wk=n((kvd, d)),
                 wv=n((kvd, d)),
@@ -401,7 +472,7 @@ def tiny_qwen36_decomposed_model(
                 n_kv_head=cfg.n_kv_head,
                 head_dim=cfg.head_dim,
                 eps=cfg.rms_norm_eps,
-                implementation="auto",
+                implementation="xla",
             ),
         )
 
@@ -433,61 +504,116 @@ def tiny_qwen36_decomposed_model(
         moe_layers=[moe_layer() for _ in range(cfg.n_layer)],
         norm=centered_norm((d,)),
         lm_head=n((cfg.vocab_size, d), 0.05),
-        stack=jnp.stack,
         # toy dims sit below the split arm's 64-multiple kernel tiling: the oracle arm
         # serves every engine-semantics fixture (kernel parity lives in
         # tests/routed/test_experts at 64-multiple shapes)
-        grouped_matmul_backend="ragged_dot",
+        expert_implementation="ragged_dot",
+        output_edge=MaterializedOutputEdge(),
     )
 
 
-def tiny_qwen36_moe_ci_arch(model: Qwen36MoeDecomposedModel) -> MoEChunkwiseTransformerCIArch:
+def _mask_width(cfg: Qwen36MoeConfig, spec: SiteSpec) -> int:
+    """The per-position width of one site's mask/CI values: the `k·c` routed slots of an
+    expert kind, the full `C` of a shared kind."""
+    _layer, kind = qwen36_moe.parse_site_name(spec.name)
+    if qwen36_moe.is_expert_kind(kind):
+        return cfg.n_experts_per_token * spec.C // cfg.n_experts
+    return spec.C
+
+
+def site_masks(
+    model: Qwen36MoeDecomposedModel, routing: BlockSelection, values: Mapping[str, jax.Array]
+) -> dict[str, SiteCI]:
+    """Per-site masks (or CI) in each kind's emission from bare values: an expert kind's
+    `[*lead, k·c]` values bundle with the pinned routing of their layer (slot m is expert
+    `indices[layer, .., m]`), a shared kind's `[*lead, C]` values pass through."""
+    masks: dict[str, SiteCI] = {}
+    for name, value in values.items():
+        layer, kind = qwen36_moe.parse_site_name(name)
+        if not qwen36_moe.is_expert_kind(kind):
+            masks[name] = value
+            continue
+        masks[name] = SelectedCI(value, routing.indices[layer], model.cfg.n_experts)
+    return masks
+
+
+def constant_mask_values(
+    model: Qwen36MoeDecomposedModel, lead: tuple[int, ...], fill: float
+) -> dict[str, jax.Array]:
+    """Every site's mask/CI values at its emission width, filled with `fill`."""
+    return {
+        spec.name: jnp.full((*lead, _mask_width(model.cfg, spec)), fill) for spec in model.sites
+    }
+
+
+def random_mask_values(
+    model: Qwen36MoeDecomposedModel, lead: tuple[int, ...], key: jax.Array
+) -> dict[str, jax.Array]:
+    """Every site's mask/CI values at its emission width, uniform on [0, 1)."""
+    return {
+        spec.name: jax.random.uniform(
+            jax.random.fold_in(key, i), (*lead, _mask_width(model.cfg, spec))
+        )
+        for i, spec in enumerate(model.sites)
+    }
+
+
+def identity_masking(
+    model: Qwen36MoeDecomposedModel, conditioning: BlockSelection
+) -> MaterializedMasking:
+    """The exact identity on `conditioning`: every site's mask ≡ 1 in its kind's emission and
+    every weight-delta mask ≡ 1, so every site computes `x @ W` again and the masked
+    forward reproduces the clean one up to fp32 reassociation."""
+    lead = conditioning.indices.shape[1:-1]
+    return MaterializedMasking(
+        component_masks=site_masks(model, conditioning, constant_mask_values(model, lead, 1.0)),
+        weight_delta_masks={spec.name: jnp.ones(lead) for spec in model.sites},
+    )
+
+
+def tiny_qwen36_moe_ci_fn_arch(
+    model: Qwen36MoeDecomposedModel,
+) -> BlockSelectedChunkwiseTransformerCIFnArch:
     """One chunk per target stage over the model's OWN sites: expert kinds narrow
     (router = in-stage position), shared kinds full — the resolver's shape at the tiny
     config."""
     cfg = model.cfg
     interval = cfg.full_attention_interval
-    chunk_slots: list[list[FullSlot | NarrowSlot]] = [[] for _ in range(cfg.n_stages)]
+    chunk_slots: list[list[FullSlot | SelectedSlot]] = [[] for _ in range(cfg.n_stages)]
     for spec in model.sites:
         layer, kind = qwen36_moe.parse_site_name(spec.name)
         chunk_slots[layer // interval].append(
-            NarrowSlot(site=spec.name, router=layer % interval)
+            SelectedSlot(site=spec.name, selection=layer % interval)
             if qwen36_moe.is_expert_kind(kind)
             else FullSlot(site=spec.name)
         )
     chunks = tuple(
-        MoEChunk(
+        BlockSelectedChunk(
             input_taps=(resid_tap_key(start),),
-            routing=tuple(
-                RoutingTap(
-                    ids_key=router_idx_tap_key(layer),
-                    weights_key=router_weights_tap_key(layer),
-                )
-                for layer in range(start, start + interval)
-            ),
+            layers=tuple(range(start, start + interval)),
             slots=tuple(chunk_slots[start // interval]),
         )
         for start in range(0, cfg.n_layer, interval)
     )
     # Dims sized to tile the placed suites' (data=4, tp=2) mesh (÷8 on the sharded axes).
-    return MoEChunkwiseTransformerCIArch(
+    return BlockSelectedChunkwiseTransformerCIFnArch(
         chunks=chunks,
-        input_dim=cfg.n_embd + interval * cfg.n_experts,
+        input_dim=cfg.n_embd,
         d_model=16,
         n_blocks=2,
-        attention=MHACIAttention(n_heads=2),
-        n_experts=cfg.n_experts,
-        expert_ffn_hidden=8,
+        attention=MHACIFnAttention(mask="bidirectional", implementation="xla", n_heads=2),
+        table_size=cfg.n_experts,
+        selected_ffn_hidden=8,
         shared_ffn_hidden=8,
         learned_norm_scale=False,
         # toy dims sit below the split arm's 64-multiple kernel tiling: the oracle arm
-        grouped_matmul_backend="ragged_dot",
+        expert_implementation="ragged_dot",
     )
 
 
 def tiny_qwen36_moe_ci_fn(
     model: Qwen36MoeDecomposedModel, key: jax.Array
-) -> MoEChunkwiseTransformerCIFn:
-    ci_fn = build_ci_fn(tiny_qwen36_moe_ci_arch(model), model.sites, key)
-    assert isinstance(ci_fn, MoEChunkwiseTransformerCIFn)
+) -> BlockSelectedChunkwiseTransformerCIFn:
+    ci_fn = tiny_qwen36_moe_ci_fn_arch(model).initialize(model.sites, None, key)
+    assert isinstance(ci_fn, BlockSelectedChunkwiseTransformerCIFn)
     return ci_fn

@@ -1,6 +1,6 @@
 """Per-metric averaging parity: JAX `sum/n_steps` vs torch position-weighted accumulate.
 
-Issue #715. JAX averages an eval metric across `n_steps` batches as
+JAX averages an eval metric across `n_steps` batches as
 `(Σ_j v_j) / n_steps` (`run.py` eval loop), assuming a uniform `(B,T)`. Torch
 accumulates `Σ_j v_j · (B·T)` and divides by `Σ_j (B·T)` (`CEandKLLosses.update` /
 `compute`, `CI_L0`). Under fixed `(B,T)` the `(B·T)` factor cancels and the two are
@@ -30,7 +30,7 @@ checks the averaging math directly (the per-batch step itself is covered by
 """
 
 import math
-from types import SimpleNamespace
+from dataclasses import replace
 from typing import Any, cast
 
 import jax
@@ -38,17 +38,25 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, PRNGKeyArray
 
-from param_decomp.core.ci_fn import CI, PlacedCIFn
+from param_decomp.core.ci_fn.interface import CI, CIFn
 from param_decomp.core.components import ComponentStacks
 from param_decomp.core.eval_schedule import Every
-from param_decomp.core.model import PlacedModel
+from param_decomp.core.model import MaterializedMasking, PlacedModel
 from param_decomp.core.run import EvalInvocation
+from param_decomp.core.train import Decomposition
 from param_decomp.experiments.eval_config import EvalConfig
 from param_decomp.experiments.fast_eval_operations import _averaged_over_eval_batches
 from param_decomp.experiments.lm.eval import PreparedLMBatch
-from param_decomp.experiments.lm.eval_context import LMBatchContext, LMEvalPass
+from param_decomp.experiments.lm.eval_context import (
+    LMBatchContext,
+    LMBatchForwardProducts,
+    LMEvalPass,
+)
 from param_decomp.experiments.lm.scalar_eval_operations import _make_scalar_operation
+from param_decomp.lm.batch import LMBatchWithDocuments
 from param_decomp.targets.lm_output import LMOutput
+from param_decomp.targets.testing import materialized_logits
+from param_decomp.tests.core.test_eval_runtime import _decomposition
 
 
 def _jax_average(per_batch_values: list[float], n_steps: int) -> float:
@@ -90,11 +98,9 @@ def test_mean_metric_averaging_diverges_under_ragged_bt():
 
 
 def test_nonmean_metric_is_jensen_divergent():
-    """A metric that is a nonlinear fn of a GLOBAL accumulated sum (the S8-class caveat,
-    e.g. `log2(Σ_batches L0)`) is NOT exact under `sum/n_steps`. Exhibits the gap so a
-    future addition can't silently ride the mean path: torch's accumulate-then-compute
-    (log2 of the global sum) differs from JAX's per-batch-mean-then-average
-    (mean of per-batch log2s)."""
+    """Averaging per-batch log-counts differs from taking the log of the global count.
+
+    A metric nonlinear in a global sum must not use the mean-over-batches path."""
     per_batch_l0 = [3.0, 12.0, 48.0, 6.0]
     accumulate_then_compute = math.log2(sum(per_batch_l0))
     mean_of_per_batch_compute = sum(math.log2(x) for x in per_batch_l0) / len(per_batch_l0)
@@ -113,76 +119,114 @@ def test_hidden_acts_reconstruction_averages_batch_objectives_instead_of_pooling
     assert globally_pooled_ratio == 2.5
 
 
-def _state_stub() -> SimpleNamespace:
-    return SimpleNamespace(decomposition=SimpleNamespace(components=None, ci_fn=None))
-
-
-def _value_context(batch_index: int, value: float) -> LMBatchContext:
+def _value_context(
+    batch_index: int, value: float
+) -> LMBatchContext[LMBatchWithDocuments, ComponentStacks, LMBatchWithDocuments]:
     return LMBatchContext(
         pass_index=0,
         batch_index=batch_index,
-        tokens=jnp.asarray(value),
-        clean_output=jnp.asarray(value),
-        captures={},
-        ci=CI(preactivations={}, lower={}, upper={}),
-        prepared_weights=None,
+        forward=LMBatchForwardProducts(
+            tokens=LMBatchWithDocuments.from_unsegmented_sequences(
+                jnp.zeros((1, 1), dtype=jnp.int32)
+            ),
+            clean_output=jnp.asarray(value),
+            captures={},
+            ci=CI(preactivations={}, lower={}, upper={}),
+            prepared_weights=ComponentStacks(stacks={}, site_stack_indices=()),
+            conditioning=LMBatchWithDocuments.from_unsegmented_sequences(
+                jnp.zeros((1, 1), dtype=jnp.int32)
+            ),
+        ),
+        persistent_sources={},
     )
 
 
 def test_lm_scalar_operation_averages_residual_batch_objectives():
     def scorer(
-        _model: PlacedModel[LMOutput],
-        batch: PreparedLMBatch[Any],
+        _model: PlacedModel[
+            LMBatchWithDocuments,
+            LMOutput,
+            ComponentStacks,
+            LMBatchWithDocuments,
+            MaterializedMasking,
+        ],
+        batch: PreparedLMBatch[LMBatchWithDocuments, ComponentStacks, LMBatchWithDocuments],
         _key: PRNGKeyArray,
     ) -> dict[str, Array]:
-        return {"loss/probe/hidden_acts_reconstruction": batch.tokens}
+        return {"loss/probe/hidden_acts_reconstruction": materialized_logits(batch.clean.output)}
 
-    operation = _make_scalar_operation(
+    plan = _make_scalar_operation(
         Every(1),
         scorer,
         ("loss/probe/",),
-        cast(Any, object()),
+        cast(Any, None),
         jnp.array([0, 0], dtype=jnp.uint32),
         train_steps=0,
         eval_steps=2,
         compiler_options={},
     )
-    state = operation.init()
-    state = operation.update(state, _value_context(0, 1.0))
-    state = operation.update(state, _value_context(1, 3.0))
-    eval_pass = LMEvalPass(
-        state=cast(Any, _state_stub()),
-        now_step=0,
-        placed_ci_fn=PlacedCIFn(fn=None, placement=None),  # pyright: ignore[reportArgumentType]
-        pass_index=0,
-        batches=(),
+    contexts = (_value_context(0, 1.0), _value_context(1, 3.0))
+    unconditioned = _decomposition()
+    decomposition = Decomposition[LMBatchWithDocuments](
+        components=unconditioned.components, ci_fn=unconditioned.ci_fn
     )
+    eval_pass = LMEvalPass(
+        decomposition=decomposition,
+        persistent_sources={},
+        now_step=0,
+        pass_index=0,
+        batches=tuple(context.forward.tokens for context in contexts),
+    )
+    operation = plan.prepare(eval_pass, contexts[0])
+    state = operation.init()
+    for context in contexts:
+        state = operation.update(state, context)
     record = operation.finish(eval_pass, state)
     assert record["eval/loss/probe/hidden_acts_reconstruction"] == 2.0
 
 
 def test_generic_scalar_operation_averages_residual_batch_objectives():
     def step(
-        _model: PlacedModel[LMOutput],
+        _model: PlacedModel[Array, LMOutput, ComponentStacks, Array, MaterializedMasking],
         _components: ComponentStacks,
-        _placed_ci_fn: PlacedCIFn,
+        _ci_fn: CIFn[Any],
         value: jax.Array,
-        _key: PRNGKeyArray,
+        key: PRNGKeyArray,
     ) -> dict[str, Array]:
-        return {"loss/probe/hidden_acts_reconstruction": value}
+        return {
+            "loss/probe/hidden_acts_reconstruction": value,
+            "random_sample": jax.random.uniform(key),
+        }
 
     eval_config = EvalConfig(batch_size=1, n_steps=2, every=1, slow_every=1)
-    operation = _averaged_over_eval_batches(
+    plan = _averaged_over_eval_batches(
         step,
         eval_config,
         Every(1),
         seed=0,
-        model=object(),  # pyright: ignore[reportArgumentType]
-        sample_eval_batch=lambda index: jnp.asarray((1.0, 3.0)[index]),
+        compiler_options={},
+        model=cast(Any, None),
+        sample_eval_batch=lambda index: jnp.asarray((1.0, 3.0)[index % 2], dtype=jnp.float32),
+    )
+    unconditioned = _decomposition()
+    decomposition = Decomposition[Array](
+        components=unconditioned.components, ci_fn=unconditioned.ci_fn
     )
     context = EvalInvocation(
-        state=_state_stub(),  # pyright: ignore[reportArgumentType]
+        decomposition=decomposition,
+        persistent_sources={},
         now_step=0,
-        placed_ci_fn=PlacedCIFn(fn=None, placement=None),  # pyright: ignore[reportArgumentType]
     )
-    assert operation.run(context)["eval/loss/probe/hidden_acts_reconstruction"] == 2.0
+    operation = plan.prepare(context)
+    for pass_index in (0, 3):
+        expected_sample = (
+            sum(
+                float(jax.random.uniform(jax.random.fold_in(jax.random.PRNGKey(1), index)))
+                for index in range(pass_index * 2, pass_index * 2 + 2)
+            )
+            / 2
+        )
+        with jax.no_tracing():
+            record = operation.run(replace(context, now_step=pass_index))
+        assert record["eval/loss/probe/hidden_acts_reconstruction"] == 2.0
+        assert record["eval/random_sample"] == expected_sample

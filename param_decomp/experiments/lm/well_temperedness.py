@@ -22,6 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -31,25 +32,25 @@ from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 from numpy.typing import NDArray
 
-from param_decomp.core.ci_fn import (
-    PlacedCIFn,
-    evaluate_compute_ci,
-    materialize_ci_compute_weights,
+from param_decomp.core.ci_fn.interface import CIFn
+from param_decomp.core.ci_fn.runtime import evaluate_ci_from_captures
+from param_decomp.core.components import (
+    ComponentStacks,
+    require_full_emission,
 )
-from param_decomp.core.components import ComponentStacks, require_full_emission
-from param_decomp.core.jit_util import filter_jit
 from param_decomp.core.linear_plan import value_mesh
 from param_decomp.core.masking import all_live_masking_no_delta
 from param_decomp.core.model import (
     CaptureKeys,
+    ComponentActivations,
     MaterializedMasking,
     PlacedModel,
-    prepare_compute_weights,
 )
 from param_decomp.core.placement import batch_axes
 from param_decomp.core.precision import COMPUTE_DT
 from param_decomp.core.sharding import batch_shard_leading
 from param_decomp.experiments.lm.eval_config import WellTemperednessConfig
+from param_decomp.lm.batch import LMBatch, LMBatchWithDocuments, LMBatchWithRouting
 from param_decomp.targets.lm_output import LMOutput, StreamedLinearOutput
 
 type Region = Literal["below_zero", "zero_to_one", "above_one"]
@@ -66,8 +67,19 @@ class Ablations:
     site_indices: Int[NumericArray, "n_regions n_locations n_components"]
 
 
-type WellTemperednessStep = Callable[
-    [PlacedModel[LMOutput], ComponentStacks, PlacedCIFn, Int[Array, "B T"], PRNGKeyArray],
+type WellTemperednessStep[
+    TargetIn,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+] = Callable[
+    [
+        PlacedModel[TargetIn, LMOutput, PreparedT, Conditioning, PreparedMaskingT],
+        ComponentStacks,
+        CIFn[Conditioning],
+        TargetIn,
+        PRNGKeyArray,
+    ],
     Ablations,
 ]
 
@@ -80,6 +92,51 @@ def in_region[ArrayT: (Array, NDArray[Any])](preactivations: ArrayT, region: Reg
             return (preactivations > 0.0) & (preactivations < 1.0)
         case "above_one":
             return preactivations >= 1.0
+
+
+def _replicated(values: Array) -> Array:
+    """`values` with every axis replicated over its mesh (a no-op off-mesh): the operand
+    a row/location gather needs, since a gather off a batch-typed operand has no
+    inferable output sharding (the gathered indices do not follow the batch axes)."""
+    if value_mesh(values).empty:
+        return values
+    return jax.sharding.reshard(
+        values, NamedSharding(value_mesh(values), P(*([None] * values.ndim)))
+    )
+
+
+def _routing_rows(values: Array, rows: Int[Array, " n_rows"], mesh: Mesh | None) -> Array:
+    """Batch rows `rows` of an `BlockSelection` leaf (`[n_layer, B, ..]`, batch axis
+    second), re-pinning over the data axes like the tokens they accompany."""
+    selected = jnp.take(_replicated(values), rows, axis=1)
+    if mesh is None:
+        return selected
+    spec = [None, batch_axes(mesh)] + [None] * (selected.ndim - 2)
+    return jax.sharding.reshard(selected, NamedSharding(mesh, P(*spec)))
+
+
+def _conditioning_at_rows[Conditioning](
+    conditioning: Conditioning, rows: Int[Array, " n_rows"], mesh: Mesh | None
+) -> Conditioning:
+    """Read the same batch rows from inputs and their layer-major routing."""
+
+    def token_rows(values: Array) -> Array:
+        return batch_shard_leading(jnp.take(_replicated(values), rows, axis=0), mesh)
+
+    match conditioning:
+        case jax.Array() | LMBatch() | LMBatchWithDocuments():
+            return jax.tree.map(token_rows, conditioning)
+        case LMBatchWithRouting(batch=batch, selection=selection):
+            return eqx.tree_at(
+                lambda value: (value.batch, value.selection),
+                conditioning,
+                (
+                    jax.tree.map(token_rows, batch),
+                    jax.tree.map(lambda value: _routing_rows(value, rows, mesh), selection),
+                ),
+            )
+        case _:
+            raise TypeError(f"conditioning has no row selection: {type(conditioning).__name__}")
 
 
 def _components_to_ablate(
@@ -106,16 +163,20 @@ def _components_to_ablate(
     return global_component_indices
 
 
-def make_well_temperedness_step(
-    model_static: PlacedModel[LMOutput],
+def make_well_temperedness_step[
+    TargetIn: LMBatch | LMBatchWithDocuments,
+    PreparedT: ComponentActivations,
+    Conditioning,
+    PreparedMaskingT,
+](
+    model_static: PlacedModel[TargetIn, LMOutput, PreparedT, Conditioning, PreparedMaskingT],
     ci_capture_keys: CaptureKeys,
     config: WellTemperednessConfig,
     mesh: Mesh | None = None,
-    compiler_options: dict[str, bool | int | str] | None = None,
-) -> WellTemperednessStep:
-    assert model_static.has_position_axis, "well-temperedness ablates at token positions"
-    site_names = model_static.site_names
-    site_specs = model_static.sites
+) -> WellTemperednessStep[TargetIn, PreparedT, Conditioning, PreparedMaskingT]:
+    assert model_static.model.has_position_axis, "well-temperedness ablates at token positions"
+    site_names = model_static.model.site_names
+    site_specs = model_static.model.sites
     per_ablation_recon_loss = jax.vmap(model_static.recon_loss_fn)
     ablations_per_forward = config.ablations_per_forward
     indices_within_forward = jnp.arange(ablations_per_forward)
@@ -149,15 +210,8 @@ def make_well_temperedness_step(
         batch_indices: Int[Array, " n_locations"],
         position_indices: Int[Array, " n_locations"],
     ) -> Float[Array, "n_locations d"]:
-        # A batch-typed operand's location gather has no inferable output sharding
-        # (n_locations does not follow the batch axes); the tiny selected slab is
-        # replicated, like every downstream ablation quantity.
-        if not value_mesh(values).empty:
-            values = jax.sharding.reshard(
-                values,
-                NamedSharding(value_mesh(values), P(*([None] * values.ndim))),
-            )
-        return values[batch_indices, position_indices]
+        # The tiny selected slab stays replicated, like every downstream ablation quantity.
+        return _replicated(values)[batch_indices, position_indices]
 
     def select_output_locations(
         output: LMOutput,
@@ -176,26 +230,32 @@ def make_well_temperedness_step(
             case jax.Array():
                 return select_locations(output, batch_indices, position_indices).astype(jnp.float32)
 
-    # `model` is the filter_jit ARG: frozen array fields stay traced instead of becoming HLO
+    # `model` is a dynamic argument: frozen array fields stay traced instead of becoming HLO
     # constants. Only static topology and the array-free recon loss close over the factory.
     def step(
-        model: PlacedModel[LMOutput],
+        model: PlacedModel[TargetIn, LMOutput, PreparedT, Conditioning, PreparedMaskingT],
         components: ComponentStacks,
-        placed_ci_fn: PlacedCIFn,
-        tokens: Int[Array, "B T"],
+        ci_fn: CIFn[Conditioning],
+        tokens: TargetIn,
         sampling_key: PRNGKeyArray,
     ) -> Ablations:
-        ci_inputs = model.clean_forward(tokens, ci_capture_keys).captures
+        clean = model.clean_forward(tokens, ci_capture_keys)
         # The step's CI lifecycle: materialize the compute residents first — evaluating
         # persistence-layout weights leaves their gathers (and, under Explicit typing,
         # ambiguous weight-grad contractions) inside the chunk scan.
-        compute_ci_fn = materialize_ci_compute_weights(placed_ci_fn)
+        compute_ci_fn = ci_fn.prepare()
+        prepared_components = model.prepare_compute_weights(components)
         # The global-C concat + region sampling below have no narrow arm: a narrow
         # site's structurally-absent components would flood the below-zero region.
         ci_preactivations = {
             site: require_full_emission(value)
-            for site, value in evaluate_compute_ci(
-                compute_ci_fn, ci_inputs, remat=False
+            for site, value in evaluate_ci_from_captures(
+                compute_ci_fn,
+                clean.captures,
+                clean.conditioning,
+                prepared_components,
+                sequence=clean.sequence,
+                remat=False,
             ).preactivations.items()
         }
         location_shape = ci_preactivations[site_names[0]].shape[:-1]
@@ -245,13 +305,15 @@ def make_well_temperedness_step(
             preactivations_at_locations[None], global_component_indices, axis=-1
         )
 
-        prepared_components = prepare_compute_weights(model, components)
         all_components_output = model.masked_forward(
             prepared_components,
-            tokens,
-            masking=all_live_masking_no_delta(
-                site_specs, leading_shape=location_shape, dtype=COMPUTE_DT
+            clean.conditioning,
+            masking=model.model.prepare_masking(
+                all_live_masking_no_delta(
+                    site_specs, leading_shape=location_shape, dtype=COMPUTE_DT
+                )
             ),
+            routes=None,
             remat=False,
         ).output
         reference_outputs = select_output_locations(
@@ -269,23 +331,18 @@ def make_well_temperedness_step(
         ) -> Float[Array, " ablations_per_forward"]:
             location_indices, site_indices, component_indices = ablation_indices
 
-            # A location gather off the batch-typed tokens has no inferable output
-            # sharding; the tiny per-forward subset materializes replicated and
-            # batch_shard_leading re-pins it.
-            tokens_for_ablations = tokens
-            if not value_mesh(tokens).empty:
-                tokens_for_ablations = jax.sharding.reshard(
-                    tokens, NamedSharding(value_mesh(tokens), P(None, None))
-                )
-            tokens_for_ablations = batch_shard_leading(
-                jnp.take(tokens_for_ablations, batch_indices[location_indices], axis=0), mesh
-            )
+            # The tiny per-forward row subset materializes replicated and re-pins
+            # batch-sharded — tokens and pinned decisions alike.
+            rows = batch_indices[location_indices]
             ablated_outputs = model.masked_forward(
                 prepared_components,
-                tokens_for_ablations,
-                masking=ablated_masking(
-                    site_indices, position_indices[location_indices], component_indices
+                _conditioning_at_rows(clean.conditioning, rows, mesh),
+                masking=model.model.prepare_masking(
+                    ablated_masking(
+                        site_indices, position_indices[location_indices], component_indices
+                    )
                 ),
+                routes=None,
                 remat=False,
             ).output
             # `indices_within_forward` is an identity batch gather (each forward's rows
@@ -316,7 +373,7 @@ def make_well_temperedness_step(
         replicated = NamedSharding(mesh, P())
         return jax.tree.map(lambda value: jax.sharding.reshard(value, replicated), ablations)
 
-    return filter_jit(step, compiler_options=compiler_options)
+    return step
 
 
 def _choose_locations(

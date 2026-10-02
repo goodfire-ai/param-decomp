@@ -1,51 +1,55 @@
-"""Checkpoint / resume of the generic trainer's `TrainState` via orbax (SPEC S22).
+"""Checkpoint and resume for plain and targeted PD via orbax.
 
 Each checkpoint step holds TWO orbax items, splitting the product from the process:
 
 - `decomposition` — `train.Decomposition` (V/U components + ci_fn), the trained product.
   Every downstream consumer (including fine-tune initialization) restores ONLY this
   item, with zero knowledge of how training initializes its optimizers or adversaries.
-- `training` — `train.TrainingItem` (both optimizer states, the persistent adversaries,
-  the step counter), the trainer-only trajectory tail. Only trainer resume touches it.
+- `training` — the algorithm-specific objective and trajectory, including optimizer
+  states, persistent adversaries, and the step counter. Only trainer resume touches it.
 
-`TrainState` composes exactly these two — one representation — so save/restore map onto its
+Both algorithms compose these two items, so save/restore map onto their
 own `.decomposition` / `.training` fields with no regrouping.
 
 Both items save **sharded** (every process writes its own shards, no full-gather on the
-training loop) and restore onto the reference state's shardings. The frozen target is
-NOT saved (SPEC §3): resume rebuilds it from HF and loads only the trajectory.
+training loop) and restore directly into the consumer's declared array formats.
+The frozen target is NOT saved: resume rebuilds it from HF and loads only the trajectory.
 
 Checkpoints are therefore topology-free: orbax saves the LOGICAL array, and restore
-places values by the abstract reference's shardings — a reference rebuilt from config
+places values using shapes from the initializer and layouts from the compiled consumer
 on the restoring side's OWN mesh. Any checkpoint restores onto any mesh whose placement
 constructs, train mesh to train mesh included; consumers re-place finished runs the
 same way, on whatever layout their caller names.
 Pinned by the cross-topology restore tests in `param_decomp/tests/core/test_checkpoint.py`.
 
 Synchronous saves (no async): a SIGTERM-triggered save must be on disk before the
-process exits for SLURM requeue-resume.
+process exits for restart and resume.
 
-`init_from_parent` is the fine-tune entry (SPEC S33): a fresh run loads a PARENT
-checkpoint's `decomposition` (the trained product) but starts a clean schedule —
-fresh optimizer / sources, `step=0` — under a NEW config (changed LR / coeffs / steps,
-same component & ci-fn structure).
+Fine-tuning restores only the decomposition, then initializes fresh training state
+under the new config. The parent optimizer and adversary history are never read.
 """
 
-import dataclasses
 from pathlib import Path
 from typing import cast
 
 import jax
 import orbax.checkpoint as ocp
+from beartype import beartype
+from jax.experimental.layout import Format
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
+from jaxtyping import jaxtyped
 from orbax.checkpoint.checkpoint_managers import PreservationPolicy, preservation_policy
 from orbax.checkpoint.type_handlers import ArrayHandler, register_type_handler
 
+from param_decomp.core.components import ComponentStacks
 from param_decomp.core.configs import (
     CheckpointRetention,
     KeepAllCheckpoints,
     KeepLastNCheckpoints,
 )
-from param_decomp.core.train import TrainState
+from param_decomp.core.pytree import FormatTree, ShapeTree
+from param_decomp.core.train import TrainingProgress, TrainState
 
 # Replica-parallel writes (multiple hosts cooperatively writing a REPLICATED array)
 # hit a Shard-internals incompatibility on multi-controller jax 0.10 and buy nothing
@@ -77,8 +81,8 @@ def make_checkpoint_manager(
 
 
 def make_read_only_checkpoint_manager(ckpt_dir: Path) -> ocp.CheckpointManager:
-    """A manager for consumers that only restore (fine-tune parent init, `open_jax_run`,
-    fine-tune initialization and other downstream readers). `read_only` makes orbax refuse both saves and deletes, so no
+    """A manager for consumers that only restore (fine-tune parent init, `open_run`, and
+    other downstream readers). `read_only` makes orbax refuse both saves and deletes, so no
     retention question arises: a reader of someone else's run has no say in what that run
     keeps on disk."""
     return ocp.CheckpointManager(
@@ -86,7 +90,9 @@ def make_read_only_checkpoint_manager(ckpt_dir: Path) -> ocp.CheckpointManager:
     )
 
 
-def save_state(mgr: ocp.CheckpointManager, step: int, state: TrainState) -> None:
+def save_state[Conditioning, Training: TrainingProgress](
+    mgr: ocp.CheckpointManager, step: int, state: TrainState[Conditioning, Training]
+) -> None:
     mgr.save(
         step,
         args=ocp.args.Composite(
@@ -97,67 +103,91 @@ def save_state(mgr: ocp.CheckpointManager, step: int, state: TrainState) -> None
     mgr.wait_until_finished()
 
 
-def restore_step(mgr: ocp.CheckpointManager, reference: TrainState, step: int) -> TrainState:
-    """Restore checkpoint `step` onto `reference`'s shapes/dtypes/shardings
-    (a freshly-initialised, correctly-placed `TrainState`)."""
-    abstract = jax.tree.map(ocp.utils.to_shape_dtype_struct, reference)
-    composite = mgr.restore(
-        step,
-        args=ocp.args.Composite(
-            decomposition=ocp.args.StandardRestore(abstract.decomposition),
-            training=ocp.args.StandardRestore(abstract.training),
-        ),
-    )
-    restored = TrainState(decomposition=composite["decomposition"], training=composite["training"])
-    # Coerce the restored tree onto the reference's exact FORMAT (layout + sharding), not just its
-    # sharding. StandardRestore already honors the sharding SPEC (verified), so a device_put onto
-    # sharding alone is a no-op — but orbax-restored arrays carry a default memory LAYOUT that
-    # differs from what the jitted step was compiled for. The reference is a fresh-init state built
-    # by the same XLA layout assignment as the step, so its `.format` IS the step's expected input
-    # layout; matching it avoids a ÷1-scale entry relayout on the first resumed step (the resume OOM).
-    restored = jax.device_put(restored, jax.tree.map(lambda r: r.format, reference))
-    return cast(TrainState, restored)
+@jaxtyped(typechecker=beartype)
+def restore_destination[Tree](
+    abstract: ShapeTree[Tree], formats: FormatTree, mesh: Mesh
+) -> ShapeTree[Tree]:
+    """Pair initializer shapes with the compiled consumer's physical input formats."""
+
+    def destination(shape: jax.ShapeDtypeStruct, fmt: Format) -> jax.ShapeDtypeStruct:
+        if fmt.sharding is None:
+            # Pruned inputs have no consumer layout; retain their declared placement.
+            assert fmt.layout is None
+            match shape.sharding:
+                case None:
+                    sharding = NamedSharding(mesh, P())
+                case NamedSharding(spec=spec):
+                    sharding = NamedSharding(mesh, spec)
+                case unexpected:
+                    raise TypeError(f"unexpected initializer sharding: {unexpected}")
+            fmt = Format(None, sharding)
+        return jax.ShapeDtypeStruct(shape.shape, shape.dtype, sharding=fmt)
+
+    return jax.tree.map(destination, abstract, formats)
 
 
-def restore_latest(
-    mgr: ocp.CheckpointManager, reference: TrainState
-) -> tuple[TrainState, int] | None:
+@jaxtyped(typechecker=beartype)
+def restore_step[Conditioning, Training: TrainingProgress](
+    mgr: ocp.CheckpointManager,
+    destination: ShapeTree[TrainState[Conditioning, Training]],
+    step: int,
+) -> TrainState[Conditioning, Training]:
+    """Load checkpoint values directly into the declared shapes and physical layouts."""
+    # Orbax uploads local shards before assembling global arrays.
+    with jax.set_mesh(None):
+        composite = mgr.restore(
+            step,
+            args=ocp.args.Composite(
+                decomposition=ocp.args.StandardRestore(
+                    destination.decomposition, support_layout=True
+                ),
+                training=ocp.args.StandardRestore(destination.training, support_layout=True),
+            ),
+        )
+    return TrainState(decomposition=composite["decomposition"], training=composite["training"])
+
+
+def restore_latest[Conditioning, Training: TrainingProgress](
+    mgr: ocp.CheckpointManager, destination: ShapeTree[TrainState[Conditioning, Training]]
+) -> tuple[TrainState[Conditioning, Training], int] | None:
     """`restore_step` at the newest checkpoint; None if no checkpoint."""
     step = mgr.latest_step()
     if step is None:
         return None
-    return restore_step(mgr, reference, step), step
+    return restore_step(mgr, destination, step), step
 
 
+@jaxtyped(typechecker=beartype)
 def restore_decomposition[DecompositionTree](
-    mgr: ocp.CheckpointManager, step: int, abstract: DecompositionTree
+    mgr: ocp.CheckpointManager, step: int, abstract: ShapeTree[DecompositionTree]
 ) -> DecompositionTree:
     """Restore ONLY the trained decomposition of checkpoint `step` onto `abstract`'s
-    shapes/dtypes/shardings (`to_shape_dtype_struct` of a correctly-placed reference)."""
-    composite = mgr.restore(
-        step, args=ocp.args.Composite(decomposition=ocp.args.StandardRestore(abstract))
-    )
+    shapes, dtypes, and optional physical layouts."""
+    with jax.set_mesh(None):
+        composite = mgr.restore(
+            step,
+            args=ocp.args.Composite(
+                decomposition=ocp.args.StandardRestore(abstract, support_layout=True)
+            ),
+        )
     return cast(DecompositionTree, composite["decomposition"])
 
 
-def init_from_parent(parent_ckpt_dir: Path, parent_step: int, reference: TrainState) -> TrainState:
-    """Fine-tune init (SPEC S33): load the parent checkpoint's trained decomposition ONTO
-    `reference` (a fresh-from-init `TrainState` built from the NEW config), and keep the
-    fresh reference's optimizer states, persistent sources, and `step=0`.
-
-    Only the decomposition carries over — the new schedule wants a clean Adam (no stale
-    momentum scale) and a fresh adversary; the schedule recomputes from step 0 over the
-    new `cfg.steps`. Orbax requires the reference's decomposition to be
-    shape/dtype/sharding-identical to the parent's saved one: a mismatch in
-    component/ci_fn structure (different sites / C / ci-fn arch) fails the restore. The
-    config-level structural guard in `run.py` is the readable pre-check before this
-    point. The parent's optimizer/adversary state is never read, so it may differ freely.
-    `reference.step` is kept as-is: it is already a GLOBAL replicated zero
-    (`_ensure_global`); re-creating it host-local would break the multi-host save."""
-    parent_mgr = make_read_only_checkpoint_manager(parent_ckpt_dir)
-    assert parent_step in parent_mgr.all_steps(), (
-        f"parent step {parent_step} not in {parent_ckpt_dir} (have {sorted(parent_mgr.all_steps())})"
-    )
-    abstract = jax.tree.map(ocp.utils.to_shape_dtype_struct, reference.decomposition)
-    parent = restore_decomposition(parent_mgr, parent_step, abstract)
-    return dataclasses.replace(reference, decomposition=parent)
+def restore_components(
+    mgr: ocp.CheckpointManager, step: int, abstract: ShapeTree[ComponentStacks]
+) -> ComponentStacks:
+    """Restore ONLY the component stacks of checkpoint `step`'s decomposition, leaving its
+    CI fn unread — a consumer that never evaluates CI needs no CI architecture."""
+    item = {"components": abstract}
+    with jax.set_mesh(None):
+        composite = mgr.restore(
+            step,
+            args=ocp.args.Composite(
+                decomposition=ocp.args.PyTreeRestore(
+                    item=item,
+                    restore_args=ocp.checkpoint_utils.construct_restore_args(item),
+                    partial_restore=True,
+                )
+            ),
+        )
+    return composite["decomposition"]["components"]

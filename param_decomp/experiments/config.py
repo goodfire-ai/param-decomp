@@ -3,7 +3,7 @@ helpers every experiment reuses.
 
 Each experiment subclasses `ExperimentConfig` to fix the concrete `target` / `data` types.
 The generic engine reads the pydantic `pd` / `cadence` DIRECTLY, so there is no
-flattened mirror to build; `run_instance` / `ci_arch` resolve the run identity and the
+flattened mirror to build; `run_instance` / `ci_fn_arch` resolve the run identity and the
 CI-fn architecture, and each experiment's `run.py` assembles the rest (target + data).
 """
 
@@ -11,13 +11,14 @@ import re
 from pathlib import Path
 
 from param_decomp.core.base_config import BaseConfig
-from param_decomp.core.built_run import LAUNCH_CONFIG_FILENAME, RunInstance
+from param_decomp.core.built_run import RunInstance
 from param_decomp.core.configs import (
     Cadence,
     PDConfig,
     ResumeProvenance,
     WandbConfig,
 )
+from param_decomp.core.run_files import LAUNCH_CONFIG_FILENAME
 
 
 class ExperimentConfigBase(BaseConfig):

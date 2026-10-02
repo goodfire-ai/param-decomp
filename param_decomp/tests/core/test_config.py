@@ -5,38 +5,59 @@ helpers as an explicit arg (`RUN_ID` here), and the run dir derives from it
 (`<data_root>/runs/<run_id>`)."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import jax.numpy as jnp
 import pytest
 import yaml
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
-from param_decomp.core.components import SiteC
+from param_decomp.core.ci_fn.implementations.chunkwise.arch import ChunkwiseTransformerCIFnArch
+from param_decomp.core.components import DenseFactorization, SiteC, SiteSpec
 from param_decomp.core.configs import (
+    AdamPGDConfig,
+    AnyLossMetricConfig,
+    BatchSourceShape,
     CI_L0Config,
     CIHistogramsConfig,
     ComponentActivationDensityConfig,
+    EvalPGDReconLossConfig,
     ImportanceMinimalityLossConfig,
+    MergedStochasticSubsetPPGDReconLossConfig,
     PersistentPGDReconLossConfig,
+    PGDInitStrategy,
     PGDReconLossConfig,
+    PGDReconSubsetLossConfig,
+    SlowPGDReconLossConfig,
+    TargetedLossMetricConfig,
 )
-from param_decomp.core.losses import scheduled_value_traced
-from param_decomp.core.objective import build_objective
+from param_decomp.core.objective import build_objective, build_recon_terms
 from param_decomp.core.recon import (
+    FreshPGDSources,
     persistent_configs,
 )
+from param_decomp.core.runtime_schedule import scheduled_value_traced
+from param_decomp.core.schedule import ScheduleConfig
+from param_decomp.core.world_size import SingleNode
+from param_decomp.experiments.eval_config import AnyEvalMetricConfig
 from param_decomp.experiments.lm.config import (
+    HFTarget,
+    HFWeightsInVendored,
+    LMDecompositionConfig,
     LMExperimentConfig,
+    LMTargetConfig,
     build_experiment_config,
     load_config,
+    resolve_decomposition,
 )
 from param_decomp.experiments.lm.eval_config import (
     ArithmeticCIGridConfig,
     CEandKLLossesConfig,
 )
 from param_decomp.experiments.lm.resolved import ResolvedLMData
-from param_decomp.targets.glu_transformer import mlp_family_site_cs
+from param_decomp.experiments.lm.scalar_eval_operations import fresh_pgd_probe
+from param_decomp.targets.transformer import mlp_family_site_cs
+from param_decomp.tests.lm_configs import arithmetic_metric, l18_mlp_raw, llama_raw
 
 CONFIGS = Path(__file__).parents[2] / "experiments" / "lm" / "configs"
 RUN_ID = "p-0123abcd"
@@ -44,26 +65,30 @@ DATA_ROOT = Path("out")
 
 
 def _reference_lm_raw():
-    return yaml.safe_load((CONFIGS / "llama8b_l18_b128_cmp32.yaml").read_text())
+    return l18_mlp_raw()
 
 
-def test_b128_config_converts():
-    converted, authored = load_config(CONFIGS / "llama8b_l18_b128_cmp32.yaml", RUN_ID, DATA_ROOT)
+def test_l18_mlp_variant_converts():
+    authored = LMExperimentConfig.model_validate(l18_mlp_raw())
+    converted = build_experiment_config(authored, RUN_ID, DATA_ROOT)
     # The substrate rides on the authored config, not the engine's bundle.
-    assert authored.runtime.world_size == 1 and authored.runtime.sharding == "zero1"
-    assert converted.run.run_name == "jax-l18-b128-cmp32-from-torch"
+    assert (
+        authored.runtime.world_size == SingleNode(n_gpus=1) and authored.runtime.sharding == "owner"
+    )
+    assert converted.run.run_name == "test-l18-mlp"
     assert converted.pd.batch_size == 128 and converted.data is not None
     assert converted.target.sites == mlp_family_site_cs(18, 18, 24576)
     losses = build_objective(
-        converted.pd.loss_metrics, tuple(sc.name for sc in converted.target.sites)
+        converted.pd.loss_metrics,
+        resolve_decomposition(authored.target, authored.decomposition, DATA_ROOT).site_specs,
     )
-    faith, imp = losses.faith, losses.imp
-    assert isinstance(imp.cfg, ImportanceMinimalityLossConfig)
-    assert faith.coeff == 1.0e3 and imp.cfg.gamma.max_val == 1.0
+    faith, imp = losses.faith, losses.minimality
+    assert float(faith.coeff.at(jnp.float32(0))) == 1.0e3
+    assert imp.gamma.max_val == 1.0
     (ppgd,) = persistent_configs(losses.recon).values()
     assert isinstance(ppgd, PersistentPGDReconLossConfig)
     assert ppgd.n_warmup_steps == 2
-    assert converted.pd.components_optimizer.grad_clip_norm == 0.01
+    assert converted.pd.components_optimizer.grad_clip_norm == 1.0
     assert [t.name for t in losses.recon] == [
         "StochasticReconSubsetLoss",
         "PersistentPGDReconLoss",
@@ -104,7 +129,6 @@ def test_eval_block_maps_slow_tier_and_defers_offline_only_metrics(
             {"type": "CI_L0", "groups": None, "ci_alive_threshold": 0.0},
             {
                 "type": "PGDReconLoss",
-                "coeff": None,
                 "name": "fresh_probe",
                 "init": "random",
                 "source_shape": "c",
@@ -141,7 +165,7 @@ def test_eval_block_maps_slow_tier_and_defers_offline_only_metrics(
         for metric in cfg.eval.metrics
     )
     assert any(
-        isinstance(metric, PGDReconLossConfig)
+        isinstance(metric, EvalPGDReconLossConfig)
         and metric.name == "fresh_probe"
         and metric.n_steps == 20
         and metric.step_size == 0.1
@@ -165,7 +189,8 @@ def test_eval_data_resolves_to_a_separate_holdout():
         build_experiment_config(LMExperimentConfig(**dict(raw, data=same_both)), RUN_ID, DATA_ROOT)
 
 
-def test_eval_pgd_threads_hidden_acts_reconstruction_into_built_probe():
+@pytest.mark.parametrize("kind", ["PGDReconLoss", "SlowPGDReconLoss"])
+def test_eval_pgd_threads_hidden_acts_reconstruction_into_built_probe(kind: str):
     raw = _reference_lm_raw()
     raw["eval"] = {
         "batch_size": 1,
@@ -176,28 +201,50 @@ def test_eval_pgd_threads_hidden_acts_reconstruction_into_built_probe():
             {"type": "CEandKLLosses", "rounding_threshold": 0.0},
             {"type": "CI_L0", "groups": None, "ci_alive_threshold": 0.0},
             {
-                "type": "PGDReconLoss",
+                "type": kind,
                 "init": "random",
                 "source_shape": "c",
                 "n_steps": 1,
                 "step_size": 0.1,
-                "hidden_acts_reconstruction": {"coeff": 0.0, "points": ["resid.19"]},
+                "auxiliaries": [
+                    {
+                        "name": "hidden_acts_reconstruction",
+                        "coeff": 0.0,
+                        "comparisons": [
+                            {"capture": "resid.19", "distance": "relative_squared_error"}
+                        ],
+                    }
+                ],
             },
         ],
     }
     authored = LMExperimentConfig(**raw)
     assert authored.eval is not None
-    [metric] = [m for m in authored.eval.metrics if isinstance(m, PGDReconLossConfig)]
-    assert metric.hidden_acts_reconstruction is not None
-    assert metric.hidden_acts_reconstruction.coeff == 0.0
-    assert metric.hidden_acts_reconstruction.points == ("resid.19",)
+    [metric] = [
+        m
+        for m in authored.eval.metrics
+        if isinstance(m, (EvalPGDReconLossConfig, SlowPGDReconLossConfig))
+    ]
+    (auxiliary,) = metric.auxiliaries
+    assert auxiliary.coeff == 0.0
+    assert tuple(comparison.capture for comparison in auxiliary.comparisons) == ("resid.19",)
+    probe = fresh_pgd_probe(metric)
+    assert probe.name == kind
+    assert probe.n_steps == 1 and probe.step_size == 0.1
+    assert probe.reconstruction_capture_keys == frozenset({"resid.19"})
     build_experiment_config(authored, RUN_ID, DATA_ROOT)
 
 
 def test_training_hidden_acts_reconstruction_refuses_measurement_only_coefficient():
     raw = _reference_lm_raw()
     recon = next(metric for metric in raw["pd"]["loss_metrics"] if "Recon" in metric["type"])
-    recon["hidden_acts_reconstruction"] = {"coeff": 0.0, "points": ["resid.19"]}
+    recon["auxiliaries"] = [
+        {
+            "name": "hidden_acts_reconstruction",
+            "coeff": 0.0,
+            "comparisons": [{"capture": "resid.19", "distance": "relative_squared_error"}],
+        }
+    ]
 
     with pytest.raises(ValidationError, match="zero is reserved for eval-only measurement"):
         LMExperimentConfig.model_validate(raw)
@@ -223,26 +270,74 @@ def test_unsupported_settings_refuse():
     with pytest.raises(ValidationError):
         LMExperimentConfig(**_with_cs({"c_fc": 512}))
 
-    # family <-> target mismatch survives parse (both are well-formed) but is refused at
-    # resolve: a simple_mlp c-spec against the GLU Llama-3.1 target.
-    simple_mlp_sites = dict(
-        raw,
-        decomposition=dict(
-            raw["decomposition"],
-            sites={"kind": "simple_mlp", "layers": {"kind": "all"}, "cs": {"c_fc": 512}},
-        ),
-    )
-    with pytest.raises(AssertionError, match="c-spec family"):
-        build_experiment_config(LMExperimentConfig(**simple_mlp_sites), RUN_ID, DATA_ROOT)
+
+TargetKind = Literal[
+    "HFTarget", "HFWeightsInVendored", "PretrainedTarget", "PretrainedQwen35MoeTarget"
+]
+SitesKind = Literal["GluTransformerCSpec", "SimpleMlpCSpec", "Qwen36MoeCSpec"]
+
+
+def _repo_config(name: str) -> LMExperimentConfig:
+    return LMExperimentConfig.model_validate(yaml.safe_load((CONFIGS / name).read_text()))
+
+
+def _repo_target(kind: TargetKind) -> LMTargetConfig:
+    match kind:
+        case "HFTarget":
+            return _repo_config("llama3_1_8b.yaml").target
+        case "HFWeightsInVendored":
+            hf = _repo_config("llama3_1_8b.yaml").target
+            assert isinstance(hf.spec, HFTarget)
+            vendored = HFWeightsInVendored(
+                model_class="param_decomp.experiments.lm.vendored.llama_3_1.model.VendoredLlama",
+                model_name=hf.spec.model_name,
+            )
+            return hf.model_copy(update={"spec": vendored})
+        case "PretrainedTarget":
+            return _repo_config("pile_llama_simple_mlp-4L.yaml").target
+        case "PretrainedQwen35MoeTarget":
+            return _repo_config("pile_qwen3_5_moe-4L.yaml").target
+
+
+def _repo_decomposition(kind: SitesKind) -> LMDecompositionConfig:
+    match kind:
+        case "GluTransformerCSpec":
+            return _repo_config("llama3_1_8b.yaml").decomposition
+        case "SimpleMlpCSpec":
+            return _repo_config("pile_llama_simple_mlp-4L.yaml").decomposition
+        case "Qwen36MoeCSpec":
+            return _repo_config("pile_qwen3_5_moe-4L.yaml").decomposition
+
+
+@pytest.mark.parametrize(
+    ("target_kind", "sites_kind"),
+    [
+        ("PretrainedTarget", "GluTransformerCSpec"),
+        ("PretrainedQwen35MoeTarget", "GluTransformerCSpec"),
+        ("HFTarget", "SimpleMlpCSpec"),
+        ("HFWeightsInVendored", "SimpleMlpCSpec"),
+        ("PretrainedQwen35MoeTarget", "SimpleMlpCSpec"),
+        ("HFWeightsInVendored", "Qwen36MoeCSpec"),
+        ("PretrainedTarget", "Qwen36MoeCSpec"),
+    ],
+)
+def test_resolution_refuses_every_illegal_target_sites_pair(
+    target_kind: TargetKind, sites_kind: SitesKind
+):
+    """Target spec and c-spec parse independently, so the schema admits their full
+    product; resolution refuses every pair outside the legal combinations, by name."""
+    with pytest.raises(ValueError, match=f"^{target_kind} can't decompose {sites_kind} sites$"):
+        resolve_decomposition(_repo_target(target_kind), _repo_decomposition(sites_kind), DATA_ROOT)
 
 
 def test_unsupported_model_variant_refuses_and_supported_variants_dispatch():
     """E23: only the `HF_MODEL_VARIANTS` models (`hf`/`hf_weights_in_vendored`
-    → `TargetConfig`; Llama-3.1-8B and the registered Qwen3 checkpoints) and
-    `LlamaSimpleMLP` (`pretrained` → `LlamaSimpleMLPTargetConfig`) convert; every other
-    variant is refused at convert time. The schema's `LMTargetSpec` discriminated union
-    still validates a GPT-2 spec (it's a well-formed `kind`), so the refusal must come
-    from `_resolve_target`'s
+    → `TargetConfig`; Llama-3.1-8B and the registered Qwen3 checkpoints),
+    `LlamaSimpleMLP` (`pretrained` → `LlamaSimpleMLPTargetConfig`) and the qwen36_moe
+    sources (`hf` 35B / `pretrained_qwen35_moe` → `Qwen36MoeTargetConfig`, pinned by
+    `test_qwen36_wiring`) convert; every other variant is refused at convert time. The
+    schema's `LMTargetSpec` discriminated union still validates a GPT-2 spec (it's a
+    well-formed `kind`), so the refusal must come from `resolve_decomposition`'s
     per-family asserts, not pydantic."""
     from param_decomp.experiments.lm.resolved import LlamaSimpleMLPTargetConfig, TargetConfig
 
@@ -319,22 +414,32 @@ def test_unsupported_model_variant_refuses_and_supported_variants_dispatch():
     with pytest.raises(AssertionError, match="Llama-3.2-1B"):
         _converted_target(other_hf_llama)
 
-    # `pretrained` dispatches into the LlamaSimpleMLP branch (proven by the
-    # model-class assert firing there); a non-LlamaSimpleMLP pretrained spec refuses
-    # before any disk access.
-    non_simple_mlp_pretrained = {
-        "kind": "pretrained",
-        "model_class": "param_decomp.experiments.lm.pretrain.models.gpt2.GPT2Simple",
-        "run_path": "goodfire/spd/runs/t-deadbeef",
-    }
+    # `pretrained` with a simple_mlp c-spec dispatches into the LlamaSimpleMLP branch
+    # (proven by the model-class assert firing there); a non-LlamaSimpleMLP pretrained spec
+    # refuses before any disk access.
+    non_simple_mlp_pretrained = dict(
+        raw,
+        target=dict(
+            raw["target"],
+            spec={
+                "kind": "pretrained",
+                "model_class": "param_decomp.experiments.lm.pretrain.models.gpt2.GPT2Simple",
+                "run_path": "goodfire/spd/runs/t-deadbeef",
+            },
+        ),
+        decomposition=dict(
+            raw["decomposition"],
+            sites={"kind": "simple_mlp", "layers": {"kind": "all"}, "cs": {"c_fc": 512}},
+        ),
+    )
     with pytest.raises(AssertionError, match="GPT2Simple"):
-        _converted_target(non_simple_mlp_pretrained)
+        build_experiment_config(LMExperimentConfig(**non_simple_mlp_pretrained), RUN_ID, DATA_ROOT)
 
     assert LlamaSimpleMLPTargetConfig is not None  # the `pretrained` happy-path type
 
 
 def test_decaying_persistent_source_schedule_accepted_and_decays():
-    """Issue #646 refused a decaying persistent-source `lr_schedule` because the JAX
+    """A decaying persistent-source `lr_schedule` must not be flattened: the JAX
     source LR was computed by a specialized `warmup_then_constant_lr` with no decay
     branch at all — a configured decay would have silently flattened. `adversary.py`'s
     `source_lr` now goes through the same generic `scheduled_value_traced` every other
@@ -365,8 +470,12 @@ def test_decaying_persistent_source_schedule_accepted_and_decays():
             ],
         ),
     )
-    built = build_experiment_config(LMExperimentConfig(**decaying_source), RUN_ID, DATA_ROOT)
-    losses = build_objective(built.pd.loss_metrics, tuple(sc.name for sc in built.target.sites))
+    authored = LMExperimentConfig(**decaying_source)
+    built = build_experiment_config(authored, RUN_ID, DATA_ROOT)
+    losses = build_objective(
+        built.pd.loss_metrics,
+        resolve_decomposition(authored.target, authored.decomposition, DATA_ROOT).site_specs,
+    )
     (cfg,) = persistent_configs(losses.recon).values()
     schedule = cfg.optimizer.lr_schedule
     assert not schedule.is_constant and schedule.max_val == 0.01
@@ -411,7 +520,10 @@ def test_all_block_resids_concatenates_one_tap_per_block():
     """`input_tap` default (`first_block_resid`): a multi-block chunk reads ONE tap — the
     residual entering its first block. `all_block_resids` concatenates one tap per block in
     the chunk, widening `ci_fn.input_dim` `blocks_per_chunk`x."""
-    from param_decomp.core.ci_fn import Chunk, ChunkwiseTransformerCIArch
+    from param_decomp.core.ci_fn.implementations.chunkwise.arch import (
+        Chunk,
+        ChunkwiseTransformerCIFnArch,
+    )
 
     raw = _reference_lm_raw()
 
@@ -433,14 +545,14 @@ def test_all_block_resids_concatenates_one_tap_per_block():
     default_cfg = build_experiment_config(
         LMExperimentConfig(**_two_block_cfg("first_block_resid")), RUN_ID, DATA_ROOT
     )
-    assert isinstance(default_cfg.ci_fn, ChunkwiseTransformerCIArch)
+    assert isinstance(default_cfg.ci_fn, ChunkwiseTransformerCIFnArch)
     assert default_cfg.ci_fn.chunks == (Chunk(input_taps=("resid.18",), output_sites=output_sites),)
     assert default_cfg.ci_fn.input_dim == 4096
 
     all_taps_cfg = build_experiment_config(
         LMExperimentConfig(**_two_block_cfg("all_block_resids")), RUN_ID, DATA_ROOT
     )
-    assert isinstance(all_taps_cfg.ci_fn, ChunkwiseTransformerCIArch)
+    assert isinstance(all_taps_cfg.ci_fn, ChunkwiseTransformerCIFnArch)
     assert all_taps_cfg.ci_fn.chunks == (
         Chunk(input_taps=("resid.18", "resid.19"), output_sites=output_sites),
     )
@@ -449,7 +561,7 @@ def test_all_block_resids_concatenates_one_tap_per_block():
     taps_cfg = build_experiment_config(
         LMExperimentConfig(**_two_block_cfg("all_block_taps")), RUN_ID, DATA_ROOT
     )
-    assert isinstance(taps_cfg.ci_fn, ChunkwiseTransformerCIArch)
+    assert isinstance(taps_cfg.ci_fn, ChunkwiseTransformerCIFnArch)
     assert taps_cfg.ci_fn.chunks == (
         Chunk(
             input_taps=(
@@ -468,47 +580,32 @@ def test_all_block_resids_concatenates_one_tap_per_block():
     assert taps_cfg.ci_fn.input_dim == (4096 + 4096 + 4096 + 14336) * 2
 
 
-def test_c49k_config_converts():
-    """The C49k/200k config (raw-HF target spec, bf16 weights_dtype, `model.`-prefixed
-    site patterns) must convert cleanly."""
-    converted, _raw = load_config(CONFIGS / "llama8b_l18_C49k_200k.yaml", RUN_ID, DATA_ROOT)
-    assert converted.target.sites == mlp_family_site_cs(18, 18, 49152)
-    assert converted.pd.steps == 200000
+def test_canonical_llama_config_converts():
+    converted, authored = load_config(CONFIGS / "llama3_1_8b.yaml", RUN_ID, DATA_ROOT)
+    assert len(converted.target.sites) == 32 * 7
+    assert converted.pd.steps == 50000
+    assert converted.pd.batch_size == 1024
     assert isinstance(converted.data, ResolvedLMData)
-    assert converted.pd.batch_size == 512 and converted.data.dir.name == "fineweb_llama_tok_2048"
-    assert converted.pd.components_optimizer.lr_schedule.max_val == 7e-05
-    assert converted.pd.ci_fn_optimizer.lr_schedule.max_val == 7e-05
-    authored = LMExperimentConfig.model_validate(_raw)
+    assert converted.data.dir.name == "fineweb350bt_llama3_docs512_r9bb295dd_seed0_train48_v2"
     assert authored.eval is not None
-    assert any(isinstance(metric, PGDReconLossConfig) for metric in authored.eval.metrics)
-    assert converted.run.wandb is not None and converted.run.wandb.entity is None
+    assert any(isinstance(metric, EvalPGDReconLossConfig) for metric in authored.eval.metrics)
 
 
-def test_nine_layer_config_converts():
-    """The launch-critical 9-layer chunkwise config: 27 MLP sites (layers 18-26), seq
-    512, B=128, 40k steps, eps 1e-6, comp 1.5e-4 / ci_fn 5e-5, remat on."""
-    converted, authored = load_config(
-        CONFIGS / "llama8b_l18-26_9layer_chunkwise.yaml", RUN_ID, DATA_ROOT
-    )
-    assert converted.run.run_name == "jax-l18-26-9L-seq512-b128-40k"
-    assert len(converted.target.sites) == 27
-    assert isinstance(converted.data, ResolvedLMData)
-    assert (
-        converted.data.dir.name == "fineweb_llama_tok_512_train284"
-        and converted.pd.batch_size == 128
-    )
-    assert converted.pd.steps == 40000
-    assert converted.pd.components_optimizer.lr_schedule.max_val == 1.5e-4
-    assert converted.pd.ci_fn_optimizer.lr_schedule.max_val == 5e-5
+def test_nine_layer_variant_converts():
+    raw = l18_mlp_raw()
+    raw["decomposition"]["sites"]["layers"] = {"kind": "range", "start": 18, "end": 27}
+    authored = LMExperimentConfig.model_validate(raw)
+    converted = build_experiment_config(authored, RUN_ID, DATA_ROOT)
+    assert converted.target.sites == mlp_family_site_cs(18, 26, 24576)
+    assert isinstance(converted.ci_fn, ChunkwiseTransformerCIFnArch)
+    assert len(converted.ci_fn.chunks) == 9
     assert authored.runtime.remat_recon_forwards is True
-    imp = next(m for m in converted.pd.loss_metrics if m.type == "ImportanceMinimalityLoss")
-    assert imp.gamma.max_val == 1.0 and imp.coeff == 5e-6
 
 
 def test_pinned_run_uses_current_schema(tmp_path: Path):
     """Pinned configs have the same strict contract as authored configs."""
-    raw = yaml.safe_load((CONFIGS / "llama8b_l18_C49k_200k.yaml").read_text())
-    raw["runtime"]["launch"] = "slurm"
+    raw = llama_raw()
+    raw["runtime"]["launch"] = "external"
     config = tmp_path / "launch_config.yaml"
     config.write_text(yaml.safe_dump(raw))
 
@@ -520,26 +617,19 @@ def test_run_id_drives_identity_and_rejects_malformed():
     """The run dir and wandb id are the p-id (runs/<id>/ convention); the human name
     stays the wandb display name. The run id is the build helper's arg; a malformed id
     refuses at build time."""
-    config = CONFIGS / "llama8b_l18_C49k_200k.yaml"
+    config = CONFIGS / "llama3_1_8b.yaml"
     cfg, _ = load_config(config, RUN_ID, DATA_ROOT)
     assert cfg.run.run_id == RUN_ID
     assert cfg.run.run_dir.name == RUN_ID
-    assert cfg.run.run_name == "jax-l18-C49k-200k"
+    assert cfg.run.run_name == "llama3-1-8b"
 
     with pytest.raises(AssertionError, match="run_id must be"):
         load_config(config, "run42", DATA_ROOT)
 
 
 def test_arithmetic_ci_grid_metric_builds_to_arithmetic_eval_config():
-    # In-tree coverage of the ArithmeticCIGrid authored-operation path (C49k enables
-    # it by default; drop that entry and inject a known one so the assert is config-independent).
-    raw = yaml.safe_load((CONFIGS / "llama8b_l18_C49k_200k.yaml").read_text())
-    arithmetic_raw = next(
-        metric for metric in raw["eval"]["metrics"] if metric["type"] == "ArithmeticCIGrid"
-    )
-    raw["eval"]["metrics"] = [
-        metric for metric in raw["eval"]["metrics"] if metric["type"] != "ArithmeticCIGrid"
-    ]
+    raw = llama_raw()
+    arithmetic_raw = arithmetic_metric()
     raw["eval"]["metrics"].append(arithmetic_raw | {"a_range": [1, 50]})
     authored = LMExperimentConfig(**raw)
     assert authored.eval is not None
@@ -562,10 +652,9 @@ def test_arithmetic_ci_grid_metric_builds_to_arithmetic_eval_config():
     (("coeff", None), ("init", "random"), ("source_shape", "c"), ("type", "PGDReconLoss")),
 )
 def test_arithmetic_probe_rejects_unexecuted_fresh_pgd_fields(field: str, value: object):
-    raw = yaml.safe_load((CONFIGS / "llama8b_l18_C49k_200k.yaml").read_text())
-    arithmetic = next(
-        metric for metric in raw["eval"]["metrics"] if metric["type"] == "ArithmeticCIGrid"
-    )
+    raw = llama_raw()
+    arithmetic = arithmetic_metric()
+    raw["eval"]["metrics"].append(arithmetic)
     arithmetic["probe_metrics"]["fresh_pgd"][field] = value
 
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
@@ -589,34 +678,7 @@ def test_placement_table_parses_typed_and_fails_closed():
             "operands": {"C": "tp"},
             "ns_compute": {"stack": "replicate"},
         },
-        "ci_fn": {
-            "attention": {
-                "optimizer_state": {},
-                "compute_weights": {},
-                "operands": {},
-                "ns_compute": {},
-            },
-            "ffn": {
-                "optimizer_state": {},
-                "compute_weights": {},
-                "operands": {},
-                "ns_compute": {},
-            },
-            "input": {
-                "optimizer_state": {},
-                "compute_weights": {},
-                "operands": {},
-                "ns_compute": {},
-            },
-            "output": {
-                "optimizer_state": {},
-                "compute_weights": {},
-                "operands": {},
-                "ns_compute": {},
-            },
-            "vectors": {},
-            "activations": {},
-        },
+        "ci_fn": "owner",
         "activations": {
             "external": {"batch": ["replicate", "fsdp"]},
             "component": {"batch": ["replicate", "fsdp"], "C": "tp"},
@@ -655,6 +717,14 @@ def test_placement_table_parses_typed_and_fails_closed():
         "C": "tp",
     }
 
+    # CI rows belong to the CI architecture: a table names a preset for them, and
+    # hand-written CI rows refuse at parse
+    assert full.ci_fn == "owner"
+    with pytest.raises(ValidationError, match="ci_fn"):
+        PlacementTableConfig.model_validate(
+            {**table, "ci_fn": {"vectors": {}, "activations": {"batch": "replicate"}}}
+        )
+
     # per-group fallback rows are unrepresentable: the closed schema refuses them at parse
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         PlacementTableConfig.model_validate(
@@ -677,34 +747,7 @@ def test_placement_table_parses_typed_and_fails_closed():
                 "operands": {},
                 "ns_compute": {},
             },
-            "ci_fn": {
-                "attention": {
-                    "optimizer_state": {},
-                    "compute_weights": {},
-                    "operands": {},
-                    "ns_compute": {},
-                },
-                "ffn": {
-                    "optimizer_state": {},
-                    "compute_weights": {},
-                    "operands": {},
-                    "ns_compute": {},
-                },
-                "input": {
-                    "optimizer_state": {},
-                    "compute_weights": {},
-                    "operands": {},
-                    "ns_compute": {},
-                },
-                "output": {
-                    "optimizer_state": {},
-                    "compute_weights": {},
-                    "operands": {},
-                    "ns_compute": {},
-                },
-                "vectors": {},
-                "activations": {},
-            },
+            "ci_fn": "ddp",
             "activations": {"external": {}, "component": {}},
             "target": {
                 "embedding": {"persist": {}, "operand": {}},
@@ -789,7 +832,7 @@ def test_placement_table_parses_typed_and_fails_closed():
 
 
 def test_attention_eval_geometry_is_target_owned_not_configurable() -> None:
-    raw = yaml.safe_load((CONFIGS / "llama8b_l18_C49k_200k.yaml").read_text())
+    raw = llama_raw()
     raw["eval"]["metrics"].append(
         {
             "type": "CIMaskedAttnPatternsReconLoss",
@@ -801,3 +844,102 @@ def test_attention_eval_geometry_is_target_owned_not_configurable() -> None:
 
     with pytest.raises(ValidationError, match="extra_forbidden"):
         LMExperimentConfig.model_validate(raw)
+
+
+@pytest.mark.parametrize("kind", ["PGDReconLoss", "PGDReconSubsetLoss"])
+@pytest.mark.parametrize("shape", ["c", "sc"])
+def test_shared_fresh_sources_are_refused_when_training_configs_are_constructed(
+    kind: str, shape: str
+):
+    term = {
+        "type": kind,
+        "coeff": 1.0,
+        "init": "random",
+        "source_shape": shape,
+        "n_steps": 1,
+        "step_size": 0.1,
+    }
+    raw = _reference_lm_raw()
+    raw["pd"]["loss_metrics"].append(term)
+    with pytest.raises(ValidationError, match="source_shape"):
+        LMExperimentConfig.model_validate(raw)
+    cls = PGDReconLossConfig if kind == "PGDReconLoss" else PGDReconSubsetLossConfig
+    with pytest.raises(ValidationError, match="source_shape"):
+        cls.model_validate(term)
+    with pytest.raises(ValidationError, match="source_shape"):
+        TypeAdapter(TargetedLossMetricConfig).validate_python(term)
+
+
+@pytest.mark.parametrize("shape", ["bc", "bsc"])
+@pytest.mark.parametrize("init", ["random", "ones", "zeroes"])
+@pytest.mark.parametrize("cls", [PGDReconLossConfig, PGDReconSubsetLossConfig])
+def test_fresh_training_strategy_retains_its_batch_shape(
+    shape: BatchSourceShape,
+    init: PGDInitStrategy,
+    cls: type[PGDReconLossConfig] | type[PGDReconSubsetLossConfig],
+):
+    cfg = cls(coeff=1.0, init=init, source_shape=shape, n_steps=1, step_size=0.1)
+    (term,) = build_recon_terms(
+        [cfg],
+        (SiteSpec(name="site", factorization=DenseFactorization(d_in=4, d_out=4, C=4), group="g"),),
+    )
+    assert isinstance(term.sources, FreshPGDSources)
+    assert term.sources.source_shape == shape
+    assert term.sources.init == init
+
+
+@pytest.mark.parametrize("cls", [EvalPGDReconLossConfig, SlowPGDReconLossConfig])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("source_shape", "bc"),
+        ("source_shape", "bsc"),
+        ("source_shape", "sc"),
+        ("init", "ones"),
+        ("init", "zeroes"),
+    ],
+)
+def test_eval_pgd_rejects_unsupported_attacks_at_construction(
+    cls: type[EvalPGDReconLossConfig] | type[SlowPGDReconLossConfig], field: str, value: str
+):
+    raw = cls(init="random", source_shape="c", n_steps=2, step_size=0.1).model_dump()
+    raw[field] = value
+    with pytest.raises(ValidationError, match=field):
+        cls.model_validate(raw)
+    with pytest.raises(ValidationError, match=field):
+        TypeAdapter(AnyEvalMetricConfig).validate_python(raw)
+
+
+def test_training_and_eval_parse_the_same_pgd_tag_into_distinct_types():
+    training = PGDReconLossConfig(
+        coeff=1.0, init="random", source_shape="bc", n_steps=2, step_size=0.1
+    )
+    evaluation = EvalPGDReconLossConfig(init="random", source_shape="c", n_steps=2, step_size=0.1)
+    assert training.type == evaluation.type == "PGDReconLoss"
+    train_adapter = TypeAdapter(AnyLossMetricConfig)
+    eval_adapter = TypeAdapter(AnyEvalMetricConfig)
+    assert train_adapter.validate_json(training.model_dump_json()) == training
+    assert eval_adapter.validate_json(evaluation.model_dump_json()) == evaluation
+    with pytest.raises(ValidationError):
+        train_adapter.validate_python(evaluation)
+    with pytest.raises(ValidationError):
+        eval_adapter.validate_python(training)
+
+
+@pytest.mark.parametrize("shape", ["c", "sc"])
+@pytest.mark.parametrize(
+    "cls", [PersistentPGDReconLossConfig, MergedStochasticSubsetPPGDReconLossConfig]
+)
+def test_persistent_training_configuration_requires_a_batch_axis(
+    shape: str,
+    cls: type[PersistentPGDReconLossConfig] | type[MergedStochasticSubsetPPGDReconLossConfig],
+):
+    fields: dict[str, object] = {
+        "coeff": 1.0,
+        "optimizer": AdamPGDConfig(lr_schedule=ScheduleConfig.constant(0.1)),
+        "source_shape": shape,
+    }
+    if cls is MergedStochasticSubsetPPGDReconLossConfig:
+        fields["adv_fraction"] = ScheduleConfig.constant(0.5)
+    with pytest.raises(ValidationError, match="source_shape"):
+        cls.model_validate(fields)

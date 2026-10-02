@@ -2,19 +2,21 @@
 
 Mirrors the torch `Config` recipe fields (next-token CE, AdamW, cosine LR + warmup, grad
 clip) plus the run-instance fields supplied at entry (`run_id`, `data_root`). Data is
-the offline pre-tokenized parquet artifact served by `param_decomp.pretrain.batch_data.ShardServer` —
+the offline pre-tokenized parquet artifact served by `param_decomp.lm.batch_data.ShardServer` —
 NEVER streamed from HF at run time.
 """
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 from annotated_types import Ge, Gt, Le
-from pydantic import Field, PositiveInt
+from pydantic import Field, PositiveInt, model_validator
 
+from param_decomp.attention import AttentionImplementation
 from param_decomp.core.base_config import BaseConfig
 from param_decomp.infra.dataset_store import DatasetRef
+from param_decomp.metric_schema import MetricSchema
 from param_decomp.pretrain.models import (
     GPT2SimpleConfig,
     LlamaSimpleConfig,
@@ -25,6 +27,7 @@ from param_decomp.pretrain.models import (
 
 class PretrainWandbConfig(BaseConfig):
     project: str
+    metric_schema: MetricSchema = "legacy"
     entity: str | None = None
     group: str | None = None
     tags: tuple[str, ...] = ()
@@ -69,7 +72,7 @@ class PretrainConfig(BaseConfig):
         description=(
             "Distributed world size — the number of data-parallel workers (nodes × 8). "
             "None means a single device (CPU / 1-GPU smoke, no jax.distributed). The "
-            "single source of truth for distributedness; never inferred from SLURM env."
+            "single source of truth for distributedness; never inferred from scheduler environment."
         ),
     )
     global_batch: Annotated[int, Gt(0)]
@@ -82,6 +85,8 @@ class PretrainConfig(BaseConfig):
     grad_clip: Annotated[float, Gt(0)] | None
     adam_beta1: float = 0.9
     adam_beta2: float = 0.95
+    attention_implementation: AttentionImplementation
+    """The attention backend used during pretraining, independent of the architecture."""
     dtype: Literal["float32", "bfloat16"]
     """Compute dtype for the forward/backward. Masters are always fp32."""
 
@@ -97,6 +102,19 @@ class PretrainConfig(BaseConfig):
     """The one root of the run's local world — the dataset store, the runs dir, the
     pretrain cache and the compilation cache all hang under it."""
     wandb: PretrainWandbConfig | None = None
+
+    @model_validator(mode="after")
+    def validate_attention_dtype(self) -> Self:
+        match self.attention_implementation:
+            case "flash":
+                if self.dtype == "float32":
+                    raise ValueError(
+                        "flash attention requires bfloat16 pretraining compute; choose "
+                        "dtype: bfloat16 or explicitly select attention_implementation: xla"
+                    )
+            case "xla":
+                pass
+        return self
 
     @property
     def block_size(self) -> int:

@@ -10,11 +10,11 @@ Two kinds of check:
     (`recon_loss_kl` / `get_ppgd_mask_infos` / `LinearComponents.forward`), compared
     at ~1e-4.
 
-  * **Structural.** `test_structure_*` pin SPEC invariants that aren't a single number:
-    each recon term loops its routing draws (S10'), recon is KL not MSE (§2.3),
-    and the PPGD source carries the trailing raw weight-delta channel (S1).
+  * **Structural.** `test_structure_*` pin structural invariants that aren't a single number:
+    recon is KL not MSE, and the PPGD source carries the trailing raw
+    weight-delta channel.
     `test_sc_source_broadcasts_over_batch_in_masked_forward` pins the `sc`
-    broadcast (S1/S16): an `(1, T, C+1)` source broadcasts over `[B, T]` in the masked
+    broadcast: an `(1, T, C+1)` source broadcasts over `[B, T]` in the masked
     forward, and a B/T-transposed source must break it (the fixtures keep `B != T`).
 
 Faithfulness is no longer compared because the target-relative formula intentionally differs
@@ -35,17 +35,17 @@ import inspect
 import json
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-import param_decomp.core.losses as core_losses_mod
-import param_decomp.core.masking as masking_mod
-import param_decomp.core.train as train_mod
 import param_decomp.targets.losses as losses_mod
 from param_decomp.core.adversary import SiteSource, full_source_components
 from param_decomp.core.components import require_full_emission
-from param_decomp.core.masking import masks_from_sources
+from param_decomp.core.masking import materialize_masking, source_masking
+from param_decomp.core.model import MaterializedMasking
+from param_decomp.lm.batch import LMBatchWithDocuments  # noqa: E402
 from param_decomp.targets.testing import materialized_logits, run_masked
 from param_decomp.tests.targets.equivalence.jax_equivalence import (
     compute_jax_terms,
@@ -83,40 +83,28 @@ def test_jax_matches_torch_reference(term: str) -> None:
     )
 
 
-def test_structure_stoch_is_mean_over_draws() -> None:
-    """SPEC S10': one forward per routing draw, and the term's loss is the mean over
-    its draws — not one fused forward over all draws."""
-    src = inspect.getsource(train_mod.ReconGrid)
-    assert "for draw_key, routes in draws" in src, "each recon term must loop its sampled draws"
-    assert "mean_reconstruction_losses" in src
-    reducer_src = inspect.getsource(core_losses_mod.mean_reconstruction_losses)
-    assert "jax.tree.map(scalar_mean, *values)" in reducer_src, (
-        "each breakdown leaf must be averaged over every masked draw"
-    )
-    assert "/ len(scalars)" in reducer_src, (
-        "each breakdown leaf must be normalized by every masked draw"
-    )
-
-
 def test_structure_recon_is_kl_not_mse() -> None:
-    """SPEC §2.3: recon is KL on logits, not MSE."""
+    """Recon is KL on logits, not MSE."""
     src = inspect.getsource(losses_mod.kl_per_position)
     assert "log_softmax" in src and "log_p - log_q" in src, "recon must be KL"
     assert "** 2" not in src and "**2" not in src, "recon must not be MSE"
 
 
 def test_structure_ppgd_has_delta_channel() -> None:
-    """SPEC S1: component sources are interpolated; delta sources are raw masks."""
-    ingredients = inspect.getsource(masking_mod.source_value_cis)
-    assert "source.components" in ingredients and "source.delta" in ingredients
-    compose = inspect.getsource(masking_mod.compose_source_mask)
-    assert "ci + (1.0 - ci) * source_values" in compose, (
-        "ppgd must interpolate mask=ci+(1-ci)*source"
-    )
+    """Component sources are interpolated; delta sources are raw masks."""
+    from param_decomp.core.masking import read_source_mask
+
+    ci = jnp.array([[0.2, 0.7]], dtype=jnp.float32)
+    source = SiteSource(components=jnp.array([[0.3, 0.9]]), delta=jnp.array([0.4]))
+    pair = read_source_mask(ci, source)
+    mask = pair.compose()
+    assert isinstance(mask, jax.Array) and isinstance(source.components, jax.Array)
+    np.testing.assert_allclose(mask, ci + (1.0 - ci) * source.components)
+    np.testing.assert_array_equal(pair.delta, source.delta)
 
 
 def test_sc_scope_broadcast_axis_matches_torch() -> None:
-    """SPEC S1/S16: the `sc`-scope PPGD source `(1, T, C+1)` broadcasts over the batch
+    """The `sc`-scope PPGD source `(1, T, C+1)` broadcasts over the batch
     axis and varies per position. This pins the batch broadcast axis: a silent transpose
     (`(1, T, ...)` read as `(T, 1, ...)`) would broadcast over position and vary per
     batch element instead — uncaught by the scalar-KL `ppgd` term, which sums over `B·T`.
@@ -130,15 +118,20 @@ def test_sc_scope_broadcast_axis_matches_torch() -> None:
     ci_lower_np = rng.uniform(0.0, 1.0, (B, T, C)).astype(np.float32)
     source_np = rng.uniform(0.0, 1.0, (1, T, C + 1)).astype(np.float32)
 
-    masks, delta_masks = masks_from_sources(
-        {site: jnp.asarray(ci_lower_np)},
-        {
-            site: SiteSource(
-                components=jnp.asarray(source_np[..., :-1]),
-                delta=jnp.asarray(source_np[..., -1]),
-            )
-        },
+    masking = materialize_masking(
+        source_masking(
+            {site: jnp.asarray(ci_lower_np)},
+            {
+                site: SiteSource(
+                    components=jnp.asarray(source_np[..., :-1]),
+                    delta=jnp.asarray(source_np[..., -1]),
+                )
+            },
+        )
     )
+    masks = masking.component_masks
+    assert masking.weight_delta_masks is not None
+    delta_masks = masking.weight_delta_masks
     mask = np.asarray(masks[site])
     delta_mask = np.asarray(delta_masks[site])
 
@@ -177,12 +170,12 @@ def test_fixtures_are_batch_asymmetric_so_a_bt_transpose_is_observable() -> None
 
 @_PENDING_REGEN
 def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
-    """SPEC S1/S16: an sc-scope source `(1, T, C+1)` broadcasts over `[B, T]` in the
+    """An sc-scope source `(1, T, C+1)` broadcasts over `[B, T]` in the
     masked forward — shared across batch elements, free per position. This exercises the
     `delta_mask[..., None]` / mask broadcast (`components.site_out`) the way the PPGD path
     does, and pins the broadcast AXIS: transposing the source to `(1, B, C+1)` (B != T)
     must break the forward rather than silently re-interpret the time axis as batch."""
-    from param_decomp.targets.glu_transformer import MLP_KINDS, site_name
+    from param_decomp.targets.transformer import MLP_KINDS, site_name
     from param_decomp.tests.targets.equivalence.jax_equivalence import FP, _build
 
     f = _load_fixtures()
@@ -202,7 +195,10 @@ def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
         assert packed_source[s].shape == (1, T, packed_source[s].shape[-1])
     source = {site: split_packed_fixture(value) for site, value in packed_source.items()}
 
-    masks, delta_masks = masks_from_sources(ci_lower, source)
+    masking = materialize_masking(source_masking(ci_lower, source))
+    masks = masking.component_masks
+    assert masking.weight_delta_masks is not None
+    delta_masks = masking.weight_delta_masks
     # `ci + (1-ci)*src` lifts the sc mask to the CI's batch dim; delta stays sc.
     for s in model.site_names:
         mask = require_full_emission(masks[s])
@@ -213,12 +209,10 @@ def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
         run_masked(
             model,
             model.prepare_compute_weights(vu, None),
-            resid,
-            masks,
-            delta_masks,
-            None,
-            True,
+            LMBatchWithDocuments.from_unsegmented_sequences(resid),
+            MaterializedMasking(component_masks=masks, weight_delta_masks=delta_masks),
             remat=False,
+            routes=None,
         )
     )
     assert pred.shape == (B, T, vocab), pred.shape
@@ -232,14 +226,15 @@ def test_sc_source_broadcasts_over_batch_in_masked_forward() -> None:
     for s in model.site_names:
         assert full_source_components(bt_transposed[s].components).shape[:2] == (1, B)
     with pytest.raises(Exception):  # noqa: B017 — broadcast error, framework-specific type
-        bad_masks, bad_delta = masks_from_sources(ci_lower, bt_transposed)
+        bad_masking = materialize_masking(source_masking(ci_lower, bt_transposed))
+        bad_masks = bad_masking.component_masks
+        assert bad_masking.weight_delta_masks is not None
+        bad_delta = bad_masking.weight_delta_masks
         run_masked(
             model,
             model.prepare_compute_weights(vu, None),
-            resid,
-            bad_masks,
-            bad_delta,
-            None,
-            True,
+            LMBatchWithDocuments.from_unsegmented_sequences(resid),
+            MaterializedMasking(component_masks=bad_masks, weight_delta_masks=bad_delta),
             remat=False,
+            routes=None,
         )

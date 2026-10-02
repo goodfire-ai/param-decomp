@@ -11,15 +11,19 @@ bf16 final-position logits in distribution (KL + argmax) — the weight-loading 
 
 import json
 from pathlib import Path
-from typing import cast
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from jaxtyping import Array
 
-from param_decomp.targets.glu_transformer import hf_snapshot_dir
+from param_decomp.lm.batch import LMBatch
+from param_decomp.targets.lm_output import (
+    MaterializedOutputEdge,
+    OutputEdge,
+    StreamedLinearOutput,
+    StreamedOutputEdge,
+)
 from param_decomp.targets.qwen36_moe import (
     Qwen36MoeConfig,
     build_qwen36_moe_from_weights,
@@ -27,6 +31,7 @@ from param_decomp.targets.qwen36_moe import (
     qwen36_35b_a3b_config,
 )
 from param_decomp.targets.testing import capture_clean, materialized_logits, run_clean
+from param_decomp.targets.transformer import hf_snapshot_dir
 from param_decomp.targets.transformer_taps import resid_tap_key
 
 HERE = Path(__file__).resolve().parent
@@ -65,7 +70,8 @@ def _tiny_cfg_from_golden(config_json: str) -> Qwen36MoeConfig:
     )
 
 
-def test_tiny_random_qwen36_moe_matches_hf():
+@pytest.mark.parametrize("output_edge", [MaterializedOutputEdge(), StreamedOutputEdge(4)])
+def test_tiny_random_qwen36_moe_matches_hf(output_edge: OutputEdge):
     f = np.load(HERE / "qwen36_moe_tiny_hf_fixtures.npz")
     cfg = _tiny_cfg_from_golden(str(f["config_json"]))
     sd = {k.removeprefix("sd::"): f[k] for k in f.files if k.startswith("sd::")}
@@ -73,24 +79,37 @@ def test_tiny_random_qwen36_moe_matches_hf():
     # The production loader mirrored over the in-memory fp32 state dict: the
     # `Qwen3_5MoeForCausalLM` fixture nests the decoder under `model` (the real
     # conditional-generation checkpoint uses `model.language_model`).
-    def get_host(key: str) -> Array:
-        # The production loader's contract (HFWeights.get): host numpy behind the Array type.
-        return cast(Array, cast(object, np.asarray(sd[key], np.float32)))
+    def get(key: str) -> jax.Array:
+        return jnp.asarray(sd[key], jnp.float32)
 
-    model = build_qwen36_moe_from_weights(cfg, (), get_host, decoder_prefix="model")
-    device_leaves = [leaf for leaf in jax.tree.leaves(model) if isinstance(leaf, jax.Array)]
-    assert not device_leaves, (
-        "the production loader assembles on HOST — placement serves per-device shards; a "
-        f"device leaf here is a staging regression: {[jax.typeof(x) for x in device_leaves]}"
+    model = build_qwen36_moe_from_weights(
+        cfg,
+        (),
+        get,
+        decoder_prefix="model",
+        implementation="xla",
+        expert_implementation="tokamax_split_vjp",
+        output_edge=output_edge,
+    )
+    assert jax.tree.leaves(model)
+    assert all(
+        isinstance(weight, jax.Array)
+        and all(device.platform == "cpu" for device in weight.devices())
+        for weight in jax.tree.leaves(model)
     )
     tokens = jnp.asarray(f["tokens"])
     residual_keys = tuple(resid_tap_key(i) for i in range(cfg.n_layer + 1))
-    residuals = capture_clean(model, tokens, residual_keys)
+    residuals = capture_clean(model, LMBatch(tokens), residual_keys)
     for i, key in enumerate(residual_keys):
         np.testing.assert_allclose(residuals[key], f[f"resid::{i}"], rtol=2e-4, atol=1e-5)
-    np.testing.assert_allclose(
-        materialized_logits(run_clean(model, tokens)), f["logits"], rtol=2e-4, atol=1e-5
-    )
+    assert model.output_edge == output_edge
+    output = run_clean(model, LMBatch(tokens))
+    match output:
+        case jax.Array():
+            logits = output
+        case StreamedLinearOutput(activations=activations, head=head):
+            logits = activations @ head.T
+    np.testing.assert_allclose(logits, f["logits"], rtol=2e-4, atol=1e-5)
 
 
 @pytest.mark.slow
@@ -104,15 +123,21 @@ def test_real_qwen36_35b_matches_hf():
         pytest.skip("no local Qwen/Qwen3.6-35B-A3B snapshot")
     f = np.load(HERE / "qwen36_35b_real_logits.npz")
     model = load_decomposed_qwen36_moe_from_hf(
-        "Qwen/Qwen3.6-35B-A3B", qwen36_35b_a3b_config(), (), jnp.bfloat16, "auto"
+        "Qwen/Qwen3.6-35B-A3B",
+        qwen36_35b_a3b_config(),
+        (),
+        jnp.bfloat16,
+        "xla",
+        "tokamax_split_vjp",
+        MaterializedOutputEdge(),
     )
     # fp32 accumulations must not silently drop to TF32 on GPU: the drift grows with
     # depth and at 40 layers exceeds the KL threshold, faking a broken port.
     with jax.default_matmul_precision("highest"):
         logits = np.asarray(
-            materialized_logits(run_clean(model, jnp.asarray(f["tokens"])))[:, -1, :].astype(
-                jnp.float32
-            )
+            materialized_logits(run_clean(model, LMBatch(jnp.asarray(f["tokens"]))))[
+                :, -1, :
+            ].astype(jnp.float32)
         )
     ref = f["final_logits"]
     jax_pick_ref_logit = np.take_along_axis(ref, logits.argmax(-1, keepdims=True), -1)[:, 0]

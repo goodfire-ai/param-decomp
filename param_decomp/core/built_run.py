@@ -6,7 +6,7 @@ The engine reads `pd` / `cadence` DIRECTLY (no flattened mirror): optimizers,
 faith warmup, loss metrics, seed, steps all come off `PDConfig`. The bundle only
 carries the things that are genuinely BUILT lab-side and cannot live in the pydantic schema:
 the run identity (`RunInstance`), the decomposed `target` (typed by the `TargetSites`
-protocol — just `.sites`), the domain-resolved `data` plan (generic and opaque to core), and the built CI-fn architecture (`CIFnArch`). The YAML→bundle
+protocol — just `.sites`), the domain-resolved `data` plan (generic and opaque to core), and the built CI-fn architecture (the domain's closed union of arches). The YAML→bundle
 conversion is composition and lives lab-side
 (`param_decomp/experiments/`).
 """
@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from param_decomp.core.ci_fn import CIFnArch
+from param_decomp.core.ci_fn.architecture import CIFnArchitectureFootprint
 from param_decomp.core.components import SiteC
 from param_decomp.core.configs import (
     Cadence,
@@ -23,10 +23,6 @@ from param_decomp.core.configs import (
     ResumeProvenance,
     WandbConfig,
 )
-
-LAUNCH_CONFIG_FILENAME = "launch_config.yaml"
-"""The self-contained run config pinned into each run dir. Not `config.yaml` — that basename
-clashes with wandb's own run-config file, which `wandb.save` would clobber via symlink."""
 
 
 class TargetSites(Protocol):
@@ -50,8 +46,7 @@ class RunInstance:
     out_dir: Path
     wandb: WandbConfig | None
     resume_provenance: ResumeProvenance | None
-    """Set on a fine-tune run: the parent run dir + step to initialize V/U + ci_fn from
-    (SPEC S33). `None` for a fresh-from-init run."""
+    """Parent run and checkpoint step for fine-tune initialization; `None` for a fresh run."""
 
     @property
     def run_dir(self) -> Path:
@@ -59,7 +54,12 @@ class RunInstance:
 
 
 @dataclass(frozen=True)
-class BuiltRun[DataT, TargetT: TargetSites, PDT: PDConfigBase]:
+class BuiltRun[
+    DataT,
+    TargetT: TargetSites,
+    PDT: PDConfigBase,
+    CIFnArchT: CIFnArchitectureFootprint,
+]:
     """Everything the generic engine needs for one decomposition run: the pydantic
     algorithm config (read DIRECTLY) plus the lab-built objects.
 
@@ -84,4 +84,4 @@ class BuiltRun[DataT, TargetT: TargetSites, PDT: PDConfigBase]:
     LM target config (lab-side) or a lab toy target config (satisfying `TargetSites`)."""
     data: DataT
     """Domain data plan; `None` when composition supplies batches directly."""
-    ci_fn: CIFnArch
+    ci_fn: CIFnArchT

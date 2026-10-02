@@ -1,26 +1,18 @@
-"""Adversarial source state, initialization, and optimization.
+"""Adversarial source initialization, storage, and projected ascent.
 
-Two semantically distinct adversaries share source initialization and optimization but
-nothing else (SPEC §3):
+Persistent PGD keeps source stacks and optimizer state across training steps.
+The trainer runs supplemental warmup ascents and a final ascent using an
+unscaled source gradient. Adam stores coordinate moments, SGD is stateless,
+and momentum SGD stores one velocity buffer. Every update projects to [0, 1].
 
-- **Persistent PGD (PPGD)** — `PersistentPGDReconLossConfig`. The sources + their
-  SRC_STEP optimizer state live in `TrainState` across steps, persisted as
-  target-declared semantic stacks (`SourceStacks`, the grouping `ComponentStacks` uses)
-  and shaped per `source_shape` (`configs.SourceShape`); every consumer reads the
-  site-keyed `per_site()` view. SRC_STEP is a closed enumeration (SPEC §6): `adam` carries
-  coordinate moments (`SourcesAdamState`); `sgd` is the stateless plain ascent
-  (`SourcesSgdState`, no leaves) — the arm whose persistent state is the sources alone;
-  `momentum_sgd` carries one float velocity buffer (`SourcesMomentumState`).
-  Source VALUES are stored per `source_dtype` — a float dtype, or the uint16
-  unit-interval fixed-point representation (`UINT16_UNIT_SCALE`): ascents differentiate
-  and update the float view and store back with stochastic rounding.
-  Each step runs `n_warmup_steps` supplemental ascents plus one final ascent from
-  the main backward (SPEC S13/S14), projecting to [0,1] after every update (S15).
-- **Fresh PGD** — `PGDReconLossConfig` (torch `PGDReconLoss` as a TRAINING loss).
-  Sources are re-initialized every step, ascended `n_steps` times by
-  `step_size * sign(grad)` with clamp to [0,1], and carry NO state across steps —
-  `TrainState.adversaries` stays empty for this variant.
-"""
+Fresh PGD initializes sources each step, applies sign-gradient ascent with
+clipping to [0, 1], and discards them after the reconstruction forward. Its
+routing draw is shared by all ascents and the final forward.
+
+Sources use the model's semantic stacks and `source_shape` broadcast axes;
+`per_site()` exposes site-keyed views. Float storage is differentiable directly.
+Uint16 storage represents `value = u / 65535`: consumers read a float view,
+and updates store it back with stochastic rounding."""
 
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -35,13 +27,13 @@ from jaxtyping import Array, Float, PRNGKeyArray
 from typing_extensions import TypeVar
 
 from param_decomp.core.components import (
-    Dense,
-    ExpertBlocked,
+    BlockedFactorization,
+    DenseFactorization,
     Factorization,
-    SiteSlots,
     SiteSpec,
-    site_slots_for,
-    slot_index,
+    SiteStackIndices,
+    site_stack_indices_for,
+    stack_index_by_site,
     vu_groups,
 )
 from param_decomp.core.configs import (
@@ -52,19 +44,19 @@ from param_decomp.core.configs import (
     SourceShape,
 )
 from param_decomp.core.linear_plan import uniform_like
-from param_decomp.core.losses import scheduled_value_at
+from param_decomp.core.runtime_schedule import scheduled_value_at
 
 
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
-class ExpertBlockedSource:
-    """An expert-blocked site's component sources in BLOCK dim: `values[.., e, j]`
+class BlockedSourceComponents:
+    """A block-factored site's component sources in BLOCK dim: `values[.., e, j]`
     sources component `(e, j)` directly — no flat-offset arithmetic anywhere. Mask
-    formation reads either the flat expert-major view (`flat` — the FULL-emission arm,
+    formation reads either the flat block-major view (`flat` — the FULL-emission arm,
     bit-identical to the dense spelling) or a take along the block axis by the token's
-    router indices (the narrow-emission arm, landing with the routed-decomposed masked
-    forward). Shards `expert: tp` like every other expert-shaped tensor — the same
-    bytes-per-rank as the flat expert-major `C: tp` split whenever tp | E."""
+    block indices (the selected-emission arm, landing with the block-selected masked
+    forward). The shape does not prescribe storage ownership; expert-owned reads
+    redistribute to their job layout before gathering."""
 
     values: Float[Array, "*leading E c"]
 
@@ -73,15 +65,15 @@ class ExpertBlockedSource:
         return self.values.reshape(*self.values.shape[:-2], -1)
 
 
-SourceComponents = Float[Array, "*leading C"] | ExpertBlockedSource
-"""One site's component sources: dense sites carry the bare flat array, expert-blocked
+SourceComponents = Float[Array, "*leading C"] | BlockedSourceComponents
+"""One site's component sources: dense sites carry the bare flat array, block-factored
 sites the block-dim bundle — discriminated the same way CI values are (`SiteCI`)."""
 
 
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class SiteSource:
-    """ONE site's adversarial sources, site-shaped (`[*leading, ..]`, no slot axis): the
+    """ONE site's adversarial sources, site-shaped (`[*leading, ..]`, no stack axis): the
     component sources plus the EXPLICIT weight-delta source — its own tensor, never a
     column inside the components. The stacked persistence shape is `SourceStack`."""
 
@@ -104,54 +96,55 @@ SourceLeaf = TypeVar("SourceLeaf", default=Array)
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class SourceStack(Generic[SourceLeaf]):
-    """One semantic GROUP's sources, slot-major over its member sites — the stacked
+    """One semantic GROUP's sources, stack-major over its member sites — the stacked
     counterpart of `SiteSource`, distinct in type so a stack can never pass for a site
-    view: component sources `[slot, *leading, C]` (dense) or
-    `ExpertBlockedSource([slot, *leading, E, c])`, delta sources `[slot, *leading]`.
+    view: component sources `[stack, *leading, C]` (dense) or
+    `BlockedSourceComponents([stack, *leading, E, c])`, delta sources `[stack, *leading]`.
     The name says what `ComponentStacks.stacks[group]` is — one group's stack; unlike
     that bare `(Vs, Us)` tuple the fields are named, because they differ in rank."""
 
-    components: SourceLeaf | ExpertBlockedSource
+    components: SourceLeaf | BlockedSourceComponents
     delta: SourceLeaf
 
 
 class SourceStacks(eqx.Module, Generic[SourceLeaf]):
     """Persistent sources stacked per target-declared semantic group — the SAME grouping
-    `ComponentStacks` persists under (`SiteSpec.group`; slot = the site's order within
-    its group, so for the LM families group = matrix kind and slot = layer). One group
-    rides one homogeneous `SourceStack`. Slot-major keeps a stage-blocked reshape of the
-    slot axis a view.
+    `ComponentStacks` persists under (`SiteSpec.group`; the stack index = the site's
+    order within its group, so for the LM families group = matrix kind and stack index =
+    layer). One group rides one homogeneous `SourceStack`. Stack-major keeps a
+    stage-blocked reshape of the stack axis a view.
 
     `site()` is the ONE read boundary (`per_site()` is the whole-dict spelling of it):
-    its slot slices are views, and slicing commutes with the elementwise dequant, so
-    site views of the float view are bit-equal to per-site float sources. The SRC_STEP
+    its stack-index slices are views, and slicing commutes with the elementwise dequant, so
+    site views of the float view are bit-equal to per-site float sources. The source optimizer
     state (velocity / moments) and the checkpoint tree mirror this layout by `tree.map`.
     Leaves are stored Arrays or the same-structure `NamedSharding` tree
     `init_placed.persistent_sources_shardings` returns (`SourceStacks[NamedSharding]`).
 
-    No `stack_pads` counterpart: the slot axis is never sharded for sources (the batch
-    axis rides `data`, C / the expert axis rides `tp`, the slot axis replicates), so the
-    persist-layer padding `ComponentStacks` enumerates never arises here."""
+    No `stack_pads` counterpart: the stack axis is never sharded for sources (the batch
+    axis rides `data`, C / the block axis (`expert`) rides `tp`, the stack axis
+    replicates), so the persist-layer padding `ComponentStacks` enumerates never arises
+    here."""
 
     stacks: dict[str, SourceStack[SourceLeaf]]
-    site_slots: SiteSlots = eqx.field(static=True)
+    site_stack_indices: SiteStackIndices = eqx.field(static=True)
 
-    def slot_of(self, name: str) -> tuple[str, int]:
-        return slot_index(self.site_slots)[name]
+    def stack_index_of(self, name: str) -> tuple[str, int]:
+        return stack_index_by_site(self.site_stack_indices)[name]
 
     def site(self: "SourceStacks[Array]", name: str) -> SiteSource:
-        group, slot = self.slot_of(name)
+        group, index = self.stack_index_of(name)
         stack = self.stacks[group]
         match stack.components:
-            case ExpertBlockedSource(values=values):
-                components: SourceComponents = ExpertBlockedSource(values=values[slot])
+            case BlockedSourceComponents(values=values):
+                components: SourceComponents = BlockedSourceComponents(values=values[index])
             case jax.Array():
-                components = stack.components[slot]
-        return SiteSource(components=components, delta=stack.delta[slot])
+                components = stack.components[index]
+        return SiteSource(components=components, delta=stack.delta[index])
 
     @property
     def site_names(self) -> tuple[str, ...]:
-        return tuple(name for name, _, _ in self.site_slots)
+        return tuple(name for name, _, _ in self.site_stack_indices)
 
     def per_site(self: "SourceStacks[Array]") -> Sources:
         return {name: self.site(name) for name in self.site_names}
@@ -159,7 +152,7 @@ class SourceStacks(eqx.Module, Generic[SourceLeaf]):
 
 UINT16_UNIT_SCALE = 65535.0
 """The uint16 fixed-point representation of a unit-interval value: `value = u / 65535`.
-Sources live in [0,1] by construction (SPEC S15's projection), so the representation is
+Projected sources lie in [0,1], so the representation is
 exact at the interval's ends and uniformly 1/65535 everywhere — bf16 resolves only
 ~2^-8 near 1.0. The stored integer is NOT differentiable; every consumer reads the
 float view (`source_values_to_float`) and every store quantizes back."""
@@ -190,11 +183,11 @@ def source_values_to_float[T](sources: T) -> T:
 
 
 def _quantize_unit_stochastic(value: Array, key: PRNGKeyArray) -> Array:
-    """[0,1] float -> uint16 fixed-point with STOCHASTIC rounding (unbiased: an update
-    smaller than half a step still lands in expectation — round-to-nearest would stall
-    every |Δ| < 1/(2·65535) forever) and saturating ends (composes exactly with the
-    S15 projection). The rounding draw is typed to the value's sharding: a bare draw
-    lowers REPLICATED under the Explicit mesh, every rank forming the global-shape bits."""
+    """Quantize [0, 1] values to uint16 with unbiased stochastic rounding.
+
+    Clipping preserves the interval endpoints. Stochastic rounding lets updates
+    smaller than half a quantization step survive in expectation. The draw follows
+    the value's sharding to avoid replicated global-shape random buffers."""
     scaled = jnp.clip(value.astype(jnp.float32), 0.0, 1.0) * UINT16_UNIT_SCALE
     low = jnp.floor(scaled)
     rounded_up = uniform_like(key, scaled) < (scaled - low)
@@ -217,11 +210,11 @@ def store_sources[T](stored: T, new_values: T, key: PRNGKeyArray) -> T:
 
 
 def full_source_components(components: SourceComponents) -> Float[Array, "*leading C"]:
-    """The flat expert-major `[.., C]` view — the FULL-emission mask arm's read (the
-    narrow arm takes along the block axis by router indices instead,
-    `masking._narrow_source_values`)."""
+    """The flat block-major `[.., C]` view — the FULL-emission mask arm's read (the
+    selected arm takes along the block axis by block indices instead,
+    `masking._selected_source_values`)."""
     match components:
-        case ExpertBlockedSource():
+        case BlockedSourceComponents():
             return components.flat
         case jax.Array():
             return components
@@ -231,19 +224,19 @@ def _draw_site_source(
     site_key: PRNGKeyArray, factorization: Factorization, leading_shape: tuple[int, ...]
 ) -> SiteSource:
     """One site's U[0,1] sources drawn directly in their honest shapes — block-dim
-    `[.., E, c]` values for expert-blocked sites, flat `[.., C]` for dense, the delta
+    `[.., E, c]` values for block-factored sites, flat `[.., C]` for dense, the delta
     as its own tensor. Fp32 draws; callers cast to the storage dtype per field.
-    `init_persistent_sources` vmaps THIS function over per-site keys, so each slot of a
-    stack is bit-identical to the standalone per-site draw (the RNG-chain pin)."""
+    `init_persistent_sources` vmaps THIS function over per-site keys, so each stack index
+    of a stack is bit-identical to the standalone per-site draw (the RNG-chain pin)."""
     components_key, delta_key = random.split(site_key)
     delta = random.uniform(delta_key, leading_shape, jnp.float32)
     match factorization:
-        case ExpertBlocked(n_experts=n_experts, c_per_expert=c_per_expert):
+        case BlockedFactorization(n_blocks=n_blocks, c_per_block=c_per_block):
             values = random.uniform(
-                components_key, (*leading_shape, n_experts, c_per_expert), jnp.float32
+                components_key, (*leading_shape, n_blocks, c_per_block), jnp.float32
             )
-            return SiteSource(components=ExpertBlockedSource(values=values), delta=delta)
-        case Dense(C=c):
+            return SiteSource(components=BlockedSourceComponents(values=values), delta=delta)
+        case DenseFactorization(C=c):
             return SiteSource(
                 components=random.uniform(components_key, (*leading_shape, c), jnp.float32),
                 delta=delta,
@@ -261,16 +254,15 @@ class SourcesAdamState:
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class SourcesSgdState:
-    """The stateless SRC_STEP's optimizer state: a typed marker with no leaves, so the
-    persistent bundle checkpoints and shards as the sources alone."""
+    """Stateless SGD marker; only the sources persist in checkpoints and shardings."""
 
 
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class SourcesMomentumState:
-    """SRC_STEP `momentum_sgd`'s one buffer: the velocity, a float tree mirroring the
-    source stacks (same shapes, same shardings) at `velocity_dtype` of the storage —
-    SIGNED, so it never takes the uint16 unit-interval representation."""
+    """Momentum velocity matching the source tree's shapes and shardings.
+
+    Velocity is signed and uses `velocity_dtype`, never the uint16 source format."""
 
     velocity: SourceStacks
 
@@ -285,8 +277,7 @@ def velocity_dtype(source_storage_dtype: DTypeLike) -> jnp.dtype:
 SourcesOptState = SourcesAdamState | SourcesSgdState | SourcesMomentumState
 
 SourceOptimizerConfig = AdamPGDConfig | SgdPGDConfig | MomentumSgdPGDConfig
-"""The SRC_STEP enumeration (SPEC §6), paired with its state by `init_sources_opt_state`
-and re-matched at every ascent — a config/state mismatch dies in `sources_ascend_project`."""
+"""Supported source optimizers; `sources_ascend_project` requires a matching state type."""
 
 
 def init_persistent_sources(
@@ -297,16 +288,16 @@ def init_persistent_sources(
 ) -> SourceStacks:
     """PPGD component and weight-delta sources, initialized U[0,1] into their semantic
     stacks. Keys split per SITE (in site order) and each group vmaps `_draw_site_source`
-    over its members' keys, so slot `j` of a stack is bit-identical to the standalone
+    over its members' keys, so stack index `j` of a stack is bit-identical to the standalone
     per-site draw under `keys[site_index]` — and the jitted graph has n_groups sharded
     outputs, not n_sites (the per-site form was a ~55s XLA compile at 224 sites).
 
-    `leading_shape` spells the `source_shape` over the model's leading axes (SPEC §1.6),
+    `leading_shape` spells the `source_shape` over the model's leading axes,
     rank matching the waist with size-1 broadcast axes — e.g. an LM's `(1, T)` for `sc`
     (shared across batch, free per position), `(B, 1)` for `bc` (per batch element,
     shared over positions).
 
-    `source_dtype` is the resident storage dtype (SPEC N1 fp32 for oracle parity; bf16 to
+    `source_dtype` is the resident storage dtype (fp32 for oracle parity; bf16 to
     halve footprint). Drawing in fp32 then casting keeps the U[0,1] draw dtype-stable."""
     keys = random.split(key, len(sites))
     site_index = {site.name: idx for idx, site in enumerate(sites)}
@@ -319,7 +310,7 @@ def init_persistent_sources(
         )
         stored = jax.tree.map(lambda a: store_unit_float(a, source_dtype), drawn)
         stacks[group] = SourceStack(components=stored.components, delta=stored.delta)
-    return SourceStacks(stacks=stacks, site_slots=site_slots_for(sites))
+    return SourceStacks(stacks=stacks, site_stack_indices=site_stack_indices_for(sites))
 
 
 def init_fresh_pgd_sources(
@@ -344,15 +335,13 @@ def init_fresh_pgd_sources(
             source_leading = (batch, *(1 for _ in positions))
         case "c":
             source_leading = tuple(1 for _ in leading)
-        case "sc":
-            raise AssertionError("unreachable: PGDConfig validation rejects `sc`")
     keys = random.split(key, len(sites))
     sources: Sources = {}
     for site, site_key in zip(sites, keys, strict=True):
         match site.factorization:
-            case ExpertBlocked(n_experts=n_experts, c_per_expert=c_per_expert):
-                component_shape = (*source_leading, n_experts, c_per_expert)
-            case Dense():
+            case BlockedFactorization(n_blocks=n_blocks, c_per_block=c_per_block):
+                component_shape = (*source_leading, n_blocks, c_per_block)
+            case DenseFactorization():
                 component_shape = (*source_leading, site.C)
         delta_shape = source_leading
         match init:
@@ -361,8 +350,8 @@ def init_fresh_pgd_sources(
             case "ones" | "zeroes":
                 fill = jnp.ones if init == "ones" else jnp.zeros
                 components: SourceComponents = fill(component_shape, jnp.float32)
-                if isinstance(site.factorization, ExpertBlocked):
-                    components = ExpertBlockedSource(values=components)
+                if isinstance(site.factorization, BlockedFactorization):
+                    components = BlockedSourceComponents(values=components)
                 sources[site.name] = SiteSource(
                     components=components, delta=fill(delta_shape, jnp.float32)
                 )
@@ -384,7 +373,7 @@ def init_sources_opt_state(
     match optimizer:
         case AdamPGDConfig():
             assert jnp.dtype(jnp.uint16) not in storage_dtypes, (
-                "SRC_STEP adam keeps moments AT the source storage dtype; uint16 "
+                "source optimizer adam keeps moments AT the source storage dtype; uint16 "
                 "fixed-point storage pairs with the float-buffered arms (momentum_sgd) "
                 "or the stateless one (sgd)"
             )
@@ -403,9 +392,10 @@ def init_sources_opt_state(
 def sources_sgd_ascend_project(
     sources: SourceStacks, sources_grad: SourceStacks, lr: Array
 ) -> SourceStacks:
-    """One plain-SGD ASCENT on the persistent sources, then project to [0,1] (SPEC
-    S13/S15; SRC_STEP `sgd`). The `lr·grad` product runs at fp32 (scalar-lr promotion)
-    and casts ONCE into the source storage dtype — nothing wider persists."""
+    """Take one SGD ascent and project sources to [0, 1].
+
+    The scalar learning rate promotes `lr * grad` to fp32; the update is cast once
+    to the source storage dtype before addition."""
     return jax.tree.map(
         lambda source, g: jnp.clip(source + (lr * g).astype(source.dtype), 0.0, 1.0),
         sources,
@@ -420,11 +410,10 @@ def sources_momentum_ascend_project(
     lr: Array,
     momentum: float,
 ) -> tuple[SourceStacks, SourcesMomentumState]:
-    """One momentum-SGD ASCENT on the float source values, then project to [0,1] (SPEC
-    S13/S15; SRC_STEP `momentum_sgd`): `v = momentum·v + grad; values += lr·v`. The EMA
-    forms in fp32 and rounds ONCE into the velocity's own float dtype — a Python-float
-    coefficient times a bf16 buffer multiplies IN bf16, rounding the coefficient itself;
-    the store rounding is the 16-bit seam, the coefficient rounding is not."""
+    """Update `v = momentum * v + grad`, ascend sources by `lr * v`, and clip to [0, 1].
+
+    Form the velocity in fp32 before rounding once to its storage dtype. Multiplying
+    a bf16 buffer directly by a Python float would also round the coefficient."""
     velocity = jax.tree.map(
         lambda v, g: (momentum * v.astype(jnp.float32) + g.astype(jnp.float32)).astype(v.dtype),
         state.velocity,
@@ -446,11 +435,11 @@ def sources_ascend_project(
     optimizer: SourceOptimizerConfig,
     key: PRNGKeyArray,
 ) -> tuple[SourceStacks, SourcesOptState]:
-    """One SRC_STEP ASCENT (SPEC §6) dispatched over the config/state pair — the
-    enumerated arms share only the projection contract (S15). `sources` is the STORED
-    representation; the arms ascend its float view (`sources_grad` is d/d(float view))
-    and `store_sources` lands the projected values back — `key` feeds only the uint16
-    stochastic rounding and is dead in the graph for float storage."""
+    """Apply the configured source optimizer and project values to [0, 1].
+
+    `sources_grad` differentiates the float view of the stored sources. The config
+    and optimizer-state types must match. `key` controls stochastic rounding for
+    uint16 storage; float storage uses no rounding draw."""
     values = source_values_to_float(sources)
     match optimizer, opt_state:
         case AdamPGDConfig(), SourcesAdamState():
@@ -465,7 +454,7 @@ def sources_ascend_project(
             )
         case _:
             raise AssertionError(
-                f"SRC_STEP config/state mismatch: {type(optimizer).__name__} "
+                f"source optimizer config/state mismatch: {type(optimizer).__name__} "
                 f"with {type(opt_state).__name__}"
             )
     return store_sources(sources, new_values, key), new_state
@@ -478,7 +467,7 @@ def sources_adam_ascend_project(
     lr: Array,
     adam: AdamPGDConfig,
 ) -> tuple[SourceStacks, SourcesAdamState]:
-    """One Adam ASCENT on the persistent sources, then project to [0,1] (SPEC S13/S15)."""
+    """Take one Adam ascent on the sources and project to [0, 1]."""
     step_count = adam_state.step_count + 1.0
     # `sources_grad` arrives in the masked-forward compute dtype (bf16); cast to the moment
     # dtype so the persistent `m`/`v` keep their declared storage dtype across steps.
@@ -508,16 +497,11 @@ def sources_adam_ascend_project(
 
 
 class PersistentAdversary(eqx.Module):
-    """One persistent-PGD adversary (SPEC §3): the source stacks + their SRC_STEP state
-    that persist across steps, plus the lifecycle the trainer drives around the shared
-    backward. `sources` / `opt_state` are dynamic state; the rest is static config.
+    """Persistent source stacks, optimizer state, and static ascent configuration.
 
-    Per step: `warmup_ascend` (n_warmup supplemental ascents vs a scoring forward, params
-    + CI detached) → the warmed sources enter the main `value_and_grad` as leaves →
-    `final_ascend` (one more ascent from the SAME backward's source-grad — which IS
-    `dL_term/d(sources)`: the source path is never coeff-scaled, SPEC S14'/S23).
-    Ascents and grads are STACKED throughout; a scoring loss takes the stacked float view
-    and reads sites through `per_site()`."""
+    The trainer warms the sources with detached model parameters, then computes
+    an unscaled source gradient for the final ascent. Sources and gradients stay
+    stacked; scoring functions access individual sites through `per_site()`."""
 
     sources: SourceStacks
     opt_state: SourcesOptState
@@ -541,11 +525,12 @@ class PersistentAdversary(eqx.Module):
         train_frac: Array,
         key: PRNGKeyArray,
     ) -> "PersistentAdversary":
-        """`n_warmup` supplemental SRC_STEP ascents on the sources vs `scoring_loss` (the
-        route-all all-sites recon forward over FLOAT source values, params/CI detached —
-        provided by the step). The warmed sources are `stop_gradient`'d: they enter the
-        main backward as leaves, so the main graph differentiates w.r.t. them, not back
-        through this scan. `key` feeds only the uint16 stochastic store."""
+        """Take `n_warmup` projected ascents against `scoring_loss`.
+
+        The caller supplies a route-all reconstruction loss over float source values,
+        with model parameters and CI detached. Return detached sources so the main
+        backward differentiates them as leaves, not through the warmup scan.
+        `key` controls stochastic rounding when storing uint16 sources."""
         lr = self.source_lr(train_frac)
 
         def body(
@@ -565,8 +550,7 @@ class PersistentAdversary(eqx.Module):
     def after_one_ascent(
         self, grad: SourceStacks, train_frac: Array, key: PRNGKeyArray
     ) -> "PersistentAdversary":
-        """The adversary one SRC_STEP ascent-and-project (SPEC S13/S15) further along
-        `grad` (taken w.r.t. the float source view)."""
+        """Return the adversary after one projected ascent along its float-view gradient."""
         lr = self.source_lr(train_frac)
         sources, opt_state = sources_ascend_project(
             self.sources, grad, self.opt_state, lr, self.optimizer, key
@@ -576,9 +560,8 @@ class PersistentAdversary(eqx.Module):
     def final_ascend(
         self, source_grad: SourceStacks, train_frac: Array, key: PRNGKeyArray
     ) -> "PersistentAdversary":
-        """One final ascent recycled from the shared backward (SPEC S13'/S14'): the
-        source path enters the backward UNSCALED — the term's coeff scales only the
-        model-side cotangents (`train.model_cotangents_scaled`) — so `source_grad` IS
-        `dL_term/d(sources)`, with nothing to unscale, at every step of any coeff
-        schedule, activation gates included."""
+        """Take the final projected ascent using an unscaled source gradient.
+
+        The trainer applies reconstruction coefficients only to model-side gradients,
+        so source updates remain active even when the term coefficient is zero."""
         return self.after_one_ascent(source_grad, train_frac, key)

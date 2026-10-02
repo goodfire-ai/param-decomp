@@ -82,6 +82,9 @@ miscomputes empty groups, openxla/tokamax#887). Both tokamax calls pin
 large expert counts — NaN/garbage values or a spin that never returns, shape-dependent
 (the forward's comment carries the evidence)."""
 
+ExpertImplementation = Literal["dense_masked"] | GroupedMatmulBackend
+"""Expert execution strategy, independent of component/CI emission layout."""
+
 _TRANS_RHS_DIM_NUMS = jax.lax.RaggedDotDimensionNumbers(
     dot_dimension_numbers=(([1], [2]), ([], [])),
     lhs_ragged_dimensions=[0],
@@ -1016,30 +1019,48 @@ def ep_unsort_jobs(
 
 
 def ep_gather_job_blocks(
-    table: Float[Array, "B T E n"], jobs: ExpertShardedJobs, shard_axis: str
+    table: Float[Array, "source_batch source_position E n"],
+    jobs: ExpertShardedJobs,
+    shard_axis: str,
 ) -> Float[Array, "B S J n"]:
-    """Each job's (token, expert) row of a per-(token, expert) table — a mask/CI tensor
-    viewed `[B, T, E, block]` — in sentinel-sorted job order, dead tail zeroed. The
-    expert axis reshards to `shard_axis` (an expert-major C rides there already — a
-    typing move; a replicated table slices locally), so each cell's gather touches only
-    its own shard's rows. A partial gather: the transpose is left to autodiff as the
+    """Read each job's source row in expert-owned order, with dead rows zeroed.
+
+    Each source leading axis spans either its token axis or one broadcast entry.
+    Position broadcasting changes only gather indices; no full-token table is built. The
+    expert axis reshards to `shard_axis` before gathering. Storage may already use
+    that layout, replicate experts, or partition within each expert; this boundary
+    performs any required redistribution, so each gather reads its own expert rows. A partial gather: the transpose is left to autodiff as the
     scatter-add it honestly is (`gather_job_blocks`)."""
-    b, t, n_experts, n = table.shape
-    assert (b, t) == jobs.top_idx.shape[:2], (table.shape, jobs.top_idx.shape)
+    source_batch, source_position, n_experts, n = table.shape
+    b, t, _ = jobs.top_idx.shape
+    assert source_batch in (1, b), (table.shape, jobs.top_idx.shape)
+    assert source_position in (1, t), (table.shape, jobs.top_idx.shape)
     n_shards = jobs.n_shards
+    assert n_experts % n_shards == 0, (n_experts, n_shards)
     e_local = n_experts // n_shards
     assert jobs.group_sizes.shape[-1] == e_local, (jobs.group_sizes.shape, e_local)
     mesh = _mesh_of(table)
-    batch = _batch_entry(table)
+    batch = _batch_entry(jobs.top_idx)
     view = jax.sharding.reshard(
-        table.reshape(b, t, n_shards, e_local, n),
-        NamedSharding(mesh, P(batch, None, shard_axis, None, None)),
+        table.reshape(source_batch, source_position, n_shards, e_local, n),
+        NamedSharding(mesh, P(_batch_entry(table), None, shard_axis, None, None)),
     )
-    rows = view.transpose(0, 2, 1, 3, 4).reshape(b, n_shards, t * e_local, n)
-    token_of_job = jobs.sort_idx // jobs.experts_per_token
-    expert_of_job = jnp.take_along_axis(
-        jobs.top_idx.reshape(b, -1)[:, None, :], jobs.sort_idx, axis=-1
+    rows = view.transpose(0, 2, 1, 3, 4).reshape(
+        source_batch, n_shards, source_position * e_local, n
     )
+    rows = jnp.broadcast_to(
+        rows,
+        (b, n_shards, source_position * e_local, n),
+        out_sharding=NamedSharding(mesh, P(batch, shard_axis, None, None)),
+    )
+    sort_idx = _shard_jobs_ints(jobs.sort_idx, shard_axis)
+    token_of_job = (sort_idx // jobs.experts_per_token) % source_position
+    block_indices = jnp.broadcast_to(
+        jobs.top_idx.reshape(b, 1, -1),
+        sort_idx.shape,
+        out_sharding=NamedSharding(mesh, P(batch, shard_axis, None)),
+    )
+    expert_of_job = jnp.take_along_axis(block_indices, sort_idx, axis=-1)
     # non-local (sentinel-tail) jobs index another shard's expert mod e_local — an
     # arbitrary in-range row, zeroed below with the rest of the dead tail.
     idx = _shard_jobs_ints(token_of_job * e_local + expert_of_job % e_local, shard_axis)

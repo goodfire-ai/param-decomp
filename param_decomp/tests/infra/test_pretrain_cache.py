@@ -6,6 +6,7 @@ import socket
 from pathlib import Path
 
 import pytest
+import wandb
 
 from param_decomp.infra import pretrain_cache
 
@@ -42,3 +43,19 @@ def test_incomplete_entry_is_not_complete(tmp_path: Path) -> None:
 def test_bare_run_id_is_refused(tmp_path: Path) -> None:
     with pytest.raises(AssertionError, match="entity"):
         pretrain_cache.cache_dir_for_run(tmp_path, "t-0a1b2c3d")
+
+
+def test_architecture_resolves_without_weights_or_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_path = "entity/proj/runs/t-0a1b2c3d"
+    cache_dir = pretrain_cache.cache_dir_for_run(tmp_path, run_path)
+    cache_dir.mkdir(parents=True)
+    (cache_dir / pretrain_cache.MODEL_CONFIG_FILENAME).write_text("n_layer: 1\n")
+
+    def no_network(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("Architecture resolution tried to fetch weights")
+
+    monkeypatch.setattr(wandb, "Api", no_network)
+    assert pretrain_cache.resolved_model_config_dir(tmp_path, run_path) == cache_dir
+    assert not pretrain_cache.is_complete(cache_dir)

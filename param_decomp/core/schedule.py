@@ -1,10 +1,10 @@
-"""The one schedule surface: `ScheduleConfig` — a knot-based piecewise curve — plus
-`get_scheduled_value`, its host-numpy evaluator (the parity reference). Every scheduled
-quantity (main LRs, PPGD source LR, imp-min `p`/`gamma`, nonlinearity threshold,
-merged-loss `adv_fraction`, every loss coefficient via `configs.LossCoeff`) is configured by `ScheduleConfig` and
-evaluated in-step by the jnp twin `losses.scheduled_value_traced` (jax lives there so
-this module — imported by the config schema — stays jax-free); `test_schedule.py` pins
-the pair pointwise."""
+"""Knot-based schedule configuration and its host-numpy evaluator (the parity reference).
+
+`runtime_schedule.schedule_fraction_at` evaluates the curve in JAX; callers multiply by the
+configured magnitude or a traced runtime magnitude. JAX stays out of this module,
+which the config schema imports. `test_schedule.py` pins host and traced evaluation
+pointwise.
+"""
 
 from typing import Literal, Self
 
@@ -29,7 +29,7 @@ class Knot(BaseConfig):
 class ScheduleConfig(BaseConfig):
     """A piecewise curve `step -> max_val * frac(t)` over normalized run time
     `t = step / (total_steps - 1)`, so the `at = 1.0` knot lands exactly ON the final
-    step (the torch-parity convention, SPEC S20). `max_val` is the sweepable magnitude;
+    step (the torch-parity convention). `max_val` is the sweepable magnitude;
     the knots are the shape (`frac` in `[0, 1]`, attained at least once so `max_val` is
     honest). A bare float parses as the constant schedule at that value."""
 

@@ -8,7 +8,7 @@ asserting on anything malformed (a site name is never string-manipulated elsewhe
 
 `ArchFamily` is the ordered, exhaustive matrix set (canonical within-block order) plus the
 `(layer, matrix) -> site name` renderer. Each target module builds its OWN family
-(`glu_transformer.FAMILY`, `llama_simple_mlp.FAMILY`), with `matrices` derived from the
+(`transformer.FAMILY`, `llama_simple_mlp.FAMILY`), with `matrices` derived from the
 `Literal` matrix vocabulary the target module itself owns — the same vocabulary the
 authored c-spec keys (lab-side, `param_decomp/experiments/lm/config.py`) are typed
 by, so a c-spec key outside the family's vocabulary is unrepresentable, not merely
@@ -32,7 +32,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from param_decomp.core.components import Factorization, SiteC, SiteSpec
-from param_decomp.core.nonlinearity import NonlinearityPartition
+from param_decomp.core.nonlinearity import NonlinearityAlignment
 
 
 @dataclass(frozen=True)
@@ -68,11 +68,11 @@ def site_specs(
     family: ArchFamily,
     site_cs: tuple[SiteC, ...],
     factorization_of: Callable[[str, int], Factorization],
-    nonlinearity_partition_of: Callable[[str], NonlinearityPartition | None],
+    alignment_of: Callable[[str], NonlinearityAlignment],
     n_layer: int,
 ) -> tuple[SiteSpec, ...]:
     """Shape-resolved specs in canonical order (input must already be canonical);
-    `factorization_of(matrix, C)` / `nonlinearity_partition_of(matrix)` are the target's
+    `factorization_of(matrix, C)` / `alignment_of(matrix)` are the target's
     shape and nonlinearity-unit tables, closed over its config."""
     assert site_cs == canonical_site_cs(family, site_cs), f"sites not in canonical order: {site_cs}"
     specs = []
@@ -85,7 +85,7 @@ def site_specs(
                 name=site.name,
                 factorization=factorization_of(kind, site.C),
                 group=kind,
-                nonlinearity_partition=nonlinearity_partition_of(kind),
+                alignment=alignment_of(kind),
             )
         )
     return tuple(specs)

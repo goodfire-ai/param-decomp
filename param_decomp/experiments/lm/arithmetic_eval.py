@@ -8,43 +8,50 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.experimental import multihost_utils
+from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, Int
 from matplotlib.figure import Figure
-from typing_extensions import TypeVar
 
 from param_decomp.core.base_config import Probability
-from param_decomp.core.ci_fn import PlacedCIFn, ci_preactivations, lower_leaky_hard_sigmoid
+from param_decomp.core.ci_fn.interface import CIFn
+from param_decomp.core.ci_fn.runtime import evaluate_ci_from_captures
+from param_decomp.core.ci_fn.squashing import lower_leaky_hard_sigmoid
 from param_decomp.core.components import ComponentStacks, require_full_emission
+from param_decomp.core.linear_plan import value_mesh
 from param_decomp.core.masking import all_live_masking_no_delta
 from param_decomp.core.model import (
     CaptureKeys,
+    ComponentActivations,
     DecomposedModel,
     MaterializedMasking,
     PlacedModel,
-    prepare_compute_weights,
 )
 from param_decomp.core.placement import PlacementRules
-from param_decomp.core.precision import COMPUTE_DT
+from param_decomp.core.precision import COMPUTE_DT, cast_floating
+from param_decomp.lm.batch import LMBatchWithDocuments
+from param_decomp.lm.inputs import input_token_ids
 from param_decomp.targets.lm_output import LMOutput
-
-PreparedT = TypeVar("PreparedT", default=Any)
 
 
 @runtime_checkable
-class ComponentActivationModel(DecomposedModel[LMOutput, PreparedT], Protocol[PreparedT]):
+class ComponentActivationModel[PreparedT: ComponentActivations, PreparedMaskingT](
+    DecomposedModel[
+        LMBatchWithDocuments, LMOutput, PreparedT, LMBatchWithDocuments, PreparedMaskingT
+    ],
+    Protocol,
+):
     """A `DecomposedModel` that also exposes per-component activations `x@V`. The arithmetic
-    activation heatmaps need this seam; it is LM-only (currently `GLUDecomposedModel`), so
+    activation heatmaps need this seam; it is LM-only (currently `TransformerDecomposedModel`), so
     the eval narrows to it with an `isinstance` check rather than widening the core
     `DecomposedModel` Protocol every target must satisfy."""
 
     def masked_component_activations(
         self,
         prepared_weights: PreparedT,
-        inputs: Any,
+        inputs: LMBatchWithDocuments,
         masking: MaterializedMasking,
         *,
         placement: PlacementRules | None,
@@ -79,19 +86,30 @@ class ArithmeticGrid:
         return per_prompt.reshape(self.n_a, self.n_b, *per_prompt.shape[1:])
 
 
-ArithmeticGridStep = Callable[
-    [PlacedModel[LMOutput], ComponentStacks, PlacedCIFn, Int[Array, "n_pad T"]],
-    tuple[dict[str, Array], dict[str, Array], dict[str, Array]],
-]
-"""`(model, components, placed_ci_fn, tokens) -> ({site: CI}, {site: x@V}, {site: max CI})`. CI and
-`x@V` are `(n_pad, C)` at the answer position, batch-sharded ON DEVICE (never fully
-host-gathered — see `compute_arithmetic_selection`); max CI is `(C,)` replicated, the max
-over the REAL (`< n_valid_rows`) rows only. `model` (frozen-weight-bearing) is the jit ARG."""
+class ArithmeticGridStep[PreparedT: ComponentActivations, PreparedMaskingT](Protocol):
+    """Return CI, component activations, and maximum CI by site for an arithmetic grid.
+
+    CI and activations are `(n_pad, C)` at the answer position, batch-sharded on device.
+    Maximum CI is `(C,)`, replicated and reduced over the unpadded rows only.
+    """
+
+    def __call__(
+        self,
+        model: PlacedModel[
+            LMBatchWithDocuments, LMOutput, PreparedT, LMBatchWithDocuments, PreparedMaskingT
+        ],
+        components: ComponentStacks,
+        ci_fn: CIFn[LMBatchWithDocuments],
+        tokens: LMBatchWithDocuments,
+        /,
+    ) -> tuple[dict[str, Array], dict[str, Array], dict[str, Array]]: ...
 
 
-def component_activation_model[PreparedT](
-    placed: PlacedModel[LMOutput, PreparedT],
-) -> ComponentActivationModel[PreparedT]:
+def component_activation_model[PreparedT: ComponentActivations, PreparedMaskingT](
+    placed: PlacedModel[
+        LMBatchWithDocuments, LMOutput, PreparedT, LMBatchWithDocuments, PreparedMaskingT
+    ],
+) -> ComponentActivationModel[PreparedT, PreparedMaskingT]:
     """Narrow the bundle's target to the `x@V` seam — re-derived from the traced model arg
     each call, never closed over (the HLO-baking rule)."""
     model = placed.model
@@ -101,35 +119,43 @@ def component_activation_model[PreparedT](
     return model
 
 
-def make_arithmetic_grid_step[PreparedT](
-    model_static: PlacedModel[LMOutput, PreparedT],
+def make_arithmetic_grid_step[PreparedT: ComponentActivations, PreparedMaskingT](
+    model_static: PlacedModel[
+        LMBatchWithDocuments, LMOutput, PreparedT, LMBatchWithDocuments, PreparedMaskingT
+    ],
     ci_capture_keys: CaptureKeys,
     answer_position: int,
     n_valid_rows: int,
-) -> ArithmeticGridStep:
-    """Build the jit'd step returning, at `answer_position` with the batch axis KEPT as the
+) -> ArithmeticGridStep[PreparedT, PreparedMaskingT]:
+    """Build the step returning, at `answer_position` with the batch axis KEPT as the
     grid, BOTH per-component lower-leaky CI (from the CI fn) and the pre-mask activation `x@V`
     (from the decomposed forward under all-ones masks ≈ full reconstruction), plus the
     per-component max CI over the real rows (`n_valid_rows` masks the sharding-pad tail —
     garbage prompts must not decide liveness). One step so the grids come from one call; a
     site's own mask never enters its `x@V`."""
     component_activation_model(model_static)
-    site_names = model_static.site_names
+    site_names = model_static.model.site_names
 
-    # HLO-baking rule: read STATIC config (site_names, Cs) off the closed-over `model_static`; all array
-    # access goes through the traced `model` arg.
-    @eqx.filter_jit
+    # Frozen weights remain dynamic arguments; only topology is captured here.
     def step(
-        model: PlacedModel[LMOutput, PreparedT],
+        model: PlacedModel[
+            LMBatchWithDocuments, LMOutput, PreparedT, LMBatchWithDocuments, PreparedMaskingT
+        ],
         components: ComponentStacks,
-        placed_ci_fn: PlacedCIFn,
-        tokens: Int[Array, "n_pad T"],
+        ci_fn: CIFn[Any],
+        tokens: LMBatchWithDocuments,
     ) -> tuple[dict[str, Array], dict[str, Array], dict[str, Array]]:
-        preactivations = ci_preactivations(
-            placed_ci_fn,
-            model.clean_forward(tokens, ci_capture_keys).captures,
+        clean = model.clean_forward(tokens, ci_capture_keys)
+        prepared_weights = model.prepare_compute_weights(components)
+        preactivations = evaluate_ci_from_captures(
+            ci_fn.prepare(),
+            clean.captures,
+            clean.conditioning,
+            prepared_weights,
+            sequence=clean.sequence,
             remat=False,
-        )
+        ).preactivations
+        preactivations = cast_floating(preactivations, jnp.float32)
         # Per-component grid columns need the full axis; narrow sites refuse (the
         # metric is GLU-anatomy-gated anyway).
         preactivations = {site: require_full_emission(v) for site, v in preactivations.items()}
@@ -141,12 +167,13 @@ def make_arithmetic_grid_step[PreparedT](
             for site in site_names
         }
 
-        prepared_weights = prepare_compute_weights(model, components)
         component_activations = component_activation_model(model).masked_component_activations(
             prepared_weights,
             tokens,
             all_live_masking_no_delta(
-                model_static.sites, leading_shape=tokens.shape, dtype=COMPUTE_DT
+                model_static.model.sites,
+                leading_shape=input_token_ids(tokens).shape,
+                dtype=COMPUTE_DT,
             ),
             placement=model.placement,
         )
@@ -154,7 +181,7 @@ def make_arithmetic_grid_step[PreparedT](
             site: component_activations[site][:, answer_position, :].astype(jnp.float32)
             for site in site_names
         }
-        valid_rows = (jnp.arange(tokens.shape[0]) < n_valid_rows)[:, None]
+        valid_rows = (jnp.arange(input_token_ids(tokens).shape[0]) < n_valid_rows)[:, None]
         max_ci_by_component = {
             site: jnp.where(valid_rows, answer_position_ci[site], -jnp.inf).max(axis=0)
             for site in site_names
@@ -168,9 +195,32 @@ def make_arithmetic_grid_step[PreparedT](
     return step
 
 
-@eqx.filter_jit
-def _take_columns(per_prompt: Float[Array, "n_pad C"], idx: Int[Array, " k"]) -> Array:
-    return jnp.take(per_prompt, idx, axis=1)
+def _take_columns(per_prompt: Float[Array, "n_pad C"], idx: Int[np.ndarray, " k"]) -> Array:
+    columns = jnp.take(per_prompt, idx, axis=1)
+    if value_mesh(per_prompt).empty:
+        return columns
+    return jax.sharding.reshard(columns, P())
+
+
+type ArithmeticColumnGather = Callable[[Array, Array, Int[np.ndarray, " k"]], tuple[Array, Array]]
+
+
+def _take_ci_and_xv_columns(
+    ci: Float[Array, "n_pad C"],
+    xv: Float[Array, "n_pad C"],
+    indices: Int[np.ndarray, " k"],
+) -> tuple[Array, Array]:
+    return _take_columns(ci, indices), _take_columns(xv, indices)
+
+
+def prepare_arithmetic_columns(
+    ci_shapes: dict[str, Array], xv_shapes: dict[str, Array], top_k: int
+) -> dict[str, ArithmeticColumnGather]:
+    indices = np.zeros(top_k, dtype=np.int32)
+    return {
+        site: jax.jit(_take_ci_and_xv_columns).lower(ci_shape, xv_shapes[site], indices).compile()
+        for site, ci_shape in ci_shapes.items()
+    }
 
 
 @dataclass(frozen=True)
@@ -191,15 +241,18 @@ class ArithmeticSelection:
     xv_columns: dict[str, np.ndarray]
 
 
-def compute_arithmetic_selection(
-    step: ArithmeticGridStep,
-    model: PlacedModel[LMOutput],
+def compute_arithmetic_selection[PreparedT: ComponentActivations, PreparedMaskingT](
+    step: ArithmeticGridStep[PreparedT, PreparedMaskingT],
+    model: PlacedModel[
+        LMBatchWithDocuments, LMOutput, PreparedT, LMBatchWithDocuments, PreparedMaskingT
+    ],
     components: ComponentStacks,
-    placed_ci_fn: PlacedCIFn,
-    tokens: Int[Array, "n_pad T"],
+    ci_fn: CIFn[Any],
+    tokens: LMBatchWithDocuments,
     n_prompts: int,
     thresholds: tuple[Probability, ...],
     top_k: int,
+    column_gathers: dict[str, ArithmeticColumnGather],
 ) -> ArithmeticSelection:
     """Two-phase device->host pull, sized to what the figures actually need — NEVER the full
     `(n_prompts, C)` grids (they scale as n_prompts x C per site). Phase 1: the step's replicated
@@ -207,27 +260,22 @@ def compute_arithmetic_selection(
     identically on every rank. Phase 2: only the selected columns are host-gathered (the
     index padded to `top_k` so the gather compiles once; `n_prompts` trims the sharding pad
     rows off the END). Both the step and the column gather are COLLECTIVE — all ranks join."""
-    ci, xv, max_ci_replicated = step(model, components, placed_ci_fn, tokens)
+    ci, xv, max_ci_replicated = step(model, components, ci_fn, tokens)
     max_ci = {s: np.asarray(v) for s, v in max_ci_replicated.items()}
     active = select_active(max_ci, thresholds)
     shown = {s: active[min(thresholds)][s][:top_k] for s in max_ci}
 
     ci_columns: dict[str, np.ndarray] = {}
     xv_columns: dict[str, np.ndarray] = {}
-    to_gather: dict[str, tuple[Array, Array]] = {}
     for site, idx in shown.items():
         if idx.size == 0:
             ci_columns[site] = np.zeros((n_prompts, 0), np.float32)
             xv_columns[site] = np.zeros((n_prompts, 0), np.float32)
             continue
-        padded_idx = jnp.asarray(np.pad(idx, (0, top_k - idx.size), mode="edge"))
-        to_gather[site] = (_take_columns(ci[site], padded_idx), _take_columns(xv[site], padded_idx))
-    if to_gather:
-        gathered = multihost_utils.process_allgather(to_gather, tiled=True)
-        for site, (ci_cols, xv_cols) in gathered.items():
-            k = shown[site].size
-            ci_columns[site] = np.asarray(ci_cols)[:n_prompts, :k]
-            xv_columns[site] = np.asarray(xv_cols)[:n_prompts, :k]
+        padded_idx = np.pad(idx, (0, top_k - idx.size), mode="edge").astype(np.int32)
+        ci_cols, xv_cols = column_gathers[site](ci[site], xv[site], padded_idx)
+        ci_columns[site] = np.asarray(ci_cols)[:n_prompts, : idx.size]
+        xv_columns[site] = np.asarray(xv_cols)[:n_prompts, : idx.size]
     return ArithmeticSelection(
         active=active, shown=shown, ci_columns=ci_columns, xv_columns=xv_columns
     )

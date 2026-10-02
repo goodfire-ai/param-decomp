@@ -8,16 +8,19 @@ scalars; and the renderer emits valid CI + activation PNGs over the shared activ
 """
 
 from functools import cache
+from typing import Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from jax.sharding import AxisType, Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
 
-from param_decomp.core.ci_fn import ci_preactivations, lower_leaky_hard_sigmoid
+from param_decomp.core.ci_fn.squashing import lower_leaky_hard_sigmoid
 from param_decomp.core.components import init_component_stacks
-from param_decomp.core.model import MaterializedMasking, PlacedModel, prepare_compute_weights
-from param_decomp.core.precision import COMPUTE_DT
+from param_decomp.core.model import MaterializedMasking, PlacedModel
+from param_decomp.core.precision import COMPUTE_DT, cast_floating
 from param_decomp.experiments.lm.arithmetic_eval import (
     ArithmeticGrid,
     ArithmeticSelection,
@@ -26,17 +29,20 @@ from param_decomp.experiments.lm.arithmetic_eval import (
     make_arithmetic_grid_step,
     n_alive_scalars,
     plot_component_grids,
+    prepare_arithmetic_columns,
     render_arithmetic_figures,
     select_active,
 )
-from param_decomp.targets.glu_transformer import glu_site_specs, mlp_family_site_cs
+from param_decomp.lm.batch import LMBatchWithDocuments
 from param_decomp.targets.testing import (
     capture_clean,
     capture_site_outputs,
     tiny_glu_cfg,
     tiny_glu_decomposed_lm,
 )
+from param_decomp.targets.transformer import glu_site_specs, mlp_family_site_cs
 from param_decomp.tests.core.test_slow_eval import _build_ci_fn
+from param_decomp.tests.sequence import unsegmented_sequence_layout
 
 N_A, N_B = 3, 4
 T = 5
@@ -61,8 +67,10 @@ def _grid_step():
     """One trace shared by every test: the step is a pure function of the (cached) model,
     the answer position, and the row count, all of which are fixed for this file."""
     _, model, ci_fn, _ = _tiny_setup()
-    return make_arithmetic_grid_step(
-        model, ci_fn.fn.capture_keys, ANSWER_POSITION, n_valid_rows=N_A * N_B
+    return jax.jit(
+        make_arithmetic_grid_step(
+            model, ci_fn.capture_keys, ANSWER_POSITION, n_valid_rows=N_A * N_B
+        )
     )
 
 
@@ -73,26 +81,46 @@ def _grid() -> ArithmeticGrid:
 def test_grid_step_ci_xv_and_masked_max_match_hand_rolled():
     cfg, model, ci_fn, C = _tiny_setup()
     assert isinstance(model.model, ComponentActivationModel)
-    vu = init_component_stacks(model.sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(model.model.sites, jax.random.PRNGKey(1))
     n_pad = N_A * N_B + 2  # two garbage tail rows, as the sharding pad would append
     tokens = jax.random.randint(jax.random.PRNGKey(4), (n_pad, T), 0, cfg.vocab_size)
     step = _grid_step()
-    ci_grids, xv_grids, max_ci = step(model, vu, ci_fn, tokens)
+    ci_grids, xv_grids, max_ci = step(
+        model, vu, ci_fn, LMBatchWithDocuments.from_unsegmented_sequences(tokens)
+    )
 
-    names = model.site_names
+    names = model.model.site_names
     # CI hand-roll: bf16 readout, slice the answer position.
-    preactivations = ci_preactivations(
-        ci_fn, capture_clean(model.model, tokens, ci_fn.fn.capture_keys), remat=False
+    preactivations = cast_floating(
+        ci_fn.prepare()(
+            capture_clean(
+                model.model,
+                LMBatchWithDocuments.from_unsegmented_sequences(tokens),
+                ci_fn.capture_keys,
+            ),
+            None,
+            model.prepare_compute_weights(vu),
+            sequence=unsegmented_sequence_layout(
+                capture_clean(
+                    model.model,
+                    LMBatchWithDocuments.from_unsegmented_sequences(tokens),
+                    ci_fn.capture_keys,
+                )
+            ),
+            remat=False,
+        ).preactivations,
+        jnp.float32,
     )
     # xV hand-roll: all-ones masks -> site output == (x@V) @ U, so x@V projected through U
     # reproduces the captured masked site output at the answer position.
-    prepared_weights = prepare_compute_weights(model, vu)
+    prepared_weights = model.prepare_compute_weights(vu)
     component_masks = {site: jnp.ones((*tokens.shape, C), COMPUTE_DT) for site in names}
     outputs = capture_site_outputs(
         model.model,
         prepared_weights,
-        tokens,
+        LMBatchWithDocuments.from_unsegmented_sequences(tokens),
         MaterializedMasking(component_masks=component_masks),
+        routes=None,
     )
     for site in names:
         ci = np.asarray(ci_grids[site])
@@ -112,15 +140,41 @@ def test_grid_step_ci_xv_and_masked_max_match_hand_rolled():
 def test_compute_arithmetic_selection_gathers_only_shown_columns():
     cfg, model, ci_fn, _ = _tiny_setup()
     assert isinstance(model.model, ComponentActivationModel)
-    vu = init_component_stacks(model.sites, jax.random.PRNGKey(1))
+    vu = init_component_stacks(model.model.sites, jax.random.PRNGKey(1))
     tokens = jax.random.randint(jax.random.PRNGKey(4), (N_A * N_B, T), 0, cfg.vocab_size)
-    step = _grid_step()
+    batch = LMBatchWithDocuments.from_unsegmented_sequences(tokens)
+    lowered = jax.jit(_grid_step()).lower(model, vu, ci_fn, batch)
+    step = lowered.compile()
+    ci_shapes, xv_shapes, _ = step.out_info
     top_k = 3
-    selection = compute_arithmetic_selection(
-        step, model, vu, ci_fn, tokens, N_A * N_B, thresholds=(0.0,), top_k=top_k
+    column_gathers = prepare_arithmetic_columns(ci_shapes, xv_shapes, top_k)
+    compilation_events: list[str] = []
+
+    def compilation_listener(event: str, duration_secs: float, **_metadata: Any) -> None:
+        del duration_secs
+        if event.startswith("/jax/core/compile/"):
+            compilation_events.append(event)
+
+    jax.monitoring.register_event_duration_secs_listener(compilation_listener)
+    try:
+        selection = compute_arithmetic_selection(
+            step,
+            model,
+            vu,
+            ci_fn,
+            LMBatchWithDocuments.from_unsegmented_sequences(tokens),
+            N_A * N_B,
+            thresholds=(0.0,),
+            top_k=top_k,
+            column_gathers=column_gathers,
+        )
+    finally:
+        jax.monitoring.unregister_event_duration_listener(compilation_listener)
+    assert not compilation_events
+    full_ci, full_xv, _ = step(
+        model, vu, ci_fn, LMBatchWithDocuments.from_unsegmented_sequences(tokens)
     )
-    full_ci, full_xv, _ = step(model, vu, ci_fn, tokens)
-    for site in model.site_names:
+    for site in model.model.site_names:
         shown = selection.shown[site]
         assert shown.size == min(top_k, selection.active[0.0][site].size)
         assert selection.ci_columns[site].shape == (N_A * N_B, shown.size)
@@ -130,6 +184,22 @@ def test_compute_arithmetic_selection_gathers_only_shown_columns():
         np.testing.assert_allclose(
             selection.xv_columns[site], np.asarray(full_xv[site])[:, shown], rtol=1e-6
         )
+
+
+def test_column_gather_replicates_both_grids_and_preserves_their_dtypes():
+    mesh = Mesh(np.asarray(jax.devices()), ("batch",), axis_types=(AxisType.Explicit,))
+    sharding = NamedSharding(mesh, P("batch", None))
+    n_rows = 2 * jax.device_count()
+    ci = jax.device_put(jnp.arange(n_rows * 4, dtype=jnp.bfloat16).reshape(n_rows, 4), sharding)
+    xv = jax.device_put(jnp.arange(n_rows * 4, dtype=jnp.float32).reshape(n_rows, 4), sharding)
+    indices = np.array([3, 1], dtype=np.int32)
+    with jax.set_mesh(mesh):
+        gather = prepare_arithmetic_columns({SITE: ci}, {SITE: xv}, top_k=2)[SITE]
+        ci_columns, xv_columns = gather(ci, xv, indices)
+    for source, columns in ((ci, ci_columns), (xv, xv_columns)):
+        assert columns.dtype == source.dtype
+        assert columns.sharding.is_fully_replicated
+        np.testing.assert_array_equal(np.asarray(columns), np.asarray(source)[:, indices])
 
 
 def test_to_grid_is_row_major_a_then_b():

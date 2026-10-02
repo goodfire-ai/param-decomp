@@ -1,0 +1,349 @@
+# Latest canonical run: https://wandb.ai/goodfire/param-decomp/runs/p-63932d23
+# Model-only run name replaces the source run's experiment label.
+run_name: pile-qwen3-5-moe-4L
+cadence:
+  checkpointing:
+    kind: periodic
+    save_every: 5000
+    retention:
+      kind: keep_last
+      n: 2
+data:
+  train:
+    kind: name
+    name: pile_neox_tok_512
+  eval:
+    kind: name
+    name: pile_neox_tok_512_val
+eval:
+  batch_size: 128
+  every: 1000
+  metrics:
+  - n_batches_accum: 1
+    type: CIHistograms
+  - ci_alive_threshold: 0.0
+    type: ComponentActivationDensity
+  - ci_alive_threshold: 0.0
+    groups:
+      gdn:
+      - layers.*.linear_attn.*
+      attn:
+      - layers.*.self_attn.*
+      experts_gate:
+      - layers.*.mlp.experts.gate_proj
+      experts_up:
+      - layers.*.mlp.experts.up_proj
+      experts_down:
+      - layers.*.mlp.experts.down_proj
+      shared:
+      - layers.*.mlp.shared_expert.*
+      total:
+      - '*'
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  - type: CIMeanPerComponent
+  # Adds per-position active-CI diagnostics; absent from p-63932d23
+  - type: CIActiveCountsPerPosition
+  - init: random
+    source_shape: c
+    n_steps: 20
+    name: PGDReconLoss_20step
+    step_size: 0.1
+    type: PGDReconLoss
+    # p-63932d23's hidden_acts_reconstruction in the current auxiliary schema;
+    # keep the zero weight and the same residual captures.
+    auxiliaries:
+    - name: hidden_acts_reconstruction
+      coeff: 0.0
+      comparisons:
+      - capture: resid.1
+        distance: relative_squared_error
+      - capture: resid.2
+        distance: relative_squared_error
+      - capture: resid.3
+        distance: relative_squared_error
+      - capture: resid.4
+        distance: relative_squared_error
+  - init: random
+    source_shape: c
+    n_steps: 40
+    name: PGDReconLoss_40step
+    step_size: 0.1
+    type: SlowPGDReconLoss
+  - init: random
+    source_shape: c
+    n_steps: 80
+    name: PGDReconLoss_80step
+    step_size: 0.1
+    type: SlowPGDReconLoss
+  - init: random
+    source_shape: c
+    n_steps: 160
+    name: PGDReconLoss_160step
+    step_size: 0.1
+    type: SlowPGDReconLoss
+  - init: random
+    source_shape: c
+    n_steps: 320
+    name: PGDReconLoss_320step
+    step_size: 0.1
+    type: SlowPGDReconLoss
+  - init: random
+    source_shape: c
+    n_steps: 640
+    name: PGDReconLoss_640step
+    step_size: 0.1
+    type: SlowPGDReconLoss
+  - init: random
+    source_shape: c
+    n_steps: 1280
+    name: PGDReconLoss_1280step
+    step_size: 0.1
+    type: SlowPGDReconLoss
+  - type: RouterDivergence
+    strategies:
+    - kind: ci_masked
+    # Current evaluator supports one stochastic draw; p-63932d23 requested four.
+    - kind: stochastic
+    - kind: fresh_pgd
+      n_steps: 20
+      step_size: 0.1
+  n_steps: 1
+  slow_every: 10000
+  slow_on_first_step: true
+decomposition:
+  sites:
+    kind: qwen36_moe
+    layers:
+      kind: all
+    # Retired neuron_aligned -> supported nonlinearity_aligned;
+    # initialization geometry differs from p-63932d23.
+    initialization: nonlinearity_aligned
+    cs:
+      gdn_q: 512
+      gdn_k: 512
+      gdn_v: 1024
+      gdn_z: 1024
+      gdn_a: 8
+      gdn_b: 8
+      gdn_out: 1024
+      attn_q: 1024
+      attn_k: 256
+      attn_v: 256
+      attn_o: 512
+      experts_gate: 5376
+      experts_up: 5376
+      experts_down: 5376
+      shared_gate: 128
+      shared_up: 128
+      shared_down: 128
+  ci:
+    type: moe_chunkwise_transformer
+    expert_implementation: dense_masked
+    blocks_per_chunk: 4
+    input_tap: all_block_resids
+    d_model: 1344
+    n_blocks: 8
+    attention:
+      kind: mha
+      n_heads: 14
+      mask: causal
+      implementation: flash
+    expert_ffn_hidden: 128
+    shared_ffn_hidden: 128
+pd:
+  batch_size: 1024
+  steps: 400000
+  ci_fn_optimizer:
+    type: muon
+    ns_dtype: bfloat16
+    grad_clip_norm: 1.0
+    lr_schedule: &id001
+      max_val: 0.0001979898987322333
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 0.9
+        frac: 0.1
+        interp: cosine
+      - at: 1.0
+        frac: 0.1
+  components_optimizer:
+    type: muon
+    ns_dtype: bfloat16
+    grad_clip_norm: 1.0
+    lr_schedule: *id001
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 0
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - frequency:
+      coeff: 5.6e-05
+      reference_datapoint_count: 6553600
+      ema_halflife_steps: 200
+    coeff: 0.00017
+    normalize_at_one: true
+    type: ImportanceMinimalityLoss
+    gamma:
+      max_val: 1.0
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 0.9
+        frac: 0.01
+      - at: 1.0
+        frac: 0.01
+  # MLP input reads and writes; writes only in p-63932d23
+  - type: NonlinearityLocalityLoss
+    coeff: 3.0e-05
+    relative_threshold:
+      max_val: 8.0
+      points:
+      - at: 0.0
+        frac: 1.0
+      - at: 1.0
+        frac: 0.25
+    unit_kind_coefficients:
+      neuron: 1.0
+      attention_head: 1.0
+      deltanet_head: 1.0
+  - type: MergedStochasticSubsetPooledPPGDReconLoss
+    coeff: 1.0
+    adversary_objective: e2e
+    adv_fraction: 0.5
+    n_warmup_steps: 2
+    routing:
+      type: uniform_k_subset
+    optimizer:
+      beta1: 0.01
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        max_val: 0.02
+        points:
+        - at: 0.0
+          frac: 0.0
+        - at: 0.025
+          frac: 1.0
+        - at: 1.0
+          frac: 1.0
+      type: adam
+    # p-63932d23 used pool: {size: 8192, group_size: 32}. The current per-batch
+    # API uses 8192 / 1024 = 8; same total, different ownership and random draws.
+    pool:
+      size_per_batch_element: 8
+    auxiliaries:
+    - name: router_kl
+      # p-63932d23 already had router KL at 0.1; migrate it to the auxiliary schema
+      # and raise the coefficient to 4, one unit per MoE layer.
+      coeff: 4.0
+      comparisons:
+      - capture: router_logits.0
+        distance: categorical_kl_from_logits
+      - capture: router_logits.1
+        distance: categorical_kl_from_logits
+      - capture: router_logits.2
+        distance: categorical_kl_from_logits
+      - capture: router_logits.3
+        distance: categorical_kl_from_logits
+  - coeff: 1000.0
+    type: FaithfulnessLoss
+runtime:
+  compilation_cache_dir: ~/.cache/param-decomp/xla
+  remat_recon_forwards: true
+  remat_ci_fn: true
+  mesh:
+    data: 16
+    tp: 1
+  sharding:
+    components:
+      optimizer_state:
+        C:
+        - tp
+        expert:
+        - tp
+      compute_weights:
+        C:
+        - tp
+        expert:
+        - tp
+      faithfulness_weights:
+        C:
+        - tp
+        expert:
+        - tp
+      faithfulness_deltas:
+        expert:
+        - tp
+      operands:
+        C:
+        - tp
+        expert:
+        - tp
+      ns_compute: {}
+    ci_fn: zero1-replicated-resident-moe-replicated-ns
+    activations:
+      external:
+        batch:
+        - data
+      component:
+        batch:
+        - data
+        C:
+        - tp
+        expert:
+        - tp
+    target:
+      embedding:
+        persist: {}
+        operand: {}
+      normalization: {}
+      position_encoding: {}
+      column:
+        persist:
+          d_out:
+          - tp
+        operand:
+          d_out:
+          - tp
+        input: external
+        output: intermediate
+      row:
+        persist:
+          d_in:
+          - tp
+        operand:
+          d_in:
+          - tp
+        input: intermediate
+        output: external
+      output:
+        persist: {}
+        operand: {}
+      intermediate:
+        batch:
+        - data
+        feature:
+        - tp
+        q_head:
+        - tp
+        kv_head:
+        - tp
+      component:
+        input: external
+        output: external
+  compiler_options: tuned-v2
+target:
+  attention_implementation: flash
+  weights_dtype: bfloat16
+  output_edge:
+    kind: streamed
+    n_vocab_chunks: 3
+  spec:
+    kind: pretrained_qwen35_moe
+    run_path: goodfire/param-decomp/runs/t-82543a24
+  expert_implementation: dense_masked
+# Entity now follows the launch environment instead of the source's pinned goodfire.
+wandb:
+  project: param-decomp

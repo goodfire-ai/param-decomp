@@ -13,8 +13,7 @@ requires every axis of a shape, so `tp: 1` is how a run says "no tensor parallel
 Companion prose, each canonical for its piece: `sharding.py`'s module docstring — the
 mesh axes and the authored (not required) hardware alignment; `muon_stacked.py`'s
 module docstring — why Newton-Schulz stages at a waypoint at all; `checkpoint.py`'s
-module docstring — why checkpoints are topology-free; `SPEC.md` D4/S20 — the layout
-and optimizer invariants; `CLAUDE.md` (this directory) — the agent-facing summary.
+module docstring — why checkpoints are topology-free; `CLAUDE.md` (this directory) — the agent-facing summary.
 
 ## Invariants
 
@@ -47,10 +46,10 @@ and optimizer invariants; `CLAUDE.md` (this directory) — the agent-facing summ
 There are three distinct vocabularies:
 
 - **Semantic axes** describe tensor meaning: `stack`, `d_in`, `d_out`, `C`, `batch`, `q_head`,
-  `kv_head`, `ffn_hidden`, and so on. Expert-blocked component stacks add `expert` and
-  `C_block` (per-expert component axis); their `d_in`/`d_out` name one expert's block dims.
-  The component rows' legal keys derive from the run's factorizations, so a key no group
-  consumes refuses at construction.
+  `kv_head`, `ffn_hidden`, and so on. Block-factored component stacks add `expert` (the
+  block axis) and `C_block` (per-block component axis); their `d_in`/`d_out` name one
+  block's dims. The component rows' legal keys derive from the run's factorizations, so a
+  key no group consumes refuses at construction.
 - **Mesh axes** describe the logical device grid: `replicate`, `fsdp`, and `tp` on the
   three-axis HSDP mesh; `data` (the merged data axis) and `tp` on the resident two-axis
   mesh.
@@ -61,22 +60,28 @@ There are three distinct vocabularies:
   consumer branches on a value's shape. A `PartitionSpec` is always derived from a typed
   row plus a tensor's semantic axes.
 
-`PlacementRules` contains four closed sections:
+`PlacementRules` contains three closed sections and the CI preset name:
 
 - `components`: `optimizer_state`, `compute_weights`, faithfulness weight/delta rows,
   `operands`, the muon-NS staging waypoint `ns_compute`, and the resolved semantic-group
   census (each group's factorization and stack length; the transitions read per-group
   leaf axes from it);
-- `ci_fn`: `optimizer_state`, `compute_weights`, `operands`, and `ns_compute` for attention,
-  FFN, input, and output weights, plus vector-state and activation rows;
 - `activations`: the target/component external waist, the masked passes' between-blocks
   residual (`masked_external` — the external row itself unless the run authors
   `runtime.sequence_sharding: sequence_parallel`, which adds `position -> tp`), and the
   `C`-sharded internal waist;
 - `target`: persist/operand rows for every frozen weight role, Megatron column/row activation
-  contracts, normalization/position buffers, and the component-replaced public interface.
+  contracts, normalization/position buffers, and the component-replaced public interface;
+- `ci_fn`: the preset name the CI architecture resolves its own rows from. Each transformer
+  CI architecture owns a typed row set (`TransformerCIFnRows`, `BlockSelectedCIFnRows`) and a
+  `preset_rows` match over every preset name, refusing the presets it does not support;
+  its per-family lifecycle rows (`optimizer_state`, `compute_weights`, `operands`,
+  `ns_compute`) bind through `placement.bind_ci_weight_rows`, which fails closed on keys
+  its leaves do not consume and on mesh axes the mesh lacks.
 
 The explicit config model mirrors these typed fields. It is not a string-keyed escape hatch.
+An explicit table names a preset for its CI rows (`ci_fn: <preset>`); CI rows are never
+authored.
 
 ## Weight lifecycle
 
@@ -157,8 +162,9 @@ loop collective-free (a matrix-sharded operand is an explicit-mode type error on
 Gram contraction, and matrix-axis staging — the persist row verbatim included —
 re-triggers the SPMD full-rematerialization fallback). A kind whose stack length does
 not tile the declared split refuses at the stacked-muon consumer's claim
-(`assert_stacked_muon_*_staging`, fired at optimizer build and at the LM pre-submit
-gate — only a stacked-muon run consumes the row, so non-muon runs keep any-stack-length
+(`assert_stacked_muon_component_staging` at optimizer build; for CI,
+`ci_fn.optimizer.assert_ci_muon_staging_tiles` over every declared matrix during LM
+validation and again when the waypoints stage — only a stacked-muon run consumes the row, so non-muon runs keep any-stack-length
 placement) — nothing hunts for an alternative split, and nothing is ever gathered whole
 or padded. The waypoint is reached
 by `muon_stacked.staging_hops` — one mesh axis moved per reshard, since a combined
@@ -229,19 +235,19 @@ with `dots_saveable`, a gathered operand is not itself a saved dot residual.
   stack-cut, `stack` on `data`), so the faithfulness transition stays the identity in
   both, and owner's stack cut carries over (÷data, padded where the stacks don't tile it).
 - `zero1-replicated-resident-moe` / `owner-replicated-resident-moe`: the resident
-  twins extended with the rows expert-blocked component groups need — in both, V/U
-  expert blocks co-locate with their frozen experts (`expert: tp` on residents and
-  operands), the faithfulness rows ARE the master layout (identity transition), and
+  twins extended with the rows block-factored component groups need — in both, V/U
+  blocks co-locate with the frozen weight blocks they factor (`expert: tp` on residents
+  and operands), the faithfulness rows ARE the master layout (identity transition), and
   the component waist additionally keys `expert`, so a component activation's
-  expert-blocked view derives from the same row as its flat `C` view (the flat axis is
-  expert-major — one layout, two spellings). Keyed on `expert` (+`C_block` where used),
-  they bind only site sets that actually hold expert-blocked groups; a dense-only run
+  block-factored view derives from the same row as its flat `C` view (the flat axis is
+  block-major — one layout, two spellings). Keyed on `expert` (+`C_block` where used),
+  they bind only site sets that actually hold block-factored groups; a dense-only run
   refuses at the rule-key check and uses the dense twins.
   The zero1 flavor rests masters intra-matrix ÷N (`expert: tp`, `C_block: data`) — any
   stack length placeable; its costs: the faithfulness V·U contraction runs over the
   data-cut `C_block` (the delta lands through a cross-`data` reduce-scatter at entry),
   and the layout is stacked-muon-incompatible (below). One faithfulness-delta row
-  serves both factorization kinds, and an expert delta carries `expert` and `d_in`
+  serves both factorization kinds, and a block-factored delta carries `expert` and `d_in`
   together, so `d_in` cannot also ride `tp`: the dense (shared-kind) deltas' tp
   contraction all-reduces at entry instead of scattering — small matrices, off the
   hot loop.
@@ -252,20 +258,20 @@ with `dots_saveable`, a gathered operand is not itself a saved dot residual.
   and stacked-muon NS staging keeps owner's story (identity on the cross-node stack
   axis; intra-node tp gathers of co-located block axes only). Stack-cut ÷data like
   every owner, padded where the stacks don't tile it. The flavor is the components masters' —
-  the CI-fn rows stay the zero1 twin's (owner-cut CI masters would bind `n_chunks` to
-  ÷data for nothing).
-  Both flavors also carry the MoE CI fn's two weight families
-  (`ci_fn/moe.expert_ffn`, `ci_fn/moe.expert_head`): CI expert banks and fused narrow
-  heads rest whole per expert shard at `expert: tp` — co-located with the target's
-  frozen experts and the V/U blocks, so the CI fn's routed compute rides the same
-  expert-parallel schedule with zero weight movement — masters ÷(tp·data) in the zero1
-  spirit under EITHER flavor (`ffn_hidden`/`C_block` on `data`): an owner-style
-  stack-cut would demand the CI chunk stack tile `data` (n_chunks = 10 does not tile
-  8), and the intra-matrix cut costs owner nothing it claims — CI weights have no
-  faithfulness row, and the seats keep the CI group on adamw. Entry is a pure
-  all-gather over `data`; NS staging `{stack: data}` (the 4D expert leaves fold
-  layer/expert into the canonical stack). Dense presets bind `moe = None`;
-  `resolve_ci_placement` refuses pairing the MoE arch with them.
+  the block-selected CI rows stay the zero1 twin's (owner-cut CI masters would bind
+  `n_chunks` to ÷data for nothing).
+  Under both flavors the block-selected CI arch adds two weight families
+  (`ci_fn/expert_ffn`, `ci_fn/expert_head`): CI block banks and fused
+  selected-emission heads rest whole per block shard at `expert: tp` — co-located with
+  the target's frozen blocks and the V/U blocks, so the CI fn's compute over the selected
+  blocks rides the same block-sharded schedule with zero weight movement — masters
+  ÷(tp·data) in the zero1 spirit under EITHER flavor (`ffn_hidden`/`C_block` on `data`):
+  an owner-style stack-cut would demand the CI chunk stack tile `data` (n_chunks = 10
+  does not tile 8), and the intra-matrix cut costs owner nothing it claims — CI weights
+  have no faithfulness row, and the seats keep the CI group on adamw. Entry is a pure
+  all-gather over `data`; NS staging `{stack: data}` (the 4D leaves fold layer/block
+  into the canonical stack). Dense presets bind `moe = None`;
+  the block-selected arch's `resolve_placement` refuses a table without them.
 - `ddp`: replicated model state for small-model and single-node work only.
 
 Unrepresentable is the point. One row set placing every group is a claim a reader can
@@ -287,12 +293,12 @@ inference — one census type (`StackCensus`: real length + pad) for every persi
 - Each V/U semantic group resolves a `GroupCensus` in `from_config`, from the site set,
   over the component rows that cut the stack (`optimizer_state`, `faithfulness_weights`,
   `faithfulness_deltas`); `ComponentStacks.stack_pads` mirrors it on the value tree.
-- The chunkwise CI fn's chunk stack resolves a `StackCensus` in `resolve_ci_placement`
+- The chunkwise CI fn's chunk stack resolves a `StackCensus` in `resolve_chunk_census`
   — where the CI arch first meets the rows, at run assembly and at the config-build
-  gate — over every row its stacked leaves rest at (`CIFnRows.chunk_persist_rows`: the
-  four families' `optimizer_state` plus `vectors`, and the MoE families' masters for
-  the MoE arch). The resolved placement carries it (`CIFnPlacement.chunks`), and
-  `ChunkwiseTransformerCIFn.stack_pad` / `MoEChunkwiseTransformerCIFn.stack_pad`
+  gate — over every row its stacked leaves rest at (the
+  four families' `optimizer_state` plus `vectors`, and the expert families' masters for
+  the block-selected arch). The arch's resolved placement carries it (`.chunks`), and
+  `ChunkwiseTransformerBackbone.census` / `BlockSelectedChunkwiseTransformerCIFn.census`
   mirror it on the value tree.
 
 Both value trees are boundary-validated against their census
@@ -309,18 +315,17 @@ so the stack stays rectangular) — and exist in exactly two places:
   zero through adamw and stacked muon alike (NS on a zero matrix is zero — the wasted
   optimizer FLOPs are the pad fraction, `stack_pad / padded_stack_len`). Muon's
   canonical NS stack length is the padded one (`GroupCensus.ns_stack_len`; the CI
-  staging claims read `CIFnPlacement.chunks.padded_stack_len`).
+  staging claims count the padded stored matrices).
 - The faithfulness lane, whose rows ARE the master layout: pads ride the identity
   weights transition as exact zeros, targets extend the frozen stack with zero
   matrices (`weight_deltas` — pad deltas are exactly `0 − 0·0 = 0`), and
   `make_faithfulness_loss` keeps the site mean over the REAL sites. (No faithfulness
   row exists for CI weights; the CI pads have only the persist layer.)
 
-Compute never sees a pad, and the entry gather never moves one: the entry
-(`component_stacks_to_compute_weights`; `materialize_ci_compute_weights` for the CI fn)
-strips the pads BEFORE the cross-`data` gather (`materialize_reduced_weights`), so the
-residents, the forwards, the chunk scan, and every mask/CI surface carry only real
-stacks and the all-gather's result shapes read `stack_len`, never `padded_stack_len`.
+The V/U compute never sees a pad, and the V/U entry gather never moves one: the entry
+(`component_stacks_to_compute_weights`) strips the pads BEFORE the cross-`data` gather
+(`materialize_reduced_weights`), so the V/U residents, the forwards, and every mask
+surface carry only real stacks and the all-gather's result shapes read `stack_len`, never `padded_stack_len`.
 The typed slice cannot drop slots from a cut stack axis (a real length that does not
 tile the cut has no sharded spelling — the very reason the pad exists), so a padded
 stack first hops to its entry waypoint (`padded_entry_waypoint`: the compute layout with
@@ -329,9 +334,15 @@ slot per device, after which the stack rests whole and every device still holds 
 the bytes), the pads exit there device-local (`strip_stack_pad`), and the all-gather
 carries only real slots. The transpose runs the route backwards: a real-slot
 reduce-scatter, the slice's transpose writing exact zeros into the pad slots, the
-all-to-all returning them to their owners. The CI vector leaves rest whole on the stack
-axis at their persist row (`_bind` refuses `stack` on the vectors row, as on every
-scanned row) and strip in place. The waypoint's tiling — the leaf's last dim against
+all-to-all returning them to their owners.
+
+The chunkwise CI fns take the plain route instead: `prepare` gathers the
+padded stack into the compute layout (`gather_reduced_weights`), so compute values carry
+the same `stack_pad` as stored ones, and the forward slices the real chunks off right
+before the chunk scan. The compute rows (and the vectors row) refuse `stack`, so that
+slice is device-local; its transpose writes exact zeros into the pad cotangents, and the
+reduce-scatter back to the persist layout keeps them zero. The pad chunks ride the CI
+entry gather. The V/U waypoint's tiling — the leaf's last dim against
 its compute assignment with the stack cut nested minor — is validated where the rows
 are bound (`validate_stacked_leaf`), like every other matrix-axis tiling. The costs are
 the pad fraction on persist bytes and optimizer work, plus the entry all-to-all's one
@@ -350,7 +361,7 @@ bounded, off-critical-path transfers; neither preset is a memory class apart —
 per-rank whole-fp32-stack peak is what the hop chain excludes, in every preset.
 
 `from_config` resolves the semantic-group census once from the concrete site set — pad counts
-included — and refuses any group the rows cannot place; `resolve_ci_placement` does the same
+included — and refuses any group the rows cannot place; `resolve_chunk_census` does the same
 for the chunk stack from the CI arch (and refuses, at the same construction time, every
 arch-known CI master leaf the rows cannot tile). Consumers validate those censuses against
 their arrays and never re-decide them; a consumer re-placing a finished run on one device tiles
@@ -371,7 +382,7 @@ of the replicated arm's all-reduce), with the between-blocks residuals and norms
 and computing at 1/tp. The final residual gathers back to `external` before the output
 edge, and clean forwards, CI-fn taps, and eval comparisons keep the replicated residual
 everywhere, so nothing outside the masked engine sees the sharded type. It is a
-resharding of the same math (numerics move at reassociation level, SPEC D4); captures
+resharding of the same math (numerics move at reassociation level); captures
 under sequence parallelism are an enumerated gap and refuse. Sequence length must tile
 tp, and only targets implementing it accept the row (qwen36_moe; others refuse at their
 masked forward).
@@ -386,7 +397,7 @@ small simulated meshes are necessary but not sufficient.
 
 Every performance claim must be reproducible from an evidence record carrying: the pushed
 commit; the exact invocation, including any config-derivation command; the pinned resolved
-`launch_config.yaml`; cluster, job id, run id, mesh, batch, objective, and warmup count; the
+`launch_config.yaml`; hardware, process topology, run id, mesh, batch, objective, and warmup count; the
 exact profiled step ranges and paths to the uncapped XPlane and optimized HLO protobuf; and the
 parser command/version that produced the numbers. A run name or prose description is never a
 substitute. Classify a run by its pinned `launch_config.yaml` and startup placement dump —
