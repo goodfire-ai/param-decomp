@@ -170,7 +170,7 @@ jobs:
       # answer "where do the minutes go".
       - name: Upload per-test timings
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: junit-${{ matrix.shard }}
           path: junit/
