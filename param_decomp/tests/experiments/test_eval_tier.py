@@ -20,6 +20,7 @@ from param_decomp.core.configs import (
     UVPlotsConfig,
 )
 from param_decomp.core.eval_schedule import Every, FirstThenEvery, eval_due
+from param_decomp.core.recon_eval import fresh_pgd_probe
 from param_decomp.experiments.eval_config import (
     EVAL_METRIC_CONFIG_TYPES,
     AnyEvalMetricConfig,
@@ -101,41 +102,63 @@ def test_the_tier_travels_with_the_metric_across_families() -> None:
     assert UVPlotsConfig.slow and not EvalPGDReconLossConfig.slow
 
 
-def _fresh_pgd_raw(metric_type: str, n_steps: int) -> dict[str, object]:
+def _fresh_pgd_raw(metric_type: str, **steps: object) -> dict[str, object]:
     return {
         "type": metric_type,
-        "name": f"PGDReconLoss_{n_steps}step",
         "init": "random",
         "source_shape": "c",
-        "n_steps": n_steps,
+        **steps,
         "step_size": 0.1,
     }
+
+
+def _eval_with(*metrics: dict[str, object]) -> EvalConfig:
+    return EvalConfig.model_validate(
+        {"batch_size": 8, "n_steps": 1, "every": 1000, "slow_every": 5000, "metrics": metrics}
+    )
 
 
 def test_the_slow_fresh_pgd_probe_is_the_fast_one_on_the_other_cadence() -> None:
     """A long attack ladder rides `slow_every` beside the 20-step fast probe; both are the
     same probe to every binder, with distinct config types for their cadences."""
-    eval_config = EvalConfig.model_validate(
-        {
-            "batch_size": 8,
-            "n_steps": 1,
-            "every": 1000,
-            "slow_every": 5000,
-            "metrics": [
-                _fresh_pgd_raw("PGDReconLoss", 20),
-                _fresh_pgd_raw("SlowPGDReconLoss", 1280),
-            ],
-        }
+    eval_config = _eval_with(
+        _fresh_pgd_raw("PGDReconLoss", n_steps=20),
+        _fresh_pgd_raw("SlowPGDReconLoss", read_out_steps=[40, 1280]),
     )
     fast, slow = eval_config.metrics
     assert type(fast) is EvalPGDReconLossConfig and type(slow) is SlowPGDReconLossConfig
     assert schedule_for(fast, eval_config) == Every(1000)
     assert schedule_for(slow, eval_config) == FirstThenEvery(0, 5000)
+    assert fresh_pgd_probe(fast).read_out_names == ("PGDReconLoss_20step",)
+    assert fresh_pgd_probe(slow).read_out_names == (
+        "SlowPGDReconLoss_40step",
+        "SlowPGDReconLoss_1280step",
+    )
 
 
 def test_the_slow_fresh_pgd_probe_is_not_a_training_loss() -> None:
     with pytest.raises(ValidationError, match="SlowPGDReconLoss"):
-        TypeAdapter(AnyLossMetricConfig).validate_python(_fresh_pgd_raw("SlowPGDReconLoss", 40))
+        TypeAdapter(AnyLossMetricConfig).validate_python(
+            _fresh_pgd_raw("SlowPGDReconLoss", read_out_steps=[40])
+        )
+
+
+@pytest.mark.parametrize("read_out_steps", [[], [80, 40], [40, 40], 40])
+def test_a_slow_fresh_pgd_ladder_strictly_ascends(read_out_steps: int | list[int]) -> None:
+    with pytest.raises(ValidationError):
+        SlowPGDReconLossConfig.model_validate(
+            _fresh_pgd_raw("SlowPGDReconLoss", read_out_steps=read_out_steps)
+        )
+
+
+def test_the_fast_probe_and_the_ladder_log_apart_at_a_shared_step() -> None:
+    fast, slow = _eval_with(
+        _fresh_pgd_raw("PGDReconLoss", n_steps=40),
+        _fresh_pgd_raw("SlowPGDReconLoss", read_out_steps=[40, 80]),
+    ).metrics
+    assert isinstance(fast, EvalPGDReconLossConfig) and isinstance(slow, SlowPGDReconLossConfig)
+    assert fresh_pgd_probe(fast).read_out_names == ("PGDReconLoss_40step",)
+    assert fresh_pgd_probe(slow).read_out_names[0] == "SlowPGDReconLoss_40step"
 
 
 def test_a_seat_cannot_author_its_own_tier() -> None:

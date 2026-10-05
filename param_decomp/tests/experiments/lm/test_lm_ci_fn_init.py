@@ -94,7 +94,7 @@ def test_conditioned_init_refuses_a_calibration_batch_holding_padding():
     document_ids = jnp.zeros(shape, jnp.int32).at[1, 6:].set(-1)
     padded = LMBatchWithDocuments(LMBatch(tokens), SequenceLayout(document_ids))
 
-    with pytest.raises(Exception, match="the calibration batch holds padding"):
+    with pytest.raises(AssertionError, match="the calibration batch holds padding"):
         _placed_init((1, 1, 1), padded)
 
 

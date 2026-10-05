@@ -455,6 +455,16 @@ def open_target_and_components(run_dir: Path, step: int, *, data_root: Path) -> 
     return TargetAndComponents(run_dir.name, step, model, jax.block_until_ready(prepared_weights))
 
 
+def dense_target_tokenizer_dir(run_dir: Path, *, data_root: Path) -> Path:
+    """The local HF snapshot holding the tokenizer of a dense run's target, read from the
+    same two config sections as `open_target_and_components`."""
+    match load_dense_target(run_dir, data_root):
+        case TargetConfig(model_name=model_name):
+            return transformer.hf_snapshot_dir(model_name)
+        case LlamaSimpleMLPTargetConfig() | Qwen36MoeTargetConfig() as other:
+            raise NotImplementedError(f"only an HF target names its own tokenizer, not {other}")
+
+
 @eqx.filter_jit
 def _prepare_components(
     model: TransformerDecomposedModel, components: ComponentStacks

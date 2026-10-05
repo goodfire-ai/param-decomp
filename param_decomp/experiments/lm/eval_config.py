@@ -165,7 +165,6 @@ class ArithmeticCIL0Config(BaseConfig):
 
 
 class ArithmeticFreshPGDConfig(ReconstructionAuxiliariesMixin):
-    name: str | None = None
     n_steps: NonNegativeInt
     step_size: PositiveFloat
 

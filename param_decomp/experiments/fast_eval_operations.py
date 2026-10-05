@@ -23,8 +23,7 @@ from param_decomp.core.configs import (
 )
 from param_decomp.core.eval_schedule import EvalSchedule
 from param_decomp.core.model import CaptureKeys, ComponentActivations, PlacedModel
-from param_decomp.core.recon import resolve_auxiliary_reconstruction
-from param_decomp.core.recon_eval import FreshPGDReconEval, make_fresh_pgd_eval_step
+from param_decomp.core.recon_eval import fresh_pgd_probe, make_fresh_pgd_eval_step
 from param_decomp.core.run import EvalInvocation, StandaloneOperation, StandaloneOperationPlan
 from param_decomp.experiments.eval_config import EvalConfig
 
@@ -123,28 +122,7 @@ def make_fresh_pgd_operation[
     mesh: Mesh | None,
     sample_eval_batch: Callable[[np.uint32], TargetIn],
 ) -> StandaloneOperationPlan[EvalInvocation[Conditioning]]:
-    probe = FreshPGDReconEval(
-        name=metric.name or metric.type,
-        n_steps=metric.n_steps,
-        step_size=metric.step_size,
-        reconstruction=resolve_auxiliary_reconstruction(metric.auxiliaries),
-    )
-    pgd_step = make_fresh_pgd_eval_step(
-        model,
-        probe,
-        ci_capture_keys,
-        mesh,
-    )
-
-    def step(
-        model: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
-        components: ComponentStacks,
-        ci_fn: CIFn[Conditioning],
-        inputs: TargetIn,
-        key: PRNGKeyArray,
-    ) -> dict[str, Array]:
-        return {f"loss/{probe.name}": pgd_step(model, components, ci_fn, inputs, key)}
-
+    step = make_fresh_pgd_eval_step(model, fresh_pgd_probe(metric), ci_capture_keys, mesh)
     return _averaged_over_eval_batches(
         step, eval_config, schedule, seed, compiler_options, model, sample_eval_batch
     )

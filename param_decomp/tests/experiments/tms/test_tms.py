@@ -48,7 +48,7 @@ from param_decomp.core.nonlinearity import (
 )
 from param_decomp.core.objective import build_objective
 from param_decomp.core.recon import AuxiliaryReconstruction
-from param_decomp.core.recon_eval import FreshPGDReconEval, make_fresh_pgd_eval_step
+from param_decomp.core.recon_eval import FreshPGDAttack, FreshPGDReconEval, make_fresh_pgd_eval_step
 from param_decomp.core.run_state import _adamw_optimizer
 from param_decomp.core.schedule import Knot, ScheduleConfig
 from param_decomp.core.train import (
@@ -426,8 +426,8 @@ def test_fresh_pgd_eval_runs_on_positionless_tms() -> None:
         make_fresh_pgd_eval_step(
             model,
             FreshPGDReconEval(
-                n_steps=2,
-                step_size=0.1,
+                attack=FreshPGDAttack(step_size=0.1, read_out_steps=(2,)),
+                metric_type="PGDReconLoss",
                 reconstruction=(
                     AuxiliaryReconstruction(
                         name="hidden_acts_reconstruction",
@@ -443,13 +443,13 @@ def test_fresh_pgd_eval_runs_on_positionless_tms() -> None:
         )
     )
 
-    value = eval_step(
+    (value,) = eval_step(
         model,
         state.decomposition.components,
         state.decomposition.ci_fn,
         batch,
         jax.random.PRNGKey(4),
-    )
+    ).values()
 
     assert value.shape == ()
     assert jnp.isfinite(value)

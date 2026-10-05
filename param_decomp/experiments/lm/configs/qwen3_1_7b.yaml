@@ -103,38 +103,9 @@ eval:
         distance: relative_squared_error
   - init: random
     source_shape: c
-    n_steps: 40
-    name: PGDReconLoss_40step
-    step_size: 0.1
-    type: SlowPGDReconLoss
-  - init: random
-    source_shape: c
-    n_steps: 80
-    name: PGDReconLoss_80step
-    step_size: 0.1
-    type: SlowPGDReconLoss
-  - init: random
-    source_shape: c
-    n_steps: 160
-    name: PGDReconLoss_160step
-    step_size: 0.1
-    type: SlowPGDReconLoss
-  - init: random
-    source_shape: c
-    n_steps: 320
-    name: PGDReconLoss_320step
-    step_size: 0.1
-    type: SlowPGDReconLoss
-  - init: random
-    source_shape: c
-    n_steps: 640
-    name: PGDReconLoss_640step
-    step_size: 0.1
-    type: SlowPGDReconLoss
-  - init: random
-    source_shape: c
-    n_steps: 1280
-    name: PGDReconLoss_1280step
+    # One ascent read out at each step, logged as SlowPGDReconLoss_<n>step. Ladders
+    # from earlier versions ran one attack per step and logged as PGDReconLoss_<n>step.
+    read_out_steps: [40, 80, 160, 320, 640, 1280]
     step_size: 0.1
     type: SlowPGDReconLoss
   n_steps: 1

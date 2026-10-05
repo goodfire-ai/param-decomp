@@ -77,7 +77,7 @@ from param_decomp.core.model import (
 from param_decomp.core.objective import PDObjective, build_objective
 from param_decomp.core.placement import PlacementRules, from_config
 from param_decomp.core.precision import COMPUTE_DT
-from param_decomp.core.recon_eval import FreshPGDReconEval, make_fresh_pgd_eval_step
+from param_decomp.core.recon_eval import FreshPGDAttack, FreshPGDReconEval, make_fresh_pgd_eval_step
 from param_decomp.core.run_state import _adamw_optimizer
 from param_decomp.core.schedule import Knot, ScheduleConfig
 from param_decomp.core.sharding import batch_shard_leading
@@ -499,11 +499,15 @@ def test_fast_eval_metrics_bind_to_positioned_non_categorical_target():
     pgd_step = jax.jit(
         make_fresh_pgd_eval_step(
             placed,
-            FreshPGDReconEval(n_steps=2, step_size=0.1),
+            FreshPGDReconEval(
+                attack=FreshPGDAttack(step_size=0.1, read_out_steps=(2,)),
+                metric_type="PGDReconLoss",
+                reconstruction=(),
+            ),
             ci_fn.capture_keys,
         )
     )
-    pgd = pgd_step(placed, components, ci_fn, inputs, random.PRNGKey(5))
+    (pgd,) = pgd_step(placed, components, ci_fn, inputs, random.PRNGKey(5)).values()
     assert pgd.shape == ()
     assert jnp.isfinite(pgd) and pgd >= 0.0
 

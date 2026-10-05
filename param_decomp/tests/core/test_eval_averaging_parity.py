@@ -15,9 +15,9 @@ checks the averaging math directly (the per-batch step itself is covered by
     - `ce_kl/ce_difference_<variant>` mean CE minus target mean CE (affine in means -> mean)
     - `l0/<thr>_<site>` / `l0/<thr>_<group>` mean L0 per example (group = per-batch
         sum of member means, then averaged) (mean)
-    - `loss/PGDReconLoss[/e2e]`       mean per-position KL at the final source when the
+    - `loss/PGDReconLoss_<n>step[/e2e]` mean per-position KL at the final source when the
         probe has no residual auxiliary (mean)
-    - `loss/PGDReconLoss/hidden_acts_reconstruction[/<point>]` and the combined loss when configured:
+    - `loss/PGDReconLoss_<n>step/hidden_acts_reconstruction[/<point>]` and the combined loss when configured:
         the same per-batch energy ratio/objective used by training, then averaged over eval
         batches (mean-of-batch-objectives, deliberately not a globally pooled energy ratio)
 

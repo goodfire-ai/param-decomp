@@ -38,7 +38,7 @@ from param_decomp.core.model import (
 )
 from param_decomp.core.placement import PlacementRules
 from param_decomp.core.recon import AuxiliaryReconstruction
-from param_decomp.core.recon_eval import FreshPGDReconEval
+from param_decomp.core.recon_eval import FreshPGDAttack, FreshPGDReconEval
 from param_decomp.experiments.lm.eval import (
     make_eval_step,
     next_token_cross_entropy,
@@ -371,7 +371,11 @@ def test_eval_step_fresh_pgd_probe():
             rounding_threshold=0.0,
             ci_alive_threshold=0.0,
             l0_group_patterns=None,
-            fresh_pgd=FreshPGDReconEval(name="fresh_probe", n_steps=8, step_size=0.1),
+            fresh_pgd=FreshPGDReconEval(
+                attack=FreshPGDAttack(step_size=0.1, read_out_steps=(8,)),
+                metric_type="PGDReconLoss",
+                reconstruction=(),
+            ),
             n_valid_rows=None,
         )
     )
@@ -382,7 +386,11 @@ def test_eval_step_fresh_pgd_probe():
             rounding_threshold=0.0,
             ci_alive_threshold=0.0,
             l0_group_patterns=None,
-            fresh_pgd=FreshPGDReconEval(name="fresh_probe", n_steps=0, step_size=0.1),
+            fresh_pgd=FreshPGDReconEval(
+                attack=FreshPGDAttack(step_size=0.1, read_out_steps=(0,)),
+                metric_type="PGDReconLoss",
+                reconstruction=(),
+            ),
             n_valid_rows=None,
         )
     )
@@ -401,9 +409,9 @@ def test_eval_step_fresh_pgd_probe():
         jax.random.PRNGKey(5),
     )
 
-    assert "loss/fresh_probe" in out
-    assert jnp.isfinite(out["loss/fresh_probe"])
-    assert float(out["loss/fresh_probe"]) >= float(out0["loss/fresh_probe"]), (
+    assert set(out) >= {"loss/PGDReconLoss_8step"} and set(out0) >= {"loss/PGDReconLoss_0step"}
+    assert jnp.isfinite(out["loss/PGDReconLoss_8step"])
+    assert float(out["loss/PGDReconLoss_8step"]) >= float(out0["loss/PGDReconLoss_0step"]), (
         "8 sign-ascent steps must not be less adversarial than the raw random source"
     )
     out_same = ascended(
@@ -413,7 +421,7 @@ def test_eval_step_fresh_pgd_probe():
         LMBatchWithDocuments.from_unsegmented_sequences(token_ids),
         jax.random.PRNGKey(5),
     )
-    assert jnp.array_equal(out["loss/fresh_probe"], out_same["loss/fresh_probe"])
+    assert jnp.array_equal(out["loss/PGDReconLoss_8step"], out_same["loss/PGDReconLoss_8step"])
 
 
 @pytest.mark.parametrize("coeff", [0.0, 3.0])
@@ -449,7 +457,9 @@ def test_eval_step_fresh_pgd_hidden_acts_reconstruction_uses_and_logs_combined_o
             ci_alive_threshold=0.0,
             l0_group_patterns=None,
             fresh_pgd=FreshPGDReconEval(
-                n_steps=2, step_size=0.1, reconstruction=hidden_acts_reconstruction
+                attack=FreshPGDAttack(step_size=0.1, read_out_steps=(2,)),
+                metric_type="PGDReconLoss",
+                reconstruction=hidden_acts_reconstruction,
             ),
             n_valid_rows=None,
         )
@@ -462,7 +472,7 @@ def test_eval_step_fresh_pgd_hidden_acts_reconstruction_uses_and_logs_combined_o
         jax.random.PRNGKey(5),
     )
 
-    name = "loss/PGDReconLoss"
+    name = "loss/PGDReconLoss_2step"
     (auxiliary,) = hidden_acts_reconstruction
     per_point = [
         float(out[f"{name}/hidden_acts_reconstruction/{comparison.capture}"])
@@ -502,8 +512,8 @@ def test_eval_step_fresh_pgd_ascends_hidden_acts_reconstruction_objective():
                 ci_alive_threshold=0.0,
                 l0_group_patterns=None,
                 fresh_pgd=FreshPGDReconEval(
-                    n_steps=1,
-                    step_size=0.2,
+                    attack=FreshPGDAttack(step_size=0.2, read_out_steps=(1,)),
+                    metric_type="PGDReconLoss",
                     reconstruction=(
                         AuxiliaryReconstruction(
                             name="hidden_acts_reconstruction",
@@ -530,7 +540,7 @@ def test_eval_step_fresh_pgd_ascends_hidden_acts_reconstruction_objective():
 
     low = run(1e-12)
     high = run(100.0)
-    keys = ("loss/PGDReconLoss/e2e", "loss/PGDReconLoss/hidden_acts_reconstruction")
+    keys = ("loss/PGDReconLoss_1step/e2e", "loss/PGDReconLoss_1step/hidden_acts_reconstruction")
     assert any(not jnp.array_equal(low[key], high[key]) for key in keys), (
         "hidden-activation reconstruction coefficient did not change the one-step PGD trajectory"
     )
@@ -589,7 +599,11 @@ def test_eval_step_fresh_pgd_probe_device_count_invariant():
             rounding_threshold=0.0,
             ci_alive_threshold=0.0,
             l0_group_patterns=None,
-            fresh_pgd=FreshPGDReconEval(n_steps=8, step_size=0.1),
+            fresh_pgd=FreshPGDReconEval(
+                attack=FreshPGDAttack(step_size=0.1, read_out_steps=(8,)),
+                metric_type="PGDReconLoss",
+                reconstruction=(),
+            ),
             n_valid_rows=None,
         )
     )
@@ -604,7 +618,11 @@ def test_eval_step_fresh_pgd_probe_device_count_invariant():
             rounding_threshold=0.0,
             ci_alive_threshold=0.0,
             l0_group_patterns=None,
-            fresh_pgd=FreshPGDReconEval(n_steps=8, step_size=0.1),
+            fresh_pgd=FreshPGDReconEval(
+                attack=FreshPGDAttack(step_size=0.1, read_out_steps=(8,)),
+                metric_type="PGDReconLoss",
+                reconstruction=(),
+            ),
             mesh=mesh,
             n_valid_rows=None,
         )
@@ -626,8 +644,8 @@ def test_eval_step_fresh_pgd_probe_device_count_invariant():
             jax.random.PRNGKey(5),
         )
 
-    single_kl = float(out_single["loss/PGDReconLoss"])
-    sharded_kl = float(out_sharded["loss/PGDReconLoss"])
+    single_kl = float(out_single["loss/PGDReconLoss_8step"])
+    sharded_kl = float(out_sharded["loss/PGDReconLoss_8step"])
     assert jnp.isfinite(single_kl) and jnp.isfinite(sharded_kl)
     # reassociation-only tolerance: cross-shard reduction order differs, so bit-exactness
     # is not achievable, but a per-shard-partial grad (the R-7 bug) would change the
@@ -732,8 +750,8 @@ def test_eval_step_n_valid_rows_masks_pad_tail():
     padded = jnp.concatenate([tokens, jnp.zeros((pad, t), tokens.dtype)], axis=0)
 
     fresh_pgd = FreshPGDReconEval(
-        n_steps=4,
-        step_size=0.1,
+        attack=FreshPGDAttack(step_size=0.1, read_out_steps=(4,)),
+        metric_type="PGDReconLoss",
         reconstruction=(
             AuxiliaryReconstruction(
                 name="hidden_acts_reconstruction",

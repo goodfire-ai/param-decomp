@@ -36,6 +36,7 @@ from param_decomp.core.recon import (
     FreshPGDSources,
     persistent_configs,
 )
+from param_decomp.core.recon_eval import FreshPGDAttack, fresh_pgd_probe
 from param_decomp.core.runtime_schedule import scheduled_value_traced
 from param_decomp.core.schedule import ScheduleConfig
 from param_decomp.core.world_size import SingleNode
@@ -55,7 +56,6 @@ from param_decomp.experiments.lm.eval_config import (
     CEandKLLossesConfig,
 )
 from param_decomp.experiments.lm.resolved import ResolvedLMData
-from param_decomp.experiments.lm.scalar_eval_operations import fresh_pgd_probe
 from param_decomp.targets.transformer import mlp_family_site_cs
 from param_decomp.tests.lm_configs import arithmetic_metric, l18_mlp_raw, llama_raw
 
@@ -129,7 +129,6 @@ def test_eval_block_maps_slow_tier_and_defers_offline_only_metrics(
             {"type": "CI_L0", "groups": None, "ci_alive_threshold": 0.0},
             {
                 "type": "PGDReconLoss",
-                "name": "fresh_probe",
                 "init": "random",
                 "source_shape": "c",
                 "n_steps": 20,
@@ -166,7 +165,6 @@ def test_eval_block_maps_slow_tier_and_defers_offline_only_metrics(
     )
     assert any(
         isinstance(metric, EvalPGDReconLossConfig)
-        and metric.name == "fresh_probe"
         and metric.n_steps == 20
         and metric.step_size == 0.1
         for metric in cfg.eval.metrics
@@ -189,8 +187,24 @@ def test_eval_data_resolves_to_a_separate_holdout():
         build_experiment_config(LMExperimentConfig(**dict(raw, data=same_both)), RUN_ID, DATA_ROOT)
 
 
-@pytest.mark.parametrize("kind", ["PGDReconLoss", "SlowPGDReconLoss"])
-def test_eval_pgd_threads_hidden_acts_reconstruction_into_built_probe(kind: str):
+@pytest.mark.parametrize(
+    "kind,steps,attack,read_out_names",
+    [
+        ("PGDReconLoss", {"n_steps": 1}, FreshPGDAttack(0.1, (1,)), ("PGDReconLoss_1step",)),
+        (
+            "SlowPGDReconLoss",
+            {"read_out_steps": [1, 4]},
+            FreshPGDAttack(0.1, (1, 4)),
+            ("SlowPGDReconLoss_1step", "SlowPGDReconLoss_4step"),
+        ),
+    ],
+)
+def test_eval_pgd_threads_hidden_acts_reconstruction_into_built_probe(
+    kind: str,
+    steps: dict[str, int | list[int]],
+    attack: FreshPGDAttack,
+    read_out_names: tuple[str, ...],
+):
     raw = _reference_lm_raw()
     raw["eval"] = {
         "batch_size": 1,
@@ -204,7 +218,7 @@ def test_eval_pgd_threads_hidden_acts_reconstruction_into_built_probe(kind: str)
                 "type": kind,
                 "init": "random",
                 "source_shape": "c",
-                "n_steps": 1,
+                **steps,
                 "step_size": 0.1,
                 "auxiliaries": [
                     {
@@ -229,8 +243,7 @@ def test_eval_pgd_threads_hidden_acts_reconstruction_into_built_probe(kind: str)
     assert auxiliary.coeff == 0.0
     assert tuple(comparison.capture for comparison in auxiliary.comparisons) == ("resid.19",)
     probe = fresh_pgd_probe(metric)
-    assert probe.name == kind
-    assert probe.n_steps == 1 and probe.step_size == 0.1
+    assert probe.attack == attack and probe.read_out_names == read_out_names
     assert probe.reconstruction_capture_keys == frozenset({"resid.19"})
     build_experiment_config(authored, RUN_ID, DATA_ROOT)
 
@@ -888,7 +901,10 @@ def test_fresh_training_strategy_retains_its_batch_shape(
     assert term.sources.init == init
 
 
-@pytest.mark.parametrize("cls", [EvalPGDReconLossConfig, SlowPGDReconLossConfig])
+@pytest.mark.parametrize(
+    "cls,steps",
+    [(EvalPGDReconLossConfig, {"n_steps": 2}), (SlowPGDReconLossConfig, {"read_out_steps": (2,)})],
+)
 @pytest.mark.parametrize(
     "field,value",
     [
@@ -900,9 +916,14 @@ def test_fresh_training_strategy_retains_its_batch_shape(
     ],
 )
 def test_eval_pgd_rejects_unsupported_attacks_at_construction(
-    cls: type[EvalPGDReconLossConfig] | type[SlowPGDReconLossConfig], field: str, value: str
+    cls: type[EvalPGDReconLossConfig] | type[SlowPGDReconLossConfig],
+    steps: dict[str, int | tuple[int, ...]],
+    field: str,
+    value: str,
 ):
-    raw = cls(init="random", source_shape="c", n_steps=2, step_size=0.1).model_dump()
+    raw = cls.model_validate(
+        {"init": "random", "source_shape": "c", **steps, "step_size": 0.1}
+    ).model_dump()
     raw[field] = value
     with pytest.raises(ValidationError, match=field):
         cls.model_validate(raw)

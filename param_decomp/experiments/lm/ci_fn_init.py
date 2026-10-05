@@ -70,7 +70,7 @@ class _CalibratedConditionedInitializer[
             f"the calibration batch holds {n_tokens} tokens, fewer than "
             f"calibration.min_n_tokens {calibration.min_n_tokens}"
         )
-        clean = placed.clean_forward(_unpadded(batch), self.arch.capture_keys)
+        clean = placed.clean_forward(batch, self.arch.capture_keys)
         uncalibrated = self.arch.initialize_backbone(self.sites, self.rules, key)
         calibrated = uncalibrated.with_calibrated_input_scales(
             clean.captures, placed.prepare_compute_weights(components)
@@ -78,15 +78,16 @@ class _CalibratedConditionedInitializer[
         return BackboneCIFn(calibrated)
 
 
-def _unpadded[TargetIn: LMBatch | LMBatchWithDocuments](batch: TargetIn) -> TargetIn:
-    """`batch`, failing if any position is padding (a negative document id)."""
+def _assert_unpadded(batch: LMBatch | LMBatchWithDocuments) -> None:
+    """Fail if any position of the concrete `batch` is padding (a negative document id).
+    Checked eagerly, before the batch enters the traced initializer."""
     match batch:
         case LMBatchWithDocuments(sequence=sequence):
-            return eqx.error_if(
-                batch, jnp.any(sequence.document_ids < 0), "the calibration batch holds padding"
+            assert not bool(jnp.any(sequence.document_ids < 0)), (
+                "the calibration batch holds padding"
             )
         case LMBatch():
-            return batch
+            pass
 
 
 def lm_ci_fn_initializer[
@@ -102,6 +103,7 @@ def lm_ci_fn_initializer[
 ) -> CIFnInitializer[Conditioning]:
     match arch:
         case ConditionedCIFnArch():
+            _assert_unpadded(inputs.batch)
             return _CalibratedConditionedInitializer(arch, sites, rules, inputs)
         case (
             ChunkwiseTransformerCIFnArch()

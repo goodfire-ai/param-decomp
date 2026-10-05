@@ -181,7 +181,7 @@ def scalar_eval_fit_reports[
     dump_for: Callable[[str], DumpConfig | None],
 ) -> dict[str, FitReport]:
     """Compile every authored scalar-tier metric's jit_eval_step AOT, one `FitReport`
-    per metric, keyed by its logged identity (`name or type`).
+    per metric, keyed by its type (unique within `eval.metrics`).
 
     Same assembly as the engine's eval boundary (`run._run_due_evaluation` +
     `scalar_step_for`): the declared-sharding decomposition as the live state, the eval
@@ -234,13 +234,7 @@ def scalar_eval_fit_reports[
             ) -> Mapping[str, Array]:
                 return step_fn(m, c, f, t, k)
 
-            # The metric's logged identity (`validate_eval_metrics`): only the
-            # `LossMetricConfig` descendants carry a `name`.
-            label = (
-                (metric.name or metric.type)
-                if isinstance(metric, (EvalPGDReconLossConfig, SlowPGDReconLossConfig))
-                else metric.type
-            )
+            label = metric.type
             options: dict[str, bool | int | str] = dict(compiler_options)
             dump = dump_for(label)
             if dump is not None:

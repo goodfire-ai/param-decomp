@@ -5,7 +5,6 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from param_decomp.core.configs import EvalPGDReconLossConfig
 from param_decomp.experiments.resid_mlp.config import ResidMLPExperimentConfig
 from param_decomp.experiments.resid_mlp.run import build_resid_mlp_built_run
 from param_decomp.experiments.toy_eval import make_toy_evaluation_operations
@@ -36,28 +35,23 @@ def test_pretrain_intent_survives_config_build() -> None:
     assert built.target.pretrain_importance_val == 0.7
 
 
-def test_duplicate_eval_metric_identities_refuse_instead_of_last_one_winning() -> None:
+def test_duplicate_eval_metric_types_refuse_instead_of_last_one_winning() -> None:
     raw = yaml.safe_load(CONFIG_PATH.read_text())
     raw["eval"]["metrics"].append(dict(raw["eval"]["metrics"][0]))
 
-    with pytest.raises(ValidationError, match="sharing a logged identity"):
+    with pytest.raises(ValidationError, match="metric type twice"):
         ResidMLPExperimentConfig(**raw)
 
 
-def test_the_same_metric_twice_is_authorable_when_the_instances_are_named() -> None:
-    """The case `LossMetricConfig.name` exists for: one probe at 5 PGD steps beside one at
-    20. The binders key emitted metrics on `name or type`, so the two stay distinct in the
-    log; before this, the type-level ban made the pair unauthorable."""
+def test_a_second_fast_pgd_probe_refuses_at_any_step_count() -> None:
+    """Each metric type appears once in `eval.metrics`; deeper attacks belong on the slow
+    ladder, which reads them off one ascent."""
     raw = yaml.safe_load(CONFIG_PATH.read_text())
     (pgd,) = [m for m in raw["eval"]["metrics"] if m["type"] == "PGDReconLoss"]
-    raw["eval"]["metrics"].append(dict(pgd, name="PGDReconLoss_20step", n_steps=20))
-
-    built = ResidMLPExperimentConfig(**raw)
-    assert built.eval is not None
-    pgd_names = [
-        m.name for m in built.eval.metrics if isinstance(m, EvalPGDReconLossConfig) and m.name
-    ]
-    assert pgd_names == ["PGDReconLoss_20step"], pgd_names
+    for second in (pgd, dict(pgd, n_steps=5)):
+        metrics = [*raw["eval"]["metrics"], second]
+        with pytest.raises(ValidationError, match="metric type twice"):
+            ResidMLPExperimentConfig(**dict(raw, eval=dict(raw["eval"], metrics=metrics)))
 
 
 @pytest.mark.parametrize(

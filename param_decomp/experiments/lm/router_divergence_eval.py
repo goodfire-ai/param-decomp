@@ -46,7 +46,7 @@ from param_decomp.core.model import (
     PlacedModel,
     StochasticMasking,
 )
-from param_decomp.core.recon_eval import FreshPGDReconEval, fresh_pgd_recon_sources
+from param_decomp.core.recon_eval import fresh_pgd_masking
 from param_decomp.experiments.lm.eval_config import (
     CIMaskedStrategy,
     FreshPGDStrategy,
@@ -220,15 +220,15 @@ def strategy_masking[
                     model.pin_output_batch(masked_output, mesh), clean_output
                 )
 
-            sources = fresh_pgd_recon_sources(
+            return fresh_pgd_masking(
                 model.model.sites,
                 ci_lower,
                 _routing(conditioning).indices.shape[1:-1],
                 key,
-                FreshPGDReconEval(n_steps=n_steps, step_size=step_size),
+                step_size,
+                n_steps,
                 output_kl_at_masking,
             )
-            return materialize_masking(source_masking(ci_lower, sources))
         case PersistentStrategy(state_key=state_key):
             sources = sample_source_rows(
                 key, ci_lower, source_values_to_float(persistent_sources[state_key]).per_site()

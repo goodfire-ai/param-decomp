@@ -75,7 +75,6 @@ eval:
   - init: random
     source_shape: c
     n_steps: 20
-    name: PGDReconLoss_20step
     step_size: 0.1
     type: PGDReconLoss
   n_steps: 1

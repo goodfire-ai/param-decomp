@@ -18,7 +18,7 @@ from param_decomp.core.metrics import LogRecord
 from param_decomp.core.model import CaptureKeys, ComponentActivations, PlacedModel
 from param_decomp.core.placement import batch_axes
 from param_decomp.core.recon import resolve_auxiliary_reconstruction
-from param_decomp.core.recon_eval import FreshPGDReconEval
+from param_decomp.core.recon_eval import FreshPGDAttack, FreshPGDReconEval
 from param_decomp.core.run import (
     BackgroundRenderer,
     DeferredMediaRecord,
@@ -126,10 +126,9 @@ def make_arithmetic_operation[
     )
     fresh_pgd = (
         FreshPGDReconEval(
-            name=pgd.name or "PGDReconLoss",
-            n_steps=pgd.n_steps,
-            step_size=pgd.step_size,
+            attack=FreshPGDAttack(step_size=pgd.step_size, read_out_steps=(pgd.n_steps,)),
             reconstruction=resolve_auxiliary_reconstruction(pgd.auxiliaries),
+            metric_type="PGDReconLoss",
         )
         if pgd is not None
         else None

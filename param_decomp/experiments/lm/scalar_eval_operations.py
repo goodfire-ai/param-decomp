@@ -21,8 +21,7 @@ from param_decomp.core.model import (
     ComponentActivations,
     PlacedModel,
 )
-from param_decomp.core.recon import resolve_auxiliary_reconstruction
-from param_decomp.core.recon_eval import FreshPGDReconEval
+from param_decomp.core.recon_eval import fresh_pgd_probe
 from param_decomp.core.run import (
     SharedForwardOperation,
     SharedForwardOperationPlan,
@@ -50,15 +49,6 @@ from param_decomp.lm.batch import LMBatch, LMBatchWithDocuments
 from param_decomp.targets.lm_output import LMOutput
 
 type AnyScalarMetricConfig = CEandKLLossesConfig | CI_L0Config | AnyPGDEvalConfig
-
-
-def fresh_pgd_probe(metric: AnyPGDEvalConfig) -> FreshPGDReconEval:
-    return FreshPGDReconEval(
-        name=metric.name or metric.type,
-        n_steps=metric.n_steps,
-        step_size=metric.step_size,
-        reconstruction=resolve_auxiliary_reconstruction(metric.auxiliaries),
-    )
 
 
 def _ci_l0_groups(metric: CI_L0Config) -> dict[str, tuple[str, ...]] | None:
@@ -304,7 +294,7 @@ def make_fresh_pgd_operation[
     return _make_scalar_operation(
         schedule,
         scalar_scorer_for(metric, model, mesh),
-        (f"loss/{probe.name}",),
+        tuple(f"loss/{name}" for name in probe.read_out_names),
         model,
         run_key,
         train_steps,

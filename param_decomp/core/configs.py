@@ -17,6 +17,7 @@ arches (`ci_fn.py`) and the resolved flat sites.
 
 import copy
 from collections.abc import Sequence
+from itertools import pairwise
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, Self
 
@@ -97,22 +98,14 @@ spelling of the constant schedule: it also carries the values a schedule's posit
 `max_val` cannot (a plain 0.0), so the trainer carries it as a `RuntimeSchedule` with a traced magnitude."""
 
 
-class LossMetricConfig(BaseConfig):
-    """A loss-shaped metric: a training loss or an eval probe measuring the same quantity.
+class TrainingLossConfig(BaseConfig):
+    """A loss weighted into the training objective by `coeff`.
 
-    `name` overrides the serialized `type` as this instance's logged identity,
-    letting a metric appear under both `loss_metrics` and `eval.metrics` with
-    different settings — e.g. a 1-step PGD training loss alongside a 20-step PGD
-    eval probe. Leave `None` (the default) and the metric's tag is used.
-    """
+    `name` overrides the serialized `type` as this instance's logged identity, so two
+    instances of one loss type can train side by side. Leave `None` (the default) and the
+    loss's tag is used."""
 
     name: str | None = None
-
-
-class TrainingLossConfig(LossMetricConfig):
-    """A loss weighted into the training objective by `coeff`. Eval probes (`EvalPGDConfig`)
-    derive from `LossMetricConfig` directly, so they cannot spell a weight."""
-
     coeff: LossCoeff
 
 
@@ -283,16 +276,16 @@ positionless `c (1, C)` / `bc (B, C)`; positioned `c (1, 1, C)` /
 """
 
 
-class PGDConfig(LossMetricConfig, ReconstructionAuxiliariesMixin):
+class PGDConfig(ReconstructionAuxiliariesMixin):
     """Reconstruction and ascent settings shared by training losses and eval probes."""
 
     step_size: PositiveFloat
-    n_steps: NonNegativeInt
 
 
 class TrainingPGDConfig(PGDConfig, TrainingLossConfig):
     """Fresh training adversaries own independent sources for every batch row."""
 
+    n_steps: NonNegativeInt
     init: PGDInitStrategy
     source_shape: BatchSourceShape
 
@@ -309,23 +302,43 @@ class PGDReconSubsetLossConfig(TrainingPGDConfig):
 
 
 class EvalPGDConfig(PGDConfig):
-    """Fresh evaluation probes optimize randomly initialized, batch-shared sources."""
+    """Fresh evaluation probes optimize randomly initialized, batch-shared sources. They
+    carry no weight and no name: the read-out after `n` steps logs as `<type>_<n>step`."""
 
     init: Literal["random"]
     source_shape: Literal["c"]
 
 
 class EvalPGDReconLossConfig(EvalPGDConfig):
+    """A fresh ascent read out once, after `n_steps`."""
+
     slow: ClassVar[bool] = False
     type: Literal["PGDReconLoss"] = "PGDReconLoss"
+    n_steps: NonNegativeInt
+
+    @property
+    def read_out_steps(self) -> tuple[int, ...]:
+        return (self.n_steps,)
 
 
 class SlowPGDReconLossConfig(EvalPGDConfig):
+    """A ladder: ONE fresh ascent read out after each of `read_out_steps`."""
+
     slow: ClassVar[bool] = True
     type: Literal["SlowPGDReconLoss"] = "SlowPGDReconLoss"
+    read_out_steps: tuple[NonNegativeInt, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_read_out_steps_ascend(self) -> Self:
+        steps = self.read_out_steps
+        assert all(a < b for a, b in pairwise(steps)), (
+            f"SlowPGDReconLoss read_out_steps must strictly ascend, got {steps}"
+        )
+        return self
 
 
 type AnyPGDEvalConfig = EvalPGDReconLossConfig | SlowPGDReconLossConfig
+type AnyPGDEvalType = Literal["PGDReconLoss", "SlowPGDReconLoss"]
 
 
 class AdamPGDConfig(BaseConfig):

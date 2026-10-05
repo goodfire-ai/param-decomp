@@ -17,7 +17,6 @@ from param_decomp.core.configs import (
     ComponentActivationDensityConfig,
     EvalPGDReconLossConfig,
     IdentityCIErrorConfig,
-    LossMetricConfig,
     PermutedCIPlotsConfig,
     ReconstructionAuxiliariesMixin,
     SlowPGDReconLossConfig,
@@ -73,30 +72,18 @@ assert_every_metric_declares_its_tier(EVAL_METRIC_CONFIG_TYPES)
 def validate_eval_metrics(metrics: list[AnyEvalMetricConfig]) -> None:
     """Validate invariants shared by every authored eval operation list.
 
-    Metrics are distinguished by their LOGGED identity, not their type: the binders key
-    emitted metrics on `name or type` (`fast_eval_operations`, `lm.scalar_eval_operations`,
-    `lm.arithmetic_eval_operation`), so a named instance is already distinct downstream.
-    Two `PGDReconLoss` probes at different `n_steps` — the case `LossMetricConfig.name`
-    exists for — are therefore authorable, while two unnamed metrics of one type still
-    refuse. Only the `LossMetricConfig` descendants can carry a name; every other metric's
-    identity is its type.
+    Every metric type logs under keys of its own, so listing each type at most once keeps
+    every metric's keys distinct.
     """
-    identities: list[str] = []
+    types = [metric.type for metric in metrics]
+    assert len(types) == len(set(types)), f"eval.metrics lists a metric type twice: {types}"
     for metric in metrics:
-        if isinstance(metric, LossMetricConfig):
-            identities.append(metric.name or metric.type)
-        else:
-            identities.append(metric.type)
         if isinstance(metric, ReconstructionAuxiliariesMixin):
             for auxiliary in metric.auxiliaries:
                 assert isinstance(auxiliary.coeff, float), (
                     f"eval metric {metric.type}: {auxiliary.name}.coeff must be a constant float "
                     "— an eval probe has no training step for a schedule to read"
                 )
-    assert len(identities) == len(set(identities)), (
-        f"eval.metrics contains metrics sharing a logged identity: {identities}. Give one a "
-        "distinct `name` if you meant to run the same metric twice."
-    )
 
 
 class EvalConfig(BaseConfig):

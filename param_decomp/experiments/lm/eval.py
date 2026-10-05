@@ -33,7 +33,7 @@ arise here, because no emitted key wraps the cross-batch axis in a nonlinearity:
   corpus-wide token-weighted CE when valid-label counts vary between batches.
 - `l0/<threshold>_<site|group>`: torch `CI_L0` collects per-batch L0 and averages them
   uniformly (`sum / count`); group L0 is a per-batch sum of member L0s. Linear.
-- `loss/PGDReconLoss`: torch `PGDReconLoss` accumulates `kl * n` over batches and divides
+- `loss/PGDReconLoss_<n>step`: torch `PGDReconLoss` accumulates `kl * n` over batches and divides
   by total `n` (example-weighted mean of a per-batch mean KL); equals the uniform average
   under uniform `(B, T)`.
 
@@ -68,10 +68,8 @@ from param_decomp.core.losses import (
     reconstruction_loss_metrics,
 )
 from param_decomp.core.masking import (
-    materialize_masking,
     sample_component_mask,
     sample_delta_mask,
-    source_masking,
 )
 from param_decomp.core.model import (
     EMPTY_CAPTURE_KEYS,
@@ -86,7 +84,7 @@ from param_decomp.core.recon import (
     ForwardObservations,
     reconstruction_observations,
 )
-from param_decomp.core.recon_eval import FreshPGDReconEval, fresh_pgd_recon_sources
+from param_decomp.core.recon_eval import FreshPGDReconEval, fresh_pgd_read_outs
 from param_decomp.core.sharding import batch_shard_leading
 from param_decomp.lm.batch import LMBatch, LMBatchWithDocuments
 from param_decomp.lm.inputs import input_next_token_mask, input_token_ids
@@ -558,25 +556,26 @@ def make_fresh_pgd_scorer[
         def loss_at_masking(masking: MaterializedMasking) -> Array:
             return objective_with_breakdown(masking).total
 
-        sources = fresh_pgd_recon_sources(
+        breakdowns = fresh_pgd_read_outs(
             model.model.sites,
             batch.ci_lower,
             input_token_ids(batch.tokens).shape,
             pgd_key,
-            fresh_pgd,
+            fresh_pgd.attack,
             loss_at_masking,
+            objective_with_breakdown,
         )
-        masking = materialize_masking(source_masking(batch.ci_lower, sources))
-        breakdown = objective_with_breakdown(masking)
-        prefix = f"loss/{fresh_pgd.name}"
-        metrics = {prefix: breakdown.total}
-        dict_safe_update_(
-            metrics,
-            {
-                f"{prefix}/{suffix}": value
-                for suffix, value in reconstruction_loss_metrics(breakdown).items()
-            },
-        )
+        metrics: dict[str, Array] = {}
+        for name, breakdown in zip(fresh_pgd.read_out_names, breakdowns, strict=True):
+            prefix = f"loss/{name}"
+            dict_safe_update_(metrics, {prefix: breakdown.total})
+            dict_safe_update_(
+                metrics,
+                {
+                    f"{prefix}/{suffix}": value
+                    for suffix, value in reconstruction_loss_metrics(breakdown).items()
+                },
+            )
         return metrics
 
     return score

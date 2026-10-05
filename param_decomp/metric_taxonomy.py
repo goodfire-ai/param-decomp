@@ -532,6 +532,8 @@ def _eval_loss_parts(probe: str, detail: tuple[str, ...]) -> tuple[str, ...]:
         name = "default"
     elif match := re.fullmatch(r"PGDReconLoss_(\d+)step", probe):
         name = f"steps_{int(match[1]):04d}"
+    elif match := re.fullmatch(r"SlowPGDReconLoss_(\d+)step", probe):
+        name = f"slow_steps_{int(match[1]):04d}"
     else:
         raise ValueError(f"Unclassified evaluation probe: {probe}")
     match detail:

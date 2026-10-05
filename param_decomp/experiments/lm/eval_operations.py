@@ -30,6 +30,7 @@ from param_decomp.core.model import (
     ComponentActivations,
     PlacedModel,
 )
+from param_decomp.core.recon_eval import fresh_pgd_probe
 from param_decomp.core.run import (
     BackgroundRenderer,
     EvalInvocation,
@@ -77,7 +78,6 @@ from param_decomp.experiments.lm.eval_context import (
 from param_decomp.experiments.lm.resolved import LMAnyRun
 from param_decomp.experiments.lm.router_divergence_eval import router_probs_capture_keys
 from param_decomp.experiments.lm.scalar_eval_operations import (
-    fresh_pgd_probe,
     make_ce_kl_operation,
     make_ci_l0_operation,
     make_fresh_pgd_operation,

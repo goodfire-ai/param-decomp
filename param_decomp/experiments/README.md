@@ -56,8 +56,10 @@ Fresh PGD uses distinct training and evaluation config types. Training
 `EvalPGDReconLossConfig` / `SlowPGDReconLossConfig` require `source_shape: c` and
 `init: random`. The training and evaluation unions select the appropriate schema
 for the `PGDReconLoss` YAML tag. Both evaluation cadences bind through the closed
-`AnyPGDEvalConfig` union to the same probe; their tags select the schedule and
-default metric name.
+`AnyPGDEvalConfig` union to one probe (`core.recon_eval.fresh_pgd_probe`), and their tags
+select the schedule. The read-out after `n` steps logs as `<type>_<n>step`: a fast probe
+reads its attack once, after `n_steps`; a slow ladder authors a strictly ascending
+`read_out_steps` list and reads ONE attack after each.
 
 The context step returns `LMBatchForwardProducts[TargetIn, PreparedT, Conditioning]`,
 a registered JAX dataclass containing one clean forward's tokens, output, requested

@@ -84,7 +84,7 @@ from param_decomp.core.train import (
     PDTrainingState,
     TargetedPDTrainingState,
 )
-from param_decomp.experiments.eval_config import AnyEvalMetricConfig, EvalConfig
+from param_decomp.experiments.eval_config import EvalConfig
 from param_decomp.experiments.lm.abstract_inputs import abstract_lm_batch
 from param_decomp.experiments.lm.attn_patterns_eval import attn_output_key_by_site
 from param_decomp.experiments.lm.ci_position_eval import position_active_counts
@@ -271,30 +271,6 @@ def _lower(label_for_log: str, program: Callable[..., Any], *abstract_args: Any)
     return out_info
 
 
-def _metric_label(metric: AnyEvalMetricConfig) -> str:
-    """The metric's logged identity (`eval_config.validate_eval_metrics`)."""
-    match metric:
-        case EvalPGDReconLossConfig() | SlowPGDReconLossConfig():
-            return metric.name or metric.type
-        case (
-            CEandKLLossesConfig()
-            | CI_L0Config()
-            | CIActiveCountsPerPositionConfig()
-            | CIHistogramsConfig()
-            | ComponentActivationDensityConfig()
-            | CIMeanPerComponentConfig()
-            | PermutedCIPlotsConfig()
-            | UVPlotsConfig()
-            | IdentityCIErrorConfig()
-            | CIMaskedAttnPatternsReconLossConfig()
-            | StochasticAttnPatternsReconLossConfig()
-            | RouterDivergenceConfig()
-            | WellTemperednessConfig()
-            | ArithmeticCIGridConfig()
-        ):
-            return metric.type
-
-
 def trace_eval_programs(
     eval: EvalConfig,
     model: PlacedQwen,
@@ -330,7 +306,7 @@ def trace_eval_programs(
         )
 
         for metric in eval.metrics:
-            label = f"eval {_metric_label(metric)} {at}"
+            label = f"eval {metric.type} {at}"
             match metric:
                 case (
                     CEandKLLossesConfig()
