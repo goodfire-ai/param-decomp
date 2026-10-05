@@ -161,6 +161,12 @@ CI arch (`type: global_mlp`) are wired end-to-end (the global arch dispatches th
 core `init_pd_state` via `toy_config.build_toy_ci_arch`). The shipped ResidMLP configs
 all use per-site `layerwise_mlp` with `hidden_dims: [400]` at `C: 200` per site — wide
 enough to avoid the output bottleneck the `global_mlp` variant escapes.
+
+`CIMeanPerComponent` also binds on the toys: it samples held-out eval batches,
+uses the shared example-weighted CI reductions, and emits linear/log PNGs through the
+configured W&B transport. Its standalone operation compiles at plan preparation, like
+the fast toy metrics, using the configured fixed eval-batch shape.
+
 Toy offline consumers are not wired (`load_run` is LM-only).
 
 ## Picking a CI-fn arch — and `n_blocks: 0`
