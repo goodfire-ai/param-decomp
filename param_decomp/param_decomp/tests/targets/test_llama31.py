@@ -801,11 +801,11 @@ def test_chunkwise_ci_init_vmap_matches_unrolled_reference():
 
 
 def test_glu_source_masking_matches_materialized_masks_bit_identically():
-    """The GLU family's `SourceMasking` arm (eager stacked composition,
-    `_attach_per_kind_sources`) vs the committed spelling (`materialize_masking` →
+    """The GLU family's `SourceMasking` arm (stacked ingredients composed per layer inside
+    the checkpointed block) vs the committed spelling (`materialize_masking` →
     `MaterializedMasking`): output and grads w.r.t. V/U, the CI envelope, and the float
     source view BIT-identical under one jit — the arm re-spells the same composition
-    at the stacked geometry. Subset sites exercise the dummy-filler rows; `sc` uint16
+    at the layer geometry. Subset sites exercise the dummy-filler rows; `sc` uint16
     sources exercise the broadcast lead axes and the fixed-point dequant seam."""
     import numpy as np
 
@@ -865,6 +865,71 @@ def test_glu_source_masking_matches_materialized_masks_bit_identically():
     assert eager_leaves and len(eager_leaves) == len(recipe_leaves)
     for eager_leaf, recipe_leaf in zip(eager_leaves, recipe_leaves, strict=True):
         np.testing.assert_array_equal(np.asarray(eager_leaf), np.asarray(recipe_leaf))
+
+
+def test_glu_mixed_sources_drawn_in_block_match_materialized_masks_bit_identically():
+    """Per-document mixes of persistent sources and fresh noise, drawn where each layer's
+    mask is composed, vs the same recipe materialized up front: output and grads w.r.t.
+    the CI envelope and the persistent sources BIT-identical — the in-block draw takes
+    the same key over the same coordinates."""
+    import numpy as np
+
+    from param_decomp.core.adversary import (
+        Sources,
+        init_persistent_sources,
+        source_values_to_float,
+    )
+    from param_decomp.core.masking import materialize_masking, mixed_persistent_stochastic_masking
+    from param_decomp.core.model import SourceMasking
+
+    cfg = tiny_glu_cfg()
+    batch, seq = 4, 16
+    sites = _mlp_sites(cfg, 2, 6, 8)
+    model = tiny_glu_decomposed_lm(cfg, sites, jax.random.PRNGKey(0))
+    vu = init_component_stacks(sites, jax.random.PRNGKey(1))
+    prepared = model.prepare_compute_weights(vu, None)
+    tokens = jax.random.randint(jax.random.PRNGKey(2), (batch, seq), 0, cfg.vocab_size)
+    ci_lower = {
+        spec.name: jax.random.uniform(
+            jax.random.fold_in(jax.random.PRNGKey(3), idx), (batch, seq, spec.C), jnp.bfloat16
+        )
+        for idx, spec in enumerate(sites)
+    }
+    stored = init_persistent_sources(model.sites, (batch, 1), jnp.float32, jax.random.PRNGKey(4))
+
+    def out_loss(masking: MaterializedMasking | SourceMasking) -> jax.Array:
+        out = model.masked_forward(
+            prepared,
+            LMBatchWithDocuments.from_unsegmented_sequences(tokens),
+            masking=model.prepare_masking(masking),
+            routes=None,
+            placement=None,
+            remat=True,
+        ).output
+        return jnp.sum(materialized_logits(out).astype(jnp.float32) ** 2)
+
+    def mixed(lower: dict[str, jax.Array], sources: Sources) -> SourceMasking:
+        masking, routes = mixed_persistent_stochastic_masking(
+            jax.random.PRNGKey(5), lower, sources, (batch, seq), jnp.asarray(0.5), None
+        )
+        assert routes is None
+        return masking
+
+    def loss_materialized(args: tuple[dict[str, jax.Array], Sources]) -> jax.Array:
+        return out_loss(materialize_masking(mixed(*args)))
+
+    def loss_in_block(args: tuple[dict[str, jax.Array], Sources]) -> jax.Array:
+        return out_loss(mixed(*args))
+
+    args = (ci_lower, source_values_to_float(stored).per_site())
+    want_loss, want_grads = eqx.filter_jit(eqx.filter_value_and_grad(loss_materialized))(args)
+    got_loss, got_grads = eqx.filter_jit(eqx.filter_value_and_grad(loss_in_block))(args)
+    np.testing.assert_array_equal(np.asarray(want_loss), np.asarray(got_loss))
+    want_leaves = jax.tree.leaves(want_grads)
+    got_leaves = jax.tree.leaves(got_grads)
+    assert want_leaves and len(want_leaves) == len(got_leaves)
+    for want_leaf, got_leaf in zip(want_leaves, got_leaves, strict=True):
+        np.testing.assert_array_equal(np.asarray(want_leaf), np.asarray(got_leaf))
 
 
 @pytest.mark.multidevice

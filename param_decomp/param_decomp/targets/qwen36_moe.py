@@ -2160,7 +2160,7 @@ def _entry_masking(inputs: _StagedKind) -> tuple[SiteCI, Array | None, Array | N
                 inputs.route,
             )
         case SourceMaskIngredients() as ingredients:
-            return ingredients.compose(), ingredients.delta, inputs.route
+            return ingredients.compose(), ingredients.delta_mask(), inputs.route
 
 
 def _decomposed_site_output(

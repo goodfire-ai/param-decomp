@@ -1,6 +1,7 @@
 """One transformer over every input tap, with output heads for every decomposed site."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from enum import StrEnum
 
 import equinox as eqx
 import jax
@@ -14,8 +15,11 @@ from param_decomp.core.ci_fn.architecture import sequence_length_for_flops
 from param_decomp.core.ci_fn.implementations.global_transformer.placement import (
     INPUT_AXES,
     OUTPUT_AXES,
+    GlobalCIStacks,
+    PlacedGlobalCIFn,
     bind_global_rows,
     preset_rows,
+    resolve_global_stacks,
 )
 from param_decomp.core.ci_fn.implementations.transformer.backbone import BackboneCIFn
 from param_decomp.core.ci_fn.implementations.transformer.layers import (
@@ -37,8 +41,8 @@ from param_decomp.core.ci_fn.implementations.transformer.layers import (
     dense_transformer_parameters,
     init_transformer_parameters,
     normalized_tap_concatenation,
+    weightless_rms_norm,
 )
-from param_decomp.core.ci_fn.implementations.transformer.placement import PlacedTransformerCIFnRows
 from param_decomp.core.ci_fn.interface import CIFnMatrix, SiteDict, TapSpec
 from param_decomp.core.components import SiteSpec, vu_groups
 from param_decomp.core.flops.types import ForwardBackwardFlops, ParameterCensus
@@ -47,7 +51,10 @@ from param_decomp.core.model import CaptureKeys, ComponentActivations, PositionA
 from param_decomp.core.placement import (
     CIFnWeightPlacement,
     PlacementRules,
+    StackCensus,
     gather_reduced_weights,
+    pad_stack,
+    strip_stack_pad,
 )
 from param_decomp.core.precision import COMPUTE_DT, cast_floating
 from param_decomp.sequence import SequenceLayout
@@ -70,8 +77,18 @@ class UnplacedGlobalCIFn:
         return "ci_fn placement: unplaced"
 
 
-GlobalCIFnPlacement = PlacedTransformerCIFnRows | UnplacedGlobalCIFn
-"""Placed rows tile every leaf exactly, so nothing pads."""
+GlobalCIFnPlacement = PlacedGlobalCIFn | UnplacedGlobalCIFn
+"""Only placed rows cut the persist stacks, so only a placed CI pads them
+(`PlacedGlobalCIFn.stacks`)."""
+
+
+class FinalNormalization(StrEnum):
+    """What the output heads read: the last block's output as it is, or RMS-normalized.
+    The norm is weightless: the heads are linear, so a per-channel gain would only rescale
+    their weights."""
+
+    NONE = "none"
+    RMS = "rms"
 
 
 @dataclass(frozen=True)
@@ -80,7 +97,8 @@ class GlobalTransformerCIFnArch:
 
     Each tap is RMS-normalized independently before concatenation. The blocks stack
     along a real `depth` axis and each semantic group's output heads along a `site`
-    axis, so placement can own whole blocks and whole heads."""
+    axis, so placement can own whole blocks and whole heads. `final_norm` selects what the
+    heads read (`FinalNormalization`)."""
 
     input_taps: tuple[TapSpec, ...]
     d_model: int
@@ -89,6 +107,7 @@ class GlobalTransformerCIFnArch:
     ffn_hidden: int
     ffn_kind: CIFnFfnKind
     learned_norm_scale: bool
+    final_norm: FinalNormalization = FinalNormalization.NONE
 
     @property
     def capture_keys(self) -> CaptureKeys:
@@ -115,22 +134,23 @@ class GlobalTransformerCIFnArch:
 
     def resolve_placement(
         self, sites: tuple[SiteSpec, ...], rules: PlacementRules
-    ) -> PlacedTransformerCIFnRows:
-        """The preset's rows bound to the mesh, each checked against every leaf it places."""
+    ) -> PlacedGlobalCIFn:
+        """The preset's rows bound to the mesh, with each persist stack padded to tile the
+        rows that cut it, and every padded leaf checked against each row that places it."""
         rows = bind_global_rows(preset_rows(rules.ci_fn), rules.mesh)
         rows.activations.validate_shape(("q_head",), (self.attention.n_heads,))
         rows.activations.validate_shape(("kv_head",), (self.attention.n_kv_heads,))
+        head_lengths = tuple(len(group.specs) for group in vu_groups(sites).values())
+        placement = PlacedGlobalCIFn(rows, resolve_global_stacks(rows, self.n_blocks, head_lengths))
         leaves = eqx.filter_eval_shape(
-            lambda: init_global_transformer_backbone(
-                self, sites, UnplacedGlobalCIFn(), jax.random.key(0)
-            )
+            lambda: init_global_transformer_backbone(self, sites, placement, jax.random.key(0))
         )
-        for leaf, axes, weights in _matrices(leaves, rows.weights):
+        for leaf, axes, weights, _ in _matrices(leaves, rows.weights):
             for row in (weights.optimizer_state, weights.compute_weights, weights.operands):
                 row.validate_shape(axes, leaf.shape)
-        for leaf, axes in _vectors(leaves):
+        for leaf, axes, _ in _vectors(leaves):
             rows.vectors.validate_shape(axes, leaf.shape)
-        return rows
+        return placement
 
     def parameter_census(self, sites: tuple[SiteSpec, ...]) -> ParameterCensus:
         return dense_transformer_parameters(
@@ -167,7 +187,9 @@ class CIFnHeadStack(eqx.Module):
 
 class GlobalTransformerBackbone(eqx.Module):
     """One transformer over independently normalized input taps. Every `blocks` leaf
-    leads with `depth`, scanned one block at a time."""
+    leads with `depth`, scanned one block at a time. The fp32 masters carry the
+    placement's persist pads (`stacks`); the compute residents `prepare` returns carry
+    none."""
 
     in_proj_w: Float[Array, "input d_model"]
     in_proj_b: Float[Array, " d_model"]
@@ -177,7 +199,11 @@ class GlobalTransformerBackbone(eqx.Module):
     input_taps: tuple[TapSpec, ...] = eqx.field(static=True)
     output_names: tuple[str, ...] = eqx.field(static=True)
     placement: GlobalCIFnPlacement = eqx.field(static=True)
+    stacks: GlobalCIStacks = eqx.field(static=True)
+    """The stacks these arrays hold: the placement's padded persist stacks on the masters,
+    their real lengths on the residents `prepare` returns."""
     eps: float = eqx.field(static=True)
+    final_norm: FinalNormalization = eqx.field(static=True)
 
     @property
     def capture_keys(self) -> CaptureKeys:
@@ -189,7 +215,7 @@ class GlobalTransformerBackbone(eqx.Module):
     def matrix_parameters(self) -> tuple[CIFnMatrix, ...]:
         return tuple(
             CIFnMatrix(value, staging)
-            for value, _, staging in _matrices(self, self.placement.muon_staging())
+            for value, _, staging, _ in _matrices(self, self.placement.muon_staging())
         )
 
     def shardings(self, mesh: Mesh) -> "GlobalTransformerBackbone":
@@ -197,7 +223,7 @@ class GlobalTransformerBackbone(eqx.Module):
         match placement:
             case UnplacedGlobalCIFn():
                 raise AssertionError("an unplaced CI fn has no mesh to shard its parameters over")
-            case PlacedTransformerCIFnRows() as rows:
+            case PlacedGlobalCIFn(rows=rows):
 
                 def matrix(value: Array, axes: Axes, weights: CIFnWeightPlacement) -> NamedSharding:
                     row = weights.optimizer_state
@@ -210,42 +236,57 @@ class GlobalTransformerBackbone(eqx.Module):
 
                 return eqx.tree_at(
                     lambda backbone: (
-                        *(value for value, _, _ in _matrices(backbone, rows.weights)),
-                        *(value for value, _ in _vectors(backbone)),
+                        *(value for value, *_ in _matrices(backbone, rows.weights)),
+                        *(value for value, *_ in _vectors(backbone)),
                         backbone.inv_freq,
                     ),
                     self,
                     (
-                        *(matrix(*entry) for entry in _matrices(self, rows.weights)),
-                        *(vector(*entry) for entry in _vectors(self)),
+                        *(
+                            matrix(value, axes, weights)
+                            for value, axes, weights, _ in _matrices(self, rows.weights)
+                        ),
+                        *(vector(value, axes) for value, axes, _ in _vectors(self)),
                         NamedSharding(mesh, P()),
                     ),
                 )
 
     def prepare(self) -> "GlobalTransformerBackbone":
-        """Compute-dtype residents, every matrix gathered to its compute row."""
+        """Compute-dtype residents: every matrix gathered to its compute row, then every
+        stacked leaf sliced to its real stack. The pads ride the gather."""
         compute = cast_floating(self, COMPUTE_DT)
         placement = self.placement
         match placement:
             case UnplacedGlobalCIFn():
                 return compute
-            case PlacedTransformerCIFnRows() as rows:
+            case PlacedGlobalCIFn(rows=rows):
 
-                def resident(value: Array, axes: Axes, weights: CIFnWeightPlacement) -> Array:
-                    return gather_reduced_weights(
+                def resident(
+                    value: Array,
+                    axes: Axes,
+                    weights: CIFnWeightPlacement,
+                    census: StackCensus | None,
+                ) -> Array:
+                    gathered = gather_reduced_weights(
                         value,
                         source=weights.optimizer_state,
                         destination=weights.compute_weights,
                         axes=axes,
                     )
+                    return _real(gathered, census)
 
-                return eqx.tree_at(
-                    lambda backbone: tuple(
-                        value for value, _, _ in _matrices(backbone, rows.weights)
+                residents = eqx.tree_at(
+                    lambda backbone: (
+                        *(value for value, *_ in _matrices(backbone, rows.weights)),
+                        *(value for value, *_ in _vectors(backbone)),
                     ),
                     compute,
-                    tuple(resident(*entry) for entry in _matrices(compute, rows.weights)),
+                    (
+                        *(resident(*entry) for entry in _matrices(compute, rows.weights)),
+                        *(_real(value, census) for value, _, census in _vectors(compute)),
+                    ),
                 )
+                return replace(residents, stacks=self.stacks.real)
 
     def preactivations(
         self,
@@ -257,6 +298,7 @@ class GlobalTransformerBackbone(eqx.Module):
         remat: bool,
     ) -> SiteDict:
         del conditioning, components
+        assert self.stacks == self.stacks.real, "preactivations reads prepare()'s residents"
         placement = self.placement
         layers = placement.layers()
         for tap in self.input_taps:
@@ -283,6 +325,11 @@ class GlobalTransformerBackbone(eqx.Module):
             else jax.checkpoint_policies.dots_saveable
         )
         x, _ = jax.lax.scan(jax.checkpoint(step, policy=policy), x, block_arrays)
+        match self.final_norm:
+            case FinalNormalization.NONE:
+                pass
+            case FinalNormalization.RMS:
+                x = weightless_rms_norm(x, self.eps)
         preactivations: SiteDict = {}
         for head in self.heads:
             values = _project_heads(x, head, layers)
@@ -293,24 +340,45 @@ class GlobalTransformerBackbone(eqx.Module):
 
 def _matrices[Value](
     backbone: GlobalTransformerBackbone, per_part: CIFnTransformerStructure[Value]
-) -> tuple[tuple[Array, Axes, Value], ...]:
-    """Every stored matrix with its semantic axes and its part's `per_part` value."""
+) -> tuple[tuple[Array, Axes, Value, StackCensus | None], ...]:
+    """Every stored matrix with its semantic axes, its part's `per_part` value, and the
+    census of the stack it leads with (`None` for the unstacked input projection)."""
+    stacks = backbone.stacks
     return (
-        (backbone.in_proj_w, INPUT_AXES, per_part.input),
+        (backbone.in_proj_w, INPUT_AXES, per_part.input, None),
         *(
-            (value, ("depth", *axes), part)
+            (value, ("depth", *axes), part, stacks.depth)
             for value, axes, part in backbone.blocks.matrix_parameters(per_part)
         ),
-        *((head.weights, OUTPUT_AXES, per_part.output) for head in backbone.heads),
+        *(
+            (head.weights, OUTPUT_AXES, per_part.output, census)
+            for head, census in zip(backbone.heads, stacks.sites, strict=True)
+        ),
     )
 
 
-def _vectors(backbone: GlobalTransformerBackbone) -> tuple[tuple[Array, Axes], ...]:
+def _vectors(
+    backbone: GlobalTransformerBackbone,
+) -> tuple[tuple[Array, Axes, StackCensus | None], ...]:
+    stacks = backbone.stacks
     return (
-        (backbone.in_proj_b, ("d_model",)),
-        *((value, ("depth", *axes)) for value, axes in backbone.blocks.vector_parameters()),
-        *((head.biases, ("site", "C")) for head in backbone.heads),
+        (backbone.in_proj_b, ("d_model",), None),
+        *(
+            (value, ("depth", *axes), stacks.depth)
+            for value, axes in backbone.blocks.vector_parameters()
+        ),
+        *(
+            (head.biases, ("site", "C"), census)
+            for head, census in zip(backbone.heads, stacks.sites, strict=True)
+        ),
     )
+
+
+def _real(value: Array, census: StackCensus | None) -> Array:
+    """A stacked compute or vector leaf without its persist pads. Those rows are scanned
+    over the stack and so never cut it (`bind_scanned_ci_fn_row`), which makes the slice
+    device-local; its transpose writes exact zeros into the pads' cotangents."""
+    return value if census is None else strip_stack_pad(value, census)
 
 
 def _project_heads(x: Array, head: CIFnHeadStack, layers: CIFnTransformerPlacement) -> Array:
@@ -330,7 +398,8 @@ def init_global_transformer_backbone(
     placement: GlobalCIFnPlacement,
     key: PRNGKeyArray,
 ) -> GlobalTransformerBackbone:
-    """Heads are drawn in site order, then stacked by semantic group."""
+    """Heads are drawn in site order, then stacked by semantic group. Every stack is then
+    padded with the placement's trailing all-zero slots."""
     tap_keys = tuple(tap.key for tap in arch.input_taps)
     assert tap_keys and len(set(tap_keys)) == len(tap_keys), tap_keys
     output_names = tuple(site.name for site in sites)
@@ -344,22 +413,41 @@ def init_global_transformer_backbone(
         arch, arch.input_dim, tuple(site.C for site in sites), key
     )
     site_index = {name: index for index, name in enumerate(output_names)}
+    groups = tuple(vu_groups(sites).values())
+    head_lengths = tuple(len(group.specs) for group in groups)
+    match placement:
+        case PlacedGlobalCIFn(stacks=stacks):
+            assert stacks.real == GlobalCIStacks.unpadded(arch.n_blocks, head_lengths), (
+                f"placement resolved {stacks} for {arch.n_blocks} blocks and heads {head_lengths}"
+            )
+        case UnplacedGlobalCIFn():
+            stacks = GlobalCIStacks.unpadded(arch.n_blocks, head_lengths)
     heads = tuple(
         CIFnHeadStack(
-            weights=jnp.stack([parameters.out_ws[site_index[spec.name]] for spec in group.specs]),
-            biases=jnp.stack([parameters.out_bs[site_index[spec.name]] for spec in group.specs]),
+            weights=pad_stack(
+                jnp.stack([parameters.out_ws[site_index[spec.name]] for spec in group.specs]),
+                census,
+            ),
+            biases=pad_stack(
+                jnp.stack([parameters.out_bs[site_index[spec.name]] for spec in group.specs]),
+                census,
+            ),
             sites=tuple(spec.name for spec in group.specs),
         )
-        for group in vu_groups(sites).values()
+        for group, census in zip(groups, stacks.sites, strict=True)
     )
     return GlobalTransformerBackbone(
         in_proj_w=parameters.in_proj_w,
         in_proj_b=parameters.in_proj_b,
-        blocks=jax.tree.map(lambda *leaves: jnp.stack(leaves), *parameters.blocks),
+        blocks=jax.tree.map(
+            lambda *leaves: pad_stack(jnp.stack(leaves), stacks.depth), *parameters.blocks
+        ),
         heads=heads,
         inv_freq=inv_freq,
         input_taps=arch.input_taps,
         output_names=output_names,
         placement=placement,
+        stacks=stacks,
         eps=CI_FN_RMS_EPS,
+        final_norm=arch.final_norm,
     )

@@ -140,23 +140,26 @@ jobs:
           path: .hf-cache
           key: hf-fixtures-${{ matrix.shard }}-1
 
-      # JAX's disk cache is content-addressed by HLO, backend, and JAX/XLA version;
-      # conftest.py caps CPU ISA at AVX2, so reuse across runners is safe. The repository's
-      # cache store is capped at 10 GB and evicts oldest-first: saving an entry per commit
-      # from every pull request turned the whole store over in about two hours, so no run
-      # ever found its cache. One entry per shard, lockfile and week, never written by a
-      # pull request, keeps the store a few GB and lets every pull request restore it.
+      # JAX's disk cache key includes the host's CPU model (conftest.py's AVX2 cap makes a
+      # foreign entry safe to load, but it still misses), and hosted runners come in several,
+      # so the entry is per CPU model. The repository's cache store is capped at 10 GB and
+      # evicts oldest-first: saving an entry per commit from every pull request turned the
+      # whole store over in about two hours, so no run ever found its cache. One entry per
+      # shard, CPU model, lockfile and week, never written by a pull request, keeps the store
+      # a few GB and lets every pull request restore it.
       - name: Compile cache key
         id: cache-key
-        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+        run: |
+          cpu=$(lscpu | sed -n 's/^Model name: *//p' | tr -cs 'A-Za-z0-9\n' '-')
+          echo "prefix=jax-test-cache-${{ matrix.shard }}-$cpu-${{ hashFiles('param_decomp/uv.lock') }}" >> "$GITHUB_OUTPUT"
+          echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
 
       - name: Restore JAX compilation cache
         uses: actions/cache/restore@v6
         with:
           path: .jax_test_cache
-          key: jax-test-cache-${{ matrix.shard }}-${{ hashFiles('param_decomp/uv.lock') }}-${{ steps.cache-key.outputs.week }}
-          restore-keys: |
-            jax-test-cache-${{ matrix.shard }}-${{ hashFiles('param_decomp/uv.lock') }}-
+          key: ${{ steps.cache-key.outputs.prefix }}-${{ steps.cache-key.outputs.week }}
+          restore-keys: ${{ steps.cache-key.outputs.prefix }}-
 
       # An aborting pass must not dump core: one process holding eight simulated devices'
       # executables dumps multiple GB, enough to fill the runner's disk.
@@ -187,7 +190,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: .jax_test_cache
-          key: jax-test-cache-${{ matrix.shard }}-${{ hashFiles('param_decomp/uv.lock') }}-${{ steps.cache-key.outputs.week }}
+          key: ${{ steps.cache-key.outputs.prefix }}-${{ steps.cache-key.outputs.week }}
 
   # One check that every other job passed, so branch protection can require a single
   # check rather than every shard.

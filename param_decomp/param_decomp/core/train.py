@@ -43,8 +43,10 @@ from param_decomp.core.components import (
     SelectedCI,
     SiteCI,
     SiteSpec,
+    SiteValueStacks,
     map_site_ci,
     selected_component_maxes,
+    site_stack_indices_for,
     vu_groups,
 )
 from param_decomp.core.decomposed_linear import constrain_component_activation
@@ -814,7 +816,7 @@ def main_draw_loss[TargetIn, Out, PreparedT: ComponentActivations, Conditioning,
     model: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
     *,
     prepared_weights: PreparedT,
-    ci: CI,
+    ci_lower: Mapping[str, SiteCI],
     draw_stochastic_masking: Callable[[Array], PreparedMaskingT],
     persistent_sources: dict[str, SourceStacks],
     source_pool_sample_keys: dict[str, PRNGKeyArray],
@@ -851,7 +853,7 @@ def main_draw_loss[TargetIn, Out, PreparedT: ComponentActivations, Conditioning,
                         MaterializedMasking(
                             component_masks={
                                 site: map_site_ci(lambda v: v + (1.0 - v) * value, lower)
-                                for site, lower in ci.lower.items()
+                                for site, lower in ci_lower.items()
                             },
                             weight_delta_masks=None,
                         )
@@ -864,13 +866,13 @@ def main_draw_loss[TargetIn, Out, PreparedT: ComponentActivations, Conditioning,
                 case FreshPGDSources():
                     masking = model.model.prepare_masking(
                         materialize_masking(
-                            source_masking(ci.lower, ascended.fresh_sources[term_idx])
+                            source_masking(ci_lower, ascended.fresh_sources[term_idx])
                         )
                     )
                 case PersistentSources(state_key=state_key):
                     masking = model.model.prepare_masking(
                         source_masking(
-                            model_cotangents_scaled(ci.lower, term.coeff.at(train_frac)),
+                            model_cotangents_scaled(ci_lower, term.coeff.at(train_frac)),
                             persistent_sources[state_key].per_site(),
                         )
                     )
@@ -878,7 +880,7 @@ def main_draw_loss[TargetIn, Out, PreparedT: ComponentActivations, Conditioning,
                     adv_fraction = scheduled_value_at(train_frac, term.sources.cfg.adv_fraction)
                     mixed, routes = mixed_persistent_stochastic_masking(
                         key=draw_key,
-                        ci_lower=model_cotangents_scaled(ci.lower, term.coeff.at(train_frac)),
+                        ci_lower=model_cotangents_scaled(ci_lower, term.coeff.at(train_frac)),
                         persistent_sources=persistent_sources[state_key].per_site(),
                         leading=stream.leading,
                         adv_fraction=adv_fraction,
@@ -894,7 +896,7 @@ def main_draw_loss[TargetIn, Out, PreparedT: ComponentActivations, Conditioning,
                     )
                     mixed, routes = mixed_persistent_stochastic_masking(
                         key=draw_key,
-                        ci_lower=model_cotangents_scaled(ci.lower, term.coeff.at(train_frac)),
+                        ci_lower=model_cotangents_scaled(ci_lower, term.coeff.at(train_frac)),
                         persistent_sources=sampled_sources,
                         leading=stream.leading,
                         adv_fraction=adv_fraction,
@@ -925,7 +927,7 @@ def retake_e2e_source_grads[
     model: PlacedModel[TargetIn, Out, PreparedT, Conditioning, PreparedMaskingT],
     *,
     prepared_weights: PreparedT,
-    ci: CI,
+    ci_lower: Mapping[str, SiteCI],
     ascended: AscendedAdversaries,
     stream: StreamInputs[Out, Conditioning],
     draws: list[TermDraw],
@@ -938,8 +940,8 @@ def retake_e2e_source_grads[
     if not e2e_terms:
         return {}
 
-    detached_ci = jax.lax.stop_gradient(ci)
-    draw_detached_stochastic_masking = model.model.prepare_stochastic_masking(detached_ci.lower)
+    detached_lower = jax.lax.stop_gradient(ci_lower)
+    draw_detached_stochastic_masking = model.model.prepare_stochastic_masking(detached_lower)
     term_indices = {term.name: idx for idx, term in enumerate(grid.terms)}
     grads: dict[str, SourceStacks] = {}
     for state_key, term in e2e_terms.items():
@@ -955,7 +957,7 @@ def retake_e2e_source_grads[
                 substrate,
                 model,
                 prepared_weights=prepared_weights,
-                ci=detached_ci,
+                ci_lower=detached_lower,
                 draw_stochastic_masking=draw_detached_stochastic_masking,
                 persistent_sources=warmed_sources | {state_key: sources},
                 source_pool_sample_keys=source_pool_sample_keys,
@@ -1151,7 +1153,10 @@ def make_train_step[TargetIn, Out, PreparedT: ComponentActivations, Conditioning
         # live value through the retained CI forward and compute-weight pullbacks.
         compute_ci_fn, ci_fn_prepare_vjp = substrate.ci_fn_prepare_vjp(decomposition.ci_fn)
         ci, ci_fn_forward_vjp = substrate.ci_fn_forward_vjp(compute_ci_fn, prepared_weights, stream)
-        ci_lower_detached = jax.lax.stop_gradient(ci).lower
+        # The ascent loops and the main loss read lower CI through one stack per group,
+        # so no per-site copy of it is materialized.
+        stack_indices = site_stack_indices_for(model_static.model.sites)
+        ci_lower_detached = SiteValueStacks.of(jax.lax.stop_gradient(ci).lower, stack_indices)
 
         ascended = ascend_adversaries(
             substrate,
@@ -1178,7 +1183,8 @@ def make_train_step[TargetIn, Out, PreparedT: ComponentActivations, Conditioning
             trainable: tuple[PreparedT, ComponentStacks, CI, dict[str, SourceStacks]],
         ) -> tuple[Float32[Array, ""], PDLossEvaluation]:
             prepared_weights, components, ci, persistent_sources = trainable
-            draw_stochastic_masking = model.model.prepare_stochastic_masking(ci.lower)
+            ci_lower = SiteValueStacks.of(ci.lower, stack_indices)
+            draw_stochastic_masking = model.model.prepare_stochastic_masking(ci_lower)
             # Δ = W − V·U derives from jit parameters alone (frozen W, fp32 masters), so
             # this checkpoint saves no residuals — without it every group's fp32 delta
             # stack persists from this forward to the backward's dV/dU contraction,
@@ -1197,7 +1203,7 @@ def make_train_step[TargetIn, Out, PreparedT: ComponentActivations, Conditioning
                 substrate,
                 model,
                 prepared_weights=prepared_weights,
-                ci=ci,
+                ci_lower=ci_lower,
                 draw_stochastic_masking=draw_stochastic_masking,
                 persistent_sources=persistent_sources,
                 source_pool_sample_keys=source_pool_sample_keys,
@@ -1262,7 +1268,7 @@ def make_train_step[TargetIn, Out, PreparedT: ComponentActivations, Conditioning
             grid,
             model,
             prepared_weights=detached_prepared_weights,
-            ci=ci,
+            ci_lower=ci_lower_detached,
             ascended=ascended,
             stream=stream,
             draws=draws,
@@ -1566,7 +1572,8 @@ def make_targeted_train_step[
         nt_ci, nt_ci_fn_forward_vjp = substrate.ci_fn_forward_vjp(
             compute_ci_fn, prepared_weights, nt_stream
         )
-        ci_lower_detached = jax.lax.stop_gradient(ci).lower
+        stack_indices = site_stack_indices_for(model_static.model.sites)
+        ci_lower_detached = SiteValueStacks.of(jax.lax.stop_gradient(ci).lower, stack_indices)
 
         ascended = ascend_adversaries(
             substrate,
@@ -1592,7 +1599,8 @@ def make_targeted_train_step[
             trainable: tuple[PreparedT, CI, CI, dict[str, SourceStacks]],
         ) -> tuple[Float32[Array, ""], TargetedLossEvaluation]:
             prepared_weights, ci, nt_ci, persistent_sources = trainable
-            draw_stochastic_masking = model.model.prepare_stochastic_masking(ci.lower)
+            ci_lower = SiteValueStacks.of(ci.lower, stack_indices)
+            draw_stochastic_masking = model.model.prepare_stochastic_masking(ci_lower)
             minimality, next_target_frequency = evaluate_minimality(
                 minimality_term,
                 training.target_frequency,
@@ -1612,7 +1620,7 @@ def make_targeted_train_step[
                 substrate,
                 model,
                 prepared_weights=prepared_weights,
-                ci=ci,
+                ci_lower=ci_lower,
                 draw_stochastic_masking=draw_stochastic_masking,
                 persistent_sources=persistent_sources,
                 source_pool_sample_keys=source_pool_sample_keys,
@@ -1682,7 +1690,7 @@ def make_targeted_train_step[
             target,
             model,
             prepared_weights=detached_prepared_weights,
-            ci=ci,
+            ci_lower=ci_lower_detached,
             ascended=ascended,
             stream=stream,
             draws=draws,

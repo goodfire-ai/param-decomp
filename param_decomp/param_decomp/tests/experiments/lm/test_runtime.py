@@ -20,6 +20,8 @@ from param_decomp.experiments.lm.config import LMExperimentConfig
 from param_decomp.experiments.lm.runtime import (
     TUNED_V2_AUTOTUNE1_COMPILER_OPTIONS,
     TUNED_V2_COMPILER_OPTIONS,
+    TUNED_V3_COMPILER_OPTIONS,
+    TUNED_V4_COMPILER_OPTIONS,
     TYPED_ENV_VARS,
     AdHocProfiling,
     LaunchEnv,
@@ -180,7 +182,7 @@ def test_compiler_options_is_required_and_fails_closed():
         RuntimeConfig.model_validate(absent)
 
     with pytest.raises(ValidationError, match="tuned-v2"):
-        RuntimeConfig.model_validate(_MINIMAL_RUNTIME | {"compiler_options": "tuned-v3"})
+        RuntimeConfig.model_validate(_MINIMAL_RUNTIME | {"compiler_options": "tuned-v9"})
 
     with pytest.raises(ValidationError, match="gpu_enable_triton_gemm"):
         RuntimeConfig.model_validate(
@@ -200,6 +202,21 @@ def test_compiler_options_resolve_with_no_merging():
     assert resolved("tuned-v2-autotune1") == dict(TUNED_V2_AUTOTUNE1_COMPILER_OPTIONS)
     assert dict(TUNED_V2_AUTOTUNE1_COMPILER_OPTIONS) == dict(TUNED_V2_COMPILER_OPTIONS) | {
         "xla_gpu_autotune_level": 1
+    }
+
+    # tuned-v3 = tuned-v2 plus memory-ordered scheduling, nothing else.
+    assert resolved("tuned-v3") == dict(TUNED_V3_COMPILER_OPTIONS)
+    assert dict(TUNED_V3_COMPILER_OPTIONS) == dict(TUNED_V2_COMPILER_OPTIONS) | {
+        "xla_gpu_memory_limit_slop_factor": 60,
+        "xla_disable_hlo_passes": "copy_fusion,rematerialization",
+    }
+
+    # tuned-v4 = tuned-v3 plus capture of six kernel categories, nothing else.
+    assert resolved("tuned-v4") == dict(TUNED_V4_COMPILER_OPTIONS)
+    assert dict(TUNED_V4_COMPILER_OPTIONS) == dict(TUNED_V3_COMPILER_OPTIONS) | {
+        "xla_gpu_enable_command_buffer": (
+            "FUSION,CUBLAS,CUBLASLT,CUDNN,CUSTOM_CALL,DYNAMIC_SLICE_FUSION"
+        ),
     }
 
     # The one tuned set serves every placement, resident included: double-buffering off.

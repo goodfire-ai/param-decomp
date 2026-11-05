@@ -15,7 +15,7 @@ import math
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from functools import cache
-from typing import Generic, Literal
+from typing import Generic, Literal, override
 
 import equinox as eqx
 import jax
@@ -484,6 +484,48 @@ def site_stack_indices_for(sites: tuple[SiteSpec, ...]) -> SiteStackIndices:
 def stack_index_by_site(site_stack_indices: SiteStackIndices) -> dict[str, tuple[str, int]]:
     """site name -> (group, stack index), cached per `SiteStackIndices` value."""
     return {name: (group, index) for name, group, index in site_stack_indices}
+
+
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class SiteValueStacks(Mapping[str, SiteCI]):
+    """Per-site values held as one stack per semantic group (the grouping
+    `ComponentStacks` persists under) and read per site where they are used. A consumer
+    traced inside a loop body slices its sites there, so the loop carries one stack per
+    group, not one materialized value per site; a target that stacks the sites per group
+    again re-forms the stack it was given."""
+
+    stacks: dict[str, SiteCI]
+    site_stack_indices: SiteStackIndices = field(metadata=dict(static=True))
+
+    @staticmethod
+    def of(values: Mapping[str, SiteCI], site_stack_indices: SiteStackIndices) -> "SiteValueStacks":
+        members: dict[str, list[tuple[int, str]]] = {}
+        for name, group, index in site_stack_indices:
+            members.setdefault(group, []).append((index, name))
+        return SiteValueStacks(
+            {
+                group: jax.tree.map(
+                    lambda *leaves: jnp.stack(leaves),
+                    *(values[name] for _, name in sorted(sites)),
+                )
+                for group, sites in members.items()
+            },
+            site_stack_indices,
+        )
+
+    @override
+    def __getitem__(self, name: str) -> SiteCI:
+        group, index = stack_index_by_site(self.site_stack_indices)[name]
+        return jax.tree.map(lambda leaf: leaf[index], self.stacks[group])
+
+    @override
+    def __iter__(self) -> Iterator[str]:
+        return (name for name, _, _ in self.site_stack_indices)
+
+    @override
+    def __len__(self) -> int:
+        return len(self.site_stack_indices)
 
 
 class ComponentStacks(eqx.Module, Generic[VULeaf]):

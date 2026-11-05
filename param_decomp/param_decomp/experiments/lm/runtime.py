@@ -75,6 +75,41 @@ not transfer to `tuned-v2` (and vice versa). Equally frozen: a change is a new p
 name."""
 
 
+TUNED_V3_COMPILER_OPTIONS: Mapping[str, bool | int | str] = MappingProxyType(
+    {
+        **TUNED_V2_COMPILER_OPTIONS,
+        "xla_gpu_memory_limit_slop_factor": 60,
+        "xla_disable_hlo_passes": "copy_fusion,rematerialization",
+    }
+)
+"""What `compiler_options: tuned-v3` resolves to — tuned-v2 with the latency-hiding
+scheduler ordering for memory, frozen. The scheduler only orders to save memory near its
+budget (`xla_gpu_memory_limit_slop_factor`, a percent of device memory); at 60 it places
+each buffer near its first use even in a step that peaks well below the device. That
+needs `copy_fusion` off: the pass merges every copy of one zero broadcast — the scans'
+capture buffers and the backward scans' cotangent and weight-grad accumulators — into
+one multi-output kernel, which runs at the first one's use and allocates all of them
+there, at the start of the step. XLA's rematerialization pass stays off, so the lower
+budget reorders without recomputing: a step over budget runs over it rather than
+replaying forward work. Equally frozen: a change is a new preset name."""
+
+
+TUNED_V4_COMPILER_OPTIONS: Mapping[str, bool | int | str] = MappingProxyType(
+    {
+        **TUNED_V3_COMPILER_OPTIONS,
+        "xla_gpu_enable_command_buffer": (
+            "FUSION,CUBLAS,CUBLASLT,CUDNN,CUSTOM_CALL,DYNAMIC_SLICE_FUSION"
+        ),
+    }
+)
+"""What `compiler_options: tuned-v4` resolves to — tuned-v3 with CUDA-graph capture
+(command buffers) for six kernel categories, frozen. A captured sequence launches as one
+graph, which removes the launch gaps between many small kernels. Collectives, conditionals
+and while loops stay uncaptured. tuned-v2's guard (capture off) dates from stream-capture
+crashes on an older jaxlib; this set runs clean on the current one. Equally frozen: a
+change is a new preset name."""
+
+
 def _merged_xla_flags(config_flags: str, inherited: str | None) -> str:
     """Compose the config's `XLA_FLAGS` with flags the process environment already
     carries, keyed by flag name (the token before `=`): disjoint flags compose (the
@@ -325,7 +360,8 @@ class RuntimeConfig(BaseConfig):
         ),
     )
     compiler_options: (
-        Literal["tuned-v2", "tuned-v2-autotune1", "bare"] | dict[str, bool | int | str]
+        Literal["tuned-v2", "tuned-v2-autotune1", "tuned-v3", "tuned-v4", "bare"]
+        | dict[str, bool | int | str]
     ) = Field(
         description=(
             "XLA compiler flags passed NATIVELY to every jit's `compiler_options` — no "
@@ -335,8 +371,12 @@ class RuntimeConfig(BaseConfig):
             "production set (`TUNED_V2_COMPILER_OPTIONS`), safe for every placement, "
             "resident included; `tuned-v2-autotune1` = tuned-v2 plus "
             "`xla_gpu_autotune_level: 1` — the fast-iteration set (shorter first "
-            "compile; kernel picks and arena may differ from tuned-v2); `bare` = {} (true XLA "
-            "defaults — the debugging baseline); or an explicit dict, used VERBATIM as the complete "
+            "compile; kernel picks and arena may differ from tuned-v2); `tuned-v3` = tuned-v2 "
+            "with the scheduler ordering for memory (`TUNED_V3_COMPILER_OPTIONS`: slop 60, "
+            "`copy_fusion` and rematerialization off); `tuned-v4` = tuned-v3 with "
+            "CUDA-graph capture for six kernel categories (`TUNED_V4_COMPILER_OPTIONS`); "
+            "`bare` = {} (true XLA defaults — the debugging baseline); or an explicit dict, "
+            "used VERBATIM as the complete "
             "flag set the run compiles with. Explicit dicts: full `xla_*` flag names, typed "
             "values (True/int/str, not 'true'); keys outside `xla_*` refuse. "
             "`xla_disable_hlo_passes: rematerialization` opts into the disable-XLA-remat "
@@ -405,6 +445,10 @@ class RuntimeConfig(BaseConfig):
                 return dict(TUNED_V2_COMPILER_OPTIONS)
             case "tuned-v2-autotune1":
                 return dict(TUNED_V2_AUTOTUNE1_COMPILER_OPTIONS)
+            case "tuned-v3":
+                return dict(TUNED_V3_COMPILER_OPTIONS)
+            case "tuned-v4":
+                return dict(TUNED_V4_COMPILER_OPTIONS)
             case "bare":
                 return {}
             case explicit:

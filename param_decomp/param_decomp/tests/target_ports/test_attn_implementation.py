@@ -148,7 +148,7 @@ def test_mosaic_matches_xla_attention_with_documents(head_dim: int, is_causal: b
         def run(q: Array, k: Array, v: Array) -> Array:
             return placed_dot_product_attention(
                 q, k, v, mask, is_causal=is_causal, implementation=implementation,
-                qkv_sharding=None, logit_softcap=None,
+                qkv_sharding=None, logit_softcap=None, sink_logits=None,
             )  # fmt: skip
 
         return run

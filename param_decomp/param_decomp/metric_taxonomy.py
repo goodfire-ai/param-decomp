@@ -76,6 +76,7 @@ CI_FN_BLOCK_PARAMETERS = {
     "shared_down": "15-shared-down",
     "q_gain": "16-q-norm",
     "k_gain": "17-k-norm",
+    "sink_logits": "18-attn-sink",
 }
 # Chunkwise and global transformers carry these under `backbone`, and a component-conditioned
 # global transformer under `backbone.backbone`; the block-selected transformer carries them
@@ -299,7 +300,14 @@ def _factor(parts: tuple[str, ...]) -> MetricKey:
             return site_named(("eval", "nonlinearity", measure, population), scope, chart)
         case ("eval", "attention_pattern", "kl", "all_layers", chart):
             return named(("eval", "attention_pattern", "kl", "all_layers"), chart)
-        case ("eval", "attention_pattern", "kl", strategy, "self_attn.q_proj", chart):
+        case (
+            "eval",
+            "attention_pattern",
+            "kl",
+            strategy,
+            "self_attn.q_proj" | "attn.q_proj",
+            chart,
+        ):
             return named(("eval", "attention_pattern", "kl", strategy), chart)
         case ("eval", "router", ("kl" | "weight_mae" | "topk_overlap") as measure, scope, chart):
             return named(("eval", "router", measure, scope), chart)
@@ -442,6 +450,10 @@ def _gradient_parts(leaf: str) -> tuple[str, ...]:
         leaf,
     ):
         return "ci_fn", "blocks", match[2], f"block_{int(match[1]):02d}"
+    if match := re.fullmatch(
+        r"ci_fns\.(?:backbone\.)?chunks\.blocks\[(\d+)\]\.attention\.sink_logits", leaf
+    ):
+        return "ci_fn", "blocks", "sink_logits", f"block_{int(match[1]):02d}"
     if match := re.fullmatch(r"ci_fns\.(?:backbone\.)?chunks\.blocks\[(\d+)\]\.(\w+)", leaf):
         return "ci_fn", "blocks", match[2], f"block_{int(match[1]):02d}"
     if match := re.fullmatch(
@@ -484,6 +496,8 @@ def _gradient_parts(leaf: str) -> tuple[str, ...]:
         leaf,
     ):
         return "ci_fn", "depth_blocks", match[1]
+    if re.fullmatch(global_backbone + r"blocks\.attention\.sink_logits", leaf):
+        return "ci_fn", "depth_blocks", "sink_logits"
     if match := re.fullmatch(global_backbone + r"blocks\.(gate|norm_scales)\[([01])\]", leaf):
         return "ci_fn", "depth_blocks", match[1], f"branch_{int(match[2]):02d}"
     if match := re.fullmatch(global_backbone + r"blocks\.(\w+)", leaf):

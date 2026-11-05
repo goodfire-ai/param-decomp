@@ -17,15 +17,19 @@ from param_decomp.core.ci_fn.implementations.chunkwise.arch import (
     ChunkwiseTransformerCIFnArch,
 )
 from param_decomp.core.ci_fn.implementations.global_transformer.arch import (
+    FinalNormalization,
     GlobalTransformerBackbone,
     GlobalTransformerCIFnArch,
 )
 from param_decomp.core.ci_fn.implementations.global_transformer.placement import (
+    GlobalCIStacks,
     bind_global_rows,
     preset_rows,
 )
 from param_decomp.core.ci_fn.implementations.transformer.backbone import BackboneCIFn
 from param_decomp.core.ci_fn.implementations.transformer.layers import (
+    AttentionSink,
+    CIFnSelfAttentionWithSink,
     GQACIFnAttention,
     MHACIFnAttention,
     QueryKeyNormalization,
@@ -41,7 +45,7 @@ from param_decomp.core.components import (
 )
 from param_decomp.core.configs import AdamWOptimizerConfig, MuonOptimizerConfig, PDConfigBase
 from param_decomp.core.optimizer import ScheduledOptimizerState
-from param_decomp.core.placement import from_config
+from param_decomp.core.placement import StackCensus, from_config
 from param_decomp.core.precision import cast_floating
 from param_decomp.core.run_state import build_optimizers
 from param_decomp.core.schedule import ScheduleConfig
@@ -295,6 +299,99 @@ def test_qk_norm_gains_scale_each_heads_logits(which: Literal["q", "k"]):
     assert not all(np.allclose(changed[name], original[name]) for name in original)
 
 
+@pytest.mark.parametrize("final_norm", list(FinalNormalization))
+@pytest.mark.parametrize("ffn", ["gelu", "swiglu"])
+def test_final_norm_makes_ci_invariant_to_the_residual_streams_scale(
+    ffn: Literal["gelu", "swiglu"], final_norm: FinalNormalization
+):
+    """Every block reads its residual through a norm, so scaling the input projection and
+    every write into the residual stream scales the whole stream. Only the final norm keeps
+    that scale from the heads."""
+    arch = replace(_arch("causal", ffn), final_norm=final_norm)
+    fn = _global_backbone(arch.initialize(SITES, None, jax.random.key(0)))
+    assert fn.final_norm is final_norm
+    taps = _taps(2)
+    sequence = SequenceLayout(jnp.array([[0, 0, 0, 1, 1]] * 2, jnp.int32))
+    original = _preactivations(fn, taps, sequence, remat=False)
+    blocks = fn.blocks
+    louder = replace(
+        fn,
+        in_proj_w=fn.in_proj_w * 5.0,
+        in_proj_b=fn.in_proj_b * 5.0,
+        blocks=replace(
+            blocks,
+            attention=replace(blocks.attention, wo=blocks.attention.wo * 5.0),
+            w2=blocks.w2 * 5.0,
+            b2=blocks.b2 * 5.0,
+        ),
+    )
+    rescaled = _preactivations(louder, taps, sequence, remat=False)
+    if final_norm is FinalNormalization.RMS:
+        _assert_close(rescaled, original, tolerance=2e-5)
+    else:
+        assert not all(np.allclose(rescaled[name], original[name]) for name in original)
+
+
+def _with_sink_logits(fn: GlobalTransformerBackbone, value: float) -> GlobalTransformerBackbone:
+    attention = fn.blocks.attention
+    assert isinstance(attention, CIFnSelfAttentionWithSink)
+    attention = replace(attention, sink_logits=jnp.full_like(attention.sink_logits, value))
+    return replace(fn, blocks=replace(fn.blocks, attention=attention))
+
+
+@pytest.mark.parametrize("logit_softcap", [None, 5.0])
+@pytest.mark.parametrize("mask", ["bidirectional", "causal"])
+@pytest.mark.parametrize("ffn", ["gelu", "swiglu"])
+def test_a_sink_lets_every_head_attend_to_nothing(
+    ffn: Literal["gelu", "swiglu"],
+    mask: Literal["bidirectional", "causal"],
+    logit_softcap: float | None,
+):
+    """The sink holds no random draws, so a sunk and a plain CI fn initialize alike. Its
+    logits start at zero, one per block and query head. Far below every logit it leaves the
+    CI as it was; far above, every head attends to nothing, as if attention wrote nothing."""
+    plain_arch = _arch(mask, ffn)
+    plain_arch = replace(
+        plain_arch, attention=replace(plain_arch.attention, logit_softcap=logit_softcap)
+    )
+    sunk_arch = replace(
+        plain_arch, attention=replace(plain_arch.attention, sink=AttentionSink.LEARNED)
+    )
+    plain = _global_backbone(plain_arch.initialize(SITES, None, jax.random.key(0)))
+    sunk = _global_backbone(sunk_arch.initialize(SITES, None, jax.random.key(0)))
+    assert type(plain.blocks.attention) is not CIFnSelfAttentionWithSink
+    attention = sunk.blocks.attention
+    assert isinstance(attention, CIFnSelfAttentionWithSink)
+    assert attention.sink_logits.shape == (plain_arch.n_blocks, plain_arch.attention.n_heads)
+    np.testing.assert_array_equal(attention.sink_logits, 0.0)
+    taps = _taps(2)
+    sequence = SequenceLayout(jnp.array([[0, 0, 0, 1, 1]] * 2, jnp.int32))
+    original = _preactivations(plain, taps, sequence, remat=False)
+    at_zero = _preactivations(sunk, taps, sequence, remat=False)
+    assert not all(np.allclose(at_zero[name], original[name]) for name in original)
+    _assert_close(
+        _preactivations(_with_sink_logits(sunk, -1e4), taps, sequence, remat=False),
+        original,
+        tolerance=2e-5,
+    )
+    silent = replace(
+        plain,
+        blocks=replace(
+            plain.blocks,
+            attention=replace(plain.blocks.attention, wo=plain.blocks.attention.wo * 0),
+        ),
+    )
+    _assert_close(
+        _preactivations(_with_sink_logits(sunk, 1e4), taps, sequence, remat=False),
+        _preactivations(silent, taps, sequence, remat=False),
+        tolerance=2e-5,
+    )
+    gradient = eqx.filter_grad(_objective)(sunk, taps, sequence, False)
+    gradient_attention = gradient.blocks.attention
+    assert isinstance(gradient_attention, CIFnSelfAttentionWithSink)
+    assert np.all(np.asarray(gradient_attention.sink_logits) != 0.0)
+
+
 def test_global_rows_refuse_presets_they_do_not_name():
     mesh = AbstractMesh((2, 2, 2), THREE_AXES, axis_types=(AxisType.Explicit,) * 3)
     with pytest.raises(NotImplementedError, match="no rows for placement preset 'zero1'"):
@@ -335,15 +432,16 @@ def test_global_row_refusals_name_each_leaf_independent_axis():
         bind_global_rows(staged_input, mesh)
 
 
-def test_global_owners_must_tile_real_depth_and_site_counts():
+def test_global_owners_pad_depth_and_site_stacks_that_do_not_tile():
     mesh = AbstractMesh((2, 2, 2), THREE_AXES, axis_types=(AxisType.Explicit,) * 3)
-    rules = from_config("owner", mesh, SITES)
     arch = _arch("causal", "gelu")
-    arch.resolve_placement(SITES, rules)
-    with pytest.raises(AssertionError, match=r"'depth' \(dim 3\) does not tile"):
-        replace(arch, n_blocks=3).resolve_placement(SITES, rules)
-    with pytest.raises(AssertionError, match=r"'site' \(dim 3\) does not tile"):
-        arch.resolve_placement(SITES[:6], rules)
+    tiled = arch.resolve_placement(SITES, from_config("owner", mesh, SITES))
+    assert tiled.stacks == GlobalCIStacks.unpadded(2, (4, 4))
+    padded = replace(arch, n_blocks=3).resolve_placement(
+        SITES[:6], from_config("owner", mesh, SITES[:6])
+    )
+    one_pad = StackCensus(stack_len=3, stack_pad=1)
+    assert padded.stacks == GlobalCIStacks(depth=one_pad, sites=(one_pad, one_pad))
 
 
 def _mesh(shape: tuple[int, int, int]) -> Mesh:
@@ -363,15 +461,28 @@ def _spec(value: jax.Array) -> P:
 type MuonSteps = tuple[jax.Array, BackboneCIFn, jax.Array, BackboneCIFn]
 
 
-def _muon_steps(mesh: Mesh) -> tuple[BackboneCIFn, MuonSteps]:
-    """Two placed Muon steps from one seed on `mesh`, with the loss and gradient of each."""
+def _muon_steps(
+    mesh: Mesh,
+    sites: tuple[SiteSpec, ...] = SITES,
+    n_blocks: int = 2,
+    sink: AttentionSink = AttentionSink.NONE,
+    final_norm: FinalNormalization = FinalNormalization.NONE,
+) -> tuple[BackboneCIFn, BackboneCIFn, MuonSteps]:
+    """Two placed Muon steps from one seed on `mesh`: the initial and once-updated CI fns,
+    and the loss and gradient of each step."""
     arch = replace(
         _arch("causal", "swiglu"),
+        n_blocks=n_blocks,
         attention=MHACIFnAttention(
-            n_heads=2, implementation="xla", mask="causal", qk_norm=QueryKeyNormalization.RMS
+            n_heads=2,
+            implementation="xla",
+            mask="causal",
+            qk_norm=QueryKeyNormalization.RMS,
+            sink=sink,
         ),
+        final_norm=final_norm,
     )
-    rules = from_config("owner", mesh, SITES)
+    rules = from_config("owner", mesh, sites)
     pd = PDConfigBase(
         steps=10,
         batch_size=8,
@@ -380,7 +491,7 @@ def _muon_steps(mesh: Mesh) -> tuple[BackboneCIFn, MuonSteps]:
             type="muon", lr_schedule=ScheduleConfig.constant(1e-2), ns_dtype="float32"
         ),
     )
-    _, optimizer = build_optimizers(pd, rules, SITES)
+    _, optimizer = build_optimizers(pd, rules, sites)
     sequence = SequenceLayout(jnp.zeros((8, 5), jnp.int32))
 
     @eqx.filter_jit
@@ -393,7 +504,7 @@ def _muon_steps(mesh: Mesh) -> tuple[BackboneCIFn, MuonSteps]:
 
     activations = bind_global_rows(preset_rows("owner"), mesh).activations
     with jax.set_mesh(mesh):
-        fn = placed_ci_fn(arch, SITES, jax.random.key(7), mesh, rules)
+        fn = placed_ci_fn(arch, sites, jax.random.key(7), mesh, rules)
         assert isinstance(fn, BackboneCIFn), type(fn)
         taps = {
             key: jax.device_put(value, activations.sharding_for(("batch", "position", "feature")))
@@ -402,26 +513,35 @@ def _muon_steps(mesh: Mesh) -> tuple[BackboneCIFn, MuonSteps]:
         state = optimizer.init(eqx.filter(fn, eqx.is_array))
         first_loss, first_gradient, updated, state = step(fn, state, taps)
         second_loss, second_gradient, _, _ = step(updated, state, taps)
-    return fn, (first_loss, first_gradient, second_loss, second_gradient)
+    return fn, updated, (first_loss, first_gradient, second_loss, second_gradient)
+
+
+def _assert_bfloat16_close(gradients: object, reference: object, roundings: float = 1.0) -> None:
+    """The residents' cotangents are bfloat16, and a placed run reduces them across
+    replicas in a different order: each gradient leaf agrees to `roundings` of its bfloat16
+    rounding (8 significand bits at the leaf's scale). A padded leaf's real slice agrees and
+    its pad slice is exactly zero."""
+    for x, y in zip(jax.tree.leaves(gradients), jax.tree.leaves(reference), strict=True):
+        x, y = np.asarray(x, np.float32), np.asarray(y, np.float32)
+        bfloat16_rounding = 2.0**-7 * float(np.max(np.abs(y)))
+        np.testing.assert_allclose(x[: y.shape[0]], y, atol=roundings * bfloat16_rounding, rtol=0)
+        np.testing.assert_array_equal(x[y.shape[0] :], 0.0)
 
 
 @pytest.mark.multidevice
 def test_global_depth_and_site_owners_match_one_device_muon_steps():
     if jax.device_count() < 8:
         pytest.skip("requires eight local devices")
-    _, reference = _muon_steps(_mesh((1, 1, 1)))
-    fn, placed = _muon_steps(_mesh((2, 2, 2)))
+    _, _, reference = _muon_steps(_mesh((1, 1, 1)))
+    fn, _, placed = _muon_steps(_mesh((2, 2, 2)))
     backbone = _global_backbone(fn)
+    assert backbone.stacks == GlobalCIStacks.unpadded(2, (4, 4))
     first_loss, gradient, second_loss, second_gradient = placed
     _assert_close(first_loss, reference[0], tolerance=1e-5)
-    # The residents' cotangents are bfloat16, and the placed run reduces them across
-    # replicas in a different order: each gradient leaf agrees to its bfloat16 rounding
-    # (8 significand bits at the leaf's scale), and the second step inherits that
-    # difference through the Muon update.
-    for grads, reference_grads in ((gradient, reference[1]), (second_gradient, reference[3])):
-        for x, y in zip(jax.tree.leaves(grads), jax.tree.leaves(reference_grads), strict=True):
-            bfloat16_rounding = 2.0**-7 * float(jnp.max(jnp.abs(y)))
-            np.testing.assert_allclose(x, y, atol=bfloat16_rounding, rtol=0)
+    # The second step inherits the first gradient's bfloat16 difference through the
+    # Muon update.
+    _assert_bfloat16_close(gradient, reference[1])
+    _assert_bfloat16_close(second_gradient, reference[3])
     _assert_close(second_loss, reference[2], tolerance=1e-3)
 
     for parameter, grad in zip(jax.tree.leaves(fn), jax.tree.leaves(gradient), strict=True):
@@ -438,3 +558,51 @@ def test_global_depth_and_site_owners_match_one_device_muon_steps():
         assert sharding.spec == P(("replicate",), None, None)
     assert isinstance(staged.in_proj_w, NamedSharding)
     assert staged.in_proj_w.spec == P(None, None, None)
+
+
+@pytest.mark.multidevice
+@pytest.mark.parametrize("sink_and_final_norm", [False, True])
+def test_padded_depth_and_site_owners_match_one_device_and_keep_pads_zero(
+    sink_and_final_norm: bool,
+):
+    """Three blocks and three heads per group under `replicate: 2`: every persist stack
+    carries one zero pad, which the forward never sees, which receives exactly zero
+    gradient, and which a Muon step leaves at zero. With learned sinks, too, whose
+    per-block logits pad along `depth` with the rest of the block."""
+    if jax.device_count() < 8:
+        pytest.skip("requires eight local devices")
+    sites = SITES[:6]
+    sink = AttentionSink.LEARNED if sink_and_final_norm else AttentionSink.NONE
+    final_norm = FinalNormalization.RMS if sink_and_final_norm else FinalNormalization.NONE
+    _, _, reference = _muon_steps(_mesh((1, 1, 1)), sites, 3, sink, final_norm)
+    fn, updated, placed = _muon_steps(_mesh((2, 2, 2)), sites, 3, sink, final_norm)
+    one_pad = StackCensus(stack_len=3, stack_pad=1)
+    assert _global_backbone(fn).stacks == GlobalCIStacks(depth=one_pad, sites=(one_pad, one_pad))
+    first_loss, gradient, second_loss, second_gradient = placed
+    _assert_close(first_loss, reference[0], tolerance=1e-5)
+    _assert_bfloat16_close(gradient, reference[1])
+    # The second step inherits the first gradient's rounding through the Muon update, and
+    # the final norm amplifies it: unpadded layouts drift 1.4-1.5 roundings there too.
+    _assert_bfloat16_close(
+        second_gradient, reference[3], roundings=3.0 if sink_and_final_norm else 1.0
+    )
+    _assert_close(second_loss, reference[2], tolerance=1e-3)
+
+    stepped = _global_backbone(updated)
+    assert stepped.blocks.attention.wq.shape[0] == 4
+    sink_logits = stepped.blocks.attention.sink()
+    if sink_and_final_norm:
+        assert isinstance(stepped.blocks.attention, CIFnSelfAttentionWithSink)
+        assert sink_logits is not None and sink_logits.shape == (4, 2)
+    else:
+        assert sink_logits is None
+    for leaf in jax.tree.leaves(eqx.filter(stepped.blocks, eqx.is_array)):
+        np.testing.assert_array_equal(np.asarray(leaf)[3:], 0.0)
+    for head in stepped.heads:
+        assert head.weights.shape[0] == 4 and len(head.sites) == 3
+        np.testing.assert_array_equal(np.asarray(head.weights)[3:], 0.0)
+        np.testing.assert_array_equal(np.asarray(head.biases)[3:], 0.0)
+    residents = _global_backbone(updated.prepare())
+    assert residents.stacks == GlobalCIStacks.unpadded(3, (3, 3))
+    assert residents.blocks.attention.wq.shape[0] == 3
+    assert all(head.weights.shape[0] == 3 for head in residents.heads)

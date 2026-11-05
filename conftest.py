@@ -19,6 +19,9 @@ from pytest import Config, Item, Parser
 # host, not just the one that compiled it: an AVX512-tier compile embeds a target-cpu guess
 # that can mismatch the loading host's feature set (harmless-looking warning, but "harmless"
 # isn't good enough for a shared CI cache — this makes cross-host reuse safe by construction).
+# Safe, not shared: jax's cache key still names the host's CPU model and feature list (the
+# CPU topology fingerprint), so a compile only hits on the CPU model that made it — CI keys
+# its cache by CPU model for that reason.
 _MAX_ISA_FLAG = "--xla_cpu_max_isa=AVX2"
 if _MAX_ISA_FLAG not in os.environ.get("XLA_FLAGS", ""):
     os.environ["XLA_FLAGS"] = f"{os.environ.get('XLA_FLAGS', '')} {_MAX_ISA_FLAG}".strip()
@@ -32,16 +35,15 @@ import jax  # noqa: E402
 # test process, workers included — is the only placement that guarantees the order.
 import tokamax  # noqa: E402, F401
 
-# Compiles are keyed by HLO + backend + jax/xla version, so this only ever serves a bit-exact
-# rerun of the same compile; a threshold of 1s skips caching the hundreds of sub-second
+# Compiles are keyed by HLO + backend + jax/xla version + host CPU, so this only ever serves a
+# bit-exact rerun of the same compile; a threshold of 1s skips caching the hundreds of sub-second
 # internal jits (which would otherwise bloat the dir and spam load-time log lines) while
-# still catching every test-suite compile worth caching (the slow ones run 4-20s). One dir
-# per xdist worker: jax's own writer-gating (`process_id == 0`) is a no-op here since each
-# worker is an independent single-process jax runtime that trivially IS "process 0" — a
-# shared dir would let concurrent workers race on the same cache files, so give each its own.
-_cache_root = Path(__file__).parent / ".jax_test_cache"
-_worker_cache_dir = _cache_root / os.environ.get("PYTEST_XDIST_WORKER", "master")
-jax.config.update("jax_compilation_cache_dir", str(_worker_cache_dir))
+# still catching every test-suite compile worth caching (the slow ones run 4-20s). All xdist
+# workers share one dir, since `--dist worksteal` doesn't keep a test on the same worker from
+# run to run. The bounded size is what makes sharing safe: it turns on jax's file lock around
+# cache reads and writes; unbounded (`-1`, the default), concurrent workers' writes race.
+jax.config.update("jax_compilation_cache_dir", str(Path(__file__).parent / ".jax_test_cache"))
+jax.config.update("jax_compilation_cache_max_size", 4 * 1024**3)
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
 jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
 

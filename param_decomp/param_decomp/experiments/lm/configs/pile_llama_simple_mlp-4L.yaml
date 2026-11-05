@@ -1,8 +1,8 @@
-# Latest canonical run: https://wandb.ai/goodfire/param-decomp/runs/p-ed2347a8
-# Best-guess adaptation of that run's spirit to a config runnable on main, not a reproduction.
-# Omits the target-activation CI readout and uses main's per-batch adversary pools
-# and read/write locality loss. Equivalent decomposition quality has not been validated.
-# Model-only run name replaces the source run's experiment label.
+# Latest canonical run: https://wandb.ai/goodfire/param-decomp/runs/p-03a83fba
+# (the attention-pattern KL 2.0 + hidden recon 2.0 recipe).
+# This is its pinned launch config with the data layout and width it trained with made
+# explicit, a model-only run name and no W&B group/tags. Comments mark where main's
+# schema, code or data differs from the run.
 run_name: pile-llama-simple-mlp-4L
 cadence:
   checkpointing:
@@ -12,6 +12,9 @@ cadence:
       kind: keep_last
       n: 1
 data:
+  # p-03a83fba read the token-only `pile_neox_tok_512_rowshuf0` / `_val_rowshuf0`, which
+  # main's trainer refuses (new runs read document-aware datasets). This is the
+  # document-aware Pile pair, read as whole rows like the run's.
   train:
     kind: name
     name: pile_neox_docs513_r188e502a_eos0_v1_rowshuf0_train
@@ -44,6 +47,9 @@ eval:
   - rounding_threshold: 0.0
     type: CEandKLLosses
   - type: CIMeanPerComponent
+  - type: CIMaskedAttnPatternsReconLoss
+  - type: StochasticAttnPatternsReconLoss
+  - type: CIActiveCountsPerPosition
   - init: random
     source_shape: c
     n_steps: 20
@@ -85,24 +91,34 @@ decomposition:
       down_proj: 3072
     initialization: nonlinearity_aligned
   ci:
-    # Omit p-ed2347a8's target-activation readout; this config uses transformer-only CI.
-    type: chunkwise_transformer
-    blocks_per_chunk: 4
-    input_tap: all_block_resids
+    type: global_transformer
+    component_conditioning:
+      kind: affine_clipped_component_activation
+      output_scale_init: 1.0
+      calibration:
+        min_n_tokens: 1048576
+    input_tap:
+      kind: residual_boundaries
+      offsets:
+      - 0
+      - 1
+      - 2
+      - 3
+      - 4
     d_model: 1088
     n_blocks: 8
     attention:
       kind: mha
       mask: causal
       n_heads: 32
-      # Head dimension 34 requires XLA, matching the run's automatic backend selection.
       implementation: xla
+      # p-03a83fba spelled this `qk_norm: true`, the same per-head RMSNorm with learned
+      # gains.
+      qk_norm: rms
     ffn:
       kind: gelu
       hidden: 4352
 pd:
-  # Every annealed schedule settles by 95% of training and holds its final value for the
-  # last 5%. Not yet validated by a completed run on this model.
   batch_size: 2048
   steps: 100000
   ci_fn_optimizer:
@@ -119,6 +135,7 @@ pd:
         interp: cosine
       - at: 1.0
         frac: 0.1
+    weight_decay: 0.1
   components_optimizer:
     type: muon
     ns_dtype: bfloat16
@@ -153,8 +170,6 @@ pd:
         frac: 0.01
       - at: 1.0
         frac: 0.01
-  # Retain main's locality over reads and writes, including o_proj/down_proj inputs;
-  # p-ed2347a8 penalized writes only, so coverage and averaging differ.
   - type: NonlinearityLocalityLoss
     coeff: 3.0e-05
     relative_threshold:
@@ -189,10 +204,58 @@ pd:
         - at: 1.0
           frac: 1.0
       type: adam
-    # p-ed2347a8 used a shared pool_size: 8192. Retain main's per-batch ownership
-    # with 8192 / 2048 = 4 particles each; total size matches, sampling differs.
     pool:
       size_per_batch_element: 4
+    adversary_objective: term
+    auxiliaries:
+    # p-03a83fba floored each position's clean energy at 0.01x the capture's median; main's
+    # relative_squared_error floors at 1e-8 only, so low-energy positions weigh more here.
+    - name: hidden_acts_reconstruction
+      coeff: 2.0
+      comparisons:
+      - capture: h.0.attn.o_proj.out
+        distance: relative_squared_error
+      - capture: post_attn.0
+        distance: relative_squared_error
+      - capture: h.0.mlp.down_proj.out
+        distance: relative_squared_error
+      - capture: resid.1
+        distance: relative_squared_error
+      - capture: h.1.attn.o_proj.out
+        distance: relative_squared_error
+      - capture: post_attn.1
+        distance: relative_squared_error
+      - capture: h.1.mlp.down_proj.out
+        distance: relative_squared_error
+      - capture: resid.2
+        distance: relative_squared_error
+      - capture: h.2.attn.o_proj.out
+        distance: relative_squared_error
+      - capture: post_attn.2
+        distance: relative_squared_error
+      - capture: h.2.mlp.down_proj.out
+        distance: relative_squared_error
+      - capture: resid.3
+        distance: relative_squared_error
+      - capture: h.3.attn.o_proj.out
+        distance: relative_squared_error
+      - capture: post_attn.3
+        distance: relative_squared_error
+      - capture: h.3.mlp.down_proj.out
+        distance: relative_squared_error
+      - capture: resid.4
+        distance: relative_squared_error
+    - name: attention_patterns
+      coeff: 2.0
+      comparisons:
+      - capture: attn_scores.0
+        distance: attention_pattern_kl
+      - capture: attn_scores.1
+        distance: attention_pattern_kl
+      - capture: attn_scores.2
+        distance: attention_pattern_kl
+      - capture: attn_scores.3
+        distance: attention_pattern_kl
   - coeff: 1000.0
     type: FaithfulnessLoss
 runtime:
@@ -206,7 +269,6 @@ runtime:
   sharding: owner
   compiler_options: tuned-v2
 target:
-  # Explicit GPU attention instead of p-ed2347a8's auto selection.
   attention_implementation: flash
   weights_dtype: bfloat16
   output_edge:
@@ -215,6 +277,5 @@ target:
     kind: pretrained
     model_class: param_decomp.experiments.lm.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
     run_path: goodfire/spd/runs/t-9d2b8f02
-# Drop the source run's experiment-specific group/tags; retain its W&B project.
 wandb:
   project: param-decomp

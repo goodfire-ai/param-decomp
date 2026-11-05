@@ -49,6 +49,7 @@ from param_decomp.core.ci_fn.implementations.chunkwise.arch import (
 )
 from param_decomp.core.ci_fn.implementations.global_mlp import GlobalMLPCIFnArch
 from param_decomp.core.ci_fn.implementations.global_transformer.arch import (
+    FinalNormalization,
     GlobalTransformerCIFnArch,
 )
 from param_decomp.core.ci_fn.implementations.transformer.component_conditioning import (
@@ -57,6 +58,7 @@ from param_decomp.core.ci_fn.implementations.transformer.component_conditioning 
     SiteInput,
 )
 from param_decomp.core.ci_fn.implementations.transformer.layers import (
+    AttentionSink,
     CIFnAttentionMask,
     GQACIFnAttention,
     MHACIFnAttention,
@@ -436,6 +438,19 @@ def _assert_softcap_implementation(
     )
 
 
+def _assert_sink_implementation(
+    sink: AttentionSink, implementation: AttentionImplementation
+) -> None:
+    match sink, implementation:
+        case AttentionSink.LEARNED, "mosaic":
+            raise AssertionError(
+                "tokamax's Mosaic kernel takes no attention sink: a learned sink needs "
+                "implementation: flash or xla"
+            )
+        case (AttentionSink.NONE, _) | (AttentionSink.LEARNED, "flash" | "xla"):
+            pass
+
+
 class MHACIFnAttentionConfig(BaseConfig):
     """Every query head carries its own K/V head."""
 
@@ -453,10 +468,22 @@ class MHACIFnAttentionConfig(BaseConfig):
         description="Cap on the attention logits: each logit s becomes cap * tanh(s / cap) "
         "before the softmax. It needs implementation: xla, which materializes the logits.",
     )
+    sink: AttentionSink = Field(
+        default=AttentionSink.NONE,
+        description="'none': each query head's softmax runs over its keys alone. 'learned': "
+        "one learned logit per query head (init zero) joins its softmax as a slot whose value "
+        "is zero, so a head can attend to nothing, the same way at every position. It needs "
+        "implementation: flash or xla.",
+    )
 
     @model_validator(mode="after")
     def validate_logit_softcap(self) -> Self:
         _assert_softcap_implementation(self.logit_softcap, self.implementation)
+        return self
+
+    @model_validator(mode="after")
+    def validate_sink(self) -> Self:
+        _assert_sink_implementation(self.sink, self.implementation)
         return self
 
 
@@ -480,6 +507,13 @@ class GQACIFnAttentionConfig(BaseConfig):
         description="Cap on the attention logits: each logit s becomes cap * tanh(s / cap) "
         "before the softmax. It needs implementation: xla, which materializes the logits.",
     )
+    sink: AttentionSink = Field(
+        default=AttentionSink.NONE,
+        description="'none': each query head's softmax runs over its keys alone. 'learned': "
+        "one learned logit per query head (init zero) joins its softmax as a slot whose value "
+        "is zero, so a head can attend to nothing, the same way at every position. It needs "
+        "implementation: flash or xla.",
+    )
 
     @model_validator(mode="after")
     def validate_grouping(self) -> Self:
@@ -496,6 +530,11 @@ class GQACIFnAttentionConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_logit_softcap(self) -> Self:
         _assert_softcap_implementation(self.logit_softcap, self.implementation)
+        return self
+
+    @model_validator(mode="after")
+    def validate_sink(self) -> Self:
+        _assert_sink_implementation(self.sink, self.implementation)
         return self
 
 
@@ -604,6 +643,11 @@ class GlobalTransformerCIFnConfig(TransformerCIFnConfig):
     type: Literal["global_transformer"] = "global_transformer"
     input_tap: CIFnInputTapSelection
     ffn: CIFnFfnConfig
+    final_norm: FinalNormalization = Field(
+        default=FinalNormalization.NONE,
+        description="What the output heads read: 'none', the last block's output at whatever "
+        "scale it has; 'rms', that output RMS-normalized (weightless).",
+    )
     component_conditioning: AffineClippedComponentActivationConfig | None = None
     """`None` leaves the CI transformer unconditioned."""
 
@@ -1132,6 +1176,7 @@ def _resolve_global_transformer_ci_fn_arch(
         ffn_hidden=ci.ffn.hidden,
         ffn_kind=ci.ffn.kind,
         learned_norm_scale=ci.learned_norm_scale,
+        final_norm=ci.final_norm,
     )
     match ci.component_conditioning:
         case None:
@@ -1167,6 +1212,7 @@ def _resolve_ci_fn_attention(
                 mask=ci_fn_attention.mask,
                 qk_norm=ci_fn_attention.qk_norm,
                 logit_softcap=ci_fn_attention.logit_softcap,
+                sink=ci_fn_attention.sink,
             )
         case GQACIFnAttentionConfig():
             return GQACIFnAttention(
@@ -1176,6 +1222,7 @@ def _resolve_ci_fn_attention(
                 mask=ci_fn_attention.mask,
                 qk_norm=ci_fn_attention.qk_norm,
                 logit_softcap=ci_fn_attention.logit_softcap,
+                sink=ci_fn_attention.sink,
             )
 
 

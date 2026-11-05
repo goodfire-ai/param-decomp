@@ -60,6 +60,7 @@ def test_attention_scan_saved_residuals_match_unsharded_gradients(
                 implementation=backend,
                 qkv_sharding=sharding,
                 logit_softcap=None,
+                sink_logits=None,
             )
             return q * 0.5 + value, None
 
@@ -123,22 +124,35 @@ def test_attention_scan_saved_residuals_match_unsharded_gradients(
 
 
 @pytest.mark.multidevice
-def test_flash_shard_map_forward_and_pullback_with_cpu_attention(monkeypatch: pytest.MonkeyPatch):
-    """Exercise Flash's partition boundary using the XLA kernel, without claiming cuDNN parity."""
+@pytest.mark.parametrize("implementation", ("flash", "xla"))
+@pytest.mark.parametrize("sink", (False, True))
+def test_sharded_forward_and_pullback_with_cpu_attention(
+    monkeypatch: pytest.MonkeyPatch, implementation: AttentionImplementation, sink: bool
+):
+    """Exercise each partition boundary (Flash's shard map, run on the XLA kernel without
+    claiming cuDNN parity, and XLA's automatic axes), with and without a sink, whose logits
+    rest replicated, as the CI fn's do."""
     if jax.default_backend() != "cpu" or jax.local_device_count() < 4:
         pytest.skip("requires four CPU devices")
     import param_decomp.attention as attention
 
     batch, tokens, query_heads, kv_heads, width = 4, 8, 4, 2, 4
-    q_key, k_key, v_key = jax.random.split(jax.random.key(11), 3)
+    q_key, k_key, v_key, sink_key = jax.random.split(jax.random.key(11), 4)
     q = jax.random.normal(q_key, (batch, tokens, query_heads, width))
     k = jax.random.normal(k_key, (batch, tokens, kv_heads, width))
     v = jax.random.normal(v_key, k.shape)
+    sink_logits = jax.random.normal(sink_key, (query_heads,))
     documents = (jnp.arange(tokens)[None, :] >= jnp.arange(batch)[:, None] + 2).astype(jnp.int32)
     mask = SequenceLayout(documents).attention_mask()[:, None]
 
     def objective(
-        q: Array, k: Array, v: Array, mask: Array, *, sharding: NamedSharding | None
+        q: Array,
+        k: Array,
+        v: Array,
+        sink_logits: Array,
+        mask: Array,
+        *,
+        sharding: NamedSharding | None,
     ) -> Array:
         y = placed_dot_product_attention(
             q,
@@ -146,15 +160,17 @@ def test_flash_shard_map_forward_and_pullback_with_cpu_attention(monkeypatch: py
             v,
             mask,
             is_causal=True,
-            implementation="flash",
+            implementation=implementation,
             qkv_sharding=sharding,
             logit_softcap=None,
+            sink_logits=sink_logits if sink else None,
         )
         return jnp.sum(jnp.sin(y))
 
     monkeypatch.setattr(attention, "jax_attention_implementation", lambda *_args: "xla")
-    expected = jax.jit(jax.value_and_grad(partial(objective, sharding=None), argnums=(0, 1, 2)))(
-        q, k, v, mask
+    argnums = (0, 1, 2, 3) if sink else (0, 1, 2)
+    expected = jax.jit(jax.value_and_grad(partial(objective, sharding=None), argnums=argnums))(
+        q, k, v, sink_logits, mask
     )
     mesh = Mesh(
         np.asarray(jax.local_devices()[:4]).reshape(2, 2),
@@ -164,11 +180,12 @@ def test_flash_shard_map_forward_and_pullback_with_cpu_attention(monkeypatch: py
     sharding = NamedSharding(mesh, P("batch", None, "head", None))
     with jax.set_mesh(mesh):
         operands = tuple(jax.device_put(value, sharding) for value in (q, k, v))
+        placed_sink = jax.device_put(sink_logits, NamedSharding(mesh, P()))
         placed_mask = jax.device_put(mask, NamedSharding(mesh, P("batch", None, None, None)))
         actual = jax.jit(
-            jax.value_and_grad(partial(objective, sharding=sharding), argnums=(0, 1, 2))
-        )(*operands, placed_mask)
+            jax.value_and_grad(partial(objective, sharding=sharding), argnums=argnums)
+        )(*operands, placed_sink, placed_mask)
     for a, e in zip(jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True):
         np.testing.assert_allclose(a, e, rtol=2e-5, atol=2e-5)
-    for gradient, operand in zip(actual[1], operands, strict=True):
+    for gradient, operand in zip(actual[1][:3], operands, strict=True):
         assert gradient.sharding.is_equivalent_to(operand.sharding, ndim=4)

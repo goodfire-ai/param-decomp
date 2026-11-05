@@ -1002,7 +1002,7 @@ class _StochasticSiteMask:
     delta_key: Array
 
 
-type _SiteMask = _MaterializedSiteMask | _StochasticSiteMask
+type _SiteMask = _MaterializedSiteMask | _StochasticSiteMask | SourceMaskIngredients
 
 
 @jax.tree_util.register_dataclass
@@ -1035,9 +1035,10 @@ class _RoutedSiteExecutor:
     it adds no operation; whether the scan body emits it as `ys` stays the caller's
     decision.
 
-    Each input pairs its V/U weights with either a materialized mask or a stochastic
-    recipe. Stochastic masks are drawn inside the checkpointed block, so backward
-    redraws from the same keys instead of retaining them."""
+    Each input pairs its V/U weights with a materialized mask, a stochastic recipe or
+    source-mask ingredients. Stochastic masks are drawn and source masks composed inside
+    the checkpointed block, so backward redraws or recomposes one layer's mask instead
+    of retaining every layer's, and a source's cotangent keeps the source's own shape."""
 
     anatomy: Anatomy
     placement: PlacementRules | None
@@ -1057,6 +1058,9 @@ class _RoutedSiteExecutor:
                 delta = uniform_like(delta_key, ci, drop_last_axis=True)
             case _MaterializedSiteMask(mask=mask, delta=delta):
                 pass
+            case SourceMaskIngredients() as ingredients:
+                mask = require_full_emission(ingredients.compose())
+                delta = ingredients.delta_mask()
         plans = (
             None
             if self.placement is None
@@ -1143,12 +1147,13 @@ class _TransformerCaptureSource:
 TransformerCaptureSources = tuple[_TransformerCaptureSource, ...]
 
 
-_UNUSED_CAPTURE_SLOT = -1
-
-
 @dataclass(frozen=True, kw_only=True)
 class _ScanCaptureLayout:
-    """One exact-size scan-carry buffer for each requested value kind."""
+    """One scan-carry buffer for each requested value kind: a row per captured block, in
+    request order, plus one discard row that every uncaptured block writes when some block
+    is not captured. Every block writes unconditionally, so the scan updates the carried
+    buffer in place; a `lax.cond` around the write makes XLA copy the whole buffer at
+    every block."""
 
     slot_by_block_per_tap: tuple[tuple[_TransformerTap, tuple[int, ...]], ...]
     sources: tuple[_TransformerCaptureSource, ...]
@@ -1190,7 +1195,9 @@ def _scan_capture_layout(sources: TransformerCaptureSources, n_layer: int) -> _S
         blocks = tuple(source.block for source in sources if source.tap is tap)
         if not blocks or tap is _TransformerTap.RESIDUAL_IN:
             continue
-        slot_by_block = [_UNUSED_CAPTURE_SLOT] * n_layer
+        assert len(set(blocks)) == len(blocks), (tap, blocks)
+        discard_slot = len(blocks)
+        slot_by_block = [discard_slot] * n_layer
         for slot, block in enumerate(blocks):
             slot_by_block[block] = slot
         tap_slots.append((tap, tuple(slot_by_block)))
@@ -1210,7 +1217,7 @@ def _allocate_capture_buffers(
     return {
         tap.value: jnp.zeros(
             (
-                sum(slot >= 0 for slot in slots),
+                max(slots) + 1,
                 *residual.shape[:-1],
                 width_of(tap),
             ),
@@ -1244,13 +1251,8 @@ def _write_block_captures(
             # buffer's batch-sharded, feature-replicated layout.
             buffer_spec = jax.typeof(buffers[buffer_key]).sharding.spec
             captured_value = jax.sharding.reshard(captured_value, P(*buffer_spec[1:]))
-        updated_buffers[buffer_key] = jax.lax.cond(
-            slot_index != _UNUSED_CAPTURE_SLOT,
-            lambda buffer, value=captured_value, index=slot_index: (
-                jax.lax.dynamic_update_index_in_dim(buffer, value, index, axis=0)
-            ),
-            lambda buffer: buffer,
-            buffers[buffer_key],
+        updated_buffers[buffer_key] = jax.lax.dynamic_update_index_in_dim(
+            buffers[buffer_key], captured_value, slot_index, axis=0
         )
     return updated_buffers
 
@@ -1452,13 +1454,13 @@ def _prepare_per_kind_stochastic(
 def _prepare_per_kind_sources(
     ingredients_stacked: dict[str, SourceMaskIngredients],
 ) -> dict[str, _SiteMask]:
-    """Compose source masks before segmented execution; padded layers remain unread."""
+    """Stacked ingredients, composed per layer inside the checkpointed block; padded
+    layers remain unread."""
 
     per_kind: dict[str, _SiteMask] = {}
-    for kind in ingredients_stacked:
-        mask = ingredients_stacked[kind].compose()
-        assert isinstance(mask, Array), "this family's sites are dense-only"
-        per_kind[kind] = _MaterializedSiteMask(mask, ingredients_stacked[kind].delta)
+    for kind, ingredients in ingredients_stacked.items():
+        assert isinstance(ingredients.ci, Array), "this family's sites are dense-only"
+        per_kind[kind] = ingredients
     return per_kind
 
 

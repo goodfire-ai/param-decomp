@@ -37,7 +37,7 @@ from param_decomp.core.model import (
     SourceMasking,
     StochasticMasking,
 )
-from param_decomp.core.source_mask import SourceMaskIngredients
+from param_decomp.core.source_mask import DocumentMixedSource, SourceMaskIngredients
 
 
 def _selected_source_values(source: BlockedSourceComponents, ci: SelectedCI) -> Array:
@@ -172,7 +172,7 @@ def materialize_masking(masking: Masking) -> MaterializedMasking:
         case SourceMasking(ingredients=ingredients):
             return MaterializedMasking(
                 component_masks={site: pair.compose() for site, pair in ingredients.items()},
-                weight_delta_masks={site: pair.delta for site, pair in ingredients.items()},
+                weight_delta_masks={site: pair.delta_mask() for site, pair in ingredients.items()},
             )
 
 
@@ -257,8 +257,9 @@ def sample_source_pool(
     return jax.tree.map(sample_stack, source_pool).per_site()
 
 
-def read_source_mask(ci: SiteCI, source: SiteSource) -> SourceMaskIngredients:
-    """Align source storage to this CI's component coordinates, preserving source gradients."""
+def _source_in_ci_frame(ci: SiteCI, source: SiteSource) -> tuple[Array, Array]:
+    """A source's component values in this CI's coordinates and dtype, and its delta
+    values in the CI's dtype, preserving source gradients."""
     assert all(jnp.issubdtype(leaf.dtype, jnp.floating) for leaf in jax.tree.leaves(source)), (
         "Masks require the floating source view, never the storage representation"
     )
@@ -268,7 +269,12 @@ def read_source_mask(ci: SiteCI, source: SiteSource) -> SourceMaskIngredients:
             values = _selected_source_values(source.components, ci)
         case jax.Array():
             values = full_source_components(source.components).astype(ci.dtype)
-    return SourceMaskIngredients(ci, values, source.delta.astype(site_ci_values(ci).dtype))
+    return values, source.delta.astype(site_ci_values(ci).dtype)
+
+
+def read_source_mask(ci: SiteCI, source: SiteSource) -> SourceMaskIngredients:
+    """Align source storage to this CI's component coordinates, preserving source gradients."""
+    return SourceMaskIngredients(ci, *_source_in_ci_frame(ci, source))
 
 
 def source_mask_ingredients(
@@ -295,24 +301,6 @@ def _per_sample_adversarial_assignment(
     return random.bernoulli(key, adv_fraction, one_flag_per_sample)
 
 
-def _uniform_source_values(ci: SiteCI, key: PRNGKeyArray) -> Array:
-    """Draw one source value per token and selected component."""
-    values = site_ci_values(ci)
-    return uniform_like(key, values, dtype=jnp.float32).astype(values.dtype)
-
-
-def _uniform_delta_source(ci: SiteCI, key: PRNGKeyArray) -> Array:
-    values = site_ci_values(ci)
-    return uniform_like(key, values, drop_last_axis=True, dtype=jnp.float32).astype(values.dtype)
-
-
-def _select_source_samples(adversarial: Array, source: Array, noise: Array) -> Array:
-    """Select one family per document, broadcasting over every payload coordinate."""
-    selector = adversarial.reshape(adversarial.shape[0], *(1 for _ in noise.shape[1:]))
-    selector = selector.astype(source.dtype)
-    return selector * source + (1 - selector) * noise
-
-
 def mixed_persistent_stochastic_masking(
     key: PRNGKeyArray,
     ci_lower: Mapping[str, SiteCI],
@@ -332,22 +320,16 @@ def mixed_persistent_stochastic_masking(
     assignment_key, uniform_key = random.split(key)
     component_key, delta_key = random.split(uniform_key)
     adversarial = _per_sample_adversarial_assignment(assignment_key, adv_fraction, leading)
+    assert set(persistent_sources) == set(ci_lower), (persistent_sources.keys(), ci_lower.keys())
     ingredients = {}
-    for site_idx, (site, pair) in enumerate(
-        source_mask_ingredients(ci_lower, persistent_sources).items()
-    ):
+    for site_idx, (site, ci) in enumerate(ci_lower.items()):
+        values, delta = _source_in_ci_frame(ci, persistent_sources[site])
         ingredients[site] = SourceMaskIngredients(
-            ci=pair.ci,
-            source_values=_select_source_samples(
-                adversarial,
-                pair.source_values,
-                _uniform_source_values(pair.ci, random.fold_in(component_key, site_idx)),
+            ci=ci,
+            source_values=DocumentMixedSource(
+                adversarial, values, random.fold_in(component_key, site_idx)
             ),
-            delta=_select_source_samples(
-                adversarial,
-                pair.delta,
-                _uniform_delta_source(pair.ci, random.fold_in(delta_key, site_idx)),
-            ),
+            delta=DocumentMixedSource(adversarial, delta, random.fold_in(delta_key, site_idx)),
         )
     routes = (
         None

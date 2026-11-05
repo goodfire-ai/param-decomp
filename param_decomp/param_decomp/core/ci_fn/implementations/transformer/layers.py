@@ -3,7 +3,7 @@
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Literal, Protocol
+from typing import Literal, Protocol, override
 
 import einops
 import equinox as eqx
@@ -198,12 +198,21 @@ class QueryKeyNormalization(StrEnum):
     RMS = "rms"
 
 
+class AttentionSink(StrEnum):
+    """What a query head's softmax runs over besides its keys. `learned`: one learned logit
+    per query head, an extra slot whose value is zero, so weight on it attends to nothing."""
+
+    NONE = "none"
+    LEARNED = "learned"
+
+
 @dataclass(frozen=True)
 class MHACIFnAttention:
     """MHA architecture: every query head carries its own K/V head.
 
-    `qk_norm` selects query/key normalization at initialization. `logit_softcap`, when set,
-    replaces each attention logit `s` by `cap · tanh(s / cap)` before the softmax.
+    `qk_norm` selects query/key normalization and `sink` the attention sink, each at
+    initialization. `logit_softcap`, when set, replaces each attention logit `s` by
+    `cap · tanh(s / cap)` before the softmax.
     """
 
     n_heads: int
@@ -211,6 +220,7 @@ class MHACIFnAttention:
     mask: CIFnAttentionMask
     qk_norm: QueryKeyNormalization = QueryKeyNormalization.NONE
     logit_softcap: float | None = None
+    sink: AttentionSink = AttentionSink.NONE
 
     @property
     def n_kv_heads(self) -> int:
@@ -221,8 +231,8 @@ class MHACIFnAttention:
 class GQACIFnAttention:
     """`n_heads // n_kv_heads` query heads share each K/V head, so `wk`/`wv` narrow to
     `n_kv_heads * head_dim`. head_dim, the RoPE tables, `wq`/`wo` and every sharding are
-    identical to MHA — only the K/V projections change. `qk_norm` and `logit_softcap` as on
-    `MHACIFnAttention`.
+    identical to MHA — only the K/V projections change. `qk_norm`, `logit_softcap` and `sink`
+    as on `MHACIFnAttention`; a sink's logit is each query head's own.
     """
 
     n_heads: int
@@ -231,6 +241,7 @@ class GQACIFnAttention:
     mask: CIFnAttentionMask
     qk_norm: QueryKeyNormalization = QueryKeyNormalization.NONE
     logit_softcap: float | None = None
+    sink: AttentionSink = AttentionSink.NONE
 
     def __post_init__(self) -> None:
         assert self.n_heads % self.n_kv_heads == 0, (
@@ -308,10 +319,12 @@ class RMSNormalizedQueryKey(eqx.Module):
 
 class CIFnSelfAttention(eqx.Module):
     """RoPE attention's projections, query/key normalization, logit softcap and execution
-    settings.
+    settings; each query head's softmax runs over its keys alone.
 
     Architecture settings choose the normalization once, at initialization. The runtime
-    module carries the chosen operation and its parameters, with no second flag.
+    module carries the chosen operation and its parameters, with no second flag. A learned
+    sink is the subclass `CIFnSelfAttentionWithSink`, so attention without one keeps the
+    checkpoint tree it always had.
     """
 
     wq: Array
@@ -336,7 +349,7 @@ class CIFnSelfAttention(eqx.Module):
                 normalization = RMSNormalizedQueryKey(
                     jnp.ones((wq.shape[0],)), jnp.ones((wk.shape[0],))
                 )
-        return CIFnSelfAttention(
+        attention = CIFnSelfAttention(
             wq=wq,
             wk=wk,
             wv=wv,
@@ -348,6 +361,11 @@ class CIFnSelfAttention(eqx.Module):
             mask=definition.mask,
             logit_softcap=definition.logit_softcap,
         )
+        match definition.sink:
+            case AttentionSink.NONE:
+                return attention
+            case AttentionSink.LEARNED:
+                return CIFnSelfAttentionWithSink.around(attention, jnp.zeros((definition.n_heads,)))
 
     def matrix_parameters(self) -> tuple[tuple[Array, MatrixAxes], ...]:
         return (
@@ -359,6 +377,10 @@ class CIFnSelfAttention(eqx.Module):
 
     def vector_parameters(self) -> tuple[tuple[Array, Axes], ...]:
         return self.query_key_norm.vector_parameters()
+
+    def sink(self) -> Float[Array, " q_head"] | None:
+        """Each query head's sink logit, a softmax slot whose value is zero; None for none."""
+        return None
 
     def __call__(
         self,
@@ -397,6 +419,7 @@ class CIFnSelfAttention(eqx.Module):
             is_causal=self.mask == "causal",
             implementation=self.implementation,
             logit_softcap=self.logit_softcap,
+            sink_logits=self.sink(),
         )
         return x + ci_fn_linear(
             einops.rearrange(y, "b t nh hd -> b t (nh hd)"),
@@ -405,6 +428,40 @@ class CIFnSelfAttention(eqx.Module):
             CI_FN_ATTN_OUT_AXES,
             transposed=True,
         )
+
+
+class CIFnSelfAttentionWithSink(CIFnSelfAttention):
+    """`CIFnSelfAttention` whose every query head also softmaxes over its sink: one learned
+    logit per head, initialized to zero, whose value is zero, the same at every position."""
+
+    sink_logits: Float[Array, " q_head"]
+
+    @staticmethod
+    def around(
+        attention: CIFnSelfAttention, sink_logits: Float[Array, " q_head"]
+    ) -> "CIFnSelfAttentionWithSink":
+        """`attention` with these sink logits."""
+        return CIFnSelfAttentionWithSink(
+            wq=attention.wq,
+            wk=attention.wk,
+            wv=attention.wv,
+            wo=attention.wo,
+            query_key_norm=attention.query_key_norm,
+            n_heads=attention.n_heads,
+            n_kv_heads=attention.n_kv_heads,
+            implementation=attention.implementation,
+            mask=attention.mask,
+            logit_softcap=attention.logit_softcap,
+            sink_logits=sink_logits,
+        )
+
+    @override
+    def vector_parameters(self) -> tuple[tuple[Array, Axes], ...]:
+        return (*super().vector_parameters(), (self.sink_logits, ("q_head",)))
+
+    @override
+    def sink(self) -> Float[Array, " q_head"]:
+        return self.sink_logits
 
 
 class CIFnBlock(eqx.Module):
@@ -612,8 +669,13 @@ def input_attention_norm_parameter_census(
             n_qk_gains = 0
         case QueryKeyNormalization.RMS:
             n_qk_gains = width + kv_width
+    match attention.sink:
+        case AttentionSink.NONE:
+            n_sink_logits = 0
+        case AttentionSink.LEARNED:
+            n_sink_logits = attention.n_heads
     n_vector_parameters = n_chunks * (
-        width + n_blocks * (2 * width * learned_norm_scale + n_qk_gains)
+        width + n_blocks * (2 * width * learned_norm_scale + n_qk_gains + n_sink_logits)
     )
     return ParameterCensus(tuple(matrices), n_vector_parameters)
 

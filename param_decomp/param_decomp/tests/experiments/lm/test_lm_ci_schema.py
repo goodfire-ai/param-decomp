@@ -8,7 +8,10 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from param_decomp.core.ci_fn.implementations.transformer.layers import QueryKeyNormalization
+from param_decomp.core.ci_fn.implementations.transformer.layers import (
+    AttentionSink,
+    QueryKeyNormalization,
+)
 from param_decomp.experiments.lm.config import (
     ChunkwiseTransformerCIFnConfig,
     GeluCIFnFfnConfig,
@@ -99,6 +102,64 @@ def test_query_key_normalization_rejects_unnamed_choices(normalization: object):
                 "mask": "causal",
                 "implementation": "xla",
                 "qk_norm": normalization,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "attention", [{"kind": "mha", "n_heads": 4}, {"kind": "gqa", "n_heads": 4, "n_kv_heads": 2}]
+)
+@pytest.mark.parametrize("sink", list(AttentionSink))
+@pytest.mark.parametrize("implementation", ["xla", "flash"])
+def test_attention_sink_survives_config_round_trip(
+    tmp_path: Path, attention: dict[str, object], sink: AttentionSink, implementation: str
+):
+    cfg = _cfg(
+        attention={
+            **attention,
+            "mask": "causal",
+            "implementation": implementation,
+            "sink": sink.value,
+        }
+    )
+    path = tmp_path / "ci.yaml"
+    cfg.to_file(path)
+    restored = ChunkwiseTransformerCIFnConfig.from_file(path)
+    assert restored.attention.sink is sink
+    assert _resolve_ci_fn_attention(restored.attention).sink is sink
+    assert restored.model_dump(mode="json")["attention"]["sink"] == sink.value
+
+
+@pytest.mark.parametrize(
+    "attention", [{"kind": "mha", "n_heads": 4}, {"kind": "gqa", "n_heads": 4, "n_kv_heads": 2}]
+)
+def test_a_sink_on_mosaic_is_refused(attention: dict[str, object]):
+    with pytest.raises(ValidationError, match="Mosaic kernel takes no attention sink"):
+        _cfg(
+            attention={
+                **attention,
+                "mask": "causal",
+                "implementation": "mosaic",
+                "sink": "learned",
+            }
+        )
+
+
+def test_attention_sink_defaults_to_none():
+    assert _cfg().attention.sink is AttentionSink.NONE
+    assert _resolve_ci_fn_attention(_cfg().attention).sink is AttentionSink.NONE
+
+
+@pytest.mark.parametrize("sink", [True, False, "zero"])
+def test_attention_sink_rejects_unnamed_choices(sink: object):
+    with pytest.raises(ValidationError, match="sink"):
+        _cfg(
+            attention={
+                "kind": "mha",
+                "n_heads": 4,
+                "mask": "causal",
+                "implementation": "xla",
+                "sink": sink,
             }
         )
 

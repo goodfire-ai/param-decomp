@@ -17,9 +17,13 @@ The frozen target is NOT saved: resume rebuilds it from HF and loads only the tr
 
 Checkpoints are therefore topology-free: orbax saves the LOGICAL array, and restore
 places values using shapes from the initializer and layouts from the compiled consumer
-on the restoring side's OWN mesh. Any checkpoint restores onto any mesh whose placement
-constructs, train mesh to train mesh included; consumers re-place finished runs the
-same way, on whatever layout their caller names.
+on the restoring side's OWN mesh. The one mesh-dependent shape is a persist stack's
+trailing pads (`StackCensus`), which a checkpoint stores as its training mesh resolved
+them. A decomposition restore re-pads every stack to the restoring placement's census
+(`restore_decomposition`), so a decomposition restores onto any mesh whose placement
+constructs, and consumers re-place finished runs on whatever layout their caller names.
+Trainer resume reads strictly: it restores onto any mesh whose placement resolves the
+same pads.
 Pinned by the cross-topology restore tests in `param_decomp/tests/core/test_checkpoint.py`.
 
 Synchronous saves (no async): a SIGTERM-triggered save must be on disk before the
@@ -29,6 +33,7 @@ Fine-tuning restores only the decomposition, then initializes fresh training sta
 under the new config. The parent optimizer and adversary history are never read.
 """
 
+from contextlib import closing
 from pathlib import Path
 from typing import cast
 
@@ -157,17 +162,51 @@ def restore_latest[Conditioning, Training: TrainingProgress](
     return restore_step(mgr, destination, step), step
 
 
+def _assert_stored_up_to_leading_length(
+    mgr: ocp.CheckpointManager, step: int, item: object
+) -> None:
+    """Checkpoint `step` stores every leaf of `item` (a decomposition, or a part of one),
+    at its shape except perhaps the length of its leading axis.
+
+    A decomposition leaf's shape depends on the mesh only through the trailing pads of
+    the persist stack it leads with (`StackCensus`), so between a run's own config and
+    another mesh only that length differs. The real stack lengths are not checked: the
+    checkpoint keeps no census, so they are trusted from `item`, which every caller builds
+    from the run's own config."""
+    if step not in mgr.all_steps():
+        raise FileNotFoundError(f"no checkpoint step {step} under {mgr.directory}")
+    with closing(ocp.StandardCheckpointer()) as checkpointer:
+        stored = checkpointer.metadata(Path(mgr.directory) / str(step) / "decomposition")
+    stored_shapes = {
+        path: tuple(leaf.shape)
+        for path, leaf in ocp.tree.to_flat_dict(stored.item_metadata).items()
+    }
+    for path, leaf in ocp.tree.to_flat_dict(item).items():
+        name = ".".join(path)
+        assert path in stored_shapes, f"checkpoint {step} stores no {name}"
+        shape = stored_shapes[path]
+        assert len(shape) == len(leaf.shape) and shape[1:] == leaf.shape[1:], (
+            f"checkpoint {step} stores {name} at {shape}, which differs from {leaf.shape} "
+            "past its leading axis"
+        )
+
+
 @jaxtyped(typechecker=beartype)
 def restore_decomposition[DecompositionTree](
     mgr: ocp.CheckpointManager, step: int, abstract: ShapeTree[DecompositionTree]
 ) -> DecompositionTree:
     """Restore ONLY the trained decomposition of checkpoint `step` onto `abstract`'s
-    shapes, dtypes, and optional physical layouts."""
+    shapes, dtypes, and optional physical layouts, with each persist stack carrying the
+    pads `abstract`'s placement resolves rather than those the run trained with. The
+    non-strict read keeps the stored slots each destination shard overlaps and zero-fills
+    the rest. Pads trail the leading axis, so when `abstract` holds the run's real stack
+    lengths every real slot is kept."""
+    _assert_stored_up_to_leading_length(mgr, step, abstract)
     with jax.set_mesh(None):
         composite = mgr.restore(
             step,
             args=ocp.args.Composite(
-                decomposition=ocp.args.StandardRestore(abstract, support_layout=True)
+                decomposition=ocp.args.StandardRestore(abstract, strict=False, support_layout=True)
             ),
         )
     return cast(DecompositionTree, composite["decomposition"])
@@ -177,16 +216,23 @@ def restore_components(
     mgr: ocp.CheckpointManager, step: int, abstract: ShapeTree[ComponentStacks]
 ) -> ComponentStacks:
     """Restore ONLY the component stacks of checkpoint `step`'s decomposition, leaving its
-    CI fn unread — a consumer that never evaluates CI needs no CI architecture."""
+    CI fn unread — a consumer that never evaluates CI needs no CI architecture. The stacks
+    carry `abstract`'s pads, as in `restore_decomposition`. Every leaf names its sharding:
+    the non-strict read re-pads only arrays it places. `mgr` must not have restored this
+    checkpoint with `restore_decomposition`, because a manager reads an item with the
+    handler of its first restore."""
+    assert all(leaf.sharding is not None for leaf in jax.tree.leaves(abstract)), (
+        "restore_components places every leaf by its sharding"
+    )
     item = {"components": abstract}
+    _assert_stored_up_to_leading_length(mgr, step, item)
+    restore_args = ocp.checkpoint_utils.construct_restore_args(item, strict=False)
     with jax.set_mesh(None):
         composite = mgr.restore(
             step,
             args=ocp.args.Composite(
                 decomposition=ocp.args.PyTreeRestore(
-                    item=item,
-                    restore_args=ocp.checkpoint_utils.construct_restore_args(item),
-                    partial_restore=True,
+                    item=item, restore_args=restore_args, partial_restore=True
                 )
             ),
         )

@@ -22,6 +22,7 @@ from param_decomp.core.ci_fn.implementations.chunkwise.arch import (
 )
 from param_decomp.core.ci_fn.implementations.global_mlp import GlobalMLPCIFnArch
 from param_decomp.core.ci_fn.implementations.global_transformer.arch import (
+    FinalNormalization,
     GlobalTransformerCIFnArch,
 )
 from param_decomp.core.ci_fn.implementations.layerwise_mlp import LayerwiseMLPCIFnArch
@@ -30,7 +31,10 @@ from param_decomp.core.ci_fn.implementations.transformer.component_conditioning 
     InputScaleCalibration,
     SiteInput,
 )
-from param_decomp.core.ci_fn.implementations.transformer.layers import GQACIFnAttention
+from param_decomp.core.ci_fn.implementations.transformer.layers import (
+    AttentionSink,
+    GQACIFnAttention,
+)
 from param_decomp.core.ci_fn.interface import TapSpec
 from param_decomp.core.components import (
     BlockedFactorization,
@@ -122,6 +126,21 @@ SELECTED_ARCH = BlockSelectedChunkwiseTransformerCIFnArch(
         (SELECTED_ARCH, SELECTED_SITES),
         (GLOBAL_ARCH, SITES),
         (replace(GLOBAL_ARCH, ffn_kind="gelu", learned_norm_scale=False), SITES),
+        (
+            replace(
+                DENSE_ARCH, attention=replace(DENSE_ARCH.attention, sink=AttentionSink.LEARNED)
+            ),
+            SITES,
+        ),
+        (
+            replace(
+                GLOBAL_ARCH,
+                final_norm=FinalNormalization.RMS,
+                attention=replace(GLOBAL_ARCH.attention, sink=AttentionSink.LEARNED),
+            ),
+            SITES,
+        ),
+        (replace(GLOBAL_ARCH, final_norm=FinalNormalization.RMS, learned_norm_scale=False), SITES),
         (
             ConditionedCIFnArch(
                 GLOBAL_ARCH,

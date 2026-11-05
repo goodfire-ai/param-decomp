@@ -6,18 +6,19 @@ from typing import Literal, get_args
 
 import jax
 import jax.numpy as jnp
+from jax._src.cudnn import fused_attention_stablehlo as cudnn_attention
 from jax.extend.backend import get_default_device
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
-from jaxtyping import Array, Bool, Float
+from jaxtyping import Array, Bool, Float, Float32
 
 from param_decomp.sequence import SequenceLayout
 
 AttentionImplementation = Literal["flash", "mosaic", "xla"]
 """`flash` is cuDNN's fused kernel; `mosaic` is tokamax's Pallas Mosaic GPU flash kernel
 (Hopper and Blackwell), which also takes head dims cuDNN rejects (not a multiple of 8);
-`xla` materializes the scores, and is the one that takes a logit softcap. No choice falls
-back to another."""
+`xla` materializes the scores, and is the one that takes a logit softcap. `flash` and `xla`
+take an attention sink. No choice falls back to another."""
 
 
 def jax_attention_implementation(
@@ -57,21 +58,34 @@ def placed_dot_product_attention(
     implementation: AttentionImplementation,
     qkv_sharding: NamedSharding | None,
     logit_softcap: float | None,
+    sink_logits: Float[Array, " qh"] | None,
 ) -> Float[Array, "b t qh hd"]:
     """`logit_softcap`, when set, softmaxes `cap · tanh(s / cap)` of each logit
     `s = q·k / √hd`; `None` softmaxes the logits as they are. Only the materialized XLA path
-    applies a cap (cuDNN's fused kernel has no logit hook), so it needs `implementation="xla"`."""
+    applies a cap (cuDNN's fused kernel has no logit hook), so it needs `implementation="xla"`.
+
+    `sink_logits`, when set, gives each query head one more softmax slot, its sink, whose
+    logit is that head's entry at every query and whose value is zero: weight on it attends
+    to nothing. A cap leaves the sink's logit as it is. cuDNN (`_cudnn_attention_with_sink`)
+    and XLA take a sink; tokamax's Mosaic kernel does not."""
     backend = jax_attention_implementation(implementation, get_default_device().platform, q.dtype)
-    if logit_softcap is None:
-        attention = partial(_uncapped_attention, is_causal=is_causal, backend=backend)
-    else:
-        assert backend == "xla", (
-            f"a logit softcap needs implementation='xla', got {implementation!r}"
-        )
-        attention = partial(_softcapped_attention, is_causal=is_causal, cap=logit_softcap)
+
+    def attention(q: Array, k: Array, v: Array, mask: Array, sink_logits: Array | None) -> Array:
+        match backend, logit_softcap, sink_logits:
+            case _, None, None:
+                return _kernel_attention(q, k, v, mask, is_causal=is_causal, backend=backend)
+            case "cudnn", None, jax.Array() as sink:
+                return _cudnn_attention_with_sink(q, k, v, mask, sink, is_causal=is_causal)
+            case "xla", cap, sink:
+                return _materialized_attention(q, k, v, mask, sink, is_causal=is_causal, cap=cap)
+            case _:
+                raise AssertionError(
+                    f"implementation={implementation!r} takes neither a logit softcap (xla "
+                    "only) nor an attention sink (flash and xla only)"
+                )
 
     if qkv_sharding is None:
-        return attention(q, k, v, mask)
+        return attention(q, k, v, mask, sink_logits)
     spec = qkv_sharding.spec
     assert len(spec) == 4 and spec[1] is None and spec[3] is None, (
         f"Attention may shard batch and heads only, got {spec}"
@@ -82,18 +96,24 @@ def placed_dot_product_attention(
             # Enclose both directions of the kernel's custom VJP in the same shard map.
             # tokamax's Pallas outputs declare no varying mesh axes (vma), which the
             # checker refuses inside a manual map; the specs here are the contract.
+            # A sink's logits go where their query heads are.
+            sink_spec = P(spec[2])
+            if sink_logits is not None:
+                sink_logits = jax.reshard(sink_logits, NamedSharding(qkv_sharding.mesh, sink_spec))
             return jax.shard_map(
                 attention,
                 mesh=qkv_sharding.mesh,
-                in_specs=(spec, spec, spec, P(spec[0], None, None, None)),
+                in_specs=(spec, spec, spec, P(spec[0], None, None, None), sink_spec),
                 out_specs=spec,
                 check_vma=implementation == "flash",
-            )(q, k, v, mask)
+            )(q, k, v, mask, sink_logits)
         case "xla":
-            return jax.sharding.auto_axes(out_sharding=qkv_sharding)(attention)(q, k, v, mask)
+            return jax.sharding.auto_axes(out_sharding=qkv_sharding)(attention)(
+                q, k, v, mask, sink_logits
+            )
 
 
-def _uncapped_attention(
+def _kernel_attention(
     q: Float[Array, "b t qh hd"],
     k: Float[Array, "b s kvh hd"],
     v: Float[Array, "b s kvh hd"],
@@ -117,26 +137,146 @@ def _uncapped_attention(
             )
 
 
-def _softcapped_attention(
+# cuDNN's fused attention with a sink, at no extra quadratic cost. With `lse` the logsumexp
+# of a query's logits over its keys, the sink's logsumexp is `lse_s = logaddexp(lse, s)` and
+# its output is the plain output times `w = exp(lse - lse_s)`. The flash backward reads the
+# softmax only through the logsumexp and the output it is handed, so handing cuDNN's
+# backward `lse_s` and the sink's output gives the exact gradients for q, k and v; the
+# sink's own is `-Σ (1 - w) · (dO · O)`. JAX exposes cuDNN's forward statistics and backward
+# only through its private module, pinned by the lock; the GPU test
+# (`tests/target_ports/test_attention_sink.py`) checks this path against float32 attention.
+def _cudnn_absent_operands(q: Array) -> tuple[Array, Array, Array, Array, Array, Array]:
+    """The optional operands JAX's cuDNN rules take after the bias (query and key/value
+    sequence lengths and segment offsets, key and value page tables), all absent here."""
+    absent = jnp.zeros(0, q.dtype)
+    return absent, absent, absent, absent, absent, absent
+
+
+type _CudnnSettings = tuple[
+    float, int, float, tuple[bool, bool], cudnn_attention.MaskType, int, None, int
+]
+
+
+def _cudnn_nondiff_args(q: Array, is_causal: bool) -> _CudnnSettings:
+    """JAX's cuDNN attention settings, as its public wrapper builds them for a boolean mask
+    and no dropout: scale, seed, dropout rate, (has bias, has bias gradient), mask type,
+    layout, sliding window, cuDNN version."""
+    mask_type = cudnn_attention.MaskType.CAUSAL if is_causal else cudnn_attention.MaskType.NO_MASK
+    return (
+        1 / math.sqrt(q.shape[-1]),
+        42,
+        0.0,
+        (True, False),
+        mask_type,
+        cudnn_attention.AttentionLayout.BTNH.value,
+        None,
+        cudnn_attention.check_cudnn_version(),
+    )
+
+
+@partial(jax.custom_vjp, nondiff_argnums=(5,))
+def _cudnn_sink_attention(
+    q: Array, k: Array, v: Array, bias: Array, sink_logits: Float32[Array, " qh"], is_causal: bool
+) -> Array:
+    out, _ = _cudnn_sink_attention_fwd(q, k, v, bias, sink_logits, is_causal)
+    return out
+
+
+def _cudnn_sink_attention_fwd(
+    q: Array, k: Array, v: Array, bias: Array, sink_logits: Float32[Array, " qh"], is_causal: bool
+) -> tuple[Array, tuple[Array, ...]]:
+    out, lse = cudnn_attention._dot_product_attention_fwd(
+        q,
+        k,
+        v,
+        bias,
+        *_cudnn_absent_operands(q),
+        *_cudnn_nondiff_args(q, is_causal),
+        return_residual=True,
+    )
+    b, t, n_heads, _ = q.shape
+    assert lse.shape == (b, n_heads, t) and lse.dtype == jnp.float32, (lse.shape, lse.dtype)
+    sink_lse = jnp.logaddexp(lse, sink_logits[None, :, None])
+    keys_share = jnp.exp(lse - sink_lse).transpose(0, 2, 1)[..., None]
+    out = (out.astype(jnp.float32) * keys_share).astype(q.dtype)
+    return out, (q, k, v, bias, sink_lse, out, keys_share)
+
+
+def _cudnn_sink_attention_bwd(
+    is_causal: bool, residuals: tuple[Array, ...], out_grad: Array
+) -> tuple[Array | None, ...]:
+    q, k, v, bias, sink_lse, out, keys_share = residuals
+    # The backward rule's `is_training` slot receives the cuDNN version, as JAX's own
+    # custom VJP passes it, and its `return_residual` is off.
+    grads = cudnn_attention._dot_product_attention_bwd_rule(
+        *_cudnn_nondiff_args(q, is_causal),
+        False,
+        (q, k, v, bias, *_cudnn_absent_operands(q), sink_lse, out),
+        out_grad,
+    )
+    out_dot_grad = jnp.sum(out.astype(jnp.float32) * out_grad.astype(jnp.float32), axis=-1)
+    sink_grad = -jnp.sum((1 - keys_share[..., 0]) * out_dot_grad, axis=(0, 1))
+    return grads[0], grads[1], grads[2], None, sink_grad
+
+
+_cudnn_sink_attention.defvjp(_cudnn_sink_attention_fwd, _cudnn_sink_attention_bwd)
+
+
+def _cudnn_attention_with_sink(
     q: Float[Array, "b t qh hd"],
     k: Float[Array, "b s kvh hd"],
     v: Float[Array, "b s kvh hd"],
     mask: Bool[Array, "b 1 t s"],
+    sink_logits: Float[Array, " qh"],
     *,
     is_causal: bool,
-    cap: float,
 ) -> Float[Array, "b t qh hd"]:
-    """Softmax attention over `cap · tanh(q·k / √hd / cap)`, its logits and softmax in fp32."""
-    assert cap > 0, cap
+    """cuDNN attention whose every query head also softmaxes over its sink. Inside a shard
+    map the logits vary over fewer mesh axes than the queries (they rest replicated across
+    batch shards); cast to the queries' axes before the custom VJP, autodiff sums their
+    gradient across those shards."""
+    bias = cudnn_attention.combine_bias_and_mask(None, mask, q.dtype)
+    sink_logits = sink_logits.astype(jnp.float32)
+    missing = (
+        jax.typeof(q).manual_axis_type.varying - jax.typeof(sink_logits).manual_axis_type.varying
+    )
+    if missing:
+        sink_logits = jax.lax.pcast(sink_logits, tuple(sorted(missing)), to="varying")
+    return _cudnn_sink_attention(q, k, v, bias, sink_logits, is_causal)
+
+
+def _materialized_attention(
+    q: Float[Array, "b t qh hd"],
+    k: Float[Array, "b s kvh hd"],
+    v: Float[Array, "b s kvh hd"],
+    mask: Bool[Array, "b 1 t s"],
+    sink_logits: Float[Array, " qh"] | None,
+    *,
+    is_causal: bool,
+    cap: float | None,
+) -> Float[Array, "b t qh hd"]:
+    """Softmax attention over the logits `q·k / √hd`, each `s` capped to `cap · tanh(s / cap)`
+    when a cap is given, its logits and softmax in fp32; a sink joins the softmax at its own,
+    uncapped logit, with a zero value."""
     group = q.shape[2] // k.shape[2]
     k, v = jnp.repeat(k, group, axis=2), jnp.repeat(v, group, axis=2)
     logits = jnp.einsum("bqhd,bkhd->bhqk", q, k, preferred_element_type=jnp.float32)
-    logits = cap * jnp.tanh(logits / (math.sqrt(q.shape[-1]) * cap))
+    logits = logits / math.sqrt(q.shape[-1])
+    if cap is not None:
+        assert cap > 0, cap
+        logits = cap * jnp.tanh(logits / cap)
     if is_causal:
         mask = mask & jnp.tril(jnp.ones((q.shape[1], k.shape[1]), bool))[None, None]
     logits = jnp.where(mask, logits, jnp.finfo(jnp.float32).min)
-    weights = jax.nn.softmax(logits, axis=-1).astype(v.dtype)
-    return jnp.einsum("bhqk,bkhd->bqhd", weights, v)
+    if sink_logits is None:
+        weights = jax.nn.softmax(logits, axis=-1).astype(v.dtype)
+        return jnp.einsum("bhqk,bkhd->bqhd", weights, v)
+    b, n_heads, t, _ = logits.shape
+    sink = jnp.broadcast_to(
+        sink_logits.astype(jnp.float32)[None, :, None, None], (b, n_heads, t, 1)
+    )
+    weights = jax.nn.softmax(jnp.concatenate([sink, logits], axis=-1), axis=-1).astype(v.dtype)
+    return jnp.einsum("bhqk,bkhd->bqhd", weights[..., 1:], v)
 
 
 def causal_attention_head_first(
@@ -161,5 +301,6 @@ def causal_attention_head_first(
         implementation=implementation,
         qkv_sharding=qkv_sharding,
         logit_softcap=None,
+        sink_logits=None,
     )
     return out.transpose(0, 2, 1, 3)

@@ -300,6 +300,11 @@ inference — one census type (`StackCensus`: real length + pad) for every persi
   the block-selected arch). The arch's resolved placement carries it (`.chunks`), and
   `ChunkwiseTransformerBackbone.census` / `BlockSelectedChunkwiseTransformerCIFn.census`
   mirror it on the value tree.
+- The global transformer CI resolves one `StackCensus` for its blocks' `depth` stack
+  (over the attention and FFN `optimizer_state` rows) and one per semantic group's
+  head stack along `site` (over the output `optimizer_state` row), in
+  `resolve_global_stacks`, carried as `GlobalCIStacks` on its resolved placement
+  (`PlacedGlobalCIFn.stacks`) and on the value tree (`GlobalTransformerBackbone.stacks`).
 
 Both value trees are boundary-validated against their census
 (`_validate_component_stacks`, `_validate_chunk_stack`), and no consumer ever derives a
@@ -336,20 +341,26 @@ carries only real slots. The transpose runs the route backwards: a real-slot
 reduce-scatter, the slice's transpose writing exact zeros into the pad slots, the
 all-to-all returning them to their owners.
 
-The chunkwise CI fns take the plain route instead: `prepare` gathers the
+The CI fns take the plain route instead. The chunkwise CI fns' `prepare` gathers the
 padded stack into the compute layout (`gather_reduced_weights`), so compute values carry
 the same `stack_pad` as stored ones, and the forward slices the real chunks off right
 before the chunk scan. The compute rows (and the vectors row) refuse `stack`, so that
 slice is device-local; its transpose writes exact zeros into the pad cotangents, and the
 reduce-scatter back to the persist layout keeps them zero. The pad chunks ride the CI
-entry gather. The V/U waypoint's tiling — the leaf's last dim against
+entry gather. The global transformer CI does the same per stack, except that `prepare`
+slices each gathered block or head stack to its real length straight away (its compute
+and vector rows refuse `depth` and `site`), so its residents carry no pads.
+
+The V/U waypoint's tiling — the leaf's last dim against
 its compute assignment with the stack cut nested minor — is validated where the rows
 are bound (`validate_stacked_leaf`), like every other matrix-axis tiling. The costs are
 the pad fraction on persist bytes and optimizer work, plus the entry all-to-all's one
 padded slot per device — nothing on the hot loop, and nothing padded in the step's
-largest collective or transient. Checkpoints persist the PADDED stacks, so a consumer
-re-placing a padded run must resolve the same pad counts (a different mesh that
-resolves different pads refuses at restore shape validation).
+largest collective or transient. Checkpoints persist the PADDED stacks. A decomposition
+restore re-pads each stack to the restoring placement's census (`restore_decomposition`
+reads non-strictly: real slots kept, the restoring mesh's pads zero-filled), so a
+consumer opens a padded run on any layout; trainer resume reads strictly and needs the
+same pad counts.
 
 Owner vs `zero1` in magnitude: under elementwise optimizers (Adam) the two are
 ~equivalent per-step communication — entry gather and exit reduce-scatter move the same
@@ -365,8 +376,8 @@ included — and refuses any group the rows cannot place; `resolve_chunk_census`
 for the chunk stack from the CI arch (and refuses, at the same construction time, every
 arch-known CI master leaf the rows cannot tile). Consumers validate those censuses against
 their arrays and never re-decide them; a consumer re-placing a finished run on one device tiles
-trivially (every stack length divides 1, so no pads resolve — which is exactly why a PADDED
-run's checkpoint must be re-placed on a mesh resolving the same pads).
+trivially (1 divides every stack length, so no pads resolve, and the restore drops a padded
+run's stored pads).
 
 ## Sequence parallelism on masked forwards
 

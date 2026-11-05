@@ -169,6 +169,18 @@ def test_legacy_allows_unclassified_keys_and_grouped_rejects_them():
         MetricNames("grouped").record({"new/diagnostic": 2.0})
 
 
+@pytest.mark.parametrize("site", ["layers.3.self_attn.q_proj", "h.3.attn.q_proj"])
+def test_per_layer_attention_pattern_kl_is_grouped_for_both_site_families(site: str):
+    """Qwen/Llama and LlamaSimpleMLP name the query projection differently; both log the
+    per-layer attention-pattern KL under the same grouped chart."""
+    names = MetricNames("grouped")
+    ci_masked = names.metric(f"eval/loss/CIMaskedAttnPatternsReconLoss/{site}")
+    stochastic = names.metric(f"eval/loss/StochasticAttnPatternsReconLoss/{site}")
+    assert ci_masked.endswith("layer-03"), ci_masked
+    assert stochastic.endswith("layer-03"), stochastic
+    assert ci_masked != stochastic
+
+
 @pytest.mark.parametrize("config_type", [WandbConfig, PretrainWandbConfig])
 def test_schema_config_is_opt_in_and_closed(config_type: type[WandbConfig | PretrainWandbConfig]):
     assert config_type(project="test").metric_schema == "legacy"

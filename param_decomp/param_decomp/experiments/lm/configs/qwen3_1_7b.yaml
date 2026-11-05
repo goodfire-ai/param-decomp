@@ -173,11 +173,20 @@ decomposition:
       - 28
     d_model: 3840
     n_blocks: 32
+    # Not in p-47857a3b; chosen for new runs. At seq 2048 the CI fn's heads read a
+    # residual its last block mostly cancels, and at positions past 1024 that cancellation
+    # failed (final residual 19x) during a CI-attention instability.
+    # The norm takes the scale out of the heads' input.
+    final_norm: rms
     attention:
       kind: mha
       mask: causal
       n_heads: 32
       implementation: flash
+      # Not in p-47857a3b; chosen for new runs. In seq-2048 runs, heads parked on the
+      # document's first token stopped doing so past ~1024 tokens, where that token's
+      # logit is out of the seq-512 range. A learned sink is position-free.
+      sink: learned
     ffn:
       kind: gelu
       hidden: 15360
@@ -282,12 +291,15 @@ runtime:
   sharding: owner
   remat_recon_forwards: true
   remat_ci_fn: true
-  # Supported compiler flags; tuned-v1 is retired. Differs from p-47857a3b
-  compiler_options: tuned-v2
-  # p-47857a3b's flat replicate/fsdp/tp fields moved under mesh; counts unchanged.
+  # tuned-v4: tuned-v2 with the scheduler ordering buffers for memory and CUDA-graph
+  # capture for six kernel categories. Differs from p-47857a3b
+  compiler_options: tuned-v4
+  # Same 64 devices as p-47857a3b's replicate 4 x fsdp 16, but each fsdp group stays
+  # inside one 8-GPU node. Owner pads the 28-layer component stacks and the CI's 28-head
+  # site stacks to 32; a consumer's restore re-pads them for its own mesh.
   mesh:
-    replicate: 4
-    fsdp: 16
+    replicate: 8
+    fsdp: 8
     tp: 1
 target:
   # Explicit GPU attention instead of auto selection in p-47857a3b

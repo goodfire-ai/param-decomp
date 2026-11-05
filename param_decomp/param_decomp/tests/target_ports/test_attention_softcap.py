@@ -39,6 +39,7 @@ def _attention(
         implementation="xla",
         qkv_sharding=None,
         logit_softcap=logit_softcap,
+        sink_logits=None,
     )
     return np.asarray(out)
 

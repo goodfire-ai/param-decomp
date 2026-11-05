@@ -11,6 +11,7 @@ from jaxtyping import Array
 from param_decomp.core.adversary import BlockedSourceComponents, SiteSource
 from param_decomp.core.components import SelectedCI, site_ci_values
 from param_decomp.core.masking import mixed_persistent_stochastic_masking
+from param_decomp.core.source_mask import DocumentMixedSource
 
 
 @pytest.mark.parametrize("adv_fraction", [0.0, 0.5, 1.0])
@@ -59,11 +60,13 @@ def test_merged_selected_masks_and_gradients_match_token_oracle(
         )
         pair = masking.ingredients["site"]
         assert isinstance(pair.ci, SelectedCI)
-        assert len(jax.tree.leaves(pair)) == len(jax.tree.leaves(pair.ci)) + 2
-        assert pair.delta.shape == (b, t)
+        # The fresh noise is a recipe resolved at composition, never a stored payload.
+        assert isinstance(pair.source_values, DocumentMixedSource)
+        assert isinstance(pair.delta, DocumentMixedSource)
+        assert pair.delta_mask().shape == (b, t)
         assert mixed_routes is not None
         return (
-            jnp.sin(site_ci_values(pair.compose())).sum() + jnp.sin(pair.delta).sum(),
+            jnp.sin(site_ci_values(pair.compose())).sum() + jnp.sin(pair.delta_mask()).sum(),
             mixed_routes["site"],
         )
 

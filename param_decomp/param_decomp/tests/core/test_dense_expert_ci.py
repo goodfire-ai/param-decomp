@@ -18,6 +18,7 @@ from param_decomp.core.ci_fn.implementations.block_selected.arch import (
     SelectedSlot,
 )
 from param_decomp.core.ci_fn.implementations.transformer.layers import (
+    AttentionSink,
     MHACIFnAttention,
     QueryKeyNormalization,
 )
@@ -46,6 +47,27 @@ def test_block_selected_arch_rejects_qk_norm_before_initialization() -> None:
                 implementation="xla",
                 n_heads=2,
                 qk_norm=QueryKeyNormalization.RMS,
+            ),
+            table_size=4,
+            selected_ffn_hidden=8,
+            shared_ffn_hidden=8,
+            learned_norm_scale=False,
+            expert_implementation="dense_masked",
+        )
+
+
+def test_block_selected_arch_rejects_attention_sinks_before_initialization() -> None:
+    with pytest.raises(ValueError, match="does not implement attention sinks"):
+        BlockSelectedChunkwiseTransformerCIFnArch(
+            chunks=(BlockSelectedChunk(("x",), (0,), (FullSlot("dense"),)),),
+            input_dim=8,
+            d_model=8,
+            n_blocks=2,
+            attention=MHACIFnAttention(
+                mask="bidirectional",
+                implementation="xla",
+                n_heads=2,
+                sink=AttentionSink.LEARNED,
             ),
             table_size=4,
             selected_ffn_hidden=8,

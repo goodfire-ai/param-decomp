@@ -7,17 +7,22 @@ import pytest
 import yaml
 
 from param_decomp.core.ci_fn.implementations.global_transformer.arch import (
+    FinalNormalization,
     GlobalTransformerBackbone,
     GlobalTransformerCIFnArch,
 )
+from param_decomp.core.ci_fn.implementations.global_transformer.placement import PlacedGlobalCIFn
 from param_decomp.core.ci_fn.implementations.transformer.backbone import BackboneCIFn
 from param_decomp.core.ci_fn.implementations.transformer.component_conditioning import (
     ConditionedCIFnArch,
     InputScaleCalibration,
     SiteInput,
 )
-from param_decomp.core.ci_fn.implementations.transformer.layers import MHACIFnAttention
-from param_decomp.core.ci_fn.implementations.transformer.placement import PlacedTransformerCIFnRows
+from param_decomp.core.ci_fn.implementations.transformer.layers import (
+    AttentionSink,
+    CIFnSelfAttentionWithSink,
+    MHACIFnAttention,
+)
 from param_decomp.core.ci_fn.interface import TapSpec
 from param_decomp.core.components import SiteC
 from param_decomp.core.configs import HsdpMeshShape
@@ -102,6 +107,55 @@ def test_global_transformer_resolves_taps_over_every_selected_block(
     assert arch.input_taps == tuple(TapSpec(key=key, width=4096) for key in expected)
 
 
+@pytest.mark.parametrize("final_norm", list(FinalNormalization))
+@pytest.mark.parametrize("sink", list(AttentionSink))
+def test_global_transformer_resolves_its_final_norm_and_attention_sink(
+    tmp_path: Path, final_norm: FinalNormalization, sink: AttentionSink
+):
+    target = LMTargetConfig.model_validate(
+        {
+            "spec": {
+                "kind": "hf",
+                "model_class": "transformers.LlamaForCausalLM",
+                "model_name": "meta-llama/Llama-3.1-8B",
+            },
+            "attention_implementation": "xla",
+            "weights_dtype": "bfloat16",
+            "output_edge": {"kind": "materialized"},
+        }
+    )
+    decomposition = LMDecompositionConfig.model_validate(
+        {
+            "sites": {
+                "kind": "glu_transformer",
+                "layers": {"kind": "list", "indices": (2, 3)},
+                "cs": {"down": 8},
+            },
+            "ci": {
+                "type": "global_transformer",
+                "input_tap": "first_block_resid",
+                "d_model": 16,
+                "n_blocks": 2,
+                "final_norm": final_norm.value,
+                "attention": {
+                    "kind": "mha",
+                    "n_heads": 2,
+                    "implementation": "xla",
+                    "mask": "causal",
+                    "sink": sink.value,
+                },
+                "ffn": {"kind": "gelu", "hidden": 32},
+            },
+        }
+    )
+    arch = resolve_lm_ci_fn_arch(
+        resolve_decomposition(target, decomposition, tmp_path), decomposition.ci
+    )
+    assert isinstance(arch, GlobalTransformerCIFnArch)
+    assert arch.final_norm is final_norm
+    assert arch.attention.sink is sink
+
+
 def test_component_conditioning_reads_each_sites_clean_input(tmp_path: Path):
     target = LMTargetConfig.model_validate(
         {
@@ -179,12 +233,19 @@ def test_qwen3_1_7b_global_ci_places_on_its_authored_mesh(tmp_path: Path):
     assert config.runtime.sharding == "owner"
     assert_placement_claims(config, tmp_path)
 
+    # ddp splits the unpadded 28-layer component stacks over replicate, so the mesh must
+    # tile them for the CI fn's refusal to be the one that fires.
     raw["runtime"]["sharding"] = "ddp"
+    raw["runtime"]["mesh"] = {"replicate": 4, "fsdp": 16, "tp": 1}
     with pytest.raises(NotImplementedError, match="no rows for placement preset 'ddp'"):
         assert_placement_claims(LMExperimentConfig.model_validate(raw), tmp_path)
 
 
-def test_global_transformer_checkpoint_opens_on_a_consumer_owner_layout(tmp_path: Path):
+@pytest.mark.parametrize("final_norm_and_sink", [False, True])
+def test_global_transformer_checkpoint_opens_on_a_consumer_owner_layout(
+    tmp_path: Path, final_norm_and_sink: bool
+):
+    """With a final norm and learned sinks, too, whose logits rest on the vector row."""
     cfg = tiny_glu_cfg()
     replicas = jax.device_count()
     sites = glu_site_specs(
@@ -200,15 +261,30 @@ def test_global_transformer_checkpoint_opens_on_a_consumer_owner_layout(tmp_path
         input_taps=(TapSpec("resid.2", cfg.n_embd), TapSpec("resid.4", cfg.n_embd)),
         d_model=16 * replicas,
         n_blocks=1,
-        attention=MHACIFnAttention(n_heads=2, implementation="xla", mask="bidirectional"),
+        attention=MHACIFnAttention(
+            n_heads=2,
+            implementation="xla",
+            mask="bidirectional",
+            sink=AttentionSink.LEARNED if final_norm_and_sink else AttentionSink.NONE,
+        ),
         ffn_hidden=32 * replicas,
         ffn_kind="gelu",
         learned_norm_scale=False,
+        final_norm=FinalNormalization.RMS if final_norm_and_sink else FinalNormalization.NONE,
     )
     layout = ConsumerLayout(mesh=HsdpMeshShape(replicate=1, fsdp=replicas, tp=1), sharding="owner")
     run = _open_checkpointed(tmp_path / "p-global-transformer", model, arch, layout)
     assert_opened_on(run, layout)
     prepared = run.prepared_ci_fn
     assert isinstance(prepared, BackboneCIFn)
-    assert isinstance(prepared.backbone, GlobalTransformerBackbone)
-    assert isinstance(prepared.backbone.placement, PlacedTransformerCIFnRows)
+    backbone = prepared.backbone
+    assert isinstance(backbone, GlobalTransformerBackbone)
+    assert isinstance(backbone.placement, PlacedGlobalCIFn)
+    assert backbone.final_norm is arch.final_norm
+    sink_logits = backbone.blocks.attention.sink()
+    if final_norm_and_sink:
+        assert isinstance(backbone.blocks.attention, CIFnSelfAttentionWithSink)
+        assert sink_logits is not None
+        assert sink_logits.shape == (arch.n_blocks, arch.attention.n_heads)
+    else:
+        assert sink_logits is None

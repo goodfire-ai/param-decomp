@@ -59,6 +59,7 @@ from param_decomp.core.ci_fn.implementations.transformer.layers import (
     CI_FN_RMS_EPS,
     CI_FN_TRANSFORMER_STAGING_IN_PLACE,
     LOCAL_CI_FN_TRANSFORMER_PLACEMENT,
+    AttentionSink,
     CIFnAttention,
     CIFnSelfAttention,
     CIFnTransformerPlacement,
@@ -253,6 +254,11 @@ class BlockSelectedChunkwiseTransformerCIFnArch:
                 pass
             case QueryKeyNormalization.RMS:
                 raise ValueError("the MoE chunkwise CI arch does not implement QK-norm")
+        match self.attention.sink:
+            case AttentionSink.NONE:
+                pass
+            case AttentionSink.LEARNED:
+                raise ValueError("the MoE chunkwise CI arch does not implement attention sinks")
 
     @property
     def capture_keys(self) -> CaptureKeys:

@@ -1,6 +1,7 @@
 """CI conditioned on live component activations, around the global transformer: the
 readout, its calibration to data, and V's shared gradient."""
 
+from dataclasses import replace
 from typing import Any
 
 import equinox as eqx
@@ -23,7 +24,10 @@ from param_decomp.core.ci_fn.implementations.transformer.component_conditioning 
     InputScaleCalibration,
     SiteInput,
 )
-from param_decomp.core.ci_fn.implementations.transformer.layers import MHACIFnAttention
+from param_decomp.core.ci_fn.implementations.transformer.layers import (
+    AttentionSink,
+    MHACIFnAttention,
+)
 from param_decomp.core.ci_fn.interface import CI, CIFn, TapSpec
 from param_decomp.core.ci_fn.runtime import evaluate_ci_from_captures
 from param_decomp.core.ci_fn.squashing import symmetric_leaky_hard_sigmoid
@@ -517,14 +521,24 @@ def test_conditioning_adds_each_site_input_projection_to_the_useful_flops():
     assert conditioned.backward - plain.backward == projection
 
 
-def test_every_conditioned_parameter_has_a_grouped_gradient_metric_name():
+@pytest.mark.parametrize("sink", [False, True])
+def test_every_conditioned_parameter_has_a_grouped_gradient_metric_name(sink: bool):
+    """With learned attention sinks, too."""
     sites = _sites()
-    fn = _conditioned_arch(_model(sites)).initialize(sites, None, jax.random.PRNGKey(2))
+    arch = _conditioned_arch(_model(sites))
+    if sink:
+        inner = arch.inner
+        arch = replace(
+            arch,
+            inner=replace(inner, attention=replace(inner.attention, sink=AttentionSink.LEARNED)),
+        )
+    fn = arch.initialize(sites, None, jax.random.PRNGKey(2))
 
     metrics = _grad_norm_metrics(init_component_stacks(sites, jax.random.PRNGKey(1)), fn, None)
 
     readout_keys = [key for key in metrics if ".readouts[" in key]
     assert len(readout_keys) == 7 * len(sites)
+    assert any("sink_logits" in key for key in metrics) == sink
     for key in metrics:
         if not key.startswith("grad_norms/summary/"):
             grouped_metric_key(f"train/{key}")

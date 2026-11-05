@@ -47,6 +47,7 @@ from math import lcm, prod
 from typing import Literal, cast, get_args
 
 import jax
+import jax.numpy as jnp
 from jax.sharding import AbstractMesh, Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array
@@ -729,11 +730,21 @@ def validate_stacked_leaf(
         padded_entry_waypoint(source, destination, axes).validate_shape(axes, shape)
 
 
+def pad_stack(value: Array, census: StackCensus) -> Array:
+    """A real stack with its census's trailing all-zero persist pads appended (the
+    inverse of `strip_stack_pad`)."""
+    if census.stack_pad == 0:
+        return value
+    assert value.shape[0] == census.stack_len, (value.shape, census)
+    pads = jnp.zeros((census.stack_pad, *value.shape[1:]), value.dtype)
+    return jnp.concatenate([value, pads])
+
+
 def strip_stack_pad(value: Array, census: StackCensus) -> Array:
-    """The V/U pad exit: drop a persist stack's trailing pads where the stack axis rests
-    whole on every device, at a padded entry's waypoint (`materialize_reduced_weights`).
-    Its transpose scatters the real grads into the leading real stack and writes exact
-    zeros into the pads."""
+    """The pad exit: drop a persist stack's trailing pads where the stack axis rests
+    whole on every device, at a padded entry's waypoint (`materialize_reduced_weights`)
+    or on a leaf whose row never cuts its stack. Its transpose scatters the real grads
+    into the leading real stack and writes exact zeros into the pads."""
     if census.stack_pad == 0:
         return value
     assert value.shape[0] == census.padded_stack_len, (value.shape, census)
@@ -1691,8 +1702,8 @@ def from_config(
     rows cannot place refuses, with the remedies spelled out — there is no fallback arm.
     The same construction serves the run's own topology (config build via
     `sharding.hsdp_abstract_mesh`, pre-submission; the composition roots) and a consumer
-    re-placing a finished run on its own mesh — NOTE a padded run's persist arrays carry
-    their pads, so a re-placing consumer's mesh must resolve the same pad counts.
+    re-placing a finished run on its own mesh — a padded run's persist arrays carry their
+    pads, and the consumer's decomposition restore re-pads them to this census.
     `sequence_sharding` is `runtime.sequence_sharding` — the default is the standing
     `replicate` spelling (`masked_external` IS the external row)."""
     match spec:

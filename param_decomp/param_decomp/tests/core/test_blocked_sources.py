@@ -424,6 +424,7 @@ def _assert_selected_read_is_the_one_hot_contraction(
         for site in _SELECTED_SITES:
             pair = ingredients[site]
             assert isinstance(pair.ci, SelectedCI)
+            assert isinstance(pair.source_values, jax.Array)
             out[site] = pair.source_values
         return out
 

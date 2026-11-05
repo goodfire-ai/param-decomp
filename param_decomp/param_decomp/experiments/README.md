@@ -437,7 +437,11 @@ set is a new preset name, never an edit). It keeps while-loop double-buffering o
 xs), so the one set serves every placement. `tuned-v2-autotune1` = tuned-v2 plus
 `xla_gpu_autotune_level: 1` (`TUNED_V2_AUTOTUNE1_COMPILER_OPTIONS`) — the faster-iteration
 preset: shorter first compile, and since autotune picks steer fusion, its arena
-and step time do not transfer to tuned-v2; `bare` = `{}` (true XLA
+and step time do not transfer to tuned-v2; `tuned-v3` = tuned-v2 with the latency-hiding
+scheduler ordering for memory (`TUNED_V3_COMPILER_OPTIONS`: slop factor 60, with
+`copy_fusion` and XLA rematerialization off, so it reorders without recomputing); `tuned-v4` =
+tuned-v3 with CUDA-graph capture (command buffers) for six kernel categories
+(`TUNED_V4_COMPILER_OPTIONS`; collectives, conditionals and while loops stay uncaptured); `bare` = `{}` (true XLA
 defaults, the debugging baseline); or an explicit `xla_*`-keyed dict, used VERBATIM as
 the run's complete flag set (non-`xla_*` keys refuse at parse). The retired `tuned-v1`
 family refuses at parse naming its successor: jaxlib 0.11 removed the three
@@ -446,7 +450,7 @@ family refuses at parse naming its successor: jaxlib 0.11 removed the three
 ```yaml
 runtime:
   mesh: {replicate: 4, fsdp: 8, tp: 1}   # or {data: D, tp: T} for *-replicated-resident
-  compiler_options: tuned-v2   # or tuned-v2-autotune1, bare, or an explicit xla_* dict
+  compiler_options: tuned-v2   # or tuned-v2-autotune1, tuned-v3, tuned-v4, bare, or an explicit xla_* dict
   launch_env:
     xla_python_client_allocator: platform
     env: { SOME_ONE_OFF_VAR: "1" }

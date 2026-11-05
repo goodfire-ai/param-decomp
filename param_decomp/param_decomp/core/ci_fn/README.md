@@ -127,6 +127,27 @@ leaves the checkpoint tree unchanged. Only the materialized XLA attention applie
 it needs `implementation: xla`; the config rejects any other implementation. The default is
 no cap.
 
+Dense global and chunkwise transformers also take `attention.sink: learned`: each block's
+attention is then a `CIFnSelfAttentionWithSink`, which adds `sink_logits`, one per query head
+(initialized to zero, a vector parameter like the QK gains), joining that head's softmax as a
+slot whose value is zero. A head can then attend to nothing the same way at every position,
+rather than by parking on a document's first token, whose logit depends on its distance from
+the query. A cap leaves the sink's logit uncapped. `flash` and `xla` take a sink. On cuDNN it
+costs no extra attention work (`attention._cudnn_attention_with_sink`): the forward scales the
+plain output by the keys' share of the softmax, read from cuDNN's logsumexp, and cuDNN's own
+backward, handed the sink-inclusive logsumexp and output, gives the exact gradients. XLA adds
+the sink as a column of its materialized softmax. tokamax's Mosaic kernel takes no sink, and
+the config refuses that pairing. The default, `none`, builds `CIFnSelfAttention` exactly as
+before. The block-selected architecture rejects sinks at construction.
+
+The global transformer's `final_norm: rms` RMS-normalizes the last block's output before the
+heads read it, weightless: the heads are linear, so a per-channel gain would only rescale their
+weights. Without it the heads read the residual stream at whatever scale it reaches. It is a
+static field of the backbone.
+
+Neither option changes the checkpoint tree of a CI function that doesn't use it: Orbax records
+even an empty module, so an absent option holds no field at all.
+
 Checkpoints made before this representation must be migrated once with
 `python -m param_decomp.migrations.ci_attention SOURCE_ITEM DESTINATION_ITEM` for each
 Orbax item (`decomposition` and, for resume, `training`). The migration moves attention

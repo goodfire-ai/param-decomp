@@ -14,7 +14,7 @@ import numpy as np
 import optax
 import orbax.checkpoint as ocp
 import pytest
-from jax.sharding import AxisType, Mesh
+from jax.sharding import AxisType, Mesh, SingleDeviceSharding
 
 from param_decomp.core.adversary import (
     PersistentAdversary,
@@ -27,6 +27,7 @@ from param_decomp.core.adversary import (
 from param_decomp.core.checkpoint import (
     make_checkpoint_manager,
     make_read_only_checkpoint_manager,
+    restore_components,
     restore_decomposition,
     restore_destination,
     restore_latest,
@@ -37,7 +38,14 @@ from param_decomp.core.ci_fn.implementations.chunkwise.arch import (
     Chunk,
     ChunkwiseTransformerCIFnArch,
 )
+from param_decomp.core.ci_fn.implementations.global_transformer.arch import (
+    GlobalTransformerBackbone,
+    GlobalTransformerCIFnArch,
+)
+from param_decomp.core.ci_fn.implementations.global_transformer.placement import GlobalCIStacks
+from param_decomp.core.ci_fn.implementations.transformer.backbone import BackboneCIFn
 from param_decomp.core.ci_fn.implementations.transformer.layers import MHACIFnAttention
+from param_decomp.core.ci_fn.interface import TapSpec
 from param_decomp.core.ci_fn.optimizer import ci_fn_muon_dimension_numbers
 from param_decomp.core.components import (
     ComponentStacks,
@@ -758,3 +766,115 @@ def test_restore_reshards_a_train_topology_checkpoint_onto_a_single_device(
         # a device-side equal would refuse the mixed placement.
         assert np.array_equal(np.asarray(was), np.asarray(got))
         assert got.sharding == ref.sharding
+
+
+def _replicate_mesh(replicate: int) -> Mesh:
+    return Mesh(
+        np.asarray(jax.devices()[:replicate]).reshape(replicate, 1, 1),
+        ("replicate", "fsdp", "tp"),
+        axis_types=(AxisType.Explicit,) * 3,
+    )
+
+
+def _owner_decomposition(
+    sites: tuple[SiteSpec, ...], arch: GlobalTransformerCIFnArch, mesh: Mesh, seed: int
+) -> Decomposition[LMBatchWithDocuments]:
+    """Components and a global transformer CI, both persisting the pads owner resolves
+    on `mesh`."""
+    rules = from_config("owner", mesh, sites)
+    return Decomposition[LMBatchWithDocuments](
+        components=init_component_stacks_placed(sites, jax.random.PRNGKey(seed), rules),
+        ci_fn=placed_ci_fn(arch, sites, jax.random.PRNGKey(seed + 1), mesh, rules),
+    )
+
+
+def _assert_real_slots_equal_and_pads_zero(saved: object, restored: object) -> None:
+    """Each restored leaf holds the saved leaf's slots along the leading axis as far as
+    both reach, and zeros past the saved ones."""
+    for was, got in zip(jax.tree.leaves(saved), jax.tree.leaves(restored), strict=True):
+        was, got = np.asarray(was), np.asarray(got)
+        assert was.shape[1:] == got.shape[1:], (was.shape, got.shape)
+        n = min(len(was), len(got))
+        assert np.array_equal(was[:n], got[:n])
+        assert not got[n:].any()
+
+
+def _global_ci_stacks(decomposition: Decomposition[LMBatchWithDocuments]) -> GlobalCIStacks:
+    ci_fn = decomposition.ci_fn
+    assert isinstance(ci_fn, BackboneCIFn)
+    assert isinstance(ci_fn.backbone, GlobalTransformerBackbone)
+    return ci_fn.backbone.stacks
+
+
+@pytest.mark.multidevice
+@pytest.mark.skipif(len(jax.devices()) < 2, reason="requires two local devices")
+@pytest.mark.parametrize(("saved_replicate", "restored_replicate"), [(2, 1), (1, 2)])
+def test_a_decomposition_restores_onto_a_mesh_that_resolves_other_stack_pads(
+    tmp_path: Path, saved_replicate: int, restored_replicate: int
+):
+    """Owner at `replicate: 2` pads the 3-long component stacks, and the global CI's 3
+    blocks and 3-head stacks, to 4; one device pads nothing. A decomposition saved under
+    either restores onto the other with every real slot kept and the restoring mesh's
+    pads zero, and its components restore alone onto unplaced stacks, as a consumer
+    reading only the components does."""
+    cfg = tiny_glu_cfg()
+    sites = glu_site_specs(cfg, mlp_family_site_cs(2, 4, 16))
+    arch = GlobalTransformerCIFnArch(
+        input_taps=(TapSpec("resid.2", cfg.n_embd),),
+        d_model=16,
+        n_blocks=3,
+        attention=MHACIFnAttention(n_heads=2, implementation="xla", mask="bidirectional"),
+        ffn_hidden=32,
+        ffn_kind="gelu",
+        learned_norm_scale=False,
+    )
+    saved = _owner_decomposition(sites, arch, _replicate_mesh(saved_replicate), seed=1)
+    mgr = make_checkpoint_manager(tmp_path / "ckpts", KeepLastNCheckpoints(n=1))
+    mgr.save(0, args=ocp.args.Composite(decomposition=ocp.args.StandardSave(saved)))
+    mgr.wait_until_finished()
+    reader = make_read_only_checkpoint_manager(tmp_path / "ckpts")
+
+    reference = _owner_decomposition(sites, arch, _replicate_mesh(restored_replicate), seed=7)
+    restored = restore_decomposition(
+        reader, 0, jax.tree.map(ocp.utils.to_shape_dtype_struct, reference)
+    )
+    assert saved.components.stack_pads != restored.components.stack_pads
+    assert _global_ci_stacks(saved) != _global_ci_stacks(restored)
+    for got, ref in zip(jax.tree.leaves(restored), jax.tree.leaves(reference), strict=True):
+        assert got.shape == ref.shape and got.sharding == ref.sharding
+    _assert_real_slots_equal_and_pads_zero(saved, restored)
+
+    one_device = SingleDeviceSharding(jax.devices()[0])
+    unplaced = jax.tree.map(
+        lambda leaf: jax.ShapeDtypeStruct(leaf.shape, leaf.dtype, sharding=one_device),
+        jax.eval_shape(lambda: init_component_stacks(sites, jax.random.PRNGKey(0))),
+    )
+    components = restore_components(
+        make_read_only_checkpoint_manager(tmp_path / "ckpts"), 0, unplaced
+    )
+    _assert_real_slots_equal_and_pads_zero(saved.components, components)
+
+
+def test_a_decomposition_restore_refuses_a_shape_that_differs_past_the_leading_axis(
+    tmp_path: Path,
+):
+    """Only a leaf's leading length may differ from the stored one: a different C is a
+    different decomposition."""
+    cfg = tiny_glu_cfg()
+    sites = glu_site_specs(cfg, mlp_family_site_cs(2, 4, 16))
+    stacks = init_component_stacks(sites, jax.random.PRNGKey(0))
+    mgr = make_checkpoint_manager(tmp_path / "ckpts", KeepLastNCheckpoints(n=1))
+    item = {"components": stacks}
+    mgr.save(0, args=ocp.args.Composite(decomposition=ocp.args.StandardSave(item)))
+    mgr.wait_until_finished()
+    one_device = SingleDeviceSharding(jax.devices()[0])
+    wider = jax.tree.map(
+        lambda leaf: jax.ShapeDtypeStruct(leaf.shape, leaf.dtype, sharding=one_device),
+        jax.eval_shape(
+            lambda: init_component_stacks(
+                glu_site_specs(cfg, mlp_family_site_cs(2, 4, 24)), jax.random.PRNGKey(0)
+            )
+        ),
+    )
+    with pytest.raises(AssertionError, match="past its leading axis"):
+        restore_components(make_read_only_checkpoint_manager(tmp_path / "ckpts"), 0, wider)
